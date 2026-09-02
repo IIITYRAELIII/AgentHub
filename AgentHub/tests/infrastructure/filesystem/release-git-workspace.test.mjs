@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -116,6 +116,36 @@ test("an unmarked repository at the managed clone path is never adopted", async 
   );
   assert.equal(await git(setup.primary, "symbolic-ref", "HEAD"), "refs/heads/main");
   assert.equal(await git(setup.primary, "rev-parse", "HEAD"), setup.baseCommit);
+});
+
+test("startup audits a detached registered primary and linked holder with an empty data directory", async (context) => {
+  const setup = await fixture(context);
+  const legacyRoot = path.join(setup.root, "legacy-prerelease-holder");
+  await git(setup.primary, "worktree", "add", "-b", "PreRelease", legacyRoot, "main");
+  context.after(() => git(setup.primary, "worktree", "remove", "--force", legacyRoot).catch(() => {}));
+  await git(setup.primary, "checkout", "--detach", setup.baseCommit);
+  const beforeHead = await git(setup.primary, "rev-parse", "HEAD");
+  const beforeStatus = await git(setup.primary, "status", "--porcelain=v1");
+
+  const reconciliation = await setup.service.reconcile({
+    projectRoots: [{ workspaceId: "workspace-1", projectRoot: setup.primary }],
+  });
+
+  assert.equal(reconciliation.checked, 1);
+  assert.equal(reconciliation.registeredWorkspaceRoots, 1);
+  assert.equal(reconciliation.checkpointCount, 0);
+  assert.equal(reconciliation.repositories[0].source, "registered_workspace");
+  assert.equal(reconciliation.repositories[0].workspaceId, "workspace-1");
+  assert.equal(reconciliation.repositories[0].status, "manual_required");
+  assert.match(reconciliation.repositories[0].reason, /attached to refs\/heads\/main/u);
+  assert.equal(reconciliation.repositories[0].primary.branch, null);
+  assert.ok(reconciliation.repositories[0].primary.legacyLinkedHolders.some(
+    (item) => path.resolve(item.path) === path.resolve(legacyRoot),
+  ));
+  assert.equal(await git(setup.primary, "rev-parse", "HEAD"), beforeHead);
+  assert.equal(await git(setup.primary, "status", "--porcelain=v1"), beforeStatus);
+  assert.match(await git(setup.primary, "worktree", "list", "--porcelain"), /legacy-prerelease-holder/u);
+  await assert.rejects(stat(path.join(setup.dataDir, "release-repositories")), { code: "ENOENT" });
 });
 
 test("dirty primary bytes, retry checkpoint and legacy linked holder remain untouched", async (context) => {

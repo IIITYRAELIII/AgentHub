@@ -24,6 +24,10 @@ import {
   workspaceSettingsWithReleaseWorkflow,
 } from "../../domain/workspace-release-workflow.mjs";
 import { workspaceSettingsWithTaskPrefix } from "../../domain/task-number.mjs";
+import {
+  withArchitectReleasePrimaryWorkspaceRule,
+  withReleasePrimaryWorkspaceRule,
+} from "../../domain/release-primary-workspace-policy.mjs";
 
 const SCHEMA_VERSION = 11;
 export const DEVELOPER_RULES_MAX_BYTES = 32 * 1024;
@@ -764,7 +768,10 @@ export class WorkspaceCatalogStore {
     const rawStreamRules = this.#developerRules("stream", stream.id);
     const workspace = this.workspace(stream.workspaceId);
     const streamContent = releaseWorkflowEnabled(workspace?.settings)
-      ? effectiveStreamDeveloperRules(rawStreamRules?.content ?? "", stream.settings)
+      ? withArchitectReleasePrimaryWorkspaceRule(
+        effectiveStreamDeveloperRules(rawStreamRules?.content ?? "", stream.settings),
+        stream.settings,
+      )
       : (rawStreamRules?.content ?? "");
     return {
       workspace: this.#effectiveWorkspaceDeveloperRules(stream.workspaceId),
@@ -780,9 +787,10 @@ export class WorkspaceCatalogStore {
 
   #effectiveWorkspaceDeveloperRules(workspaceId) {
     const stored = this.#developerRules("workspace", workspaceId);
-    const content = effectiveWorkspaceDeveloperRules(
-      stored?.content ?? "",
-      this.workspace(workspaceId)?.settings,
+    const settings = this.workspace(workspaceId)?.settings;
+    const content = withReleasePrimaryWorkspaceRule(
+      effectiveWorkspaceDeveloperRules(stored?.content ?? "", settings),
+      settings,
     );
     if (!content) return stored;
     return {

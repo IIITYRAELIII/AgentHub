@@ -590,11 +590,13 @@ test("release workflow is opt-in and injects policy without changing editable ru
     store.workspaceDeveloperRules(workspace.id).content,
     "Fast Test Contour workflow",
   );
-  assert.equal(
-    store.developerRulesForStream(stream.id).workspace.content,
-    `${RELEASE_WORKFLOW_DEVELOPER_RULES}\n\nFast Test Contour workflow`,
-  );
-  assert.match(store.developerRulesForStream(stream.id).stream.content, /Workspace release architect/u);
+  const injected = store.developerRulesForStream(stream.id);
+  assert.ok(injected.workspace.content.includes(RELEASE_WORKFLOW_DEVELOPER_RULES));
+  assert.match(injected.workspace.content, /releaseCandidates\[\]\.releaseRoot.*standalone clone/u);
+  assert.match(injected.workspace.content, /Fast Test Contour workflow\nThe registered primary Workspace/u);
+  assert.match(injected.stream.content, /Workspace release architect/u);
+  assert.match(injected.stream.content, /releaseCandidates\[\]\.releaseRoot.*only checkout/u);
+  assert.doesNotMatch(injected.stream.content, /update local main|separate integration worktree/u);
 });
 
 test.skip("retired destructive release registry discard", async (t) => {
