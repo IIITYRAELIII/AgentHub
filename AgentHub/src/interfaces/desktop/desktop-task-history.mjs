@@ -189,6 +189,25 @@ function coalesceInterstreamRootAlias(messages, turn) {
   return values;
 }
 
+function exactTerminalAgentCandidate(message, turnId, canonicalItemId) {
+  if (message?.role !== "agent" || message?.kind === "subagent") return false;
+  if (String(message?.agentThreadId ?? "").trim()) return false;
+  const itemId = String(message?.itemId ?? "").trim();
+  if (!itemId) return false;
+  const exactSyntheticIds = [
+    `${turnId}:agent:live`,
+    `${turnId}:agent:final`,
+    `${turnId}:rollout-agent:live`,
+    `${turnId}:rollout-agent:final`,
+  ];
+  if (exactSyntheticIds.includes(itemId)) return true;
+  if (canonicalItemId !== `${turnId}:agent:final`
+    && canonicalItemId !== `${turnId}:rollout-agent:final`) return false;
+  return ["final", "final_answer"].includes(String(message?.phase ?? ""))
+    && Array.isArray(message.responseAnnotationReferences)
+    && message.responseAnnotationReferences.length > 0;
+}
+
 // Builds the bounded Desktop/Mini App history read-model for one task.
 function mergeDurableMessages(hydratedMessages, durableMessages, turnId, turn) {
   const values = structuredClone(Array.isArray(hydratedMessages) ? hydratedMessages : []);
@@ -213,13 +232,15 @@ function mergeDurableMessages(hydratedMessages, durableMessages, turnId, turn) {
       if (migrationPair) index = hydrated.index;
     }
     if (index < 0 && durable?.role === "agent") {
-      const syntheticFinalId = /:(?:rollout-)?agent:(?:live|final)$/u.test(itemId);
-      if (syntheticFinalId) {
+      const exactSyntheticFinalId = [
+        `${turnId}:agent:live`,
+        `${turnId}:agent:final`,
+        `${turnId}:rollout-agent:live`,
+        `${turnId}:rollout-agent:final`,
+      ].includes(itemId);
+      if (exactSyntheticFinalId) {
         const candidates = values.map((message, candidateIndex) => ({ message, candidateIndex }))
-          .filter(({ message }) => (
-            message?.role === "agent"
-            && /:(?:rollout-)?agent:(?:live|final)$/u.test(String(message?.itemId ?? ""))
-          ));
+          .filter(({ message }) => exactTerminalAgentCandidate(message, turnId, itemId));
         if (candidates.length === 1) index = candidates[0].candidateIndex;
       }
     }
@@ -234,10 +255,17 @@ function mergeDurableMessages(hydratedMessages, durableMessages, turnId, turn) {
     }
     const author = String(durable?.author ?? "").trim()
       || String(current?.author ?? "").trim();
+    const responseAnnotationReferences = Array.isArray(durable?.responseAnnotationReferences)
+      && durable.responseAnnotationReferences.length
+      ? durable.responseAnnotationReferences
+      : current.responseAnnotationReferences;
     values[index] = {
       ...current,
       ...structuredClone(durable),
       ...(author ? { author } : {}),
+      ...(Array.isArray(responseAnnotationReferences) && responseAnnotationReferences.length
+        ? { responseAnnotationReferences: structuredClone(responseAnnotationReferences) }
+        : {}),
       time: current.time ?? durable?.time ?? null,
       attachments: Array.isArray(durable?.attachments) && durable.attachments.length
         ? structuredClone(durable.attachments)

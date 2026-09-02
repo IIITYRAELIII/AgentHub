@@ -7,6 +7,7 @@ import test from "node:test";
 import { codexAssistantResponseProjection } from "../../src/domain/codex-response-annotation.mjs";
 import { TASK_EXECUTION_OWNERS } from "../../src/domain/task-execution-owner.mjs";
 import { LocalTaskSyncStore } from "../../src/infrastructure/persistence/task-sync-store.mjs";
+import { mergeDurableTaskHistory } from "../../src/interfaces/desktop/desktop-task-history.mjs";
 
 const task = {
   provider: "codex",
@@ -336,6 +337,42 @@ test("local task sync preserves durable message metadata and attachments", async
       intent: "context",
     },
   ]);
+  restored.close();
+});
+
+test("terminal citation coalescing survives SQLite reopen", async () => {
+  const filePath = await storeFile();
+  const turnId = "turn-terminal-citation";
+  const [turn] = mergeDurableTaskHistory([{
+    id: turnId,
+    messages: [{
+      itemId: "provider-final-item",
+      role: "agent",
+      phase: "final_answer",
+      text: "Цитата 1\nГотово",
+      responseAnnotationReferences: [{ index: 1 }],
+    }],
+  }], [{
+    id: turnId,
+    messages: [{
+      itemId: `${turnId}:rollout-agent:final`,
+      role: "agent",
+      text: "Цитата 1\nГотово",
+    }],
+  }]);
+  const store = new LocalTaskSyncStore({ filePath });
+  await store.load();
+  store.recordHistory(task, [turn]);
+  await store.save();
+  store.close();
+
+  const restored = new LocalTaskSyncStore({ filePath });
+  await restored.load();
+  const [persisted] = restored.history(task);
+  const agentMessages = persisted.messages.filter((message) => message.role === "agent");
+  assert.equal(agentMessages.length, 1);
+  assert.equal(agentMessages[0].itemId, `${turnId}:rollout-agent:final`);
+  assert.deepEqual(agentMessages[0].responseAnnotationReferences, [{ index: 1 }]);
   restored.close();
 });
 

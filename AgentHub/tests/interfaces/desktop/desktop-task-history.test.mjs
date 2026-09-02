@@ -168,6 +168,87 @@ test("durable history merges equivalent synthetic final-answer copies", () => {
   assert.equal(history[0].messages[0].text, "Готово");
 });
 
+test("durable terminal final adopts exact provider citation references without a duplicate", () => {
+  const turnId = "turn-citation-final";
+  const [turn] = mergeDurableTaskHistory([{
+    id: turnId,
+    messages: [{
+      itemId: "provider-final-item",
+      role: "agent",
+      phase: "final",
+      text: "Цитата 1\nГотово",
+      responseAnnotationReferences: [{ index: 1 }],
+    }],
+  }], [{
+    id: turnId,
+    messages: [{
+      itemId: `${turnId}:rollout-agent:final`,
+      role: "agent",
+      text: "Цитата 1\nГотово",
+    }],
+  }]);
+
+  assert.equal(turn.messages.length, 1);
+  assert.equal(turn.messages[0].itemId, `${turnId}:rollout-agent:final`);
+  assert.deepEqual(turn.messages[0].responseAnnotationReferences, [{ index: 1 }]);
+});
+
+test("durable terminal final never adopts citation references across an unsafe identity", () => {
+  const turnId = "turn-citation-final";
+  const cases = [{
+    name: "wrong canonical target",
+    canonicalItemId: `other-${turnId}:rollout-agent:final`,
+    hydratedMessages: [{
+      itemId: "provider-final-item",
+      role: "agent",
+      phase: "final",
+      responseAnnotationReferences: [{ index: 1 }],
+    }],
+  }, {
+    name: "non-final provider item",
+    canonicalItemId: `${turnId}:rollout-agent:final`,
+    hydratedMessages: [{
+      itemId: "provider-commentary-item",
+      role: "agent",
+      phase: "commentary",
+      responseAnnotationReferences: [{ index: 1 }],
+    }],
+  }, {
+    name: "ambiguous provider final items",
+    canonicalItemId: `${turnId}:rollout-agent:final`,
+    hydratedMessages: [{
+      itemId: "provider-final-one",
+      role: "agent",
+      phase: "final",
+      responseAnnotationReferences: [{ index: 1 }],
+    }, {
+      itemId: "provider-final-two",
+      role: "agent",
+      phase: "final",
+      responseAnnotationReferences: [{ index: 2 }],
+    }],
+  }];
+  for (const { name, canonicalItemId, hydratedMessages } of cases) {
+    const [turn] = mergeDurableTaskHistory([{
+      id: turnId,
+      messages: hydratedMessages,
+    }], [{
+      id: turnId,
+      messages: [{
+        itemId: canonicalItemId,
+        role: "agent",
+        text: "Готово",
+      }],
+    }]);
+
+    const canonical = turn.messages.find((message) => (
+      message.itemId === canonicalItemId
+    ));
+    assert.deepEqual(canonical?.responseAnnotationReferences ?? [], [], name);
+    assert.equal(turn.messages.length, hydratedMessages.length + 1, name);
+  }
+});
+
 test("sparse durable history does not erase an already known interstream author", () => {
   const history = mergeDurableTaskHistory([{
     id: "turn-1",
