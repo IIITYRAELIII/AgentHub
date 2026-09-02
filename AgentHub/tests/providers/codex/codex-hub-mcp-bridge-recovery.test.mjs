@@ -22,6 +22,19 @@ function failedItem(toolName, requestId = null) {
   };
 }
 
+function dynamicItem(source, overrides = {}) {
+  return {
+    id: "call-composed",
+    type: "dynamicToolCall",
+    tool: "functions.exec",
+    arguments: { input: source },
+    status: "failed",
+    success: false,
+    error: { message: "MCP tool transport timed out" },
+    ...overrides,
+  };
+}
+
 function fixture(operations = new Map()) {
   const reloads = [];
   const wakes = [];
@@ -51,6 +64,91 @@ test("bridge parser recognizes only nested Agent Hub calls without exposing argu
   }), []);
 });
 
+test("bridge parser positionally maps exact ids for two composed mutations", () => {
+  const item = dynamicItem(`
+    const claim = await tools.mcp__agent_hub__hub_task_claim({
+      context_token: "sensitive",
+      request_id: "claim-exact",
+      task_id: "task-1",
+    });
+    const sent = await tools.mcp__agent_hub__hub_stream_message_send({
+      context_token: "sensitive",
+      request_id: "send-exact",
+      text: "request_id: not-an-identity",
+    });
+  `);
+
+  assert.deepEqual(hubMcpCallsFromDynamicItem(item), [
+    { toolName: "hub_task_claim", mutating: true, requestId: "claim-exact" },
+    { toolName: "hub_stream_message_send", mutating: true, requestId: "send-exact" },
+  ]);
+});
+
+test("bridge parser reads a JSON-encoded functions.exec input without evaluating it", () => {
+  const item = dynamicItem("unused");
+  item.arguments = JSON.stringify({
+    input: `await tools.mcp__agent_hub__hub_task_claim({ request_id: "json-exact" });`,
+  });
+
+  assert.deepEqual(hubMcpCallsFromDynamicItem(item), [
+    { toolName: "hub_task_claim", mutating: true, requestId: "json-exact" },
+  ]);
+});
+
+test("bridge parser keeps a read separate from its composed mutation identity", () => {
+  const item = dynamicItem(`
+    const task = await tools.mcp__agent_hub__hub_task_get({ context_token: "sensitive", task_id: "task-1" });
+    const claim = await tools.mcp__agent_hub__hub_task_claim({ context_token: "sensitive", request_id: "claim-exact" });
+  `);
+
+  assert.deepEqual(hubMcpCallsFromDynamicItem(item), [
+    { toolName: "hub_task_get", mutating: false, requestId: null },
+    { toolName: "hub_task_claim", mutating: true, requestId: "claim-exact" },
+  ]);
+});
+
+test("bridge parser fails closed for duplicate and missing mutation identities", () => {
+  const duplicateAcrossCalls = dynamicItem(`
+    await tools.mcp__agent_hub__hub_task_claim({ request_id: "same-id" });
+    await tools.mcp__agent_hub__hub_stream_message_send({ request_id: "same-id" });
+  `);
+  const duplicateProperty = dynamicItem(`
+    await tools.mcp__agent_hub__hub_task_claim({ request_id: "first", request_id: "second" });
+  `);
+  const missing = dynamicItem(`await tools.mcp__agent_hub__hub_task_claim({ task_id: "task-1" });`);
+
+  assert.deepEqual(hubMcpCallsFromDynamicItem(duplicateAcrossCalls).map((call) => ({
+    requestId: call.requestId,
+    issue: call.requestIdIssue,
+  })), [
+    { requestId: null, issue: "duplicate-across-calls" },
+    { requestId: null, issue: "duplicate-across-calls" },
+  ]);
+  assert.equal(hubMcpCallsFromDynamicItem(duplicateProperty)[0].requestIdIssue, "duplicate-property");
+  assert.equal(hubMcpCallsFromDynamicItem(missing)[0].requestIdIssue, "missing");
+});
+
+test("explicit successful completion ignores failure vocabulary in normal payloads", async () => {
+  const state = fixture();
+  const item = dynamicItem(
+    `await tools.mcp__agent_hub__hub_task_get({ context_token: "sensitive", task_id: "task-1" });`,
+    {
+      status: "completed",
+      success: true,
+      error: null,
+      result: { text: "server timeout is 60 seconds; a closed socket is recoverable" },
+      output: "transport aborted and connection reset are documentation terms",
+      contentItems: [{ type: "text", text: "broken pipe" }],
+    },
+  );
+
+  assert.equal(dynamicHubMcpCallFailed(item), false);
+  assert.equal(await state.service.observe({ method: "item/completed", item, run: { id: "run-1" } }), null);
+  assert.deepEqual(state.reloads, []);
+  assert.deepEqual(state.wakes, []);
+  assert.deepEqual(state.stages, []);
+});
+
 test("no-server-admission mutation reloads the bridge and permits only same-id retry", async () => {
   const state = fixture();
   const result = await state.service.observe({
@@ -78,6 +176,68 @@ test("lost mutation response reconciles authoritative success without replay", a
   assert.equal(result.calls[0].outcome, "authoritative-succeeded");
   assert.equal(result.calls[0].operationStatus, "succeeded");
   assert.match(state.stages[0], /must not be repeated/u);
+});
+
+test("composed mutation failures reconcile each exact audit without replaying an effect", async () => {
+  const operations = new Map([
+    ["claim-exact", { status: "succeeded", result: { claimed: true } }],
+    ["send-exact", { status: "failed", error: "delivery rejected" }],
+  ]);
+  const readbacks = [];
+  const reloads = [];
+  const wakes = [];
+  let repeatedEffects = 0;
+  const service = new CodexHubMcpBridgeRecovery({
+    reloadMcp: async () => reloads.push("reload"),
+    readOperation: (requestId) => {
+      readbacks.push(requestId);
+      return operations.get(requestId) ?? null;
+    },
+    wakeDeferredInputs: () => wakes.push("wake"),
+    setStage: () => {},
+    logger: { log: () => {}, error: () => {} },
+  });
+  const item = dynamicItem(`
+    await tools.mcp__agent_hub__hub_task_claim({ request_id: "claim-exact" });
+    await tools.mcp__agent_hub__hub_stream_message_send({ request_id: "send-exact" });
+  `);
+
+  const result = await service.observe({ method: "item/completed", item });
+
+  assert.deepEqual(readbacks, ["claim-exact", "send-exact"]);
+  assert.deepEqual(result.calls.map((call) => call.outcome), [
+    "authoritative-succeeded",
+    "authoritative-failed",
+  ]);
+  assert.deepEqual(reloads, ["reload"]);
+  assert.deepEqual(wakes, ["wake"]);
+  assert.equal(repeatedEffects, 0);
+});
+
+test("ambiguous composed mutation identities never perform authoritative readback", async () => {
+  const readbacks = [];
+  const service = new CodexHubMcpBridgeRecovery({
+    reloadMcp: async () => {},
+    readOperation: (requestId) => {
+      readbacks.push(requestId);
+      return { status: "succeeded" };
+    },
+    logger: { log: () => {}, error: () => {} },
+  });
+  const item = dynamicItem(`
+    await tools.mcp__agent_hub__hub_task_claim({ request_id: "same-id" });
+    await tools.mcp__agent_hub__hub_stream_message_send({ request_id: "same-id" });
+    await tools.mcp__agent_hub__hub_task_status_update({ status: "testing" });
+  `);
+
+  const result = await service.observe({ method: "item/completed", item });
+
+  assert.deepEqual(readbacks, []);
+  assert.deepEqual(result.calls.map((call) => call.outcome), [
+    "mutation-identity-missing",
+    "mutation-identity-missing",
+    "mutation-identity-missing",
+  ]);
 });
 
 test("pending mutation remains unknown and read-only retry is safe after rebind", async () => {

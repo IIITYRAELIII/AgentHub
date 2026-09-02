@@ -14,6 +14,12 @@ A failed dynamic `functions.exec` call that contains an `agent_hub` MCP call
 reloads the Codex MCP transport before a later attempt and wakes durable input
 lanes. Read-only calls are safe to retry after that rebind.
 
+Explicit successful/completed App Server items are terminal success before any
+payload inspection. Ordinary result, output and content text never becomes a
+transport failure merely because it contains words such as `timeout`, `socket`
+or `reset`; only the item's structural success, failure and error markers own
+that classification.
+
 Mutations are never inferred from text and never retried with a new identity.
 They require the exact `request_id` and authoritative `hub_mcp_operations`
 readback:
@@ -21,6 +27,11 @@ readback:
 - no operation means pre-dispatch and permits a retry with the same id;
 - `succeeded` or `failed` is terminal evidence and forbids another effect;
 - `pending` is unknown and permits reconciliation only with the same id.
+
+Composed `functions.exec` calls bind each mutation to the `request_id` in that
+specific nested call's argument object. Missing, duplicate-property and
+cross-call duplicate identities fail closed: recovery may rebind the transport,
+but it performs no authoritative operation lookup and authorizes no replay.
 
 Logs contain tool and operation identity, status and recovery outcome, but not
 the context capability or tool arguments.
