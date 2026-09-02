@@ -1,6 +1,7 @@
-const COMPLETE_MARKER = /^([ \t]*):codex-annotation\{index="(\d+)"\}(?:[ \t]+(.*)|[ \t]*$)/u;
+const COMPLETE_MARKER = /^([ \t]*):codex-annotation\{index="([^"\r\n]*)"\}(?:[ \t]+(.*)|[ \t]*$)/u;
 const MARKER_PREFIX = ':codex-annotation{index="';
-const PARTIAL_MARKER = /^:codex-annotation\{index="\d*"?\}?$/u;
+const PARTIAL_MARKER = /^:codex-annotation\{index="[^"\r\n]*(?:"\}?)?$/u;
+const DECIMAL_INDEX = /^\d+$/u;
 const FENCE_START = /^[ \t]{0,3}(`{3,}|~{3,})/u;
 
 export const MAX_CODEX_RESPONSE_ANNOTATION_INDEX = 20;
@@ -37,7 +38,7 @@ export function codexAssistantResponseProjection(value) {
     }
     const complete = COMPLETE_MARKER.exec(line);
     if (complete) {
-      const index = Number(complete[2]);
+      const index = DECIMAL_INDEX.test(complete[2]) ? Number(complete[2]) : Number.NaN;
       const valid = Number.isSafeInteger(index) && index >= 1
         && index <= MAX_CODEX_RESPONSE_ANNOTATION_INDEX;
       if (valid && referencedIndices.has(index)) {
