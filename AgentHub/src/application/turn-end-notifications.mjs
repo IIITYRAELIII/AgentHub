@@ -1,6 +1,9 @@
 import path from "node:path";
 
-import { visibleCodexAssistantText } from "../domain/codex-response-annotation.mjs";
+import {
+  codexAssistantResponseProjection,
+  visibleCodexAssistantText,
+} from "../domain/codex-response-annotation.mjs";
 import { estimateMissingCodexUsage } from "../domain/codex-usage-estimate.mjs";
 import { normalizeServiceTier, normalizeTokenUsage } from "../domain/token-usage.mjs";
 import { normalizeWorkLogId } from "./work-log-usage-projection.mjs";
@@ -125,6 +128,15 @@ function normalizedCompletion(value) {
       status: String(call?.status ?? "completed").trim() || "completed",
     }];
   });
+  const answerProjection = base.provider === "codex"
+    ? codexAssistantResponseProjection(value.finalAnswer)
+    : { text: String(value.finalAnswer ?? ""), responseAnnotationReferences: [] };
+  const suppliedReferences = Array.isArray(value.responseAnnotationReferences)
+    ? value.responseAnnotationReferences
+      .map((reference) => Number(reference?.index))
+      .filter((index) => Number.isSafeInteger(index) && index > 0)
+      .map((index) => ({ index }))
+    : [];
   return {
     ...base,
     turnId,
@@ -156,9 +168,14 @@ function normalizedCompletion(value) {
       : {}),
     prompt: prompts[0] ?? "",
     prompts,
-    finalAnswer: (base.provider === "codex"
-      ? visibleCodexAssistantText(value.finalAnswer)
-      : String(value.finalAnswer ?? "")).trim(),
+    finalAnswer: answerProjection.text.trim(),
+    ...((suppliedReferences.length || answerProjection.responseAnnotationReferences.length)
+      ? {
+        responseAnnotationReferences: suppliedReferences.length
+          ? suppliedReferences
+          : answerProjection.responseAnnotationReferences,
+      }
+      : {}),
     responseAttachments: normalizedAttachments(value.responseAttachments),
     changedFiles: Array.isArray(value.changedFiles)
       ? value.changedFiles.map((file) => String(file).trim()).filter(Boolean)
@@ -288,6 +305,9 @@ export class TurnEndNotificationRegistry {
     ].map((prompt) => String(prompt ?? "").trim()).filter(Boolean))].slice(0, 100);
     completion.prompt = completion.prompts[0] ?? incoming.prompt ?? completion.prompt;
     completion.finalAnswer = incoming.finalAnswer || completion.finalAnswer;
+    if (incoming.responseAnnotationReferences?.length) {
+      completion.responseAnnotationReferences = incoming.responseAnnotationReferences;
+    }
     if (incoming.responseAttachments.length) {
       completion.responseAttachments = incoming.responseAttachments;
     }

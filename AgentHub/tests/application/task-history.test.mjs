@@ -620,12 +620,17 @@ test("codex history preserves response annotations as structured prompt data", (
   ].join("\n");
   const [exchange] = codexThreadHistory([{
     id: "turn-annotated",
-    status: "inProgress",
-    items: [{ type: "userMessage", content: [{ type: "text", text: prompt }] }],
+    status: "completed",
+    items: [
+      { type: "userMessage", content: [{ type: "text", text: prompt }] },
+      { type: "agentMessage", phase: "final_answer", text: ':codex-annotation{index="1"} Готово' },
+    ],
   }]);
   assert.deepEqual(exchange.promptAnnotations, [{ text: "Цитата", annotation: "Комментарий" }]);
   assert.equal(exchange.promptRequest, "Общий вопрос");
   assert.deepEqual(exchange.messages[0].responseAnnotations, [{ text: "Цитата", annotation: "Комментарий" }]);
+  assert.equal(exchange.messages[1].text, "Цитата 1\nГотово");
+  assert.deepEqual(exchange.messages[1].responseAnnotationReferences, [{ index: 1 }]);
 });
 
 test("codexThreadHistory returns user and assistant pairs", () => {

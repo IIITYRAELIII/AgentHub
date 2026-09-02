@@ -1388,6 +1388,7 @@ test("desktop task history exposes structured response annotations", async () =>
   state.history[3].promptRequest = "Общий вопрос";
   state.history[3].messages[0].responseAnnotations = state.history[3].promptAnnotations;
   state.history[3].messages[0].responseAnnotationRequest = state.history[3].promptRequest;
+  state.history[3].messages[1].responseAnnotationReferences = [{ index: 1 }];
 
   const result = await desktopTaskHistory({ limit: 1 });
 
@@ -1397,6 +1398,7 @@ test("desktop task history exposes structured response annotations", async () =>
     text: "Цитата",
     annotation: "Комментарий",
   }]);
+  assert.deepEqual(result.items[0].messages[1].responseAnnotationReferences, [{ index: 1 }]);
 });
 
 test("desktop task history preserves pagination, field limits and response budget", async () => {

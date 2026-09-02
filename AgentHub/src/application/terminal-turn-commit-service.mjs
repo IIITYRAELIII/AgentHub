@@ -30,6 +30,13 @@ function historySnapshot(run, completion) {
     taskTitle: completion.taskTitle,
     promptPreview: String(source.promptPreview ?? completion.prompt ?? ""),
     responseText: String(completion.finalAnswer ?? source.responseText ?? ""),
+    ...((completion.responseAnnotationReferences ?? source.responseAnnotationReferences)?.length
+      ? {
+        responseAnnotationReferences: structuredClone(
+          completion.responseAnnotationReferences ?? source.responseAnnotationReferences,
+        ),
+      }
+      : {}),
     responseItemId: String(source.responseItemId ?? ""),
     clientUserMessageId: String(source.clientUserMessageId ?? "") || null,
     submittedAt: source.submittedAt ?? source.userMessages?.[0]?.submittedAt ?? source.userMessages?.[0]?.time ?? source.startedAt ?? null,

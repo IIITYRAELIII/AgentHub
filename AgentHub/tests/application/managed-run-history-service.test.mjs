@@ -67,10 +67,12 @@ test("terminal history replaces the matching agent item without duplicating it",
     turnId: "turn-1",
     responseItemId: "answer-1",
     responseText: "partial",
+    responseAnnotationReferences: [{ index: 1 }],
     activities: [],
   }, { active: false, status: "completed", answer: "final" });
   assert.equal(setup.history[0].messages.length, 1);
   assert.equal(setup.history[0].messages[0].text, "final");
+  assert.deepEqual(setup.history[0].messages[0].responseAnnotationReferences, [{ index: 1 }]);
   assert.equal(setup.history[0].completedAt, "2026-08-05T12:00:00.000Z");
   assert.equal(setup.snapshots[0].snapshot.executionOwner, null);
   assert.equal(setup.telemetry.length, 0);

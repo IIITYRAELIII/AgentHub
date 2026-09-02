@@ -33,6 +33,14 @@
         responseAnnotationRequest: rendersResponseAnnotations
           ? String(message?.responseAnnotationRequest ?? message?.text ?? "").trim()
           : "",
+        responseAnnotationReferences: message?.role === "agent"
+          && Array.isArray(message?.responseAnnotationReferences)
+          ? message.responseAnnotationReferences
+          : [],
+        responseCitationPresentations: message?.role === "agent"
+          && Array.isArray(message?.responseCitationPresentations)
+          ? message.responseCitationPresentations
+          : [],
         activities: message?.activities ?? [],
         activityGroups: message?.activityGroups ?? [],
         attachments: message?.attachments ?? [],
@@ -42,6 +50,50 @@
     } catch {
       return `${messageKey(message)}\u001f${withDiff ? "diff" : "plain"}`;
     }
+  }
+
+  function responseCitationPresentations(messages, messageIndex) {
+    const values = Array.isArray(messages) ? messages : [];
+    const message = values[messageIndex];
+    const references = message?.role === "agent" && Array.isArray(message.responseAnnotationReferences)
+      ? message.responseAnnotationReferences
+      : [];
+    if (!references.length) return [];
+    let targetIndex = -1;
+    for (let index = messageIndex - 1; index >= 0; index -= 1) {
+      if (values[index]?.role === "user" && Array.isArray(values[index].responseAnnotations)
+        && values[index].responseAnnotations.length) {
+        targetIndex = index;
+        break;
+      }
+    }
+    const target = values[targetIndex];
+    return references.flatMap((reference) => {
+      const index = Number(reference?.index);
+      if (!Number.isSafeInteger(index) || index < 1) return [];
+      const annotation = target?.responseAnnotations?.[index - 1];
+      const quote = String(annotation?.text ?? "").trim();
+      return [{
+        index,
+        label: `Цитата ${index}`,
+        quote,
+        annotation: String(annotation?.annotation ?? "").trim(),
+        targetMessageKey: target ? messageKey(target, targetIndex) : "",
+      }];
+    });
+  }
+
+  function withoutResponseCitationFallbacks(value, references) {
+    let lines = String(value ?? "").replace(/\r\n?/gu, "\n").split("\n");
+    for (const reference of Array.isArray(references) ? references : []) {
+      const index = Number(reference?.index);
+      if (!Number.isSafeInteger(index) || index < 1) continue;
+      const label = `Цитата ${index}`;
+      const position = lines.findIndex((line) => line.trim() === label);
+      if (position >= 0) lines.splice(position, 1);
+    }
+    while (lines[0] === "") lines = lines.slice(1);
+    return lines.join("\n");
   }
 
   function messageTimestampLabel(value, nowValue = Date.now()) {
@@ -333,6 +385,7 @@
     messageKey,
     messageTailPagination,
     messageTimestampLabel,
+    responseCitationPresentations,
     messageTailWindow,
     inlineMarkdownTokens,
     normalizeSystemEventText,
@@ -342,5 +395,6 @@
     reconcileKeyedChildren,
     standaloneInlineCode,
     turnDurationLabel,
+    withoutResponseCitationFallbacks,
   });
 })();

@@ -1,4 +1,4 @@
-import { visibleCodexAssistantText } from "../../domain/codex-response-annotation.mjs";
+import { codexAssistantResponseProjection } from "../../domain/codex-response-annotation.mjs";
 
 const MAX_AGENT_MESSAGES = 64;
 const PROVIDER_TEXT = Symbol("codex-provider-text");
@@ -27,7 +27,11 @@ function setProviderText(item, value) {
     writable: true,
     value: text,
   });
-  item.text = visibleCodexAssistantText(text);
+  const projection = codexAssistantResponseProjection(text);
+  item.text = projection.text;
+  if (projection.responseAnnotationReferences.length) {
+    item.responseAnnotationReferences = projection.responseAnnotationReferences;
+  } else delete item.responseAnnotationReferences;
 }
 
 function agentMessagePhase(item) {
@@ -74,6 +78,9 @@ function synchronizeResponse(run) {
   if (!selected) return null;
   run.responseItemId = selected.id;
   run.responseText = String(selected.text ?? "");
+  run.responseAnnotationReferences = Array.isArray(selected.responseAnnotationReferences)
+    ? selected.responseAnnotationReferences.map((reference) => ({ ...reference }))
+    : [];
   return selected;
 }
 

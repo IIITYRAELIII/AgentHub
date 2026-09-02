@@ -394,6 +394,13 @@ export function createDesktopSnapshotFactory({
       }),
       progress: String(run.progressReasoning ?? ""),
       response: String(run.responseText ?? ""),
+      ...((run.responseAnnotationReferences ?? responseItem?.responseAnnotationReferences)?.length
+        ? {
+          responseAnnotationReferences: structuredClone(
+            run.responseAnnotationReferences ?? responseItem.responseAnnotationReferences,
+          ),
+        }
+        : {}),
       ...(responseItem?.phase ? { responsePhase: String(responseItem.phase) } : {}),
       clientUserMessageId: run.clientUserMessageId ?? null,
       submittedAt: run.submittedAt ?? runUserMessages[0]?.submittedAt ?? runUserMessages[0]?.time ?? run.startedAt ?? null,

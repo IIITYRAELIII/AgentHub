@@ -4455,15 +4455,18 @@ function patchRenderedMessage(node, message) {
   }
 }
 
-function messageRenderSpec(message, index, lastAgentIndex, taskDiff) {
+function messageRenderSpec(message, index, lastAgentIndex, taskDiff, citationPresentations = []) {
   const withDiff = index === lastAgentIndex && Boolean(taskDiff);
+  const renderedMessage = citationPresentations.length
+    ? { ...message, responseCitationPresentations: citationPresentations }
+    : message;
   return {
     key: MessageView.messageKey(message, index),
-    signature: MessageView.messageContentSignature(message, {
+    signature: MessageView.messageContentSignature(renderedMessage, {
       withDiff,
       diffText: taskDiff?.text ?? "",
     }),
-    message,
+    message: renderedMessage,
     withDiff,
     taskDiff,
   };
@@ -4534,12 +4537,17 @@ function renderMessages({
     }
   }
   const taskDiff = state.taskDiffs.get(taskId);
+  const messageOffset = Math.max(0, allMessages.length - messages.length);
+  const citationsFor = (index) => MessageView.responseCitationPresentations(
+    allMessages,
+    messageOffset + index,
+  );
   let prependedNodes = null;
   let newTailMessages = 0;
   const added = Math.min(messages.length, Math.max(0, Number(prependedCount) || 0));
   if (!ownerChanged && added > 0 && added < messages.length) {
     const prefixSpecs = messages.slice(0, added).map((message, index) => (
-      messageRenderSpec(message, index, lastAgentIndex, taskDiff)
+      messageRenderSpec(message, index, lastAgentIndex, taskDiff, citationsFor(index))
     ));
     const expectedExistingKeys = messages.slice(added).map((message, index) => (
       MessageView.messageKey(message, added + index)
@@ -4553,7 +4561,7 @@ function renderMessages({
   }
   if (prependedNodes == null) {
     const specs = messages.map((message, index) => (
-      messageRenderSpec(message, index, lastAgentIndex, taskDiff)
+      messageRenderSpec(message, index, lastAgentIndex, taskDiff, citationsFor(index))
     ));
     newTailMessages = !ownerChanged && !tailLimit && !incrementalPrepend && !stickToBottom
       ? specs.filter((spec, index) => index >= previousMessageKeys.size
@@ -5288,7 +5296,10 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
     const text = role === "system"
       ? MessageView.normalizeSystemEventText(message.text ?? "")
       : message.text ?? "";
-    renderMarkdown(body, text, currentFileLinkContext(task), role);
+    if (role === "agent" && Array.isArray(message.responseCitationPresentations)
+      && message.responseCitationPresentations.length) {
+      renderAgentResponseBody(body, message, text, currentFileLinkContext(task));
+    } else renderMarkdown(body, text, currentFileLinkContext(task), role);
   }
 
   if (maintenance) article.append(body);
@@ -5331,6 +5342,12 @@ function subagentResponseTitle(message) {
 }
 
 document.addEventListener("click", (event) => {
+  const responseCitation = event.target.closest("button[data-response-citation-target]");
+  if (responseCitation) {
+    event.preventDefault();
+    focusResponseCitation(responseCitation);
+    return;
+  }
   const resourceActionButton = event.target.closest("button[data-agent-hub-resource-action][data-agent-hub-local-link]");
   if (resourceActionButton) {
     event.preventDefault();
@@ -5368,7 +5385,11 @@ function renderResponseAnnotations(body, message) {
     const text = String(item?.text ?? "").trim();
     const comment = String(item?.annotation ?? "").trim();
     if (!text && !comment) return;
-    const content = el("div", { class: "msg-annotation-content" }, [
+    const content = el("div", {
+      class: "msg-annotation-content",
+      tabIndex: -1,
+      "data-response-annotation-index": String(index + 1),
+    }, [
       el("div", { class: "msg-annotation-label", text: `Цитата ${index + 1}` }),
       text ? el("div", { class: "msg-annotation-quote", text }) : null,
     ]);
@@ -5387,6 +5408,62 @@ function renderResponseAnnotations(body, message) {
     renderMarkdown(requestNode, request, undefined, "user");
     body.append(requestNode);
   }
+  return true;
+}
+
+function renderResponseCitations(message) {
+  const citations = Array.isArray(message?.responseCitationPresentations)
+    ? message.responseCitationPresentations
+    : [];
+  if (!citations.length) return null;
+  return el("div", { class: "msg-response-citations", "aria-label": "Цитаты ответа" }, citations.map((citation) => (
+    el("button", {
+      type: "button",
+      class: "msg-response-citation",
+      "data-response-citation-index": String(citation.index),
+      "data-response-citation-target": citation.targetMessageKey,
+      title: citation.quote ? `Перейти к цитате: ${citation.quote}` : "Перейти к цитате",
+    }, [
+      el("span", { class: "msg-response-citation-label", text: citation.label }),
+      citation.quote
+        ? el("span", { class: "msg-response-citation-quote", text: citation.quote })
+        : null,
+    ])
+  )));
+}
+
+function renderAgentResponseBody(body, message, text, fileContext) {
+  const references = message.responseAnnotationReferences ?? [];
+  const visibleText = MessageView.withoutResponseCitationFallbacks(text, references);
+  const content = el("div", { class: "msg-response-content" });
+  renderMarkdown(content, visibleText, fileContext, "agent");
+  body.replaceChildren(renderResponseCitations(message), content);
+}
+
+function focusResponseCitation(button) {
+  const targetKey = String(button?.dataset?.responseCitationTarget ?? "");
+  const index = String(button?.dataset?.responseCitationIndex ?? "");
+  if (!targetKey || !index) return false;
+  const root = Array.from(chatLog.children).find((node) => node.dataset?.messageKey === targetKey);
+  const target = root?.querySelector?.(
+    `.msg-annotation-content[data-response-annotation-index="${index}"]`,
+  );
+  if (!target) return false;
+  const article = target.closest(".msg-user");
+  const body = article?.querySelector(".msg-body[data-user-message-disclosure]");
+  if (body?.classList.contains("is-collapsed")) {
+    const id = messageDisclosureId(article);
+    if (id) expandedUserMessageIds.add(id);
+    body.classList.remove("is-collapsed");
+    updateUserMessageDisclosure(article);
+  }
+  target.classList.remove("is-citation-target");
+  window.requestAnimationFrame(() => {
+    target.classList.add("is-citation-target");
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    target.focus({ preventScroll: true });
+    window.setTimeout(() => target.classList.remove("is-citation-target"), 1800);
+  });
   return true;
 }
 
@@ -5451,8 +5528,19 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
   })] : []));
   liveTrace.hidden = groups.length === 0;
   const body = node.querySelector("[data-live-body]");
-  renderMarkdown(body, visibleText, fileContext);
-  body.hidden = !visibleText;
+  const historyMessages = state.messages.get(state.selectedId) ?? [];
+  const liveMessage = {
+    ...live,
+    role: "agent",
+    responseCitationPresentations: MessageView.responseCitationPresentations(
+      [...historyMessages, { ...live, role: "agent" }],
+      historyMessages.length,
+    ),
+  };
+  if (liveMessage.responseCitationPresentations.length) {
+    renderAgentResponseBody(body, liveMessage, visibleText, fileContext);
+  } else renderMarkdown(body, visibleText, fileContext);
+  body.hidden = !visibleText && liveMessage.responseCitationPresentations.length === 0;
   const activityFeed = node.querySelector("[data-activity-feed]");
   const activities = Array.isArray(live.activities) ? live.activities : [];
   const activityFeedVisible = groups.length === 0 && activities.length > 0;

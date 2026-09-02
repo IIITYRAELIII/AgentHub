@@ -12,6 +12,7 @@ import {
   withoutClaudeResumePreludes,
 } from "../domain/claude-transcript.mjs";
 import { taskReferencePromptDetails } from "../domain/task-board-task.mjs";
+import { codexAssistantResponseProjection } from "../domain/codex-response-annotation.mjs";
 
 export const EMPTY_TURN_COMPLETION_TEXT = "Ход завершён без текстового ответа.";
 
@@ -466,10 +467,14 @@ function codexTurnMessages(turn, { userAuthor = "" } = {}) {
       }] : [];
     }
     if (isCodexAnswerItem(item) && String(item.text ?? "").trim()) {
+      const projection = codexAssistantResponseProjection(item.text);
       return [{
         itemId: messageItemId(turnId, "agent", item, index),
         role: "agent",
-        text: String(item.text).trim(),
+        text: projection.text.trim(),
+        ...(projection.responseAnnotationReferences.length
+          ? { responseAnnotationReferences: projection.responseAnnotationReferences }
+          : {}),
         phase: codexAnswerPhase(item),
         ...(normalizedTimestamp(item.createdAt ?? turn?.completedAt ?? turn?.updatedAt)
           ? { time: normalizedTimestamp(item.createdAt ?? turn?.completedAt ?? turn?.updatedAt) }
@@ -576,9 +581,9 @@ export function codexExplicitFinalTurnAnswer(turn) {
   if (isCodexContextProbeTurn(turn)) return "";
   const explicitFinal = (turn?.items ?? [])
     .filter((item) => isCodexAnswerItem(item) && String(item.text ?? "").trim());
-  return String(explicitFinal.findLast((item) => (
+  return codexAssistantResponseProjection(explicitFinal.findLast((item) => (
     ["final", "final_answer", "finalAnswer"].includes(codexAnswerPhase(item))
-  ))?.text ?? "").trim();
+  ))?.text ?? "").text.trim();
 }
 
 export function codexFinalTurnAnswer(turn) {
@@ -587,7 +592,7 @@ export function codexFinalTurnAnswer(turn) {
   if (isCodexContextProbeTurn(turn)) return "";
   const messages = (turn?.items ?? [])
     .filter((item) => isCodexAnswerItem(item) && String(item.text ?? "").trim());
-  return String(messages.at(-1)?.text ?? "").trim();
+  return codexAssistantResponseProjection(messages.at(-1)?.text ?? "").text.trim();
 }
 
 export function codexTurnHasExplicitFinalAnswer(turn) {
@@ -828,6 +833,9 @@ export function mergeCompletedTaskHistory(history, completedTurn = {}, {
   if (!Array.isArray(current.activities)) current.activities = [];
   if (!Array.isArray(current.activityGroups)) current.activityGroups = [];
   const completedAt = normalizedTimestamp(completedTurn.completedAt ?? completedTurn.updatedAt);
+  const responseAnnotationReferences = Array.isArray(completedTurn.responseAnnotationReferences)
+    ? structuredClone(completedTurn.responseAnnotationReferences)
+    : [];
   if (completedAt && !normalizedTimestamp(current.completedAt)) current.completedAt = completedAt;
   const messages = Array.isArray(current.messages) ? current.messages : [];
   const parentAgents = messages.filter((message) => (
@@ -840,6 +848,9 @@ export function mergeCompletedTaskHistory(history, completedTurn = {}, {
     ?? parentAgents.at(-1);
   if (agent) {
     agent.text = answer;
+    if (responseAnnotationReferences.length) {
+      agent.responseAnnotationReferences = responseAnnotationReferences;
+    }
     agent.phase = "final";
     delete agent.author;
     delete agent.kind;
@@ -852,6 +863,7 @@ export function mergeCompletedTaskHistory(history, completedTurn = {}, {
       role: "agent",
       phase: "final",
       text: answer,
+      ...(responseAnnotationReferences.length ? { responseAnnotationReferences } : {}),
       ...(completedAt ? { time: completedAt } : {}),
     });
   }
@@ -1115,8 +1127,20 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
     const existing = messages.find((item) => (
       item.role === "agent" && String(item.itemId ?? "") === itemId
     ));
-    if (existing) existing.text = answer;
-    else messages.push({ itemId, role: "agent", text: answer });
+    const responseAnnotationReferences = structuredClone(
+      activeTurn.responseAnnotationReferences ?? [],
+    );
+    if (existing) {
+      existing.text = answer;
+      if (responseAnnotationReferences.length) {
+        existing.responseAnnotationReferences = responseAnnotationReferences;
+      }
+    } else messages.push({
+      itemId,
+      role: "agent",
+      text: answer,
+      ...(responseAnnotationReferences.length ? { responseAnnotationReferences } : {}),
+    });
     current.messages = messages;
   }
   return values;

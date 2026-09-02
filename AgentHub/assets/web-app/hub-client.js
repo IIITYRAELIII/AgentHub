@@ -977,6 +977,9 @@ function updateLiveMessage(taskIdValue, selected) {
     activities: run.activities ?? [],
     activityGroups: run.activityGroups ?? [],
     responsePhase: run.responsePhase ?? "",
+    responseAnnotationReferences: Array.isArray(run.responseAnnotationReferences)
+      ? run.responseAnnotationReferences.map((reference) => ({ ...reference }))
+      : [],
     threadId: selected.threadId,
     turnId: run.turnId,
     itemId: run.responseItemId ?? null,

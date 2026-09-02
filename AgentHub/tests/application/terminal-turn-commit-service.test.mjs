@@ -76,6 +76,7 @@ test("terminal commit keeps structured response annotations beside the canonical
     turnId: "turn-annotation",
     status: "completed",
     finalAnswer: "Связь сохранена",
+    responseAnnotationReferences: [{ index: 1 }],
   }, {
     run: {
       id: "run-annotation",
@@ -84,5 +85,6 @@ test("terminal commit keeps structured response annotations beside the canonical
   });
 
   assert.equal(stored.finalAnswer, "Связь сохранена");
+  assert.deepEqual(stored.payload.history.responseAnnotationReferences, [{ index: 1 }]);
   assert.deepEqual(stored.payload.history.userMessages[0].responseAnnotations, responseAnnotations);
 });

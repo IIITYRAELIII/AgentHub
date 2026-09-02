@@ -208,11 +208,12 @@ test("CodexRunFinalizer exits before side effects for a manual compaction turn",
   assert.deepEqual(state.events, []);
 });
 
-test("CodexRunFinalizer delivers the canonical marker-free terminal revision", async () => {
+test("CodexRunFinalizer delivers the canonical readable citation terminal revision", async () => {
   const state = fixture();
   state.finalizer.notifications.recordCompletion = (value) => ({
     ...value,
-    finalAnswer: "Связь сохранена",
+    finalAnswer: "Цитата 1\nСвязь сохранена",
+    responseAnnotationReferences: [{ index: 1 }],
     usage: value.usage ?? {},
     usageReported: value.usageReported,
   });
@@ -227,11 +228,13 @@ test("CodexRunFinalizer delivers the canonical marker-free terminal revision", a
   });
 
   const [, committed, options] = state.events.find(([name]) => name === "commit");
-  assert.equal(committed.finalAnswer, "Связь сохранена");
+  assert.equal(committed.finalAnswer, "Цитата 1\nСвязь сохранена");
+  assert.deepEqual(committed.responseAnnotationReferences, [{ index: 1 }]);
   assert.deepEqual(value.userMessages[0].responseAnnotations, [
     { text: "Фрагмент", annotation: "Почему?" },
   ]);
-  assert.equal(options.channelIntents.telegram.answer, "Связь сохранена");
-  assert.equal(options.channelIntents.telegram.message, "Связь сохранена\n\nUsage");
-  assert.equal(value.responseText, "Связь сохранена");
+  assert.equal(options.channelIntents.telegram.answer, "Цитата 1\nСвязь сохранена");
+  assert.equal(options.channelIntents.telegram.message, "Цитата 1\nСвязь сохранена\n\nUsage");
+  assert.equal(value.responseText, "Цитата 1\nСвязь сохранена");
+  assert.deepEqual(value.responseAnnotationReferences, [{ index: 1 }]);
 });

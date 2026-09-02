@@ -582,6 +582,10 @@ export function createDesktopTaskHistoryFactory({
         clientUserMessageId: running.clientUserMessageId,
         userMessages: running.userMessages,
         responseItemId: running.responseItemId,
+        ...(Array.isArray(running.responseAnnotationReferences)
+          && running.responseAnnotationReferences.length
+          ? { responseAnnotationReferences: running.responseAnnotationReferences }
+          : {}),
         activities: running.activities,
         ...(Array.isArray(running.activityGroups) && running.activityGroups.length
           ? { activityGroups: running.activityGroups }
@@ -838,6 +842,14 @@ export function createDesktopTaskHistoryFactory({
                     responseAnnotationRequest: displayUserPrompt(
                       receipt?.result?.responseAnnotationRequest ?? message.responseAnnotationRequest,
                     ),
+                  }
+                  : {}),
+                ...(role === "agent" && Array.isArray(message.responseAnnotationReferences)
+                  && message.responseAnnotationReferences.length
+                  ? {
+                    responseAnnotationReferences: message.responseAnnotationReferences.map(
+                      (reference) => ({ index: Number(reference?.index) }),
+                    ).filter((reference) => Number.isSafeInteger(reference.index) && reference.index > 0),
                   }
                   : {}),
                 ...(message.phase ? { phase: String(message.phase) } : {}),

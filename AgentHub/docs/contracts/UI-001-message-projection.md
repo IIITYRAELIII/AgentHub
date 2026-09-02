@@ -15,6 +15,12 @@
   hydration remains background work.
 - Current Codex limits expose every available provider window separately. A
   healthy short window cannot hide an exhausted longer window for the same model.
+- Codex response-annotation locators cross the provider boundary as bounded
+  structured indices, never as service markup. The UI resolves each index to
+  the nearest preceding annotated user entity by its canonical message key,
+  renders the quoted text (or `Цитата N` when unavailable), and exposes a
+  keyboard-operable jump to that exact annotation. User-authored marker-like
+  literals and code remain ordinary user content.
 
 ## Canonical reducer
 

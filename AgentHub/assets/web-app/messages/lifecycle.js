@@ -148,6 +148,9 @@ function completedLiveAgentMessage(previous, selected) {
     author: previous.author,
     phase: "final",
     text: answer,
+    responseAnnotationReferences: Array.isArray(previous.responseAnnotationReferences)
+      ? previous.responseAnnotationReferences.map((reference) => ({ ...reference }))
+      : [],
     time: completionTime,
     activities: Array.isArray(previous.activities) ? previous.activities : [],
     activityGroups: Array.isArray(previous.activityGroups) ? previous.activityGroups : [],
