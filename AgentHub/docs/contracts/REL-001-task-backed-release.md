@@ -123,9 +123,10 @@ Callers may read an exact operation revision without polling and must treat a
 superseded readback as a stale result, not as validation of the newer contour.
 
 The candidate release does not become `current` until its exact manager and
-runtime report ready and the served document proves the same contour marker,
-port, release and operation identity. A healthy unrelated server on the same
-port is not readiness evidence. If the operation owner dies, the next lease
+runtime report ready: health must answer on the operation port and the
+root-local instance lock must name the spawned runtime PID, candidate release
+and `ready=true`. A healthy unrelated server on the same port is not readiness
+evidence. If the operation owner dies, the next lease
 owner finalizes an already-ready exact candidate or records the interrupted
 operation as failed before starting new work. A planned replacement is reported
 as refresh state and is not classified as a runtime crash.

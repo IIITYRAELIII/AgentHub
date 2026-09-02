@@ -86,11 +86,6 @@ async function healthServer() {
       return;
     }
     const identity = server.testContourIdentity;
-    if (request.url === "/test-contour-identity.js" && identity) {
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ kind: "agent-hub-test-contour-runtime", ...identity }));
-      return;
-    }
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(identity
       ? `<html data-test-contour="" data-test-contour-id="${identity.contourId}" data-test-contour-release="${identity.releaseId}" data-test-contour-operation="${identity.operationId ?? ""}" data-test-contour-port="${identity.port}"><body>old-runtime-visible</body></html>`
@@ -140,6 +135,12 @@ async function writeRunningContour(root, server, {
     operationId,
     port: server.address().port,
   };
+  await mkdir(paths.dataDir, { recursive: true });
+  await writeFile(path.join(paths.dataDir, "bot.lock"), JSON.stringify({
+    pid: process.pid,
+    releaseId,
+    ready: true,
+  }), "utf8");
   return paths;
 }
 
@@ -381,6 +382,7 @@ test("ready runtime is finalized after refresh owner crash without a duplicate r
 });
 
 test("readiness rejects a healthy server from another contour identity", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-identity-root-"));
   const server = await healthServer();
   const port = server.address().port;
   server.testContourIdentity = {
@@ -390,19 +392,33 @@ test("readiness rejects a healthy server from another contour identity", async (
     port,
   };
   try {
+    await mkdir(path.join(root, "data"), { recursive: true });
+    await writeFile(path.join(root, "data", "bot.lock"), JSON.stringify({
+      pid: process.pid,
+      releaseId: "shared-release",
+      ready: true,
+    }), "utf8");
     assert.equal(await readyTestContourHealth(port, {
+      root,
       expectedIdentity: {
         contourId: "isolated-contour",
         releaseId: "isolated-release",
         operationId: "isolated-operation",
         port,
+        runtimePid: process.pid,
       },
     }), null);
+    assert.equal(await readyTestContourHealth(port, {
+      root,
+      expectedIdentity: { ...server.testContourIdentity, runtimePid: process.pid + 1 },
+    }), null);
     assert.equal((await readyTestContourHealth(port, {
-      expectedIdentity: server.testContourIdentity,
+      root,
+      expectedIdentity: { ...server.testContourIdentity, runtimePid: process.pid },
     }))?.ready, true);
   } finally {
     await closeServer(server);
+    await rm(root, { recursive: true, force: true });
   }
 });
 
