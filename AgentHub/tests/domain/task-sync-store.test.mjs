@@ -142,6 +142,59 @@ test("history page keeps legacy undated turns in durable provider sequence", asy
   }
 });
 
+test("history refresh preserves exact backfilled chronology without identity heuristics", async () => {
+  const filePath = await storeFile();
+  const store = new LocalTaskSyncStore({ filePath });
+  await store.load();
+  try {
+    store.recordHistory(task, [{
+      id: "legacy-turn",
+      prompt: "Старый запрос",
+      answer: "Старый ответ",
+      completed: true,
+      startedAt: "2026-08-05T17:03:22.000Z",
+      completedAt: "2026-08-05T17:10:41.000Z",
+      messages: [
+        { itemId: "legacy-user", role: "user", text: "Старый запрос", time: "2026-08-05T17:03:22.000Z" },
+        { itemId: "legacy-agent", role: "agent", text: "Старый ответ", time: "2026-08-05T17:10:41.000Z" },
+      ],
+    }]);
+
+    store.recordHistory(task, [{
+      id: "legacy-turn",
+      prompt: "Старый запрос",
+      answer: "Старый ответ",
+      completed: true,
+      messages: [
+        { itemId: "legacy-user", role: "user", text: "Старый запрос" },
+        { itemId: "legacy-agent", role: "agent", text: "Старый ответ" },
+      ],
+    }, {
+      id: "different-turn",
+      prompt: "Старый запрос",
+      answer: "Старый ответ",
+      completed: true,
+      messages: [
+        { itemId: "different-user", role: "user", text: "Старый запрос" },
+        { itemId: "different-agent", role: "agent", text: "Старый ответ" },
+      ],
+    }]);
+
+    const [legacy, different] = store.history(task);
+    assert.equal(legacy.startedAt, "2026-08-05T17:03:22.000Z");
+    assert.equal(legacy.completedAt, "2026-08-05T17:10:41.000Z");
+    assert.deepEqual(legacy.messages.map((message) => message.time), [
+      "2026-08-05T17:03:22.000Z",
+      "2026-08-05T17:10:41.000Z",
+    ]);
+    assert.equal(different.startedAt ?? null, null);
+    assert.deepEqual(different.messages.map((message) => message.time ?? null), [null, null]);
+  } finally {
+    store.close();
+    await rm(path.dirname(filePath), { recursive: true, force: true });
+  }
+});
+
 test("Claude transcript attachment turn cannot duplicate its managed terminal command", async () => {
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath });

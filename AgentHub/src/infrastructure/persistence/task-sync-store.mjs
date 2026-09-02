@@ -333,6 +333,36 @@ function preserveDurableAttachments(existingHistory, incomingHistory) {
   });
 }
 
+function preserveDurableChronology(existingHistory, incomingHistory) {
+  const existingTurns = new Map((Array.isArray(existingHistory) ? existingHistory : []).flatMap((turn) => {
+    const id = String(turn?.id ?? "").trim();
+    return id ? [[id, turn]] : [];
+  }));
+  return (Array.isArray(incomingHistory) ? incomingHistory : []).map((turn) => {
+    const existingTurn = existingTurns.get(String(turn?.id ?? "").trim());
+    if (!existingTurn) return turn;
+    const existingMessages = new Map((Array.isArray(existingTurn.messages) ? existingTurn.messages : [])
+      .flatMap((message) => {
+        const itemId = String(message?.itemId ?? "").trim();
+        const role = String(message?.role ?? "").trim();
+        return itemId && role ? [[`${role}\0${itemId}`, message]] : [];
+      }));
+    const next = { ...turn };
+    if (!turn?.startedAt && existingTurn?.startedAt) next.startedAt = existingTurn.startedAt;
+    if (!turn?.completedAt && existingTurn?.completedAt) next.completedAt = existingTurn.completedAt;
+    if (Array.isArray(turn?.messages)) {
+      next.messages = turn.messages.map((message) => {
+        if (message?.time) return message;
+        const itemId = String(message?.itemId ?? "").trim();
+        const role = String(message?.role ?? "").trim();
+        const existingMessage = itemId && role ? existingMessages.get(`${role}\0${itemId}`) : null;
+        return existingMessage?.time ? { ...message, time: existingMessage.time } : message;
+      });
+    }
+    return next;
+  });
+}
+
 function terminalSafeSnapshot(existing, snapshot, terminals) {
   const turnId = String(snapshot?.turnId ?? "").trim();
   if (snapshot?.active !== true || !turnId || !terminals.has(turnId)) return snapshot;
@@ -1764,7 +1794,8 @@ export class LocalTaskSyncStore {
     const terminals = terminalHistoryTurns(existing.history);
     const journalHistory = this.#reconcileHistoryWithJournal(task, history);
     const reconciledHistory = preserveTerminalHistory(terminals, journalHistory);
-    const durableHistory = preserveDurableAttachments(existing.history, reconciledHistory);
+    const durableAttachments = preserveDurableAttachments(existing.history, reconciledHistory);
+    const durableHistory = preserveDurableChronology(existing.history, durableAttachments);
     const enrichedHistory = this.#withJournalSubagentModels(task, durableHistory);
     const cleanedHistory = cleanHistory(enrichedHistory, this.#historyLimit, { provider: task.provider });
     const effectiveSnapshot = terminalSafeSnapshot(existing, snapshot, terminals);
