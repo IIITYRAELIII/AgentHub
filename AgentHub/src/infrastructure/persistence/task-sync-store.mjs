@@ -318,7 +318,47 @@ function canonicalTerminalAgentSource(existingMessages, turnId, incomingMessage)
   return candidates.length === 1 ? candidates[0] : null;
 }
 
-function preserveDurableMessageMetadata(existingHistory, incomingHistory) {
+function preserveDurableResponseAnnotationReferences(existingHistory, incomingHistory) {
+  const existingTurns = new Map((Array.isArray(existingHistory) ? existingHistory : []).flatMap((turn) => {
+    const id = String(turn?.id ?? "").trim();
+    return id ? [[id, turn]] : [];
+  }));
+  return (Array.isArray(incomingHistory) ? incomingHistory : []).map((turn) => {
+    const existingTurn = existingTurns.get(String(turn?.id ?? "").trim());
+    if (!existingTurn) return turn;
+    const byItemId = new Map();
+    for (const message of Array.isArray(existingTurn.messages) ? existingTurn.messages : []) {
+      const itemId = String(message?.itemId ?? "").trim();
+      if (itemId) byItemId.set(itemId, message);
+    }
+    const next = { ...turn };
+    if (Array.isArray(turn?.messages)) {
+      next.messages = turn.messages.map((message) => {
+        const itemId = String(message?.itemId ?? "").trim();
+        const existingMessage = itemId ? byItemId.get(itemId) : null;
+        const terminalSource = existingMessage ?? canonicalTerminalAgentSource(
+          Array.isArray(existingTurn.messages) ? existingTurn.messages : [],
+          String(turn?.id ?? "").trim(),
+          message,
+        );
+        const responseAnnotationReferences = cleanResponseAnnotationReferences(
+          message?.responseAnnotationReferences,
+        ).length
+          ? message.responseAnnotationReferences
+          : terminalSource?.responseAnnotationReferences;
+        return {
+          ...message,
+          ...(cleanResponseAnnotationReferences(responseAnnotationReferences).length
+            ? { responseAnnotationReferences }
+            : {}),
+        };
+      });
+    }
+    return next;
+  });
+}
+
+function preserveDurableAttachments(existingHistory, incomingHistory) {
   const existingTurns = new Map((Array.isArray(existingHistory) ? existingHistory : []).flatMap((turn) => {
     const id = String(turn?.id ?? "").trim();
     return id ? [[id, turn]] : [];
@@ -345,26 +385,10 @@ function preserveDurableMessageMetadata(existingHistory, incomingHistory) {
         const clientId = String(message?.clientUserMessageId ?? "").trim();
         const existingMessage = (clientId ? byClientId.get(clientId) : null)
           ?? (itemId ? byItemId.get(itemId) : null);
-        const terminalSource = existingMessage ?? canonicalTerminalAgentSource(
-          Array.isArray(existingTurn.messages) ? existingTurn.messages : [],
-          String(turn?.id ?? "").trim(),
-          message,
-        );
-        const attachments = Array.isArray(message?.attachments) && message.attachments.length
-          ? message.attachments
-          : existingMessage?.attachments;
-        const responseAnnotationReferences = cleanResponseAnnotationReferences(
-          message?.responseAnnotationReferences,
-        ).length
-          ? message.responseAnnotationReferences
-          : terminalSource?.responseAnnotationReferences;
-        return {
-          ...message,
-          ...(Array.isArray(attachments) && attachments.length ? { attachments } : {}),
-          ...(cleanResponseAnnotationReferences(responseAnnotationReferences).length
-            ? { responseAnnotationReferences }
-            : {}),
-        };
+        if (!existingMessage || (Array.isArray(message?.attachments) && message.attachments.length)) {
+          return message;
+        }
+        return { ...message, attachments: existingMessage.attachments };
       });
     }
     return next;
@@ -1785,9 +1809,10 @@ export class LocalTaskSyncStore {
     const terminals = terminalHistoryTurns(existing.history);
     const journalHistory = this.#reconcileHistoryWithJournal(task, history);
     const reconciledHistory = preserveTerminalHistory(terminals, journalHistory);
-    const durableHistory = preserveDurableMessageMetadata(existing.history, reconciledHistory);
+    const durableHistory = preserveDurableAttachments(existing.history, reconciledHistory);
     const enrichedHistory = this.#withJournalSubagentModels(task, durableHistory);
-    const cleanedHistory = cleanHistory(enrichedHistory, this.#historyLimit, { provider: task.provider });
+    const durableMetadataHistory = preserveDurableResponseAnnotationReferences(existing.history, enrichedHistory);
+    const cleanedHistory = cleanHistory(durableMetadataHistory, this.#historyLimit, { provider: task.provider });
     const effectiveSnapshot = terminalSafeSnapshot(existing, snapshot, terminals);
     const next = persistedTask({
       ...existing,
