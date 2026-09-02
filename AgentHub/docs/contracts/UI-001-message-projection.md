@@ -56,16 +56,19 @@ rendered and cannot stop history refresh or remove a completion overlay.
 Canonical ordering follows durable provider sequence. A queued root message
 keeps its original `submittedAt` as metadata, but its displayed `time` becomes
 the bound turn occurrence/start time so the clock label cannot contradict its
-position after an earlier completed turn. Legacy turns without a timestamp keep
-their durable provider position relative to adjacent turns across SQLite
-pagination, provider hydration, reconnect, journal overlay and reload. Their
-missing time remains `null`; a read model never replaces it with the observation
-time or uses text/time as entity identity.
+position after an earlier completed turn.
 
 Unlabelled fenced blocks are treated as prose-oriented preformatted text and
 wrap inside the message column without horizontal page movement. Fences with an
 explicit language preserve code whitespace and may scroll horizontally. Both
 presentations copy the original unmodified block text.
+
+## Legacy chronology
+
+Legacy turns without a timestamp keep their durable provider position relative
+to adjacent turns across SQLite pagination, provider hydration, reconnect,
+journal overlay and reload. Their missing time remains `null`; a read model never
+replaces it with the observation time or uses text/time as entity identity.
 
 ## Operation kinds
 
