@@ -15,6 +15,23 @@ their next managed preparation renames the branch.
 be made there. Provider turn identity remains journal metadata and is not a
 source of file ownership.
 
+Each managed Task worktree enables sparse checkout at the Git boundary before
+it is returned. When the selected project root is a strict descendant of the
+source worktree, cone mode uses that exact repository-relative subtree as its
+only scope and the returned `projectRoot` is the matching directory inside the
+managed worktree. When the selected project root is the repository root, the
+explicit non-cone pattern is `/*`: the whole repository is the selected
+project, so the boundary remains in sparse mode without guessing a narrower
+owner or omitting future top-level paths. Scope resolution fails closed if the
+selected root escapes its source Git worktree.
+
+Repeated preparation reapplies the same scope idempotently. An existing
+managed Task worktree is migrated in place without reset, clean, branch/base
+movement or snapshotting: tracked and untracked dirty state must remain
+unchanged, including dirty paths outside the new sparse scope. Sparse
+configuration is worktree-local; shared and managed `dev` worktrees are not
+changed by Task preparation.
+
 One provider turn may perform multiple sequential Task operations. Each claim
 is durably identified by its MCP `request_id`, and terminal evidence resolves
 the exact `(provider, thread, turn, operation)` binding rather than a
