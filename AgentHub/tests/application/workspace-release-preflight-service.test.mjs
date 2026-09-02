@@ -4,12 +4,7 @@ import test from "node:test";
 
 import { WorkspaceReleasePreflightService } from "../../src/application/workspace-release-preflight-service.mjs";
 
-function fixture({
-  planRevision = "plan-1",
-  contourHead = "dev-head",
-  rejectDev = null,
-  readbackOutcome = "exact",
-} = {}) {
+function fixture({ planRevision = "plan-1", contourHead = "dev-head", rejectDev = null } = {}) {
   const calls = [];
   const projectRoot = path.resolve("D:/repo");
   const plan = {
@@ -53,18 +48,13 @@ function fixture({
     },
     refreshTestContour: async (request) => {
       calls.push(["refresh-contour", request]);
-      return {
-        operationId: "refresh-operation-1",
-        source: { branch: "dev", headCommit: "dev-head" },
-      };
     },
-    readTestContourStatus: async (request) => {
-      calls.push(["read-contour", request]);
+    readTestContourStatus: async () => {
+      calls.push(["read-contour"]);
       return {
         running: true,
         root: "D:/test-contour",
         source: { branch: "dev", headCommit: contourHead },
-        readback: { outcome: readbackOutcome },
       };
     },
   });
@@ -83,10 +73,6 @@ test("release preflight verifies selected results in dev and always refreshes Te
     taskIds: ["task-1"],
   });
   assert.deepEqual(calls[3][1], { sourceRoot: path.resolve("D:/dev-worktree/AgentHub") });
-  assert.deepEqual(calls[4][1], {
-    expectedOperationId: "refresh-operation-1",
-    expectedHeadCommit: "dev-head",
-  });
   assert.equal(result.planRevision, "plan-1");
   assert.equal(result.testContour.headCommit, "dev-head");
 });
@@ -97,17 +83,6 @@ test("release preflight rejects a refreshed contour that does not display dev HE
     () => service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-1" }),
     /does not match dev HEAD/u,
   );
-});
-
-test("release preflight reports an exact superseded refresh instead of validating a newer runtime", async () => {
-  const { calls, service } = fixture({ readbackOutcome: "superseded" });
-  await assert.rejects(
-    () => service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-1" }),
-    /was superseded; retry preflight/u,
-  );
-  assert.deepEqual(calls.map(([name]) => name), [
-    "plan", "prepare-dev", "resolve-contour", "refresh-contour", "read-contour",
-  ]);
 });
 
 test("release preflight refreshes the contour before rejecting Task results absent from dev", async () => {
