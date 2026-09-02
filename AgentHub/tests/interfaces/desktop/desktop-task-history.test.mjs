@@ -15,6 +15,23 @@ import {
 } from "../../../src/domain/codex-context-probe.mjs";
 import { createInterstreamMessage } from "../../../src/domain/interstream-message.mjs";
 
+const ANNOTATION_SOURCE = {
+  version: 1,
+  provider: "codex",
+  threadId: "thread-source",
+  turnId: "turn-source",
+  itemId: "item-source",
+  role: "agent",
+  messageKey: "provider\u001fcodex\u001fthread-source\u001fturn-source\u001fitem-source\u001fagent",
+  surfaceKind: "message-body",
+  surfaceIndex: 0,
+  start: 0,
+  end: 6,
+  contentHash: `sha256:${"a".repeat(64)}`,
+  surfaceHash: `sha256:${"b".repeat(64)}`,
+  selectionHash: `sha256:${"c".repeat(64)}`,
+};
+
 function fixture(overrides = {}) {
   const calls = {
     binding: null,
@@ -1378,7 +1395,11 @@ test("desktop task history restores screenshot sources lost from the durable cac
 
 test("desktop task history exposes structured response annotations", async () => {
   const { desktopTaskHistory, state } = fixture({ run: null });
-  state.history[3].promptAnnotations = [{ text: "Цитата", annotation: "Комментарий" }];
+  state.history[3].promptAnnotations = [{
+    text: "Цитата",
+    annotation: "Комментарий",
+    source: ANNOTATION_SOURCE,
+  }];
   state.history[3].promptRequest = "Общий вопрос";
   state.history[3].messages[0].responseAnnotations = state.history[3].promptAnnotations;
   state.history[3].messages[0].responseAnnotationRequest = state.history[3].promptRequest;
@@ -1386,11 +1407,16 @@ test("desktop task history exposes structured response annotations", async () =>
 
   const result = await desktopTaskHistory({ limit: 1 });
 
-  assert.deepEqual(result.items[0].promptAnnotations, [{ text: "Цитата", annotation: "Комментарий" }]);
+  assert.deepEqual(result.items[0].promptAnnotations, [{
+    text: "Цитата",
+    annotation: "Комментарий",
+    source: ANNOTATION_SOURCE,
+  }]);
   assert.equal(result.items[0].promptRequest, "Общий вопрос");
   assert.deepEqual(result.items[0].messages[0].responseAnnotations, [{
     text: "Цитата",
     annotation: "Комментарий",
+    source: ANNOTATION_SOURCE,
   }]);
   assert.deepEqual(result.items[0].messages[1].responseAnnotationReferences, [{ index: 1 }]);
 });

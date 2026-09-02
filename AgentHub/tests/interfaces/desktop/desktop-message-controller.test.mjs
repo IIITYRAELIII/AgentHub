@@ -10,6 +10,23 @@ const EXISTING_IMAGE = fileURLToPath(
   new URL("../../../assets/web-app/themes/blackhole/blackhole-blue.jpg", import.meta.url),
 );
 
+const ANNOTATION_SOURCE = {
+  version: 1,
+  provider: "codex",
+  threadId: "thread-1",
+  turnId: "turn-source",
+  itemId: "agent-source",
+  role: "agent",
+  messageKey: "provider\u001fcodex\u001fthread-1\u001fturn-source\u001fagent-source\u001fagent",
+  surfaceKind: "message-body",
+  surfaceIndex: 0,
+  start: 4,
+  end: 10,
+  contentHash: `sha256:${"a".repeat(64)}`,
+  surfaceHash: `sha256:${"b".repeat(64)}`,
+  selectionHash: `sha256:${"c".repeat(64)}`,
+};
+
 function controller(overrides = {}) {
   const target = {
     provider: "codex",
@@ -498,7 +515,7 @@ test("desktop message receipt preserves the visible message before provider laun
   await messages.sendMessage({
     text: "служебный конверт",
     displayText: "Видимый вопрос",
-    responseAnnotations: [{ text: "Цитата", annotation: "Комментарий" }],
+    responseAnnotations: [{ text: "Цитата", annotation: "Комментарий", source: ANNOTATION_SOURCE }],
     responseAnnotationRequest: "Что изменить?",
     clientUserMessageId: "message-visible",
   });
@@ -508,6 +525,7 @@ test("desktop message receipt preserves the visible message before provider laun
   assert.deepEqual(observedReceipt.result.responseAnnotations, [{
     text: "Цитата",
     annotation: "Комментарий",
+    source: ANNOTATION_SOURCE,
   }]);
   assert.equal(observedReceipt.result.responseAnnotationRequest, "Что изменить?");
 });

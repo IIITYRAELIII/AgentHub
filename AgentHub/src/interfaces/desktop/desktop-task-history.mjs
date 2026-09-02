@@ -7,6 +7,7 @@ import {
   userTaskReferencePromptDetails,
   withoutCodexInspectionAttachments,
 } from "../../application/task-history.mjs";
+import { normalizedResponseAnnotations } from "../../domain/response-annotation-source.mjs";
 import {
   CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX,
   CODEX_CONTEXT_PROBE_PROMPT,
@@ -739,12 +740,7 @@ export function createDesktopTaskHistoryFactory({
           prompt: displayUserPrompt(item.prompt),
           ...(promptAuthor ? { promptAuthor } : {}),
           ...(promptOrigin ? { promptOrigin } : {}),
-          promptAnnotations: (Array.isArray(item.promptAnnotations) ? item.promptAnnotations : [])
-            .slice(0, 20)
-            .map((annotation) => ({
-              text: String(annotation?.text ?? ""),
-              annotation: String(annotation?.annotation ?? ""),
-            })),
+          promptAnnotations: normalizedResponseAnnotations(item.promptAnnotations),
           promptRequest: String(item.promptRequest ?? ""),
           answer: String(item.answer ?? "").slice(0, maxAnswerChars),
           status: String(item.status ?? ""),
@@ -852,10 +848,7 @@ export function createDesktopTaskHistoryFactory({
                   : {}),
                 ...(role === "user" && responseAnnotations.length
                   ? {
-                    responseAnnotations: responseAnnotations.slice(0, 20).map((annotation) => ({
-                      text: String(annotation?.text ?? ""),
-                      annotation: String(annotation?.annotation ?? ""),
-                    })),
+                    responseAnnotations: normalizedResponseAnnotations(responseAnnotations),
                     responseAnnotationRequest: displayUserPrompt(
                       receipt?.result?.responseAnnotationRequest ?? message.responseAnnotationRequest,
                     ),

@@ -13,6 +13,7 @@ import {
 } from "../domain/claude-transcript.mjs";
 import { taskReferencePromptDetails } from "../domain/task-board-task.mjs";
 import { codexAssistantResponseProjection } from "../domain/codex-response-annotation.mjs";
+import { normalizedResponseAnnotations } from "../domain/response-annotation-source.mjs";
 
 export const EMPTY_TURN_COMPLETION_TEXT = "Ход завершён без текстового ответа.";
 
@@ -499,11 +500,7 @@ export function responseAnnotationDetails(value) {
     // A malformed annotation container falls back to the explicit request text.
   }
 
-  const items = annotations.flatMap((item) => {
-    const selectedText = String(item?.text ?? "").trim();
-    const annotation = String(item?.annotation ?? "").trim();
-    return selectedText || annotation ? [{ text: selectedText, annotation }] : [];
-  });
+  const items = normalizedResponseAnnotations(annotations);
   const comments = items.flatMap((item, index) => (
     item.annotation ? [{ index: index + 1, annotation: item.annotation }] : []
   ));

@@ -482,7 +482,8 @@ function normalizedResponseAnnotations(values) {
   return (Array.isArray(values) ? values : []).flatMap((item) => {
     const text = String(item?.text ?? item?.quote ?? "").trim();
     const annotation = String(item?.annotation ?? item?.comment ?? "").trim();
-    return text || annotation ? [{ text, annotation }] : [];
+    const source = globalThis.AgentHubMessageDisclosure?.normalizedResponseAnnotationSource?.(item?.source);
+    return text || annotation ? [{ text, annotation, ...(source ? { source } : {}) }] : [];
   });
 }
 

@@ -10397,6 +10397,17 @@ html[data-view="background"] .background-view {
   outline-offset: 3px;
 }
 
+.msg-source-citation-highlight {
+  color: inherit;
+  background: color-mix(in srgb, var(--accent, #d86a5d) 38%, transparent);
+  border-radius: 3px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #d86a5d) 24%, transparent);
+}
+
+[data-response-citation-source-focus]:focus {
+  outline: none;
+}
+
 @keyframes response-citation-target {
   0%, 28% {
     background: color-mix(in srgb, var(--accent-soft) 78%, var(--surface-1));

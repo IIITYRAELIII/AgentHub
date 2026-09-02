@@ -88,12 +88,16 @@
       const annotation = target?.responseAnnotations?.[index - 1];
       const interactive = Boolean(target && annotation);
       const quote = String(annotation?.text ?? "").trim();
+      const source = globalThis.AgentHubMessageDisclosure?.normalizedResponseAnnotationSource?.(
+        annotation?.source,
+      );
       return [{
         index,
         label: `Цитата ${index}`,
         quote: interactive ? quote : "",
         annotation: interactive ? String(annotation?.annotation ?? "").trim() : "",
         targetMessageKey: interactive ? messageKey(target, targetIndex) : "",
+        ...(interactive && source ? { source } : {}),
         interactive,
       }];
     });
@@ -111,6 +115,7 @@
       interactive,
       label: String(citation?.label ?? (Number.isSafeInteger(index) ? `Цитата ${index}` : "Цитата")),
       quote: interactive ? String(citation?.quote ?? "").trim() : "",
+      ...(interactive && citation?.source ? { source: citation.source } : {}),
       ...(interactive ? { index, targetMessageKey } : {}),
     };
   }

@@ -10,6 +10,7 @@ import {
   normalizeInterstreamOrigin,
 } from "../../domain/interstream-message.mjs";
 import { normalizedCodexResponseAnnotationReferences } from "../../domain/codex-response-annotation.mjs";
+import { normalizedResponseAnnotations } from "../../domain/response-annotation-source.mjs";
 
 const FORMAT_VERSION = 1;
 const TASK_SCHEMA_VERSION = 9;
@@ -61,13 +62,7 @@ function cleanAttachments(attachments) {
 }
 
 function cleanResponseAnnotations(annotations) {
-  return (Array.isArray(annotations) ? annotations : [])
-    .slice(0, 20)
-    .map((annotation) => ({
-      text: cleanText(annotation?.text ?? annotation?.quote, 4_000),
-      annotation: cleanText(annotation?.annotation ?? annotation?.comment, 4_000),
-    }))
-    .filter((annotation) => annotation.text || annotation.annotation);
+  return normalizedResponseAnnotations(annotations);
 }
 
 function cleanResponseAnnotationReferences(references) {
@@ -1065,7 +1060,7 @@ export class LocalTaskSyncStore {
         ...(row.model ? { model: String(row.model) } : {}),
         ...(row.phase ? { phase: String(row.phase) } : {}),
         ...(row.time ? { time: String(row.time) } : {}),
-        responseAnnotations: parseJsonArray(row.response_annotations_json),
+        responseAnnotations: cleanResponseAnnotations(parseJsonArray(row.response_annotations_json)),
         ...(responseAnnotationReferences.length
           ? { responseAnnotationReferences }
           : {}),
@@ -1089,7 +1084,7 @@ export class LocalTaskSyncStore {
       completed: Number(row.completed) === 1,
       ...(row.started_at ? { startedAt: String(row.started_at) } : {}),
       ...(row.completed_at ? { completedAt: String(row.completed_at) } : {}),
-      promptAnnotations: parseJsonArray(row.prompt_annotations_json),
+      promptAnnotations: cleanResponseAnnotations(parseJsonArray(row.prompt_annotations_json)),
       ...(row.prompt_request ? { promptRequest: String(row.prompt_request) } : {}),
       attachments: parseJsonArray(row.attachments_json),
       activities: parseJsonArray(row.activities_json),

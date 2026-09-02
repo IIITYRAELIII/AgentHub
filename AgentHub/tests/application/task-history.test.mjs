@@ -585,10 +585,26 @@ test("Codex history retains a Task-only turn as a structured attachment", () => 
 });
 
 test("codex history preserves response annotations as structured prompt data", () => {
+  const source = {
+    version: 1,
+    provider: "codex",
+    threadId: "thread-source",
+    turnId: "turn-source",
+    itemId: "item-source",
+    role: "agent",
+    messageKey: "provider\u001fcodex\u001fthread-source\u001fturn-source\u001fitem-source\u001fagent",
+    surfaceKind: "message-body",
+    surfaceIndex: 0,
+    start: 0,
+    end: 6,
+    contentHash: `sha256:${"a".repeat(64)}`,
+    surfaceHash: `sha256:${"b".repeat(64)}`,
+    selectionHash: `sha256:${"c".repeat(64)}`,
+  };
   const prompt = [
     "# Response annotations:",
     "<response-annotations>",
-    JSON.stringify([{ text: "Цитата", annotation: "Комментарий" }]),
+    JSON.stringify([{ text: "Цитата", annotation: "Комментарий", source }]),
     "</response-annotations>",
     "",
     "## My request for Codex:",
@@ -602,9 +618,9 @@ test("codex history preserves response annotations as structured prompt data", (
       { type: "agentMessage", phase: "final_answer", text: ':codex-annotation{index="1"} Готово' },
     ],
   }]);
-  assert.deepEqual(exchange.promptAnnotations, [{ text: "Цитата", annotation: "Комментарий" }]);
+  assert.deepEqual(exchange.promptAnnotations, [{ text: "Цитата", annotation: "Комментарий", source }]);
   assert.equal(exchange.promptRequest, "Общий вопрос");
-  assert.deepEqual(exchange.messages[0].responseAnnotations, [{ text: "Цитата", annotation: "Комментарий" }]);
+  assert.deepEqual(exchange.messages[0].responseAnnotations, [{ text: "Цитата", annotation: "Комментарий", source }]);
   assert.equal(exchange.messages[1].text, "Цитата 1\nГотово");
   assert.deepEqual(exchange.messages[1].responseAnnotationReferences, [{ index: 1 }]);
 });

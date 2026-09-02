@@ -9,6 +9,7 @@ import {
   messageReceiptKey,
   messageRequestFingerprint,
 } from "../../infrastructure/persistence/message-receipts.mjs";
+import { normalizedResponseAnnotations } from "../../domain/response-annotation-source.mjs";
 
 export function createDesktopMessageController({
   attachmentPaths,
@@ -64,12 +65,10 @@ export function createDesktopMessageController({
     const descriptors = attachments.length ? describeAttachments(attachments) : [];
     const messageAttachments = [...descriptors, ...taskReferences];
     const displayText = String(params.displayText ?? params.text ?? "").trim();
-    const responseAnnotations = Array.isArray(params.responseAnnotations)
-      ? params.responseAnnotations.slice(0, 20).map((item) => ({
-        text: String(item?.text ?? ""),
-        annotation: String(item?.annotation ?? ""),
-      }))
-      : [];
+    const responseAnnotations = normalizedResponseAnnotations(params.responseAnnotations, {
+      textLimit: 400,
+      annotationLimit: 20_000,
+    });
     const responseAnnotationRequest = String(params.responseAnnotationRequest ?? "").trim();
     const referencedInput = messageWithTaskReferences(text, taskReferences);
     const input = attachments.length

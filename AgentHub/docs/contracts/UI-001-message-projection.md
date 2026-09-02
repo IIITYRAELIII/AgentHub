@@ -27,6 +27,16 @@
   exact target annotation exists. Missing mappings render non-interactive
   `Цитата N`. User-authored marker-like literals and code remain ordinary user
   content.
+- A new user-created annotation records its exact source provider item, one
+  versioned rendered surface, a bounded UTF-16 range and SHA-256 boundaries for
+  canonical message content, surface content and selected content. Equal text
+  is not source identity. Clicking a response citation validates every boundary,
+  reveals a hidden source trace when necessary, scrolls and focuses that exact
+  source surface, and temporarily highlights only the addressed range across
+  Markdown DOM splits. A missing, stale or malformed locator cannot highlight
+  another range and falls back to the annotation card. Legacy annotations
+  without a locator keep the annotation-card jump and are never backfilled by
+  text, time or display order.
 
 ## Canonical reducer
 
@@ -113,3 +123,7 @@ hydration starts strictly as background work and is never awaited by mark-read.
   submission alias. It cannot bind steer or inter-Stream messages and is removed
   after retained history has `clientUserMessageId` or `submissionId` on every
   user command.
+- Response annotations created before source-locator version `1` remain readable
+  and jump only to their annotation card. This guard is removed only if a future
+  authoritative provider export supplies exact item and range identity; local
+  text matching is not a migration path.

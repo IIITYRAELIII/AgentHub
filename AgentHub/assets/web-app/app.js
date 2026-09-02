@@ -27,8 +27,19 @@ const {
   standaloneLiveStageDetail,
   liveTraceDisclosureOpen,
   nativeSelectionMenuRequired,
+  domRangeFromOffsets,
+  domRangeOffsets,
+  highlightResponseAnnotationRange,
+  normalizedResponseAnnotationSource,
   quotableSelectionScope,
   quotableSelectionText,
+  responseAnnotationSha256,
+  responseAnnotationSourceContent,
+  responseAnnotationSourceHashesMatch,
+  responseAnnotationSourceIdentity,
+  responseAnnotationSourceProjection,
+  responseAnnotationSourceSurface,
+  responseAnnotationSurfaceLocator,
   turnTraceContent,
   turnTraceSummary,
 } = window.AgentHubMessageDisclosure;
@@ -40,6 +51,8 @@ const JournalView = window.AgentHubJournalView;
 const JournalAccountPanel = window.AgentHubJournalAccountPanel;
 const MessageView = window.AgentHubMessageView;
 const expandedUserMessageIds = new Set();
+const responseCitationSources = new WeakMap();
+let activeSourceCitationCleanup = null;
 let messageDisclosureFrame = 0;
 const journal = document.querySelector("[data-journal]");
 const journalView = document.querySelector("[data-journal-view]");
@@ -1373,10 +1386,14 @@ function normalizedDraftText(value) {
 
 function normalizedDraftAnnotations(value) {
   if (!Array.isArray(value)) return [];
-  return value.slice(0, 20).map((annotation) => ({
-    quote: String(annotation?.quote ?? "").slice(0, 400),
-    annotation: String(annotation?.annotation ?? annotation?.comment ?? "").slice(0, 20_000),
-  })).filter((annotation) => annotation.quote);
+  return value.slice(0, 20).map((annotation) => {
+    const source = normalizedResponseAnnotationSource(annotation?.source);
+    return {
+      quote: String(annotation?.quote ?? "").slice(0, 400),
+      annotation: String(annotation?.annotation ?? annotation?.comment ?? "").slice(0, 20_000),
+      ...(source ? { source } : {}),
+    };
+  }).filter((annotation) => annotation.quote);
 }
 
 function restorePersistedDrafts() {
@@ -5343,7 +5360,7 @@ document.addEventListener("click", (event) => {
   const responseCitation = event.target.closest("button[data-response-citation-target]");
   if (responseCitation) {
     event.preventDefault();
-    focusResponseCitation(responseCitation);
+    void focusResponseCitation(responseCitation);
     return;
   }
   const resourceActionButton = event.target.closest("button[data-agent-hub-resource-action][data-agent-hub-local-link]");
@@ -5416,7 +5433,7 @@ function renderResponseCitations(message) {
   if (!citations.length) return null;
   return el("div", { class: "msg-response-citations", "aria-label": "Цитаты ответа" }, citations.map((citation) => {
     const control = MessageView.responseCitationControl(citation);
-    return el(control.tagName, {
+    const node = el(control.tagName, {
       class: control.className,
       ...(control.interactive ? {
         type: "button",
@@ -5430,6 +5447,10 @@ function renderResponseCitations(message) {
         ? el("span", { class: "msg-response-citation-quote", text: control.quote })
         : null,
     ]);
+    if (control.interactive && control.source) {
+      responseCitationSources.set(node, { source: control.source, quote: control.quote });
+    }
+    return node;
   }));
 }
 
@@ -5441,7 +5462,7 @@ function renderAgentResponseBody(body, message, text, fileContext) {
   body.replaceChildren(renderResponseCitations(message), content);
 }
 
-function focusResponseCitation(button) {
+function focusResponseAnnotationCard(button) {
   const targetKey = String(button?.dataset?.responseCitationTarget ?? "");
   const index = String(button?.dataset?.responseCitationIndex ?? "");
   if (!targetKey || !index) return false;
@@ -5466,6 +5487,71 @@ function focusResponseCitation(button) {
     window.setTimeout(() => target.classList.remove("is-citation-target"), 1800);
   });
   return true;
+}
+
+function sourceMessageProjection(source) {
+  const messages = state.messages.get(state.selectedId) ?? [];
+  return responseAnnotationSourceProjection(messages, source);
+}
+
+function revealResponseCitationSource(article, surface) {
+  for (let node = surface; node && node !== article.parentElement; node = node.parentElement) {
+    if (node.tagName === "DETAILS") node.open = true;
+    if (node === article) break;
+  }
+}
+
+async function focusResponseCitationSource(button) {
+  const target = responseCitationSources.get(button);
+  const source = normalizedResponseAnnotationSource(target?.source);
+  if (!source) return false;
+  const projection = sourceMessageProjection(source);
+  if (!projection) return false;
+  const renderedKey = MessageView.messageKey(projection.message, projection.index);
+  const rootNode = Array.from(chatLog.children).find((node) => node.dataset?.messageKey === renderedKey);
+  const article = rootNode?.matches?.("article.msg, details.msg")
+    ? rootNode
+    : rootNode?.querySelector?.("article.msg, details.msg");
+  const surface = responseAnnotationSourceSurface(article, source);
+  if (!article || !surface) return false;
+  const range = domRangeFromOffsets(surface, source.start, source.end);
+  if (!range) return false;
+  const [contentHash, surfaceHash, selectionHash] = await Promise.all([
+    responseAnnotationSha256(responseAnnotationSourceContent(projection.message)),
+    responseAnnotationSha256(surface.textContent),
+    responseAnnotationSha256(range.toString().trim()),
+  ]);
+  if (!responseAnnotationSourceHashesMatch(source, { contentHash, surfaceHash, selectionHash })) return false;
+  activeSourceCitationCleanup?.();
+  const highlight = highlightResponseAnnotationRange(surface, source.start, source.end);
+  if (!highlight) return false;
+  const previousTabIndex = surface.getAttribute("tabindex");
+  const previousLabel = surface.getAttribute("aria-label");
+  surface.tabIndex = -1;
+  surface.dataset.responseCitationSourceFocus = "";
+  surface.setAttribute("aria-label", `Цитируемый фрагмент: ${target.quote}`);
+  revealResponseCitationSource(article, surface);
+  highlight.first.scrollIntoView({ behavior: "smooth", block: "center" });
+  surface.focus({ preventScroll: true });
+  let timeout = 0;
+  const cleanup = () => {
+    if (timeout) window.clearTimeout(timeout);
+    highlight.cleanup();
+    if (previousTabIndex == null) surface.removeAttribute("tabindex");
+    else surface.setAttribute("tabindex", previousTabIndex);
+    if (previousLabel == null) surface.removeAttribute("aria-label");
+    else surface.setAttribute("aria-label", previousLabel);
+    delete surface.dataset.responseCitationSourceFocus;
+    if (activeSourceCitationCleanup === cleanup) activeSourceCitationCleanup = null;
+  };
+  activeSourceCitationCleanup = cleanup;
+  timeout = window.setTimeout(cleanup, 1_800);
+  return true;
+}
+
+async function focusResponseCitation(button) {
+  if (await focusResponseCitationSource(button)) return true;
+  return focusResponseAnnotationCard(button);
 }
 
 function normalizedMessageText(value) {
@@ -6373,7 +6459,7 @@ for (const dropTarget of [composer, chatScroll]) {
 /* ---- аннотации к выделенному фрагменту сообщения или рассуждения ---- */
 
 let annotations = [];
-let pendingAnnotationQuote = "";
+let pendingAnnotationSelection = null;
 let lastAnnotationSelection = null;
 let lastTouchSelectionAt = 0;
 const TOUCH_CONTEXT_MENU_WINDOW_MS = 3_000;
@@ -6476,8 +6562,12 @@ function selectedQuotableSelection() {
     intersectedSurface: intersected?.surface,
   });
   if (!scope) return null;
+  if (scope.startSurface !== scope.endSurface) return null;
+  const offsets = domRangeOffsets(scope.startSurface, range);
+  if (!offsets) return null;
+  const exactRange = domRangeFromOffsets(scope.startSurface, offsets.start, offsets.end);
   const quote = quotableSelectionText({
-    text: selection.toString(),
+    text: exactRange?.toString(),
     rangeCount: selection.rangeCount,
     startMessage: scope.message,
     endMessage: scope.message,
@@ -6485,29 +6575,32 @@ function selectedQuotableSelection() {
     endSurface: scope.endSurface,
   });
   if (!quote) return null;
-  return { quote, message: scope.message };
+  return { quote, message: scope.message, surface: scope.startSurface, offsets };
 }
 
 function selectedQuotableSelectionAt(target) {
   const selection = window.getSelection();
+  const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
   const boundary = selectionBoundary(target);
-  if (!selection || !boundary.message || !boundary.surface) return null;
+  if (!selection || !range || !boundary.message || !boundary.surface) return null;
+  const offsets = domRangeOffsets(boundary.surface, range);
+  if (!offsets) return null;
+  const exactRange = domRangeFromOffsets(boundary.surface, offsets.start, offsets.end);
   const quote = quotableSelectionText({
-    text: selection.toString(),
+    text: exactRange?.toString(),
     rangeCount: selection.rangeCount,
     startMessage: boundary.message,
     endMessage: boundary.message,
     startSurface: boundary.surface,
     endSurface: boundary.surface,
   });
-  const comparable = (value) => String(value ?? "").replace(/\s+/gu, " ").trim();
-  if (!quote || !comparable(boundary.surface.textContent).includes(comparable(quote))) return null;
-  return { quote, message: boundary.message };
+  if (!quote) return null;
+  return { quote, message: boundary.message, surface: boundary.surface, offsets };
 }
 
 function normalizedAnnotationQuote(value) {
   const quote = String(value ?? "").trim();
-  return quote.length > 400 ? `${quote.slice(0, 400)}…` : quote;
+  return quote.length <= 400 ? quote : "";
 }
 
 function meaningfulAnnotationSelection(value) {
@@ -6524,17 +6617,67 @@ document.addEventListener("selectionchange", () => {
   }
 });
 
-function addAnnotation(value) {
-  const quote = normalizedAnnotationQuote(value);
+function sourceMessageForSelection(selection) {
+  const renderedRoot = selection?.message?.closest?.("[data-message-key]");
+  const renderedKey = String(renderedRoot?.dataset?.messageKey ?? "");
+  if (!renderedKey) return null;
+  const messages = state.messages.get(state.selectedId) ?? [];
+  const index = messages.findIndex((message, messageIndex) => (
+    MessageView.messageKey(message, messageIndex) === renderedKey
+  ));
+  return index >= 0 ? { message: messages[index], root: renderedRoot } : null;
+}
+
+async function responseAnnotationFromSelection(selection) {
+  const quote = normalizedAnnotationQuote(selection?.quote);
+  const projection = sourceMessageForSelection(selection);
+  const identity = responseAnnotationSourceIdentity(projection?.message);
+  const locator = responseAnnotationSurfaceLocator(selection?.message, selection?.surface);
+  const start = Number(selection?.offsets?.start);
+  const end = Number(selection?.offsets?.end);
+  if (!quote || !projection || !identity || !locator
+    || !Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return null;
+  const [contentHash, surfaceHash, selectionHash] = await Promise.all([
+    responseAnnotationSha256(responseAnnotationSourceContent(projection.message)),
+    responseAnnotationSha256(selection.surface.textContent),
+    responseAnnotationSha256(quote),
+  ]);
+  const source = normalizedResponseAnnotationSource({
+    version: 1,
+    ...identity,
+    ...locator,
+    start,
+    end,
+    contentHash,
+    surfaceHash,
+    selectionHash,
+  });
+  return source ? { quote, annotation: "", source } : null;
+}
+
+function duplicateResponseAnnotation(left, right) {
+  const leftSource = normalizedResponseAnnotationSource(left?.source);
+  const rightSource = normalizedResponseAnnotationSource(right?.source);
+  if (leftSource && rightSource) return JSON.stringify(leftSource) === JSON.stringify(rightSource);
+  return !leftSource && !rightSource && left?.quote === right?.quote;
+}
+
+async function addAnnotation(selection) {
+  const quote = normalizedAnnotationQuote(selection?.quote);
   if (!quote) {
     showToast("Выделите фрагмент сообщения или рассуждения.");
     return false;
   }
-  if (annotations.some((annotation) => annotation.quote === quote)) {
+  const next = await responseAnnotationFromSelection(selection);
+  if (!next) {
+    showToast("Цитату можно связать только с сохранённым сообщением агента.");
+    return false;
+  }
+  if (annotations.some((annotation) => duplicateResponseAnnotation(annotation, next))) {
     showToast("Этот фрагмент уже добавлен.");
     return false;
   }
-  setAnnotations([...annotations, { quote, annotation: "" }]);
+  setAnnotations([...annotations, next]);
   lastAnnotationSelection = null;
   window.getSelection()?.removeAllRanges();
   annotationsBox.querySelector(`[data-annotation-comment-index="${annotations.length - 1}"]`)?.focus();
@@ -6543,12 +6686,12 @@ function addAnnotation(value) {
 }
 
 function closeAnnotationContextMenu() {
-  pendingAnnotationQuote = "";
+  pendingAnnotationSelection = null;
   annotationContextMenu.hidden = true;
 }
 
-function openAnnotationContextMenu(event, quote) {
-  pendingAnnotationQuote = quote;
+function openAnnotationContextMenu(event, selection) {
+  pendingAnnotationSelection = selection;
   annotationContextMenu.hidden = false;
   const menuRect = annotationContextMenu.getBoundingClientRect();
   const chatRect = event.target.closest?.("[data-chat]")?.getBoundingClientRect();
@@ -6578,7 +6721,7 @@ function handleAnnotationContextMenu(event) {
     recentTouch: Date.now() - lastTouchSelectionAt <= TOUCH_CONTEXT_MENU_WINDOW_MS,
   })) return;
   event.preventDefault();
-  openAnnotationContextMenu(event, quote);
+  openAnnotationContextMenu(event, selected ?? lastAnnotationSelection);
 }
 
 document.addEventListener("contextmenu", handleAnnotationContextMenu, { capture: true });
@@ -6586,9 +6729,10 @@ document.addEventListener("contextmenu", handleAnnotationContextMenu, { capture:
 annotationContextMenu.addEventListener("click", (event) => {
   const action = event.target.closest("[data-action]")?.dataset.action;
   if (!["copy-selection", "annotate-selection"].includes(action)) return;
-  const quote = pendingAnnotationQuote;
+  const selection = pendingAnnotationSelection;
+  const quote = selection?.quote ?? "";
   closeAnnotationContextMenu();
-  if (action === "annotate-selection") addAnnotation(quote);
+  if (action === "annotate-selection") void addAnnotation(selection);
   else emit("clipboard:write", { text: quote });
 });
 
@@ -8303,7 +8447,7 @@ const AgentHub = {
     setPane("chat");
   },
   addSelectedAnnotation() {
-    return addAnnotation(selectedQuotableSelection()?.quote || lastAnnotationSelection?.quote);
+    return addAnnotation(selectedQuotableSelection() || lastAnnotationSelection);
   },
   navigateBack,
   toast: showToast,

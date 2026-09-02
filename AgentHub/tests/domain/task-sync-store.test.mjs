@@ -17,6 +17,23 @@ const task = {
   title: "FB Фаровон обмен1",
 };
 
+const ANNOTATION_SOURCE = {
+  version: 1,
+  provider: "codex",
+  threadId: "source-thread",
+  turnId: "source-turn",
+  itemId: "source-item",
+  role: "agent",
+  messageKey: "provider\u001fcodex\u001fsource-thread\u001fsource-turn\u001fsource-item\u001fagent",
+  surfaceKind: "trace-reasoning",
+  surfaceIndex: 1,
+  start: 2,
+  end: 19,
+  contentHash: `sha256:${"a".repeat(64)}`,
+  surfaceHash: `sha256:${"b".repeat(64)}`,
+  selectionHash: `sha256:${"c".repeat(64)}`,
+};
+
 async function storeFile() {
   const directory = await mkdtemp(path.join(os.tmpdir(), "telegram-task-sync-"));
   return path.join(directory, "task-sync.json");
@@ -234,7 +251,7 @@ test("local task sync preserves durable message metadata and attachments", async
     answer: "Вижу",
     status: "completed",
     completed: true,
-    promptAnnotations: [{ text: "Цитата из ответа", annotation: "Почему так?" }],
+    promptAnnotations: [{ text: "Цитата из ответа", annotation: "Почему так?", source: ANNOTATION_SOURCE }],
     promptRequest: "Почему так?",
     startedAt: "2026-07-31T12:00:00.000Z",
     completedAt: "2026-07-31T12:01:00.000Z",
@@ -251,7 +268,7 @@ test("local task sync preserves durable message metadata and attachments", async
       role: "user",
       text: "Посмотри скриншот",
       author: "Agent Hub - Architect",
-      responseAnnotations: [{ text: "Цитата из ответа", annotation: "Почему так?" }],
+      responseAnnotations: [{ text: "Цитата из ответа", annotation: "Почему так?", source: ANNOTATION_SOURCE }],
       responseAnnotationRequest: "Почему так?",
       time: "2026-07-31T12:00:00.000Z",
       attachments: [
@@ -289,11 +306,11 @@ test("local task sync preserves durable message metadata and attachments", async
   assert.equal(entry.messages[0].time, "2026-07-31T12:00:00.000Z");
   assert.equal(entry.messages[0].author, "Agent Hub - Architect");
   assert.deepEqual(entry.promptAnnotations, [
-    { text: "Цитата из ответа", annotation: "Почему так?" },
+    { text: "Цитата из ответа", annotation: "Почему так?", source: ANNOTATION_SOURCE },
   ]);
   assert.equal(entry.promptRequest, "Почему так?");
   assert.deepEqual(entry.messages[0].responseAnnotations, [
-    { text: "Цитата из ответа", annotation: "Почему так?" },
+    { text: "Цитата из ответа", annotation: "Почему так?", source: ANNOTATION_SOURCE },
   ]);
   assert.equal(entry.messages[0].responseAnnotationRequest, "Почему так?");
   assert.deepEqual(entry.messages[1].responseAnnotationReferences, [{ index: 1 }]);
