@@ -180,6 +180,10 @@ primary authority. A detached primary and every linked `main`, `PreRelease`, or 
 holder are diagnostic evidence; discovery performs no clone creation, checkout,
 branch change, cleanup or removal. Checkpoint enumeration additionally recovers
 Agent Hub-owned clones that are no longer associated with a registered root.
+For each registered root the audit also derives the exact managed repository
+layout. An existing `releaseRoot` without its matching valid checkpoint, or with
+an absent/mismatched ownership marker or shared/invalid Git common directory, is
+an orphan and yields `manual_required`; startup never adopts, repairs or removes it.
 
 The effective Workspace and Architect developer rules, and the visible release
 tooltip, state the same execution boundary: the primary is not a release checkout;

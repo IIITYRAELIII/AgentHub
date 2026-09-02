@@ -34,6 +34,10 @@ source, not discovery authority. Legacy Workspace rows without a working directo
 use the runtime default project registration; thread history is never primary
 authority. A detached primary or historical linked holder
 is reported as `manual_required`; the audit creates, switches and removes nothing.
+The audit always derives the expected managed layout for each registered root.
+If its `releaseRoot` exists without the matching checkpoint and ownership marker,
+or is not a valid independent clone, it is reported as an orphan requiring manual
+resolution and is never adopted, repaired or removed during startup.
 
 Injected Workspace and Architect rules identify `releaseCandidates[].releaseRoot`
 as the only frozen-release checkout. The compatibility layer removes the former
