@@ -14,9 +14,14 @@ import {
   BoundedPollingBackoff,
   retryAfterMilliseconds,
 } from "./remote-polling-policy.mjs";
+import {
+  RemoteControlWakeChannel,
+  REMOTE_CONTROL_WAKE_FALLBACK_MS,
+  REMOTE_CONTROL_WAKE_PROTOCOL,
+  remoteControlWakeUrl,
+} from "./remote-control-wake-channel.mjs";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 35_000;
-const DEFAULT_POLL_WAIT_MS = 25_000;
 const DEFAULT_POLL_TIMEOUT_MS = 35_000;
 const DEFAULT_RETRY_MS = 5_000;
 const MAX_RETRY_MS = 5 * 60_000;
@@ -73,6 +78,7 @@ export class SharedDashboardBotClient {
   #retryMs;
   #backoff;
   #attachmentTimeoutMs;
+  #wakeChannel;
   #closed = false;
   #loop = null;
   #abortController = null;
@@ -90,6 +96,8 @@ export class SharedDashboardBotClient {
     retrySeconds = DEFAULT_RETRY_MS / 1_000,
     maxRetrySeconds = MAX_RETRY_MS / 1_000,
     attachmentTimeoutMs = ATTACHMENT_TIMEOUT_MS,
+    wakeFallbackSeconds = REMOTE_CONTROL_WAKE_FALLBACK_MS / 1_000,
+    webSocketFactory = (url) => new globalThis.WebSocket(url),
     logger = console,
     random = Math.random,
   } = {}) {
@@ -112,6 +120,17 @@ export class SharedDashboardBotClient {
       throw new TypeError("Shared Dashboard bot publicUrl and hubId are required");
     }
     if (typeof handler !== "function") throw new TypeError("Shared Dashboard bot handler is required");
+    this.#wakeChannel = new RemoteControlWakeChannel({
+      createUrl: async () => remoteControlWakeUrl({
+        publicUrl: this.#publicUrl,
+        pathname: "/api/dashboard-bot/wake",
+        secret: await this.#secret(),
+        parameters: { hubId: this.#hubId },
+      }),
+      createSocket: webSocketFactory,
+      fallbackMs: Math.max(1_000, Number(wakeFallbackSeconds) * 1_000 || REMOTE_CONTROL_WAKE_FALLBACK_MS),
+      logger,
+    });
   }
 
   async #secret() {
@@ -565,7 +584,8 @@ export class SharedDashboardBotClient {
     try {
       const payload = await this.#signedRequest("/api/dashboard-bot/pull", {
         limit: 10,
-        waitMs: DEFAULT_POLL_WAIT_MS,
+        waitMs: 0,
+        transport: REMOTE_CONTROL_WAKE_PROTOCOL,
       }, { signal: abortController.signal, timeoutMs: DEFAULT_POLL_TIMEOUT_MS });
       if (!Array.isArray(payload?.commands)) throw new Error("Shared Dashboard bot returned an invalid queue");
       const textCommands = [];
@@ -616,7 +636,7 @@ export class SharedDashboardBotClient {
         if (recoveredAttempts > 0) {
           this.#logger.info?.(`Shared Dashboard bot recovered after ${recoveredAttempts} failed polls.`);
         }
-        if (handled === 0) await this.#delay();
+        if (handled === 0) await this.#wakeChannel.wait();
       } catch (error) {
         if (this.#closed || error?.name === "AbortError") break;
         const retry = this.#backoff.failure({ minimumMs: error?.retryAfterMs });
@@ -648,6 +668,7 @@ export class SharedDashboardBotClient {
 
   async close() {
     this.#closed = true;
+    this.#wakeChannel.close();
     clearTimeout(this.#delayTimer);
     this.#delayTimer = null;
     this.#delayResolve?.();

@@ -13,6 +13,7 @@ import {
   signMiniAppSyncChunk,
 } from "../../../src/interfaces/web/mini-app-publisher.mjs";
 import { createDesktopControlRouter } from "../../../src/interfaces/desktop/desktop-control-router.mjs";
+import { REMOTE_CONTROL_WAKE_PROTOCOL } from "../../../src/interfaces/web/remote-control-wake-channel.mjs";
 
 function memoryJournal(payload = {
   html: "<p>Журнал</p>",
@@ -483,7 +484,8 @@ test("Mini App publisher polls signed controls and posts their result", async ()
     assert.equal(requests.length, 2);
     assert.deepEqual(JSON.parse(requests[0].options.body), {
       limit: 10,
-      waitMs: 10_000,
+      waitMs: 0,
+      transport: REMOTE_CONTROL_WAKE_PROTOCOL,
     });
     for (const request of requests) {
       const pathname = new URL(request.url).pathname;
@@ -510,7 +512,7 @@ test("Mini App publisher polls signed controls and posts their result", async ()
   }
 });
 
-test("Mini App publisher uses a wakeable long poll without an immediate empty-loop retry", async () => {
+test("Mini App publisher uses immediate drain without an empty-loop retry", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-control-short-poll-"));
   const secretFile = path.join(root, "sync.secret");
   await writeFile(secretFile, "l".repeat(64));
@@ -530,6 +532,7 @@ test("Mini App publisher uses a wakeable long poll without an immediate empty-lo
       markStarted();
       return Response.json({ commands: [] });
     },
+    webSocketFactory: () => ({ addEventListener() {}, close() {} }),
     controlHandler: async () => ({ ok: true }),
   });
   try {
@@ -537,7 +540,11 @@ test("Mini App publisher uses a wakeable long poll without an immediate empty-lo
     await started;
     await publisher.close();
     assert.equal(pullCount, 1);
-    assert.deepEqual(pullBody, { limit: 10, waitMs: 10_000 });
+    assert.deepEqual(pullBody, {
+      limit: 10,
+      waitMs: 0,
+      transport: REMOTE_CONTROL_WAKE_PROTOCOL,
+    });
   } finally {
     await publisher.close();
     await rm(root, { recursive: true, force: true });

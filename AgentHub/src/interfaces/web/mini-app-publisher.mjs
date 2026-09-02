@@ -24,12 +24,17 @@ import {
   BoundedPollingBackoff,
   retryAfterMilliseconds,
 } from "./remote-polling-policy.mjs";
+import {
+  RemoteControlWakeChannel,
+  REMOTE_CONTROL_WAKE_FALLBACK_MS,
+  REMOTE_CONTROL_WAKE_PROTOCOL,
+  remoteControlWakeUrl,
+} from "./remote-control-wake-channel.mjs";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const ATTACHMENT_TIMEOUT_MS = 60_000;
 const SYNC_CHUNK_BYTES = 1024 * 1024;
 const DEFAULT_CONTROL_POLL_MS = 1_000;
-const DEFAULT_CONTROL_WAIT_MS = 10_000;
 const MAX_CONTROL_RETRY_MS = 60_000;
 const DEFAULT_SNAPSHOT_REFRESH_MS = 2_000;
 const MAX_CONTROL_RESULT_BYTES = 1024 * 1024;
@@ -167,8 +172,8 @@ export class MiniAppPublisher {
   #snapshotRefreshMs;
   #snapshotVersions = new Map();
   #controlPollMs;
-  #controlWaitMs;
   #controlBackoff;
+  #controlWakeChannel;
   #controlBatchSize;
   #attachmentDirectory;
   #unsubscribeJournal = null;
@@ -214,6 +219,8 @@ export class MiniAppPublisher {
     snapshotUserIds = [],
     snapshotRefreshSeconds = DEFAULT_SNAPSHOT_REFRESH_MS / 1_000,
     controlPollSeconds = DEFAULT_CONTROL_POLL_MS / 1_000,
+    wakeFallbackSeconds = REMOTE_CONTROL_WAKE_FALLBACK_MS / 1_000,
+    webSocketFactory = (url) => new globalThis.WebSocket(url),
     controlBatchSize = 10,
     attachmentDirectory = null,
     controlReceiptFile = null,
@@ -241,7 +248,6 @@ export class MiniAppPublisher {
       Number(snapshotRefreshSeconds) * 1_000 || DEFAULT_SNAPSHOT_REFRESH_MS,
     );
     this.#controlPollMs = Math.max(500, Number(controlPollSeconds) * 1_000 || DEFAULT_CONTROL_POLL_MS);
-    this.#controlWaitMs = DEFAULT_CONTROL_WAIT_MS;
     this.#controlBackoff = new BoundedPollingBackoff({
       baseMs: this.#controlPollMs,
       maxMs: MAX_CONTROL_RETRY_MS,
@@ -288,6 +294,16 @@ export class MiniAppPublisher {
     this.#onControlResultDelivered = typeof onControlResultDelivered === "function"
       ? onControlResultDelivered
       : null;
+    this.#controlWakeChannel = new RemoteControlWakeChannel({
+      createUrl: async () => remoteControlWakeUrl({
+        publicUrl: this.#publicUrl,
+        pathname: "/api/control/wake",
+        secret: await this.#secret(),
+      }),
+      createSocket: webSocketFactory,
+      fallbackMs: Math.max(1_000, Number(wakeFallbackSeconds) * 1_000 || REMOTE_CONTROL_WAKE_FALLBACK_MS),
+      logger,
+    });
   }
 
   async #secret() {
@@ -688,10 +704,11 @@ export class MiniAppPublisher {
       await this.#flushControlResults();
       const response = await this.#signedControlRequest("/api/control/pull", {
         limit: this.#controlBatchSize,
-        waitMs: this.#controlWaitMs,
+        waitMs: 0,
+        transport: REMOTE_CONTROL_WAKE_PROTOCOL,
       }, secret, {
         signal: abortController.signal,
-        timeoutMs: this.#controlWaitMs + DEFAULT_TIMEOUT_MS,
+        timeoutMs: DEFAULT_TIMEOUT_MS,
       });
       if (!Array.isArray(response?.commands)) throw new Error("Mini App Worker returned an invalid control response");
       let handled = 0;
@@ -737,7 +754,7 @@ export class MiniAppPublisher {
         if (recoveredAttempts > 0) {
           this.#logger.info?.(`Mini App control polling recovered after ${recoveredAttempts} failed polls.`);
         }
-        retryDelay = handled > 0 ? 0 : this.#controlPollMs;
+        if (handled === 0) await this.#controlWakeChannel.wait();
       } catch (error) {
         if (this.#closed) break;
         const retry = this.#controlBackoff.failure({ minimumMs: error?.retryAfterMs });
@@ -746,7 +763,7 @@ export class MiniAppPublisher {
           `Mini App control poll failed (attempt ${retry.attempt}, retry in ${retry.delayMs} ms): ${error.message}`,
         );
       }
-      await this.#controlDelay(retryDelay);
+      if (retryDelay > 0) await this.#controlDelay(retryDelay);
     }
   }
 
@@ -896,6 +913,7 @@ export class MiniAppPublisher {
 
   async close() {
     this.#closed = true;
+    this.#controlWakeChannel.close();
     this.#unsubscribeJournal?.();
     this.#unsubscribeJournal = null;
     clearTimeout(this.#debounceTimer);
