@@ -35,6 +35,10 @@ function normalizeState(value = {}, { defaultServerUrl = "" } = {}) {
       0,
       Math.trunc(Number(value.lastUsagePushJournalRevision) || 0),
     ),
+    lastUsageHistoryResendVersion: Math.max(
+      0,
+      Math.trunc(Number(value.lastUsageHistoryResendVersion) || 0),
+    ),
     lastUsagePullRevision: pullRevision,
     lastResult: value.lastResult && typeof value.lastResult === "object"
       ? structuredClone(value.lastResult)
@@ -106,8 +110,16 @@ export class UsageSyncRemoteConfigStore {
     });
   }
 
-  rememberPush(result = {}, { usageWatermark = "", usageJournalRevision = null } = {}) {
-    return this.#rememberResult("lastPushAt", result, { usageWatermark, usageJournalRevision });
+  rememberPush(result = {}, {
+    usageWatermark = "",
+    usageJournalRevision = null,
+    usageHistoryResendVersion = null,
+  } = {}) {
+    return this.#rememberResult("lastPushAt", result, {
+      usageWatermark,
+      usageJournalRevision,
+      usageHistoryResendVersion,
+    });
   }
 
   rememberPull(result = {}, { serverRevision = null } = {}) {
@@ -117,6 +129,7 @@ export class UsageSyncRemoteConfigStore {
   #rememberResult(timestampField, result, {
     usageWatermark = "",
     usageJournalRevision = null,
+    usageHistoryResendVersion = null,
     serverRevision = null,
   } = {}) {
     return this.#enqueue(async () => {
@@ -132,6 +145,12 @@ export class UsageSyncRemoteConfigStore {
           : Math.max(
               Number(current.lastUsagePushJournalRevision) || 0,
               Math.trunc(Number(usageJournalRevision) || 0),
+            ),
+        lastUsageHistoryResendVersion: usageHistoryResendVersion == null
+          ? current.lastUsageHistoryResendVersion
+          : Math.max(
+              Number(current.lastUsageHistoryResendVersion) || 0,
+              Math.trunc(Number(usageHistoryResendVersion) || 0),
             ),
         lastUsagePullRevision: serverRevision == null
           ? current.lastUsagePullRevision

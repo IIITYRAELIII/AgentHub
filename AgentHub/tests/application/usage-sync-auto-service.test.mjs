@@ -11,6 +11,7 @@ function fixture({
   enrolledAt = "2026-08-20T00:00:00.000Z",
   lastUsagePushWatermark = "",
   lastUsagePushJournalRevision = 0,
+  lastUsageHistoryResendVersion = 1,
   lastUsagePullRevision = 0,
   localJournalRevision = 7,
   localEvents = [{ id: "turn-1", observedAt: "2026-08-20T04:00:00.000Z" }],
@@ -51,6 +52,7 @@ function fixture({
           enrolledAt,
           lastUsagePushWatermark,
           lastUsagePushJournalRevision,
+          lastUsageHistoryResendVersion,
           lastUsagePullRevision,
         };
       },
@@ -234,6 +236,76 @@ test("UsageSyncAutoService sends only journal deltas after the saved revision", 
   });
   assert.equal(state.events.some(([name]) => name === "import-project"), false);
   assert.equal(state.events.some(([name]) => name === "info"), false);
+});
+
+test("UsageSyncAutoService resends full history once for USG-001 migration", async () => {
+  const state = fixture({
+    lastUsagePushWatermark: "2026-08-20T04:00:00.000Z",
+    lastUsagePushJournalRevision: 6,
+    lastUsageHistoryResendVersion: 0,
+    localEvents: [
+      { id: "turn-1", observedAt: "2026-08-20T04:00:00.000Z" },
+      { id: "turn-2", observedAt: "2026-08-20T04:05:00.000Z" },
+    ],
+    remoteEvents: [],
+    pushResult: {
+      ok: true,
+      added: 0,
+      updated: 0,
+      unchanged: 2,
+      rejected: 0,
+      usageFactSchemaVersion: 2,
+    },
+  });
+
+  const result = await state.service.sync();
+
+  assert.equal(result.exportedEvents, 2);
+  assert.equal(result.usageHistoryResendVersion, 1);
+  assert.equal(result.usageHistoryResendPending, false);
+  assert.deepEqual(state.events.find(([name]) => name === "snapshot")?.[1], {
+    deviceId: "device-local",
+    deviceLabel: "DESKTOP-FNNC1JA",
+    afterObservedAt: "",
+    afterJournalRevision: 0,
+  });
+  assert.deepEqual(state.events.find(([name]) => name === "remember-push")?.[2], {
+    usageWatermark: "2026-08-20T04:05:00.000Z",
+    usageJournalRevision: 7,
+    usageHistoryResendVersion: 1,
+  });
+});
+
+test("UsageSyncAutoService keeps USG-001 history resend pending against legacy servers", async () => {
+  const state = fixture({
+    lastUsagePushWatermark: "2026-08-20T04:00:00.000Z",
+    lastUsagePushJournalRevision: 6,
+    lastUsageHistoryResendVersion: 0,
+    localEvents: [{ id: "turn-1", observedAt: "2026-08-20T04:00:00.000Z" }],
+    remoteEvents: [],
+    pushResult: {
+      ok: true,
+      added: 0,
+      updated: 0,
+      unchanged: 1,
+      rejected: 0,
+    },
+  });
+
+  const result = await state.service.sync();
+
+  assert.equal(result.usageHistoryResendVersion, null);
+  assert.equal(result.usageHistoryResendPending, true);
+  assert.deepEqual(state.events.find(([name]) => name === "snapshot")?.[1], {
+    deviceId: "device-local",
+    deviceLabel: "DESKTOP-FNNC1JA",
+    afterObservedAt: "",
+    afterJournalRevision: 0,
+  });
+  assert.deepEqual(state.events.find(([name]) => name === "remember-push")?.[2], {
+    usageWatermark: "",
+    usageJournalRevision: null,
+  });
 });
 
 test("UsageSyncAutoService exposes and confirms the device nickname", async () => {

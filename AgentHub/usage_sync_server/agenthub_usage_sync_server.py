@@ -261,8 +261,6 @@ def init_db(db: sqlite3.Connection) -> None:
             ON usage_events(device_id, completed_ms);
         CREATE INDEX IF NOT EXISTS usage_events_account_completed
             ON usage_events(account_key, completed_ms);
-        CREATE INDEX IF NOT EXISTS usage_events_server_revision
-            ON usage_events(server_revision);
         CREATE TABLE IF NOT EXISTS ingest_audit (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             device_id TEXT NOT NULL,
@@ -1081,6 +1079,7 @@ def ingest_snapshot(
     return {
         "ok": True,
         "deviceId": device_id,
+        "usageFactSchemaVersion": USAGE_FACT_SCHEMA_VERSION,
         "serverRevision": revision,
         "added": added,
         "updated": updated + label_updates,
@@ -1101,6 +1100,7 @@ def export_snapshot(
     )
     return {
         "version": 1,
+        "usageFactSchemaVersion": USAGE_FACT_SCHEMA_VERSION,
         "exportedAt": utc_now_iso(),
         "serverRevision": current_server_revision(db),
         "events": snapshot_events(db),
@@ -1120,6 +1120,7 @@ def export_changes(
     since_revision = max(0, integer(payload.get("sinceRevision")))
     return {
         "version": 1,
+        "usageFactSchemaVersion": USAGE_FACT_SCHEMA_VERSION,
         "exportedAt": utc_now_iso(),
         "deviceId": device_id,
         "sinceRevision": since_revision,

@@ -1,4 +1,6 @@
 const TIMER_NAME = "work-log-usage-sync";
+const USG001_HISTORY_RESEND_VERSION = 1;
+const USAGE_FACT_SCHEMA_VERSION = 2;
 
 function numberField(value) {
   return Math.max(0, Number(value) || 0);
@@ -36,6 +38,10 @@ function latestTurnObservedAt(events = []) {
     }
   }
   return latest;
+}
+
+function usageFactSchemaVersion(value) {
+  return Math.max(0, Math.trunc(Number(value?.usageFactSchemaVersion) || 0));
 }
 
 export class UsageSyncAutoService {
@@ -182,18 +188,36 @@ export class UsageSyncAutoService {
     if (!remoteConfig?.enrolledAt) return { skipped: true, reason: "not-enrolled", serverUrl };
     const client = this.clientFactory({ serverUrl, identityStore: this.identityStore });
     const accountBackfill = await this.#backfillAccounts();
+    const historyResendDoneVersion = Math.max(
+      0,
+      Math.trunc(Number(remoteConfig.lastUsageHistoryResendVersion) || 0),
+    );
+    const forceHistoryResend = historyResendDoneVersion < USG001_HISTORY_RESEND_VERSION;
     const snapshot = await this.workLogUsageStore.usageSyncSnapshot({
       deviceId: this.identityStore.deviceId,
       deviceLabel: this.identityStore.label,
-      afterObservedAt: remoteConfig.lastUsagePushWatermark,
-      afterJournalRevision: remoteConfig.lastUsagePushJournalRevision,
+      afterObservedAt: forceHistoryResend ? "" : remoteConfig.lastUsagePushWatermark,
+      afterJournalRevision: forceHistoryResend ? 0 : remoteConfig.lastUsagePushJournalRevision,
     });
     const push = await client.push(snapshot);
-    const usageWatermark = numberField(push.rejected) ? "" : latestTurnObservedAt(snapshot.events);
-    const usageJournalRevision = numberField(push.rejected)
-      ? null
-      : Math.max(0, Math.trunc(Number(snapshot.journalRevision) || 0));
-    await this.remoteConfigStore.rememberPush(push, { usageWatermark, usageJournalRevision });
+    const pushAccepted = push?.ok !== false && !numberField(push.rejected);
+    const serverAcceptsUsageFacts = usageFactSchemaVersion(push) >= USAGE_FACT_SCHEMA_VERSION;
+    const canAdvanceUsageCursor = pushAccepted && (!forceHistoryResend || serverAcceptsUsageFacts);
+    const usageWatermark = canAdvanceUsageCursor ? latestTurnObservedAt(snapshot.events) : "";
+    const usageJournalRevision = canAdvanceUsageCursor
+      ? Math.max(0, Math.trunc(Number(snapshot.journalRevision) || 0))
+      : null;
+    const usageHistoryResendVersion = forceHistoryResend && canAdvanceUsageCursor
+      ? USG001_HISTORY_RESEND_VERSION
+      : null;
+    const rememberPushOptions = {
+      usageWatermark,
+      usageJournalRevision,
+    };
+    if (usageHistoryResendVersion != null) {
+      rememberPushOptions.usageHistoryResendVersion = usageHistoryResendVersion;
+    }
+    await this.remoteConfigStore.rememberPush(push, rememberPushOptions);
     const remoteSnapshot = await client.pull({
       sinceRevision: Math.max(0, Math.trunc(Number(remoteConfig.lastUsagePullRevision) || 0)),
     });
@@ -215,6 +239,8 @@ export class UsageSyncAutoService {
       serverRevision,
       usageWatermark,
       usageJournalRevision,
+      usageHistoryResendVersion,
+      usageHistoryResendPending: forceHistoryResend && !usageHistoryResendVersion,
       accountBackfill,
       push,
       pull,

@@ -48,6 +48,7 @@ test("remote config exposes default server URL without marking enrollment", asyn
     assert.equal(state.serverUrl, "https://sync.example.test/default");
     assert.equal(state.deviceId, "");
     assert.equal(state.enrolledAt, "");
+    assert.equal(state.lastUsageHistoryResendVersion, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -65,6 +66,10 @@ test("remote config records push and pull timestamps", async () => {
     await store.rememberPush({ ok: true, added: 2 }, {
       usageWatermark: "2026-08-20T04:00:30.000Z",
       usageJournalRevision: 17,
+      usageHistoryResendVersion: 1,
+    });
+    await store.rememberPush({ ok: true, added: 0 }, {
+      usageHistoryResendVersion: 0,
     });
     const pulled = await store.rememberPull(
       { imported: true, added: 1 },
@@ -75,6 +80,7 @@ test("remote config records push and pull timestamps", async () => {
     assert.equal(pulled.lastPullAt, "2026-08-20T04:01:00.000Z");
     assert.equal(pulled.lastUsagePushWatermark, "2026-08-20T04:00:30.000Z");
     assert.equal(pulled.lastUsagePushJournalRevision, 17);
+    assert.equal(pulled.lastUsageHistoryResendVersion, 1);
     assert.equal(pulled.lastUsagePullRevision, 42);
     assert.deepEqual(pulled.lastResult, { imported: true, added: 1 });
   } finally {

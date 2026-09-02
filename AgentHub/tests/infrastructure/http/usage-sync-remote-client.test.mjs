@@ -130,7 +130,15 @@ test("large usage snapshots are sent as bounded signed idempotent chunks", async
           added += 1;
         }
       }
-      return response({ ok: true, deviceId: identity.deviceId, added, updated: 0, unchanged, rejected: 0 });
+      return response({
+        ok: true,
+        deviceId: identity.deviceId,
+        added,
+        updated: 0,
+        unchanged,
+        rejected: 0,
+        usageFactSchemaVersion: 2,
+      });
     },
   });
 
@@ -139,6 +147,7 @@ test("large usage snapshots are sent as bounded signed idempotent chunks", async
 
   assert.ok(expectedChunks.length > 1);
   assert.equal(result.requests, expectedChunks.length);
+  assert.equal(result.usageFactSchemaVersion, 2);
   assert.equal(result.added + result.unchanged, events.length);
   assert.deepEqual([...stored], events.map((event) => event.eventId));
   for (const call of calls) {

@@ -176,6 +176,16 @@ export class UsageSyncRemoteClient {
       for (const field of ["added", "updated", "unchanged", "rejected"]) {
         aggregate[field] += Math.max(0, Number(lastResult?.[field]) || 0);
       }
+      const usageFactSchemaVersion = Math.max(
+        0,
+        Math.trunc(Number(lastResult?.usageFactSchemaVersion) || 0),
+      );
+      if (usageFactSchemaVersion) {
+        aggregate.usageFactSchemaVersion = Math.max(
+          Number(aggregate.usageFactSchemaVersion) || 0,
+          usageFactSchemaVersion,
+        );
+      }
     }
     return chunks.length === 1 ? lastResult : aggregate;
   }

@@ -19,6 +19,10 @@ pseudonym of the resolved auth store directory.
 for ingest only under *Legacy ingest* below. Unknown record types and unknown
 higher versions are rejected, counted and never partially applied.
 
+Server push and pull responses include `usageFactSchemaVersion: 2`. Clients use
+this marker to distinguish an upgraded server from a legacy server that accepted
+schema 2 JSON but returned/stored it through the old schema 1 path.
+
 ### `turn`
 
 | field | required | note |
@@ -232,3 +236,10 @@ estimand.
 - A refill therefore repairs only devices whose rollout files are still present
   locally. Another participant's history is not recoverable without that
   participant updating.
+- After a client upgrade to this contract, the client performs one full-history
+  usage export regardless of its previous push cursor. The client records that
+  resend as completed only after a push response advertises
+  `usageFactSchemaVersion >= 2` and rejects no events. Until then the previous
+  cursor is not advanced for that migration attempt, so updating the sync server
+  later causes the next sync to resend history again instead of leaving it
+  stranded behind an old cursor.
