@@ -3,7 +3,7 @@ import path from "node:path";
 import vm from "node:vm";
 
 const SKIPPED_DIRECTORIES = new Set(["data", "node_modules"]);
-const CONTRACT_ID_PATTERN = /^(?:SYS|MSG|TURN|UI|RST|PERF|REL)-\d{3}$/u;
+const CONTRACT_ID_PATTERN = /^(?:SYS|MSG|TURN|UI|RST|PERF|REL|MCP)-\d{3}$/u;
 
 async function verifyContractRegistry(root) {
   const registryFile = path.join(root, "docs", "contracts", "registry.json");

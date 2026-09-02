@@ -10,6 +10,7 @@ import { providerThreadKey } from "../domain/workspace-stream-identity.mjs";
 import { ClaudeEventService } from "../providers/claude/claude-event-service.mjs";
 import { isContextCompactionItem } from "../providers/codex/context-compaction-tracker.mjs";
 import { CodexEventService } from "../providers/codex/codex-event-service.mjs";
+import { CodexHubMcpBridgeRecovery } from "../providers/codex/codex-hub-mcp-bridge-recovery.mjs";
 import { discoverCodexRollouts } from "../providers/codex/codex-turn-usage.mjs";
 import { resolveHubDeveloperInstructions } from "./hub-developer-instructions-composition.mjs";
 import {
@@ -98,6 +99,7 @@ export function createProviderOperationComposition({
   requestMcpElicitation,
   requestUserInput,
   discardContextCompactionRun,
+  wakeDeferredInputs,
 }) {
   const codexProviderTasks = new CodexProviderTaskService({
     transportRunning: codexTransportRunning,
@@ -247,6 +249,16 @@ export function createProviderOperationComposition({
     logWarn: (...args) => console.warn(...args),
     logError: (...args) => console.error(...args),
   });
+  const codexHubMcpBridgeRecovery = new CodexHubMcpBridgeRecovery({
+    reloadMcp: () => sendRpc("config/mcpServer/reload", {}, {
+      timeoutMs: 10_000,
+      priority: "critical",
+    }),
+    readOperation: (requestId) => workspaceCatalogStore.mcpOperation(requestId),
+    wakeDeferredInputs,
+    setStage: (...args) => taskProgress().setStage(...args),
+    logger: console,
+  });
   const codexEventService = new CodexEventService({
     invalidateThreadRead: invalidateCodexThreadRead,
     forEvent: (reference) => taskRuns.forEvent(reference),
@@ -296,6 +308,7 @@ export function createProviderOperationComposition({
     logWarn: (...args) => console.warn(...args),
     logError: (...args) => console.error(...args),
     observeMcpProgress: (event) => mcpAdmissionCoordinator?.progress(event),
+    observeHubMcpBridge: (event) => codexHubMcpBridgeRecovery.observe(event),
   });
   return {
     codexProviderTasks,
@@ -306,6 +319,7 @@ export function createProviderOperationComposition({
     codexRecoveryService,
     codexTurnService,
     providerCancellationService,
+    codexHubMcpBridgeRecovery,
     codexEventService,
     scheduleObservedRun: (...args) => taskObserver().schedule(...args),
   };

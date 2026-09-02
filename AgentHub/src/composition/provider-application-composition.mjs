@@ -470,6 +470,7 @@ export async function createProviderApplicationComposition({
     requestMcpElicitation: api.requestMcpElicitation,
     requestUserInput: api.requestUserInput,
     discardContextCompactionRun: api.discardContextCompactionRun,
+    wakeDeferredInputs: api.wakeDeferredInputs,
   });
   const providerCatalog = createProviderCatalogComposition({
     taskSyncStore: runtimeData.taskSyncStore,

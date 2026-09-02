@@ -38,6 +38,23 @@ test("HubMcpServer serves MCP only through its secret loopback URL", async (cont
   assert.equal(publicPath.status, 404);
 });
 
+test("HubMcpServer configures a client deadline beyond its server deadline", async (context) => {
+  const server = new HubMcpServer({
+    secret: "server-secret",
+    requestTimeoutMs: 60_000,
+    clientToolTimeoutSeconds: 75,
+    service: { tools: () => [], call: () => ({}) },
+    logger: { log() {}, error() {} },
+  });
+  await server.start();
+  context.after(() => server.close());
+
+  assert.deepEqual(server.codexArgs().slice(-2), [
+    "-c", "mcp_servers.agent_hub.tool_timeout_sec=75",
+  ]);
+  assert.equal(server.codexArgs().some((value) => /mcp_servers\.(?!agent_hub).*tool_timeout_sec/u.test(value)), false);
+});
+
 test("HubMcpServer closes active HTTP sockets during a runtime restart", async () => {
   const server = new HubMcpServer({
     secret: "server-secret",

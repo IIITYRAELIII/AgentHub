@@ -314,6 +314,32 @@ test("DeferredInputController keeps a paused head in FIFO until occupancy clears
   assert.deepEqual(started, ["paused", "next"]);
 });
 
+test("DeferredInputController lets runnable intake pass an intentionally paused lane item", async () => {
+  const started = [];
+  const state = fixture({ start: async (item) => started.push(item.id) });
+  const lane = { streamId: "stream-1", provider: "codex", threadId: "thread-1" };
+  state.queuedInputs.set("paused", {
+    ...lane,
+    id: "paused",
+    paused: true,
+    queueOrder: 0,
+    conflictKind: "message-intake",
+  });
+  state.queuedInputs.set("accepted-after-hang", {
+    ...lane,
+    id: "accepted-after-hang",
+    taskTitle: "Dashboard",
+    queueOrder: 1,
+    conflictKind: "message-intake",
+  });
+
+  await state.controller.process("accepted-after-hang");
+
+  assert.deepEqual(started, ["accepted-after-hang"]);
+  assert.equal(state.queuedInputs.has("paused"), true);
+  assert.equal(state.queuedInputs.has("accepted-after-hang"), false);
+});
+
 test("DeferredInputController retries a transient app-server failure without losing FIFO", async () => {
   let attempts = 0;
   const state = fixture({

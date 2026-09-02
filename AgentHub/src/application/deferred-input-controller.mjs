@@ -48,6 +48,12 @@ function steerTargetsOccupancy(item, occupancy) {
     && (!expectedTurnId || expectedTurnId === String(occupancy.run.turnId ?? "").trim());
 }
 
+function intentionallyPaused(item) {
+  return item?.paused === true && ![
+    "provider-thread-active", "provider-temporarily-unavailable",
+  ].includes(String(item?.waitReason ?? ""));
+}
+
 export class DeferredInputController {
   constructor({
     pendingInputs,
@@ -153,7 +159,7 @@ export class DeferredInputController {
       }
     }
     if (!activeSteer) {
-      const oldest = this.oldestForTask(item, { includePending: true });
+      const oldest = this.oldestForTask(item, { includePending: true, runnableOnly: true });
       if (oldest?.id !== id) {
         if (this.pendingInputs.has(oldest?.id)) {
           const released = await this.releaseResolvedTaskConflict(oldest);
@@ -512,7 +518,7 @@ export class DeferredInputController {
     return this.laneKey(item);
   }
 
-  oldestForTask(item, { includePending = false } = {}) {
+  oldestForTask(item, { includePending = false, runnableOnly = false } = {}) {
     const key = this.taskKey(item);
     let oldest = null;
     let oldestAt = Number.POSITIVE_INFINITY;
@@ -521,6 +527,7 @@ export class DeferredInputController {
       : this.queuedInputs.values();
     for (const candidate of candidates) {
       if (this.taskKey(candidate) !== key) continue;
+      if (runnableOnly && this.queuedInputs.has(candidate.id) && intentionallyPaused(candidate)) continue;
       const order = Number(candidate.queueOrder);
       const parsed = Date.parse(String(candidate.createdAt ?? ""));
       const candidateAt = Number.isFinite(order)
@@ -535,7 +542,7 @@ export class DeferredInputController {
   }
 
   scheduleNextForTask(item) {
-    const next = this.oldestForTask(item);
+    const next = this.oldestForTask(item, { runnableOnly: true });
     if (next) this.schedule(next, 0);
   }
 
@@ -551,9 +558,9 @@ export class DeferredInputController {
       else this.schedule(candidate, 0);
       scheduled = true;
     }
-    const oldest = this.oldestForTask(target, { includePending: true });
+    const oldest = this.oldestForTask(target, { includePending: true, runnableOnly: true });
     const trigger = this.pendingInputs.has(oldest?.id)
-      ? this.oldestForTask(target)
+      ? this.oldestForTask(target, { runnableOnly: true })
       : oldest;
     if (!trigger) return scheduled;
     if (this.processing.has(trigger.id)) trigger.recheckRequested = true;
