@@ -1144,7 +1144,11 @@ function receiptHasAuthoritativeProviderAcceptance(receipt) {
 function queueHistoryReceiptProjection(receipt) {
   const base = messageReceiptProjection(receipt);
   const providerAccepted = receiptHasAuthoritativeProviderAcceptance(receipt);
+  const immediateIntake = !providerAccepted
+    && receipt?.accepted === true
+    && String(receipt?.reason ?? receipt?.conflictKind ?? "").trim() === "message-intake";
   const ownsQueue = !providerAccepted
+    && !immediateIntake
     && receipt?.cancelled !== true
     && receipt?.rejected !== true
     && receipt?.failed !== true
@@ -1158,17 +1162,21 @@ function queueHistoryReceiptProjection(receipt) {
     );
   const deliveryState = providerAccepted
     ? "accepted"
-    : ownsQueue
-      ? receipt?.dispatching === true ? "sending"
-        : receipt?.steerPending === true ? "steering"
-          : receipt?.queued === true ? "queued" : "deferred"
-      : base.deliveryState;
+    : immediateIntake
+      ? "accepted"
+      : ownsQueue
+        ? receipt?.dispatching === true ? "sending"
+          : receipt?.steerPending === true ? "steering"
+            : receipt?.queued === true ? "queued" : "deferred"
+        : base.deliveryState;
   return {
     ...base,
     providerAccepted,
     ownsDeferredQueue: ownsQueue,
     deliveryState,
-    projectionState: ownsQueue ? "queued" : providerAccepted ? "active" : "unknown",
+    projectionState: ownsQueue
+      ? "queued"
+      : providerAccepted ? "active" : immediateIntake ? "optimistic" : "unknown",
   };
 }
 
@@ -1198,7 +1206,8 @@ function deferredInputDeliveryState(deferredInput, messageReceipts = []) {
 function queuedCommandUsesQueue(deferredInput, messageReceipts = []) {
   const state = String(deferredInput?.state ?? "").trim();
   const receipt = deferredInputReceipt(deferredInput, messageReceipts);
-  if (receiptHasAuthoritativeProviderAcceptance(receipt)) return false;
+  if (receipt) return queueHistoryReceiptProjection(receipt).ownsDeferredQueue;
+  if (String(deferredInput?.conflictKind ?? "").trim() === "message-intake") return false;
   return [
     "pending",
     "queued",
@@ -1207,8 +1216,7 @@ function queuedCommandUsesQueue(deferredInput, messageReceipts = []) {
     "paused",
     "attention-required",
     "unknown",
-  ].includes(state)
-    || queueHistoryReceiptProjection(receipt).ownsDeferredQueue;
+  ].includes(state);
 }
 
 function queuedCommandDeliveryState(deferredInput, messageReceipts = []) {
@@ -1228,11 +1236,31 @@ function queuedCommandClientUserMessageIds(deferredInputs, messageReceipts = [])
     .filter(Boolean);
 }
 
+function deferredInputConversationProjection(deferredInput, messageReceipts = []) {
+  const clientUserMessageId = deferredClientMessageId(deferredInput);
+  if (!clientUserMessageId || queuedCommandUsesQueue(deferredInput, messageReceipts)) return null;
+  if (String(deferredInput?.conflictKind ?? "").trim() !== "message-intake") return null;
+  return {
+    clientUserMessageId,
+    submissionId: clientUserMessageId,
+    projectionState: "optimistic",
+    providerAccepted: false,
+    deliveryState: "accepted",
+    submittedAt: deferredInput?.createdAt ?? null,
+  };
+}
+
+function optimisticSubmissionUsesQueue({ followUpMode = "", deferWhileRunning = false } = {}) {
+  return ["queue", "steer"].includes(String(followUpMode ?? "").trim())
+    || deferWhileRunning === true;
+}
+
 function messageAwaitsProviderAcceptance(message) {
   if (message?.role !== "user" || message?.providerAccepted === true) return false;
   const projectionState = String(message?.projectionState ?? "").trim();
   if (["active", "completed", "failed", "cancelled"].includes(projectionState)) return false;
-  if (["optimistic", "queued", "unknown"].includes(projectionState)) return true;
+  if (projectionState === "optimistic") return false;
+  if (["queued", "unknown"].includes(projectionState)) return true;
   return [
     "preparing",
     "sending",
@@ -1630,6 +1658,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   contextProbeRun,
   conversationMessageAuthor,
   deduplicateConversationMessages,
+  deferredInputConversationProjection,
   displayedFinalAcknowledgement,
   embeddedResponseAnnotations,
   hubErrorMessage,
@@ -1659,6 +1688,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   queuedCommandDeliveryState,
   queuedCommandUsesQueue,
   providerAcceptedHistoryClientUserMessageIds,
+  optimisticSubmissionUsesQueue,
   receiptHasAuthoritativeProviderAcceptance,
   runHasAuthoritativeProviderAcceptance,
   mergeDeferredQueueEntries,

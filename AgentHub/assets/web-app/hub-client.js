@@ -136,6 +136,7 @@ const {
   confirmedOutgoingMessageIds,
   conversationMessageAuthor,
   deduplicateConversationMessages,
+  deferredInputConversationProjection,
   displayedFinalAcknowledgement,
   focusedTurnAlreadyVisible,
   focusedTurnTaskThreadId,
@@ -160,6 +161,7 @@ const {
   queuedCommandDeliveryState,
   queuedCommandUsesQueue,
   providerAcceptedHistoryClientUserMessageIds,
+  optimisticSubmissionUsesQueue,
   runHasAuthoritativeProviderAcceptance,
   mergeLiveMaintenance,
   mergeReconciledUserMessage,
@@ -673,6 +675,57 @@ function renderTaskQueue(taskIdValue, snapshot = lastSnapshot) {
     serverEntries,
     optimisticDeferredEntries(taskIdValue, serverEntries),
   ));
+}
+
+function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
+  const projection = deferredInputConversationProjection(deferred, messageReceipts);
+  if (!projection) return false;
+  const stableTaskId = taskId(deferred.provider, deferred.threadId, deferred.streamId);
+  const messages = outgoingMessages(stableTaskId);
+  const responseAnnotations = normalizedResponseAnnotations(deferred.annotations);
+  const text = String(deferred.text ?? deferred.preview ?? "");
+  const attachments = attachmentViews(deferred.attachments);
+  if (!text.trim() && !responseAnnotations.length && !attachments.length) return false;
+  optimisticDeferredClientUserMessageIds.delete(projection.clientUserMessageId);
+  deferredClientUserMessageIds.delete(projection.clientUserMessageId);
+  const existing = messages.get(projection.clientUserMessageId);
+  if (existing) {
+    Object.assign(existing, {
+      projectionAuthority: "canonical",
+      projectionState: projection.projectionState,
+      providerAccepted: projection.providerAccepted,
+      ...deliveryPatch(projection.deliveryState),
+      ...(!existing.submittedAt && projection.submittedAt
+        ? { submittedAt: projection.submittedAt }
+        : {}),
+      ...(!existing.time && projection.submittedAt ? { time: projection.submittedAt } : {}),
+    });
+  } else {
+    rememberOutgoing(stableTaskId, {
+      id: `local:${projection.clientUserMessageId}`,
+      provider: String(deferred.provider ?? ""),
+      threadId: String(deferred.threadId ?? ""),
+      streamId: String(deferred.streamId ?? ""),
+      turnId: "",
+      itemId: projection.clientUserMessageId,
+      clientUserMessageId: projection.clientUserMessageId,
+      submissionId: projection.submissionId,
+      operationKind: "user-turn",
+      projectionAuthority: "canonical",
+      projectionState: projection.projectionState,
+      providerAccepted: projection.providerAccepted,
+      role: "user",
+      author: String(deferred.author ?? "").trim() || "Вы",
+      text,
+      responseAnnotations,
+      responseAnnotationRequest: String(deferred.responseAnnotationRequest ?? text),
+      submittedAt: projection.submittedAt,
+      time: projection.submittedAt,
+      attachments,
+      ...deliveryPatch(projection.deliveryState),
+    });
+  }
+  return true;
 }
 
 function applyMessageReceipts(snapshot) {
@@ -1952,7 +2005,10 @@ function applySnapshot(snapshot, { materialized = false } = {}) {
         deferred,
         snapshot.messageReceipts,
       );
-      if (!deferredDeliveryState) continue;
+      if (!deferredDeliveryState) {
+        restoreImmediateIntakeMessage(deferred, snapshot.messageReceipts);
+        continue;
+      }
       patchOutgoing(
         taskId(deferred.provider, deferred.threadId, deferred.streamId),
         clientUserMessageId,
@@ -2625,6 +2681,7 @@ agentHub.on("message:send", (request) => {
   const queuesOptimistically = request.followUpMode === "queue"
     || request.deferWhileRunning === true;
   const steersOptimistically = request.followUpMode === "steer" && !queuesOptimistically;
+  const usesQueueOptimistically = optimisticSubmissionUsesQueue(request);
   const visibleText = String(request.text ?? "").trim()
     || ((request.annotations ?? []).length
       ? `Аннотации к ответу: ${(request.annotations ?? []).length}`
@@ -2639,7 +2696,7 @@ agentHub.on("message:send", (request) => {
     submissionId: request.requestId,
     operationKind: "user-turn",
     projectionAuthority: "optimistic",
-    projectionState: "queued",
+    projectionState: usesQueueOptimistically ? "queued" : "optimistic",
     providerAccepted: false,
     role: "user",
     author: "Вы",
@@ -2652,9 +2709,11 @@ agentHub.on("message:send", (request) => {
     ...deliveryPatch(queuesOptimistically ? "sending" : steersOptimistically ? "steering" : "preparing"),
   };
   rememberOutgoing(request.taskId, optimistic);
-  optimisticDeferredClientUserMessageIds.add(request.requestId);
-  deferredClientUserMessageIds.add(request.requestId);
-  renderOutgoingWithoutBlockingSend(request.taskId, { queue: true });
+  if (usesQueueOptimistically) {
+    optimisticDeferredClientUserMessageIds.add(request.requestId);
+    deferredClientUserMessageIds.add(request.requestId);
+  }
+  renderOutgoingWithoutBlockingSend(request.taskId, { queue: usesQueueOptimistically });
   return runAction(() => sendTransaction.run({
     send: async () => {
       if (request.draftStream) {
@@ -2690,14 +2749,14 @@ agentHub.on("message:send", (request) => {
       if (!paths.length) {
         for (const attachment of request.attachments ?? []) paths.push(await uploadAttachment(attachment));
         updateOutgoing(request.taskId, request.requestId, { uploadedPaths: paths.slice() });
-        renderOutgoingWithoutBlockingSend(request.taskId, { queue: true });
+        renderOutgoingWithoutBlockingSend(request.taskId, { queue: usesQueueOptimistically });
       }
       updateOutgoing(
         request.taskId,
         request.requestId,
         deliveryPatch(queuesOptimistically ? "sending" : steersOptimistically ? "steering" : "sending"),
       );
-      renderOutgoingWithoutBlockingSend(request.taskId, { queue: true });
+      renderOutgoingWithoutBlockingSend(request.taskId, { queue: usesQueueOptimistically });
       const params = {
         text: annotatedText(request.text, request.annotations),
         displayText: visibleText,

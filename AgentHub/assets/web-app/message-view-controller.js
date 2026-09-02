@@ -191,7 +191,8 @@
     if (message?.role !== "user" || message?.providerAccepted === true) return false;
     const projectionState = String(message?.projectionState ?? "").trim();
     if (["active", "completed", "failed", "cancelled"].includes(projectionState)) return false;
-    if (["optimistic", "queued", "unknown"].includes(projectionState)) return true;
+    if (projectionState === "optimistic") return false;
+    if (["queued", "unknown"].includes(projectionState)) return true;
     return [
       "preparing",
       "sending",

@@ -23,26 +23,30 @@ set `clientUserMessageId + submissionId`; either alias binds the optimistic and
 canonical forms without using text, time or display order. Provider turns are
 keyed by `provider + threadId + turnId`; item entities additionally include
 `itemId + role`. Canonical intake atomically replaces its optimistic projection.
-Before provider acceptance, optimistic, durable queued, dispatching, ambiguous
-and attention-required forms are rendered only by the queue surface above the
-composer. A Hub durable ACK confirms storage and idempotency; it is not provider
-acceptance and does not create a conversation card. `accepted=true` combined
-with `deferred=true`, `queued=true`, `dispatching=true` or
-`steerPending=true` therefore remains queue-owned.
+When the client snapshot says the Stream is idle, the exact submission is
+rendered immediately as one optimistic conversation card. A durable
+`message-intake` ACK keeps that same card visible through dispatch and labels it
+`Принято`, never `В очереди`. The durable deferred row with
+`conflictKind=message-intake` preserves that placement when the bounded receipt
+is absent during reload or reconciliation.
 
-The conversation card appears only after exact provider acceptance. For a new
-turn that requires the exact command identity plus `runId + turnId`; for a
-steer it requires `steered=true` plus the exact target `turnId`. An active run
-snapshot is accepted only when `run.turnId` equals
+When the client snapshot says the Stream is busy, queue and steer submissions
+are rendered only by the queue surface above the composer. Durable queued,
+dispatching, ambiguous and attention-required forms remain queue-owned until
+exact provider acceptance. A new turn requires the exact command identity plus
+`runId + turnId`; a steer requires `steered=true` plus the exact target
+`turnId`. An active run snapshot is accepted only when `run.turnId` equals
 `run.providerStart.turnId` and provider-start state is
-`accepted-awaiting-first-event` or `observed`. Queue, active and history
-projections reuse the same `clientUserMessageId` and cannot create a second
-card.
+`accepted-awaiting-first-event` or `observed`. Optimistic, queue, active and
+history projections reuse the same `clientUserMessageId` and cannot create a
+second card.
 
 Direct ACK, remote-result reconciliation and snapshot reconciliation use the
-same classifier. Receipt snapshots are bounded, so any unresolved durable input
-record remains queue-owned even after its receipt leaves the current window;
-`conflictKind`, text, time and display order cannot promote it into history.
+same classifier. Receipt snapshots are bounded. Exact
+`conflictKind=message-intake` preserves an already accepted idle optimistic card
+after its receipt leaves the current window; every other unresolved durable
+input remains queue-owned. Text, time and display order cannot choose the
+surface or promote a command into history.
 The server applies exact turn-receipt aliases before exposing active or durable
 user items, so a root or steer cannot coexist with its accepted optimistic card.
 Service-only attachment wrappers such as `<image ...>` are removed from both the

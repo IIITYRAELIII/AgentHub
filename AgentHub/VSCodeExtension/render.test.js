@@ -1603,16 +1603,14 @@ test("chat sends with Enter on desktop and keeps Enter as a newline on phones", 
   assert.doesNotMatch(html, /Ctrl\+Enter/u);
 });
 
-  test("chat keeps unaccepted sends in the queue and reconciles accepted history by exact identity", () => {
+  test("chat reconciles optimistic and accepted history by exact identity", () => {
     const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
     const lifecycle = fs.readFileSync(require.resolve("../assets/web-app/messages/lifecycle.js"), "utf8");
     assert.match(client, /rememberOutgoing\(request\.taskId, optimistic\);/u);
     assert.match(client, /const queuesOptimistically = request\.followUpMode === "queue"/u);
     assert.match(client, /optimisticDeferredClientUserMessageIds\.add\(request\.requestId\)/u);
   assert.match(client, /\.\.\.deliveryPatch\(queuesOptimistically \? "sending" : steersOptimistically \? "steering" : "preparing"\)/u);
-  assert.match(client, /projectionState: "queued"/u);
   assert.match(client, /providerAccepted: false/u);
-  assert.match(client, /renderOutgoingWithoutBlockingSend\(request\.taskId, \{ queue: true \}\)/u);
   assert.match(client, /clientUserMessageId: request\.requestId/u);
   assert.match(client, /reconcileMessageLifecycle\(serverMessages, outgoing\)/u);
   assert.match(client, /if \(!matchedIds\.has\(message\.clientUserMessageId\)\) result\.push\(message\)/u);

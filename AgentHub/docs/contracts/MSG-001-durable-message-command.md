@@ -25,11 +25,14 @@ permission to create a second effect.
 Transitions are monotonic and idempotent. A canonical record atomically replaces
 its optimistic projection by the same identity.
 
-Hub acceptance and provider acceptance are distinct boundaries. Durable ACK may
-return while the command is queued or dispatching, but those states and
-`attention-required` remain on the queue-management surface. Conversation
-history begins only after exact provider acceptance; the later active and
-terminal projections reuse the original `clientUserMessageId`.
+Hub acceptance and provider acceptance are distinct boundaries. A submission
+made from an exact idle client snapshot may have one optimistic conversation
+projection before provider acceptance; its durable `message-intake` ACK keeps
+that same entity visible and never labels it queued. A submission made while
+the client knows the Stream is busy, plus ambiguous and `attention-required`
+commands, remains on the queue-management surface until exact provider
+acceptance. Later active and terminal projections reuse the original
+`clientUserMessageId` in both paths.
 
 ## Occupancy and ordering
 
