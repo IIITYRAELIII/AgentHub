@@ -352,7 +352,7 @@ test("same Thread success after recovery does not trigger another rebind", async
   assert.deepEqual(state.reloads, ["reload"]);
 });
 
-test("failed transport rebind still wakes the queued lane with a bounded recovery state", async () => {
+test("failed transport rebind reports deferred recovery and keeps aggregate replay blocked", async () => {
   const wakes = [];
   const stages = [];
   const logs = [];
@@ -366,12 +366,19 @@ test("failed transport rebind still wakes the queued lane with a bounded recover
 
   const result = await service.observe({
     method: "item/completed",
-    item: failedItem("hub_task_get"),
+    item: dynamicItem(`
+      await tools.mcp__agent_hub__hub_task_claim({ request_id: "claim-exact" });
+      await tools.mcp__agent_hub__hub_stream_message_send({ text: "missing identity" });
+    `),
     run: { id: "run-1" },
   });
 
   assert.equal(result.recovered, false);
+  assert.equal(result.aggregateOutcome, "replay-blocked-identity");
   assert.deepEqual(wakes, ["wake"]);
   assert.match(stages[0], /rebind failed/u);
+  assert.match(stages[0], /transport recovery is deferred/u);
+  assert.match(stages[0], /entire composed call is blocked/u);
+  assert.doesNotMatch(stages[0], /transport recovered/u);
   assert.equal(logs.some((entry) => entry.includes("bridge-reload-failed")), true);
 });

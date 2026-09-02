@@ -200,23 +200,27 @@ function aggregateOutcome(results) {
   return "read-retry-safe";
 }
 
-function recoveryStage(outcome) {
+function replayAdvice(outcome) {
   if (outcome === "replay-blocked-identity") {
-    return "Agent Hub MCP transport recovered; replay of the entire composed call is blocked because at least one mutation identity is missing or ambiguous.";
+    return "Replay of the entire composed call is blocked because at least one mutation identity is missing or ambiguous.";
   }
   if (outcome === "replay-blocked-reconciliation") {
-    return "Agent Hub MCP transport recovered; mutation audit reconciliation is unavailable, so replay is blocked until authoritative readback succeeds.";
+    return "Mutation audit reconciliation is unavailable, so replay is blocked until authoritative readback succeeds.";
   }
   if (outcome === "replay-blocked-pending") {
-    return "Agent Hub MCP transport recovered; mutation outcome is pending. Reconcile with the same request_id.";
+    return "Mutation outcome is pending. Reconcile with the same request_id.";
   }
   if (outcome === "replay-blocked-authoritative") {
-    return "Agent Hub MCP transport recovered; the mutation has an authoritative audited outcome and must not be repeated.";
+    return "The mutation has an authoritative audited outcome and must not be repeated.";
   }
   if (outcome === "same-identity-retry-safe") {
-    return "Agent Hub MCP transport recovered; the mutation did not reach admission and may be retried with the same request_id.";
+    return "The mutation did not reach admission and may be retried with the same request_id.";
   }
-  return "Agent Hub MCP transport recovered; the read-only call may be retried safely.";
+  return "The read-only call may be retried safely.";
+}
+
+function recoveredStage(outcome) {
+  return `Agent Hub MCP transport recovered; ${replayAdvice(outcome)}`;
 }
 
 export class CodexHubMcpBridgeRecovery {
@@ -269,10 +273,10 @@ export class CodexHubMcpBridgeRecovery {
         error: String(error?.message ?? error).slice(0, 500),
       }, true);
     }
-    const outcomeStage = recoveryStage(recoveryOutcome);
+    const outcomeAdvice = replayAdvice(recoveryOutcome);
     const stage = reloadError
-      ? `Agent Hub MCP call reached its client deadline, but transport rebind failed. The queued lane was woken and transport recovery may be retried. ${outcomeStage}`
-      : outcomeStage;
+      ? `Agent Hub MCP call reached its client deadline, but transport rebind failed. The queued lane was woken and transport recovery is deferred. ${outcomeAdvice}`
+      : recoveredStage(recoveryOutcome);
     if (run) this.setStage(run, stage);
     this.wakeDeferredInputs();
     for (const result of results) this.#trace(reloadError ? "bridge-recovery-deferred" : "bridge-recovered", result);

@@ -14,6 +14,12 @@ A failed dynamic `functions.exec` call that contains an `agent_hub` MCP call
 reloads the Codex MCP transport before a later attempt and wakes durable input
 lanes. Read-only calls are safe to retry after that rebind.
 
+Recovery presentation distinguishes transport state from aggregate replay
+policy. A successful rebind may report that the transport recovered. A failed
+rebind reports deferred transport recovery, wakes the durable lane once and
+retains the same aggregate replay policy, but never reports the transport as
+recovered.
+
 Explicit successful/completed App Server items are terminal success before any
 payload inspection. Ordinary result, output and content text never becomes a
 transport failure merely because it contains words such as `timeout`, `socket`
