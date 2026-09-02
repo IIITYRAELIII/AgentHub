@@ -272,44 +272,6 @@ html[data-view="chat"][data-surface][data-theme] {
   width: 100%;
 }
 
-/* Движущийся эффект часть цикла находится за пределами компактной вкладки.
-   Отдельный внутренний слой оставляет спокойную постоянную отметку, не
-   возвращая тяжёлую тематическую рамку самой карточке. */
-.stream-tabs-track .stream-tab-status-marker {
-  align-items: center;
-  display: inline-flex;
-  gap: 2px;
-  height: 5px;
-  pointer-events: none;
-  position: absolute;
-  right: 1px;
-  top: 3px;
-  z-index: 2;
-}
-
-&[data-stream-status-effect]:not([data-stream-status-effect="off"])
-  .stream-tabs-track .stream-tab[data-running] .stream-tab-status-marker::before,
-&[data-stream-status-effect]:not([data-stream-status-effect="off"])
-  .stream-tabs-track .stream-tab[data-answer-ready] .stream-tab-status-marker::after {
-  border-radius: 50%;
-  content: "";
-  flex: 0 0 5px;
-  height: 5px;
-  width: 5px;
-}
-
-&[data-stream-status-effect]:not([data-stream-status-effect="off"])
-  .stream-tabs-track .stream-tab[data-running] .stream-tab-status-marker::before {
-  background: color-mix(in srgb, var(--accent) 72%, transparent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 16%, transparent);
-}
-
-&[data-stream-status-effect]:not([data-stream-status-effect="off"])
-  .stream-tabs-track .stream-tab[data-answer-ready] .stream-tab-status-marker::after {
-  background: var(--accent);
-  box-shadow: 0 0 5px color-mix(in srgb, var(--accent) 62%, transparent);
-}
-
 .stream-tabs-track .stream-tab-card:has(> .stream-tab-pin-icon) {
   grid-template-columns: 7px 13px minmax(0, 1fr) max-content;
 }
