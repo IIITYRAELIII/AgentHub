@@ -11,7 +11,7 @@ import {
 } from "../../domain/interstream-message.mjs";
 
 const FORMAT_VERSION = 1;
-const TASK_SCHEMA_VERSION = 8;
+const TASK_SCHEMA_VERSION = 9;
 const MODEL_BACKFILL_VERSION = "1";
 const SUBAGENT_MODEL_BACKFILL_VERSION = "1";
 const SEARCH_BACKFILL_VERSION = "3";
@@ -67,6 +67,14 @@ function cleanResponseAnnotations(annotations) {
       annotation: cleanText(annotation?.annotation ?? annotation?.comment, 4_000),
     }))
     .filter((annotation) => annotation.text || annotation.annotation);
+}
+
+function cleanResponseAnnotationReferences(references) {
+  return (Array.isArray(references) ? references : [])
+    .slice(0, 20)
+    .map((reference) => Number(reference?.index))
+    .filter((index) => Number.isSafeInteger(index) && index > 0)
+    .map((index) => ({ index }));
 }
 
 function cleanActivities(activities) {
@@ -241,6 +249,13 @@ function cleanHistory(history, limit, { provider = "" } = {}) {
             ...(message?.phase ? { phase: cleanText(message.phase, 40) } : {}),
             ...(message?.time ? { time: cleanText(message.time, 80) } : {}),
             responseAnnotations: cleanResponseAnnotations(message?.responseAnnotations),
+            ...(cleanResponseAnnotationReferences(message?.responseAnnotationReferences).length
+              ? {
+                responseAnnotationReferences: cleanResponseAnnotationReferences(
+                  message.responseAnnotationReferences,
+                ),
+              }
+              : {}),
             ...(cleanText(message?.responseAnnotationRequest, 12_000)
               ? { responseAnnotationRequest: cleanText(message.responseAnnotationRequest, 12_000) }
               : {}),
@@ -511,6 +526,7 @@ function configure(database) {
       time TEXT,
       response_annotations_json TEXT NOT NULL DEFAULT '[]',
       response_annotation_request TEXT NOT NULL DEFAULT '',
+      response_annotation_references_json TEXT NOT NULL DEFAULT '[]',
       attachments_json TEXT NOT NULL,
       PRIMARY KEY (provider, thread_id, turn_position, position),
       FOREIGN KEY (provider, thread_id, turn_position)
@@ -600,6 +616,9 @@ function configure(database) {
   }
   if (!messageColumns.has("response_annotation_request")) {
     database.exec("ALTER TABLE task_read_model_messages ADD COLUMN response_annotation_request TEXT NOT NULL DEFAULT ''");
+  }
+  if (!messageColumns.has("response_annotation_references_json")) {
+    database.exec("ALTER TABLE task_read_model_messages ADD COLUMN response_annotation_references_json TEXT NOT NULL DEFAULT '[]'");
   }
   if (!turnColumns.has("prompt_author")) {
     database.exec("ALTER TABLE task_read_model_turns ADD COLUMN prompt_author TEXT NOT NULL DEFAULT ''");
@@ -985,6 +1004,9 @@ export class LocalTaskSyncStore {
         ...(row.phase ? { phase: String(row.phase) } : {}),
         ...(row.time ? { time: String(row.time) } : {}),
         responseAnnotations: parseJsonArray(row.response_annotations_json),
+        ...(parseJsonArray(row.response_annotation_references_json).length
+          ? { responseAnnotationReferences: parseJsonArray(row.response_annotation_references_json) }
+          : {}),
         ...(row.response_annotation_request
           ? { responseAnnotationRequest: String(row.response_annotation_request) }
           : {}),
@@ -1244,8 +1266,9 @@ export class LocalTaskSyncStore {
       INSERT INTO task_read_model_messages (
         provider, thread_id, turn_position, position, item_id,
         client_user_message_id, role, text, author, kind, agent_thread_id, model, phase, time,
-        origin_json, response_annotations_json, response_annotation_request, attachments_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        origin_json, response_annotations_json, response_annotation_request,
+        response_annotation_references_json, attachments_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     history.forEach((turn, turnPosition) => {
       insertTurn.run(
@@ -1287,6 +1310,7 @@ export class LocalTaskSyncStore {
           JSON.stringify(message.origin ?? {}),
           JSON.stringify(message.responseAnnotations),
           message.responseAnnotationRequest ?? "",
+          JSON.stringify(message.responseAnnotationReferences ?? []),
           JSON.stringify(message.attachments),
         );
       });

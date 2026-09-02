@@ -264,6 +264,11 @@ test("local task sync preserves durable message metadata and attachments", async
           description: "не должно сохраняться во вложении",
         },
       ],
+    }, {
+      itemId: "agent-1",
+      role: "agent",
+      text: "Цитата 1\nВижу",
+      responseAnnotationReferences: [{ index: 1 }],
     }],
   }]);
   await store.save();
@@ -284,6 +289,7 @@ test("local task sync preserves durable message metadata and attachments", async
     { text: "Цитата из ответа", annotation: "Почему так?" },
   ]);
   assert.equal(entry.messages[0].responseAnnotationRequest, "Почему так?");
+  assert.deepEqual(entry.messages[1].responseAnnotationReferences, [{ index: 1 }]);
   assert.deepEqual(entry.messages[0].attachments, [
     { id: "screen.png", name: "screen.png", type: "image/png" },
     {

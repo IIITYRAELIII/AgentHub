@@ -1073,7 +1073,7 @@ test("rollout activity preserves a final answer longer than forty thousand chara
   assert.equal(activity.finalMessages["long-final"], finalAnswer);
 });
 
-test("rollout history projects marker-free Codex answers and structured annotations", () => {
+test("rollout history projects readable Codex citations and structured annotations", () => {
   const turnId = "annotation-turn";
   const annotationPrompt = [
     "# Response annotations:",
@@ -1100,8 +1100,9 @@ test("rollout history projects marker-free Codex answers and structured annotati
     }),
   ].join("\n"));
 
-  assert.equal(activity.latestMessages[turnId], "Готово");
-  assert.equal(activity.finalMessages[turnId], "Готово");
+  assert.equal(activity.latestMessages[turnId], "Цитата 1\nГотово");
+  assert.equal(activity.finalMessages[turnId], "Цитата 1\nГотово");
+  assert.deepEqual(activity.responseAnnotationReferences[turnId], [{ index: 1 }]);
   assert.deepEqual(activity.userMessages[turnId][0].responseAnnotations, [
     { text: "Фрагмент", annotation: "Почему?" },
   ]);

@@ -72,6 +72,7 @@ export class ManagedRunHistoryService {
         clientUserMessageId: run.clientUserMessageId,
         userMessages: run.userMessages,
         responseItemId: run.responseItemId,
+        responseAnnotationReferences: run.responseAnnotationReferences,
         activities: run.activities,
         activityGroups: run.activityGroups,
         startedAt: run.startedAt,
@@ -103,6 +104,12 @@ export class ManagedRunHistoryService {
           ));
           if (existing) {
             existing.text = current.answer || existing.text || "Изображение";
+            if (Array.isArray(run.responseAnnotationReferences)
+              && run.responseAnnotationReferences.length) {
+              existing.responseAnnotationReferences = structuredClone(
+                run.responseAnnotationReferences,
+              );
+            }
             existing.time = current.completedAt ?? existing.time;
             if (responseAttachments.length) existing.attachments = responseAttachments;
           } else {
@@ -110,6 +117,10 @@ export class ManagedRunHistoryService {
               itemId,
               role: "agent",
               text: current.answer || "Изображение",
+              ...(Array.isArray(run.responseAnnotationReferences)
+                && run.responseAnnotationReferences.length
+                ? { responseAnnotationReferences: structuredClone(run.responseAnnotationReferences) }
+                : {}),
               ...(responseAttachments.length ? { attachments: responseAttachments } : {}),
               ...(current.completedAt ? { time: current.completedAt } : {}),
             });

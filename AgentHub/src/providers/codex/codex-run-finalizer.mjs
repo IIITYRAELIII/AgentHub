@@ -121,6 +121,9 @@ export class CodexRunFinalizer {
       clientUserMessageId: run.clientUserMessageId ?? null,
       userMessages: run.userMessages,
       finalAnswer: String(answer ?? "").trim(),
+      responseAnnotationReferences: tracker.responseAnnotationReferences
+        ?? run.responseAnnotationReferences
+        ?? [],
       responseAttachments,
       changedFiles: exactRunChangedFiles(run),
       diff: run.latestDiff ?? "",
@@ -172,6 +175,9 @@ export class CodexRunFinalizer {
     run.responseText = String(
       committed.terminal?.finalAnswer ?? completion.finalAnswer ?? answer ?? "",
     ).trim();
+    run.responseAnnotationReferences = structuredClone(
+      completion.responseAnnotationReferences ?? run.responseAnnotationReferences ?? [],
+    );
     run.terminalRevision = Number(committed.terminal?.terminalRevision) || null;
     await this.markRunCompleted(run);
     this.turnStarts.delete(startKey);

@@ -145,7 +145,8 @@ test("Codex terminal reconciliation removes only provider annotation markers", (
   ].join("\n");
 
   const result = codexTurnUsageFromJsonl(text, "turn-annotation");
-  assert.equal(result.finalAnswer, "Проверено");
+  assert.equal(result.finalAnswer, "Цитата 1\nПроверено");
+  assert.deepEqual(result.responseAnnotationReferences, [{ index: 1 }]);
   assert.match(result.prompt, /Проверь/u);
 });
 
