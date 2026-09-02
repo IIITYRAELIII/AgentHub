@@ -383,9 +383,6 @@ function stateFromEvidence({ pending, queued, run, receipt }) {
   if (pending) return "attention-required";
   if (result?.dispatching === true) return "dispatching";
   if (result?.deferred === true) return result?.queued === true ? "queued" : "attention-required";
-  if (result?.started === true || (result?.accepted === true && (result?.runId || result?.turnId))) {
-    return "started";
-  }
   return null;
 }
 

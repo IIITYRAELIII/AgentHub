@@ -311,6 +311,88 @@ test("provider admission stays dispatching until the provider accepts an exact t
   assert.equal(store.get(command.item.clientUserMessageId).state, "dispatching");
 });
 
+for (const [label, result] of [
+  ["started without provider identities", {
+    accepted: true,
+    started: true,
+    runId: null,
+    turnId: null,
+  }],
+  ["accepted with runId but without turnId", {
+    accepted: true,
+    started: false,
+    runId: "receipt-run-only",
+    turnId: null,
+  }],
+  ["accepted with turnId but without a matching run", {
+    accepted: true,
+    started: true,
+    runId: null,
+    turnId: "receipt-turn-only",
+  }],
+]) {
+  test(`receipt-only ${label} cannot promote a queued command to started`, async (context) => {
+    const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-message-ledger-receipt-only-"));
+    const store = new MessageCommandLedgerStore({ dataDir });
+    context.after(async () => {
+      store.close();
+      await rm(dataDir, { recursive: true, force: true });
+    });
+    const command = messageCommandFixture({
+      clientUserMessageId: `message-${label.replaceAll(" ", "-")}`,
+      fingerprint: `fingerprint-${label.replaceAll(" ", "-")}`,
+      receipt: { result },
+    });
+    store.accept({ ...command, destination: "queued" });
+
+    const projected = store.projectSnapshot({ desktopMessageReceipts: [command.receipt] });
+
+    assert.deepEqual(projected, { scanned: 1, changed: 0 });
+    assert.equal(store.get(command.item.clientUserMessageId).state, "queued");
+  });
+}
+
+test("an exact accepted provider turn promotes its matching queued command to started", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-message-ledger-exact-acceptance-"));
+  const store = new MessageCommandLedgerStore({ dataDir });
+  context.after(async () => {
+    store.close();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  const command = messageCommandFixture({
+    clientUserMessageId: "message-exact-provider-acceptance",
+    fingerprint: "fingerprint-exact-provider-acceptance",
+    receipt: {
+      result: {
+        accepted: true,
+        started: true,
+        runId: "run-exact",
+        turnId: "turn-exact",
+      },
+    },
+  });
+  store.accept({ ...command, destination: "queued" });
+
+  store.projectSnapshot({
+    desktopMessageReceipts: [command.receipt],
+    activeRuns: [{
+      id: "run-exact",
+      clientUserMessageId: command.item.clientUserMessageId,
+      streamId: "stream-1",
+      provider: "codex",
+      threadId: "thread-1",
+      turnId: "turn-exact",
+      status: "running",
+      providerStart: {
+        state: "accepted-awaiting-first-event",
+        turnId: "turn-exact",
+      },
+    }],
+  });
+
+  assert.equal(store.get(command.item.clientUserMessageId).state, "started");
+});
+
 test("startup returns a legacy pre-acceptance phantom start to explicit attention", async (context) => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-message-ledger-phantom-start-"));
   let store = new MessageCommandLedgerStore({ dataDir });
