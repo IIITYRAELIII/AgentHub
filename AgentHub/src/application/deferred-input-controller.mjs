@@ -247,6 +247,7 @@ export class DeferredInputController {
       delete item.blockedChecks;
       // Keep the input durable while launch is in progress, but expose the
       // transition so clients no longer render it as waiting in the queue.
+      delete item.laneReleased;
       item.dispatchingAt = new Date(this.now()).toISOString();
       this.onStateChange(item, "dispatching");
       await this.persist();
@@ -308,6 +309,7 @@ export class DeferredInputController {
         }
         delete item.waitReason;
         item.lastError = String(error.message ?? error);
+        item.laneReleased = true;
         this.queuedInputs.delete(id);
         this.pendingInputs.set(id, item);
         this.onStateChange(item, "pending", error);
@@ -318,6 +320,7 @@ export class DeferredInputController {
           this.pendingKeyboard(item),
         );
         await this.notifyReturned(item);
+        this.scheduleNextForTask(item);
         return;
       }
       this.queuedInputs.delete(id);
@@ -520,6 +523,7 @@ export class DeferredInputController {
       ? [...this.pendingInputs.values(), ...this.queuedInputs.values()]
       : this.queuedInputs.values();
     for (const candidate of candidates) {
+      if (this.pendingInputs.has(candidate.id) && candidate.laneReleased === true) continue;
       if (this.taskKey(candidate) !== key) continue;
       const order = Number(candidate.queueOrder);
       const parsed = Date.parse(String(candidate.createdAt ?? ""));
