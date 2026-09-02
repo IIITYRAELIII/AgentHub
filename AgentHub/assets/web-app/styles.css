@@ -10443,6 +10443,16 @@ html[data-view="background"] .background-view {
   outline-offset: 2px;
 }
 
+.msg-response-citation.is-fallback {
+  cursor: default;
+}
+
+.msg-response-citation.is-fallback:hover {
+  background: color-mix(in srgb, var(--surface-1) 86%, transparent);
+  border-color: var(--accent-line);
+  transform: none;
+}
+
 .msg-response-citation-label {
   color: var(--accent);
   font-size: 0.68rem;

@@ -333,7 +333,12 @@ test("local task sync preserves durable message metadata and attachments", async
       itemId: "agent-1",
       role: "agent",
       text: "Цитата 1\nВижу",
-      responseAnnotationReferences: [{ index: 1 }],
+      responseAnnotationReferences: [
+        { index: 1 },
+        { index: 1 },
+        { index: 21 },
+        { index: Number.MAX_SAFE_INTEGER + 1 },
+      ],
     }],
   }]);
   await store.save();

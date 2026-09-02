@@ -5416,20 +5416,23 @@ function renderResponseCitations(message) {
     ? message.responseCitationPresentations
     : [];
   if (!citations.length) return null;
-  return el("div", { class: "msg-response-citations", "aria-label": "Цитаты ответа" }, citations.map((citation) => (
-    el("button", {
-      type: "button",
-      class: "msg-response-citation",
-      "data-response-citation-index": String(citation.index),
-      "data-response-citation-target": citation.targetMessageKey,
-      title: citation.quote ? `Перейти к цитате: ${citation.quote}` : "Перейти к цитате",
+  return el("div", { class: "msg-response-citations", "aria-label": "Цитаты ответа" }, citations.map((citation) => {
+    const control = MessageView.responseCitationControl(citation);
+    return el(control.tagName, {
+      class: control.className,
+      ...(control.interactive ? {
+        type: "button",
+        "data-response-citation-index": String(control.index),
+        "data-response-citation-target": control.targetMessageKey,
+        title: control.quote ? `Перейти к цитате: ${control.quote}` : "Перейти к цитате",
+      } : {}),
     }, [
-      el("span", { class: "msg-response-citation-label", text: citation.label }),
-      citation.quote
-        ? el("span", { class: "msg-response-citation-quote", text: citation.quote })
+      el("span", { class: "msg-response-citation-label", text: control.label }),
+      control.quote
+        ? el("span", { class: "msg-response-citation-quote", text: control.quote })
         : null,
-    ])
-  )));
+    ]);
+  }));
 }
 
 function renderAgentResponseBody(body, message, text, fileContext) {

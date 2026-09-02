@@ -9,6 +9,7 @@ import {
   interstreamOriginAuthor,
   normalizeInterstreamOrigin,
 } from "../../domain/interstream-message.mjs";
+import { normalizedCodexResponseAnnotationReferences } from "../../domain/codex-response-annotation.mjs";
 
 const FORMAT_VERSION = 1;
 const TASK_SCHEMA_VERSION = 9;
@@ -70,11 +71,7 @@ function cleanResponseAnnotations(annotations) {
 }
 
 function cleanResponseAnnotationReferences(references) {
-  return (Array.isArray(references) ? references : [])
-    .slice(0, 20)
-    .map((reference) => Number(reference?.index))
-    .filter((index) => Number.isSafeInteger(index) && index > 0)
-    .map((index) => ({ index }));
+  return normalizedCodexResponseAnnotationReferences(references);
 }
 
 function cleanActivities(activities) {
@@ -1006,6 +1003,9 @@ export class LocalTaskSyncStore {
       const key = `${row.provider}\0${row.thread_id}\0${Number(row.turn_position)}`;
       const turnMessages = messagesByTurn.get(key) ?? [];
       const origin = parseInterstreamOrigin(row.origin_json);
+      const responseAnnotationReferences = cleanResponseAnnotationReferences(
+        parseJsonArray(row.response_annotation_references_json),
+      );
       turnMessages.push({
         itemId: String(row.item_id ?? ""),
         ...(row.client_user_message_id
@@ -1021,8 +1021,8 @@ export class LocalTaskSyncStore {
         ...(row.phase ? { phase: String(row.phase) } : {}),
         ...(row.time ? { time: String(row.time) } : {}),
         responseAnnotations: parseJsonArray(row.response_annotations_json),
-        ...(parseJsonArray(row.response_annotation_references_json).length
-          ? { responseAnnotationReferences: parseJsonArray(row.response_annotation_references_json) }
+        ...(responseAnnotationReferences.length
+          ? { responseAnnotationReferences }
           : {}),
         ...(row.response_annotation_request
           ? { responseAnnotationRequest: String(row.response_annotation_request) }
