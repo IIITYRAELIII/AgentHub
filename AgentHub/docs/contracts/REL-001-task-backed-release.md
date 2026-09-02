@@ -171,6 +171,21 @@ preflight, after candidate preparation, during retry, after publication and at
 startup reconciliation. Release code must not switch, detach, reset, stash,
 clean, or otherwise mutate its HEAD, index or working tree.
 
+At runtime startup, reconciliation receives the working directory of every
+release-enabled registered Workspace from the Workspace catalog. It audits those
+roots even when `release-repositories` is absent and no checkpoint has ever been
+written. A detached primary and every linked `main`, `PreRelease`, or legacy-named
+holder are diagnostic evidence; discovery performs no clone creation, checkout,
+branch change, cleanup or removal. Checkpoint enumeration additionally recovers
+Agent Hub-owned clones that are no longer associated with a registered root.
+
+The effective Workspace and Architect developer rules, and the visible release
+tooltip, state the same execution boundary: the primary is not a release checkout;
+the frozen release runs only from `releaseCandidates[].releaseRoot` in the
+standalone clone; legacy linked release worktrees are neither created nor reused.
+Compatibility injection removes the old Architect instruction to update local
+`main` or use a separate linked integration worktree.
+
 After verified publication, synchronization is limited to a guarded `--ff-only`
 update while the primary still satisfies the invariant. Existing dirty paths are
 hashed first. Overlap with published paths, a non-fast-forward, or an invalid

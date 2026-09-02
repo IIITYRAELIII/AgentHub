@@ -27,8 +27,17 @@ preparation never switches, detaches, resets, stashes or cleans it. Post-release
 synchronization is a separate guarded fast-forward: overlap or non-fast-forward
 conditions return `manual_required` without failing an already verified release.
 
-Startup reconciliation reads only Agent Hub-owned checkpoints. Historical linked
-holders are reported, never reused and never deleted by this migration.
+Startup reconciliation receives every release-enabled registered Workspace root
+from the runtime catalog and audits its branch ownership plus linked worktrees
+before any release checkpoint exists. Checkpoints are an additional evidence
+source, not discovery authority. A detached primary or historical linked holder
+is reported as `manual_required`; the audit creates, switches and removes nothing.
+
+Injected Workspace and Architect rules identify `releaseCandidates[].releaseRoot`
+as the only frozen-release checkout. The compatibility layer removes the former
+Architect instruction to update local `main` or use a linked integration worktree.
+The web tooltip adds the same invariant without replacing the current workflow
+text supplied by later policy revisions.
 
 ## Consequences
 

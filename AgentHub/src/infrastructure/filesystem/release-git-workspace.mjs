@@ -177,7 +177,21 @@ async function primarySnapshot(projectRoot) {
       || /(?:^|[-_.])prerelease(?:[-_.]|$)/iu.test(path.basename(item.path))
     )
   ));
-  return { root, branchRef, headCommit, mainCommit, commonDir, dirty, legacyLinkedHolders };
+  return {
+    root, branchRef, headCommit, mainCommit, commonDir, dirty, worktrees: linked, legacyLinkedHolders,
+  };
+}
+
+function primaryInvariantFailure(snapshot, phase) {
+  if (snapshot.branchRef !== "refs/heads/main" || snapshot.headCommit !== snapshot.mainCommit) {
+    return `registered primary Workspace invariant failed during ${phase}: `
+      + `HEAD must remain attached to refs/heads/main (${snapshot.root})`;
+  }
+  const mainHolder = snapshot.worktrees.find((item) => item.branchRef === "refs/heads/main");
+  if (!mainHolder || !samePath(mainHolder.path, snapshot.root)) {
+    return `registered primary Workspace does not own refs/heads/main during ${phase}`;
+  }
+  return null;
 }
 
 function publicPrimaryEvidence(snapshot) {
@@ -215,22 +229,15 @@ export class ReleaseGitWorkspaceService {
   constructor({ dataDir } = {}) {
     this.dataDir = canonicalPath(String(dataDir ?? ""));
     this.releaseRepositoriesRoot = path.join(this.dataDir, "release-repositories");
-    this.lastReconciliation = { checked: 0, repositories: [] };
+    this.lastReconciliation = {
+      checked: 0, registeredWorkspaceRoots: 0, checkpointCount: 0, repositories: [],
+    };
   }
 
   async assertPrimaryInvariant(projectRoot, { phase = "release" } = {}) {
     const snapshot = await primarySnapshot(projectRoot);
-    if (snapshot.branchRef !== "refs/heads/main" || snapshot.headCommit !== snapshot.mainCommit) {
-      throw new Error(
-        `registered primary Workspace invariant failed during ${phase}: `
-        + `HEAD must remain attached to refs/heads/main (${snapshot.root})`,
-      );
-    }
-    const mainHolder = parseWorktrees(await runGit(["worktree", "list", "--porcelain"], { cwd: snapshot.root }))
-      .find((item) => item.branchRef === "refs/heads/main");
-    if (!mainHolder || !samePath(mainHolder.path, snapshot.root)) {
-      throw new Error(`registered primary Workspace does not own refs/heads/main during ${phase}`);
-    }
+    const failure = primaryInvariantFailure(snapshot, phase);
+    if (failure) throw new Error(failure);
     return publicPrimaryEvidence(snapshot);
   }
 
@@ -490,26 +497,112 @@ export class ReleaseGitWorkspaceService {
     });
   }
 
-  async reconcile() {
+  async reconcile({ projectRoots = [] } = {}) {
     const entries = await readdir(this.releaseRepositoriesRoot, { withFileTypes: true }).catch((error) => {
       if (error?.code === "ENOENT") return [];
       throw error;
     });
-    const repositories = [];
+    const checkpoints = [];
     for (const entry of entries.filter((item) => item.isDirectory())) {
       const checkpointFile = path.join(this.releaseRepositoriesRoot, entry.name, "checkpoint.json");
       const checkpoint = await readJson(checkpointFile);
       const manifest = checkpoint?.manifestFile ? await readJson(checkpoint.manifestFile) : null;
-      if (!manifest?.primaryRoot) continue;
+      if (manifest?.primaryRoot) checkpoints.push({
+        repositoryKey: entry.name, checkpointFile, checkpoint, manifest,
+      });
+    }
+
+    const repositories = [];
+    const auditedRoots = [];
+    const registeredRoots = projectRoots.map((item) => ({
+      workspaceId: typeof item === "object" ? String(item?.workspaceId ?? "").trim() || null : null,
+      projectRoot: String(typeof item === "object" ? item?.projectRoot ?? "" : item ?? "").trim(),
+    })).filter((item) => item.projectRoot);
+    for (const registeredRoot of registeredRoots) {
+      const requestedRoot = registeredRoot.projectRoot;
       try {
-        const primary = await this.assertPrimaryInvariant(manifest.primaryRoot, { phase: "startup reconciliation" });
-        const marker = await assertReleaseCloneForPublication({ repositoryRoot: manifest.releaseRoot });
-        repositories.push({ repositoryKey: entry.name, status: "ready", primary, releaseRoot: marker.releaseRoot });
+        const snapshot = await primarySnapshot(requestedRoot);
+        if (auditedRoots.some((item) => samePath(item, snapshot.root))) continue;
+        auditedRoots.push(snapshot.root);
+        const checkpoint = checkpoints.find((item) => samePath(item.manifest.primaryRoot, snapshot.root)) ?? null;
+        const failure = primaryInvariantFailure(snapshot, "startup reconciliation");
+        const legacyFailure = snapshot.legacyLinkedHolders.length
+          ? `legacy linked release holder detected for registered primary Workspace (${snapshot.root})`
+          : null;
+        if (failure || legacyFailure) {
+          repositories.push({
+            source: "registered_workspace",
+            workspaceId: registeredRoot.workspaceId,
+            repositoryKey: taskRepositoryKey(snapshot.root),
+            status: "manual_required",
+            reason: failure ?? legacyFailure,
+            primary: publicPrimaryEvidence(snapshot),
+            releaseRoot: checkpoint?.manifest?.releaseRoot ?? null,
+            checkpointPresent: checkpoint != null,
+          });
+          continue;
+        }
+        let releaseRoot = null;
+        if (checkpoint) {
+          releaseRoot = (await assertReleaseCloneForPublication({
+            repositoryRoot: checkpoint.manifest.releaseRoot,
+          })).releaseRoot;
+        }
+        repositories.push({
+          source: "registered_workspace",
+          workspaceId: registeredRoot.workspaceId,
+          repositoryKey: taskRepositoryKey(snapshot.root),
+          status: "ready",
+          primary: publicPrimaryEvidence(snapshot),
+          releaseRoot,
+          checkpointPresent: checkpoint != null,
+        });
       } catch (error) {
-        repositories.push({ repositoryKey: entry.name, status: "manual_required", reason: error.message });
+        repositories.push({
+          source: "registered_workspace",
+          workspaceId: registeredRoot.workspaceId,
+          projectRoot: requestedRoot,
+          repositoryKey: taskRepositoryKey(requestedRoot),
+          status: "manual_required",
+          reason: error.message,
+          checkpointPresent: false,
+        });
       }
     }
-    this.lastReconciliation = { checked: repositories.length, repositories };
+
+    for (const checkpoint of checkpoints) {
+      if (auditedRoots.some((item) => samePath(item, checkpoint.manifest.primaryRoot))) continue;
+      try {
+        const primary = await this.assertPrimaryInvariant(checkpoint.manifest.primaryRoot, {
+          phase: "startup reconciliation",
+        });
+        const marker = await assertReleaseCloneForPublication({
+          repositoryRoot: checkpoint.manifest.releaseRoot,
+        });
+        repositories.push({
+          source: "checkpoint",
+          repositoryKey: checkpoint.repositoryKey,
+          status: "ready",
+          primary,
+          releaseRoot: marker.releaseRoot,
+          checkpointPresent: true,
+        });
+      } catch (error) {
+        repositories.push({
+          source: "checkpoint",
+          repositoryKey: checkpoint.repositoryKey,
+          status: "manual_required",
+          reason: error.message,
+          checkpointPresent: true,
+        });
+      }
+    }
+    this.lastReconciliation = {
+      checked: repositories.length,
+      registeredWorkspaceRoots: auditedRoots.length,
+      checkpointCount: checkpoints.length,
+      repositories,
+    };
     return this.lastReconciliation;
   }
 

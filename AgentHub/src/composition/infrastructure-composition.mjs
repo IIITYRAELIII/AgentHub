@@ -314,7 +314,16 @@ export async function createHubInfrastructure({
   const hubMcpSecret = await ensureLocalWebSecret(path.join(runtimeCommandRoot, "hub-mcp.secret"));
   const taskGitWorkspaces = new TaskGitWorkspaceService({ dataDir: config.dataDir });
   const releaseGitWorkspaces = new ReleaseGitWorkspaceService({ dataDir: config.dataDir });
-  const releaseReconciliation = await releaseGitWorkspaces.reconcile();
+  const registeredReleaseProjectRoots = workspaceCatalogStore.hierarchy()
+    .filter((workspace) => workspace.settings?.releaseWorkflowEnabled === true)
+    .map((workspace) => ({
+      workspaceId: workspace.id,
+      projectRoot: String(workspace.settings?.workingDirectory ?? "").trim(),
+    }))
+    .filter((workspace) => workspace.projectRoot);
+  const releaseReconciliation = await releaseGitWorkspaces.reconcile({
+    projectRoots: registeredReleaseProjectRoots,
+  });
   agentHubRuntimeHealth.setDiagnosticSource("releaseGit", () => releaseGitWorkspaces.diagnostics());
   for (const repository of releaseReconciliation.repositories.filter((item) => item.status !== "ready")) {
     console.warn(`Release repository requires manual reconciliation: ${repository.reason}`);
