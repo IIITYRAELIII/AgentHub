@@ -9,6 +9,7 @@ import {
   SharedDashboardBotClient,
   signSharedDashboardBotRequest,
 } from "../../../src/interfaces/web/shared-dashboard-bot-client.mjs";
+import { REMOTE_CONTROL_WAKE_PROTOCOL } from "../../../src/interfaces/web/remote-control-wake-channel.mjs";
 
 function attachmentChunkTransport(body, {
   contentType = "application/octet-stream",
@@ -105,7 +106,11 @@ test("shared Dashboard bot signs requests, dispatches a Task, and reports its re
   assert.equal(registration.name, "Командный Hub");
   const pull = requests[1];
   const pullBody = pull.options.body;
-  assert.deepEqual(JSON.parse(pullBody), { limit: 10, waitMs: 25_000 });
+  assert.deepEqual(JSON.parse(pullBody), {
+    limit: 10,
+    waitMs: 0,
+    transport: REMOTE_CONTROL_WAKE_PROTOCOL,
+  });
   const pullTimestamp = pull.options.headers["X-Agent-Hub-Timestamp"];
   const expectedSignature = createHmac("sha256", secret)
     .update([
@@ -186,12 +191,13 @@ test("shared Dashboard bot preserves retry guidance from a capacity response", a
   });
 });
 
-test("shared Dashboard bot pauses after an empty wakeable long poll", async (context) => {
+test("shared Dashboard bot uses immediate drain and waits on the wake channel", async (context) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-shared-bot-idle-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
   const secretFile = path.join(directory, "shared-dashboard-bot.secret");
   await writeFile(secretFile, "s".repeat(64), "utf8");
   let pulls = 0;
+  let pullBody = null;
   let firstPull;
   const firstPullSeen = new Promise((resolve) => { firstPull = resolve; });
   const client = new SharedDashboardBotClient({
@@ -199,21 +205,28 @@ test("shared Dashboard bot pauses after an empty wakeable long poll", async (con
     hubId: "018f6c86-3f34-7a31-8f27-16f5b96cce66",
     secretFile,
     retrySeconds: 1,
-    fetchImpl: async (url) => {
+    fetchImpl: async (url, options) => {
       if (url.endsWith("/api/dashboard-bot/register")) return Response.json({ paired: true });
       if (url.endsWith("/api/dashboard-bot/pull")) {
         pulls += 1;
+        pullBody = JSON.parse(options.body);
         firstPull();
         return Response.json({ commands: [] });
       }
       return Response.json({ error: "unexpected request" }, { status: 500 });
     },
+    webSocketFactory: () => ({ addEventListener() {}, close() {} }),
     handler: async () => null,
   });
   await client.start();
   await firstPullSeen;
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(pulls, 1);
+  assert.deepEqual(pullBody, {
+    limit: 10,
+    waitMs: 0,
+    transport: REMOTE_CONTROL_WAKE_PROTOCOL,
+  });
   await client.close();
 });
 

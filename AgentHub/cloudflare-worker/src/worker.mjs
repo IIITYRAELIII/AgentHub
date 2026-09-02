@@ -21,6 +21,12 @@ const CONTROL_INDEX_VERSION_KEY = "control:index-version";
 const CONTROL_ACTIVE_COUNT_KEY = "control:active-count";
 const CONTROL_AVAILABLE_PREFIX = "control:available:";
 const CONTROL_EXPIRY_PREFIX = "control:expiry:";
+export const CONTROL_WAKE_PROTOCOL = "agent-hub-control-wake-v1";
+const CONTROL_WAKE_CAPABILITY_KEY = "control:wake-capability";
+const CONTROL_WAKE_REVISION_KEY = "control:wake-revision";
+const CONTROL_WAKE_SOCKET_TAG = "control-wake";
+const CONTROL_WAKE_FALLBACK_MS = 10_000;
+const CONTROL_WAKE_HEARTBEAT_MS = 60_000;
 const CLIENT_SNAPSHOT_PREFIX = "client:snapshot:";
 const CONTROL_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const DASHBOARD_BOT_PAIRING_EXPIRY_MS = 10 * 60 * 1_000;
@@ -548,6 +554,83 @@ export async function validateControlServiceRequest(request, secret, {
     throw new Error("invalid control signature");
   }
   return body;
+}
+
+export async function validateControlWakeRequest(request, secret, {
+  now = Date.now(),
+  pathname = "",
+} = {}) {
+  const url = new URL(request.url);
+  const timestamp = Number(url.searchParams.get("timestamp"));
+  const receivedSignature = String(url.searchParams.get("signature") ?? "").toLowerCase();
+  if (!Number.isSafeInteger(timestamp) || Math.abs(Math.trunc(now / 1_000) - timestamp) > MAX_SYNC_AGE_SECONDS) {
+    throw new Error("expired control wake request");
+  }
+  if (!/^[a-f0-9]{64}$/u.test(receivedSignature)) throw new Error("invalid control wake signature");
+  const signatureValue = [
+    timestamp,
+    "GET",
+    pathname || url.pathname,
+    await sha256(""),
+  ].join("\n");
+  if (!await verifyHmac(secret, signatureValue, receivedSignature)) {
+    throw new Error("invalid control wake signature");
+  }
+  return true;
+}
+
+export function controlWakeBudgetProbe() {
+  const channels = 2;
+  const fallbackRequests = Math.ceil((86_400_000 / CONTROL_WAKE_FALLBACK_MS) * channels);
+  const heartbeatMessages = Math.ceil((86_400_000 / CONTROL_WAKE_HEARTBEAT_MS) * channels);
+  const websocketRequestEquivalents = Math.ceil(heartbeatMessages / 20) + channels;
+  const fallbackGbSeconds = fallbackRequests * 0.25 * (128 / 1_024);
+  return {
+    protocol: CONTROL_WAKE_PROTOCOL,
+    channels,
+    fallbackMs: CONTROL_WAKE_FALLBACK_MS,
+    heartbeatMs: CONTROL_WAKE_HEARTBEAT_MS,
+    immediatePullP99Ms: 250,
+    fallbackRequests,
+    fallbackRequestRatio: fallbackRequests / 100_000,
+    fallbackGbSeconds,
+    fallbackDurationRatio: fallbackGbSeconds / 13_000,
+    heartbeatMessages,
+    websocketRequestEquivalents,
+    websocketRequestRatio: websocketRequestEquivalents / 100_000,
+    websocketIdleGbSeconds: 0,
+  };
+}
+
+export async function acceptHibernatableControlWake(ctx, {
+  channel = "control",
+  pairFactory = () => new WebSocketPair(),
+  autoResponseFactory = () => new WebSocketRequestResponsePair("ping", "pong"),
+} = {}) {
+  const pair = pairFactory();
+  const [client, server] = Object.values(pair);
+  if (!client || !server) throw new Error("control wake socket pair is unavailable");
+  ctx.acceptWebSocket(server, [CONTROL_WAKE_SOCKET_TAG]);
+  server.serializeAttachment({ protocol: CONTROL_WAKE_PROTOCOL, channel });
+  ctx.setWebSocketAutoResponse?.(autoResponseFactory());
+  await ctx.storage.put(CONTROL_WAKE_CAPABILITY_KEY, CONTROL_WAKE_PROTOCOL);
+  return { client, server };
+}
+
+export function notifyHibernatableControlWake(ctx, revision) {
+  const payload = JSON.stringify({
+    protocol: CONTROL_WAKE_PROTOCOL,
+    kind: "available",
+    revision: Math.max(0, Math.trunc(Number(revision) || 0)),
+  });
+  let notified = 0;
+  for (const socket of ctx.getWebSockets?.(CONTROL_WAKE_SOCKET_TAG) ?? []) {
+    try {
+      socket.send(payload);
+      notified += 1;
+    } catch {}
+  }
+  return notified;
 }
 
 function dashboardBotHubRegistry(value) {
@@ -1346,6 +1429,18 @@ export class JournalStore extends DurableObject {
   #controlWaiters = new Set();
   #deviceAuthAttempts = new DeviceAuthAttemptLimiter();
 
+  webSocketMessage(socket, message) {
+    if (String(message) !== "ping") socket.close(1008, "unsupported wake message");
+  }
+
+  webSocketClose(socket, code, reason) {
+    socket.close(code, reason);
+  }
+
+  webSocketError(socket) {
+    socket.close(1011, "wake transport error");
+  }
+
   #controlWaiter(waitMs) {
     let timer = null;
     let settle = null;
@@ -1361,8 +1456,26 @@ export class JournalStore extends DurableObject {
     return { promise, cancel: () => settle() };
   }
 
-  #wakeControlWaiters() {
+  #wakeControlWaiters(revision = 0) {
     for (const settle of [...this.#controlWaiters]) settle();
+    notifyHibernatableControlWake(this.ctx, revision);
+  }
+
+  async #controlWakeResponse(channel) {
+    const { client } = await acceptHibernatableControlWake(this.ctx, { channel });
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  async #dashboardBotWake(request) {
+    const url = new URL(request.url);
+    const hubId = String(url.searchParams.get("hubId") ?? "").trim().toLowerCase();
+    if (!CONTROL_ID_PATTERN.test(hubId)) throw new Error("invalid dashboard bot hub id");
+    const record = await this.ctx.storage.get(dashboardBotHubKey(hubId))
+      ?? await this.ctx.storage.get(DASHBOARD_BOT_SERVICE_IDENTITY_KEY);
+    if (record?.hubId !== hubId || !record?.secret) throw new Error("dashboard bot hub is not registered");
+    if (!record.userId || !record.chatId) throw new Error("dashboard bot hub is not paired");
+    await validateControlWakeRequest(request, record.secret, { pathname: "/api/dashboard-bot/wake" });
+    return this.#controlWakeResponse("dashboard-bot");
   }
 
   #controlResultWaiter(id, waitMs) {
@@ -2706,6 +2819,26 @@ export class JournalStore extends DurableObject {
 
   async fetch(request) {
     const url = new URL(request.url);
+    if (request.method === "GET" && url.pathname === "/api/dashboard-bot/wake") {
+      try {
+        if (String(request.headers.get("Upgrade") ?? "").toLowerCase() !== "websocket") {
+          return json({ error: "websocket upgrade required" }, 426);
+        }
+        return await this.#dashboardBotWake(request);
+      } catch (error) {
+        const status = /not paired/iu.test(error.message) ? 409 : 401;
+        return json({ error: error.message }, status);
+      }
+    }
+    if (request.method === "GET" && url.pathname === "/control/wake") {
+      if (request.headers.get("X-Agent-Hub-Wake-Authorized") !== CONTROL_WAKE_PROTOCOL) {
+        return json({ error: "control wake request is not authorized" }, 401);
+      }
+      if (String(request.headers.get("Upgrade") ?? "").toLowerCase() !== "websocket") {
+        return json({ error: "websocket upgrade required" }, 426);
+      }
+      return this.#controlWakeResponse("mini-app");
+    }
     if (request.method === "POST" && url.pathname === "/dashboard-bot/service-identity") {
       try {
         return json(await this.#dashboardBotServiceIdentity(await request.json()));
@@ -3170,11 +3303,13 @@ export class JournalStore extends DurableObject {
         };
         record.availabilityKey = controlAvailableKey(record, now);
         record.expiryKey = controlExpiryKey(record);
+        const wakeRevision = (Number(await storage.get(CONTROL_WAKE_REVISION_KEY)) || 0) + 1;
         await storage.put({
           [key]: record,
           [record.availabilityKey]: { id: record.id },
           [record.expiryKey]: { id: record.id },
           [CONTROL_ACTIVE_COUNT_KEY]: activeCount + 1,
+          [CONTROL_WAKE_REVISION_KEY]: wakeRevision,
           ...Object.fromEntries(attachmentManifests.map((manifest) => {
             manifest.commandIds = [...new Set([...(manifest.commandIds ?? []), command.id])];
             manifest.expiresAt = Math.max(manifest.expiresAt, record.expiresAt);
@@ -3184,7 +3319,7 @@ export class JournalStore extends DurableObject {
         return json(this.#controlStatus(record), 202);
       });
       if (response.status === 202) {
-        this.#wakeControlWaiters();
+        this.#wakeControlWaiters(await this.ctx.storage.get(CONTROL_WAKE_REVISION_KEY));
         await this.#scheduleCleanupAlarm(now + expiryMs);
       }
       return response;
@@ -3226,6 +3361,17 @@ export class JournalStore extends DurableObject {
       const payload = await request.json();
       const limit = Math.min(20, Math.max(1, Number(payload?.limit) || 10));
       const waitMs = Math.min(MAX_CONTROL_WAIT_MS, Math.max(0, Number(payload?.waitMs) || 0));
+      const transport = String(payload?.transport ?? "");
+      if (transport && transport !== CONTROL_WAKE_PROTOCOL) {
+        return json({ error: "invalid control wake transport" }, 400);
+      }
+      const migratedTransport = await this.ctx.storage.get(CONTROL_WAKE_CAPABILITY_KEY);
+      if (waitMs > 0 && migratedTransport === CONTROL_WAKE_PROTOCOL) {
+        return json({
+          error: "control long poll is disabled after wake transport migration",
+          code: "control_wake_required",
+        }, 409);
+      }
       const waiter = waitMs > 0 ? this.#controlWaiter(waitMs) : null;
       try {
         let commands = await this.#claimControlCommands(limit);
@@ -3674,6 +3820,9 @@ export default {
     if (url.pathname === "/api/transport-probe/attachment") {
       return dashboardAttachmentTransportProbeResponse(request);
     }
+    if (url.pathname === "/api/transport-probe/control-budget") {
+      return json(controlWakeBudgetProbe());
+    }
     if (url.pathname === "/health") return json({ ok: true });
     if (url.pathname === "/api/dashboard-bot/register") {
       if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
@@ -3711,6 +3860,13 @@ export default {
               : 400;
         return json({ error: error.message }, status);
       }
+    }
+    if (url.pathname === "/api/dashboard-bot/wake") {
+      if (request.method !== "GET") return json({ error: "Method Not Allowed" }, 405);
+      const hubId = String(url.searchParams.get("hubId") ?? "").trim().toLowerCase();
+      if (!CONTROL_ID_PATTERN.test(hubId)) return json({ error: "invalid dashboard bot hub id" }, 401);
+      const hubStore = env.JOURNAL.getByName(`dashboard-bot:${hubId}`);
+      return dashboardBotDurableFetch(hubStore, request, "wake");
     }
     if (url.pathname === "/api/dashboard-bot/webhook") {
       if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
@@ -3978,16 +4134,20 @@ export default {
       if (url.pathname.endsWith("/pull")) {
         const limit = Number(payload?.limit ?? 10);
         const waitMs = Number(payload?.waitMs ?? 0);
+        const transport = String(payload?.transport ?? "");
         if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) {
           return json({ error: "invalid dashboard bot pull limit" }, 400);
         }
         if (!Number.isSafeInteger(waitMs) || waitMs < 0 || waitMs > MAX_CONTROL_WAIT_MS) {
           return json({ error: "invalid dashboard bot pull wait" }, 400);
         }
+        if (transport && transport !== CONTROL_WAKE_PROTOCOL) {
+          return json({ error: "invalid dashboard bot wake transport" }, 400);
+        }
         return dashboardBotDurableFetch(hubStore, new Request("https://journal.internal/control/pull", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ limit, waitMs }),
+          body: JSON.stringify({ limit, waitMs, ...(transport ? { transport } : {}) }),
         }), "control-pull");
       }
       const id = String(payload?.id ?? "").toLowerCase();
@@ -4271,6 +4431,23 @@ export default {
         error: String(payload.error ?? "Agent Hub control action failed"),
       });
     }
+    if (url.pathname === "/api/control/wake") {
+      if (request.method !== "GET") return json({ error: "Method Not Allowed" }, 405);
+      if (String(request.headers.get("Upgrade") ?? "").toLowerCase() !== "websocket") {
+        return json({ error: "websocket upgrade required" }, 426);
+      }
+      try {
+        await validateControlWakeRequest(request, env.SYNC_SECRET);
+      } catch (error) {
+        return json({ error: error.message }, 401);
+      }
+      return store.fetch(new Request("https://journal.internal/control/wake", {
+        headers: {
+          Upgrade: "websocket",
+          "X-Agent-Hub-Wake-Authorized": CONTROL_WAKE_PROTOCOL,
+        },
+      }));
+    }
     if (url.pathname === "/api/control/pull") {
       if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
       let body;
@@ -4283,14 +4460,16 @@ export default {
         const payload = parseJson(body, "control pull");
         const limit = Number(payload?.limit ?? 10);
         const waitMs = Number(payload?.waitMs ?? 0);
+        const transport = String(payload?.transport ?? "");
         if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) throw new Error("invalid control pull limit");
         if (!Number.isSafeInteger(waitMs) || waitMs < 0 || waitMs > MAX_CONTROL_WAIT_MS) {
           throw new Error("invalid control pull wait");
         }
+        if (transport && transport !== CONTROL_WAKE_PROTOCOL) throw new Error("invalid control wake transport");
         return store.fetch(new Request("https://journal.internal/control/pull", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ limit, waitMs }),
+          body: JSON.stringify({ limit, waitMs, ...(transport ? { transport } : {}) }),
         }));
       } catch (error) {
         return json({ error: error.message }, 400);

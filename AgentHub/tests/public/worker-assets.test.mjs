@@ -17,9 +17,12 @@ import {
 import {
   changedBackgrounds,
   fetchWithTransportRace,
+  measureImmediateControlDrain,
   verifyThemeDeployment,
   WORKER_VERIFY_REQUEST_TIMEOUT_MS,
 } from "../../cloudflare-worker/verify-deployment.mjs";
+import { remoteControlTransportBudget } from "../../src/interfaces/web/remote-control-transport-budget.mjs";
+import { REMOTE_CONTROL_WAKE_PROTOCOL } from "../../src/interfaces/web/remote-control-wake-channel.mjs";
 
 const require = createRequire(import.meta.url);
 const { localAssetPathname, localAssetReferences } = require("../../client-assets.cjs");
@@ -56,6 +59,13 @@ function syntheticAttachmentProbeResponse(target) {
   }
   const chunk = chunks[Number(target.searchParams.get("index"))];
   return new Response(chunk?.body ?? "missing", { status: chunk ? 200 : 404 });
+}
+
+function syntheticControlBudgetResponse() {
+  return Response.json({
+    protocol: REMOTE_CONTROL_WAKE_PROTOCOL,
+    ...remoteControlTransportBudget(),
+  });
 }
 
 test("Worker build packages the same shell and theme resources used by local clients", async () => {
@@ -127,6 +137,9 @@ test("Worker build packages the same shell and theme resources used by local cli
       if (target.pathname === "/api/transport-probe/attachment") {
         return syntheticAttachmentProbeResponse(target);
       }
+      if (target.pathname === "/api/transport-probe/control-budget") {
+        return syntheticControlBudgetResponse();
+      }
       const pathname = target.pathname === "/" ? "/index.html" : target.pathname;
       try {
         if (pathname.endsWith(".b64")) {
@@ -156,6 +169,8 @@ test("Worker build packages the same shell and theme resources used by local cli
     assert.ok(deployment.largeStaticBytes > 100 * 1024);
     assert.ok(deployment.attachmentProbeBytes > 100 * 1024);
     assert.ok(deployment.attachmentProbeChunks > 1);
+    assert.equal(deployment.controlTransportBudget.fallbackRequests, 17_280);
+    assert.equal(deployment.controlTransportBudget.websocketIdleGbSeconds, 0);
 
     await assert.rejects(() => verifyThemeDeployment({
       baseUrl: "https://agent-hub.test/",
@@ -334,6 +349,9 @@ test("Worker verification resumes unfinished chunks and rejects damaged checkpoi
         }
         return response;
       }
+      if (target.pathname === "/api/transport-probe/control-budget") {
+        return syntheticControlBudgetResponse();
+      }
       const pathname = target.pathname === "/" ? "/index.html" : target.pathname;
       try {
         return new Response(await readFile(path.join(output, ...pathname.slice(1).split("/"))));
@@ -371,4 +389,21 @@ test("Worker verification resumes unfinished chunks and rejects damaged checkpoi
   } finally {
     await rm(output, { recursive: true, force: true });
   }
+});
+
+test("deployment control drain measurement rejects partial queues and slow p99", async () => {
+  let clock = 0;
+  const measured = await measureImmediateControlDrain({
+    drain: async () => ({ commands: [] }),
+    samples: 20,
+    now: () => {
+      clock += 100;
+      return clock;
+    },
+  });
+  assert.deepEqual(measured, { samples: 20, p99Ms: 100, maxP99Ms: 250 });
+  await assert.rejects(
+    measureImmediateControlDrain({ drain: async () => ({ commands: [{}] }) }),
+    /non-empty or invalid/u,
+  );
 });

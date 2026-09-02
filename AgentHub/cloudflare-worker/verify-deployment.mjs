@@ -4,6 +4,12 @@ import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+
+import {
+  assertRemoteControlTransportBudget,
+  remoteControlTransportBudget,
+} from "../src/interfaces/web/remote-control-transport-budget.mjs";
+import { REMOTE_CONTROL_WAKE_PROTOCOL } from "../src/interfaces/web/remote-control-wake-channel.mjs";
 import { promisify } from "node:util";
 
 import {
@@ -269,6 +275,68 @@ async function verifyAttachmentProbeHttp1({ base, http1Fetch, requestTimeoutMs, 
   return { bytes: body.length, chunks: chunks.length, hash: first.hash };
 }
 
+export async function measureImmediateControlDrain({
+  drain,
+  samples = 20,
+  maxP99Ms = 250,
+  now = () => performance.now(),
+} = {}) {
+  if (typeof drain !== "function") throw new TypeError("control drain probe is required");
+  const durations = [];
+  for (let index = 0; index < Math.max(1, Math.trunc(Number(samples) || 1)); index += 1) {
+    const startedAt = now();
+    const payload = await drain();
+    durations.push(Math.max(0, now() - startedAt));
+    if (!Array.isArray(payload?.commands) || payload.commands.length !== 0) {
+      throw new Error("Immediate control drain probe returned a non-empty or invalid queue");
+    }
+  }
+  durations.sort((left, right) => left - right);
+  const p99 = durations[Math.min(durations.length - 1, Math.ceil(durations.length * 0.99) - 1)];
+  if (p99 > maxP99Ms) throw new Error(`Immediate control drain p99 ${p99.toFixed(2)} ms exceeds ${maxP99Ms} ms`);
+  return { samples: durations.length, p99Ms: p99, maxP99Ms };
+}
+
+async function verifyControlTransportBudget({ base, fetchImpl, requestTimeoutMs, checkpoint }) {
+  const target = new URL("/api/transport-probe/control-budget", base);
+  const expected = assertRemoteControlTransportBudget(remoteControlTransportBudget());
+  return checkpoint.complete({
+    key: "control-transport-budget",
+    expected: { url: target.href, protocol: REMOTE_CONTROL_WAKE_PROTOCOL },
+    read: async () => readWithRetry(
+      fetchImpl,
+      target,
+      (response) => response.json(),
+      { timeoutMs: requestTimeoutMs, log: () => {} },
+    ),
+    validate: (actual) => {
+      const numericFields = [
+        "channels",
+        "fallbackMs",
+        "heartbeatMs",
+        "immediatePullP99Ms",
+        "fallbackRequests",
+        "fallbackRequestRatio",
+        "fallbackGbSeconds",
+        "fallbackDurationRatio",
+        "heartbeatMessages",
+        "websocketRequestEquivalents",
+        "websocketRequestRatio",
+        "websocketIdleGbSeconds",
+      ];
+      if (actual?.protocol !== REMOTE_CONTROL_WAKE_PROTOCOL) {
+        throw new Error("Published Worker does not advertise the hibernation wake protocol");
+      }
+      for (const field of numericFields) {
+        if (Number(actual?.[field]) !== Number(expected[field])) {
+          throw new Error(`Published Worker control budget differs at ${field}`);
+        }
+      }
+      return actual;
+    },
+  });
+}
+
 async function fetchBuffered(fetchImpl, target, signal) {
   const response = await fetchImpl(target, { signal, cache: "no-store" });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -478,6 +546,12 @@ export async function verifyThemeDeployment({
     requestTimeoutMs,
     checkpoint: checkpointSession,
   });
+  const controlTransportBudget = await verifyControlTransportBudget({
+    base,
+    fetchImpl,
+    requestTimeoutMs,
+    checkpoint: checkpointSession,
+  });
   let bytes = 0;
   let sampledChunks = 0;
   await mapConcurrent(backgrounds, 1, async ({ theme, background }) => {
@@ -554,7 +628,7 @@ export async function verifyThemeDeployment({
     sampledChunks += sampleIndexes.length;
     bytes += source.length;
   });
-  log(`Verified ${backgrounds.length}/${availableBackgrounds.length} changed theme manifests and ${sampledChunks} chunks (${bytes} bytes), ${largeStatic.bytes} static bytes and ${attachmentProbe.bytes} attachment bytes over HTTP/1.1.`);
+  log(`Verified ${backgrounds.length}/${availableBackgrounds.length} changed theme manifests and ${sampledChunks} chunks (${bytes} bytes), ${largeStatic.bytes} static bytes, ${attachmentProbe.bytes} attachment bytes over HTTP/1.1, and control fallback ${controlTransportBudget.fallbackRequests} requests/day.`);
   const result = {
     backgrounds: backgrounds.length,
     availableBackgrounds: availableBackgrounds.length,
@@ -564,6 +638,7 @@ export async function verifyThemeDeployment({
     largeStaticHash: largeStatic.hash,
     attachmentProbeBytes: attachmentProbe.bytes,
     attachmentProbeChunks: attachmentProbe.chunks,
+    controlTransportBudget,
   };
   await checkpointSession.clear();
   return result;
