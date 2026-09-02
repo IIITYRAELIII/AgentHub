@@ -30,7 +30,9 @@ conditions return `manual_required` without failing an already verified release.
 Startup reconciliation receives every release-enabled registered Workspace root
 from the runtime catalog and audits its branch ownership plus linked worktrees
 before any release checkpoint exists. Checkpoints are an additional evidence
-source, not discovery authority. A detached primary or historical linked holder
+source, not discovery authority. Legacy Workspace rows without a working directory
+use the runtime default project registration; thread history is never primary
+authority. A detached primary or historical linked holder
 is reported as `manual_required`; the audit creates, switches and removes nothing.
 
 Injected Workspace and Architect rules identify `releaseCandidates[].releaseRoot`

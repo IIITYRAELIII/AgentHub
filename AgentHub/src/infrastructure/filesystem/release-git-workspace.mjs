@@ -516,6 +516,9 @@ export class ReleaseGitWorkspaceService {
     const auditedRoots = [];
     const registeredRoots = projectRoots.map((item) => ({
       workspaceId: typeof item === "object" ? String(item?.workspaceId ?? "").trim() || null : null,
+      registrationSource: typeof item === "object"
+        ? String(item?.registrationSource ?? "").trim() || null
+        : null,
       projectRoot: String(typeof item === "object" ? item?.projectRoot ?? "" : item ?? "").trim(),
     })).filter((item) => item.projectRoot);
     for (const registeredRoot of registeredRoots) {
@@ -533,6 +536,7 @@ export class ReleaseGitWorkspaceService {
           repositories.push({
             source: "registered_workspace",
             workspaceId: registeredRoot.workspaceId,
+            registrationSource: registeredRoot.registrationSource,
             repositoryKey: taskRepositoryKey(snapshot.root),
             status: "manual_required",
             reason: failure ?? legacyFailure,
@@ -551,6 +555,7 @@ export class ReleaseGitWorkspaceService {
         repositories.push({
           source: "registered_workspace",
           workspaceId: registeredRoot.workspaceId,
+          registrationSource: registeredRoot.registrationSource,
           repositoryKey: taskRepositoryKey(snapshot.root),
           status: "ready",
           primary: publicPrimaryEvidence(snapshot),
@@ -561,6 +566,7 @@ export class ReleaseGitWorkspaceService {
         repositories.push({
           source: "registered_workspace",
           workspaceId: registeredRoot.workspaceId,
+          registrationSource: registeredRoot.registrationSource,
           projectRoot: requestedRoot,
           repositoryKey: taskRepositoryKey(requestedRoot),
           status: "manual_required",
