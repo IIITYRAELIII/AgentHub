@@ -638,29 +638,13 @@ test("overflow summary counts running and answer-ready Streams independently", a
   );
 });
 
-test("desktop Stream statuses keep a permanent marker and overflow exposes aggregate state", async () => {
+test("Stream overflow exposes aggregate running and answer-ready state", async () => {
   const app = await readFile(new URL("../../assets/web-app/app.js", import.meta.url), "utf8");
-  const dialogStyles = await readFile(new URL("../../assets/web-app/dialog-area.css", import.meta.url), "utf8");
 
   assert.match(app, /button\.toggleAttribute\("data-running", summary\.running > 0\)/u);
   assert.match(app, /button\.toggleAttribute\("data-answer-ready", summary\.answerReady > 0\)/u);
   assert.match(app, /data-stream-tabs-overflow-running-count/u);
   assert.match(app, /data-stream-tabs-overflow-answer-ready-count/u);
-  assert.match(app, /class: "stream-tab-status-marker"/u);
-  assert.match(
-    dialogStyles,
-    /\.stream-tabs-track \.stream-tab\[data-running\] \.stream-tab-status-marker::before \{[\s\S]*background:/u,
-  );
-  assert.match(
-    dialogStyles,
-    /\.stream-tabs-track \.stream-tab\[data-answer-ready\] \.stream-tab-status-marker::after \{[\s\S]*background:/u,
-  );
-  const markerBlock = dialogStyles.match(
-    /\.stream-tabs-track \.stream-tab-status-marker \{[^}]*\}/u,
-  )?.[0] ?? "";
-  assert.doesNotMatch(markerBlock, /inset-inline:/u);
-  assert.doesNotMatch(dialogStyles, /:root\[data-stream-status-effect/u);
-  assert.match(dialogStyles, /&\[data-stream-status-effect\]:not/u);
 });
 
 test("answer arrival animation does not replay during Thread selection", async () => {

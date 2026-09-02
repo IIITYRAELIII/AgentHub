@@ -2606,10 +2606,7 @@ function renderStreamTabs() {
       "aria-label": [streamName, agentLabel, task?.modelLabel, statusLabel].filter(Boolean).join(". "),
       title,
     };
-    const content = (includeStatusMarker = false) => [
-      includeStatusMarker
-        ? el("span", { class: "stream-tab-status-marker", "aria-hidden": "true" })
-        : null,
+    const content = () => [
       el("span", {
         class: "provider-dot",
         "data-provider": provider,
@@ -2632,7 +2629,7 @@ function renderStreamTabs() {
       ...attributes,
       class: "stream-tab",
       draggable: window.AgentHubStreamTabs.streamsAreDraggable(streamOrderMode, surface) ? "true" : null,
-    }, [el("span", { class: "stream-tab-card" }, content(true))]);
+    }, [el("span", { class: "stream-tab-card" }, content())]);
     overflowItems.push(el("button", {
       ...attributes,
       class: "stream-overflow-item",
