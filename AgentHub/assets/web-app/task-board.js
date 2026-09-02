@@ -428,13 +428,275 @@
     regions.notes.replaceChildren(...(notes ? [notes] : []));
   }
 
+  function taskBoardScrollSnapshot(regions) {
+    const roots = [regions?.backlog, regions?.workspaces, regions?.notes].filter(Boolean);
+    const columns = roots.flatMap((root) => Array.from(
+      root.querySelectorAll?.("[data-board-destination]") ?? [],
+    )).map((column) => ({
+      id: String(column.dataset?.boardDestination ?? ""),
+      scrollTop: Math.max(0, Number(
+        column.querySelector?.(".task-board-column-list")?.scrollTop,
+      ) || 0),
+    })).filter(({ id }) => id);
+    return Object.freeze({
+      workspaceScrollLeft: Math.max(0, Number(regions?.workspaces?.scrollLeft) || 0),
+      columns: Object.freeze(columns.map((entry) => Object.freeze(entry))),
+    });
+  }
+
+  function restoreTaskBoardScroll(regions, snapshot) {
+    if (regions?.workspaces) {
+      regions.workspaces.scrollLeft = Math.max(
+        0,
+        Number(snapshot?.workspaceScrollLeft) || 0,
+      );
+    }
+    const saved = new Map((snapshot?.columns ?? []).map(({ id, scrollTop }) => [id, scrollTop]));
+    const roots = [regions?.backlog, regions?.workspaces, regions?.notes].filter(Boolean);
+    for (const column of roots.flatMap((root) => Array.from(
+      root.querySelectorAll?.("[data-board-destination]") ?? [],
+    ))) {
+      const scrollTop = saved.get(String(column.dataset?.boardDestination ?? ""));
+      const list = column.querySelector?.(".task-board-column-list");
+      if (list && scrollTop != null) list.scrollTop = Math.max(0, Number(scrollTop) || 0);
+    }
+  }
+
+  function createTaskBoardPointerDrag({
+    root,
+    pointTargetAt = (x, y) => root?.ownerDocument?.elementFromPoint?.(x, y),
+    onMove,
+    windowTarget = window,
+    threshold = 7,
+  } = {}) {
+    let pointer = null;
+    let nativeDragTaskId = null;
+    let suppressClick = false;
+    let suppressClickTimer = null;
+
+    function insideRoot(node) {
+      return Boolean(node) && (typeof root?.contains !== "function" || root.contains(node));
+    }
+
+    function closest(node, selector) {
+      const match = node?.closest?.(selector) ?? null;
+      return insideRoot(match) ? match : null;
+    }
+
+    function movableCard(node) {
+      return closest(node, '[data-board-task-id][data-board-task-movable="true"]');
+    }
+
+    function taskIdOf(card) {
+      return String(card?.dataset?.boardTaskId ?? "").trim();
+    }
+
+    function clearDropTarget(current) {
+      current?.dropNode?.classList?.remove("is-dragover");
+      if (current) {
+        current.dropNode = null;
+        current.drop = null;
+      }
+    }
+
+    function armClickSuppression() {
+      suppressClick = true;
+      if (suppressClickTimer != null) windowTarget.clearTimeout?.(suppressClickTimer);
+      suppressClickTimer = windowTarget.setTimeout?.(() => {
+        suppressClick = false;
+        suppressClickTimer = null;
+      }, 0) ?? null;
+    }
+
+    function cleanup({ suppress = false } = {}) {
+      const current = pointer;
+      pointer = null;
+      if (!current) return;
+      clearDropTarget(current);
+      current.source?.classList?.remove("is-pointer-dragging");
+      if (current.captured) {
+        try {
+          current.source?.releasePointerCapture?.(current.id);
+        } catch {
+          // Capture can already be lost during blur, cancel, or a board rerender.
+        }
+      }
+      if (suppress && current.active) armClickSuppression();
+    }
+
+    function resolveDropTarget(event) {
+      const hit = pointTargetAt(Number(event.clientX) || 0, Number(event.clientY) || 0);
+      const column = closest(hit, "[data-board-destination]");
+      if (!column) return null;
+      const destination = String(column.dataset?.boardDestination ?? "").trim();
+      if (!destination) return null;
+      const card = movableCard(hit);
+      const beforeId = taskIdOf(card);
+      if (beforeId && beforeId === pointer?.taskId) return null;
+      return {
+        destination,
+        beforeId: beforeId || null,
+        dropNode: beforeId ? card : column,
+      };
+    }
+
+    function updateDropTarget(event) {
+      const next = resolveDropTarget(event);
+      if (pointer?.dropNode === next?.dropNode) {
+        if (pointer) pointer.drop = next;
+        return;
+      }
+      clearDropTarget(pointer);
+      if (!pointer || !next) return;
+      pointer.drop = next;
+      pointer.dropNode = next.dropNode;
+      pointer.dropNode?.classList?.add("is-dragover");
+    }
+
+    function start(event) {
+      if (
+        nativeDragTaskId
+        || event?.isPrimary === false
+        || event?.pointerType === "touch"
+        || Number(event?.button ?? 0) !== 0
+      ) return;
+      const source = movableCard(event.target);
+      const taskId = taskIdOf(source);
+      if (!taskId) return;
+      cleanup();
+      pointer = {
+        id: event.pointerId,
+        taskId,
+        source,
+        startX: Number(event.clientX) || 0,
+        startY: Number(event.clientY) || 0,
+        active: false,
+        captured: false,
+        drop: null,
+        dropNode: null,
+      };
+    }
+
+    function move(event) {
+      if (!pointer || event.pointerId !== pointer.id) return;
+      if (event.pointerType === "mouse" && Number(event.buttons) === 0) {
+        cleanup({ suppress: pointer.active });
+        return;
+      }
+      if (!pointer.active) {
+        const distance = Math.hypot(
+          (Number(event.clientX) || 0) - pointer.startX,
+          (Number(event.clientY) || 0) - pointer.startY,
+        );
+        if (distance < Math.max(1, Number(threshold) || 1)) return;
+        pointer.active = true;
+        pointer.source?.classList?.add("is-pointer-dragging");
+        try {
+          pointer.source?.setPointerCapture?.(pointer.id);
+          pointer.captured = true;
+        } catch {
+          pointer.captured = false;
+        }
+      }
+      event.preventDefault?.();
+      updateDropTarget(event);
+    }
+
+    function finish(event) {
+      if (!pointer || event.pointerId !== pointer.id) return;
+      const current = pointer;
+      if (current.active) {
+        event.preventDefault?.();
+        updateDropTarget(event);
+      }
+      const moveDetail = current.active && current.drop
+        ? {
+          taskId: current.taskId,
+          destination: current.drop.destination,
+          beforeId: current.drop.beforeId,
+        }
+        : null;
+      cleanup({ suppress: current.active });
+      if (moveDetail) onMove?.(moveDetail);
+    }
+
+    function cancel(event) {
+      if (event?.pointerId != null && pointer && event.pointerId !== pointer.id) return;
+      cleanup({ suppress: Boolean(pointer?.active) });
+    }
+
+    function blur() {
+      nativeDragTaskId = null;
+      cleanup({ suppress: Boolean(pointer?.active) });
+    }
+
+    function nativeDragStart(event) {
+      const card = closest(event.target, "[data-board-task-id]");
+      const taskId = taskIdOf(card);
+      if (!taskId) return;
+      nativeDragTaskId = taskId;
+      cleanup({ suppress: Boolean(pointer?.active) });
+    }
+
+    function nativeDragEnd(event) {
+      const taskId = taskIdOf(closest(event.target, "[data-board-task-id]"));
+      if (!taskId || taskId === nativeDragTaskId) nativeDragTaskId = null;
+    }
+
+    function blockAccidentalClick(event) {
+      if (!suppressClick) return;
+      suppressClick = false;
+      if (suppressClickTimer != null) windowTarget.clearTimeout?.(suppressClickTimer);
+      suppressClickTimer = null;
+      event.preventDefault?.();
+      event.stopImmediatePropagation?.();
+    }
+
+    const listeners = [
+      ["pointerdown", start, false],
+      ["pointermove", move, false],
+      ["pointerup", finish, false],
+      ["pointercancel", cancel, false],
+      ["lostpointercapture", cancel, false],
+      ["dragstart", nativeDragStart, true],
+      ["dragend", nativeDragEnd, true],
+      ["click", blockAccidentalClick, true],
+    ];
+    for (const [type, listener, capture] of listeners) root?.addEventListener?.(type, listener, capture);
+    windowTarget?.addEventListener?.("blur", blur);
+
+    return Object.freeze({
+      cancelForRerender() {
+        nativeDragTaskId = null;
+        cleanup({ suppress: Boolean(pointer?.active) });
+      },
+      destroy() {
+        nativeDragTaskId = null;
+        cleanup();
+        for (const [type, listener, capture] of listeners) {
+          root?.removeEventListener?.(type, listener, capture);
+        }
+        windowTarget?.removeEventListener?.("blur", blur);
+        if (suppressClickTimer != null) windowTarget.clearTimeout?.(suppressClickTimer);
+        suppressClick = false;
+        suppressClickTimer = null;
+      },
+    });
+  }
+
+  window.AgentHubTaskBoardInteraction = Object.freeze({
+    createPointerDrag: createTaskBoardPointerDrag,
+  });
+
   window.AgentHubTaskBoardView = Object.freeze({
     createTaskReferenceOpenHandler,
     normalizedTaskStatusLanguage,
     orderedDashboardColumnIds,
     replaceBoardColumnRegionsPreservingScroll,
     replaceBoardColumnsPreservingScroll,
+    restoreTaskBoardScroll,
     taskBoardSnapshotChanges,
+    taskBoardScrollSnapshot,
     taskAttachmentCountLabel,
     taskAttachmentFiles,
     taskChangedFileGroups,
@@ -697,6 +959,14 @@
       });
     }
   }
+
+  const pointerTaskDrag = createTaskBoardPointerDrag({
+    root: board,
+    onMove: ({ taskId, destination, beforeId }) => {
+      const task = state.tasks.find((item) => item.id === taskId);
+      if (task && task.status !== "done") moveTask(task, destination, beforeId);
+    },
+  });
 
   function draggedColumnId(dataTransfer) {
     const custom = dataTransfer.getData(COLUMN_MIME);
@@ -1024,6 +1294,7 @@
       tabindex: "0",
       "aria-label": `Открыть задачу ${task.title || task.text}`,
       "data-board-task-id": task.id,
+      "data-board-task-movable": movable ? "true" : null,
       onclick: () => openTaskCard(task),
       onkeydown: (event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
@@ -1201,6 +1472,8 @@
   }
 
   function renderBoard() {
+    const scrollSnapshot = taskBoardScrollSnapshot(boardColumnRegions);
+    pointerTaskDrag.cancelForRerender();
     const visibleTasks = tasksForMode(state.tasks, { completedOnly: state.completedOnly });
     const emptyText = state.completedOnly ? "Нет закрытых задач" : "Перетащите задачу сюда";
     const completedCount = state.tasks.filter((task) => task.status === "done").length;
@@ -1243,6 +1516,7 @@
     }));
     const orderedIds = orderedDashboardColumnIds(state.columnOrder, rendered.keys());
     replaceBoardColumnRegionsPreservingScroll(boardColumnRegions, orderedIds, rendered);
+    restoreTaskBoardScroll(boardColumnRegions, scrollSnapshot);
   }
 
   function renderWorkspacePanel() {
