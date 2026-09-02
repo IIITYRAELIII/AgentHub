@@ -176,6 +176,53 @@ test("startup counts a registered runtime root even when it is not a Git reposit
   assert.match(reconciliation.repositories[0].reason, /not a git repository/u);
 });
 
+test("startup rejects an orphan unmarked clone at the exact managed release path", async (context) => {
+  const setup = await fixture(context);
+  const releaseRoot = path.join(
+    setup.dataDir,
+    "release-repositories",
+    taskRepositoryKey(setup.primary),
+    "repository",
+  );
+  await mkdir(path.dirname(releaseRoot), { recursive: true });
+  await git(path.dirname(releaseRoot), "clone", "--no-checkout", setup.primary, releaseRoot);
+  const primaryBefore = {
+    branch: await git(setup.primary, "symbolic-ref", "HEAD"),
+    head: await git(setup.primary, "rev-parse", "HEAD"),
+    status: await git(setup.primary, "status", "--porcelain=v1"),
+    team: await readFile(path.join(setup.primary, ".team", "participant.json")),
+    access: await readFile(path.join(setup.primary, "1C_ACCESS", "access.json")),
+  };
+  const orphanBefore = {
+    head: await git(releaseRoot, "rev-parse", "HEAD"),
+    status: await git(releaseRoot, "status", "--porcelain=v1"),
+  };
+
+  const reconciliation = await setup.service.reconcile({
+    projectRoots: [{
+      workspaceId: "workspace-orphan-clone",
+      registrationSource: "workspace_setting",
+      projectRoot: setup.primary,
+    }],
+  });
+
+  assert.equal(reconciliation.checked, 1);
+  assert.equal(reconciliation.registeredWorkspaceRoots, 1);
+  assert.equal(reconciliation.checkpointCount, 0);
+  assert.equal(reconciliation.repositories[0].status, "manual_required");
+  assert.equal(reconciliation.repositories[0].releaseRoot, releaseRoot);
+  assert.equal(reconciliation.repositories[0].checkpointPresent, false);
+  assert.match(reconciliation.repositories[0].reason, /orphan managed release repository/u);
+  assert.equal(await git(setup.primary, "symbolic-ref", "HEAD"), primaryBefore.branch);
+  assert.equal(await git(setup.primary, "rev-parse", "HEAD"), primaryBefore.head);
+  assert.equal(await git(setup.primary, "status", "--porcelain=v1"), primaryBefore.status);
+  assert.deepEqual(await readFile(path.join(setup.primary, ".team", "participant.json")), primaryBefore.team);
+  assert.deepEqual(await readFile(path.join(setup.primary, "1C_ACCESS", "access.json")), primaryBefore.access);
+  assert.equal(await git(releaseRoot, "rev-parse", "HEAD"), orphanBefore.head);
+  assert.equal(await git(releaseRoot, "status", "--porcelain=v1"), orphanBefore.status);
+  await assert.rejects(stat(path.join(path.dirname(releaseRoot), "checkpoint.json")), { code: "ENOENT" });
+});
+
 test("dirty primary bytes, retry checkpoint and legacy linked holder remain untouched", async (context) => {
   const setup = await fixture(context);
   const resultCommit = await taskResult(setup, context);

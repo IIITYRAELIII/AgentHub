@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
@@ -530,6 +530,7 @@ export class ReleaseGitWorkspaceService {
         const snapshot = await primarySnapshot(requestedRoot);
         if (auditedRoots.some((item) => samePath(item, snapshot.root))) continue;
         auditedRoots.push(snapshot.root);
+        const layout = this.#layout(snapshot.root);
         const checkpoint = checkpoints.find((item) => samePath(item.manifest.primaryRoot, snapshot.root)) ?? null;
         const failure = primaryInvariantFailure(snapshot, "startup reconciliation");
         const legacyFailure = snapshot.legacyLinkedHolders.length
@@ -540,26 +541,52 @@ export class ReleaseGitWorkspaceService {
             source: "registered_workspace",
             workspaceId: registeredRoot.workspaceId,
             registrationSource: registeredRoot.registrationSource,
-            repositoryKey: taskRepositoryKey(snapshot.root),
+            repositoryKey: layout.repositoryKey,
             status: "manual_required",
             reason: failure ?? legacyFailure,
             primary: publicPrimaryEvidence(snapshot),
-            releaseRoot: checkpoint?.manifest?.releaseRoot ?? null,
+            releaseRoot: layout.releaseRoot,
             checkpointPresent: checkpoint != null,
+          });
+          continue;
+        }
+        const releaseRootExists = await lstat(layout.releaseRoot).then(() => true).catch((error) => {
+          if (error?.code === "ENOENT") return false;
+          throw error;
+        });
+        if (releaseRootExists && !checkpoint) {
+          repositories.push({
+            source: "registered_workspace",
+            workspaceId: registeredRoot.workspaceId,
+            registrationSource: registeredRoot.registrationSource,
+            repositoryKey: layout.repositoryKey,
+            status: "manual_required",
+            reason: `orphan managed release repository exists without a valid checkpoint (${layout.releaseRoot})`,
+            primary: publicPrimaryEvidence(snapshot),
+            releaseRoot: layout.releaseRoot,
+            checkpointPresent: false,
           });
           continue;
         }
         let releaseRoot = null;
         if (checkpoint) {
-          releaseRoot = (await assertReleaseCloneForPublication({
-            repositoryRoot: checkpoint.manifest.releaseRoot,
-          })).releaseRoot;
+          if (checkpoint.repositoryKey !== layout.repositoryKey
+            || !samePath(checkpoint.checkpointFile, layout.checkpointFile)
+            || !samePath(checkpoint.manifest.releaseRoot, layout.releaseRoot)) {
+            throw new Error(`release checkpoint does not match the expected managed layout (${layout.releaseRoot})`);
+          }
+          const marker = await assertReleaseCloneForPublication({ repositoryRoot: layout.releaseRoot });
+          if (!samePath(marker.primaryRoot, snapshot.root)
+            || !samePath(marker.primaryGitCommonDir, snapshot.commonDir)) {
+            throw new Error(`managed release clone ownership does not match the registered primary Workspace (${snapshot.root})`);
+          }
+          releaseRoot = marker.releaseRoot;
         }
         repositories.push({
           source: "registered_workspace",
           workspaceId: registeredRoot.workspaceId,
           registrationSource: registeredRoot.registrationSource,
-          repositoryKey: taskRepositoryKey(snapshot.root),
+          repositoryKey: layout.repositoryKey,
           status: "ready",
           primary: publicPrimaryEvidence(snapshot),
           releaseRoot,
