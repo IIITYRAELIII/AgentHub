@@ -39,6 +39,7 @@ const particleStyle = window.AgentHubParticleStyle;
 const JournalView = window.AgentHubJournalView;
 const JournalAccountPanel = window.AgentHubJournalAccountPanel;
 const MessageView = window.AgentHubMessageView;
+const liveCardRenderController = window.AgentHubLiveCardRender.createLiveCardRenderController();
 const expandedUserMessageIds = new Set();
 let messageDisclosureFrame = 0;
 const journal = document.querySelector("[data-journal]");
@@ -5518,19 +5519,7 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
   const reasoning = node.querySelector("[data-live-reasoning]");
   const standaloneReasoning = groups.length ? "" : live.reasoning || "";
   const fileContext = currentFileLinkContext(task);
-  renderMarkdown(reasoning, standaloneReasoning, fileContext);
-  reasoning.hidden = !standaloneReasoning;
-  const liveTrace = node.querySelector("[data-live-trace]");
-  const openGroupIds = new Set(Array.from(
-    liveTrace.querySelectorAll("details[data-trace-group-id][open]"),
-    (details) => details.dataset.traceGroupId,
-  ));
-  liveTrace.replaceChildren(...(groups.length ? [turnTraceGroupsNode(groups, {
-    liveStage: liveStage.detail,
-    openGroupIds,
-  })] : []));
-  liveTrace.hidden = groups.length === 0;
-  const body = node.querySelector("[data-live-body]");
+  const activities = Array.isArray(live.activities) ? live.activities : [];
   const historyMessages = state.messages.get(state.selectedId) ?? [];
   const liveMessage = {
     ...live,
@@ -5540,25 +5529,66 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
       historyMessages.length,
     ),
   };
-  if (liveMessage.responseCitationPresentations.length) {
-    renderAgentResponseBody(body, liveMessage, visibleText, fileContext);
-  } else renderMarkdown(body, visibleText, fileContext);
+  const renderParts = window.AgentHubLiveCardRender.liveCardRenderParts({
+    visibleText,
+    standaloneReasoning,
+    traceGroups: groups,
+    activities,
+    stageDetail: liveStage.detail,
+    fileContext,
+    bodyState: liveMessage.responseCitationPresentations,
+  });
+  liveCardRenderController.reconcile(node, "reasoning", renderParts.reasoning, () => {
+    renderMarkdown(reasoning, standaloneReasoning, fileContext);
+  });
+  reasoning.hidden = !standaloneReasoning;
+  const liveTrace = node.querySelector("[data-live-trace]");
+  liveCardRenderController.reconcile(node, "trace", renderParts.trace, () => {
+    const openGroupIds = new Set(Array.from(
+      liveTrace.querySelectorAll("details[data-trace-group-id][open]"),
+      (details) => details.dataset.traceGroupId,
+    ));
+    liveTrace.replaceChildren(...(groups.length ? [turnTraceGroupsNode(groups, {
+      liveStage: liveStage.detail,
+      openGroupIds,
+    })] : []));
+  });
+  liveCardRenderController.reconcile(node, "trace-summary", renderParts.traceSummary, () => {
+    const summary = liveTrace.querySelector(
+      `details[data-trace-group-id="${TURN_TRACE_ACTIVITY_GROUP_ID}"] > summary`,
+    );
+    if (summary) renderActivityDisclosureSummary(summary, {
+      count: renderParts.traceSummary.count,
+      stage: renderParts.traceSummary.stageDetail,
+    });
+  });
+  liveTrace.hidden = groups.length === 0;
+  const body = node.querySelector("[data-live-body]");
+  liveCardRenderController.reconcile(node, "body", renderParts.body, () => {
+    if (liveMessage.responseCitationPresentations.length) {
+      renderAgentResponseBody(body, liveMessage, visibleText, fileContext);
+    } else renderMarkdown(body, visibleText, fileContext);
+  });
   body.hidden = !visibleText && liveMessage.responseCitationPresentations.length === 0;
   const activityFeed = node.querySelector("[data-activity-feed]");
-  const activities = Array.isArray(live.activities) ? live.activities : [];
-  const activityFeedVisible = groups.length === 0 && activities.length > 0;
-  activityFeed.open = liveActivityDisclosureOpen({
-    open: activityFeed.open,
-    wasHidden: activityFeed.hidden,
-    visible: activityFeedVisible,
+  liveCardRenderController.reconcile(node, "activity-feed", renderParts.activityFeed, () => {
+    activityFeed.open = liveActivityDisclosureOpen({
+      open: activityFeed.open,
+      wasHidden: activityFeed.hidden,
+      visible: renderParts.activityFeed.visible,
+    });
+    activityFeed.hidden = !renderParts.activityFeed.visible;
+    node.querySelector("[data-activity-list]").replaceChildren(
+      ...renderParts.activityFeed.activities.map(activityItemNode),
+    );
   });
-  activityFeed.hidden = !activityFeedVisible;
-  renderActivityDisclosureSummary(node.querySelector("[data-activity-summary]"), {
-    label: "Выполненные действия",
-    count: activities.length,
-    stage: liveStage.detail,
+  liveCardRenderController.reconcile(node, "activity-feed-summary", renderParts.activityFeedSummary, () => {
+    renderActivityDisclosureSummary(node.querySelector("[data-activity-summary]"), {
+      label: "Выполненные действия",
+      count: renderParts.activityFeedSummary.count,
+      stage: renderParts.activityFeedSummary.stageDetail,
+    });
   });
-  node.querySelector("[data-activity-list]").replaceChildren(...activities.map(activityItemNode));
   return true;
 }
 
