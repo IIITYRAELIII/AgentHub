@@ -153,6 +153,29 @@ test("startup audits a detached registered primary and linked holder with an emp
   await assert.rejects(stat(path.join(setup.dataDir, "release-repositories")), { code: "ENOENT" });
 });
 
+test("startup counts a registered runtime root even when it is not a Git repository", async (context) => {
+  const setup = await fixture(context);
+  const runtimeRoot = path.join(setup.root, "runtime-default-project");
+  await mkdir(runtimeRoot, { recursive: true });
+
+  const reconciliation = await setup.service.reconcile({
+    projectRoots: [{
+      workspaceId: "workspace-runtime-default",
+      registrationSource: "runtime_default",
+      projectRoot: runtimeRoot,
+    }],
+  });
+
+  assert.equal(reconciliation.checked, 1);
+  assert.equal(reconciliation.registeredWorkspaceRoots, 1);
+  assert.equal(reconciliation.checkpointCount, 0);
+  assert.equal(reconciliation.repositories[0].source, "registered_workspace");
+  assert.equal(reconciliation.repositories[0].registrationSource, "runtime_default");
+  assert.equal(reconciliation.repositories[0].projectRoot, runtimeRoot);
+  assert.equal(reconciliation.repositories[0].status, "manual_required");
+  assert.match(reconciliation.repositories[0].reason, /not a git repository/u);
+});
+
 test("dirty primary bytes, retry checkpoint and legacy linked holder remain untouched", async (context) => {
   const setup = await fixture(context);
   const resultCommit = await taskResult(setup, context);

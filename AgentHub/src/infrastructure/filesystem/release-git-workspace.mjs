@@ -514,6 +514,7 @@ export class ReleaseGitWorkspaceService {
 
     const repositories = [];
     const auditedRoots = [];
+    const attemptedRegisteredRoots = [];
     const registeredRoots = projectRoots.map((item) => ({
       workspaceId: typeof item === "object" ? String(item?.workspaceId ?? "").trim() || null : null,
       registrationSource: typeof item === "object"
@@ -523,6 +524,8 @@ export class ReleaseGitWorkspaceService {
     })).filter((item) => item.projectRoot);
     for (const registeredRoot of registeredRoots) {
       const requestedRoot = registeredRoot.projectRoot;
+      if (attemptedRegisteredRoots.some((item) => samePath(item, requestedRoot))) continue;
+      attemptedRegisteredRoots.push(requestedRoot);
       try {
         const snapshot = await primarySnapshot(requestedRoot);
         if (auditedRoots.some((item) => samePath(item, snapshot.root))) continue;
@@ -605,7 +608,7 @@ export class ReleaseGitWorkspaceService {
     }
     this.lastReconciliation = {
       checked: repositories.length,
-      registeredWorkspaceRoots: auditedRoots.length,
+      registeredWorkspaceRoots: attemptedRegisteredRoots.length,
       checkpointCount: checkpoints.length,
       repositories,
     };
