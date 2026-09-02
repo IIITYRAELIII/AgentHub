@@ -625,6 +625,38 @@ test("an active Stream preserves its answer-ready state", async () => {
   );
 });
 
+test("overflow summary counts running and answer-ready Streams independently", async () => {
+  const { summarizeStreamStatuses } = await streamTabsApi();
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(summarizeStreamStatuses([
+      { running: true, answerReady: false },
+      { running: false, answerReady: true },
+      { running: true, answerReady: true },
+      { running: false, answerReady: false },
+    ]))),
+    { running: 2, answerReady: 2 },
+  );
+});
+
+test("desktop Stream statuses keep a permanent marker and overflow exposes aggregate state", async () => {
+  const app = await readFile(new URL("../../assets/web-app/app.js", import.meta.url), "utf8");
+  const dialogStyles = await readFile(new URL("../../assets/web-app/dialog-area.css", import.meta.url), "utf8");
+
+  assert.match(app, /button\.toggleAttribute\("data-running", summary\.running > 0\)/u);
+  assert.match(app, /button\.toggleAttribute\("data-answer-ready", summary\.answerReady > 0\)/u);
+  assert.match(app, /data-stream-tabs-overflow-running-count/u);
+  assert.match(app, /data-stream-tabs-overflow-answer-ready-count/u);
+  assert.match(app, /class: "stream-tab-status-marker"/u);
+  assert.match(
+    dialogStyles,
+    /\.stream-tabs-track \.stream-tab\[data-running\] \.stream-tab-status-marker \{[\s\S]*bottom: 0;[\s\S]*height: 2px;/u,
+  );
+  assert.match(
+    dialogStyles,
+    /\.stream-tabs-track \.stream-tab\[data-answer-ready\] \.stream-tab-status-marker \{[\s\S]*height: 2px;[\s\S]*top: 0;/u,
+  );
+});
+
 test("answer arrival animation does not replay during Thread selection", async () => {
   const { answerArrivalTaskIds } = await streamTabsApi();
   const observedFinals = new Map();
