@@ -1,0 +1,122 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { HubMcpService } from "../../src/application/hub-mcp-service.mjs";
+
+function methodStub(result = null) {
+  return () => result;
+}
+
+test("hub_task_start carries the audited source Stream into message intake", async () => {
+  const task = {
+    id: "task-1",
+    title: "Исправить автора",
+    description: "",
+    bucket: "workspace",
+    status: "open",
+    workflowStatus: "new",
+    workspaceId: "workspace-1",
+    streamId: null,
+    boardOrder: 0,
+  };
+  const operations = new Map();
+  const workspace = {
+    id: "workspace-1",
+    name: "Agent HUB",
+    streams: [{
+      id: "stream-architect",
+      displayName: "Architect",
+      settings: { workingDirectory: "D:/work" },
+      threads: [{ provider: "codex", threadId: "thread-architect" }],
+    }],
+  };
+  const workspaceCatalog = {
+    resolveThread: ({ provider, threadId }) => provider === "codex" && threadId === "thread-architect"
+      ? {
+        workspaceId: workspace.id,
+        workspaceName: workspace.name,
+        streamId: "stream-architect",
+        streamDisplayName: "Architect",
+        thread: { projectRoot: "D:/work" },
+      }
+      : null,
+    workspace: (id) => id === workspace.id ? workspace : null,
+    hierarchy: () => [workspace],
+    stream: (id) => workspace.streams.find((candidate) => candidate.id === id) ?? null,
+    activeThread: methodStub(null),
+    developerRulesForStream: methodStub({}),
+    updateWorkspaceDeveloperRules: methodStub({}),
+    updateStreamDeveloperRules: methodStub({}),
+    workspaceEvents: methodStub([]),
+    mcpOperations: () => [...operations.values()],
+    beginMcpOperation: (operation) => {
+      const value = { ...operation, status: "pending", result: null, replayed: false };
+      operations.set(operation.requestId, value);
+      return value;
+    },
+    completeMcpOperation: (requestId, result) => {
+      Object.assign(operations.get(requestId), { status: "succeeded", result });
+    },
+    failMcpOperation: (requestId, error) => {
+      Object.assign(operations.get(requestId), { status: "failed", error: error.message });
+    },
+  };
+  const taskBoard = {
+    snapshot: () => [task],
+    task: () => task,
+    create: methodStub(task),
+    move: methodStub(task),
+    update: methodStub(task),
+    markStarted: methodStub(task),
+    complete: methodStub(task),
+    addAttachment: methodStub(task),
+    claim: methodStub(task),
+    requestWorkflowStatus: methodStub(task),
+    releaseTasks: methodStub([]),
+  };
+  const service = new HubMcpService({
+    workspaceCatalog,
+    taskBoard,
+    workLog: { threadTurns: async () => [] },
+    attachmentDirectory: "D:/attachments",
+    secret: "test-secret",
+    releasePlanner: { plan: async () => ({}) },
+    releasePreflight: { preflight: async () => ({}) },
+    releaseCompleter: { completeRelease: async () => ({}) },
+  });
+  service.setActiveRuns(() => [{
+    provider: "codex",
+    threadId: "thread-architect",
+    model: "Sol",
+  }]);
+  let launch = null;
+  service.setTaskLauncher(async (params, context) => {
+    launch = { params, context };
+    return {
+      task: { ...task, status: "started", workflowStatus: "in_progress", streamId: "stream-architect" },
+      target: { streamId: "stream-architect", provider: "codex", threadId: "thread-target" },
+    };
+  });
+
+  await service.call("hub_task_start", {
+    context_token: service.contextToken({ provider: "codex", threadId: "thread-architect" }),
+    request_id: "task-start-origin-1",
+    task_id: task.id,
+    message: "Исправь дефект полностью.",
+    confirm_launch: true,
+  });
+
+  assert.equal(launch.params.message, "Исправь дефект полностью.");
+  assert.equal(launch.params.clientUserMessageId, "mcp:task-start-origin-1");
+  assert.deepEqual(launch.context.messageOrigin, {
+    kind: "interstream",
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    model: "Sol",
+    sourceThreadId: "thread-architect",
+    requestId: "task-start-origin-1",
+  });
+});

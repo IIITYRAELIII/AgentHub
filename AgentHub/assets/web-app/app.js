@@ -4398,6 +4398,12 @@ function scheduleUserMessageDisclosureSync(roots = null) {
 
 window.addEventListener("resize", scheduleUserMessageDisclosureSync, { passive: true });
 
+function renderedMessageAuthor(message, role) {
+  const author = String(message?.author ?? "").trim()
+    || (role === "user" ? "Вы" : role === "system" ? "Система" : "Агент");
+  return message?.kind === "interstream" ? `Служебное · ${author}` : author;
+}
+
 function patchRenderedMessage(node, message) {
   const article = node.matches?.("article.msg, details.msg")
     ? node
@@ -4408,7 +4414,7 @@ function patchRenderedMessage(node, message) {
   article.dataset.itemId = message.itemId ?? "";
   article.dataset.deliveryState = message.deliveryState ?? "";
   const role = message.role === "user" ? "user" : message.role === "system" ? "system" : "agent";
-  const author = MessageView.messageAuthorLabel(message);
+  const author = renderedMessageAuthor(message, role);
   const head = article.querySelector(".msg-head");
   const authorNode = head?.querySelector(".msg-author");
   if (authorNode) authorNode.textContent = author;
@@ -5238,7 +5244,7 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
     ...(subagent ? { "data-subagent-response": true } : {}),
   });
 
-  const author = MessageView.messageAuthorLabel(message);
+  const author = renderedMessageAuthor(message, role);
   const head = el(subagent ? "summary" : "div", { class: "msg-head" }, [
     subagent
       ? el("span", { class: "msg-subagent-chevron", "aria-hidden": "true" }, [

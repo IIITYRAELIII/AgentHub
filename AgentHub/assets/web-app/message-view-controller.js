@@ -44,15 +44,6 @@
     }
   }
 
-  function messageAuthorLabel(message) {
-    const role = message?.role === "user"
-      ? "user"
-      : message?.role === "system" ? "system" : "agent";
-    const author = String(message?.author ?? "").trim()
-      || (role === "user" ? "Вы" : role === "system" ? "Система" : "Агент");
-    return message?.kind === "interstream" ? `Служебное · ${author}` : author;
-  }
-
   function messageTimestampLabel(value, nowValue = Date.now()) {
     const date = new Date(value);
     if (!Number.isFinite(date.getTime())) return "";
@@ -338,7 +329,6 @@
     messageTechnicalContent,
     messageCopyRequest,
     messageDisclosurePresentation,
-    messageAuthorLabel,
     messageContentSignature,
     messageKey,
     messageTailPagination,

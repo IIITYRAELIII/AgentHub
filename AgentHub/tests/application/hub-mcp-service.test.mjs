@@ -204,8 +204,8 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     },
   });
   const taskLaunchCalls = [];
-  service.setTaskLauncher(async ({ id, workspaceId, streamId, ...options }, launchContext) => {
-    taskLaunchCalls.push({ id, workspaceId, streamId, ...options, context: launchContext });
+  service.setTaskLauncher(async ({ id, workspaceId, streamId, ...options }) => {
+    taskLaunchCalls.push({ id, workspaceId, streamId, ...options });
     const selectedProjectRoot = streamId === "stream-2"
       ? targetWorkingDirectory
       : streamId === null ? workspaceWorkingDirectory : streamWorkingDirectory;
@@ -294,26 +294,13 @@ test("HubMcpService falls back to Stream context while a rotated Thread is not b
 test("HubMcpService starts the current Workspace task in the current Stream", async (context) => {
   const { service, token, streamWorkingDirectory, taskGitPrepareCalls, taskLaunchCalls } = await fixture(context);
   const task = await service.call("hub_task_start", {
-    context_token: token, request_id: "start-task", task_id: "task-current",
-    message: "Исправь дефект полностью.", confirm_launch: true,
+    context_token: token, request_id: "start-task", task_id: "task-current", confirm_launch: true,
   });
   assert.equal(task.task.status, "started");
   assert.equal(task.task.workflowStatus, "in_progress");
   assert.equal(task.target.streamId, "stream-1");
   assert.equal(taskGitPrepareCalls[0].projectRoot, streamWorkingDirectory);
   assert.equal("workingDirectory" in taskLaunchCalls[0], false);
-  assert.equal(taskLaunchCalls[0].message, "Исправь дефект полностью.");
-  assert.deepEqual(taskLaunchCalls[0].context.messageOrigin, {
-    kind: "interstream",
-    workspaceId: "workspace-1",
-    workspaceName: "Agent Hub",
-    streamId: "stream-1",
-    streamName: "MCP",
-    provider: "codex",
-    model: "Sol",
-    sourceThreadId: "thread-1",
-    requestId: "start-task",
-  });
   assert.match(task.gitWorkspace.projectRoot, /task-worktree[\\/]task-current$/u);
 });
 
