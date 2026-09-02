@@ -32,6 +32,7 @@
   function installCollapsibleSection({
     section,
     toggle,
+    trigger,
     storage,
     key,
     collapsedTitle = "Развернуть секцию",
@@ -47,10 +48,19 @@
       toggle.title = collapsed ? collapsedTitle : expandedTitle;
       return collapsed;
     };
-    toggle.addEventListener("click", () => {
+    const toggleSection = () => {
       collapsed = persistBoolean(storage, key, !collapsed);
       sync();
       onChange(collapsed);
+    };
+    toggle.addEventListener("click", (event) => {
+      event?.stopPropagation?.();
+      toggleSection();
+    });
+    trigger?.addEventListener("click", (event) => {
+      if (event?.defaultPrevented) return;
+      if (event?.target?.closest?.("button, a, input, select, textarea, [role='button']")) return;
+      toggleSection();
     });
     sync();
     return Object.freeze({
@@ -481,6 +491,7 @@
     installCollapsibleSection({
       section: workspaceTaskSection,
       toggle: workspaceTaskToggle,
+      trigger: workspaceTaskSection.querySelector(":scope > header"),
       storage: windowRef.localStorage,
       key: WORKSPACE_TASKS_COLLAPSED_STORAGE_KEY,
       collapsedTitle: "Развернуть задачи Workspace",
@@ -490,6 +501,7 @@
     installCollapsibleSection({
       section: recentStreamSection,
       toggle: recentStreamToggle,
+      trigger: recentStreamSection.querySelector(":scope > header"),
       storage: windowRef.localStorage,
       key: RECENT_STREAMS_COLLAPSED_STORAGE_KEY,
       collapsedTitle: "Развернуть недавние потоки",

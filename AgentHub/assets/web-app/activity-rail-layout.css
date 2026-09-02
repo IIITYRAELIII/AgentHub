@@ -66,6 +66,11 @@
   gap: 0.3rem;
 }
 
+.activity-recent-streams > .activity-section-head,
+.workspace-task-section.is-workspace > header {
+  cursor: pointer;
+}
+
 html[data-activity-task-column="separate"]:not([data-surface="mobile"]) .activity-rail-head {
   display: grid;
   gap: 0.35rem;
