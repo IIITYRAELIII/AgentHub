@@ -632,7 +632,6 @@ function optimisticDeferredEntries(taskIdValue, serverEntries = []) {
     .filter((message) => (
       optimisticDeferredClientUserMessageIds.has(message.clientUserMessageId)
       || serverClientIds.has(message.clientUserMessageId)
-      || window.AgentHubMessageView.messageOwnsDeferredQueue(message)
     ))
     .map((message) => ({
       id: `local:${message.clientUserMessageId}`,

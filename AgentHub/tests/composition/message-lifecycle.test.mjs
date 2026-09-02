@@ -2458,22 +2458,6 @@ test("returning to a busy task keeps its deferred user card only in the queue", 
   assert.deepEqual(visible, [activeUser]);
 });
 
-test("queued outgoing state restores the separate queue when receipt ids race", () => {
-  const clientUserMessageId = "client-queued-state";
-  const merged = lifecycle.mergeDeferredQueueEntries([], [{
-    id: `local:${clientUserMessageId}`,
-    clientUserMessageId,
-    state: "queued",
-    deliveryState: "queued",
-    text: "Следующий вопрос",
-    optimistic: true,
-  }]);
-
-  assert.equal(merged.length, 1);
-  assert.equal(merged[0].clientUserMessageId, clientUserMessageId);
-  assert.equal(merged[0].optimistic, true);
-});
-
 test("rotation completion waits for maintenance and keeps its post-answer position", () => {
   assert.match(
     hubClientSource,

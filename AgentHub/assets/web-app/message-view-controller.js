@@ -403,23 +403,10 @@
     }
   }
 
-  function messageOwnsDeferredQueue(message) {
-    if (message?.role !== "user") return false;
-    const deliveryState = String(message?.deliveryState ?? "").trim();
-    return deliveryState === "queued" || deliveryState === "deferred";
-  }
-
-  function conversationSurfaceMessages(messages) {
-    return (Array.isArray(messages) ? messages : []).filter((message) => {
-      return !messageOwnsDeferredQueue(message);
-    });
-  }
-
   globalThis.AgentHubMessageView = Object.freeze({
     claimKeyedChildrenOwner,
     codeBlockCopyRequest,
     composerFollowUpMode,
-    conversationSurfaceMessages,
     deferredQueueCounts,
     extractTechnicalTails,
     messageTechnicalContent,
@@ -427,7 +414,6 @@
     messageDisclosurePresentation,
     messageContentSignature,
     messageKey,
-    messageOwnsDeferredQueue,
     messageTailPagination,
     messageTimestampLabel,
     responseCitationControl,
