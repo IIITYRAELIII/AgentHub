@@ -42,8 +42,16 @@ function historyItemTimestamp(item) {
 }
 
 function sortTaskHistoryChronologically(history) {
-  return history
-    .map((item, index) => ({ item, index, time: historyItemTimestamp(item) }))
+  const values = history
+    .map((item, index) => ({ item, index, time: historyItemTimestamp(item) }));
+  const anchors = values.filter(({ time }) => Number.isFinite(time));
+  for (const value of values) {
+    if (Number.isFinite(value.time)) continue;
+    const previous = anchors.findLast((anchor) => anchor.index < value.index);
+    const next = anchors.find((anchor) => anchor.index > value.index);
+    value.time = next?.time ?? previous?.time ?? Number.NaN;
+  }
+  return values
     .sort((left, right) => {
       if (Number.isFinite(left.time) && Number.isFinite(right.time) && left.time !== right.time) {
         return left.time - right.time;

@@ -869,7 +869,7 @@ function historyPageQuery(references, {
   `;
   const cte = `WITH selected_threads(provider, thread_id, source_order) AS (
     VALUES ${referenceSql}
-  ), visible_turns AS (
+  ), base_turns AS (
     SELECT turns.*, selected_threads.source_order,
       COALESCE(
         julianday(turns.started_at),
@@ -888,6 +888,23 @@ function historyPageQuery(references, {
     JOIN selected_threads ON selected_threads.provider = turns.provider
       AND selected_threads.thread_id = turns.thread_id
     WHERE ${visibleSql}
+  ), turn_groups AS (
+    SELECT base_turns.*,
+      SUM(CASE WHEN sort_time IS NOT NULL THEN 1 ELSE 0 END) OVER (
+        ORDER BY source_order, position ROWS UNBOUNDED PRECEDING
+      ) AS previous_time_group,
+      SUM(CASE WHEN sort_time IS NOT NULL THEN 1 ELSE 0 END) OVER (
+        ORDER BY source_order DESC, position DESC ROWS UNBOUNDED PRECEDING
+      ) AS next_time_group
+    FROM base_turns
+  ), visible_turns AS (
+    SELECT turn_groups.*,
+      COALESCE(
+        sort_time,
+        MAX(sort_time) OVER (PARTITION BY next_time_group),
+        MAX(sort_time) OVER (PARTITION BY previous_time_group)
+      ) AS chronology_anchor
+    FROM turn_groups
   )`;
   return { cte, params };
 }
@@ -1913,8 +1930,7 @@ export class LocalTaskSyncStore {
     }
     const rows = this.#database.prepare(`${query.cte}
       SELECT * FROM visible_turns
-      ORDER BY CASE WHEN sort_time IS NULL THEN 1 ELSE 0 END,
-        sort_time, source_order, position
+      ORDER BY chronology_anchor, source_order, position
       LIMIT ? OFFSET ?
     `).all(...query.params, end - start, start);
     const history = this.#hydrateHistoryRows(rows);

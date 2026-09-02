@@ -77,6 +77,71 @@ test("local task sync persists catalog, runtime owner, status and history", asyn
   assert.equal(restored.snapshot(task).stage, "Изменяются файлы");
 });
 
+test("history page keeps legacy undated turns in durable provider sequence", async () => {
+  const filePath = await storeFile();
+  const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
+  const store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  const legacyThread = { ...task, threadId: "legacy-vsc-thread" };
+  const modernThread = { ...task, threadId: "modern-codex-thread" };
+  try {
+    store.recordHistory(legacyThread, [{
+      id: "legacy-vsc-1",
+      prompt: "Старый VSC-запрос",
+      answer: "Старый VSC-ответ",
+      completed: true,
+      messages: [
+        { itemId: "legacy-vsc-user-1", role: "user", text: "Старый VSC-запрос" },
+        { itemId: "legacy-vsc-agent-1", role: "agent", text: "Старый VSC-ответ" },
+      ],
+    }, {
+      id: "legacy-vsc-2",
+      prompt: "Ещё один старый VSC-запрос",
+      answer: "Ещё один старый VSC-ответ",
+      completed: true,
+      messages: [
+        { itemId: "legacy-vsc-user-2", role: "user", text: "Ещё один старый VSC-запрос" },
+        { itemId: "legacy-vsc-agent-2", role: "agent", text: "Ещё один старый VSC-ответ" },
+      ],
+    }]);
+    store.recordHistory(modernThread, [{
+      id: "modern-codex-1",
+      prompt: "Современный запрос",
+      answer: "Современный ответ",
+      completed: true,
+      startedAt: "2026-09-01T20:00:00.000Z",
+      completedAt: "2026-09-01T20:01:00.000Z",
+      messages: [
+        {
+          itemId: "modern-codex-user-1",
+          role: "user",
+          text: "Современный запрос",
+          time: "2026-09-01T20:00:00.000Z",
+        },
+        {
+          itemId: "modern-codex-agent-1",
+          role: "agent",
+          text: "Современный ответ",
+          time: "2026-09-01T20:01:00.000Z",
+        },
+      ],
+    }]);
+
+    const page = store.historyPage([legacyThread, modernThread], { limit: 10 });
+
+    assert.deepEqual(page.items.map(({ turn }) => turn.id), [
+      "legacy-vsc-1",
+      "legacy-vsc-2",
+      "modern-codex-1",
+    ]);
+    assert.equal(page.items[0].turn.startedAt ?? null, null);
+    assert.equal(page.items[0].turn.messages[0].time ?? null, null);
+  } finally {
+    store.close();
+    await rm(path.dirname(filePath), { recursive: true, force: true });
+  }
+});
+
 test("Claude transcript attachment turn cannot duplicate its managed terminal command", async () => {
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath });
