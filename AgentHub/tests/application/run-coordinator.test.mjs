@@ -524,6 +524,168 @@ test("RunCoordinator acknowledges durable steer within 250ms without awaiting th
   ]);
 });
 
+test("RunCoordinator queues an exact Codex final-answer follow-up instead of steering", async () => {
+  const active = {
+    id: "active",
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    status: "running",
+    executionOwner: "hub",
+    responseItems: [{
+      id: "answer-1",
+      type: "agentMessage",
+      phase: "final_answer",
+      turnId: "turn-1",
+      status: "inProgress",
+    }],
+  };
+  const f = fixture({
+    taskRuns: { forTask: () => active },
+    deferInput: async (...args) => {
+      f.calls.push(["defer", ...args]);
+      return { id: "queued-after-final", item: { id: "queued-after-final" } };
+    },
+    scheduleDeferred: (item, delay) => f.calls.push(["schedule", item, delay]),
+  });
+
+  const result = await f.coordinator.acceptClientInput({
+    input: "следующий вопрос",
+    attachments: [],
+    target: f.target,
+    clientUserMessageId: "message-after-final",
+    messageFingerprint: "fingerprint-after-final",
+    followUpMode: "steer",
+  });
+
+  assert.equal(result.accepted, true);
+  assert.equal(result.queued, true);
+  assert.equal(result.steerPending, undefined);
+  assert.equal(result.reason, "final-answer-active");
+  assert.match(result.message, /очереди для следующего хода/u);
+  assert.equal(f.calls.some(([name]) => name === "provider"), false);
+  assert.equal(f.calls.find(([name]) => name === "defer")[3].conflictKind, "message-intake");
+  assert.equal(f.calls.find(([name]) => name === "defer")[3].clientUserMessageId, "message-after-final");
+  assert.deepEqual(f.calls.find(([name]) => name === "schedule").slice(1), [
+    { id: "queued-after-final" }, 500,
+  ]);
+});
+
+test("RunCoordinator keeps exact Codex commentary steering available", async () => {
+  const active = {
+    id: "active",
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    status: "running",
+    executionOwner: "hub",
+    responseItems: [{
+      id: "commentary-1",
+      type: "agentMessage",
+      phase: "commentary",
+      turnId: "turn-1",
+      status: "inProgress",
+    }],
+  };
+  const f = fixture({ taskRuns: { forTask: () => active } });
+
+  const result = await f.coordinator.steer({
+    input: "уточнение",
+    target: {
+      ...f.target,
+      steerTargetRunId: "active",
+      steerTargetTurnId: "turn-1",
+    },
+    clientUserMessageId: "message-commentary",
+  });
+
+  assert.equal(result.steered, true);
+  assert.equal(f.calls.filter(([name]) => name === "provider").length, 1);
+});
+
+test("RunCoordinator ignores final-answer markers outside the exact Codex run identity", async () => {
+  for (const active of [{
+    id: "active-codex",
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    status: "running",
+    executionOwner: "hub",
+    responseItems: [{
+      id: "answer-other",
+      type: "agentMessage",
+      phase: "final_answer",
+      turnId: "turn-other",
+      status: "inProgress",
+    }],
+  }, {
+    id: "active-claude",
+    provider: "claude",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    status: "running",
+    executionOwner: "hub",
+    responseItems: [{
+      id: "answer-claude",
+      type: "agentMessage",
+      phase: "final_answer",
+      turnId: "turn-1",
+      status: "inProgress",
+    }],
+  }]) {
+    const f = fixture({ taskRuns: { forTask: () => active } });
+    const result = await f.coordinator.steer({
+      input: "уточнение",
+      target: {
+        ...f.target,
+        provider: active.provider,
+        steerTargetRunId: active.id,
+        steerTargetTurnId: active.turnId,
+      },
+      clientUserMessageId: `message-${active.provider}`,
+    });
+    assert.equal(result.steered, true);
+    assert.equal(f.calls.filter(([name]) => name === "provider").length, 1);
+  }
+});
+
+test("RunCoordinator closes a queued steer when the exact final starts before dispatch", async () => {
+  const active = {
+    id: "active",
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    status: "running",
+    executionOwner: "hub",
+    responseItems: [{
+      id: "commentary-1",
+      type: "agentMessage",
+      phase: "commentary",
+      turnId: "turn-1",
+      status: "inProgress",
+    }],
+  };
+  const f = fixture({ taskRuns: { forTask: () => active } });
+  active.responseItems.push({
+    id: "answer-1",
+    type: "agentMessage",
+    phase: "final_answer",
+    turnId: "turn-1",
+    status: "inProgress",
+  });
+
+  await assert.rejects(f.coordinator.steer({
+    input: "не прерывать финал",
+    target: {
+      ...f.target,
+      steerTargetRunId: "active",
+      steerTargetTurnId: "turn-1",
+    },
+    clientUserMessageId: "message-final-race",
+  }), /exact Codex final answer already started/u);
+  assert.equal(f.calls.some(([name]) => name === "provider"), false);
+});
+
 test("RunCoordinator rejects a durable steer after its exact managed turn changes", async () => {
   const active = { id: "run-new", turnId: "turn-new", executionOwner: "hub" };
   const f = fixture({ taskRuns: { forTask: () => active } });

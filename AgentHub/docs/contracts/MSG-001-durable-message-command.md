@@ -50,6 +50,17 @@ consulted only when no exact managed identity exists or when the provider
 rejects that identity as stale; only a real provider rejection downgrades the
 durable command to queued intake.
 
+Codex closes steer admission for one exact nonterminal turn when that run has
+observed `item/started` for an `agentMessage` with `phase="final_answer"` and the
+item's non-empty `turnId` equals the registered `run.turnId`. The admission
+boundary checks this protocol state both before acknowledging a requested steer
+and immediately before `turn/steer`, because the phase may advance while the
+durable command waits for dispatch. The same command remains ordinary durable
+queued intake under its original `clientUserMessageId` and FIFO position until
+the turn releases occupancy. Analysis, commentary and reasoning remain
+steerable. A different item or turn, missing identity, and every Claude run are
+outside this guard; text, elapsed time and rendered state are never evidence.
+
 For an inter-Stream command, the envelope `requestId` deterministically restores
 the `mcp:<requestId>` command alias when a provider rollout omits
 `clientUserMessageId`. That alias reconciles receipt and rollout projections;

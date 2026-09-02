@@ -37,6 +37,22 @@ function persistentAttachmentDescriptors(describeAttachments, files, persistentF
   return persistentFiles ? describeAttachments(files) : [];
 }
 
+function codexFinalAnswerStarted(run, target) {
+  const runId = String(run?.id ?? "").trim();
+  const runTurnId = String(run?.turnId ?? "").trim();
+  const runThreadId = String(run?.threadId ?? "").trim();
+  const targetThreadId = String(target?.threadId ?? "").trim();
+  if (!runId || !runTurnId || !runThreadId || runThreadId !== targetThreadId) return false;
+  if (String(run?.provider ?? "").trim().toLowerCase() !== "codex"
+    || String(target?.provider ?? "").trim().toLowerCase() !== "codex") return false;
+  return (Array.isArray(run.responseItems) ? run.responseItems : []).some((item) => (
+    String(item?.id ?? "").trim()
+    && item?.type === "agentMessage"
+    && String(item?.phase ?? "").trim() === "final_answer"
+    && String(item?.turnId ?? "").trim() === runTurnId
+  ));
+}
+
 export class RunCoordinator {
   #lanes = new Map();
   #intakeLanes = new Map();
@@ -363,7 +379,7 @@ export class RunCoordinator {
     }
     if (!deferred.duplicate) this.scheduleDeferred(deferred.item, scheduleDelayMs);
     return {
-      accepted: ["message-intake", "runtime-restart"].includes(reason),
+      accepted: ["message-intake", "runtime-restart", "final-answer-active"].includes(reason),
       deferred: true,
       queued: true,
       duplicate: deferred.duplicate === true,
@@ -380,6 +396,8 @@ export class RunCoordinator {
         ? "Сообщение принято Hub, сохранено и передано на запуск."
         : reason === "steer-unavailable"
         ? "Текущий ход уже нельзя изменить; сообщение сохранено в очереди."
+        : reason === "final-answer-active"
+        ? "Финальный ответ уже формируется; сообщение сохранено в очереди для следующего хода."
         : reason === "context-maintenance"
           ? "Сообщение поставлено в очередь до завершения свёртки или ротации контекста."
           : reason === "runtime-restart"
@@ -461,6 +479,16 @@ export class RunCoordinator {
     }
     if (existingRun) {
       if (followUpMode === "steer") {
+        if (codexFinalAnswerStarted(existingRun, target)) {
+          return this.queue(input, attachments, {
+            target,
+            executionOwner: existingRun.executionOwner ?? TASK_EXECUTION_OWNERS.HUB,
+            clientUserMessageId,
+            messageFingerprint,
+            reason: "final-answer-active",
+            conflictKind: "message-intake",
+          });
+        }
         return this.queueSteer(input, attachments, {
           existingRun,
           messageFingerprint,
@@ -513,6 +541,9 @@ export class RunCoordinator {
     if ((expectedRunId && expectedRunId !== String(existingRun?.id ?? "").trim())
       || (expectedTurnId && expectedTurnId !== String(existingRun?.turnId ?? "").trim())) {
       throw new Error("Active turn not steerable: the targeted managed turn is no longer active");
+    }
+    if (codexFinalAnswerStarted(existingRun, target)) {
+      throw new Error("Active turn not steerable: the exact Codex final answer already started");
     }
     const externalActivity = existingRun
       ? { state: "active", executionOwner: existingRun.executionOwner }
