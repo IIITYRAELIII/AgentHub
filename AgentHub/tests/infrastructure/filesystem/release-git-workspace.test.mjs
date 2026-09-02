@@ -128,7 +128,11 @@ test("startup audits a detached registered primary and linked holder with an emp
   const beforeStatus = await git(setup.primary, "status", "--porcelain=v1");
 
   const reconciliation = await setup.service.reconcile({
-    projectRoots: [{ workspaceId: "workspace-1", projectRoot: setup.primary }],
+    projectRoots: [{
+      workspaceId: "workspace-1",
+      registrationSource: "runtime_default",
+      projectRoot: setup.primary,
+    }],
   });
 
   assert.equal(reconciliation.checked, 1);
@@ -136,6 +140,7 @@ test("startup audits a detached registered primary and linked holder with an emp
   assert.equal(reconciliation.checkpointCount, 0);
   assert.equal(reconciliation.repositories[0].source, "registered_workspace");
   assert.equal(reconciliation.repositories[0].workspaceId, "workspace-1");
+  assert.equal(reconciliation.repositories[0].registrationSource, "runtime_default");
   assert.equal(reconciliation.repositories[0].status, "manual_required");
   assert.match(reconciliation.repositories[0].reason, /attached to refs\/heads\/main/u);
   assert.equal(reconciliation.repositories[0].primary.branch, null);

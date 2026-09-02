@@ -183,7 +183,9 @@ clean, or otherwise mutate its HEAD, index or working tree.
 At runtime startup, reconciliation receives the working directory of every
 release-enabled registered Workspace from the Workspace catalog. It audits those
 roots even when `release-repositories` is absent and no checkpoint has ever been
-written. A detached primary and every linked `main`, `PreRelease`, or legacy-named
+written. A legacy Workspace without its own working directory uses the runtime's
+registered default project root; historical thread roots are not treated as
+primary authority. A detached primary and every linked `main`, `PreRelease`, or legacy-named
 holder are diagnostic evidence; discovery performs no clone creation, checkout,
 branch change, cleanup or removal. Checkpoint enumeration additionally recovers
 Agent Hub-owned clones that are no longer associated with a registered root.

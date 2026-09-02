@@ -318,7 +318,10 @@ export async function createHubInfrastructure({
     .filter((workspace) => workspace.settings?.releaseWorkflowEnabled === true)
     .map((workspace) => ({
       workspaceId: workspace.id,
-      projectRoot: String(workspace.settings?.workingDirectory ?? "").trim(),
+      projectRoot: String(workspace.settings?.workingDirectory ?? "").trim() || config.projectRoot,
+      registrationSource: String(workspace.settings?.workingDirectory ?? "").trim()
+        ? "workspace_setting"
+        : "runtime_default",
     }))
     .filter((workspace) => workspace.projectRoot);
   const releaseReconciliation = await releaseGitWorkspaces.reconcile({
