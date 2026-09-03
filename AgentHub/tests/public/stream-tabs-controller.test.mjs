@@ -878,7 +878,7 @@ test("Workspace folders open for selected, running, or unread children", async (
   }, ["folder:Клиенты"], "other"), true);
 });
 
-test("Workspace folder mutations preserve settings and creation can stay ungrouped", async () => {
+test("Workspace folder mutations carry only identity and folder while creation can stay ungrouped", async () => {
   const {
     workspaceCreationSettings,
     workspaceFolderMutation,
@@ -895,12 +895,6 @@ test("Workspace folder mutations preserve settings and creation can stay ungroup
   )), {
     workspaceId: "workspace-1",
     folderName: "Важные проекты",
-    settings: {
-      workingDirectory: "project",
-      taskPrefix: "HUB",
-      releaseWorkflowEnabled: true,
-      catalogFolder: "Важные проекты",
-    },
   });
   assert.deepEqual(JSON.parse(JSON.stringify(workspaceFolderMutation({
     ...workspace,
@@ -908,7 +902,6 @@ test("Workspace folder mutations preserve settings and creation can stay ungroup
   }, ""))), {
     workspaceId: "workspace-1",
     folderName: "",
-    settings: workspace.settings,
   });
   assert.deepEqual(Array.from(workspaceFolderNames([
     { settings: { catalogFolder: "Бета" } },

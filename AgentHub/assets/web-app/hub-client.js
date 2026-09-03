@@ -2819,13 +2819,9 @@ agentHub.on("workspace:rename", ({ workspaceId, name }) => runAction(async () =>
   await control("rename-workspace", { workspaceId, name }),
 )));
 agentHub.on("workspace:folder-move", ({ workspaceId, folderName }) => runAction(async () => {
-  const workspace = (lastSnapshot?.workspaces ?? []).find((item) => item.id === workspaceId);
-  const mutation = window.AgentHubStreamTabs.workspaceFolderMutation(workspace, folderName);
+  const mutation = window.AgentHubStreamTabs.workspaceFolderMutation({ id: workspaceId }, folderName);
   if (!mutation) return;
-  applySnapshot(await control("update-workspace-settings", {
-    workspaceId: mutation.workspaceId,
-    settings: mutation.settings,
-  }));
+  applySnapshot(await control("move-workspace-to-folder", mutation));
   agentHub.toast(mutation.folderName
     ? `Workspace перемещён в папку «${mutation.folderName}»`
     : "Workspace убран из папки");

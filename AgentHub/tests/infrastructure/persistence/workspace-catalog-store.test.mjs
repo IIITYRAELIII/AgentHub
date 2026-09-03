@@ -134,6 +134,42 @@ test("Workspace folder rename updates every member atomically and preserves sett
   assert.throws(() => store.renameWorkspaceFolder("", "Новая"), /names are required/u);
 });
 
+test("Workspace folder move preserves settings updated after a stale client snapshot", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({
+    name: "Concurrent",
+    settings: {
+      catalogFolder: "Старая",
+      workingDirectory: "old",
+      taskPrefix: "RACE",
+      releaseWorkflowEnabled: true,
+    },
+  });
+  const staleClientSnapshot = structuredClone(workspace);
+
+  store.updateWorkspaceSettings(workspace.id, {
+    ...workspace.settings,
+    workingDirectory: "new-authoritative",
+    concurrentMarker: "must-survive",
+  });
+  const moved = store.moveWorkspaceToFolder(staleClientSnapshot.id, " Клиенты ");
+
+  assert.deepEqual(moved.settings, {
+    catalogFolder: "Клиенты",
+    workingDirectory: "new-authoritative",
+    taskPrefix: "RACE",
+    releaseWorkflowEnabled: true,
+    concurrentMarker: "must-survive",
+  });
+  const ungrouped = store.moveWorkspaceToFolder(staleClientSnapshot.id, "");
+  assert.deepEqual(ungrouped.settings, {
+    workingDirectory: "new-authoritative",
+    taskPrefix: "RACE",
+    releaseWorkflowEnabled: true,
+    concurrentMarker: "must-survive",
+  });
+});
+
 test("legacy Experiments name migrates to Other without replacing its Workspace", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspaces-other-migration-"));
   const databaseFile = path.join(directory, "journal.sqlite");

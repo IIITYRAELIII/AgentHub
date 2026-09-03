@@ -637,13 +637,8 @@
   function workspaceFolderMutation(workspace, folderName) {
     const workspaceId = String(workspace?.id ?? "").trim();
     if (!workspaceId) return null;
-    const settings = {
-      ...(workspace?.settings && typeof workspace.settings === "object" ? workspace.settings : {}),
-    };
     const normalized = normalizeWorkspaceFolderName(folderName);
-    if (normalized) settings.catalogFolder = normalized;
-    else delete settings.catalogFolder;
-    return { workspaceId, settings, folderName: normalized };
+    return { workspaceId, folderName: normalized };
   }
 
   function workspaceCreationSettings({

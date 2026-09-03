@@ -15,6 +15,7 @@ function fixture({ sourceSurvives = false } = {}) {
       workspace: (id) => (workspaces.has(id) ? { id } : null),
     },
     workspaceCatalogService: {
+      moveWorkspaceToFolder: (params) => (calls.push(["move-folder", params]), params),
       renameWorkspaceFolder: (params) => (calls.push(["folder", params]), params),
       createWorkspaceFromStream: () => {
         workspaces.add("created");
@@ -95,5 +96,20 @@ test("renaming a Workspace folder uses one Workspace mutation", async () => {
   assert.deepEqual(calls, [["folder", {
     fromFolderName: "Клиенты",
     toFolderName: "Заказчики",
+  }]]);
+});
+
+test("moving a Workspace to a folder uses the dedicated Workspace mutation", async () => {
+  const { actions, calls } = fixture();
+  assert.deepEqual(await actions.moveWorkspaceToFolder({
+    workspaceId: "workspace-1",
+    folderName: "Клиенты",
+  }), {
+    workspaceId: "workspace-1",
+    folderName: "Клиенты",
+  });
+  assert.deepEqual(calls, [["move-folder", {
+    workspaceId: "workspace-1",
+    folderName: "Клиенты",
   }]]);
 });

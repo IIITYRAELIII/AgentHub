@@ -490,6 +490,24 @@ export class WorkspaceCatalogStore {
     return this.workspace(id);
   }
 
+  moveWorkspaceToFolder(workspaceId, folderName) {
+    const id = safeIdentifier(workspaceId, "workspace id");
+    return this.#transaction(() => {
+      const current = this.workspace(id);
+      if (!current) throw new Error(`workspace not found: ${id}`);
+      const settings = current.settings && typeof current.settings === "object" && !Array.isArray(current.settings)
+        ? { ...current.settings }
+        : {};
+      const normalizedFolderName = workspaceFolderName(folderName);
+      if (normalizedFolderName) settings.catalogFolder = normalizedFolderName;
+      else delete settings.catalogFolder;
+      this.#database.prepare(`
+        UPDATE hub_workspaces SET settings_json = ?, updated_at_ms = ? WHERE id = ?
+      `).run(JSON.stringify(settings), this.#nowMs(), id);
+      return this.workspace(id);
+    });
+  }
+
   renameWorkspaceFolder(fromFolderName, toFolderName) {
     const fromName = workspaceFolderName(fromFolderName);
     const toName = workspaceFolderName(toFolderName);

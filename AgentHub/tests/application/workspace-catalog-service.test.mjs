@@ -12,6 +12,9 @@ function fixture({ taskBoard = null } = {}) {
     createStream: (value) => (calls.push(["createStream", value]), { id: "stream-1", ...value }),
     renameWorkspace: (...args) => calls.push(["renameWorkspace", ...args]),
     updateWorkspaceSettings: (...args) => (calls.push(["updateWorkspaceSettings", ...args]), { settings: args[1] }),
+    moveWorkspaceToFolder: (...args) => (calls.push(["moveWorkspaceToFolder", ...args]), {
+      id: args[0], settings: { catalogFolder: args[1] },
+    }),
     renameWorkspaceFolder: (...args) => (calls.push(["renameWorkspaceFolder", ...args]), {
       fromFolderName: args[0], toFolderName: args[1], workspaceCount: 2,
     }),
@@ -115,6 +118,18 @@ test("Workspace folder rename delegates one atomic catalog mutation", () => {
     workspaceCount: 2,
   });
   assert.deepEqual(calls.at(-1), ["renameWorkspaceFolder", "Клиенты", "Заказчики"]);
+});
+
+test("Workspace folder move delegates only stable identity and folder name", () => {
+  const { service, calls } = fixture();
+  assert.deepEqual(service.moveWorkspaceToFolder({
+    workspaceId: "workspace-1",
+    folderName: "Клиенты",
+  }), {
+    id: "workspace-1",
+    settings: { catalogFolder: "Клиенты" },
+  });
+  assert.deepEqual(calls.at(-1), ["moveWorkspaceToFolder", "workspace-1", "Клиенты"]);
 });
 
 test("adding a Workspace Task prefix backfills its unnumbered Tasks", () => {

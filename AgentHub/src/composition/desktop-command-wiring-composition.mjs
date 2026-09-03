@@ -10,6 +10,9 @@ export function createWorkspaceActions(services) {
       () => services.workspaceCatalogService.updateWorkspaceSettings(params),
       { resultKey: "workspaceSettingsUpdate" },
     ),
+    moveWorkspaceToFolder: (params) => services.workspaceMutation(
+      () => services.workspaceCatalogService.moveWorkspaceToFolder(params),
+    ),
     renameWorkspaceFolder: (params) => services.workspaceMutation(
       () => services.workspaceCatalogService.renameWorkspaceFolder(params),
       { resultKey: "renamedWorkspaceFolder" },
