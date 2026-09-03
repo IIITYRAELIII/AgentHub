@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+  createVisibilityBoundAnimation,
   createStartupDisconnectedModel,
   createStartupScreenModel,
   formatStartupElapsed,
@@ -101,4 +102,50 @@ test("startup screen can reopen for a runtime replacement after initial startup"
 test("startup screen uses factual health stages and a webview-safe mark URL", () => {
   assert.match(startupScreenSource, /new URL\("\.\/agent-hub-mark\.png", import\.meta\.url\)\.href/u);
   assert.doesNotMatch(startupScreenSource, /<img src="\/agent-hub-mark\.png"/u);
+});
+
+test("startup animation runs only while its screen is visible", () => {
+  let visible = false;
+  let nextFrameId = 1;
+  const frames = new Map();
+  const cancelled = [];
+  const draws = [];
+  const animation = createVisibilityBoundAnimation({
+    requestFrame: (callback) => {
+      const frameId = nextFrameId++;
+      frames.set(frameId, callback);
+      return frameId;
+    },
+    cancelFrame: (frameId) => {
+      cancelled.push(frameId);
+      frames.delete(frameId);
+    },
+    isVisible: () => visible,
+    draw: (now) => draws.push(now),
+  });
+
+  animation.start();
+  assert.equal(frames.size, 0);
+
+  visible = true;
+  animation.start();
+  animation.start();
+  assert.equal(frames.size, 1);
+  const [firstFrameId, firstFrame] = frames.entries().next().value;
+  frames.delete(firstFrameId);
+  firstFrame(16);
+  assert.deepEqual(draws, [16]);
+  assert.equal(frames.size, 1);
+
+  visible = false;
+  animation.stop();
+  assert.deepEqual(cancelled, [2]);
+  assert.equal(frames.size, 0);
+
+  visible = true;
+  animation.start();
+  animation.destroy();
+  assert.deepEqual(cancelled, [2, 3]);
+  animation.start();
+  assert.equal(frames.size, 0);
 });

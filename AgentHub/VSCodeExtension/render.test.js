@@ -2409,6 +2409,10 @@ test("composer pastes arbitrary clipboard files and falls back to the files list
 test("shared shell groups threads under stable Workspace and Stream identities", () => {
   const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
+  const streamTabs = fs.readFileSync(
+    require.resolve("../assets/web-app/stream-tabs-controller.js"),
+    "utf8",
+  );
   const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
   const tabsStart = app.indexOf("function renderStreamTabs()");
   const tabsEnd = app.indexOf("function publishVisibleStreamTasks", tabsStart);
@@ -2421,8 +2425,9 @@ test("shared shell groups threads under stable Workspace and Stream identities",
   assert.doesNotMatch(modelTask, new RegExp(["hub", "TaskId"].join(""), "u"));
 
   // Один безымянный поток не показывает искусственный номер; несколько получают Stream N.
-  assert.match(app, /function streamDisplayName\(stream, streamCount\)/u);
-  assert.match(app, /streamCount > 1 \? `Stream \$\{stream\.ordinal\}` : "Stream"/u);
+  assert.match(streamTabs, /function streamDisplayName\(stream, streamCount\)/u);
+  assert.match(streamTabs, /Number\(streamCount\) > 1/u);
+  assert.match(app, /AgentHubStreamTabs\.streamDisplayName\(stream, streams\.length\)/u);
   // Обычный клик переключает единственную колонку; Ctrl+click держит до четырёх.
   assert.match(app, /normalized = \[selectedInWorkspace \|\| ordered\[0\]\?\.id\]\.filter\(Boolean\)/u);
   assert.match(app, /configuredOpenStreamWorkspaces/u);

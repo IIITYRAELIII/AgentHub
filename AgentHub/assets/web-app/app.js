@@ -2469,11 +2469,6 @@ function renderTaskWorkspaceItem({ id, name, kind, tasks, shortName }, { family 
   ]);
 }
 
-function streamDisplayName(stream, streamCount) {
-  if (stream.name) return stream.name;
-  return streamCount > 1 ? `Stream ${stream.ordinal}` : "Stream";
-}
-
 function representativeStreamTask(stream) {
   if (!stream) return null;
   // У потока обычно несколько задач: каждый Thread — своя. Вкладка показывает
@@ -2779,7 +2774,7 @@ function renderStreamTabs() {
   const overflowItems = [];
   const groups = ordered.map((stream, index) => {
     const task = representativeStreamTask(stream);
-    const streamName = streamDisplayName(stream, streams.length);
+    const streamName = window.AgentHubStreamTabs.streamDisplayName(stream, streams.length);
     const provider = String(task?.provider ?? "none");
     const agentLabel = task?.agentLabel || providerLabels[provider] || "Агент";
     const { running, answerReady, statusLabel } = window.AgentHubStreamTabs.streamStatusPresentation(task);
@@ -2796,7 +2791,7 @@ function renderStreamTabs() {
       "data-stream-tab-id": stream.id,
       "data-workspace-id": workspaceId,
       "data-workspace-name": task?.workspaceName ?? "",
-      "data-stream-name": stream.name ?? "",
+      "data-stream-name": streamName,
       "data-stream-task-id": task?.id ?? "",
       "data-stream-provider": provider,
       "data-stream-provider-label": agentLabel,
