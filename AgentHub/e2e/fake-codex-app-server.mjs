@@ -128,6 +128,48 @@ function schedule(callback, delayMs) {
   timers.add(timer);
 }
 
+function scheduleHubMcpBridgeItem(thread, turn, prompt) {
+  let toolName = null;
+  let requestId = null;
+  let succeeded = false;
+  if (prompt.includes("[hub-mcp-no-admission]")) {
+    toolName = "hub_task_claim";
+    requestId = "claim-pre-dispatch";
+  } else if (prompt.includes("[hub-mcp-lost-response]")) {
+    toolName = "hub_stream_message_send";
+    requestId = "send-lost-response";
+  } else if (prompt.includes("[hub-mcp-success-vocabulary]")) {
+    toolName = "hub_task_get";
+    succeeded = true;
+  } else {
+    return;
+  }
+  const requestIdentity = requestId ? `, request_id: "${requestId}"` : "";
+  const item = {
+    id: `${turn.id}:dynamic-hub-mcp`,
+    type: "dynamicToolCall",
+    tool: "functions.exec",
+    arguments: {
+      input: `const result = await tools.mcp__agent_hub__${toolName}({ context_token: "test"${requestIdentity} });`,
+    },
+    status: succeeded ? "completed" : "failed",
+    success: succeeded,
+    error: succeeded ? null : { message: "MCP tool timed out before server admission" },
+    ...(succeeded ? {
+      result: { text: "server timeout is 60 seconds; closed socket recovery is documented" },
+      output: "transport reset is normal payload vocabulary",
+    } : {}),
+  };
+  turn.items.push(item);
+  save();
+  schedule(() => notify("item/completed", {
+    threadId: thread.id,
+    turnId: turn.id,
+    item: structuredClone(item),
+    completedAtMs: Date.now(),
+  }), 50);
+}
+
 function finishTurn(thread, turn, { status = "completed", answer = null } = {}) {
   if (turn.status !== "inProgress") return;
   const text = answer ?? `Готово: ${turn.prompt}`;
@@ -212,6 +254,7 @@ function startTurn(params) {
     turnId: turn.id,
     delta: `Проверяю сценарий: ${prompt}`,
   }), 25);
+  scheduleHubMcpBridgeItem(thread, turn, prompt);
 
   if (acceptAll) {
     schedule(() => finishTurn(thread, turn, { answer: "Принято" }), 120);
@@ -404,6 +447,12 @@ function resumeInterruptedTurns() {
 function handleRequest(message) {
   const { id, method, params = {} } = message;
   state.requestCounts[method] = Number(state.requestCounts[method] ?? 0) + 1;
+  if (method === "config/mcpServer/reload") {
+    state.lastMcpReloadAt = Date.now();
+    save();
+    reply(id, { reloaded: true });
+    return;
+  }
   if (method === "initialize") {
     const completeInitialize = () => {
       state.initializeCompletedAt = Date.now();

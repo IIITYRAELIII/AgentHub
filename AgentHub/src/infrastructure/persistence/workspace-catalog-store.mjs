@@ -743,6 +743,13 @@ export class WorkspaceCatalogStore {
     ).get(id));
   }
 
+  mcpOperation(requestId) {
+    const id = safeIdentifier(requestId, "MCP request id");
+    return mcpOperationFromRow(this.#database.prepare(
+      "SELECT * FROM hub_mcp_operations WHERE request_id = ?",
+    ).get(id));
+  }
+
   mcpOperations(workspaceId, { limit = 50 } = {}) {
     const id = safeIdentifier(workspaceId, "workspace id");
     if (!this.workspace(id)) throw new Error(`workspace not found: ${id}`);

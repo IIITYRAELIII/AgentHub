@@ -23,6 +23,10 @@ const MUTATING_TOOLS = new Set([
   "hub_stream_message_send",
   "hub_release_preflight", "hub_release_complete",
 ]);
+
+export function hubMcpToolMutates(name) {
+  return MUTATING_TOOLS.has(String(name ?? "").trim());
+}
 const TEXT_ATTACHMENT_TYPES = new Set([
   "text/plain", "text/markdown", "text/csv", "application/json", "application/xml",
 ]);

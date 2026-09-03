@@ -22,6 +22,7 @@ function createService(run, overrides = {}) {
     itemActivity: () => null, requestApproval: async () => {}, formatCommandApproval: () => "",
     formatFileApproval: () => "", formatPermissionsApproval: () => "", requestMcpElicitation: async () => {},
     observeMcpProgress: () => {},
+    observeHubMcpBridge: async () => {},
     requestUserInput: async () => {}, reduceLiveItemEvent: () => null,
     startLiveItem: () => null, completeLiveItem: () => null,
     discardContextCompaction: async () => false, consumeTracker: () => null,
@@ -97,6 +98,29 @@ test("Codex event service settles MCP admission only on later exact-turn progres
     turnId: "turn-1",
     method: "item/completed",
   }]);
+});
+
+test("Codex event service hands a failed dynamic Hub call to bridge recovery", async () => {
+  const run = { id: "run-1", status: "running", threadId: "thread-1", turnId: "turn-1" };
+  const recovered = [];
+  const service = createService(run, {
+    observeHubMcpBridge: async (event) => recovered.push(event),
+  });
+  const item = {
+    id: "call-1",
+    type: "dynamicToolCall",
+    tool: "exec",
+    arguments: "await tools.mcp__agent_hub__hub_task_get({ task_id: 'task-1' })",
+    status: "failed",
+    success: false,
+  };
+
+  await service.handle({
+    method: "item/completed",
+    params: { threadId: "thread-1", turnId: "turn-1", item },
+  });
+
+  assert.deepEqual(recovered, [{ method: "item/completed", item, run }]);
 });
 
 test("Codex event service applies canonical completed agent messages", async () => {

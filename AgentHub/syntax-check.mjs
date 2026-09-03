@@ -3,7 +3,7 @@ import path from "node:path";
 import vm from "node:vm";
 
 const SKIPPED_DIRECTORIES = new Set(["data", "node_modules"]);
-const CONTRACT_ID_PATTERN = /^(?:SYS|MSG|TURN|UI|RST|PERF|REL|USG)-\d{3}$/u;
+const CONTRACT_ID_PATTERN = /^(?:SYS|MSG|TURN|UI|RST|PERF|REL|MCP|USG|UPD)-\d{3}$/u;
 
 async function verifyContractRegistry(root) {
   const registryFile = path.join(root, "docs", "contracts", "registry.json");
@@ -45,7 +45,7 @@ async function verifyAgentHubChangelogContracts(root) {
   const sections = governed.split(/(?=^## )/mu).filter((section) => section.includes("`agent-hub`"));
   for (const section of sections) {
     const heading = section.match(/^## .+$/mu)?.[0] ?? "unknown Agent Hub changelog entry";
-    if (!/^- `Контракты`: (?:`(?:SYS|MSG|TURN|UI|RST|PERF|REL|USG)-\d{3}`(?:,\s*`(?:SYS|MSG|TURN|UI|RST|PERF|REL|USG)-\d{3}`)*|`none`)/mu.test(section)) {
+    if (!/^- `Контракты`: (?:`(?:SYS|MSG|TURN|UI|RST|PERF|REL|MCP|USG|UPD)-\d{3}`(?:,\s*`(?:SYS|MSG|TURN|UI|RST|PERF|REL|MCP|USG|UPD)-\d{3}`)*|`none`)/mu.test(section)) {
       throw new Error(`${heading} has no valid Контракты field`);
     }
   }

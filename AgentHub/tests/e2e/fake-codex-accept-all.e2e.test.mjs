@@ -7,6 +7,8 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import test from "node:test";
 
+import { CodexHubMcpBridgeRecovery } from "../../src/providers/codex/codex-hub-mcp-bridge-recovery.mjs";
+
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
 const FAKE_CODEX = path.join(ROOT, "e2e", "fake-codex-app-server.mjs");
 
@@ -75,6 +77,30 @@ async function waitForNotification(fake, method, timeoutMs = 2_000) {
   throw new Error(`Timeout waiting for ${method}`);
 }
 
+async function waitForNotificationAt(fake, method, index, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const found = fake.notifications.filter((message) => message.method === method)[index];
+    if (found) return found;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timeout waiting for ${method} at index ${index}`);
+}
+
+async function bounded(promise, timeoutMs = 2_000) {
+  let timer = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Operation exceeded ${timeoutMs} ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 test("accept-all Fake Codex completes arbitrary delivery input with Принято", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-fake-codex-"));
   const stateFile = path.join(root, "data", "fake-state.json");
@@ -134,6 +160,69 @@ test("accept-all Fake Codex restores one unfinished turn after restart", async (
   assert.equal(completed.params.turn.id, "turn-restart");
   assert.equal(completed.params.turn.status, "completed");
   assert.equal(completed.params.turn.items.at(-1).text, "Принято");
+});
+
+test("App Server bridge bounds pre-dispatch and lost-response failures then preserves same-thread success", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-fake-codex-mcp-bridge-"));
+  const stateFile = path.join(root, "data", "fake-state.json");
+  await mkdir(path.dirname(stateFile), { recursive: true });
+  const fake = startFake(root, stateFile);
+  t.after(async () => {
+    await fake.stop();
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  });
+  await fake.request("initialize");
+  await fake.request("thread/ensure", { threadId: "thread-hub-mcp-bridge", model: "fake-codex" });
+
+  const reloads = [];
+  const wakes = [];
+  const stages = [];
+  const operations = new Map([
+    ["send-lost-response", { status: "succeeded", result: { sent: true } }],
+  ]);
+  const recovery = new CodexHubMcpBridgeRecovery({
+    reloadMcp: async () => {
+      reloads.push("reload");
+      return fake.request("config/mcpServer/reload");
+    },
+    readOperation: (requestId) => operations.get(requestId) ?? null,
+    wakeDeferredInputs: () => wakes.push("wake"),
+    setStage: (_run, stage) => stages.push(stage),
+    logger: { log: () => {}, error: () => {} },
+  });
+
+  async function runScenario(prompt, itemIndex, turnIndex) {
+    const started = await fake.request("turn/start", {
+      threadId: "thread-hub-mcp-bridge",
+      model: "fake-codex",
+      input: [{ type: "text", text: prompt }],
+    });
+    const completedItem = await waitForNotificationAt(fake, "item/completed", itemIndex);
+    assert.equal(completedItem.params.threadId, "thread-hub-mcp-bridge");
+    assert.equal(completedItem.params.turnId, started.turn.id);
+    const result = await bounded(recovery.observe({
+      method: "item/completed",
+      item: completedItem.params.item,
+      run: { id: started.turn.id },
+    }));
+    const completedTurn = await waitForNotificationAt(fake, "turn/completed", turnIndex);
+    assert.equal(completedTurn.params.turn.id, started.turn.id);
+    return result;
+  }
+
+  const preDispatch = await runScenario("[hub-mcp-no-admission]", 0, 0);
+  assert.equal(preDispatch.calls[0].outcome, "pre-dispatch");
+  assert.deepEqual(reloads, ["reload"]);
+
+  const lostResponse = await runScenario("[hub-mcp-lost-response]", 1, 1);
+  assert.equal(lostResponse.calls[0].outcome, "authoritative-succeeded");
+  assert.deepEqual(reloads, ["reload", "reload"]);
+
+  const success = await runScenario("[hub-mcp-success-vocabulary]", 2, 2);
+  assert.equal(success, null);
+  assert.deepEqual(reloads, ["reload", "reload"]);
+  assert.deepEqual(wakes, ["wake", "wake"]);
+  assert.equal(stages.length, 2);
 });
 
 test("Fake Codex preserves loaded Thread ownership across process restart", async (t) => {

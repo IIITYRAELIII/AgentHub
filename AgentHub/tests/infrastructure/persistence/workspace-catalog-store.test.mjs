@@ -474,6 +474,8 @@ test("MCP mutation audit is idempotent and scoped to its Workspace", async (t) =
   assert.equal(store.beginMcpOperation(operation).replayed, true);
   store.completeMcpOperation(operation.requestId, { taskId: "task-1" });
   assert.deepEqual(store.beginMcpOperation(operation).result, { taskId: "task-1" });
+  assert.equal(store.mcpOperation(operation.requestId).status, "succeeded");
+  assert.equal(store.mcpOperation("missing-request"), null);
   assert.equal(store.mcpOperations(workspace.id).length, 1);
   assert.equal(store.mcpOperations(otherWorkspace.id).length, 0);
   assert.throws(

@@ -53,6 +53,11 @@ occupancy can couple otherwise independent lanes. A steer that no longer has
 an active turn is downgraded to ordinary intake before the later-turn FIFO
 choice.
 
+An explicitly user-paused command remains durable but does not own the runnable
+lane head. Later accepted commands in that exact lane may dispatch in their
+relative FIFO order. Provider-occupancy pauses remain transient lane heads and
+are rechecked until the exact writer clears.
+
 For a nonterminal Hub-owned managed run, its exact registered `run.turnId` is
 the primary steer identity. A lagging or temporarily incomplete Thread
 projection must not suppress the `turn/steer` attempt. Thread projection is

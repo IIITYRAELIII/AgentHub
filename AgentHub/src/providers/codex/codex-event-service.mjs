@@ -98,6 +98,7 @@ export class CodexEventService {
       "requestUserInput", "reduceLiveItemEvent", "startLiveItem", "completeLiveItem",
       "consumeTracker", "finishObserved", "turnSnapshot", "completeManaged",
       "observeMcpProgress",
+      "observeHubMcpBridge",
     ]) requiredFunction(dependencies[name], name);
     this.#d = dependencies;
   }
@@ -325,6 +326,7 @@ export class CodexEventService {
           run.toolMetricsKnown = true;
         }
       }
+      await d.observeHubMcpBridge({ method, item: params.item, run });
     }
     if (method === "thread/compacted") {
       const threadId = String(params.threadId ?? run?.threadId ?? "").trim();
