@@ -10,6 +10,7 @@ import {
   buildWorkLogUsageHistory,
   incomingLedgerRecord,
   mergeLedgerRecord,
+  normalizedAccountFields,
   normalizeEstimatedCredits,
   normalizePersistedWorkLog,
   normalizeWorkLogId,
@@ -22,6 +23,7 @@ import {
   workLogTurnKey,
 } from "./work-log-usage-projection.mjs";
 import { usageSyncSnapshotFromLedger } from "../domain/work-log-usage-sync.mjs";
+import { normalizeAuthObservation } from "../domain/usage-facts.mjs";
 
 export function createWorkLogUsageStore({
   repositoryFactory,
@@ -35,6 +37,7 @@ export function createWorkLogUsageStore({
   usageSyncDeviceId = "",
   usageSyncDeviceLabel = "",
   usageSyncRuntimeHomeIds = {},
+  usageSyncIdentity = null,
   workspaceCatalogStore = null,
   beforeProjectionWrite = null,
   logger = console,
@@ -60,6 +63,7 @@ export function createWorkLogUsageStore({
     usageSyncDeviceId,
     usageSyncDeviceLabel,
     usageSyncRuntimeHomeIds,
+    usageSyncIdentity,
     workspaceCatalogStore,
     beforeProjectionWrite,
     logger,
@@ -75,6 +79,8 @@ export class WorkLogUsageStore {
   #usageSyncDeviceId;
   #usageSyncDeviceLabel;
   #usageSyncRuntimeHomeIds;
+  #usageSyncIdentity;
+  #publishedAuthObservationKeys = new Set();
   #workspaceCatalogStore;
   #beforeProjectionWrite;
   #logger;
@@ -88,6 +94,7 @@ export class WorkLogUsageStore {
     usageSyncDeviceId = "",
     usageSyncDeviceLabel = "",
     usageSyncRuntimeHomeIds = {},
+    usageSyncIdentity = null,
     workspaceCatalogStore = null,
     beforeProjectionWrite = null,
     logger = console,
@@ -115,6 +122,7 @@ export class WorkLogUsageStore {
         .map(([key, value]) => [String(key ?? "").trim().toLowerCase(), String(value ?? "").trim()])
         .filter(([key, value]) => key && value),
     );
+    this.#usageSyncIdentity = usageSyncIdentity;
     if (workspaceCatalogStore && (
       typeof workspaceCatalogStore.resolveThread !== "function"
       || typeof workspaceCatalogStore.assignUnknownThread !== "function"
@@ -184,7 +192,7 @@ export class WorkLogUsageStore {
       ? await this.#repository.accountCatalog()
       : [];
     const syncedUsageEvents = this.#usageSyncStore
-      ? await this.#usageSyncStore.events()
+      ? await this.#syncedUsageFacts()
       : [];
     const updated = this.#projectUsage(source, selectedTurns, {
       accountCatalog,
@@ -305,7 +313,7 @@ export class WorkLogUsageStore {
   usageHistory(options = {}) {
     return this.#enqueueRead(async () => {
       const syncedUsageEvents = this.#usageSyncStore
-        ? await this.#usageSyncStore.events()
+        ? await this.#syncedUsageFacts()
         : [];
       return structuredClone(buildWorkLogUsageHistory(this.#ledger.turns, {
         includeClaudeUsage: this.#includeClaudeUsage,
@@ -523,15 +531,102 @@ export class WorkLogUsageStore {
       ));
     }
     return this.#repository.enqueue(
-      () => this.#usageSyncStore.usageSyncSnapshot({
-        deviceId,
-        deviceLabel,
-        afterObservedAt,
-        afterJournalRevision,
-        defaultRuntimeHomeIds: this.#usageSyncRuntimeHomeIds,
-      }),
+      async () => {
+        await this.#publishCurrentAuthObservations();
+        return this.#usageSyncStore.usageSyncSnapshot({
+          deviceId,
+          deviceLabel,
+          afterObservedAt,
+          afterJournalRevision,
+          defaultRuntimeHomeIds: this.#usageSyncRuntimeHomeIds,
+        });
+      },
       { load: false },
     );
+  }
+
+  async #syncedUsageFacts() {
+    if (!this.#usageSyncStore) return [];
+    if (typeof this.#usageSyncStore.facts === "function") {
+      return this.#usageSyncStore.facts();
+    }
+    return this.#usageSyncStore.events();
+  }
+
+  async #currentAuthObservation(provider, observedAt) {
+    if (!this.#resolveAccount || !this.#usageSyncDeviceId) return null;
+    const normalizedProvider = String(provider ?? "").trim().toLowerCase();
+    const runtimeHomeId = String(this.#usageSyncRuntimeHomeIds[normalizedProvider] ?? "").trim();
+    const installationInstanceId = String(this.#usageSyncIdentity?.installationInstanceId ?? "").trim();
+    if (!normalizedProvider || !runtimeHomeId || !installationInstanceId) return null;
+    let resolved = null;
+    try {
+      resolved = await this.#resolveAccount(normalizedProvider);
+    } catch (error) {
+      this.#logger?.warn?.(`Cannot identify ${normalizedProvider} account for usage sync auth observation: ${error.message}`);
+      return null;
+    }
+    const account = normalizedAccountFields({ account: resolved });
+    if (!account.accountKey) return null;
+    let authFingerprint = "";
+    try {
+      authFingerprint = typeof this.#usageSyncIdentity?.authFingerprint === "function"
+        ? this.#usageSyncIdentity.authFingerprint({
+          accountKey: account.accountKey,
+          accountPlan: account.accountPlan,
+        })
+        : "";
+    } catch (error) {
+      this.#logger?.warn?.(`Cannot fingerprint ${normalizedProvider} account for usage sync: ${error.message}`);
+    }
+    return normalizeAuthObservation({
+      schemaVersion: 2,
+      type: "auth_observation",
+      deviceId: this.#usageSyncDeviceId,
+      installationInstanceId,
+      provider: normalizedProvider,
+      runtimeHomeId,
+      accountKey: account.accountKey,
+      accountLabel: account.accountLabel,
+      accountType: account.accountType,
+      accountPlan: account.accountPlan,
+      observedAt,
+      evidenceSource: "account-read",
+      authFingerprint,
+    });
+  }
+
+  async #publishCurrentAuthObservations() {
+    if (typeof this.#usageSyncStore?.importSnapshot !== "function") return { added: 0, updated: 0 };
+    const observedAt = new Date().toISOString();
+    const observed = (await Promise.all(
+      ["codex", "claude"].map((provider) => this.#currentAuthObservation(provider, observedAt)),
+    )).filter(Boolean);
+    const facts = [];
+    const pendingKeys = [];
+    for (const fact of observed) {
+      const key = JSON.stringify([
+        fact.deviceId,
+        fact.provider,
+        fact.runtimeHomeId,
+        fact.accountKey,
+        fact.accountPlan,
+        fact.authFingerprint,
+      ]);
+      if (this.#publishedAuthObservationKeys.has(key)) continue;
+      facts.push(fact);
+      pendingKeys.push(key);
+    }
+    if (!facts.length) return { added: 0, updated: 0 };
+    const result = await this.#usageSyncStore.importSnapshot({
+      version: 1,
+      deviceId: this.#usageSyncDeviceId,
+      deviceLabel: this.#usageSyncDeviceLabel,
+      exportedAt: observedAt,
+      events: facts,
+    });
+    for (const key of pendingKeys) this.#publishedAuthObservationKeys.add(key);
+    return result;
   }
 
   importUsageSyncSnapshotAndProject({

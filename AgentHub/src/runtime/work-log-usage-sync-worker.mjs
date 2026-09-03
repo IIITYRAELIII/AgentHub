@@ -16,14 +16,14 @@ function serializedError(error) {
 
 async function projectAccountUsage(payload = {}) {
   const startedAt = performance.now();
-  const [syncedUsageEvents, turns] = await Promise.all([
-    store.events(),
+  const [syncedUsageFacts, turns] = await Promise.all([
+    store.facts(),
     store.journalTurns({ projectRoots: payload.projectRoots }),
   ]);
   const updatedHtml = projectWorkLogAccountUsage(payload.html, turns, {
     accountCatalog: payload.accountCatalog,
     includeClaudeUsage: payload.includeClaudeUsage,
-    syncedUsageEvents,
+    syncedUsageEvents: syncedUsageFacts,
     localDeviceId: payload.localDeviceId,
     localDeviceLabel: payload.localDeviceLabel,
     now: payload.now,
@@ -37,7 +37,7 @@ async function projectAccountUsage(payload = {}) {
       version: `sha256:${crypto.createHash("sha256").update(updatedHtml, "utf8").digest("hex")}`,
     }),
     workerThreadId: threadId,
-    eventCount: syncedUsageEvents.length,
+    eventCount: syncedUsageFacts.length,
     durationMs: performance.now() - startedAt,
   };
 }
@@ -51,6 +51,7 @@ async function usageSyncSnapshot(payload = {}) {
 async function handle(message) {
   switch (message.type) {
     case "events": return store.events();
+    case "facts": return store.facts();
     case "import-snapshot": return store.importSnapshot(message.payload.snapshot);
     case "replace-events": return store.replaceEvents(message.payload.events);
     case "adopt-device-ids": return store.adoptDeviceIds(message.payload.deviceIds);

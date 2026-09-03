@@ -50,6 +50,10 @@ export class WorkLogUsageSyncWorkerStore {
     return this.#request("events");
   }
 
+  facts() {
+    return this.#request("facts");
+  }
+
   importSnapshot(snapshot) {
     return this.#request("import-snapshot", { snapshot });
   }

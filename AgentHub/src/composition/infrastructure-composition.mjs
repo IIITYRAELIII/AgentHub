@@ -308,6 +308,7 @@ export async function createHubInfrastructure({
     usageSyncDeviceId: workLogUsageSyncDeviceId,
     usageSyncDeviceLabel: workLogUsageIdentityStore.label,
     usageSyncRuntimeHomeIds: workLogUsageRuntimeHomeIds,
+    usageSyncIdentity: workLogUsageIdentityStore,
     workspaceCatalogStore,
   });
   agentHubRuntimeHealth.setDiagnosticSource("usageSync", () => workLogUsageSyncStore.diagnostics());

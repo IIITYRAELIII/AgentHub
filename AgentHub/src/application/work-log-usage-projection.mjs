@@ -26,7 +26,7 @@ import {
   usageSyncEventIdentity,
   usageSyncEventFromLedgerRecord,
 } from "../domain/work-log-usage-sync.mjs";
-import { mergeUsageLimitSamples } from "../domain/usage-facts.mjs";
+import { mergeUsageLimitSamples, normalizeAuthObservation } from "../domain/usage-facts.mjs";
 
 const WORK_LOG_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ACCOUNT_ATTRIBUTIONS = new Set(["exact", "inferred"]);
@@ -739,11 +739,88 @@ function syncedUsageRecord(event) {
   };
 }
 
+function usageFactSets(values) {
+  const turns = [];
+  const authObservations = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    const turn = normalizeUsageSyncEvent(value);
+    if (turn) {
+      turns.push(turn);
+      continue;
+    }
+    const auth = normalizeAuthObservation(value);
+    if (auth) authObservations.push(auth);
+  }
+  return { turns, authObservations };
+}
+
+function usageAuthObservationIdentity(value) {
+  const deviceId = String(value?.deviceId ?? "").trim();
+  const provider = String(value?.provider ?? "").trim().toLowerCase();
+  const runtimeHomeId = String(value?.runtimeHomeId ?? "").trim();
+  return deviceId && provider && runtimeHomeId
+    ? JSON.stringify([deviceId, provider, runtimeHomeId])
+    : "";
+}
+
+function authCandidateMetadata(current, observation) {
+  const observedMs = Date.parse(String(observation?.observedAt ?? ""));
+  const currentMs = Date.parse(String(current?.observedAt ?? ""));
+  const newer = Number.isFinite(observedMs) && (!Number.isFinite(currentMs) || observedMs >= currentMs);
+  return {
+    accountKey: String(observation?.accountKey ?? "").trim(),
+    accountLabel: String((newer ? observation?.accountLabel : current?.accountLabel)
+      || current?.accountLabel
+      || observation?.accountLabel
+      || "").trim(),
+    accountType: String((newer ? observation?.accountType : current?.accountType)
+      || current?.accountType
+      || observation?.accountType
+      || "").trim(),
+    accountPlan: String((newer ? observation?.accountPlan : current?.accountPlan)
+      || current?.accountPlan
+      || observation?.accountPlan
+      || "").trim(),
+    observedAt: newer ? observation.observedAt : current?.observedAt,
+  };
+}
+
+function usageAuthCandidatesByRuntimeHome(authObservations = []) {
+  const byRuntimeHome = new Map();
+  for (const observation of authObservations) {
+    const key = usageAuthObservationIdentity(observation);
+    if (!key || !observation.accountKey) continue;
+    const candidates = byRuntimeHome.get(key) ?? new Map();
+    candidates.set(
+      observation.accountKey,
+      authCandidateMetadata(candidates.get(observation.accountKey), observation),
+    );
+    byRuntimeHome.set(key, candidates);
+  }
+  return byRuntimeHome;
+}
+
+function attributedUsageSyncRecord(event, authCandidates) {
+  const record = syncedUsageRecord(event);
+  if (!record || String(record.accountKey ?? "").trim()) return record;
+  const candidates = authCandidates.get(usageAuthObservationIdentity(event));
+  if (!candidates || candidates.size !== 1) return record;
+  const [account] = candidates.values();
+  return {
+    ...record,
+    accountKey: account.accountKey,
+    accountLabel: account.accountLabel,
+    accountType: account.accountType,
+    accountPlan: account.accountPlan,
+    accountAttribution: "inferred",
+  };
+}
+
 function syncedUsageRecords(values) {
-  return (Array.isArray(values) ? values : [])
-    .map(normalizeUsageSyncEvent)
-    .filter(Boolean)
-    .map(syncedUsageRecord)
+  const facts = usageFactSets(values);
+  const authCandidates = usageAuthCandidatesByRuntimeHome(facts.authObservations);
+  return facts.turns
+    .map((event) => attributedUsageSyncRecord(event, authCandidates))
     .filter(Boolean);
 }
 
