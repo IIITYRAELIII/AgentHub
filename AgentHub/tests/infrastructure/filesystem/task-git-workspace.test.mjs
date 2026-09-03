@@ -4,10 +4,12 @@ import { access, mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { setTimeout as wait } from "node:timers/promises";
 import { promisify } from "node:util";
 
 import {
   prepareTaskContourSource,
+  runTaskGitCommand,
   taskSparseCheckoutSelection,
   TaskGitWorkspaceService,
 } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
@@ -116,6 +118,34 @@ test("Task Git workspace commits one Task branch and merges it into dev", async 
   } finally {
     await git(root, "worktree", "remove", "--force", releaseRoot);
   }
+});
+
+test("timed-out Task Git commands terminate their Windows process tree before rejection", {
+  skip: process.platform !== "win32",
+}, async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-git-timeout-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const script = path.join(directory, "parent.mjs");
+  const marker = path.join(directory, "descendant-survived.txt");
+  await writeFile(script, `
+    import { spawn } from "node:child_process";
+    const marker = process.argv[2];
+    spawn(process.execPath, ["-e", "setTimeout(() => require('node:fs').writeFileSync(process.argv[1], 'survived'), 700)", marker], {
+      stdio: "ignore",
+    });
+    setInterval(() => {}, 1_000);
+  `, "utf8");
+
+  await assert.rejects(
+    runTaskGitCommand([script, marker], {
+      executable: process.execPath,
+      cwd: directory,
+      timeoutMs: 100,
+    }),
+    /timed out.*process tree stopped/u,
+  );
+  await wait(900);
+  assert.equal(await access(marker).then(() => true, () => false), false);
 });
 
 test("an empty Task diff is explicit no_result even when its HEAD is already ancestral to dev", async (context) => {

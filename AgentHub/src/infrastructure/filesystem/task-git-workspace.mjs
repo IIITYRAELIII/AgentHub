@@ -17,9 +17,9 @@ export const TASK_DEV_BRANCH = "dev";
 const TASK_BASE_REF_PREFIX = "refs/agent-hub/task-bases/";
 const TASK_RESULT_REF_PREFIX = "refs/agent-hub/task-results/";
 
-function runGit(args, { cwd, timeoutMs = 60_000 } = {}) {
+export function runTaskGitCommand(args, { cwd, timeoutMs = 60_000, executable = "git" } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn("git", args, { cwd, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(executable, args, { cwd, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
     const stdout = [];
     const stderr = [];
     let timedOut = false;
@@ -58,6 +58,8 @@ function runGit(args, { cwd, timeoutMs = 60_000 } = {}) {
     });
   });
 }
+
+const runGit = runTaskGitCommand;
 
 async function gitMaybe(args, options) {
   try {

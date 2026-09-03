@@ -1204,6 +1204,38 @@ test("HubMcpService coalesces concurrent mutations with the same request identit
   assert.equal(operations.get("message-concurrent-1").status, "succeeded");
 });
 
+test("receipt failure after a completed effect becomes unknown and cannot replay the effect", async (context) => {
+  const { service, token, workspaceCatalog, operations } = await fixture(context);
+  let effects = 0;
+  service.setStreamMessenger(async () => {
+    effects += 1;
+    return { accepted: false, queued: true, id: "queued-before-receipt-crash" };
+  });
+  workspaceCatalog.completeMcpOperation = () => {
+    throw new Error("simulated durable receipt failure after effect");
+  };
+  const input = {
+    context_token: token,
+    request_id: "message-effect-receipt-crash",
+    stream_id: "stream-2",
+    text: "Do not replay me.",
+    mode: "queue",
+    confirm_send: true,
+  };
+
+  await assert.rejects(
+    service.call("hub_stream_message_send", input),
+    /effect completed.*receipt reconciliation is required/u,
+  );
+  assert.equal(effects, 1);
+  assert.equal(operations.get("message-effect-receipt-crash").status, "unknown");
+  await assert.rejects(
+    service.call("hub_stream_message_send", input),
+    /outcome is unknown.*reconcile authoritatively/u,
+  );
+  assert.equal(effects, 1);
+});
+
 test("HubMcpService copies project files into task attachments", async (context) => {
   const { service, token, projectRoot } = await fixture(context);
   const source = path.join(path.dirname(projectRoot), "outside.txt");
