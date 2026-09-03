@@ -1678,7 +1678,7 @@ test("message attachments keep timestamps, previews and an explicit open action"
   const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   const extension = fs.readFileSync(require.resolve("./extension.js"), "utf8");
-  assert.match(client, /time:\s*message\.time \?\?/u);
+  assert.match(client, /createdAt:\s*message\.submittedAt \?\? message\.time/u);
   assert.match(client, /attachments:\s*attachmentViews\(message\.attachments\)/u);
   assert.match(client, /agentHub\.on\("attachment:open"/u);
   assert.match(app, /emit\("attachment:open",\s*\{\s*attachment:\s*item,\s*gallery,\s*index:/u);

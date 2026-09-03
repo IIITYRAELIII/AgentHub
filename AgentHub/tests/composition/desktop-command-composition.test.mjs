@@ -16,7 +16,7 @@ function dependencyProxy(overrides = {}) {
 test("desktop command composition exposes Workspace archive and restore commands", async () => {
   const calls = [];
   const workspaceActions = Object.fromEntries([
-    "renameWorkspace", "updateWorkspaceSettings", "renameWorkspaceFolder", "updateWorkspaceDeveloperRules",
+    "renameWorkspace", "updateWorkspaceSettings", "moveWorkspaceToFolder", "renameWorkspaceFolder", "updateWorkspaceDeveloperRules",
     "readWorkspaceReleasePlan", "completeWorkspaceRelease", "createWorkspace",
     "archiveWorkspace", "restoreWorkspace", "createWorkspaceFromStream", "mergeWorkspaces",
     "createStream", "renameStream", "archiveStream", "updateStreamSettings",
