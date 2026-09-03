@@ -1,4 +1,4 @@
-# ADR-0014 — Idle optimism and busy queue ownership
+# ADR-0016 — Idle optimism and busy queue ownership
 
 ## Status
 
