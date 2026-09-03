@@ -24,8 +24,9 @@ The immutable `clientProjectionIntent` is part of the durable request
 fingerprint and record. `conversation` preserves the idle projection across
 ACK, a later `task-running` conflict, snapshot races and reload; it is labelled
 `Принято`, never `В очереди`. `queue` preserves busy-origin placement even when
-server admission later finds the Stream idle. Ambiguous and attention-required
-records remain on the queue surface until exact provider acceptance:
+server admission later finds the Stream idle. Ambiguous, attention-required,
+paused and unknown records remain on the queue surface until exact provider
+acceptance:
 
 - a new turn has the original `clientUserMessageId`, exact `runId` and exact
   provider `turnId`;
@@ -47,8 +48,10 @@ acceptance.
   `task-running` admission preserves the already visible exact entity.
 - A busy-origin submission records `clientProjectionIntent=queue` and remains
   queue-only even if canonical admission later finds the Stream idle.
-- Definitive rejection and ambiguous start remain manageable in the queue
-  without creating history.
+- Definitive rejection removes both pre-acceptance projections and creates no
+  history.
+- Ambiguous, attention-required, paused and unknown records remain manageable
+  in the queue without creating history.
 - A reload reconstructs placement from durable `clientProjectionIntent` even
   when the bounded receipt is absent. Legacy rows without the field retain the
   narrow `conflictKind=message-intake` compatibility fallback until migrated.
