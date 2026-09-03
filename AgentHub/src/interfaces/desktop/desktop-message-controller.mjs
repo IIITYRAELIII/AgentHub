@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { messageInputWithAttachments } from "../../domain/attachment-files.mjs";
 import { messageWithTaskReferences } from "../../domain/task-board-task.mjs";
 import {
+  createInterstreamMessage,
+  interstreamMessageDetails,
   interstreamOriginAuthor,
   normalizeInterstreamOrigin,
 } from "../../domain/interstream-message.mjs";
@@ -74,11 +76,14 @@ export function createDesktopMessageController({
       annotationLimit: 20_000,
     });
     const responseAnnotationRequest = String(params.responseAnnotationRequest ?? "").trim();
-    const referencedInput = messageWithTaskReferences(text, taskReferences);
+    const messageOrigin = normalizeInterstreamOrigin(target.messageOrigin);
+    const taskReferencedInput = messageWithTaskReferences(text, taskReferences);
+    const referencedInput = messageOrigin && !interstreamMessageDetails(taskReferencedInput)
+      ? createInterstreamMessage({ ...messageOrigin, text: taskReferencedInput })
+      : taskReferencedInput;
     const input = attachments.length
       ? messageInputWithAttachments(referencedInput, attachments, descriptors)
       : referencedInput;
-    const messageOrigin = normalizeInterstreamOrigin(target.messageOrigin);
     const messageAuthor = interstreamOriginAuthor(messageOrigin);
     const receiptIdentity = {
       provider: target.provider,

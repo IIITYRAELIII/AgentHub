@@ -154,6 +154,7 @@ function fixture(overrides = {}) {
       }),
       forTurn: () => null,
     },
+    interstreamOriginForClientMessage: overrides.interstreamOriginForClientMessage ?? (() => null),
     responseBudget: {
       fit: (payload, options) => {
         calls.fit = options;
@@ -795,6 +796,74 @@ test("desktop task history trusts durable interstream origin after the envelope 
   assert.deepEqual(result.items[0].promptOrigin, origin);
   assert.equal(result.items[0].messages[0].author, "Agent HUB - Themes (Terra)");
   assert.deepEqual(result.items[0].messages[0].origin, origin);
+});
+
+test("desktop task history recovers a legacy task assignment from exact MCP audit identity", async () => {
+  const origin = {
+    kind: "interstream",
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    sourceThreadId: "thread-architect",
+    requestId: "legacy-assignment-1",
+  };
+  const resolved = [];
+  const { desktopTaskHistory, state } = fixture({
+    run: null,
+    interstreamOriginForClientMessage: (clientUserMessageId) => {
+      resolved.push(clientUserMessageId);
+      return clientUserMessageId === "mcp:legacy-assignment-1" ? origin : null;
+    },
+  });
+  state.history = [{
+    id: "legacy-assignment",
+    prompt: "Начни работу над Task",
+    answer: "Принято",
+    completed: true,
+    messages: [{
+      itemId: "legacy-assignment-user",
+      clientUserMessageId: "mcp:legacy-assignment-1",
+      role: "user",
+      text: "Начни работу над Task",
+    }],
+  }];
+
+  const result = await desktopTaskHistory({ includeActive: false, limit: 1 });
+
+  assert.equal(result.items[0].promptAuthor, "Agent HUB - Architect (Codex)");
+  assert.deepEqual(result.items[0].promptOrigin, origin);
+  assert.equal(result.items[0].messages[0].author, "Agent HUB - Architect (Codex)");
+  assert.equal(result.items[0].messages[0].kind, "interstream");
+  assert.deepEqual(result.items[0].messages[0].origin, origin);
+  assert.deepEqual(resolved, ["mcp:legacy-assignment-1", "mcp:legacy-assignment-1"]);
+});
+
+test("desktop task history leaves ordinary user input unattributed", async () => {
+  const { desktopTaskHistory, state } = fixture({
+    run: null,
+    interstreamOriginForClientMessage: () => null,
+  });
+  state.history = [{
+    id: "ordinary-user",
+    prompt: "Обычный вопрос",
+    answer: "Ответ",
+    completed: true,
+    messages: [{
+      itemId: "ordinary-user-message",
+      clientUserMessageId: "user-message-1",
+      role: "user",
+      text: "Обычный вопрос",
+    }],
+  }];
+
+  const result = await desktopTaskHistory({ includeActive: false, limit: 1 });
+
+  assert.equal("promptAuthor" in result.items[0], false);
+  assert.equal("author" in result.items[0].messages[0], false);
+  assert.equal("kind" in result.items[0].messages[0], false);
+  assert.equal("origin" in result.items[0].messages[0], false);
 });
 
 test("desktop task history does not reactivate a completed registry run", async () => {

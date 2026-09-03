@@ -189,6 +189,7 @@ export function createDesktopReadSystemWiring({
         forMessage: services.receiptForMessage,
         forTurn: services.receiptsForTurn,
       },
+      interstreamOriginForClientMessage: services.interstreamOriginForClientMessage,
       attachmentImporter: services.attachmentImporter,
       responseBudget: {
         fit: fitTaskHistoryPayload,
