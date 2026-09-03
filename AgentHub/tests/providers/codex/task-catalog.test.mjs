@@ -21,6 +21,7 @@ import {
   CODEX_CONTEXT_PROBE_PROMPT,
   CODEX_CONTEXT_PROBE_RESPONSE,
 } from "../../../src/domain/codex-context-probe.mjs";
+import { createInterstreamMessage } from "../../../src/domain/interstream-message.mjs";
 import {
   mergeTaskCatalog,
   preserveUnknownActivityOnSourceFailure,
@@ -1372,6 +1373,62 @@ test("response_item and event_msg whitespace variants remain one user message", 
     clientUserMessageId: "client-one",
     role: "user",
     text: "Первая строка\n\n\nВторая строка",
+  }]);
+});
+
+test("rollout response_item restores exact interstream command identity from its envelope", () => {
+  const turnId = "interstream-turn";
+  const requestId = "hub143-readonly-audit-s6-v1";
+  const message = createInterstreamMessage({
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-s6",
+    streamName: "S6",
+    provider: "codex",
+    model: "gpt-5.6-sol",
+    sourceThreadId: "thread-s6",
+    requestId,
+    text: "Проверенный отчёт S6",
+  });
+  const result = parseCodexRolloutActivity([
+    JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: turnId } }),
+    JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: message }],
+        internal_chat_message_metadata_passthrough: { turn_id: turnId },
+      },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "item_completed",
+        turn_id: turnId,
+        item: { type: "UserMessage", client_id: `mcp:${requestId}`, message },
+      },
+    }),
+  ].join("\n"));
+
+  assert.deepEqual(result.userMessages[turnId], [{
+    itemId: `mcp:${requestId}`,
+    clientUserMessageId: `mcp:${requestId}`,
+    role: "user",
+    text: "Проверенный отчёт S6",
+    author: "Agent HUB - S6 (Sol)",
+    kind: "interstream",
+    origin: {
+      kind: "interstream",
+      workspaceId: "workspace-1",
+      workspaceName: "Agent HUB",
+      streamId: "stream-s6",
+      streamName: "S6",
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      sourceThreadId: "thread-s6",
+      requestId,
+    },
   }]);
 });
 

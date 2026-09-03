@@ -4741,13 +4741,30 @@ function messageDisclosureId(article) {
   return String(article.dataset.messageId ?? "").trim();
 }
 
+const deferredUserMessageBodyRenderers = new WeakMap();
+
+function configureDeferredUserMessageBody(body, { renderPreview, renderFull, expanded = false }) {
+  const state = { expanded: null, renderFull, renderPreview };
+  deferredUserMessageBodyRenderers.set(body, state);
+  syncDeferredUserMessageBody(body, expanded);
+}
+
+function syncDeferredUserMessageBody(body, expanded) {
+  const state = deferredUserMessageBodyRenderers.get(body);
+  if (!state || state.expanded === expanded) return;
+  body.replaceChildren();
+  (expanded ? state.renderFull : state.renderPreview)(body);
+  state.expanded = expanded;
+}
+
 function updateUserMessageDisclosure(article) {
   const body = article.querySelector(".msg-body[data-user-message-disclosure]");
   if (!body) return;
   const bubble = article.querySelector(".msg-user-bubble");
   if (!bubble) return;
   const id = messageDisclosureId(article);
-  const overflows = hasCollapsedOverflow(body.scrollHeight, USER_MESSAGE_COLLAPSE_HEIGHT_PX);
+  const deferred = deferredUserMessageBodyRenderers.has(body);
+  const overflows = deferred || hasCollapsedOverflow(body.scrollHeight, USER_MESSAGE_COLLAPSE_HEIGHT_PX);
   const existing = article.querySelector("[data-message-disclosure]");
   if (!overflows) {
     body.classList.remove("is-collapsed");
@@ -4756,7 +4773,8 @@ function updateUserMessageDisclosure(article) {
     return;
   }
 
-  const expanded = id && expandedUserMessageIds.has(id);
+  const expanded = Boolean(id && expandedUserMessageIds.has(id));
+  syncDeferredUserMessageBody(body, expanded);
   body.classList.toggle("is-collapsed", !expanded);
   const button = existing ?? el("button", {
     type: "button",
@@ -4778,6 +4796,7 @@ function updateUserMessageDisclosure(article) {
   button.setAttribute("aria-expanded", String(expanded));
   button.onclick = () => {
     const nextExpanded = body.classList.contains("is-collapsed");
+    syncDeferredUserMessageBody(body, nextExpanded);
     body.classList.toggle("is-collapsed", !nextExpanded);
     if (id) {
       if (nextExpanded) expandedUserMessageIds.add(id);
@@ -5519,13 +5538,33 @@ function activityItemNode(activity) {
   ]);
 }
 
+const deferredDisclosureControllers = new WeakMap();
+
+function configureDeferredDisclosure(details, content, renderContent) {
+  const existing = deferredDisclosureControllers.get(details);
+  if (existing) existing.update(renderContent);
+  else deferredDisclosureControllers.set(
+    details,
+    MessageView.createDeferredDisclosureController(details, content, renderContent),
+  );
+  return details;
+}
+
+function syncDeferredDisclosure(details) {
+  deferredDisclosureControllers.get(details)?.sync();
+}
+
 function activityFeedNode(activities) {
   const values = Array.isArray(activities) ? activities : [];
   if (!values.length) return null;
-  return el("details", { class: "activity-feed" }, [
+  const content = el("div", { class: "activity-list", "data-deferred-disclosure-content": "" });
+  const details = el("details", { class: "activity-feed" }, [
     activityDisclosureSummary({ count: values.length }),
-    el("div", { class: "activity-list" }, values.map(activityItemNode)),
+    content,
   ]);
+  return configureDeferredDisclosure(details, content, (target) => {
+    target.replaceChildren(...values.map(activityItemNode));
+  });
 }
 
 function visibleTurnTraceGroups(groups) {
@@ -5547,7 +5586,11 @@ function turnTraceGroupsNode(values, { liveStage = "", openGroupIds = [] } = {})
     return section;
   });
   if (content.activities.length) {
-    blocks.push(el("details", {
+    const activityContent = el("div", {
+      class: "activity-list",
+      "data-deferred-disclosure-content": "",
+    });
+    const activityDetails = el("details", {
       class: "turn-trace-activities",
       "data-trace-group-id": TURN_TRACE_ACTIVITY_GROUP_ID,
       open: liveTraceDisclosureOpen({
@@ -5556,8 +5599,11 @@ function turnTraceGroupsNode(values, { liveStage = "", openGroupIds = [] } = {})
       }),
     }, [
       activityDisclosureSummary({ count: content.activities.length, stage: liveStage }),
-      el("div", { class: "activity-list" }, content.activities.map(activityItemNode)),
-    ]));
+      activityContent,
+    ]);
+    blocks.push(configureDeferredDisclosure(activityDetails, activityContent, (target) => {
+      target.replaceChildren(...content.activities.map(activityItemNode));
+    }));
   }
   return el("div", { class: "turn-trace-groups" }, blocks);
 }
@@ -5567,26 +5613,31 @@ function turnTraceNode(groups) {
   if (!values.length) return null;
   const activityCount = values.reduce((total, group) => total + (group.activities?.length ?? 0), 0);
   const content = turnTraceContent(values);
-  const expanded = el("div", { class: "turn-trace-groups" });
-  content.reasoningBlocks.forEach((reasoning, index) => {
-    const reasoningNode = el("div", { class: "turn-trace-reasoning" });
-    renderMarkdown(reasoningNode, reasoning);
-    expanded.append(el("section", {
-      class: "turn-trace-block",
-      "data-trace-index": String(index),
-    }, [reasoningNode]));
-  });
-  if (content.activities.length) {
-    expanded.append(el("div", { class: "activity-list" }, content.activities.map(activityItemNode)));
-  }
   const summary = turnTraceSummary({
     reasoningCount: content.reasoningBlocks.length,
     activityCount,
   });
-  return el("details", { class: "turn-trace" }, [
+  const expanded = el("div", {
+    class: "turn-trace-groups",
+    "data-deferred-disclosure-content": "",
+  });
+  const details = el("details", { class: "turn-trace" }, [
     activityDisclosureSummary(summary),
     expanded,
   ]);
+  return configureDeferredDisclosure(details, expanded, (target) => {
+    content.reasoningBlocks.forEach((reasoning, index) => {
+      const reasoningNode = el("div", { class: "turn-trace-reasoning" });
+      renderMarkdown(reasoningNode, reasoning);
+      target.append(el("section", {
+        class: "turn-trace-block",
+        "data-trace-index": String(index),
+      }, [reasoningNode]));
+    });
+    if (content.activities.length) {
+      target.append(el("div", { class: "activity-list" }, content.activities.map(activityItemNode)));
+    }
+  });
 }
 
 function messageActionButton({ icon, label, action, onClick }) {
@@ -5712,16 +5763,30 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
     class: "msg-body",
     ...(role === "user" ? { "data-user-message-disclosure": "" } : {}),
   });
-  // Markdown собирается только безопасными DOM-узлами; сырой HTML не исполняется.
-  if (!renderResponseAnnotations(body, message)) {
+  const renderBody = (target) => {
+    target.replaceChildren();
+    // Markdown собирается только безопасными DOM-узлами; сырой HTML не исполняется.
+    if (renderResponseAnnotations(target, message)) return;
     const text = role === "system"
       ? MessageView.normalizeSystemEventText(message.text ?? "")
       : message.text ?? "";
     if (role === "agent" && Array.isArray(message.responseCitationPresentations)
       && message.responseCitationPresentations.length) {
-      renderAgentResponseBody(body, message, text, currentFileLinkContext(task));
-    } else renderMarkdown(body, text, currentFileLinkContext(task), role);
-  }
+      renderAgentResponseBody(target, message, text, currentFileLinkContext(task));
+    } else renderMarkdown(target, text, currentFileLinkContext(task), role);
+  };
+  const deferredPreview = MessageView.deferredUserMessagePreview(message);
+  if (deferredPreview != null) {
+    body.dataset.deferredMessageBody = "";
+    configureDeferredUserMessageBody(body, {
+      expanded: Boolean(message.id && expandedUserMessageIds.has(message.id)),
+      renderPreview: (target) => target.append(el("p", {
+        class: "msg-deferred-preview",
+        text: deferredPreview,
+      })),
+      renderFull: renderBody,
+    });
+  } else renderBody(body);
 
   if (maintenance) article.append(body);
   else article.append(head);
@@ -5934,6 +5999,15 @@ function revealResponseCitationSource(article, surface) {
   }
 }
 
+function materializeDeferredCitationSource(article, surfaceKind) {
+  if (!article || surfaceKind !== "message-body") return;
+  const body = article.querySelector(".msg-body[data-deferred-message-body]");
+  if (!body || !deferredUserMessageBodyRenderers.has(body)) return;
+  const disclosure = article.querySelector("[data-message-disclosure]");
+  if (body.classList.contains("is-collapsed") && disclosure) disclosure.click();
+  else syncDeferredUserMessageBody(body, true);
+}
+
 async function focusResponseCitationSource(button) {
   const target = responseCitationSources.get(button);
   const source = normalizedResponseAnnotationSource(target?.source);
@@ -5945,6 +6019,13 @@ async function focusResponseCitationSource(button) {
   const article = rootNode?.matches?.("article.msg, details.msg")
     ? rootNode
     : rootNode?.querySelector?.("article.msg, details.msg");
+  materializeDeferredCitationSource(article, source.surfaceKind);
+  if (article && source.surfaceKind === "trace-reasoning") {
+    for (const details of article.querySelectorAll("details.turn-trace")) {
+      details.open = true;
+      syncDeferredDisclosure(details);
+    }
+  }
   const surface = responseAnnotationSourceSurface(article, source);
   if (!article || !surface) return false;
   const range = domRangeFromOffsets(surface, source.start, source.end);
@@ -6094,9 +6175,10 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
       visible: renderParts.activityFeed.visible,
     });
     activityFeed.hidden = !renderParts.activityFeed.visible;
-    node.querySelector("[data-activity-list]").replaceChildren(
-      ...renderParts.activityFeed.activities.map(activityItemNode),
-    );
+    const activityList = node.querySelector("[data-activity-list]");
+    configureDeferredDisclosure(activityFeed, activityList, (target) => {
+      target.replaceChildren(...renderParts.activityFeed.activities.map(activityItemNode));
+    });
   });
   liveCardRenderController.reconcile(node, "activity-feed-summary", renderParts.activityFeedSummary, () => {
     renderActivityDisclosureSummary(node.querySelector("[data-activity-summary]"), {
