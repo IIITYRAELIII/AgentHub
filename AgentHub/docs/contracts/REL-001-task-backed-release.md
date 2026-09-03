@@ -186,7 +186,9 @@ that exact source identity. It never prepares or falls back to a `dev` checkout
 inside the contour root. The ownership/isolation guard remains mandatory, and
 the source identity is checked again immediately before and after candidate
 deployment so a changed clone fails before activation. No ordinary command
-selects this source mode.
+selects this source mode. An ordinary `start` always resolves the current exact
+`dev` identity before reusing a persisted runtime; a persisted release-candidate
+runtime is replaced by `dev` rather than restarted.
 
 The rolling contour is preview evidence, not release proof. Release validation
 still requires the prescribed isolated candidate checks and publication

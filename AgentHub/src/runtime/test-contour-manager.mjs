@@ -1623,9 +1623,19 @@ async function startTestContourUnlocked({
       ...dependencies,
     });
   }
+  if (sourceKind !== TEST_CONTOUR_DEV_SOURCE) {
+    throw new Error("ordinary Test Contour start accepts only the exact dev source");
+  }
+  const expectedSource = await resolveTestContourSource({
+    root: isolatedRoot,
+    sourceRoot,
+    sourceKind: TEST_CONTOUR_DEV_SOURCE,
+    prepareSource: dependencies.prepareSource ?? prepareTaskContourSource,
+  });
   const source = await readJson(testContourPaths(isolatedRoot).sourceFile);
   const candidate = await currentRelease(isolatedRoot).then((release) => ({
     ...release,
+    kind: source?.kind ?? TEST_CONTOUR_DEV_SOURCE,
     sourceRoot: source?.sourceRoot ?? sourceRoot,
     branch: source?.branch ?? null,
     headCommit: source?.headCommit ?? null,
@@ -1638,7 +1648,11 @@ async function startTestContourUnlocked({
       || !candidate.contourId
       || !candidate.operationId
       || candidate.port !== port
-      || candidate.model !== model) {
+      || candidate.model !== model
+      || candidate.kind !== TEST_CONTOUR_DEV_SOURCE
+      || candidate.branch !== expectedSource.branch
+      || candidate.headCommit !== expectedSource.headCommit
+      || !samePath(candidate.sourceRoot, expectedSource.sourceRoot)) {
     return refreshTestContourUnlocked({
       root: isolatedRoot,
       entryFile,
