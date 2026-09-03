@@ -81,6 +81,20 @@ function scopedCredentialAccount(type, value) {
   };
 }
 
+const CLAUDE_PLAN_TIERS = new Set(["free", "pro", "max", "team", "enterprise"]);
+
+function normalizedClaudePlanTier(value) {
+  const normalized = text(value).toLowerCase().replace(/[\s-]+/gu, "_");
+  const tier = normalized.startsWith("claude_") ? normalized.slice("claude_".length) : normalized;
+  if (/^max(?:_\d+x)?$/u.test(tier)) return "max";
+  return CLAUDE_PLAN_TIERS.has(tier) ? tier : "";
+}
+
+function claudePlanType(account) {
+  return normalizedClaudePlanTier(account?.seatTier)
+    || normalizedClaudePlanTier(account?.organizationType);
+}
+
 /**
  * Account dimension for a Codex auth store. Returns null when the store exposes
  * no stable identifier of a specific account — a device then publishes no
@@ -113,7 +127,7 @@ export function claudeUsageAccount(value) {
     key: `anthropic:${accountUuid}`,
     label: text(account?.emailAddress).toLowerCase(),
     type: "oauth",
-    planType: [text(account?.seatTier), text(account?.billingType)].filter(Boolean).join(":"),
+    planType: claudePlanType(account),
   };
 }
 

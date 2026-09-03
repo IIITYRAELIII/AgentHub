@@ -979,6 +979,22 @@ function formatProviderNames(providers = {}) {
   return sortedProviders(providers).map(([provider]) => providerTitle(provider)).join(" · ");
 }
 
+function formatAccountPlan(planType) {
+  const raw = String(planType ?? "").trim();
+  const normalized = raw.toLowerCase();
+  if (!normalized) return "";
+  if (normalized === "apple_subscription") return "Pro";
+  const tier = normalized.split(":", 1)[0].replace(/^claude_/u, "");
+  if (/^max(?:_\d+x)?$/u.test(tier)) return "Max";
+  if (tier === "pro") return "Pro";
+  if (tier === "plus") return "Plus";
+  if (tier === "team") return "Team";
+  if (tier === "enterprise") return "Enterprise";
+  if (tier === "free") return "Free";
+  if (normalized.includes(":") || normalized.endsWith("_subscription")) return "";
+  return raw;
+}
+
 function pluralize(count, [one, few, many]) {
   const value = Math.max(0, Math.trunc(Number(count) || 0));
   const tens = value % 100;
@@ -1110,6 +1126,8 @@ function formatDeviceShareFill(devices, currentIndex, total) {
 function formatAccountUsageRow(account, totalCredits, groupId) {
   const devices = accountDevices(account);
   const uiAccountKey = String(account.uiAccountKey || account.accountKey || "");
+  const providers = formatProviderNames(account.providers);
+  const plan = formatAccountPlan(account.planType);
   const share = totalCredits > 0 && account.credits > 0
     ? Math.round(account.credits / totalCredits * 100)
     : 0;
@@ -1138,11 +1156,11 @@ function formatAccountUsageRow(account, totalCredits, groupId) {
     + "</span>"
     + "</span>"
     + "<span data-work-log-account-provider>"
-    + (account.type
-      ? `<span data-work-log-account-provider-name>${escapeHtmlText(account.type)}</span>`
+    + (providers
+      ? `<span data-work-log-account-provider-name>${escapeHtmlText(providers)}</span>`
       : "")
-    + (account.planType
-      ? `<span data-work-log-account-plan>${escapeHtmlText(account.planType)}</span>`
+    + (plan
+      ? `<span data-work-log-account-plan>${escapeHtmlText(plan)}</span>`
       : "")
     + "</span>"
     + `<span data-work-log-account-bar aria-hidden="true">${formatShareSegments(segments)}</span>`

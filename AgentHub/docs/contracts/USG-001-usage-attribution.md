@@ -3,6 +3,7 @@
 Model and rationale: [USAGE_CORRELATION_MODEL.md](../architecture/USAGE_CORRELATION_MODEL.md).
 Decision: [ADR-0013](../decisions/ADR-0013-interval-account-attribution.md).
 Limit sample conflict semantics: [ADR-0014](../decisions/ADR-0014-lossless-limit-sample-merge.md).
+Claude plan normalization: [ADR-0018](../decisions/ADR-0018-claude-account-plan-normalization.md).
 
 ## Identity and owner
 
@@ -157,7 +158,21 @@ account held in an auth store the device owns:
 
 - Codex ChatGPT — `chatgpt:sha256(lowercased email)`.
 - Claude — `anthropic:<oauthAccount.accountUuid>`, label from
-  `oauthAccount.emailAddress` lowercased, plan from `seatTier:billingType`.
+  `oauthAccount.emailAddress` lowercased, account type `oauth`, and normalized
+  subscription plan from a recognized `seatTier` or from a recognized
+  `organizationType` (`claude_<tier>`) otherwise. `billingType` is a payment
+  channel and never becomes `accountPlan`.
+
+An account's displayed provider comes from the providers of its usage facts,
+not from `accountType`. In particular, Claude OAuth accounts display `Claude`,
+while `oauth` remains credential metadata only.
+
+For records written before this normalization, presentation recognizes the
+legacy `apple_subscription` and `<tier>:subscription` values without rewriting
+identity evidence. These aliases are removed after persisted account metadata
+has a dedicated canonical-plan migration; until then this is a known migration
+gap. A newly normalized observation may change `authFingerprint` once while
+retaining the same `accountKey`.
 
 Missing email, missing `accountUuid`, or any other absence of the identifying
 field yields **no observation at all**. A partial or synthesized key is never

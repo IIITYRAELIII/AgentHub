@@ -23,8 +23,51 @@ test("Claude account reader returns a stable opaque account key", async () => {
       key: "anthropic:acc-123",
       label: "first@example.test",
       type: "oauth",
-      planType: "max:subscription",
+      planType: "max",
     });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Claude account reader falls back to the current organization subscription tier", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-claude-account-"));
+  try {
+    const file = path.join(root, ".claude.json");
+    await writeFile(file, `${JSON.stringify({
+      oauthAccount: {
+        accountUuid: "acc-pro",
+        emailAddress: "Pro@Example.Test",
+        seatTier: "",
+        billingType: "apple_subscription",
+        organizationType: "claude_pro",
+      },
+    })}\n`, "utf8");
+    const readClaudeAccount = createClaudeAccountReader({ file });
+    assert.deepEqual(await readClaudeAccount(), {
+      key: "anthropic:acc-pro",
+      label: "pro@example.test",
+      type: "oauth",
+      planType: "pro",
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Claude account reader does not treat a billing channel as a subscription tier", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-claude-account-"));
+  try {
+    const file = path.join(root, ".claude.json");
+    await writeFile(file, `${JSON.stringify({
+      oauthAccount: {
+        accountUuid: "acc-billing-only",
+        emailAddress: "Billing@Example.Test",
+        billingType: "apple_subscription",
+      },
+    })}\n`, "utf8");
+    const readClaudeAccount = createClaudeAccountReader({ file });
+    assert.equal((await readClaudeAccount()).planType, "");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
