@@ -182,16 +182,22 @@ export async function inspectOfficialCodexCandidate(candidate, {
   if (!pathInsideOrSame(canonicalPath, canonicalRoot)) throw new Error("Codex executable escapes its official install root");
   const info = await statImpl(canonicalPath);
   if (!info.isFile()) throw new Error("Codex executable candidate is not a file");
+  const hashBeforeSignature = await hashFile(canonicalPath);
   const signature = await verifySignature(canonicalPath);
+  const hashAfterSignature = await hashFile(canonicalPath);
+  if (hashBeforeSignature !== hashAfterSignature) {
+    throw new Error("Codex executable changed during signature verification");
+  }
   if (!signature?.valid) throw new Error(`Codex executable signature is not trusted (${signature?.status ?? "unknown"})`);
-  const hashBefore = await hashFile(canonicalPath);
   const version = await readVersion(canonicalPath);
-  const hashAfter = await hashFile(canonicalPath);
-  if (hashBefore !== hashAfter) throw new Error("Codex executable changed during verification");
+  const hashAfterVersion = await hashFile(canonicalPath);
+  if (hashAfterSignature !== hashAfterVersion) {
+    throw new Error("Codex executable changed during version verification");
+  }
   return {
     path: canonicalPath,
     version,
-    sha256: hashAfter,
+    sha256: hashAfterVersion,
     publisher: signature.publisher,
     signatureStatus: signature.status,
     source: candidate.source,

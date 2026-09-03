@@ -18,8 +18,8 @@ bad candidate.
 
 Introduce one executable update service at the process/lifecycle boundary. It
 discovers only current-user official OpenAI install layouts, canonicalizes each
-path, verifies the Authenticode publisher, executes bounded `--version`, hashes
-the exact file, and orders trusted identities by parsed version. The service
+path, binds Authenticode and bounded `--version` observations with surrounding
+SHA-256 checks, and orders trusted identities by parsed version. The service
 persists the selected, candidate, last-known-good, canary, and failure state in
 one atomically replaced file under the Agent Hub data directory.
 
@@ -48,7 +48,8 @@ official discovery trust.
 | --- | --- | --- |
 | A planted `codex.exe` in a lookalike directory | Canonical allowlisted install roots plus valid OpenAI Authenticode signer | A compromised OpenAI signing key or trusted installer is outside Hub's boundary |
 | Version spoofing or mtime manipulation | Bounded `--version`, strict parsed version, SHA-256 identity; mtime ignored | A malicious correctly signed binary may still lie about its version |
-| File replacement between verification and launch | Re-hash immediately before launch and require the durable identity | Windows cannot provide an immutable executable handle across all spawn implementations |
+| File replacement during signature or version inspection | Hash before and after Authenticode, then around bounded version execution; reject every transition | A kernel-level attacker remains outside Hub's boundary |
+| File replacement between canary/re-discovery and launch | At the lifecycle launch boundary, re-read durable selection and re-inspect exact path, version, SHA-256, and publisher before allowing `spawn` | Windows cannot provide an immutable executable handle across the final verification-to-spawn instructions |
 | Downgrade or wrong prerelease ordering | SemVer comparison including prerelease identifiers and explicit pin policy | OpenAI version strings outside the supported grammar are rejected, not guessed |
 | Canary hang, protocol incompatibility, or unexpected cost | Per-operation and total deadlines, isolated Thread/runtime, single attempt per identity | A successful canary cannot prove every production workload |
 | Update interrupts an active run | Adoption deferred whenever active/recovering Codex runs exist | A process crash remains governed by normal run recovery |

@@ -22,14 +22,16 @@ function sameIdentity(left, right) {
   return Boolean(left && right
     && String(left.path).toLowerCase() === String(right.path).toLowerCase()
     && left.version === right.version
-    && left.sha256 === right.sha256);
+    && left.sha256 === right.sha256
+    && left.publisher === right.publisher);
 }
 
 function validIdentity(value) {
   return value && typeof value === "object"
     && typeof value.path === "string" && value.path
     && typeof value.version === "string" && value.version
-    && typeof value.sha256 === "string" && /^[A-F0-9]{64}$/.test(value.sha256);
+    && typeof value.sha256 === "string" && /^[A-F0-9]{64}$/.test(value.sha256)
+    && typeof value.publisher === "string" && value.publisher;
 }
 
 function initialState() {
@@ -96,15 +98,20 @@ export class CodexExecutableUpdateService {
   async #load() {
     if (this.#loaded) return;
     this.#loaded = true;
+    this.#state = await this.#readPersistedState({ allowMissing: true });
+  }
+
+  async #readPersistedState({ allowMissing }) {
     try {
       const parsed = JSON.parse(await this.readFileImpl(this.stateFile, "utf8"));
       if (parsed?.schemaVersion !== SCHEMA_VERSION) throw new Error("unsupported schema version");
       for (const key of ["active", "selected", "lastKnownGood", "candidate", "failedIdentity"]) {
         if (parsed[key] != null && !validIdentity(parsed[key])) throw new Error(`invalid ${key} identity`);
       }
-      this.#state = { ...initialState(), ...parsed };
+      return { ...initialState(), ...parsed };
     } catch (error) {
-      if (error?.code !== "ENOENT") throw new Error(`Cannot read Codex executable state: ${error.message}`);
+      if (allowMissing && error?.code === "ENOENT") return initialState();
+      throw new Error(`Cannot read Codex executable state: ${error.message}`);
     }
   }
 
@@ -265,6 +272,31 @@ export class CodexExecutableUpdateService {
       await this.#save();
       return fallback.path;
     }
+  }
+
+  async verifySelectedForLaunch(expectedPath) {
+    const requestedPath = String(expectedPath ?? "").trim();
+    const selected = identity(this.#selection);
+    if (!requestedPath || !selected
+      || selected.path.toLowerCase() !== requestedPath.toLowerCase()) {
+      throw new Error("Codex executable launch path does not match the selected identity");
+    }
+    if (["manual-override", "path-fallback"].includes(selected.source)) return requestedPath;
+
+    await this.#load();
+    if (!validIdentity(selected)) throw new Error("Codex executable launch identity is incomplete");
+    const durable = await this.#readPersistedState({ allowMissing: false });
+    if (!sameIdentity(selected, durable.selected)) {
+      throw new Error("Durable selected Codex executable identity changed before process spawn");
+    }
+
+    const discovery = await this.discover();
+    this.#verifiedCandidates = discovery.candidates ?? [];
+    const verified = this.#findVerified(selected);
+    if (!verified) {
+      throw new Error("Selected Codex executable identity changed before process spawn");
+    }
+    return verified.path;
   }
 
   async markStartupSuccess() {

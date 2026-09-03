@@ -24,6 +24,7 @@ async function fixture(context) {
 
 function service(stateFile, {
   candidates,
+  discover = async () => ({ candidates, rejected: [] }),
   runCanary = async () => ({ ok: true, evidence: { scenario: "passed" } }),
   activeRuns = () => [],
   autoUpdateEnabled = true,
@@ -35,7 +36,7 @@ function service(stateFile, {
     versionPin,
     activeRuns,
     platform: "win32",
-    discover: async () => ({ candidates, rejected: [] }),
+    discover,
     runCanary,
   });
 }
@@ -217,4 +218,69 @@ test("candidate startup failure permits exactly one last-known-good rollback", a
   assert.equal(update.diagnostics().lastKnownGood.version, legacy.version);
   const saved = JSON.parse(await readFile(stateFile, "utf8"));
   assert.equal(JSON.stringify(saved).includes("auth"), false);
+});
+
+test("launch verification rejects post-canary replacement and permits only verified last-known-good", async (context) => {
+  const stateFile = await fixture(context);
+  const legacy = candidate("0.151.0-alpha.7.2", "vscode");
+  const newest = candidate("0.152.1");
+  const replaced = { ...newest, sha256: "C".repeat(64) };
+  const baseline = service(stateFile, { candidates: [legacy] });
+  await baseline.selectForStart();
+  await baseline.markStartupSuccess();
+
+  let discoveries = 0;
+  const update = service(stateFile, {
+    discover: async () => ({
+      candidates: discoveries++ < 2 ? [newest, legacy] : [replaced, legacy],
+      rejected: [],
+    }),
+  });
+  assert.equal(await update.selectForStart(), newest.path);
+  await assert.rejects(
+    update.verifySelectedForLaunch(newest.path),
+    /identity changed before process spawn/u,
+  );
+  assert.equal(await update.markStartupFailure(new Error("launch identity mismatch")), true);
+  assert.equal(await update.selectForStart(), legacy.path);
+  assert.equal(await update.verifySelectedForLaunch(legacy.path), legacy.path);
+  assert.equal(update.diagnostics().status, "rollback-starting");
+});
+
+test("changed last-known-good identity fails closed at launch without another rollback", async (context) => {
+  const stateFile = await fixture(context);
+  const legacy = candidate("0.151.0-alpha.7.2", "vscode");
+  const replaced = { ...legacy, publisher: "CN=Different Publisher" };
+  const baseline = service(stateFile, { candidates: [legacy] });
+  await baseline.selectForStart();
+  await baseline.markStartupSuccess();
+
+  let discoveries = 0;
+  const update = service(stateFile, {
+    discover: async () => ({ candidates: [discoveries++ === 0 ? legacy : replaced], rejected: [] }),
+  });
+  assert.equal(await update.selectForStart(), legacy.path);
+  await assert.rejects(
+    update.verifySelectedForLaunch(legacy.path),
+    /identity changed before process spawn/u,
+  );
+  assert.equal(await update.markStartupFailure(new Error("last-known-good identity mismatch")), false);
+  assert.equal(update.diagnostics().status, "startup-failed");
+  assert.equal(update.diagnostics().reason, "rollback-unavailable");
+});
+
+test("launch verification fails closed when durable selected identity is altered", async (context) => {
+  const stateFile = await fixture(context);
+  const selected = candidate("0.152.1");
+  const update = service(stateFile, { candidates: [selected] });
+  assert.equal(await update.selectForStart(), selected.path);
+
+  const durable = JSON.parse(await readFile(stateFile, "utf8"));
+  durable.selected.publisher = "CN=Different Publisher";
+  await writeFile(stateFile, `${JSON.stringify(durable, null, 2)}\n`, "utf8");
+
+  await assert.rejects(
+    update.verifySelectedForLaunch(selected.path),
+    /Durable selected Codex executable identity changed before process spawn/u,
+  );
 });

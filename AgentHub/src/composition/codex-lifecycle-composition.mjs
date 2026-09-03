@@ -29,6 +29,7 @@ export function createCodexLifecycleComposition({
   });
   const runtime = new CodexAppServerLifecycle({
     resolveExecutable: () => executableUpdates.selectForStart(),
+    verifyExecutableForLaunch: (command) => executableUpdates.verifySelectedForLaunch(command),
     onStartupSuccess: () => executableUpdates.markStartupSuccess(),
     onStartupFailure: (error) => executableUpdates.markStartupFailure(error),
     unavailableMcpOverrides: async () => {

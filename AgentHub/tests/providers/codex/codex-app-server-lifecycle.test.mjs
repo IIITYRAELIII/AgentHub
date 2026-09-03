@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 
 import { AGENT_HUB_VERSION } from "../../../src/infrastructure/filesystem/agent-hub-package.mjs";
@@ -62,6 +64,17 @@ function fixture(overrides = {}) {
     timeout: (event) => lifecycleTransport.onTimeout(event),
     exit: (event) => lifecycleTransport.onExit(event),
   };
+}
+
+function spawnableChild() {
+  const child = new EventEmitter();
+  child.pid = 42;
+  child.stdin = new PassThrough();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.kill = () => {};
+  queueMicrotask(() => child.emit("spawn"));
+  return child;
 }
 
 test("Codex App Server lifecycle initializes the transport and selected thread", async () => {
@@ -129,6 +142,62 @@ test("Codex App Server lifecycle rolls back when candidate process cannot start"
   assert.deepEqual(events.map(([name]) => name), [
     "start", "error", "stop", "start", "initialize", "notify", "attach", "startup-success",
   ]);
+});
+
+test("Codex App Server lifecycle blocks an unverified executable before spawn", async () => {
+  const events = [];
+  const lifecycle = new CodexAppServerLifecycle({
+    resolveExecutable: async () => { events.push("resolve"); return "C:/candidate/codex.exe"; },
+    unavailableMcpOverrides: async () => { events.push("mcp"); return { disabled: [], args: [] }; },
+    verifyExecutableForLaunch: async () => { events.push("verify"); throw new Error("identity changed"); },
+    spawnProcess: () => { events.push("spawn"); return spawnableChild(); },
+    executableArgs: [],
+    projectRoot: () => process.cwd(),
+    stopProcessTree: async () => {},
+    onMessage: () => {},
+    onStartupFailure: async () => false,
+    rpcTimeoutMs: 1_000,
+    isStopping: () => false,
+    providerSelected: () => true,
+    activeRuns: () => [],
+    logger: { log: () => {}, error: () => {} },
+  });
+
+  await assert.rejects(lifecycle.start(), /identity changed/u);
+  assert.deepEqual(events, ["resolve", "mcp", "verify"]);
+});
+
+test("Codex App Server lifecycle spawns only verified last-known-good after launch mismatch", async () => {
+  const commands = ["C:/candidate/codex.exe", "C:/lkg/codex.exe"];
+  const spawned = [];
+  const verified = [];
+  let stopping = false;
+  const lifecycle = new CodexAppServerLifecycle({
+    resolveExecutable: async () => commands.shift(),
+    unavailableMcpOverrides: async () => ({ disabled: [], args: [] }),
+    verifyExecutableForLaunch: async (command) => {
+      verified.push(command);
+      if (command.includes("candidate")) throw new Error("candidate identity changed");
+      return command;
+    },
+    spawnProcess: (command) => { spawned.push(command); return spawnableChild(); },
+    executableArgs: [],
+    projectRoot: () => process.cwd(),
+    stopProcessTree: async () => {},
+    onMessage: () => {},
+    onStartupFailure: async () => true,
+    rpcTimeoutMs: 1_000,
+    isStopping: () => stopping,
+    providerSelected: () => true,
+    activeRuns: () => [],
+    logger: { log: () => {}, error: () => {} },
+  });
+
+  await lifecycle.start();
+  assert.deepEqual(verified, ["C:/candidate/codex.exe", "C:/lkg/codex.exe"]);
+  assert.deepEqual(spawned, ["C:/lkg/codex.exe"]);
+  stopping = true;
+  await lifecycle.stop();
 });
 
 test("Codex App Server lifecycle bounds candidate and rollback process start failures", async () => {

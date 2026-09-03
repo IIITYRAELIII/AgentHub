@@ -20,6 +20,10 @@ publisher`. A path or a version alone is not an executable identity.
   signer subject is OpenAI, must remain inside its canonical allowed install
   root, must report a parseable Codex version through a bounded `--version`
   invocation, and must have a SHA-256 digest computed from the same file.
+- Authenticode and version results are bound to the accepted bytes by hashing
+  immediately before and after signature verification, then hashing again
+  after the bounded version process. Any transition between those observations
+  rejects the identity.
 - Selection compares parsed versions, including prerelease identifiers; file
   or directory modification time is never update authority.
 - The update channel never downloads, installs, copies, patches, or executes an
@@ -36,6 +40,11 @@ publisher`. A path or a version alone is not an executable identity.
   restart/resume of that Thread, ordinary turn, isolated Agent Hub-shaped MCP
   read, cancel, and a successful following turn. Canary runtime state and auth
   copies are removed after the result is recorded.
+- Immediately before every App Server process spawn, the lifecycle re-reads the
+  durable selected identity and re-inspects the installed executable. The exact
+  canonical path, version, SHA-256, and publisher must still match. A mismatch
+  cannot reach `spawn`; it uses the same bounded verified last-known-good
+  rollback when available and otherwise fails closed.
 - A candidate is never activated while a Codex run is active or while active
   run recovery is pending. Discovery may report the candidate, but activation
   remains `deferred-active-runs` until the next safe lifecycle boundary.

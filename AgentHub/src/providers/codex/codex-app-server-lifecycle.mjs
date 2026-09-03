@@ -27,7 +27,7 @@ export class CodexAppServerLifecycle {
 
   async #spawn(args) {
     const d = this.#d;
-    const command = await d.resolveExecutable();
+    const selectedCommand = await d.resolveExecutable();
     const mcp = await d.unavailableMcpOverrides();
     if (mcp.disabled.length > 0) {
       const endpoints = mcp.disabled
@@ -35,8 +35,11 @@ export class CodexAppServerLifecycle {
         .join(", ");
       d.logger.log(`Local MCP unavailable; disabled for Agent Hub Server: ${endpoints}`);
     }
+    const command = typeof d.verifyExecutableForLaunch === "function"
+      ? await d.verifyExecutableForLaunch(selectedCommand)
+      : selectedCommand;
     d.logger.error(`Starting Codex: ${command}`);
-    const child = spawn(command, [...d.executableArgs, ...mcp.args, ...args], {
+    const child = (d.spawnProcess ?? spawn)(command, [...d.executableArgs, ...mcp.args, ...args], {
       cwd: d.projectRoot(),
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,

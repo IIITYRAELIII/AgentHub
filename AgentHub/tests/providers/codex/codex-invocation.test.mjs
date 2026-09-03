@@ -78,7 +78,7 @@ test("trusted discovery sorts by executable-reported version rather than filesys
   }]);
 });
 
-test("candidate inspection verifies signature before executing version and rejects TOCTOU changes", async () => {
+test("candidate inspection rejects replacement immediately after Authenticode before version execution", async () => {
   const calls = [];
   const candidate = { executable: "C:/official/codex.exe", installRoot: "C:/official", source: "desktop" };
   await assert.rejects(inspectOfficialCodexCandidate(candidate, {
@@ -96,8 +96,30 @@ test("candidate inspection verifies signature before executing version and rejec
       calls.push("hash");
       return calls.filter((call) => call === "hash").length === 1 ? "A".repeat(64) : "B".repeat(64);
     },
-  }), /changed during verification/u);
-  assert.deepEqual(calls, ["signature", "hash", "version", "hash"]);
+  }), /changed during signature verification/u);
+  assert.deepEqual(calls, ["hash", "signature", "hash"]);
+});
+
+test("candidate inspection rejects replacement during bounded version execution", async () => {
+  const calls = [];
+  const candidate = { executable: "C:/official/codex.exe", installRoot: "C:/official", source: "desktop" };
+  await assert.rejects(inspectOfficialCodexCandidate(candidate, {
+    realpathImpl: async (value) => value,
+    statImpl: async () => ({ isFile: () => true }),
+    verifySignature: async () => {
+      calls.push("signature");
+      return { valid: true, status: "Valid", publisher: "CN=OpenAI OpCo, LLC" };
+    },
+    readVersion: async () => {
+      calls.push("version");
+      return "0.152.1";
+    },
+    hashFile: async () => {
+      calls.push("hash");
+      return calls.filter((call) => call === "hash").length < 3 ? "A".repeat(64) : "B".repeat(64);
+    },
+  }), /changed during version verification/u);
+  assert.deepEqual(calls, ["hash", "signature", "hash", "version", "hash"]);
 });
 
 test("VS Code compatibility resolver uses version-sorted trusted candidates", async () => {
