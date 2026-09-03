@@ -8,6 +8,7 @@ export class CodexAppServerLifecycle {
   #restarting = false;
   #timeoutRestarting = false;
   #timeoutHealthCheck = null;
+  #startedWithRollback = false;
 
   constructor(dependencies) {
     this.#d = dependencies;
@@ -26,7 +27,7 @@ export class CodexAppServerLifecycle {
 
   async #spawn(args) {
     const d = this.#d;
-    const command = await d.resolveExecutable();
+    const selectedCommand = await d.resolveExecutable();
     const mcp = await d.unavailableMcpOverrides();
     if (mcp.disabled.length > 0) {
       const endpoints = mcp.disabled
@@ -34,8 +35,11 @@ export class CodexAppServerLifecycle {
         .join(", ");
       d.logger.log(`Local MCP unavailable; disabled for Agent Hub Server: ${endpoints}`);
     }
+    const command = typeof d.verifyExecutableForLaunch === "function"
+      ? await d.verifyExecutableForLaunch(selectedCommand)
+      : selectedCommand;
     d.logger.error(`Starting Codex: ${command}`);
-    const child = spawn(command, [...d.executableArgs, ...mcp.args, ...args], {
+    const child = (d.spawnProcess ?? spawn)(command, [...d.executableArgs, ...mcp.args, ...args], {
       cwd: d.projectRoot(),
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
@@ -112,7 +116,27 @@ export class CodexAppServerLifecycle {
     this.#restarting = Boolean(value);
   }
 
-  async start() { await this.transport.start(); }
+  async start() {
+    try {
+      await this.transport.start();
+      this.#startedWithRollback = false;
+    } catch (error) {
+      const rollback = await this.#d.onStartupFailure?.(error);
+      if (!rollback) throw error;
+      this.#d.logger.error(`Codex process start failed; retrying once with last-known-good: ${error.message}`);
+      await this.transport.stop();
+      try {
+        await this.transport.start();
+        this.#startedWithRollback = true;
+      } catch (rollbackError) {
+        await this.#d.onStartupFailure?.(rollbackError);
+        throw new AggregateError(
+          [error, rollbackError],
+          `Codex candidate and last-known-good process start failed: ${rollbackError.message}`,
+        );
+      }
+    }
+  }
   async stop() { await this.transport.stop(); }
   request(method, params = {}, options = {}) { return this.transport.request(method, params, options); }
   readThread(threadId, options = {}) { return this.transport.readThread(threadId, options); }
@@ -121,16 +145,44 @@ export class CodexAppServerLifecycle {
   respond(id, result) { return this.transport.respond(id, result); }
 
   async initialize({ attachSelectedThread = true } = {}) {
-    const initialized = await this.transport.initialize({
-      clientInfo: {
-        name: "agent_hub",
-        title: "Agent Hub",
-        version: AGENT_HUB_VERSION,
-      },
-      capabilities: { experimentalApi: true },
-    });
-    if (initialized.newlyInitialized) this.notify("initialized");
-    if (attachSelectedThread) await this.#d.attachSelectedThread();
+    const initializeOnce = async () => {
+      const initialized = await this.transport.initialize({
+        clientInfo: {
+          name: "agent_hub",
+          title: "Agent Hub",
+          version: AGENT_HUB_VERSION,
+        },
+        capabilities: { experimentalApi: true },
+      });
+      if (initialized.newlyInitialized) this.notify("initialized");
+      if (attachSelectedThread) await this.#d.attachSelectedThread();
+      return initialized;
+    };
+    try {
+      const initialized = await initializeOnce();
+      await this.#d.onStartupSuccess?.();
+      const rolledBack = this.#startedWithRollback;
+      this.#startedWithRollback = false;
+      return rolledBack ? { ...initialized, rolledBack: true } : initialized;
+    } catch (error) {
+      const rollback = await this.#d.onStartupFailure?.(error);
+      if (!rollback) throw error;
+      this.#d.logger.error(`Codex startup failed; retrying once with last-known-good: ${error.message}`);
+      await this.transport.stop();
+      await this.transport.start();
+      try {
+        const initialized = await initializeOnce();
+        await this.#d.onStartupSuccess?.();
+        this.#startedWithRollback = false;
+        return { ...initialized, rolledBack: true };
+      } catch (rollbackError) {
+        await this.#d.onStartupFailure?.(rollbackError);
+        throw new AggregateError(
+          [error, rollbackError],
+          `Codex candidate and last-known-good startup failed: ${rollbackError.message}`,
+        );
+      }
+    }
   }
 
   async restartAfterCrash() {

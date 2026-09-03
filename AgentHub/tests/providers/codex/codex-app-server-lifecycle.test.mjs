@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 
 import { AGENT_HUB_VERSION } from "../../../src/infrastructure/filesystem/agent-hub-package.mjs";
@@ -14,7 +16,7 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-function fixture() {
+function fixture(overrides = {}) {
   const events = [];
   const lifecycle = new CodexAppServerLifecycle({
     resolveExecutable: async () => "codex",
@@ -31,6 +33,8 @@ function fixture() {
     recoverRuns: async () => events.push(["recover"]),
     startTyping: () => events.push(["typing"]),
     attachSelectedThread: async () => events.push(["attach"]),
+    onStartupSuccess: overrides.onStartupSuccess,
+    onStartupFailure: overrides.onStartupFailure,
     scheduleRetry: (...args) => events.push(["retry", ...args]),
     logger: { log: (...args) => events.push(["log", ...args]), error: (...args) => events.push(["error", ...args]) },
   });
@@ -62,6 +66,17 @@ function fixture() {
   };
 }
 
+function spawnableChild() {
+  const child = new EventEmitter();
+  child.pid = 42;
+  child.stdin = new PassThrough();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.kill = () => {};
+  queueMicrotask(() => child.emit("spawn"));
+  return child;
+}
+
 test("Codex App Server lifecycle initializes the transport and selected thread", async () => {
   const { lifecycle, events } = fixture();
   await lifecycle.initialize();
@@ -75,6 +90,154 @@ test("Codex App Server lifecycle owns crash recovery", async () => {
   const { lifecycle, events } = fixture();
   await lifecycle.restartAfterCrash();
   assert.deepEqual(events.map(([name]) => name), ["start", "initialize", "notify", "attach", "recover"]);
+});
+
+test("Codex App Server lifecycle retries once with last-known-good after candidate startup failure", async () => {
+  const failures = [];
+  let initializeCount = 0;
+  const { lifecycle, events } = fixture({
+    onStartupFailure: async (error) => {
+      failures.push(error.message);
+      return true;
+    },
+    onStartupSuccess: async () => events.push(["startup-success"]),
+  });
+  lifecycle.transport.initialize = async () => {
+    initializeCount += 1;
+    events.push(["initialize", initializeCount]);
+    if (initializeCount === 1) throw new Error("candidate protocol rejected");
+    return { newlyInitialized: true };
+  };
+
+  const initialized = await lifecycle.initialize();
+
+  assert.equal(initialized.rolledBack, true);
+  assert.deepEqual(failures, ["candidate protocol rejected"]);
+  assert.deepEqual(events.map(([name]) => name), [
+    "initialize", "error", "stop", "start", "initialize", "notify", "attach", "startup-success",
+  ]);
+});
+
+test("Codex App Server lifecycle rolls back when candidate process cannot start", async () => {
+  const failures = [];
+  let starts = 0;
+  const { lifecycle, events } = fixture({
+    onStartupFailure: async (error) => {
+      failures.push(error.message);
+      return true;
+    },
+    onStartupSuccess: async () => events.push(["startup-success"]),
+  });
+  lifecycle.transport.start = async () => {
+    starts += 1;
+    events.push(["start", starts]);
+    if (starts === 1) throw new Error("candidate executable would not start");
+  };
+
+  await lifecycle.start();
+  const initialized = await lifecycle.initialize();
+
+  assert.equal(initialized.rolledBack, true);
+  assert.deepEqual(failures, ["candidate executable would not start"]);
+  assert.deepEqual(events.map(([name]) => name), [
+    "start", "error", "stop", "start", "initialize", "notify", "attach", "startup-success",
+  ]);
+});
+
+test("Codex App Server lifecycle blocks an unverified executable before spawn", async () => {
+  const events = [];
+  const lifecycle = new CodexAppServerLifecycle({
+    resolveExecutable: async () => { events.push("resolve"); return "C:/candidate/codex.exe"; },
+    unavailableMcpOverrides: async () => { events.push("mcp"); return { disabled: [], args: [] }; },
+    verifyExecutableForLaunch: async () => { events.push("verify"); throw new Error("identity changed"); },
+    spawnProcess: () => { events.push("spawn"); return spawnableChild(); },
+    executableArgs: [],
+    projectRoot: () => process.cwd(),
+    stopProcessTree: async () => {},
+    onMessage: () => {},
+    onStartupFailure: async () => false,
+    rpcTimeoutMs: 1_000,
+    isStopping: () => false,
+    providerSelected: () => true,
+    activeRuns: () => [],
+    logger: { log: () => {}, error: () => {} },
+  });
+
+  await assert.rejects(lifecycle.start(), /identity changed/u);
+  assert.deepEqual(events, ["resolve", "mcp", "verify"]);
+});
+
+test("Codex App Server lifecycle spawns only verified last-known-good after launch mismatch", async () => {
+  const commands = ["C:/candidate/codex.exe", "C:/lkg/codex.exe"];
+  const spawned = [];
+  const verified = [];
+  let stopping = false;
+  const lifecycle = new CodexAppServerLifecycle({
+    resolveExecutable: async () => commands.shift(),
+    unavailableMcpOverrides: async () => ({ disabled: [], args: [] }),
+    verifyExecutableForLaunch: async (command) => {
+      verified.push(command);
+      if (command.includes("candidate")) throw new Error("candidate identity changed");
+      return command;
+    },
+    spawnProcess: (command) => { spawned.push(command); return spawnableChild(); },
+    executableArgs: [],
+    projectRoot: () => process.cwd(),
+    stopProcessTree: async () => {},
+    onMessage: () => {},
+    onStartupFailure: async () => true,
+    rpcTimeoutMs: 1_000,
+    isStopping: () => stopping,
+    providerSelected: () => true,
+    activeRuns: () => [],
+    logger: { log: () => {}, error: () => {} },
+  });
+
+  await lifecycle.start();
+  assert.deepEqual(verified, ["C:/candidate/codex.exe", "C:/lkg/codex.exe"]);
+  assert.deepEqual(spawned, ["C:/lkg/codex.exe"]);
+  stopping = true;
+  await lifecycle.stop();
+});
+
+test("Codex App Server lifecycle bounds candidate and rollback process start failures", async () => {
+  const failures = [];
+  const { lifecycle } = fixture({
+    onStartupFailure: async (error) => {
+      failures.push(error.message);
+      return failures.length === 1;
+    },
+  });
+  lifecycle.transport.start = async () => {
+    throw new Error(failures.length === 0 ? "candidate spawn failed" : "rollback spawn failed");
+  };
+
+  await assert.rejects(lifecycle.start(), (error) => {
+    assert.equal(error instanceof AggregateError, true);
+    assert.match(error.message, /rollback spawn failed/u);
+    return true;
+  });
+  assert.deepEqual(failures, ["candidate spawn failed", "rollback spawn failed"]);
+});
+
+test("Codex App Server lifecycle reports aggregate failure when candidate and rollback both fail", async () => {
+  const failures = [];
+  const { lifecycle } = fixture({
+    onStartupFailure: async (error) => {
+      failures.push(error.message);
+      return failures.length === 1;
+    },
+  });
+  lifecycle.transport.initialize = async () => {
+    throw new Error(failures.length === 0 ? "candidate failed" : "rollback failed");
+  };
+
+  await assert.rejects(lifecycle.initialize(), (error) => {
+    assert.equal(error instanceof AggregateError, true);
+    assert.match(error.message, /rollback failed/u);
+    return true;
+  });
+  assert.deepEqual(failures, ["candidate failed", "rollback failed"]);
 });
 
 test("Codex App Server lifecycle keeps a healthy server after one background read timeout", async () => {

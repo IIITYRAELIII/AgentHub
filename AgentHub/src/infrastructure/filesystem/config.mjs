@@ -13,6 +13,7 @@ import { defaultRuntimeRoot, runtimeLayout } from "./runtime-layout.mjs";
 
 export const AGENT_HUB_ROOT = path.resolve(import.meta.dirname, "../../..");
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const CODEX_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u;
 
 export async function resolveConfigPath({
   environment = process.env,
@@ -45,6 +46,23 @@ function positiveInteger(value, fallback, name) {
     throw new Error(`${name} must be a positive integer`);
   }
   return number;
+}
+
+function booleanSetting(value, fallback, name) {
+  if (value == null || value === "") return fallback;
+  if (typeof value === "boolean") return value;
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === "true" || normalized === "1") return true;
+  if (normalized === "false" || normalized === "0") return false;
+  throw new Error(`${name} must be a boolean`);
+}
+
+function codexExecutableVersionPin(value) {
+  const version = String(value ?? "").trim();
+  if (version && !CODEX_VERSION_PATTERN.test(version)) {
+    throw new Error("codexExecutableVersionPin must be an exact Codex version");
+  }
+  return version;
 }
 
 function nonNegativeInteger(value, fallback, name) {
@@ -723,6 +741,14 @@ export async function loadConfig() {
       "telegramApiBaseUrl",
     ),
     codexExecutable: String(process.env.CODEX_EXECUTABLE ?? raw.codexExecutable ?? "").trim(),
+    codexExecutableAutoUpdate: booleanSetting(
+      process.env.CODEX_EXECUTABLE_AUTO_UPDATE ?? raw.codexExecutableAutoUpdate,
+      true,
+      "codexExecutableAutoUpdate",
+    ),
+    codexExecutableVersionPin: codexExecutableVersionPin(
+      process.env.CODEX_EXECUTABLE_VERSION_PIN ?? raw.codexExecutableVersionPin,
+    ),
     codexExecutableArgs: stringArray(raw.codexExecutableArgs, "codexExecutableArgs"),
     codexRpcTimeoutSeconds: positiveInteger(
       process.env.CODEX_RPC_TIMEOUT_SECONDS ?? raw.codexRpcTimeoutSeconds,

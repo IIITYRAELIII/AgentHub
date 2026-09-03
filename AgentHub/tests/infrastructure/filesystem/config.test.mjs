@@ -21,6 +21,45 @@ test("Agent Hub root remains independent from the config module location", () =>
   assert.equal(AGENT_HUB_ROOT, path.resolve(import.meta.dirname, "..", "..", ".."));
 });
 
+test("Codex executable update policy validates disable and exact version pin", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-codex-update-config-"));
+  const configFile = path.join(root, "config.json");
+  const previous = Object.fromEntries([
+    "AGENT_HUB_CONFIG",
+    "CODEX_EXECUTABLE_AUTO_UPDATE",
+    "CODEX_EXECUTABLE_VERSION_PIN",
+  ].map((key) => [key, process.env[key]]));
+  try {
+    await writeFile(configFile, JSON.stringify({
+      components: { telegram: false, miniApp: false, androidApp: false },
+      projectRoot: root,
+      codexExecutableAutoUpdate: false,
+      codexExecutableVersionPin: "0.152.1",
+    }), "utf8");
+    process.env.AGENT_HUB_CONFIG = configFile;
+    delete process.env.CODEX_EXECUTABLE_AUTO_UPDATE;
+    delete process.env.CODEX_EXECUTABLE_VERSION_PIN;
+    const config = await loadConfig();
+    assert.equal(config.codexExecutableAutoUpdate, false);
+    assert.equal(config.codexExecutableVersionPin, "0.152.1");
+
+    process.env.CODEX_EXECUTABLE_AUTO_UPDATE = "true";
+    process.env.CODEX_EXECUTABLE_VERSION_PIN = "0.151.0-alpha.7.2";
+    const overridden = await loadConfig();
+    assert.equal(overridden.codexExecutableAutoUpdate, true);
+    assert.equal(overridden.codexExecutableVersionPin, "0.151.0-alpha.7.2");
+
+    process.env.CODEX_EXECUTABLE_VERSION_PIN = "latest";
+    await assert.rejects(loadConfig(), /codexExecutableVersionPin/u);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value == null) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("core-only components need neither Telegram credentials nor Web App", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-journal-profile-"));
   const configFile = path.join(root, "config.json");

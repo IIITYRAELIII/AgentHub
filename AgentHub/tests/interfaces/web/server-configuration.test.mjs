@@ -9,6 +9,7 @@ test("server configuration exposes only its editable non-secret fields", () => {
   const entries = serverConfigurationEntries({
     autoApproveOnStart: true,
     guardConcurrentRepositoryWrites: false,
+    codexExecutableAutoUpdate: true,
     components: { codexContextCleanup: true },
     codexRolloutContext: { scanIntervalSeconds: 1800 },
     contextAutomation: {
@@ -25,8 +26,21 @@ test("server configuration exposes only its editable non-secret fields", () => {
     logMaxFiles: 5,
     token: "secret",
   }, { logMaxFiles: 7 });
-  assert.equal(entries.length, 14);
+  assert.equal(entries.length, 15);
   assert.equal(JSON.stringify(entries).includes("secret"), false);
+  assert.deepEqual(entries.find((entry) => entry.key === "codexExecutableAutoUpdate"), {
+    key: "codexExecutableAutoUpdate",
+    name: "Автообновление Codex",
+    hint: "На безопасном перезапуске проверяет новейший уже установленный официальный Codex. Не скачивает бинарники и не переключается во время активного хода.",
+    type: "boolean",
+    value: true,
+    display: "Включено",
+    unit: "",
+    min: null,
+    max: null,
+    pending: false,
+    presentation: "advanced",
+  });
   assert.deepEqual(entries.find((entry) => entry.key === "logMaxFiles"), {
     key: "logMaxFiles", name: "Хранение диагностических логов", type: "integer", value: 7,
     hint: "Сколько архивных файлов обычных событий и ошибок хранит Hub. Самые старые удаляются автоматически.",
@@ -98,6 +112,7 @@ test("server configuration persists only validated whitelisted values", async (c
     configPath,
     changes: {
       autoApproveOnStart: true,
+      codexExecutableAutoUpdate: false,
       "codexRolloutContext.scanIntervalSeconds": 45,
       "contextAutomation.autoCompactAfterTurn": true,
       "contextAutomation.autoCompactThresholdPercent": 75,
@@ -111,6 +126,7 @@ test("server configuration persists only validated whitelisted values", async (c
   });
   assert.deepEqual(result, {
     autoApproveOnStart: true,
+    codexExecutableAutoUpdate: false,
     "codexRolloutContext.scanIntervalSeconds": 2700,
     "contextAutomation.autoCompactAfterTurn": true,
     "contextAutomation.autoCompactThresholdPercent": 75,
@@ -122,6 +138,7 @@ test("server configuration persists only validated whitelisted values", async (c
   const saved = JSON.parse(await readFile(configPath, "utf8"));
   assert.equal(saved.telegramBotToken, "secret");
   assert.equal(saved.unrelated, 1);
+  assert.equal(saved.codexExecutableAutoUpdate, false);
   assert.deepEqual(saved.components, { codexContextCleanup: false });
   assert.deepEqual(saved.codexRolloutContext, { scanIntervalSeconds: 2700 });
   assert.deepEqual(saved.contextAutomation, {
