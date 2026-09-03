@@ -51,6 +51,7 @@ const particleStyle = window.AgentHubParticleStyle;
 const JournalView = window.AgentHubJournalView;
 const JournalAccountPanel = window.AgentHubJournalAccountPanel;
 const MessageView = window.AgentHubMessageView;
+const liveCardRenderController = window.AgentHubLiveCardRender.createLiveCardRenderController();
 const expandedUserMessageIds = new Set();
 const responseCitationSources = new WeakMap();
 let activeSourceCitationCleanup = null;
@@ -166,6 +167,7 @@ const dialogStreamRulesCount = document.querySelector("[data-dialog-stream-rules
 const dialogStreamRulesSave = document.querySelector("[data-dialog-stream-rules-save]");
 const dialogStreamArchitect = document.querySelector("[data-dialog-stream-architect]");
 const dialogStreamTeamLead = document.querySelector("[data-dialog-stream-team-lead]");
+const dialogStreamTeamLeadTooltip = document.querySelector("[data-stream-team-lead-tooltip]");
 const dialogStreamQuickMessages = document.querySelector("[data-dialog-stream-quick-messages]");
 const dialogStreamQuickMessagesCount = document.querySelector("[data-dialog-stream-quick-messages-count]");
 const workspaceMessageSearch = document.querySelector("[data-workspace-message-search]");
@@ -188,6 +190,7 @@ const annotationsBox = document.querySelector("[data-annotations]");
 const attachmentsBox = document.querySelector("[data-attachments]");
 const TaskReferences = window.AgentHubTaskReferences;
 const streamRoleSettings = window.AgentHubStreamRoleSettings;
+streamRoleSettings?.renderTeamLeadTooltip(dialogStreamTeamLeadTooltip);
 const annotationContextMenu = document.querySelector("[data-annotation-context-menu]");
 const resourceContextMenu = document.querySelector("[data-resource-context-menu]");
 // Theme panels may clip their children (for example Lake uses overflow:hidden
@@ -2951,7 +2954,9 @@ function renderStreamChatPreview(task) {
   } else if (!messages.length) {
     log.append(el("p", { class: "stream-chat-preview-empty", text: "В этом Stream пока нет сообщений." }));
   } else {
-    for (const message of messages.slice(-20)) log.append(renderMessage(message, { readOnly: true, task }));
+    for (const message of MessageView.conversationSurfaceMessages(messages).slice(-20)) {
+      log.append(renderMessage(message, { readOnly: true, task }));
+    }
   }
   const live = state.live.get(task.id);
   if (liveCardHasContent(live)) {
@@ -3637,7 +3642,7 @@ function renderWorkspaceContextMenu(menu, workspace) {
       text: `В папку «${name}»`,
       title: `Переместить Workspace в папку «${name}»`,
     }));
-  menu.replaceChildren(
+  window.AgentHubStreamTabs.renderWorkspaceContextMenuChildren(menu, [
     el("button", {
       type: "button",
       role: "menuitem",
@@ -3661,25 +3666,25 @@ function renderWorkspaceContextMenu(menu, workspace) {
       "data-workspace-menu-action": "folder-new",
       text: "Новая папка…",
     }),
-    currentFolder ? el("button", {
-      type: "button",
-      role: "menuitem",
-      class: "stream-context-action",
-      "data-workspace-menu-action": "folder-remove",
-      text: "Убрать из папки",
-    }) : null,
-    workspace?.kind !== "system" ? el("span", {
+  ], currentFolder, () => el("button", {
+    type: "button",
+    role: "menuitem",
+    class: "stream-context-action",
+    "data-workspace-menu-action": "folder-remove",
+    text: "Убрать из папки",
+  }));
+  if (workspace?.kind !== "system") {
+    menu.append(el("span", {
       class: "stream-context-label",
       text: "Безопасность",
-    }) : null,
-    workspace?.kind !== "system" ? el("button", {
+    }), el("button", {
       type: "button",
       role: "menuitem",
       class: "stream-context-action stream-context-danger",
       "data-workspace-menu-action": "archive",
       text: "Удалить в архив на 3 дня…",
-    }) : null,
-  );
+    }));
+  }
 }
 
 function openWorkspaceContextMenu(event, workspaceId) {
@@ -4813,6 +4818,12 @@ function scheduleUserMessageDisclosureSync(roots = null) {
 
 window.addEventListener("resize", scheduleUserMessageDisclosureSync, { passive: true });
 
+function renderedMessageAuthor(message, role) {
+  const author = String(message?.author ?? "").trim()
+    || (role === "user" ? "Вы" : role === "system" ? "Система" : "Агент");
+  return message?.kind === "interstream" ? `Служебное · ${author}` : author;
+}
+
 function patchRenderedMessage(node, message) {
   const article = node.matches?.("article.msg, details.msg")
     ? node
@@ -4823,8 +4834,7 @@ function patchRenderedMessage(node, message) {
   article.dataset.itemId = message.itemId ?? "";
   article.dataset.deliveryState = message.deliveryState ?? "";
   const role = message.role === "user" ? "user" : message.role === "system" ? "system" : "agent";
-  const author = message.author
-    || (role === "user" ? "Вы" : role === "system" ? "Система" : "Агент");
+  const author = renderedMessageAuthor(message, role);
   const head = article.querySelector(".msg-head");
   const authorNode = head?.querySelector(".msg-author");
   if (authorNode) authorNode.textContent = author;
@@ -4920,7 +4930,7 @@ function renderMessages({
     .map((node) => String(node?.dataset?.messageKey ?? ""))
     .filter(Boolean));
   const historyLoaded = state.messages.has(taskId);
-  const allMessages = state.messages.get(taskId) ?? [];
+  const allMessages = MessageView.conversationSurfaceMessages(state.messages.get(taskId) ?? []);
   const visibleLimit = tailLimit > 0
     ? tailLimit
     : (state.messageRenderLimits.get(taskId) ?? INITIAL_MESSAGE_RENDER_LIMIT);
@@ -5662,8 +5672,7 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
     ...(subagent ? { "data-subagent-response": true } : {}),
   });
 
-  const author = message.author
-    || (role === "user" ? "Вы" : role === "system" ? "Система" : "Агент");
+  const author = renderedMessageAuthor(message, role);
   const head = el(subagent ? "summary" : "div", { class: "msg-head" }, [
     subagent
       ? el("span", { class: "msg-subagent-chevron", "aria-hidden": "true" }, [
@@ -6026,19 +6035,7 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
   const reasoning = node.querySelector("[data-live-reasoning]");
   const standaloneReasoning = groups.length ? "" : live.reasoning || "";
   const fileContext = currentFileLinkContext(task);
-  renderMarkdown(reasoning, standaloneReasoning, fileContext);
-  reasoning.hidden = !standaloneReasoning;
-  const liveTrace = node.querySelector("[data-live-trace]");
-  const openGroupIds = new Set(Array.from(
-    liveTrace.querySelectorAll("details[data-trace-group-id][open]"),
-    (details) => details.dataset.traceGroupId,
-  ));
-  liveTrace.replaceChildren(...(groups.length ? [turnTraceGroupsNode(groups, {
-    liveStage: liveStage.detail,
-    openGroupIds,
-  })] : []));
-  liveTrace.hidden = groups.length === 0;
-  const body = node.querySelector("[data-live-body]");
+  const activities = Array.isArray(live.activities) ? live.activities : [];
   const historyMessages = state.messages.get(state.selectedId) ?? [];
   const liveMessage = {
     ...live,
@@ -6049,25 +6046,66 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
     ),
   };
   node.dataset.messageKey = MessageView.messageKey(liveMessage, historyMessages.length);
-  if (liveMessage.responseCitationPresentations.length) {
-    renderAgentResponseBody(body, liveMessage, visibleText, fileContext);
-  } else renderMarkdown(body, visibleText, fileContext);
+  const renderParts = window.AgentHubLiveCardRender.liveCardRenderParts({
+    visibleText,
+    standaloneReasoning,
+    traceGroups: groups,
+    activities,
+    stageDetail: liveStage.detail,
+    fileContext,
+    bodyState: liveMessage.responseCitationPresentations,
+  });
+  liveCardRenderController.reconcile(node, "reasoning", renderParts.reasoning, () => {
+    renderMarkdown(reasoning, standaloneReasoning, fileContext);
+  });
+  reasoning.hidden = !standaloneReasoning;
+  const liveTrace = node.querySelector("[data-live-trace]");
+  liveCardRenderController.reconcile(node, "trace", renderParts.trace, () => {
+    const openGroupIds = new Set(Array.from(
+      liveTrace.querySelectorAll("details[data-trace-group-id][open]"),
+      (details) => details.dataset.traceGroupId,
+    ));
+    liveTrace.replaceChildren(...(groups.length ? [turnTraceGroupsNode(groups, {
+      liveStage: liveStage.detail,
+      openGroupIds,
+    })] : []));
+  });
+  liveCardRenderController.reconcile(node, "trace-summary", renderParts.traceSummary, () => {
+    const summary = liveTrace.querySelector(
+      `details[data-trace-group-id="${TURN_TRACE_ACTIVITY_GROUP_ID}"] > summary`,
+    );
+    if (summary) renderActivityDisclosureSummary(summary, {
+      count: renderParts.traceSummary.count,
+      stage: renderParts.traceSummary.stageDetail,
+    });
+  });
+  liveTrace.hidden = groups.length === 0;
+  const body = node.querySelector("[data-live-body]");
+  liveCardRenderController.reconcile(node, "body", renderParts.body, () => {
+    if (liveMessage.responseCitationPresentations.length) {
+      renderAgentResponseBody(body, liveMessage, visibleText, fileContext);
+    } else renderMarkdown(body, visibleText, fileContext);
+  });
   body.hidden = !visibleText && liveMessage.responseCitationPresentations.length === 0;
   const activityFeed = node.querySelector("[data-activity-feed]");
-  const activities = Array.isArray(live.activities) ? live.activities : [];
-  const activityFeedVisible = groups.length === 0 && activities.length > 0;
-  activityFeed.open = liveActivityDisclosureOpen({
-    open: activityFeed.open,
-    wasHidden: activityFeed.hidden,
-    visible: activityFeedVisible,
+  liveCardRenderController.reconcile(node, "activity-feed", renderParts.activityFeed, () => {
+    activityFeed.open = liveActivityDisclosureOpen({
+      open: activityFeed.open,
+      wasHidden: activityFeed.hidden,
+      visible: renderParts.activityFeed.visible,
+    });
+    activityFeed.hidden = !renderParts.activityFeed.visible;
+    node.querySelector("[data-activity-list]").replaceChildren(
+      ...renderParts.activityFeed.activities.map(activityItemNode),
+    );
   });
-  activityFeed.hidden = !activityFeedVisible;
-  renderActivityDisclosureSummary(node.querySelector("[data-activity-summary]"), {
-    label: "Выполненные действия",
-    count: activities.length,
-    stage: liveStage.detail,
+  liveCardRenderController.reconcile(node, "activity-feed-summary", renderParts.activityFeedSummary, () => {
+    renderActivityDisclosureSummary(node.querySelector("[data-activity-summary]"), {
+      label: "Выполненные действия",
+      count: renderParts.activityFeedSummary.count,
+      stage: renderParts.activityFeedSummary.stageDetail,
+    });
   });
-  node.querySelector("[data-activity-list]").replaceChildren(...activities.map(activityItemNode));
   return true;
 }
 
@@ -6169,7 +6207,6 @@ function renderApprovals() {
 
 function renderQueueForTask(taskId, container) {
   const queued = (state.queue.get(taskId) ?? [])
-    .filter((entry) => entry.state !== "dispatching" && entry.state !== "steering")
     .slice()
     .sort((left, right) => {
       const leftOrder = Number(left.queueOrder);
@@ -8552,12 +8589,16 @@ const AgentHub = {
     }
     try {
       if (navigationChanged || selectionChanged) renderTasks();
-      if (selectionChanged || selectedTaskChanged || nextTasks.some((task) => (
+      const chatNeedsRender = selectionChanged || selectedTaskChanged || nextTasks.some((task) => (
         task.id !== nextSelectedId
         && state.visibleStreamTaskIds.includes(task.id)
         && chatChangedIds.has(task.id)
-      ))) renderChat();
-      else if (selectedTaskDataChanged) renderStreamChatHeader(nextSelectedTask);
+      ));
+      if (chatNeedsRender) renderChat();
+      else {
+        if (navigationChanged) renderStreamTabs();
+        if (selectedTaskDataChanged) renderStreamChatHeader(nextSelectedTask);
+      }
     } finally {
       transientAnswerArrivalTaskIds = new Set();
     }
@@ -8593,7 +8634,10 @@ const AgentHub = {
     try {
       renderTasks();
       if (id === state.selectedId) renderChat();
-      else if (state.visibleStreamTaskIds.includes(id)) renderStreamChatDeck({ force: true });
+      else {
+        renderStreamTabs();
+        if (state.visibleStreamTaskIds.includes(id)) renderStreamChatDeck({ force: true });
+      }
     } finally {
       transientAnswerArrivalTaskIds = new Set();
     }

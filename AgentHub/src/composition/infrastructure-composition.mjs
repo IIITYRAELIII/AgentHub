@@ -18,6 +18,7 @@ import { StreamHandoffService } from "../application/stream-handoff-service.mjs"
 import { AGENT_HUB_VERSION } from "../infrastructure/filesystem/agent-hub-package.mjs";
 import { samePath } from "../infrastructure/filesystem/config.mjs";
 import { TaskGitWorkspaceService } from "../infrastructure/filesystem/task-git-workspace.mjs";
+import { ReleaseGitWorkspaceService } from "../infrastructure/filesystem/release-git-workspace.mjs";
 import { AttachmentThumbnailService } from "../infrastructure/media/attachment-thumbnail-service.mjs";
 import { runtimeLayout, runtimeReleaseDirectory } from "../infrastructure/filesystem/runtime-layout.mjs";
 import { UsdRubRateStore } from "../infrastructure/network/exchange-rate.mjs";
@@ -342,10 +343,29 @@ export async function createHubInfrastructure({
   });
   const hubMcpSecret = await ensureLocalWebSecret(path.join(runtimeCommandRoot, "hub-mcp.secret"));
   const taskGitWorkspaces = new TaskGitWorkspaceService({ dataDir: config.dataDir });
+  const releaseGitWorkspaces = new ReleaseGitWorkspaceService({ dataDir: config.dataDir });
+  const registeredReleaseProjectRoots = workspaceCatalogStore.hierarchy()
+    .filter((workspace) => workspace.settings?.releaseWorkflowEnabled === true)
+    .map((workspace) => ({
+      workspaceId: workspace.id,
+      projectRoot: String(workspace.settings?.workingDirectory ?? "").trim() || config.projectRoot,
+      registrationSource: String(workspace.settings?.workingDirectory ?? "").trim()
+        ? "workspace_setting"
+        : "runtime_default",
+    }))
+    .filter((workspace) => workspace.projectRoot);
+  const releaseReconciliation = await releaseGitWorkspaces.reconcile({
+    projectRoots: registeredReleaseProjectRoots,
+  });
+  agentHubRuntimeHealth.setDiagnosticSource("releaseGit", () => releaseGitWorkspaces.diagnostics());
+  for (const repository of releaseReconciliation.repositories.filter((item) => item.status !== "ready")) {
+    console.warn(`Release repository requires manual reconciliation: ${repository.reason}`);
+  }
   const taskReleasePlanner = new TaskReleasePlanService({ taskBoard, taskGitWorkspaces });
   const workspaceReleasePreflight = new WorkspaceReleasePreflightService({
     releasePlanner: taskReleasePlanner,
     taskGitWorkspaces,
+    releaseGitWorkspaces,
     resolveTestContourSource: resolveReleaseTestContourSource,
     refreshTestContour: ({ sourceRoot, ...options }) => startTestContour({
       refresh: true,
@@ -358,6 +378,7 @@ export async function createHubInfrastructure({
   const workspaceReleaseService = new WorkspaceReleaseService({
     store: taskBoardStore,
     releasePlanner: taskReleasePlanner,
+    releaseGitWorkspaces,
     verifyPublication: verifyWorkspaceReleasePublication,
   });
   const hubMcpService = new HubMcpService({
@@ -370,6 +391,7 @@ export async function createHubInfrastructure({
     releasePreflight: workspaceReleasePreflight,
     releaseCompleter: workspaceReleaseService,
     taskGitWorkspaces,
+    releaseGitWorkspaces,
   });
   const mcpAdmissionCoordinator = new McpAdmissionCoordinator();
   const hubMcpServer = new HubMcpServer({
@@ -506,6 +528,7 @@ export async function createHubInfrastructure({
     preTurnInstructions,
     taskBoard,
     taskGitWorkspaces,
+    releaseGitWorkspaces,
     taskVoiceTranscriber,
     hubMcpService,
     hubMcpServer,

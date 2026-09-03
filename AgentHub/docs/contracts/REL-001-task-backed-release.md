@@ -49,12 +49,11 @@ set remain Git data and are derived when a release plan is read. A conflict is
 aborted and returned with exact conflicting paths. Git failure never rejects the
 requested workflow-status transition.
 
-Moving a Task to `awaiting_implementation` additionally rebuilds `PreRelease`
-from current `main` plus the exact result commits of every accepted Await Task.
-`dev` is never merged into `PreRelease`; Test-only work must not enter a release.
-Returning, withdrawing or replacing an Await Task rebuilds `PreRelease` without
-its old result. An Await Task without successful `dev` and `PreRelease`
-integration is explicitly blocked and cannot be released.
+Moving a Task to `awaiting_implementation` records that its exact immutable
+result is accepted for a future release. The status transition does not build,
+rebuild or mutate `PreRelease`. A ready Await Task requires a valid exact result
+and successful `dev` integration; invalid or missing evidence is explicitly
+blocked from release without rejecting the selected Task status.
 
 ## Task Git reference and CAS
 
@@ -86,12 +85,21 @@ Open `done` Tasks remain an Architect audit set. Plan revision hashes current
 Task IDs, row revisions and Git references. Conflict detection reads the
 Git-derived plan projection, never work-log files or a shared mutable tree.
 
-At explicit release start, Architect freezes the exact release-plan revision,
-included Await Task IDs and resulting `PreRelease` head. Architect updates from
-`origin/main`, writes one consolidated `CHANGELOG.md` entry in `PreRelease` when
-that file exists, validates the exact frozen revision, integrates it into
-`main`, and publishes `main`. Later Await Tasks are not silently added. Only a
-Stream with `settings.architect=true` may record verified release completion.
+At explicit release start, Architect reads and selects the exact ready Await
+set, updates from `origin/main`, builds `PreRelease` from current `main` plus the
+selected exact Task results, and then freezes the exact release-plan revision,
+included Await Task IDs and resulting `PreRelease` head. `dev` is never merged
+into `PreRelease`; Test-only work cannot enter a release. Architect writes one
+consolidated `CHANGELOG.md` entry in `PreRelease` when that file exists,
+validates the exact frozen revision, integrates it into `main`, and publishes
+`main`. Later Await Tasks are not silently added. Only a Stream with
+`settings.architect=true` may record verified release completion.
+
+The frozen candidate remains immutable. If an included Task changes, is
+withdrawn or is excluded before completion, its Task revision or Git reference
+changes and completion CAS fails. Architect must explicitly rebuild and
+refreeze the release before it can complete; acceptance changes never mutate an
+already frozen candidate.
 
 Completion performs one transaction that CAS-checks every exact Task revision
 and the plan hash, then changes only those Tasks to `done` and closes them.
@@ -102,8 +110,9 @@ Post-deployment verification proves that every accepted immutable Task result
 commit is an ancestor of the published `main` revision. It does not compare a
 second stored blob manifest. Once verified, only included Tasks are completed
 and their managed branches and worktrees may be removed. Published `main` is
-incorporated into `dev` without discarding later Test work, then `PreRelease` is
-rebuilt from any remaining Await Tasks.
+incorporated into `dev` without discarding later Test work. Remaining Await
+Tasks stay accepted for the next explicit release; Agent Hub does not prebuild a
+mutable next candidate.
 
 ## Test Contour
 
@@ -181,3 +190,55 @@ the live registry/freeze source tables physically dropped. The retained history
 is audit-only and is never read by release planning. All new work follows
 ADR-0009 Task branches, ADR-0010 integration boundaries and ADR-0011
 Git-reference authority.
+
+## Independent release repository
+
+`PreRelease` is materialized only in an Agent Hub-owned standalone clone under
+runtime data. Its Git common directory is distinct from the registered primary
+Workspace. It imports the exact frozen Task results without sharing branch
+ownership; a linked worktree is never a release holder. Publication entrypoints
+require the independent-clone marker and reject the primary Workspace.
+
+The clone writes a content-addressed execution manifest and retry checkpoint
+containing the exact plan revision, `origin/main` base, Task IDs, result commits
+and `PreRelease` head. This is audit evidence, not a second readiness authority.
+Retry may reuse it only when the complete frozen identity and head match.
+
+The registered primary must own and remain attached to `refs/heads/main` before
+preflight, after candidate preparation, during retry, after publication and at
+startup reconciliation. Release code must not switch, detach, reset, stash,
+clean, or otherwise mutate its HEAD, index or working tree.
+
+At runtime startup, reconciliation receives the working directory of every
+release-enabled registered Workspace from the Workspace catalog. It audits those
+roots even when `release-repositories` is absent and no checkpoint has ever been
+written. A legacy Workspace without its own working directory uses the runtime's
+registered default project root; historical thread roots are not treated as
+primary authority. A detached primary and every linked `main`, `PreRelease`, or legacy-named
+holder are diagnostic evidence; discovery performs no clone creation, checkout,
+branch change, cleanup or removal. Checkpoint enumeration additionally recovers
+Agent Hub-owned clones that are no longer associated with a registered root.
+For each registered root the audit also derives the exact managed repository
+layout. An existing `releaseRoot` without its matching valid checkpoint, or with
+an absent/mismatched ownership marker or shared/invalid Git common directory, is
+an orphan and yields `manual_required`; startup never adopts, repairs or removes it.
+
+The effective Workspace and Architect developer rules, and the visible release
+tooltip, state the same execution boundary: the primary is not a release checkout;
+the frozen release runs only from `releaseCandidates[].releaseRoot` in the
+standalone clone; legacy linked release worktrees are neither created nor reused.
+Compatibility injection removes the old Architect instruction to update local
+`main` or use a separate linked integration worktree.
+
+After verified publication, synchronization is limited to a guarded `--ff-only`
+update while the primary still satisfies the invariant. Existing dirty paths are
+hashed first. Overlap with published paths, a non-fast-forward, or an invalid
+primary yields `manual_required`: the successful release stands and primary HEAD
+and local bytes remain untouched. A successful fast-forward must preserve every
+pre-existing dirty-path hash.
+
+Linked release holders from before ADR-0013 are detection-only migration
+evidence. They are never reused or removed by startup/retry. Cleanup requires a
+separate authorization and proven Agent Hub ownership. The detection guard may
+be retired only after every supported installation has an independent-clone
+checkpoint and no supported migration can contain a linked holder.

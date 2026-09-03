@@ -41,8 +41,16 @@ function historyItemTimestamp(item) {
 }
 
 function sortTaskHistoryChronologically(history) {
-  return history
-    .map((item, index) => ({ item, index, time: historyItemTimestamp(item) }))
+  const values = history
+    .map((item, index) => ({ item, index, time: historyItemTimestamp(item) }));
+  const anchors = values.filter(({ time }) => Number.isFinite(time));
+  for (const value of values) {
+    if (Number.isFinite(value.time)) continue;
+    const previous = anchors.findLast((anchor) => anchor.index < value.index);
+    const next = anchors.find((anchor) => anchor.index > value.index);
+    value.time = next?.time ?? previous?.time ?? Number.NaN;
+  }
+  return values
     .sort((left, right) => {
       if (Number.isFinite(left.time) && Number.isFinite(right.time) && left.time !== right.time) {
         return left.time - right.time;
@@ -829,6 +837,12 @@ export function createDesktopTaskHistoryFactory({
                 : attachments.some((attachment) => (
                   String(attachment?.type ?? "").toLowerCase().startsWith("image/")
                 )) ? "Изображение" : "Вложение");
+              const rootSubmittedAt = role === "user" && messageIndex === rootUserIndex
+                ? message.submittedAt ?? receipt?.createdAt ?? message.time ?? item.submittedAt ?? item.startedAt ?? null
+                : null;
+              const rootStartedAt = role === "user" && messageIndex === rootUserIndex
+                ? message.startedAt ?? item.startedAt ?? null
+                : null;
               return [{
                 itemId: String(message.itemId ?? ""),
                 ...(clientUserMessageId ? { clientUserMessageId } : {}),
@@ -860,11 +874,14 @@ export function createDesktopTaskHistoryFactory({
                   }
                   : {}),
                 ...(message.phase ? { phase: String(message.phase) } : {}),
-                ...(role === "user" && messageIndex === rootUserIndex && message.time
-                  ? { submittedAt: message.time }
+                ...(rootSubmittedAt
+                  ? { submittedAt: rootSubmittedAt }
+                  : {}),
+                ...(rootStartedAt
+                  ? { startedAt: rootStartedAt }
                   : {}),
                 time: role === "user" && messageIndex === rootUserIndex
-                  ? item.startedAt ?? message.time ?? receipt?.createdAt ?? null
+                  ? rootSubmittedAt
                   : message.time
                     ?? (role === "user" ? item.startedAt : item.completedAt)
                     ?? receipt?.createdAt

@@ -390,6 +390,36 @@ function preserveDurableAttachments(existingHistory, incomingHistory) {
   });
 }
 
+function preserveDurableChronology(existingHistory, incomingHistory) {
+  const existingTurns = new Map((Array.isArray(existingHistory) ? existingHistory : []).flatMap((turn) => {
+    const id = String(turn?.id ?? "").trim();
+    return id ? [[id, turn]] : [];
+  }));
+  return (Array.isArray(incomingHistory) ? incomingHistory : []).map((turn) => {
+    const existingTurn = existingTurns.get(String(turn?.id ?? "").trim());
+    if (!existingTurn) return turn;
+    const existingMessages = new Map((Array.isArray(existingTurn.messages) ? existingTurn.messages : [])
+      .flatMap((message) => {
+        const itemId = String(message?.itemId ?? "").trim();
+        const role = String(message?.role ?? "").trim();
+        return itemId && role ? [[`${role}\0${itemId}`, message]] : [];
+      }));
+    const next = { ...turn };
+    if (!turn?.startedAt && existingTurn?.startedAt) next.startedAt = existingTurn.startedAt;
+    if (!turn?.completedAt && existingTurn?.completedAt) next.completedAt = existingTurn.completedAt;
+    if (Array.isArray(turn?.messages)) {
+      next.messages = turn.messages.map((message) => {
+        if (message?.time) return message;
+        const itemId = String(message?.itemId ?? "").trim();
+        const role = String(message?.role ?? "").trim();
+        const existingMessage = itemId && role ? existingMessages.get(`${role}\0${itemId}`) : null;
+        return existingMessage?.time ? { ...message, time: existingMessage.time } : message;
+      });
+    }
+    return next;
+  });
+}
+
 function terminalSafeSnapshot(existing, snapshot, terminals) {
   const turnId = String(snapshot?.turnId ?? "").trim();
   if (snapshot?.active !== true || !turnId || !terminals.has(turnId)) return snapshot;
@@ -942,7 +972,7 @@ function historyPageQuery(references, {
   `;
   const cte = `WITH selected_threads(provider, thread_id, source_order) AS (
     VALUES ${referenceSql}
-  ), visible_turns AS (
+  ), base_turns AS (
     SELECT turns.*, selected_threads.source_order,
       COALESCE(
         julianday(turns.started_at),
@@ -961,6 +991,23 @@ function historyPageQuery(references, {
     JOIN selected_threads ON selected_threads.provider = turns.provider
       AND selected_threads.thread_id = turns.thread_id
     WHERE ${visibleSql}
+  ), turn_groups AS (
+    SELECT base_turns.*,
+      SUM(CASE WHEN sort_time IS NOT NULL THEN 1 ELSE 0 END) OVER (
+        ORDER BY source_order, position ROWS UNBOUNDED PRECEDING
+      ) AS previous_time_group,
+      SUM(CASE WHEN sort_time IS NOT NULL THEN 1 ELSE 0 END) OVER (
+        ORDER BY source_order DESC, position DESC ROWS UNBOUNDED PRECEDING
+      ) AS next_time_group
+    FROM base_turns
+  ), visible_turns AS (
+    SELECT turn_groups.*,
+      COALESCE(
+        sort_time,
+        MAX(sort_time) OVER (PARTITION BY next_time_group),
+        MAX(sort_time) OVER (PARTITION BY previous_time_group)
+      ) AS chronology_anchor
+    FROM turn_groups
   )`;
   return { cte, params };
 }
@@ -1804,7 +1851,8 @@ export class LocalTaskSyncStore {
     const terminals = terminalHistoryTurns(existing.history);
     const journalHistory = this.#reconcileHistoryWithJournal(task, history);
     const reconciledHistory = preserveTerminalHistory(terminals, journalHistory);
-    const durableHistory = preserveDurableAttachments(existing.history, reconciledHistory);
+    const durableAttachments = preserveDurableAttachments(existing.history, reconciledHistory);
+    const durableHistory = preserveDurableChronology(existing.history, durableAttachments);
     const enrichedHistory = this.#withJournalSubagentModels(task, durableHistory);
     const durableMetadataHistory = preserveDurableResponseAnnotationReferences(existing.history, enrichedHistory);
     const cleanedHistory = cleanHistory(durableMetadataHistory, this.#historyLimit, { provider: task.provider });
@@ -1995,8 +2043,7 @@ export class LocalTaskSyncStore {
     }
     const rows = this.#database.prepare(`${query.cte}
       SELECT * FROM visible_turns
-      ORDER BY CASE WHEN sort_time IS NULL THEN 1 ELSE 0 END,
-        sort_time, source_order, position
+      ORDER BY chronology_anchor, source_order, position
       LIMIT ? OFFSET ?
     `).all(...query.params, end - start, start);
     const history = this.#hydrateHistoryRows(rows);

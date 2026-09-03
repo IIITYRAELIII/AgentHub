@@ -280,15 +280,35 @@ test("DeferredInputController keeps input queued when maintenance wins the launc
 });
 
 test("DeferredInputController returns a failed launch to pending without losing input", async () => {
-  const state = fixture({ start: async () => { throw new Error("launch failed"); } });
-  const item = { id: "one", taskTitle: "Task", input: "important", allowForce: true };
+  const started = [];
+  const state = fixture({
+    start: async (item) => {
+      if (item.id === "one") throw new Error("launch failed");
+      started.push(item.id);
+    },
+  });
+  const lane = { provider: "codex", projectRoot: "D:\\Work", threadId: "thread" };
+  const item = {
+    ...lane,
+    id: "one",
+    taskTitle: "Task",
+    input: "important",
+    allowForce: true,
+    queueOrder: 1,
+  };
   state.queuedInputs.set(item.id, item);
+  state.queuedInputs.set("two", { ...lane, id: "two", taskTitle: "Task", queueOrder: 2 });
   await state.controller.process(item.id);
   assert.equal(state.queuedInputs.has(item.id), false);
   assert.equal(state.pendingInputs.get(item.id).input, "important");
+  assert.equal(state.pendingInputs.get(item.id).laneReleased, true);
   assert.equal(item.attempts, 1);
   assert.deepEqual(state.notifications, ["one"]);
   assert.match(state.updates[0][1], /сохранено/);
+  assert.equal(state.timers.at(-1).delay, 0);
+
+  await state.controller.process("two");
+  assert.deepEqual(started, ["two"]);
 });
 
 test("DeferredInputController keeps a paused head in FIFO until occupancy clears", async () => {
@@ -797,6 +817,15 @@ test("DeferredInputController requests a decision only after exact-start reconci
     threadId: "thread-1",
     clientUserMessageId: "client-1",
     taskTitle: "Task",
+    queueOrder: 1,
+  });
+  state.queuedInputs.set("two", {
+    id: "two",
+    provider: "codex",
+    threadId: "thread-1",
+    clientUserMessageId: "client-2",
+    taskTitle: "Task",
+    queueOrder: 2,
   });
 
   await state.controller.process("one");
@@ -805,8 +834,13 @@ test("DeferredInputController requests a decision only after exact-start reconci
 
   assert.equal(state.queuedInputs.has("one"), false);
   assert.equal(state.pendingInputs.has("one"), true);
+  assert.equal(state.pendingInputs.get("one").laneReleased, undefined);
   assert.equal(state.transitions.at(-1).state, "pending");
   assert.match(state.updates.at(-1)[1], /автоматический повтор не выполнялся/u);
+
+  await state.controller.process("two");
+  assert.equal(state.queuedInputs.has("two"), true);
+  assert.equal(state.transitions.filter((entry) => entry.id === "two").length, 0);
 });
 
 test("DeferredInputController does not serialize unrelated tasks", async () => {

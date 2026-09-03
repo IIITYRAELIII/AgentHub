@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
   createDesktopTaskHistoryFactory,
@@ -14,6 +17,7 @@ import {
   CODEX_CONTEXT_PROBE_RESPONSE,
 } from "../../../src/domain/codex-context-probe.mjs";
 import { createInterstreamMessage } from "../../../src/domain/interstream-message.mjs";
+import { LocalTaskSyncStore } from "../../../src/infrastructure/persistence/task-sync-store.mjs";
 
 const ANNOTATION_SOURCE = {
   version: 1,
@@ -545,7 +549,9 @@ test("desktop task history resolves selection and merges the active run", async 
   assert.equal(result.end, 5);
   assert.equal(result.nextBefore, 3);
   assert.deepEqual(result.items.map((item) => item.id), ["turn-4", "turn-live"]);
-  assert.equal(result.items[0].messages[0].time, "2026-07-30T10:03:00.000Z");
+  assert.equal(result.items[0].messages[0].time, "2026-07-30T09:59:00.000Z");
+  assert.equal(result.items[0].messages[0].submittedAt, "2026-07-30T09:59:00.000Z");
+  assert.equal(result.items[0].messages[0].startedAt, "2026-07-30T10:03:00.000Z");
   assert.deepEqual(result.items[0].messages[0].attachments, [{
     id: "client-4.png",
     type: "image/png",
@@ -1296,8 +1302,9 @@ test("desktop task history keeps a saved final beside a later active user turn",
   assert.equal(previous.terminalRevision, 2);
   assert.equal(current.answer, "");
   assert.equal(current.active, true);
-  assert.equal(current.messages[0].time, "2026-08-08T17:09:19.000Z");
+  assert.equal(current.messages[0].time, "2026-08-08T01:01:00.000Z");
   assert.equal(current.messages[0].submittedAt, "2026-08-08T01:01:00.000Z");
+  assert.equal(current.messages[0].startedAt, "2026-08-08T17:09:19.000Z");
 });
 
 test("desktop task history returns durable history while provider hydration is still blocked", async () => {
@@ -1852,6 +1859,132 @@ test("desktop task history hydrates only visible turns and evicts old hydrated t
   await desktopTaskHistory({ includeActive: false, limit: 1 });
 
   assert.equal(calls.attachments.length, 43);
+});
+
+test("legacy VSC chronology survives initial load hydration reconnect journal and reload", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-legacy-chronology-"));
+  const filePath = path.join(directory, "task-sync.json");
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const binding = {
+    streamId: "stream-legacy",
+    provider: "codex",
+    threadId: "thread-vsc-codex",
+    projectRoot: "D:/work",
+    title: "Legacy VSC chronology",
+  };
+  const providerHistory = [{
+    id: "legacy-vsc-1",
+    prompt: "Старый VSC-запрос",
+    answer: "Старый VSC-ответ",
+    status: "completed",
+    completed: true,
+    messages: [
+      { itemId: "legacy-vsc-user-1", role: "user", text: "Старый VSC-запрос" },
+      { itemId: "legacy-vsc-agent-1", role: "agent", phase: "final", text: "Старый VSC-ответ" },
+    ],
+  }, {
+    id: "legacy-vsc-2",
+    prompt: "Ещё один старый VSC-запрос",
+    answer: "Ещё один старый VSC-ответ",
+    status: "completed",
+    completed: true,
+    messages: [
+      { itemId: "legacy-vsc-user-2", role: "user", text: "Ещё один старый VSC-запрос" },
+      { itemId: "legacy-vsc-agent-2", role: "agent", phase: "final", text: "Ещё один старый VSC-ответ" },
+    ],
+  }, {
+    id: "modern-codex-1",
+    prompt: "Современный запрос",
+    answer: "Современный ответ",
+    status: "completed",
+    completed: true,
+    startedAt: "2026-09-01T20:00:00.000Z",
+    completedAt: "2026-09-01T20:01:00.000Z",
+    messages: [
+      {
+        itemId: "modern-codex-user-1",
+        role: "user",
+        text: "Современный запрос",
+        time: "2026-09-01T20:00:00.000Z",
+      },
+      {
+        itemId: "modern-codex-agent-1",
+        role: "agent",
+        phase: "final",
+        text: "Современный ответ",
+        time: "2026-09-01T20:01:00.000Z",
+      },
+    ],
+  }];
+  let store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  store.recordHistory(binding, providerHistory);
+  let savedCompletion = null;
+  const createHistory = () => createDesktopTaskHistoryFactory({
+    selection: {
+      activeProvider: () => binding.provider,
+      threadId: () => binding.threadId,
+      chatId: () => 42,
+    },
+    catalog: {
+      entries: () => [binding],
+      threadsForStream: () => [binding],
+    },
+    historyReader: {
+      read: async () => ({ history: store.history(binding) }),
+      readPage: async (references, options) => store.historyPage(references, options),
+      refresh: async () => ({ history: structuredClone(providerHistory) }),
+    },
+    runs: { forTask: () => null },
+    latestMessage: () => savedCompletion,
+    historyMerger: {
+      mergeActive: mergeActiveTaskHistory,
+      mergeCompleted: mergeCompletedTaskHistory,
+    },
+    responseBudget: { fit: (payload) => payload },
+  });
+  const expectedIds = ["legacy-vsc-1", "legacy-vsc-2", "modern-codex-1"];
+  const assertChronology = (result) => {
+    assert.deepEqual(result.items.map((item) => item.id), expectedIds);
+    assert.equal(new Set(result.items.map((item) => item.id)).size, expectedIds.length);
+    assert.equal(result.items[0].startedAt, null);
+    assert.equal(result.items[0].completedAt, null);
+    assert.equal(result.items[0].messages[0].time, null);
+  };
+  try {
+    const initialHistory = createHistory();
+    assertChronology(await initialHistory({ streamId: binding.streamId, limit: 10 }));
+    assertChronology(await initialHistory({
+      streamId: binding.streamId,
+      limit: 10,
+      refreshSource: true,
+    }));
+
+    savedCompletion = {
+      provider: binding.provider,
+      threadId: binding.threadId,
+      turnId: "modern-codex-1",
+      text: "Современный ответ из journal overlay",
+      updatedAt: "2026-09-01T20:01:30.000Z",
+      terminalRevision: 2,
+    };
+    const overlaid = await initialHistory({ streamId: binding.streamId, limit: 10 });
+    assertChronology(overlaid);
+    assert.equal(overlaid.items.at(-1).answer, "Современный ответ из journal overlay");
+
+    const reconnectedHistory = createHistory();
+    assertChronology(await reconnectedHistory({ streamId: binding.streamId, limit: 10 }));
+
+    store.close();
+    store = new LocalTaskSyncStore({ filePath, databaseFile });
+    await store.load();
+    savedCompletion = null;
+    const reloadedHistory = createHistory();
+    assertChronology(await reloadedHistory({ streamId: binding.streamId, limit: 10 }));
+  } finally {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("desktop task history rejects invalid and missing tasks", async () => {

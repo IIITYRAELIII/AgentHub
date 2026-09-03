@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { HubMcpService } from "../../src/application/hub-mcp-service.mjs";
+import { incomingLedgerRecord } from "../../src/application/work-log-usage-projection.mjs";
 
 async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-mcp-"));
@@ -13,6 +14,8 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
   const streamWorkingDirectory = path.join(directory, "stream-working-directory");
   const workspaceWorkingDirectory = path.join(directory, "workspace-working-directory");
   const targetWorkingDirectory = path.join(directory, "target-working-directory");
+  const foreignWorkspaceWorkingDirectory = path.join(directory, "foreign-workspace-working-directory");
+  const foreignStreamWorkingDirectory = path.join(directory, "foreign-stream-working-directory");
   const attachmentDirectory = path.join(directory, "attachments");
   await mkdir(projectRoot, { recursive: true });
   const tasks = new Map([
@@ -27,14 +30,15 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
   ]);
   const workspaceCatalog = {
     resolveThread: ({ provider, threadId }) => {
-      if (provider !== "codex" || !["thread-1", "thread-2"].includes(threadId)) return null;
-      const streamId = threadId === "thread-1" ? "stream-1" : "stream-2";
+      if (provider !== "codex" || !["thread-1", "thread-2", "thread-3"].includes(threadId)) return null;
+      const streamId = threadId === "thread-1" ? "stream-1" : threadId === "thread-2" ? "stream-2" : "stream-3";
+      const foreign = streamId === "stream-3";
       return {
-        workspaceId: "workspace-1",
-        workspaceName: "Agent Hub",
+        workspaceId: foreign ? "workspace-2" : "workspace-1",
+        workspaceName: foreign ? "Foreign Workspace" : "Agent Hub",
         streamId,
-        streamDisplayName: streamId === "stream-1" ? "MCP" : "Themes",
-        thread: { projectRoot },
+        streamDisplayName: streamId === "stream-1" ? "MCP" : streamId === "stream-2" ? "Themes" : "Foreign Stream",
+        thread: { projectRoot: foreign ? foreignStreamWorkingDirectory : projectRoot },
       };
     },
     stream: (id) => ({
@@ -46,30 +50,40 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
         id, workspaceId: "workspace-1", displayName: "Themes", settings: { workingDirectory: targetWorkingDirectory },
         threads: [{ provider: "codex", threadId: "thread-2" }],
       },
+      "stream-3": {
+        id, workspaceId: "workspace-2", displayName: "Foreign Stream", settings: { workingDirectory: foreignStreamWorkingDirectory },
+        threads: [{ provider: "codex", threadId: "thread-3" }],
+      },
     }[id] ?? null),
     activeThread: () => null,
-    workspace: (id) => id === "workspace-1" ? {
-      id, name: "Agent Hub", settings: { releaseWorkflowEnabled, workingDirectory: workspaceWorkingDirectory },
-    } : null,
+    workspace: (id) => ({
+      "workspace-1": { id, name: "Agent Hub", settings: { releaseWorkflowEnabled, workingDirectory: workspaceWorkingDirectory } },
+      "workspace-2": { id, name: "Foreign Workspace", settings: { releaseWorkflowEnabled, workingDirectory: foreignWorkspaceWorkingDirectory } },
+    }[id] ?? null),
     hierarchy: () => [{
-      id: "workspace-1",
-      name: "Agent Hub",
+      id: "workspace-1", name: "Agent Hub",
       settings: { releaseWorkflowEnabled, workingDirectory: workspaceWorkingDirectory },
       streams: [
         { id: "stream-1", displayName: "MCP", settings: { architect: true, workingDirectory: streamWorkingDirectory }, threads: [{ provider: "codex", threadId: "thread-1" }] },
         { id: "stream-2", displayName: "Themes", settings: { workingDirectory: targetWorkingDirectory }, threads: [{ provider: "codex", threadId: "thread-2" }] },
       ],
+    }, {
+      id: "workspace-2", name: "Foreign Workspace",
+      settings: { releaseWorkflowEnabled, workingDirectory: foreignWorkspaceWorkingDirectory },
+      streams: [
+        { id: "stream-3", displayName: "Foreign Stream", settings: { workingDirectory: foreignStreamWorkingDirectory }, threads: [{ provider: "codex", threadId: "thread-3" }] },
+      ],
     }],
-    workspaceEvents: (_workspaceId, { afterSequence }) => [{
-      sequence: afterSequence + 1, workspaceId: "workspace-1", streamId: "stream-1",
+    workspaceEvents: (workspaceId, { afterSequence }) => [{
+      sequence: afterSequence + 1, workspaceId, streamId: workspaceId === "workspace-2" ? "stream-3" : "stream-1",
       type: "run.completed", subjectId: "turn-1", payload: {}, createdAtMs: 1,
     }],
-    developerRulesForStream: () => ({
-      workspace: { revision: 1, content: "Workspace rule" },
-      stream: { revision: 2, content: "Stream rule" },
+    developerRulesForStream: (streamId) => ({
+      workspace: { revision: 1, content: streamId === "stream-3" ? "Foreign Workspace rule" : "Workspace rule" },
+      stream: { revision: 2, content: streamId === "stream-3" ? "Foreign Stream rule" : "Stream rule" },
     }),
-    updateWorkspaceDeveloperRules: (_id, content) => ({ revision: 2, content }),
-    updateStreamDeveloperRules: (_id, content) => ({ revision: 3, content }),
+    updateWorkspaceDeveloperRules: (id, content) => ({ workspaceId: id, revision: 2, content }),
+    updateStreamDeveloperRules: (id, content) => ({ streamId: id, revision: 3, content }),
   };
   const operations = new Map();
   const taskEvidenceCalls = [];
@@ -96,18 +110,18 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
   const taskBoard = {
     snapshot: () => [...tasks.values()].map((task) => ({ ...task, attachments: task.attachments ?? [] })),
     task: (id) => tasks.get(id) ?? null,
-    create: ({ text, sourceDetails = {} }) => {
+    create: ({ text, sourceDetails = {}, bucket = "backlog", workspaceId = null }) => {
       const task = {
-        id: "created", title: text, description: "", bucket: "backlog",
-        status: "open", workflowStatus: "new", workspaceId: null, sourceDetails,
+        id: "created", title: text, description: "", bucket,
+        status: "open", workflowStatus: "new", workspaceId, sourceDetails,
       };
       tasks.set(task.id, task);
       return task;
     },
     move: ({ id, bucket, workspaceId = null }) => Object.assign(tasks.get(id), { bucket, workspaceId }),
     update: ({ id, title, description }) => Object.assign(tasks.get(id), { title, description }),
-    markStarted: ({ id, streamId }) => Object.assign(tasks.get(id), {
-      status: "started", workflowStatus: "in_progress", streamId,
+    markStarted: ({ id, workspaceId, streamId }) => Object.assign(tasks.get(id), {
+      status: "started", workflowStatus: "in_progress", workspaceId, streamId,
     }),
     claim: ({ id, streamId, turnId, operationId, operationKind, gitBaseline }) => {
       taskClaimCalls.push({ id, turnId, operationId, operationKind });
@@ -142,14 +156,22 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
       return task;
     },
   };
-  const workLog = {
-    threadTurns: async () => [{
+  const historyRecordsByThread = new Map([["thread-1", [{
       provider: "codex", threadId: "thread-1", turnId: "turn-1", title: "Done",
       prompt: [{ type: "text", text: "Initial prompt" }], body: "Result", status: "completed",
-    }],
+    }]], ["thread-3", [{
+      provider: "codex", threadId: "thread-3", turnId: "turn-foreign-done", title: "Foreign Done",
+      prompt: "Foreign prompt", body: "Foreign result", status: "completed",
+      completedAt: "2026-09-01T12:00:00.000Z",
+    }]]]);
+  const workLog = {
+    threadTurns: async (identities, { limit = 20 } = {}) => identities
+      .flatMap((identity) => historyRecordsByThread.get(identity.threadId) ?? [])
+      .slice(0, limit),
   };
   const releaseCalls = [];
   const preflightCalls = [];
+  const releasePlanWorkspaceIds = [];
   const taskGitPrepareCalls = [];
   const taskGitWorkspaces = {
     prepare: async ({ taskId, projectRoot: selectedProjectRoot }) => {
@@ -188,7 +210,10 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret: "secret",
     taskGitWorkspaces,
     releasePlanner: {
-      plan: async () => ({ revision: "plan-1", candidates: [], ready: [], draft: [], blocked: [], conflicts: [] }),
+      plan: async (workspaceId) => {
+        releasePlanWorkspaceIds.push(workspaceId);
+        return { workspaceId, revision: "plan-1", candidates: [], ready: [], draft: [], blocked: [], conflicts: [] };
+      },
     },
     releasePreflight: {
       preflight: async (options) => {
@@ -206,8 +231,9 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
   const taskLaunchCalls = [];
   service.setTaskLauncher(async ({ id, workspaceId, streamId, ...options }) => {
     taskLaunchCalls.push({ id, workspaceId, streamId, ...options });
-    const selectedProjectRoot = streamId === "stream-2"
-      ? targetWorkingDirectory
+    const selectedProjectRoot = streamId === "stream-3"
+      ? foreignStreamWorkingDirectory
+      : streamId === "stream-2" ? targetWorkingDirectory
       : streamId === null ? workspaceWorkingDirectory : streamWorkingDirectory;
     const gitWorkspace = await taskGitWorkspaces.prepare({ taskId: id, projectRoot: selectedProjectRoot });
     const task = taskBoard.markStarted({ id, workspaceId, streamId });
@@ -233,6 +259,8 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     streamWorkingDirectory,
     workspaceWorkingDirectory,
     targetWorkingDirectory,
+    foreignWorkspaceWorkingDirectory,
+    foreignStreamWorkingDirectory,
     workspaceCatalog,
     tasks,
     operations,
@@ -242,8 +270,11 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     taskLaunchCalls,
     releaseCalls,
     preflightCalls,
+    releasePlanWorkspaceIds,
     taskGitWorkspaces,
     sentMessages,
+    historyRecordsByThread,
+    activeRun,
   };
 }
 
@@ -530,6 +561,24 @@ test("Task status integration uses its executor Stream root without reassigning 
   assert.equal(taskEvidenceCalls.at(-1).projectRoot, targetWorkingDirectory);
 });
 
+test("Task status integration resolves an executor root in another Workspace", async (context) => {
+  const { service, token, tasks, foreignStreamWorkingDirectory, taskGitPrepareCalls } = await fixture(context);
+  Object.assign(tasks.get("task-foreign"), {
+    status: "started", workflowStatus: "in_progress", streamId: "stream-3",
+  });
+
+  const result = await service.call("hub_task_status_update", {
+    context_token: token,
+    request_id: "foreign-task-testing",
+    task_id: "task-foreign",
+    status: "testing",
+  });
+
+  assert.equal(taskGitPrepareCalls.at(-1).projectRoot, foreignStreamWorkingDirectory);
+  assert.equal(result.workflowStatus, "testing");
+  assert.equal(result.gitIntegration.integrated, true);
+});
+
 test("HubMcpService resumes an interrupted pending task start with the same request id", async (context) => {
   const { service, token, operations, tasks } = await fixture(context);
   let launches = 0;
@@ -735,8 +784,266 @@ test("HubMcpService exposes bounded activity, history and effective rules", asyn
   const history = await service.call("hub_stream_history", { context_token: token });
   const rules = await service.call("hub_rules_get", { context_token: token });
   assert.equal(active.runs[0].streamId, "stream-1");
-  assert.match(history.turns[0].prompt, /Initial prompt/u);
+  assert.equal(history.state, "active");
+  assert.equal(history.turns.some((turn) => turn.active === true), true);
+  assert.match(history.turns.find((turn) => turn.turnId === "turn-1").prompt, /Initial prompt/u);
   assert.equal(rules.stream.content, "Stream rule");
+});
+
+test("HubMcpService performs standard reads and writes across Workspace boundaries", async (context) => {
+  const {
+    service, token, sentMessages, taskLaunchCalls, preflightCalls, releaseCalls,
+    releasePlanWorkspaceIds, operations,
+  } = await fixture(context);
+  service.setActiveRuns(() => [{
+    id: "run-foreign", provider: "codex", streamId: "stream-3", threadId: "thread-3",
+    turnId: "turn-foreign-active", status: "running", progressStage: "Foreign active",
+    startedAt: "2026-09-01T13:00:00.000Z",
+  }]);
+
+  const workspace = await service.call("hub_workspace_get", {
+    context_token: token, workspace_id: "workspace-2",
+  });
+  const streams = await service.call("hub_parallel_streams_list", {
+    context_token: token, workspace_id: "workspace-2",
+  });
+  const active = await service.call("hub_active_runs_list", {
+    context_token: token, workspace_id: "workspace-2",
+  });
+  const history = await service.call("hub_stream_history", {
+    context_token: token, workspace_id: "workspace-2", stream_id: "stream-3",
+  });
+  const rules = await service.call("hub_rules_get", {
+    context_token: token, stream_id: "stream-3",
+  });
+  assert.equal(workspace.id, "workspace-2");
+  assert.equal(workspace.currentStreamId, null);
+  assert.deepEqual(streams.streams.map((stream) => stream.id), ["stream-3"]);
+  assert.equal(active.runs[0].streamId, "stream-3");
+  assert.equal(history.workspaceId, "workspace-2");
+  assert.equal(history.turns[0].turnId, "turn-foreign-active");
+  assert.equal(rules.stream.content, "Foreign Stream rule");
+
+  const workspaceRules = await service.call("hub_workspace_rules_update", {
+    context_token: token, request_id: "foreign-workspace-rules", workspace_id: "workspace-2",
+    content: "Updated foreign Workspace rules",
+  });
+  const streamRules = await service.call("hub_stream_rules_update", {
+    context_token: token, request_id: "foreign-stream-rules", stream_id: "stream-3",
+    content: "Updated foreign Stream rules",
+  });
+  const created = await service.call("hub_task_create", {
+    context_token: token, request_id: "foreign-task-create", workspace_id: "workspace-2",
+    title: "Foreign task",
+  });
+  const moved = await service.call("hub_task_move", {
+    context_token: token, request_id: "foreign-task-move", task_id: "task-current",
+    destination: "workspace", workspace_id: "workspace-2",
+  });
+  const started = await service.call("hub_task_start", {
+    context_token: token, request_id: "foreign-task-start", task_id: "task-foreign",
+    workspace_id: "workspace-2", stream_id: "stream-3", confirm_launch: true,
+  });
+  const sent = await service.call("hub_stream_message_send", {
+    context_token: token, request_id: "foreign-message", stream_id: "stream-3",
+    text: "Cross Workspace message", mode: "steer", confirm_send: true,
+  });
+  const plan = await service.call("hub_release_plan_get", {
+    context_token: token, workspace_id: "workspace-2",
+  });
+  await service.call("hub_release_preflight", {
+    context_token: token, request_id: "foreign-preflight", workspace_id: "workspace-2",
+    expected_plan_revision: "plan-1",
+  });
+  await service.call("hub_release_complete", {
+    context_token: token, request_id: "foreign-release-complete", workspace_id: "workspace-2",
+    expected_plan_revision: "plan-1", deployment_verified: true,
+    verification_summary: "Foreign Workspace published",
+  });
+  const events = await service.call("hub_events_list", {
+    context_token: token, workspace_id: "workspace-2", after_sequence: 2,
+  });
+
+  assert.equal(workspaceRules.workspaceId, "workspace-2");
+  assert.equal(streamRules.streamId, "stream-3");
+  assert.equal(created.workspaceId, "workspace-2");
+  assert.equal(moved.workspaceId, "workspace-2");
+  assert.equal(started.target.streamId, "stream-3");
+  assert.equal(taskLaunchCalls.at(-1).workspaceId, "workspace-2");
+  assert.equal(sent.target.workspaceId, "workspace-2");
+  assert.equal(sentMessages.at(-1).params.streamId, "stream-3");
+  assert.equal(plan.workspaceId, "workspace-2");
+  assert.equal(releasePlanWorkspaceIds.at(-1), "workspace-2");
+  assert.equal(preflightCalls.at(-1).workspaceId, "workspace-2");
+  assert.equal(releaseCalls.at(-1).workspaceId, "workspace-2");
+  assert.equal(events.workspaceId, "workspace-2");
+  assert.equal(operations.get("foreign-workspace-rules").workspaceId, "workspace-1");
+  assert.equal(operations.get("foreign-workspace-rules").streamId, "stream-1");
+
+  await assert.rejects(() => service.call("hub_stream_history", {
+    context_token: token, workspace_id: "workspace-1", stream_id: "stream-3",
+  }), /outside the selected Workspace/u);
+  await assert.rejects(() => service.call("hub_task_start", {
+    context_token: token, request_id: "mismatched-target", task_id: "task-foreign",
+    workspace_id: "workspace-1", stream_id: "stream-3", confirm_launch: true,
+  }), /outside the selected Workspace/u);
+});
+
+test("hub_stream_history projects active content and deterministic lifecycle states", async (context) => {
+  const { service, token, historyRecordsByThread } = await fixture(context);
+  const visibleActivity = {
+    id: "tool-1", type: "tool", label: "Используется инструмент",
+    detail: "agent_hub/hub_task_get", status: "running", time: "2026-09-01T13:00:01.000Z",
+  };
+  const firstRun = {
+    id: "run-foreign-1", provider: "codex", streamId: "stream-3", threadId: "thread-3",
+    turnId: "turn-foreign-1", status: "running", taskTitle: "Foreign live",
+    promptPreview: "Inspect foreign state", progressStage: "Reading",
+    progressReasoning: "Hub-visible progress summary", responseText: "Visible partial answer",
+    activities: [visibleActivity, { ...visibleActivity, id: "tool-2", detail: "second" }],
+    hiddenChainOfThought: "must never be exposed",
+    startedAt: "2026-09-01T13:00:00.000Z",
+  };
+  service.setActiveRuns(() => [firstRun]);
+
+  const first = await service.call("hub_stream_history", {
+    context_token: token,
+    workspace_id: "workspace-2",
+    stream_id: "stream-3",
+    limit: 2,
+    include_body: true,
+    max_activity_items: 1,
+  });
+  assert.equal(first.state, "active");
+  assert.equal(first.activeRunCount, 1);
+  assert.equal(first.turns[0].status, "active");
+  assert.equal(first.turns[0].active, true);
+  assert.equal(first.turns[0].prompt, "Inspect foreign state");
+  assert.equal(first.turns[0].progress, "Hub-visible progress summary");
+  assert.equal(first.turns[0].body, "Visible partial answer");
+  assert.equal(first.turns[0].activities.length, 1);
+  assert.equal(JSON.stringify(first).includes("must never be exposed"), false);
+  assert.match(first.cursor, /^[A-Za-z0-9_-]+$/u);
+  assert.match(first.revision, /^[a-f0-9]{64}$/u);
+
+  const repeated = await service.call("hub_stream_history", {
+    context_token: token, stream_id: "stream-3", cursor: first.cursor,
+    limit: 2, include_body: true, max_activity_items: 1,
+  });
+  assert.equal(repeated.state, "active");
+  assert.equal(repeated.cursor, first.cursor);
+  assert.equal(repeated.revision, first.revision);
+
+  historyRecordsByThread.set("thread-3", [{
+    provider: "codex", threadId: "thread-3", turnId: "turn-foreign-1",
+    title: "Persisted too early", prompt: "Inspect foreign state", body: "Persisted partial",
+    status: "completed", completedAt: "2026-09-01T13:00:02.000Z",
+  }]);
+  const deduplicated = await service.call("hub_stream_history", {
+    context_token: token, stream_id: "stream-3", cursor: first.cursor, limit: 5,
+  });
+  assert.equal(deduplicated.turns.filter((turn) => turn.turnId === "turn-foreign-1").length, 1);
+  assert.equal(deduplicated.turns[0].active, false);
+
+  const replacementRun = {
+    ...firstRun,
+    id: "run-foreign-2",
+    turnId: "turn-foreign-2",
+    promptPreview: "Replacement turn",
+    responseText: "Replacement partial",
+    startedAt: "2026-09-01T13:05:00.000Z",
+  };
+  service.setActiveRuns(() => [replacementRun]);
+  const replaced = await service.call("hub_stream_history", {
+    context_token: token, stream_id: "stream-3", cursor: first.cursor, limit: 2,
+  });
+  assert.equal(replaced.state, "replaced");
+  assert.notEqual(replaced.cursor, first.cursor);
+  assert.equal(replaced.turns[0].turnId, "turn-foreign-2");
+
+  historyRecordsByThread.set("thread-3", [{
+    provider: "codex", threadId: "thread-3", turnId: "turn-foreign-2",
+    title: "Replacement turn", prompt: "Replacement turn", body: "Replacement final",
+    status: "completed", completedAt: "2026-09-01T13:06:00.000Z",
+  }]);
+  service.setActiveRuns(() => []);
+  const terminal = await service.call("hub_stream_history", {
+    context_token: token, stream_id: "stream-3", cursor: replaced.cursor, limit: 2,
+  });
+  assert.equal(terminal.state, "terminal");
+  assert.equal(terminal.turns[0].turnId, "turn-foreign-2");
+  assert.equal(terminal.turns[0].status, "completed");
+  assert.equal(terminal.turns[0].active, false);
+
+  const preTurnRun = {
+    ...firstRun,
+    id: "run-before-turn-id",
+    turnId: null,
+  };
+  historyRecordsByThread.set("thread-3", []);
+  service.setActiveRuns(() => [preTurnRun]);
+  const beforeTurnId = await service.call("hub_stream_history", {
+    context_token: token, stream_id: "stream-3",
+  });
+  historyRecordsByThread.set("thread-3", [incomingLedgerRecord({
+    provider: "codex", threadId: "thread-3", turnId: "turn-assigned-at-terminal",
+    runId: "run-before-turn-id", title: "Pre-turn", prompt: "Pre-turn", body: "Final",
+    status: "completed", completedAt: "2026-09-01T13:07:00.000Z",
+  })]);
+  service.setActiveRuns(() => []);
+  const terminalAfterPreTurn = await service.call("hub_stream_history", {
+    context_token: token, stream_id: "stream-3", cursor: beforeTurnId.cursor,
+  });
+  assert.equal(terminalAfterPreTurn.state, "terminal");
+  assert.equal(terminalAfterPreTurn.turns[0].turnId, "turn-assigned-at-terminal");
+  assert.equal(terminalAfterPreTurn.turns[0].runId, "run-before-turn-id");
+
+  historyRecordsByThread.set("thread-3", []);
+  const unknownCursor = await service.call("hub_stream_history", {
+    context_token: token, stream_id: "stream-3", cursor: first.cursor,
+  });
+  const idle = await service.call("hub_stream_history", {
+    context_token: token, stream_id: "stream-3", limit: 1,
+  });
+  await assert.rejects(() => service.call("hub_stream_history", {
+    context_token: token, stream_id: "missing-stream", limit: 1,
+  }), /Stream not found/u);
+  assert.equal(unknownCursor.state, "not_found");
+  assert.equal(idle.state, "idle");
+
+  const schema = service.tools().find((tool) => tool.name === "hub_stream_history").inputSchema.properties;
+  assert.equal("wait" in schema, false);
+  assert.equal("timeout" in schema, false);
+  assert.equal(service.tools().some((tool) => tool.name === "hub_stream_turn_snapshot"), false);
+});
+
+test("hub_stream_history merge-sorts active and terminal turns before applying limit", async (context) => {
+  const { service, token, historyRecordsByThread } = await fixture(context);
+  historyRecordsByThread.set("thread-3", [{
+    provider: "codex", threadId: "thread-3", turnId: "turn-terminal-new",
+    title: "Newest terminal", status: "completed", completedAt: "2026-09-01T13:06:00.000Z",
+  }, {
+    provider: "codex", threadId: "thread-3", turnId: "turn-terminal-old",
+    title: "Older terminal", status: "completed", completedAt: "2026-09-01T13:04:00.000Z",
+  }]);
+  service.setActiveRuns(() => [{
+    id: "run-b", provider: "codex", streamId: "stream-3", threadId: "thread-3",
+    turnId: "turn-b", status: "running", startedAt: "2026-09-01T13:05:00.000Z",
+  }, {
+    id: "run-a", provider: "codex", streamId: "stream-3", threadId: "thread-3",
+    turnId: "turn-a", status: "running", startedAt: "2026-09-01T13:05:00.000Z",
+  }]);
+
+  const result = await service.call("hub_stream_history", {
+    context_token: token, stream_id: "stream-3", limit: 3,
+  });
+
+  assert.deepEqual(result.turns.map((turn) => turn.turnId), [
+    "turn-terminal-new", "turn-a", "turn-b",
+  ]);
+  assert.equal(result.truncated, true);
+  const cursor = JSON.parse(Buffer.from(result.cursor, "base64url").toString("utf8"));
+  assert.equal(cursor.turnId, "turn-a");
 });
 
 test("HubMcpService replays successful mutations by request id", async (context) => {

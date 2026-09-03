@@ -44,3 +44,20 @@ test("Stream Team Lead is an independent persisted boolean", async () => {
     { provider: "claude", teamLead: false },
   );
 });
+
+test("Stream Team Lead tooltip explains review and Stream numbering in Russian", async () => {
+  const settings = await roleSettingsApi();
+  const text = settings.teamLeadTooltip.join("\n");
+  assert.match(text, /ревью результата каждой Task.*не проходит ревью.*исполнителю на доработку.*повторно проверь/iu);
+  assert.match(text, /максимальный номер.*S<number>.*прибавь 1.*назови новый S2/iu);
+
+  const children = [];
+  const container = {
+    ownerDocument: {
+      createElement: () => ({ textContent: "" }),
+    },
+    replaceChildren: (...values) => children.push(...values),
+  };
+  assert.equal(settings.renderTeamLeadTooltip(container), true);
+  assert.deepEqual(children.map((item) => item.textContent), [...settings.teamLeadTooltip]);
+});

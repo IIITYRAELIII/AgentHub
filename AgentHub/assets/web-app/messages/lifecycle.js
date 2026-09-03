@@ -185,6 +185,18 @@ function activeTaskRun(task) {
   return task?.running === true && task?.run ? task.run : null;
 }
 
+function activeRunSubmissionTiming(run) {
+  const clientUserMessageId = String(run?.clientUserMessageId ?? "").trim();
+  const rootMessage = (Array.isArray(run?.userMessages) ? run.userMessages : []).find((message) => (
+    String(message?.clientUserMessageId ?? "").trim() === clientUserMessageId
+  ));
+  return {
+    rootMessage,
+    submittedAt: run?.submittedAt ?? rootMessage?.submittedAt ?? rootMessage?.time ?? run?.startedAt ?? null,
+    startedAt: run?.startedAt ?? rootMessage?.startedAt ?? null,
+  };
+}
+
 function activeRunMessageReceipts(tasks) {
   const receipts = [];
   for (const task of Array.isArray(tasks) ? tasks : []) {
@@ -193,9 +205,7 @@ function activeRunMessageReceipts(tasks) {
     const provider = String(task?.provider ?? run?.provider ?? "").trim();
     const threadId = String(task?.threadId ?? run?.threadId ?? "").trim();
     if (!clientUserMessageId || !provider || !threadId) continue;
-    const rootMessage = (Array.isArray(run.userMessages) ? run.userMessages : []).find((message) => (
-      String(message?.clientUserMessageId ?? "").trim() === clientUserMessageId
-    ));
+    const { rootMessage, submittedAt, startedAt } = activeRunSubmissionTiming(run);
     receipts.push({
       accepted: true,
       provider,
@@ -204,7 +214,9 @@ function activeRunMessageReceipts(tasks) {
       clientUserMessageId,
       turnId: String(run.turnId ?? rootMessage?.turnId ?? "").trim(),
       itemId: String(rootMessage?.itemId ?? clientUserMessageId).trim() || clientUserMessageId,
-      deliveredAt: rootMessage?.time ?? run.startedAt ?? null,
+      submittedAt,
+      startedAt,
+      deliveredAt: startedAt,
       attachments: Array.isArray(rootMessage?.attachments) ? rootMessage.attachments : [],
     });
   }
@@ -881,13 +893,15 @@ function visibleConversationMessages(messages, {
     .map((value) => String(value ?? "").trim())
     .filter(Boolean));
   const visible = withoutContextProbeMessages(messages).filter((message) => {
-    const deliveryState = String(message?.deliveryState ?? "").trim();
-    if (message?.role === "user" && (deliveryState === "queued" || deliveryState === "deferred")) {
-      return false;
-    }
     const clientUserMessageId = String(
       message?.clientUserMessageId ?? message?.clientId ?? "",
     ).trim();
+    const deliveryState = String(message?.deliveryState ?? "").trim();
+    if (
+      message?.role === "user"
+      && !clientUserMessageId
+      && (deliveryState === "queued" || deliveryState === "deferred")
+    ) return false;
     if (message?.role === "user" && clientUserMessageId && deferredIds.has(clientUserMessageId)) {
       return false;
     }
@@ -964,6 +978,8 @@ function mergeLiveUserMessages(messages, {
   prompt = "",
   promptAuthor = "",
   clientUserMessageId = "",
+  submittedAt = null,
+  startedAt = null,
   time = null,
   attachments = [],
 } = {}) {
@@ -1013,7 +1029,13 @@ function mergeLiveUserMessages(messages, {
         responseAnnotations: message.responseAnnotations.map((item) => ({ ...item })),
         responseAnnotationRequest: String(message.responseAnnotationRequest ?? ""),
       } : {}),
-      time: message.time ?? time ?? null,
+      ...(role === "user" && turnUserSlot === "root" ? {
+        submittedAt: message.submittedAt ?? submittedAt ?? message.time ?? time ?? null,
+        startedAt: message.startedAt ?? startedAt ?? null,
+      } : {}),
+      time: role === "user" && turnUserSlot === "root"
+        ? message.submittedAt ?? submittedAt ?? message.time ?? time ?? null
+        : message.time ?? time ?? null,
       attachments: Array.isArray(message.attachments) && message.attachments.length
         ? message.attachments.map((attachment) => ({ ...attachment }))
         : role === "user" && turnUserSlot === "root"
@@ -1099,19 +1121,26 @@ function receiptUsesDeferredQueue(receipt) {
 }
 
 function receiptDeliveryState(receipt) {
-  if (receipt?.accepted === true || receipt?.steered === true) return "accepted";
   if (receipt?.dispatching === true) return "sending";
-  if (receiptUsesDeferredQueue(receipt)) {
-    return receipt?.queued === true ? "queued" : "deferred";
-  }
+  if (receipt?.deferred === true && receipt?.queued === true) return "queued";
+  if (receipt?.accepted === true || receipt?.steered === true) return "accepted";
+  if (receipt?.deferred === true) return "deferred";
   return null;
 }
 
 function messageReceiptProjection(receipt) {
+  const deliveryState = receiptDeliveryState(receipt);
+  const submittedAt = receipt?.submittedAt ?? receipt?.createdAt ?? null;
+  const startedAt = receipt?.startedAt ?? receipt?.deliveredAt ?? null;
   return {
     accepted: Boolean(receipt?.accepted || receipt?.deferred),
-    deliveryState: receiptDeliveryState(receipt),
+    deliveryState,
     ownsDeferredQueue: receiptUsesDeferredQueue(receipt),
+    projectionState: deliveryState === "queued" || deliveryState === "deferred"
+      ? "queued"
+      : deliveryState ? "active" : "unknown",
+    ...(submittedAt ? { submittedAt } : {}),
+    ...(startedAt ? { startedAt } : {}),
   };
 }
 
@@ -1134,6 +1163,9 @@ function deferredInputUsesQueue(deferredInput, messageReceipts = []) {
 function deferredInputDeliveryState(deferredInput, messageReceipts = []) {
   const state = String(deferredInput?.state ?? "").trim();
   if (state === "dispatching" || state === "steering") return "sending";
+  const receipt = deferredInputReceipt(deferredInput, messageReceipts);
+  if (receipt) return receiptDeliveryState(receipt);
+  if (state === "queued") return "queued";
   if (!deferredInputUsesQueue(deferredInput, messageReceipts)) return null;
   return state === "queued" ? "queued" : "deferred";
 }
@@ -1498,6 +1530,7 @@ function hubErrorMessage(error) {
 }
 
 globalThis.AgentHubMessageLifecycle = Object.freeze({
+  activeRunSubmissionTiming,
   activeRunMessageReceipts,
   activeStageLabel,
   activeTaskRun,

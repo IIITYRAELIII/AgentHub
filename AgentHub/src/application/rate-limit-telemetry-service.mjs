@@ -43,6 +43,7 @@ export class RateLimitTelemetryService {
     this.logger = logger;
     this.pollInFlight = null;
     this.codexRefreshInFlight = null;
+    this.historyRefreshInFlight = null;
     this.lastCodexRefresh = null;
   }
 
@@ -72,14 +73,20 @@ export class RateLimitTelemetryService {
   }
 
   async history(params = {}) {
-    if (this.codexRunning()) {
-      try {
-        await this.refreshCodex({ maxAgeMs: this.historyFreshnessMs });
-      } catch (error) {
-        this.logger.error("Cannot refresh current Codex rate limits:", error.message);
-      }
-    }
+    if (this.codexRunning()) this.#refreshHistoryInBackground();
     return this.historyStore.read(params);
+  }
+
+  #refreshHistoryInBackground() {
+    if (this.historyRefreshInFlight) return;
+    const refresh = this.refreshCodex({ maxAgeMs: this.historyFreshnessMs });
+    this.historyRefreshInFlight = refresh;
+    void refresh.then(() => {
+      if (this.historyRefreshInFlight === refresh) this.historyRefreshInFlight = null;
+    }, (error) => {
+      if (this.historyRefreshInFlight === refresh) this.historyRefreshInFlight = null;
+      this.logger.error("Cannot refresh current Codex rate limits:", error.message);
+    }).catch(() => {});
   }
 
   async readClaude() {

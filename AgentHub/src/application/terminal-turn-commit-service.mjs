@@ -43,6 +43,7 @@ function historySnapshot(run, completion) {
       : {}),
     responseItemId: String(source.responseItemId ?? ""),
     clientUserMessageId: String(source.clientUserMessageId ?? "") || null,
+    submittedAt: source.submittedAt ?? source.userMessages?.[0]?.submittedAt ?? source.userMessages?.[0]?.time ?? source.startedAt ?? null,
     userMessages: Array.isArray(source.userMessages) ? structuredClone(source.userMessages) : [],
     activities: Array.isArray(source.activities) ? structuredClone(source.activities) : [],
     activityGroups: Array.isArray(source.activityGroups) ? structuredClone(source.activityGroups) : [],
@@ -106,7 +107,10 @@ export class TerminalTurnCommitService {
       usageIdentity: usageIdentity(completion),
       lastMessage,
       payload: {
-        completion: structuredClone(completion),
+        completion: {
+          ...structuredClone(completion),
+          ...(String(run?.id ?? "").trim() ? { runId: String(run.id).trim() } : {}),
+        },
         history: historySnapshot(run, completion),
       },
       channels: channelIntents,

@@ -4,7 +4,7 @@ import test from "node:test";
 
 import { WorkspaceReleasePreflightService } from "../../src/application/workspace-release-preflight-service.mjs";
 
-function fixture({ planRevision = "plan-1", contourHead = "dev-head", rejectDev = null } = {}) {
+function fixture({ planRevision = "plan-1", contourHead = "dev-head", rejectDev = null, rejectPrimary = null } = {}) {
   const calls = [];
   const projectRoot = path.resolve("D:/repo");
   const plan = {
@@ -39,6 +39,23 @@ function fixture({ planRevision = "plan-1", contourHead = "dev-head", rejectDev 
           branch: "dev",
           headCommit: "dev-head",
           resultCommits: ["task-result"],
+        };
+      },
+    },
+    releaseGitWorkspaces: {
+      assertPrimaryInvariant: async (requestedProjectRoot, options) => {
+        calls.push(["guard-primary", requestedProjectRoot, options]);
+        if (rejectPrimary) throw rejectPrimary;
+        return { projectRoot: requestedProjectRoot, branch: "refs/heads/main", headCommit: "main-head" };
+      },
+      prepareCandidate: async (request) => {
+        calls.push(["prepare-candidate", request]);
+        return {
+          repositoryRoot: request.projectRoot,
+          releaseRoot: path.resolve("D:/release-clone"),
+          preReleaseHead: "prerelease-head",
+          manifestHash: "manifest-hash",
+          primaryPreserved: true,
         };
       },
     },
@@ -113,16 +130,19 @@ test("release preflight verifies selected results in dev and always refreshes Te
   const { calls, projectRoot, service } = fixture();
   const result = await service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-1" });
   assert.deepEqual(calls.map(([name]) => name), [
-    "plan", "prepare-dev", "resolve-contour", "refresh-contour", "read-contour", "verify-dev",
+    "plan", "guard-primary", "prepare-dev", "resolve-contour", "refresh-contour", "read-contour",
+    "verify-dev", "prepare-candidate",
   ]);
-  assert.deepEqual(calls[5][1], {
+  assert.deepEqual(calls[6][1], {
     projectRoot,
     resultCommits: ["task-result"],
     taskIds: ["task-1"],
   });
-  assert.deepEqual(calls[3][1], { sourceRoot: path.resolve("D:/dev-worktree/AgentHub") });
+  assert.deepEqual(calls[4][1], { sourceRoot: path.resolve("D:/dev-worktree/AgentHub") });
+  assert.deepEqual(calls[7][1].frozenTasks, [{ taskId: "task-1", resultCommit: "task-result" }]);
   assert.equal(result.planRevision, "plan-1");
   assert.equal(result.testContour.headCommit, "dev-head");
+  assert.equal(result.releaseCandidates[0].manifestHash, "manifest-hash");
 });
 
 test("release preflight rejects a refreshed contour that does not display dev HEAD", async () => {
@@ -140,7 +160,7 @@ test("release preflight refreshes the contour before rejecting Task results abse
     /not integrated into dev/u,
   );
   assert.deepEqual(calls.map(([name]) => name), [
-    "plan", "prepare-dev", "resolve-contour", "refresh-contour", "read-contour", "verify-dev",
+    "plan", "guard-primary", "prepare-dev", "resolve-contour", "refresh-contour", "read-contour", "verify-dev",
   ]);
 });
 
@@ -151,4 +171,13 @@ test("release preflight binds all side effects to the exact plan revision", asyn
     /revision changed/u,
   );
   assert.deepEqual(calls.map(([name]) => name), ["plan"]);
+});
+
+test("release preflight stops before side effects when the registered primary is detached", async () => {
+  const { calls, service } = fixture({ rejectPrimary: new Error("primary must remain attached to main") });
+  await assert.rejects(
+    () => service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-1" }),
+    /attached to main/u,
+  );
+  assert.deepEqual(calls.map(([name]) => name), ["plan", "guard-primary"]);
 });

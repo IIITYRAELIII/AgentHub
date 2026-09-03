@@ -35,6 +35,12 @@ permission to create a second effect.
 Transitions are monotonic and idempotent. A canonical record atomically replaces
 its optimistic projection by the same identity.
 
+A provider rejection received before provider acceptance moves that command to
+`attention-required` and releases its FIFO lane only after the rejection is
+durable. A launch with an unknown outcome keeps the lane until exact
+reconciliation or an explicit user decision; it never authorizes automatic
+resubmission or a later same-lane provider effect.
+
 ## Occupancy and ordering
 
 Before provider Thread binding, a queued command occupies a provisional lane
@@ -93,6 +99,30 @@ the local file visible to the command handler.
 Transport timeout or an incomplete chunk leaves the durable command available
 for a later poll with the same command and attachment identities. The client
 does not create an immediate retry loop to make a stalled body appear reliable.
+
+The two permanent remote command consumers use
+`agent-hub-control-wake-v1`. An authenticated hibernatable WebSocket carries only
+an availability revision. The command is persisted before the revision is sent;
+the consumer then claims it through the existing immediate durable pull with
+`waitMs: 0`. Initial connection and reconnection always perform the same drain,
+so a missed or duplicate hint cannot lose or duplicate an effect. Durable queue,
+claim, receipt and result identity remain authoritative.
+
+When the wake endpoint is unavailable during rolling deployment, the consumer
+uses only an immediate `waitMs: 0` pull at a fixed ten-second idle cadence.
+Consecutive transport or storage failures still use bounded exponential backoff
+with jitter and `Retry-After`. A successful wake connection and drain reset that
+failure state. After a Durable Object accepts the wake capability, it rejects
+nonzero waits on its permanent service pull route. User-scoped result and
+snapshot waits are not part of this service transport migration.
+
+The deterministic idle budget assumes two permanent channels, a sixty-second
+hibernation auto-response heartbeat and a 250 ms immediate-pull p99. The fallback
+is bounded to 17,280 Durable Object requests and 540 GB-s per day; the primary
+wake channel has zero idle GB-s and 146 request-equivalents per day. Deployment
+verification rejects a published budget that differs from these bounds. Durable
+Object unavailability remains an observable `503` service state, not an
+unhandled `500` and not evidence that a command was rejected or completed.
 
 During rolling deployment, a request without `mode` may still receive the
 legacy full-body response, and a new runtime may accept a binary response from

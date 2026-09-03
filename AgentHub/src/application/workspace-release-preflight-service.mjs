@@ -26,15 +26,19 @@ function readyRepositories(ready = []) {
     const resultCommit = String(entry?.resultCommit ?? "").trim();
     if (!resultCommit) throw new Error(`release Task ${entry?.taskId ?? "unknown"} has no result commit`);
     const key = canonicalRoot(projectRoot);
-    const repository = repositories.get(key) ?? { projectRoot, resultCommits: new Set(), taskIds: new Set() };
-    repository.resultCommits.add(resultCommit);
-    repository.taskIds.add(String(entry.taskId));
+    const repository = repositories.get(key) ?? { projectRoot, frozenTasks: new Map() };
+    const taskId = String(entry.taskId);
+    const existing = repository.frozenTasks.get(taskId);
+    if (existing && existing !== resultCommit) throw new Error(`release Task ${taskId} has multiple result commits`);
+    repository.frozenTasks.set(taskId, resultCommit);
     repositories.set(key, repository);
   }
   return [...repositories.values()].map((repository) => ({
     projectRoot: repository.projectRoot,
-    resultCommits: [...repository.resultCommits].sort(),
-    taskIds: [...repository.taskIds].sort(),
+    frozenTasks: [...repository.frozenTasks].map(([taskId, resultCommit]) => ({ taskId, resultCommit }))
+      .sort((left, right) => left.taskId.localeCompare(right.taskId)),
+    resultCommits: [...new Set(repository.frozenTasks.values())].sort(),
+    taskIds: [...repository.frozenTasks.keys()].sort(),
   }));
 }
 
@@ -79,16 +83,20 @@ function exactReadyContourReadback({ refreshed, contour, expectedHeadCommit }) {
 
 export class WorkspaceReleasePreflightService {
   constructor({
-    releasePlanner, taskGitWorkspaces, resolveTestContourSource, refreshTestContour, readTestContourStatus,
+    releasePlanner, taskGitWorkspaces, releaseGitWorkspaces,
+    resolveTestContourSource, refreshTestContour, readTestContourStatus,
   } = {}) {
     requiredMethod(releasePlanner, "plan");
     requiredMethod(taskGitWorkspaces, "prepareDev");
     requiredMethod(taskGitWorkspaces, "verifyReleaseResultsInDev");
+    requiredMethod(releaseGitWorkspaces, "assertPrimaryInvariant");
+    requiredMethod(releaseGitWorkspaces, "prepareCandidate");
     requiredFunction(resolveTestContourSource, "resolveTestContourSource");
     requiredFunction(refreshTestContour, "refreshTestContour");
     requiredFunction(readTestContourStatus, "readTestContourStatus");
     this.releasePlanner = releasePlanner;
     this.taskGitWorkspaces = taskGitWorkspaces;
+    this.releaseGitWorkspaces = releaseGitWorkspaces;
     this.resolveTestContourSource = resolveTestContourSource;
     this.refreshTestContour = refreshTestContour;
     this.readTestContourStatus = readTestContourStatus;
@@ -105,6 +113,12 @@ export class WorkspaceReleasePreflightService {
     if (plan.conflicts.length && conflictsResolved !== true) throw new Error("release has overlapping files");
 
     const selectedRepositories = readyRepositories(plan.ready);
+    const primaryRepositories = [];
+    for (const repository of selectedRepositories) {
+      primaryRepositories.push(await this.releaseGitWorkspaces.assertPrimaryInvariant(repository.projectRoot, {
+        phase: "release preflight",
+      }));
+    }
     const preparedRepositories = [];
     for (const repository of selectedRepositories) {
       const dev = await this.taskGitWorkspaces.prepareDev(repository.projectRoot);
@@ -137,7 +151,11 @@ export class WorkspaceReleasePreflightService {
 
     const repositories = [];
     for (const repository of selectedRepositories) {
-      const dev = await this.taskGitWorkspaces.verifyReleaseResultsInDev(repository);
+      const dev = await this.taskGitWorkspaces.verifyReleaseResultsInDev({
+        projectRoot: repository.projectRoot,
+        resultCommits: repository.resultCommits,
+        taskIds: repository.taskIds,
+      });
       repositories.push({
         projectRoot: dev.repositoryRoot,
         worktreeRoot: dev.projectRoot,
@@ -154,12 +172,23 @@ export class WorkspaceReleasePreflightService {
       throw new Error("refreshed Test Contour source does not match dev HEAD");
     }
 
+    const releaseCandidates = [];
+    for (const repository of selectedRepositories) {
+      releaseCandidates.push(await this.releaseGitWorkspaces.prepareCandidate({
+        planRevision: plan.revision,
+        projectRoot: repository.projectRoot,
+        frozenTasks: repository.frozenTasks,
+      }));
+    }
+
     return {
       workspaceId: String(workspaceId),
       planRevision: plan.revision,
       taskIds: [...new Set(plan.ready.map((entry) => String(entry.taskId)))].sort(),
       conflictsResolved: conflictsResolved === true,
+      primaryRepositories,
       repositories,
+      releaseCandidates,
       testContour: {
         root: contour.root,
         running: true,

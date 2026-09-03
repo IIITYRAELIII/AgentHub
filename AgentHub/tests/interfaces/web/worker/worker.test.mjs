@@ -5,6 +5,8 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { measureImmediateControlDrain } from "../../../../cloudflare-worker/verify-deployment.mjs";
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 
 async function loadWorker() {
@@ -70,6 +72,42 @@ test("Dashboard bot materializes an attachment before crossing the public Worker
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("X-Agent-Hub-Attachment-Hash"), "a".repeat(64));
   assert.deepEqual(Buffer.from(await response.arrayBuffer()), Buffer.concat(chunks));
+});
+
+test("Dashboard bot reports Durable Object exhaustion as an observable retryable service state", async () => {
+  const worker = await loadWorker();
+  const hubId = "018f6c86-3f34-7a31-8f27-16f5b96cce70";
+  const hubSecret = "h".repeat(64);
+  const diagnostics = [];
+  const originalError = console.error;
+  console.error = (message) => diagnostics.push(String(message));
+  try {
+    const response = await worker.default.fetch(signedServiceRequest(
+      "https://hub.test/api/dashboard-bot/pull",
+      { limit: 10, waitMs: 25_000 },
+      hubSecret,
+      { "X-Agent-Hub-Dashboard-Id": hubId },
+    ), {
+      JOURNAL: {
+        getByName: () => ({
+          fetch: async () => { throw new Error("Exceeded allowed volume of requests in Durable Objects free tier."); },
+        }),
+      },
+      ASSETS: { fetch: async () => new Response("asset") },
+    });
+
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("Retry-After"), "60");
+    assert.deepEqual(await response.json(), {
+      error: "Dashboard bot storage is temporarily unavailable",
+      code: "dashboard_bot_storage_unavailable",
+    });
+    assert.equal(diagnostics.length, 1);
+    assert.match(diagnostics[0], /"stage":"authenticate"/u);
+    assert.match(diagnostics[0], /Exceeded allowed volume/u);
+  } finally {
+    console.error = originalError;
+  }
 });
 
 test("Dashboard transport probe exposes a bounded ordered attachment manifest", async () => {
@@ -154,6 +192,40 @@ class MemoryStorage {
   }
 }
 
+class FakeWakeSocket {
+  attachment = null;
+  sent = [];
+  onSend = null;
+
+  serializeAttachment(value) {
+    this.attachment = value;
+  }
+
+  send(value) {
+    this.onSend?.(value);
+    this.sent.push(value);
+  }
+}
+
+function wakeContext(storage) {
+  const sockets = [];
+  return {
+    storage,
+    sockets,
+    autoResponse: null,
+    acceptWebSocket(socket, tags) {
+      socket.tags = tags;
+      sockets.push(socket);
+    },
+    getWebSockets(tag) {
+      return sockets.filter((socket) => socket.tags?.includes(tag));
+    },
+    setWebSocketAutoResponse(value) {
+      this.autoResponse = value;
+    },
+  };
+}
+
 function telegramInitData(botToken, userId, authDate = Math.trunc(Date.now() / 1_000)) {
   const values = new URLSearchParams({
     auth_date: String(authDate),
@@ -187,6 +259,22 @@ function signedServiceRequest(url, payload, secret, headers = {}) {
     },
     body,
   });
+}
+
+function signedWakeRequest(url, secret) {
+  const target = new URL(url);
+  const timestamp = Math.trunc(Date.now() / 1_000);
+  const signature = createHmac("sha256", secret)
+    .update([
+      timestamp,
+      "GET",
+      target.pathname,
+      createHash("sha256").update("").digest("hex"),
+    ].join("\n"))
+    .digest("hex");
+  target.searchParams.set("timestamp", String(timestamp));
+  target.searchParams.set("signature", signature);
+  return new Request(target, { headers: { Upgrade: "websocket" } });
 }
 
 function dashboardBotHubRegistry(entries) {
@@ -483,6 +571,122 @@ test("Worker long poll wakes as soon as any client enqueues a command", async ()
     env,
   );
   assert.equal(invalid.status, 400);
+});
+
+test("hibernation wake persists before notify and disables migrated service long polls", async () => {
+  const workerModule = await loadWorker();
+  const storage = new MemoryStorage();
+  const ctx = wakeContext(storage);
+  const client = new FakeWakeSocket();
+  const server = new FakeWakeSocket();
+  const commandId = "018f6c86-3f34-7a31-8f27-16f5b96cce75";
+  let persistedBeforeNotify = false;
+  server.onSend = () => {
+    persistedBeforeNotify = storage.values.has(`control:command:${commandId}`);
+  };
+  await workerModule.acceptHibernatableControlWake(ctx, {
+    channel: "mini-app",
+    pairFactory: () => ({ client, server }),
+    autoResponseFactory: () => ({ request: "ping", response: "pong" }),
+  });
+  const store = new workerModule.JournalStore(ctx, {});
+
+  const enqueue = await store.fetch(new Request("https://journal.internal/control/enqueue", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      id: commandId,
+      userId: "42",
+      action: "snapshot",
+      params: {},
+    }),
+  }));
+  assert.equal(enqueue.status, 202);
+  assert.equal(persistedBeforeNotify, true);
+  assert.deepEqual(server.attachment, {
+    protocol: workerModule.CONTROL_WAKE_PROTOCOL,
+    channel: "mini-app",
+  });
+  assert.deepEqual(JSON.parse(server.sent[0]), {
+    protocol: workerModule.CONTROL_WAKE_PROTOCOL,
+    kind: "available",
+    revision: 1,
+  });
+
+  const legacy = await store.fetch(new Request("https://journal.internal/control/pull", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ limit: 10, waitMs: 1_000 }),
+  }));
+  assert.equal(legacy.status, 409);
+  assert.equal((await legacy.json()).code, "control_wake_required");
+
+  const immediate = await store.fetch(new Request("https://journal.internal/control/pull", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ limit: 10, waitMs: 0, transport: workerModule.CONTROL_WAKE_PROTOCOL }),
+  }));
+  assert.equal(immediate.status, 200);
+  assert.equal((await immediate.json()).commands[0].id, commandId);
+});
+
+test("immediate durable drain stays inside the production p99 budget", async () => {
+  const workerModule = await loadWorker();
+  const store = new workerModule.JournalStore({ storage: new MemoryStorage() }, {});
+  const measured = await measureImmediateControlDrain({
+    samples: 20,
+    drain: async () => {
+      const response = await store.fetch(new Request("https://journal.internal/control/pull", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ limit: 10, waitMs: 0, transport: workerModule.CONTROL_WAKE_PROTOCOL }),
+      }));
+      return response.json();
+    },
+  });
+
+  assert.equal(measured.samples, 20);
+  assert.ok(measured.p99Ms <= 250);
+});
+
+test("wake authentication binds the exact path and routes each service to its exact Durable Object", async () => {
+  const workerModule = await loadWorker();
+  const syncSecret = "w".repeat(64);
+  const hubSecret = "h".repeat(64);
+  const hubId = "018f6c86-3f34-7a31-8f27-16f5b96cce76";
+  const routed = [];
+  const env = {
+    SYNC_SECRET: syncSecret,
+    JOURNAL: {
+      getByName(name) {
+        return {
+          fetch: async (request) => {
+            routed.push({ name, pathname: new URL(request.url).pathname });
+            return Response.json({ routed: true });
+          },
+        };
+      },
+    },
+    ASSETS: { fetch: async () => new Response("asset") },
+  };
+
+  const controlRequest = signedWakeRequest("https://hub.test/api/control/wake", syncSecret);
+  assert.equal(await workerModule.validateControlWakeRequest(controlRequest.clone(), syncSecret), true);
+  await assert.rejects(
+    workerModule.validateControlWakeRequest(controlRequest.clone(), hubSecret),
+    /invalid control wake signature/u,
+  );
+  let response = await workerModule.default.fetch(controlRequest, env);
+  assert.equal(response.status, 200);
+  assert.deepEqual(routed.pop(), { name: "current", pathname: "/control/wake" });
+
+  const dashboardRequest = signedWakeRequest(
+    `https://hub.test/api/dashboard-bot/wake?hubId=${hubId}`,
+    hubSecret,
+  );
+  response = await workerModule.default.fetch(dashboardRequest, env);
+  assert.equal(response.status, 200);
+  assert.deepEqual(routed.pop(), { name: `dashboard-bot:${hubId}`, pathname: "/api/dashboard-bot/wake" });
 });
 
 test("Worker result long poll wakes as soon as Hub completes a command", async () => {

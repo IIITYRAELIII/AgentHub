@@ -257,7 +257,12 @@ test("snapshot promotes provisional occupancy when the run obtains its exact thr
       streamId: "stream-1",
       provider: "claude",
       threadId: "thread-late",
+      turnId: "turn-late",
       status: "running",
+      providerStart: {
+        state: "accepted-awaiting-first-event",
+        turnId: "turn-late",
+      },
     }],
   });
 
@@ -267,6 +272,92 @@ test("snapshot promotes provisional occupancy when the run obtains its exact thr
   assert.notEqual(bound.occupancyKey, accepted.record.occupancyKey);
   assert.equal(bound.item.threadId, "thread-late");
   assert.equal(bound.item.queueOrder, accepted.record.acceptedAtMs);
+});
+
+test("provider admission stays dispatching until the provider accepts an exact turn", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-message-ledger-pre-acceptance-"));
+  const store = new MessageCommandLedgerStore({ dataDir });
+  context.after(async () => {
+    store.close();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  const command = messageCommandFixture({
+    clientUserMessageId: "message-provider-rejected",
+    fingerprint: "fingerprint-provider-rejected",
+    item: {
+      streamId: "stream-1",
+      provider: "codex",
+      threadId: "thread-1",
+      dispatchingAt: "2026-09-02T06:47:03.395Z",
+      dispatchingRunId: "run-rejected",
+    },
+  });
+  store.accept({ ...command, destination: "queued" });
+
+  store.projectSnapshot({
+    queuedInputs: [command.item],
+    desktopMessageReceipts: [command.receipt],
+    activeRuns: [{
+      id: "run-rejected",
+      clientUserMessageId: command.item.clientUserMessageId,
+      streamId: "stream-1",
+      provider: "codex",
+      threadId: "thread-1",
+      status: "running",
+      providerStart: { state: "requesting", turnId: null },
+    }],
+  });
+
+  assert.equal(store.get(command.item.clientUserMessageId).state, "dispatching");
+});
+
+test("startup returns a legacy pre-acceptance phantom start to explicit attention", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-message-ledger-phantom-start-"));
+  let store = new MessageCommandLedgerStore({ dataDir });
+  context.after(async () => {
+    store.close();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  const command = messageCommandFixture({
+    clientUserMessageId: "message-phantom-start",
+    fingerprint: "fingerprint-phantom-start",
+    item: {
+      streamId: "stream-1",
+      provider: "codex",
+      threadId: "thread-1",
+      dispatchingAt: "2026-09-02T06:47:03.395Z",
+      dispatchingRunId: "run-without-provider-turn",
+    },
+    receipt: {
+      result: {
+        accepted: true,
+        deferred: false,
+        queued: false,
+        dispatching: false,
+        started: true,
+        runId: null,
+        turnId: null,
+      },
+    },
+  });
+  store.accept({ ...command, destination: "queued" });
+  store.transition({
+    clientUserMessageId: command.item.clientUserMessageId,
+    expectedStates: ["queued"],
+    state: "started",
+    result: command.receipt.result,
+  });
+  store.close();
+
+  store = new MessageCommandLedgerStore({ dataDir });
+  const repaired = store.get(command.item.clientUserMessageId);
+  assert.equal(repaired.state, "attention-required");
+  assert.equal(repaired.destination, "pending");
+  assert.equal(repaired.item.dispatchingAt, undefined);
+  assert.equal(repaired.item.dispatchingRunId, undefined);
+  assert.equal(repaired.item.waitReason, "provider-start-unconfirmed");
+  assert.equal(repaired.result.started, false);
+  assert.equal(repaired.result.reason, "provider-start-unconfirmed");
 });
 
 test("a steered receipt closes the durable command and preserves retry identity", async (context) => {

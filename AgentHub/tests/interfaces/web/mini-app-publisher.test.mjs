@@ -13,6 +13,7 @@ import {
   signMiniAppSyncChunk,
 } from "../../../src/interfaces/web/mini-app-publisher.mjs";
 import { createDesktopControlRouter } from "../../../src/interfaces/desktop/desktop-control-router.mjs";
+import { REMOTE_CONTROL_WAKE_PROTOCOL } from "../../../src/interfaces/web/remote-control-wake-channel.mjs";
 
 function memoryJournal(payload = {
   html: "<p>Журнал</p>",
@@ -484,6 +485,7 @@ test("Mini App publisher polls signed controls and posts their result", async ()
     assert.deepEqual(JSON.parse(requests[0].options.body), {
       limit: 10,
       waitMs: 0,
+      transport: REMOTE_CONTROL_WAKE_PROTOCOL,
     });
     for (const request of requests) {
       const pathname = new URL(request.url).pathname;
@@ -510,7 +512,7 @@ test("Mini App publisher polls signed controls and posts their result", async ()
   }
 });
 
-test("Mini App publisher pauses between short control polls", async () => {
+test("Mini App publisher uses immediate drain without an empty-loop retry", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-control-short-poll-"));
   const secretFile = path.join(root, "sync.secret");
   await writeFile(secretFile, "l".repeat(64));
@@ -530,6 +532,7 @@ test("Mini App publisher pauses between short control polls", async () => {
       markStarted();
       return Response.json({ commands: [] });
     },
+    webSocketFactory: () => ({ addEventListener() {}, close() {} }),
     controlHandler: async () => ({ ok: true }),
   });
   try {
@@ -537,7 +540,38 @@ test("Mini App publisher pauses between short control polls", async () => {
     await started;
     await publisher.close();
     assert.equal(pullCount, 1);
-    assert.deepEqual(pullBody, { limit: 10, waitMs: 0 });
+    assert.deepEqual(pullBody, {
+      limit: 10,
+      waitMs: 0,
+      transport: REMOTE_CONTROL_WAKE_PROTOCOL,
+    });
+  } finally {
+    await publisher.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Mini App publisher preserves retry guidance from a capacity response", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-control-capacity-"));
+  const secretFile = path.join(root, "sync.secret");
+  await writeFile(secretFile, "c".repeat(64));
+  const publisher = new MiniAppPublisher({
+    dataDirectory: root,
+    publicUrl: "https://hub.example.test",
+    syncSecretFile: secretFile,
+    fetchImpl: async () => Response.json({
+      error: "Dashboard bot storage is temporarily unavailable",
+      code: "dashboard_bot_storage_unavailable",
+    }, { status: 503, headers: { "Retry-After": "60" } }),
+    controlHandler: async () => ({ ok: true }),
+  });
+  try {
+    await assert.rejects(publisher.pollControl(), (error) => {
+      assert.equal(error.status, 503);
+      assert.equal(error.code, "dashboard_bot_storage_unavailable");
+      assert.equal(error.retryAfterMs, 60_000);
+      return true;
+    });
   } finally {
     await publisher.close();
     await rm(root, { recursive: true, force: true });

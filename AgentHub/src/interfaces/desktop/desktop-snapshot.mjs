@@ -333,6 +333,8 @@ export function createDesktopSnapshotFactory({
         const clientUserMessageId = String(
           message.clientUserMessageId ?? turnReceipt?.clientUserMessageId ?? "",
         ).trim();
+        const rootUserMessage = role === "user"
+          && clientUserMessageId === String(run.clientUserMessageId ?? "").trim();
         const receipt = role === "user" && clientUserMessageId
           ? receipts.forMessage?.({
             provider: run.provider,
@@ -380,7 +382,13 @@ export function createDesktopSnapshotFactory({
               receipt?.result?.responseAnnotationRequest ?? message.responseAnnotationRequest,
             ),
           } : {}),
-          time: message.time ?? run.startedAt ?? receipt?.createdAt ?? null,
+          ...(rootUserMessage ? {
+            submittedAt: message.submittedAt ?? run.submittedAt ?? receipt?.createdAt ?? message.time ?? run.startedAt ?? null,
+            startedAt: message.startedAt ?? run.startedAt ?? null,
+          } : {}),
+          time: rootUserMessage
+            ? message.submittedAt ?? run.submittedAt ?? receipt?.createdAt ?? message.time ?? run.startedAt ?? null
+            : message.time ?? run.startedAt ?? receipt?.createdAt ?? null,
           attachments,
         }];
       }),
@@ -395,6 +403,7 @@ export function createDesktopSnapshotFactory({
         : {}),
       ...(responseItem?.phase ? { responsePhase: String(responseItem.phase) } : {}),
       clientUserMessageId: run.clientUserMessageId ?? null,
+      submittedAt: run.submittedAt ?? runUserMessages[0]?.submittedAt ?? runUserMessages[0]?.time ?? run.startedAt ?? null,
       responseItemId: run.responseItemId ?? null,
       startedAt: run.startedAt ?? null,
       lastActivityAt: run.lastMeaningfulProgressAt ?? run.progressHeartbeatAt ?? run.startedAt ?? null,

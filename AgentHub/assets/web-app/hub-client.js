@@ -124,6 +124,7 @@ const MAX_OUTGOING_MESSAGES_PER_TASK = 100;
 const acknowledgedFinalByTask = new Map();
 const { isUserRunningProjection, projectCanonicalMessages } = window.AgentHubMessageProjection;
 const {
+  activeRunSubmissionTiming,
   activeRunMessageReceipts,
   activeStageLabel,
   activeTaskRun,
@@ -550,6 +551,7 @@ function liveUserMessagesSignature(run) {
     String(run?.prompt ?? "").length,
     String(run?.promptAuthor ?? ""),
     String(run?.startedAt ?? ""),
+    String(run?.submittedAt ?? ""),
     JSON.stringify(run?.attachments ?? []),
     ...messages.map((message) => [
       String(message?.itemId ?? ""),
@@ -639,7 +641,7 @@ function optimisticDeferredEntries(taskIdValue, serverEntries = []) {
         || (message.responseAnnotations?.length ? "" : message.text),
       annotations: message.responseAnnotations ?? [],
       attachments: message.attachments ?? [],
-      createdAt: message.time,
+      createdAt: message.submittedAt ?? message.time,
       delivery: message.delivery,
       deliveryState: message.deliveryState,
       remoteCommandId: message.remoteCommandId,
@@ -701,12 +703,15 @@ function applyMessageReceipts(snapshot) {
         submissionId: String(receipt.submissionId ?? clientUserMessageId),
         operationKind: "user-turn",
         projectionAuthority: "canonical",
+        projectionState: projection.projectionState,
         role: "user",
         author: String(receipt.author ?? "").trim() || "Вы",
         text: restoredText,
         responseAnnotations: restoredAnnotations,
         responseAnnotationRequest: restoredRequest,
-        time: receipt.createdAt ?? null,
+        submittedAt: projection.submittedAt ?? null,
+        startedAt: projection.startedAt ?? null,
+        time: projection.submittedAt ?? null,
         attachments: restoredAttachments,
       });
     }
@@ -719,7 +724,12 @@ function applyMessageReceipts(snapshot) {
       submissionId: String(receipt.submissionId ?? clientUserMessageId),
       operationKind: "user-turn",
       projectionAuthority: "canonical",
-      time: receipt.deliveredAt ?? receipt.createdAt ?? null,
+      projectionState: projection.projectionState,
+      ...(projection.submittedAt ? {
+        submittedAt: projection.submittedAt,
+        time: projection.submittedAt,
+      } : {}),
+      ...(projection.startedAt ? { startedAt: projection.startedAt } : {}),
       ...nonEmptyAttachmentPatch(receipt.attachments),
       ...(receipt.accepted && !receipt.steered ? { turnUserSlot: "root" } : {}),
       ...(receipt.steered ? { turnUserSlot: "steer" } : {}),
@@ -910,18 +920,15 @@ function updateLiveMessage(taskIdValue, selected) {
   const promoted = promoteLiveCompletion(taskIdValue, selected, run?.turnId);
   const snapshotCompletionRemembered = rememberSnapshotCompletion(taskIdValue, selected, run?.turnId);
   if (!run) {
-    const previousLive = liveCardsByTask.get(taskIdValue);
-    const staleLiveRemoved = previousLive
-      && !isUserRunningProjection(previousLive)
-      ? liveCardsByTask.delete(taskIdValue)
-      : false;
+    const staleLiveRemoved = liveCardsByTask.delete(taskIdValue);
     const removed = liveProbeByTask.delete(taskIdValue);
     const userRemoved = liveUserMessagesByTask.delete(taskIdValue);
     if (promoted || snapshotCompletionRemembered || staleLiveRemoved || removed || userRemoved) {
       renderTaskMessages(taskIdValue);
     }
-    return liveCardsByTask.get(taskIdValue) ?? null;
+    return null;
   }
+  const runTiming = activeRunSubmissionTiming(run);
   const nextLiveUsers = {
     provider: selected.provider,
     threadId: selected.threadId,
@@ -930,7 +937,9 @@ function updateLiveMessage(taskIdValue, selected) {
     prompt: run.prompt ?? "",
     promptAuthor: run.promptAuthor ?? "",
     clientUserMessageId: run.clientUserMessageId ?? "",
-    time: run.startedAt ?? null,
+    submittedAt: runTiming.submittedAt,
+    startedAt: runTiming.startedAt,
+    time: runTiming.submittedAt,
     attachments: attachmentViews(run.attachments),
     signature: liveUserMessagesSignature(run),
   };
@@ -1207,6 +1216,13 @@ function observeQueuedRemoteMessage(commandId, params) {
           threadId: result?.threadId ?? params?.threadId ?? "",
           turnId: result?.turnId ?? "",
           itemId: result?.itemId ?? clientUserMessageId,
+          projectionAuthority: "canonical",
+          projectionState: projection.projectionState,
+          ...(projection.submittedAt ? {
+            submittedAt: projection.submittedAt,
+            time: projection.submittedAt,
+          } : {}),
+          ...(projection.startedAt ? { startedAt: projection.startedAt } : {}),
           remoteQueued: false,
           remoteCommandId: commandId,
           ...deliveryPatch(projection.deliveryState ?? "rejected"),
@@ -2109,7 +2125,13 @@ function historyMessages(history, focusedTurn = null) {
       activityGroups: messageIndex === traceMessageIndex && Array.isArray(item.activityGroups)
         ? item.activityGroups
         : [],
-      time: message.time ?? (message.role === "user" ? item.startedAt : item.completedAt) ?? null,
+      ...(message.role === "user" ? {
+        submittedAt: message.submittedAt ?? message.time ?? item.submittedAt ?? item.startedAt ?? null,
+        startedAt: message.startedAt ?? (message.turnUserSlot === "root" ? item.startedAt ?? null : null),
+      } : {}),
+      time: message.role === "user"
+        ? message.submittedAt ?? message.time ?? item.submittedAt ?? item.startedAt ?? null
+        : message.time ?? item.completedAt ?? null,
       ...(messageIndex === traceMessageIndex ? {
         turnStartedAt: item.startedAt ?? null,
         turnCompletedAt: item.completedAt ?? null,
@@ -2163,8 +2185,13 @@ function historyMessages(history, focusedTurn = null) {
         activityGroups: itemId === focusedTraceItemId && Array.isArray(focusedTurn.activityGroups)
           ? focusedTurn.activityGroups
           : [],
-        time: message.time
-          ?? (message.role === "user" ? focusedTurn.startedAt : focusedTurn.completedAt)
+        ...(message.role === "user" ? {
+          submittedAt: message.submittedAt ?? message.time ?? focusedTurn.submittedAt ?? focusedTurn.startedAt ?? null,
+          startedAt: message.startedAt ?? (message.turnUserSlot === "root" ? focusedTurn.startedAt ?? null : null),
+        } : {}),
+        time: message.submittedAt
+          ?? message.time
+          ?? (message.role === "user" ? focusedTurn.submittedAt ?? focusedTurn.startedAt : focusedTurn.completedAt)
           ?? focusedTurn.startedAt
           ?? null,
         ...(itemId === focusedTraceItemId ? {
@@ -2189,7 +2216,9 @@ function historyMessages(history, focusedTurn = null) {
       text: focusedTurn.prompt,
       responseAnnotations: focusedTurn.promptAnnotations,
       responseAnnotationRequest: focusedTurn.promptRequest,
-      time: focusedTurn.startedAt,
+      submittedAt: focusedTurn.submittedAt ?? focusedTurn.startedAt,
+      startedAt: focusedTurn.startedAt,
+      time: focusedTurn.submittedAt ?? focusedTurn.startedAt,
     });
     messages.push({
       id: `${focusedTurn.turnId}:answer`,
@@ -2619,6 +2648,7 @@ agentHub.on("message:send", (request) => {
     || ((request.annotations ?? []).length
       ? `Аннотации к ответу: ${(request.annotations ?? []).length}`
       : window.AgentHubMessageLifecycle.attachmentOnlyText(visibleAttachments));
+  const submittedAt = new Date().toISOString();
   const optimistic = {
     id: optimisticId,
     provider: identity?.provider ?? request.settings?.provider ?? "",
@@ -2635,7 +2665,8 @@ agentHub.on("message:send", (request) => {
     text: visibleText,
     responseAnnotations: normalizedResponseAnnotations(request.annotations),
     responseAnnotationRequest: String(request.text ?? "").trim(),
-    time: new Date().toISOString(),
+    submittedAt,
+    time: submittedAt,
     attachments: visibleAttachments,
     uploadedPaths: previousAttempt?.uploadedPaths ?? [],
     ...deliveryPatch(queuesOptimistically ? "sending" : steersOptimistically ? "steering" : "preparing"),
@@ -2741,6 +2772,13 @@ agentHub.on("message:send", (request) => {
         itemId: result?.itemId ?? request.requestId,
         remoteQueued: result?.remoteQueued === true,
         remoteCommandId: result?.remoteCommandId ?? "",
+        projectionAuthority: "canonical",
+        projectionState: projection.projectionState,
+        ...(projection.submittedAt ? {
+          submittedAt: projection.submittedAt,
+          time: projection.submittedAt,
+        } : {}),
+        ...(projection.startedAt ? { startedAt: projection.startedAt } : {}),
         ...nonEmptyAttachmentPatch(result?.attachments),
         ...(result?.accepted && !result?.steered ? { turnUserSlot: "root" } : {}),
         ...(result?.remoteQueued

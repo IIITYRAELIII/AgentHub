@@ -3919,6 +3919,12 @@ html[data-view="dashboard"] .task-board-view {
   transform: translateY(2px);
 }
 
+.board-task-card.is-pointer-dragging {
+  cursor: grabbing;
+  opacity: 0.72;
+  user-select: none;
+}
+
 .board-task-card.is-compact {
   box-shadow: none;
   cursor: default;

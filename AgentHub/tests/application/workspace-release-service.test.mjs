@@ -5,7 +5,7 @@ import { WorkspaceReleaseService } from "../../src/application/workspace-release
 
 function fixture(plan = {
   revision: "plan-1", ready: [{ id: "change-1" }], draft: [], blocked: [], conflicts: [],
-}) {
+}, { primarySync = null } = {}) {
   const calls = [];
   const service = new WorkspaceReleaseService({
     store: {
@@ -15,6 +15,12 @@ function fixture(plan = {
       },
     },
     releasePlanner: { plan: async () => plan },
+    releaseGitWorkspaces: {
+      synchronizePublishedPrimary: async (value) => {
+        calls.push(["sync-primary", value]);
+        return primarySync ?? { status: "fast_forwarded", publishedRevision: value.publishedRevision };
+      },
+    },
     verifyPublication: async (value) => {
       calls.push(["verify", value]);
       return { repositories: [{ root: "D:/repo", revision: "abc" }] };
@@ -43,8 +49,13 @@ test("release completion verifies repositories before atomically closing ready c
   });
   assert.equal(result.publication.verificationSummary, "Published and smoke-tested");
   assert.equal(result.publication.planRevision, "plan-1");
-  assert.deepEqual(calls.map(([name]) => name), ["verify", "complete"]);
-  const { plan: completedPlan, ...completionOptions } = calls[1][2];
+  assert.deepEqual(calls.map(([name]) => name), ["verify", "sync-primary", "complete"]);
+  assert.deepEqual(calls[1][1], {
+    projectRoot: "D:/repo",
+    publishedRevision: "abc",
+    planRevision: "plan-1",
+  });
+  const { plan: completedPlan, ...completionOptions } = calls[2][2];
   assert.equal(completedPlan.revision, "plan-1");
   assert.deepEqual(completionOptions, {
     expectedPlanRevision: "plan-1",
@@ -56,6 +67,7 @@ test("release completion verifies repositories before atomically closing ready c
       conflictsResolved: false,
       publication: {
         repositories: [{ root: "D:/repo", revision: "abc" }],
+        primarySynchronization: [{ status: "fast_forwarded", publishedRevision: "abc" }],
         verificationSummary: "Published and smoke-tested",
         planRevision: "plan-1",
       },
@@ -82,8 +94,8 @@ test("release completion requires and records explicit resolution of overlapping
   await assert.rejects(() => service.completeRelease(request), /overlapping files/u);
   await service.completeRelease({ ...request, conflictsResolved: true });
   assert.equal(calls[0][1].conflictsResolved, true);
-  assert.equal(calls[1][2].conflictsResolved, true);
-  assert.equal(calls[1][2].verificationEvidence.conflictsResolved, true);
+  assert.equal(calls[2][2].conflictsResolved, true);
+  assert.equal(calls[2][2].verificationEvidence.conflictsResolved, true);
 });
 
 test("release completion binds publication evidence to the exact observed plan revision", async () => {
@@ -98,4 +110,19 @@ test("release completion binds publication evidence to the exact observed plan r
     /revision changed/u,
   );
   assert.deepEqual(calls, []);
+});
+
+test("manual primary synchronization does not undo verified release completion", async () => {
+  const { calls, service } = fixture(undefined, {
+    primarySync: { status: "manual_required", reason: "intentional local overlap" },
+  });
+  const result = await service.completeRelease({
+    workspaceId: "workspace-1",
+    expectedRevision: "abc",
+    expectedPlanRevision: "plan-1",
+    deploymentVerified: true,
+    verificationSummary: "Published and verified",
+  });
+  assert.equal(result.publication.primarySynchronization[0].status, "manual_required");
+  assert.deepEqual(calls.map(([name]) => name), ["verify", "sync-primary", "complete"]);
 });

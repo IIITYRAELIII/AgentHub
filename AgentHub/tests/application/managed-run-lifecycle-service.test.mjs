@@ -55,11 +55,26 @@ test("managed run lifecycle creates and persists one owned run", async () => {
   assert.deepEqual(run.userMessages, [{
     role: "user",
     text: "hello",
+    submittedAt: run.submittedAt,
+    startedAt: run.startedAt,
     time: run.startedAt,
   }]);
   assert.equal(run.streamId, "stream-1");
   assert.equal(run.model, "GPT");
   assert.deepEqual(events, ["catalog", "diff", "clear-diff", "sync-start", "save", "progress"]);
+});
+
+test("managed run preserves durable submission time separately from provider start", async () => {
+  const { service } = harness();
+  const run = await service.begin("queued", {
+    clientUserMessageId: "client-queued",
+    deferredInput: { createdAt: "2026-09-01T21:25:00.000Z" },
+  });
+
+  assert.equal(run.submittedAt, "2026-09-01T21:25:00.000Z");
+  assert.equal(run.userMessages[0].submittedAt, run.submittedAt);
+  assert.equal(run.userMessages[0].startedAt, run.startedAt);
+  assert.equal(run.userMessages[0].time, run.submittedAt);
 });
 
 test("managed run lifecycle does not capture Git baselines for provider turns", async () => {
@@ -269,6 +284,8 @@ test("managed run lifecycle keeps interstream identity on the active user messag
     origin: messageOrigin,
     author: "Agent HUB - Themes (Terra)",
     text: "проверь сообщение",
+    submittedAt: run.submittedAt,
+    startedAt: run.startedAt,
     time: run.startedAt,
   });
 });
