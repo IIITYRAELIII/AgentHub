@@ -275,6 +275,25 @@
     )));
   }
 
+  function streamDisplayName(stream, streamCount) {
+    const name = String(stream?.name ?? "").trim();
+    if (name) return name;
+    return Number(streamCount) > 1
+      ? `Stream ${Math.max(1, Number(stream?.ordinal) || 1)}`
+      : "Stream";
+  }
+
+  function streamTabsMutationAction(mutations) {
+    const values = Array.isArray(mutations) ? mutations : [...(mutations ?? [])];
+    const contentChanged = values.some((mutation) => mutation.type !== "attributes"
+      || mutation.attributeName === "data-order-mode");
+    if (contentChanged) return "sync";
+    const overflowChanged = values.some((mutation) => mutation.type === "attributes"
+      && mutation.attributeName === "hidden"
+      && mutation.target?.matches?.(".stream-tab-group, .stream-tabs-overflow"));
+    return overflowChanged ? "align" : "none";
+  }
+
   function streamsAreDraggable(mode, surface) {
     return normalizeStreamOrderMode(mode) === STREAM_ORDER_MODES.MANUAL
       && surface !== "mobile";
@@ -1036,13 +1055,9 @@
       });
       if (typeof this.window.MutationObserver === "function") {
         this.tabsObserver = new this.window.MutationObserver((mutations) => {
-          const overflowChanged = mutations.some((mutation) => mutation.type === "attributes"
-            && mutation.attributeName === "hidden"
-            && mutation.target.matches?.(".stream-tab-group, .stream-tabs-overflow"));
-          const contentChanged = mutations.some((mutation) => mutation.type !== "attributes"
-            || mutation.attributeName === "data-order-mode");
-          if (contentChanged) this.sync();
-          else if (overflowChanged) this.alignOverflow();
+          const action = streamTabsMutationAction(mutations);
+          if (action === "sync") this.sync();
+          else if (action === "align") this.alignOverflow();
         });
         this.tabsObserver.observe(this.tabs, {
           attributes: true,
@@ -1658,6 +1673,8 @@
     resolveStableStreamCardWidth,
     rotationMaintenancePresentation,
     streamDeckRenderKey,
+    streamDisplayName,
+    streamTabsMutationAction,
     streamHeadTasks,
     streamLastActivity,
     streamRotationTransitions,

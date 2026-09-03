@@ -1,4 +1,5 @@
 import {
+  createVisibilityBoundAnimation,
   createStartupDisconnectedModel,
   createStartupScreenModel,
   formatStartupElapsed,
@@ -217,6 +218,7 @@ function applyModel(model) {
   updateQueueOverflow();
   root.dataset.hubStartupScreen = model.failed ? "failed" : "visible";
   screen.hidden = false;
+  horizonAnimation.start();
 }
 
 function revealCurrentOperation() {
@@ -245,6 +247,7 @@ function showModel(model) {
 }
 
 function hideScreen() {
+  horizonAnimation.stop();
   screen.hidden = true;
   delete root.dataset.hubStartupScreen;
 }
@@ -348,7 +351,6 @@ function resizeCanvas() {
 }
 
 function drawHorizon(now) {
-  if (stopped && screen.hidden) return;
   const width = canvas.clientWidth;
   const height = canvas.clientHeight;
   context.clearRect(0, 0, width, height);
@@ -369,17 +371,23 @@ function drawHorizon(now) {
     context.lineWidth = 1;
     context.stroke();
   }
-  requestAnimationFrame(drawHorizon);
 }
+
+const horizonAnimation = createVisibilityBoundAnimation({
+  requestFrame: (callback) => requestAnimationFrame(callback),
+  cancelFrame: (frameId) => cancelAnimationFrame(frameId),
+  isVisible: () => !screen.hidden,
+  draw: drawHorizon,
+});
 
 const timerInterval = window.setInterval(updateTimer, 1_000);
 new ResizeObserver(resizeCanvas).observe(canvas);
 new ResizeObserver(updateQueueOverflow).observe(queueSection);
-requestAnimationFrame(drawHorizon);
 void refresh();
 
 window.addEventListener("pagehide", () => {
   stopped = true;
+  horizonAnimation.destroy();
   window.clearTimeout(hideTimer);
   window.clearTimeout(pollTimer);
   clearConnectionTimer();

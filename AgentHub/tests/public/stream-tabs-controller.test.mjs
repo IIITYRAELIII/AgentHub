@@ -861,6 +861,34 @@ test("background status changes rerender visible top Stream tabs", async () => {
   }
 });
 
+test("Stream display identity never exposes a blank name", async () => {
+  const { streamDisplayName } = await streamTabsApi();
+  assert.equal(streamDisplayName({ name: " Architect ", ordinal: 2 }, 3), "Architect");
+  assert.equal(streamDisplayName({ name: "", ordinal: 2 }, 3), "Stream 2");
+  assert.equal(streamDisplayName({ name: "", ordinal: 7 }, 1), "Stream");
+});
+
+test("overflow visibility mutations do not rebuild Stream settings", async () => {
+  const { streamTabsMutationAction } = await streamTabsApi();
+  const overflowTarget = { matches: (selector) => selector.includes(".stream-tab-group") };
+  assert.equal(streamTabsMutationAction([{
+    type: "attributes",
+    attributeName: "hidden",
+    target: overflowTarget,
+  }]), "align");
+  assert.equal(streamTabsMutationAction([{
+    type: "attributes",
+    attributeName: "data-order-mode",
+    target: overflowTarget,
+  }]), "sync");
+  assert.equal(streamTabsMutationAction([{ type: "childList", target: overflowTarget }]), "sync");
+  assert.equal(streamTabsMutationAction([{
+    type: "attributes",
+    attributeName: "hidden",
+    target: { matches: () => false },
+  }]), "none");
+});
+
 test("answer arrival animation does not replay during Thread selection", async () => {
   const { answerArrivalTaskIds } = await streamTabsApi();
   const observedFinals = new Map();

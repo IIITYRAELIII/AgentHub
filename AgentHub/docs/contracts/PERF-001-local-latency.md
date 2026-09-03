@@ -97,3 +97,12 @@ asynchronous retry rather than blocking busy waits.
 
 The “Local Hub” health RTT is not message ACK latency and must not be presented
 as such. Provider latency and remote Worker latency are separate indicators.
+
+## Navigation responsiveness
+
+Switching between Chat, Dashboard and Journal exposes the target shell before
+optional data hydration completes. On production-shaped data the input-to-first-
+paint p95 is at most 200 ms and no navigation-owned main-thread task exceeds
+50 ms. A hidden startup screen owns no animation frame; its canvas animation is
+scheduled only while that screen is visible. The shared invariant applies to
+the browser shell and the VS Code WebView, which execute the same client assets.

@@ -91,3 +91,38 @@ export function shouldShowStartupScreen(model, {
   if (!model.ready || visible) return true;
   return Number(model.startedAtMs) !== Number(lastStartedAtMs);
 }
+
+export function createVisibilityBoundAnimation({
+  requestFrame,
+  cancelFrame,
+  isVisible,
+  draw,
+}) {
+  if (typeof requestFrame !== "function") throw new TypeError("requestFrame is required");
+  if (typeof cancelFrame !== "function") throw new TypeError("cancelFrame is required");
+  if (typeof isVisible !== "function") throw new TypeError("isVisible is required");
+  if (typeof draw !== "function") throw new TypeError("draw is required");
+
+  let frameId = 0;
+  let destroyed = false;
+
+  const schedule = () => {
+    if (destroyed || frameId || !isVisible()) return;
+    frameId = requestFrame((now) => {
+      frameId = 0;
+      if (destroyed || !isVisible()) return;
+      draw(now);
+      schedule();
+    });
+  };
+  const stop = () => {
+    if (frameId) cancelFrame(frameId);
+    frameId = 0;
+  };
+  const destroy = () => {
+    destroyed = true;
+    stop();
+  };
+
+  return Object.freeze({ start: schedule, stop, destroy });
+}
