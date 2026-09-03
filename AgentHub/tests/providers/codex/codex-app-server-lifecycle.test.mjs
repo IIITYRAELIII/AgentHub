@@ -14,7 +14,7 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-function fixture() {
+function fixture(overrides = {}) {
   const events = [];
   const lifecycle = new CodexAppServerLifecycle({
     resolveExecutable: async () => "codex",
@@ -31,6 +31,8 @@ function fixture() {
     recoverRuns: async () => events.push(["recover"]),
     startTyping: () => events.push(["typing"]),
     attachSelectedThread: async () => events.push(["attach"]),
+    onStartupSuccess: overrides.onStartupSuccess,
+    onStartupFailure: overrides.onStartupFailure,
     scheduleRetry: (...args) => events.push(["retry", ...args]),
     logger: { log: (...args) => events.push(["log", ...args]), error: (...args) => events.push(["error", ...args]) },
   });
@@ -75,6 +77,98 @@ test("Codex App Server lifecycle owns crash recovery", async () => {
   const { lifecycle, events } = fixture();
   await lifecycle.restartAfterCrash();
   assert.deepEqual(events.map(([name]) => name), ["start", "initialize", "notify", "attach", "recover"]);
+});
+
+test("Codex App Server lifecycle retries once with last-known-good after candidate startup failure", async () => {
+  const failures = [];
+  let initializeCount = 0;
+  const { lifecycle, events } = fixture({
+    onStartupFailure: async (error) => {
+      failures.push(error.message);
+      return true;
+    },
+    onStartupSuccess: async () => events.push(["startup-success"]),
+  });
+  lifecycle.transport.initialize = async () => {
+    initializeCount += 1;
+    events.push(["initialize", initializeCount]);
+    if (initializeCount === 1) throw new Error("candidate protocol rejected");
+    return { newlyInitialized: true };
+  };
+
+  const initialized = await lifecycle.initialize();
+
+  assert.equal(initialized.rolledBack, true);
+  assert.deepEqual(failures, ["candidate protocol rejected"]);
+  assert.deepEqual(events.map(([name]) => name), [
+    "initialize", "error", "stop", "start", "initialize", "notify", "attach", "startup-success",
+  ]);
+});
+
+test("Codex App Server lifecycle rolls back when candidate process cannot start", async () => {
+  const failures = [];
+  let starts = 0;
+  const { lifecycle, events } = fixture({
+    onStartupFailure: async (error) => {
+      failures.push(error.message);
+      return true;
+    },
+    onStartupSuccess: async () => events.push(["startup-success"]),
+  });
+  lifecycle.transport.start = async () => {
+    starts += 1;
+    events.push(["start", starts]);
+    if (starts === 1) throw new Error("candidate executable would not start");
+  };
+
+  await lifecycle.start();
+  const initialized = await lifecycle.initialize();
+
+  assert.equal(initialized.rolledBack, true);
+  assert.deepEqual(failures, ["candidate executable would not start"]);
+  assert.deepEqual(events.map(([name]) => name), [
+    "start", "error", "stop", "start", "initialize", "notify", "attach", "startup-success",
+  ]);
+});
+
+test("Codex App Server lifecycle bounds candidate and rollback process start failures", async () => {
+  const failures = [];
+  const { lifecycle } = fixture({
+    onStartupFailure: async (error) => {
+      failures.push(error.message);
+      return failures.length === 1;
+    },
+  });
+  lifecycle.transport.start = async () => {
+    throw new Error(failures.length === 0 ? "candidate spawn failed" : "rollback spawn failed");
+  };
+
+  await assert.rejects(lifecycle.start(), (error) => {
+    assert.equal(error instanceof AggregateError, true);
+    assert.match(error.message, /rollback spawn failed/u);
+    return true;
+  });
+  assert.deepEqual(failures, ["candidate spawn failed", "rollback spawn failed"]);
+});
+
+test("Codex App Server lifecycle reports aggregate failure when candidate and rollback both fail", async () => {
+  const failures = [];
+  const { lifecycle } = fixture({
+    onStartupFailure: async (error) => {
+      failures.push(error.message);
+      return failures.length === 1;
+    },
+  });
+  lifecycle.transport.initialize = async () => {
+    throw new Error(failures.length === 0 ? "candidate failed" : "rollback failed");
+  };
+
+  await assert.rejects(lifecycle.initialize(), (error) => {
+    assert.equal(error instanceof AggregateError, true);
+    assert.match(error.message, /rollback failed/u);
+    return true;
+  });
+  assert.deepEqual(failures, ["candidate failed", "rollback failed"]);
 });
 
 test("Codex App Server lifecycle keeps a healthy server after one background read timeout", async () => {

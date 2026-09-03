@@ -15,6 +15,7 @@ const CHOICE = "choice";
 export const SERVER_CONFIGURATION_FIELDS = Object.freeze([
   { key: "autoApproveOnStart", name: "Автоподтверждение при запуске", hint: "Команды и правки файлов выполняются без запроса. Выключено — Hub спрашивает разрешение на каждое действие агента.", type: BOOLEAN },
   { key: "guardConcurrentRepositoryWrites", name: "Защита параллельной записи", hint: "Не даёт двум потокам писать в один репозиторий одновременно: второй ждёт, пока первый закончит ход.", type: BOOLEAN },
+  { key: "codexExecutableAutoUpdate", name: "Автообновление Codex", hint: "На безопасном перезапуске проверяет новейший уже установленный официальный Codex. Не скачивает бинарники и не переключается во время активного хода.", type: BOOLEAN, environment: "CODEX_EXECUTABLE_AUTO_UPDATE", presentation: "advanced" },
   {
     key: "contextAutomation.autoCompactAfterTurn",
     name: "Авто-свёртка после хода",

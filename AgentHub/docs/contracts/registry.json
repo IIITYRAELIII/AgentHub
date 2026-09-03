@@ -49,6 +49,12 @@
       "title": "Usage fact transport and account attribution",
       "document": "USG-001-usage-attribution.md",
       "paths": ["src/domain/work-log-usage-sync.mjs", "src/domain/usage-sync-identity.mjs", "src/domain/team-usage-accounts.mjs", "src/application/work-log-usage-projection.mjs", "src/application/work-log-usage-store.mjs", "src/application/usage-sync-auto-service.mjs", "src/infrastructure/http/usage-sync-remote-client.mjs", "src/infrastructure/persistence/work-log-usage-*", "src/infrastructure/persistence/work-log-account-backfill.mjs", "src/infrastructure/persistence/usage-sync-*", "src/infrastructure/persistence/rate-limit-history.mjs", "src/infrastructure/persistence/rate-limit-account-backfill.mjs", "src/providers/claude/claude-account.mjs", "usage_sync_server/**", "assets/web-app/rate-limit-series.js", "assets/web-app/journal-account-panel.js"]
+    },
+    {
+      "id": "UPD-001",
+      "title": "Trusted Codex executable update channel",
+      "document": "UPD-001-codex-executable-update.md",
+      "paths": ["src/infrastructure/process/codex-executable*", "src/composition/codex-app-server-canary.mjs", "src/providers/codex/codex-app-server-lifecycle.mjs", "src/composition/codex-lifecycle-composition.mjs", "src/infrastructure/filesystem/config.mjs", "src/interfaces/web/server-configuration.mjs"]
     }
   ]
 }

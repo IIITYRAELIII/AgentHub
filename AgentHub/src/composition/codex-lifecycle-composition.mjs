@@ -1,8 +1,11 @@
+import path from "node:path";
+
+import { CodexExecutableUpdateService } from "../infrastructure/process/codex-executable-update-service.mjs";
 import { unavailableLocalMcpOverrides } from "../infrastructure/process/local-mcp-preflight.mjs";
-import { resolveCodexExecutable } from "../providers/codex/codex-invocation.mjs";
 import { CodexAppServerLifecycle } from "../providers/codex/codex-app-server-lifecycle.mjs";
 import { CodexLifecycleController } from "../providers/codex/codex-lifecycle-controller.mjs";
 import { agentHubRuntimeHealth } from "../application/runtime-health.mjs";
+import { runCodexAppServerCompatibilityCanary } from "./codex-app-server-canary.mjs";
 
 export function createCodexLifecycleComposition({
   config,
@@ -11,8 +14,23 @@ export function createCodexLifecycleComposition({
   runtimeDependencies,
   controllerDependencies,
 }) {
+  const executableUpdates = new CodexExecutableUpdateService({
+    stateFile: path.join(config.dataDir, "codex-executable-state.json"),
+    requestedExecutable: config.codexExecutable,
+    autoUpdateEnabled: config.codexExecutableAutoUpdate,
+    versionPin: config.codexExecutableVersionPin,
+    activeRuns: runtimeDependencies.activeRuns,
+    runCanary: (candidate) => runCodexAppServerCompatibilityCanary(candidate, {
+      dataDir: config.dataDir,
+      executableArgs: config.codexExecutableArgs,
+      model: config.codexModel,
+      logger: runtimeDependencies.logger ?? console,
+    }),
+  });
   const runtime = new CodexAppServerLifecycle({
-    resolveExecutable: () => resolveCodexExecutable({ requested: config.codexExecutable }),
+    resolveExecutable: () => executableUpdates.selectForStart(),
+    onStartupSuccess: () => executableUpdates.markStartupSuccess(),
+    onStartupFailure: (error) => executableUpdates.markStartupFailure(error),
     unavailableMcpOverrides: async () => {
       const existing = await unavailableLocalMcpOverrides();
       return { ...existing, args: [...existing.args, ...hubMcpServer.codexArgs()] };
@@ -37,6 +55,7 @@ export function createCodexLifecycleComposition({
     ...transport.diagnostics(),
     hubOwnedProcessTrees: transport.running ? 1 : 0,
   }));
+  agentHubRuntimeHealth.setDiagnosticSource("codexExecutableUpdate", () => executableUpdates.diagnostics());
 
   async function start() {
     await runtime.start();
@@ -97,6 +116,7 @@ export function createCodexLifecycleComposition({
     runtime,
     transport,
     controller,
+    executableUpdates,
     start,
     stop,
     restartAfterCrash,
