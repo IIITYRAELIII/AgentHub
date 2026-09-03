@@ -11605,6 +11605,10 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
   grid-template-columns: repeat(var(--account-period-count, 6), minmax(0, 1fr));
 }
 
+[data-work-log-account-period-tabs] {
+  display: contents;
+}
+
 [data-work-log-account-period-tab] {
   appearance: none;
   background: transparent;
@@ -11622,7 +11626,7 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
   transition: background 120ms ease;
 }
 
-[data-work-log-account-periods] > [data-work-log-account-period-tab]:first-of-type {
+[data-work-log-account-period-tabs] > [data-work-log-account-period-tab]:first-of-type {
   border-left: 0;
 }
 
@@ -14963,60 +14967,67 @@ html[data-browser-auth] {
 
 /* Переключатель периода в расходе по аккаунтам тоже встаёт колонкой: шесть
    широких плиток в ряд занимали всю ширину и ломали ритм страницы. */
-.statistics-account-panel [data-work-log-account-periods] {
-  /* Строки объявлены явно: без них `grid-row: 1 / -1` у тела периода
-     схлопывается в первую строку и растягивает её вместо колонки. */
+html:not([data-surface="mobile"]) .statistics-account-panel [data-work-log-account-periods] {
   grid-template-columns: clamp(9rem, 12vw, 11.5rem) minmax(0, 1fr);
-  grid-template-rows: repeat(var(--account-period-count, 6), auto);
+}
+
+html:not([data-surface="mobile"]) .statistics-account-panel [data-work-log-account-period-tabs] {
+  align-self: start;
+  display: flex;
+  flex-direction: column;
+  grid-column: 1;
+  grid-row: 1;
 }
 
 /* Плитка периода в колонке остаётся компактной: название, сумма и ходы.
    Строка качества записей длинная и в узком рельсе занимала три строки —
    она переехала в шапку выбранного периода. */
-.statistics-account-panel [data-work-log-account-period-tab] {
+html:not([data-surface="mobile"]) .statistics-account-panel [data-work-log-account-period-tab] {
   border-left: 0;
   border-top: 1px solid var(--line);
   gap: 0.1rem;
-  grid-column: 1;
-  grid-row: auto;
   padding: 0.5rem 0.75rem;
 }
 
-.statistics-account-panel [data-work-log-account-period-name] {
+html:not([data-surface="mobile"]) .statistics-account-panel [data-work-log-account-period-name] {
   font-size: 0.6rem;
   letter-spacing: 0.1em;
 }
 
-.statistics-account-panel [data-work-log-account-period-amount] {
+html:not([data-surface="mobile"]) .statistics-account-panel [data-work-log-account-period-amount] {
   font-size: 0.98rem;
 }
 
-.statistics-account-panel [data-work-log-account-period-unit] {
+html:not([data-surface="mobile"]) .statistics-account-panel [data-work-log-account-period-unit] {
   font-size: 0.66rem;
 }
 
-.statistics-account-panel [data-work-log-account-period-turns] {
+html:not([data-surface="mobile"]) .statistics-account-panel [data-work-log-account-period-turns] {
   font-size: 0.66rem;
 }
 
-.statistics-account-panel [data-work-log-account-period-quality] {
+html:not([data-surface="mobile"]) .statistics-account-panel [data-work-log-account-period-quality] {
   display: none;
 }
 
-.statistics-account-panel [data-work-log-account-periods]
+html:not([data-surface="mobile"]) .statistics-account-panel [data-work-log-account-period-tabs]
   > [data-work-log-account-period-tab]:first-of-type {
   border-top: 0;
 }
 
-.statistics-account-panel [data-work-log-account-period-body][data-active] {
+html:not([data-surface="mobile"]) .statistics-account-panel
+  [data-work-log-account-period-body][data-active] {
+  align-self: start;
   border-left: 1px solid var(--line-strong);
   border-top: 0;
   grid-column: 2;
-  grid-row: 1 / -1;
+  grid-row: 1;
+  max-height: min(62vh, 42rem);
+  overflow: auto;
 }
 
 /* Шапка периода нужна здесь как подпись выбранного столбца рельса. */
-.statistics-account-panel [data-work-log-account-period-headline] {
+html:not([data-surface="mobile"]) .statistics-account-panel [data-work-log-account-period-headline] {
   align-items: baseline;
   border-bottom: 1px solid var(--line);
   display: flex;
@@ -15025,7 +15036,8 @@ html[data-browser-auth] {
   padding: 0.55rem 0.9rem;
 }
 
-.statistics-account-panel [data-work-log-account-period-headline-title] {
+html:not([data-surface="mobile"]) .statistics-account-panel
+  [data-work-log-account-period-headline-title] {
   color: var(--text-faint);
   font-family: var(--font-title);
   font-size: 0.62rem;
@@ -15034,13 +15046,16 @@ html[data-browser-auth] {
   text-transform: uppercase;
 }
 
-.statistics-account-panel [data-work-log-account-period-headline-quality],
-.statistics-account-panel [data-work-log-account-period-headline-turns] {
+html:not([data-surface="mobile"]) .statistics-account-panel
+  [data-work-log-account-period-headline-quality],
+html:not([data-surface="mobile"]) .statistics-account-panel
+  [data-work-log-account-period-headline-turns] {
   color: var(--text-faint);
   font-size: 0.68rem;
 }
 
-.statistics-account-panel [data-work-log-account-period-headline-value] {
+html:not([data-surface="mobile"]) .statistics-account-panel
+  [data-work-log-account-period-headline-value] {
   margin-left: auto;
 }
 

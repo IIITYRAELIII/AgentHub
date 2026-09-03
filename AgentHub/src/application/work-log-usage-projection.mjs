@@ -1301,8 +1301,14 @@ function formatAccountUsagePanel(summary) {
     + "Показать устройства</button>"
     + "</div>"
     + '<div data-work-log-account-periods>'
-    + summary.map((range) => formatAccountUsagePeriodTab(range, range.id === activeId)
-      + formatAccountUsagePeriodBody(range, range.id === activeId, accountCount)).join("")
+    + '<div data-work-log-account-period-tabs>'
+    + summary.map((range) => formatAccountUsagePeriodTab(range, range.id === activeId)).join("")
+    + "</div>"
+    + summary.map((range) => formatAccountUsagePeriodBody(
+      range,
+      range.id === activeId,
+      accountCount,
+    )).join("")
     + "</div>"
     + "</section>"
     + "<!-- work-log-account-panel:end -->";
