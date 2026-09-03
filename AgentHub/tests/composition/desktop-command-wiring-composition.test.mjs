@@ -15,6 +15,7 @@ function fixture({ sourceSurvives = false } = {}) {
       workspace: (id) => (workspaces.has(id) ? { id } : null),
     },
     workspaceCatalogService: {
+      moveWorkspaceToFolder: (params) => (calls.push(["move-folder", params]), params),
       renameWorkspaceFolder: (params) => (calls.push(["folder", params]), params),
       archiveWorkspace: ({ workspaceId }) => ({ id: workspaceId, archivedAtMs: 1 }),
       restoreWorkspace: ({ workspaceId }) => ({ id: workspaceId, archivedAtMs: null }),
@@ -127,4 +128,19 @@ test("archiving a Workspace is blocked while one of its Threads is running", asy
     actions.archiveWorkspace({ workspaceId: "source" }),
     /завершите активные ходы/u,
   );
+});
+
+test("moving a Workspace to a folder uses the dedicated Workspace mutation", async () => {
+  const { actions, calls } = fixture();
+  assert.deepEqual(await actions.moveWorkspaceToFolder({
+    workspaceId: "workspace-1",
+    folderName: "Клиенты",
+  }), {
+    workspaceId: "workspace-1",
+    folderName: "Клиенты",
+  });
+  assert.deepEqual(calls, [["move-folder", {
+    workspaceId: "workspace-1",
+    folderName: "Клиенты",
+  }]]);
 });

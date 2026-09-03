@@ -10,7 +10,7 @@ function service(calls) {
   const handlers = Object.fromEntries([
     "selectTask", "createTask", "rotateStream", "renameTask", "archiveTask",
     "updateSetting", "cancelRun", "resolveApproval",
-    "renameWorkspace", "updateWorkspaceSettings", "renameWorkspaceFolder", "updateWorkspaceDeveloperRules", "readWorkspaceReleasePlan", "completeWorkspaceRelease", "createWorkspace", "archiveWorkspace", "restoreWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "createStream",
+    "renameWorkspace", "updateWorkspaceSettings", "moveWorkspaceToFolder", "renameWorkspaceFolder", "updateWorkspaceDeveloperRules", "readWorkspaceReleasePlan", "completeWorkspaceRelease", "createWorkspace", "archiveWorkspace", "restoreWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "createStream",
     "renameStream", "archiveStream", "updateStreamSettings", "updateStreamDeveloperRules", "moveStream",
   ].map((name) => [name, (...args) => { calls.push({ name, args }); return name; }]));
   return createApplicationCommandService({ handlers });
@@ -59,6 +59,10 @@ test("workspace and stream commands use the shared command path", async () => {
   await commands.dispatch("workspace.settings.update", {
     workspaceId: "workspace-1",
     settings: { workingDirectory: "D:/work/AgentHub" },
+  }, { source: "desktop", userId: "7" });
+  await commands.dispatch("workspace.folder.move", {
+    workspaceId: "workspace-1",
+    folderName: "Клиенты",
   }, { source: "desktop", userId: "7" });
   await commands.dispatch("workspace.folder.rename", {
     fromFolderName: "Клиенты",
@@ -110,6 +114,10 @@ test("workspace and stream commands use the shared command path", async () => {
     {
       name: "updateWorkspaceSettings",
       args: [{ workspaceId: "workspace-1", settings: { workingDirectory: "D:/work/AgentHub" } }],
+    },
+    {
+      name: "moveWorkspaceToFolder",
+      args: [{ workspaceId: "workspace-1", folderName: "Клиенты" }],
     },
     {
       name: "renameWorkspaceFolder",

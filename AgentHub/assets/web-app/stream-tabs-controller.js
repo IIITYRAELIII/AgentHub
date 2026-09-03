@@ -637,13 +637,21 @@
   function workspaceFolderMutation(workspace, folderName) {
     const workspaceId = String(workspace?.id ?? "").trim();
     if (!workspaceId) return null;
-    const settings = {
-      ...(workspace?.settings && typeof workspace.settings === "object" ? workspace.settings : {}),
-    };
     const normalized = normalizeWorkspaceFolderName(folderName);
-    if (normalized) settings.catalogFolder = normalized;
-    else delete settings.catalogFolder;
-    return { workspaceId, settings, folderName: normalized };
+    return { workspaceId, folderName: normalized };
+  }
+
+  function renderWorkspaceContextMenuChildren(menu, children, currentFolder, createRemoveAction) {
+    const rendered = [...(children ?? [])];
+    if (normalizeWorkspaceFolderName(currentFolder)) {
+      if (typeof createRemoveAction !== "function") {
+        throw new TypeError("Workspace folder remove action factory is required");
+      }
+      const removeAction = createRemoveAction();
+      if (removeAction == null) throw new TypeError("Workspace folder remove action is required");
+      rendered.push(removeAction);
+    }
+    menu.replaceChildren(...rendered);
   }
 
   function workspaceCreationSettings({
@@ -1610,6 +1618,7 @@
     workspaceFolderOpen,
     workspaceFolderNames,
     workspaceFolderMutation,
+    renderWorkspaceContextMenuChildren,
     workspaceFolderRenamePlan,
     workspaceCreationSettings,
     workspaceArchiveNameMatches,

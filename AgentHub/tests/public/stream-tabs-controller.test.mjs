@@ -1078,7 +1078,7 @@ test("Workspace folders open for selected, running, or unread children", async (
   }, ["folder:Клиенты"], "other"), true);
 });
 
-test("Workspace folder mutations preserve settings and creation can stay ungrouped", async () => {
+test("Workspace folder mutations carry only identity and folder while creation can stay ungrouped", async () => {
   const {
     workspaceCreationSettings,
     workspaceFolderMutation,
@@ -1095,12 +1095,6 @@ test("Workspace folder mutations preserve settings and creation can stay ungroup
   )), {
     workspaceId: "workspace-1",
     folderName: "Важные проекты",
-    settings: {
-      workingDirectory: "project",
-      taskPrefix: "HUB",
-      releaseWorkflowEnabled: true,
-      catalogFolder: "Важные проекты",
-    },
   });
   assert.deepEqual(JSON.parse(JSON.stringify(workspaceFolderMutation({
     ...workspace,
@@ -1108,7 +1102,6 @@ test("Workspace folder mutations preserve settings and creation can stay ungroup
   }, ""))), {
     workspaceId: "workspace-1",
     folderName: "",
-    settings: workspace.settings,
   });
   assert.deepEqual(Array.from(workspaceFolderNames([
     { settings: { catalogFolder: "Бета" } },
@@ -1165,6 +1158,61 @@ test("Workspace archive presentation keeps expiry and exact-name confirmation", 
   }]);
   assert.equal(workspaceArchiveNameMatches({ name: "Точный регистр" }, "Точный регистр"), true);
   assert.equal(workspaceArchiveNameMatches({ name: "Точный регистр" }, "точный регистр"), false);
+});
+
+test("Workspace context menu omits ungroup for an ungrouped Workspace without a null text node", async () => {
+  const { renderWorkspaceContextMenuChildren } = await streamTabsApi();
+  const menu = {
+    childNodes: [],
+    replaceChildren(...children) {
+      this.childNodes = children.map((child) => child?.nodeType
+        ? child
+        : { nodeType: 3, textContent: String(child) });
+    },
+  };
+  const newFolder = {
+    nodeType: 1,
+    textContent: "Новая папка…",
+    dataset: { workspaceMenuAction: "folder-new" },
+  };
+
+  renderWorkspaceContextMenuChildren(menu, [newFolder], null, () => ({
+    nodeType: 1,
+    textContent: "Убрать из папки",
+    dataset: { workspaceMenuAction: "folder-remove" },
+  }));
+
+  assert.deepEqual(menu.childNodes, [newFolder]);
+  assert.equal(menu.childNodes.some((node) => node.textContent === "null"), false);
+  assert.equal(menu.childNodes.some((node) => node.dataset?.workspaceMenuAction === "folder-remove"), false);
+});
+
+test("Workspace context menu renders the localized ungroup action for a grouped Workspace", async () => {
+  const { renderWorkspaceContextMenuChildren } = await streamTabsApi();
+  const menu = {
+    childNodes: [],
+    replaceChildren(...children) {
+      this.childNodes = children.map((child) => child?.nodeType
+        ? child
+        : { nodeType: 3, textContent: String(child) });
+    },
+  };
+  const newFolder = {
+    nodeType: 1,
+    textContent: "Новая папка…",
+    dataset: { workspaceMenuAction: "folder-new" },
+  };
+  const removeFolder = {
+    nodeType: 1,
+    textContent: "Убрать из папки",
+    dataset: { workspaceMenuAction: "folder-remove" },
+  };
+
+  renderWorkspaceContextMenuChildren(menu, [newFolder], "Клиенты", () => removeFolder);
+
+  assert.deepEqual(menu.childNodes, [newFolder, removeFolder]);
+  assert.equal(menu.childNodes.at(-1).textContent, "Убрать из папки");
+  assert.equal(menu.childNodes.at(-1).dataset.workspaceMenuAction, "folder-remove");
 });
 
 test("activity rail markup exposes separate active and recent sections", async () => {

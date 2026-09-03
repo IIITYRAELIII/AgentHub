@@ -197,6 +197,20 @@ test("Desktop application router renames a Workspace folder atomically", async (
   ]]);
 });
 
+test("Desktop application router moves a Workspace with a narrow folder command", async () => {
+  const calls = [];
+  const control = router(calls);
+  await control.handleDesktopControl({
+    action: "move-workspace-to-folder",
+    params: { workspaceId: "workspace-1", folderName: "Клиенты" },
+    context: { source: "desktop", userId: "7" },
+  });
+  assert.deepEqual(calls.map(([type, payload]) => [type, payload]), [[
+    "workspace.folder.move",
+    { workspaceId: "workspace-1", folderName: "Клиенты", maxResponseBytes: 3_500_000 },
+  ]]);
+});
+
 test("Desktop application router forwards diagnostic events", async () => {
   const control = router([]);
   const result = await control.handleDesktopControl({
