@@ -151,6 +151,30 @@ test("Codex history hides the internal context probe exchange", () => {
   assert.equal(codexFinalTurnAnswer(turn), "");
 });
 
+test("Codex history keeps reserved probe text for a normal client identity", () => {
+  const turn = {
+    id: "manual-probe-text",
+    status: "completed",
+    items: [{
+      id: "manual-user",
+      type: "userMessage",
+      clientId: "client-manual-probe",
+      content: [{ type: "text", text: CODEX_CONTEXT_PROBE_PROMPT }],
+    }, {
+      id: "manual-agent",
+      type: "agentMessage",
+      text: CODEX_CONTEXT_PROBE_RESPONSE,
+      phase: "final_answer",
+    }],
+  };
+
+  const history = codexThreadHistory([turn]);
+  assert.equal(history.length, 1);
+  assert.equal(history[0].prompt, CODEX_CONTEXT_PROBE_PROMPT);
+  assert.equal(history[0].answer, CODEX_CONTEXT_PROBE_RESPONSE);
+  assert.equal(codexFinalTurnAnswer(turn), CODEX_CONTEXT_PROBE_RESPONSE);
+});
+
 test("Codex history preserves a safe activity feed", () => {
   const activities = codexTurnActivities({
     items: [

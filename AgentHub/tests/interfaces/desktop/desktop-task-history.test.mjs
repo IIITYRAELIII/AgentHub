@@ -115,11 +115,13 @@ function fixture(overrides = {}) {
     runs: {
       forTask: () => state.run,
     },
+    latestMessage: overrides.latestMessage ?? (() => null),
     historyMerger: {
       mergeActive: (history, active) => {
         calls.merged = active;
         history.push({ id: active.turnId, ...active });
       },
+      mergeCompleted: mergeCompletedTaskHistory,
     },
     receipts: overrides.receipts ?? {
       forMessage: (message) => ({
@@ -505,6 +507,84 @@ test("desktop task history hides the reserved probe text without metadata", asyn
         text: CODEX_CONTEXT_PROBE_RESPONSE,
       }],
     }],
+  });
+
+  const result = await desktopTaskHistory({ includeActive: false, limit: 10 });
+
+  assert.deepEqual(result.items, []);
+});
+
+test("desktop task history keeps reserved probe text with a normal client identity", async () => {
+  const { desktopTaskHistory } = fixture({
+    run: null,
+    history: [{
+      id: "manual-probe-text",
+      prompt: CODEX_CONTEXT_PROBE_PROMPT,
+      answer: CODEX_CONTEXT_PROBE_RESPONSE,
+      completed: true,
+      clientUserMessageId: "client-manual-probe",
+      messages: [{
+        itemId: "manual-user",
+        role: "user",
+        clientUserMessageId: "client-manual-probe",
+        text: CODEX_CONTEXT_PROBE_PROMPT,
+      }, {
+        itemId: "manual-answer",
+        role: "agent",
+        text: CODEX_CONTEXT_PROBE_RESPONSE,
+      }],
+    }],
+  });
+
+  const result = await desktopTaskHistory({ includeActive: false, limit: 10 });
+
+  assert.equal(result.items.length, 1);
+  assert.equal(result.items[0].prompt, CODEX_CONTEXT_PROBE_PROMPT);
+  assert.equal(result.items[0].answer, CODEX_CONTEXT_PROBE_RESPONSE);
+});
+
+test("desktop task history restores a reserved final from explicit journal identity before hydration", async () => {
+  const blockedRefresh = new Promise(() => {});
+  const { desktopTaskHistory } = fixture({
+    run: null,
+    history: [],
+    refresh: async () => blockedRefresh,
+    latestMessage: () => ({
+      provider: "codex",
+      threadId: "thread-1",
+      turnId: "payload-only-user-turn",
+      operationKind: "user-turn",
+      contextProbe: false,
+      clientUserMessageId: "client-manual-probe",
+      text: CODEX_CONTEXT_PROBE_RESPONSE,
+      updatedAt: "2026-09-01T16:00:00.000Z",
+      terminalRevision: 1,
+    }),
+  });
+
+  const result = await Promise.race([
+    desktopTaskHistory({ includeActive: false, limit: 10 }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("journal overlay awaited provider hydration")), 100)),
+  ]);
+
+  assert.equal(result.items.length, 1);
+  assert.equal(result.items[0].id, "payload-only-user-turn");
+  assert.equal(result.items[0].answer, CODEX_CONTEXT_PROBE_RESPONSE);
+  assert.equal(result.items[0].messages.at(-1).text, CODEX_CONTEXT_PROBE_RESPONSE);
+  assert.equal(result.items[0].terminalRevision, 1);
+});
+
+test("desktop task history hides an identity-less reserved final from the journal overlay", async () => {
+  const { desktopTaskHistory } = fixture({
+    run: null,
+    history: [],
+    latestMessage: () => ({
+      provider: "codex",
+      threadId: "thread-1",
+      turnId: "legacy-synthetic-probe",
+      text: CODEX_CONTEXT_PROBE_RESPONSE,
+      updatedAt: "2026-09-01T16:00:00.000Z",
+    }),
   });
 
   const result = await desktopTaskHistory({ includeActive: false, limit: 10 });

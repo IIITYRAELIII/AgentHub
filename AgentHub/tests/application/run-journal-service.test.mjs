@@ -116,6 +116,25 @@ test("RunJournalService rejects live and restored context probe answers", () => 
   assert.deepEqual(service.lastMessageSnapshot().map(([key]) => key), ["answer"]);
 });
 
+test("RunJournalService keeps reserved probe output for an explicit user operation", () => {
+  const { service } = fixture();
+  const task = {
+    provider: "codex",
+    projectRoot: "C:/workspace",
+    threadId: "thread",
+    turnId: "manual-probe-text",
+    operationKind: "user-turn",
+    clientUserMessageId: "client-manual-probe",
+  };
+
+  assert.equal(service.rememberLastMessage(task, "AGENT_HUB_CONTEXT_PROBE_OK_V1"), true);
+  assert.equal(service.lastMessage(task), "AGENT_HUB_CONTEXT_PROBE_OK_V1");
+
+  const restored = fixture().service;
+  assert.equal(restored.restoreLastMessages(service.lastMessageSnapshot()), 1);
+  assert.equal(restored.lastMessage(task), "AGENT_HUB_CONTEXT_PROBE_OK_V1");
+});
+
 test("RunJournalService restores only valid bounded message records", () => {
   const { service } = fixture();
   const restored = service.restoreLastMessages([
