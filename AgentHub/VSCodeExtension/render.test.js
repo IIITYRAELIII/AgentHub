@@ -1603,19 +1603,19 @@ test("chat sends with Enter on desktop and keeps Enter as a newline on phones", 
   assert.doesNotMatch(html, /Ctrl\+Enter/u);
 });
 
-  test("chat shows sent messages immediately and reconciles them by exact identity", () => {
+  test("chat reconciles optimistic and accepted history by exact identity", () => {
     const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
     const lifecycle = fs.readFileSync(require.resolve("../assets/web-app/messages/lifecycle.js"), "utf8");
     assert.match(client, /rememberOutgoing\(request\.taskId, optimistic\);/u);
     assert.match(client, /const queuesOptimistically = request\.followUpMode === "queue"/u);
     assert.match(client, /optimisticDeferredClientUserMessageIds\.add\(request\.requestId\)/u);
   assert.match(client, /\.\.\.deliveryPatch\(queuesOptimistically \? "sending" : steersOptimistically \? "steering" : "preparing"\)/u);
-  assert.match(client, /delivery: "Отправляется…"/u);
+  assert.match(client, /providerAccepted: false/u);
   assert.match(client, /clientUserMessageId: request\.requestId/u);
   assert.match(client, /reconcileMessageLifecycle\(serverMessages, outgoing\)/u);
   assert.match(client, /if \(!matchedIds\.has\(message\.clientUserMessageId\)\) result\.push\(message\)/u);
   assert.match(client, /confirmedOutgoingMessageIds\(durableMessages, outgoing\)/u);
-  assert.match(client, /for \(const clientUserMessageId of confirmedMatchedIds\) pending\.delete\(clientUserMessageId\)/u);
+  assert.match(client, /for \(const clientUserMessageId of confirmedMatchedIds\) \{[\s\S]*pending\.delete\(clientUserMessageId\)[\s\S]*optimisticDeferredClientUserMessageIds\.delete\(clientUserMessageId\)[\s\S]*deferredClientUserMessageIds\.delete\(clientUserMessageId\)/u);
   assert.match(client, /function promoteLiveCompletion\(taskIdValue, selected, incomingTurnId/u);
   assert.match(client, /completionOverlaysByTask\.set\(taskIdValue, overlays\)/u);
   assert.match(client, /completedConversationTurnVisible\(durableMessages/u);
@@ -1657,18 +1657,19 @@ test("Sync controls use the shared text dialog in VS Code webviews", () => {
   assert.match(app, /await askText\(\{ title: "Введите код подключения Sync"/u);
 });
 
-  test("dispatching deferred messages leave the queue and reappear in the active conversation", () => {
+  test("dispatching deferred messages stay in the queue until provider acceptance", () => {
   const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  assert.match(app, /\.filter\(\(entry\) => entry\.state !== "dispatching" && entry\.state !== "steering"\)/u);
+  assert.doesNotMatch(app, /\.filter\(\(entry\) => entry\.state !== "dispatching" && entry\.state !== "steering"\)/u);
+  assert.equal((app.match(/MessageView\.conversationSurfaceMessages\(/gu) ?? []).length, 2);
   assert.match(app, /Date\.parse\(left\.createdAt \|\| 0\)/u);
     assert.match(
       client,
-      /function deferredEntriesForTask[\s\S]*deferredInputUsesQueue\(item, snapshot\?\.messageReceipts\)/u,
+      /function deferredEntriesForTask[\s\S]*queuedCommandUsesQueue\(item, snapshot\?\.messageReceipts\)/u,
     );
     assert.match(
       client,
-      /const deferredDeliveryState = deferredInputDeliveryState\([\s\S]*\.\.\.deliveryPatch\(deferredDeliveryState\)/u,
+      /const deferredDeliveryState = queuedCommandDeliveryState\([\s\S]*\.\.\.deliveryPatch\(deferredDeliveryState\)/u,
     );
 });
 
@@ -1780,8 +1781,8 @@ test("annotation actions preserve native selection and keep per-quote comments",
 
 test("lost command results reconcile by durable message receipt without duplicate draft", () => {
   const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  assert.match(client, /function applyMessageReceipts\(snapshot\)[\s\S]*const projection = messageReceiptProjection\(receipt\)[\s\S]*agentHub\.completeSend\(clientUserMessageId, \{[\s\S]*accepted: projection\.accepted/u);
-  assert.match(client, /const rejected = messageSendDefinitelyRejected\(error\)[\s\S]*deliveryPatch\(rejected \? "rejected" : "unconfirmed"\)/u);
+  assert.match(client, /function applyMessageReceipts\(snapshot\)[\s\S]*const projection = queueHistoryReceiptProjection\(receipt\)[\s\S]*agentHub\.completeSend\(clientUserMessageId, \{[\s\S]*accepted: projection\.accepted/u);
+  assert.match(client, /const rejected = messageSendDefinitelyRejected\(error\)[\s\S]*if \(rejected\) \{[\s\S]*outgoingMessages\(request\.taskId\)\.delete\(request\.requestId\)[\s\S]*else \{[\s\S]*deliveryPatch\("unconfirmed"\)/u);
 });
 
 test("queue actions are single-flight and steer uses the dedicated server action", () => {
@@ -2058,7 +2059,7 @@ test("composer restores definite rejection but keeps an ambiguous delivery singl
   assert.match(client, /reusableAttachmentPaths\([\s\S]*\{ remote: !vscode \}/u);
   assert.match(client, /if \(isConnectionFailure\(error\)\) recordTransientConnectionFailure/u);
   assert.match(client, /const rejected = messageSendDefinitelyRejected\(error\)/u);
-  assert.match(client, /deliveryPatch\(rejected \? "rejected" : "unconfirmed"\)/u);
+  assert.match(client, /if \(rejected\) \{[\s\S]*outgoingMessages\(request\.taskId\)\.delete\(request\.requestId\)[\s\S]*else \{[\s\S]*deliveryPatch\("unconfirmed"\)/u);
   assert.match(client, /AgentHubConnectionBanner\.snapshotConnectionState\(snapshot, idleStatus\)/u);
   assert.match(connectionBanner, /snapshot\?\.restartWaiting === true \|\| blockingCount > 0/u);
   assert.match(html, /data-restart-banner/u);

@@ -62,6 +62,10 @@ export function createDesktopMessageController({
     if (followUpMode && !["queue", "steer"].includes(followUpMode)) {
       throw new Error("Неизвестный режим следующего сообщения");
     }
+    const clientProjectionIntent = String(params.clientProjectionIntent ?? "").trim().toLowerCase();
+    if (clientProjectionIntent && !["conversation", "queue"].includes(clientProjectionIntent)) {
+      throw new Error("Неизвестная проекция отправленного сообщения");
+    }
     const descriptors = attachments.length ? describeAttachments(attachments) : [];
     const messageAttachments = [...descriptors, ...taskReferences];
     const displayText = String(params.displayText ?? params.text ?? "").trim();
@@ -82,7 +86,7 @@ export function createDesktopMessageController({
       clientUserMessageId,
     };
     const fingerprint = await messageRequestFingerprint({
-      text, attachmentIdentities: descriptors, taskReferences, followUpMode,
+      text, attachmentIdentities: descriptors, taskReferences, followUpMode, clientProjectionIntent,
     });
     preparation?.finish({
       outcome: "succeeded",
@@ -108,6 +112,7 @@ export function createDesktopMessageController({
         pending: true,
         threadId: target.threadId,
         clientUserMessageId,
+        ...(clientProjectionIntent ? { clientProjectionIntent } : {}),
         displayText,
         responseAnnotations,
         responseAnnotationRequest,
@@ -127,10 +132,12 @@ export function createDesktopMessageController({
           attachments,
           target,
           clientUserMessageId,
+          clientProjectionIntent,
           followUpMode,
         });
         const { snapshot: _snapshot, ...storedResult } = result;
         storedResult.pending = false;
+        if (clientProjectionIntent) storedResult.clientProjectionIntent = clientProjectionIntent;
         if (messageAttachments.length) storedResult.attachments = messageAttachments;
         receipts.updateResult(receiptIdentity, storedResult);
         if (!usesDurableIntake) await persistReceipts();

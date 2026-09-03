@@ -2077,92 +2077,213 @@ test("only receipts still owned by the deferred queue hide their chat card", () 
   assert.equal(lifecycle.receiptUsesDeferredQueue({ accepted: true, deferred: false }), false);
 });
 
-test("accepted immediate intake stays visible until its provider turn starts", () => {
-  const clientUserMessageId = "client-immediate-intake";
-  const intakeReceipt = {
-    clientUserMessageId,
-    accepted: true,
-    deferred: true,
-    queued: true,
-    reason: "message-intake",
-  };
-  const transientDeferredInput = {
-    clientUserMessageId,
-    state: "queued",
-  };
-  const optimistic = {
-    ...message(clientUserMessageId, "Исправь регрессию"),
-    turnId: "",
-    itemId: clientUserMessageId,
-    deliveryState: lifecycle.receiptDeliveryState(intakeReceipt),
-  };
-
-  assert.deepEqual(
-    { ...lifecycle.messageReceiptProjection(intakeReceipt) },
-    { accepted: true, deliveryState: "queued", ownsDeferredQueue: false, projectionState: "queued" },
-  );
-  assert.equal(optimistic.deliveryState, "queued");
-  assert.equal(
-    lifecycle.deferredInputDeliveryState(transientDeferredInput, [intakeReceipt]),
-    "queued",
-  );
-  const deferredIds = lifecycle.deferredQueueClientUserMessageIds(
-    [transientDeferredInput],
-    [intakeReceipt],
-  );
-  assert.deepEqual(deferredIds, []);
-  assert.deepEqual(
-    lifecycle.visibleConversationMessages([optimistic], {
-      deferredClientUserMessageIds: deferredIds,
-    }).map((item) => item.clientUserMessageId),
-    [clientUserMessageId],
-  );
-
-  const canonical = {
-    ...optimistic,
-    id: "provider-user-item",
-    turnId: "provider-turn",
-    itemId: "provider-user-item",
-    deliveryState: "delivered",
-  };
-  const started = lifecycle.deduplicateConversationMessages([canonical, optimistic]);
-  assert.equal(started.length, 1);
-  assert.equal(started[0].clientUserMessageId, clientUserMessageId);
+test("known-idle intake stays as one optimistic conversation card for every client transport", () => {
+  for (const clientSource of [
+    "desktop",
+    "local-vscode-webview",
+    "web",
+    "trusted-device",
+  ]) {
+    const clientUserMessageId = `client-queued-${clientSource}`;
+    const receipt = {
+      clientUserMessageId,
+      clientSource,
+      accepted: true,
+      deferred: true,
+      queued: true,
+      reason: "message-intake",
+      clientProjectionIntent: "conversation",
+    };
+    const deferredInput = {
+      clientUserMessageId,
+      clientSource,
+      state: "queued",
+      conflictKind: "message-intake",
+      clientProjectionIntent: "conversation",
+      createdAt: "2026-09-03T10:00:00.123Z",
+    };
+    const projection = lifecycle.queueHistoryReceiptProjection(receipt);
+    assert.equal(projection.accepted, true);
+    assert.equal(projection.providerAccepted, false);
+    assert.equal(projection.ownsDeferredQueue, false);
+    assert.equal(projection.projectionState, "optimistic");
+    assert.equal(projection.deliveryState, "accepted");
+    assert.equal(lifecycle.queuedCommandDeliveryState(deferredInput, [receipt]), null);
+    const deferredIds = lifecycle.queuedCommandClientUserMessageIds(
+      [deferredInput],
+      [receipt],
+    );
+    assert.deepEqual(deferredIds, []);
+    assert.deepEqual(
+      lifecycle.visibleConversationMessages([{
+        ...message(clientUserMessageId, "Исправь регрессию"),
+        turnId: "",
+        projectionState: projection.projectionState,
+        providerAccepted: projection.providerAccepted,
+        deliveryState: projection.deliveryState,
+      }], { deferredClientUserMessageIds: deferredIds }).map((item) => item.clientUserMessageId),
+      [clientUserMessageId],
+    );
+    assert.deepEqual(
+      { ...lifecycle.deferredInputConversationProjection(deferredInput, [receipt]) },
+      {
+        clientUserMessageId,
+        submissionId: clientUserMessageId,
+        projectionState: "optimistic",
+        providerAccepted: false,
+        deliveryState: "accepted",
+        clientProjectionIntent: "conversation",
+        submittedAt: deferredInput.createdAt,
+      },
+    );
+  }
 });
 
-test("a real deferred queue command stays out of the conversation", () => {
-  const clientUserMessageId = "client-real-queue";
-  const queueReceipt = {
+test("known-busy submissions use only the queue surface", () => {
+  assert.equal(lifecycle.optimisticSubmissionUsesQueue({ followUpMode: "" }), false);
+  assert.equal(lifecycle.optimisticSubmissionUsesQueue({ followUpMode: "queue" }), false);
+  assert.equal(lifecycle.optimisticSubmissionUsesQueue({ followUpMode: "steer" }), true);
+  assert.equal(lifecycle.optimisticSubmissionUsesQueue({ deferWhileRunning: true }), true);
+  assert.equal(lifecycle.optimisticSubmissionUsesQueue({
+    followUpMode: "queue",
+    deferWhileRunning: true,
+  }), true);
+
+  const clientUserMessageId = "client-known-busy";
+  const receipt = {
     clientUserMessageId,
     accepted: false,
     deferred: true,
     queued: true,
     reason: "task-running",
+    clientProjectionIntent: "queue",
   };
-  const deferredInput = { clientUserMessageId, state: "queued" };
+  const deferredInput = {
+    clientUserMessageId,
+    state: "queued",
+    conflictKind: "task-running",
+    clientProjectionIntent: "queue",
+  };
+  const projection = lifecycle.queueHistoryReceiptProjection(receipt);
+  assert.equal(projection.ownsDeferredQueue, true);
+  assert.equal(projection.deliveryState, "queued");
+  assert.equal(lifecycle.queuedCommandDeliveryState(deferredInput, [receipt]), "queued");
   assert.deepEqual(
-    { ...lifecycle.messageReceiptProjection(queueReceipt) },
-    { accepted: true, deliveryState: "queued", ownsDeferredQueue: true, projectionState: "queued" },
+    lifecycle.visibleConversationMessages([{
+      ...message(clientUserMessageId, "После текущего хода"),
+      projectionState: "queued",
+      providerAccepted: false,
+      deliveryState: "queued",
+    }], {
+      deferredClientUserMessageIds: lifecycle.queuedCommandClientUserMessageIds(
+        [deferredInput],
+        [receipt],
+      ),
+    }),
+    [],
   );
-  assert.equal(lifecycle.receiptDeliveryState(queueReceipt), "queued");
-  assert.equal(lifecycle.deferredInputDeliveryState(deferredInput, [queueReceipt]), "queued");
-  const deferredIds = lifecycle.deferredQueueClientUserMessageIds(
-    [deferredInput],
-    [queueReceipt],
-  );
-  const visible = lifecycle.visibleConversationMessages([{
-    ...message(clientUserMessageId, "После текущего хода"),
-    deliveryState: "queued",
-  }], { deferredClientUserMessageIds: deferredIds });
-  assert.deepEqual(visible, []);
 });
 
-test("accepted intake stays visible after its receipt leaves the bounded snapshot", () => {
-  const clientUserMessageId = "client-accepted-outside-receipt-window";
+test("dispatching, rejected and ambiguous starts remain queue-only", () => {
+  for (const scenario of [
+    {
+      state: "dispatching",
+      receipt: {
+        accepted: false,
+        deferred: true,
+        queued: true,
+        dispatching: true,
+        reason: "task-running",
+        clientProjectionIntent: "queue",
+      },
+      deliveryState: "sending",
+    },
+    {
+      state: "pending",
+      receipt: {
+        accepted: false,
+        deferred: true,
+        queued: false,
+        reason: "launch-failed",
+        clientProjectionIntent: "queue",
+      },
+      deliveryState: "deferred",
+    },
+    {
+      state: "attention-required",
+      receipt: {
+        accepted: false,
+        deferred: true,
+        queued: false,
+        reason: "launch-failed",
+        clientProjectionIntent: "conversation",
+        attentionRequired: true,
+      },
+      deliveryState: "deferred",
+    },
+    {
+      state: "paused",
+      receipt: {
+        accepted: false,
+        deferred: true,
+        queued: true,
+        reason: "task-running",
+        clientProjectionIntent: "conversation",
+        paused: true,
+      },
+      deliveryState: "queued",
+    },
+    {
+      state: "pending",
+      receipt: {
+        accepted: false,
+        deferred: true,
+        queued: false,
+        unknown: true,
+        reason: "provider-start-unconfirmed",
+        clientProjectionIntent: "conversation",
+      },
+      deliveryState: "deferred",
+    },
+  ]) {
+    const clientUserMessageId = `client-${scenario.state}-${scenario.receipt.reason ?? "active"}`;
+    const receipt = { clientUserMessageId, ...scenario.receipt };
+    const deferredInput = {
+      clientUserMessageId,
+      state: scenario.state,
+      clientProjectionIntent: scenario.receipt.clientProjectionIntent,
+      ...(scenario.receipt.reason === "provider-start-unconfirmed"
+        ? { waitReason: "provider-start-unconfirmed" }
+        : {}),
+    };
+    const projection = lifecycle.queueHistoryReceiptProjection(receipt);
+    assert.equal(projection.providerAccepted, false);
+    assert.equal(projection.ownsDeferredQueue, true);
+    assert.equal(
+      lifecycle.queuedCommandDeliveryState(deferredInput, [receipt]),
+      scenario.deliveryState,
+    );
+    assert.deepEqual(
+      lifecycle.visibleConversationMessages([
+        message(clientUserMessageId, "Ещё не принято провайдером"),
+      ], {
+        deferredClientUserMessageIds: lifecycle.queuedCommandClientUserMessageIds(
+          [deferredInput],
+          [receipt],
+        ),
+      }),
+      [],
+    );
+  }
+});
+
+test("idle intake survives receipt-window loss and reload without moving to the queue", () => {
+  const clientUserMessageId = "client-idle-outside-receipt-window";
   const deferredInput = {
     clientUserMessageId,
     state: "queued",
     conflictKind: "message-intake",
+    clientProjectionIntent: "conversation",
   };
   const newerReceipts = Array.from({ length: 100 }, (_, index) => ({
     clientUserMessageId: `client-terminal-${index}`,
@@ -2179,52 +2300,278 @@ test("accepted intake stays visible after its receipt leaves the bounded snapsho
   assert.equal(exposedReceipts.some((receipt) => (
     receipt.clientUserMessageId === clientUserMessageId
   )), false);
-  assert.equal(lifecycle.deferredInputUsesQueue(deferredInput, exposedReceipts), false);
-  assert.equal(lifecycle.deferredInputDeliveryState(deferredInput, exposedReceipts), "queued");
-  const deferredIds = lifecycle.deferredQueueClientUserMessageIds(
+  assert.equal(lifecycle.queuedCommandUsesQueue(deferredInput, exposedReceipts), false);
+  assert.equal(lifecycle.queuedCommandDeliveryState(deferredInput, exposedReceipts), null);
+  const deferredIds = lifecycle.queuedCommandClientUserMessageIds(
     [deferredInput],
     exposedReceipts,
   );
   assert.deepEqual(deferredIds, []);
+  const restored = lifecycle.deferredInputConversationProjection({
+    ...deferredInput,
+    createdAt: "2026-09-03T10:01:02.345Z",
+  }, exposedReceipts);
+  assert.equal(restored.clientUserMessageId, clientUserMessageId);
+  assert.equal(restored.projectionState, "optimistic");
+  assert.equal(restored.deliveryState, "accepted");
   assert.deepEqual(
     lifecycle.visibleConversationMessages([{
-      ...message(clientUserMessageId, "Не исчезай после snapshot"),
-      deliveryState: "accepted",
+      ...message(clientUserMessageId, "Не исчезай после reload"),
+      turnId: "",
+      projectionState: restored.projectionState,
+      providerAccepted: restored.providerAccepted,
+      deliveryState: restored.deliveryState,
     }], { deferredClientUserMessageIds: deferredIds }).map((item) => item.clientUserMessageId),
     [clientUserMessageId],
   );
 });
 
-test("deferred input without a receipt stays queued unless durable intake accepted it", () => {
-  const deferredInput = {
-    clientUserMessageId: "client-real-queue-without-receipt",
-    state: "queued",
-    conflictKind: "task-running",
+test("idle-to-busy race preserves the already visible exact card", () => {
+  const clientUserMessageId = "client-idle-race";
+  const optimistic = {
+    ...message(clientUserMessageId, "Не мигай"),
+    turnId: "",
+    projectionState: "optimistic",
+    providerAccepted: false,
+    deliveryState: "sending",
+    clientProjectionIntent: "conversation",
   };
-
-  assert.equal(lifecycle.deferredInputUsesQueue(deferredInput, []), true);
-  assert.equal(lifecycle.deferredInputDeliveryState(deferredInput, []), "queued");
   assert.deepEqual(
-    lifecycle.deferredQueueClientUserMessageIds([deferredInput], []),
-    [deferredInput.clientUserMessageId],
+    lifecycle.visibleConversationMessages([optimistic]).map((item) => item.clientUserMessageId),
+    [clientUserMessageId],
+  );
+
+  const deferredInput = {
+    clientUserMessageId,
+    state: "pending",
+    conflictKind: "task-running",
+    clientProjectionIntent: "conversation",
+    createdAt: "2026-09-03T10:02:03.456Z",
+  };
+  const receipt = {
+    clientUserMessageId,
+    accepted: false,
+    deferred: true,
+    reason: "task-running",
+    clientProjectionIntent: "conversation",
+  };
+  const deferredIds = lifecycle.queuedCommandClientUserMessageIds(
+    [deferredInput],
+    [receipt],
+  );
+  assert.deepEqual(deferredIds, []);
+  assert.deepEqual(
+    lifecycle.visibleConversationMessages([optimistic], {
+      deferredClientUserMessageIds: deferredIds,
+    }).map((item) => item.clientUserMessageId),
+    [clientUserMessageId],
+  );
+  assert.deepEqual(
+    { ...lifecycle.deferredInputConversationProjection(deferredInput, [receipt]) },
+    {
+      clientUserMessageId,
+      submissionId: clientUserMessageId,
+      projectionState: "optimistic",
+      providerAccepted: false,
+      deliveryState: "accepted",
+      clientProjectionIntent: "conversation",
+      submittedAt: deferredInput.createdAt,
+    },
   );
 });
 
-test("dispatching input leaves the queue while retaining its sending state", () => {
-  const clientUserMessageId = "client-dispatching";
+test("busy-origin intent remains queue-only when admission finds the Stream idle", () => {
+  const clientUserMessageId = "client-busy-race";
   const receipt = {
     clientUserMessageId,
+    accepted: true,
     deferred: true,
     queued: true,
-    dispatching: true,
+    reason: "message-intake",
+    clientProjectionIntent: "queue",
   };
-  const deferredInput = { clientUserMessageId, state: "dispatching" };
-  assert.equal(lifecycle.deferredInputUsesQueue(deferredInput, [receipt]), false);
-  assert.equal(lifecycle.deferredInputDeliveryState(deferredInput, [receipt]), "sending");
+  const deferredInput = {
+    clientUserMessageId,
+    state: "queued",
+    conflictKind: "message-intake",
+    clientProjectionIntent: "queue",
+  };
+  assert.equal(lifecycle.queueHistoryReceiptProjection(receipt).ownsDeferredQueue, true);
   assert.deepEqual(
-    lifecycle.deferredQueueClientUserMessageIds([deferredInput], [receipt]),
+    lifecycle.queuedCommandClientUserMessageIds([deferredInput], [receipt]),
+    [clientUserMessageId],
+  );
+  assert.equal(lifecycle.deferredInputConversationProjection(deferredInput, [receipt]), null);
+});
+
+test("definitive rejection restores neither queue nor optimistic conversation", () => {
+  const clientUserMessageId = "client-rejected";
+  const receipt = {
+    clientUserMessageId,
+    accepted: false,
+    deferred: false,
+    rejected: true,
+    reason: "launch-rejected",
+    clientProjectionIntent: "conversation",
+  };
+  const deferredInput = {
+    clientUserMessageId,
+    state: "pending",
+    conflictKind: "task-running",
+    clientProjectionIntent: "conversation",
+  };
+  const projection = lifecycle.queueHistoryReceiptProjection(receipt);
+  assert.equal(projection.ownsDeferredQueue, false);
+  assert.equal(projection.ownsOptimisticConversation, false);
+  assert.deepEqual(lifecycle.queuedCommandClientUserMessageIds([deferredInput], [receipt]), []);
+  assert.equal(lifecycle.deferredInputConversationProjection(deferredInput, [receipt]), null);
+});
+
+test("authoritative provider acceptance moves one exact command into conversation history", () => {
+  const clientUserMessageId = "client-provider-accepted";
+  const deferredInput = {
+    clientUserMessageId,
+    state: "dispatching",
+    clientProjectionIntent: "queue",
+  };
+  const receipt = {
+    clientUserMessageId,
+    accepted: true,
+    deferred: false,
+    queued: false,
+    runId: "run-1",
+    turnId: "turn-1",
+    clientProjectionIntent: "queue",
+  };
+  const projection = lifecycle.queueHistoryReceiptProjection(receipt);
+  assert.equal(projection.providerAccepted, true);
+  assert.equal(projection.ownsDeferredQueue, false);
+  assert.equal(projection.deliveryState, "accepted");
+  assert.equal(lifecycle.queuedCommandUsesQueue(deferredInput, [receipt]), false);
+  assert.deepEqual(
+    lifecycle.queuedCommandClientUserMessageIds([deferredInput], [receipt]),
     [],
   );
+  const optimistic = {
+    ...message(clientUserMessageId, "Один раз"),
+    itemId: clientUserMessageId,
+    deliveryState: "accepted",
+  };
+  const canonical = {
+    ...optimistic,
+    id: "provider-user-item",
+    itemId: "provider-user-item",
+    turnId: "turn-1",
+    projectionAuthority: "canonical",
+  };
+  const visible = lifecycle.visibleConversationMessages(
+    lifecycle.deduplicateConversationMessages([canonical, optimistic]),
+  );
+  assert.equal(visible.length, 1);
+  assert.equal(visible[0].clientUserMessageId, clientUserMessageId);
+  assert.equal(visible[0].turnId, "turn-1");
+});
+
+test("active run projection requires exact provider acceptance identity", () => {
+  const task = {
+    running: true,
+    provider: "codex",
+    threadId: "thread-1",
+    streamId: "stream-1",
+    run: {
+      id: "run-1",
+      provider: "codex",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      clientUserMessageId: "client-1",
+      providerStart: {
+        state: "requesting",
+        turnId: null,
+      },
+    },
+  };
+  assert.equal(lifecycle.runHasAuthoritativeProviderAcceptance(task.run), false);
+  assert.equal(lifecycle.authoritativeActiveRunMessageReceipts([task]).length, 0);
+
+  task.run.providerStart = {
+    state: "accepted-awaiting-first-event",
+    turnId: "turn-1",
+  };
+  const receipts = lifecycle.authoritativeActiveRunMessageReceipts([task]);
+  assert.equal(receipts.length, 1);
+  assert.equal(receipts[0].clientUserMessageId, "client-1");
+  assert.equal(receipts[0].providerAccepted, true);
+});
+
+test("terminal history reload replaces an idle optimistic projection without a duplicate", () => {
+  const clientUserMessageId = "client-terminal-reload";
+  const optimistic = {
+    ...message(clientUserMessageId, "После reload"),
+    turnId: "",
+    itemId: clientUserMessageId,
+    deliveryState: "accepted",
+    projectionAuthority: "optimistic",
+    projectionState: "optimistic",
+    providerAccepted: false,
+  };
+  const canonical = {
+    ...optimistic,
+    id: "history-user-item",
+    itemId: "history-user-item",
+    turnId: "turn-completed",
+    deliveryState: "delivered",
+    projectionAuthority: "canonical",
+    projectionState: "completed",
+  };
+  assert.deepEqual(
+    Array.from(lifecycle.providerAcceptedHistoryClientUserMessageIds([canonical])),
+    [clientUserMessageId],
+  );
+  assert.deepEqual(
+    Array.from(lifecycle.providerAcceptedHistoryClientUserMessageIds([{
+      ...canonical,
+      clientUserMessageId: "",
+      submissionId: "",
+    }])),
+    [],
+  );
+  for (const values of [[canonical, optimistic], [optimistic, canonical]]) {
+    const messages = projection.projectCanonicalMessages(values);
+    assert.equal(messages.length, 1);
+    assert.deepEqual(
+      Array.from(lifecycle.visibleConversationMessages(messages), (item) => [
+        item.id,
+        item.clientUserMessageId,
+        item.turnId,
+      ]),
+      [["history-user-item", clientUserMessageId, "turn-completed"]],
+    );
+  }
+});
+
+test("queued outgoing state restores the separate queue when receipt and snapshot race", () => {
+  const clientUserMessageId = "client-queued-state";
+  const outgoing = {
+    ...message(clientUserMessageId, "Следующий вопрос"),
+    turnId: "",
+    itemId: clientUserMessageId,
+    deliveryState: "sending",
+    projectionAuthority: "optimistic",
+    projectionState: "queued",
+    providerAccepted: false,
+  };
+  assert.equal(lifecycle.messageAwaitsProviderAcceptance(outgoing), true);
+  const merged = lifecycle.mergeDeferredQueueEntries([], [{
+    id: `local:${clientUserMessageId}`,
+    clientUserMessageId,
+    state: "dispatching",
+    deliveryState: outgoing.deliveryState,
+    text: outgoing.text,
+    optimistic: true,
+  }]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].clientUserMessageId, clientUserMessageId);
+  assert.equal(merged[0].state, "dispatching");
 });
 
 test("live user update enriches a durable duplicate with its attachment and time", () => {

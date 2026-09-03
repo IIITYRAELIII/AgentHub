@@ -41,6 +41,19 @@ durable. A launch with an unknown outcome keeps the lane until exact
 reconciliation or an explicit user decision; it never authorizes automatic
 resubmission or a later same-lane provider effect.
 
+Hub acceptance and provider acceptance are distinct boundaries. A submission
+made from an exact idle client snapshot may have one optimistic conversation
+projection before provider acceptance. The client persists immutable
+`clientProjectionIntent=conversation` with the command, so a later
+`task-running` admission conflict keeps that same entity visible and never
+labels it queued. A submission made while the client knows the Stream is busy
+persists `clientProjectionIntent=queue` and remains on the queue-management
+surface even when admission later finds the Stream idle. Ambiguous and
+`attention-required` commands are queue-owned regardless of the optimistic
+intent. Later active and terminal projections reuse the original
+`clientUserMessageId` in both paths. The projection intent participates in the
+request fingerprint and cannot change on retry.
+
 ## Occupancy and ordering
 
 Before provider Thread binding, a queued command occupies a provisional lane
@@ -71,10 +84,28 @@ consulted only when no exact managed identity exists or when the provider
 rejects that identity as stale; only a real provider rejection downgrades the
 durable command to queued intake.
 
+Codex closes steer admission for one exact nonterminal turn when that run has
+observed `item/started` for an `agentMessage` with `phase="final_answer"` and the
+item's non-empty `turnId` equals the registered `run.turnId`. The admission
+boundary checks this protocol state both before acknowledging a requested steer
+and immediately before `turn/steer`, because the phase may advance while the
+durable command waits for dispatch. The same command remains ordinary durable
+queued intake under its original `clientUserMessageId` and FIFO position until
+the turn releases occupancy. Analysis, commentary and reasoning remain
+steerable. A different item or turn, missing identity, and every Claude run are
+outside this guard; text, elapsed time and rendered state are never evidence.
+
 For an inter-Stream command, the envelope `requestId` deterministically restores
 the `mcp:<requestId>` command alias when a provider rollout omits
 `clientUserMessageId`. That alias reconciles receipt and rollout projections;
 display text and card position never substitute for it.
+
+`hub_stream_message_send`, `hub_task_start` and `hub_task_reassign` carry the
+audited source Workspace, Stream, provider Thread and request identity as
+durable `messageOrigin`. The provider input keeps the same origin in the outer
+inter-Stream envelope, including when a Task reference is attached. Task
+assignment therefore remains a service command and cannot be reclassified as a
+human message while crossing intake, queue, run, receipt or history boundaries.
 
 ## Durable ACK
 

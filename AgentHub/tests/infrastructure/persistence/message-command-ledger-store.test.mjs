@@ -49,6 +49,39 @@ test("message command projection scans only bounded active rows", async (context
   }, (error) => error.code === "MESSAGE_COMMAND_CAPACITY_EXHAUSTED");
 });
 
+test("message command projection preserves intent and exposes queue-forcing states", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-message-ledger-projection-intent-"));
+  const store = new MessageCommandLedgerStore({ dataDir });
+  context.after(async () => {
+    store.close();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  const command = messageCommandFixture({
+    clientUserMessageId: "message-projection-intent",
+    fingerprint: "fingerprint-projection-intent",
+    item: { clientProjectionIntent: "conversation" },
+    receipt: { result: { accepted: false, pending: true, clientProjectionIntent: "conversation" } },
+  });
+  store.accept({ ...command, destination: "queued" });
+
+  store.projectSnapshot({
+    pendingInputs: [command.item],
+    desktopMessageReceipts: [command.receipt],
+  });
+  let overlay = store.overlay({});
+  assert.equal(overlay.pendingInputs[0].clientProjectionIntent, "conversation");
+  assert.equal(overlay.desktopMessageReceipts[0].result.clientProjectionIntent, "conversation");
+  assert.equal(overlay.desktopMessageReceipts[0].result.attentionRequired, true);
+
+  store.projectSnapshot({
+    queuedInputs: [{ ...command.item, paused: true }],
+    desktopMessageReceipts: [command.receipt],
+  });
+  overlay = store.overlay({});
+  assert.equal(overlay.queuedInputs[0].clientProjectionIntent, "conversation");
+  assert.equal(overlay.desktopMessageReceipts[0].result.paused, true);
+});
+
 test("receipt-only legacy commands migrate to terminal tombstones", async (context) => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-message-ledger-legacy-receipt-"));
   const store = new MessageCommandLedgerStore({ dataDir, maxActiveCommands: 1 });

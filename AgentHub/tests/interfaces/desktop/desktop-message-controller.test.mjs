@@ -174,6 +174,7 @@ test("durable desktop intake reuses the queue persistence boundary", async () =>
   const receipts = new MessageReceiptRegistry();
   let controllerPersistenceCalls = 0;
   let receiptCapturedByQueue = null;
+  let acceptedRequest = null;
   const messages = controller({
     durableIntake: true,
     receipts,
@@ -181,7 +182,8 @@ test("durable desktop intake reuses the queue persistence boundary", async () =>
     runCoordinator: {
       submitClientInput: async () => assert.fail("durable intake must use acceptClientInput"),
       steer: async () => ({}),
-      acceptClientInput: async () => {
+      acceptClientInput: async (request) => {
+        acceptedRequest = request;
         receiptCapturedByQueue = receipts.get({ clientUserMessageId: "message-one-boundary" });
         return {
           accepted: true,
@@ -196,12 +198,24 @@ test("durable desktop intake reuses the queue persistence boundary", async () =>
   const result = await messages.sendMessage({
     text: "не ждать три записи",
     clientUserMessageId: "message-one-boundary",
+    clientProjectionIntent: "conversation",
   });
 
   assert.equal(receiptCapturedByQueue.result.pending, true);
+  assert.equal(receiptCapturedByQueue.result.clientProjectionIntent, "conversation");
+  assert.equal(acceptedRequest.clientProjectionIntent, "conversation");
   assert.equal(controllerPersistenceCalls, 0);
   assert.equal(result.accepted, true);
   assert.equal(receipts.get({ clientUserMessageId: "message-one-boundary" }).result.pending, false);
+  assert.equal(
+    receipts.get({ clientUserMessageId: "message-one-boundary" }).result.clientProjectionIntent,
+    "conversation",
+  );
+  await assert.rejects(messages.sendMessage({
+    text: "неизвестная поверхность",
+    clientUserMessageId: "message-invalid-projection",
+    clientProjectionIntent: "sidebar",
+  }), /Неизвестная проекция/u);
 });
 
 test("desktop message receipt preserves the interstream source author", async () => {

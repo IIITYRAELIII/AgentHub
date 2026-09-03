@@ -28,6 +28,7 @@ export async function messageRequestFingerprint({
   attachmentIdentities = null,
   taskReferences = [],
   followUpMode = "",
+  clientProjectionIntent = "",
 } = {}, {
   readAttachment = readFile,
 } = {}) {
@@ -49,6 +50,7 @@ export async function messageRequestFingerprint({
         intent: String(reference?.intent ?? "context").trim().toLowerCase(),
       })),
       followUpMode: String(followUpMode).trim().toLowerCase(),
+      clientProjectionIntent: String(clientProjectionIntent).trim().toLowerCase(),
     }))
     .digest("hex");
 }

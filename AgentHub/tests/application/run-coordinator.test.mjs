@@ -118,11 +118,15 @@ test("RunCoordinator keeps ordinary active intake pending for a manual action", 
     attachments: [],
     target: f.target,
     clientUserMessageId: "message-next",
+    clientProjectionIntent: "conversation",
   });
   assert.equal(result.deferred, true);
   assert.equal(result.queued, undefined);
   assert.equal(result.reason, "task-running");
-  assert.equal(f.calls.find(([name]) => name === "defer")[3].conflictKind, "task-running");
+  assert.equal(result.clientProjectionIntent, "conversation");
+  const deferredOptions = f.calls.find(([name]) => name === "defer")[3];
+  assert.equal(deferredOptions.conflictKind, "task-running");
+  assert.equal(deferredOptions.clientProjectionIntent, "conversation");
   assert.equal(f.calls.some(([name]) => name === "provider"), false);
 });
 
@@ -145,13 +149,16 @@ test("RunCoordinator durably accepts idle intake before external activity checks
     attachments: [],
     target: f.target,
     clientUserMessageId: "message-intake",
+    clientProjectionIntent: "conversation",
   });
 
   assert.equal(result.accepted, true);
   assert.equal(result.queued, true);
   assert.equal(result.reason, "message-intake");
+  assert.equal(result.clientProjectionIntent, "conversation");
   assert.equal(externalChecks, 0);
   assert.equal(f.calls.find(([name]) => name === "defer")[3].conflictKind, "message-intake");
+  assert.equal(f.calls.find(([name]) => name === "defer")[3].clientProjectionIntent, "conversation");
   assert.deepEqual(f.calls.find(([name]) => name === "schedule").slice(1), [
     { id: "intake-1" }, 0,
   ]);
@@ -172,9 +179,11 @@ test("RunCoordinator preserves an explicit queue request behind the active turn"
     attachments: [],
     target: f.target,
     clientUserMessageId: "message-later",
+    clientProjectionIntent: "queue",
     followUpMode: "queue",
   });
   assert.equal(f.calls.find(([name]) => name === "defer")[3].conflictKind, "task-running");
+  assert.equal(f.calls.find(([name]) => name === "defer")[3].clientProjectionIntent, "queue");
   assert.deepEqual(f.calls.find(([name]) => name === "schedule").slice(1), [
     { id: "queued-1" }, 500,
   ]);

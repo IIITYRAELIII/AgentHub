@@ -51,23 +51,39 @@ set `clientUserMessageId + submissionId`; either alias binds the optimistic and
 canonical forms without using text, time or display order. Provider turns are
 keyed by `provider + threadId + turnId`; item entities additionally include
 `itemId + role`. Canonical intake atomically replaces its optimistic projection.
-After the optimistic card is visible, durable intake keeps that same card
-continuously visible while it passes through a transient deferred record before
-provider start. `accepted=true`, `deferred=true`, `queued=true` is projected as
-an explicitly queued conversation card until dispatch; it does not move to the
-separate queue surface because the accepted intake no longer owns that surface.
-Only a command still owned by the deferred queue (`deferred=true`, without
-acceptance or dispatch) moves from the conversation to the queue surface.
-Provider start advances the same card from `queued` to `active`, and terminal
-history advances it to `completed`; neither reconciliation may add a second
-card. Direct ACK, remote-result reconciliation and snapshot reconciliation use
-the same receipt classifier; none may infer queue ownership from
-`deferredInputs` presence or the `deferred` flag alone. Receipt snapshots are
-bounded, so an active deferred record with `conflictKind=message-intake`
-remains authoritative evidence of accepted immediate intake when its receipt
-has left the current receipt window. Absence of a receipt must not move that
-card into the queue; deferred records with any other conflict kind retain queue
-ownership unless an available receipt or dispatch state says otherwise.
+When the client snapshot says the Stream is idle, the exact submission is
+rendered immediately as one optimistic conversation card. A durable
+`message-intake` ACK keeps that same card visible through dispatch and labels it
+`Принято`, never `В очереди`. The durable deferred row with
+`clientProjectionIntent=conversation` preserves that placement through an
+idle-to-busy admission race and when the bounded receipt is absent during
+reload or reconciliation.
+
+When the client snapshot says the Stream is busy, queue and steer submissions
+are rendered only by the queue surface above the composer. Durable queued,
+dispatching, ambiguous and attention-required forms remain queue-owned until
+exact provider acceptance. A new turn requires the exact command identity plus
+`runId + turnId`; a steer requires `steered=true` plus the exact target
+`turnId`. An active run snapshot is accepted only when `run.turnId` equals
+`run.providerStart.turnId` and provider-start state is
+`accepted-awaiting-first-event` or `observed`. Optimistic, queue, active and
+history projections reuse the same `clientUserMessageId` and cannot create a
+second card.
+
+If admission detects that an apparently idle Stream became busy, its canonical
+`task-running` result preserves the same optimistic conversation card according
+to its immutable `clientProjectionIntent=conversation`. A busy-origin command
+with `clientProjectionIntent=queue` remains queue-only if admission later finds
+the Stream idle. Attention-required and ambiguous commands remain queue-owned.
+Reconciliation never renders both forms and never loses the logical entity.
+
+Direct ACK, remote-result reconciliation and snapshot reconciliation use the
+same classifier. Receipt snapshots are bounded. The durable explicit projection
+intent restores the chosen surface after its receipt leaves the current window.
+Legacy rows without that field use exact `conflictKind=message-intake` only as a
+temporary compatibility boundary; remove it after every retained active command
+has an explicit projection intent. Text, time and display order cannot choose
+the surface or promote a command into history.
 The server applies exact turn-receipt aliases before exposing active or durable
 user items, so a root or steer cannot coexist with its accepted optimistic card.
 Service-only attachment wrappers such as `<image ...>` are removed from both the
@@ -148,6 +164,14 @@ hydration starts strictly as background work and is never awaited by mark-read.
   submission alias. It cannot bind steer or inter-Stream messages and is removed
   after retained history has `clientUserMessageId` or `submissionId` on every
   user command.
+- A retained pre-origin MCP message may recover inter-Stream provenance only by
+  exact `mcp:<requestId>` lookup of a successful audited
+  `hub_stream_message_send`, `hub_task_start` or `hub_task_reassign` operation.
+  Its source Workspace and Stream are rendered with the explicit service marker
+  `Служебное`; text, time and display order are never attribution evidence.
+  Remove this read-only guard after every retained MCP message carries durable
+  `messageOrigin`. Rows without both durable origin and exact successful audit
+  evidence remain unattributed rather than receiving a guessed backfill.
 - Response annotations created before source-locator version `1` remain readable
   and jump only to their annotation card. This guard is removed only if a future
   authoritative provider export supplies exact item and range identity; local

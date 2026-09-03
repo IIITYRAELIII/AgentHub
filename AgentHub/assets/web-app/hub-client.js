@@ -126,6 +126,7 @@ const { isUserRunningProjection, projectCanonicalMessages } = window.AgentHubMes
 const {
   activeRunSubmissionTiming,
   activeRunMessageReceipts,
+  authoritativeActiveRunMessageReceipts,
   activeStageLabel,
   activeTaskRun,
   chronologicalMessages,
@@ -137,6 +138,7 @@ const {
   confirmedOutgoingMessageIds,
   conversationMessageAuthor,
   deduplicateConversationMessages,
+  deferredInputConversationProjection,
   displayedFinalAcknowledgement,
   focusedTurnAlreadyVisible,
   focusedTurnTaskThreadId,
@@ -154,12 +156,15 @@ const {
   markCommandRejected,
   markConnectionFailure,
   messageSendDefinitelyRejected,
-  messageReceiptProjection,
+  messageAwaitsProviderAcceptance,
+  queueHistoryReceiptProjection,
   mergeDeferredQueueEntries,
-  deferredInputDeliveryState,
-  deferredInputUsesQueue,
-  deferredQueueClientUserMessageIds,
-  receiptLeavesDeferredQueue,
+  queuedCommandClientUserMessageIds,
+  queuedCommandDeliveryState,
+  queuedCommandUsesQueue,
+  providerAcceptedHistoryClientUserMessageIds,
+  optimisticSubmissionUsesQueue,
+  runHasAuthoritativeProviderAcceptance,
   mergeLiveMaintenance,
   mergeReconciledUserMessage,
   mergeLiveUserMessages,
@@ -606,7 +611,11 @@ function reconciledMessages(taskIdValue) {
     if (!matchedIds.has(message.clientUserMessageId)) result.push(message);
   }
   const confirmedMatchedIds = confirmedOutgoingMessageIds(durableMessages, outgoing);
-  for (const clientUserMessageId of confirmedMatchedIds) pending.delete(clientUserMessageId);
+  for (const clientUserMessageId of confirmedMatchedIds) {
+    pending.delete(clientUserMessageId);
+    optimisticDeferredClientUserMessageIds.delete(clientUserMessageId);
+    deferredClientUserMessageIds.delete(clientUserMessageId);
+  }
   const visible = visibleConversationMessages(result.map(normalizedUserMessage), {
     deferredClientUserMessageIds,
     liveProbe: liveProbeByTask.get(taskIdValue) ?? null,
@@ -617,25 +626,38 @@ function reconciledMessages(taskIdValue) {
 }
 
 function deferredEntriesForTask(snapshot, taskIdValue) {
+  const acceptedHistoryIds = new Set(providerAcceptedHistoryClientUserMessageIds(
+    historyByTask.get(taskIdValue),
+  ));
   return (snapshot?.deferredInputs ?? []).filter((item) => (
-    deferredInputUsesQueue(item, snapshot?.messageReceipts)
+    queuedCommandUsesQueue(item, snapshot?.messageReceipts)
+    && !acceptedHistoryIds.has(String(item?.clientUserMessageId ?? item?.clientMessageId ?? "").trim())
     && !optimisticQueueSteerIds.has(String(item.id ?? ""))
     && (!item.provider || taskId(item.provider, item.threadId, item.streamId) === taskIdValue)
   ));
 }
 
 function optimisticDeferredEntries(taskIdValue, serverEntries = []) {
+  const acceptedHistoryIds = new Set(providerAcceptedHistoryClientUserMessageIds(
+    historyByTask.get(taskIdValue),
+  ));
   const serverClientIds = new Set(serverEntries
     .map((item) => String(item.clientUserMessageId ?? item.clientMessageId ?? "").trim())
     .filter(Boolean));
   return [...outgoingMessages(taskIdValue).values()]
     .filter((message) => (
-      optimisticDeferredClientUserMessageIds.has(message.clientUserMessageId)
-      || serverClientIds.has(message.clientUserMessageId)
+      !acceptedHistoryIds.has(String(message?.clientUserMessageId ?? "").trim())
+      && (
+        optimisticDeferredClientUserMessageIds.has(message.clientUserMessageId)
+        || serverClientIds.has(message.clientUserMessageId)
+        || messageAwaitsProviderAcceptance(message)
+      )
     ))
     .map((message) => ({
       id: `local:${message.clientUserMessageId}`,
-      state: "queued",
+      state: message.deliveryState === "steering"
+        ? "steering"
+        : message.deliveryState === "sending" ? "dispatching" : "queued",
       clientUserMessageId: message.clientUserMessageId,
       text: message.responseAnnotationRequest
         || (message.responseAnnotations?.length ? "" : message.text),
@@ -658,6 +680,59 @@ function renderTaskQueue(taskIdValue, snapshot = lastSnapshot) {
   ));
 }
 
+function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
+  const projection = deferredInputConversationProjection(deferred, messageReceipts);
+  if (!projection) return false;
+  const stableTaskId = taskId(deferred.provider, deferred.threadId, deferred.streamId);
+  const messages = outgoingMessages(stableTaskId);
+  const responseAnnotations = normalizedResponseAnnotations(deferred.annotations);
+  const text = String(deferred.text ?? deferred.preview ?? "");
+  const attachments = attachmentViews(deferred.attachments);
+  if (!text.trim() && !responseAnnotations.length && !attachments.length) return false;
+  optimisticDeferredClientUserMessageIds.delete(projection.clientUserMessageId);
+  deferredClientUserMessageIds.delete(projection.clientUserMessageId);
+  const existing = messages.get(projection.clientUserMessageId);
+  if (existing) {
+    Object.assign(existing, {
+      projectionAuthority: "canonical",
+      projectionState: projection.projectionState,
+      providerAccepted: projection.providerAccepted,
+      clientProjectionIntent: projection.clientProjectionIntent,
+      ...deliveryPatch(projection.deliveryState),
+      ...(!existing.submittedAt && projection.submittedAt
+        ? { submittedAt: projection.submittedAt }
+        : {}),
+      ...(!existing.time && projection.submittedAt ? { time: projection.submittedAt } : {}),
+    });
+  } else {
+    rememberOutgoing(stableTaskId, {
+      id: `local:${projection.clientUserMessageId}`,
+      provider: String(deferred.provider ?? ""),
+      threadId: String(deferred.threadId ?? ""),
+      streamId: String(deferred.streamId ?? ""),
+      turnId: "",
+      itemId: projection.clientUserMessageId,
+      clientUserMessageId: projection.clientUserMessageId,
+      submissionId: projection.submissionId,
+      operationKind: "user-turn",
+      projectionAuthority: "canonical",
+      projectionState: projection.projectionState,
+      providerAccepted: projection.providerAccepted,
+      clientProjectionIntent: projection.clientProjectionIntent,
+      role: "user",
+      author: String(deferred.author ?? "").trim() || "Вы",
+      text,
+      responseAnnotations,
+      responseAnnotationRequest: String(deferred.responseAnnotationRequest ?? text),
+      submittedAt: projection.submittedAt,
+      time: projection.submittedAt,
+      attachments,
+      ...deliveryPatch(projection.deliveryState),
+    });
+  }
+  return true;
+}
+
 function applyMessageReceipts(snapshot) {
   for (const receipt of snapshot?.messageReceipts ?? []) {
     const clientUserMessageId = String(receipt?.clientUserMessageId ?? "").trim();
@@ -666,7 +741,8 @@ function applyMessageReceipts(snapshot) {
     if (!clientUserMessageId || !provider || !threadId) continue;
     const streamId = String(receipt?.streamId ?? "").trim();
     const stableTaskId = taskId(provider, threadId, streamId);
-    if (receiptLeavesDeferredQueue(receipt)) {
+    const projection = queueHistoryReceiptProjection(receipt);
+    if (!projection.ownsDeferredQueue) {
       optimisticDeferredClientUserMessageIds.delete(clientUserMessageId);
       deferredClientUserMessageIds.delete(clientUserMessageId);
     }
@@ -675,7 +751,6 @@ function applyMessageReceipts(snapshot) {
       outgoingMessages(stableTaskId).delete(clientUserMessageId);
       continue;
     }
-    const projection = messageReceiptProjection(receipt);
     const patch = projection.deliveryState ? deliveryPatch(projection.deliveryState) : null;
     if (!patch) continue;
     agentHub.completeSend(clientUserMessageId, {
@@ -704,6 +779,8 @@ function applyMessageReceipts(snapshot) {
         operationKind: "user-turn",
         projectionAuthority: "canonical",
         projectionState: projection.projectionState,
+        providerAccepted: projection.providerAccepted,
+        clientProjectionIntent: projection.clientProjectionIntent,
         role: "user",
         author: String(receipt.author ?? "").trim() || "Вы",
         text: restoredText,
@@ -725,6 +802,8 @@ function applyMessageReceipts(snapshot) {
       operationKind: "user-turn",
       projectionAuthority: "canonical",
       projectionState: projection.projectionState,
+      providerAccepted: projection.providerAccepted,
+      clientProjectionIntent: projection.clientProjectionIntent,
       ...(projection.submittedAt ? {
         submittedAt: projection.submittedAt,
         time: projection.submittedAt,
@@ -1207,7 +1286,7 @@ function observeQueuedRemoteMessage(commandId, params) {
     receive: (result) => {
       const clientUserMessageId = String(params?.clientUserMessageId ?? "").trim();
       if (clientUserMessageId) {
-        const projection = messageReceiptProjection(result);
+        const projection = queueHistoryReceiptProjection(result);
         if (!projection.ownsDeferredQueue) {
           optimisticDeferredClientUserMessageIds.delete(clientUserMessageId);
           deferredClientUserMessageIds.delete(clientUserMessageId);
@@ -1225,6 +1304,7 @@ function observeQueuedRemoteMessage(commandId, params) {
           ...(projection.startedAt ? { startedAt: projection.startedAt } : {}),
           remoteQueued: false,
           remoteCommandId: commandId,
+          providerAccepted: projection.providerAccepted,
           ...deliveryPatch(projection.deliveryState ?? "rejected"),
         });
         if (resolvedTaskId) renderTaskMessages(resolvedTaskId);
@@ -1864,11 +1944,11 @@ function applySnapshot(snapshot, { materialized = false } = {}) {
       ...syncActiveMaintenanceMessages(representativeTasks),
     ]);
     if (snapshot.messageReceipts !== previousSnapshot?.messageReceipts) applyMessageReceipts(snapshot);
-    const serverDeferredClientUserMessageIds = new Set(deferredQueueClientUserMessageIds(
+    const serverDeferredClientUserMessageIds = new Set(queuedCommandClientUserMessageIds(
       snapshot.deferredInputs,
       snapshot.messageReceipts,
     ));
-    const activeRunReceipts = activeRunMessageReceipts(snapshot.tasks);
+    const activeRunReceipts = authoritativeActiveRunMessageReceipts(snapshot.tasks);
     const nextActiveRunClientUserMessageIds = new Set(
       activeRunReceipts.map((receipt) => receipt.clientUserMessageId),
     );
@@ -1943,16 +2023,21 @@ function applySnapshot(snapshot, { materialized = false } = {}) {
     for (const deferred of snapshot.deferredInputs ?? []) {
       const clientUserMessageId = String(deferred.clientUserMessageId ?? "");
       if (!clientUserMessageId) continue;
-      const deferredDeliveryState = deferredInputDeliveryState(
+      const deferredDeliveryState = queuedCommandDeliveryState(
         deferred,
         snapshot.messageReceipts,
       );
-      if (!deferredDeliveryState) continue;
+      if (!deferredDeliveryState) {
+        restoreImmediateIntakeMessage(deferred, snapshot.messageReceipts);
+        continue;
+      }
       patchOutgoing(
         taskId(deferred.provider, deferred.threadId, deferred.streamId),
         clientUserMessageId,
         {
           ...deliveryPatch(deferredDeliveryState),
+          projectionState: "queued",
+          providerAccepted: false,
           time: deferred.createdAt ?? null,
           ...nonEmptyAttachmentPatch(deferred.attachments),
         },
@@ -1960,7 +2045,7 @@ function applySnapshot(snapshot, { materialized = false } = {}) {
     }
     for (const task of snapshot.tasks ?? []) {
       const clientUserMessageId = String(task.run?.clientUserMessageId ?? "");
-      if (!clientUserMessageId) continue;
+      if (!clientUserMessageId || !runHasAuthoritativeProviderAcceptance(task.run)) continue;
       patchOutgoing(taskId(task.provider, task.threadId, task.streamId), clientUserMessageId, {
         provider: task.provider,
         threadId: task.threadId,
@@ -1971,6 +2056,8 @@ function applySnapshot(snapshot, { materialized = false } = {}) {
         // turn. It identifies the first user item even while Codex history has
         // not yet echoed client_id back to us.
         turnUserSlot: "root",
+        projectionState: "active",
+        providerAccepted: true,
         ...deliveryPatch("accepted"),
       });
     }
@@ -2107,6 +2194,7 @@ function historyMessages(history, focusedTurn = null) {
         ? { terminalRevisionMigrationGuard: "legacy-terminal-revision" }
         : {}),
       ...(message.kind ? { kind: message.kind } : {}),
+      ...(message.origin ? { origin: message.origin } : {}),
       ...(message.agentThreadId ? { agentThreadId: message.agentThreadId } : {}),
       ...(message.model ? { model: message.model } : {}),
       author: conversationMessageAuthor(message, itemProvider),
@@ -2170,6 +2258,7 @@ function historyMessages(history, focusedTurn = null) {
         itemId,
         role: message.role,
         ...(message.kind ? { kind: message.kind } : {}),
+        ...(message.origin ? { origin: message.origin } : {}),
         ...(message.agentThreadId ? { agentThreadId: message.agentThreadId } : {}),
         ...(message.model ? { model: message.model } : {}),
         author: conversationMessageAuthor(message, focusedTurn.provider),
@@ -2212,6 +2301,7 @@ function historyMessages(history, focusedTurn = null) {
       itemId: `${focusedTurn.turnId}:focused:user`,
       role: "user",
       turnUserSlot: "root",
+      ...(focusedTurn.promptOrigin ? { kind: "interstream", origin: focusedTurn.promptOrigin } : {}),
       author: focusedTurn.promptAuthor || "Вы",
       text: focusedTurn.prompt,
       responseAnnotations: focusedTurn.promptAnnotations,
@@ -2304,6 +2394,7 @@ function applyOpened(result, {
   if (selectTask) agentHub.selectTask(id);
   syncHistoryPagination(id);
   const renderedMessages = renderTaskMessages(id, { preserveScroll });
+  renderTaskQueue(id, result?.snapshot ?? lastSnapshot);
   const acknowledgementSnapshot = result?.snapshot ?? lastSnapshot;
   const acknowledgementTask = (acknowledgementSnapshot?.tasks ?? []).find((item) => taskId(
     item.provider,
@@ -2644,6 +2735,8 @@ agentHub.on("message:send", (request) => {
   const queuesOptimistically = request.followUpMode === "queue"
     || request.deferWhileRunning === true;
   const steersOptimistically = request.followUpMode === "steer" && !queuesOptimistically;
+  const usesQueueOptimistically = optimisticSubmissionUsesQueue(request);
+  const clientProjectionIntent = usesQueueOptimistically ? "queue" : "conversation";
   const visibleText = String(request.text ?? "").trim()
     || ((request.annotations ?? []).length
       ? `Аннотации к ответу: ${(request.annotations ?? []).length}`
@@ -2659,7 +2752,9 @@ agentHub.on("message:send", (request) => {
     submissionId: request.requestId,
     operationKind: "user-turn",
     projectionAuthority: "optimistic",
-    projectionState: "optimistic",
+    projectionState: usesQueueOptimistically ? "queued" : "optimistic",
+    providerAccepted: false,
+    clientProjectionIntent,
     role: "user",
     author: "Вы",
     text: visibleText,
@@ -2672,11 +2767,11 @@ agentHub.on("message:send", (request) => {
     ...deliveryPatch(queuesOptimistically ? "sending" : steersOptimistically ? "steering" : "preparing"),
   };
   rememberOutgoing(request.taskId, optimistic);
-  if (queuesOptimistically) {
+  if (usesQueueOptimistically) {
     optimisticDeferredClientUserMessageIds.add(request.requestId);
     deferredClientUserMessageIds.add(request.requestId);
   }
-  renderOutgoingWithoutBlockingSend(request.taskId, { queue: queuesOptimistically });
+  renderOutgoingWithoutBlockingSend(request.taskId, { queue: usesQueueOptimistically });
   return runAction(() => sendTransaction.run({
     send: async () => {
       if (request.draftStream) {
@@ -2712,14 +2807,14 @@ agentHub.on("message:send", (request) => {
       if (!paths.length) {
         for (const attachment of request.attachments ?? []) paths.push(await uploadAttachment(attachment));
         updateOutgoing(request.taskId, request.requestId, { uploadedPaths: paths.slice() });
-        renderOutgoingWithoutBlockingSend(request.taskId);
+        renderOutgoingWithoutBlockingSend(request.taskId, { queue: usesQueueOptimistically });
       }
       updateOutgoing(
         request.taskId,
         request.requestId,
         deliveryPatch(queuesOptimistically ? "sending" : steersOptimistically ? "steering" : "sending"),
       );
-      renderOutgoingWithoutBlockingSend(request.taskId);
+      renderOutgoingWithoutBlockingSend(request.taskId, { queue: usesQueueOptimistically });
       const params = {
         text: annotatedText(request.text, request.annotations),
         displayText: visibleText,
@@ -2729,6 +2824,7 @@ agentHub.on("message:send", (request) => {
         provider: identity?.provider,
         threadId: identity?.threadId,
         clientUserMessageId: request.requestId,
+        clientProjectionIntent,
         followUpMode: request.followUpMode,
         clientTiming: {
           submittedAtMs: request.submittedAtMs,
@@ -2755,7 +2851,7 @@ agentHub.on("message:send", (request) => {
       }
     },
     receive: (result) => {
-      const projection = messageReceiptProjection(result);
+      const projection = queueHistoryReceiptProjection(result);
       if (projection.ownsDeferredQueue) {
         optimisticDeferredClientUserMessageIds.add(request.requestId);
         deferredClientUserMessageIds.add(request.requestId);
@@ -2774,6 +2870,7 @@ agentHub.on("message:send", (request) => {
         remoteCommandId: result?.remoteCommandId ?? "",
         projectionAuthority: "canonical",
         projectionState: projection.projectionState,
+        providerAccepted: projection.providerAccepted,
         ...(projection.submittedAt ? {
           submittedAt: projection.submittedAt,
           time: projection.submittedAt,
@@ -2785,7 +2882,7 @@ agentHub.on("message:send", (request) => {
           ? deliveryPatch("relaying")
           : deliveryPatch(projection.deliveryState ?? "rejected")),
       });
-      renderOutgoingWithoutBlockingSend(request.taskId, { queue: queuesOptimistically });
+      renderOutgoingWithoutBlockingSend(request.taskId, { queue: true });
     },
     synchronize: async (result) => {
       if (result?.snapshot) applySnapshot(result.snapshot);
@@ -2810,10 +2907,8 @@ agentHub.on("message:send", (request) => {
         agentHub.showSelectedTask();
       }
       renderTaskMessages(request.taskId);
-      if (queuesOptimistically) {
-        renderTaskQueue(request.taskId, result?.snapshot ?? lastSnapshot);
-        renderTaskMessages(request.taskId);
-      }
+      renderTaskQueue(request.taskId, result?.snapshot ?? lastSnapshot);
+      renderTaskMessages(request.taskId);
       agentHub.toast(result?.message ?? (result?.accepted ? "Сообщение принято" : "Сообщение сохранено"));
     },
     reject: (error) => {
@@ -2821,15 +2916,21 @@ agentHub.on("message:send", (request) => {
       // its request id for an idempotent retry instead of creating a second
       // optimistic card for the same user action.
       const rejected = messageSendDefinitelyRejected(error);
-      optimisticDeferredClientUserMessageIds.delete(request.requestId);
-      deferredClientUserMessageIds.delete(request.requestId);
       agentHub.completeSend(request.requestId, { accepted: false });
-      updateOutgoing(
-        request.taskId,
-        request.requestId,
-        deliveryPatch(rejected ? "rejected" : "unconfirmed"),
-      );
-      renderOutgoingWithoutBlockingSend(request.taskId, { queue: queuesOptimistically });
+      if (rejected) {
+        outgoingMessages(request.taskId).delete(request.requestId);
+        optimisticDeferredClientUserMessageIds.delete(request.requestId);
+        deferredClientUserMessageIds.delete(request.requestId);
+      } else {
+        optimisticDeferredClientUserMessageIds.add(request.requestId);
+        deferredClientUserMessageIds.add(request.requestId);
+        updateOutgoing(request.taskId, request.requestId, {
+          ...deliveryPatch("unconfirmed"),
+          projectionState: "unknown",
+          providerAccepted: false,
+        });
+      }
+      renderOutgoingWithoutBlockingSend(request.taskId, { queue: true });
       if (!rejected) void refresh();
     },
     synchronizationFailed: (error) => {
@@ -2877,13 +2978,9 @@ agentHub.on("workspace:rename", ({ workspaceId, name }) => runAction(async () =>
   await control("rename-workspace", { workspaceId, name }),
 )));
 agentHub.on("workspace:folder-move", ({ workspaceId, folderName }) => runAction(async () => {
-  const workspace = (lastSnapshot?.workspaces ?? []).find((item) => item.id === workspaceId);
-  const mutation = window.AgentHubStreamTabs.workspaceFolderMutation(workspace, folderName);
+  const mutation = window.AgentHubStreamTabs.workspaceFolderMutation({ id: workspaceId }, folderName);
   if (!mutation) return;
-  applySnapshot(await control("update-workspace-settings", {
-    workspaceId: mutation.workspaceId,
-    settings: mutation.settings,
-  }));
+  applySnapshot(await control("move-workspace-to-folder", mutation));
   agentHub.toast(mutation.folderName
     ? `Workspace перемещён в папку «${mutation.folderName}»`
     : "Workspace убран из папки");

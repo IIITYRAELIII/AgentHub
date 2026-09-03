@@ -223,6 +223,29 @@ function activeRunMessageReceipts(tasks) {
   return receipts;
 }
 
+function runHasAuthoritativeProviderAcceptance(run) {
+  const turnId = String(run?.turnId ?? "").trim();
+  const acceptedTurnId = String(run?.providerStart?.turnId ?? "").trim();
+  return Boolean(
+    turnId
+    && acceptedTurnId === turnId
+    && ["accepted-awaiting-first-event", "observed"].includes(
+      String(run?.providerStart?.state ?? "").trim(),
+    ),
+  );
+}
+
+function authoritativeActiveRunMessageReceipts(tasks) {
+  return activeRunMessageReceipts(
+    (Array.isArray(tasks) ? tasks : []).filter((task) => (
+      runHasAuthoritativeProviderAcceptance(activeTaskRun(task))
+    )),
+  ).map((receipt) => ({
+    ...receipt,
+    providerAccepted: true,
+  }));
+}
+
 function latestAnswerTransition(previous, current) {
   if (!previous || !current) return false;
   if (String(previous.provider ?? "") !== String(current.provider ?? "")
@@ -893,6 +916,7 @@ function visibleConversationMessages(messages, {
     .map((value) => String(value ?? "").trim())
     .filter(Boolean));
   const visible = withoutContextProbeMessages(messages).filter((message) => {
+    if (messageAwaitsProviderAcceptance(message)) return false;
     const clientUserMessageId = String(
       message?.clientUserMessageId ?? message?.clientId ?? "",
     ).trim();
@@ -1144,6 +1168,82 @@ function messageReceiptProjection(receipt) {
   };
 }
 
+function receiptHasAuthoritativeProviderAcceptance(receipt) {
+  const turnId = String(receipt?.turnId ?? "").trim();
+  if (!turnId) return false;
+  if (receipt?.providerAccepted === true || receipt?.steered === true) return true;
+  return Boolean(
+    receipt?.accepted === true
+    && receipt?.deferred !== true
+    && receipt?.queued !== true
+    && receipt?.dispatching !== true
+    && receipt?.steerPending !== true
+    && String(receipt?.runId ?? "").trim(),
+  );
+}
+
+function clientProjectionIntent(value) {
+  const intent = String(value ?? "").trim().toLowerCase();
+  return ["conversation", "queue"].includes(intent) ? intent : "";
+}
+
+function queueHistoryReceiptProjection(receipt) {
+  const base = messageReceiptProjection(receipt);
+  const providerAccepted = receiptHasAuthoritativeProviderAcceptance(receipt);
+  const projectionIntent = clientProjectionIntent(receipt?.clientProjectionIntent);
+  const terminal = receipt?.cancelled === true
+    || receipt?.rejected === true
+    || receipt?.failed === true
+    || receipt?.completed === true;
+  const requiresQueue = receipt?.unknown === true
+    || receipt?.attentionRequired === true
+    || receipt?.paused === true;
+  const immediateIntake = !providerAccepted
+    && !terminal
+    && !requiresQueue
+    && (
+      projectionIntent === "conversation"
+      || (
+        !projectionIntent
+        && receipt?.accepted === true
+        && String(receipt?.reason ?? receipt?.conflictKind ?? "").trim() === "message-intake"
+      )
+    );
+  const ownsQueue = !providerAccepted
+    && !immediateIntake
+    && !terminal
+    && (
+      requiresQueue
+      || projectionIntent === "queue"
+      || receipt?.pending === true
+      || receipt?.deferred === true
+      || receipt?.queued === true
+      || receipt?.dispatching === true
+      || receipt?.steerPending === true
+      || receipt?.unknown === true
+    );
+  const deliveryState = providerAccepted
+    ? "accepted"
+    : immediateIntake
+      ? "accepted"
+      : ownsQueue
+        ? receipt?.dispatching === true ? "sending"
+          : receipt?.steerPending === true ? "steering"
+            : receipt?.queued === true ? "queued" : "deferred"
+        : base.deliveryState;
+  return {
+    ...base,
+    clientProjectionIntent: projectionIntent || null,
+    providerAccepted,
+    ownsDeferredQueue: ownsQueue,
+    ownsOptimisticConversation: immediateIntake,
+    deliveryState,
+    projectionState: ownsQueue
+      ? "queued"
+      : providerAccepted ? "active" : immediateIntake ? "optimistic" : "unknown",
+  };
+}
+
 function deferredInputReceipt(deferredInput, messageReceipts) {
   const clientUserMessageId = deferredClientMessageId(deferredInput);
   if (!clientUserMessageId) return null;
@@ -1168,6 +1268,94 @@ function deferredInputDeliveryState(deferredInput, messageReceipts = []) {
   if (state === "queued") return "queued";
   if (!deferredInputUsesQueue(deferredInput, messageReceipts)) return null;
   return state === "queued" ? "queued" : "deferred";
+}
+
+function queuedCommandUsesQueue(deferredInput, messageReceipts = []) {
+  const state = String(deferredInput?.state ?? "").trim();
+  if (["paused", "attention-required", "unknown"].includes(state)) return true;
+  if (String(deferredInput?.waitReason ?? "").trim() === "provider-start-unconfirmed") return true;
+  const receipt = deferredInputReceipt(deferredInput, messageReceipts);
+  if (receipt) return queueHistoryReceiptProjection(receipt).ownsDeferredQueue;
+  const projectionIntent = clientProjectionIntent(deferredInput?.clientProjectionIntent);
+  if (projectionIntent === "conversation") return false;
+  if (projectionIntent === "queue") return true;
+  if (String(deferredInput?.conflictKind ?? "").trim() === "message-intake") return false;
+  return [
+    "pending",
+    "queued",
+    "dispatching",
+    "steering",
+    "paused",
+    "attention-required",
+    "unknown",
+  ].includes(state);
+}
+
+function queuedCommandDeliveryState(deferredInput, messageReceipts = []) {
+  if (!queuedCommandUsesQueue(deferredInput, messageReceipts)) return null;
+  const state = String(deferredInput?.state ?? "").trim();
+  if (state === "dispatching") return "sending";
+  if (state === "steering") return "steering";
+  const receipt = deferredInputReceipt(deferredInput, messageReceipts);
+  return queueHistoryReceiptProjection(receipt).deliveryState
+    ?? (state === "queued" ? "queued" : "deferred");
+}
+
+function queuedCommandClientUserMessageIds(deferredInputs, messageReceipts = []) {
+  return (Array.isArray(deferredInputs) ? deferredInputs : [])
+    .filter((item) => queuedCommandUsesQueue(item, messageReceipts))
+    .map(deferredClientMessageId)
+    .filter(Boolean);
+}
+
+function deferredInputConversationProjection(deferredInput, messageReceipts = []) {
+  const clientUserMessageId = deferredClientMessageId(deferredInput);
+  if (!clientUserMessageId || queuedCommandUsesQueue(deferredInput, messageReceipts)) return null;
+  const receipt = deferredInputReceipt(deferredInput, messageReceipts);
+  if (receipt && !queueHistoryReceiptProjection(receipt).ownsOptimisticConversation) return null;
+  const projectionIntent = clientProjectionIntent(deferredInput?.clientProjectionIntent);
+  if (projectionIntent !== "conversation"
+    && String(deferredInput?.conflictKind ?? "").trim() !== "message-intake") return null;
+  return {
+    clientUserMessageId,
+    submissionId: clientUserMessageId,
+    projectionState: "optimistic",
+    providerAccepted: false,
+    deliveryState: "accepted",
+    clientProjectionIntent: projectionIntent || null,
+    submittedAt: deferredInput?.createdAt ?? null,
+  };
+}
+
+function optimisticSubmissionUsesQueue({ followUpMode = "", deferWhileRunning = false } = {}) {
+  return String(followUpMode ?? "").trim() === "steer" || deferWhileRunning === true;
+}
+
+function messageAwaitsProviderAcceptance(message) {
+  if (message?.role !== "user" || message?.providerAccepted === true) return false;
+  const projectionState = String(message?.projectionState ?? "").trim();
+  if (["active", "completed", "failed", "cancelled"].includes(projectionState)) return false;
+  if (projectionState === "optimistic") return false;
+  if (["queued", "unknown"].includes(projectionState)) return true;
+  return [
+    "preparing",
+    "sending",
+    "steering",
+    "queued",
+    "deferred",
+    "unconfirmed",
+    "rejected",
+  ].includes(String(message?.deliveryState ?? "").trim());
+}
+
+function providerAcceptedHistoryClientUserMessageIds(messages) {
+  return (Array.isArray(messages) ? messages : []).flatMap((message) => {
+    if (message?.role !== "user" || !String(message?.turnId ?? "").trim()) return [];
+    const clientUserMessageId = String(
+      message?.clientUserMessageId ?? message?.submissionId ?? "",
+    ).trim();
+    return clientUserMessageId ? [clientUserMessageId] : [];
+  });
 }
 
 function deferredQueueClientUserMessageIds(deferredInputs, messageReceipts = []) {
@@ -1531,6 +1719,7 @@ function hubErrorMessage(error) {
 
 globalThis.AgentHubMessageLifecycle = Object.freeze({
   activeRunSubmissionTiming,
+  authoritativeActiveRunMessageReceipts,
   activeRunMessageReceipts,
   activeStageLabel,
   activeTaskRun,
@@ -1546,6 +1735,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   contextProbeRun,
   conversationMessageAuthor,
   deduplicateConversationMessages,
+  deferredInputConversationProjection,
   displayedFinalAcknowledgement,
   embeddedResponseAnnotations,
   hubErrorMessage,
@@ -1568,7 +1758,16 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   markCommandRejected,
   markConnectionFailure,
   messageSendDefinitelyRejected,
+  messageAwaitsProviderAcceptance,
   messageReceiptProjection,
+  queueHistoryReceiptProjection,
+  queuedCommandClientUserMessageIds,
+  queuedCommandDeliveryState,
+  queuedCommandUsesQueue,
+  providerAcceptedHistoryClientUserMessageIds,
+  optimisticSubmissionUsesQueue,
+  receiptHasAuthoritativeProviderAcceptance,
+  runHasAuthoritativeProviderAcceptance,
   mergeDeferredQueueEntries,
   deferredInputDeliveryState,
   deferredInputUsesQueue,
