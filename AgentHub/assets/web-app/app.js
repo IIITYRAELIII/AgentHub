@@ -1160,7 +1160,10 @@ new MutationObserver((records) => {
       if (node instanceof Element) cleanupThemedSelects(node);
     }
     for (const node of record.addedNodes) {
-      if (node instanceof Element) enhanceThemedSelects(node);
+      if (!(node instanceof Element) || node === journal || journal.contains(node)) continue;
+      if (node instanceof HTMLSelectElement || node.querySelector?.("select")) {
+        enhanceThemedSelects(node);
+      }
     }
   }
 }).observe(document.body, { childList: true, subtree: true });
@@ -12401,22 +12404,6 @@ async function fetchJournalFragment(pathname, params) {
   return payload;
 }
 
-async function fetchJournalDayFragments() {
-  await localSessionReady;
-  const query = new URLSearchParams({ version: currentVersion });
-  const response = await fetch(`/api/journal/days?${query}`, {
-    cache: "no-store",
-    headers: await authenticatedRequestHeaders(),
-  });
-  const payload = await response.json();
-  if (response.status === 409 || payload.version && payload.version !== currentVersion) {
-    void loadJournal({ force: true });
-    throw new Error("Журнал обновился.");
-  }
-  if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
-  return payload.days && typeof payload.days === "object" ? payload.days : {};
-}
-
 function materializeLazyDay(details, html, {
   decorate = true,
   postProcess = true,
@@ -13665,29 +13652,25 @@ function dayGroupingContent(source) {
 let journalRenderSequence = 0;
 let journalSyncLatestStatus = null;
 
-async function hydrateAllLazyDays() {
+async function hydrateAllLazyDays({ isCurrent = () => true } = {}) {
   const days = [...journal.querySelectorAll(
     "details[data-work-log-day-section][data-lazy-day]",
   )];
-  const missingDates = days
-    .map((details) => details.dataset.lazyDay)
-    .filter((date) => date && !journalDayHtmlCache.has(date));
-  if (missingDates.length) {
-    const fragments = await fetchJournalDayFragments();
-    for (const [date, html] of Object.entries(fragments)) {
-      if (typeof html === "string") journalDayHtmlCache.set(date, html);
-    }
-  }
-  const fallback = [];
-  for (const details of days) {
-    const html = journalDayHtmlCache.get(details.dataset.lazyDay);
-    if (html) {
-      materializeLazyDay(details, html, { decorate: false, postProcess: false });
-    } else {
-      fallback.push(loadLazyDay(details));
-    }
-  }
-  await Promise.all(fallback);
+  return JournalView.hydrateLazyDays(days, {
+    dateFor: (details) => details.dataset.lazyDay,
+    cachedHtml: (date) => journalDayHtmlCache.get(date),
+    fetchHtml: async (date) => (
+      await fetchJournalFragment("/api/journal/day", { date })
+    ).html,
+    rememberHtml: (date, html) => journalDayHtmlCache.set(date, html),
+    materialize: (details, html) => materializeLazyDay(details, html, {
+      decorate: false,
+      postProcess: false,
+    }),
+    isCurrent,
+    yieldControl: () => new Promise((resolve) => requestAnimationFrame(() => resolve())),
+    batchSize: 2,
+  });
 }
 
 function summarizedLazyDays(source) {
@@ -13936,7 +13919,9 @@ async function renderJournal() {
   journal.replaceChildren(template.content.cloneNode(true));
   removeJournalRateLimits();
   try {
-    if (JournalView.requiresCompleteHistory(grouping)) await hydrateAllLazyDays();
+    if (JournalView.requiresCompleteHistory(grouping)) {
+      await hydrateAllLazyDays({ isCurrent: () => sequence === journalRenderSequence });
+    }
     if (sequence !== journalRenderSequence) return;
     applyJournalGrouping();
   } catch (error) {

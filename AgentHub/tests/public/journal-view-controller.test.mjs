@@ -69,6 +69,52 @@ test("day grouping keeps historical days lazy while aggregate views require them
   assert.equal(api.requiresCompleteHistory("month"), true);
 });
 
+test("aggregate journal hydration bounds fetch and DOM work and can be superseded", async () => {
+  const api = await journalViewApi();
+  const entries = Array.from({ length: 7 }, (_, index) => ({ date: `day-${index}` }));
+  const cache = new Map([["day-0", "cached-0"]]);
+  const materialized = [];
+  let activeFetches = 0;
+  let maxFetches = 0;
+  let yields = 0;
+  const completed = await api.hydrateLazyDays(entries, {
+    dateFor: (entry) => entry.date,
+    cachedHtml: (date) => cache.get(date),
+    fetchHtml: async (date) => {
+      activeFetches += 1;
+      maxFetches = Math.max(maxFetches, activeFetches);
+      await Promise.resolve();
+      activeFetches -= 1;
+      return `html-${date}`;
+    },
+    rememberHtml: (date, html) => cache.set(date, html),
+    materialize: (entry, html) => materialized.push(`${entry.date}:${html}`),
+    yieldControl: async () => { yields += 1; },
+    batchSize: 2,
+  });
+
+  assert.equal(completed, true);
+  assert.equal(maxFetches, 2);
+  assert.equal(yields, 3);
+  assert.equal(materialized.length, 7);
+  assert.equal(materialized[0], "day-0:cached-0");
+
+  const superseded = [];
+  let current = true;
+  const result = await api.hydrateLazyDays(entries, {
+    dateFor: (entry) => entry.date,
+    cachedHtml: (date) => cache.get(date),
+    fetchHtml: async () => "unused",
+    rememberHtml: () => {},
+    materialize: (entry) => superseded.push(entry.date),
+    yieldControl: async () => { current = false; },
+    isCurrent: () => current,
+    batchSize: 2,
+  });
+  assert.equal(result, false);
+  assert.deepEqual(superseded, ["day-0", "day-1"]);
+});
+
 test("journal header counts current catalog streams instead of historical tasks", async () => {
   const api = await journalViewApi();
   assert.equal(api.streamCount([

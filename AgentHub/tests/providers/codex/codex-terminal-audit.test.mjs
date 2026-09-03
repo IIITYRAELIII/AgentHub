@@ -436,7 +436,7 @@ test("terminal audit advances through an active rollout and reads its later term
   nowMs += 60_000;
   await audit.run();
 
-  assert.deepEqual(starts, [50, 100, 120]);
+  assert.deepEqual(starts, [50, 100]);
   assert.deepEqual(observedStarts, [["thread-active", project.path, "turn-active"]]);
   assert.deepEqual(recovered, ["turn-active"]);
   assert.equal(audit.snapshot().positions[0][1].offset, 120);
@@ -736,7 +736,7 @@ test("terminal audit migrates v7 and imports an external parent with four subage
   );
   assert.ok(recovered.every((value) => value.project === project));
   assert.ok(recovered.every((value) => value.turnId.startsWith("turn-")));
-  assert.equal(audit.snapshot().version, 13);
+  assert.equal(audit.snapshot().version, 14);
   assert.equal(audit.snapshot().historicalSubagentBackfill.pending, false);
   assert.equal(audit.snapshot().historicalSubagentBackfill.completedFiles, 5);
 });
@@ -1087,7 +1087,7 @@ test("terminal audit reruns v11 historical reconciliation once after preparing a
   assert.deepEqual(preparations, ["prepared"]);
   assert.deepEqual(scans, ["previously-completed.jsonl"]);
   const checkpoint = audit.snapshot();
-  assert.equal(checkpoint.version, 13);
+  assert.equal(checkpoint.version, 14);
   assert.equal(checkpoint.historicalSubagentBackfill.pending, false);
   assert.equal(checkpoint.historicalSubagentBackfill.prepared, true);
   assert.equal(
@@ -1354,4 +1354,157 @@ test("terminal audit isolates a missing pending rollout from unrelated completed
   assert.deepEqual(recovered, ["valid-turn"]);
   assert.deepEqual(audit.snapshot().positions, [["valid", { path: "valid.jsonl", offset: 100 }]]);
   assert.equal(audit.snapshot().pendingTurns[0][0], "missing");
+});
+
+test("production-shaped terminal audit bounds a tick and resumes its durable checkpoint", async () => {
+  const nowMs = Date.parse("2026-09-03T12:00:00.000Z");
+  const terminals = Array.from({ length: 2_000 }, (_, index) => ({
+    turnId: `historical-${index}`,
+    status: "completed",
+    completedAt: "2026-09-03T11:59:00.000Z",
+  }));
+  const threads = Array.from({ length: 279 }, (_, index) => thread(
+    `thread-${index}`,
+    "2026-09-03T11:59:00.000Z",
+    `thread-${index}.jsonl`,
+  ));
+  const reconciled = [];
+  const checkpoints = [];
+  const scans = [];
+  let audit;
+  const options = {
+    now: () => nowMs,
+    discoverHistoricalThreads: async () => threads,
+    resolveProject: () => project,
+    statFile: async () => ({ size: 512 * 1024, mtimeMs: nowMs }),
+    scanFile: async (file, scanOptions) => {
+      scans.push([file, scanOptions.startOffset, scanOptions.maxBytes]);
+      return file === "thread-0.jsonl"
+        ? { terminals, activeTurns: [], nextOffset: 128 * 1024 }
+        : { terminals: [], activeTurns: [], nextOffset: 128 * 1024 };
+    },
+    reconcile: async (_thread, _project, terminal) => {
+      reconciled.push(terminal.turnId);
+      return true;
+    },
+    persistProgress: async () => checkpoints.push(audit.snapshot()),
+    auditTurnsPerRun: 25,
+    auditThreadsPerRun: 8,
+    auditBytesPerRun: 512 * 1024,
+    liveScanBytes: 128 * 1024,
+  };
+  audit = new CodexTerminalAudit(options);
+
+  await audit.run();
+
+  assert.equal(reconciled.length, 25);
+  assert.equal(scans.length, 1);
+  assert.equal(scans[0][2], 128 * 1024);
+  assert.equal(checkpoints.length, 1);
+  assert.equal(checkpoints[0].positions[0][1].pendingScan.terminalIndex, 25);
+  assert.ok(checkpoints[0].positions[0][1].pendingScan.fingerprint.length < 100);
+  assert.deepEqual(checkpoints[0].lastRun, {
+    completedAt: "2026-09-03T12:00:00.000Z",
+    elapsedMs: 0,
+    bytes: 128 * 1024,
+    threads: 1,
+    turns: 25,
+    cycleComplete: false,
+    yielded: "turns",
+  });
+
+  const firstCheckpoint = checkpoints.at(-1);
+  audit = new CodexTerminalAudit(options);
+  audit.restore(firstCheckpoint);
+  await audit.run();
+
+  assert.equal(reconciled.length, 50);
+  assert.deepEqual(reconciled.slice(25), terminals.slice(25, 50).map((item) => item.turnId));
+  assert.equal(new Set(reconciled).size, reconciled.length);
+  assert.equal(checkpoints.at(-1).positions[0][1].pendingScan.terminalIndex, 50);
+});
+
+test("terminal audit processes the final permitted scan before yielding its scan budget", async () => {
+  const nowMs = Date.parse("2026-09-03T12:00:00.000Z");
+  const reconciled = [];
+  const audit = new CodexTerminalAudit({
+    now: () => nowMs,
+    discoverHistoricalThreads: async () => [
+      thread("one", "2026-09-03T11:59:00.000Z", "one.jsonl"),
+      thread("two", "2026-09-03T11:59:00.000Z", "two.jsonl"),
+      thread("three", "2026-09-03T11:59:00.000Z", "three.jsonl"),
+    ],
+    resolveProject: () => project,
+    statFile: async () => ({ size: 16 * 1024, mtimeMs: nowMs }),
+    scanFile: async (file) => ({
+      terminals: [{
+        turnId: file.replace(".jsonl", ""),
+        status: "completed",
+        completedAt: "2026-09-03T11:59:00.000Z",
+      }],
+      activeTurns: [],
+      nextOffset: 16 * 1024,
+    }),
+    reconcile: async (_thread, _project, terminal) => reconciled.push(terminal.turnId),
+    liveScanBytes: 16 * 1024,
+    auditBytesPerRun: 32 * 1024,
+    auditThreadsPerRun: 2,
+  });
+
+  await audit.run();
+
+  assert.deepEqual(reconciled, ["one", "two"]);
+  assert.equal(audit.snapshot().lastRun.threads, 2);
+  assert.equal(audit.snapshot().lastRun.bytes, 32 * 1024);
+  assert.equal(audit.snapshot().lastRun.yielded, "bytes");
+});
+
+test("terminal audit yields to interactive work and flushes one projection per recovered batch", async () => {
+  let interactive = false;
+  let preemptOnce = true;
+  let audit;
+  let projections = 0;
+  const reconciled = [];
+  const checkpoints = [];
+  const terminals = Array.from({ length: 10 }, (_, index) => ({
+    turnId: `turn-${index}`,
+    status: "completed",
+    completedAt: "2026-09-03T11:59:00.000Z",
+  }));
+  audit = new CodexTerminalAudit({
+    now: () => Date.parse("2026-09-03T12:00:00.000Z"),
+    discoverHistoricalThreads: async () => [{
+      ...thread("subagent", "2026-09-03T11:59:00.000Z", "subagent.jsonl"),
+      parentThreadId: "parent",
+    }],
+    resolveProject: () => project,
+    statFile: async () => ({ size: 100, mtimeMs: Date.parse("2026-09-03T11:59:00.000Z") }),
+    scanFile: async () => ({ terminals, activeTurns: [], nextOffset: 100 }),
+    reconcile: async (_thread, _project, terminal) => {
+      reconciled.push(terminal.turnId);
+      if (preemptOnce) {
+        preemptOnce = false;
+        interactive = true;
+      }
+      return true;
+    },
+    shouldRunAudit: () => !interactive,
+    persistProgress: async () => checkpoints.push(audit.snapshot()),
+    flushHistoricalProjection: async () => { projections += 1; },
+    auditTurnsPerRun: 10,
+  });
+
+  await audit.run();
+
+  assert.deepEqual(reconciled, ["turn-0"]);
+  assert.equal(projections, 0);
+  assert.equal(checkpoints.length, 1);
+  assert.equal(checkpoints[0].lastRun.yielded, "interactive");
+  assert.equal(checkpoints[0].liveProjectionPending, true);
+
+  interactive = false;
+  await audit.run();
+  assert.equal(reconciled.length, 10);
+  assert.equal(projections, 1);
+  assert.equal(checkpoints.at(-1).liveProjectionPending, false);
 });

@@ -837,6 +837,19 @@ export class JournalDatabase {
     return publicIndex(row, revisionOf(database));
   }
 
+  async metadata() {
+    const database = await this.#open();
+    const row = database.prepare(
+      "SELECT source_version, updated_at FROM journal_meta WHERE id = 1",
+    ).get();
+    if (!row) return null;
+    return {
+      updatedAt: String(row.updated_at ?? ""),
+      version: String(row.source_version ?? ""),
+      revision: revisionOf(database),
+    };
+  }
+
   async snapshot() {
     const database = await this.#open();
     const payload = await this.payload();
@@ -913,6 +926,23 @@ export class JournalDatabase {
     return Object.fromEntries(database.prepare(
       `SELECT ${column} AS key, html FROM ${table} ORDER BY ${order}`,
     ).all().map((row) => [row.key, row.html]));
+  }
+
+  async fragmentPage(kind, { offset = 0, limit = 7 } = {}) {
+    const database = await this.#open();
+    const table = kind === "day" ? "journal_days" : "journal_turns";
+    const column = kind === "day" ? "date" : "id";
+    const order = kind === "day" ? JOURNAL_DAY_ORDER : column;
+    const boundedOffset = Math.max(0, Math.floor(Number(offset) || 0));
+    const boundedLimit = Math.max(1, Math.min(20, Math.floor(Number(limit) || 7)));
+    const rows = database.prepare(
+      `SELECT ${column} AS key, html FROM ${table} ORDER BY ${order} LIMIT ? OFFSET ?`,
+    ).all(boundedLimit + 1, boundedOffset);
+    const page = rows.slice(0, boundedLimit);
+    return {
+      fragments: Object.fromEntries(page.map((row) => [row.key, row.html])),
+      nextOffset: rows.length > boundedLimit ? boundedOffset + page.length : null,
+    };
   }
 
   close() {

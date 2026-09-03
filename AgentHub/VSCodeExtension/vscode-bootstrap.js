@@ -65,8 +65,11 @@ function scheduleWebviewMotionResume() {
 function mutationAddsMotion(record) {
   if (record.type === "attributes") return true;
   return [...record.addedNodes].some((node) => (
+    !node?.closest?.("[data-journal]")
+    && (
     node?.matches?.(MOTION_TARGET_SELECTOR)
     || node?.querySelector?.(MOTION_TARGET_SELECTOR)
+    )
   ));
 }
 

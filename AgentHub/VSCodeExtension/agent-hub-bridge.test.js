@@ -21,6 +21,11 @@ function day(date, turnId) {
 
 function memoryJournal({ html = "", days = {}, turns = {}, version = "sqlite-v1" } = {}) {
   return {
+    metadata: async () => ({
+      updatedAt: "2026-07-30T02:55:14.512Z",
+      version,
+      revision: 1,
+    }),
     payload: async () => ({
       html,
       updatedAt: "2026-07-30T02:55:14.512Z",
@@ -69,6 +74,35 @@ test("VS Code bridge serves the same lazy journal contract", async () => {
     assert.match(JSON.parse(older.body).html, /Ход turn-6/u);
   } finally {
     bridge?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("VS Code bridge returns metadata ETag without loading the journal payload", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-journal-etag-"));
+  let payloadCalls = 0;
+  const bridge = new AgentHubBridge({
+    journalDatabase: {
+      metadata: async () => ({ version: "sqlite-v-fast", revision: 7, updatedAt: "now" }),
+      payload: async () => {
+        payloadCalls += 1;
+        throw new Error("payload must remain lazy");
+      },
+      subscribe: () => () => {},
+      close() {},
+    },
+    moduleRoot: path.resolve(__dirname, ".."),
+    runtimeRoot: root,
+  });
+  try {
+    const response = await bridge.http({
+      path: "/api/journal",
+      headers: { "if-none-match": '"sqlite-v-fast"' },
+    });
+    assert.equal(response.status, 304);
+    assert.equal(payloadCalls, 0);
+  } finally {
+    bridge.close();
     await rm(root, { recursive: true, force: true });
   }
 });

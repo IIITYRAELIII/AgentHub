@@ -265,6 +265,9 @@ test("unchanged run snapshots do not rebuild Dashboard columns", async () => {
   assert.equal(unchanged.boardChanged, false);
   assert.equal(unchanged.panelChanged, false);
   assert.equal(unchanged.openTaskChanged, false);
+  assert.equal(unchanged.next.tasks, current.tasks);
+  assert.equal(unchanged.next.workspaces, current.workspaces);
+  assert.equal(unchanged.next.columnOrder, current.columnOrder);
 
   const selection = taskBoardSnapshotChanges(current, {
     ...current,

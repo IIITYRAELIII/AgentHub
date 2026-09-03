@@ -336,6 +336,35 @@ test("index-only projection uses revision CAS and preserves lazy fragments", asy
   }
 });
 
+test("journal metadata and fragment pages stay bounded without loading index HTML", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-journal-page-"));
+  const database = new JournalDatabase(path.join(root, "data", "journal.sqlite"));
+  try {
+    const days = Object.fromEntries(Array.from({ length: 30 }, (_, index) => {
+      const date = `${String(index + 1).padStart(2, "0")}.07.2026`;
+      return [date, `<section>${date}</section>`];
+    }));
+    await database.replaceProjection({ html: "X".repeat(2_000_000), days, turns: {} });
+    const metadata = await database.metadata();
+    assert.equal(Object.hasOwn(metadata, "html"), false);
+    assert.match(metadata.version, /^sha256:/u);
+
+    const first = await database.fragmentPage("day", { limit: 7 });
+    assert.equal(Object.keys(first.fragments).length, 7);
+    assert.equal(first.nextOffset, 7);
+    const second = await database.fragmentPage("day", { offset: first.nextOffset, limit: 7 });
+    assert.equal(Object.keys(second.fragments).length, 7);
+    assert.equal(second.nextOffset, 14);
+    assert.equal(
+      new Set([...Object.keys(first.fragments), ...Object.keys(second.fragments)]).size,
+      14,
+    );
+  } finally {
+    database.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("corrupt SQLite journal fails closed without creating a clean store", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-journal-corrupt-"));
   const databaseFile = path.join(root, "data", "journal.sqlite");
