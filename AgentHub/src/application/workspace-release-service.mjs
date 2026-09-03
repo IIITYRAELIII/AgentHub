@@ -9,11 +9,12 @@ function requiredPlanRevision(value) {
 }
 
 export class WorkspaceReleaseService {
-  constructor({ store, verifyPublication } = {}) {
-    requiredMethod(store, "releasePlan");
+  constructor({ store, releasePlanner, verifyPublication } = {}) {
     requiredMethod(store, "completeRelease");
+    requiredMethod(releasePlanner, "plan");
     if (typeof verifyPublication !== "function") throw new TypeError("verifyPublication is required");
     this.store = store;
+    this.releasePlanner = releasePlanner;
     this.verifyPublication = verifyPublication;
   }
 
@@ -21,7 +22,7 @@ export class WorkspaceReleaseService {
     workspaceId, expectedRevision = null, expectedPlanRevision, deploymentVerified = false, verificationSummary = "",
     conflictsResolved = false,
   } = {}) {
-    const plan = this.store.releasePlan(workspaceId);
+    const plan = await this.releasePlanner.plan(workspaceId);
     const requestedPlanRevision = requiredPlanRevision(expectedPlanRevision);
     if (plan.revision !== requestedPlanRevision) {
       throw new Error("release plan revision changed; read and verify the current release plan again");
@@ -42,6 +43,7 @@ export class WorkspaceReleaseService {
     return {
       ...this.store.completeRelease(workspaceId, {
         expectedPlanRevision: plan.revision,
+        plan,
         conflictsResolved,
         verificationEvidence: {
           planRevision: plan.revision,

@@ -12,7 +12,7 @@ function router(calls, { omit = [] } = {}) {
     "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport", "reportDiagnostic",
     "trustedDevices", "createDevicePairing", "revokeDevice",
     "renameWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "renameStream", "moveStream",
-    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
+    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
     "boardWorkspaceMove", "usageSync", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
   ].map((name) => [name, handler]));
@@ -167,6 +167,36 @@ test("Desktop application router exposes runtime health without a Web server", a
   assert.deepEqual(result.params, { maxResponseBytes: 3_500_000 });
 });
 
+test("Desktop application router archives and restores a Workspace by stable id", async () => {
+  const calls = [];
+  const control = router(calls);
+  for (const action of ["archive-workspace", "restore-workspace"]) {
+    await control.handleDesktopControl({
+      action,
+      params: { workspaceId: "workspace-1" },
+      context: { source: "desktop", userId: "7" },
+    });
+  }
+  assert.deepEqual(calls.map(([type, payload]) => [type, payload.workspaceId]), [
+    ["workspace.archive", "workspace-1"],
+    ["workspace.restore", "workspace-1"],
+  ]);
+});
+
+test("Desktop application router renames a Workspace folder atomically", async () => {
+  const calls = [];
+  const control = router(calls);
+  await control.handleDesktopControl({
+    action: "rename-workspace-folder",
+    params: { fromFolderName: "Клиенты", toFolderName: "Заказчики" },
+    context: { source: "desktop", userId: "7" },
+  });
+  assert.deepEqual(calls.map(([type, payload]) => [type, payload]), [[
+    "workspace.folder.rename",
+    { fromFolderName: "Клиенты", toFolderName: "Заказчики", maxResponseBytes: 3_500_000 },
+  ]]);
+});
+
 test("Desktop application router forwards diagnostic events", async () => {
   const control = router([]);
   const result = await control.handleDesktopControl({
@@ -219,6 +249,19 @@ test("Desktop application router changes a Task workflow status", async () => {
   assert.equal(result.params.status, "awaiting_implementation");
 });
 
+test("Desktop application router adds files to a Dashboard Task", async () => {
+  const control = router([]);
+  const result = await control.handleDesktopControl({
+    action: "board-task-attachment-add",
+    params: { id: "board-1", attachments: ["D:/runtime/attachments/file.bin"] },
+  });
+  assert.deepEqual(result.params, {
+    id: "board-1",
+    attachments: ["D:/runtime/attachments/file.bin"],
+    maxResponseBytes: 3_500_000,
+  });
+});
+
 test("Desktop application router accepts a message beside a blocked mutation", async () => {
   let releaseBlocked;
   const blocked = new Promise((resolve) => { releaseBlocked = resolve; });
@@ -229,7 +272,7 @@ test("Desktop application router accepts a message beside a blocked mutation", a
     "updateServerConfiguration", "readPreTurnInstructions", "updateGlobalPreTurnInstructions",
     "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport", "reportDiagnostic",
     "trustedDevices", "createDevicePairing", "revokeDevice",
-    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
+    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
     "boardWorkspaceMove", "usageSync", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
   ].map((name) => [name, async () => ({ accepted: true, name })]));
@@ -260,7 +303,7 @@ test("Desktop application router accepts a restart beside a blocked mutation", a
     "updateServerConfiguration", "readPreTurnInstructions", "updateGlobalPreTurnInstructions",
     "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport", "reportDiagnostic",
     "trustedDevices", "createDevicePairing", "revokeDevice",
-    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
+    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
     "boardWorkspaceMove", "usageSync", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
   ].map((name) => [name, async () => ({ accepted: true, name })]));

@@ -111,6 +111,16 @@ test("canonical SQLite ledger replaces, upserts and deletes records transactiona
       "codex\0thread-1\0turn-3",
     ]);
     assert.equal(ledger.turns["codex\0thread-1\0turn-1"].body, "Исправленный ответ");
+    assert.equal((await reopened.getRecord({
+      provider: "codex",
+      threadId: "thread-1",
+      turnId: "turn-1",
+    })).body, "Исправленный ответ");
+    assert.deepEqual(
+      (await reopened.threadRecords([{ provider: "codex", threadId: "thread-1" }], { limit: 2 }))
+        .map((entry) => entry.turnId).sort(),
+      ["turn-1", "turn-3"],
+    );
     assert.equal(await reopened.currentRevision(), 3);
     reopened.close();
   } finally {

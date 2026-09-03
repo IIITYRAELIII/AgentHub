@@ -10,20 +10,37 @@ import {
   isCodexContextProbeClientId,
 } from "../../domain/codex-context-probe.mjs";
 import { addTokenUsage, emptyTokenUsage, normalizeTokenUsage } from "../../domain/token-usage.mjs";
+import { mergeUsageLimitSamples } from "../../domain/usage-facts.mjs";
 import { displayUserPrompt } from "../../application/task-history.mjs";
 
 const rolloutPathIndexPromises = new Map();
 const rolloutSessionCache = new Map();
-const DEFAULT_ROLLOUT_SESSION_CACHE_LIMIT = 10_000;
+const DEFAULT_ROLLOUT_SESSION_CACHE_LIMIT = 128;
+const DEFAULT_ROLLOUT_SESSION_CACHE_BYTES = 32 * 1024 * 1024;
+const DEFAULT_ROLLOUT_SESSION_SCAN_BYTES = 1024 * 1024;
+const DEFAULT_ROLLOUT_SESSION_SCAN_LINES = 4_096;
+const DEFAULT_ROLLOUT_SESSION_LINE_BYTES = 256 * 1024;
+const DEFAULT_ROLLOUT_SESSION_SCAN_MS = 1_000;
 
 function rolloutSessionCacheKey(file) {
   return path.resolve(file).toLowerCase();
 }
 
-function trimRolloutSessionCache(cache, limit) {
+function rolloutSessionBytes(value) {
+  try {
+    return Buffer.byteLength(JSON.stringify(value), "utf8");
+  } catch {
+    return DEFAULT_ROLLOUT_SESSION_CACHE_BYTES;
+  }
+}
+
+function trimRolloutSessionCache(cache, limit, maxBytes = DEFAULT_ROLLOUT_SESSION_CACHE_BYTES) {
   const normalizedLimit = Math.max(1, Number(limit) || DEFAULT_ROLLOUT_SESSION_CACHE_LIMIT);
-  while (cache.size > normalizedLimit) {
-    cache.delete(cache.keys().next().value);
+  let retainedBytes = [...cache.values()].reduce((total, value) => total + rolloutSessionBytes(value), 0);
+  while (cache.size > normalizedLimit || retainedBytes > maxBytes) {
+    const oldestKey = cache.keys().next().value;
+    retainedBytes -= rolloutSessionBytes(cache.get(oldestKey));
+    cache.delete(oldestKey);
   }
 }
 
@@ -73,21 +90,90 @@ function codexRolloutSession(entry, transcriptPath = "") {
 
 export async function readCodexRolloutSession(transcriptPath, {
   createReadStreamImpl = createReadStream,
+  maxBytes = DEFAULT_ROLLOUT_SESSION_SCAN_BYTES,
+  maxLines = DEFAULT_ROLLOUT_SESSION_SCAN_LINES,
+  maxLineBytes = DEFAULT_ROLLOUT_SESSION_LINE_BYTES,
+  maxDurationMs = DEFAULT_ROLLOUT_SESSION_SCAN_MS,
 } = {}) {
-  const input = createReadStreamImpl(transcriptPath, { encoding: "utf8" });
-  const lines = createInterface({ input, crlfDelay: Infinity });
+  const byteLimit = Math.max(1, Number(maxBytes) || DEFAULT_ROLLOUT_SESSION_SCAN_BYTES);
+  const lineLimit = Math.max(1, Number(maxLines) || DEFAULT_ROLLOUT_SESSION_SCAN_LINES);
+  const lineByteLimit = Math.max(1, Number(maxLineBytes) || DEFAULT_ROLLOUT_SESSION_LINE_BYTES);
+  const durationLimit = Math.max(1, Number(maxDurationMs) || DEFAULT_ROLLOUT_SESSION_SCAN_MS);
+  const input = createReadStreamImpl(transcriptPath, { start: 0, end: byteLimit - 1 });
+  const iterator = input[Symbol.asyncIterator]();
+  const deadline = Date.now() + durationLimit;
+  let bytesRead = 0;
+  let linesRead = 0;
+  let pendingParts = [];
+  let pendingLength = 0;
+  let droppingLongLine = false;
+  let reachedEof = false;
+
+  const acceptLine = (parts, length) => {
+    if (!length) return null;
+    try {
+      const line = parts.length === 1 ? parts[0] : Buffer.concat(parts, length);
+      return codexRolloutSession(JSON.parse(line.toString("utf8").replace(/\r$/u, "")), transcriptPath);
+    } catch {
+      return null;
+    }
+  };
+
   try {
-    for await (const line of lines) {
-      if (!line) continue;
-      try {
-        const session = codexRolloutSession(JSON.parse(line), transcriptPath);
-        if (session) return session;
-      } catch {
-        // Keep looking if a damaged preamble record precedes session metadata.
+    while (bytesRead < byteLimit && linesRead < lineLimit) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) break;
+      let timer;
+      const next = await Promise.race([
+        iterator.next().then((value) => ({ value })),
+        new Promise((resolve) => {
+          timer = setTimeout(() => resolve({ timedOut: true }), remainingMs);
+        }),
+      ]);
+      clearTimeout(timer);
+      if (next.timedOut) break;
+      if (next.value.done) {
+        reachedEof = true;
+        break;
+      }
+      const source = Buffer.isBuffer(next.value.value)
+        ? next.value.value
+        : Buffer.from(next.value.value);
+      const chunk = source.subarray(0, Math.min(source.length, byteLimit - bytesRead));
+      bytesRead += chunk.length;
+      let start = 0;
+      let newline = chunk.indexOf(0x0a);
+      while (newline >= 0 && linesRead < lineLimit) {
+        const part = chunk.subarray(start, newline);
+        linesRead += 1;
+        if (!droppingLongLine && pendingLength + part.length <= lineByteLimit) {
+          const session = acceptLine([...pendingParts, part], pendingLength + part.length);
+          if (session) return session;
+        }
+        pendingParts = [];
+        pendingLength = 0;
+        droppingLongLine = false;
+        start = newline + 1;
+        newline = chunk.indexOf(0x0a, start);
+      }
+      if (start < chunk.length && linesRead < lineLimit) {
+        const part = chunk.subarray(start);
+        if (!droppingLongLine && pendingLength + part.length <= lineByteLimit) {
+          pendingParts.push(part);
+          pendingLength += part.length;
+        } else {
+          pendingParts = [];
+          pendingLength = 0;
+          droppingLongLine = true;
+        }
       }
     }
+    if (reachedEof && !droppingLongLine && pendingLength && linesRead < lineLimit) {
+      return acceptLine(pendingParts, pendingLength);
+    }
+  } catch {
+    return null;
   } finally {
-    lines.close();
     input.destroy?.();
   }
   return null;
@@ -122,6 +208,50 @@ function normalizedRolloutUsage(value) {
     reasoningOutputTokens: value?.reasoning_output_tokens,
     totalTokens: value?.total_tokens,
   });
+}
+
+function isoFromEpochSeconds(value) {
+  const milliseconds = Number(value) * 1000;
+  if (!Number.isFinite(milliseconds) || milliseconds <= 0) return "";
+  return new Date(milliseconds).toISOString();
+}
+
+function timestamp(value) {
+  const candidate = String(value ?? "").trim();
+  return Number.isFinite(Date.parse(candidate)) ? candidate : "";
+}
+
+function codexLimitSamplesFromTokenEvent(entry) {
+  const observedAt = timestamp(entry?.timestamp);
+  const source = entry?.payload?.rate_limits ?? entry?.rate_limits;
+  if (!observedAt || !source || typeof source !== "object") return [];
+  const buckets = source.limit_id || source.limitId
+    ? [source]
+    : Object.values(source.rateLimitsByLimitId ?? source).filter((value) => (
+      value && typeof value === "object"
+    ));
+  const samples = [];
+  for (const bucket of buckets) {
+    const limitId = String(bucket?.limit_id ?? bucket?.limitId ?? bucket?.limitName ?? "").trim();
+    if (!limitId) continue;
+    for (const [window, value] of Object.entries(bucket)) {
+      if (["limit_id", "limitId", "limitName", "plan_type", "planType"].includes(window)) continue;
+      if (!value || typeof value !== "object") continue;
+      const usedPercent = Number(value.used_percent ?? value.usedPercent);
+      if (!Number.isFinite(usedPercent)) continue;
+      samples.push({
+        observedAt,
+        limitId,
+        window,
+        windowMinutes: Number(value.window_minutes ?? value.windowDurationMins) || null,
+        usedPercent,
+        resetsAt: timestamp(value.resets_at ?? value.resetsAt)
+          || isoFromEpochSeconds(value.resets_at ?? value.resetsAt),
+        planType: String(bucket.plan_type ?? bucket.planType ?? "").trim(),
+      });
+    }
+  }
+  return mergeUsageLimitSamples(samples);
 }
 
 function isFinalAssistantItem(entry, turnId) {
@@ -282,6 +412,7 @@ function createTurnAccumulator(turnId) {
   let finalAnswer = "";
   let startedAt = "";
   let completedAt = "";
+  let limitSamples = [];
   let prompt = "";
   const prompts = [];
   let status = "";
@@ -414,6 +545,7 @@ function createTurnAccumulator(turnId) {
       || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
     if (attributedTurnId === requestedTurnId) {
       usage = addTokenUsage(usage, normalizedRolloutUsage(entry.payload?.info?.last_token_usage));
+      limitSamples = mergeUsageLimitSamples(limitSamples, codexLimitSamplesFromTokenEvent(entry));
       reported = true;
       finalTokenIndex = index;
     }
@@ -446,6 +578,7 @@ function createTurnAccumulator(turnId) {
       imageGenerationCount,
       estimatedCredits: imageGenerationCount * IMAGE_GENERATION_ESTIMATE_CREDITS,
       estimateKind: imageGenerationCount > 0 ? "imagegen-default" : "",
+      limitSamples,
       model: model || latestModel,
       serviceTier,
       status: status || (terminal ? "completed" : started ? "inProgress" : ""),
@@ -767,6 +900,7 @@ function createHistoricalTurn(turnId) {
     contextCompacted: false,
     contextProbe: false,
     hasOwnTurnContent: false,
+    limitSamples: [],
   };
 }
 
@@ -792,6 +926,7 @@ function restoreHistoricalTurn(value) {
       spawned?.threadId ? [[String(spawned.threadId), spawned]] : []
     ))),
     imageGenerationCalls: new Set(value?.imageGenerationCalls ?? []),
+    limitSamples: mergeUsageLimitSamples(value?.limitSamples),
   };
 }
 
@@ -1013,6 +1148,10 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
       attributedTurn.usage = addTokenUsage(
         attributedTurn.usage,
         normalizedRolloutUsage(entry.payload?.info?.last_token_usage),
+      );
+      attributedTurn.limitSamples = mergeUsageLimitSamples(
+        attributedTurn.limitSamples,
+        codexLimitSamplesFromTokenEvent(entry),
       );
       attributedTurn.reported = true;
       touch(attributedTurn, timestamp);

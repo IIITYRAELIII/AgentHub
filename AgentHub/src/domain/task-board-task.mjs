@@ -107,6 +107,7 @@ export function taskReferenceDescriptor(task, { intent = "context" } = {}) {
   return {
     kind: "task",
     taskId,
+    taskNumber: String(task?.taskNumber ?? "").trim() || null,
     title: taskDisplayTitle(task),
     workflowStatus,
     workspaceId: String(task?.workspaceId ?? "").trim() || null,
@@ -116,7 +117,9 @@ export function taskReferenceDescriptor(task, { intent = "context" } = {}) {
 
 function taskReferenceLink(reference) {
   const title = String(reference?.title ?? "Task").replace(/\r|\n|\[|\]/gu, " ").trim() || "Task";
-  return `[Dashboard Task: ${title}](agent-hub://task/${encodeURIComponent(reference.taskId)})`;
+  const label = String(reference?.taskNumber ?? "").trim() || `Dashboard Task: ${title}`;
+  const tooltip = title.replace(/\\/gu, "\\\\").replace(/"/gu, '\\"');
+  return `[${label}](agent-hub://task/${encodeURIComponent(reference.taskId)} "${tooltip}")`;
 }
 
 export function taskReferencePromptDetails(value) {
@@ -132,7 +135,7 @@ export function taskReferencePromptDetails(value) {
   const references = text.slice("# Attached Agent Hub Tasks\n".length, marker.index)
     .split("\n")
     .flatMap((line) => {
-      const match = /^- \[Dashboard Task: ([^\]]+)\]\(agent-hub:\/\/task\/([^\s)]+)\) · status: ([a-z_]+) · intent: (context|start)$/u
+      const match = /^- \[([^\]]+)\]\(agent-hub:\/\/task\/([^\s)]+)(?: "((?:\\.|[^"])*)")?\) · status: ([a-z_]+) · intent: (context|start)$/u
         .exec(line.trim());
       if (!match) return [];
       let taskId;
@@ -141,14 +144,17 @@ export function taskReferencePromptDetails(value) {
       } catch {
         return [];
       }
-      const workflowStatus = TASK_WORKFLOW_STATUSES.includes(match[3]) ? match[3] : "new";
+      const workflowStatus = TASK_WORKFLOW_STATUSES.includes(match[4]) ? match[4] : "new";
+      const legacyTitle = match[1].startsWith("Dashboard Task: ") ? match[1].slice(16).trim() : "";
+      const title = String(match[3] ?? legacyTitle ?? "Task").replace(/\\"/gu, '"').replace(/\\\\/gu, "\\").trim() || "Task";
       return [{
         kind: "task",
         taskId,
-        title: match[1].trim() || "Task",
+        taskNumber: legacyTitle ? null : match[1].trim() || null,
+        title,
         workflowStatus,
         workspaceId: null,
-        intent: match[4],
+        intent: match[5],
       }];
     });
   return {

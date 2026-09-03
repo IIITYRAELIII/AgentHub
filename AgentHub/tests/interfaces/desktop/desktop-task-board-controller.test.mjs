@@ -1,15 +1,20 @@
 import assert from "node:assert/strict";
+import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { DesktopTaskBoardController } from "../../../src/interfaces/desktop/desktop-task-board-controller.mjs";
 
-function fixture({ activeThread = null, sourceDetails = undefined, voiceTranscriber = null } = {}) {
+function fixture({ activeThread = null, sourceDetails = undefined, voiceTranscriber = null, attachmentDirectory = null } = {}) {
   const calls = [];
   const task = {
     id: "board-1",
     rawText: "Исправить Task dashboard",
     correctedText: "",
+    status: "open",
     workspaceId: "workspace-1",
+    streamId: null,
     sourceDetails,
   };
   const controller = new DesktopTaskBoardController({
@@ -29,15 +34,23 @@ function fixture({ activeThread = null, sourceDetails = undefined, voiceTranscri
         return { id: "board-1", rawText: value.text };
       },
       update: (value) => calls.push(["update", value]),
+      addAttachment: (value) => calls.push(["add-attachment", value]),
       setWorkflowStatus: (value) => calls.push(["status", value]),
       move: (value) => calls.push(["move", value]),
       moveColumn: (value) => calls.push(["move-column", value]),
       setNotesComment: (value) => calls.push(["notes-comment", value]),
+      prepareStart: ({ workspaceId, streamId, streamName, requestId }) => Object.assign(task, {
+        status: "starting", workspaceId, streamId, startStreamName: streamName, startRequestId: requestId,
+      }),
+      cancelPreparedStart: () => Object.assign(task, {
+        status: "open", streamId: null, startStreamName: null, startRequestId: null,
+      }),
       markStarted: (value) => calls.push(["started", value]),
     },
     workspaceCatalog: {
       workspace: (id) => id === "workspace-1" ? { id, name: "Agent Hub" } : null,
       stream: (id) => id === "stream-1" ? { id, workspaceId: "workspace-1" } : null,
+      createStream: ({ id, workspaceId, name, settings }) => ({ id, workspaceId, name, settings }),
       activeThread: () => activeThread,
       updateWorkspaceComment: (...value) => calls.push(["workspace-comment", ...value]),
     },
@@ -54,18 +67,49 @@ function fixture({ activeThread = null, sourceDetails = undefined, voiceTranscri
     },
     sendMessage: async (params) => calls.push(["message", params]),
     voiceTranscriber,
+    attachmentDirectory,
     snapshot: async (value) => { calls.push(["snapshot", value]); return { boardTasks: [] }; },
   });
   return { controller, calls };
 }
 
+test("dashboard attachment mutation accepts only files from the runtime attachment directory", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-attachments-"));
+  const attachmentDirectory = path.join(root, "attachments");
+  const outside = path.join(root, "outside.txt");
+  await mkdir(attachmentDirectory);
+  const first = path.join(attachmentDirectory, "first.bin");
+  const second = path.join(attachmentDirectory, "second.txt");
+  await Promise.all([
+    writeFile(first, Buffer.from([1, 2, 3])),
+    writeFile(second, "text"),
+    writeFile(outside, "outside"),
+  ]);
+  try {
+    const [expectedFirst, expectedSecond] = await Promise.all([realpath(first), realpath(second)]);
+    const { controller, calls } = fixture({ attachmentDirectory });
+    await controller.addAttachments({ id: "board-1", attachments: [first, second] });
+    assert.deepEqual(calls.slice(0, 2), [
+      ["add-attachment", { id: "board-1", attachment: expectedFirst }],
+      ["add-attachment", { id: "board-1", attachment: expectedSecond }],
+    ]);
+    assert.deepEqual(calls[2], ["snapshot", { refresh: true }]);
+    await assert.rejects(
+      controller.addAttachments({ id: "board-1", attachments: [outside] }),
+      /Вложение недоступно/u,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("dashboard creation adds a manual task directly to its Workspace", async () => {
   const { controller, calls } = fixture();
   await controller.create({ text: "Новая задача", workspaceId: "workspace-1" });
-  assert.deepEqual(calls[0], ["create", { text: "Новая задача", source: "hub" }]);
-  assert.deepEqual(calls[1], ["move", {
-    id: "board-created", bucket: "workspace", workspaceId: "workspace-1",
+  assert.deepEqual(calls[0], ["create", {
+    text: "Новая задача", source: "hub", bucket: "workspace", workspaceId: "workspace-1",
   }]);
+  assert.equal(calls.some(([name]) => name === "move"), false);
 });
 
 test("shared Telegram bot ingestion preserves its source and refreshes the dashboard", async () => {
@@ -237,6 +281,7 @@ test("starting a Task in an existing Stream sends a uniquely identified referenc
   assert.equal("attachments" in calls[1][1], false);
   assert.deepEqual(calls[2], ["started", {
     id: "board-1", workspaceId: "workspace-1", streamId: "stream-1",
+    requestId: "board-task:board-1:launch-2",
   }]);
 });
 

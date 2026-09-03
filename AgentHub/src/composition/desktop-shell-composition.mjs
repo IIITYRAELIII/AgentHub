@@ -1,6 +1,7 @@
 import { createDesktopReadSystemWiring } from "./desktop-read-system-wiring-composition.mjs";
 import { createDesktopCommandWiring } from "./desktop-command-wiring-composition.mjs";
 import { createDesktopRunRouterWiring } from "./desktop-run-router-wiring-composition.mjs";
+import { createDesktopTaskCreationPreparation } from "./desktop-task-creation-composition.mjs";
 import { WorkspaceCatalogService } from "../application/workspace-catalog-service.mjs";
 import { ClientTaskSelectionService } from "../application/client-task-selection-service.mjs";
 import { agentHubRuntimeHealth } from "../application/runtime-health.mjs";
@@ -60,6 +61,7 @@ export function createDesktopShellComposition({
     workLogUsageStore,
     workLogUsageRemoteConfigStore,
     workspaceCatalogStore,
+    taskReleasePlanner,
     workspaceReleaseService,
     streamHandoff,
     runtimeStateStore,
@@ -89,7 +91,9 @@ export function createDesktopShellComposition({
     streamContextMaintenance,
     streamMaintenance,
     taskBoard,
+    taskGitWorkspaces,
     taskVoiceTranscriber,
+    attachmentDirectory,
     usageSyncAuto,
   } = runtime;
   const {
@@ -226,6 +230,7 @@ export function createDesktopShellComposition({
       orderingActivityAtMs: taskOrderingActivityAtMs,
       catalogEntries: getTaskCatalog,
       workspaceHierarchy: () => workspaceCatalogStore.hierarchy(),
+      archivedWorkspaces: () => workspaceCatalogStore.archivedWorkspaces(),
       taskBoardSnapshot: () => taskBoard.snapshot(),
       taskBoardWorkspaces: () => taskBoard.workspaces(),
       taskBoardLayout: () => taskBoard.layout(),
@@ -258,6 +263,7 @@ export function createDesktopShellComposition({
   const workspaceCatalog = new WorkspaceCatalogService({
     store: workspaceCatalogStore,
     taskBoard,
+    releasePlanner: taskReleasePlanner,
     releaseCompleter: workspaceReleaseService,
   });
   const workspaceMutation = async (run, { resultKey = "" } = {}) => {
@@ -268,47 +274,15 @@ export function createDesktopShellComposition({
     return resultKey ? { ...snapshot, [resultKey]: result } : snapshot;
   };
 
-  const prepareTaskCreation = async ({
-    provider: targetProvider,
-    project,
-    workingDirectory,
-    model,
-    reasoning,
-    mode,
-    autoApprove: targetAutoApprove,
-    streamId = null,
-    title = "",
-  } = {}) => {
-    const normalizedProvider = targetProvider === "claude" ? "claude" : "codex";
-    const requestedDirectory = [workingDirectory, project, selectedProjectRoot()]
-      .map((value) => String(value ?? "").trim())
-      .find(Boolean) ?? "";
-    const selectedProject = findProject(requestedDirectory);
-    if (!selectedProject) {
-      throw new Error("Рабочая директория должна находиться внутри настроенного репозитория");
-    }
-    selectionStore.selectTask({
-      activeProjectRoot: requestedDirectory || selectedProject.path,
-      activeProvider: normalizedProvider,
-      threadId: null,
-      streamId,
-      activeThreadTitle: String(title ?? "").trim(),
-    });
-    if (model) {
-      if (normalizedProvider === "codex") agentPreferences.setCodexModel(model);
-      else agentPreferences.setClaudeModel(model);
-    }
-    if (reasoning) {
-      if (normalizedProvider === "codex") agentPreferences.setCodexReasoning(reasoning);
-      else agentPreferences.setClaudeReasoning(reasoning);
-    }
-    if (mode) {
-      if (normalizedProvider === "codex") agentPreferences.setCodexMode(mode);
-      else agentPreferences.setClaudeMode(mode);
-    }
-    if (typeof targetAutoApprove === "boolean") hostState.setAutoApprove(targetAutoApprove);
-    await saveState();
-  };
+  const prepareTaskCreation = createDesktopTaskCreationPreparation({
+    selectedProjectRoot,
+    findProject,
+    taskGitWorkspaces,
+    selectionStore,
+    agentPreferences,
+    hostState,
+    saveState,
+  });
 
   const telegramSelection = new ClientTaskSelectionService({
     sessionState: hostState,
@@ -559,6 +533,7 @@ export function createDesktopShellComposition({
       updateRootAgents: (params) => serverControlController.updateRootAgents(params),
       taskBoard,
       taskVoiceTranscriber,
+      attachmentDirectory,
       workspaceCatalog: workspaceCatalogStore,
     },
     desktop: {

@@ -222,6 +222,7 @@ function validUsageSyncService(service) {
     typeof service.sync === "function"
     || typeof service.createEnrollmentCode === "function"
     || typeof service.enroll === "function"
+    || typeof service.setDeviceLabel === "function"
   ));
 }
 
@@ -702,6 +703,14 @@ export class MiniAppServer {
       serverUrl: body.serverUrl,
       code: body.code,
     });
+    this.#journalCache = null;
+    return result;
+  }
+
+  async #setUsageSyncDeviceLabel(request) {
+    if (!this.#usageSyncService?.setDeviceLabel) throw new Error("Ник устройства Sync недоступен");
+    const body = await readJsonBody(request, 16 * 1024);
+    const result = await this.#usageSyncService.setDeviceLabel(body.deviceLabel);
     this.#journalCache = null;
     return result;
   }
@@ -1508,6 +1517,34 @@ export class MiniAppServer {
         }, method, { headers: { "Cache-Control": "private, no-store" } });
       } catch (error) {
         json(response, 503, { error: `Подключение Sync недоступно: ${error.message}` }, method);
+      }
+      return;
+    }
+    if (url.pathname === "/api/journal/usage-sync/device-label") {
+      if (!await this.#authorize(request, response)) return;
+      if (method !== "POST") {
+        json(response, 405, { error: "Метод не поддерживается" }, method, {
+          headers: { Allow: "POST" },
+        });
+        return;
+      }
+      try {
+        const result = await this.#setUsageSyncDeviceLabel(request);
+        const usageSync = await this.#usageSyncStatus();
+        const journal = await this.#journal().catch(() => null);
+        json(response, 200, {
+          ok: true,
+          result,
+          usageSync: publicJournalPayload({ html: "", updatedAt: "", version: "" }, { usageSync }).usageSync,
+          journal: journal
+            ? {
+                updatedAt: journal.updatedAt,
+                version: journal.version,
+              }
+            : null,
+        }, method, { headers: { "Cache-Control": "private, no-store" } });
+      } catch (error) {
+        json(response, 503, { error: `Ник устройства Sync недоступен: ${error.message}` }, method);
       }
       return;
     }

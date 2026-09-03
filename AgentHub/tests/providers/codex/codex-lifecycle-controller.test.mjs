@@ -17,6 +17,7 @@ async function fixture({
   run = null,
   taskGitDiff = async () => "",
   changedFilesForRun = (value) => value?.changedFiles ?? [],
+  resolveTerminalAttachments = async () => [],
 } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "codex-lifecycle-controller-"));
   const projectRoot = path.join(root, "project");
@@ -60,6 +61,7 @@ async function fixture({
         return completion;
       },
     },
+    resolveTerminalAttachments,
     defaultNotificationChatId: () => 101,
     projectTurnUsageToWorkLog: async (...args) => { projected.push(args); },
     rememberLastTaskMessage: (...args) => { remembered.push(args); },
@@ -129,6 +131,80 @@ test("Codex lifecycle completion records and delivers one terminal result", asyn
   assert.deepEqual(f.deliveredCompletions, [{ id: "completion" }]);
   assert.equal(f.codexTurnStarts.size, 0);
   assert.equal(f.hookReceipts.stop.status, "completed");
+});
+
+test("Codex lifecycle commits generated images when no managed run owns the terminal", async () => {
+  const calls = [];
+  const responseAttachments = [
+    { id: "codex-generated-one.png", name: "Изображение", type: "image/png" },
+  ];
+  const f = await fixture({
+    resolveTerminalAttachments: async (run, turnId) => {
+      calls.push({ run, turnId });
+      return responseAttachments;
+    },
+  });
+  await f.controller.handle(request("turn-start", f.projectRoot, {
+    prompt: "Generate an image",
+    startedAt: "2026-09-01T10:00:00.000Z",
+  }));
+  await f.controller.handle(request("turn-complete", f.projectRoot, {
+    status: "completed",
+    finalAnswer: "Done",
+  }));
+
+  assert.deepEqual(calls, [{
+    run: {
+      threadId: "thread-1",
+      startedAt: "2026-09-01T10:00:00.000Z",
+    },
+    turnId: "turn-1",
+  }]);
+  assert.deepEqual(f.recorded[0].responseAttachments, responseAttachments);
+});
+
+test("Codex lifecycle leaves every managed run terminal to the finalizer", async () => {
+  for (const status of ["running", "finishing", "completed"]) {
+    let resolverCalls = 0;
+    const f = await fixture({
+      run: { status },
+      resolveTerminalAttachments: async () => {
+        resolverCalls += 1;
+        return [];
+      },
+    });
+    await f.controller.handle(request("turn-complete", f.projectRoot, {
+      status: "completed",
+      finalAnswer: "Done",
+    }));
+
+    assert.equal(resolverCalls, 0, status);
+    assert.deepEqual(f.recorded[0].responseAttachments, [], status);
+    assert.deepEqual(f.deliveredCompletions, [], status);
+  }
+});
+
+test("Codex lifecycle preserves Hub terminal ownership after the managed run leaves the index", async () => {
+  let resolverCalls = 0;
+  const f = await fixture({
+    run: null,
+    resolveTerminalAttachments: async () => {
+      resolverCalls += 1;
+      return [];
+    },
+  });
+  await f.controller.handle(request("turn-start", f.projectRoot, {
+    prompt: "Generate an image",
+    executionOwner: TASK_EXECUTION_OWNERS.HUB,
+  }));
+  await f.controller.handle(request("turn-complete", f.projectRoot, {
+    status: "completed",
+    finalAnswer: "Done",
+  }));
+
+  assert.equal(resolverCalls, 0);
+  assert.deepEqual(f.recorded[0].responseAttachments, []);
+  assert.deepEqual(f.deliveredCompletions, []);
 });
 
 test("Codex lifecycle prefers turn-attributed files over shared-tree baseline changes", async () => {

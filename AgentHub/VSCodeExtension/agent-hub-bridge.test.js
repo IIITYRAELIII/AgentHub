@@ -73,6 +73,51 @@ test("VS Code bridge serves the same lazy journal contract", async () => {
   }
 });
 
+test("VS Code bridge exposes account panel HTML and usage sync status in journal payload", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-journal-sync-status-"));
+  let bridge;
+  try {
+    await mkdir(path.join(root, "data"), { recursive: true });
+    await writeFile(path.join(root, "data", "usage-sync-remote.json"), JSON.stringify({
+      serverUrl: "https://sync.example.test/agenthub",
+      deviceId: "device-vscode",
+      enrolledAt: "2026-08-20T13:45:00.000Z",
+      lastPullAt: "2026-08-20T13:46:00.000Z",
+      lastResult: { added: 2, updated: 1, projected: true, after: 3 },
+    }), "utf8");
+    await writeFile(path.join(root, "data", "usage-sync-identity.json"), JSON.stringify({
+      deviceId: "device-vscode",
+      label: "SidorukSV",
+      labelConfirmedAt: "2026-08-20T13:44:00.000Z",
+    }), "utf8");
+    bridge = new AgentHubBridge({
+      journalDatabase: memoryJournal({
+        html: [
+          '<section data-work-log-account-panel>',
+          '<span data-work-log-account-panel-caption>Расход по аккаунтам</span>',
+          "</section>",
+          day("06.07.2026", "turn-1"),
+        ].join("\n"),
+      }),
+      moduleRoot: path.resolve(__dirname, ".."),
+      runtimeRoot: root,
+    });
+
+    const response = await bridge.http({ path: "/api/journal" });
+    assert.equal(response.status, 200);
+    const payload = JSON.parse(response.body);
+    assert.match(payload.html, /data-work-log-account-panel/u);
+    assert.equal(payload.usageSync.configured, true);
+    assert.equal(payload.usageSync.deviceId, "device-vscode");
+    assert.equal(payload.usageSync.deviceLabel, "SidorukSV");
+    assert.equal(payload.usageSync.lastResult.added, 2);
+    assert.match(response.headers.ETag, /2026-08-20T13:46:00\.000Z/u);
+  } finally {
+    bridge?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("VS Code bridge closes its SQLite reader after each journal request", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-ephemeral-journal-"));
   const marker = path.join(root, "closed.txt");

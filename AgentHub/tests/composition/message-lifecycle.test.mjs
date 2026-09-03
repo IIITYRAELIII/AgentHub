@@ -1762,6 +1762,81 @@ test("durable turn order wins over an earlier queue timestamp", () => {
   ]);
 });
 
+test("focused history item identity includes its provider Thread", () => {
+  const source = clientFunctionSource("historyMessages", "function mergeNewestHistory");
+  const sandbox = vm.createContext({
+    attachmentViews: () => [],
+    conversationMessageAuthor: (_message, provider) => provider,
+    focusedTurnAlreadyVisible: () => true,
+    focusedTurnTaskThreadId: (turn) => turn.threadId,
+    historicalMessagesForDisplay: (item) => item.messages,
+  });
+  vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
+  const turnId = "20000000-0000-4000-8000-000000000001";
+  const itemId = `${turnId}:user`;
+  const messages = sandbox.mapHistory({
+    provider: "codex",
+    threadId: "10000000-0000-4000-8000-000000000020",
+    items: [{
+      provider: "codex",
+      threadId: "10000000-0000-4000-8000-000000000001",
+      id: turnId,
+      messages: [{ itemId, role: "user", text: "historical" }],
+    }],
+  }, {
+    provider: "codex",
+    threadId: "10000000-0000-4000-8000-000000000020",
+    turnId,
+    messages: [{ itemId, role: "user", text: "current" }],
+  });
+
+  assert.deepEqual(Array.from(messages, (message) => [message.threadId, message.text]), [
+    ["10000000-0000-4000-8000-000000000001", "historical"],
+    ["10000000-0000-4000-8000-000000000020", "current"],
+  ]);
+});
+
+test("chronology keeps colliding turn ids isolated by provider Thread identity", () => {
+  const turnId = "20000000-0000-4000-8000-000000000001";
+  const source = [
+    {
+      id: "old-user", provider: "codex", threadId: "10000000-0000-4000-8000-000000000001",
+      turnId, itemId: `${turnId}:user`, role: "user", turnUserSlot: "root",
+      text: "old prompt", time: "2026-08-28T22:42:00.000Z", historyOrder: 1_000,
+    },
+    {
+      id: "old-agent", provider: "codex", threadId: "10000000-0000-4000-8000-000000000001",
+      turnId, itemId: `${turnId}:agent:final`, role: "agent", text: "old answer",
+      time: "2026-08-28T22:43:00.000Z", historyOrder: 1_001,
+      activities: [{ id: "old-diff", title: "Historical diff" }],
+    },
+    {
+      id: "current-user", provider: "codex", threadId: "10000000-0000-4000-8000-000000000020",
+      turnId, itemId: `${turnId}:user`, role: "user", turnUserSlot: "root",
+      text: "123", time: "2026-09-01T04:05:00.000Z", historyOrder: 29_000,
+    },
+    {
+      id: "current-agent", provider: "codex", threadId: "10000000-0000-4000-8000-000000000020",
+      turnId, itemId: `${turnId}:agent:final`, role: "agent", text: "Принято",
+      time: "2026-09-01T04:05:01.000Z", historyOrder: 29_001,
+      activities: [],
+    },
+  ];
+
+  const deduplicated = lifecycle.deduplicateConversationMessages(source);
+  assert.equal(deduplicated.length, 4);
+  const ordered = lifecycle.chronologicalMessages(deduplicated);
+  assert.deepEqual(Array.from(ordered, (item) => item.id), [
+    "old-user", "old-agent", "current-user", "current-agent",
+  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(
+    ordered.find((item) => item.id === "old-agent").activities,
+  )), [
+    { id: "old-diff", title: "Historical diff" },
+  ]);
+  assert.equal(ordered.find((item) => item.id === "current-agent").activities.length, 0);
+});
+
 test("same-turn maintenance stays below the agent answer despite an earlier timestamp", () => {
   const values = lifecycle.chronologicalMessages([
     {
@@ -1923,6 +1998,156 @@ test("only receipts still owned by the deferred queue hide their chat card", () 
   assert.equal(lifecycle.receiptUsesDeferredQueue({ accepted: true, deferred: true, queued: true, reason: "message-intake" }), false);
   assert.equal(lifecycle.receiptUsesDeferredQueue({ deferred: true, queued: true, dispatching: true }), false);
   assert.equal(lifecycle.receiptUsesDeferredQueue({ accepted: true, deferred: false }), false);
+});
+
+test("accepted immediate intake stays visible until its provider turn starts", () => {
+  const clientUserMessageId = "client-immediate-intake";
+  const intakeReceipt = {
+    clientUserMessageId,
+    accepted: true,
+    deferred: true,
+    queued: true,
+    reason: "message-intake",
+  };
+  const transientDeferredInput = {
+    clientUserMessageId,
+    state: "queued",
+  };
+  const optimistic = {
+    ...message(clientUserMessageId, "Исправь регрессию"),
+    turnId: "",
+    itemId: clientUserMessageId,
+    deliveryState: lifecycle.receiptDeliveryState(intakeReceipt),
+  };
+
+  assert.deepEqual(
+    { ...lifecycle.messageReceiptProjection(intakeReceipt) },
+    { accepted: true, deliveryState: "accepted", ownsDeferredQueue: false },
+  );
+  assert.equal(optimistic.deliveryState, "accepted");
+  assert.equal(
+    lifecycle.deferredInputDeliveryState(transientDeferredInput, [intakeReceipt]),
+    null,
+  );
+  const deferredIds = lifecycle.deferredQueueClientUserMessageIds(
+    [transientDeferredInput],
+    [intakeReceipt],
+  );
+  assert.deepEqual(deferredIds, []);
+  assert.deepEqual(
+    lifecycle.visibleConversationMessages([optimistic], {
+      deferredClientUserMessageIds: deferredIds,
+    }).map((item) => item.clientUserMessageId),
+    [clientUserMessageId],
+  );
+
+  const canonical = {
+    ...optimistic,
+    id: "provider-user-item",
+    turnId: "provider-turn",
+    itemId: "provider-user-item",
+    deliveryState: "delivered",
+  };
+  const started = lifecycle.deduplicateConversationMessages([canonical, optimistic]);
+  assert.equal(started.length, 1);
+  assert.equal(started[0].clientUserMessageId, clientUserMessageId);
+});
+
+test("a real deferred queue command stays out of the conversation", () => {
+  const clientUserMessageId = "client-real-queue";
+  const queueReceipt = {
+    clientUserMessageId,
+    accepted: false,
+    deferred: true,
+    queued: true,
+    reason: "task-running",
+  };
+  const deferredInput = { clientUserMessageId, state: "queued" };
+  assert.deepEqual(
+    { ...lifecycle.messageReceiptProjection(queueReceipt) },
+    { accepted: true, deliveryState: "queued", ownsDeferredQueue: true },
+  );
+  assert.equal(lifecycle.receiptDeliveryState(queueReceipt), "queued");
+  assert.equal(lifecycle.deferredInputDeliveryState(deferredInput, [queueReceipt]), "queued");
+  const deferredIds = lifecycle.deferredQueueClientUserMessageIds(
+    [deferredInput],
+    [queueReceipt],
+  );
+  const visible = lifecycle.visibleConversationMessages([{
+    ...message(clientUserMessageId, "После текущего хода"),
+    deliveryState: "queued",
+  }], { deferredClientUserMessageIds: deferredIds });
+  assert.deepEqual(visible, []);
+});
+
+test("accepted intake stays visible after its receipt leaves the bounded snapshot", () => {
+  const clientUserMessageId = "client-accepted-outside-receipt-window";
+  const deferredInput = {
+    clientUserMessageId,
+    state: "queued",
+    conflictKind: "message-intake",
+  };
+  const newerReceipts = Array.from({ length: 100 }, (_, index) => ({
+    clientUserMessageId: `client-terminal-${index}`,
+    accepted: true,
+  }));
+  const exposedReceipts = [{
+    clientUserMessageId,
+    accepted: true,
+    deferred: true,
+    queued: true,
+    reason: "message-intake",
+  }, ...newerReceipts].slice(-100);
+
+  assert.equal(exposedReceipts.some((receipt) => (
+    receipt.clientUserMessageId === clientUserMessageId
+  )), false);
+  assert.equal(lifecycle.deferredInputUsesQueue(deferredInput, exposedReceipts), false);
+  assert.equal(lifecycle.deferredInputDeliveryState(deferredInput, exposedReceipts), null);
+  const deferredIds = lifecycle.deferredQueueClientUserMessageIds(
+    [deferredInput],
+    exposedReceipts,
+  );
+  assert.deepEqual(deferredIds, []);
+  assert.deepEqual(
+    lifecycle.visibleConversationMessages([{
+      ...message(clientUserMessageId, "Не исчезай после snapshot"),
+      deliveryState: "accepted",
+    }], { deferredClientUserMessageIds: deferredIds }).map((item) => item.clientUserMessageId),
+    [clientUserMessageId],
+  );
+});
+
+test("deferred input without a receipt stays queued unless durable intake accepted it", () => {
+  const deferredInput = {
+    clientUserMessageId: "client-real-queue-without-receipt",
+    state: "queued",
+    conflictKind: "task-running",
+  };
+
+  assert.equal(lifecycle.deferredInputUsesQueue(deferredInput, []), true);
+  assert.equal(lifecycle.deferredInputDeliveryState(deferredInput, []), "queued");
+  assert.deepEqual(
+    lifecycle.deferredQueueClientUserMessageIds([deferredInput], []),
+    [deferredInput.clientUserMessageId],
+  );
+});
+
+test("dispatching input leaves the queue while retaining its sending state", () => {
+  const clientUserMessageId = "client-dispatching";
+  const receipt = {
+    clientUserMessageId,
+    deferred: true,
+    queued: true,
+    dispatching: true,
+  };
+  const deferredInput = { clientUserMessageId, state: "dispatching" };
+  assert.equal(lifecycle.deferredInputUsesQueue(deferredInput, [receipt]), false);
+  assert.equal(lifecycle.deferredInputDeliveryState(deferredInput, [receipt]), "sending");
+  assert.deepEqual(
+    lifecycle.deferredQueueClientUserMessageIds([deferredInput], [receipt]),
+    [],
+  );
 });
 
 test("live user update enriches a durable duplicate with its attachment and time", () => {
@@ -2393,6 +2618,81 @@ test("completed live card uses a newly recorded final even before durable histor
     lastAnswer: "Legacy final",
     lastAnswerAt: "2026-08-02T10:00:01.000Z",
   }), "Legacy final");
+});
+
+test("terminal history clears a pre-turn live card by exact client identity", () => {
+  const taskId = "stream:s5";
+  const provider = "codex";
+  const threadId = "10000000-0000-4000-8000-000000000020";
+  const turnId = "20000000-0000-4000-8000-000000000028";
+  const clientUserMessageId = "qa-28";
+  const history = [
+    {
+      provider, threadId, turnId, itemId: `${turnId}:user`, role: "user",
+      clientUserMessageId, text: "QA-28", projectionState: "completed",
+    },
+    {
+      provider, threadId, turnId, itemId: `${turnId}:agent:final`, role: "agent",
+      text: "Принято", projectionState: "completed", terminalRevision: 1,
+    },
+  ];
+  assert.deepEqual(
+    { ...lifecycle.completedLiveTurnIdentity(history, {
+      provider,
+      threadId,
+      turnId: "",
+      clientUserMessageIds: [clientUserMessageId],
+    }) },
+    { provider, threadId, turnId },
+  );
+
+  const liveCardsByTask = new Map([[taskId, { provider, threadId, turnId: "" }]]);
+  const liveProbeByTask = new Map([[taskId, { provider, threadId, turnId: "" }]]);
+  const liveUserMessagesByTask = new Map([[taskId, {
+    provider,
+    threadId,
+    turnId: "",
+    clientUserMessageId,
+    userMessages: [{ clientUserMessageId }],
+  }]]);
+  const cleared = [];
+  const sandbox = vm.createContext({
+    liveCardsByTask,
+    liveProbeByTask,
+    liveUserMessagesByTask,
+    historyByTask: new Map([[taskId, history]]),
+    completedLiveTurnIdentity: lifecycle.completedLiveTurnIdentity,
+    agentHub: { setLive: (...args) => cleared.push(args) },
+  });
+  const clearSource = clientFunctionSource(
+    "clearDurablyCompletedLiveCard",
+    "function exactSelectedTaskParams",
+  );
+  vm.runInContext(`${clearSource}; globalThis.clearLive = clearDurablyCompletedLiveCard;`, sandbox);
+
+  assert.equal(sandbox.clearLive(taskId), true);
+  assert.equal(liveCardsByTask.has(taskId), false);
+  assert.equal(liveProbeByTask.has(taskId), false);
+  assert.equal(liveUserMessagesByTask.has(taskId), false);
+  assert.deepEqual(cleared, [[taskId, null]]);
+});
+
+test("pre-turn live cleanup never crosses provider Thread identity", () => {
+  const turnId = "20000000-0000-4000-8000-000000000028";
+  assert.equal(lifecycle.completedLiveTurnIdentity([
+    {
+      provider: "codex", threadId: "thread-old", turnId, role: "user",
+      clientUserMessageId: "qa-28", text: "QA-28",
+    },
+    {
+      provider: "codex", threadId: "thread-old", turnId, role: "agent",
+      text: "Принято", projectionState: "completed", terminalRevision: 1,
+    },
+  ], {
+    provider: "codex",
+    threadId: "thread-current",
+    clientUserMessageIds: ["qa-28"],
+  }), null);
 });
 
 test("terminal live promotion keeps the complete activity trace", () => {

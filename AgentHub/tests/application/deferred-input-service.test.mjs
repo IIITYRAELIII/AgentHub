@@ -98,6 +98,31 @@ test("message intake uses its bounded durable write instead of a full runtime sn
   assert.deepEqual(events, ["intake:desktop-intake:queued"]);
 });
 
+test("durable steer persists its exact managed run target", async () => {
+  const store = new DeferredInputStore();
+  const service = new DeferredInputService({
+    store,
+    createId: () => "desktop-steer",
+    persist: async () => assert.fail("full persistence must not run"),
+    persistIntake: async (item) => ({ record: { item } }),
+    removeFiles: async () => {},
+    notify: async () => null,
+  });
+
+  const result = await service.defer("steer", [], {
+    target: { provider: "codex", threadId: "thread-1", clientSource: "desktop" },
+    clientUserMessageId: "client-steer-1",
+    destination: "queued",
+    conflictKind: "message-steer",
+    steerTargetRunId: "run-1",
+    steerTargetTurnId: "turn-1",
+    notify: false,
+  });
+
+  assert.equal(result.item.steerTargetRunId, "run-1");
+  assert.equal(result.item.steerTargetTurnId, "turn-1");
+});
+
 test("failed durable message intake does not leave an executable ghost item", async () => {
   const store = new DeferredInputStore();
   const service = new DeferredInputService({

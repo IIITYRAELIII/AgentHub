@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { DesktopAttachmentService } from "../../../src/interfaces/desktop/desktop-attachment-service.mjs";
+import { createCodexAssistantAttachmentImporter } from "../../../src/providers/codex/codex-assistant-attachments.mjs";
 
 test("Desktop attachment service validates, describes and opens local images", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-attachments-"));
@@ -52,6 +53,34 @@ test("Desktop attachment service accepts documents and preserves their names", a
       isImage: false,
     }]);
     assert.equal((await service.open({ id: path.basename(file) })).url, `/api/message-attachment/${path.basename(file)}`);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Desktop attachment service imports generated images from the configured Codex home", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-attachments-"));
+  try {
+    const codexHome = path.join(root, "isolated-codex-home");
+    const generated = path.join(codexHome, "generated_images", "thread-1", "exec-1.png");
+    await mkdir(path.dirname(generated), { recursive: true });
+    await writeFile(generated, Buffer.from("terra-image"));
+    const service = new DesktopAttachmentService({
+      runtimeCommandRoot: root,
+      codexHome,
+      projectRoot: root,
+      projectRoots: [root],
+      assistantAttachmentImporterFactory: createCodexAssistantAttachmentImporter,
+    });
+
+    const [attachment] = await service.importCodex([{ type: "generated-path", value: generated }]);
+
+    assert.match(attachment.id, /^codex-generated-[0-9a-f]{64}\.png$/u);
+    assert.equal(attachment.name, "Изображение");
+    assert.equal(
+      (await readFile(path.join(root, "attachments", attachment.id))).toString(),
+      "terra-image",
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

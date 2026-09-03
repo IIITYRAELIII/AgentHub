@@ -410,6 +410,7 @@ test("every production Phosphor icon creates a real namespaced SVG", async () =>
     "caret-up",
     "clock-counter-clockwise",
     "copy",
+    "folder",
     "pencil-simple",
     "plus",
     "push-pin-simple",
@@ -436,6 +437,41 @@ test("unknown Phosphor icons fail the registry contract", async () => {
     () => createPhosphorIcon(document, "missing-icon"),
     /unknown Phosphor icon: missing-icon/u,
   );
+});
+
+test("Workspace folder summary uses only namespaced Phosphor SVG icons", async () => {
+  const { workspaceFolderSummaryIcons } = await streamTabsApi();
+  const document = {
+    createElementNS: (namespaceURI, localName) => new FakeSvgNode(namespaceURI, localName),
+  };
+
+  const icons = workspaceFolderSummaryIcons(document);
+
+  assert.deepEqual(
+    Array.from(icons, (icon) => icon.attributes.get("data-phosphor-icon")),
+    ["caret-right", "folder"],
+  );
+  for (const icon of icons) {
+    assert.equal(icon.namespaceURI, "http://www.w3.org/2000/svg");
+    assert.equal(icon.localName, "svg");
+    assert.equal(icon.attributes.get("aria-hidden"), "true");
+    assert.ok(icon.attributes.get("class")?.startsWith("task-workspace-folder-"));
+    assert.equal(icon.children.length, 1);
+    assert.equal(icon.children[0].localName, "path");
+    assert.ok(icon.children[0].attributes.get("d"));
+  }
+});
+
+test("Workspace folder production path uses Phosphor icons without raw glyphs", async () => {
+  const [appSource, stylesSource] = await Promise.all([
+    readFile(new URL("../../assets/web-app/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../../assets/web-app/styles.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(appSource, /workspaceFolderSummaryIcons\(document\)/u);
+  assert.doesNotMatch(appSource, /task-workspace-folder-icon[^,\n]*text:\s*"▸"/u);
+  assert.doesNotMatch(stylesSource, /task-workspace-folder-glyph::before/u);
+  assert.doesNotMatch(stylesSource, /task-workspace-folder-glyph\s*\{[^}]*border:/u);
 });
 
 test("open Stream layout preserves physical column order when activity changes", async () => {
@@ -783,6 +819,152 @@ test("Workspace sections separate active work and group stable project families"
       },
     ],
   );
+});
+
+test("explicit Workspace folders keep members together and empty folders visible", async () => {
+  const { workspaceSections } = await streamTabsApi();
+  const sections = workspaceSections([
+    {
+      id: "urgent",
+      name: "Срочный проект",
+      folderName: "Клиенты",
+      tasks: [{ running: true, lastActivity: "2026-08-10T10:00:00Z" }],
+    },
+    {
+      id: "calm",
+      name: "Архивный проект",
+      folderName: "Клиенты",
+      tasks: [{ lastActivity: "2026-08-01T10:00:00Z" }],
+    },
+    {
+      id: "loose",
+      name: "Личное",
+      tasks: [{ running: true, lastActivity: "2026-08-10T10:00:00Z" }],
+    },
+  ], {
+    nowMs: Date.parse("2026-08-10T11:00:00Z"),
+    activeWindowMs: 1,
+    folderNames: ["Пустая"],
+  });
+
+  assert.deepEqual(Array.from(sections.active, (group) => group.id), ["loose"]);
+  assert.deepEqual(JSON.parse(JSON.stringify(sections.catalog.map((entry) => ({
+    type: entry.type,
+    name: entry.name,
+    items: entry.items?.map((item) => item.id) ?? [],
+  })))), [
+    { type: "folder", name: "Клиенты", items: ["calm", "urgent"] },
+    { type: "folder", name: "Пустая", items: [] },
+  ]);
+});
+
+test("Workspace folders open for selected, running, or unread children", async () => {
+  const { workspaceFolderOpen } = await streamTabsApi();
+  const folder = {
+    key: "folder:Клиенты",
+    name: "Клиенты",
+    items: [{ id: "one", tasks: [{ running: false, unread: false }] }],
+  };
+
+  assert.equal(workspaceFolderOpen(folder, ["folder:Клиенты"], "other"), false);
+  assert.equal(workspaceFolderOpen(folder, ["folder:Клиенты"], "one"), true);
+  assert.equal(workspaceFolderOpen({
+    ...folder,
+    items: [{ id: "one", tasks: [{ running: true }] }],
+  }, ["folder:Клиенты"], "other"), true);
+  assert.equal(workspaceFolderOpen({
+    ...folder,
+    items: [{ id: "one", tasks: [{ unread: true }] }],
+  }, ["folder:Клиенты"], "other"), true);
+});
+
+test("Workspace folder mutations preserve settings and creation can stay ungrouped", async () => {
+  const {
+    workspaceCreationSettings,
+    workspaceFolderMutation,
+    workspaceFolderNames,
+    workspaceFolderRenamePlan,
+  } = await streamTabsApi();
+  const workspace = {
+    id: "workspace-1",
+    settings: { workingDirectory: "project", taskPrefix: "HUB", releaseWorkflowEnabled: true },
+  };
+
+  assert.deepEqual(JSON.parse(JSON.stringify(
+    workspaceFolderMutation(workspace, "  Важные   проекты  "),
+  )), {
+    workspaceId: "workspace-1",
+    folderName: "Важные проекты",
+    settings: {
+      workingDirectory: "project",
+      taskPrefix: "HUB",
+      releaseWorkflowEnabled: true,
+      catalogFolder: "Важные проекты",
+    },
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(workspaceFolderMutation({
+    ...workspace,
+    settings: { ...workspace.settings, catalogFolder: "Старая" },
+  }, ""))), {
+    workspaceId: "workspace-1",
+    folderName: "",
+    settings: workspace.settings,
+  });
+  assert.deepEqual(Array.from(workspaceFolderNames([
+    { settings: { catalogFolder: "Бета" } },
+    { settings: { catalogFolder: "Альфа" } },
+  ], [" Гамма ", "Альфа"])), ["Альфа", "Бета", "Гамма"]);
+  assert.deepEqual(JSON.parse(JSON.stringify(workspaceCreationSettings({
+    workingDirectory: "  project  ",
+    taskPrefix: " HUB ",
+    releaseWorkflowEnabled: true,
+    folderName: "  Новые   проекты ",
+  }))), {
+    workingDirectory: "project",
+    taskPrefix: "HUB",
+    releaseWorkflowEnabled: true,
+    catalogFolder: "Новые проекты",
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(
+    workspaceCreationSettings({ workingDirectory: "project" }),
+  )), {
+    workingDirectory: "project",
+    taskPrefix: "",
+    releaseWorkflowEnabled: false,
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(workspaceFolderRenamePlan([
+    { id: "one", settings: { catalogFolder: "Клиенты" } },
+    { id: "two", settings: { catalogFolder: "Другое" } },
+  ], "Клиенты", " Заказчики ", ["Клиенты", "Другое"]))), {
+    fromFolderName: "Клиенты",
+    toFolderName: "Заказчики",
+    duplicateFolderName: "",
+    workspaceIds: ["one"],
+  });
+  assert.equal(
+    workspaceFolderRenamePlan([], "Клиенты", "другое", ["Клиенты", "Другое"]).duplicateFolderName,
+    "Другое",
+  );
+});
+
+test("Workspace archive presentation keeps expiry and exact-name confirmation", async () => {
+  const { workspaceArchiveNameMatches, workspaceArchivePresentation } = await streamTabsApi();
+  assert.deepEqual(JSON.parse(JSON.stringify(workspaceArchivePresentation([{
+    id: "archived",
+    name: "Удалённый",
+    streamCount: 2,
+    threadCount: 5,
+    purgeAfterMs: 1_700_000_000_000 + (26 * 60 * 60 * 1000),
+  }], 1_700_000_000_000))), [{
+    id: "archived",
+    name: "Удалённый",
+    streamCount: 2,
+    threadCount: 5,
+    purgeAfterMs: 1_700_093_600_000,
+    remainingLabel: "Осталось 2 дн.",
+  }]);
+  assert.equal(workspaceArchiveNameMatches({ name: "Точный регистр" }, "Точный регистр"), true);
+  assert.equal(workspaceArchiveNameMatches({ name: "Точный регистр" }, "точный регистр"), false);
 });
 
 test("activity rail markup exposes separate active and recent sections", async () => {

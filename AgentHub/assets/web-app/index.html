@@ -55,6 +55,7 @@
   <script src="/task-references.js" defer></script>
   <script src="/workspace-release-workflow.js" defer></script>
   <script src="/stream-role-settings.js" defer></script>
+  <script src="/themed-select-placement.js" defer></script>
   <script src="/app.js" defer></script>
   <script src="/pre-turn-instructions-editor.js" defer></script>
   <script src="/root-agents-editor.js" defer></script>
@@ -238,15 +239,39 @@
           <span>Workspaces</span>
           <span class="task-count" data-task-count hidden></span>
         </div>
-        <button type="button" class="icon-button task-new" data-action="workspace-new"
-          title="Новый Workspace" aria-label="Новый Workspace">
-          <svg data-phosphor-icon="plus" viewBox="0 0 256 256" aria-hidden="true">
-            <line x1="40" y1="128" x2="216" y2="128" fill="none" stroke="currentColor"
-              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
-            <line x1="128" y1="40" x2="128" y2="216" fill="none" stroke="currentColor"
-              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
-          </svg>
-        </button>
+        <span class="task-rail-actions">
+          <button type="button" class="icon-button task-folder-new" data-action="workspace-folder-new"
+            title="Новая пустая папка Workspace" aria-label="Новая пустая папка Workspace">
+            <svg data-phosphor-icon="folder-plus" viewBox="0 0 256 256" aria-hidden="true">
+              <path d="M216 208H40a8 8 0 0 1-8-8V64a8 8 0 0 1 8-8h60l28 32h88a8 8 0 0 1 8 8v104a8 8 0 0 1-8 8Z"
+                fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+                stroke-width="16"></path>
+              <line x1="128" y1="120" x2="128" y2="176" fill="none" stroke="currentColor"
+                stroke-linecap="round" stroke-width="16"></line>
+              <line x1="100" y1="148" x2="156" y2="148" fill="none" stroke="currentColor"
+                stroke-linecap="round" stroke-width="16"></line>
+            </svg>
+          </button>
+          <button type="button" class="icon-button workspace-archive-open" data-action="workspace-archive-open"
+            title="Архив удалённых Workspace" aria-label="Архив удалённых Workspace" hidden>
+            <svg data-phosphor-icon="archive-tray" viewBox="0 0 256 256" aria-hidden="true">
+              <rect x="24" y="56" width="208" height="40" rx="8" fill="none" stroke="currentColor"
+                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></rect>
+              <path d="M208 96v104a8 8 0 0 1-8 8H56a8 8 0 0 1-8-8V96M96 136h64" fill="none"
+                stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></path>
+            </svg>
+            <span class="workspace-archive-count" data-workspace-archive-count></span>
+          </button>
+          <button type="button" class="icon-button task-new" data-action="workspace-new"
+            title="Новый Workspace" aria-label="Новый Workspace">
+            <svg data-phosphor-icon="plus" viewBox="0 0 256 256" aria-hidden="true">
+              <line x1="40" y1="128" x2="216" y2="128" fill="none" stroke="currentColor"
+                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+              <line x1="128" y1="40" x2="128" y2="216" fill="none" stroke="currentColor"
+                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+            </svg>
+          </button>
+        </span>
       </div>
       <div class="task-search">
         <svg data-phosphor-icon="magnifying-glass" viewBox="0 0 256 256" aria-hidden="true">
@@ -478,25 +503,75 @@
                   <span class="switch-text">Автоподтверждение</span>
                   <span class="switch-track" aria-hidden="true"></span>
                 </label>
-                <div class="stream-architect-setting">
-                  <label class="setting-switch">
-                    <input type="checkbox" data-dialog-stream-architect
-                      aria-describedby="stream-architect-note">
-                    <span class="switch-text">Архитектор</span>
-                    <span class="switch-track" aria-hidden="true"></span>
-                  </label>
-                  <span class="switch-note" id="stream-architect-note">
-                    Архитектор Workspace проверяет и выпускает ожидающие Tasks. Архитекторов может быть несколько.
+                <div class="stream-role-setting stream-architect-setting">
+                  <span class="stream-role-setting-heading">
+                    <label class="setting-switch">
+                      <input type="checkbox" data-dialog-stream-architect
+                        aria-describedby="stream-architect-note">
+                      <span class="switch-text">Архитектор</span>
+                      <span class="switch-track" aria-hidden="true"></span>
+                    </label>
+                    <span class="stream-role-help-popover">
+                      <button type="button" class="stream-role-help" aria-label="Инструкция роли Архитектор"
+                        popovertarget="stream-architect-note">?</button>
+                      <div class="stream-role-tooltip" id="stream-architect-note" popover>
+                        <p>Ты — архитектор релизов Workspace.</p>
+                        <p>Ты собираешь, проверяешь и развёртываешь релизы.</p>
+                        <p>Только Streams, отмеченные как Workspace Architect, могут интегрировать и публиковать релизы Workspace.</p>
+                        <p>Не жди несвязанных черновых или заблокированных работ. Сразу выпускай готовый набор, но остановись, если неготовые, конфликтующие, пересекающиеся или незарегистрированные изменения влияют на зафиксированный состав релиза, целостность сборки или развёртывания.</p>
+                        <p>Последовательность проверки релиза</p>
+                        <p>Когда пользователь явно разрешает релиз, действуй как интегратор релиза.</p>
+                        <p>В начале релиза обнови локальную ветку main из origin до фиксации состава релиза. Если текущее рабочее дерево мешает безопасному обновлению, используй отдельный интеграционный worktree. Никогда не применяй stash, не удаляй и не перезаписывай изменения, принадлежащие другому Stream.</p>
+                        <p>После обновления main зафиксируй точный состав релиза. Не добавляй молча изменения, появившиеся после фиксации состава.</p>
+                        <p>Проверь незарегистрированные изменения рабочего дерева и определи затронутые компоненты и необходимые проверки.</p>
+                        <p>До релизных тестов и сборки выполни предписанную для Workspace предварительную проверку зафиксированного состава. Продолжай только если она подтверждает, что релизный кандидат актуален и содержит ровно выбранные изменения.</p>
+                        <p>Перед интеграцией релиза запускай только целевые тесты затронутого кода и выполни поиск по репозиторию устаревших проверок, контрактов, подписей и терминологии, связанных с изменённым поведением.</p>
+                        <p>Собери все результаты предварительной проверки и исправления в один согласованный пакет. Избегай последовательности отдельных коммитов, исправляющих только тесты.</p>
+                        <p>Интегрируй зафиксированный состав способом, предписанным для Workspace.</p>
+                        <p>Проверяй и публикуй только неизменяемый кандидат, соответствующий зафиксированному составу релиза, но не изменяемую интеграционную ветку.</p>
+                        <p>Запусти предписанный для Workspace релизный конвейер как единую полную процедуру финального тестирования, сборки, push и публикации без ограничения времени выполнения.</p>
+                        <p>Если конвейер завершился ошибкой, используй его полный агрегированный отчёт. Исправь все выявленные причины одним согласованным пакетом, запусти только необходимые для этих исправлений целевые тесты, интегрируй исправление и повторно запусти тот же релизный конвейер.</p>
+                        <p>Продолжай повторные попытки, пока релиз не завершится успешно или дальнейшему выполнению не помешает реальная внешняя блокировка. Повторные попытки, необходимые для завершения того же явно разрешённого релиза, не требуют дополнительного разрешения пользователя.</p>
+                        <p>После успешного завершения конвейера проверь, что main содержит интегрированную ревизию релиза и production-развёртывание исправно. Только после этого отметь релиз опубликованным.</p>
+                        <p>После подтверждённой публикации закрой только включённые элементы работы, синхронизируй опубликованный main с интеграционной веткой без потери более поздних изменений и пересобери следующий кандидат из оставшихся принятых элементов.</p>
+                      </div>
+                    </span>
                   </span>
                 </div>
-                <div class="setting-row dialog-quick-messages-row">
-                  <span class="dialog-quick-messages-summary">
-                    <span class="setting-name">Глобальные быстрые ответы</span>
-                    <span class="setting-value" data-dialog-global-quick-messages-count>Не заданы</span>
+                <div class="stream-role-setting stream-team-lead-setting">
+                  <span class="stream-role-setting-heading">
+                    <label class="setting-switch">
+                      <input type="checkbox" data-dialog-stream-team-lead
+                        aria-describedby="stream-team-lead-note">
+                      <span class="switch-text">Тим-лид</span>
+                      <span class="switch-track" aria-hidden="true"></span>
+                    </label>
+                    <span class="stream-role-help-popover">
+                      <button type="button" class="stream-role-help" aria-label="Инструкция роли Тим-лид"
+                        popovertarget="stream-team-lead-note">?</button>
+                      <div class="stream-role-tooltip" id="stream-team-lead-note" popover>
+                        <p>Ты — тим-лид Workspace.</p>
+                        <p>По умолчанию делегируй Dashboard Tasks другим потокам вместо самостоятельного выполнения. Это предпочтение не распространяется на архитектурные релизные действия.</p>
+                        <p>При делегировании проси исполнителя прислать результат межпоточным сообщением в твой Stream. Не жди ответа: если другой работы нет, заверши текущий ход.</p>
+                        <p>Не используй субагентов даже по просьбе пользователя; используй соседние потоки Workspace. Тебе всегда разрешено обращаться к другим потокам без отдельного подтверждения пользователя.</p>
+                        <p>Перед делегированием вызови hub_parallel_streams_list. Stream свободен, только если activeRuns пуст и queuedInputCount равен нулю. Назначенная Task в In Progress сама по себе не делает Stream занятым.</p>
+                        <p>Предпочитай свободный Stream, имя которого указывает на ответственность за нужный логический блок. Если такого нет, используй свободный S2–Sn.</p>
+                        <p>Не делегируй в Stream с другим текущим provider, если пользователь прямо не указал этот Stream или provider.</p>
+                        <p>Если все подходящие Streams заняты, создай S&lt;max+1&gt;, учитывая только имена вида S&lt;number&gt;; если таких нет, используй S2. Новый Stream наследует только твои provider, model и reasoning, но не роли, правила и рабочую директорию.</p>
+                        <p>Вопрос или замечание по уже назначенной Task отправляй через hub_stream_message_send с mode=queue.</p>
+                        <p>Новую Task передавай свободному Stream через hub_task_start, запущенную — через hub_task_reassign. В сообщении попроси исполнителя прислать результат в твой Stream.</p>
+                      </div>
+                    </span>
                   </span>
-                  <button type="button" class="chip-button" data-dialog-global-quick-messages>
-                    Настроить…
-                  </button>
+                </div>
+                <div class="quick-messages-settings-row">
+                  <span class="setting-name">Быстрые ответы потока</span>
+                  <span class="quick-messages-settings-control">
+                    <span class="setting-value" data-dialog-stream-quick-messages-count>Не заданы</span>
+                    <button type="button" class="chip-button" data-dialog-stream-quick-messages>
+                      Настроить…
+                    </button>
+                  </span>
                 </div>
               </div>
             </section>
@@ -748,7 +823,10 @@
       <form class="task-card-editor" data-task-card-editor>
         <label>
           <span>Заголовок</span>
-          <textarea rows="1" maxlength="160" required data-task-card-title></textarea>
+          <span class="task-card-title-control">
+            <output class="task-card-number" data-task-card-number aria-label="Номер задачи" hidden></output>
+            <textarea rows="1" maxlength="160" required data-task-card-title></textarea>
+          </span>
         </label>
         <label>
           <span>Описание</span>
@@ -774,7 +852,22 @@
           <div class="task-card-work-log-entries" data-task-card-work-log-entries></div>
         </div>
       </section>
-      <div class="board-task-card-attachments" data-task-card-attachments hidden></div>
+      <section class="board-task-card-attachments" aria-label="Вложения задачи">
+        <div class="task-card-attachment-toolbar">
+          <span>Вложения</span>
+          <button type="button" class="icon-button task-card-attachment-add" data-task-card-attachment-add
+            title="Прикрепить файлы" aria-label="Прикрепить файлы">
+            <svg data-phosphor-icon="paperclip" viewBox="0 0 256 256" aria-hidden="true">
+              <path d="M160,80,76.69,164.69a16,16,0,0,0,22.63,22.62L198.63,86.63a32,32,0,0,0-45.26-45.26L54.06,142.06a48,48,0,0,0,67.88,67.88L204,128"
+                fill="none" stroke="currentColor" stroke-linecap="round"
+                stroke-linejoin="round" stroke-width="16"></path>
+            </svg>
+          </button>
+          <input type="file" data-task-card-attachment-input multiple hidden>
+        </div>
+        <p class="task-card-attachment-hint" data-task-card-attachment-hint>Выбери файлы или вставь их через Ctrl+V</p>
+        <div data-task-card-attachments hidden></div>
+      </section>
       <div class="board-task-original" data-task-card-original>
         <button type="button" class="board-task-original-toggle" data-task-card-original-toggle
           aria-expanded="false" aria-controls="task-card-original-text">Показать исходный текст</button>
@@ -799,7 +892,7 @@
   <dialog class="task-start-modal" data-task-start-modal>
     <header>
       <div>
-        <p class="eyebrow">Начать работу</p>
+        <p class="eyebrow" data-task-start-eyebrow>Начать работу</p>
         <h2 data-task-start-title>Задача</h2>
       </div>
       <button type="button" class="icon-button" data-task-start-close aria-label="Закрыть">×</button>
@@ -815,7 +908,7 @@
         <option value="codex">Codex</option>
         <option value="claude">Claude</option>
       </select>
-      <button type="submit">Создать Stream и начать</button>
+      <button type="submit" data-task-start-submit>Создать Stream и начать</button>
     </form>
   </dialog>
 
@@ -833,6 +926,12 @@
           <span>Наименование</span>
           <input type="text" maxlength="120" data-workspace-card-name required>
         </label>
+        <label data-workspace-card-folder-field>
+          <span>Папка</span>
+          <select data-workspace-card-folder>
+            <option value="">Без папки — общий список</option>
+          </select>
+        </label>
         <label>
           <span>Комментарий</span>
           <textarea rows="4" maxlength="1000" data-workspace-card-comment></textarea>
@@ -841,6 +940,11 @@
           <span>Рабочая директория</span>
           <input type="text" maxlength="1000" data-workspace-card-working-directory
             placeholder="Например, D:\projects\Utilities\AgentHub" autocomplete="off" spellcheck="false">
+        </label>
+        <label>
+          <span>Префикс воркспейса</span>
+          <input type="text" maxlength="40" data-workspace-card-task-prefix
+            placeholder="Например, HUB" autocomplete="off" spellcheck="false">
         </label>
         <label class="agent-rules-field">
           <span>Правила агента</span>
@@ -852,6 +956,15 @@
             <output data-workspace-card-rules-count>0 / 32 КиБ</output>
           </span>
         </label>
+        <div class="quick-messages-settings-row workspace-card-quick-messages">
+          <span class="setting-name">Быстрые ответы Workspace</span>
+          <span class="quick-messages-settings-control">
+            <span class="setting-value" data-workspace-card-quick-messages-count>Не заданы</span>
+            <button type="button" class="chip-button" data-workspace-card-quick-messages>
+              Настроить…
+            </button>
+          </span>
+        </div>
         <div class="workspace-release-workflow-setting">
           <label class="setting-switch workspace-release-workflow-switch">
             <input type="checkbox" data-workspace-release-workflow>
@@ -862,18 +975,8 @@
             <summary class="workspace-release-workflow-help"
               aria-label="Что включает релизный процесс"
               aria-describedby="workspace-release-workflow-tooltip">?</summary>
-            <div id="workspace-release-workflow-tooltip" class="workspace-release-workflow-tooltip" role="tooltip">
-              <p>Dashboard Task создаётся только для работы с изменениями кода, конфигурации, данных или другого поставляемого результата.</p>
-              <p>Агент даёт Task краткий содержательный заголовок; исходный запрос сохраняется в описании и не копируется как название без явной просьбы.</p>
-              <p>Для диагностики, чтения, объяснений и ответов без изменений Task не создаётся.</p>
-              <p>Если после диагностики нужны изменения, Task создаётся или назначается до первой правки.</p>
-              <p>Текущий Stream сразу назначается исполнителем Task в своём Workspace.</p>
-              <p>В конце каждого хода Task получает актуальные work log, изменённые файлы и статус.</p>
-              <p>Ход без diff не создаёт запись файла или evidence.</p>
-              <p>Завершённое исправление автоматически переходит в «К применению» только после точного terminal evidence.</p>
-              <p>Любой Архитектор Workspace выбирает ожидающие Tasks и проверяет видимый результат.</p>
-              <p>После проверенного релиза только вошедшие в него Tasks переходят в «Готово» и закрываются.</p>
-            </div>
+            <div id="workspace-release-workflow-tooltip" class="workspace-release-workflow-tooltip"
+              data-workspace-release-workflow-tooltip role="tooltip"></div>
           </details>
         </div>
         <label>
@@ -886,6 +989,19 @@
         <button type="submit" class="board-task-primary" data-workspace-card-submit>Сохранить</button>
       </footer>
     </form>
+  </dialog>
+
+  <dialog class="workspace-archive-modal" data-workspace-archive-modal aria-labelledby="workspace-archive-title">
+    <header>
+      <div>
+        <p class="eyebrow">Безопасное удаление</p>
+        <h2 id="workspace-archive-title">Архив Workspace</h2>
+      </div>
+      <button type="button" class="icon-button" data-workspace-archive-close aria-label="Закрыть">×</button>
+    </header>
+    <p class="workspace-archive-note">Workspace хранятся здесь три дня без копирования чатов и Streams, затем удаляются автоматически.</p>
+    <div class="workspace-archive-list" data-workspace-archive-list></div>
+    <p class="workspace-archive-empty" data-workspace-archive-empty>Архив пуст.</p>
   </dialog>
 
   <!-- ================================================= Отдельное представление: журнал === -->
@@ -1563,6 +1679,20 @@
         </div>
       </section>
       <section class="settings-section">
+        <h3 class="settings-section-title">Диалоги</h3>
+        <div class="settings-card">
+          <div class="quick-messages-settings-row">
+            <span class="setting-name">Глобальные ответы</span>
+            <span class="quick-messages-settings-control">
+              <span class="setting-value" data-settings-global-quick-messages-count>Не заданы</span>
+              <button type="button" class="chip-button" data-settings-global-quick-messages>
+                Настроить…
+              </button>
+            </span>
+          </div>
+        </div>
+      </section>
+      <section class="settings-section">
         <h3 class="settings-section-title">Интерфейс</h3>
         <div class="settings-card">
           <label class="setting-row setting-field">
@@ -1646,8 +1776,7 @@
     </form>
   </div>
 
-  <div class="attachment-viewer" data-attachment-viewer hidden role="dialog" aria-modal="true" tabindex="-1"
-    aria-label="Просмотр изображения">
+  <dialog class="attachment-viewer" data-attachment-viewer hidden aria-label="Просмотр изображения">
     <button type="button" class="attachment-viewer-close" data-attachment-viewer-close
       aria-label="Вернуться в чат" title="Вернуться в чат">
       <svg data-phosphor-icon="caret-left" viewBox="0 0 256 256" aria-hidden="true">
@@ -1677,7 +1806,7 @@
       <span data-attachment-viewer-name></span>
       <span data-attachment-viewer-counter></span>
     </div>
-  </div>
+  </dialog>
 
   <div class="resource-context-menu" data-resource-context-menu hidden role="menu"
     aria-label="Действия с ресурсом">

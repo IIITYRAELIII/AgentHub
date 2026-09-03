@@ -13,14 +13,15 @@ import {
   createInterstreamMessage,
   interstreamMessageDetails,
 } from "../domain/interstream-message.mjs";
+import { taskProjectRoot } from "../domain/task-project-root.mjs";
 
 const CONTEXT_TOKEN_VERSION = 1;
 const MAX_REGISTERED_CONTEXT_CAPABILITIES = 1_000;
 const MUTATING_TOOLS = new Set([
-  "hub_task_create", "hub_task_update", "hub_task_move", "hub_task_start", "hub_task_claim", "hub_task_status_update", "hub_task_complete", "hub_task_delete",
+  "hub_task_create", "hub_task_update", "hub_task_move", "hub_task_start", "hub_task_reassign", "hub_task_claim", "hub_task_status_update", "hub_task_complete", "hub_task_delete",
   "hub_task_attachment_add", "hub_workspace_rules_update", "hub_stream_rules_update",
   "hub_stream_message_send",
-  "hub_release_complete",
+  "hub_release_preflight", "hub_release_complete",
 ]);
 const TEXT_ATTACHMENT_TYPES = new Set([
   "text/plain", "text/markdown", "text/csv", "application/json", "application/xml",
@@ -167,6 +168,7 @@ function compactText(value, maximumLength) {
 function compactTask(task) {
   return {
     id: task.id,
+    taskNumber: task.taskNumber,
     title: task.title,
     description: task.description,
     text: task.text,
@@ -182,9 +184,8 @@ function compactTask(task) {
     startedAt: task.startedAt,
     completedAt: task.completedAt,
     revision: task.revision,
-    changedFiles: task.changedFiles ?? [],
     workLog: task.workLog ?? [],
-    repositoryRevisions: task.repositoryRevisions ?? [],
+    gitReferences: task.gitReferences ?? [],
     attachments: task.attachments ?? [],
   };
 }
@@ -217,13 +218,14 @@ function tool(name, description, properties = {}, required = []) {
 
 export class HubMcpService {
   #activeRuns = () => [];
+  #deferredInputs = () => [];
   #taskLauncher = async () => { throw new Error("Agent Hub task launcher is not ready"); };
   #streamMessenger = async () => { throw new Error("Agent Hub Stream messenger is not ready"); };
   #pendingMutations = new Map();
   #contextCapabilities = new Map();
 
   constructor({
-    workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releaseCompleter,
+    workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releasePlanner, releasePreflight, releaseCompleter,
     taskGitWorkspaces = null,
   } = {}) {
     for (const name of [
@@ -234,24 +236,32 @@ export class HubMcpService {
     ]) requiredMethod(workspaceCatalog, name);
     for (const name of [
       "snapshot", "task", "create", "move", "update", "markStarted", "complete", "addAttachment",
-      "claim", "requestWorkflowStatus", "releasePlan",
+      "claim", "requestWorkflowStatus", "releaseTasks",
     ]) {
       requiredMethod(taskBoard, name);
     }
     requiredMethod(workLog, "threadTurns");
+    requiredMethod(releasePreflight, "preflight");
     requiredMethod(releaseCompleter, "completeRelease");
     this.workspaceCatalog = workspaceCatalog;
     this.taskBoard = taskBoard;
     this.workLog = workLog;
     this.attachmentDirectory = path.resolve(requiredText(attachmentDirectory, "attachment directory", 2_000));
     this.secret = requiredText(secret, "MCP secret", 512);
+    this.releasePreflight = releasePreflight;
     this.releaseCompleter = releaseCompleter;
+    this.releasePlanner = releasePlanner;
     this.taskGitWorkspaces = taskGitWorkspaces;
   }
 
   setActiveRuns(value) {
     if (typeof value !== "function") throw new TypeError("active runs provider is required");
     this.#activeRuns = value;
+  }
+
+  setDeferredInputs(value) {
+    if (typeof value !== "function") throw new TypeError("deferred inputs provider is required");
+    this.#deferredInputs = value;
   }
 
   setTaskLauncher(value) {
@@ -304,8 +314,9 @@ export class HubMcpService {
         title: { type: "string" },
         description: { type: "string", default: "" },
       }, ["title"]),
-      tool("hub_task_update", "Update the title or description of any Dashboard task by id.", {
+      tool("hub_task_update", "Update the number, title or description of any Dashboard task by id.", {
         task_id: { type: "string" },
+        task_number: { type: "string" },
         title: { type: "string" },
         description: { type: "string" },
       }, ["task_id"]),
@@ -319,6 +330,15 @@ export class HubMcpService {
         stream_id: { type: "string", description: "Existing Stream in this Workspace. Defaults to the current Stream." },
         new_stream_name: { type: "string", description: "Create a new Stream instead of using stream_id." },
         provider: { type: "string", enum: ["codex", "claude"] },
+        message: { type: "string", description: "Optional assignment message delivered together with the Task reference." },
+        confirm_launch: { type: "boolean", description: "Must be true because this starts or queues another agent turn." },
+      }, ["task_id", "confirm_launch"]),
+      tool("hub_task_reassign", "Reassign a started Dashboard task to an existing or new Stream. The current executor must have no active turn or queued input.", {
+        task_id: { type: "string" },
+        stream_id: { type: "string", description: "Existing target Stream in this Workspace." },
+        new_stream_name: { type: "string", description: "Create a new target Stream instead of using stream_id." },
+        provider: { type: "string", enum: ["codex", "claude"] },
+        message: { type: "string", description: "Optional assignment message delivered together with the Task reference." },
         confirm_launch: { type: "boolean", description: "Must be true because this starts or queues another agent turn." },
       }, ["task_id", "confirm_launch"]),
       tool("hub_task_claim", "Bind a Dashboard Task to the exact current provider turn, assign its dedicated Git branch/worktree, and make the current Stream its executor. Continue repository work only in the returned gitWorkspace.projectRoot.", {
@@ -344,6 +364,10 @@ export class HubMcpService {
         local_path: { type: "string" },
       }, ["task_id", "local_path"]),
       tool("hub_release_plan_get", "Read the complete release plan and exact integrated dev heads for the current Workspace."),
+      tool("hub_release_preflight", "Refresh Test Contour from dev and verify the exact selected Task results are integrated before release.", {
+        expected_plan_revision: { type: "string", description: "Exact revision returned by hub_release_plan_get." },
+        conflicts_resolved: { type: "boolean", description: "True only after the Architect explicitly resolves every reported overlap." },
+      }, ["expected_plan_revision"]),
       tool("hub_release_complete", "Complete a release only after clean main revisions and explicit deployment verification.", {
         expected_revision: { type: "string" },
         expected_plan_revision: { type: "string", description: "Exact revision returned by hub_release_plan_get." },
@@ -441,6 +465,8 @@ export class HubMcpService {
         return this.#moveTask(context, args);
       case "hub_task_start":
         return this.#startTask(context, args);
+      case "hub_task_reassign":
+        return this.#startTask(context, args, { reassign: true });
       case "hub_task_claim":
         return this.#claimTask(context, args);
       case "hub_task_status_update":
@@ -459,6 +485,9 @@ export class HubMcpService {
         return this.#addAttachment(context, args);
       case "hub_release_plan_get":
         return this.#releasePlan(context);
+      case "hub_release_preflight":
+        if (!this.#isArchitect(context)) throw new Error("release preflight requires an Architect Stream");
+        return this.#preflightRelease(context, args);
       case "hub_release_complete":
         if (!this.#isArchitect(context)) throw new Error("release completion requires an Architect Stream");
         return this.#completeRelease(context, args);
@@ -579,17 +608,31 @@ export class HubMcpService {
     return { ...workspace, currentStreamId: context.streamId };
   }
 
+  #taskProjectRoot(context, streamId = context.streamId) {
+    const workspace = this.#workspace(context);
+    const stream = workspace.streams.find((candidate) => candidate.id === streamId);
+    return taskProjectRoot({ workspace, stream });
+  }
+
   #parallelStreams(context) {
     const workspace = this.#workspace(context);
+    const activeRunSummaries = this.#activeRunSummaries(context.workspaceId);
+    const deferredInputs = this.#deferredInputSummaries(context.workspaceId);
     return {
       workspaceId: context.workspaceId,
       currentStreamId: context.streamId,
-      streams: workspace.streams.map((stream) => ({
-        ...stream,
-        current: stream.id === context.streamId,
-        activeRuns: this.#activeRunSummaries(context.workspaceId)
-          .filter((run) => run.streamId === stream.id),
-      })),
+      streams: workspace.streams.map((stream) => {
+        const activeRuns = activeRunSummaries
+          .filter((run) => run.streamId === stream.id);
+        const queuedInputs = deferredInputs.filter((input) => input.streamId === stream.id);
+        return {
+          ...stream,
+          current: stream.id === context.streamId,
+          activeRuns,
+          queuedInputCount: queuedInputs.length,
+          available: activeRuns.length === 0 && queuedInputs.length === 0,
+        };
+      }),
     };
   }
 
@@ -623,15 +666,13 @@ export class HubMcpService {
       text,
       source: "hub-mcp",
       sourceDetails: { mcpWorkspaceId: context.workspaceId },
-    });
-    return compactTask(this.taskBoard.move({
-      id: created.id,
       bucket: "workspace",
       workspaceId: context.workspaceId,
-    }));
+    });
+    return compactTask(created);
   }
 
-  #updateTask(context, { task_id: taskId, title, description } = {}) {
+  #updateTask(context, { task_id: taskId, task_number: taskNumber, title, description } = {}) {
     const current = this.#task(context, taskId);
     const nextTitle = title == null ? current.title : requiredText(title, "task title", 10_000);
     const nextDescription = description == null
@@ -639,6 +680,7 @@ export class HubMcpService {
       : (optionalText(description, 50_000) ?? "");
     return compactTask(this.taskBoard.update({
       id: current.id,
+      taskNumber: taskNumber == null ? undefined : requiredText(taskNumber, "task number", 80),
       title: nextTitle,
       description: nextDescription,
     }));
@@ -663,11 +705,12 @@ export class HubMcpService {
     }));
   }
 
-  async #claimTask(context, { task_id: taskId } = {}) {
+  async #claimTask(context, { task_id: taskId, request_id: operationId } = {}) {
     const task = this.#task(context, taskId);
     const active = this.#currentRun(context);
-    const gitWorkspace = this.taskGitWorkspaces && active.projectRoot
-      ? await this.taskGitWorkspaces.prepare({ taskId: task.id, projectRoot: active.projectRoot })
+    const projectRoot = this.#taskProjectRoot(context);
+    const gitWorkspace = this.taskGitWorkspaces && projectRoot
+      ? await this.taskGitWorkspaces.prepare({ taskId: task.id, taskNumber: task.taskNumber, projectRoot })
       : null;
     if (gitWorkspace) active.gitBaseline = gitWorkspace.gitBaseline;
     return {
@@ -678,6 +721,8 @@ export class HubMcpService {
         provider: context.provider,
         threadId: context.threadId,
         turnId: active.turnId,
+        operationId,
+        operationKind: "claim",
         gitBaseline: active.gitBaseline ?? null,
       })),
       claimedTurnId: active.turnId,
@@ -707,26 +752,15 @@ export class HubMcpService {
   async #updateTaskWorkflowStatus(context, { task_id: taskId, status } = {}) {
     const task = this.#task(context, taskId);
     const workflowStatus = requiredText(status, "task workflow status", 40);
-    const active = context.threadId ? this.#activeRuns().filter((run) => (
-      String(run?.provider ?? "").trim().toLowerCase() === context.provider
-      && String(run?.threadId ?? "").trim() === context.threadId
-      && String(run?.turnId ?? "").trim()
-      && run?.observer !== true
-    )) : [];
-    const run = active.length === 1 ? active[0] : null;
     let gitWorkspace = null;
     let preparationError = null;
-    if (workflowStatus === "awaiting_implementation" && run?.projectRoot && this.taskGitWorkspaces) {
+    const snapshotsResult = ["testing", "awaiting_implementation", "done"].includes(workflowStatus);
+    const targetStreamId = String(task.streamId ?? "").trim() || context.streamId;
+    const projectRoot = snapshotsResult ? this.#taskProjectRoot(context, targetStreamId) : null;
+    if (snapshotsResult && projectRoot && this.taskGitWorkspaces) {
       try {
-        gitWorkspace = await this.taskGitWorkspaces.prepare({ taskId: task.id, projectRoot: run.projectRoot });
-        this.taskBoard.claim({
-          id: task.id,
-          workspaceId: context.workspaceId,
-          streamId: context.streamId,
-          provider: context.provider,
-          threadId: context.threadId,
-          turnId: run.turnId,
-          gitBaseline: gitWorkspace.gitBaseline,
+        gitWorkspace = await this.taskGitWorkspaces.prepare({
+          taskId: task.id, taskNumber: task.taskNumber, projectRoot,
         });
       } catch (error) {
         preparationError = error;
@@ -737,9 +771,9 @@ export class HubMcpService {
       status: workflowStatus,
       provider: context.provider,
       threadId: context.threadId,
-      turnId: run?.turnId ?? null,
+      turnId: null,
     });
-    if (workflowStatus !== "awaiting_implementation") return compactTask(updated);
+    if (!snapshotsResult) return compactTask(updated);
     if (!gitWorkspace) {
       return {
         ...compactTask(updated),
@@ -752,22 +786,17 @@ export class HubMcpService {
     try {
       const { snapshot, integration } = await this.taskGitWorkspaces.snapshotAndMerge({
         taskId: task.id,
+        taskNumber: task.taskNumber,
         projectRoot: gitWorkspace.projectRoot,
-        turnId: run?.turnId,
+        turnId: null,
         summary: task.title,
       });
       if (integration.integrated && snapshot.changedFiles.length) {
-        this.taskBoard.recordTaskTurn({
+        this.taskBoard.recordTaskGitReference({
           taskId: task.id,
-          provider: context.provider,
-          threadId: context.threadId,
-          turnId: run.turnId,
           projectRoot: snapshot.repositoryRoot,
-          summary: task.title,
-          status: "completed",
-          changedFiles: snapshot.changedFiles.map((file) => ({ ...file, turnId: run.turnId })),
-          gitBaseline: snapshot.gitBaseline,
           resultSnapshot: snapshot.resultSnapshot,
+          branch: snapshot.branch,
         });
       }
       const current = this.#task(context, task.id);
@@ -810,7 +839,7 @@ export class HubMcpService {
   }
 
   async #releasePlan(context) {
-    const plan = this.taskBoard.releasePlan(context.workspaceId);
+    const plan = await this.releasePlanner.plan(context.workspaceId);
     if (!this.taskGitWorkspaces) return plan;
     const roots = [...new Set(plan.ready.map((entry) => String(entry.projectRoot ?? "").trim()).filter(Boolean))];
     const repositories = [];
@@ -852,8 +881,8 @@ export class HubMcpService {
 
   async #startTask(context, {
     task_id: taskId, stream_id: streamId = null, new_stream_name: newStreamName = null,
-    provider = null, confirm_launch: confirmLaunch = false, request_id: requestId,
-  } = {}) {
+    provider = null, message = "", confirm_launch: confirmLaunch = false, request_id: requestId,
+  } = {}, { reassign = false } = {}) {
     if (confirmLaunch !== true) throw new Error("confirm_launch must be true");
     const task = this.#task(context, taskId);
     const requestedStreamId = String(streamId ?? "").trim();
@@ -861,22 +890,46 @@ export class HubMcpService {
     if (requestedStreamId && requestedStreamName) {
       throw new Error("stream_id and new_stream_name are mutually exclusive");
     }
-    const gitWorkspace = this.taskGitWorkspaces && context.projectRoot
-      ? await this.taskGitWorkspaces.prepare({ taskId: task.id, projectRoot: context.projectRoot })
-      : null;
+    const targetStreamId = requestedStreamName ? null : (requestedStreamId || context.streamId);
+    const previousStreamId = String(task.streamId ?? "").trim();
+    if (reassign) {
+      if (task.status !== "started" || !previousStreamId) throw new Error("only a started Task can be reassigned");
+      if (targetStreamId && targetStreamId === previousStreamId) throw new Error("Task is already assigned to this Stream");
+      const activeRuns = this.#activeRunSummaries(context.workspaceId)
+        .filter((run) => run.streamId === previousStreamId);
+      const queuedInputs = this.#deferredInputSummaries(context.workspaceId)
+        .filter((input) => input.streamId === previousStreamId);
+      if (activeRuns.length || queuedInputs.length) {
+        throw new Error("Task cannot be reassigned while its current Stream has an active turn or queued input");
+      }
+    }
+    const targetProvider = String(provider ?? "").trim() || context.provider;
+    const sourceRun = this.#activeRuns().find((run) => (
+      String(run?.provider ?? "").trim().toLowerCase() === context.provider
+      && String(run?.threadId ?? "").trim() === String(context.threadId ?? "").trim()
+    ));
+    const inheritedSettings = requestedStreamName && targetProvider === context.provider ? {
+      provider: targetProvider,
+      ...(String(sourceRun?.modelId ?? "").trim() ? { model: sourceRun.modelId } : {}),
+      ...(String(sourceRun?.reasoningId ?? "").trim() ? { reasoning: sourceRun.reasoningId } : {}),
+    } : null;
     const result = await this.#taskLauncher({
       id: task.id,
       workspaceId: context.workspaceId,
-      streamId: requestedStreamName ? null : (requestedStreamId || context.streamId),
+      streamId: targetStreamId,
       streamName: requestedStreamName || null,
-      provider: String(provider ?? "").trim() || context.provider,
+      provider: targetProvider,
+      ...(inheritedSettings ? { settings: inheritedSettings } : {}),
+      reassign,
+      message: optionalText(message, 100_000) ?? "",
       followUpMode: "queue",
       launchRequestId: requiredText(requestId, "request id", 200),
       clientUserMessageId: `mcp:${requiredText(requestId, "request id", 200)}`,
-      workingDirectory: gitWorkspace?.projectRoot ?? null,
     }, context);
+    const gitWorkspace = result.gitWorkspace ?? null;
     return {
       task: compactTask(result.task),
+      ...(reassign ? { previousStreamId } : {}),
       target: {
         streamId: result.target.streamId,
         provider: result.target.provider,
@@ -980,6 +1033,21 @@ export class HubMcpService {
     });
   }
 
+  #deferredInputSummaries(workspaceId) {
+    return this.#deferredInputs().flatMap((input) => {
+      let streamId = String(input?.streamId ?? "").trim();
+      if (!streamId) {
+        streamId = this.workspaceCatalog.resolveThread({
+          provider: input?.provider,
+          threadId: input?.threadId,
+        })?.streamId ?? "";
+      }
+      const stream = streamId ? this.workspaceCatalog.stream(streamId) : null;
+      if (!stream || stream.workspaceId !== workspaceId) return [];
+      return [{ id: String(input?.id ?? ""), streamId }];
+    });
+  }
+
   #activeRunsForWorkspace(context) {
     return { workspaceId: context.workspaceId, runs: this.#activeRunSummaries(context.workspaceId) };
   }
@@ -1073,7 +1141,7 @@ export class HubMcpService {
     if (started.status === "failed") throw new Error(started.error || "previous MCP operation failed");
     const inFlight = this.#pendingMutations.get(requestId);
     if (inFlight) return inFlight;
-    if (started.replayed && toolName !== "hub_task_start") {
+    if (started.replayed && !["hub_task_start", "hub_task_reassign"].includes(toolName)) {
       throw new Error("MCP operation with this request_id is still pending");
     }
     const pending = (async () => {
@@ -1082,7 +1150,8 @@ export class HubMcpService {
         this.workspaceCatalog.completeMcpOperation(requestId, result);
         return result;
       } catch (error) {
-        if (toolName === "hub_task_start" && this.#hasPreparedTaskStart(context, args, requestId)) {
+        if (["hub_task_start", "hub_task_reassign"].includes(toolName)
+          && this.#hasPreparedTaskStart(context, args, requestId)) {
           throw error;
         }
         this.workspaceCatalog.failMcpOperation(requestId, error);
@@ -1102,5 +1171,13 @@ export class HubMcpService {
     } catch {
       return false;
     }
+  }
+
+  async #preflightRelease(context, args) {
+    return this.releasePreflight.preflight({
+      workspaceId: context.workspaceId,
+      expectedPlanRevision: optionalText(args.expected_plan_revision, 128),
+      conflictsResolved: args.conflicts_resolved === true,
+    });
   }
 }

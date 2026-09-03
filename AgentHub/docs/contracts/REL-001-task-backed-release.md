@@ -7,11 +7,27 @@ authority for ownership, readiness and release completion. Its `workspaceId`
 and `streamId` identify the Workspace and executor Stream. The durable Task
 `row_revision` is the CAS version for every release-relevant mutation.
 
-Every file-changing Task owns a local branch named
-`agenthub/task/<taskId>/<repositoryKey>` and a managed worktree.
+Every numbered file-changing Task owns a local branch whose name is exactly its
+stable human-facing Task number, for example `HUB-11`, and a managed worktree.
+Legacy unnumbered Tasks retain `agenthub/task/<taskId>/<repositoryKey>` until
+their next managed preparation renames the branch.
 `hub_task_claim` and `hub_task_start` return that worktree. All Task changes must
 be made there. Provider turn identity remains journal metadata and is not a
 source of file ownership.
+
+One provider turn may perform multiple sequential Task operations. Each claim
+is durably identified by its MCP `request_id`, and terminal evidence resolves
+the exact `(provider, thread, turn, operation)` binding rather than a
+turn-global Task. At most one unterminated Task write operation may exist for a
+provider turn. A new explicit claim operation
+atomically terminates the preceding binding before it activates the next Task,
+so sequential switches are allowed without overlapping active writers.
+
+The persistence compatibility boundary is the absence of `operation_id` on
+the binding or work-log table. Store startup rebuilds only that legacy shape,
+assigns deterministic `legacy:<taskId>` operation identities and installs the
+active-operation guard in the same migration. The rebuild may be removed only
+after every supported database version is guaranteed to contain operation IDs.
 
 ## Test and acceptance integration
 
@@ -27,9 +43,11 @@ that root. Git defines the base, result, operation, blobs and patch. Provider
 receipts, final text, timestamps and shared dirty trees are never ownership
 fallbacks.
 
-A successful Test integration records the changed files and repository revisions
-directly on the Task. A conflict is aborted and returned with exact conflicting
-paths. Git failure never rejects the requested workflow-status transition.
+A successful Test integration records only the deterministic Task branch and
+its accepted immutable result commit on the Task. The base ref and changed-file
+set remain Git data and are derived when a release plan is read. A conflict is
+aborted and returned with exact conflicting paths. Git failure never rejects the
+requested workflow-status transition.
 
 Moving a Task to `awaiting_implementation` additionally rebuilds `PreRelease`
 from current `main` plus the exact result commits of every accepted Await Task.
@@ -38,29 +56,35 @@ Returning, withdrawing or replacing an Await Task rebuilds `PreRelease` without
 its old result. An Await Task without successful `dev` and `PreRelease`
 integration is explicitly blocked and cannot be released.
 
-## Task evidence and CAS
+## Task Git reference and CAS
 
-The server-side Git boundary derives:
+The server-side Git boundary owns:
 
-- exact base and result commit or tree object ids;
-- repository-relative operation for every changed file;
-- the Task branch and integrated `dev` result.
+- the Task-number branch;
+- the internal Task base ref;
+- the immutable accepted result commit;
+- the integrated `dev` result.
 
-The Task aggregate stores changed files and repository revisions. There is no
-separate readiness row, frozen manifest or freeze command. The release plan
-hashes the current Task revision and evidence. Generic status mutation may
-select any workflow status at any time; any intervening Task mutation changes
-the plan revision and invalidates an older Architect plan. Provider terminal
-callbacks do not infer file ownership or release readiness.
+The Task aggregate stores only `{projectRoot, branch, resultCommit}` for each
+repository. It does not store a second release-authority copy of changed files,
+base/result revision pairs, blobs or manifests. Work-log changed files remain
+diagnostic journal data only. There is no separate readiness row, frozen
+manifest or freeze command. The release plan hashes the current Task revision
+and Git references. Generic status mutation may select any workflow status at
+any time; any intervening Task or accepted-result mutation changes the plan
+revision and invalidates an older Architect plan. Provider terminal callbacks
+do not infer file ownership or release readiness.
 
 ## Release plan and completion
 
-The plan contains every open `awaiting_implementation` Task. Tasks with changed
-files and repository revisions are candidates; Tasks missing either are returned
-as `blocked` and are never silently omitted. Open `done` Tasks remain an
-Architect audit set. Plan revision hashes current Task IDs, row revisions and
-Task evidence. Conflict detection reads recorded Task files and revisions,
-never a shared mutable working tree.
+The plan contains every open `awaiting_implementation` Task. For each accepted
+Git reference it verifies the deterministic branch and result commit, then
+derives repository-relative operations from the internal base ref to that exact
+commit. Tasks with a valid non-empty Git result are candidates; Tasks missing or
+invalid references are returned as `blocked` and are never silently omitted.
+Open `done` Tasks remain an Architect audit set. Plan revision hashes current
+Task IDs, row revisions and Git references. Conflict detection reads the
+Git-derived plan projection, never work-log files or a shared mutable tree.
 
 At explicit release start, Architect freezes the exact release-plan revision,
 included Await Task IDs and resulting `PreRelease` head. Architect updates from
@@ -74,11 +98,12 @@ and the plan hash, then changes only those Tasks to `done` and closes them.
 Generic `done` and
 `hub_task_complete` do not create production evidence.
 
-Post-deployment verification proves file-by-file that the published `main`
-revision contains every recorded Task result. Once verified, only included Tasks
-are completed and their managed branches and worktrees may be removed. Published
-`main` is incorporated into `dev` without discarding later Test work, then
-`PreRelease` is rebuilt from any remaining Await Tasks.
+Post-deployment verification proves that every accepted immutable Task result
+commit is an ancestor of the published `main` revision. It does not compare a
+second stored blob manifest. Once verified, only included Tasks are completed
+and their managed branches and worktrees may be removed. Published `main` is
+incorporated into `dev` without discarding later Test work, then `PreRelease` is
+rebuilt from any remaining Await Tasks.
 
 ## Test Contour
 
@@ -87,6 +112,15 @@ not deploy a contour per Task branch. The contour status records the exact
 `dev` head it displays. Candidate preparation completes before the current
 runtime is stopped, so a Git or build preparation failure leaves the previous
 working contour available.
+
+An explicit release preflight always prepares a fresh candidate from `dev`; it
+must never reuse or start a cached candidate. After refresh,
+`TestContour.source.headCommit` must equal the exact Agent Hub repository `dev`
+HEAD observed by the preflight. Only this release preflight additionally
+requires every selected immutable Task result commit to be an ancestor of the
+corresponding repository `dev` HEAD. Ordinary plan reads do not impose that
+integration requirement. The preflight does not reconstruct or compare blob
+manifests.
 
 The rolling contour is preview evidence, not release proof. Release validation
 still requires the prescribed isolated candidate checks and publication
@@ -116,4 +150,5 @@ aggregate before cutover. Every source row is exported to append-only history
 and verified by source identity, payload cardinality and SHA-256. Only then are
 the live registry/freeze source tables physically dropped. The retained history
 is audit-only and is never read by release planning. All new work follows
-ADR-0009 Task branches, `dev` integration and Task-owned Git evidence.
+ADR-0009 Task branches, ADR-0010 integration boundaries and ADR-0011
+Git-reference authority.

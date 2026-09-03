@@ -12,6 +12,7 @@ import { scanCodexHistoricalRolloutInWorker } from "../providers/codex/codex-his
 import { resolveCodexJournalProject } from "../providers/codex/codex-journal-project.mjs";
 import { CODEX_AUDIT_SOURCE_KINDS } from "../providers/codex/codex-subagent-accounting.mjs";
 import { CodexTerminalAudit } from "../providers/codex/codex-terminal-audit.mjs";
+import { createCodexTerminalAttachmentResolver } from "../providers/codex/codex-terminal-attachments.mjs";
 import { CodexTerminalReconciliationService } from "../providers/codex/codex-terminal-reconciliation-service.mjs";
 import {
   discoverCodexRollouts,
@@ -59,6 +60,7 @@ export function createCodexObservabilityComposition({
   isHistoricalBackfillIdle,
   operationStore,
   streamIdForThread,
+  importCodexAssistantAttachments,
 }) {
   const rolloutPathsByProviderTaskId = new Map();
   const compactions = new ContextCompactionTracker({
@@ -129,6 +131,12 @@ export function createCodexObservabilityComposition({
     setBounded(rolloutPathsByProviderTaskId, providerTaskId, rolloutPath, 5_000);
   }
 
+  const resolveTerminalAttachments = createCodexTerminalAttachmentResolver({
+    knownRolloutPath,
+    readRolloutActivity: readCodexRolloutActivity,
+    importAttachments: importCodexAssistantAttachments,
+  });
+
   async function rememberAuditedTurnStart(thread, project, turn) {
     const identity = {
       provider: "codex",
@@ -178,6 +186,7 @@ export function createCodexObservabilityComposition({
     },
     saveState,
     deliverNotification: deliverTurnEndNotification,
+    resolveTerminalAttachments,
   });
   const terminalAudit = new CodexTerminalAudit({
     listPage: (cursor, limit) => sendRpc("thread/list", {
@@ -253,6 +262,7 @@ export function createCodexObservabilityComposition({
     capturedExecutionOwner,
     knownRolloutPath,
     rememberRolloutPath,
+    resolveTerminalAttachments,
     async rememberSeenTurn(task, turnId) {
       setBounded(lastSeenTaskTurnIds, taskRunKey(task), turnId, 500);
       await saveState();

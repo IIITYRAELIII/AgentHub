@@ -3932,10 +3932,27 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .board-task-summary {
-  align-items: flex-start;
-  display: flex;
+  align-items: center;
+  display: grid;
   gap: 0.45rem;
-  justify-content: space-between;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.board-task-number {
+  border-bottom: 1px solid var(--accent-line);
+  color: var(--accent);
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 0.56rem;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0.12rem 0.05rem 0.16rem;
+  white-space: nowrap;
+}
+
+.board-task-number.is-placeholder {
+  border-bottom: 0;
+  padding-inline: 0;
 }
 
 .board-task-title {
@@ -3943,9 +3960,19 @@ html[data-view="dashboard"] .task-board-view {
   font-size: 0.8rem;
   font-weight: 600;
   line-height: 1.35;
-  margin: 0;
+  margin: 0.42rem 0 0;
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.board-task-executor {
+  color: var(--text-muted);
+  font-size: 0.62rem;
+  line-height: 1.2;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .board-task-status {
@@ -4034,7 +4061,32 @@ html[data-view="dashboard"] .task-board-view {
 
 .board-task-card-attachments {
   border-top: 1px solid var(--line);
+  display: grid;
+  gap: 0.5rem;
   padding-top: 0.75rem;
+}
+
+.task-card-attachment-toolbar {
+  align-items: center;
+  color: var(--text-faint);
+  display: flex;
+  font-size: 0.68rem;
+  justify-content: space-between;
+}
+
+.task-card-attachment-add {
+  height: 2rem;
+  width: 2rem;
+}
+
+.task-card-attachment-add svg {
+  height: 1rem;
+  width: 1rem;
+}
+
+.task-card-attachment-hint {
+  color: var(--text-faint);
+  font-size: 0.68rem;
 }
 
 .board-task-card-head,
@@ -4251,6 +4303,31 @@ html[data-view="dashboard"] .task-board-view {
   gap: 0.3rem;
 }
 
+.task-card-title-control {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.task-card-number {
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0.32rem 0.4rem;
+  white-space: nowrap;
+}
+
+.task-card-number[hidden] {
+  display: none;
+}
+
 .task-card-status-field {
   color: var(--text-faint);
   display: grid;
@@ -4401,6 +4478,7 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .task-card-editor [data-task-card-title] {
+  flex: 1 1 auto;
   font-size: 0.92rem;
   font-weight: 650;
   min-height: 0;
@@ -4427,6 +4505,93 @@ html[data-view="dashboard"] .task-board-view {
   max-width: 42rem;
   padding: 0;
   width: calc(100% - 2rem);
+}
+
+.workspace-archive-modal {
+  background: var(--surface-1);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  color: var(--text);
+  max-height: min(80dvh, 38rem);
+  max-width: 36rem;
+  padding: 0;
+  width: calc(100% - 2rem);
+}
+
+.workspace-archive-modal::backdrop {
+  background: rgba(2, 5, 10, 0.76);
+  backdrop-filter: blur(3px);
+}
+
+.workspace-archive-modal > header {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  justify-content: space-between;
+  padding: 0.85rem 1rem;
+}
+
+.workspace-archive-modal h2,
+.workspace-archive-modal p {
+  margin: 0;
+}
+
+.workspace-archive-modal h2 {
+  font-size: 0.95rem;
+  margin-top: 0.2rem;
+}
+
+.workspace-archive-note {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  padding: 0.85rem 1rem 0;
+}
+
+.workspace-archive-list {
+  display: grid;
+  gap: 0.55rem;
+  max-height: min(56dvh, 28rem);
+  overflow-y: auto;
+  padding: 0.85rem 1rem 1rem;
+}
+
+.workspace-archive-item {
+  align-items: center;
+  background: color-mix(in srgb, var(--surface-2) 82%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  display: grid;
+  gap: 0.2rem 0.75rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 0.7rem 0.75rem;
+}
+
+.workspace-archive-item strong,
+.workspace-archive-item span {
+  min-width: 0;
+}
+
+.workspace-archive-item strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-archive-item span {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+
+.workspace-archive-restore {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+
+.workspace-archive-empty {
+  color: var(--text-faint);
+  padding: 1.5rem 1rem 1.8rem;
+  text-align: center;
 }
 
 .workspace-card-modal::backdrop {
@@ -4475,6 +4640,10 @@ html[data-view="dashboard"] .task-board-view {
   padding: 1rem;
 }
 
+.workspace-card-fields [hidden] {
+  display: none;
+}
+
 .workspace-card-fields label {
   display: grid;
   gap: 0.35rem;
@@ -4488,6 +4657,7 @@ html[data-view="dashboard"] .task-board-view {
 /* Поля брали оформление у браузера и оставались серыми в любой теме. Токены
    те же, что у остальных полей оболочки, поэтому диалог следует за темой. */
 .workspace-card-fields input,
+.workspace-card-fields select,
 .workspace-card-fields textarea {
   background: var(--surface-2);
   border: 1px solid var(--line);
@@ -4500,17 +4670,24 @@ html[data-view="dashboard"] .task-board-view {
   width: 100%;
 }
 
+.workspace-card-fields select option {
+  background: var(--surface-1);
+  color: var(--text);
+}
+
 .workspace-card-fields input::placeholder,
 .workspace-card-fields textarea::placeholder {
   color: var(--text-faint);
 }
 
 .workspace-card-fields input:hover,
+.workspace-card-fields select:hover,
 .workspace-card-fields textarea:hover {
   border-color: var(--line-strong);
 }
 
 .workspace-card-fields input:focus,
+.workspace-card-fields select:focus,
 .workspace-card-fields textarea:focus {
   border-color: var(--accent-line);
   box-shadow: var(--accent-glow);
@@ -4640,13 +4817,81 @@ html[data-view="dashboard"] .task-board-view {
   display: grid;
 }
 
-.stream-architect-setting {
+.stream-role-setting {
   display: grid;
   gap: 0.35rem;
 }
 
-.stream-architect-setting .switch-note {
-  padding-left: 0;
+.stream-role-setting-heading {
+  align-items: center;
+  display: flex;
+  gap: 0.45rem;
+}
+
+.stream-role-help-popover {
+  display: inline-flex;
+}
+
+.stream-role-help {
+  appearance: none;
+  align-items: center;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  border-radius: 50%;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), var(--accent-glow);
+  color: var(--accent);
+  cursor: help;
+  display: inline-flex;
+  font-family: var(--font-body);
+  font-size: 0.72rem;
+  font-weight: 750;
+  height: 1.1rem;
+  justify-content: center;
+  line-height: 1;
+  min-width: 1.1rem;
+  padding: 0;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease, transform 120ms ease;
+  width: 1.1rem;
+}
+
+.stream-role-help:hover {
+  background: color-mix(in srgb, var(--accent) 24%, var(--surface-2));
+  border-color: var(--accent);
+  color: var(--text);
+  transform: translateY(-1px);
+}
+
+.stream-role-help:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.stream-role-tooltip {
+  background: color-mix(in srgb, var(--bg) 94%, var(--accent));
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-md);
+  box-shadow: 0 24px 64px -20px rgba(0, 0, 0, 0.9), var(--accent-glow);
+  color: var(--text);
+  gap: 0.45rem;
+  margin: auto;
+  max-height: min(28rem, 70vh);
+  max-width: calc(100vw - 2rem);
+  overflow: auto;
+  padding: 0.75rem;
+  width: min(42rem, calc(100vw - 2rem));
+  z-index: 8;
+}
+
+.stream-role-tooltip:popover-open {
+  display: grid;
+}
+
+.stream-role-tooltip::backdrop {
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.stream-role-tooltip p {
+  margin: 0;
 }
 
 .workspace-card-fields input[type="number"] {
@@ -4844,9 +5089,163 @@ html[data-surface="mobile"]
   text-transform: uppercase;
 }
 
-/* Внутри семейства строки сдвинуты — видно, что они принадлежат заголовку. */
+.task-rail-actions {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 0.25rem;
+}
+
+.task-folder-new {
+  color: var(--text-muted);
+}
+
+.task-folder-new:hover,
+.task-folder-new:focus-visible {
+  color: var(--accent);
+}
+
+.workspace-archive-open {
+  position: relative;
+}
+
+.workspace-archive-count {
+  align-items: center;
+  background: var(--accent);
+  border: 1px solid var(--surface-1);
+  border-radius: 999px;
+  color: var(--accent-contrast, var(--surface-1));
+  display: flex;
+  font-family: var(--font-numeric);
+  font-size: 0.55rem;
+  height: 1rem;
+  justify-content: center;
+  min-width: 1rem;
+  padding: 0 0.18rem;
+  position: absolute;
+  right: -0.22rem;
+  top: -0.22rem;
+}
+
+.task-workspace-folder {
+  list-style: none;
+  margin: 0.58rem 0 0.34rem;
+}
+
+.task-workspace-folder-details {
+  background: color-mix(in srgb, var(--surface-1) 48%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  border-radius: var(--radius-md);
+  box-shadow: 0 0.3rem 1.2rem rgb(0 0 0 / 10%);
+  overflow: hidden;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease, background 0.14s ease;
+}
+
+.task-workspace-folder-summary {
+  align-items: center;
+  background: color-mix(in srgb, var(--surface-1) 70%, transparent);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: grid;
+  font-size: 0.72rem;
+  font-weight: 720;
+  gap: 0.42rem;
+  grid-template-columns: 0.65rem 1rem minmax(0, 1fr) auto;
+  list-style: none;
+  min-height: 2.15rem;
+  padding: 0.44rem 0.58rem;
+  text-transform: uppercase;
+}
+
+.task-workspace-folder-summary::-webkit-details-marker {
+  display: none;
+}
+
+.task-workspace-folder-summary:hover,
+.task-workspace-folder-summary:focus-visible {
+  background: var(--surface-2);
+  outline: none;
+}
+
+.task-workspace-folder-icon {
+  color: var(--text-faint);
+  height: 0.72rem;
+  transform: rotate(0deg);
+  transition: transform 0.14s ease;
+  width: 0.72rem;
+}
+
+.task-workspace-folder-glyph {
+  color: var(--accent);
+  height: 0.88rem;
+  opacity: 0.78;
+  width: 0.88rem;
+}
+
+.task-workspace-folder-details[open] .task-workspace-folder-icon {
+  transform: rotate(90deg);
+}
+
+.task-workspace-folder-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-workspace-folder-count {
+  align-items: center;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-faint);
+  display: inline-flex;
+  font-family: var(--font-numeric);
+  font-size: 0.66rem;
+  justify-content: center;
+  min-width: 1.45rem;
+  padding: 0.06rem 0.36rem;
+}
+
+.task-workspace-folder-list {
+  display: grid;
+  gap: 0.24rem;
+  margin: 0;
+  padding: 0.38rem 0.38rem 0.46rem;
+}
+
+.task-workspace-folder-empty {
+  align-items: center;
+  border: 1px dashed color-mix(in srgb, var(--accent-line) 58%, var(--line));
+  border-radius: calc(var(--radius-md) - 0.18rem);
+  color: var(--text-faint);
+  display: flex;
+  font-size: 0.68rem;
+  justify-content: center;
+  list-style: none;
+  min-height: 2.45rem;
+  padding: 0.45rem;
+  text-align: center;
+}
+
+.task-workspace-folder[data-running] .task-workspace-folder-summary,
+.task-workspace-folder[data-unread] .task-workspace-folder-summary,
+.task-workspace-folder[data-selected] .task-workspace-folder-summary {
+  color: var(--text);
+}
+
+.task-workspace-folder[data-workspace-folder-kind="folder"] .task-workspace-folder-details {
+  border-color: color-mix(in srgb, var(--accent-line) 68%, var(--line));
+}
+
+.task-workspace-folder[data-selected] .task-workspace-folder-details {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent),
+    0 0.4rem 1.4rem rgb(0 0 0 / 12%);
+}
+
+/* Внутри папки строки сдвинуты — видно, что они принадлежат заголовку. */
 .task-workspace-item[data-family-member] {
-  margin-left: 0.7rem;
+  margin: 0;
 }
 
 .task-workspace-item[data-workspace-kind="system"] {
@@ -6312,6 +6711,16 @@ html[data-surface="mobile"]
 
 @keyframes stream-running-wave {
   to { transform: translateX(300%); }
+}
+
+/* Кольцо статуса во вкладке двигает не сам слой, а градиент внутри него,
+   поэтому у него отдельный ключевой кадр. Объявление обязано быть на верхнем
+   уровне: dialog-area.css целиком вложен в правило html[...], а вложенность
+   CSS допускает внутри правила только @media, @supports, @layer, @scope и
+   @container — @keyframes оттуда молча выбрасывается. */
+@keyframes stream-tab-ring-sweep {
+  from { background-position: 120% 0; }
+  to { background-position: -120% 0; }
 }
 
 @keyframes stream-answer-ready {
@@ -7814,10 +8223,16 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   align-items: center;
   display: grid;
   gap: 0.45rem;
-  grid-template-columns: 2.25rem minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr);
   min-height: 3.4rem;
   padding: 0.35rem 0.55rem;
   width: min(18rem, 72vw);
+}
+
+.attachment-task-card .attachment-file-type {
+  min-width: 2.25rem;
+  padding-inline: 0.4rem;
+  white-space: nowrap;
 }
 
 .attachment-task-copy {
@@ -7966,11 +8381,22 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
 .attachment-viewer {
   align-items: center;
   background: rgba(2, 7, 10, 0.94);
+  border: 0;
   display: flex;
+  height: auto;
   inset: 0;
   justify-content: center;
+  margin: 0;
+  max-height: none;
+  max-width: none;
+  padding: 0;
   position: fixed;
+  width: auto;
   z-index: 120;
+}
+
+.attachment-viewer::backdrop {
+  background: transparent;
 }
 
 .attachment-viewer[hidden] {
@@ -8921,41 +9347,37 @@ html[data-surface="mobile"] .chat-stop-bottom > span {
   max-width: 11rem;
 }
 
-.dialog-quick-messages-row {
-  align-items: flex-start;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.55rem 0.75rem;
-  justify-content: space-between;
-}
-
-.dialog-quick-messages-summary {
+.quick-messages-settings-row {
   display: grid;
-  flex: 1 1 13rem;
-  gap: 0.18rem;
-  min-width: min(100%, 13rem);
+  gap: 0.35rem;
+  min-width: 0;
 }
 
-.dialog-quick-messages-summary .setting-name {
+.quick-messages-settings-row .setting-name {
   overflow-wrap: anywhere;
 }
 
-.dialog-quick-messages-summary .setting-value {
+.quick-messages-settings-control {
+  align-items: center;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.quick-messages-settings-control .setting-value {
   color: var(--text-muted);
+  flex: 1 1 auto;
   font-size: 0.78rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.dialog-quick-messages-row > .chip-button {
-  flex: 0 1 auto;
+.quick-messages-settings-control > .chip-button {
+  flex: 0 0 auto;
   justify-content: center;
-  margin-left: auto;
-}
-
-@media (max-width: 520px) {
-  .dialog-quick-messages-row > .chip-button {
-    flex-basis: 100%;
-    width: 100%;
-  }
 }
 
 .setting-field select option {

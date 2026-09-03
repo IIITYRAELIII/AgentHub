@@ -26,6 +26,7 @@ import {
   usageSyncEventIdentity,
   usageSyncEventFromLedgerRecord,
 } from "../domain/work-log-usage-sync.mjs";
+import { mergeUsageLimitSamples, normalizeAuthObservation } from "../domain/usage-facts.mjs";
 
 const WORK_LOG_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ACCOUNT_ATTRIBUTIONS = new Set(["exact", "inferred"]);
@@ -294,6 +295,7 @@ export function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
         skillsUsed: normalizedSkillsUsed(record?.skillsUsed),
         mcpCalls: normalizedMcpCalls(record?.mcpCalls),
         toolMetricsKnown: sourceVersion >= 8 && record?.toolMetricsKnown === true,
+        limitSamples: mergeUsageLimitSamples(record?.limitSamples),
         startedAt: String(record?.startedAt ?? ""),
         completedAt: String(record?.completedAt ?? ""),
         observedAt: String(record?.observedAt ?? ""),
@@ -521,6 +523,58 @@ function accountDeviceDisplayName(deviceId, source, label = "") {
   return id.length <= 16 ? id : `device ${shortDeviceKey(id)}`;
 }
 
+function deviceLabelQuality(label, deviceId = "") {
+  const value = String(label ?? "").trim();
+  if (!value) return 0;
+  const normalizedLabel = value.toLowerCase();
+  const normalizedDeviceId = String(deviceId ?? "").trim().toLowerCase();
+  if (normalizedDeviceId && normalizedLabel === normalizedDeviceId) return 1;
+  if (/^device\s+[a-f0-9-]{4,}$/iu.test(value)) return 1;
+  if (/^(?:desktop|laptop|pc|macbook|notebook)-[a-z0-9-]+$/iu.test(value)) return 2;
+  return 3;
+}
+
+function deviceLabelTimestamp(record) {
+  const completedMs = Date.parse(String(record?.completedAt ?? ""));
+  if (Number.isFinite(completedMs)) return completedMs;
+  const startedMs = Date.parse(String(record?.startedAt ?? ""));
+  if (Number.isFinite(startedMs)) return startedMs;
+  const observedMs = Date.parse(String(record?.observedAt ?? ""));
+  return Number.isFinite(observedMs) ? observedMs : Number.NEGATIVE_INFINITY;
+}
+
+function betterDeviceLabel(current, candidate, deviceId = "") {
+  const label = String(candidate?.label ?? "").trim();
+  if (!label) return current;
+  const quality = deviceLabelQuality(label, deviceId);
+  const timestamp = Number(candidate?.timestamp);
+  const normalizedTimestamp = Number.isFinite(timestamp) ? timestamp : Number.NEGATIVE_INFINITY;
+  if (!current) return { label, quality, timestamp: normalizedTimestamp };
+  if (quality > current.quality) return { label, quality, timestamp: normalizedTimestamp };
+  if (quality === current.quality && normalizedTimestamp >= current.timestamp) {
+    return { label, quality, timestamp: normalizedTimestamp };
+  }
+  return current;
+}
+
+function preferredSyncDeviceLabels(records = []) {
+  const labels = new Map();
+  for (const record of Array.isArray(records) ? records : []) {
+    const deviceId = String(record?.syncDeviceId ?? "").trim();
+    if (!deviceId) continue;
+    labels.set(deviceId, betterDeviceLabel(labels.get(deviceId), {
+      label: record?.syncDeviceLabel,
+      timestamp: deviceLabelTimestamp(record),
+    }, deviceId));
+  }
+  return labels;
+}
+
+function preferredSyncDeviceLabel(record, labels) {
+  const deviceId = String(record?.syncDeviceId ?? "").trim();
+  return String(labels?.get(deviceId)?.label ?? record?.syncDeviceLabel ?? "").trim();
+}
+
 function accountUsageRangeStart(range, nowMs) {
   const now = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
   if (range === "24h") return now - 24 * 60 * 60 * 1_000;
@@ -582,6 +636,7 @@ function emptyAccountUsageBucket(accountKey, catalog) {
     inferredTurns: 0,
     unknownTurns: 0,
     noCostTurns: 0,
+    deviceRecoveredTurns: 0,
     localTurns: 0,
     syncedTurns: 0,
     providers: {},
@@ -619,6 +674,7 @@ function emptyAccountDeviceBucket(deviceId, source, { noCost = false, label = ""
     inferredTurns: 0,
     unknownTurns: 0,
     noCostTurns: 0,
+    deviceRecoveredTurns: 0,
     localTurns: 0,
     syncedTurns: 0,
     providers: {},
@@ -651,11 +707,13 @@ function applyAccountUsageStats(target, entry, record, {
     target.exactTurns += 1;
   } else {
     target.inferredTurns += 1;
+    if (String(record?.accountRecovery ?? "").trim() === "device") {
+      target.deviceRecoveredTurns += 1;
+    }
   }
 }
 
-function syncedUsageRecord(value) {
-  const event = normalizeUsageSyncEvent(value);
+function syncedUsageRecord(event) {
   if (!event) return null;
   return {
     usage: event.usage,
@@ -674,10 +732,96 @@ function syncedUsageRecord(value) {
     accountLabel: event.accountLabel,
     accountType: event.accountType,
     accountPlan: event.accountPlan,
+    accountRecovery: event.accountRecovery,
     syncDeviceId: event.deviceId,
     syncDeviceLabel: event.deviceLabel,
     syncEventId: event.eventId,
   };
+}
+
+function usageFactSets(values) {
+  const turns = [];
+  const authObservations = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    const turn = normalizeUsageSyncEvent(value);
+    if (turn) {
+      turns.push(turn);
+      continue;
+    }
+    const auth = normalizeAuthObservation(value);
+    if (auth) authObservations.push(auth);
+  }
+  return { turns, authObservations };
+}
+
+function usageAuthObservationIdentity(value) {
+  const deviceId = String(value?.deviceId ?? "").trim();
+  const provider = String(value?.provider ?? "").trim().toLowerCase();
+  const runtimeHomeId = String(value?.runtimeHomeId ?? "").trim();
+  return deviceId && provider && runtimeHomeId
+    ? JSON.stringify([deviceId, provider, runtimeHomeId])
+    : "";
+}
+
+function authCandidateMetadata(current, observation) {
+  const observedMs = Date.parse(String(observation?.observedAt ?? ""));
+  const currentMs = Date.parse(String(current?.observedAt ?? ""));
+  const newer = Number.isFinite(observedMs) && (!Number.isFinite(currentMs) || observedMs >= currentMs);
+  return {
+    accountKey: String(observation?.accountKey ?? "").trim(),
+    accountLabel: String((newer ? observation?.accountLabel : current?.accountLabel)
+      || current?.accountLabel
+      || observation?.accountLabel
+      || "").trim(),
+    accountType: String((newer ? observation?.accountType : current?.accountType)
+      || current?.accountType
+      || observation?.accountType
+      || "").trim(),
+    accountPlan: String((newer ? observation?.accountPlan : current?.accountPlan)
+      || current?.accountPlan
+      || observation?.accountPlan
+      || "").trim(),
+    observedAt: newer ? observation.observedAt : current?.observedAt,
+  };
+}
+
+function usageAuthCandidatesByRuntimeHome(authObservations = []) {
+  const byRuntimeHome = new Map();
+  for (const observation of authObservations) {
+    const key = usageAuthObservationIdentity(observation);
+    if (!key || !observation.accountKey) continue;
+    const candidates = byRuntimeHome.get(key) ?? new Map();
+    candidates.set(
+      observation.accountKey,
+      authCandidateMetadata(candidates.get(observation.accountKey), observation),
+    );
+    byRuntimeHome.set(key, candidates);
+  }
+  return byRuntimeHome;
+}
+
+function attributedUsageSyncRecord(event, authCandidates) {
+  const record = syncedUsageRecord(event);
+  if (!record || String(record.accountKey ?? "").trim()) return record;
+  const candidates = authCandidates.get(usageAuthObservationIdentity(event));
+  if (!candidates || candidates.size !== 1) return record;
+  const [account] = candidates.values();
+  return {
+    ...record,
+    accountKey: account.accountKey,
+    accountLabel: account.accountLabel,
+    accountType: account.accountType,
+    accountPlan: account.accountPlan,
+    accountAttribution: "inferred",
+  };
+}
+
+function syncedUsageRecords(values) {
+  const facts = usageFactSets(values);
+  const authCandidates = usageAuthCandidatesByRuntimeHome(facts.authObservations);
+  return facts.turns
+    .map((event) => attributedUsageSyncRecord(event, authCandidates))
+    .filter(Boolean);
 }
 
 export function buildWorkLogAccountUsageSummary(turns = {}, {
@@ -693,9 +837,9 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
   const normalizedTurns = normalizedLedger({ version: 9, turns }).ledger.turns;
   const normalizedLocalDeviceId = String(localDeviceId ?? "").trim();
   const normalizedLocalDeviceLabel = String(localDeviceLabel ?? "").trim();
-  const normalizedSyncedTurns = (Array.isArray(syncedUsageEvents) ? syncedUsageEvents : [])
-    .map(syncedUsageRecord)
+  const normalizedSyncedTurns = syncedUsageRecords(syncedUsageEvents)
     .filter((record) => record && record.syncDeviceId !== normalizedLocalDeviceId);
+  const syncDeviceLabels = preferredSyncDeviceLabels(normalizedSyncedTurns);
   const nowMs = Number.isFinite(Number(now)) ? Number(now) : Date.now();
   const records = [
     ...Object.values(normalizedTurns).map((record) => ({ record, source: "local", deviceId: "" })),
@@ -725,6 +869,7 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
       let inferredTurns = 0;
       let unknownTurns = 0;
       let noCostTurns = 0;
+      let deviceRecoveredTurns = 0;
       let syncedTurns = 0;
       for (const entry of records) {
         if (entry.timestamp < fromMs) continue;
@@ -743,13 +888,19 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
         if (!bucket.devices[deviceKey]) {
           bucket.devices[deviceKey] = emptyAccountDeviceBucket(deviceKey, entry.source, {
             noCost: bucket.noCost,
-            label: entry.source === "local" ? normalizedLocalDeviceLabel : record?.syncDeviceLabel,
+            label: entry.source === "local"
+              ? normalizedLocalDeviceLabel
+              : preferredSyncDeviceLabel(record, syncDeviceLabels),
           });
         }
         const deviceBucket = bucket.devices[deviceKey];
         if (deviceBucket.source !== entry.source) {
           deviceBucket.source = "mixed";
-          deviceBucket.label = accountDeviceDisplayName(deviceKey, "mixed", record?.syncDeviceLabel);
+          deviceBucket.label = accountDeviceDisplayName(
+            deviceKey,
+            "mixed",
+            preferredSyncDeviceLabel(record, syncDeviceLabels),
+          );
         }
         applyAccountUsageStats(deviceBucket, entry, record, { accountKey, attribution, noCost });
         if (noCost) {
@@ -767,6 +918,9 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
           exactTurns += 1;
         } else {
           inferredTurns += 1;
+          if (String(record?.accountRecovery ?? "").trim() === "device") {
+            deviceRecoveredTurns += 1;
+          }
         }
         totalCredits += entry.credits;
         totalTurns += 1;
@@ -782,6 +936,7 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
         inferredTurns,
         unknownTurns,
         noCostTurns,
+        deviceRecoveredTurns,
         syncedTurns,
         accounts: [...accounts.values()].map((account) => ({
           ...account,
@@ -874,7 +1029,10 @@ function formatAccountQuality(account) {
   }
   const parts = [];
   if (account.exactTurns) parts.push(`точно ${account.exactTurns}`);
-  if (account.inferredTurns) parts.push(`восст. ${account.inferredTurns}`);
+  const deviceRecoveredTurns = Math.max(0, Number(account.deviceRecoveredTurns) || 0);
+  const otherInferredTurns = Math.max(0, (Number(account.inferredTurns) || 0) - deviceRecoveredTurns);
+  if (deviceRecoveredTurns) parts.push(`Восстановлено устройством ${deviceRecoveredTurns}`);
+  if (otherInferredTurns) parts.push(`восст. ${otherInferredTurns}`);
   if (account.unknownTurns) parts.push(`без ключа ${account.unknownTurns}`);
   if (account.noCostTurns) parts.push(`без расхода ${account.noCostTurns}`);
   if (account.syncedTurns) parts.push(`sync ${account.syncedTurns}`);
@@ -960,6 +1118,7 @@ function formatAccountUsageRow(account, totalCredits, groupId) {
     + `data-account-color="${escapeHtmlAttribute(accountColorSlot(uiAccountKey))}" `
     + `data-account-attribution-exact="${escapeHtmlAttribute(String(account.exactTurns))}" `
     + `data-account-attribution-inferred="${escapeHtmlAttribute(String(account.inferredTurns))}" `
+    + `data-account-recovery-device="${escapeHtmlAttribute(String(account.deviceRecoveredTurns))}" `
     + (account.noCost ? "data-account-no-cost " : "")
     + `data-account-sync-turns="${escapeHtmlAttribute(String(account.syncedTurns))}" `
     + `data-account-turns="${escapeHtmlAttribute(String(account.turns))}" `
@@ -1008,6 +1167,7 @@ function formatAccountDeviceRow(account, device, index) {
     + `data-device-index="${escapeHtmlAttribute(String(Math.min(index, 3)))}" `
     + `data-account-color="${escapeHtmlAttribute(accountColorSlot(uiAccountKey))}" `
     + `data-account-turns="${escapeHtmlAttribute(String(device.turns))}" `
+    + `data-account-recovery-device="${escapeHtmlAttribute(String(device.deviceRecoveredTurns))}" `
     + `data-account-credits="${escapeHtmlAttribute(String(device.credits))}">`
     + "<span data-work-log-account-name>"
     + '<span data-work-log-account-device-rail aria-hidden="true"></span>'
@@ -2761,6 +2921,7 @@ export function incomingLedgerRecord({
   skillsUsed,
   mcpCalls,
   toolMetricsKnown,
+  limitSamples,
   account,
   accountKey,
   accountAttribution,
@@ -2806,6 +2967,7 @@ export function incomingLedgerRecord({
     skillsUsed: normalizedSkillsUsed(skillsUsed),
     mcpCalls: normalizedMcpCalls(mcpCalls),
     toolMetricsKnown: toolMetricsKnown === true,
+    limitSamples: mergeUsageLimitSamples(limitSamples),
     ...accountFields,
     startedAt: String(startedAt ?? ""),
     completedAt: String(completedAt ?? new Date().toISOString()),
@@ -2815,7 +2977,10 @@ export function incomingLedgerRecord({
 }
 
 function usageSyncContent(record) {
-  const event = usageSyncEventFromLedgerRecord(record, { deviceId: "ledger-content" });
+  const event = usageSyncEventFromLedgerRecord(record, {
+    deviceId: "ledger-content",
+    runtimeHomeId: "ledger-content-home",
+  });
   if (!event) return "";
   const {
     deviceId: _deviceId,
@@ -2842,6 +3007,7 @@ export function mergeLedgerRecord(existing, incoming) {
   }
   if (incoming.imageGenerationCount > 0) existing.imageGenerationCount = incoming.imageGenerationCount;
   if (incoming.contextProbe) existing.contextProbe = true;
+  existing.limitSamples = mergeUsageLimitSamples(existing.limitSamples, incoming.limitSamples);
   if (incoming.accountKey) {
     existing.accountKey = incoming.accountKey;
     if (incoming.accountLabel) existing.accountLabel = incoming.accountLabel;
@@ -3039,11 +3205,15 @@ export function buildWorkLogUsageHistory(turns = {}, {
   const localUsageEventIds = new Set(localTurns.map(usageSyncEventIdentity).filter(Boolean));
   const normalizedLocalDeviceId = String(localDeviceId ?? "").trim();
   const normalizedLocalDeviceLabel = String(localDeviceLabel ?? "").trim();
-  const syncedTurns = (Array.isArray(syncedUsageEvents) ? syncedUsageEvents : [])
-    .map(syncedUsageRecord)
+  const allSyncedTurns = syncedUsageRecords(syncedUsageEvents)
     .filter((record) => {
       if (!record || record.syncDeviceId === normalizedLocalDeviceId) return false;
       if (localUsageEventIds.has(record.syncEventId)) return false;
+      return true;
+    });
+  const syncDeviceLabels = preferredSyncDeviceLabels(allSyncedTurns);
+  const syncedTurns = allSyncedTurns
+    .filter((record) => {
       const recordAccountKey = String(record.accountKey ?? "").trim();
       if (!recordAccountKey) return false;
       if (requestedAccountKey && recordAccountKey !== requestedAccountKey) return false;
@@ -3090,7 +3260,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
           : String(record?.syncDeviceId ?? "").trim(),
         deviceLabel: source === "local"
           ? normalizedLocalDeviceLabel || "Это устройство"
-          : `${String(record?.syncDeviceLabel ?? "").trim() || "Другое устройство"}`
+          : `${preferredSyncDeviceLabel(record, syncDeviceLabels) || "Другое устройство"}`
             + ` · ${shortDeviceKey(record?.syncDeviceId)}`,
       };
     }).filter((record) => (

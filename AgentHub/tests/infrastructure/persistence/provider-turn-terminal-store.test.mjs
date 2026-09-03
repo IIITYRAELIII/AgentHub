@@ -61,6 +61,31 @@ test("terminal commit is idempotent and revisions supersede pending projections"
   assert.deepEqual((await terminal.pending()).map((item) => item.terminalRevision), [2]);
 });
 
+test("terminal attachment changes create a new durable revision", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-terminal-images-"));
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const terminal = new TerminalTurnCommitService({
+    store: new ProviderTurnTerminalStore({ dataDir }),
+  });
+
+  const first = await terminal.commit(completion({
+    responseAttachments: [{ id: "codex-generated-one.png", type: "image/png" }],
+  }));
+  const revised = await terminal.commit(completion({
+    responseAttachments: [
+      { id: "codex-generated-one.png", type: "image/png" },
+      { id: "codex-generated-two.png", type: "image/png" },
+    ],
+  }));
+
+  assert.equal(first.terminal.terminalRevision, 1);
+  assert.equal(revised.terminal.terminalRevision, 2);
+  assert.deepEqual(revised.terminal.payload.completion.responseAttachments.map((item) => item.id), [
+    "codex-generated-one.png",
+    "codex-generated-two.png",
+  ]);
+});
+
 test("missing projection ACK repeats one revision without repeating provider effect", async (context) => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-terminal-outbox-"));
   context.after(() => rm(dataDir, { recursive: true, force: true }));

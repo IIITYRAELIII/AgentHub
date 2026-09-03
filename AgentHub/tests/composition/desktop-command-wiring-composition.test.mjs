@@ -15,6 +15,9 @@ function fixture({ sourceSurvives = false } = {}) {
       workspace: (id) => (workspaces.has(id) ? { id } : null),
     },
     workspaceCatalogService: {
+      renameWorkspaceFolder: (params) => (calls.push(["folder", params]), params),
+      archiveWorkspace: ({ workspaceId }) => ({ id: workspaceId, archivedAtMs: 1 }),
+      restoreWorkspace: ({ workspaceId }) => ({ id: workspaceId, archivedAtMs: null }),
       createWorkspaceFromStream: () => {
         workspaces.add("created");
         if (!sourceSurvives) workspaces.delete("source");
@@ -32,6 +35,11 @@ function fixture({ sourceSurvives = false } = {}) {
     },
     taskBoard: {
       reassignWorkspace: (...args) => calls.push(args),
+    },
+    selectionStore: {
+      streamId: "stream",
+      activeProjectRoot: "D:/work",
+      switchProject: (...args) => calls.push(["selection", ...args]),
     },
   };
   return { actions: createWorkspaceActions(services), calls };
@@ -79,5 +87,44 @@ test("archiving a Stream is blocked while one of its Threads is running", async 
   await assert.rejects(
     actions.archiveStream({ streamId: "stream" }),
     /завершите активный ход/u,
+  );
+});
+
+test("renaming a Workspace folder uses one Workspace mutation", async () => {
+  const { actions, calls } = fixture();
+  assert.deepEqual(await actions.renameWorkspaceFolder({
+    fromFolderName: "Клиенты",
+    toFolderName: "Заказчики",
+  }), {
+    fromFolderName: "Клиенты",
+    toFolderName: "Заказчики",
+  });
+  assert.deepEqual(calls, [["folder", {
+    fromFolderName: "Клиенты",
+    toFolderName: "Заказчики",
+  }]]);
+});
+
+test("archiving a Workspace hides the selected Stream without deleting it", async () => {
+  const { actions, calls } = fixture();
+  assert.deepEqual(await actions.archiveWorkspace({ workspaceId: "source" }), {
+    id: "source",
+    archivedAtMs: 1,
+  });
+  assert.deepEqual(calls, [["selection", "D:/work"]]);
+});
+
+test("archiving a Workspace is blocked while one of its Threads is running", async () => {
+  const actions = createWorkspaceActions({
+    workspaceMutation: async (run) => run(),
+    catalogEntries: () => [{ workspaceId: "source", streamId: "stream", threadId: "thread" }],
+    runForTask: () => ({ id: "run" }),
+    workspaceCatalog: { stream: () => ({ workspaceId: "source" }) },
+    workspaceCatalogService: { archiveWorkspace: () => assert.fail("must not archive") },
+    selectionStore: { streamId: "stream", activeProjectRoot: "D:/work" },
+  });
+  await assert.rejects(
+    actions.archiveWorkspace({ workspaceId: "source" }),
+    /завершите активные ходы/u,
   );
 });

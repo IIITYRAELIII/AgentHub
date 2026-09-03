@@ -115,7 +115,7 @@ test("Worker build packages the same shell and theme resources used by local cli
     assert.match(headers, /style-src 'self' https:\/\/home\./u);
     assert.match(headers, /Cache-Control: no-store/u);
     const wrangler = JSON.parse(await readFile(path.join(ROOT, "cloudflare-worker", "wrangler.jsonc"), "utf8"));
-    assert.equal(wrangler.assets.run_worker_first, false);
+    assert.deepEqual(wrangler.assets.run_worker_first, ["/", "/index.html", "/__agent-hub-shell-loader.js"]);
     let activeChunkReads = 0;
     let maximumChunkReads = 0;
     const fixtureFetch = async (input, options) => {
@@ -230,6 +230,7 @@ test("Worker publication holds one transaction through build, deploy and live ve
 
 test("Worker deployment and live verification are independently retryable", async () => {
   const events = [];
+  const verificationCheckpoint = { marker: "durable-worker-checkpoint" };
   const common = {
     exclusive: async (operation) => operation(),
     before: async () => events.push("guard"),
@@ -242,8 +243,12 @@ test("Worker deployment and live verification are independently retryable", asyn
   await verifyWorkerRelease({
     ...common,
     changedFiles: ["AgentHub/assets/web-app/themes/bespin/portal.jpg"],
+    verificationCheckpoint,
     readConfig: async () => ({ routes: ["hub.example.test/*"] }),
-    verify: async ({ baseUrl, changedFiles }) => events.push(`verify:${baseUrl}:${changedFiles.length}`),
+    verify: async ({ baseUrl, changedFiles, checkpoint }) => {
+      assert.equal(checkpoint, verificationCheckpoint);
+      events.push(`verify:${baseUrl}:${changedFiles.length}`);
+    },
   });
   assert.deepEqual(events, ["guard", "build", "deploy", "guard", "verify:https://hub.example.test/:1"]);
 });
@@ -286,4 +291,84 @@ test("Worker verification ignores a fast failed transport when the fallback succ
     curlFetch: async () => new Response("curl response"),
   });
   assert.equal(await response.text(), "curl response");
+});
+
+test("Worker verification resumes unfinished chunks and rejects damaged checkpoint evidence", async () => {
+  const output = await mkdtemp(path.join(os.tmpdir(), "agent-hub-worker-resume-"));
+  let savedCheckpoint = null;
+  let cleared = 0;
+  const checkpoint = {
+    read: async () => structuredClone(savedCheckpoint),
+    write: async (value) => { savedCheckpoint = structuredClone(value); },
+    clear: async () => { savedCheckpoint = null; cleared += 1; },
+  };
+  const calls = new Map();
+  const count = (target) => {
+    const key = new URL(target).href;
+    calls.set(key, (calls.get(key) ?? 0) + 1);
+  };
+  let stallChunkFive = true;
+  try {
+    await buildWorkerAssets({ output, includeMobile: false });
+    const fixtureFetch = async (input, { signal } = {}) => {
+      const target = new URL(input);
+      count(target);
+      if (target.hostname.startsWith("home.")) {
+        const body = await readFile(path.join(ROOT, "assets", "web-app", ...target.pathname.slice(1).split("/")));
+        return new Response(body);
+      }
+      if (target.pathname === "/api/transport-probe/attachment") {
+        const response = syntheticAttachmentProbeResponse(target);
+        if (target.searchParams.get("mode") === "chunk"
+          && target.searchParams.get("index") === "5" && stallChunkFive) {
+          stallChunkFive = false;
+          const body = Buffer.from(await response.arrayBuffer());
+          return new Response(new ReadableStream({
+            start(controller) {
+              controller.enqueue(body.subarray(0, 8 * 1024));
+              const abort = () => controller.error(signal?.reason ?? new Error("aborted"));
+              if (signal?.aborted) abort();
+              else signal?.addEventListener("abort", abort, { once: true });
+            },
+          }));
+        }
+        return response;
+      }
+      const pathname = target.pathname === "/" ? "/index.html" : target.pathname;
+      try {
+        return new Response(await readFile(path.join(output, ...pathname.slice(1).split("/"))));
+      } catch {
+        return new Response("Not Found", { status: 404 });
+      }
+    };
+    const verify = () => verifyThemeDeployment({
+      baseUrl: "https://agent-hub.test/",
+      sourceRoot: path.join(ROOT, "assets", "web-app"),
+      deployedRoot: output,
+      fetchImpl: fixtureFetch,
+      http1Fetch: fixtureFetch,
+      changedFiles: [],
+      requestTimeoutMs: 25,
+      checkpoint,
+      log: () => {},
+    });
+
+    await assert.rejects(verify, /index=5.*8192 bytes/u);
+    assert.ok(savedCheckpoint.completed["attachment/chunk/4"]);
+    assert.equal(savedCheckpoint.completed["attachment/chunk/5"], undefined);
+    savedCheckpoint.completed["attachment/chunk/4"].evidence.base64 = Buffer.from("damaged").toString("base64");
+
+    const result = await verify();
+    assert.ok(result.attachmentProbeChunks > 5);
+    assert.equal(cleared, 1);
+    assert.equal(savedCheckpoint, null);
+    assert.equal(calls.get("https://agent-hub.test/"), 1);
+    assert.equal(calls.get("https://agent-hub.test/api/transport-probe/attachment?mode=manifest&page=0"), 1);
+    for (let index = 0; index < result.attachmentProbeChunks; index += 1) {
+      const key = `https://agent-hub.test/api/transport-probe/attachment?mode=chunk&index=${index}`;
+      assert.equal(calls.get(key), index === 4 || index === 5 ? 2 : 1, key);
+    }
+  } finally {
+    await rm(output, { recursive: true, force: true });
+  }
 });

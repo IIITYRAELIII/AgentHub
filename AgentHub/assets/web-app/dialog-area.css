@@ -252,16 +252,12 @@ html[data-view="chat"][data-surface][data-theme] {
   right: 0;
 }
 
-/* Рамка прозрачная, а не нулевая: полоса вкладок остаётся плоской, но правило
-   статуса потока сохраняет носитель для акцентного цвета. Нулевая ширина
-   отбирала его вместе с оформлением, и во вкладке от эффекта оставалась одна
-   бегущая волна — заметная лишь в момент прохода. */
 .stream-tabs-track .stream-tab-card {
   align-items: center;
   background: transparent !important;
-  border: 1px solid transparent !important;
+  border: 0 !important;
   border-image: none !important;
-  border-radius: calc(var(--radius-md) - 2px) !important;
+  border-radius: 0 !important;
   box-shadow: none !important;
   display: grid;
   flex: 1 1 auto;
@@ -280,15 +276,9 @@ html[data-view="chat"][data-surface][data-theme] {
   grid-template-columns: 7px 13px minmax(0, 1fr) max-content;
 }
 
-/* Статус потока во вкладке. Общее правило эффекта задаёт только border-color и
-   проигрывает плоской рамке полосы, поэтому акцент возвращается здесь. Запись
-   через [class~=...] — как у соседнего правила: файл владеет только карточками
-   внутри полосы и не должен объявлять голый .stream-tab-card. */
-.stream-tabs-track
-  .stream-tab:is([data-running], [data-answer-ready])
-  [class~="stream-tab-card"] {
-  border-color: var(--stream-status-border-color, var(--accent-line)) !important;
-}
+
+
+
 
 .stream-tabs-track .stream-tab-title {
   color: inherit;

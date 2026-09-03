@@ -74,6 +74,11 @@ const taskList = document.querySelector("[data-task-list]");
 const taskEmpty = document.querySelector("[data-task-empty]");
 const taskCount = document.querySelector("[data-task-count]");
 const taskFilter = document.querySelector("[data-task-filter]");
+const workspaceArchiveOpen = document.querySelector("[data-action='workspace-archive-open']");
+const workspaceArchiveCount = document.querySelector("[data-workspace-archive-count]");
+const workspaceArchiveModal = document.querySelector("[data-workspace-archive-modal]");
+const workspaceArchiveList = document.querySelector("[data-workspace-archive-list]");
+const workspaceArchiveEmpty = document.querySelector("[data-workspace-archive-empty]");
 const activityRail = document.querySelector("[data-activity-rail]");
 const activityRailToggle = document.querySelector("[data-activity-rail-toggle]");
 const activityRailCount = document.querySelector("[data-activity-rail-count]");
@@ -86,13 +91,20 @@ const workspaceCardModal = document.querySelector("[data-workspace-card-modal]")
 const workspaceCardForm = document.querySelector("[data-workspace-card-form]");
 const workspaceCardTitle = document.querySelector("[data-workspace-card-title]");
 const workspaceCardName = document.querySelector("[data-workspace-card-name]");
+const workspaceCardFolderField = document.querySelector("[data-workspace-card-folder-field]");
+const workspaceCardFolder = document.querySelector("[data-workspace-card-folder]");
 const workspaceCardComment = document.querySelector("[data-workspace-card-comment]");
 const workspaceCardWorkingDirectory = document.querySelector("[data-workspace-card-working-directory]");
+const workspaceCardTaskPrefix = document.querySelector("[data-workspace-card-task-prefix]");
 const workspaceCardRules = document.querySelector("[data-workspace-card-rules]");
 const workspaceCardRulesCount = document.querySelector("[data-workspace-card-rules-count]");
+const workspaceCardQuickMessages = document.querySelector("[data-workspace-card-quick-messages]");
+const workspaceCardQuickMessagesCount = document.querySelector("[data-workspace-card-quick-messages-count]");
 const workspaceCardReleaseWorkflow = document.querySelector("[data-workspace-release-workflow]");
+const workspaceCardReleaseWorkflowTooltip = document.querySelector("[data-workspace-release-workflow-tooltip]");
 const workspaceCardOrder = document.querySelector("[data-workspace-card-order]");
 const workspaceCardSubmit = document.querySelector("[data-workspace-card-submit]");
+window.AgentHubWorkspaceReleaseWorkflow?.renderTooltip(workspaceCardReleaseWorkflowTooltip);
 
 const chatPane = document.querySelector("[data-chat-pane]");
 const streamTabs = document.querySelector("[data-stream-tabs]");
@@ -139,8 +151,9 @@ const dialogStreamRules = document.querySelector("[data-dialog-stream-rules]");
 const dialogStreamRulesCount = document.querySelector("[data-dialog-stream-rules-count]");
 const dialogStreamRulesSave = document.querySelector("[data-dialog-stream-rules-save]");
 const dialogStreamArchitect = document.querySelector("[data-dialog-stream-architect]");
-const dialogGlobalQuickMessages = document.querySelector("[data-dialog-global-quick-messages]");
-const dialogGlobalQuickMessagesCount = document.querySelector("[data-dialog-global-quick-messages-count]");
+const dialogStreamTeamLead = document.querySelector("[data-dialog-stream-team-lead]");
+const dialogStreamQuickMessages = document.querySelector("[data-dialog-stream-quick-messages]");
+const dialogStreamQuickMessagesCount = document.querySelector("[data-dialog-stream-quick-messages-count]");
 const workspaceMessageSearch = document.querySelector("[data-workspace-message-search]");
 const workspaceMessageSearchToggle = document.querySelector("[data-workspace-message-search-toggle]");
 const workspaceMessageSearchClose = document.querySelector("[data-workspace-message-search-close]");
@@ -187,6 +200,8 @@ const approvalsBox = document.querySelector("[data-approvals]");
 const queueBox = document.querySelector("[data-queue]");
 
 const settingsPanel = document.querySelector("[data-settings-panel]");
+const settingsGlobalQuickMessages = document.querySelector("[data-settings-global-quick-messages]");
+const settingsGlobalQuickMessagesCount = document.querySelector("[data-settings-global-quick-messages-count]");
 const bugReportToggle = document.querySelector("[data-bug-report-toggle]");
 const bugReportForm = document.querySelector("[data-bug-report-form]");
 const bugReportText = document.querySelector("[data-bug-report-text]");
@@ -957,9 +972,10 @@ function enhanceThemedSelect(select) {
   menu.setAttribute("role", "listbox");
   menu.setAttribute("aria-label", button.getAttribute("aria-label"));
   button.setAttribute("aria-controls", menu.id);
-  const supportsPopover = typeof menu.showPopover === "function";
+  const placement = window.AgentHubThemedSelectPlacement.resolve(select, menu);
+  const supportsPopover = placement.usePopover;
   if (supportsPopover) menu.setAttribute("popover", "manual");
-  (supportsPopover ? document.body : select.closest("dialog") ?? document.body).append(menu);
+  placement.host.append(menu);
 
   const state = { button, menu, select, shell, value };
   select.__themedSelect = state;
@@ -1274,6 +1290,7 @@ document.addEventListener("agenthub:attachment-open", (event) => {
 const state = {
   tasks: [],
   workspaces: [],
+  archivedWorkspaces: [],
   workspaceColumnOrder: [],
   selectedId: null,
   messages: new Map(),   // taskId -> message[]
@@ -1319,6 +1336,8 @@ const state = {
   openStreamsByWorkspace: new Map(),
   activeStreamByWorkspace: new Map(),
   configuredOpenStreamWorkspaces: new Set(),
+  collapsedWorkspaceFolders: new Set(),
+  workspaceFolderNames: new Set(),
   visibleStreamTaskIds: [],
 };
 let transientAnswerArrivalTaskIds = new Set();
@@ -1405,6 +1424,9 @@ function taskNavigationData(task) {
   } = task;
   return {
     ...navigation,
+    workspaceFolder: window.AgentHubStreamTabs.normalizeWorkspaceFolderName(
+      task.workspaceSettings?.catalogFolder,
+    ),
     lastActivity: task.running ? task.startedAt ?? null : task.lastActivity ?? null,
     compactionStatus: context?.compaction?.status ?? null,
   };
@@ -1475,9 +1497,169 @@ function workspaceKey(task) {
 
 const OPEN_STREAMS_STORAGE_VERSION = "agent-hub:workspace-open-streams:v3";
 let openStreamsRestored = false;
+const COLLAPSED_WORKSPACE_FOLDERS_STORAGE_VERSION = "agent-hub:workspace-collapsed-folders:v1";
+let collapsedWorkspaceFoldersRestored = false;
+/* Идея и постановка пользовательской группировки Workspace принадлежат
+   ZeroFakt (GitHub), 01.09.2026. Папки остаются отдельной сущностью интерфейса,
+   чтобы их создание не перемещало выбранный Workspace неявно. */
+const WORKSPACE_FOLDERS_STORAGE_VERSION = "agent-hub:workspace-folders:v1";
+let workspaceFoldersRestored = false;
 
 function openStreamsStorageKey() {
   return `${OPEN_STREAMS_STORAGE_VERSION}:${draftStorageSurface()}`;
+}
+
+function collapsedWorkspaceFoldersStorageKey() {
+  return `${COLLAPSED_WORKSPACE_FOLDERS_STORAGE_VERSION}:${draftStorageSurface()}`;
+}
+
+function workspaceFoldersStorageKey() {
+  return `${WORKSPACE_FOLDERS_STORAGE_VERSION}:${draftStorageSurface()}`;
+}
+
+function restoreWorkspaceFolders() {
+  if (workspaceFoldersRestored) return;
+  workspaceFoldersRestored = true;
+  try {
+    const stored = JSON.parse(localStorage.getItem(workspaceFoldersStorageKey()) ?? "[]");
+    if (!Array.isArray(stored)) return;
+    state.workspaceFolderNames = new Set(
+      window.AgentHubStreamTabs.workspaceFolderNames([], stored).slice(0, 100),
+    );
+  } catch {
+    // Недоступный localStorage оставляет каталог папок в памяти текущей вкладки.
+  }
+}
+
+function persistWorkspaceFolders() {
+  try {
+    localStorage.setItem(
+      workspaceFoldersStorageKey(),
+      JSON.stringify([...state.workspaceFolderNames].slice(0, 100)),
+    );
+  } catch {
+    // Каталог папок остаётся действительным до закрытия вкладки.
+  }
+}
+
+function workspaceFolderCatalogNames() {
+  restoreWorkspaceFolders();
+  const names = window.AgentHubStreamTabs.workspaceFolderNames(
+    state.workspaces,
+    state.workspaceFolderNames,
+  );
+  if (names.some((name) => !state.workspaceFolderNames.has(name))) {
+    state.workspaceFolderNames = new Set(names);
+    persistWorkspaceFolders();
+  }
+  return names;
+}
+
+function createWorkspaceFolder(requestedName) {
+  const folderName = window.AgentHubStreamTabs.normalizeWorkspaceFolderName(requestedName);
+  if (!folderName) return false;
+  const duplicate = workspaceFolderCatalogNames().find((name) => (
+    name.toLocaleLowerCase("ru") === folderName.toLocaleLowerCase("ru")
+  ));
+  if (duplicate) {
+    showToast(`Папка «${duplicate}» уже существует`);
+    return false;
+  }
+  state.workspaceFolderNames.add(folderName);
+  persistWorkspaceFolders();
+  renderTasks();
+  showToast(`Папка «${folderName}» создана`);
+  return true;
+}
+
+function renameWorkspaceFolderCatalog(fromFolderName, toFolderName) {
+  const fromName = window.AgentHubStreamTabs.normalizeWorkspaceFolderName(fromFolderName);
+  const toName = window.AgentHubStreamTabs.normalizeWorkspaceFolderName(toFolderName);
+  if (!fromName || !toName || fromName === toName) return false;
+  restoreWorkspaceFolders();
+  state.workspaceFolderNames.delete(fromName);
+  state.workspaceFolderNames.add(toName);
+  persistWorkspaceFolders();
+  restoreCollapsedWorkspaceFolders();
+  for (const oldKey of [fromName, `folder:${fromName}`]) {
+    if (!state.collapsedWorkspaceFolders.delete(oldKey)) continue;
+    state.collapsedWorkspaceFolders.add(`folder:${toName}`);
+  }
+  persistCollapsedWorkspaceFolders();
+  renderTasks();
+  return true;
+}
+
+function populateWorkspaceFolderSelect(selectedName = "") {
+  if (!workspaceCardFolder) return;
+  const normalizedSelected = window.AgentHubStreamTabs.normalizeWorkspaceFolderName(selectedName);
+  const names = workspaceFolderCatalogNames();
+  workspaceCardFolder.replaceChildren(
+    el("option", { value: "", text: "Без папки — общий список" }),
+    ...names.map((name) => el("option", { value: name, text: name })),
+  );
+  workspaceCardFolder.value = names.includes(normalizedSelected) ? normalizedSelected : "";
+}
+
+function renderWorkspaceArchive() {
+  const items = window.AgentHubStreamTabs.workspaceArchivePresentation(state.archivedWorkspaces);
+  if (workspaceArchiveOpen) workspaceArchiveOpen.hidden = items.length === 0;
+  if (workspaceArchiveCount) workspaceArchiveCount.textContent = String(items.length);
+  if (workspaceArchiveEmpty) workspaceArchiveEmpty.hidden = items.length > 0;
+  if (!workspaceArchiveList) return;
+  workspaceArchiveList.hidden = items.length === 0;
+  workspaceArchiveList.replaceChildren(...items.map((workspace) => el("article", {
+    class: "workspace-archive-item",
+  }, [
+    el("strong", { text: workspace.name || "Без названия" }),
+    el("span", {
+      text: `${workspace.streamCount} Streams · ${workspace.threadCount} Threads · ${workspace.remainingLabel}`,
+      title: workspace.purgeAfterMs
+        ? `Автоматическое удаление: ${new Date(workspace.purgeAfterMs).toLocaleString("ru-RU")}`
+        : "",
+    }),
+    el("button", {
+      type: "button",
+      class: "board-task-quiet workspace-archive-restore",
+      "data-workspace-archive-restore": workspace.id,
+      text: "Восстановить",
+    }),
+  ])));
+}
+
+function openWorkspaceArchive() {
+  renderWorkspaceArchive();
+  workspaceArchiveModal?.showModal();
+}
+
+function closeWorkspaceArchive() {
+  if (workspaceArchiveModal?.open) workspaceArchiveModal.close();
+}
+
+function restoreCollapsedWorkspaceFolders() {
+  if (collapsedWorkspaceFoldersRestored) return;
+  collapsedWorkspaceFoldersRestored = true;
+  try {
+    const stored = JSON.parse(localStorage.getItem(collapsedWorkspaceFoldersStorageKey()) ?? "[]");
+    if (!Array.isArray(stored)) return;
+    state.collapsedWorkspaceFolders = new Set(stored
+      .map((value) => String(value ?? "").trim())
+      .filter(Boolean)
+      .slice(0, 100));
+  } catch {
+    // Недоступный localStorage оставляет папки открытыми в текущей вкладке.
+  }
+}
+
+function persistCollapsedWorkspaceFolders() {
+  try {
+    localStorage.setItem(
+      collapsedWorkspaceFoldersStorageKey(),
+      JSON.stringify([...state.collapsedWorkspaceFolders].slice(0, 100)),
+    );
+  } catch {
+    // Состояние папок остаётся действительным до закрытия вкладки.
+  }
 }
 
 function restoreOpenStreams() {
@@ -1555,6 +1737,69 @@ function quickMessageEntriesForCurrentTask() {
   );
 }
 
+function quickMessagesForScope(scope, scopeId = "") {
+  const quickMessages = window.AgentHubStreamTabs.normalizeQuickMessages(state.selection.quickMessages);
+  if (scope === "global") return quickMessages.global;
+  const id = String(scopeId ?? "").trim();
+  if (!id) return [];
+  const key = scope === "workspace" ? "workspaces" : "streams";
+  return quickMessages[key][id] ?? [];
+}
+
+function quickMessagesCountText(entries) {
+  const count = window.AgentHubStreamTabs.normalizeQuickMessages({ global: entries }).global.length;
+  return count ? window.AgentHubStreamTabs.quickMessagesCountLabel(count) : "Не заданы";
+}
+
+function renderQuickMessagesControl(countElement, button, entries, disabled = false) {
+  if (countElement) countElement.textContent = quickMessagesCountText(entries);
+  if (button) {
+    button.disabled = Boolean(disabled);
+    button.setAttribute("aria-busy", String(disabled));
+  }
+}
+
+function renderGlobalQuickMessagesSettings() {
+  renderQuickMessagesControl(
+    settingsGlobalQuickMessagesCount,
+    settingsGlobalQuickMessages,
+    quickMessagesForScope("global"),
+    state.pendingSelections.has("quickMessages"),
+  );
+}
+
+function renderWorkspaceCardQuickMessages(workspaceId = workspaceCardId) {
+  const id = String(workspaceId ?? "").trim();
+  const pending = state.pendingSelections.has("quickMessages");
+  const createMode = workspaceCardMode === "create" || !id;
+  if (workspaceCardQuickMessagesCount) {
+    workspaceCardQuickMessagesCount.textContent = createMode
+      ? "Доступно после создания"
+      : quickMessagesCountText(quickMessagesForScope("workspace", id));
+  }
+  if (workspaceCardQuickMessages) {
+    workspaceCardQuickMessages.disabled = pending || createMode;
+    workspaceCardQuickMessages.setAttribute("aria-busy", String(pending));
+  }
+}
+
+function renderStreamQuickMessagesSettings() {
+  const task = currentTask();
+  const streamId = String(task?.streamId ?? "").trim();
+  renderQuickMessagesControl(
+    dialogStreamQuickMessagesCount,
+    dialogStreamQuickMessages,
+    quickMessagesForScope("stream", streamId),
+    state.pendingSelections.has("quickMessages") || !streamId,
+  );
+}
+
+function renderQuickMessageSettingsControls() {
+  renderGlobalQuickMessagesSettings();
+  renderWorkspaceCardQuickMessages();
+  renderStreamQuickMessagesSettings();
+}
+
 function saveQuickMessagesForScope(scope, scopeId, entries) {
   const quickMessages = window.AgentHubStreamTabs.setQuickMessagesForScope(
     state.selection,
@@ -1564,6 +1809,7 @@ function saveQuickMessagesForScope(scope, scopeId, entries) {
   );
   state.selection = { ...state.selection, quickMessages };
   renderComposerQuickMessages();
+  renderQuickMessageSettingsControls();
   emit("selection:set", { key: "quickMessages", value: quickMessages });
 }
 
@@ -2012,6 +2258,7 @@ function renderTasks() {
         id: key,
         name: task.workspaceName || task.title || "Без названия",
         kind: task.workspaceKind ?? "user",
+        folderName: task.workspaceSettings?.catalogFolder ?? "",
         tasks: [],
       });
       groups.get(key).tasks.push(task);
@@ -2024,7 +2271,9 @@ function renderTasks() {
         taskList.append(renderTaskWorkspaceItem(group));
       }
     } else {
-      const sections = window.AgentHubStreamTabs.workspaceSections(groups.values());
+      const sections = window.AgentHubStreamTabs.workspaceSections(groups.values(), {
+        folderNames: workspaceFolderCatalogNames(),
+      });
       for (const group of sections.active) taskList.append(renderTaskWorkspaceItem(group));
       if (sections.active.length && sections.catalog.length) {
         taskList.append(renderTaskWorkspaceDivider("Все"));
@@ -2034,10 +2283,7 @@ function renderTasks() {
           taskList.append(renderTaskWorkspaceItem(entry.group));
           continue;
         }
-        taskList.append(renderTaskWorkspaceDivider(`${entry.name} · ${entry.items.length}`));
-        for (const item of entry.items) {
-          taskList.append(renderTaskWorkspaceItem(item, { family: true }));
-        }
+        taskList.append(renderTaskWorkspaceFolder(entry));
       }
     }
     for (const task of unassignedTasks) taskList.append(renderTaskItem(task));
@@ -2120,6 +2366,51 @@ function renderTaskWorkspaceDivider(label) {
   ]);
 }
 
+function renderTaskWorkspaceFolder(folder) {
+  restoreCollapsedWorkspaceFolders();
+  const folderKey = String(folder.key ?? folder.name ?? "").trim();
+  const open = window.AgentHubStreamTabs.workspaceFolderOpen(
+    folder,
+    state.collapsedWorkspaceFolders,
+    workspaceKey(currentTask()),
+  );
+  const items = folder.items ?? [];
+  const running = items.some((item) => (item.tasks ?? []).some((task) => task?.running));
+  const unread = items.some((item) => (item.tasks ?? []).some((task) => task?.unread));
+  const selected = items.some((item) => item.id === workspaceKey(currentTask()));
+  return el("li", {
+    class: "task-workspace-folder",
+    "data-workspace-folder": folderKey,
+    "data-workspace-folder-name": folder.name,
+    "data-workspace-folder-kind": folder.type,
+    "data-selected": selected ? "" : null,
+    "data-running": running ? "" : null,
+    "data-unread": unread ? "" : null,
+  }, [
+    el("details", {
+      class: "task-workspace-folder-details",
+      open,
+      "data-workspace-folder-details": folderKey,
+    }, [
+      el("summary", {
+        class: "task-workspace-folder-summary",
+        title: "Свернуть или раскрыть папку Workspace",
+      }, [
+        ...window.AgentHubStreamTabs.workspaceFolderSummaryIcons(document),
+        el("span", { class: "task-workspace-folder-name", text: folder.name }),
+        el("span", { class: "task-workspace-folder-count", text: String(items.length) }),
+      ]),
+      el("ul", { class: "task-workspace-folder-list" }, items.length
+        ? items.map((item) => renderTaskWorkspaceItem(item, { family: true }))
+        : [el("li", {
+            class: "task-workspace-folder-empty",
+            text: "Папка пуста",
+            role: "presentation",
+          })]),
+    ]),
+  ]);
+}
+
 function renderTaskWorkspaceItem({ id, name, kind, tasks, shortName }, { family = false } = {}) {
   const selected = workspaceKey(currentTask()) === id;
   const lastActivity = workspaceLastActivity(tasks);
@@ -2163,9 +2454,20 @@ function streamDisplayName(stream, streamCount) {
 
 function representativeStreamTask(stream) {
   if (!stream) return null;
+  // У потока обычно несколько задач: каждый Thread — своя. Вкладка показывает
+  // одну из них, и выбирать её только по времени последней активности нельзя:
+  // идущий ход часто не самый свежий по этому полю, и вкладка молча брала
+  // соседнюю задачу без признака работы. Правая панель тем временем выбирает по
+  // состоянию и показывает поток работающим — отсюда «справа есть, сверху нет».
+  // Порядок здесь тот же, что в рельсе: сначала состояние, потом время.
+  // Порядок обязан совпадать с attentionRank рельса: там готовый ответ идёт
+  // впереди идущего хода. Обратный порядок давал разные ветки одного потока
+  // в полосе и в панели, и они показывали разные состояния одновременно.
+  const attention = (task) => (task?.unread && !task?.running ? 0 : task?.running ? 1 : 2);
   return stream.tasks.find((task) => task.id === state.selectedId)
     ?? [...stream.tasks].sort((left, right) => (
-      Date.parse(right.lastActivity || 0) - Date.parse(left.lastActivity || 0)
+      attention(left) - attention(right)
+      || Date.parse(right.lastActivity || 0) - Date.parse(left.lastActivity || 0)
     ))[0]
     ?? null;
 }
@@ -2813,6 +3115,17 @@ taskList.addEventListener("click", (event) => {
   if (target) selectTaskFromUi(target.id);
 });
 taskList.addEventListener("keydown", (event) => {
+  if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+    const folder = event.target.closest("[data-workspace-folder-name]");
+    if (!folder || folder.dataset.workspaceFolderKind !== "folder") return;
+    event.preventDefault();
+    const rect = folder.getBoundingClientRect();
+    openWorkspaceFolderContextMenu(
+      { clientX: rect.left + 12, clientY: rect.top + 36 },
+      folder.dataset.workspaceFolderName,
+    );
+    return;
+  }
   if (!["Enter", " "].includes(event.key)) return;
   const workspace = event.target.closest("[data-workspace-select]");
   if (!workspace) return;
@@ -2821,6 +3134,30 @@ taskList.addEventListener("keydown", (event) => {
   const target = representativeWorkspaceTask(state.tasks.filter((task) => workspaceKey(task) === workspaceId));
   if (target) selectTaskFromUi(target.id);
 });
+taskList.addEventListener("toggle", (event) => {
+  const details = event.target.closest?.("[data-workspace-folder-details]");
+  if (!details || !taskList.contains(details)) return;
+  const folderKey = String(details.dataset.workspaceFolderDetails ?? "").trim();
+  if (!folderKey) return;
+  restoreCollapsedWorkspaceFolders();
+  if (details.open) state.collapsedWorkspaceFolders.delete(folderKey);
+  else state.collapsedWorkspaceFolders.add(folderKey);
+  persistCollapsedWorkspaceFolders();
+}, true);
+
+function moveWorkspaceToFolder(workspaceId, folderName) {
+  const workspace = workspaceCatalogItem(workspaceId);
+  const mutation = window.AgentHubStreamTabs.workspaceFolderMutation(workspace, folderName);
+  if (!mutation) return;
+  const current = window.AgentHubStreamTabs.normalizeWorkspaceFolderName(
+    workspace?.settings?.catalogFolder,
+  );
+  if (current === mutation.folderName) return;
+  emit("workspace:folder-move", {
+    workspaceId: mutation.workspaceId,
+    folderName: mutation.folderName,
+  });
+}
 activityRailToggle?.addEventListener("click", () => {
   activityRailCollapsed = !activityRailCollapsed;
   applyActivityRailState({ persist: true });
@@ -3084,6 +3421,7 @@ if (streamTabs && typeof ResizeObserver === "function") {
 
 let streamContextMenu = null;
 let workspaceContextMenu = null;
+let workspaceFolderContextMenu = null;
 let workspaceCardId = "";
 let workspaceCardMode = "edit";
 const AGENT_RULES_LIMIT_BYTES = 32 * 1024;
@@ -3174,11 +3512,15 @@ function openWorkspaceCard(workspaceId) {
   workspaceCardSubmit.textContent = "Сохранить";
   workspaceCardName.value = String(workspace.name ?? "");
   workspaceCardName.disabled = workspace.kind === "system";
+  if (workspaceCardFolderField) workspaceCardFolderField.hidden = true;
+  if (workspaceCardFolder) workspaceCardFolder.disabled = true;
   workspaceCardComment.value = String(workspace.comment ?? "");
   workspaceCardWorkingDirectory.value = String(workspace.settings?.workingDirectory ?? "");
+  workspaceCardTaskPrefix.value = String(workspace.settings?.taskPrefix ?? "");
   workspaceCardRules.value = entityAgentRules(workspace);
   workspaceCardReleaseWorkflow.checked = workspace.settings?.releaseWorkflowEnabled === true;
   updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
+  renderWorkspaceCardQuickMessages(workspace.id);
   workspaceCardOrder.max = String(order.length);
   workspaceCardOrder.value = String(Math.max(1, order.indexOf(columnId) + 1));
   workspaceCardModal.showModal();
@@ -3195,11 +3537,16 @@ function openNewWorkspaceCard() {
   workspaceCardSubmit.textContent = "Создать";
   workspaceCardName.value = "";
   workspaceCardName.disabled = false;
+  if (workspaceCardFolderField) workspaceCardFolderField.hidden = false;
+  if (workspaceCardFolder) workspaceCardFolder.disabled = false;
+  populateWorkspaceFolderSelect();
   workspaceCardComment.value = "";
   workspaceCardWorkingDirectory.value = "";
+  workspaceCardTaskPrefix.value = "";
   workspaceCardRules.value = "";
   workspaceCardReleaseWorkflow.checked = false;
   updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
+  renderWorkspaceCardQuickMessages("");
   workspaceCardOrder.max = String(order.length + 1);
   workspaceCardOrder.value = String((notesIndex < 0 ? order.length : notesIndex) + 1);
   workspaceCardModal.showModal();
@@ -3213,19 +3560,7 @@ function ensureWorkspaceContextMenu() {
     role: "menu",
     "aria-label": "Управление Workspace",
     hidden: true,
-  }, [el("button", {
-    type: "button",
-    role: "menuitem",
-    class: "stream-context-action",
-    "data-workspace-menu-action": "edit",
-    text: "Редактировать Workspace…",
-  }), el("button", {
-    type: "button",
-    role: "menuitem",
-    class: "stream-context-action",
-    "data-workspace-menu-action": "quick-messages",
-    text: "Быстрые ответы Workspace…",
-  })]);
+  });
   document.body.append(workspaceContextMenu);
   workspaceContextMenu.addEventListener("click", async (event) => {
     const action = event.target.closest("[data-workspace-menu-action]");
@@ -3238,18 +3573,161 @@ function ensureWorkspaceContextMenu() {
     if (kind === "edit") openWorkspaceCard(workspaceId);
     else if (kind === "quick-messages") {
       await editQuickMessagesForScope("workspace", workspaceId, `${workspaceName} / Workspace`);
+    } else if (kind === "folder-move") {
+      moveWorkspaceToFolder(workspaceId, String(action.dataset.folderName ?? ""));
+    } else if (kind === "folder-new") {
+      const folderName = await askText({ title: "Название папки Workspace" });
+      if (folderName) createWorkspaceFolder(folderName);
+    } else if (kind === "folder-remove") {
+      moveWorkspaceToFolder(workspaceId, "");
+    } else if (kind === "archive") {
+      const confirmation = await askText({
+        title: `Для удаления на 3 дня введите: ${workspaceName}`,
+      });
+      if (confirmation == null) return;
+      if (!window.AgentHubStreamTabs.workspaceArchiveNameMatches(
+        workspaceCatalogItem(workspaceId),
+        confirmation,
+      )) {
+        showToast("Название не совпало — Workspace не удалён");
+        return;
+      }
+      emit("workspace:archive", { workspaceId });
     }
   });
   return workspaceContextMenu;
 }
 
+function closeWorkspaceFolderContextMenu() {
+  if (!workspaceFolderContextMenu) return;
+  workspaceFolderContextMenu.hidden = true;
+  workspaceFolderContextMenu.dataset.folderName = "";
+}
+
+function renderWorkspaceContextMenu(menu, workspace) {
+  const currentFolder = window.AgentHubStreamTabs.normalizeWorkspaceFolderName(
+    workspace?.settings?.catalogFolder,
+  );
+  const folderActions = workspaceFolderCatalogNames()
+    .filter((name) => name !== currentFolder)
+    .map((name) => el("button", {
+      type: "button",
+      role: "menuitem",
+      class: "stream-context-action",
+      "data-workspace-menu-action": "folder-move",
+      "data-folder-name": name,
+      text: `В папку «${name}»`,
+      title: `Переместить Workspace в папку «${name}»`,
+    }));
+  menu.replaceChildren(
+    el("button", {
+      type: "button",
+      role: "menuitem",
+      class: "stream-context-action",
+      "data-workspace-menu-action": "edit",
+      text: "Редактировать Workspace…",
+    }),
+    el("button", {
+      type: "button",
+      role: "menuitem",
+      class: "stream-context-action",
+      "data-workspace-menu-action": "quick-messages",
+      text: "Быстрые ответы Workspace…",
+    }),
+    el("span", { class: "stream-context-label", text: "Папка" }),
+    ...folderActions,
+    el("button", {
+      type: "button",
+      role: "menuitem",
+      class: "stream-context-action stream-context-create",
+      "data-workspace-menu-action": "folder-new",
+      text: "Новая папка…",
+    }),
+    currentFolder ? el("button", {
+      type: "button",
+      role: "menuitem",
+      class: "stream-context-action",
+      "data-workspace-menu-action": "folder-remove",
+      text: "Убрать из папки",
+    }) : null,
+    workspace?.kind !== "system" ? el("span", {
+      class: "stream-context-label",
+      text: "Безопасность",
+    }) : null,
+    workspace?.kind !== "system" ? el("button", {
+      type: "button",
+      role: "menuitem",
+      class: "stream-context-action stream-context-danger",
+      "data-workspace-menu-action": "archive",
+      text: "Удалить в архив на 3 дня…",
+    }) : null,
+  );
+}
+
 function openWorkspaceContextMenu(event, workspaceId) {
   if (!workspaceCatalogItem(workspaceId)) return;
   closeStreamContextMenu();
+  closeWorkspaceFolderContextMenu();
   const menu = ensureWorkspaceContextMenu();
   const workspace = workspaceCatalogItem(workspaceId);
+  renderWorkspaceContextMenu(menu, workspace);
   menu.dataset.workspaceId = String(workspaceId);
   menu.dataset.workspaceName = String(workspace?.name ?? workspace?.displayName ?? workspaceId);
+  menu.hidden = false;
+  const left = Math.max(8, Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 8));
+  const top = Math.max(8, Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 8));
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+  menu.querySelector("button")?.focus();
+}
+
+function ensureWorkspaceFolderContextMenu() {
+  if (workspaceFolderContextMenu) return workspaceFolderContextMenu;
+  workspaceFolderContextMenu = el("div", {
+    class: "stream-context-menu workspace-context-menu",
+    role: "menu",
+    "aria-label": "Управление папкой Workspace",
+    hidden: true,
+  }, [el("button", {
+    type: "button",
+    role: "menuitem",
+    class: "stream-context-action",
+    "data-workspace-folder-menu-action": "rename",
+    text: "Переименовать папку…",
+  })]);
+  document.body.append(workspaceFolderContextMenu);
+  workspaceFolderContextMenu.addEventListener("click", async (event) => {
+    const action = event.target.closest("[data-workspace-folder-menu-action]");
+    if (!action) return;
+    event.preventDefault();
+    const currentName = String(workspaceFolderContextMenu.dataset.folderName ?? "");
+    closeWorkspaceFolderContextMenu();
+    if (action.dataset.workspaceFolderMenuAction !== "rename") return;
+    const requestedName = await askText({ title: "Новое название папки", value: currentName });
+    if (requestedName == null) return;
+    const plan = window.AgentHubStreamTabs.workspaceFolderRenamePlan(
+      state.workspaces,
+      currentName,
+      requestedName,
+      workspaceFolderCatalogNames(),
+    );
+    if (!plan) return;
+    if (plan.duplicateFolderName) {
+      showToast(`Папка «${plan.duplicateFolderName}» уже существует`);
+      return;
+    }
+    emit("workspace:folder-rename", plan);
+  });
+  return workspaceFolderContextMenu;
+}
+
+function openWorkspaceFolderContextMenu(event, folderName) {
+  const normalizedName = window.AgentHubStreamTabs.normalizeWorkspaceFolderName(folderName);
+  if (!normalizedName) return;
+  closeStreamContextMenu();
+  closeWorkspaceContextMenu();
+  const menu = ensureWorkspaceFolderContextMenu();
+  menu.dataset.folderName = normalizedName;
   menu.hidden = false;
   const left = Math.max(8, Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 8));
   const top = Math.max(8, Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 8));
@@ -3340,6 +3818,8 @@ function ensureStreamContextMenu() {
 }
 
 function openStreamContextMenu(event, tab) {
+  closeWorkspaceContextMenu();
+  closeWorkspaceFolderContextMenu();
   const menu = ensureStreamContextMenu();
   const streamId = String(tab.dataset.streamTabId ?? "");
   const workspaceId = String(tab.dataset.workspaceId ?? "");
@@ -3491,13 +3971,18 @@ document.addEventListener("click", (event) => {
   }
   if (streamContextMenu && !streamContextMenu.contains(event.target)) closeStreamContextMenu();
   if (workspaceContextMenu && !workspaceContextMenu.contains(event.target)) closeWorkspaceContextMenu();
+  if (workspaceFolderContextMenu && !workspaceFolderContextMenu.contains(event.target)) {
+    closeWorkspaceFolderContextMenu();
+  }
 });
 window.addEventListener("resize", closeStreamContextMenu);
 window.addEventListener("resize", closeWorkspaceContextMenu);
+window.addEventListener("resize", closeWorkspaceFolderContextMenu);
 window.addEventListener("resize", scheduleStreamTabsOverflow);
 document.addEventListener("scroll", (event) => {
   if (!streamContextMenu?.contains(event.target)) closeStreamContextMenu();
   if (!workspaceContextMenu?.contains(event.target)) closeWorkspaceContextMenu();
+  if (!workspaceFolderContextMenu?.contains(event.target)) closeWorkspaceFolderContextMenu();
 }, true);
 
 let draggedStreamId = "";
@@ -4000,6 +4485,10 @@ function openAttachmentViewer({ dataUrl = "", name = "Изображение", g
   const selectedDataUrl = String(selected.dataUrl ?? dataUrl ?? "");
   attachmentViewerOpen = true;
   attachmentViewer.hidden = false;
+  if (!attachmentViewer.open) {
+    if (typeof attachmentViewer.showModal === "function") attachmentViewer.showModal();
+    else attachmentViewer.setAttribute("open", "");
+  }
   attachmentViewerImage.hidden = !selectedDataUrl;
   attachmentViewerLoading.hidden = Boolean(selectedDataUrl);
   attachmentViewerImage.alt = String(selected.name ?? name);
@@ -4046,6 +4535,8 @@ function moveAttachmentViewer(direction) {
 function closeAttachmentViewer() {
   if (!attachmentViewerOpen) return false;
   attachmentViewerOpen = false;
+  if (attachmentViewer.open && typeof attachmentViewer.close === "function") attachmentViewer.close();
+  else attachmentViewer.removeAttribute("open");
   attachmentViewer.hidden = true;
   attachmentViewerImage.removeAttribute("src");
   attachmentViewerImage.hidden = true;
@@ -4087,6 +4578,10 @@ attachmentViewer.addEventListener("click", (event) => {
     attachmentViewer,
     attachmentViewerStage,
   )) closeAttachmentViewer();
+});
+attachmentViewer.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeAttachmentViewer();
 });
 window.addEventListener("keydown", (event) => {
   if (!attachmentViewerOpen) return;
@@ -4712,8 +5207,8 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
       appendInlineMarkdown(emphasis, token.slice(1, -1), fileContext);
       target.append(emphasis);
     } else {
-      const parts = token.match(/^\[([^\]\n]+)\]\(<([^>\n]+)>\)$/u)
-        ?? token.match(/^\[([^\]\n]+)\]\(([^)\n]+)\)$/u);
+      const parts = token.match(/^\[([^\]\n]+)\]\(<([^>\n]+)>(?:\s+"([^"]*)")?\)$/u)
+        ?? token.match(/^\[([^\]\n]+)\]\(([^)\n]+?)(?:\s+"([^"]*)")?\)$/u);
       const targetLink = markdownLink(parts?.[2], fileContext);
       if (targetLink) {
         const link = el("a", {
@@ -4721,6 +5216,7 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
           target: targetLink.taskId ? null : "_blank",
           rel: targetLink.taskId ? null : "noopener noreferrer",
           text: parts[1],
+          title: parts[3] || null,
         });
         if (targetLink.taskId) link.dataset.agentHubTaskReference = targetLink.taskId;
         if (targetLink.localPath) link.dataset.agentHubLocalLink = targetLink.localPath;
@@ -5950,6 +6446,7 @@ function renderAttachmentStrip(items, { readOnly, taskReferenceList = false }) {
   items.forEach((item, index) => {
     if (TaskReferences.isTaskReference(item)) {
       const reference = TaskReferences.normalize(item);
+      const presentation = TaskReferences.presentation(reference);
       const status = ({
         new: "New",
         in_progress: "InProg",
@@ -5959,12 +6456,12 @@ function renderAttachmentStrip(items, { readOnly, taskReferenceList = false }) {
       })[reference.workflowStatus] ?? "New";
       const card = el(readOnly ? "button" : "div", {
         class: "attachment attachment-task-reference",
-        title: readOnly ? "Открыть карточку Dashboard Task" : reference.title,
+        title: reference.title,
         ...(readOnly ? { type: "button" } : {}),
       }, [el("span", { class: "attachment-task-card" }, [
-        el("span", { class: "attachment-file-type", text: "TASK" }),
+        el("span", { class: "attachment-file-type", text: presentation.badge }),
         el("span", { class: "attachment-task-copy" }, [
-          el("span", { class: "attachment-file-name", text: reference.title }),
+          el("span", { class: "attachment-file-name", text: presentation.title }),
           el("span", { class: "attachment-task-status", text: status }),
         ]),
       ])]);
@@ -6548,6 +7045,7 @@ function toggleDialogSettings() {
 }
 
 function openPanel() {
+  renderGlobalQuickMessagesSettings();
   settingsPanel.hidden = false;
   panelScrim.hidden = false;
   if (limitsState.status === "idle") requestLimits(limitsState.range);
@@ -6646,11 +7144,23 @@ bugReportToggle?.addEventListener("click", () => {
 });
 document.addEventListener("contextmenu", (event) => {
   if (event.defaultPrevented) return;
+  const folder = event.target.closest("[data-workspace-folder-name]");
+  if (folder?.dataset.workspaceFolderKind === "folder") {
+    event.preventDefault();
+    openWorkspaceFolderContextMenu(event, folder.dataset.workspaceFolderName);
+    return;
+  }
   const workspace = event.target.closest("[data-workspace-heading], [data-board-workspace-id]");
   if (!workspace) return;
   event.preventDefault();
   const workspaceId = String(workspace.dataset.workspaceHeading ?? workspace.dataset.boardWorkspaceId ?? "");
   openWorkspaceContextMenu(event, workspaceId);
+});
+workspaceCardQuickMessages?.addEventListener("click", async () => {
+  const workspace = workspaceCatalogItem(workspaceCardId);
+  if (!workspace) return;
+  await editQuickMessagesForScope("workspace", workspace.id, String(workspace.name ?? "Workspace"));
+  renderWorkspaceCardQuickMessages(workspace.id);
 });
 workspaceCardForm?.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -6666,8 +7176,10 @@ workspaceCardForm?.addEventListener("submit", (event) => {
     const targetIndex = Math.max(0, Math.min(order.length, requestedOrder - 1));
     emit("workspace:create", {
       name,
+      folderName: workspaceCardFolder?.value ?? "",
       comment: workspaceCardComment.value.trim(),
       workingDirectory: workspaceCardWorkingDirectory.value.trim(),
+      taskPrefix: workspaceCardTaskPrefix.value.trim(),
       rules: workspaceCardRules.value,
       releaseWorkflowEnabled: workspaceCardReleaseWorkflow.checked,
       beforeColumnId: order[targetIndex] ?? null,
@@ -6686,6 +7198,7 @@ workspaceCardForm?.addEventListener("submit", (event) => {
     name,
     comment: workspaceCardComment.value.trim(),
     workingDirectory: workspaceCardWorkingDirectory.value.trim(),
+    taskPrefix: workspaceCardTaskPrefix.value.trim(),
     rules: workspaceCardRules.value,
     releaseWorkflowEnabled,
     beforeColumnId: remaining[targetIndex] ?? null,
@@ -6703,6 +7216,15 @@ workspaceCardModal?.addEventListener("click", (event) => {
 workspaceCardModal?.addEventListener("close", () => {
   workspaceCardId = "";
   workspaceCardMode = "edit";
+});
+workspaceArchiveList?.addEventListener("click", (event) => {
+  const restore = event.target.closest("[data-workspace-archive-restore]");
+  const workspaceId = String(restore?.dataset?.workspaceArchiveRestore ?? "").trim();
+  if (workspaceId) emit("workspace:restore", { workspaceId });
+});
+document.querySelector("[data-workspace-archive-close]")?.addEventListener("click", closeWorkspaceArchive);
+workspaceArchiveModal?.addEventListener("click", (event) => {
+  if (event.target === workspaceArchiveModal) closeWorkspaceArchive();
 });
 bugReportAttach?.addEventListener("click", () => bugReportFiles?.click());
 bugReportFiles?.addEventListener("change", () => {
@@ -6862,6 +7384,7 @@ panelScrim.addEventListener("click", closePanel);
 
 function renderOptions() {
   renderDialogSettings();
+  renderGlobalQuickMessagesSettings();
   renderTurnTimeModeOptions();
   renderComparisonViewModeOptions();
   for (const toggle of document.querySelectorAll("[data-toggle]")) {
@@ -6967,19 +7490,12 @@ function renderDialogSettings() {
     dialogStreamArchitect.checked = streamRoleSettings.architectEnabled(task?.streamSettings);
     dialogStreamArchitect.disabled = !task?.streamId;
   }
+  if (dialogStreamTeamLead) {
+    dialogStreamTeamLead.checked = streamRoleSettings.teamLeadEnabled(task?.streamSettings);
+    dialogStreamTeamLead.disabled = !task?.streamId;
+  }
   renderStreamRulesPreview();
-  if (dialogGlobalQuickMessagesCount) {
-    const quickMessages = window.AgentHubStreamTabs.normalizeQuickMessages(state.selection.quickMessages);
-    const count = quickMessages.global.length;
-    dialogGlobalQuickMessagesCount.textContent = count
-      ? window.AgentHubStreamTabs.quickMessagesCountLabel(count)
-      : "Не заданы";
-  }
-  if (dialogGlobalQuickMessages) {
-    const pending = state.pendingSelections.has("quickMessages");
-    dialogGlobalQuickMessages.disabled = pending;
-    dialogGlobalQuickMessages.setAttribute("aria-busy", String(pending));
-  }
+  renderStreamQuickMessagesSettings();
 }
 
 function selectDialogSetting(group, value) {
@@ -7006,10 +7522,21 @@ function selectDialogSetting(group, value) {
   renderOptions();
 }
 
+settingsPanel?.addEventListener("click", async (event) => {
+  const globalQuickMessages = event.target.closest("[data-settings-global-quick-messages]");
+  if (!globalQuickMessages) return;
+  await editQuickMessagesForScope("global", "", "Глобальные");
+  renderGlobalQuickMessagesSettings();
+});
+
 dialogSettings.addEventListener("click", async (event) => {
-  const globalQuickMessages = event.target.closest("[data-dialog-global-quick-messages]");
-  if (globalQuickMessages) {
-    await editQuickMessagesForScope("global", "", "Глобальные");
+  const streamQuickMessages = event.target.closest("[data-dialog-stream-quick-messages]");
+  if (streamQuickMessages) {
+    const task = currentTask();
+    const streamId = String(task?.streamId ?? "").trim();
+    if (!streamId) return;
+    const name = String(task?.streamName ?? task?.streamDisplayName ?? "потока").trim() || "потока";
+    await editQuickMessagesForScope("stream", streamId, name);
     renderDialogSettings();
     return;
   }
@@ -7041,6 +7568,15 @@ dialogSettings.addEventListener("change", (event) => {
     const task = currentTask();
     if (!task?.streamId) return;
     task.streamSettings = streamRoleSettings.withArchitect(task.streamSettings, architect.checked);
+    emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
+    renderOptions();
+    return;
+  }
+  const teamLead = event.target.closest("[data-dialog-stream-team-lead]");
+  if (teamLead) {
+    const task = currentTask();
+    if (!task?.streamId) return;
+    task.streamSettings = streamRoleSettings.withTeamLead(task.streamSettings, teamLead.checked);
     emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
     renderOptions();
     return;
@@ -7506,6 +8042,14 @@ async function handleAction(action, trigger) {
   const taskId = trigger.closest("[data-stream-chat-task-id]")?.dataset.streamChatTaskId
     || state.selectedId;
   switch (action) {
+    case "workspace-archive-open":
+      openWorkspaceArchive();
+      break;
+    case "workspace-folder-new": {
+      const folderName = await askText({ title: "Название папки Workspace" });
+      if (folderName) createWorkspaceFolder(folderName);
+      break;
+    }
     case "workspace-new":
       openNewWorkspaceCard();
       break;
@@ -7764,6 +8308,13 @@ const AgentHub = {
     state.workspaceColumnOrder = nextColumnOrder;
     if (journalRendered) updateJournalStreamCount();
   },
+  setArchivedWorkspaces(workspaces) {
+    const next = Array.isArray(workspaces) ? workspaces.slice() : [];
+    if (sameData(state.archivedWorkspaces, next)) return;
+    state.archivedWorkspaces = next;
+    renderWorkspaceArchive();
+  },
+  renameWorkspaceFolderCatalog,
   openDialogSettings,
   /** Точечное обновление задачи (статус, время, непрочитанное). */
   patchTask(id, patch) {
@@ -8504,7 +9055,9 @@ function burnRatePolicyForRange(range) {
 
 function selectedBurnRatePolicyForRange(range) {
   const policy = burnRatePolicyForRange(range);
-  return limitsState.speedFullWindow ? policy : { ...policy, minimumSpanMs: 0 };
+  return limitsState.speedFullWindow
+    ? policy
+    : { ...policy, minimumSpanMs: 0, showResetStartAsZero: true };
 }
 
 function weeklyLimitDurationMs(series) {
@@ -8543,7 +9096,10 @@ function sameWeeklyLimitCycle(left, right) {
 function sameLimitsSpeedSegment(left, right) {
   const hasPathSegments = Number.isInteger(left?.pathSegmentIndex)
     && Number.isInteger(right?.pathSegmentIndex);
-  return sameWeeklyLimitCycle(left, right)
+  const joinsResetAnchor = right?.resetAnchor === true
+    && Number.isInteger(left?.cycleIndex)
+    && right.cycleIndex === left.cycleIndex + 1;
+  return (sameWeeklyLimitCycle(left, right) || joinsResetAnchor)
     && (!hasPathSegments || left.pathSegmentIndex === right.pathSegmentIndex);
 }
 
@@ -8581,6 +9137,7 @@ function weeklyBurnRatePoints(series, {
   rollingWindowMs = BURN_RATE_ROLLING_WINDOW_MS,
   minimumSpanMs = BURN_RATE_MINIMUM_SPAN_MS,
   maximumLookbackMs = rollingWindowMs * 1.5,
+  showResetStartAsZero = false,
 } = {}) {
   const durationMs = weeklyLimitDurationMs(series);
   if (!durationMs) return [];
@@ -8607,14 +9164,18 @@ function weeklyBurnRatePoints(series, {
   for (let index = 0; index < points.length; index += 1) {
     const previousAccount = String(points[index - 1]?.raw?.accountKey ?? "");
     const currentAccount = String(points[index]?.raw?.accountKey ?? "");
-    if (index > 0 && (
-      points[index].usedPercent < points[index - 1].usedPercent
-      || (previousAccount && currentAccount && previousAccount !== currentAccount)
-    )) cycleIndex += 1;
+    const startsAfterReset = index > 0
+      && points[index].usedPercent < points[index - 1].usedPercent;
+    const startsAfterAccountChange = index > 0
+      && previousAccount
+      && currentAccount
+      && previousAccount !== currentAccount;
+    if (startsAfterReset || startsAfterAccountChange) cycleIndex += 1;
     points[index].cycleIndex = cycleIndex;
+    points[index].startsAfterReset = startsAfterReset;
   }
 
-  return points.map((point, index) => {
+  const ratePoints = points.map((point, index) => {
     const remainingMs = point.resetMs - point.atMs;
     const targetRate = Math.max(0, point.remainingPercent) / remainingMs * WEEK_MILLISECONDS;
     let baseline = null;
@@ -8635,7 +9196,7 @@ function weeklyBurnRatePoints(series, {
     const usedDelta = baseline ? point.usedPercent - baseline.usedPercent : Number.NaN;
     const actualRate = spanMs > 0 && spanMs >= minimumSpanMs && usedDelta >= 0
       ? usedDelta / spanMs * WEEK_MILLISECONDS
-      : null;
+      : showResetStartAsZero && point.startsAfterReset ? 0 : null;
     const deviationRate = Number.isFinite(actualRate) ? actualRate - targetRate : null;
     return {
       ...point,
@@ -8647,6 +9208,37 @@ function weeklyBurnRatePoints(series, {
       deviationRate,
       overTarget: Number.isFinite(deviationRate) ? deviationRate > 0 : false,
     };
+  });
+  if (!showResetStartAsZero) return ratePoints;
+  return ratePoints.flatMap((point, index) => {
+    if (!point.startsAfterReset) return [point];
+    const previousAtMs = ratePoints[index - 1]?.atMs;
+    const cycleStartMs = point.resetMs - durationMs;
+    if (!(cycleStartMs > previousAtMs && cycleStartMs < point.atMs)) return [point];
+    const remainingPercent = 100;
+    const targetRate = remainingPercent / durationMs * WEEK_MILLISECONDS;
+    return [{
+      ...point,
+      raw: {
+        ...point.raw,
+        at: new Date(cycleStartMs).toISOString(),
+        usedPercent: 0,
+        remainingPercent,
+        estimated: true,
+        estimateKind: "reset-start",
+      },
+      atMs: cycleStartMs,
+      usedPercent: 0,
+      remainingPercent,
+      cycleAgeMs: 0,
+      sampleSpanMs: 0,
+      targetRate,
+      actualRate: 0,
+      deviationRate: -targetRate,
+      overTarget: false,
+      startsAfterReset: false,
+      resetAnchor: true,
+    }, point];
   });
 }
 
@@ -13060,11 +13652,7 @@ function usageSyncSuggestedDeviceLabel(status = null) {
 }
 
 function usageSyncCanSetDeviceLabel(status = null) {
-  return Boolean(
-    status?.deviceLabelPromptRequired
-    || usageSyncDeviceLabel(status)
-    || usageSyncSuggestedDeviceLabel(status),
-  );
+  return Boolean(status && typeof status === "object");
 }
 
 function mountStatisticsSyncControls() {
@@ -13087,7 +13675,7 @@ function updateUsageSyncDeviceLabelButton(status = null) {
   const suggested = usageSyncSuggestedDeviceLabel(status);
   journalSyncDeviceLabelButton.hidden = !visible;
   journalSyncDeviceLabelButton.disabled = !visible;
-  journalSyncDeviceLabelButton.textContent = status?.deviceLabelPromptRequired ? "Задать ник" : "Ник устройства";
+  journalSyncDeviceLabelButton.textContent = status?.deviceLabelPromptRequired || !label ? "Задать ник" : "Ник устройства";
   journalSyncDeviceLabelButton.title = [
     "Задать никнейм этого устройства для Sync.",
     label ? `Текущий ник: ${label}` : "",

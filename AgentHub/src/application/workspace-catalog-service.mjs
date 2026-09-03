@@ -1,3 +1,5 @@
+import { workspaceTaskPrefix } from "../domain/task-number.mjs";
+
 function requiredStore(value) {
   if (!value || typeof value.hierarchy !== "function") {
     throw new TypeError("workspace catalog store is required");
@@ -8,9 +10,10 @@ function requiredStore(value) {
 export class WorkspaceCatalogService {
   #store;
 
-  constructor({ store, taskBoard = null, releaseCompleter = null } = {}) {
+  constructor({ store, taskBoard = null, releasePlanner = null, releaseCompleter = null } = {}) {
     this.#store = requiredStore(store);
     this.taskBoard = taskBoard;
+    this.releasePlanner = releasePlanner;
     this.releaseCompleter = releaseCompleter;
   }
 
@@ -31,7 +34,25 @@ export class WorkspaceCatalogService {
   }
 
   updateWorkspaceSettings({ workspaceId, settings = {} } = {}) {
-    return this.#store.updateWorkspaceSettings(workspaceId, settings);
+    const workspace = this.#store.updateWorkspaceSettings(workspaceId, settings);
+    if (workspaceTaskPrefix(workspace.settings)) this.taskBoard?.assignWorkspaceTaskNumbers?.(workspaceId);
+    return workspace;
+  }
+
+  renameWorkspaceFolder({ fromFolderName, toFolderName } = {}) {
+    return this.#store.renameWorkspaceFolder(fromFolderName, toFolderName);
+  }
+
+  archiveWorkspace({ workspaceId } = {}) {
+    return this.#store.archiveWorkspace(workspaceId);
+  }
+
+  restoreWorkspace({ workspaceId } = {}) {
+    return this.#store.restoreWorkspace(workspaceId);
+  }
+
+  archivedWorkspaces() {
+    return this.#store.archivedWorkspaces();
   }
 
   workspaceDeveloperRules({ workspaceId } = {}) {
@@ -43,8 +64,8 @@ export class WorkspaceCatalogService {
   }
 
   releasePlan({ workspaceId } = {}) {
-    if (typeof this.taskBoard?.releasePlan !== "function") throw new Error("Task release plan is unavailable");
-    return this.taskBoard.releasePlan(workspaceId);
+    if (typeof this.releasePlanner?.plan !== "function") throw new Error("Task release plan is unavailable");
+    return this.releasePlanner.plan(workspaceId);
   }
 
   completeRelease(params = {}) {

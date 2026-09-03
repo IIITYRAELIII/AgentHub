@@ -6,6 +6,7 @@ import { createTaskInteractionWiring } from "./task-interaction-wiring-compositi
 import { createRuntimeRestartWiring } from "./runtime-restart-wiring-composition.mjs";
 import { taskDisplayTitle } from "../domain/task-display-title.mjs";
 import { TestContourJournalSyncService } from "../application/test-contour-journal-sync-service.mjs";
+import { testContourRuntimeAlive } from "../runtime/test-contour-manager.mjs";
 import { readMissingTestContourJournalRecords } from "../infrastructure/persistence/test-contour-journal-source.mjs";
 
 export function createRuntimeOrchestrationComposition({
@@ -88,6 +89,7 @@ export function createRuntimeOrchestrationComposition({
     startCodexAppServer,
     initializeCodex,
     stopCodexAppServerTree,
+    importCodexDesktopAttachments,
   } = provider;
   const {
     runTaskTitle,
@@ -153,6 +155,7 @@ export function createRuntimeOrchestrationComposition({
     targetDatabaseFile: journalDatabaseFile,
     projectionProjectRoots: globalWorkLogProjectRoots,
     readRecords: readMissingTestContourJournalRecords,
+    sourceRuntimeAlive: () => testContourRuntimeAlive(),
     enabled: config.components?.testContour === true
       && process.env.AGENT_HUB_TEST_CONTOUR !== "1",
   });
@@ -235,8 +238,8 @@ export function createRuntimeOrchestrationComposition({
     isStopping: () => hostState.stopping,
     runtimeTimers,
     selectedTaskWatchIntervalMs,
+    attachmentImporter: importCodexDesktopAttachments,
     terminalAuditIntervalMs,
-    terminalAuditEnabled: false,
     logger: taskObserverLogger,
   }));
   const {

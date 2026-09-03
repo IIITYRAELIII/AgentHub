@@ -248,6 +248,83 @@ test("rollout session reads nested subagent parent metadata", async () => {
   });
 });
 
+test("rollout session discovery bounds a virtual 5 GiB line by bytes", async () => {
+  const chunk = Buffer.alloc(64 * 1024, 0x78);
+  const virtualBytes = 5 * 1024 * 1024 * 1024;
+  let emittedBytes = 0;
+  let destroyed = false;
+  const input = {
+    [Symbol.asyncIterator]() { return this; },
+    async next() {
+      if (destroyed || emittedBytes >= virtualBytes) return { done: true };
+      emittedBytes += chunk.length;
+      return { done: false, value: chunk };
+    },
+    destroy() { destroyed = true; },
+  };
+
+  const session = await readCodexRolloutSession("5gib-damaged.jsonl", {
+    createReadStreamImpl: () => input,
+    maxBytes: 256 * 1024,
+    maxLineBytes: 32 * 1024,
+    maxDurationMs: 1_000,
+  });
+
+  assert.equal(session, null);
+  assert.equal(emittedBytes, 256 * 1024);
+  assert.equal(destroyed, true);
+});
+
+test("rollout session discovery bounds newline-heavy input by line count", async () => {
+  const chunk = Buffer.from(`${"{}\n".repeat(4_096)}`);
+  let reads = 0;
+  let destroyed = false;
+  const input = {
+    [Symbol.asyncIterator]() { return this; },
+    async next() {
+      if (destroyed) return { done: true };
+      reads += 1;
+      return { done: false, value: chunk };
+    },
+    destroy() { destroyed = true; },
+  };
+
+  const session = await readCodexRolloutSession("5gib-lines.jsonl", {
+    createReadStreamImpl: () => input,
+    maxBytes: 1024 * 1024,
+    maxLines: 32,
+    maxDurationMs: 1_000,
+  });
+
+  assert.equal(session, null);
+  assert.equal(reads, 1);
+  assert.equal(destroyed, true);
+});
+
+test("rollout session discovery times out and contains stream failures", async () => {
+  let destroyed = false;
+  const stalled = {
+    [Symbol.asyncIterator]() { return this; },
+    next() { return new Promise(() => {}); },
+    destroy() { destroyed = true; },
+  };
+  const startedAt = Date.now();
+  assert.equal(await readCodexRolloutSession("stalled.jsonl", {
+    createReadStreamImpl: () => stalled,
+    maxDurationMs: 20,
+  }), null);
+  assert.ok(Date.now() - startedAt < 250);
+  assert.equal(destroyed, true);
+
+  assert.equal(await readCodexRolloutSession("failed.jsonl", {
+    createReadStreamImpl: () => ({
+      [Symbol.asyncIterator]() { return this; },
+      async next() { throw new RangeError("damaged rollout"); },
+      destroy() {},
+    }),
+  }), null);
+});
+
 test("subagent rollout discovery includes active and archived sessions", async () => {
   const directories = new Map([
     [path.join("C:\\Codex", "sessions"), [{
@@ -411,6 +488,32 @@ test("complete rollout discovery also includes ordinary sessions", async () => {
     }),
   });
   assert.deepEqual(result.map((value) => value.threadId), ["ordinary"]);
+});
+
+test("rollout discovery retries unreadable files without retaining damaged payloads", async () => {
+  let files = [{ name: "damaged.jsonl", isDirectory: () => false, isFile: () => true }];
+  let reads = 0;
+  const sessionCache = new Map();
+  const options = {
+    codexHome: "C:\\Codex",
+    readdirImpl: async (directory) => (
+      directory === path.join("C:\\Codex", "sessions") ? files : []
+    ),
+    readSession: async () => {
+      reads += 1;
+      return null;
+    },
+    sessionCache,
+  };
+
+  assert.deepEqual(await discoverCodexRollouts(options), []);
+  assert.deepEqual(await discoverCodexRollouts(options), []);
+  assert.equal(reads, 2);
+  assert.equal(sessionCache.size, 0);
+
+  files = [];
+  assert.deepEqual(await discoverCodexRollouts(options), []);
+  assert.equal(sessionCache.size, 0);
 });
 
 test("streaming rollout scan extracts the exact prompt, terminal status and changed files", async () => {

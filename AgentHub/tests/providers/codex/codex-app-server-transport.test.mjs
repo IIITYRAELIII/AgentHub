@@ -60,6 +60,42 @@ test("CodexAppServerTransport routes RPC responses and notifications", async () 
   assert.deepEqual(messages, [{ method: "turn/started", params: { turnId: "t1" } }]);
 });
 
+test("CodexAppServerTransport confirms an elicitation response was flushed", async () => {
+  const { child, transport } = await startedTransport();
+  const written = nextWrittenJson(child.stdin);
+  const flushed = transport.respond(41, { action: "accept" });
+  assert.deepEqual(await written, { id: 41, result: { action: "accept" } });
+  await flushed;
+});
+
+test("CodexAppServerTransport rejects an elicitation response bound to an old generation", async () => {
+  const firstChild = fakeChild({ pid: 321 });
+  const replacementChild = fakeChild({ pid: 654 });
+  const children = [firstChild, replacementChild];
+  const replacementWrites = [];
+  replacementChild.stdin.on("data", (chunk) => replacementWrites.push(String(chunk)));
+  const transport = new CodexAppServerTransport({
+    spawnProcess: async () => children.shift(),
+    onStderr: () => {},
+  });
+  await transport.start();
+  const firstGeneration = transport.generation;
+  firstChild.emit("exit", 1, null);
+  await new Promise((resolve) => setImmediate(resolve));
+  await transport.start();
+
+  await assert.rejects(
+    transport.respond(41, { action: "accept" }, { expectedGeneration: firstGeneration }),
+    (error) => {
+      assert.equal(error.code, "CODEX_APP_SERVER_GENERATION_CHANGED");
+      assert.equal(error.deliveryOutcome, "not-sent");
+      return true;
+    },
+  );
+  assert.equal(transport.generation, firstGeneration + 1);
+  assert.deepEqual(replacementWrites, []);
+});
+
 test("CodexAppServerTransport coalesces live answer deltas before dispatch", async () => {
   const { child, messages } = await startedTransport();
   const lines = Array.from({ length: 600 }, (_, index) => JSON.stringify({
@@ -189,7 +225,7 @@ test("CodexAppServerTransport times out requests and rejects them on exit", asyn
   assert.equal(exits[0].code, 7);
 });
 
-test("CodexAppServerTransport deduplicates, caches and invalidates thread reads", async () => {
+test("CodexAppServerTransport deduplicates only in-flight thread reads", async () => {
   const { child, transport } = await startedTransport({ threadReadCacheMs: 10_000 });
   const firstWrite = nextWrittenJson(child.stdin);
   const first = transport.readThread("thread-1", { includeTurns: false });
@@ -199,14 +235,14 @@ test("CodexAppServerTransport deduplicates, caches and invalidates thread reads"
   assert.deepEqual(await first, { thread: { id: "thread-1" } });
   assert.deepEqual(await duplicate, { thread: { id: "thread-1" } });
 
-  assert.deepEqual(await transport.readThread("thread-1", { includeTurns: false }), { thread: { id: "thread-1" } });
-  transport.invalidateThreadRead("thread-1");
   const secondWrite = nextWrittenJson(child.stdin);
   const refreshed = transport.readThread("thread-1", { includeTurns: false });
   const secondRequest = await secondWrite;
   assert.notEqual(secondRequest.id, request.id);
   child.stdout.write(`${JSON.stringify({ id: secondRequest.id, result: { thread: { id: "thread-1", fresh: true } } })}\n`);
   assert.equal((await refreshed).thread.fresh, true);
+  assert.equal(transport.diagnostics().inFlightThreadReads, 0);
+  assert.equal("retainedThreadReadValues" in transport.diagnostics(), false);
 });
 
 test("CodexAppServerTransport builds bounded full history from cursor pages", async () => {
@@ -399,6 +435,8 @@ test("CodexAppServerTransport owns notifications, responses and process-tree sto
 
   await transport.stop();
   assert.deepEqual(stopped, [321]);
+  assert.equal(transport.running, false);
+  assert.equal(transport.diagnostics().hubOwnedProcessTrees, undefined);
 });
 
 test("CodexAppServerTransport reports startup failures without becoming active", async () => {

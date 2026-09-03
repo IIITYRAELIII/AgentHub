@@ -22,6 +22,7 @@ test("snapshot transport materializes bootstrap resets and conversation naming",
   const snapshot = api.materialize(null, {
     apiVersion: 4,
     version: "snapshot-1",
+    archivedWorkspaces: [{ id: "workspace-archived", purgeAfterMs: 123 }],
     collectionDeltas: {
       conversations: {
         version: "conversations-1",
@@ -43,6 +44,7 @@ test("snapshot transport materializes bootstrap resets and conversation naming",
   }]);
   assert.deepEqual(plain(snapshot.workspaces), [{ id: "workspace-1" }]);
   assert.deepEqual(plain(snapshot.boardTasks), [{ id: "task-1" }]);
+  assert.deepEqual(plain(snapshot.archivedWorkspaces), [{ id: "workspace-archived", purgeAfterMs: 123 }]);
   assert.equal(snapshot.conversations, undefined);
   assert.equal(snapshot.collectionDeltas, undefined);
   assert.deepEqual({ ...api.requestParams(snapshot) }, {

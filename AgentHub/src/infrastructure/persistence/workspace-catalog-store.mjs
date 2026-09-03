@@ -3,6 +3,8 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import { editableWorkspaceDeveloperRules } from "../../domain/editable-workspace-developer-rules.mjs";
+
 import {
   EXPERIMENTS_SYSTEM_KEY,
   OTHER_WORKSPACE_NAME,
@@ -21,9 +23,11 @@ import {
   releaseWorkflowEnabled,
   workspaceSettingsWithReleaseWorkflow,
 } from "../../domain/workspace-release-workflow.mjs";
+import { workspaceSettingsWithTaskPrefix } from "../../domain/task-number.mjs";
 
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 export const DEVELOPER_RULES_MAX_BYTES = 32 * 1024;
+export const WORKSPACE_ARCHIVE_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
 const SOURCES = new Set(["created", "discovered", "migration", "rebirth"]);
 const DEVELOPER_RULE_SCOPES = new Set(["workspace", "stream"]);
 
@@ -45,7 +49,9 @@ function configure(database) {
       system_key TEXT UNIQUE,
       created_at_ms INTEGER NOT NULL,
       updated_at_ms INTEGER NOT NULL,
-      settings_json TEXT NOT NULL DEFAULT '{}'
+      settings_json TEXT NOT NULL DEFAULT '{}',
+      archived_at_ms INTEGER,
+      purge_after_ms INTEGER
     ) WITHOUT ROWID;
     CREATE INDEX IF NOT EXISTS hub_workspaces_updated_idx
       ON hub_workspaces(updated_at_ms DESC);
@@ -140,6 +146,17 @@ function configure(database) {
   if (!workspaceColumns.some((column) => column.name === "comment")) {
     database.exec("ALTER TABLE hub_workspaces ADD COLUMN comment TEXT NOT NULL DEFAULT ''");
   }
+  if (!workspaceColumns.some((column) => column.name === "archived_at_ms")) {
+    database.exec("ALTER TABLE hub_workspaces ADD COLUMN archived_at_ms INTEGER");
+  }
+  if (!workspaceColumns.some((column) => column.name === "purge_after_ms")) {
+    database.exec("ALTER TABLE hub_workspaces ADD COLUMN purge_after_ms INTEGER");
+  }
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS hub_workspaces_archive_expiry_idx
+      ON hub_workspaces(purge_after_ms)
+      WHERE archived_at_ms IS NOT NULL;
+  `);
   const streamColumns = database.prepare("PRAGMA table_info(hub_streams)").all();
   if (!streamColumns.some((column) => column.name === "settings_json")) {
     database.exec("ALTER TABLE hub_streams ADD COLUMN settings_json TEXT NOT NULL DEFAULT '{}'");
@@ -162,6 +179,8 @@ function workspaceFromRow(row) {
     systemKey: row.system_key ? String(row.system_key) : null,
     createdAtMs: Number(row.created_at_ms) || 0,
     updatedAtMs: Number(row.updated_at_ms) || 0,
+    archivedAtMs: row.archived_at_ms == null ? null : Number(row.archived_at_ms),
+    purgeAfterMs: row.purge_after_ms == null ? null : Number(row.purge_after_ms),
     settings,
   };
 }
@@ -212,15 +231,19 @@ function safeIdentifier(value, name) {
   return id;
 }
 
+function workspaceFolderName(value) {
+  return String(value ?? "").replace(/\s+/gu, " ").trim().slice(0, 80);
+}
+
 function developerRuleScope(value) {
   const scope = String(value ?? "").trim().toLowerCase();
   if (!DEVELOPER_RULE_SCOPES.has(scope)) throw new Error(`invalid developer rule scope: ${value}`);
   return scope;
 }
 
-function developerRuleContent(value) {
+function developerRuleContent(value, maximumBytes = DEVELOPER_RULES_MAX_BYTES) {
   const content = String(value ?? "");
-  if (Buffer.byteLength(content, "utf8") > DEVELOPER_RULES_MAX_BYTES) {
+  if (Buffer.byteLength(content, "utf8") > maximumBytes) {
     throw new Error(`developer rules exceed ${DEVELOPER_RULES_MAX_BYTES} UTF-8 bytes`);
   }
   return content;
@@ -275,20 +298,30 @@ function workspaceEventFromRow(row) {
 export class WorkspaceCatalogStore {
   #databaseFile;
   #database = null;
+  #readOnly;
   #now;
   #idFactory;
 
-  constructor({ databaseFile, now = () => Date.now(), idFactory = randomUUID } = {}) {
+  constructor({
+    databaseFile,
+    readOnly = false,
+    now = () => Date.now(),
+    idFactory = randomUUID,
+  } = {}) {
     if (!databaseFile) throw new Error("WorkspaceCatalogStore databaseFile is required");
     this.#databaseFile = path.resolve(databaseFile);
+    this.#readOnly = readOnly === true;
     this.#now = now;
     this.#idFactory = idFactory;
   }
 
   async load() {
     await this.#open();
+    if (this.#readOnly) return this;
     this.#migrateReleaseWorkflowSettings();
+    this.#migrateWorkspaceDeveloperRules();
     this.#migrateArchitectStreamSettings();
+    this.purgeExpiredWorkspaces();
     this.ensureExperiments();
     return this;
   }
@@ -300,11 +333,18 @@ export class WorkspaceCatalogStore {
 
   async #open() {
     if (this.#database) return this.#database;
-    await mkdir(path.dirname(this.#databaseFile), { recursive: true });
+    if (!this.#readOnly) await mkdir(path.dirname(this.#databaseFile), { recursive: true });
     let database;
     try {
-      database = new DatabaseSync(this.#databaseFile);
-      configure(database);
+      database = new DatabaseSync(
+        this.#databaseFile,
+        this.#readOnly ? { readOnly: true } : {},
+      );
+      if (this.#readOnly) {
+        database.exec("PRAGMA query_only = ON; PRAGMA busy_timeout = 0; PRAGMA foreign_keys = ON;");
+      } else {
+        configure(database);
+      }
     } catch (error) {
       database?.close();
       throw error;
@@ -350,14 +390,30 @@ export class WorkspaceCatalogStore {
         try { settings = JSON.parse(String(row.settings_json ?? "{}")); } catch { settings = {}; }
         const currentRules = this.#developerRules("workspace", row.id);
         const migration = legacyReleaseWorkflowRules(currentRules?.content ?? "");
+        const editableContent = editableWorkspaceDeveloperRules(currentRules?.content ?? "");
         update.run(
           JSON.stringify(workspaceSettingsWithReleaseWorkflow(settings, migration.enabled)),
           row.id,
         );
-        if (migration.migrated && migration.content !== currentRules?.content) {
-          this.#updateDeveloperRules("workspace", row.id, migration.content);
+        if (editableContent !== (currentRules?.content ?? "")) {
+          this.#updateWorkspaceDeveloperRules(row.id, editableContent);
         }
       }
+    });
+  }
+
+  #migrateWorkspaceDeveloperRules() {
+    const key = "workspace_system_rules_removed_v2";
+    if (this.#database.prepare("SELECT 1 FROM hub_workspace_catalog_meta WHERE key = ?").get(key)) return;
+    this.#transaction(() => {
+      for (const row of this.#database.prepare("SELECT id FROM hub_workspaces").all()) {
+        const current = this.#developerRules("workspace", row.id);
+        const content = editableWorkspaceDeveloperRules(current?.content ?? "");
+        if (content !== (current?.content ?? "")) this.#updateWorkspaceDeveloperRules(row.id, content);
+      }
+      this.#database.prepare(
+        "INSERT INTO hub_workspace_catalog_meta (key, value) VALUES (?, ?)",
+      ).run(key, "completed");
     });
   }
 
@@ -403,10 +459,11 @@ export class WorkspaceCatalogStore {
       nowMs,
       nowMs,
       JSON.stringify(workspaceSettingsWithReleaseWorkflow(
-        settings,
+        workspaceSettingsWithTaskPrefix(settings),
         releaseWorkflowEnabled(settings),
       )),
     );
+    this.#updateWorkspaceDeveloperRules(workspaceId, "");
     return this.workspace(workspaceId);
   }
 
@@ -443,11 +500,108 @@ export class WorkspaceCatalogStore {
     const enabled = explicitReleaseWorkflow
       ? releaseWorkflowEnabled(settings)
       : releaseWorkflowEnabled(current.settings);
-    const nextSettings = workspaceSettingsWithReleaseWorkflow(settings, enabled);
+    const nextSettings = workspaceSettingsWithReleaseWorkflow(workspaceSettingsWithTaskPrefix(settings), enabled);
     this.#database.prepare(`
       UPDATE hub_workspaces SET settings_json = ?, updated_at_ms = ? WHERE id = ?
     `).run(JSON.stringify(nextSettings), this.#nowMs(), id);
     return this.workspace(id);
+  }
+
+  renameWorkspaceFolder(fromFolderName, toFolderName) {
+    const fromName = workspaceFolderName(fromFolderName);
+    const toName = workspaceFolderName(toFolderName);
+    if (!fromName || !toName) throw new Error("workspace folder names are required");
+    if (fromName === toName) {
+      return { fromFolderName: fromName, toFolderName: toName, workspaceCount: 0 };
+    }
+    const rows = this.#database.prepare("SELECT id, settings_json FROM hub_workspaces").all();
+    const matching = rows.flatMap((row) => {
+      let settings = {};
+      try { settings = JSON.parse(String(row.settings_json ?? "{}")); } catch { settings = {}; }
+      if (!settings || typeof settings !== "object" || Array.isArray(settings)) settings = {};
+      if (workspaceFolderName(settings.catalogFolder) !== fromName) return [];
+      return [{ id: String(row.id), settings: { ...settings, catalogFolder: toName } }];
+    });
+    if (matching.length) {
+      const updatedAtMs = this.#nowMs();
+      const update = this.#database.prepare(`
+        UPDATE hub_workspaces SET settings_json = ?, updated_at_ms = ? WHERE id = ?
+      `);
+      this.#transaction(() => {
+        for (const workspace of matching) {
+          update.run(JSON.stringify(workspace.settings), updatedAtMs, workspace.id);
+        }
+      });
+    }
+    return {
+      fromFolderName: fromName,
+      toFolderName: toName,
+      workspaceCount: matching.length,
+    };
+  }
+
+  archiveWorkspace(workspaceId) {
+    const id = safeIdentifier(workspaceId, "workspace id");
+    const current = this.workspace(id);
+    if (!current) throw new Error(`workspace not found: ${id}`);
+    if (current.kind === "system") throw new Error("system workspace cannot be archived");
+    if (current.archivedAtMs != null) return current;
+    const archivedAtMs = this.#nowMs();
+    this.#database.prepare(`
+      UPDATE hub_workspaces
+      SET archived_at_ms = ?, purge_after_ms = ?, updated_at_ms = ?
+      WHERE id = ?
+    `).run(
+      archivedAtMs,
+      archivedAtMs + WORKSPACE_ARCHIVE_RETENTION_MS,
+      archivedAtMs,
+      id,
+    );
+    return this.workspace(id);
+  }
+
+  restoreWorkspace(workspaceId) {
+    const id = safeIdentifier(workspaceId, "workspace id");
+    const current = this.workspace(id);
+    if (!current) throw new Error(`workspace not found: ${id}`);
+    if (current.archivedAtMs == null) return current;
+    this.#database.prepare(`
+      UPDATE hub_workspaces
+      SET archived_at_ms = NULL, purge_after_ms = NULL, updated_at_ms = ?
+      WHERE id = ?
+    `).run(this.#nowMs(), id);
+    return this.workspace(id);
+  }
+
+  archivedWorkspaces() {
+    this.purgeExpiredWorkspaces();
+    return this.#database.prepare(`
+      SELECT w.id, w.name, w.archived_at_ms, w.purge_after_ms,
+        COUNT(DISTINCT s.id) AS stream_count,
+        COUNT(t.provider_thread_id) AS thread_count
+      FROM hub_workspaces w
+      LEFT JOIN hub_streams s ON s.workspace_id = w.id
+      LEFT JOIN hub_threads t ON t.stream_id = s.id
+      WHERE w.archived_at_ms IS NOT NULL AND w.purge_after_ms > ?
+      GROUP BY w.id
+      ORDER BY w.purge_after_ms, w.name, w.id
+    `).all(this.#nowMs()).map((row) => ({
+      id: String(row.id),
+      name: String(row.name),
+      archivedAtMs: Number(row.archived_at_ms),
+      purgeAfterMs: Number(row.purge_after_ms),
+      streamCount: Number(row.stream_count) || 0,
+      threadCount: Number(row.thread_count) || 0,
+    }));
+  }
+
+  purgeExpiredWorkspaces() {
+    if (this.#readOnly) return 0;
+    const result = this.#database.prepare(`
+      DELETE FROM hub_workspaces
+      WHERE archived_at_ms IS NOT NULL AND purge_after_ms <= ?
+    `).run(this.#nowMs());
+    return Number(result.changes) || 0;
   }
 
   releaseWorkflowEnabledForThread(value) {
@@ -464,7 +618,7 @@ export class WorkspaceCatalogStore {
   updateWorkspaceDeveloperRules(workspaceId, content) {
     const id = safeIdentifier(workspaceId, "workspace id");
     if (!this.workspace(id)) throw new Error(`workspace not found: ${id}`);
-    return this.#updateDeveloperRules("workspace", id, content);
+    return this.#updateWorkspaceDeveloperRules(id, content);
   }
 
   #migrateArchitectStreamSettings() {
@@ -637,7 +791,9 @@ export class WorkspaceCatalogStore {
   } = {}) {
     const streamId = safeIdentifier(id, "stream id");
     const targetWorkspaceId = safeIdentifier(workspaceId, "workspace id");
-    if (!this.workspace(targetWorkspaceId)) throw new Error(`workspace not found: ${targetWorkspaceId}`);
+    const targetWorkspace = this.workspace(targetWorkspaceId);
+    if (!targetWorkspace) throw new Error(`workspace not found: ${targetWorkspaceId}`);
+    if (targetWorkspace.archivedAtMs != null) throw new Error("archived workspace cannot accept Streams");
     const nextOrdinal = ordinal == null
       ? Number(this.#database.prepare(`
           SELECT COALESCE(MAX(ordinal), 0) + 1 AS ordinal
@@ -789,10 +945,15 @@ export class WorkspaceCatalogStore {
     ]));
   }
 
-  #updateDeveloperRules(scopeType, scopeId, content) {
+  #updateWorkspaceDeveloperRules(workspaceId, content) {
+    const editableContent = developerRuleContent(editableWorkspaceDeveloperRules(content));
+    return this.#updateDeveloperRules("workspace", workspaceId, editableContent);
+  }
+
+  #updateDeveloperRules(scopeType, scopeId, content, maximumBytes = DEVELOPER_RULES_MAX_BYTES) {
     const scope = developerRuleScope(scopeType);
     const id = safeIdentifier(scopeId, `${scope} id`);
-    const value = developerRuleContent(content);
+    const value = developerRuleContent(content, maximumBytes);
     const current = this.#developerRules(scope, id);
     if (current?.content === value) return current;
     const revision = (current?.revision ?? 0) + 1;
@@ -809,7 +970,12 @@ export class WorkspaceCatalogStore {
     const targetWorkspaceId = safeIdentifier(workspaceId, "workspace id");
     const stream = this.stream(id);
     if (!stream) throw new Error(`stream not found: ${id}`);
-    if (!this.workspace(targetWorkspaceId)) throw new Error(`workspace not found: ${targetWorkspaceId}`);
+    if (this.workspace(stream.workspaceId)?.archivedAtMs != null) {
+      throw new Error("archived workspace Streams cannot be moved");
+    }
+    const targetWorkspace = this.workspace(targetWorkspaceId);
+    if (!targetWorkspace) throw new Error(`workspace not found: ${targetWorkspaceId}`);
+    if (targetWorkspace.archivedAtMs != null) throw new Error("archived workspace cannot accept Streams");
     if (stream.workspaceId === targetWorkspaceId) return stream;
     const ordinal = Number(this.#database.prepare(`
       SELECT COALESCE(MAX(ordinal), 0) + 1 AS ordinal FROM hub_streams WHERE workspace_id = ?
@@ -1019,7 +1185,9 @@ export class WorkspaceCatalogStore {
     return this.#transaction(() => (Array.isArray(entries) ? entries : []).map((entry) => {
       const identity = normalizedThreadIdentity(entry);
       const boundThread = this.thread(identity);
-      if (boundThread && this.stream(boundThread.streamId)?.archivedAtMs != null) return null;
+      const boundStream = boundThread ? this.stream(boundThread.streamId) : null;
+      if (boundStream?.archivedAtMs != null
+        || (boundStream && this.workspace(boundStream.workspaceId)?.archivedAtMs != null)) return null;
       let resolved = this.resolveThread(identity);
       const experiments = this.ensureExperiments();
       if (!resolved) {
@@ -1067,17 +1235,24 @@ export class WorkspaceCatalogStore {
   }
 
   hierarchy() {
+    this.purgeExpiredWorkspaces();
     const workspaces = this.#database.prepare(`
-      SELECT * FROM hub_workspaces
+      SELECT * FROM hub_workspaces WHERE archived_at_ms IS NULL
       ORDER BY CASE WHEN system_key = '${EXPERIMENTS_SYSTEM_KEY}' THEN 1 ELSE 0 END,
         updated_at_ms DESC, name, id
     `).all().map(workspaceFromRow);
     const streams = this.#database.prepare(`
-      SELECT * FROM hub_streams WHERE archived_at_ms IS NULL
+      SELECT s.* FROM hub_streams s
+      JOIN hub_workspaces w ON w.id = s.workspace_id
+      WHERE s.archived_at_ms IS NULL AND w.archived_at_ms IS NULL
       ORDER BY workspace_id, ordinal
     `).all();
     const threads = this.#database.prepare(`
-      SELECT * FROM hub_threads ORDER BY stream_id, position
+      SELECT t.* FROM hub_threads t
+      JOIN hub_streams s ON s.id = t.stream_id
+      JOIN hub_workspaces w ON w.id = s.workspace_id
+      WHERE s.archived_at_ms IS NULL AND w.archived_at_ms IS NULL
+      ORDER BY t.stream_id, t.position
     `).all().map(threadFromRow);
     const developerRules = this.#latestDeveloperRules();
     const streamCount = new Map();

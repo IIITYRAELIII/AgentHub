@@ -1,14 +1,18 @@
 import { execFile } from "node:child_process";
-import { mkdir, readFile } from "node:fs/promises";
+import { access, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { homedir } from "node:os";
 import { promisify } from "node:util";
 
 import { RunJournalService } from "../application/run-journal-service.mjs";
 import { HubMcpService } from "../application/hub-mcp-service.mjs";
+import { McpAdmissionCoordinator } from "../application/mcp-admission-coordinator.mjs";
 import { TurnEndNotificationRegistry } from "../application/turn-end-notifications.mjs";
 import { createWorkLogUsageStore } from "../application/work-log-usage-store.mjs";
 import { TaskBoardService } from "../application/task-board-service.mjs";
+import { TaskReleasePlanService } from "../application/task-release-plan-service.mjs";
+import { WorkspaceReleasePreflightService } from "../application/workspace-release-preflight-service.mjs";
 import { WorkspaceReleaseService } from "../application/workspace-release-service.mjs";
 import { StreamHandoffService } from "../application/stream-handoff-service.mjs";
 import { AGENT_HUB_VERSION } from "../infrastructure/filesystem/agent-hub-package.mjs";
@@ -43,6 +47,7 @@ import {
 } from "../infrastructure/process/windows-file-clipboard.mjs";
 import { MiniAppServer } from "../interfaces/web/mini-app-server.mjs";
 import { HubMcpServer } from "../interfaces/mcp/hub-mcp-server.mjs";
+import { agentHubRuntimeHealth } from "../application/runtime-health.mjs";
 import { ensureLocalWebSecret } from "../interfaces/web/local-web-auth.mjs";
 import { TrustedDeviceRegistry } from "../interfaces/web/trusted-device-access.mjs";
 import { CodexRolloutContextSanitizer } from "../providers/codex/codex-rollout-context.mjs";
@@ -55,6 +60,7 @@ import {
   ensureDashBotTerraStream,
 } from "../providers/codex/codex-terra-voice-transcriber.mjs";
 import { RuntimeNotificationController } from "../runtime/runtime-notification-controller.mjs";
+import { readTestContourStatus, startTestContour } from "../runtime/test-contour-manager.mjs";
 import { sentryDiagnostics } from "../infrastructure/diagnostics/sentry-diagnostics.mjs";
 import { createCommandTraceComposition } from "./command-trace-composition.mjs";
 
@@ -153,6 +159,24 @@ async function usageSyncIdentity(config, agentHubRoot) {
   return store;
 }
 
+function usageSyncRuntimeHomeIds(identityStore) {
+  return {
+    codex: identityStore.runtimeHomeId(process.env.CODEX_HOME || path.join(homedir(), ".codex")),
+    claude: identityStore.runtimeHomeId(process.env.CLAUDE_CONFIG_DIR || homedir()),
+  };
+}
+
+async function resolveReleaseTestContourSource(repositories) {
+  for (const repository of repositories) {
+    const sourceRoot = path.join(repository.worktreeRoot, "AgentHub");
+    try {
+      await access(path.join(sourceRoot, "test-contour.mjs"));
+      return { ...repository, sourceRoot };
+    } catch {}
+  }
+  throw new Error("release preflight could not locate AgentHub in an integrated dev worktree");
+}
+
 export async function createHubInfrastructure({
   config,
   agentHubRoot,
@@ -205,10 +229,6 @@ export async function createHubInfrastructure({
   });
   const taskBoardStore = new TaskBoardStore({ databaseFile: journalDatabaseFile });
   await workspaceCatalogStore.load();
-  const workspaceReleaseService = new WorkspaceReleaseService({
-    store: taskBoardStore,
-    verifyPublication: verifyWorkspaceReleasePublication,
-  });
   const preTurnInstructions = new PreTurnInstructionStore({
     guideFile: path.join(agentHubRoot, "AGENT_HUB_GUIDE.md"),
     globalFile: path.join(config.dataDir, "global-pre-turn-instructions.md"),
@@ -265,10 +285,12 @@ export async function createHubInfrastructure({
     defaultServerUrl: defaultUsageSyncServerUrl(),
   });
   const workLogUsageSyncDeviceId = workLogUsageIdentityStore.deviceId;
+  const workLogUsageRuntimeHomeIds = usageSyncRuntimeHomeIds(workLogUsageIdentityStore);
   const workLogUsageSyncStore = new WorkLogUsageSyncWorkerStore({
     databaseFile: journalDatabaseFile,
     legacyFile: path.join(config.dataDir, "work-log-usage-sync.json"),
     deviceId: workLogUsageSyncDeviceId,
+    defaultRuntimeHomeIds: workLogUsageRuntimeHomeIds,
   });
   const adoptedUsageSyncEvents = await workLogUsageSyncStore
     .adoptDeviceIds(workLogUsageIdentityStore.legacyDeviceIds);
@@ -285,8 +307,12 @@ export async function createHubInfrastructure({
     usageSyncStore: workLogUsageSyncStore,
     usageSyncDeviceId: workLogUsageSyncDeviceId,
     usageSyncDeviceLabel: workLogUsageIdentityStore.label,
+    usageSyncRuntimeHomeIds: workLogUsageRuntimeHomeIds,
+    usageSyncIdentity: workLogUsageIdentityStore,
     workspaceCatalogStore,
   });
+  agentHubRuntimeHealth.setDiagnosticSource("usageSync", () => workLogUsageSyncStore.diagnostics());
+  agentHubRuntimeHealth.setDiagnosticSource("journal", () => workLogUsageStore.diagnostics());
   const streamHandoff = new StreamHandoffService({
     workspaceCatalog: workspaceCatalogStore,
     workLog: workLogUsageStore,
@@ -298,18 +324,39 @@ export async function createHubInfrastructure({
   });
   const hubMcpSecret = await ensureLocalWebSecret(path.join(runtimeCommandRoot, "hub-mcp.secret"));
   const taskGitWorkspaces = new TaskGitWorkspaceService({ dataDir: config.dataDir });
+  const taskReleasePlanner = new TaskReleasePlanService({ taskBoard, taskGitWorkspaces });
+  const workspaceReleasePreflight = new WorkspaceReleasePreflightService({
+    releasePlanner: taskReleasePlanner,
+    taskGitWorkspaces,
+    resolveTestContourSource: resolveReleaseTestContourSource,
+    refreshTestContour: ({ sourceRoot }) => startTestContour({
+      refresh: true,
+      sourceRoot,
+      entryFile: path.join(sourceRoot, "test-contour.mjs"),
+    }),
+    readTestContourStatus,
+  });
+  const workspaceReleaseService = new WorkspaceReleaseService({
+    store: taskBoardStore,
+    releasePlanner: taskReleasePlanner,
+    verifyPublication: verifyWorkspaceReleasePublication,
+  });
   const hubMcpService = new HubMcpService({
     workspaceCatalog: workspaceCatalogStore,
     taskBoard,
     workLog: workLogUsageStore,
     attachmentDirectory,
     secret: hubMcpSecret,
+    releasePlanner: taskReleasePlanner,
+    releasePreflight: workspaceReleasePreflight,
     releaseCompleter: workspaceReleaseService,
     taskGitWorkspaces,
   });
+  const mcpAdmissionCoordinator = new McpAdmissionCoordinator();
   const hubMcpServer = new HubMcpServer({
     service: hubMcpService,
     secret: hubMcpSecret,
+    mcpAdmissionCoordinator,
     captureUnexpectedException: (error, context) => sentryDiagnostics.captureUnexpectedException(error, context),
   });
   const serverOptions = {
@@ -432,6 +479,8 @@ export async function createHubInfrastructure({
     workLogUsageIdentityStore,
     workLogUsageRemoteConfigStore,
     workspaceCatalogStore,
+    taskReleasePlanner,
+    workspaceReleasePreflight,
     workspaceReleaseService,
     streamHandoff,
     preTurnInstructions,
@@ -440,8 +489,10 @@ export async function createHubInfrastructure({
     taskVoiceTranscriber,
     hubMcpService,
     hubMcpServer,
+    mcpAdmissionCoordinator,
     miniAppServer,
     publicMiniAppServer,
+    attachmentDirectory,
     attachmentThumbnails,
     usdRubRateStore,
     instanceGuard,

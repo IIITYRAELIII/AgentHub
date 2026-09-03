@@ -17,7 +17,7 @@ import re
 import secrets
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -44,8 +44,22 @@ UUID_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
 EVENT_ID_PATTERN = re.compile(r"^usage:[0-9a-f]{64}$")
+OBSERVATION_ID_PATTERN = re.compile(r"^(?:auth|limit):[0-9a-f]{64}$")
 PSEUDONYM_PATTERN = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+RUNTIME_HOME_ID_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 ACCOUNT_ATTRIBUTIONS = {"exact", "inferred"}
+USAGE_FACT_SCHEMA_VERSION = 2
+LEGACY_USAGE_EVENT_SCHEMA_VERSION = 1
+USAGE_FACT_TYPES = {"turn", "auth_observation", "limit_observation"}
+FORBIDDEN_TURN_ACCOUNT_FIELDS = {
+    "accountKey",
+    "accountLabel",
+    "accountType",
+    "accountPlan",
+    "accountAttribution",
+    "accountRecovery",
+}
+CREDENTIAL_CLASS_ACCOUNT_KEYS = {"api-key", "amazon-bedrock"}
 
 
 def now_ms() -> int:
@@ -89,6 +103,80 @@ def parse_time_ms(value: str) -> int:
         return 0
 
 
+def timestamp(value: Any) -> str:
+    candidate = text(value, 80)
+    return candidate if parse_time_ms(candidate) else ""
+
+
+def finite_number(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number and abs(number) != float("inf") else None
+
+
+def sample_text_sort_key(value: Any) -> bytes:
+    return text(value).encode("utf-8")
+
+
+def sample_number_sort_key(value: Any) -> tuple[int, float]:
+    number = finite_number(value)
+    return (0, 0.0) if number is None else (1, number)
+
+
+def limit_sample_identity(sample: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        sample["observedAt"],
+        sample["limitId"],
+        sample["window"],
+        sample["windowMinutes"],
+        sample["usedPercent"],
+        sample["resetsAt"],
+        sample["planType"],
+    )
+
+
+def limit_sample_sort_key(sample: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        sample_text_sort_key(sample["observedAt"]),
+        sample_text_sort_key(sample["limitId"]),
+        sample_text_sort_key(sample["window"]),
+        sample_number_sort_key(sample["windowMinutes"]),
+        sample_number_sort_key(sample["usedPercent"]),
+        sample_text_sort_key(sample["resetsAt"]),
+        sample_text_sort_key(sample["planType"]),
+    )
+
+
+def normalize_limit_samples(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    by_key: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        observed_at = timestamp(item.get("observedAt"))
+        limit_id = text(item.get("limitId"), 120)
+        window = text(item.get("window"), 80)
+        used_percent = finite_number(item.get("usedPercent"))
+        if not observed_at or not limit_id or not window or used_percent is None:
+            continue
+        sample = {
+            "observedAt": observed_at,
+            "limitId": limit_id,
+            "window": window,
+            "windowMinutes": finite_number(item.get("windowMinutes")),
+            "usedPercent": used_percent,
+            "resetsAt": timestamp(item.get("resetsAt")),
+            "planType": text(item.get("planType"), 80),
+        }
+        key = limit_sample_identity(sample)
+        if key not in by_key:
+            by_key[key] = sample
+    return sorted(by_key.values(), key=limit_sample_sort_key)
+
+
 def b64url_decode(value: str) -> bytes:
     candidate = text(value, 8192)
     padding = "=" * (-len(candidate) % 4)
@@ -107,6 +195,38 @@ def canonical_json_bytes(value: Any) -> bytes:
 
 def code_hash(code: str) -> str:
     return hashlib.sha256(text(code, 256).encode("utf-8")).hexdigest()
+
+
+def auth_observation_id(
+    *,
+    device_id: str,
+    installation_instance_id: str,
+    provider: str,
+    runtime_home_id: str,
+    account_key: str,
+    observed_at: str,
+) -> str:
+    payload = [device_id, installation_instance_id, provider, runtime_home_id, account_key, observed_at]
+    digest = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return f"auth:{digest}"
+
+
+def limit_observation_id(
+    *,
+    device_id: str,
+    provider: str,
+    account_key: str,
+    limit_id: str,
+    window: str,
+    observed_at: str,
+) -> str:
+    payload = [device_id, provider, account_key, limit_id, window, observed_at]
+    digest = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return f"limit:{digest}"
 
 
 def db_connect(path: str) -> sqlite3.Connection:
@@ -149,6 +269,9 @@ def init_db(db: sqlite3.Connection) -> None:
             completed_at TEXT NOT NULL,
             completed_ms INTEGER NOT NULL,
             started_at TEXT NOT NULL DEFAULT '',
+            schema_version INTEGER NOT NULL DEFAULT 1,
+            runtime_home_id TEXT NOT NULL DEFAULT '',
+            limit_samples_json TEXT NOT NULL DEFAULT '[]',
             account_key TEXT NOT NULL DEFAULT '',
             account_label TEXT NOT NULL DEFAULT '',
             account_type TEXT NOT NULL DEFAULT '',
@@ -172,8 +295,6 @@ def init_db(db: sqlite3.Connection) -> None:
             ON usage_events(device_id, completed_ms);
         CREATE INDEX IF NOT EXISTS usage_events_account_completed
             ON usage_events(account_key, completed_ms);
-        CREATE INDEX IF NOT EXISTS usage_events_server_revision
-            ON usage_events(server_revision);
         CREATE TABLE IF NOT EXISTS ingest_audit (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             device_id TEXT NOT NULL,
@@ -185,6 +306,34 @@ def init_db(db: sqlite3.Connection) -> None:
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS usage_auth_observations (
+            observation_id TEXT PRIMARY KEY,
+            device_id TEXT NOT NULL REFERENCES devices(device_id),
+            installation_instance_id TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            runtime_home_id TEXT NOT NULL,
+            account_key TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            fact_json TEXT NOT NULL,
+            received_at_ms INTEGER NOT NULL,
+            server_revision INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS usage_auth_observations_server_revision
+            ON usage_auth_observations(server_revision);
+        CREATE TABLE IF NOT EXISTS usage_limit_observations (
+            observation_id TEXT PRIMARY KEY,
+            device_id TEXT NOT NULL REFERENCES devices(device_id),
+            provider TEXT NOT NULL,
+            account_key TEXT NOT NULL,
+            limit_id TEXT NOT NULL,
+            window TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            fact_json TEXT NOT NULL,
+            received_at_ms INTEGER NOT NULL,
+            server_revision INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS usage_limit_observations_server_revision
+            ON usage_limit_observations(server_revision);
         """
     )
     columns = {
@@ -197,6 +346,9 @@ def init_db(db: sqlite3.Connection) -> None:
         ("account_plan", "TEXT NOT NULL DEFAULT ''"),
         ("device_label", "TEXT NOT NULL DEFAULT ''"),
         ("server_revision", "INTEGER NOT NULL DEFAULT 0"),
+        ("schema_version", "INTEGER NOT NULL DEFAULT 1"),
+        ("runtime_home_id", "TEXT NOT NULL DEFAULT ''"),
+        ("limit_samples_json", "TEXT NOT NULL DEFAULT '[]'"),
     ):
         if name not in columns:
             db.execute(f"ALTER TABLE usage_events ADD COLUMN {name} {definition}")
@@ -210,9 +362,11 @@ def init_db(db: sqlite3.Connection) -> None:
 def current_server_revision(db: sqlite3.Connection) -> int:
     row = db.execute("SELECT value FROM usage_sync_meta WHERE key='server_revision'").fetchone()
     meta_revision = integer(row["value"]) if row else 0
-    row = db.execute("SELECT COALESCE(MAX(server_revision), 0) AS revision FROM usage_events").fetchone()
-    event_revision = integer(row["revision"]) if row else 0
-    return max(meta_revision, event_revision)
+    revisions = [meta_revision]
+    for table in ("usage_events", "usage_auth_observations", "usage_limit_observations"):
+        row = db.execute(f"SELECT COALESCE(MAX(server_revision), 0) AS revision FROM {table}").fetchone()
+        revisions.append(integer(row["revision"]) if row else 0)
+    return max(revisions)
 
 
 def set_server_revision(db: sqlite3.Connection, revision: int) -> None:
@@ -233,6 +387,7 @@ def next_server_revision(db: sqlite3.Connection) -> int:
 
 
 def backfill_server_revisions(db: sqlite3.Connection) -> None:
+    revision = current_server_revision(db)
     rows = db.execute(
         """
         SELECT event_id
@@ -241,16 +396,27 @@ def backfill_server_revisions(db: sqlite3.Connection) -> None:
         ORDER BY received_at_ms, completed_ms, device_id, event_id
         """
     ).fetchall()
-    if not rows:
-        set_server_revision(db, current_server_revision(db))
-        return
-    revision = current_server_revision(db)
     for row in rows:
         revision += 1
         db.execute(
             "UPDATE usage_events SET server_revision=? WHERE event_id=?",
             (revision, row["event_id"]),
         )
+    for table in ("usage_auth_observations", "usage_limit_observations"):
+        rows = db.execute(
+            f"""
+            SELECT observation_id
+            FROM {table}
+            WHERE server_revision=0
+            ORDER BY received_at_ms, observed_at, device_id, observation_id
+            """
+        ).fetchall()
+        for row in rows:
+            revision += 1
+            db.execute(
+                f"UPDATE {table} SET server_revision=? WHERE observation_id=?",
+                (revision, row["observation_id"]),
+            )
     set_server_revision(db, revision)
 
 
@@ -410,6 +576,9 @@ class UsageEvent:
     completed_at: str
     completed_ms: int
     started_at: str
+    schema_version: int
+    runtime_home_id: str
+    limit_samples_json: str
     account_key: str
     account_label: str
     account_type: str
@@ -433,12 +602,22 @@ class UsageEvent:
 def normalize_event(value: Any, received_at_ms: int) -> UsageEvent:
     if not isinstance(value, dict):
         raise ValueError("event must be an object")
+    schema_version = integer(value.get("schemaVersion") or value.get("version")) or LEGACY_USAGE_EVENT_SCHEMA_VERSION
+    if schema_version not in (LEGACY_USAGE_EVENT_SCHEMA_VERSION, USAGE_FACT_SCHEMA_VERSION):
+        raise ValueError("unsupported usage schemaVersion")
+    if schema_version == USAGE_FACT_SCHEMA_VERSION:
+        if text(value.get("type"), 40) != "turn":
+            raise ValueError("invalid usage fact type")
+        if any(text(value.get(field), 512) for field in FORBIDDEN_TURN_ACCOUNT_FIELDS):
+            raise ValueError("turn fact must not contain account fields")
     event_id = text(value.get("eventId"), 80)
     device_id = text(value.get("deviceId"), 80).lower()
     thread_key = text(value.get("threadKey"), 160)
     task_key = text(value.get("taskKey"), 160) or thread_key
     completed_at = text(value.get("completedAt"), 80)
     completed_ms = parse_time_ms(completed_at)
+    started_at = text(value.get("startedAt"), 80)
+    runtime_home_id = text(value.get("runtimeHomeId"), 80)
     if not EVENT_ID_PATTERN.fullmatch(event_id):
         raise ValueError("invalid eventId")
     if not UUID_PATTERN.fullmatch(device_id):
@@ -447,11 +626,15 @@ def normalize_event(value: Any, received_at_ms: int) -> UsageEvent:
         raise ValueError("invalid thread/task key")
     if not completed_ms:
         raise ValueError("invalid completedAt")
+    if schema_version == USAGE_FACT_SCHEMA_VERSION:
+        if not started_at or not parse_time_ms(started_at):
+            raise ValueError("invalid startedAt")
+        if not RUNTIME_HOME_ID_PATTERN.fullmatch(runtime_home_id):
+            raise ValueError("invalid runtimeHomeId")
     usage = value.get("usage") if isinstance(value.get("usage"), dict) else {}
-    account_key = text(value.get("accountKey"), 256)
-    attribution = text(value.get("accountAttribution"), 32).lower()
-    if attribution not in ACCOUNT_ATTRIBUTIONS:
-        attribution = "exact" if account_key else "inferred"
+    limit_samples_json_value = limit_samples_json(value.get("limitSamples"))
+    account_key = ""
+    attribution = "inferred"
     return UsageEvent(
         event_id=event_id,
         device_id=device_id,
@@ -460,14 +643,14 @@ def normalize_event(value: Any, received_at_ms: int) -> UsageEvent:
         task_key=task_key,
         completed_at=completed_at,
         completed_ms=completed_ms,
-        started_at=text(value.get("startedAt"), 80),
+        started_at=started_at,
+        schema_version=schema_version,
+        runtime_home_id=runtime_home_id,
+        limit_samples_json=limit_samples_json_value,
         account_key=account_key,
-        account_label=text(value.get("accountLabel"), 256),
-        account_type=text(value.get("accountType"), 80),
-        account_plan=text(
-            value.get("accountPlan") or value.get("accountPlanType") or value.get("planType"),
-            80,
-        ),
+        account_label="",
+        account_type="",
+        account_plan="",
         account_attribution=attribution,
         estimated_credits=positive_number(value.get("estimatedCredits") or value.get("credits")),
         input_tokens=integer(usage.get("inputTokens")),
@@ -484,22 +667,25 @@ def normalize_event(value: Any, received_at_ms: int) -> UsageEvent:
     )
 
 
-def event_rank(row_or_event: sqlite3.Row | UsageEvent) -> tuple[int, int, int, int]:
+def event_rank(row_or_event: sqlite3.Row | UsageEvent) -> tuple[int, int, int, int, int, int, int]:
     def value(name: str) -> Any:
         if isinstance(row_or_event, sqlite3.Row):
             return row_or_event[name]
         return getattr(row_or_event, name)
 
-    attribution = value("account_attribution")
-    account_key = value("account_key")
+    schema_version = value("schema_version")
+    runtime_home_id = value("runtime_home_id")
+    started_at = value("started_at")
+    limit_samples = normalize_limit_samples(json.loads(value("limit_samples_json") or "[]"))
     credits = value("estimated_credits")
-    observed_ms = parse_time_ms(value("observed_at"))
-    received = value("received_at_ms")
     return (
-        1 if attribution == "exact" else 0,
-        1 if account_key else 0,
+        1 if int(schema_version or 0) == USAGE_FACT_SCHEMA_VERSION else 0,
+        1 if runtime_home_id else 0,
+        1 if started_at else 0,
+        len(limit_samples),
+        1 if int(value("usage_reported") or 0) else 0,
+        int(value("total_tokens") or 0),
         1 if float(credits or 0) > 0 else 0,
-        observed_ms or int(received or 0),
     )
 
 
@@ -509,9 +695,140 @@ def should_replace(existing: sqlite3.Row | None, incoming: UsageEvent) -> bool:
     return event_rank(incoming) > event_rank(existing)
 
 
+def limit_samples_json(samples: Any) -> str:
+    return json.dumps(
+        normalize_limit_samples(samples),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def merged_event_limit_samples_json(existing: sqlite3.Row | None, incoming: UsageEvent) -> str:
+    incoming_samples = json.loads(incoming.limit_samples_json or "[]")
+    if existing is None:
+        return limit_samples_json(incoming_samples)
+    existing_samples = json.loads(existing["limit_samples_json"] or "[]")
+    return limit_samples_json(existing_samples + incoming_samples)
+
+
+def normalize_auth_observation(value: Any, received_at_ms: int) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("auth observation must be an object")
+    if integer(value.get("schemaVersion") or value.get("version")) != USAGE_FACT_SCHEMA_VERSION:
+        raise ValueError("invalid auth observation schemaVersion")
+    if text(value.get("type"), 40) != "auth_observation":
+        raise ValueError("invalid auth observation type")
+    device_id = text(value.get("deviceId"), 80).lower()
+    installation_instance_id = text(value.get("installationInstanceId"), 80).lower()
+    provider = text(value.get("provider"), 32).lower() or "unknown"
+    runtime_home_id = text(value.get("runtimeHomeId"), 80)
+    account_key = text(value.get("accountKey"), 256)
+    observed_at = timestamp(value.get("observedAt"))
+    if not UUID_PATTERN.fullmatch(device_id):
+        raise ValueError("invalid auth deviceId")
+    if not UUID_PATTERN.fullmatch(installation_instance_id):
+        raise ValueError("invalid installationInstanceId")
+    if not RUNTIME_HOME_ID_PATTERN.fullmatch(runtime_home_id):
+        raise ValueError("invalid auth runtimeHomeId")
+    if not account_key or account_key in CREDENTIAL_CLASS_ACCOUNT_KEYS:
+        raise ValueError("invalid auth accountKey")
+    if not observed_at:
+        raise ValueError("invalid auth observedAt")
+    observation_id = auth_observation_id(
+        device_id=device_id,
+        installation_instance_id=installation_instance_id,
+        provider=provider,
+        runtime_home_id=runtime_home_id,
+        account_key=account_key,
+        observed_at=observed_at,
+    )
+    if not OBSERVATION_ID_PATTERN.fullmatch(observation_id):
+        raise ValueError("invalid auth observationId")
+    fact = {
+        "schemaVersion": USAGE_FACT_SCHEMA_VERSION,
+        "type": "auth_observation",
+        "observationId": observation_id,
+        "deviceId": device_id,
+        "installationInstanceId": installation_instance_id,
+        "provider": provider,
+        "runtimeHomeId": runtime_home_id,
+        "accountKey": account_key,
+        "accountLabel": text(value.get("accountLabel"), 256),
+        "accountType": text(value.get("accountType"), 80),
+        "accountPlan": text(value.get("accountPlan"), 80),
+        "observedAt": observed_at,
+        "evidenceSource": text(value.get("evidenceSource"), 80),
+        "authFingerprint": text(value.get("authFingerprint"), 256),
+    }
+    return {"fact": fact, "received_at_ms": received_at_ms}
+
+
+def normalize_limit_observation(value: Any, received_at_ms: int) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("limit observation must be an object")
+    if integer(value.get("schemaVersion") or value.get("version")) != USAGE_FACT_SCHEMA_VERSION:
+        raise ValueError("invalid limit observation schemaVersion")
+    if text(value.get("type"), 40) != "limit_observation":
+        raise ValueError("invalid limit observation type")
+    device_id = text(value.get("deviceId"), 80).lower()
+    provider = text(value.get("provider"), 32).lower() or "unknown"
+    account_key = text(value.get("accountKey"), 256)
+    limit_id = text(value.get("limitId"), 120)
+    window = text(value.get("window"), 80)
+    observed_at = timestamp(value.get("observedAt"))
+    used_percent = finite_number(value.get("usedPercent"))
+    if not UUID_PATTERN.fullmatch(device_id):
+        raise ValueError("invalid limit deviceId")
+    if not account_key or account_key in CREDENTIAL_CLASS_ACCOUNT_KEYS:
+        raise ValueError("invalid limit accountKey")
+    if not limit_id or not window or not observed_at or used_percent is None:
+        raise ValueError("invalid limit observation")
+    observation_id = limit_observation_id(
+        device_id=device_id,
+        provider=provider,
+        account_key=account_key,
+        limit_id=limit_id,
+        window=window,
+        observed_at=observed_at,
+    )
+    fact = {
+        "schemaVersion": USAGE_FACT_SCHEMA_VERSION,
+        "type": "limit_observation",
+        "observationId": observation_id,
+        "deviceId": device_id,
+        "provider": provider,
+        "accountKey": account_key,
+        "limitId": limit_id,
+        "window": window,
+        "windowMinutes": finite_number(value.get("windowMinutes")),
+        "usedPercent": used_percent,
+        "resetsAt": timestamp(value.get("resetsAt")),
+        "observedAt": observed_at,
+        "reachedType": text(value.get("reachedType"), 80),
+    }
+    return {"fact": fact, "received_at_ms": received_at_ms}
+
+
+def normalize_fact(value: Any, received_at_ms: int) -> tuple[str, Any]:
+    schema_version = integer(value.get("schemaVersion") or value.get("version")) if isinstance(value, dict) else 0
+    if schema_version > USAGE_FACT_SCHEMA_VERSION:
+        raise ValueError("unsupported usage schemaVersion")
+    if schema_version == USAGE_FACT_SCHEMA_VERSION:
+        kind = text(value.get("type"), 40)
+        if kind not in USAGE_FACT_TYPES:
+            raise ValueError("unknown usage fact type")
+        if kind == "auth_observation":
+            return kind, normalize_auth_observation(value, received_at_ms)
+        if kind == "limit_observation":
+            return kind, normalize_limit_observation(value, received_at_ms)
+    return "turn", normalize_event(value, received_at_ms)
+
+
 EVENT_COLUMNS = (
     "event_id, device_id, provider, thread_key, task_key, completed_at, completed_ms, "
-    "started_at, account_key, account_label, account_type, account_plan, "
+    "started_at, schema_version, runtime_home_id, limit_samples_json, "
+    "account_key, account_label, account_type, account_plan, "
     "account_attribution, estimated_credits, input_tokens, "
     "cached_input_tokens, output_tokens, reasoning_output_tokens, total_tokens, "
     "usage_reported, model, service_tier, device_label, observed_at, received_at_ms, "
@@ -549,8 +866,16 @@ def insert_or_update_event(db: sqlite3.Connection, event: UsageEvent) -> str:
         "SELECT * FROM usage_events WHERE event_id=?",
         (event.event_id,),
     ).fetchone()
+    merged_samples_json = merged_event_limit_samples_json(existing, event)
     if not should_replace(existing, event):
+        if existing is not None and existing["limit_samples_json"] != merged_samples_json:
+            db.execute(
+                "UPDATE usage_events SET limit_samples_json=?, server_revision=? WHERE event_id=?",
+                (merged_samples_json, next_server_revision(db), event.event_id),
+            )
+            return "updated"
         return "unchanged"
+    event = replace(event, limit_samples_json=merged_samples_json)
     values = tuple(
         event.__dict__[name] if name != "server_revision" else next_server_revision(db)
         for name in EVENT_COLUMNS.replace(" ", "").split(",")
@@ -567,6 +892,9 @@ def insert_or_update_event(db: sqlite3.Connection, event: UsageEvent) -> str:
             completed_at=excluded.completed_at,
             completed_ms=excluded.completed_ms,
             started_at=excluded.started_at,
+            schema_version=excluded.schema_version,
+            runtime_home_id=excluded.runtime_home_id,
+            limit_samples_json=excluded.limit_samples_json,
             account_key=excluded.account_key,
             account_label=excluded.account_label,
             account_type=excluded.account_type,
@@ -591,9 +919,99 @@ def insert_or_update_event(db: sqlite3.Connection, event: UsageEvent) -> str:
     return "added" if existing is None else "updated"
 
 
+def insert_or_update_auth_observation(db: sqlite3.Connection, record: dict[str, Any]) -> str:
+    fact = record["fact"]
+    existing = db.execute(
+        "SELECT fact_json FROM usage_auth_observations WHERE observation_id=?",
+        (fact["observationId"],),
+    ).fetchone()
+    fact_json = json.dumps(fact, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if existing and existing["fact_json"] == fact_json:
+        return "unchanged"
+    db.execute(
+        """
+        INSERT INTO usage_auth_observations(
+            observation_id, device_id, installation_instance_id, provider,
+            runtime_home_id, account_key, observed_at, fact_json,
+            received_at_ms, server_revision
+        )
+        VALUES(?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(observation_id) DO UPDATE SET
+            device_id=excluded.device_id,
+            installation_instance_id=excluded.installation_instance_id,
+            provider=excluded.provider,
+            runtime_home_id=excluded.runtime_home_id,
+            account_key=excluded.account_key,
+            observed_at=excluded.observed_at,
+            fact_json=excluded.fact_json,
+            received_at_ms=excluded.received_at_ms,
+            server_revision=excluded.server_revision
+        """,
+        (
+            fact["observationId"],
+            fact["deviceId"],
+            fact["installationInstanceId"],
+            fact["provider"],
+            fact["runtimeHomeId"],
+            fact["accountKey"],
+            fact["observedAt"],
+            fact_json,
+            record["received_at_ms"],
+            next_server_revision(db),
+        ),
+    )
+    return "added" if existing is None else "updated"
+
+
+def insert_or_update_limit_observation(db: sqlite3.Connection, record: dict[str, Any]) -> str:
+    fact = record["fact"]
+    existing = db.execute(
+        "SELECT fact_json FROM usage_limit_observations WHERE observation_id=?",
+        (fact["observationId"],),
+    ).fetchone()
+    fact_json = json.dumps(fact, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if existing and existing["fact_json"] == fact_json:
+        return "unchanged"
+    db.execute(
+        """
+        INSERT INTO usage_limit_observations(
+            observation_id, device_id, provider, account_key,
+            limit_id, window, observed_at, fact_json,
+            received_at_ms, server_revision
+        )
+        VALUES(?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(observation_id) DO UPDATE SET
+            device_id=excluded.device_id,
+            provider=excluded.provider,
+            account_key=excluded.account_key,
+            limit_id=excluded.limit_id,
+            window=excluded.window,
+            observed_at=excluded.observed_at,
+            fact_json=excluded.fact_json,
+            received_at_ms=excluded.received_at_ms,
+            server_revision=excluded.server_revision
+        """,
+        (
+            fact["observationId"],
+            fact["deviceId"],
+            fact["provider"],
+            fact["accountKey"],
+            fact["limitId"],
+            fact["window"],
+            fact["observedAt"],
+            fact_json,
+            record["received_at_ms"],
+            next_server_revision(db),
+        ),
+    )
+    return "added" if existing is None else "updated"
+
+
 def event_row_to_api(row: sqlite3.Row) -> dict[str, Any]:
-    return {
+    schema_version = integer(row["schema_version"]) or LEGACY_USAGE_EVENT_SCHEMA_VERSION
+    event = {
         "version": 1,
+        "schemaVersion": schema_version,
         "eventId": row["event_id"],
         "deviceId": row["device_id"],
         "source": "sync",
@@ -602,11 +1020,6 @@ def event_row_to_api(row: sqlite3.Row) -> dict[str, Any]:
         "taskKey": row["task_key"],
         "completedAt": row["completed_at"],
         "startedAt": row["started_at"],
-        "accountKey": row["account_key"],
-        "accountLabel": row["account_label"],
-        "accountType": row["account_type"],
-        "accountPlan": row["account_plan"],
-        "accountAttribution": row["account_attribution"],
         "estimatedCredits": row["estimated_credits"],
         "usage": {
             "inputTokens": row["input_tokens"],
@@ -621,6 +1034,52 @@ def event_row_to_api(row: sqlite3.Row) -> dict[str, Any]:
         "deviceLabel": row["device_label"] or row["device_device_label"],
         "observedAt": row["observed_at"],
     }
+    if schema_version == USAGE_FACT_SCHEMA_VERSION:
+        event["type"] = "turn"
+        event["runtimeHomeId"] = row["runtime_home_id"]
+        event["limitSamples"] = normalize_limit_samples(json.loads(row["limit_samples_json"] or "[]"))
+    return event
+
+
+def observation_row_to_api(row: sqlite3.Row) -> dict[str, Any]:
+    return json.loads(row["fact_json"])
+
+
+def snapshot_events(db: sqlite3.Connection, where_sql: str = "", params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+    usage_rows = db.execute(
+        f"""
+        SELECT usage_events.*, devices.label AS device_device_label, usage_events.server_revision AS fact_revision
+        FROM usage_events
+        LEFT JOIN devices ON devices.device_id = usage_events.device_id
+        {where_sql}
+        """
+        + (" AND" if where_sql.strip().upper().startswith("WHERE") else " WHERE")
+        + " 1=1",
+        params,
+    ).fetchall()
+    auth_rows = db.execute(
+        f"""
+        SELECT *, server_revision AS fact_revision
+        FROM usage_auth_observations
+        {where_sql}
+        """,
+        params,
+    ).fetchall()
+    limit_rows = db.execute(
+        f"""
+        SELECT *, server_revision AS fact_revision
+        FROM usage_limit_observations
+        {where_sql}
+        """,
+        params,
+    ).fetchall()
+    records = [
+        *[(row["fact_revision"], row["device_id"], row["event_id"], event_row_to_api(row)) for row in usage_rows],
+        *[(row["fact_revision"], row["device_id"], row["observation_id"], observation_row_to_api(row)) for row in auth_rows],
+        *[(row["fact_revision"], row["device_id"], row["observation_id"], observation_row_to_api(row)) for row in limit_rows],
+    ]
+    records.sort(key=lambda item: (item[0], item[1], item[2]))
+    return [item[3] for item in records]
 
 
 def ingest_snapshot(
@@ -643,11 +1102,17 @@ def ingest_snapshot(
         label_updates = update_device_label(db, device_id, payload.get("deviceLabel"))
         for item in events:
             try:
-                event = normalize_event(item, received)
-                if event.device_id != device_id:
+                kind, fact = normalize_fact(item, received)
+                fact_device_id = fact.device_id if kind == "turn" else fact["fact"]["deviceId"]
+                if fact_device_id != device_id:
                     rejected += 1
                     continue
-                result = insert_or_update_event(db, event)
+                if kind == "auth_observation":
+                    result = insert_or_update_auth_observation(db, fact)
+                elif kind == "limit_observation":
+                    result = insert_or_update_limit_observation(db, fact)
+                else:
+                    result = insert_or_update_event(db, fact)
                 added += 1 if result == "added" else 0
                 updated += 1 if result == "updated" else 0
                 unchanged += 1 if result == "unchanged" else 0
@@ -668,6 +1133,7 @@ def ingest_snapshot(
     return {
         "ok": True,
         "deviceId": device_id,
+        "usageFactSchemaVersion": USAGE_FACT_SCHEMA_VERSION,
         "serverRevision": revision,
         "added": added,
         "updated": updated + label_updates,
@@ -686,19 +1152,12 @@ def export_snapshot(
         body=body,
         kind="snapshot",
     )
-    rows = db.execute(
-        """
-        SELECT usage_events.*, devices.label AS device_device_label
-        FROM usage_events
-        LEFT JOIN devices ON devices.device_id = usage_events.device_id
-        ORDER BY completed_ms, usage_events.device_id, event_id
-        """
-    ).fetchall()
     return {
         "version": 1,
+        "usageFactSchemaVersion": USAGE_FACT_SCHEMA_VERSION,
         "exportedAt": utc_now_iso(),
         "serverRevision": current_server_revision(db),
-        "events": [event_row_to_api(row) for row in rows],
+        "events": snapshot_events(db),
     }
 
 
@@ -713,23 +1172,14 @@ def export_changes(
         kind="changes",
     )
     since_revision = max(0, integer(payload.get("sinceRevision")))
-    rows = db.execute(
-        """
-        SELECT usage_events.*, devices.label AS device_device_label
-        FROM usage_events
-        LEFT JOIN devices ON devices.device_id = usage_events.device_id
-        WHERE usage_events.server_revision > ?
-        ORDER BY usage_events.server_revision, usage_events.event_id
-        """,
-        (since_revision,),
-    ).fetchall()
     return {
         "version": 1,
+        "usageFactSchemaVersion": USAGE_FACT_SCHEMA_VERSION,
         "exportedAt": utc_now_iso(),
         "deviceId": device_id,
         "sinceRevision": since_revision,
         "serverRevision": current_server_revision(db),
-        "events": [event_row_to_api(row) for row in rows],
+        "events": snapshot_events(db, "WHERE server_revision > ?", (since_revision,)),
     }
 
 

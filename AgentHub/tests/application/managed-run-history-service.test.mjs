@@ -76,6 +76,33 @@ test("terminal history replaces the matching agent item without duplicating it",
   assert.equal(setup.telemetry.length, 0);
 });
 
+test("terminal history projects generated ideate images on the final agent message", async () => {
+  const setup = fixture();
+  setup.service.mergeActiveHistory = (target, input) => target.push({
+    id: input.turnId,
+    messages: [{ itemId: `${input.turnId}:user`, role: "user", text: "Три концепта" }],
+  });
+  await setup.service.persist({
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-ideate",
+    responseText: "",
+    responseAttachments: [
+      { id: "codex-generated-one.png", type: "image/png" },
+      { id: "codex-generated-two.png", type: "image/png" },
+      { id: "codex-generated-three.png", type: "image/png" },
+    ],
+  }, { active: false, status: "completed", answer: "Три концепта Rain" });
+
+  const agent = setup.history[0].messages.find((message) => message.role === "agent");
+  assert.equal(agent.text, "Три концепта Rain");
+  assert.deepEqual(agent.attachments.map((attachment) => attachment.id), [
+    "codex-generated-one.png",
+    "codex-generated-two.png",
+    "codex-generated-three.png",
+  ]);
+});
+
 test("late active history is absorbed by the committed terminal revision", async () => {
   const setup = fixture({
     terminalCommits: {

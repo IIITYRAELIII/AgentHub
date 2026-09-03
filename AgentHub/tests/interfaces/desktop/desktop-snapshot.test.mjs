@@ -147,6 +147,7 @@ function fixture(overrides = {}) {
         return state.workspaces
           ?? [{ id: "workspace-2", name: "Second" }, { id: "workspace-1", name: "First" }];
       },
+      archivedWorkspaces: () => state.archivedWorkspaces ?? [],
       layout: () => {
         state.boardLayoutBuilds += 1;
         return {
@@ -320,10 +321,17 @@ test("desktop task snapshot carries server-side unread state for the account", (
 });
 
 test("desktop snapshot exposes Task board state", async () => {
-  const { desktopSnapshot } = fixture();
+  const { desktopSnapshot } = fixture({
+    archivedWorkspaces: [{ id: "workspace-archived", name: "Archive", purgeAfterMs: 9_000 }],
+  });
   const snapshot = await desktopSnapshot();
   assert.deepEqual(snapshot.boardTasks, [{ id: "board-task-1", text: "Проверить дашборд" }]);
   assert.deepEqual(snapshot.workspaces.map((workspace) => workspace.id), ["workspace-2", "workspace-1"]);
+  assert.deepEqual(snapshot.archivedWorkspaces, [{
+    id: "workspace-archived",
+    name: "Archive",
+    purgeAfterMs: 9_000,
+  }]);
   assert.deepEqual(snapshot.boardLayout, {
     columnOrder: ["workspace:workspace-2", "notes", "workspace:workspace-1"],
     notesComment: "Кино",
@@ -1188,6 +1196,23 @@ test("desktopSnapshot exposes an in-flight steer as sending rather than a new de
   assert.equal(snapshot.deferredInputs[0].state, "steering");
 });
 
+test("desktopSnapshot exposes a durable automatic steer as steering", async () => {
+  const { desktopSnapshot } = fixture({
+    queued: [{
+      id: "automatic-steer-1",
+      provider: "codex",
+      threadId: "thread-1",
+      taskTitle: "Задача",
+      input: "Уточнение",
+      conflictKind: "message-steer",
+      steerTargetRunId: "run-1",
+      steerTargetTurnId: "turn-1",
+    }],
+  });
+  const snapshot = await desktopSnapshot();
+  assert.equal(snapshot.deferredInputs[0].state, "steering");
+});
+
 test("desktopSnapshot exposes an inter-Stream queue message without its service envelope", async () => {
   const input = [
     "<agent-hub-stream-message>",
@@ -1473,6 +1498,7 @@ test("live snapshot exposes only a Task card when its provider prompt has no use
   const reference = {
     kind: "task",
     taskId: "board-1",
+    taskNumber: null,
     title: "Проверка",
     workflowStatus: "new",
     workspaceId: null,

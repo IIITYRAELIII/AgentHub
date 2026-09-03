@@ -10,7 +10,7 @@ function service(calls) {
   const handlers = Object.fromEntries([
     "selectTask", "createTask", "rotateStream", "renameTask", "archiveTask",
     "updateSetting", "cancelRun", "resolveApproval",
-    "renameWorkspace", "updateWorkspaceSettings", "updateWorkspaceDeveloperRules", "readWorkspaceReleasePlan", "completeWorkspaceRelease", "createWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "createStream",
+    "renameWorkspace", "updateWorkspaceSettings", "renameWorkspaceFolder", "updateWorkspaceDeveloperRules", "readWorkspaceReleasePlan", "completeWorkspaceRelease", "createWorkspace", "archiveWorkspace", "restoreWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "createStream",
     "renameStream", "archiveStream", "updateStreamSettings", "updateStreamDeveloperRules", "moveStream",
   ].map((name) => [name, (...args) => { calls.push({ name, args }); return name; }]));
   return createApplicationCommandService({ handlers });
@@ -60,9 +60,19 @@ test("workspace and stream commands use the shared command path", async () => {
     workspaceId: "workspace-1",
     settings: { workingDirectory: "D:/work/AgentHub" },
   }, { source: "desktop", userId: "7" });
+  await commands.dispatch("workspace.folder.rename", {
+    fromFolderName: "Клиенты",
+    toFolderName: "Заказчики",
+  }, { source: "desktop", userId: "7" });
   await commands.dispatch("workspace.developer-rules.update", {
     workspaceId: "workspace-1",
     content: "Workspace rule",
+  }, { source: "desktop", userId: "7" });
+  await commands.dispatch("workspace.archive", {
+    workspaceId: "workspace-1",
+  }, { source: "desktop", userId: "7" });
+  await commands.dispatch("workspace.restore", {
+    workspaceId: "workspace-1",
   }, { source: "desktop", userId: "7" });
   await commands.dispatch("workspace.create-from-stream", {
     streamId: "stream-1",
@@ -102,8 +112,20 @@ test("workspace and stream commands use the shared command path", async () => {
       args: [{ workspaceId: "workspace-1", settings: { workingDirectory: "D:/work/AgentHub" } }],
     },
     {
+      name: "renameWorkspaceFolder",
+      args: [{ fromFolderName: "Клиенты", toFolderName: "Заказчики" }],
+    },
+    {
       name: "updateWorkspaceDeveloperRules",
       args: [{ workspaceId: "workspace-1", content: "Workspace rule" }],
+    },
+    {
+      name: "archiveWorkspace",
+      args: [{ workspaceId: "workspace-1" }],
+    },
+    {
+      name: "restoreWorkspace",
+      args: [{ workspaceId: "workspace-1" }],
     },
     {
       name: "createWorkspaceFromStream",

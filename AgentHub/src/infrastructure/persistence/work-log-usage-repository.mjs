@@ -20,6 +20,7 @@ export class WorkLogUsageRepository {
   #loadedRevision = -1;
   #ledger = { version: 9, turns: {} };
   #recordSnapshot = new Map();
+  #pointReadsReady = false;
   #tail = Promise.resolve();
 
   constructor({
@@ -45,6 +46,20 @@ export class WorkLogUsageRepository {
   get ledger() {
     if (!this.#loaded) throw new Error("Work-log repository is not loaded");
     return this.#ledger;
+  }
+
+  diagnostics() {
+    return {
+      loaded: this.#loaded,
+      retainedRecords: this.#loaded ? Object.keys(this.#ledger.turns).length : 0,
+      loadedRevision: this.#loadedRevision,
+    };
+  }
+
+  #releaseLoadedLedger() {
+    this.#loaded = false;
+    this.#ledger = { version: 9, turns: {} };
+    this.#recordSnapshot = new Map();
   }
 
   async #load() {
@@ -84,6 +99,29 @@ export class WorkLogUsageRepository {
     if (normalized.migrated || normalized.invalidRecords.length) {
       await this.save({ forceCheckpoint: true });
     }
+  }
+
+  async #preparePointReads() {
+    if (this.#pointReadsReady) return;
+    let imported = null;
+    let importError = null;
+    try {
+      imported = await this.#database.importLegacyLedger(this.#ledgerFile);
+    } catch (error) {
+      importError = error;
+    }
+    const status = await this.#database.ledgerStatus();
+    if (importError && !status.records) throw importError;
+    if (importError) {
+      console.error(
+        `Ignored unreadable retired work-log ledger ${this.#ledgerFile}; SQLite already contains the journal records: ${String(importError?.message ?? importError)}`,
+      );
+    }
+    if (imported?.imported || status.version < 9) {
+      await this.#load();
+      this.#releaseLoadedLedger();
+    }
+    this.#pointReadsReady = true;
   }
 
   async save({ forceCheckpoint = false } = {}) {
@@ -126,16 +164,29 @@ export class WorkLogUsageRepository {
     return result;
   }
 
-  enqueue(operation) {
+  enqueue(operation, { load = true, retain = true, pointRead = false } = {}) {
     const queued = this.#tail.catch(() => {}).then(() => withInterprocessLocks(
       [this.#databaseFile],
       async () => {
-        await this.#load();
-        return operation();
+        if (pointRead) await this.#preparePointReads();
+        else if (load) await this.#load();
+        try {
+          return await operation();
+        } finally {
+          if (load && !retain) this.#releaseLoadedLedger();
+        }
       },
     ));
     this.#tail = queued;
     return queued;
+  }
+
+  getRecord(identity) {
+    return this.#database.getRecord(identity);
+  }
+
+  threadRecords(identities, options) {
+    return this.#database.threadRecords(identities, options);
   }
 
   payload() {

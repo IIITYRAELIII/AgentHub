@@ -176,6 +176,7 @@ export class RunJournalService {
       estimateKind: completion.estimateKind,
       imageGenerationCount: completion.imageGenerationCount,
       contextProbe: completion.contextProbe,
+      limitSamples: completion.limitSamples,
       resolveAccount: completion.resolveAccount,
       model: completion.model,
       serviceTier: completion.serviceTier,

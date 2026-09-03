@@ -15,11 +15,14 @@ export class WorkLogUsageSyncWorkerStore {
   #pending = new Map();
   #closing = false;
   #closed = false;
+  #lastProjection = null;
+  #lastSnapshot = null;
 
   constructor({
     databaseFile,
     legacyFile = "",
     deviceId = "",
+    defaultRuntimeHomeIds = {},
     maxPendingRequests = DEFAULT_MAX_PENDING_REQUESTS,
     closeTimeoutMs = DEFAULT_CLOSE_TIMEOUT_MS,
     workerUrl = new URL("./work-log-usage-sync-worker.mjs", import.meta.url),
@@ -31,7 +34,7 @@ export class WorkLogUsageSyncWorkerStore {
     this.maxPendingRequests = maxPendingRequests;
     this.closeTimeoutMs = closeTimeoutMs;
     this.#worker = new WorkerImpl(workerUrl, {
-      workerData: { databaseFile, legacyFile, deviceId },
+      workerData: { databaseFile, legacyFile, deviceId, defaultRuntimeHomeIds },
     });
     this.#worker.unref?.();
     this.#worker.on("message", (message) => this.#settle(message));
@@ -47,6 +50,10 @@ export class WorkLogUsageSyncWorkerStore {
     return this.#request("events");
   }
 
+  facts() {
+    return this.#request("facts");
+  }
+
   importSnapshot(snapshot) {
     return this.#request("import-snapshot", { snapshot });
   }
@@ -60,7 +67,34 @@ export class WorkLogUsageSyncWorkerStore {
   }
 
   projectAccountUsage(payload) {
-    return this.#request("project-account-usage", payload);
+    return this.#request("project-account-usage", payload).then((result) => {
+      this.#lastProjection = {
+        durationMs: result.durationMs,
+        eventCount: result.eventCount,
+        completedAtMs: Date.now(),
+      };
+      return result;
+    });
+  }
+
+  usageSyncSnapshot(payload) {
+    return this.#request("usage-sync-snapshot", payload).then((result) => {
+      this.#lastSnapshot = {
+        durationMs: result.durationMs,
+        eventCount: result.events?.length ?? 0,
+        completedAtMs: Date.now(),
+      };
+      return result;
+    });
+  }
+
+  diagnostics() {
+    return {
+      pendingRequests: this.#pending.size,
+      closed: this.#closed,
+      lastProjection: this.#lastProjection,
+      lastSnapshot: this.#lastSnapshot,
+    };
   }
 
   async close() {

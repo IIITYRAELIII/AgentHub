@@ -5,6 +5,11 @@ import path from "node:path";
 export const TEST_CONTOUR_PROBE = "Ответь строго: AGENT_HUB_TEST_CONTOUR_SPARK_OK_V1";
 export const TEST_CONTOUR_PROBE_RESPONSE = "AGENT_HUB_TEST_CONTOUR_SPARK_OK_V1";
 
+export function exactTestContourResponsePattern(response) {
+  const escaped = String(response ?? "").replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  return new RegExp(`^\\s*${escaped}\\s*$`, "u");
+}
+
 export function isTestContourModelSettingResponse(response, model) {
   if (!response?.url?.().endsWith("/api/control") || response.request?.().method?.() !== "POST") return false;
   try {
@@ -176,7 +181,7 @@ export async function runTestContourUiSmoke({
       await input.fill(TEST_CONTOUR_PROBE);
       await page.locator("[data-composer-send]").click();
       const response = page.locator(".msg-agent .msg-body")
-        .filter({ hasText: probeResponse })
+        .filter({ hasText: exactTestContourResponsePattern(probeResponse) })
         .last();
       await response.waitFor({ state: "visible", timeout: timeoutMs });
       const responseText = (await response.innerText()).trim();

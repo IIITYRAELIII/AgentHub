@@ -10,7 +10,10 @@ function fixture({
   serverUrl = "https://sync.example.test/agenthub",
   enrolledAt = "2026-08-20T00:00:00.000Z",
   lastUsagePushWatermark = "",
+  lastUsagePushJournalRevision = 0,
+  lastUsageHistoryResendVersion = 1,
   lastUsagePullRevision = 0,
+  localJournalRevision = 7,
   localEvents = [{ id: "turn-1", observedAt: "2026-08-20T04:00:00.000Z" }],
   remoteEvents = [{ id: "remote-1" }],
   accountBackfillResult = { applied: true, updated: 2 },
@@ -44,7 +47,14 @@ function fixture({
     remoteConfigStore: {
       load: async () => {
         events.push(["load-config"]);
-        return { serverUrl, enrolledAt, lastUsagePushWatermark, lastUsagePullRevision };
+        return {
+          serverUrl,
+          enrolledAt,
+          lastUsagePushWatermark,
+          lastUsagePushJournalRevision,
+          lastUsageHistoryResendVersion,
+          lastUsagePullRevision,
+        };
       },
       rememberPush: async (result, options) => events.push(["remember-push", result, options]),
       rememberPull: async (result, options) => events.push(["remember-pull", result, options]),
@@ -53,7 +63,12 @@ function fixture({
     workLogUsageStore: {
       usageSyncSnapshot: async (options) => {
         events.push(["snapshot", options]);
-        return { version: 1, deviceId: options.deviceId, events: localEvents };
+        return {
+          version: 1,
+          deviceId: options.deviceId,
+          journalRevision: localJournalRevision,
+          events: localEvents,
+        };
       },
       importUsageSyncSnapshotAndProject: async (options) => {
         events.push(["import-project", options]);
@@ -149,9 +164,11 @@ test("UsageSyncAutoService pushes, pulls, imports and remembers remote results",
     deviceId: "device-local",
     deviceLabel: "DESKTOP-FNNC1JA",
     afterObservedAt: "",
+    afterJournalRevision: 0,
   });
   assert.deepEqual(state.events.find(([name]) => name === "remember-push")?.[2], {
     usageWatermark: "2026-08-20T04:00:00.000Z",
+    usageJournalRevision: 7,
   });
   assert.deepEqual(state.events.find(([name]) => name === "pull")?.[1], {
     sinceRevision: 0,
@@ -164,9 +181,39 @@ test("UsageSyncAutoService pushes, pulls, imports and remembers remote results",
   assert.deepEqual(importProject[1].projectionProjectRoots, ["D:/projects/Utilities"]);
 });
 
-test("UsageSyncAutoService sends only observed usage deltas after the saved watermark", async () => {
+test("UsageSyncAutoService push watermark is based only on turn facts", async () => {
+  const state = fixture({
+    localEvents: [{
+      schemaVersion: 2,
+      type: "turn",
+      eventId: `usage:${"a".repeat(64)}`,
+      observedAt: "2026-08-20T04:00:00.000Z",
+    }, {
+      schemaVersion: 2,
+      type: "auth_observation",
+      observationId: `auth:${"b".repeat(64)}`,
+      observedAt: "2026-08-20T05:00:00.000Z",
+    }, {
+      schemaVersion: 2,
+      type: "limit_observation",
+      observationId: `limit:${"c".repeat(64)}`,
+      observedAt: "2026-08-20T06:00:00.000Z",
+    }],
+    remoteEvents: [],
+  });
+
+  await state.service.sync();
+
+  assert.deepEqual(state.events.find(([name]) => name === "remember-push")?.[2], {
+    usageWatermark: "2026-08-20T04:00:00.000Z",
+    usageJournalRevision: 7,
+  });
+});
+
+test("UsageSyncAutoService sends only journal deltas after the saved revision", async () => {
   const state = fixture({
     lastUsagePushWatermark: "2026-08-20T04:00:00.000Z",
+    lastUsagePushJournalRevision: 6,
     lastUsagePullRevision: 8,
     localEvents: [],
     remoteEvents: [],
@@ -182,12 +229,83 @@ test("UsageSyncAutoService sends only observed usage deltas after the saved wate
     deviceId: "device-local",
     deviceLabel: "DESKTOP-FNNC1JA",
     afterObservedAt: "2026-08-20T04:00:00.000Z",
+    afterJournalRevision: 6,
   });
   assert.deepEqual(state.events.find(([name]) => name === "pull")?.[1], {
     sinceRevision: 8,
   });
   assert.equal(state.events.some(([name]) => name === "import-project"), false);
   assert.equal(state.events.some(([name]) => name === "info"), false);
+});
+
+test("UsageSyncAutoService resends full history once for USG-001 migration", async () => {
+  const state = fixture({
+    lastUsagePushWatermark: "2026-08-20T04:00:00.000Z",
+    lastUsagePushJournalRevision: 6,
+    lastUsageHistoryResendVersion: 0,
+    localEvents: [
+      { id: "turn-1", observedAt: "2026-08-20T04:00:00.000Z" },
+      { id: "turn-2", observedAt: "2026-08-20T04:05:00.000Z" },
+    ],
+    remoteEvents: [],
+    pushResult: {
+      ok: true,
+      added: 0,
+      updated: 0,
+      unchanged: 2,
+      rejected: 0,
+      usageFactSchemaVersion: 2,
+    },
+  });
+
+  const result = await state.service.sync();
+
+  assert.equal(result.exportedEvents, 2);
+  assert.equal(result.usageHistoryResendVersion, 1);
+  assert.equal(result.usageHistoryResendPending, false);
+  assert.deepEqual(state.events.find(([name]) => name === "snapshot")?.[1], {
+    deviceId: "device-local",
+    deviceLabel: "DESKTOP-FNNC1JA",
+    afterObservedAt: "",
+    afterJournalRevision: 0,
+  });
+  assert.deepEqual(state.events.find(([name]) => name === "remember-push")?.[2], {
+    usageWatermark: "2026-08-20T04:05:00.000Z",
+    usageJournalRevision: 7,
+    usageHistoryResendVersion: 1,
+  });
+});
+
+test("UsageSyncAutoService keeps USG-001 history resend pending against legacy servers", async () => {
+  const state = fixture({
+    lastUsagePushWatermark: "2026-08-20T04:00:00.000Z",
+    lastUsagePushJournalRevision: 6,
+    lastUsageHistoryResendVersion: 0,
+    localEvents: [{ id: "turn-1", observedAt: "2026-08-20T04:00:00.000Z" }],
+    remoteEvents: [],
+    pushResult: {
+      ok: true,
+      added: 0,
+      updated: 0,
+      unchanged: 1,
+      rejected: 0,
+    },
+  });
+
+  const result = await state.service.sync();
+
+  assert.equal(result.usageHistoryResendVersion, null);
+  assert.equal(result.usageHistoryResendPending, true);
+  assert.deepEqual(state.events.find(([name]) => name === "snapshot")?.[1], {
+    deviceId: "device-local",
+    deviceLabel: "DESKTOP-FNNC1JA",
+    afterObservedAt: "",
+    afterJournalRevision: 0,
+  });
+  assert.deepEqual(state.events.find(([name]) => name === "remember-push")?.[2], {
+    usageWatermark: "",
+    usageJournalRevision: null,
+  });
 });
 
 test("UsageSyncAutoService exposes and confirms the device nickname", async () => {
@@ -220,6 +338,7 @@ test("UsageSyncAutoService exposes and confirms the device nickname", async () =
     deviceId: "device-local",
     deviceLabel: "SidorukSV",
     afterObservedAt: "",
+    afterJournalRevision: 0,
   });
 });
 

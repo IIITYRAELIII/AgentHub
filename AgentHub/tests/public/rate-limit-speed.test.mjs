@@ -150,6 +150,14 @@ test("speed chart starts a new path at every weekly reset", () => {
   ]), "M1.0 2.0 L3.0 4.0 M5.0 6.0");
 });
 
+test("preliminary reset anchor closes the path gap at the cycle boundary", () => {
+  assert.equal(pathFor([
+    { x: 1, y: 80, cycleIndex: 0, pathSegmentIndex: 1 },
+    { x: 3, y: 0, cycleIndex: 1, pathSegmentIndex: 1, resetAnchor: true },
+    { x: 5, y: 0, cycleIndex: 1, pathSegmentIndex: 1 },
+  ]), "M1.0 80.0 L3.0 0.0 L5.0 0.0");
+});
+
 test("missing speed samples break the actual-rate path", () => {
   const points = finitePoints([
     { actualRate: 160, cycleIndex: 0 },
@@ -210,6 +218,34 @@ test("weekly burn rate never carries a negative delta across a reset", () => {
 
   assert.equal(points[1].actualRate, null);
   assert.equal(points[1].overTarget, false);
+});
+
+test("preliminary speed fills the post-reset gap with zero without inventing an account baseline", () => {
+  const options = { minimumSpanMs: 0, showResetStartAsZero: true };
+  const resetPoints = calculate({
+    id: "codex:primary",
+    window: "primary",
+    points: [
+      { at: "2026-08-07T22:00:00.000Z", usedPercent: 14, accountKey: "same", resetsAt: "2026-08-08T00:00:00.000Z", windowDurationMins: 10080 },
+      { at: "2026-08-08T02:00:00.000Z", usedPercent: 6, accountKey: "same", resetsAt: "2026-08-15T00:00:00.000Z", windowDurationMins: 10080 },
+    ],
+  }, options);
+  const accountPoints = calculate({
+    id: "codex:primary",
+    window: "primary",
+    points: [
+      { at: "2026-08-01T00:00:00.000Z", usedPercent: 10, accountKey: "old", resetsAt: "2026-08-08T00:00:00.000Z", windowDurationMins: 10080 },
+      { at: "2026-08-02T00:00:00.000Z", usedPercent: 30, accountKey: "new", resetsAt: "2026-08-08T00:00:00.000Z", windowDurationMins: 10080 },
+    ],
+  }, options);
+
+  assert.equal(resetPoints[0].actualRate, null);
+  assert.equal(resetPoints[1].raw.at, "2026-08-08T00:00:00.000Z");
+  assert.equal(resetPoints[1].actualRate, 0);
+  assert.equal(resetPoints[1].resetAnchor, true);
+  assert.equal(resetPoints[2].actualRate, 0);
+  assert.equal(resetPoints[2].sampleSpanMs, 0);
+  assert.equal(accountPoints[1].actualRate, null);
 });
 
 test("weekly burn rate never spans two accounts", () => {

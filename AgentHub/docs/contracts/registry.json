@@ -41,8 +41,14 @@
       "id": "REL-001",
       "title": "Task-backed Workspace release",
       "document": "REL-001-task-backed-release.md",
-      "paths": ["src/application/workspace-release-service.mjs", "src/application/task-board-service.mjs", "src/application/run-journal-service.mjs", "src/application/hub-mcp-service.mjs", "src/application/task-board-launch-service.mjs", "src/application/workspace-catalog-service.mjs", "src/domain/task-release-snapshot.mjs", "src/domain/workspace-release-workflow.mjs", "src/infrastructure/persistence/task-board-store.mjs", "src/infrastructure/persistence/workspace-catalog-store.mjs", "src/infrastructure/persistence/release-publication-verifier.mjs", "src/infrastructure/filesystem/task-git-workspace.mjs", "src/infrastructure/browser/test-contour-ui-smoke.mjs", "src/interfaces/web/mini-app-server.mjs", "src/runtime/test-contour-manager.mjs", "cloudflare-worker/build-assets.mjs", "cloudflare-worker/verify-deployment.mjs", "cloudflare-worker/_headers", "publish-changed.mjs", "test-contour.mjs"]
+      "paths": ["src/application/workspace-release-service.mjs", "src/application/workspace-release-preflight-service.mjs", "src/application/task-board-service.mjs", "src/application/run-journal-service.mjs", "src/application/hub-mcp-service.mjs", "src/application/task-board-launch-service.mjs", "src/application/workspace-catalog-service.mjs", "src/composition/infrastructure-composition.mjs", "src/domain/task-release-snapshot.mjs", "src/domain/workspace-release-workflow.mjs", "src/infrastructure/persistence/task-board-store.mjs", "src/infrastructure/persistence/workspace-catalog-store.mjs", "src/infrastructure/persistence/release-publication-verifier.mjs", "src/infrastructure/filesystem/task-git-workspace.mjs", "src/infrastructure/browser/test-contour-ui-smoke.mjs", "src/interfaces/web/mini-app-server.mjs", "src/runtime/test-contour-manager.mjs", "cloudflare-worker/build-assets.mjs", "cloudflare-worker/verify-deployment.mjs", "cloudflare-worker/_headers", "publish-changed.mjs", "test-contour.mjs"]
 
+    },
+    {
+      "id": "USG-001",
+      "title": "Usage fact transport and account attribution",
+      "document": "USG-001-usage-attribution.md",
+      "paths": ["src/domain/work-log-usage-sync.mjs", "src/domain/usage-sync-identity.mjs", "src/domain/team-usage-accounts.mjs", "src/application/work-log-usage-projection.mjs", "src/application/work-log-usage-store.mjs", "src/application/usage-sync-auto-service.mjs", "src/infrastructure/http/usage-sync-remote-client.mjs", "src/infrastructure/persistence/work-log-usage-*", "src/infrastructure/persistence/work-log-account-backfill.mjs", "src/infrastructure/persistence/usage-sync-*", "src/infrastructure/persistence/rate-limit-history.mjs", "src/infrastructure/persistence/rate-limit-account-backfill.mjs", "src/providers/claude/claude-account.mjs", "usage_sync_server/**", "assets/web-app/rate-limit-series.js", "assets/web-app/journal-account-panel.js"]
     }
   ]
 }

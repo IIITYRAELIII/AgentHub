@@ -917,6 +917,45 @@ test("concurrent rollout activity reads share one in-flight operation", async ()
   assert.deepEqual((await first).activeTurnIds, ["shared"]);
 });
 
+test("terminal rollout reparse replaces an incomplete same-size cache", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-rollout-terminal-reparse-"));
+  const rollout = path.join(root, "rollout.jsonl");
+  const turnId = "terminal-image";
+  const generatedPath = "C:/generated/terminal.png";
+  const generated = JSON.stringify({
+    type: "response_item",
+    payload: {
+      type: "custom_tool_call_output",
+      output: [
+        { type: "input_image", image_url: "data:image/png;base64,aGVsbG8=" },
+        {
+          type: "input_text",
+          text: `Generated images are saved to C:/generated as ${generatedPath} by default.`,
+        },
+      ],
+      internal_chat_message_metadata_passthrough: { turn_id: turnId },
+    },
+  });
+  const completed = JSON.stringify({
+    type: "event_msg",
+    payload: { type: "task_complete", turn_id: turnId, last_agent_message: "Done" },
+  });
+  await writeFile(rollout, `${generated}\n${"x".repeat(2_048)}\n${completed}\n`, "utf8");
+
+  const incomplete = await readCodexRolloutActivity(rollout, { tailBytes: 512 });
+  assert.deepEqual(incomplete.generatedImageSources?.[turnId] ?? [], []);
+  assert.equal(incomplete.finalMessages[turnId], "Done");
+
+  const reparsed = await readCodexRolloutActivity(rollout, {
+    tailBytes: 4_096,
+    reparseTail: true,
+  });
+  assert.deepEqual(reparsed.generatedImageSources[turnId], [{
+    type: "generated-path",
+    value: generatedPath,
+  }]);
+});
+
 test("an active rollout cache survives a cold historical scan", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-rollout-pinned-"));
   const rollout = path.join(root, "active.jsonl");

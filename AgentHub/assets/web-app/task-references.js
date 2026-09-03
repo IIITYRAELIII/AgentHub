@@ -28,6 +28,7 @@
     return {
       kind: "task",
       taskId,
+      taskNumber: String(source?.taskNumber ?? source?.number ?? "").trim().slice(0, 80) || null,
       title: String(source?.title ?? source?.name ?? "Task").replace(/\s+/gu, " ").trim().slice(0, 160) || "Task",
       workflowStatus: WORKFLOW_STATUSES.has(workflowStatus) ? workflowStatus : "new",
       workspaceId: String(source?.workspaceId ?? "").trim() || null,
@@ -38,6 +39,7 @@
   function fromTask(task, options = {}) {
     return normalize({
       taskId: task?.id,
+      taskNumber: task?.taskNumber,
       title: task?.title || task?.text,
       workflowStatus: task?.workflowStatus,
       workspaceId: task?.workspaceId,
@@ -124,6 +126,15 @@
     return value?.kind === "task" && Boolean(String(value?.taskId ?? "").trim());
   }
 
+  function presentation(value) {
+    const reference = normalize(value);
+    if (!reference) return null;
+    return {
+      badge: reference.taskNumber || "TASK",
+      title: reference.title,
+    };
+  }
+
   global.AgentHubTaskReferences = Object.freeze({
     MIME,
     beginDrag,
@@ -137,6 +148,7 @@
     merge,
     normalize,
     open,
+    presentation,
     taskUri,
     transferText,
   });

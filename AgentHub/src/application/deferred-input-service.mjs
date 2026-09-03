@@ -32,6 +32,8 @@ export class DeferredInputService {
     conflictTask = null,
     clientUserMessageId = null,
     messageFingerprint = null,
+    steerTargetRunId = null,
+    steerTargetTurnId = null,
     destination = "pending",
     notify = true,
     persistentFiles = false,
@@ -101,6 +103,12 @@ export class DeferredInputService {
       allowForce,
       conflictKind,
       clientUserMessageId: normalizedClientUserMessageId,
+      ...(String(steerTargetRunId ?? "").trim() ? {
+        steerTargetRunId: String(steerTargetRunId).trim(),
+      } : {}),
+      ...(String(steerTargetTurnId ?? "").trim() ? {
+        steerTargetTurnId: String(steerTargetTurnId).trim(),
+      } : {}),
       telegramDeliveryRequested: target.telegramDeliveryRequested !== false,
       clientSource: String(target.clientSource ?? "telegram").trim() || "telegram",
       ...(messageOrigin ? { messageOrigin } : {}),

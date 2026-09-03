@@ -196,6 +196,16 @@ export class CodexLifecycleController {
       ? [...new Set(Array.isArray(run.rolloutChangedFiles) ? run.rolloutChangedFiles : [])]
       : [];
     const changedFiles = payloadChangedFiles.length ? payloadChangedFiles : rolloutChangedFiles;
+    const executionOwner = normalizeTaskExecutionOwner(
+      turnStart?.executionOwner ?? payload.executionOwner ?? run?.executionOwner,
+    );
+    const lifecycleOwnsTerminal = !run && executionOwner !== TASK_EXECUTION_OWNERS.HUB;
+    const responseAttachments = lifecycleOwnsTerminal
+      ? await d.resolveTerminalAttachments?.({
+        threadId: identity.threadId,
+        startedAt: payload.startedAt ?? turnStart?.startedAt,
+      }, payload.turnId) ?? []
+      : [];
     const completion = d.turnEndNotifications.recordCompletion({
       provider: "codex",
       threadId: identity.threadId,
@@ -210,6 +220,7 @@ export class CodexLifecycleController {
       estimatedCredits: payload.estimatedCredits
         ?? (payload.estimatedUnits != null ? Number(payload.estimatedUnits) / 8_000 : 0),
       estimateKind: payload.estimateKind ?? "",
+      limitSamples: payload.limitSamples ?? [],
       model: payload.model ?? "",
       serviceTier: payload.serviceTier ?? payload.service_tier ?? "default",
       startedAt: payload.startedAt ?? turnStart?.startedAt ?? run?.startedAt,
@@ -218,6 +229,7 @@ export class CodexLifecycleController {
       prompts: payload.prompts,
       userMessages: payload.userMessages ?? run?.userMessages,
       finalAnswer: payload.finalAnswer ?? "",
+      responseAttachments,
       changedFiles,
       diff: turnDiff || run?.latestDiff || "",
       gitBaseline: turnStart?.gitBaseline ?? run?.gitBaseline ?? null,
@@ -237,6 +249,7 @@ export class CodexLifecycleController {
         estimatedCredits: payload.estimatedCredits
           ?? (payload.estimatedUnits != null ? Number(payload.estimatedUnits) / 8_000 : 0),
         estimateKind: payload.estimateKind ?? "",
+        limitSamples: payload.limitSamples ?? [],
         model: payload.model ?? "",
         serviceTier: payload.serviceTier ?? payload.service_tier ?? "default",
         startedAt: payload.startedAt ?? turnStart?.startedAt ?? run?.startedAt,
@@ -272,7 +285,7 @@ export class CodexLifecycleController {
     }
     d.codexTurnStarts.delete(turnEndKey(deliveredIdentity));
     await d.saveState();
-    if (completion && (!run || !["running", "finishing"].includes(run.status))) {
+    if (completion && lifecycleOwnsTerminal) {
       await d.deliverTurnEndNotification(completion);
     }
     return completion

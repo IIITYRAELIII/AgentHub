@@ -1028,6 +1028,22 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
         ));
         if (unidentifiedRoot.length === 1) user = unidentifiedRoot[0];
       }
+      if (
+        !user
+        && incoming.index === 0
+        && incoming.origin?.requestId
+        && incoming.origin.requestId === rootOrigin?.requestId
+        && incoming.clientUserMessageId === `mcp:${incoming.origin.requestId}`
+        && incoming.text
+        && incoming.text === visiblePrompt
+      ) {
+        const unidentifiedRoot = users.filter((message) => (
+          !String(message.clientUserMessageId ?? "").trim()
+          && !normalizeInterstreamOrigin(message.origin)
+          && String(message.text ?? "").trim() === incoming.text
+        ));
+        if (unidentifiedRoot.length === 1) user = unidentifiedRoot[0];
+      }
       if (!user && !incoming.origin) {
         const unidentified = users.filter((message) => !String(message.clientUserMessageId ?? "").trim());
         const matchingText = incoming.text

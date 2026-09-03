@@ -8,6 +8,17 @@ function exactRunChangedFiles(run) {
     .sort((left, right) => left.localeCompare(right));
 }
 
+function exactTerminalCompletion(existing, incoming) {
+  if (!existing) return incoming;
+  return {
+    ...existing,
+    ...incoming,
+    responseAttachments: incoming.responseAttachments.length
+      ? incoming.responseAttachments
+      : existing.responseAttachments ?? [],
+  };
+}
+
 export class CodexRunFinalizer {
   constructor({
     turnStarts,
@@ -23,6 +34,7 @@ export class CodexRunFinalizer {
     deliverTerminal,
     markRunCompleted,
     completeRun,
+    resolveTerminalAttachments = async () => [],
     formatUsage = formatTurnTokenUsage,
     titleForAnswer = conciseTurnTitle,
     logger = console,
@@ -40,6 +52,7 @@ export class CodexRunFinalizer {
     this.deliverTerminal = deliverTerminal;
     this.markRunCompleted = markRunCompleted;
     this.completeRun = completeRun;
+    this.resolveTerminalAttachments = resolveTerminalAttachments;
     this.formatUsage = formatUsage;
     this.titleForAnswer = titleForAnswer;
     this.logger = logger;
@@ -87,6 +100,8 @@ export class CodexRunFinalizer {
       turnId: completedTurnId,
     };
     const existingCompletion = this.notifications.get(identity);
+    const responseAttachments = await this.resolveTerminalAttachments(run, completedTurnId);
+    run.responseAttachments = responseAttachments;
     const completionInput = {
       ...identity,
       streamId: run.streamId ?? null,
@@ -99,6 +114,7 @@ export class CodexRunFinalizer {
       imageGenerationCount: tracker.imageGenerationCount ?? 0,
       estimatedCredits: tracker.estimatedCredits ?? 0,
       estimateKind: tracker.estimateKind ?? "",
+      limitSamples: tracker.limitSamples,
       model: tracker.model ?? run.modelId ?? "",
       serviceTier: tracker.serviceTier ?? run.serviceTier ?? "default",
       startedAt: run.startedAt,
@@ -106,6 +122,7 @@ export class CodexRunFinalizer {
       clientUserMessageId: run.clientUserMessageId ?? null,
       userMessages: run.userMessages,
       finalAnswer: String(answer ?? "").trim(),
+      responseAttachments,
       changedFiles: exactRunChangedFiles(run),
       diff: run.latestDiff ?? "",
       gitBaseline: run.gitBaseline ?? null,
@@ -114,8 +131,7 @@ export class CodexRunFinalizer {
       toolMetricsKnown: tracker.toolMetricsKnown === true || run.toolMetricsKnown === true,
     };
     const completion = this.notifications.recordCompletion(completionInput)
-      ?? existingCompletion
-      ?? completionInput;
+      ?? exactTerminalCompletion(existingCompletion, completionInput);
     const resolvedTracker = {
       usage: completion.usage,
       reported: completion.usageReported,

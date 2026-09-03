@@ -90,6 +90,7 @@ const CONTROL_ACTIONS = new Set([
   "create-device-pairing",
   "revoke-device",
   "board-task-ingest",
+  "board-task-attachment-add",
 ]);
 const CONTROL_SOURCES = new Set(["telegram-mini-app", "trusted-device", "shared-dashboard-bot"]);
 
@@ -419,7 +420,7 @@ function attachmentIdFromReference(value) {
 function attachmentIdsFromParams(action, params) {
   if (!Object.hasOwn(params, "attachments") || params.attachments == null) return [];
   if (
-    !["send-message", "submit-bug-report", "board-task-ingest"].includes(action)
+    !["send-message", "submit-bug-report", "board-task-ingest", "board-task-attachment-add"].includes(action)
     || !Array.isArray(params.attachments)
     || params.attachments.length < 1
     || params.attachments.length > MAX_ATTACHMENTS_PER_COMMAND
@@ -1698,27 +1699,25 @@ export class JournalStore extends DurableObject {
       await this.ctx.storage.delete(key);
       return { reply: "Открытая пачка относилась к другой привязке и была отменена. Перешлите сообщения ещё раз." };
     }
-    if (bundle.submitting) {
-      if (!dashboardBotSubmissionIsStale(bundle)) {
-        return { reply: "Пачка уже отправляется. Дождитесь подтверждения." };
-      }
-      bundle.submitting = false;
-      delete bundle.submissionStartedAt;
-      bundle.updatedAt = Date.now();
-      await this.ctx.storage.put(key, bundle);
-      return {
-        reply: "Предыдущая отправка не была подтверждена. Новое сообщение не добавлено: повторите отправку пачки или отмените её, затем перешлите сообщение ещё раз.",
-        card: this.#dashboardBotBundleCard(bundle, {
-          warning: "Предыдущая отправка не подтверждена. Пачка сохранена: её можно отправить повторно или отменить.",
-        }),
-      };
-    }
     if (bundle.items.some((item) => item.messageId === message.message_id)) {
       if (Number.isSafeInteger(bundle.cardMessageId)) return { card: this.#dashboardBotBundleCard(bundle) };
       if (bundle.cardPending) return { ignored: true };
       bundle.cardPending = true;
       await this.ctx.storage.put(key, bundle);
       return { card: this.#dashboardBotBundleCard(bundle) };
+    }
+    if (bundle.submitting) {
+      if (!dashboardBotSubmissionIsStale(bundle)) {
+        return { reply: "Пачка уже отправляется. Дождитесь подтверждения." };
+      }
+    }
+    if (bundle.submission || bundle.submitting) {
+      return {
+        ...await this.#dashboardBotSubmitBundle(linked.userId, bundle.id, {
+          separate: bundle.submission?.separate === true,
+        }),
+        resumeUpdateAfterSubmission: true,
+      };
     }
     const text = String(message.text ?? message.caption ?? "").trim();
     const totalChars = bundle.items.reduce((sum, item) => sum + String(item.text ?? "").length, 0);
@@ -1770,51 +1769,62 @@ export class JournalStore extends DurableObject {
     if (bundle.submitting && !dashboardBotSubmissionIsStale(bundle)) {
       return { reply: "Пачка уже отправляется. Дождитесь подтверждения." };
     }
+    let submission = isPlainObject(bundle.submission) && Array.isArray(bundle.submission.commands)
+      ? bundle.submission
+      : null;
+    if (!submission) {
+      const groups = separate ? dashboardBotSeparatedGroups(bundle) : [{ items: bundle.items }];
+      submission = {
+        separate,
+        commands: groups.map((group, index) => {
+          const telegramAttachments = group.items.flatMap(dashboardBotItemAttachments);
+          return {
+            hubId: bundle.hubId,
+            telegramAttachments,
+            command: {
+              id: crypto.randomUUID().toLowerCase(),
+              action: "board-task-ingest",
+              params: {
+                text: dashboardBotBundleText(group),
+                mergeMessageId: group.items.find((item) => Number.isSafeInteger(item.existingTaskMessageId))
+                  ?.existingTaskMessageId,
+                sourceKey: separate
+                  ? `shared-dashboard:${bundle.id}:${index + 1}`
+                  : `shared-dashboard:${bundle.id}`,
+                sourceDetails: {
+                  bundleId: bundle.id,
+                  chatId: bundle.chatId,
+                  userId: Number(bundle.userId),
+                  messageCount: group.items.length,
+                  bundleMessageCount: bundle.items.length,
+                  attachmentCount: telegramAttachments.length,
+                  attachmentKinds: telegramAttachments.map((item) => item.type),
+                  separate,
+                  separateIndex: separate ? index + 1 : null,
+                  items: group.items.map((item) => ({
+                    updateId: item.updateId,
+                    messageId: item.messageId,
+                    replyToMessageId: item.replyToMessageId,
+                    kind: item.kind,
+                    source: item.source,
+                    attachmentCount: dashboardBotItemAttachments(item).length,
+                  })),
+                },
+              },
+              userId: bundle.userId,
+            },
+          };
+        }),
+      };
+      bundle.submission = submission;
+    }
     const now = Date.now();
     bundle.submitting = true;
     bundle.submissionStartedAt = now;
     bundle.updatedAt = now;
     await this.ctx.storage.put(key, bundle);
-    const groups = separate ? dashboardBotSeparatedGroups(bundle) : [{ items: bundle.items }];
-    const commands = groups.map((group, index) => {
-      const telegramAttachments = group.items.flatMap(dashboardBotItemAttachments);
-      return {
-        hubId: bundle.hubId,
-        telegramAttachments,
-        command: {
-          id: crypto.randomUUID().toLowerCase(),
-          action: "board-task-ingest",
-          params: {
-            text: dashboardBotBundleText(group),
-            mergeMessageId: group.items.find((item) => Number.isSafeInteger(item.existingTaskMessageId))
-              ?.existingTaskMessageId,
-            sourceKey: separate
-              ? `shared-dashboard:${bundle.id}:${index + 1}`
-              : `shared-dashboard:${bundle.id}`,
-            sourceDetails: {
-              bundleId: bundle.id,
-              chatId: bundle.chatId,
-              userId: Number(bundle.userId),
-              messageCount: group.items.length,
-              bundleMessageCount: bundle.items.length,
-              attachmentCount: telegramAttachments.length,
-              attachmentKinds: telegramAttachments.map((item) => item.type),
-              separate,
-              separateIndex: separate ? index + 1 : null,
-              items: group.items.map((item) => ({
-                updateId: item.updateId,
-                messageId: item.messageId,
-                replyToMessageId: item.replyToMessageId,
-                kind: item.kind,
-                source: item.source,
-                attachmentCount: dashboardBotItemAttachments(item).length,
-              })),
-            },
-          },
-          userId: bundle.userId,
-        },
-      };
-    });
+    const commands = submission.commands;
+    const submitSeparately = submission.separate === true;
     return {
       commands,
       submittedBundle: {
@@ -1822,10 +1832,10 @@ export class JournalStore extends DurableObject {
         id: bundle.id,
         itemCount: bundle.items.length,
         taskCount: commands.length,
-        separate,
+        separate: submitSeparately,
       },
       card: this.#dashboardBotBundleCard(bundle, {
-        finalText: separate
+        finalText: submitSeparately
           ? `⏳ Отправляю ${commands.length} отдельных задач…`
           : `⏳ Отправляю пачку из ${bundle.items.length} сообщений…`,
       }),
@@ -1863,7 +1873,7 @@ export class JournalStore extends DurableObject {
       if (bundle.submitting && !dashboardBotSubmissionIsStale(bundle)) {
         return { callbackQueryId: query.id, callbackText: "Отправка ещё выполняется. Дождитесь подтверждения." };
       }
-      const submissionWasAmbiguous = bundle.submitting === true;
+      const submissionWasAmbiguous = bundle.submitting === true || Boolean(bundle.submission);
       await this.ctx.storage.delete(key);
       return {
         callbackQueryId: query.id,
@@ -1915,7 +1925,7 @@ export class JournalStore extends DurableObject {
       if (openBundle.submitting && !dashboardBotSubmissionIsStale(openBundle)) {
         return { reply: "Отправка ещё выполняется. Дождитесь подтверждения." };
       }
-      const submissionWasAmbiguous = openBundle.submitting === true;
+      const submissionWasAmbiguous = openBundle.submitting === true || Boolean(openBundle.submission);
       await this.ctx.storage.delete(dashboardBotBundleKey(linked.userId));
       return {
         card: this.#dashboardBotBundleCard(openBundle, {
@@ -2026,6 +2036,32 @@ export class JournalStore extends DurableObject {
     bundle.updatedAt = Date.now();
     await this.ctx.storage.put(key, bundle);
     return { ok: true, card: this.#dashboardBotBundleCard(bundle) };
+  }
+
+  async #materializeDashboardBotSubmissionCommand(payload) {
+    const userId = String(payload?.userId ?? "");
+    const id = String(payload?.id ?? "").toLowerCase();
+    const key = dashboardBotBundleKey(userId);
+    const bundle = await this.ctx.storage.get(key);
+    if (!bundle || bundle.id !== id || !Array.isArray(bundle.submission?.commands)) return { ok: false };
+    let command;
+    try {
+      command = {
+        ...validateControlCommand(payload?.command),
+        userId: String(payload?.command?.userId ?? ""),
+      };
+    } catch {
+      return { ok: false };
+    }
+    const submittedCommand = bundle.submission.commands.find((item) => item?.command?.id === command.id);
+    if (!submittedCommand || command.userId !== bundle.userId || command.action !== submittedCommand.command.action) {
+      return { ok: false };
+    }
+    submittedCommand.command = command;
+    submittedCommand.telegramAttachments = [];
+    bundle.updatedAt = Date.now();
+    await this.ctx.storage.put(key, bundle);
+    return { ok: true };
   }
 
   async #finalizeDashboardBotBundle(payload) {
@@ -2750,6 +2786,9 @@ export class JournalStore extends DurableObject {
     if (request.method === "POST" && url.pathname === "/dashboard-bot/card") {
       return json(await this.#setDashboardBotBundleCard(await request.json()));
     }
+    if (request.method === "POST" && url.pathname === "/dashboard-bot/submission-command") {
+      return json(await this.#materializeDashboardBotSubmissionCommand(await request.json()));
+    }
     if (request.method === "POST" && url.pathname === "/dashboard-bot/finalize") {
       return json(await this.#finalizeDashboardBotBundle(await request.json()));
     }
@@ -3387,7 +3426,62 @@ export class JournalStore extends DurableObject {
   }
 }
 
-function secureStaticResponse(response, request) {
+const STATIC_SHELL_CHUNK_BYTES = 16 * 1_024;
+const STATIC_SHELL_CHUNK_PARAM = "__agent_hub_shell_chunk";
+const STATIC_SHELL_LOADER_PATH = "/__agent-hub-shell-loader.js";
+const STATIC_SHELL_LOADER = `(() => {
+  const script = document.currentScript;
+  const chunkCount = Number(script?.dataset.agentHubShellChunks ?? 0);
+  const expectedBytes = Number(script?.dataset.agentHubShellBytes ?? 0);
+  const fail = (error) => {
+    console.error("Agent Hub shell bootstrap failed", error);
+    document.body.textContent = "Agent Hub не загрузился. Обнови страницу.";
+  };
+  if (!Number.isSafeInteger(chunkCount) || chunkCount < 1
+    || !Number.isSafeInteger(expectedBytes) || expectedBytes < 1) {
+    fail(new Error("invalid shell manifest"));
+    return;
+  }
+  Promise.all(Array.from({ length: chunkCount }, async (_, index) => {
+    const target = new URL("/index.html", location.href);
+    target.searchParams.set("${STATIC_SHELL_CHUNK_PARAM}", String(index));
+    const response = await fetch(target, { cache: "no-store" });
+    if (!response.ok) throw new Error("shell chunk " + index + ": HTTP " + response.status);
+    return new Uint8Array(await response.arrayBuffer());
+  })).then((chunks) => {
+    const size = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+    if (size !== expectedBytes) throw new Error("shell size " + size + " !== " + expectedBytes);
+    const body = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      body.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    const html = new TextDecoder().decode(body);
+    document.open();
+    document.write(html);
+    document.close();
+  }).catch(fail);
+})();`;
+
+function staticShellLoaderResponse() {
+  return new Response(STATIC_SHELL_LOADER, {
+    headers: {
+      "Cache-Control": "no-store",
+      "Content-Type": "text/javascript; charset=utf-8",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+}
+
+function replaceBodyHeaders(headers) {
+  headers.delete("Content-Encoding");
+  headers.delete("Content-Length");
+  headers.delete("Content-Range");
+  headers.delete("ETag");
+}
+
+async function secureStaticResponse(response, request) {
   const headers = new Headers(response.headers);
   const contentType = String(headers.get("Content-Type") ?? "").toLowerCase();
   const url = new URL(request.url);
@@ -3415,7 +3509,28 @@ function secureStaticResponse(response, request) {
   ].join("; "));
   headers.set("Referrer-Policy", "no-referrer");
   headers.set("X-Content-Type-Options", "nosniff");
-  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+  let body = response.body;
+  if (body && contentType.includes("text/html")) {
+    body = new Uint8Array(await response.arrayBuffer());
+    replaceBodyHeaders(headers);
+    const chunkValue = url.searchParams.get(STATIC_SHELL_CHUNK_PARAM);
+    if (chunkValue !== null) {
+      const chunkIndex = Number(chunkValue);
+      const chunkCount = Math.ceil(body.byteLength / STATIC_SHELL_CHUNK_BYTES);
+      if (!Number.isSafeInteger(chunkIndex) || chunkIndex < 0 || chunkIndex >= chunkCount) {
+        return new Response("invalid shell chunk", { status: 416 });
+      }
+      const start = chunkIndex * STATIC_SHELL_CHUNK_BYTES;
+      const chunk = body.slice(start, Math.min(start + STATIC_SHELL_CHUNK_BYTES, body.byteLength));
+      headers.set("Content-Type", "application/octet-stream");
+      headers.set("X-Agent-Hub-Shell-Chunk", `${chunkIndex + 1}/${chunkCount}`);
+      return new Response(chunk, { status: response.status, statusText: response.statusText, headers });
+    }
+    const chunkCount = Math.ceil(body.byteLength / STATIC_SHELL_CHUNK_BYTES);
+    body = `<!doctype html><html><head><meta charset="utf-8"><title>Agent Hub</title></head><body><script src="${STATIC_SHELL_LOADER_PATH}" data-agent-hub-shell-chunks="${chunkCount}" data-agent-hub-shell-bytes="${body.byteLength}"></script></body></html>`;
+    headers.set("X-Agent-Hub-Static-Body", "chunk-bootstrap");
+  }
+  return new Response(body, { status: response.status, statusText: response.statusText, headers });
 }
 
 const DEVICE_SESSION_COOKIE = "agent_hub_device";
@@ -3600,6 +3715,7 @@ export default {
       } catch (error) {
         return json({ error: error.message }, /too large/iu.test(error.message) ? 413 : 400);
       }
+      for (let routeIndex = 0; routeIndex < 2; routeIndex += 1) {
       const routedResponse = await dashboardBotRouter.fetch(new Request("https://journal.internal/dashboard-bot/update", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -3677,6 +3793,24 @@ export default {
                 ...command,
                 params,
               };
+              if (routed.submittedBundle) {
+                const materializeResponse = await dashboardBotRouter.fetch(new Request(
+                  "https://journal.internal/dashboard-bot/submission-command",
+                  {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      userId: routed.submittedBundle.userId,
+                      id: routed.submittedBundle.id,
+                      command,
+                    }),
+                  },
+                ));
+                const materialized = await materializeResponse.json().catch(() => ({}));
+                if (!materializeResponse.ok || materialized.ok !== true) {
+                  throw new Error("Agent Hub не сохранил точный состав отправляемой пачки.");
+                }
+              }
             }
             const enqueueResponse = await hubStore.fetch(new Request("https://journal.internal/control/enqueue", {
               method: "POST",
@@ -3711,11 +3845,15 @@ export default {
           return json({ error: error.message }, 503);
         }
         if (routed.submittedBundle) {
-          await dashboardBotRouter.fetch(new Request("https://journal.internal/dashboard-bot/finalize", {
+          const finalizeResponse = await dashboardBotRouter.fetch(new Request("https://journal.internal/dashboard-bot/finalize", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ ...routed.submittedBundle, submitted: true }),
           }));
+          const finalized = await finalizeResponse.json().catch(() => ({}));
+          if (!finalizeResponse.ok || finalized.ok !== true) {
+            return json({ error: "Agent Hub поставил пачку в очередь, но не подтвердил её закрытие." }, 503);
+          }
           await updateDashboardBotCard(env, dashboardBotRouter, {
             ...routed.card,
             mode: "edit",
@@ -3728,6 +3866,12 @@ export default {
           });
         }
       }
+      if (routed.resumeUpdateAfterSubmission === true) {
+        if (routeIndex !== 0 || update?.callback_query) {
+          return json({ error: "invalid dashboard bot bundle recovery" }, 409);
+        }
+        continue;
+      }
       if (routed.reply) {
         const chatId = update?.message?.chat?.id ?? update?.callback_query?.message?.chat?.id;
         if (chatId) await dashboardBotTelegramRequest(env, "sendMessage", {
@@ -3737,6 +3881,8 @@ export default {
         });
       }
       return json({ ok: true, ignored: routed.ignored === true });
+      }
+      return json({ error: "dashboard bot bundle recovery did not complete" }, 503);
     }
     if ([
       "/api/dashboard-bot/pull",
@@ -4282,6 +4428,7 @@ export default {
         : response;
     }
     if (url.pathname === "/events") return json({ error: "Polling is used in Telegram." }, 404);
+    if (url.pathname === STATIC_SHELL_LOADER_PATH) return staticShellLoaderResponse();
     return secureStaticResponse(await env.ASSETS.fetch(request), request);
   },
 };

@@ -28,7 +28,6 @@ html[data-theme="gothic"] {
   --line: rgb(116 111 101 / 42%);
   --line-strong: rgb(148 140 125 / 62%);
 
-  --gothic-iron-texture: var(--gothic-iron-texture-asset, url("./gothic-iron-texture.png"));
   --gothic-iron-frame: var(--gothic-iron-frame-asset, url("./gothic-iron-frame-plain.png"));
   --gothic-forged-frame: var(--gothic-forged-frame-asset, url("./gothic-forged-frame.png"));
   --gothic-forged-frame-matte: var(--gothic-forged-frame-matte-asset, url("./gothic-forged-frame-matte.png"));
@@ -37,7 +36,7 @@ html[data-theme="gothic"] {
   --gothic-header-rivet: var(--gothic-header-rivet-asset, url("./gothic-header-rivet.png"));
   --card-bg: rgb(10 11 11 / 94%);
   --card-bg-open: rgb(17 18 18 / 96%);
-  --card-texture: var(--gothic-iron-texture);
+  --card-texture: var(--gothic-panel-texture-preview);
   --card-border: rgb(111 105 95 / 40%);
   --card-border-open: rgb(132 91 72 / 68%);
   --card-shadow:
@@ -46,7 +45,7 @@ html[data-theme="gothic"] {
     inset 0 0 28px rgb(0 0 0 / 28%),
     0 20px 38px -28px #000;
   --plate-bg: rgb(12 13 13 / 95%);
-  --plate-texture: var(--gothic-iron-texture);
+  --plate-texture: var(--gothic-panel-texture-preview);
   --plate-shadow: inset 0 1px 0 rgb(216 182 134 / 8%), inset 0 -1px 0 rgb(0 0 0 / 82%);
   --turn-shadow: 0 12px 26px -18px #000;
 
@@ -82,7 +81,7 @@ html[data-theme="gothic"] {
      геометрию верхних панелей, а тема меняет только их фактуру и рамку. */
   --shell-header-background:
     linear-gradient(rgb(5 6 6 / 82%), rgb(5 6 6 / 82%)),
-    var(--gothic-iron-texture) center / 24rem 24rem;
+    var(--gothic-panel-texture-preview) center / 24rem 24rem;
   --shell-brand-mark-size: 2.9rem;
   --shell-header-border: 0;
   --shell-header-frame-border: 1px solid rgb(91 86 77 / 78%);
@@ -103,13 +102,13 @@ html[data-theme="gothic"] {
   --shell-toolbar-margin-top: 0;
   --shell-control-background:
     linear-gradient(rgb(7 8 8 / 86%), rgb(7 8 8 / 86%)),
-    var(--gothic-iron-texture) center / 18rem 18rem;
+    var(--gothic-panel-texture-preview) center / 18rem 18rem;
   --shell-control-border: 1px solid rgb(106 102 94 / 54%);
   --shell-control-shadow: inset 0 1px 0 rgb(220 216 204 / 4%), inset 0 -1px 0 #020303;
   --shell-tab-background: transparent;
   --shell-tab-active-background:
     linear-gradient(rgb(9 10 10 / 42%), rgb(5 6 6 / 56%)),
-    var(--gothic-iron-texture) center / 20rem 20rem;
+    var(--gothic-panel-texture-preview) center / 20rem 20rem;
   --shell-tab-active-border: 1px solid rgb(105 100 90 / 62%);
   --shell-tab-active-padding: 0.42rem 0.94rem;
   --shell-tab-active-shadow: inset 0 -2px 0 #a14438;
@@ -127,7 +126,7 @@ html[data-theme="gothic"] {
   --shell-panel-border-image-width: 6px;
   --shell-stream-tabs-background:
     linear-gradient(rgb(7 8 8 / 82%), rgb(7 8 8 / 82%)),
-    var(--gothic-iron-texture) center / 24rem 24rem;
+    var(--gothic-panel-texture-preview) center / 24rem 24rem;
   --shell-stream-tabs-border: 0;
   --shell-stream-tabs-border-bottom: 0;
   --shell-stream-tabs-border-image: none;
@@ -136,9 +135,9 @@ html[data-theme="gothic"] {
   --shell-stream-tabs-padding: 0 0.55rem 0.2rem;
   --shell-stream-tab-background: transparent;
   --shell-stream-tab-border: 0;
-  --shell-stream-tab-hover-background: #121313 var(--gothic-iron-texture) center / 18rem 18rem;
-  --shell-stream-tab-active-background: #251714 var(--gothic-iron-texture) center / 18rem 18rem;
-  --shell-stream-card-background: #0a0b0b var(--gothic-iron-texture) center / 18rem 18rem;
+  --shell-stream-tab-hover-background: #121313 var(--gothic-panel-texture-preview) center / 18rem 18rem;
+  --shell-stream-tab-active-background: #251714 var(--gothic-panel-texture-preview) center / 18rem 18rem;
+  --shell-stream-card-background: #0a0b0b var(--gothic-panel-texture-preview) center / 18rem 18rem;
   --shell-stream-card-border: 6px solid transparent;
   --shell-stream-card-border-image: var(--gothic-iron-frame) 5% / 6px stretch;
 }
@@ -171,7 +170,7 @@ html[data-theme="gothic"] .task-rail-title {
   html[data-theme="gothic"]:not([data-surface="mobile"]) {
     --shell-header-background:
       linear-gradient(rgb(5 6 6 / 58%), rgb(5 6 6 / 58%)),
-      var(--gothic-iron-texture) center / 24rem 24rem;
+      var(--gothic-panel-texture-preview) center / 24rem 24rem;
     --shell-header-frame-border: 6px solid transparent;
     --shell-header-frame-filter: brightness(1.16) contrast(1.08) saturate(0.78);
     --shell-header-frame-image: var(--gothic-iron-frame) 5% / 6px stretch;
@@ -188,7 +187,7 @@ html[data-theme="gothic"] .task-rail-title {
     align-self: stretch;
     background:
       linear-gradient(rgb(6 7 7 / 42%), rgb(6 7 7 / 42%)),
-      var(--gothic-iron-texture) center / 20rem 20rem;
+      var(--gothic-panel-texture-preview) center / 20rem 20rem;
     border: 0;
     box-sizing: border-box;
     flex: 0 0 16.5rem;
@@ -401,7 +400,7 @@ html[data-theme="gothic"] .task-list {
   background-color: rgb(8 9 9 / 96%);
   background-image:
     linear-gradient(#0a0b0b, #0a0b0b),
-    var(--gothic-iron-texture);
+    var(--gothic-panel-texture-preview);
   background-blend-mode: color, normal;
   background-position: left top;
   background-repeat: repeat;
@@ -418,7 +417,7 @@ html[data-theme="gothic"] .composer {
   background-color: rgb(9 10 10 / 90%);
   background-image:
     linear-gradient(rgb(7 8 8 / 70%), rgb(7 8 8 / 70%)),
-    var(--gothic-iron-texture);
+    var(--gothic-panel-texture-preview);
   background-blend-mode: color, normal;
   background-size: 24rem 24rem;
 }
@@ -449,7 +448,7 @@ html[data-theme="gothic"] .msg {
   background-color: rgb(9 10 10 / 97%);
   background-image:
     linear-gradient(rgb(7 8 8 / 68%), rgb(7 8 8 / 68%)),
-    var(--gothic-iron-texture);
+    var(--gothic-panel-texture-preview);
   background-blend-mode: color, normal;
   background-size: 22rem 22rem;
   border: 2px solid transparent;
@@ -464,7 +463,7 @@ html[data-theme="gothic"] .msg-user {
   background-color: rgb(47 27 21 / 94%);
   background-image:
     linear-gradient(rgb(58 29 22 / 64%), rgb(36 18 14 / 72%)),
-    var(--gothic-iron-texture);
+    var(--gothic-panel-texture-preview);
   border-color: rgb(166 83 57 / 64%);
   max-width: min(34rem, 82%);
 }
@@ -494,7 +493,7 @@ html[data-theme="gothic"] .composer-input {
 html[data-theme="gothic"] .composer-send,
 html[data-theme="gothic"] .chip-button.primary {
   background: #241613;
-  background-image: var(--gothic-iron-texture);
+  background-image: var(--gothic-panel-texture-preview);
   border-color: #764438;
   color: #c7bcb0;
 }
@@ -525,7 +524,7 @@ html[data-theme="gothic"] .composer-send {
     background-color: rgb(7 8 8 / 97%);
     background-image:
       linear-gradient(rgb(8 9 9 / 74%), rgb(8 9 9 / 74%)),
-      var(--gothic-iron-texture);
+      var(--gothic-panel-texture-preview);
     background-blend-mode: color, normal;
     background-size: 28rem 28rem;
     box-shadow: inset 0 0 0 1px rgb(218 184 137 / 7%), inset 0 0 2rem rgb(0 0 0 / 48%);
@@ -549,7 +548,7 @@ html[data-theme="gothic"] .composer-send {
     background-color: rgb(7 8 8 / 94%);
     background-image:
       linear-gradient(rgb(8 9 9 / 74%), rgb(8 9 9 / 74%)),
-      var(--gothic-iron-texture);
+      var(--gothic-panel-texture-preview);
     background-blend-mode: color, normal;
     border: 6px solid transparent;
     border-image: var(--gothic-iron-frame) 5% / 6px stretch;
@@ -573,11 +572,18 @@ html[data-theme="gothic"] .composer-send {
     background-color: rgb(8 9 9 / 92%);
     background-image:
       linear-gradient(rgb(8 9 9 / 72%), rgb(8 9 9 / 72%)),
-      var(--gothic-iron-texture);
+      var(--gothic-panel-texture-preview);
     background-blend-mode: color, normal;
     background-size: 18rem 18rem;
     border-color: rgb(106 101 92 / 48%);
     border-radius: 0;
+  }
+
+  html[data-theme="gothic"] .quick-messages-settings-control > .chip-button {
+    background-color: #100f0f;
+    background-image: var(--gothic-panel-texture-preview);
+    background-blend-mode: normal;
+    background-size: auto;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .task-workspace-name,
@@ -654,8 +660,9 @@ html[data-theme="gothic"] {
   --gothic-blade-joint-task-bottom-preview: url("./gothic-blade-joint-bottom-left-v12.png");
   --gothic-blade-joint-activity-top-preview: url("./gothic-blade-joint-top-right-v12.png");
   --gothic-blade-joint-activity-bottom-preview: url("./gothic-blade-joint-bottom-right-v12.png");
-  --gothic-panel-texture-preview: url("./gothic-panel-texture-reference.png");
   --gothic-workspace-card-texture-preview: url("./gothic-workspace-card-texture.png");
+  --gothic-panel-texture-preview:
+    linear-gradient(145deg, rgb(255 255 255 / 1.2%), transparent 38%, rgb(0 0 0 / 10%) 72%, rgb(255 255 255 / 0.8%));
   --gothic-panel-base-color: #0b0c0e;
   --gothic-panel-base-image:
     linear-gradient(rgb(8 9 10 / 14%), rgb(8 9 10 / 14%)),
@@ -790,7 +797,7 @@ html[data-theme="gothic"] body::before {
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .view-tab {
     background-color: #100f0f !important;
-    background-image: url("./gothic-panel-texture-reference.png") !important;
+    background-image: var(--gothic-panel-texture-preview) !important;
     background-blend-mode: multiply;
     background-size: 24rem 24rem !important;
     border: 1px solid rgb(79 75 79 / 28%) !important;
@@ -817,7 +824,7 @@ html[data-theme="gothic"] body::before {
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .view-tab[aria-pressed="true"] {
     background-color: #15100f !important;
-    background-image: url("./gothic-panel-texture-reference.png") !important;
+    background-image: var(--gothic-panel-texture-preview) !important;
     background-blend-mode: multiply;
     background-size: 24rem 24rem !important;
     border: 1px solid rgb(79 75 79 / 48%) !important;
@@ -881,7 +888,7 @@ html[data-theme="gothic"] body::before {
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .toolbar .view-settings {
     background-color: #100f0f !important;
-    background-image: url("./gothic-panel-texture-reference.png") !important;
+    background-image: var(--gothic-panel-texture-preview) !important;
     background-blend-mode: multiply;
     background-size: 24rem 24rem !important;
     border: 1px solid rgb(79 75 79 / 28%) !important;
@@ -1059,7 +1066,17 @@ html[data-theme="gothic"] body::before {
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .workspace-task-panel {
-    padding: var(--gothic-rail-content-inset) !important;
+    padding: var(--gothic-rail-content-inset) 0.5rem !important;
+  }
+
+  html[data-theme="gothic"][data-activity-task-column="separate"][data-activity-column-count="2"]:not([data-surface="mobile"])
+    .workspace-task-panel {
+    padding-right: 0.25rem !important;
+  }
+
+  html[data-theme="gothic"][data-activity-task-column="separate"][data-activity-column-count="2"]:not([data-surface="mobile"])
+    .activity-stream-list {
+    padding-left: 0.75rem !important;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .chat {
@@ -1111,12 +1128,22 @@ html[data-theme="gothic"] body::before {
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .task-workspace-item,
   html[data-theme="gothic"]:not([data-surface="mobile"]) .activity-stream-item,
-  html[data-theme="gothic"]:not([data-surface="mobile"]) .stream-tab-card,
-  html[data-theme="gothic"]:not([data-surface="mobile"]) .msg:not(.msg-user) {
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .stream-tab-card {
     background-color: #151618 !important;
     background-image:
       linear-gradient(rgb(24 25 27 / 24%), rgb(24 25 27 / 24%)),
       var(--gothic-panel-texture-preview) !important;
+    background-blend-mode: normal, normal !important;
+    background-position: center, center !important;
+    background-repeat: repeat, repeat !important;
+    background-size: auto, 28rem 28rem !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .msg:not(.msg-user) {
+    background-color: #151618 !important;
+    background-image:
+      linear-gradient(rgb(24 25 27 / 24%), rgb(24 25 27 / 24%)),
+      var(--gothic-workspace-card-texture-preview) !important;
     background-blend-mode: normal, normal !important;
     background-position: center, center !important;
     background-repeat: repeat, repeat !important;
@@ -1256,11 +1283,15 @@ html[data-theme="gothic"] body::before {
     background-color: #151618 !important;
     background-image:
       linear-gradient(rgb(24 25 27 / 24%), rgb(24 25 27 / 24%)),
-      var(--gothic-panel-texture-preview) !important;
+      var(--gothic-workspace-card-texture-preview) !important;
     background-blend-mode: normal, normal !important;
     background-position: center, center !important;
     background-repeat: repeat, repeat !important;
     background-size: auto, 28rem 28rem !important;
+  }
+
+  html[data-theme="gothic"] .msg-user-bubble {
+    background: transparent !important;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .chat-log {
@@ -1649,7 +1680,7 @@ html[data-theme="gothic"][data-surface="mobile"] .stream-tab[aria-pressed="true"
     background-color: #151618 !important;
     background-image:
       linear-gradient(rgb(24 25 27 / 24%), rgb(24 25 27 / 24%)),
-      var(--gothic-panel-texture-preview) !important;
+      var(--gothic-workspace-card-texture-preview) !important;
     background-position: center, center !important;
     background-repeat: repeat, repeat !important;
     background-size: auto, 28rem 28rem !important;

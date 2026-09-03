@@ -157,7 +157,8 @@ test("title backfill updates SQLite and leaves legacy files unchanged", async ()
     database.close();
     assert.equal(stored.turns[key].title, "Отчёт сформирован");
     assert.match(snapshot.html, /Отчёт сформирован/u);
-    assert.match(snapshot.html, /remote@example\.com/u);
+    assert.match(snapshot.html, /Неизвестный аккаунт/u);
+    assert.doesNotMatch(snapshot.html, /remote@example\.com/u);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

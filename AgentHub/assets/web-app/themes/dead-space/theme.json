@@ -5,6 +5,8 @@
   "order": 45,
   "styles": "theme.css",
   "backgrounds": [
-    { "id": "dead-space", "name": "Шахтёрская палуба", "asset": "dead-space-mining-deck.png", "particles": "motes", "preload": true }
+    { "id": "dead-space", "name": "Шахтёрская палуба", "asset": "dead-space-mining-deck.png", "particles": "motes", "preload": true },
+    { "id": "dead-space-zero-g", "name": "USG «Ишимура»", "asset": "dead-space-zero-g.png", "particles": "motes", "preload": true },
+    { "id": "dead-space-hydroponics", "name": "Заражённая гидропоника", "asset": "dead-space-hydroponics.png", "particles": "motes", "preload": true }
   ]
 }

@@ -15,6 +15,8 @@ const validIdentity = {
   platform: "win32",
   publicKey: "MCowBQYDK2VwAyEAabc",
   privateKey: "MC4CAQAwBQYDK2VwBCIEIabc",
+  homeSalt: "local-salt",
+  installationInstanceId: "11111111-2222-3333-4444-555555555555",
   createdAt: "2026-08-20T05:00:00.000Z",
 };
 
@@ -38,6 +40,8 @@ test("identity normalization accepts a complete record", () => {
   assert.equal(identity.label, "Основной компьютер");
   assert.equal(identity.updatedAt, validIdentity.createdAt);
   assert.equal(identity.labelConfirmedAt, "");
+  assert.equal(identity.homeSalt, "local-salt");
+  assert.equal(identity.installationInstanceId, "11111111-2222-3333-4444-555555555555");
   assert.deepEqual(identity.legacyDeviceIds, []);
 });
 
@@ -68,6 +72,8 @@ test("public identity never exposes the private key", () => {
   const identity = normalizeUsageSyncIdentity(validIdentity);
   const shared = publicUsageSyncIdentity(identity);
   assert.ok(!("privateKey" in shared));
+  assert.ok(!("homeSalt" in shared));
+  assert.ok(!("installationInstanceId" in shared));
   assert.equal(shared.publicKey, validIdentity.publicKey);
   assert.ok(isUsageSyncDeviceId(shared.deviceId));
 });

@@ -690,10 +690,12 @@ export function createDesktopSnapshotFactory({
     snapshotTiming.serverStateMs = Math.round((monotonicNow() - phaseStartedAt) * 10) / 10;
     phaseStartedAt = monotonicNow();
     const boardTasks = board.snapshot?.() ?? [];
+    const archivedWorkspaces = board.archivedWorkspaces?.() ?? [];
     const messageReceipts = desktopMessageReceiptSnapshot();
     const snapshot = {
       apiVersion: protocol,
       workspaces,
+      archivedWorkspaces,
       boardTasks,
       boardLayout: board.layout?.() ?? { columnOrder: [], notesComment: "" },
       selected: {
@@ -791,7 +793,11 @@ export function createDesktopSnapshotFactory({
         })),
         ...deferred.queuedValues().map((item) => ({
           id: item.id,
-          state: item.dispatchingAt ? "dispatching" : item.paused === true ? "paused" : "queued",
+          state: item.dispatchingAt
+            ? "dispatching"
+            : item.conflictKind === "message-steer"
+              ? "steering"
+              : item.paused === true ? "paused" : "queued",
           provider: item.provider,
           threadId: item.threadId,
           taskTitle: deferredTaskTitle(item),

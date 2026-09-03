@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  exactTestContourResponsePattern,
   isTestContourModelSettingResponse,
   selectTestContourCodexStream,
   selectTestContourModel,
@@ -166,6 +167,14 @@ test("Test Contour smoke recognizes only the exact model-setting ACK", () => {
     action: "update-setting",
     params: { name: "reasoning", value: "gpt-5.6-terra" },
   }), "gpt-5.6-terra"), false);
+});
+
+test("Test Contour smoke ignores old messages containing the expected response", () => {
+  const pattern = exactTestContourResponsePattern("Принято");
+
+  assert.equal(pattern.test("Принято"), true);
+  assert.equal(pattern.test("  Принято\n"), true);
+  assert.equal(pattern.test("Старый ответ: принято и ожидает релиза"), false);
 });
 
 test("Test Contour smoke rejects an unavailable requested model", async () => {

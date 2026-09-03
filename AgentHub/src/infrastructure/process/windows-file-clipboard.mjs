@@ -1,4 +1,5 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 
 const FILE_DROP_CLIPBOARD_SCRIPT = Buffer.from([
@@ -36,19 +37,32 @@ export function copyWindowsFileObject(file, {
 
 export function revealWindowsFile(file, {
   platform = process.platform,
-  execFileImpl = execFile,
+  existsSyncImpl = fs.existsSync,
+  spawnImpl = spawn,
 } = {}) {
   if (platform !== "win32") {
     throw new Error("Показ файла в проводнике поддерживается только в Windows");
   }
   const target = path.resolve(String(file ?? ""));
+  if (!existsSyncImpl(target)) {
+    throw new Error(`Файл не найден: ${target}`);
+  }
   return new Promise((resolve, reject) => {
-    execFileImpl("explorer.exe", [`/select,${target}`], {
-      timeout: 10_000,
-      windowsHide: true,
-    }, (error) => {
-      if (error) reject(error);
-      else resolve();
+    let settled = false;
+    const settle = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      callback(value);
+    };
+    const child = spawnImpl("explorer.exe", [`/select,${target}`], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: false,
+    });
+    child.once("error", (error) => settle(reject, error));
+    child.once("spawn", () => {
+      child.unref();
+      settle(resolve);
     });
   });
 }

@@ -167,6 +167,21 @@ export class CodexAppServerTransport {
     return this.child?.pid ?? null;
   }
 
+  diagnostics() {
+    return {
+      running: this.running,
+      pid: this.pid,
+      generation: this.generation,
+      pendingRequests: this.pending.size,
+      queuedRequests: REQUEST_PRIORITIES.reduce(
+        (total, priority) => total + this.requestQueues[priority].length,
+        0,
+      ),
+      inFlightThreadReads: this.threadReadCache.size,
+      activeHydrations: this.threadHydrations.size,
+    };
+  }
+
   async start() {
     if (this.child) return this.child;
     if (this.startPromise) return this.startPromise;
@@ -211,9 +226,10 @@ export class CodexAppServerTransport {
     if (!child) return;
     if (!child.pid || typeof this.stopProcessTree !== "function") {
       child.kill();
-      return;
+    } else {
+      await this.stopProcessTree(child.pid).catch(() => child.kill());
     }
-    await this.stopProcessTree(child.pid).catch(() => child.kill());
+    await this.#handleExit(child, null, "owner-stop", new Error("stopped by Hub owner"));
   }
 
   request(method, params = {}, { timeoutMs = null, priority = null } = {}) {
@@ -360,8 +376,35 @@ export class CodexAppServerTransport {
     };
   }
 
-  respond(id, result) {
-    this.#write({ id, result });
+  respond(id, result, { expectedGeneration = null } = {}) {
+    const child = this.child;
+    if (!child) return Promise.reject(new Error("Codex App Server is not running"));
+    if (Number.isSafeInteger(expectedGeneration) && expectedGeneration !== this.generation) {
+      const error = new Error(
+        `Codex App Server generation changed (expected=${expectedGeneration}, current=${this.generation})`,
+      );
+      error.code = "CODEX_APP_SERVER_GENERATION_CHANGED";
+      error.deliveryOutcome = "not-sent";
+      return Promise.reject(error);
+    }
+    const message = { id, result };
+    if (typeof child.send === "function") {
+      return new Promise((resolve, reject) => {
+        if (child.send.length < 2) {
+          try {
+            child.send(message);
+            resolve();
+          } catch (error) {
+            reject(error);
+          }
+          return;
+        }
+        child.send(message, (error) => error ? reject(error) : resolve());
+      });
+    }
+    return new Promise((resolve, reject) => {
+      child.stdin.write(`${JSON.stringify(message)}\n`, (error) => error ? reject(error) : resolve());
+    });
   }
 
   invalidateThreadRead(threadId) {
@@ -392,30 +435,21 @@ export class CodexAppServerTransport {
     const key = `${threadKey}\0${includeTurns
       ? `full:${turnLimit}:${turnPageSize}:${turnItemsView}`
       : "metadata"}`;
-    const cached = this.threadReadCache.get(key);
-    if (cached?.promise) return cached.promise;
-    if (!fresh && cached?.value && cached.expiresAt > Date.now()) return cached.value;
+    const inFlight = this.threadReadCache.get(key);
+    if (inFlight) return inFlight;
 
-    const entry = { value: null, expiresAt: 0, promise: null };
-    entry.promise = this.#readThreadValue(threadKey, {
+    const operation = this.#readThreadValue(threadKey, {
       includeTurns,
       priority,
       turnLimit,
       turnPageSize,
       turnItemsView,
     });
-    this.threadReadCache.set(key, entry);
+    this.threadReadCache.set(key, operation);
     try {
-      entry.value = await entry.promise;
-      entry.expiresAt = Date.now() + this.threadReadCacheMs;
-      entry.promise = null;
-      while (this.threadReadCache.size > this.threadReadCacheLimit) {
-        this.threadReadCache.delete(this.threadReadCache.keys().next().value);
-      }
-      return entry.value;
-    } catch (error) {
-      if (this.threadReadCache.get(key) === entry) this.threadReadCache.delete(key);
-      throw error;
+      return await operation;
+    } finally {
+      if (this.threadReadCache.get(key) === operation) this.threadReadCache.delete(key);
     }
   }
 

@@ -118,7 +118,7 @@ export class CodexAppServerLifecycle {
   readThread(threadId, options = {}) { return this.transport.readThread(threadId, options); }
   invalidateThreadRead(threadId) { this.transport.invalidateThreadRead(threadId); }
   notify(method, params = {}) { this.transport.notify(method, params); }
-  respond(id, result) { this.transport.respond(id, result); }
+  respond(id, result) { return this.transport.respond(id, result); }
 
   async initialize({ attachSelectedThread = true } = {}) {
     const initialized = await this.transport.initialize({
