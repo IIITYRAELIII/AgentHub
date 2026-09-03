@@ -2,6 +2,8 @@
   "use strict";
 
   const MAX_RESPONSE_ANNOTATION_INDEX = 20;
+  const DEFERRED_USER_MESSAGE_THRESHOLD = 4_000;
+  const DEFERRED_USER_MESSAGE_PREVIEW_CHARS = 1_600;
 
   function normalizedResponseAnnotationReferences(references) {
     const normalized = [];
@@ -227,6 +229,66 @@
       : { label: "Показать ещё", icon: "caret-down" };
   }
 
+  function deferredUserMessagePreview(message) {
+    const text = String(message?.text ?? "");
+    if (message?.role !== "user"
+      || text.length < DEFERRED_USER_MESSAGE_THRESHOLD
+      || (Array.isArray(message?.responseAnnotations) && message.responseAnnotations.length)) return null;
+    const head = text.slice(0, DEFERRED_USER_MESSAGE_PREVIEW_CHARS);
+    const newline = head.lastIndexOf("\n");
+    const space = head.lastIndexOf(" ");
+    const boundary = Math.max(newline, space);
+    const preview = head.slice(
+      0,
+      boundary >= Math.floor(DEFERRED_USER_MESSAGE_PREVIEW_CHARS * 0.75) ? boundary : head.length,
+    ).trimEnd();
+    return `${preview}\n…`;
+  }
+
+  function createDeferredDisclosureController(details, content, renderContent) {
+    if (!details || typeof details.addEventListener !== "function") {
+      throw new TypeError("details must support addEventListener");
+    }
+    if (!content || typeof content.replaceChildren !== "function") {
+      throw new TypeError("content must support replaceChildren");
+    }
+    if (typeof renderContent !== "function") throw new TypeError("renderContent must be a function");
+    let render = renderContent;
+    let materialized = false;
+
+    const sync = () => {
+      if (details.open === true) {
+        if (!materialized) {
+          render(content);
+          materialized = true;
+        }
+        return;
+      }
+      if (!materialized) return;
+      content.replaceChildren();
+      materialized = false;
+    };
+    const update = (nextRender) => {
+      if (typeof nextRender !== "function") throw new TypeError("renderContent must be a function");
+      render = nextRender;
+      if (materialized) {
+        content.replaceChildren();
+        materialized = false;
+      }
+      sync();
+    };
+
+    details.addEventListener("toggle", sync);
+    sync();
+    return Object.freeze({
+      get materialized() {
+        return materialized;
+      },
+      sync,
+      update,
+    });
+  }
+
   function extractTechnicalTails(value) {
     const tokenPattern = /(runtime|коммит)\s*(?:[:—–-]\s*)?(?:`([^`\r\n]+)`|(\d{12,}-[\p{L}\p{N}_-]+|[0-9a-f]{7,40}))/giu;
     const rows = [];
@@ -446,6 +508,8 @@
     codeBlockCopyRequest,
     composerFollowUpMode,
     conversationSurfaceMessages,
+    createDeferredDisclosureController,
+    deferredUserMessagePreview,
     deferredQueueCounts,
     extractTechnicalTails,
     messageTechnicalContent,
