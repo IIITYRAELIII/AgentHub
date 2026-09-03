@@ -45,6 +45,7 @@
   <script src="/journal-polling-policy.js" defer></script>
   <script src="/statistics-controls.js" defer></script>
   <script src="/attachments/interactions.js" defer></script>
+  <script src="/modal-overlays.js" defer></script>
   <script src="/tooltip-position.js" defer></script>
   <!-- agent-hub-theme-catalog -->
   <script src="/rate-limit-series.js" defer></script>
@@ -812,7 +813,14 @@
         <p class="eyebrow">Связь с моделью</p>
         <h2 id="provider-turn-title">История хода</h2>
       </div>
-      <button type="button" class="icon-button" data-provider-turn-close aria-label="Закрыть">×</button>
+      <button type="button" class="icon-button" data-provider-turn-close aria-label="Закрыть">
+        <svg data-phosphor-icon="x" viewBox="0 0 256 256" aria-hidden="true">
+          <line x1="200" y1="56" x2="56" y2="200" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+          <line x1="200" y1="200" x2="56" y2="56" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+        </svg>
+      </button>
     </header>
     <section>
       <p class="provider-turn-summary" data-provider-turn-summary></p>
@@ -827,7 +835,14 @@
         <p class="eyebrow" data-task-card-source>Задача</p>
         <h2>Карточка задачи</h2>
       </div>
-      <button type="button" class="icon-button" data-task-card-close aria-label="Закрыть">×</button>
+      <button type="button" class="icon-button" data-task-card-close aria-label="Закрыть">
+        <svg data-phosphor-icon="x" viewBox="0 0 256 256" aria-hidden="true">
+          <line x1="200" y1="56" x2="56" y2="200" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+          <line x1="200" y1="200" x2="56" y2="56" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+        </svg>
+      </button>
     </header>
     <section class="task-card-content">
       <form class="task-card-editor" data-task-card-editor>
@@ -905,7 +920,14 @@
         <p class="eyebrow" data-task-start-eyebrow>Начать работу</p>
         <h2 data-task-start-title>Задача</h2>
       </div>
-      <button type="button" class="icon-button" data-task-start-close aria-label="Закрыть">×</button>
+      <button type="button" class="icon-button" data-task-start-close aria-label="Закрыть">
+        <svg data-phosphor-icon="x" viewBox="0 0 256 256" aria-hidden="true">
+          <line x1="200" y1="56" x2="56" y2="200" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+          <line x1="200" y1="200" x2="56" y2="56" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+        </svg>
+      </button>
     </header>
     <section>
       <h3>Существующий Stream</h3>
@@ -929,7 +951,14 @@
           <p class="eyebrow">Workspace</p>
           <h2 data-workspace-card-title>Редактирование Workspace</h2>
         </div>
-        <button type="button" class="icon-button" data-workspace-card-close aria-label="Закрыть">×</button>
+        <button type="button" class="icon-button" data-workspace-card-close aria-label="Закрыть">
+          <svg data-phosphor-icon="x" viewBox="0 0 256 256" aria-hidden="true">
+            <line x1="200" y1="56" x2="56" y2="200" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+            <line x1="200" y1="200" x2="56" y2="56" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+          </svg>
+        </button>
       </header>
       <section class="workspace-card-fields">
         <label>
@@ -1007,7 +1036,14 @@
         <p class="eyebrow">Безопасное удаление</p>
         <h2 id="workspace-archive-title">Архив Workspace</h2>
       </div>
-      <button type="button" class="icon-button" data-workspace-archive-close aria-label="Закрыть">×</button>
+      <button type="button" class="icon-button" data-workspace-archive-close aria-label="Закрыть">
+        <svg data-phosphor-icon="x" viewBox="0 0 256 256" aria-hidden="true">
+          <line x1="200" y1="56" x2="56" y2="200" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+          <line x1="200" y1="200" x2="56" y2="56" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+        </svg>
+      </button>
     </header>
     <p class="workspace-archive-note">Workspace хранятся здесь три дня без копирования чатов и Streams, затем удаляются автоматически.</p>
     <div class="workspace-archive-list" data-workspace-archive-list></div>

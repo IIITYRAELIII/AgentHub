@@ -47,6 +47,7 @@ const {
 const chatSurfacePreference = window.AgentHubChatSurfacePreference;
 const backgroundMotionPreference = window.AgentHubBackgroundMotionPreference;
 const backgroundImageResolver = window.AgentHubBackgroundImageResolver;
+const modalOverlays = window.AgentHubModalOverlays;
 const particleStyle = window.AgentHubParticleStyle;
 const JournalView = window.AgentHubJournalView;
 const JournalAccountPanel = window.AgentHubJournalAccountPanel;
@@ -7510,8 +7511,10 @@ workspaceCardRules?.addEventListener("input", () => {
 });
 document.querySelector("[data-workspace-card-close]")?.addEventListener("click", closeWorkspaceCard);
 document.querySelector("[data-workspace-card-cancel]")?.addEventListener("click", closeWorkspaceCard);
-workspaceCardModal?.addEventListener("click", (event) => {
-  if (event.target === workspaceCardModal) closeWorkspaceCard();
+modalOverlays?.installDismissibleOverlay({
+  dialog: workspaceCardModal,
+  content: workspaceCardForm,
+  close: closeWorkspaceCard,
 });
 workspaceCardModal?.addEventListener("close", () => {
   workspaceCardId = "";
@@ -7523,8 +7526,9 @@ workspaceArchiveList?.addEventListener("click", (event) => {
   if (workspaceId) emit("workspace:restore", { workspaceId });
 });
 document.querySelector("[data-workspace-archive-close]")?.addEventListener("click", closeWorkspaceArchive);
-workspaceArchiveModal?.addEventListener("click", (event) => {
-  if (event.target === workspaceArchiveModal) closeWorkspaceArchive();
+modalOverlays?.installDismissibleOverlay({
+  dialog: workspaceArchiveModal,
+  close: closeWorkspaceArchive,
 });
 bugReportAttach?.addEventListener("click", () => bugReportFiles?.click());
 bugReportFiles?.addEventListener("change", () => {
@@ -8323,7 +8327,10 @@ dialogForm.addEventListener("submit", (event) => {
   closeDialog(dialogActiveInput.value.trim());
 });
 document.querySelector("[data-text-dialog-cancel]").addEventListener("click", () => closeDialog(null));
-dialogScrim.addEventListener("click", () => closeDialog(null));
+modalOverlays?.installScrimDismiss({
+  scrim: dialogScrim,
+  close: () => closeDialog(null),
+});
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !dialog.hidden) closeDialog(null);
   if (event.key === "Escape" && !settingsPanel.hidden) closePanel();
@@ -8472,7 +8479,7 @@ async function handleAction(action, trigger) {
 }
 
 contextUsageModal?.addEventListener("click", (event) => {
-  if (event.target === contextUsageModal) closeContextUsage();
+  if (modalOverlays?.isDialogBackdropClick(event, contextUsageModal)) closeContextUsage();
 });
 document.addEventListener("pointerdown", (event) => {
   if (!contextUsageModal?.open) return;

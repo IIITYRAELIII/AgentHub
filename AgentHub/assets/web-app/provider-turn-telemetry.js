@@ -170,9 +170,7 @@
     indicator.addEventListener("click", openDialog);
     close?.addEventListener("click", closeDialog);
     dialog.addEventListener("close", () => indicator.setAttribute("aria-expanded", "false"));
-    dialog.addEventListener("click", (event) => {
-      if (event.target === dialog) closeDialog();
-    });
+    window.AgentHubModalOverlays?.installDismissibleOverlay({ dialog, close: closeDialog });
     window.addEventListener("resize", () => positionTooltip(indicator, tooltip));
     window.addEventListener("scroll", () => positionTooltip(indicator, tooltip), true);
 

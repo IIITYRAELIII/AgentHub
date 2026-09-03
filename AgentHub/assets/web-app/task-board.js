@@ -1,6 +1,8 @@
 "use strict";
 
 (() => {
+  const modalOverlays = window.AgentHubModalOverlays;
+
   function fitTaskCardWidth({ baseWidth, maxWidth, maxHeight, measureHeight } = {}) {
     const minimum = Math.max(1, Math.ceil(Number(baseWidth) || 0));
     const maximum = Math.max(minimum, Math.floor(Number(maxWidth) || minimum));
@@ -72,10 +74,7 @@
       close();
       onConfirm?.(taskId);
     });
-    dialog?.addEventListener("cancel", (event) => {
-      event.preventDefault();
-      close();
-    });
+    modalOverlays?.installDismissibleOverlay({ dialog, close });
 
     return Object.freeze({ request, close });
   }
@@ -1619,8 +1618,14 @@
       description: taskCardDescription.value,
     }));
   });
-  taskCardModal?.addEventListener("cancel", (event) => { event.preventDefault(); closeTaskCard(); });
-  startModal.addEventListener("cancel", (event) => { event.preventDefault(); closeStart(); });
+  modalOverlays?.installDismissibleOverlay({
+    dialog: taskCardModal,
+    close: closeTaskCard,
+  });
+  modalOverlays?.installDismissibleOverlay({
+    dialog: startModal,
+    close: closeStart,
+  });
   startNewForm.addEventListener("submit", (event) => {
     event.preventDefault();
     const task = state.tasks.find((item) => item.id === state.startingTaskId);

@@ -13,9 +13,15 @@ class Control {
     this.listeners.set(type, listener);
   }
 
-  dispatch(type) {
+  dispatch(type, event = {}) {
     let prevented = false;
-    this.listeners.get(type)?.({ preventDefault: () => { prevented = true; } });
+    this.listeners.get(type)?.({
+      target: this,
+      clientX: -1,
+      clientY: -1,
+      ...event,
+      preventDefault: () => { prevented = true; },
+    });
     return prevented;
   }
 
@@ -37,12 +43,17 @@ class Control {
 }
 
 async function loadFactory() {
-  const source = await readFile(new URL("../../assets/web-app/task-board.js", import.meta.url), "utf8");
+  const [overlaySource, source] = await Promise.all([
+    readFile(new URL("../../assets/web-app/modal-overlays.js", import.meta.url), "utf8"),
+    readFile(new URL("../../assets/web-app/task-board.js", import.meta.url), "utf8"),
+  ]);
   const window = {};
-  vm.runInNewContext(source, {
+  const context = {
     document: { querySelector: () => null },
     window,
-  });
+  };
+  vm.runInNewContext(overlaySource, context);
+  vm.runInNewContext(source, context);
   return window.AgentHubTaskDeleteDialog.create;
 }
 
@@ -67,6 +78,11 @@ test("task deletion requires explicit confirmation and supports cancellation", a
 
   controller.request("task-1");
   assert.equal(dialog.dispatch("cancel"), true);
+  assert.equal(dialog.open, false);
+  assert.deepEqual(confirmed, []);
+
+  controller.request("task-1");
+  assert.equal(dialog.dispatch("click"), false);
   assert.equal(dialog.open, false);
   assert.deepEqual(confirmed, []);
 
