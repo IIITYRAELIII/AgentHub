@@ -76,13 +76,16 @@ test("workspace tasks and recent streams collapse independently and persist", as
   };
   const workspaceSection = fakeElement();
   const workspaceToggle = fakeElement();
+  const workspaceHeader = fakeElement();
   const recentSection = fakeElement();
   const recentToggle = fakeElement();
+  const recentHeader = fakeElement();
   let workspaceChanges = 0;
 
   const workspaceControl = installCollapsibleSection({
     section: workspaceSection,
     toggle: workspaceToggle,
+    trigger: workspaceHeader,
     storage,
     key: WORKSPACE_TASKS_COLLAPSED_STORAGE_KEY,
     collapsedTitle: "Развернуть задачи Workspace",
@@ -92,6 +95,7 @@ test("workspace tasks and recent streams collapse independently and persist", as
   const recentControl = installCollapsibleSection({
     section: recentSection,
     toggle: recentToggle,
+    trigger: recentHeader,
     storage,
     key: RECENT_STREAMS_COLLAPSED_STORAGE_KEY,
   });
@@ -102,14 +106,28 @@ test("workspace tasks and recent streams collapse independently and persist", as
   assert.equal(recentToggle.attributes.get("aria-expanded"), "false");
   assert.equal(recentSection.attributes.has("data-section-collapsed"), true);
 
-  workspaceToggle.listeners.get("click")();
+  workspaceHeader.listeners.get("click")({ target: { closest: () => null } });
   assert.equal(workspaceControl.collapsed, true);
   assert.equal(workspaceSection.attributes.has("data-section-collapsed"), true);
   assert.equal(workspaceToggle.title, "Развернуть задачи Workspace");
   assert.equal(values.get(WORKSPACE_TASKS_COLLAPSED_STORAGE_KEY), "true");
   assert.equal(workspaceChanges, 1);
 
-  recentToggle.listeners.get("click")();
+  let propagationStopped = false;
+  workspaceToggle.listeners.get("click")({
+    stopPropagation: () => { propagationStopped = true; },
+  });
+  assert.equal(propagationStopped, true);
+  assert.equal(workspaceControl.collapsed, false);
+  assert.equal(workspaceChanges, 2);
+
+  workspaceHeader.listeners.get("click")({
+    target: { closest: () => ({ tagName: "BUTTON" }) },
+  });
+  assert.equal(workspaceControl.collapsed, false);
+  assert.equal(workspaceChanges, 2);
+
+  recentHeader.listeners.get("click")({ target: { closest: () => null } });
   assert.equal(recentControl.collapsed, false);
   assert.equal(recentSection.attributes.has("data-section-collapsed"), false);
   assert.equal(values.get(RECENT_STREAMS_COLLAPSED_STORAGE_KEY), "false");
