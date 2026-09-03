@@ -15,6 +15,34 @@
   hydration remains background work.
 - Current Codex limits expose every available provider window separately. A
   healthy short window cannot hide an exhausted longer window for the same model.
+- Codex response-annotation locators cross the provider boundary as unique
+  positive safe-integer indices in the provider annotation range `1..20`,
+  never as service markup. The trusted Codex parser consumes every complete
+  line-start marker with a quoted index payload before validating the payload;
+  invalid payloads retain only a readable generic fallback and do not enter
+  structured state. Partial markers remain hidden while streaming. The UI
+  resolves each valid index to the nearest preceding annotated user entity by
+  its canonical message key,
+  renders the user's annotation/comment text and exposes a keyboard-operable
+  jump to that exact annotation card only when the target annotation exists.
+  Missing mappings render non-interactive
+  `Цитата N`. User-authored marker-like literals and code remain ordinary user
+  content.
+- A new user-created annotation records its exact source user or agent provider
+  item, including an active non-final agent item, one
+  versioned rendered surface, a bounded UTF-16 range and SHA-256 boundaries for
+  canonical message content, surface content and selected content. Equal text
+  is not source identity. Clicking the user-created annotation card validates
+  every source boundary, reveals a hidden source trace when necessary, scrolls
+  and focuses that exact source surface, and temporarily highlights only the
+  addressed range across Markdown DOM splits. Clicking a response citation
+  instead scrolls, focuses and temporarily highlights the corresponding user
+  annotation card. A missing, stale or malformed locator cannot highlight
+  another source range and does not change the response-citation target.
+  A user-created annotation card is keyboard-operable only when it owns a valid
+  locator. Legacy annotations
+  without a locator keep the annotation-card jump and are never backfilled by
+  text, time or display order.
 
 ## Canonical reducer
 
@@ -105,3 +133,7 @@ hydration starts strictly as background work and is never awaited by mark-read.
   submission alias. It cannot bind steer or inter-Stream messages and is removed
   after retained history has `clientUserMessageId` or `submissionId` on every
   user command.
+- Response annotations created before source-locator version `1` remain readable
+  and jump only to their annotation card. This guard is removed only if a future
+  authoritative provider export supplies exact item and range identity; local
+  text matching is not a migration path.

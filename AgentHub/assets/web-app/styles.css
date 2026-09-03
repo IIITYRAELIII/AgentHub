@@ -10639,9 +10639,123 @@ html[data-view="background"] .background-view {
 
 .msg-annotation-content {
   background: color-mix(in srgb, var(--surface-1) 88%, transparent);
+  border: 0;
   border-left: 3px solid var(--accent-line);
   border-radius: var(--radius-sm);
+  color: inherit;
+  font: inherit;
   padding: 0.55rem 0.7rem;
+  text-align: left;
+  width: 100%;
+}
+
+.msg-annotation-content[data-response-annotation-source] {
+  cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease, transform 140ms ease;
+}
+
+.msg-annotation-content[data-response-annotation-source]:hover,
+.msg-annotation-content[data-response-annotation-source]:focus-visible {
+  background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface-1));
+  border-left-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.msg-annotation-content[data-response-annotation-source]:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 48%, transparent);
+  outline-offset: 2px;
+}
+
+.msg-annotation-content.is-citation-target {
+  animation: response-citation-target 1.8s ease-out;
+  outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent);
+  outline-offset: 3px;
+}
+
+.msg-source-citation-highlight {
+  color: inherit;
+  background: color-mix(in srgb, var(--accent, #d86a5d) 38%, transparent);
+  border-radius: 3px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #d86a5d) 24%, transparent);
+}
+
+[data-response-citation-source-focus]:focus {
+  outline: none;
+}
+
+@keyframes response-citation-target {
+  0%, 28% {
+    background: color-mix(in srgb, var(--accent-soft) 78%, var(--surface-1));
+    box-shadow: 0 0 0 0.45rem color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+  100% {
+    background: color-mix(in srgb, var(--surface-1) 88%, transparent);
+    box-shadow: none;
+  }
+}
+
+.msg-response-citations {
+  display: grid;
+  gap: 0.42rem;
+  margin-bottom: 0.65rem;
+}
+
+.msg-response-citation {
+  align-items: start;
+  background: color-mix(in srgb, var(--surface-1) 86%, transparent);
+  border: 1px solid var(--accent-line);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  cursor: pointer;
+  display: grid;
+  font: inherit;
+  gap: 0.18rem;
+  padding: 0.5rem 0.65rem;
+  text-align: left;
+  transition: background-color 140ms ease, border-color 140ms ease, transform 140ms ease;
+  width: 100%;
+}
+
+.msg-response-citation:hover,
+.msg-response-citation:focus-visible {
+  background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface-1));
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.msg-response-citation:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 48%, transparent);
+  outline-offset: 2px;
+}
+
+.msg-response-citation.is-fallback {
+  cursor: default;
+}
+
+.msg-response-citation.is-fallback:hover {
+  background: color-mix(in srgb, var(--surface-1) 86%, transparent);
+  border-color: var(--accent-line);
+  transform: none;
+}
+
+.msg-response-citation-label {
+  color: var(--accent);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
+.msg-response-citation-quote {
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: var(--text-soft);
+  display: -webkit-box;
+  font-size: 0.82rem;
+  font-style: italic;
+  line-height: 1.42;
+  overflow: hidden;
 }
 
 .msg-annotation-label {

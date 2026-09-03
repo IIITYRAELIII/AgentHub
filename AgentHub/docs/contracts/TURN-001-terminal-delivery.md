@@ -26,6 +26,10 @@ final status and final content.
 - Terminal is absorbing: late running, progress, snapshot or reconnect events
   cannot revive it.
 - Live, focused, history and badge views derive from the same terminal revision.
+- Versioned response-annotation source locators for user, final agent and
+  non-final agent provider items attached to the turn prompt are
+  retained byte-for-byte through terminal history persistence and reload after
+  intake validation; terminal coalescing cannot strip or retarget them.
 - Delivery uses a durable outbox. A missing UI ACK retries delivery without
   reverting terminal state or regenerating the provider effect.
 - A later user turn cannot suppress or mutate the previous terminal entity.

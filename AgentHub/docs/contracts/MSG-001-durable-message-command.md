@@ -15,6 +15,16 @@ stays unbound; text, time and attachment names never repair identity.
 The durable command ledger owns acceptance and dispatch state. UI cards,
 in-memory receipts and runtime snapshots are projections.
 
+A new response annotation may carry one bounded source locator owned by the
+original client capture from a canonical user, final agent or active non-final
+agent item: exact `provider + threadId + turnId + itemId + role`,
+the derived provider-message key, a versioned rendered-surface kind and index,
+a UTF-16 range, and SHA-256 boundaries for canonical source content, rendered
+surface content and the selected range. Intake validates that schema before the
+locator enters a receipt. The same validated object crosses queue, provider
+prompt and history with the original `clientUserMessageId`; no downstream layer
+reconstructs it from selected text, time or order.
+
 ## State machine
 
 `accepted` may advance to `queued`, `attention-required` or `dispatching`.

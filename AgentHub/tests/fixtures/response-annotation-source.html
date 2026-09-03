@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Response annotation source fixture</title>
+  <link rel="icon" href="data:,">
+  <script src="/assets/web-app/messages/disclosure.js" defer></script>
+  <style>
+    .msg-source-citation-highlight { background: #ffd54f; color: #111; }
+  </style>
+</head>
+<body>
+  <article class="msg msg-agent" id="source-message">
+    <details class="turn-trace" id="source-details">
+      <summary>Trace</summary>
+      <div class="turn-trace-reasoning" id="source-surface" tabindex="-1">
+        duplicate <strong id="range-start">target</strong> and <code id="range-end">code</code> split
+      </div>
+    </details>
+  </article>
+  <article class="msg msg-agent">
+    <div class="turn-trace-reasoning">duplicate target and code split</div>
+  </article>
+  <button type="button" id="citation">Citation</button>
+  <output id="status">idle</output>
+  <script>
+    window.addEventListener("DOMContentLoaded", async () => {
+      const api = window.AgentHubMessageDisclosure;
+      const root = document.querySelector("#source-message");
+      const surface = document.querySelector("#source-surface");
+      const selectedRange = document.createRange();
+      selectedRange.setStart(document.querySelector("#range-start").firstChild, 0);
+      selectedRange.setEnd(document.querySelector("#range-end").firstChild, 4);
+      const offsets = api.domRangeOffsets(surface, selectedRange);
+      const message = {
+        provider: "codex",
+        threadId: "thread-fixture",
+        turnId: "turn-fixture",
+        itemId: "item-fixture",
+        role: "agent",
+        text: "fixture",
+        activityGroups: [{ id: "trace", reasoning: "duplicate target and code split" }],
+      };
+      const identity = api.responseAnnotationSourceIdentity(message);
+      const source = api.normalizedResponseAnnotationSource({
+        version: 1,
+        ...identity,
+        ...api.responseAnnotationSurfaceLocator(root, surface),
+        ...offsets,
+        contentHash: await api.responseAnnotationSha256(api.responseAnnotationSourceContent(message)),
+        surfaceHash: await api.responseAnnotationSha256(surface.textContent),
+        selectionHash: await api.responseAnnotationSha256(selectedRange.toString().trim()),
+      });
+      window.fixture = { api, message, root, surface, source, cleanup: null };
+      document.querySelector("#citation").addEventListener("click", async () => {
+        const exactSurface = api.responseAnnotationSourceSurface(root, source);
+        const exactRange = api.domRangeFromOffsets(exactSurface, source.start, source.end);
+        const hashes = await Promise.all([
+          api.responseAnnotationSha256(api.responseAnnotationSourceContent(message)),
+          api.responseAnnotationSha256(exactSurface.textContent),
+          api.responseAnnotationSha256(exactRange.toString().trim()),
+        ]);
+        if (hashes.join("|") !== [source.contentHash, source.surfaceHash, source.selectionHash].join("|")) {
+          document.querySelector("#status").value = "failed-closed";
+          return;
+        }
+        document.querySelector("#source-details").open = true;
+        window.fixture.cleanup?.();
+        const highlight = api.highlightResponseAnnotationRange(exactSurface, source.start, source.end);
+        exactSurface.focus();
+        window.fixture.cleanup = highlight.cleanup;
+        document.querySelector("#status").value = `${highlight.rangeText}|focused`;
+        window.setTimeout(() => {
+          highlight.cleanup();
+          document.querySelector("#status").value = "cleaned";
+        }, 150);
+      });
+    });
+  </script>
+</body>
+</html>

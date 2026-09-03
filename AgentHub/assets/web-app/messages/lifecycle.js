@@ -148,6 +148,9 @@ function completedLiveAgentMessage(previous, selected) {
     author: previous.author,
     phase: "final",
     text: answer,
+    responseAnnotationReferences: Array.isArray(previous.responseAnnotationReferences)
+      ? previous.responseAnnotationReferences.map((reference) => ({ ...reference }))
+      : [],
     time: completionTime,
     activities: Array.isArray(previous.activities) ? previous.activities : [],
     activityGroups: Array.isArray(previous.activityGroups) ? previous.activityGroups : [],
@@ -479,7 +482,8 @@ function normalizedResponseAnnotations(values) {
   return (Array.isArray(values) ? values : []).flatMap((item) => {
     const text = String(item?.text ?? item?.quote ?? "").trim();
     const annotation = String(item?.annotation ?? item?.comment ?? "").trim();
-    return text || annotation ? [{ text, annotation }] : [];
+    const source = globalThis.AgentHubMessageDisclosure?.normalizedResponseAnnotationSource?.(item?.source);
+    return text || annotation ? [{ text, annotation, ...(source ? { source } : {}) }] : [];
   });
 }
 

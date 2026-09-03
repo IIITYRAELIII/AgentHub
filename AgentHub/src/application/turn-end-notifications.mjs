@@ -1,5 +1,9 @@
 import path from "node:path";
 
+import {
+  codexAssistantResponseProjection,
+  visibleCodexAssistantText,
+} from "../domain/codex-response-annotation.mjs";
 import { estimateMissingCodexUsage } from "../domain/codex-usage-estimate.mjs";
 import { normalizeServiceTier, normalizeTokenUsage } from "../domain/token-usage.mjs";
 import { mergeUsageLimitSamples } from "../domain/usage-facts.mjs";
@@ -26,8 +30,14 @@ function validBase(value) {
 
 function normalizedMessage(value) {
   const base = validBase(value);
-  const text = String(value?.text ?? "").trim().slice(0, TURN_END_BODY_LIMIT);
-  const title = String(value?.title ?? "").trim().replace(/\s+/g, " ").slice(0, TURN_END_TITLE_LIMIT);
+  const providerText = String(value?.text ?? "");
+  const text = (base?.provider === "codex"
+    ? visibleCodexAssistantText(providerText)
+    : providerText).trim().slice(0, TURN_END_BODY_LIMIT);
+  const providerTitle = String(value?.title ?? "");
+  const title = (base?.provider === "codex"
+    ? visibleCodexAssistantText(providerTitle)
+    : providerTitle).trim().replace(/\s+/g, " ").slice(0, TURN_END_TITLE_LIMIT);
   const projectRoot = String(value?.projectRoot ?? "").trim();
   if (!base || !text || !projectRoot) return null;
   let workLogId = null;
@@ -119,6 +129,15 @@ function normalizedCompletion(value) {
       status: String(call?.status ?? "completed").trim() || "completed",
     }];
   });
+  const answerProjection = base.provider === "codex"
+    ? codexAssistantResponseProjection(value.finalAnswer)
+    : { text: String(value.finalAnswer ?? ""), responseAnnotationReferences: [] };
+  const suppliedReferences = Array.isArray(value.responseAnnotationReferences)
+    ? value.responseAnnotationReferences
+      .map((reference) => Number(reference?.index))
+      .filter((index) => Number.isSafeInteger(index) && index > 0)
+      .map((index) => ({ index }))
+    : [];
   return {
     ...base,
     turnId,
@@ -150,7 +169,14 @@ function normalizedCompletion(value) {
       : {}),
     prompt: prompts[0] ?? "",
     prompts,
-    finalAnswer: String(value.finalAnswer ?? "").trim(),
+    finalAnswer: answerProjection.text.trim(),
+    ...((suppliedReferences.length || answerProjection.responseAnnotationReferences.length)
+      ? {
+        responseAnnotationReferences: suppliedReferences.length
+          ? suppliedReferences
+          : answerProjection.responseAnnotationReferences,
+      }
+      : {}),
     responseAttachments: normalizedAttachments(value.responseAttachments),
     changedFiles: Array.isArray(value.changedFiles)
       ? value.changedFiles.map((file) => String(file).trim()).filter(Boolean)
@@ -281,6 +307,9 @@ export class TurnEndNotificationRegistry {
     ].map((prompt) => String(prompt ?? "").trim()).filter(Boolean))].slice(0, 100);
     completion.prompt = completion.prompts[0] ?? incoming.prompt ?? completion.prompt;
     completion.finalAnswer = incoming.finalAnswer || completion.finalAnswer;
+    if (incoming.responseAnnotationReferences?.length) {
+      completion.responseAnnotationReferences = incoming.responseAnnotationReferences;
+    }
     if (incoming.responseAttachments.length) {
       completion.responseAttachments = incoming.responseAttachments;
     }

@@ -20,6 +20,10 @@ function terminalKey(value) {
 
 function historySnapshot(run, completion) {
   const source = run ?? {};
+  const responseAnnotationReferences = Array.isArray(completion.responseAnnotationReferences)
+    && completion.responseAnnotationReferences.length
+    ? completion.responseAnnotationReferences
+    : source.responseAnnotationReferences;
   return {
     id: String(source.id ?? "").trim() || null,
     streamId: source.streamId ?? completion.streamId ?? null,
@@ -30,6 +34,13 @@ function historySnapshot(run, completion) {
     taskTitle: completion.taskTitle,
     promptPreview: String(source.promptPreview ?? completion.prompt ?? ""),
     responseText: String(completion.finalAnswer ?? source.responseText ?? ""),
+    ...(responseAnnotationReferences?.length
+      ? {
+        responseAnnotationReferences: structuredClone(
+          responseAnnotationReferences,
+        ),
+      }
+      : {}),
     responseItemId: String(source.responseItemId ?? ""),
     clientUserMessageId: String(source.clientUserMessageId ?? "") || null,
     userMessages: Array.isArray(source.userMessages) ? structuredClone(source.userMessages) : [],

@@ -1,6 +1,21 @@
 (() => {
   "use strict";
 
+  const MAX_RESPONSE_ANNOTATION_INDEX = 20;
+
+  function normalizedResponseAnnotationReferences(references) {
+    const normalized = [];
+    const seen = new Set();
+    for (const reference of Array.isArray(references) ? references : []) {
+      const index = Number(reference?.index);
+      if (!Number.isSafeInteger(index) || index < 1
+        || index > MAX_RESPONSE_ANNOTATION_INDEX || seen.has(index)) continue;
+      seen.add(index);
+      normalized.push({ index });
+    }
+    return normalized;
+  }
+
   function messageKey(message, index = 0) {
     const clientUserMessageId = String(message?.clientUserMessageId ?? "").trim();
     if (clientUserMessageId) return `client\u001f${clientUserMessageId}`;
@@ -33,6 +48,14 @@
         responseAnnotationRequest: rendersResponseAnnotations
           ? String(message?.responseAnnotationRequest ?? message?.text ?? "").trim()
           : "",
+        responseAnnotationReferences: message?.role === "agent"
+          && Array.isArray(message?.responseAnnotationReferences)
+          ? message.responseAnnotationReferences
+          : [],
+        responseCitationPresentations: message?.role === "agent"
+          && Array.isArray(message?.responseCitationPresentations)
+          ? message.responseCitationPresentations
+          : [],
         activities: message?.activities ?? [],
         activityGroups: message?.activityGroups ?? [],
         attachments: message?.attachments ?? [],
@@ -42,6 +65,81 @@
     } catch {
       return `${messageKey(message)}\u001f${withDiff ? "diff" : "plain"}`;
     }
+  }
+
+  function responseCitationPresentations(messages, messageIndex) {
+    const values = Array.isArray(messages) ? messages : [];
+    const message = values[messageIndex];
+    const references = message?.role === "agent" && Array.isArray(message.responseAnnotationReferences)
+      ? normalizedResponseAnnotationReferences(message.responseAnnotationReferences)
+      : [];
+    if (!references.length) return [];
+    let targetIndex = -1;
+    for (let index = messageIndex - 1; index >= 0; index -= 1) {
+      if (values[index]?.role === "user" && Array.isArray(values[index].responseAnnotations)
+        && values[index].responseAnnotations.length) {
+        targetIndex = index;
+        break;
+      }
+    }
+    const target = values[targetIndex];
+    return references.flatMap((reference) => {
+      const index = Number(reference?.index);
+      const annotation = target?.responseAnnotations?.[index - 1];
+      const interactive = Boolean(target && annotation);
+      const quote = String(annotation?.annotation ?? "").trim();
+      const source = globalThis.AgentHubMessageDisclosure?.normalizedResponseAnnotationSource?.(
+        annotation?.source,
+      );
+      return [{
+        index,
+        label: `Цитата ${index}`,
+        quote: interactive ? quote : "",
+        annotation: quote,
+        targetMessageKey: interactive ? messageKey(target, targetIndex) : "",
+        ...(interactive && source ? { source } : {}),
+        interactive,
+      }];
+    });
+  }
+
+  function responseCitationControl(citation) {
+    const index = Number(citation?.index);
+    const targetMessageKey = String(citation?.targetMessageKey ?? "").trim();
+    const interactive = citation?.interactive === true
+      && Number.isSafeInteger(index) && index >= 1
+      && index <= MAX_RESPONSE_ANNOTATION_INDEX && Boolean(targetMessageKey);
+    return {
+      tagName: interactive ? "button" : "span",
+      className: `msg-response-citation${interactive ? "" : " is-fallback"}`,
+      interactive,
+      label: String(citation?.label ?? (Number.isSafeInteger(index) ? `Цитата ${index}` : "Цитата")),
+      quote: interactive ? String(citation?.quote ?? "").trim() : "",
+      ...(interactive ? { index, targetMessageKey } : {}),
+    };
+  }
+
+  function responseAnnotationCardControl(annotation) {
+    const source = globalThis.AgentHubMessageDisclosure?.normalizedResponseAnnotationSource?.(
+      annotation?.source,
+    );
+    return {
+      tagName: source ? "button" : "div",
+      interactive: Boolean(source),
+      ...(source ? { source } : {}),
+    };
+  }
+
+  function withoutResponseCitationFallbacks(value, references) {
+    let lines = String(value ?? "").replace(/\r\n?/gu, "\n").split("\n");
+    for (const reference of normalizedResponseAnnotationReferences(references)) {
+      const index = Number(reference?.index);
+      const label = `Цитата ${index}`;
+      const position = lines.findIndex((line) => line.trim() === label);
+      if (position >= 0) lines.splice(position, 1);
+    }
+    while (lines[0] === "") lines = lines.slice(1);
+    return lines.join("\n");
   }
 
   function messageTimestampLabel(value, nowValue = Date.now()) {
@@ -333,6 +431,10 @@
     messageKey,
     messageTailPagination,
     messageTimestampLabel,
+    normalizedResponseAnnotationReferences,
+    responseAnnotationCardControl,
+    responseCitationControl,
+    responseCitationPresentations,
     messageTailWindow,
     inlineMarkdownTokens,
     normalizeSystemEventText,
@@ -342,5 +444,6 @@
     reconcileKeyedChildren,
     standaloneInlineCode,
     turnDurationLabel,
+    withoutResponseCitationFallbacks,
   });
 })();

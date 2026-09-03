@@ -3,11 +3,17 @@ import { readdir, readFile } from "node:fs/promises";
 import vm from "node:vm";
 import test from "node:test";
 
+const disclosureSource = await readFile(
+  new URL("../../assets/web-app/messages/disclosure.js", import.meta.url),
+  "utf8",
+);
 const source = await readFile(
   new URL("../../assets/web-app/messages/lifecycle.js", import.meta.url),
   "utf8",
 );
 const context = vm.createContext({});
+context.window = context;
+vm.runInContext(disclosureSource, context);
 vm.runInContext(source, context);
 const lifecycle = context.AgentHubMessageLifecycle;
 const projectionSource = await readFile(
@@ -251,6 +257,45 @@ test("aggregated Stream history preserves each item's provider and Thread", () =
   assert.equal(messages[0].provider, "codex");
   assert.equal(messages[0].threadId, "thread-old");
   assert.match(messages[0].id, /^codex:thread-old:/u);
+});
+
+test("Web history mapping preserves canonical citation references", () => {
+  const source = clientFunctionSource("historyMessages", "function mergeNewestHistory");
+  const normalize = (references) => references.filter((reference) => reference.index === 1);
+  const sandbox = vm.createContext({
+    AgentHubMessageView: { normalizedResponseAnnotationReferences: normalize },
+    attachmentViews: () => [],
+    conversationMessageAuthor: () => "Codex",
+    focusedTurnAlreadyVisible: () => true,
+    focusedTurnTaskThreadId: (turn) => turn.threadId,
+    historicalMessagesForDisplay: (item) => item.messages,
+  });
+  vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
+  const [historyAgent] = sandbox.mapHistory({
+    provider: "codex",
+    threadId: "thread-citation",
+    items: [{
+      id: "turn-citation",
+      messages: [{
+        itemId: "turn-citation:rollout-agent:final",
+        role: "agent",
+        responseAnnotationReferences: [{ index: 1 }, { index: 21 }],
+      }],
+    }],
+  });
+  const [focusedAgent] = sandbox.mapHistory({ items: [] }, {
+    provider: "codex",
+    threadId: "thread-focused-citation",
+    turnId: "turn-focused-citation",
+    messages: [{
+      itemId: "msg_focused_citation",
+      role: "agent",
+      responseAnnotationReferences: [{ index: 1 }, { index: 21 }],
+    }],
+  });
+
+  assert.deepEqual(historyAgent.responseAnnotationReferences, [{ index: 1 }]);
+  assert.deepEqual(focusedAgent.responseAnnotationReferences, [{ index: 1 }]);
 });
 
 test("focused completed turn cannot append commentary after its durable final", () => {
@@ -1149,6 +1194,33 @@ test("composer quote annotations retain every selected fragment for the protocol
     { text: "Второй выделенный фрагмент", annotation: "" },
   ]);
   assert.match(prompt, /## My request for Codex:\nОбщий вопрос$/u);
+});
+
+test("annotation envelopes preserve distinct exact sources for duplicate selected text", () => {
+  const hash = (value) => `sha256:${value.repeat(64)}`;
+  const sourceFor = (itemId, start) => ({
+    version: 1,
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    itemId,
+    role: "agent",
+    messageKey: `provider\u001fcodex\u001fthread-1\u001fturn-1\u001f${itemId}\u001fagent`,
+    surfaceKind: "message-body",
+    surfaceIndex: 0,
+    start,
+    end: start + 6,
+    contentHash: hash("a"),
+    surfaceHash: hash("b"),
+    selectionHash: hash("c"),
+  });
+  const values = [
+    { text: "повтор", annotation: "первая", source: sourceFor("item-1", 0) },
+    { text: "повтор", annotation: "вторая", source: sourceFor("item-2", 10) },
+  ];
+  const prompt = lifecycle.responseAnnotationPrompt("Сравни", values);
+  const restored = lifecycle.normalizedUserMessage({ role: "user", text: prompt });
+  assert.deepEqual(JSON.parse(JSON.stringify(restored.responseAnnotations)), values);
 });
 
 test("empty legacy annotation data still hides the service envelope", () => {

@@ -15,6 +15,23 @@ import {
 } from "../../../src/domain/codex-context-probe.mjs";
 import { createInterstreamMessage } from "../../../src/domain/interstream-message.mjs";
 
+const ANNOTATION_SOURCE = {
+  version: 1,
+  provider: "codex",
+  threadId: "thread-source",
+  turnId: "turn-source",
+  itemId: "item-source",
+  role: "agent",
+  messageKey: "provider\u001fcodex\u001fthread-source\u001fturn-source\u001fitem-source\u001fagent",
+  surfaceKind: "message-body",
+  surfaceIndex: 0,
+  start: 0,
+  end: 6,
+  contentHash: `sha256:${"a".repeat(64)}`,
+  surfaceHash: `sha256:${"b".repeat(64)}`,
+  selectionHash: `sha256:${"c".repeat(64)}`,
+};
+
 function fixture(overrides = {}) {
   const calls = {
     binding: null,
@@ -168,6 +185,87 @@ test("durable history merges equivalent synthetic final-answer copies", () => {
 
   assert.equal(history[0].messages.length, 1);
   assert.equal(history[0].messages[0].text, "Готово");
+});
+
+test("durable terminal final adopts exact provider citation references without a duplicate", () => {
+  const turnId = "turn-citation-final";
+  const [turn] = mergeDurableTaskHistory([{
+    id: turnId,
+    messages: [{
+      itemId: "provider-final-item",
+      role: "agent",
+      phase: "final",
+      text: "Цитата 1\nГотово",
+      responseAnnotationReferences: [{ index: 1 }],
+    }],
+  }], [{
+    id: turnId,
+    messages: [{
+      itemId: `${turnId}:rollout-agent:final`,
+      role: "agent",
+      text: "Цитата 1\nГотово",
+    }],
+  }]);
+
+  assert.equal(turn.messages.length, 1);
+  assert.equal(turn.messages[0].itemId, `${turnId}:rollout-agent:final`);
+  assert.deepEqual(turn.messages[0].responseAnnotationReferences, [{ index: 1 }]);
+});
+
+test("durable terminal final never adopts citation references across an unsafe identity", () => {
+  const turnId = "turn-citation-final";
+  const cases = [{
+    name: "wrong canonical target",
+    canonicalItemId: `other-${turnId}:rollout-agent:final`,
+    hydratedMessages: [{
+      itemId: "provider-final-item",
+      role: "agent",
+      phase: "final",
+      responseAnnotationReferences: [{ index: 1 }],
+    }],
+  }, {
+    name: "non-final provider item",
+    canonicalItemId: `${turnId}:rollout-agent:final`,
+    hydratedMessages: [{
+      itemId: "provider-commentary-item",
+      role: "agent",
+      phase: "commentary",
+      responseAnnotationReferences: [{ index: 1 }],
+    }],
+  }, {
+    name: "ambiguous provider final items",
+    canonicalItemId: `${turnId}:rollout-agent:final`,
+    hydratedMessages: [{
+      itemId: "provider-final-one",
+      role: "agent",
+      phase: "final",
+      responseAnnotationReferences: [{ index: 1 }],
+    }, {
+      itemId: "provider-final-two",
+      role: "agent",
+      phase: "final",
+      responseAnnotationReferences: [{ index: 2 }],
+    }],
+  }];
+  for (const { name, canonicalItemId, hydratedMessages } of cases) {
+    const [turn] = mergeDurableTaskHistory([{
+      id: turnId,
+      messages: hydratedMessages,
+    }], [{
+      id: turnId,
+      messages: [{
+        itemId: canonicalItemId,
+        role: "agent",
+        text: "Готово",
+      }],
+    }]);
+
+    const canonical = turn.messages.find((message) => (
+      message.itemId === canonicalItemId
+    ));
+    assert.deepEqual(canonical?.responseAnnotationReferences ?? [], [], name);
+    assert.equal(turn.messages.length, hydratedMessages.length + 1, name);
+  }
 });
 
 test("sparse durable history does not erase an already known interstream author", () => {
@@ -1377,19 +1475,30 @@ test("desktop task history restores screenshot sources lost from the durable cac
 
 test("desktop task history exposes structured response annotations", async () => {
   const { desktopTaskHistory, state } = fixture({ run: null });
-  state.history[3].promptAnnotations = [{ text: "Цитата", annotation: "Комментарий" }];
+  state.history[3].promptAnnotations = [{
+    text: "Цитата",
+    annotation: "Комментарий",
+    source: ANNOTATION_SOURCE,
+  }];
   state.history[3].promptRequest = "Общий вопрос";
   state.history[3].messages[0].responseAnnotations = state.history[3].promptAnnotations;
   state.history[3].messages[0].responseAnnotationRequest = state.history[3].promptRequest;
+  state.history[3].messages[1].responseAnnotationReferences = [{ index: 1 }];
 
   const result = await desktopTaskHistory({ limit: 1 });
 
-  assert.deepEqual(result.items[0].promptAnnotations, [{ text: "Цитата", annotation: "Комментарий" }]);
+  assert.deepEqual(result.items[0].promptAnnotations, [{
+    text: "Цитата",
+    annotation: "Комментарий",
+    source: ANNOTATION_SOURCE,
+  }]);
   assert.equal(result.items[0].promptRequest, "Общий вопрос");
   assert.deepEqual(result.items[0].messages[0].responseAnnotations, [{
     text: "Цитата",
     annotation: "Комментарий",
+    source: ANNOTATION_SOURCE,
   }]);
+  assert.deepEqual(result.items[0].messages[1].responseAnnotationReferences, [{ index: 1 }]);
 });
 
 test("desktop task history preserves pagination, field limits and response budget", async () => {

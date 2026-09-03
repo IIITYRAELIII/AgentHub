@@ -58,6 +58,9 @@ export function codexTurnSnapshot(turn, threadStatus = null) {
   const hasExplicitFinalAnswer = codexTurnHasExplicitFinalAnswer(turn);
   const waitingOnApproval = codexThreadWaitingOnApproval(threadStatus);
   const exchange = codexThreadHistory([turn]).at(-1);
+  const responseAnnotationReferences = (exchange?.messages ?? [])
+    .findLast((message) => message?.role === "agent")
+    ?.responseAnnotationReferences ?? [];
   const turnMessages = (exchange?.messages ?? [])
     .filter((message) => message.role === "user" || message.kind === "subagent")
     .map((message) => ({ ...message }));
@@ -70,6 +73,7 @@ export function codexTurnSnapshot(turn, threadStatus = null) {
     prompt,
     clientUserMessageId: userMessages[0]?.clientUserMessageId ?? null,
     userMessages: turnMessages,
+    responseAnnotationReferences: structuredClone(responseAnnotationReferences),
     activities: exchange?.activities ?? [],
     activityGroups: exchange?.activityGroups ?? [],
     startedAt: codexTurnStartedAt(turn),
@@ -305,6 +309,9 @@ export class CodexTaskSnapshotService {
       run.reasoning = this.#d.reasoningLabels?.[snapshot.reasoningEffort]
         ?? snapshot.reasoningEffort;
     }
+    if (Array.isArray(snapshot?.responseAnnotationReferences)) {
+      run.responseAnnotationReferences = structuredClone(snapshot.responseAnnotationReferences);
+    }
     if (Array.isArray(snapshot?.activityGroups) && snapshot.activityGroups.length) {
       const existingActivities = new Map((run.activities ?? []).map((activity) => [activity.id, activity]));
       run.activityGroups = snapshot.activityGroups.map((group) => ({
@@ -333,6 +340,7 @@ export class CodexTaskSnapshotService {
       prompt: rootUser?.text ?? "",
       clientUserMessageId: rootUser?.clientUserMessageId ?? null,
       userMessages: state.userMessages,
+      responseAnnotationReferences: structuredClone(state.responseAnnotationReferences ?? []),
       activityGroups: structuredClone(activity.activityGroups?.[state.turnId] ?? []),
       startedAt: state.startedAt,
       completedAt: state.completedAt,

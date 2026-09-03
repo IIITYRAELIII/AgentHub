@@ -8,11 +8,20 @@ function exactRunChangedFiles(run) {
     .sort((left, right) => left.localeCompare(right));
 }
 
+function preferredResponseAnnotationReferences(primary, fallback) {
+  if (Array.isArray(primary) && primary.length) return primary;
+  return Array.isArray(fallback) ? fallback : [];
+}
+
 function exactTerminalCompletion(existing, incoming) {
   if (!existing) return incoming;
   return {
     ...existing,
     ...incoming,
+    responseAnnotationReferences: preferredResponseAnnotationReferences(
+      incoming.responseAnnotationReferences,
+      existing.responseAnnotationReferences,
+    ),
     responseAttachments: incoming.responseAttachments.length
       ? incoming.responseAttachments
       : existing.responseAttachments ?? [],
@@ -102,6 +111,10 @@ export class CodexRunFinalizer {
     const existingCompletion = this.notifications.get(identity);
     const responseAttachments = await this.resolveTerminalAttachments(run, completedTurnId);
     run.responseAttachments = responseAttachments;
+    const responseAnnotationReferences = preferredResponseAnnotationReferences(
+      tracker.responseAnnotationReferences,
+      run.responseAnnotationReferences,
+    );
     const completionInput = {
       ...identity,
       streamId: run.streamId ?? null,
@@ -124,6 +137,7 @@ export class CodexRunFinalizer {
       clientUserMessageId: run.clientUserMessageId ?? null,
       userMessages: run.userMessages,
       finalAnswer: String(answer ?? "").trim(),
+      responseAnnotationReferences,
       responseAttachments,
       changedFiles: exactRunChangedFiles(run),
       diff: run.latestDiff ?? "",
@@ -134,6 +148,7 @@ export class CodexRunFinalizer {
     };
     const completion = this.notifications.recordCompletion(completionInput)
       ?? exactTerminalCompletion(existingCompletion, completionInput);
+    const visibleAnswer = String(completion.finalAnswer ?? answer ?? "").trim();
     const resolvedTracker = {
       usage: completion.usage,
       reported: completion.usageReported,
@@ -142,7 +157,7 @@ export class CodexRunFinalizer {
       serviceTier: completion.serviceTier,
     };
     const shouldDeliver = deliver ?? (run.telegramDeliveryRequested !== false);
-    const message = [answer, this.formatUsage(resolvedTracker)].filter(Boolean).join("\n\n");
+    const message = [visibleAnswer, this.formatUsage(resolvedTracker)].filter(Boolean).join("\n\n");
     const telegramRequested = shouldDeliver && Number.isSafeInteger(completion.chatId);
     const committed = await this.commitTerminal(completion, {
       run,
@@ -162,9 +177,9 @@ export class CodexRunFinalizer {
             serviceTier: run.serviceTier ?? null,
             finishedProgressMessageIds: [...(run.finishedProgressMessageIds ?? [])],
           },
-          answer: String(answer ?? ""),
+          answer: visibleAnswer,
           message,
-          speechText: String(answer ?? ""),
+          speechText: visibleAnswer,
           forceSpeechButton,
           silent,
           description,
@@ -174,6 +189,12 @@ export class CodexRunFinalizer {
     run.responseText = String(
       committed.terminal?.finalAnswer ?? completion.finalAnswer ?? answer ?? "",
     ).trim();
+    run.responseAnnotationReferences = structuredClone(
+      preferredResponseAnnotationReferences(
+        completion.responseAnnotationReferences,
+        run.responseAnnotationReferences,
+      ),
+    );
     run.terminalRevision = Number(committed.terminal?.terminalRevision) || null;
     await this.markRunCompleted(run);
     this.turnStarts.delete(startKey);

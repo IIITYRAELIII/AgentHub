@@ -10,6 +10,10 @@ import { TASK_EXECUTION_OWNERS } from "../../domain/task-execution-owner.mjs";
 import {
   isCodexContextProbeClientId,
 } from "../../domain/codex-context-probe.mjs";
+import {
+  codexAssistantResponseProjection,
+  visibleCodexAssistantText,
+} from "../../domain/codex-response-annotation.mjs";
 import { codexParentThreadId } from "./codex-subagent-accounting.mjs";
 import {
   pinCodexRolloutActivityCacheInWorker,
@@ -102,8 +106,15 @@ function codexResponseItemMessage(entry, role) {
 }
 
 function rememberCodexTurnMessage(metadata, turnId, message) {
-  const value = String(message ?? "").trim();
+  const projection = codexAssistantResponseProjection(message);
+  const value = projection.text.trim();
   if (!turnId || !value) return;
+  if (projection.responseAnnotationReferences.length) {
+    metadata.responseAnnotationReferences.set(
+      turnId,
+      projection.responseAnnotationReferences.map((reference) => ({ ...reference })),
+    );
+  }
   const previous = String(metadata.latestMessages.get(turnId) ?? "").trim();
   const combined = !previous
     ? value
@@ -603,17 +614,22 @@ function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
   }
   if (entry?.type === "event_msg" && entry.payload?.type === "agent_message") {
     const messageTurnId = turnId || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
-    const message = String(entry.payload?.message ?? "").trim();
-    if (messageTurnId && message) {
-      rememberCodexTurnMessage(metadata, messageTurnId, message);
-    } else if (message) {
-      metadata.unscopedLatestMessage = message.slice(-CODEX_AGENT_MESSAGE_CHARS);
+    const providerMessage = String(entry.payload?.message ?? "");
+    const visibleMessage = visibleCodexAssistantText(providerMessage).trim();
+    if (messageTurnId && visibleMessage) {
+      rememberCodexTurnMessage(metadata, messageTurnId, providerMessage);
+    } else if (visibleMessage) {
+      metadata.unscopedLatestMessage = visibleMessage.slice(-CODEX_AGENT_MESSAGE_CHARS);
     }
   }
   if (entry?.type === "event_msg" && entry.payload?.type === "task_complete" && turnId) {
-    const message = String(entry.payload?.last_agent_message ?? "").trim();
+    const projection = codexAssistantResponseProjection(entry.payload?.last_agent_message);
+    const message = projection.text.trim();
     if (message) {
       metadata.finalMessages.set(turnId, message);
+      if (projection.responseAnnotationReferences.length) {
+        metadata.responseAnnotationReferences.set(turnId, projection.responseAnnotationReferences);
+      }
       while (metadata.finalMessages.size > 8) {
         metadata.finalMessages.delete(metadata.finalMessages.keys().next().value);
       }
@@ -737,6 +753,9 @@ function withoutCodexContextProbeTurns(activity) {
     latestTurnId: hidden.has(String(activity.latestTurnId ?? "")) ? knownTurnIds.at(-1) ?? null : activity.latestTurnId,
     latestMessages: withoutHiddenKeys(activity.latestMessages),
     finalMessages: withoutHiddenKeys(activity.finalMessages),
+    ...(activity.responseAnnotationReferences
+      ? { responseAnnotationReferences: withoutHiddenKeys(activity.responseAnnotationReferences) }
+      : {}),
     userMessages: withoutHiddenKeys(activity.userMessages),
     generatedImageSources: withoutHiddenKeys(activity.generatedImageSources),
     ...(activity.activityGroups
@@ -784,6 +803,7 @@ export function parseCodexRolloutActivity(text, options = {}) {
     reasoningEffort: "",
     latestMessages: new Map(),
     finalMessages: new Map(),
+    responseAnnotationReferences: new Map(),
     userMessages: new Map(),
     generatedImageSources: new Map(),
     activityGroups: new Map(),
@@ -813,6 +833,9 @@ export function parseCodexRolloutActivity(text, options = {}) {
     ...(metadata.parentThreadId ? { parentThreadId: metadata.parentThreadId } : {}),
     latestMessages: Object.fromEntries(metadata.latestMessages),
     finalMessages: Object.fromEntries(metadata.finalMessages),
+    ...(metadata.responseAnnotationReferences.size
+      ? { responseAnnotationReferences: Object.fromEntries(metadata.responseAnnotationReferences) }
+      : {}),
     completedAtMsByTurnId: codexCompletedAtMsByTurnId(metadata.finalMessages, lastSeenAtByTurnId),
     userMessages: Object.fromEntries(metadata.userMessages),
     ...(metadata.generatedImageSources.size
@@ -908,6 +931,9 @@ export async function readCodexRolloutActivityOnCurrentThread(
       latestTurnId: cached?.latestTurnId || null,
       latestMessages: Object.fromEntries(cached?.latestMessages ?? []),
       finalMessages: Object.fromEntries(cached?.finalMessages ?? []),
+      ...((cached?.responseAnnotationReferences ?? []).length
+        ? { responseAnnotationReferences: Object.fromEntries(cached.responseAnnotationReferences) }
+        : {}),
       userMessages: Object.fromEntries(cached?.userMessages ?? []),
       generatedImageSources: Object.fromEntries(cached?.generatedImageSources ?? []),
       ...(cached?.activityGroups?.length
@@ -941,6 +967,9 @@ export async function readCodexRolloutActivityOnCurrentThread(
       latestTurnId: cached.latestTurnId || null,
       latestMessages: Object.fromEntries(cached.latestMessages ?? []),
       finalMessages: Object.fromEntries(cached.finalMessages ?? []),
+      ...((cached.responseAnnotationReferences ?? []).length
+        ? { responseAnnotationReferences: Object.fromEntries(cached.responseAnnotationReferences) }
+        : {}),
       completedAtMsByTurnId: codexCompletedAtMsByTurnId(
         cached.finalMessages,
         new Map(cached.lastSeenAtByTurnId ?? []),
@@ -973,6 +1002,9 @@ export async function readCodexRolloutActivityOnCurrentThread(
     reasoningEffort: appendOnly ? String(cached.reasoningEffort ?? "") : "",
     latestMessages: new Map(appendOnly ? cached.latestMessages ?? [] : []),
     finalMessages: new Map(appendOnly ? cached.finalMessages ?? [] : []),
+    responseAnnotationReferences: new Map(
+      appendOnly ? cached.responseAnnotationReferences ?? [] : [],
+    ),
     userMessages: new Map(appendOnly ? cached.userMessages ?? [] : []),
     generatedImageSources: new Map(appendOnly ? cached.generatedImageSources ?? [] : []),
     activityGroups: new Map((appendOnly ? cached.activityGroups ?? [] : []).map(([turnId, groups]) => (
@@ -1074,6 +1106,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
     reasoningEffort: metadata.reasoningEffort,
     latestMessages: [...metadata.latestMessages],
     finalMessages: [...metadata.finalMessages],
+    responseAnnotationReferences: [...metadata.responseAnnotationReferences],
     userMessages: [...metadata.userMessages],
     generatedImageSources: [...metadata.generatedImageSources],
     activityGroups: [...metadata.activityGroups],
@@ -1097,6 +1130,9 @@ export async function readCodexRolloutActivityOnCurrentThread(
     ...(metadata.parentThreadId ? { parentThreadId: metadata.parentThreadId } : {}),
     latestMessages: Object.fromEntries(metadata.latestMessages),
     finalMessages: Object.fromEntries(metadata.finalMessages),
+    ...(metadata.responseAnnotationReferences.size
+      ? { responseAnnotationReferences: Object.fromEntries(metadata.responseAnnotationReferences) }
+      : {}),
     completedAtMsByTurnId: codexCompletedAtMsByTurnId(metadata.finalMessages, lastSeenAtByTurnId),
     userMessages: Object.fromEntries(metadata.userMessages),
     generatedImageSources: Object.fromEntries(metadata.generatedImageSources),
@@ -1267,6 +1303,10 @@ export function codexRolloutTurnState(
   const userMessages = turnId && Array.isArray(activity.userMessages?.[turnId])
     ? activity.userMessages[turnId].map((message) => ({ ...message }))
     : [];
+  const responseAnnotationReferences = turnId
+    && Array.isArray(activity.responseAnnotationReferences?.[turnId])
+    ? activity.responseAnnotationReferences[turnId].map((reference) => ({ ...reference }))
+    : [];
   const startedAtMs = Number(activity.startedAtMsByTurnId?.[turnId]);
   const completedAtMs = Number(activity.completedAtMsByTurnId?.[turnId]);
   return {
@@ -1275,6 +1315,7 @@ export function codexRolloutTurnState(
     completed: !active,
     latestAnswer,
     finalAnswer,
+    ...(responseAnnotationReferences.length ? { responseAnnotationReferences } : {}),
     userMessages,
     startedAt: Number.isFinite(startedAtMs) ? new Date(startedAtMs).toISOString() : null,
     completedAt: Number.isFinite(completedAtMs) ? new Date(completedAtMs).toISOString() : null,

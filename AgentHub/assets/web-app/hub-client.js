@@ -968,6 +968,9 @@ function updateLiveMessage(taskIdValue, selected) {
     activities: run.activities ?? [],
     activityGroups: run.activityGroups ?? [],
     responsePhase: run.responsePhase ?? "",
+    responseAnnotationReferences: Array.isArray(run.responseAnnotationReferences)
+      ? run.responseAnnotationReferences.map((reference) => ({ ...reference }))
+      : [],
     threadId: selected.threadId,
     turnId: run.turnId,
     itemId: run.responseItemId ?? null,
@@ -2050,6 +2053,10 @@ function recordTransientConnectionFailure() {
 
 function historyMessages(history, focusedTurn = null) {
   const messages = [];
+  const normalizedResponseAnnotationReferences = (references) => {
+    const normalize = globalThis.AgentHubMessageView?.normalizedResponseAnnotationReferences;
+    return typeof normalize === "function" ? normalize(references) : [];
+  };
   const historyStart = Number.isSafeInteger(Number(history?.start))
     ? Number(history.start)
     : 0;
@@ -2091,6 +2098,10 @@ function historyMessages(history, focusedTurn = null) {
       ...(message.role === "user" ? {
         responseAnnotations: message.responseAnnotations,
         responseAnnotationRequest: message.responseAnnotationRequest,
+      } : message.role === "agent" ? {
+        responseAnnotationReferences: normalizedResponseAnnotationReferences(
+          message.responseAnnotationReferences,
+        ),
       } : {}),
       activities: messageIndex === traceMessageIndex && Array.isArray(item.activities)
         ? item.activities
@@ -2141,6 +2152,11 @@ function historyMessages(history, focusedTurn = null) {
         ...(message.model ? { model: message.model } : {}),
         author: conversationMessageAuthor(message, focusedTurn.provider),
         text: message.text,
+        ...(message.role === "agent" ? {
+          responseAnnotationReferences: normalizedResponseAnnotationReferences(
+            message.responseAnnotationReferences,
+          ),
+        } : {}),
         activities: itemId === focusedTraceItemId && Array.isArray(focusedTurn.activities)
           ? focusedTurn.activities
           : [],
@@ -2184,6 +2200,9 @@ function historyMessages(history, focusedTurn = null) {
       role: "agent",
       author: focusedTurn.provider === "claude" ? "Claude" : "Codex",
       text: focusedTurn.answer || focusedTurn.title || "Ход завершён",
+      responseAnnotationReferences: normalizedResponseAnnotationReferences(
+        focusedTurn.responseAnnotationReferences,
+      ),
       activities: Array.isArray(focusedTurn.activities) ? focusedTurn.activities : [],
       activityGroups: Array.isArray(focusedTurn.activityGroups) ? focusedTurn.activityGroups : [],
       time: focusedTurn.completedAt,

@@ -616,6 +616,12 @@ test("desktopRunSnapshot preserves run fields and nested context", () => {
   assert.equal(desktopRunSnapshot(null), null);
 });
 
+test("desktopRunSnapshot exposes live response citation references", () => {
+  const { desktopRunSnapshot, run } = fixture();
+  run.responseAnnotationReferences = [{ index: 1 }];
+  assert.deepEqual(desktopRunSnapshot(run).responseAnnotationReferences, [{ index: 1 }]);
+});
+
 test("desktopRunSnapshot binds a sparse provider steer to its remaining exact receipt", () => {
   const receipts = [{
     clientUserMessageId: "client-root",

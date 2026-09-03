@@ -9,6 +9,9 @@ import { IMAGE_GENERATION_ESTIMATE_CREDITS } from "../../domain/codex-usage-esti
 import {
   isCodexContextProbeClientId,
 } from "../../domain/codex-context-probe.mjs";
+import {
+  codexAssistantResponseProjection,
+} from "../../domain/codex-response-annotation.mjs";
 import { addTokenUsage, emptyTokenUsage, normalizeTokenUsage } from "../../domain/token-usage.mjs";
 import { mergeUsageLimitSamples } from "../../domain/usage-facts.mjs";
 import { displayUserPrompt } from "../../application/task-history.mjs";
@@ -410,6 +413,7 @@ function createTurnAccumulator(turnId) {
   let terminalAnswerSeen = false;
   let finalTokenIndex = -1;
   let finalAnswer = "";
+  let responseAnnotationReferences = [];
   let startedAt = "";
   let completedAt = "";
   let limitSamples = [];
@@ -461,9 +465,11 @@ function createTurnAccumulator(turnId) {
         terminal = true;
         completedAt ||= String(entry?.timestamp ?? "");
         status = lifecycleTerminalStatus(lifecycle);
-        const terminalAnswer = String(entry.payload?.last_agent_message ?? "").trim();
+        const terminalProjection = codexAssistantResponseProjection(entry.payload?.last_agent_message);
+        const terminalAnswer = terminalProjection.text.trim();
         if (terminalAnswer && !finalAnswer) {
           finalAnswer = terminalAnswer;
+          responseAnnotationReferences = terminalProjection.responseAnnotationReferences;
           terminalAnswerSeen = true;
         }
       }
@@ -537,7 +543,11 @@ function createTurnAccumulator(turnId) {
     }
     if (isFinalAssistantItem(entry, requestedTurnId)) {
       finalAnswerIndex = index;
-      finalAnswer = messageText(entry.payload) || finalAnswer;
+      const projection = codexAssistantResponseProjection(messageText(entry.payload));
+      finalAnswer = projection.text.trim() || finalAnswer;
+      if (projection.responseAnnotationReferences.length) {
+        responseAnnotationReferences = projection.responseAnnotationReferences;
+      }
     }
 
     if (entry?.type !== "event_msg" || entry.payload?.type !== "token_count") return;
@@ -562,6 +572,7 @@ function createTurnAccumulator(turnId) {
       terminal,
       finalAnswerSeen: finalAnswerIndex >= 0 || terminalAnswerSeen,
       finalAnswer,
+      responseAnnotationReferences,
       finalTokenSeen: terminalAnswerSeen || finalAnswerIndex < 0
         ? reported
         : finalTokenIndex > finalAnswerIndex,
@@ -881,6 +892,7 @@ function createHistoricalTurn(turnId) {
     started: false,
     terminal: false,
     finalAnswer: "",
+    responseAnnotationReferences: [],
     startedAt: "",
     completedAt: "",
     lastActivityAt: "",
@@ -1137,7 +1149,11 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
       if (patch) exactTurn.patches.push(patch);
     }
     if (exactTurn && isFinalAssistantItem(entry, exactTurnId)) {
-      exactTurn.finalAnswer = messageText(entry.payload) || exactTurn.finalAnswer;
+      const projection = codexAssistantResponseProjection(messageText(entry.payload));
+      exactTurn.finalAnswer = projection.text.trim() || exactTurn.finalAnswer;
+      if (projection.responseAnnotationReferences.length) {
+        exactTurn.responseAnnotationReferences = projection.responseAnnotationReferences;
+      }
     }
 
     if (entry?.type !== "event_msg" || entry.payload?.type !== "token_count") return;

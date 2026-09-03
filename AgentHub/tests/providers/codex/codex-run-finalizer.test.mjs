@@ -207,3 +207,54 @@ test("CodexRunFinalizer exits before side effects for a manual compaction turn",
   assert.equal(await state.finalizer.finalize(run(), { answer: "Ignored" }), null);
   assert.deepEqual(state.events, []);
 });
+
+test("CodexRunFinalizer delivers the canonical readable citation terminal revision", async () => {
+  const state = fixture();
+  state.finalizer.notifications.recordCompletion = (value) => ({
+    ...value,
+    finalAnswer: "Цитата 1\nСвязь сохранена",
+    responseAnnotationReferences: [{ index: 1 }],
+    usage: value.usage ?? {},
+    usageReported: value.usageReported,
+  });
+  const value = run();
+  value.userMessages = [{
+    text: "Комментарий пользователя",
+    responseAnnotations: [{ text: "Фрагмент", annotation: "Почему?" }],
+  }];
+
+  await state.finalizer.finalize(value, {
+    answer: ':codex-annotation{index="1"} Связь сохранена',
+  });
+
+  const [, committed, options] = state.events.find(([name]) => name === "commit");
+  assert.equal(committed.finalAnswer, "Цитата 1\nСвязь сохранена");
+  assert.deepEqual(committed.responseAnnotationReferences, [{ index: 1 }]);
+  assert.deepEqual(value.userMessages[0].responseAnnotations, [
+    { text: "Фрагмент", annotation: "Почему?" },
+  ]);
+  assert.equal(options.channelIntents.telegram.answer, "Цитата 1\nСвязь сохранена");
+  assert.equal(options.channelIntents.telegram.message, "Цитата 1\nСвязь сохранена\n\nUsage");
+  assert.equal(value.responseText, "Цитата 1\nСвязь сохранена");
+  assert.deepEqual(value.responseAnnotationReferences, [{ index: 1 }]);
+});
+
+test("CodexRunFinalizer keeps exact live citation refs when terminal tracking is empty", async () => {
+  const state = fixture();
+  const value = run();
+  value.responseItemId = "provider-final-item";
+  value.responseAnnotationReferences = [{ index: 1 }];
+
+  await state.finalizer.finalize(value, {
+    answer: "Цитата 1\nСвязь сохранена",
+    tracker: {
+      usage: {},
+      reported: true,
+      responseAnnotationReferences: [],
+    },
+  });
+
+  const [, committed] = state.events.find(([name]) => name === "commit");
+  assert.deepEqual(committed.responseAnnotationReferences, [{ index: 1 }]);
+  assert.deepEqual(value.responseAnnotationReferences, [{ index: 1 }]);
+});

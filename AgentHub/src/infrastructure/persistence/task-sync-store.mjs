@@ -9,9 +9,11 @@ import {
   interstreamOriginAuthor,
   normalizeInterstreamOrigin,
 } from "../../domain/interstream-message.mjs";
+import { normalizedCodexResponseAnnotationReferences } from "../../domain/codex-response-annotation.mjs";
+import { normalizedResponseAnnotations } from "../../domain/response-annotation-source.mjs";
 
 const FORMAT_VERSION = 1;
-const TASK_SCHEMA_VERSION = 8;
+const TASK_SCHEMA_VERSION = 9;
 const MODEL_BACKFILL_VERSION = "1";
 const SUBAGENT_MODEL_BACKFILL_VERSION = "1";
 const SEARCH_BACKFILL_VERSION = "3";
@@ -60,13 +62,11 @@ function cleanAttachments(attachments) {
 }
 
 function cleanResponseAnnotations(annotations) {
-  return (Array.isArray(annotations) ? annotations : [])
-    .slice(0, 20)
-    .map((annotation) => ({
-      text: cleanText(annotation?.text ?? annotation?.quote, 4_000),
-      annotation: cleanText(annotation?.annotation ?? annotation?.comment, 4_000),
-    }))
-    .filter((annotation) => annotation.text || annotation.annotation);
+  return normalizedResponseAnnotations(annotations);
+}
+
+function cleanResponseAnnotationReferences(references) {
+  return normalizedCodexResponseAnnotationReferences(references);
 }
 
 function cleanActivities(activities) {
@@ -241,6 +241,13 @@ function cleanHistory(history, limit, { provider = "" } = {}) {
             ...(message?.phase ? { phase: cleanText(message.phase, 40) } : {}),
             ...(message?.time ? { time: cleanText(message.time, 80) } : {}),
             responseAnnotations: cleanResponseAnnotations(message?.responseAnnotations),
+            ...(cleanResponseAnnotationReferences(message?.responseAnnotationReferences).length
+              ? {
+                responseAnnotationReferences: cleanResponseAnnotationReferences(
+                  message.responseAnnotationReferences,
+                ),
+              }
+              : {}),
             ...(cleanText(message?.responseAnnotationRequest, 12_000)
               ? { responseAnnotationRequest: cleanText(message.responseAnnotationRequest, 12_000) }
               : {}),
@@ -281,6 +288,68 @@ function preserveTerminalHistory(terminals, history) {
     const status = String(turn?.status ?? "").trim().toLowerCase();
     const incomingIsTerminal = turn?.completed === true || TERMINAL_TURN_STATUSES.has(status);
     return terminal && !incomingIsTerminal ? structuredClone(terminal) : turn;
+  });
+}
+
+function canonicalTerminalAgentSource(existingMessages, turnId, incomingMessage) {
+  if (incomingMessage?.role !== "agent") return null;
+  const incomingItemId = String(incomingMessage?.itemId ?? "").trim();
+  if (![`${turnId}:agent:final`, `${turnId}:rollout-agent:final`].includes(incomingItemId)) {
+    return null;
+  }
+  const exactSyntheticIds = [
+    `${turnId}:agent:live`,
+    `${turnId}:agent:final`,
+    `${turnId}:rollout-agent:live`,
+    `${turnId}:rollout-agent:final`,
+  ];
+  const candidates = existingMessages.filter((message) => {
+    if (message?.role !== "agent" || message?.kind === "subagent") return false;
+    if (String(message?.agentThreadId ?? "").trim()) return false;
+    if (!cleanResponseAnnotationReferences(message?.responseAnnotationReferences).length) return false;
+    const itemId = String(message?.itemId ?? "").trim();
+    return exactSyntheticIds.includes(itemId) || itemId.startsWith("msg_");
+  });
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+function preserveDurableResponseAnnotationReferences(existingHistory, incomingHistory) {
+  const existingTurns = new Map((Array.isArray(existingHistory) ? existingHistory : []).flatMap((turn) => {
+    const id = String(turn?.id ?? "").trim();
+    return id ? [[id, turn]] : [];
+  }));
+  return (Array.isArray(incomingHistory) ? incomingHistory : []).map((turn) => {
+    const existingTurn = existingTurns.get(String(turn?.id ?? "").trim());
+    if (!existingTurn) return turn;
+    const byItemId = new Map();
+    for (const message of Array.isArray(existingTurn.messages) ? existingTurn.messages : []) {
+      const itemId = String(message?.itemId ?? "").trim();
+      if (itemId) byItemId.set(itemId, message);
+    }
+    const next = { ...turn };
+    if (Array.isArray(turn?.messages)) {
+      next.messages = turn.messages.map((message) => {
+        const itemId = String(message?.itemId ?? "").trim();
+        const existingMessage = itemId ? byItemId.get(itemId) : null;
+        const terminalSource = existingMessage ?? canonicalTerminalAgentSource(
+          Array.isArray(existingTurn.messages) ? existingTurn.messages : [],
+          String(turn?.id ?? "").trim(),
+          message,
+        );
+        const responseAnnotationReferences = cleanResponseAnnotationReferences(
+          message?.responseAnnotationReferences,
+        ).length
+          ? message.responseAnnotationReferences
+          : terminalSource?.responseAnnotationReferences;
+        return {
+          ...message,
+          ...(cleanResponseAnnotationReferences(responseAnnotationReferences).length
+            ? { responseAnnotationReferences }
+            : {}),
+        };
+      });
+    }
+    return next;
   });
 }
 
@@ -511,6 +580,7 @@ function configure(database) {
       time TEXT,
       response_annotations_json TEXT NOT NULL DEFAULT '[]',
       response_annotation_request TEXT NOT NULL DEFAULT '',
+      response_annotation_references_json TEXT NOT NULL DEFAULT '[]',
       attachments_json TEXT NOT NULL,
       PRIMARY KEY (provider, thread_id, turn_position, position),
       FOREIGN KEY (provider, thread_id, turn_position)
@@ -600,6 +670,9 @@ function configure(database) {
   }
   if (!messageColumns.has("response_annotation_request")) {
     database.exec("ALTER TABLE task_read_model_messages ADD COLUMN response_annotation_request TEXT NOT NULL DEFAULT ''");
+  }
+  if (!messageColumns.has("response_annotation_references_json")) {
+    database.exec("ALTER TABLE task_read_model_messages ADD COLUMN response_annotation_references_json TEXT NOT NULL DEFAULT '[]'");
   }
   if (!turnColumns.has("prompt_author")) {
     database.exec("ALTER TABLE task_read_model_turns ADD COLUMN prompt_author TEXT NOT NULL DEFAULT ''");
@@ -970,6 +1043,9 @@ export class LocalTaskSyncStore {
       const key = `${row.provider}\0${row.thread_id}\0${Number(row.turn_position)}`;
       const turnMessages = messagesByTurn.get(key) ?? [];
       const origin = parseInterstreamOrigin(row.origin_json);
+      const responseAnnotationReferences = cleanResponseAnnotationReferences(
+        parseJsonArray(row.response_annotation_references_json),
+      );
       turnMessages.push({
         itemId: String(row.item_id ?? ""),
         ...(row.client_user_message_id
@@ -984,7 +1060,10 @@ export class LocalTaskSyncStore {
         ...(row.model ? { model: String(row.model) } : {}),
         ...(row.phase ? { phase: String(row.phase) } : {}),
         ...(row.time ? { time: String(row.time) } : {}),
-        responseAnnotations: parseJsonArray(row.response_annotations_json),
+        responseAnnotations: cleanResponseAnnotations(parseJsonArray(row.response_annotations_json)),
+        ...(responseAnnotationReferences.length
+          ? { responseAnnotationReferences }
+          : {}),
         ...(row.response_annotation_request
           ? { responseAnnotationRequest: String(row.response_annotation_request) }
           : {}),
@@ -1005,7 +1084,7 @@ export class LocalTaskSyncStore {
       completed: Number(row.completed) === 1,
       ...(row.started_at ? { startedAt: String(row.started_at) } : {}),
       ...(row.completed_at ? { completedAt: String(row.completed_at) } : {}),
-      promptAnnotations: parseJsonArray(row.prompt_annotations_json),
+      promptAnnotations: cleanResponseAnnotations(parseJsonArray(row.prompt_annotations_json)),
       ...(row.prompt_request ? { promptRequest: String(row.prompt_request) } : {}),
       attachments: parseJsonArray(row.attachments_json),
       activities: parseJsonArray(row.activities_json),
@@ -1244,8 +1323,9 @@ export class LocalTaskSyncStore {
       INSERT INTO task_read_model_messages (
         provider, thread_id, turn_position, position, item_id,
         client_user_message_id, role, text, author, kind, agent_thread_id, model, phase, time,
-        origin_json, response_annotations_json, response_annotation_request, attachments_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        origin_json, response_annotations_json, response_annotation_request,
+        response_annotation_references_json, attachments_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     history.forEach((turn, turnPosition) => {
       insertTurn.run(
@@ -1287,6 +1367,7 @@ export class LocalTaskSyncStore {
           JSON.stringify(message.origin ?? {}),
           JSON.stringify(message.responseAnnotations),
           message.responseAnnotationRequest ?? "",
+          JSON.stringify(message.responseAnnotationReferences ?? []),
           JSON.stringify(message.attachments),
         );
       });
@@ -1725,7 +1806,8 @@ export class LocalTaskSyncStore {
     const reconciledHistory = preserveTerminalHistory(terminals, journalHistory);
     const durableHistory = preserveDurableAttachments(existing.history, reconciledHistory);
     const enrichedHistory = this.#withJournalSubagentModels(task, durableHistory);
-    const cleanedHistory = cleanHistory(enrichedHistory, this.#historyLimit, { provider: task.provider });
+    const durableMetadataHistory = preserveDurableResponseAnnotationReferences(existing.history, enrichedHistory);
+    const cleanedHistory = cleanHistory(durableMetadataHistory, this.#historyLimit, { provider: task.provider });
     const effectiveSnapshot = terminalSafeSnapshot(existing, snapshot, terminals);
     const next = persistedTask({
       ...existing,

@@ -4,8 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { codexAssistantResponseProjection } from "../../src/domain/codex-response-annotation.mjs";
 import { TASK_EXECUTION_OWNERS } from "../../src/domain/task-execution-owner.mjs";
 import { LocalTaskSyncStore } from "../../src/infrastructure/persistence/task-sync-store.mjs";
+import { mergeDurableTaskHistory } from "../../src/interfaces/desktop/desktop-task-history.mjs";
 
 const task = {
   provider: "codex",
@@ -13,6 +15,32 @@ const task = {
   projectRoot: "C:\\Projects\\Main",
   projectName: "Main",
   title: "FB Фаровон обмен1",
+};
+
+const ANNOTATION_SOURCE = {
+  version: 1,
+  provider: "codex",
+  threadId: "source-thread",
+  turnId: "source-turn",
+  itemId: "source-item",
+  role: "agent",
+  messageKey: "provider\u001fcodex\u001fsource-thread\u001fsource-turn\u001fsource-item\u001fagent",
+  surfaceKind: "trace-reasoning",
+  surfaceIndex: 1,
+  start: 2,
+  end: 19,
+  contentHash: `sha256:${"a".repeat(64)}`,
+  surfaceHash: `sha256:${"b".repeat(64)}`,
+  selectionHash: `sha256:${"c".repeat(64)}`,
+};
+const USER_ANNOTATION_SOURCE = {
+  ...ANNOTATION_SOURCE,
+  turnId: "source-user-turn",
+  itemId: "source-user-item",
+  role: "user",
+  messageKey: "provider\u001fcodex\u001fsource-thread\u001fsource-user-turn\u001fsource-user-item\u001fuser",
+  surfaceKind: "message-body",
+  surfaceIndex: 0,
 };
 
 async function storeFile() {
@@ -232,7 +260,10 @@ test("local task sync preserves durable message metadata and attachments", async
     answer: "Вижу",
     status: "completed",
     completed: true,
-    promptAnnotations: [{ text: "Цитата из ответа", annotation: "Почему так?" }],
+    promptAnnotations: [
+      { text: "Цитата из ответа", annotation: "Почему так?", source: ANNOTATION_SOURCE },
+      { text: "Цитата пользователя", annotation: "Сверить", source: USER_ANNOTATION_SOURCE },
+    ],
     promptRequest: "Почему так?",
     startedAt: "2026-07-31T12:00:00.000Z",
     completedAt: "2026-07-31T12:01:00.000Z",
@@ -249,7 +280,10 @@ test("local task sync preserves durable message metadata and attachments", async
       role: "user",
       text: "Посмотри скриншот",
       author: "Agent Hub - Architect",
-      responseAnnotations: [{ text: "Цитата из ответа", annotation: "Почему так?" }],
+      responseAnnotations: [
+        { text: "Цитата из ответа", annotation: "Почему так?", source: ANNOTATION_SOURCE },
+        { text: "Цитата пользователя", annotation: "Сверить", source: USER_ANNOTATION_SOURCE },
+      ],
       responseAnnotationRequest: "Почему так?",
       time: "2026-07-31T12:00:00.000Z",
       attachments: [
@@ -264,6 +298,16 @@ test("local task sync preserves durable message metadata and attachments", async
           description: "не должно сохраняться во вложении",
         },
       ],
+    }, {
+      itemId: "agent-1",
+      role: "agent",
+      text: "Цитата 1\nВижу",
+      responseAnnotationReferences: [
+        { index: 1 },
+        { index: 1 },
+        { index: 21 },
+        { index: Number.MAX_SAFE_INTEGER + 1 },
+      ],
     }],
   }]);
   await store.save();
@@ -277,13 +321,16 @@ test("local task sync preserves durable message metadata and attachments", async
   assert.equal(entry.messages[0].time, "2026-07-31T12:00:00.000Z");
   assert.equal(entry.messages[0].author, "Agent Hub - Architect");
   assert.deepEqual(entry.promptAnnotations, [
-    { text: "Цитата из ответа", annotation: "Почему так?" },
+    { text: "Цитата из ответа", annotation: "Почему так?", source: ANNOTATION_SOURCE },
+    { text: "Цитата пользователя", annotation: "Сверить", source: USER_ANNOTATION_SOURCE },
   ]);
   assert.equal(entry.promptRequest, "Почему так?");
   assert.deepEqual(entry.messages[0].responseAnnotations, [
-    { text: "Цитата из ответа", annotation: "Почему так?" },
+    { text: "Цитата из ответа", annotation: "Почему так?", source: ANNOTATION_SOURCE },
+    { text: "Цитата пользователя", annotation: "Сверить", source: USER_ANNOTATION_SOURCE },
   ]);
   assert.equal(entry.messages[0].responseAnnotationRequest, "Почему так?");
+  assert.deepEqual(entry.messages[1].responseAnnotationReferences, [{ index: 1 }]);
   assert.deepEqual(entry.messages[0].attachments, [
     { id: "screen.png", name: "screen.png", type: "image/png" },
     {
@@ -325,6 +372,139 @@ test("local task sync preserves durable message metadata and attachments", async
     },
   ]);
   restored.close();
+});
+
+test("terminal citation coalescing survives SQLite reopen", async () => {
+  const filePath = await storeFile();
+  const turnId = "turn-terminal-citation";
+  const [turn] = mergeDurableTaskHistory([{
+    id: turnId,
+    messages: [{
+      itemId: "provider-final-item",
+      role: "agent",
+      phase: "final_answer",
+      text: "Цитата 1\nГотово",
+      responseAnnotationReferences: [{ index: 1 }],
+    }],
+  }], [{
+    id: turnId,
+    messages: [{
+      itemId: `${turnId}:rollout-agent:final`,
+      role: "agent",
+      text: "Цитата 1\nГотово",
+    }],
+  }]);
+  const store = new LocalTaskSyncStore({ filePath });
+  await store.load();
+  store.recordHistory(task, [turn]);
+  await store.save();
+  store.close();
+
+  const restored = new LocalTaskSyncStore({ filePath });
+  await restored.load();
+  const [persisted] = restored.history(task);
+  const agentMessages = persisted.messages.filter((message) => message.role === "agent");
+  assert.equal(agentMessages.length, 1);
+  assert.equal(agentMessages[0].itemId, `${turnId}:rollout-agent:final`);
+  assert.deepEqual(agentMessages[0].responseAnnotationReferences, [{ index: 1 }]);
+  restored.close();
+});
+
+test("canonical terminal overlay preserves provider citation refs through SQLite reopen", async () => {
+  const filePath = await storeFile();
+  const turnId = "turn-terminal-overlay";
+  const store = new LocalTaskSyncStore({ filePath });
+  await store.load();
+  store.recordHistory(task, [{
+    id: turnId,
+    status: "completed",
+    completed: true,
+    messages: [{
+      itemId: "msg_provider_final",
+      role: "agent",
+      text: "Цитата 1\nГотово",
+      responseAnnotationReferences: [{ index: 1 }],
+    }],
+  }]);
+  store.recordHistory(task, [{
+    id: turnId,
+    status: "completed",
+    completed: true,
+    messages: [{
+      itemId: `${turnId}:rollout-agent:final`,
+      role: "agent",
+      phase: "final_answer",
+      text: "Цитата 1\nГотово",
+    }],
+  }]);
+  await store.save();
+  store.close();
+
+  const restored = new LocalTaskSyncStore({ filePath });
+  await restored.load();
+  const [persisted] = restored.history(task);
+  const agentMessages = persisted.messages.filter((message) => message.role === "agent");
+  assert.equal(agentMessages.length, 1);
+  assert.equal(agentMessages[0].itemId, `${turnId}:rollout-agent:final`);
+  assert.deepEqual(agentMessages[0].responseAnnotationReferences, [{ index: 1 }]);
+  restored.close();
+});
+
+test("terminal citation metadata is not transferred to a wrong or ambiguous identity", async () => {
+  const filePath = await storeFile();
+  const store = new LocalTaskSyncStore({ filePath });
+  await store.load();
+  store.recordHistory(task, [{
+    id: "turn-wrong-terminal-identity",
+    status: "completed",
+    completed: true,
+    messages: [{
+      itemId: "msg_wrong_identity_source",
+      role: "agent",
+      text: "Цитата 1",
+      responseAnnotationReferences: [{ index: 1 }],
+    }],
+  }, {
+    id: "turn-ambiguous-terminal-identity",
+    status: "completed",
+    completed: true,
+    messages: [{
+      itemId: "msg_ambiguous_source_1",
+      role: "agent",
+      text: "Цитата 1",
+      responseAnnotationReferences: [{ index: 1 }],
+    }, {
+      itemId: "msg_ambiguous_source_2",
+      role: "agent",
+      text: "Цитата 2",
+      responseAnnotationReferences: [{ index: 2 }],
+    }],
+  }]);
+  store.recordHistory(task, [{
+    id: "turn-wrong-terminal-identity",
+    status: "completed",
+    completed: true,
+    messages: [{
+      itemId: "untrusted-final-item",
+      role: "agent",
+      text: "Цитата 1",
+    }],
+  }, {
+    id: "turn-ambiguous-terminal-identity",
+    status: "completed",
+    completed: true,
+    messages: [{
+      itemId: "turn-ambiguous-terminal-identity:rollout-agent:final",
+      role: "agent",
+      text: "Цитата 1",
+    }],
+  }]);
+
+  const wrongIdentity = store.history(task).find((turn) => turn.id === "turn-wrong-terminal-identity");
+  const ambiguousIdentity = store.history(task).find((turn) => turn.id === "turn-ambiguous-terminal-identity");
+  assert.deepEqual(wrongIdentity.messages[0].responseAnnotationReferences ?? [], []);
+  assert.deepEqual(ambiguousIdentity.messages[0].responseAnnotationReferences ?? [], []);
+  store.close();
 });
 
 test("local task sync preserves interstream origin through SQLite", async () => {
@@ -370,6 +550,38 @@ test("local task sync preserves interstream origin through SQLite", async () => 
   assert.equal(restored.messages[0].author, "Agent HUB - Themes (Sol)");
   assert.equal(restored.messages[0].kind, "interstream");
   assert.deepEqual(restored.messages[0].origin, origin);
+  store.close();
+});
+
+test("SQLite history preserves the provider projection of malformed citation markers", async () => {
+  const filePath = await storeFile();
+  const projection = codexAssistantResponseProjection(
+    ':codex-annotation{index="abc"} Nonnumeric\n:codex-annotation{index=""} Empty',
+  );
+  const store = new LocalTaskSyncStore({ filePath });
+  await store.load();
+  store.recordHistory(task, [{
+    id: "turn-malformed-citation",
+    prompt: "Проверь",
+    answer: projection.text,
+    status: "completed",
+    completed: true,
+    messages: [{ itemId: "user-1", role: "user", text: "Проверь" }, {
+      itemId: "agent-1",
+      role: "agent",
+      text: projection.text,
+      responseAnnotationReferences: projection.responseAnnotationReferences,
+    }],
+  }]);
+  await store.save();
+
+  const restored = new LocalTaskSyncStore({ filePath });
+  await restored.load();
+  const [entry] = restored.history(task);
+  assert.equal(entry.messages[1].text, "Цитата\nNonnumeric\nЦитата\nEmpty");
+  assert.deepEqual(entry.messages[1].responseAnnotationReferences ?? [], []);
+  assert.equal(entry.messages[1].text.includes(":codex-annotation"), false);
+  restored.close();
   store.close();
 });
 

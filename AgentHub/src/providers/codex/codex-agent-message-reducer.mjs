@@ -1,4 +1,7 @@
+import { codexAssistantResponseProjection } from "../../domain/codex-response-annotation.mjs";
+
 const MAX_AGENT_MESSAGES = 64;
+const PROVIDER_TEXT = Symbol("codex-provider-text");
 
 function normalizedId(value) {
   return String(value ?? "").trim();
@@ -10,6 +13,25 @@ function isResponseItem(item) {
 
 function agentMessageText(item) {
   return typeof item?.text === "string" ? item.text : "";
+}
+
+function providerText(item) {
+  return typeof item?.[PROVIDER_TEXT] === "string" ? item[PROVIDER_TEXT] : agentMessageText(item);
+}
+
+function setProviderText(item, value) {
+  const text = String(value ?? "");
+  Object.defineProperty(item, PROVIDER_TEXT, {
+    configurable: true,
+    enumerable: false,
+    writable: true,
+    value: text,
+  });
+  const projection = codexAssistantResponseProjection(text);
+  item.text = projection.text;
+  if (projection.responseAnnotationReferences.length) {
+    item.responseAnnotationReferences = projection.responseAnnotationReferences;
+  } else delete item.responseAnnotationReferences;
 }
 
 function agentMessagePhase(item) {
@@ -56,6 +78,9 @@ function synchronizeResponse(run) {
   if (!selected) return null;
   run.responseItemId = selected.id;
   run.responseText = String(selected.text ?? "");
+  run.responseAnnotationReferences = Array.isArray(selected.responseAnnotationReferences)
+    ? selected.responseAnnotationReferences.map((reference) => ({ ...reference }))
+    : [];
   return selected;
 }
 
@@ -75,7 +100,7 @@ export function startCodexAgentMessage(run, { turnId = null, item = null } = {})
     type: item.type, ...(phase ? { phase } : {}), status: "inProgress",
   });
   const text = agentMessageText(item);
-  if (text) message.text = text;
+  if (text) setProviderText(message, text);
   synchronizeResponse(run);
   return message;
 }
@@ -88,8 +113,9 @@ export function appendCodexAgentMessageDelta(run, {
 } = {}) {
   if (!run) return null;
   const message = upsertAgentMessage(run, { turnId, itemId });
+  const current = providerText(message);
   const value = String(delta ?? "");
-  message.text += hydrationReplay ? replaySuffix(message.text, value) : value;
+  setProviderText(message, current + (hydrationReplay ? replaySuffix(current, value) : value));
   message.status = "inProgress";
   synchronizeResponse(run);
   return message;
@@ -101,7 +127,7 @@ export function completeCodexAgentMessage(run, { turnId = null, item = null } = 
   const message = upsertAgentMessage(run, { turnId, itemId: item.id }, {
     type: item.type, ...(phase ? { phase } : {}), status: "completed",
   });
-  if (typeof item.text === "string") message.text = item.text;
+  if (typeof item.text === "string") setProviderText(message, item.text);
   synchronizeResponse(run);
   return message;
 }
@@ -111,13 +137,17 @@ export function hydrateCodexAgentMessages(run, items = [], { turnId = null } = {
   const messages = (Array.isArray(items) ? items : [])
     .filter((item) => isResponseItem(item) && normalizedId(item.id));
   if (!messages.length) return synchronizeResponse(run);
-  run.responseItems = messages.slice(-MAX_AGENT_MESSAGES).map((item) => ({
-    id: normalizedId(item.id),
-    type: item.type,
-    turnId: normalizedId(turnId) || null,
-    text: agentMessageText(item),
-    phase: agentMessagePhase(item),
-    status: String(item.status ?? "completed"),
-  }));
+  run.responseItems = messages.slice(-MAX_AGENT_MESSAGES).map((item) => {
+    const message = {
+      id: normalizedId(item.id),
+      type: item.type,
+      turnId: normalizedId(turnId) || null,
+      text: "",
+      phase: agentMessagePhase(item),
+      status: String(item.status ?? "completed"),
+    };
+    setProviderText(message, agentMessageText(item));
+    return message;
+  });
   return synchronizeResponse(run);
 }
