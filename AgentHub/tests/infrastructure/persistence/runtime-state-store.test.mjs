@@ -210,6 +210,10 @@ test("durable message intake survives full snapshots and same-id retries", async
       id: "run-1",
       turnId: "turn-1",
       clientUserMessageId: item.clientUserMessageId,
+      providerStart: {
+        state: "accepted-awaiting-first-event",
+        turnId: "turn-1",
+      },
     }],
     pendingInputs: [],
     queuedInputs: [],
