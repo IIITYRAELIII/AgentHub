@@ -84,6 +84,23 @@ test("message fingerprint can use immutable attachment identities without readin
   assert.notEqual(first, another);
 });
 
+test("message fingerprint binds the immutable client projection intent", async () => {
+  const conversation = await messageRequestFingerprint({
+    text: "Проверь",
+    clientProjectionIntent: "conversation",
+  });
+  const retry = await messageRequestFingerprint({
+    text: "Проверь",
+    clientProjectionIntent: "conversation",
+  });
+  const queue = await messageRequestFingerprint({
+    text: "Проверь",
+    clientProjectionIntent: "queue",
+  });
+  assert.equal(conversation, retry);
+  assert.notEqual(conversation, queue);
+});
+
 test("message receipts deduplicate the same client message after a thread rebind", async () => {
   const registry = new MessageReceiptRegistry();
   const fingerprint = await messageRequestFingerprint({ text: "Проверь" });

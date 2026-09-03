@@ -354,11 +354,13 @@ function projectedReceipt(record) {
     result.deferred = true;
     result.queued = true;
     result.dispatching = record.state === "dispatching";
+    if (record.item?.paused === true) result.paused = true;
   } else if (record.state === "attention-required" || record.state === "accepted") {
     result.accepted = false;
     result.deferred = true;
     result.queued = false;
     result.dispatching = false;
+    result.attentionRequired = record.state === "attention-required";
   } else if (record.state === "started" || record.state === "completed") {
     result.accepted = true;
     result.deferred = false;

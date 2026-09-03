@@ -339,6 +339,7 @@ export class RunCoordinator {
     target,
     executionOwner,
     clientUserMessageId,
+    clientProjectionIntent = null,
     messageFingerprint = null,
     reason = "task-running",
     conflictKind = reason,
@@ -349,6 +350,7 @@ export class RunCoordinator {
       target,
       conflictKind,
       clientUserMessageId,
+      clientProjectionIntent,
       messageFingerprint,
       destination: "queued",
       notify: false,
@@ -373,6 +375,7 @@ export class RunCoordinator {
       threadId: target.threadId,
       turnId: null,
       clientUserMessageId,
+      ...(clientProjectionIntent ? { clientProjectionIntent } : {}),
       reason,
       message: deferred.duplicate === true
         ? "Точный повтор уже находится в очереди и не был добавлен второй раз."
@@ -394,6 +397,7 @@ export class RunCoordinator {
     target,
     existingRun,
     clientUserMessageId,
+    clientProjectionIntent = null,
     messageFingerprint = null,
   }) {
     const deferred = await this.deferInput(input, attachments, {
@@ -401,6 +405,7 @@ export class RunCoordinator {
       target,
       conflictKind: "message-steer",
       clientUserMessageId,
+      clientProjectionIntent,
       messageFingerprint,
       steerTargetRunId: existingRun.id ?? null,
       steerTargetTurnId: existingRun.turnId ?? null,
@@ -420,6 +425,7 @@ export class RunCoordinator {
       threadId: target.threadId,
       turnId: existingRun.turnId ?? null,
       clientUserMessageId,
+      ...(clientProjectionIntent ? { clientProjectionIntent } : {}),
       message: deferred.duplicate === true
         ? "Уточнение уже принято Hub и не было отправлено повторно."
         : "Уточнение принято Hub и будет добавлено в текущий ход.",
@@ -435,6 +441,7 @@ export class RunCoordinator {
     attachments = [],
     target,
     clientUserMessageId,
+    clientProjectionIntent = null,
     messageFingerprint = null,
     followUpMode = "",
   }) {
@@ -445,6 +452,7 @@ export class RunCoordinator {
         target,
         executionOwner: TASK_EXECUTION_OWNERS.HUB,
         clientUserMessageId,
+        clientProjectionIntent,
         messageFingerprint,
         reason: admissionBarrier,
       });
@@ -454,6 +462,7 @@ export class RunCoordinator {
         target,
         executionOwner: existingRun.executionOwner ?? TASK_EXECUTION_OWNERS.HUB,
         clientUserMessageId,
+        clientProjectionIntent,
         messageFingerprint,
         reason: "message-intake",
         scheduleDelayMs: 0,
@@ -466,6 +475,7 @@ export class RunCoordinator {
           messageFingerprint,
           target,
           clientUserMessageId,
+          clientProjectionIntent,
         });
       }
       if (followUpMode === "queue") {
@@ -473,6 +483,7 @@ export class RunCoordinator {
           target,
           executionOwner: existingRun.executionOwner ?? TASK_EXECUTION_OWNERS.HUB,
           clientUserMessageId,
+          clientProjectionIntent,
           messageFingerprint,
         });
       }
@@ -481,6 +492,8 @@ export class RunCoordinator {
         target,
         conflictKind: "task-running",
         clientUserMessageId,
+        clientProjectionIntent,
+        messageFingerprint,
         persistentFiles: attachments.length > 0,
       });
       return {
@@ -488,6 +501,7 @@ export class RunCoordinator {
         deferred: true,
         id: deferred.id,
         clientUserMessageId,
+        ...(clientProjectionIntent ? { clientProjectionIntent } : {}),
         reason: "task-running",
         message: "Сообщение сохранено: выберите новый поток, очередь или отмену справа.",
       };
@@ -496,6 +510,7 @@ export class RunCoordinator {
       target,
       executionOwner: TASK_EXECUTION_OWNERS.HUB,
       clientUserMessageId,
+      clientProjectionIntent,
       messageFingerprint,
       reason: "message-intake",
       scheduleDelayMs: 0,
@@ -589,6 +604,7 @@ export class RunCoordinator {
     attachments = [],
     target,
     clientUserMessageId,
+    clientProjectionIntent = null,
     followUpMode = "",
   }) {
     if (this.isMaintenanceActive(target)) {
@@ -596,6 +612,7 @@ export class RunCoordinator {
         target,
         executionOwner: TASK_EXECUTION_OWNERS.HUB,
         clientUserMessageId,
+        clientProjectionIntent,
         reason: "context-maintenance",
       });
     }
@@ -613,6 +630,7 @@ export class RunCoordinator {
             target,
             executionOwner,
             clientUserMessageId,
+            clientProjectionIntent,
             reason: "provider-thread-active",
           });
         }
@@ -626,6 +644,7 @@ export class RunCoordinator {
               ?? externalActivity.executionOwner
               ?? TASK_EXECUTION_OWNERS.EXTERNAL,
             clientUserMessageId,
+            clientProjectionIntent,
             reason: "steer-unavailable",
           });
         }
@@ -637,6 +656,7 @@ export class RunCoordinator {
             ?? externalActivity.executionOwner
             ?? TASK_EXECUTION_OWNERS.EXTERNAL,
           clientUserMessageId,
+          clientProjectionIntent,
         });
       }
       const deferred = await this.deferInput(input, attachments, {
@@ -649,6 +669,7 @@ export class RunCoordinator {
           ? "activity-unknown"
           : "task-running",
         clientUserMessageId,
+        clientProjectionIntent,
         persistentFiles: attachments.length > 0,
       });
       return {
@@ -656,6 +677,7 @@ export class RunCoordinator {
         deferred: true,
         id: deferred.id,
         clientUserMessageId,
+        ...(clientProjectionIntent ? { clientProjectionIntent } : {}),
         reason: externalActivity.state === "unknown" ? "activity-unknown" : "task-running",
         message: externalActivity.state === "unknown"
           ? "Сообщение сохранено: нельзя надёжно определить, завершён ли предыдущий ход."
@@ -667,6 +689,7 @@ export class RunCoordinator {
         target,
         executionOwner: TASK_EXECUTION_OWNERS.EXTERNAL,
         clientUserMessageId,
+        clientProjectionIntent,
         reason: "queue-backlog",
       });
     }
@@ -679,6 +702,7 @@ export class RunCoordinator {
         conflictKind: "repository",
         conflictTask: repositoryConflict,
         clientUserMessageId,
+        clientProjectionIntent,
         persistentFiles: attachments.length > 0,
       });
       return {
@@ -686,6 +710,7 @@ export class RunCoordinator {
         deferred: true,
         id: deferred.id,
         clientUserMessageId,
+        ...(clientProjectionIntent ? { clientProjectionIntent } : {}),
         reason: "repository-conflict",
         message: `Сообщение сохранено: поток «${repositoryConflict.taskTitle ?? "Без названия"}» уже изменяет тот же Git-репозиторий.`,
       };
@@ -701,6 +726,7 @@ export class RunCoordinator {
         target,
         executionOwner: TASK_EXECUTION_OWNERS.EXTERNAL,
         clientUserMessageId,
+        clientProjectionIntent,
         reason: "provider-thread-active",
       });
     }

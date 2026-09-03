@@ -694,6 +694,7 @@ function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
       projectionAuthority: "canonical",
       projectionState: projection.projectionState,
       providerAccepted: projection.providerAccepted,
+      clientProjectionIntent: projection.clientProjectionIntent,
       ...deliveryPatch(projection.deliveryState),
       ...(!existing.submittedAt && projection.submittedAt
         ? { submittedAt: projection.submittedAt }
@@ -714,6 +715,7 @@ function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
       projectionAuthority: "canonical",
       projectionState: projection.projectionState,
       providerAccepted: projection.providerAccepted,
+      clientProjectionIntent: projection.clientProjectionIntent,
       role: "user",
       author: String(deferred.author ?? "").trim() || "Вы",
       text,
@@ -775,6 +777,7 @@ function applyMessageReceipts(snapshot) {
         projectionAuthority: "canonical",
         projectionState: projection.projectionState,
         providerAccepted: projection.providerAccepted,
+        clientProjectionIntent: projection.clientProjectionIntent,
         role: "user",
         author: String(receipt.author ?? "").trim() || "Вы",
         text: restoredText,
@@ -795,6 +798,7 @@ function applyMessageReceipts(snapshot) {
       projectionAuthority: "canonical",
       projectionState: projection.projectionState,
       providerAccepted: projection.providerAccepted,
+      clientProjectionIntent: projection.clientProjectionIntent,
       time: receipt.deliveredAt ?? receipt.createdAt ?? null,
       ...nonEmptyAttachmentPatch(receipt.attachments),
       ...(receipt.accepted && !receipt.steered ? { turnUserSlot: "root" } : {}),
@@ -2682,6 +2686,7 @@ agentHub.on("message:send", (request) => {
     || request.deferWhileRunning === true;
   const steersOptimistically = request.followUpMode === "steer" && !queuesOptimistically;
   const usesQueueOptimistically = optimisticSubmissionUsesQueue(request);
+  const clientProjectionIntent = usesQueueOptimistically ? "queue" : "conversation";
   const visibleText = String(request.text ?? "").trim()
     || ((request.annotations ?? []).length
       ? `Аннотации к ответу: ${(request.annotations ?? []).length}`
@@ -2698,6 +2703,7 @@ agentHub.on("message:send", (request) => {
     projectionAuthority: "optimistic",
     projectionState: usesQueueOptimistically ? "queued" : "optimistic",
     providerAccepted: false,
+    clientProjectionIntent,
     role: "user",
     author: "Вы",
     text: visibleText,
@@ -2766,6 +2772,7 @@ agentHub.on("message:send", (request) => {
         provider: identity?.provider,
         threadId: identity?.threadId,
         clientUserMessageId: request.requestId,
+        clientProjectionIntent,
         followUpMode: request.followUpMode,
         clientTiming: {
           submittedAtMs: request.submittedAtMs,

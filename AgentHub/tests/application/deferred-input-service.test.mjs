@@ -78,24 +78,38 @@ test("deferred Desktop input is persisted without a Telegram prompt", async () =
 test("message intake uses its bounded durable write instead of a full runtime snapshot", async () => {
   const store = new DeferredInputStore();
   const events = [];
-  const service = new DeferredInputService({
+  let persistedItem = null;
+  let fallbackReceipt = null;
+  const intentService = new DeferredInputService({
     store,
-    createId: () => "desktop-intake",
+    createId: () => "desktop-intake-intent",
     persist: async () => events.push("full"),
-    persistIntake: async (item, destination) => events.push(`intake:${item.id}:${destination}`),
+    persistIntake: async (item, destination, receipt) => {
+      persistedItem = structuredClone(item);
+      fallbackReceipt = structuredClone(receipt);
+      events.push(`intake:${item.id}:${destination}`);
+    },
     removeFiles: async () => {},
     notify: async () => null,
   });
 
-  await service.defer("message", [], {
+  await intentService.defer("message", [], {
     target: { provider: "codex", threadId: "thread-1", clientSource: "desktop" },
     clientUserMessageId: "client-message-1",
+    messageFingerprint: "fingerprint-1",
+    clientProjectionIntent: "conversation",
     destination: "queued",
     conflictKind: "message-intake",
     notify: false,
   });
 
-  assert.deepEqual(events, ["intake:desktop-intake:queued"]);
+  assert.deepEqual(events, ["intake:desktop-intake-intent:queued"]);
+  assert.equal(persistedItem.clientProjectionIntent, "conversation");
+  assert.equal(fallbackReceipt.result.clientProjectionIntent, "conversation");
+  await assert.rejects(intentService.defer("message", [], {
+    target: { provider: "codex" },
+    clientProjectionIntent: "sidebar",
+  }), /invalid client projection intent/u);
 });
 
 test("durable steer persists its exact managed run target", async () => {

@@ -27,12 +27,16 @@ its optimistic projection by the same identity.
 
 Hub acceptance and provider acceptance are distinct boundaries. A submission
 made from an exact idle client snapshot may have one optimistic conversation
-projection before provider acceptance; its durable `message-intake` ACK keeps
-that same entity visible and never labels it queued. A submission made while
-the client knows the Stream is busy, plus ambiguous and `attention-required`
-commands, remains on the queue-management surface until exact provider
-acceptance. Later active and terminal projections reuse the original
-`clientUserMessageId` in both paths.
+projection before provider acceptance. The client persists immutable
+`clientProjectionIntent=conversation` with the command, so a later
+`task-running` admission conflict keeps that same entity visible and never
+labels it queued. A submission made while the client knows the Stream is busy
+persists `clientProjectionIntent=queue` and remains on the queue-management
+surface even when admission later finds the Stream idle. Ambiguous and
+`attention-required` commands are queue-owned regardless of the optimistic
+intent. Later active and terminal projections reuse the original
+`clientUserMessageId` in both paths. The projection intent participates in the
+request fingerprint and cannot change on retry.
 
 ## Occupancy and ordering
 

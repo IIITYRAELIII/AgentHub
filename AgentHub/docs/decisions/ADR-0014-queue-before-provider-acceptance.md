@@ -20,10 +20,12 @@ Surface placement is chosen at the exact client submission boundary:
 - a Stream known busy gets one queue item and no conversation card;
 - steer intent is queue-owned until the provider accepts the exact target turn.
 
-The durable `message-intake` record preserves the idle projection across ACK,
-snapshot races and reload. It is labelled `Принято`, never `В очереди`. Other
-queued, dispatching, ambiguous and attention-required records remain on the
-queue surface until exact provider acceptance:
+The immutable `clientProjectionIntent` is part of the durable request
+fingerprint and record. `conversation` preserves the idle projection across
+ACK, a later `task-running` conflict, snapshot races and reload; it is labelled
+`Принято`, never `В очереди`. `queue` preserves busy-origin placement even when
+server admission later finds the Stream idle. Ambiguous and attention-required
+records remain on the queue surface until exact provider acceptance:
 
 - a new turn has the original `clientUserMessageId`, exact `runId` and exact
   provider `turnId`;
@@ -41,11 +43,15 @@ acceptance.
 - An idle submission appears immediately without flashing through the queue.
 - No conversation card displays `В очереди`.
 - A busy submission stays exclusively above the composer until launch.
+- A stale idle snapshot records `clientProjectionIntent=conversation`; canonical
+  `task-running` admission preserves the already visible exact entity.
+- A busy-origin submission records `clientProjectionIntent=queue` and remains
+  queue-only even if canonical admission later finds the Stream idle.
 - Definitive rejection and ambiguous start remain manageable in the queue
   without creating history.
-- A reload reconstructs idle placement from `conflictKind=message-intake` and
-  busy placement from every other unresolved durable input even when the bounded
-  receipt is absent.
+- A reload reconstructs placement from durable `clientProjectionIntent` even
+  when the bounded receipt is absent. Legacy rows without the field retain the
+  narrow `conflictKind=message-intake` compatibility fallback until migrated.
 - Legacy active records lacking both exact provider-start evidence and an exact
   accepted command receipt stay out of the conversation until provider history
   materializes them.

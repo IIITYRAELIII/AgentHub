@@ -32,6 +32,7 @@ export class DeferredInputService {
     conflictTask = null,
     clientUserMessageId = null,
     messageFingerprint = null,
+    clientProjectionIntent = null,
     steerTargetRunId = null,
     steerTargetTurnId = null,
     destination = "pending",
@@ -46,6 +47,11 @@ export class DeferredInputService {
     const normalizedClientUserMessageId = String(
       clientUserMessageId ?? normalizedTargetClientUserMessageId ?? "",
     ).trim() || null;
+    const normalizedClientProjectionIntent = String(clientProjectionIntent ?? "").trim().toLowerCase();
+    if (normalizedClientProjectionIntent
+      && !["conversation", "queue"].includes(normalizedClientProjectionIntent)) {
+      throw new Error("invalid client projection intent");
+    }
     const existing = normalizedClientUserMessageId && typeof d.store.values === "function"
       ? d.store.values().find((item) => (
         String(item.clientUserMessageId ?? "").trim() === normalizedClientUserMessageId
@@ -65,6 +71,9 @@ export class DeferredInputService {
       temporaryFiles,
       conflictKind,
       clientUserMessageId: normalizedClientUserMessageId,
+      ...(normalizedClientProjectionIntent
+        ? { clientProjectionIntent: normalizedClientProjectionIntent }
+        : {}),
       createdAt,
     };
     const rapidDuplicate = destination === "queued" && typeof d.store.values === "function"
@@ -103,6 +112,9 @@ export class DeferredInputService {
       allowForce,
       conflictKind,
       clientUserMessageId: normalizedClientUserMessageId,
+      ...(normalizedClientProjectionIntent
+        ? { clientProjectionIntent: normalizedClientProjectionIntent }
+        : {}),
       ...(String(steerTargetRunId ?? "").trim() ? {
         steerTargetRunId: String(steerTargetRunId).trim(),
       } : {}),
@@ -131,7 +143,13 @@ export class DeferredInputService {
         clientUserMessageId: normalizedClientUserMessageId,
         fingerprint,
         createdAt,
-        result: { pending: true, deferred: true },
+        result: {
+          pending: true,
+          deferred: true,
+          ...(normalizedClientProjectionIntent
+            ? { clientProjectionIntent: normalizedClientProjectionIntent }
+            : {}),
+        },
       } : null;
       const intake = await d.persistIntake(item, destination, fallbackReceipt);
       if (intake?.duplicate) {

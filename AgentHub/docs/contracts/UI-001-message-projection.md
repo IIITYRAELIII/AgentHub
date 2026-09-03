@@ -27,8 +27,9 @@ When the client snapshot says the Stream is idle, the exact submission is
 rendered immediately as one optimistic conversation card. A durable
 `message-intake` ACK keeps that same card visible through dispatch and labels it
 `Принято`, never `В очереди`. The durable deferred row with
-`conflictKind=message-intake` preserves that placement when the bounded receipt
-is absent during reload or reconciliation.
+`clientProjectionIntent=conversation` preserves that placement through an
+idle-to-busy admission race and when the bounded receipt is absent during
+reload or reconciliation.
 
 When the client snapshot says the Stream is busy, queue and steer submissions
 are rendered only by the queue surface above the composer. Durable queued,
@@ -41,12 +42,20 @@ exact provider acceptance. A new turn requires the exact command identity plus
 history projections reuse the same `clientUserMessageId` and cannot create a
 second card.
 
+If admission detects that an apparently idle Stream became busy, its canonical
+`task-running` result preserves the same optimistic conversation card according
+to its immutable `clientProjectionIntent=conversation`. A busy-origin command
+with `clientProjectionIntent=queue` remains queue-only if admission later finds
+the Stream idle. Attention-required and ambiguous commands remain queue-owned.
+Reconciliation never renders both forms and never loses the logical entity.
+
 Direct ACK, remote-result reconciliation and snapshot reconciliation use the
-same classifier. Receipt snapshots are bounded. Exact
-`conflictKind=message-intake` preserves an already accepted idle optimistic card
-after its receipt leaves the current window; every other unresolved durable
-input remains queue-owned. Text, time and display order cannot choose the
-surface or promote a command into history.
+same classifier. Receipt snapshots are bounded. The durable explicit projection
+intent restores the chosen surface after its receipt leaves the current window.
+Legacy rows without that field use exact `conflictKind=message-intake` only as a
+temporary compatibility boundary; remove it after every retained active command
+has an explicit projection intent. Text, time and display order cannot choose
+the surface or promote a command into history.
 The server applies exact turn-receipt aliases before exposing active or durable
 user items, so a root or steer cannot coexist with its accepted optimistic card.
 Service-only attachment wrappers such as `<image ...>` are removed from both the

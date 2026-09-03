@@ -1141,20 +1141,41 @@ function receiptHasAuthoritativeProviderAcceptance(receipt) {
   );
 }
 
+function clientProjectionIntent(value) {
+  const intent = String(value ?? "").trim().toLowerCase();
+  return ["conversation", "queue"].includes(intent) ? intent : "";
+}
+
 function queueHistoryReceiptProjection(receipt) {
   const base = messageReceiptProjection(receipt);
   const providerAccepted = receiptHasAuthoritativeProviderAcceptance(receipt);
+  const projectionIntent = clientProjectionIntent(receipt?.clientProjectionIntent);
+  const terminal = receipt?.cancelled === true
+    || receipt?.rejected === true
+    || receipt?.failed === true
+    || receipt?.completed === true;
+  const requiresQueue = receipt?.unknown === true
+    || receipt?.attentionRequired === true
+    || receipt?.paused === true;
   const immediateIntake = !providerAccepted
-    && receipt?.accepted === true
-    && String(receipt?.reason ?? receipt?.conflictKind ?? "").trim() === "message-intake";
+    && !terminal
+    && !requiresQueue
+    && (
+      projectionIntent === "conversation"
+      || (
+        !projectionIntent
+        && receipt?.accepted === true
+        && String(receipt?.reason ?? receipt?.conflictKind ?? "").trim() === "message-intake"
+      )
+    );
   const ownsQueue = !providerAccepted
     && !immediateIntake
-    && receipt?.cancelled !== true
-    && receipt?.rejected !== true
-    && receipt?.failed !== true
-    && receipt?.completed !== true
+    && !terminal
     && (
-      receipt?.deferred === true
+      requiresQueue
+      || projectionIntent === "queue"
+      || receipt?.pending === true
+      || receipt?.deferred === true
       || receipt?.queued === true
       || receipt?.dispatching === true
       || receipt?.steerPending === true
@@ -1171,8 +1192,10 @@ function queueHistoryReceiptProjection(receipt) {
         : base.deliveryState;
   return {
     ...base,
+    clientProjectionIntent: projectionIntent || null,
     providerAccepted,
     ownsDeferredQueue: ownsQueue,
+    ownsOptimisticConversation: immediateIntake,
     deliveryState,
     projectionState: ownsQueue
       ? "queued"
@@ -1205,8 +1228,13 @@ function deferredInputDeliveryState(deferredInput, messageReceipts = []) {
 
 function queuedCommandUsesQueue(deferredInput, messageReceipts = []) {
   const state = String(deferredInput?.state ?? "").trim();
+  if (["paused", "attention-required", "unknown"].includes(state)) return true;
+  if (String(deferredInput?.waitReason ?? "").trim() === "provider-start-unconfirmed") return true;
   const receipt = deferredInputReceipt(deferredInput, messageReceipts);
   if (receipt) return queueHistoryReceiptProjection(receipt).ownsDeferredQueue;
+  const projectionIntent = clientProjectionIntent(deferredInput?.clientProjectionIntent);
+  if (projectionIntent === "conversation") return false;
+  if (projectionIntent === "queue") return true;
   if (String(deferredInput?.conflictKind ?? "").trim() === "message-intake") return false;
   return [
     "pending",
@@ -1239,20 +1267,24 @@ function queuedCommandClientUserMessageIds(deferredInputs, messageReceipts = [])
 function deferredInputConversationProjection(deferredInput, messageReceipts = []) {
   const clientUserMessageId = deferredClientMessageId(deferredInput);
   if (!clientUserMessageId || queuedCommandUsesQueue(deferredInput, messageReceipts)) return null;
-  if (String(deferredInput?.conflictKind ?? "").trim() !== "message-intake") return null;
+  const receipt = deferredInputReceipt(deferredInput, messageReceipts);
+  if (receipt && !queueHistoryReceiptProjection(receipt).ownsOptimisticConversation) return null;
+  const projectionIntent = clientProjectionIntent(deferredInput?.clientProjectionIntent);
+  if (projectionIntent !== "conversation"
+    && String(deferredInput?.conflictKind ?? "").trim() !== "message-intake") return null;
   return {
     clientUserMessageId,
     submissionId: clientUserMessageId,
     projectionState: "optimistic",
     providerAccepted: false,
     deliveryState: "accepted",
+    clientProjectionIntent: projectionIntent || null,
     submittedAt: deferredInput?.createdAt ?? null,
   };
 }
 
 function optimisticSubmissionUsesQueue({ followUpMode = "", deferWhileRunning = false } = {}) {
-  return ["queue", "steer"].includes(String(followUpMode ?? "").trim())
-    || deferWhileRunning === true;
+  return String(followUpMode ?? "").trim() === "steer" || deferWhileRunning === true;
 }
 
 function messageAwaitsProviderAcceptance(message) {
