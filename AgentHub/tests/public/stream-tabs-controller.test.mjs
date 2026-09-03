@@ -785,6 +785,132 @@ test("Workspace sections separate active work and group stable project families"
   );
 });
 
+test("explicit Workspace folders keep members together and empty folders visible", async () => {
+  const { workspaceSections } = await streamTabsApi();
+  const sections = workspaceSections([
+    {
+      id: "urgent",
+      name: "Срочный проект",
+      folderName: "Клиенты",
+      tasks: [{ running: true, lastActivity: "2026-08-10T10:00:00Z" }],
+    },
+    {
+      id: "calm",
+      name: "Архивный проект",
+      folderName: "Клиенты",
+      tasks: [{ lastActivity: "2026-08-01T10:00:00Z" }],
+    },
+    {
+      id: "loose",
+      name: "Личное",
+      tasks: [{ running: true, lastActivity: "2026-08-10T10:00:00Z" }],
+    },
+  ], {
+    nowMs: Date.parse("2026-08-10T11:00:00Z"),
+    activeWindowMs: 1,
+    folderNames: ["Пустая"],
+  });
+
+  assert.deepEqual(Array.from(sections.active, (group) => group.id), ["loose"]);
+  assert.deepEqual(JSON.parse(JSON.stringify(sections.catalog.map((entry) => ({
+    type: entry.type,
+    name: entry.name,
+    items: entry.items?.map((item) => item.id) ?? [],
+  })))), [
+    { type: "folder", name: "Клиенты", items: ["calm", "urgent"] },
+    { type: "folder", name: "Пустая", items: [] },
+  ]);
+});
+
+test("Workspace folders open for selected, running, or unread children", async () => {
+  const { workspaceFolderOpen } = await streamTabsApi();
+  const folder = {
+    key: "folder:Клиенты",
+    name: "Клиенты",
+    items: [{ id: "one", tasks: [{ running: false, unread: false }] }],
+  };
+
+  assert.equal(workspaceFolderOpen(folder, ["folder:Клиенты"], "other"), false);
+  assert.equal(workspaceFolderOpen(folder, ["folder:Клиенты"], "one"), true);
+  assert.equal(workspaceFolderOpen({
+    ...folder,
+    items: [{ id: "one", tasks: [{ running: true }] }],
+  }, ["folder:Клиенты"], "other"), true);
+  assert.equal(workspaceFolderOpen({
+    ...folder,
+    items: [{ id: "one", tasks: [{ unread: true }] }],
+  }, ["folder:Клиенты"], "other"), true);
+});
+
+test("Workspace folder mutations preserve settings and creation can stay ungrouped", async () => {
+  const {
+    workspaceCreationSettings,
+    workspaceFolderMutation,
+    workspaceFolderNames,
+    workspaceFolderRenamePlan,
+  } = await streamTabsApi();
+  const workspace = {
+    id: "workspace-1",
+    settings: { workingDirectory: "project", taskPrefix: "HUB", releaseWorkflowEnabled: true },
+  };
+
+  assert.deepEqual(JSON.parse(JSON.stringify(
+    workspaceFolderMutation(workspace, "  Важные   проекты  "),
+  )), {
+    workspaceId: "workspace-1",
+    folderName: "Важные проекты",
+    settings: {
+      workingDirectory: "project",
+      taskPrefix: "HUB",
+      releaseWorkflowEnabled: true,
+      catalogFolder: "Важные проекты",
+    },
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(workspaceFolderMutation({
+    ...workspace,
+    settings: { ...workspace.settings, catalogFolder: "Старая" },
+  }, ""))), {
+    workspaceId: "workspace-1",
+    folderName: "",
+    settings: workspace.settings,
+  });
+  assert.deepEqual(Array.from(workspaceFolderNames([
+    { settings: { catalogFolder: "Бета" } },
+    { settings: { catalogFolder: "Альфа" } },
+  ], [" Гамма ", "Альфа"])), ["Альфа", "Бета", "Гамма"]);
+  assert.deepEqual(JSON.parse(JSON.stringify(workspaceCreationSettings({
+    workingDirectory: "  project  ",
+    taskPrefix: " HUB ",
+    releaseWorkflowEnabled: true,
+    folderName: "  Новые   проекты ",
+  }))), {
+    workingDirectory: "project",
+    taskPrefix: "HUB",
+    releaseWorkflowEnabled: true,
+    catalogFolder: "Новые проекты",
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(
+    workspaceCreationSettings({ workingDirectory: "project" }),
+  )), {
+    workingDirectory: "project",
+    taskPrefix: "",
+    releaseWorkflowEnabled: false,
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(workspaceFolderRenamePlan([
+    { id: "one", settings: { catalogFolder: "Клиенты" } },
+    { id: "two", settings: { catalogFolder: "Другое" } },
+  ], "Клиенты", " Заказчики ", ["Клиенты", "Другое"]))), {
+    fromFolderName: "Клиенты",
+    toFolderName: "Заказчики",
+    duplicateFolderName: "",
+    workspaceIds: ["one"],
+  });
+  assert.equal(
+    workspaceFolderRenamePlan([], "Клиенты", "другое", ["Клиенты", "Другое"]).duplicateFolderName,
+    "Другое",
+  );
+});
+
 test("activity rail markup exposes separate active and recent sections", async () => {
   const [html, appSource, clientSource] = await Promise.all([
     readFile(new URL("../../assets/web-app/index.html", import.meta.url), "utf8"),

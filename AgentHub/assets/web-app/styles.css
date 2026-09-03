@@ -4553,6 +4553,10 @@ html[data-view="dashboard"] .task-board-view {
   padding: 1rem;
 }
 
+.workspace-card-fields [hidden] {
+  display: none;
+}
+
 .workspace-card-fields label {
   display: grid;
   gap: 0.35rem;
@@ -4566,6 +4570,7 @@ html[data-view="dashboard"] .task-board-view {
 /* Поля брали оформление у браузера и оставались серыми в любой теме. Токены
    те же, что у остальных полей оболочки, поэтому диалог следует за темой. */
 .workspace-card-fields input,
+.workspace-card-fields select,
 .workspace-card-fields textarea {
   background: var(--surface-2);
   border: 1px solid var(--line);
@@ -4578,17 +4583,24 @@ html[data-view="dashboard"] .task-board-view {
   width: 100%;
 }
 
+.workspace-card-fields select option {
+  background: var(--surface-1);
+  color: var(--text);
+}
+
 .workspace-card-fields input::placeholder,
 .workspace-card-fields textarea::placeholder {
   color: var(--text-faint);
 }
 
 .workspace-card-fields input:hover,
+.workspace-card-fields select:hover,
 .workspace-card-fields textarea:hover {
   border-color: var(--line-strong);
 }
 
 .workspace-card-fields input:focus,
+.workspace-card-fields select:focus,
 .workspace-card-fields textarea:focus {
   border-color: var(--accent-line);
   box-shadow: var(--accent-glow);
@@ -4990,9 +5002,154 @@ html[data-surface="mobile"]
   text-transform: uppercase;
 }
 
-/* Внутри семейства строки сдвинуты — видно, что они принадлежат заголовку. */
+.task-rail-actions {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 0.25rem;
+}
+
+.task-folder-new {
+  color: var(--text-muted);
+}
+
+.task-folder-new:hover,
+.task-folder-new:focus-visible {
+  color: var(--accent);
+}
+
+.task-workspace-folder {
+  list-style: none;
+  margin: 0.58rem 0 0.34rem;
+}
+
+.task-workspace-folder-details {
+  background: color-mix(in srgb, var(--surface-1) 48%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  border-radius: var(--radius-md);
+  box-shadow: 0 0.3rem 1.2rem rgb(0 0 0 / 10%);
+  overflow: hidden;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease, background 0.14s ease;
+}
+
+.task-workspace-folder-summary {
+  align-items: center;
+  background: color-mix(in srgb, var(--surface-1) 70%, transparent);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: grid;
+  font-size: 0.72rem;
+  font-weight: 720;
+  gap: 0.42rem;
+  grid-template-columns: 0.65rem 1rem minmax(0, 1fr) auto;
+  list-style: none;
+  min-height: 2.15rem;
+  padding: 0.44rem 0.58rem;
+  text-transform: uppercase;
+}
+
+.task-workspace-folder-summary::-webkit-details-marker {
+  display: none;
+}
+
+.task-workspace-folder-summary:hover,
+.task-workspace-folder-summary:focus-visible {
+  background: var(--surface-2);
+  outline: none;
+}
+
+.task-workspace-folder-icon {
+  color: var(--text-faint);
+  font-size: 0.72rem;
+  transform: rotate(0deg);
+  transition: transform 0.14s ease;
+}
+
+.task-workspace-folder-glyph {
+  border: 1.5px solid currentColor;
+  border-radius: 0.18rem;
+  color: var(--accent);
+  height: 0.66rem;
+  opacity: 0.78;
+  position: relative;
+  width: 0.88rem;
+}
+
+.task-workspace-folder-glyph::before {
+  background: currentColor;
+  border-radius: 0.12rem 0.12rem 0 0;
+  content: "";
+  height: 0.18rem;
+  left: 0.06rem;
+  position: absolute;
+  top: -0.25rem;
+  width: 0.4rem;
+}
+
+.task-workspace-folder-details[open] .task-workspace-folder-icon {
+  transform: rotate(90deg);
+}
+
+.task-workspace-folder-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-workspace-folder-count {
+  align-items: center;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-faint);
+  display: inline-flex;
+  font-family: var(--font-numeric);
+  font-size: 0.66rem;
+  justify-content: center;
+  min-width: 1.45rem;
+  padding: 0.06rem 0.36rem;
+}
+
+.task-workspace-folder-list {
+  display: grid;
+  gap: 0.24rem;
+  margin: 0;
+  padding: 0.38rem 0.38rem 0.46rem;
+}
+
+.task-workspace-folder-empty {
+  align-items: center;
+  border: 1px dashed color-mix(in srgb, var(--accent-line) 58%, var(--line));
+  border-radius: calc(var(--radius-md) - 0.18rem);
+  color: var(--text-faint);
+  display: flex;
+  font-size: 0.68rem;
+  justify-content: center;
+  list-style: none;
+  min-height: 2.45rem;
+  padding: 0.45rem;
+  text-align: center;
+}
+
+.task-workspace-folder[data-running] .task-workspace-folder-summary,
+.task-workspace-folder[data-unread] .task-workspace-folder-summary,
+.task-workspace-folder[data-selected] .task-workspace-folder-summary {
+  color: var(--text);
+}
+
+.task-workspace-folder[data-workspace-folder-kind="folder"] .task-workspace-folder-details {
+  border-color: color-mix(in srgb, var(--accent-line) 68%, var(--line));
+}
+
+.task-workspace-folder[data-selected] .task-workspace-folder-details {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent),
+    0 0.4rem 1.4rem rgb(0 0 0 / 12%);
+}
+
+/* Внутри папки строки сдвинуты — видно, что они принадлежат заголовку. */
 .task-workspace-item[data-family-member] {
-  margin-left: 0.7rem;
+  margin: 0;
 }
 
 .task-workspace-item[data-workspace-kind="system"] {

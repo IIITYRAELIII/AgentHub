@@ -239,15 +239,29 @@
           <span>Workspaces</span>
           <span class="task-count" data-task-count hidden></span>
         </div>
-        <button type="button" class="icon-button task-new" data-action="workspace-new"
-          title="Новый Workspace" aria-label="Новый Workspace">
-          <svg data-phosphor-icon="plus" viewBox="0 0 256 256" aria-hidden="true">
-            <line x1="40" y1="128" x2="216" y2="128" fill="none" stroke="currentColor"
-              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
-            <line x1="128" y1="40" x2="128" y2="216" fill="none" stroke="currentColor"
-              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
-          </svg>
-        </button>
+        <span class="task-rail-actions">
+          <button type="button" class="icon-button task-folder-new" data-action="workspace-folder-new"
+            title="Новая пустая папка Workspace" aria-label="Новая пустая папка Workspace">
+            <svg data-phosphor-icon="folder-plus" viewBox="0 0 256 256" aria-hidden="true">
+              <path d="M216 208H40a8 8 0 0 1-8-8V64a8 8 0 0 1 8-8h60l28 32h88a8 8 0 0 1 8 8v104a8 8 0 0 1-8 8Z"
+                fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+                stroke-width="16"></path>
+              <line x1="128" y1="120" x2="128" y2="176" fill="none" stroke="currentColor"
+                stroke-linecap="round" stroke-width="16"></line>
+              <line x1="100" y1="148" x2="156" y2="148" fill="none" stroke="currentColor"
+                stroke-linecap="round" stroke-width="16"></line>
+            </svg>
+          </button>
+          <button type="button" class="icon-button task-new" data-action="workspace-new"
+            title="Новый Workspace" aria-label="Новый Workspace">
+            <svg data-phosphor-icon="plus" viewBox="0 0 256 256" aria-hidden="true">
+              <line x1="40" y1="128" x2="216" y2="128" fill="none" stroke="currentColor"
+                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+              <line x1="128" y1="40" x2="128" y2="216" fill="none" stroke="currentColor"
+                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+            </svg>
+          </button>
+        </span>
       </div>
       <div class="task-search">
         <svg data-phosphor-icon="magnifying-glass" viewBox="0 0 256 256" aria-hidden="true">
@@ -901,6 +915,12 @@
         <label>
           <span>Наименование</span>
           <input type="text" maxlength="120" data-workspace-card-name required>
+        </label>
+        <label data-workspace-card-folder-field>
+          <span>Папка</span>
+          <select data-workspace-card-folder>
+            <option value="">Без папки — общий список</option>
+          </select>
         </label>
         <label>
           <span>Комментарий</span>

@@ -24,7 +24,7 @@ export function createApplicationCommandService({ handlers }) {
   const required = [
     "selectTask", "createTask", "rotateStream", "renameTask", "archiveTask",
     "updateSetting", "cancelRun", "resolveApproval",
-    "renameWorkspace", "updateWorkspaceSettings", "updateWorkspaceDeveloperRules", "readWorkspaceReleasePlan", "completeWorkspaceRelease", "createWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "createStream",
+    "renameWorkspace", "updateWorkspaceSettings", "renameWorkspaceFolder", "updateWorkspaceDeveloperRules", "readWorkspaceReleasePlan", "completeWorkspaceRelease", "createWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "createStream",
     "renameStream", "archiveStream", "updateStreamSettings", "updateStreamDeveloperRules", "moveStream",
   ];
   for (const name of required) {
@@ -97,6 +97,10 @@ export function createApplicationCommandService({ handlers }) {
     .register("workspace.settings.update", {
       mutating: true, target: "none", lane: "global",
       handler: ({ payload }) => handlers.updateWorkspaceSettings(payload),
+    })
+    .register("workspace.folder.rename", {
+      mutating: true, target: "none", lane: "global",
+      handler: ({ payload }) => handlers.renameWorkspaceFolder(payload),
     })
     .register("workspace.developer-rules.update", {
       mutating: true, target: "none", lane: "global",

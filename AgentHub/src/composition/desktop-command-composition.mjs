@@ -65,6 +65,7 @@ export function createDesktopCommandComposition({
       resolveApproval: application.resolveApproval,
       renameWorkspace: workspaceActions.renameWorkspace,
       updateWorkspaceSettings: workspaceActions.updateWorkspaceSettings,
+      renameWorkspaceFolder: workspaceActions.renameWorkspaceFolder,
       updateWorkspaceDeveloperRules: workspaceActions.updateWorkspaceDeveloperRules,
       readWorkspaceReleasePlan: workspaceActions.readWorkspaceReleasePlan,
       completeWorkspaceRelease: workspaceActions.completeWorkspaceRelease,

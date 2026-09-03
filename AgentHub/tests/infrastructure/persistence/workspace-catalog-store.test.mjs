@@ -105,6 +105,35 @@ test("Other is seeded once and cannot be renamed", async (t) => {
   assert.throws(() => store.renameWorkspace(first.id, "Other"), /cannot be renamed/u);
 });
 
+test("Workspace folder rename updates every member atomically and preserves settings", async (t) => {
+  const store = await fixture(t);
+  const first = store.createWorkspace({
+    name: "Первый",
+    settings: { catalogFolder: "Клиенты", workingDirectory: "first", taskPrefix: "ONE" },
+  });
+  const second = store.createWorkspace({
+    name: "Второй",
+    settings: { catalogFolder: "Клиенты", workingDirectory: "second" },
+  });
+  const untouched = store.createWorkspace({
+    name: "Другой",
+    settings: { catalogFolder: "Внутренние" },
+  });
+
+  assert.deepEqual(store.renameWorkspaceFolder(" Клиенты ", " Заказчики "), {
+    fromFolderName: "Клиенты",
+    toFolderName: "Заказчики",
+    workspaceCount: 2,
+  });
+  assert.equal(store.workspace(first.id).settings.catalogFolder, "Заказчики");
+  assert.equal(store.workspace(first.id).settings.workingDirectory, "first");
+  assert.equal(store.workspace(first.id).settings.taskPrefix, "ONE");
+  assert.equal(store.workspace(second.id).settings.catalogFolder, "Заказчики");
+  assert.equal(store.workspace(second.id).settings.workingDirectory, "second");
+  assert.equal(store.workspace(untouched.id).settings.catalogFolder, "Внутренние");
+  assert.throws(() => store.renameWorkspaceFolder("", "Новая"), /names are required/u);
+});
+
 test("legacy Experiments name migrates to Other without replacing its Workspace", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspaces-other-migration-"));
   const databaseFile = path.join(directory, "journal.sqlite");

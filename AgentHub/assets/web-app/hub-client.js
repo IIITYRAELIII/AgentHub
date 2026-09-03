@@ -2818,17 +2818,36 @@ agentHub.on("task:rename", ({ id, title }) => runAction(async () => {
 agentHub.on("workspace:rename", ({ workspaceId, name }) => runAction(async () => applySnapshot(
   await control("rename-workspace", { workspaceId, name }),
 )));
+agentHub.on("workspace:folder-move", ({ workspaceId, folderName }) => runAction(async () => {
+  const workspace = (lastSnapshot?.workspaces ?? []).find((item) => item.id === workspaceId);
+  const mutation = window.AgentHubStreamTabs.workspaceFolderMutation(workspace, folderName);
+  if (!mutation) return;
+  applySnapshot(await control("update-workspace-settings", {
+    workspaceId: mutation.workspaceId,
+    settings: mutation.settings,
+  }));
+  agentHub.toast(mutation.folderName
+    ? `Workspace перемещён в папку «${mutation.folderName}»`
+    : "Workspace убран из папки");
+}));
+agentHub.on("workspace:folder-rename", ({ fromFolderName, toFolderName }) => runAction(async () => {
+  const snapshot = await control("rename-workspace-folder", { fromFolderName, toFolderName });
+  applySnapshot(snapshot);
+  agentHub.renameWorkspaceFolderCatalog(fromFolderName, toFolderName);
+  agentHub.toast(`Папка «${fromFolderName}» переименована в «${toFolderName}»`);
+}));
 agentHub.on("workspace:create", ({
-  name, comment, workingDirectory, taskPrefix, rules, releaseWorkflowEnabled, beforeColumnId,
+  name, folderName, comment, workingDirectory, taskPrefix, rules, releaseWorkflowEnabled, beforeColumnId,
 }) => runAction(async () => {
   let snapshot = await control("create-workspace", {
     name,
     comment,
-    settings: {
-      workingDirectory: String(workingDirectory ?? "").trim(),
-      taskPrefix: String(taskPrefix ?? "").trim(),
-      releaseWorkflowEnabled: releaseWorkflowEnabled === true,
-    },
+    settings: window.AgentHubStreamTabs.workspaceCreationSettings({
+      workingDirectory,
+      taskPrefix,
+      releaseWorkflowEnabled,
+      folderName,
+    }),
   });
   const workspaceId = snapshot.createdWorkspace?.workspace?.id;
   if (workspaceId) {

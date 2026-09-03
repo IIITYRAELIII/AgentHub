@@ -605,6 +605,73 @@
   const WORKSPACE_ACTIVE_LIMIT = 6;
   const WORKSPACE_ACTIVE_WINDOW_MS = 3 * 60 * 60 * 1000;
   const WORKSPACE_GROUP_MIN_SIZE = 3;
+  const WORKSPACE_FOLDER_MAX_LENGTH = 80;
+
+  function normalizeWorkspaceFolderName(value) {
+    return String(value ?? "").replace(/\s+/gu, " ").trim().slice(0, WORKSPACE_FOLDER_MAX_LENGTH);
+  }
+
+  function workspaceFolderName(group) {
+    return normalizeWorkspaceFolderName(
+      group?.folderName ?? group?.workspaceSettings?.catalogFolder ?? group?.settings?.catalogFolder,
+    );
+  }
+
+  function workspaceFolderNames(workspaces, declaredNames = []) {
+    return [...new Set([
+      ...[...(workspaces ?? [])]
+        .map((workspace) => normalizeWorkspaceFolderName(workspace?.settings?.catalogFolder)),
+      ...[...(declaredNames ?? [])].map(normalizeWorkspaceFolderName),
+    ].filter(Boolean))]
+      .sort((left, right) => left.localeCompare(right, "ru"));
+  }
+
+  function workspaceFolderMutation(workspace, folderName) {
+    const workspaceId = String(workspace?.id ?? "").trim();
+    if (!workspaceId) return null;
+    const settings = {
+      ...(workspace?.settings && typeof workspace.settings === "object" ? workspace.settings : {}),
+    };
+    const normalized = normalizeWorkspaceFolderName(folderName);
+    if (normalized) settings.catalogFolder = normalized;
+    else delete settings.catalogFolder;
+    return { workspaceId, settings, folderName: normalized };
+  }
+
+  function workspaceCreationSettings({
+    workingDirectory = "",
+    taskPrefix = "",
+    releaseWorkflowEnabled = false,
+    folderName = "",
+  } = {}) {
+    const settings = {
+      workingDirectory: String(workingDirectory ?? "").trim(),
+      taskPrefix: String(taskPrefix ?? "").trim(),
+      releaseWorkflowEnabled: releaseWorkflowEnabled === true,
+    };
+    const normalizedFolderName = normalizeWorkspaceFolderName(folderName);
+    if (normalizedFolderName) settings.catalogFolder = normalizedFolderName;
+    return settings;
+  }
+
+  function workspaceFolderRenamePlan(workspaces, currentName, requestedName, folderNames = []) {
+    const fromFolderName = normalizeWorkspaceFolderName(currentName);
+    const toFolderName = normalizeWorkspaceFolderName(requestedName);
+    if (!fromFolderName || !toFolderName || fromFolderName === toFolderName) return null;
+    const duplicate = workspaceFolderNames([], folderNames).find((name) => (
+      name !== fromFolderName
+      && name.toLocaleLowerCase("ru") === toFolderName.toLocaleLowerCase("ru")
+    ));
+    return {
+      fromFolderName,
+      toFolderName,
+      duplicateFolderName: duplicate ?? "",
+      workspaceIds: [...(workspaces ?? [])]
+        .filter((workspace) => workspaceFolderName(workspace) === fromFolderName)
+        .map((workspace) => String(workspace?.id ?? "").trim())
+        .filter(Boolean),
+    };
+  }
 
   function workspaceFamilyKey(group) {
     const name = String(group?.name ?? "").trim();
@@ -617,6 +684,7 @@
     activeLimit = WORKSPACE_ACTIVE_LIMIT,
     activeWindowMs = WORKSPACE_ACTIVE_WINDOW_MS,
     minGroupSize = WORKSPACE_GROUP_MIN_SIZE,
+    folderNames = [],
   } = {}) {
     const ordered = orderWorkspaceGroups(groups);
     const active = [];
@@ -624,20 +692,47 @@
     for (const group of ordered) {
       const running = (group?.tasks ?? []).some((task) => task?.running);
       const fresh = nowMs - workspaceGroupLastActivity(group) <= activeWindowMs;
-      if ((running || fresh) && active.length < activeLimit) active.push(group);
+      /* Явная папка — пользовательская структура каталога. Не вынимаем её
+         элементы в активную ленту: папка остаётся целой, а running/unread
+         всё равно поднимают внимание на её заголовок. */
+      if (!workspaceFolderName(group) && (running || fresh) && active.length < activeLimit) active.push(group);
       else rest.push(group);
     }
 
-    const families = new Map();
+    const manualFolders = new Map(
+      workspaceFolderNames([], folderNames).map((name) => [name, []]),
+    );
+    const unassigned = [];
     for (const group of rest) {
+      const folderName = workspaceFolderName(group);
+      if (folderName) {
+        const items = manualFolders.get(folderName) ?? [];
+        items.push({ ...group, shortName: group.name });
+        manualFolders.set(folderName, items);
+      } else {
+        unassigned.push(group);
+      }
+    }
+
+    const families = new Map();
+    for (const group of unassigned) {
       const key = workspaceFamilyKey(group);
       if (!key) continue;
       families.set(key, (families.get(key) ?? 0) + 1);
     }
 
-    const catalog = [];
+    const catalog = [...manualFolders.entries()]
+      .sort(([left], [right]) => left.localeCompare(right, "ru"))
+      .map(([name, items]) => ({
+        type: "folder",
+        key: `folder:${name}`,
+        name,
+        items: items.sort((left, right) => (
+          String(left?.name ?? "").localeCompare(String(right?.name ?? ""), "ru")
+        )),
+      }));
     const opened = new Map();
-    for (const group of [...rest].sort((left, right) => (
+    for (const group of [...unassigned].sort((left, right) => (
       String(left?.name ?? "").localeCompare(String(right?.name ?? ""), "ru")
     ))) {
       const key = workspaceFamilyKey(group);
@@ -647,7 +742,7 @@
       }
       let family = opened.get(key);
       if (!family) {
-        family = { type: "family", name: key, items: [] };
+        family = { type: "family", key: `family:${key}`, name: key, items: [] };
         opened.set(key, family);
         catalog.push(family);
       }
@@ -657,6 +752,21 @@
       });
     }
     return { active, catalog };
+  }
+
+  function workspaceFolderOpen(folder, collapsedNames = [], selectedWorkspaceId = "") {
+    const collapsed = new Set([...(collapsedNames ?? [])]
+      .map((value) => String(value ?? "").trim())
+      .filter(Boolean));
+    const selectedId = String(selectedWorkspaceId ?? "").trim();
+    const items = Array.isArray(folder?.items) ? folder.items : [];
+    const needsAttention = items.some((item) => (
+      String(item?.id ?? "") === selectedId
+      || (item?.tasks ?? []).some((task) => task?.running || task?.unread)
+    ));
+    const name = String(folder?.name ?? "").trim();
+    const key = String(folder?.key ?? name).trim();
+    return needsAttention || !(collapsed.has(key) || collapsed.has(name));
   }
 
   function orderWorkspaceStreams(streams, mode, pinnedIds = []) {
@@ -1469,6 +1579,12 @@
     isExactActiveUserTurn,
     orderWorkspaceGroups,
     workspaceSections,
+    workspaceFolderOpen,
+    workspaceFolderNames,
+    workspaceFolderMutation,
+    workspaceFolderRenamePlan,
+    workspaceCreationSettings,
+    normalizeWorkspaceFolderName,
     resolveTaskHierarchy,
     STREAM_CARD_MAX_WIDTH,
     STREAM_CARD_MIN_WIDTH,

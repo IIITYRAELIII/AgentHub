@@ -215,6 +215,10 @@ function safeIdentifier(value, name) {
   return id;
 }
 
+function workspaceFolderName(value) {
+  return String(value ?? "").replace(/\s+/gu, " ").trim().slice(0, 80);
+}
+
 function developerRuleScope(value) {
   const scope = String(value ?? "").trim().toLowerCase();
   if (!DEVELOPER_RULE_SCOPES.has(scope)) throw new Error(`invalid developer rule scope: ${value}`);
@@ -484,6 +488,39 @@ export class WorkspaceCatalogStore {
       UPDATE hub_workspaces SET settings_json = ?, updated_at_ms = ? WHERE id = ?
     `).run(JSON.stringify(nextSettings), this.#nowMs(), id);
     return this.workspace(id);
+  }
+
+  renameWorkspaceFolder(fromFolderName, toFolderName) {
+    const fromName = workspaceFolderName(fromFolderName);
+    const toName = workspaceFolderName(toFolderName);
+    if (!fromName || !toName) throw new Error("workspace folder names are required");
+    if (fromName === toName) {
+      return { fromFolderName: fromName, toFolderName: toName, workspaceCount: 0 };
+    }
+    const rows = this.#database.prepare("SELECT id, settings_json FROM hub_workspaces").all();
+    const matching = rows.flatMap((row) => {
+      let settings = {};
+      try { settings = JSON.parse(String(row.settings_json ?? "{}")); } catch { settings = {}; }
+      if (!settings || typeof settings !== "object" || Array.isArray(settings)) settings = {};
+      if (workspaceFolderName(settings.catalogFolder) !== fromName) return [];
+      return [{ id: String(row.id), settings: { ...settings, catalogFolder: toName } }];
+    });
+    if (matching.length) {
+      const updatedAtMs = this.#nowMs();
+      const update = this.#database.prepare(`
+        UPDATE hub_workspaces SET settings_json = ?, updated_at_ms = ? WHERE id = ?
+      `);
+      this.#transaction(() => {
+        for (const workspace of matching) {
+          update.run(JSON.stringify(workspace.settings), updatedAtMs, workspace.id);
+        }
+      });
+    }
+    return {
+      fromFolderName: fromName,
+      toFolderName: toName,
+      workspaceCount: matching.length,
+    };
   }
 
   releaseWorkflowEnabledForThread(value) {

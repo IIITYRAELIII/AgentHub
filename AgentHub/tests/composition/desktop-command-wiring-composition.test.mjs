@@ -15,6 +15,7 @@ function fixture({ sourceSurvives = false } = {}) {
       workspace: (id) => (workspaces.has(id) ? { id } : null),
     },
     workspaceCatalogService: {
+      renameWorkspaceFolder: (params) => (calls.push(["folder", params]), params),
       createWorkspaceFromStream: () => {
         workspaces.add("created");
         if (!sourceSurvives) workspaces.delete("source");
@@ -80,4 +81,19 @@ test("archiving a Stream is blocked while one of its Threads is running", async 
     actions.archiveStream({ streamId: "stream" }),
     /завершите активный ход/u,
   );
+});
+
+test("renaming a Workspace folder uses one Workspace mutation", async () => {
+  const { actions, calls } = fixture();
+  assert.deepEqual(await actions.renameWorkspaceFolder({
+    fromFolderName: "Клиенты",
+    toFolderName: "Заказчики",
+  }), {
+    fromFolderName: "Клиенты",
+    toFolderName: "Заказчики",
+  });
+  assert.deepEqual(calls, [["folder", {
+    fromFolderName: "Клиенты",
+    toFolderName: "Заказчики",
+  }]]);
 });

@@ -39,6 +39,10 @@ export class WorkspaceCatalogService {
     return workspace;
   }
 
+  renameWorkspaceFolder({ fromFolderName, toFolderName } = {}) {
+    return this.#store.renameWorkspaceFolder(fromFolderName, toFolderName);
+  }
+
   workspaceDeveloperRules({ workspaceId } = {}) {
     return this.#store.workspaceDeveloperRules(workspaceId);
   }

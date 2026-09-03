@@ -167,6 +167,20 @@ test("Desktop application router exposes runtime health without a Web server", a
   assert.deepEqual(result.params, { maxResponseBytes: 3_500_000 });
 });
 
+test("Desktop application router renames a Workspace folder atomically", async () => {
+  const calls = [];
+  const control = router(calls);
+  await control.handleDesktopControl({
+    action: "rename-workspace-folder",
+    params: { fromFolderName: "Клиенты", toFolderName: "Заказчики" },
+    context: { source: "desktop", userId: "7" },
+  });
+  assert.deepEqual(calls.map(([type, payload]) => [type, payload]), [[
+    "workspace.folder.rename",
+    { fromFolderName: "Клиенты", toFolderName: "Заказчики", maxResponseBytes: 3_500_000 },
+  ]]);
+});
+
 test("Desktop application router forwards diagnostic events", async () => {
   const control = router([]);
   const result = await control.handleDesktopControl({
