@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 
 import {
   prepareTaskContourSource,
+  taskSparseCheckoutSelection,
   TaskGitWorkspaceService,
 } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
 import { canonicalPath } from "../../../src/infrastructure/filesystem/config.mjs";
@@ -207,4 +208,146 @@ test("a numbered Task uses its number as the exact Git branch name", async (cont
 
   assert.equal(numbered.branch, "HUB-11");
   assert.equal(await git(numbered.projectRoot, "branch", "--show-current"), "HUB-11");
+});
+
+test("a new Task worktree sparsely materializes only its selected project subtree", async (context) => {
+  const root = await repository(context);
+  await mkdir(path.join(root, "AgentHub"));
+  await mkdir(path.join(root, "Other"));
+  await writeFile(path.join(root, "AgentHub", "package.json"), "{}\n", "utf8");
+  await writeFile(path.join(root, "Other", "clean.txt"), "other\n", "utf8");
+  await git(root, "add", "AgentHub/package.json", "Other/clean.txt");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "projects");
+  const dataDir = path.join(root, "..", `${path.basename(root)}-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const service = new TaskGitWorkspaceService({ dataDir });
+  const selectedRoot = path.join(root, "AgentHub");
+
+  const workspace = await service.prepare({
+    taskId: "88888888-8888-4888-8888-888888888888",
+    taskNumber: "HUB-142",
+    projectRoot: selectedRoot,
+  });
+  const taskRoot = await git(workspace.projectRoot, "rev-parse", "--show-toplevel");
+  assert.equal(workspace.projectRoot, canonicalPath(path.join(taskRoot, "AgentHub")));
+  assert.equal(
+    await service.managedRepositoryRoot(workspace.projectRoot, {
+      taskId: workspace.taskId,
+      taskNumber: "HUB-142",
+    }),
+    canonicalPath(root),
+  );
+  assert.equal(await git(taskRoot, "sparse-checkout", "list"), "AgentHub");
+  assert.equal(await readFile(path.join(workspace.projectRoot, "package.json"), "utf8"), "{}\n");
+  await assert.rejects(() => readFile(path.join(taskRoot, "Other", "clean.txt"), "utf8"), /ENOENT/u);
+  await assert.rejects(() => git(root, "sparse-checkout", "list"), /not sparse/u);
+  const dev = await service.prepareDev(root);
+  await assert.rejects(() => git(dev.projectRoot, "sparse-checkout", "list"), /not sparse/u);
+
+  const repeated = await service.prepare({
+    taskId: workspace.taskId,
+    taskNumber: "HUB-142",
+    projectRoot: workspace.projectRoot,
+  });
+  assert.equal(repeated.projectRoot, workspace.projectRoot);
+  assert.equal(repeated.branch, workspace.branch);
+  assert.equal(await git(taskRoot, "sparse-checkout", "list"), "AgentHub");
+});
+
+test("repository-root Tasks use explicit all-path scope without guessing a project subtree", async (context) => {
+  const root = await repository(context);
+  await mkdir(path.join(root, "AgentHub"));
+  await writeFile(path.join(root, "AgentHub", "package.json"), "{}\n", "utf8");
+  await git(root, "add", "AgentHub/package.json");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "project");
+  const dataDir = path.join(root, "..", `${path.basename(root)}-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const service = new TaskGitWorkspaceService({ dataDir });
+
+  const workspace = await service.prepare({
+    taskId: "99999999-9999-4999-8999-999999999999",
+    projectRoot: root,
+  });
+
+  assert.equal(workspace.projectRoot, canonicalPath(await git(workspace.projectRoot, "rev-parse", "--show-toplevel")));
+  assert.equal(await git(workspace.projectRoot, "sparse-checkout", "list"), "/*");
+  assert.equal(await readFile(path.join(workspace.projectRoot, "AgentHub", "package.json"), "utf8"), "{}\n");
+});
+
+test("existing managed worktree migration preserves dirty paths branch base and repeatability", async (context) => {
+  const root = await repository(context);
+  await mkdir(path.join(root, "AgentHub"));
+  await mkdir(path.join(root, "Other"));
+  await writeFile(path.join(root, "AgentHub", "package.json"), "{}\n", "utf8");
+  await writeFile(path.join(root, "Other", "dirty.txt"), "clean\n", "utf8");
+  await writeFile(path.join(root, "Other", "excluded.txt"), "excluded\n", "utf8");
+  await git(root, "add", "AgentHub/package.json", "Other/dirty.txt", "Other/excluded.txt");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "projects");
+  const dataDir = path.join(root, "..", `${path.basename(root)}-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const service = new TaskGitWorkspaceService({ dataDir });
+  const taskId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const legacy = await service.prepare({ taskId, taskNumber: "HUB-142", projectRoot: root });
+  const taskRoot = await git(legacy.projectRoot, "rev-parse", "--show-toplevel");
+  await git(taskRoot, "sparse-checkout", "disable");
+  await writeFile(path.join(taskRoot, "AgentHub", "package.json"), "{\"dirty\":true}\n", "utf8");
+  await writeFile(path.join(taskRoot, "Other", "dirty.txt"), "dirty outside scope\n", "utf8");
+  await writeFile(path.join(taskRoot, "Other", "untracked.txt"), "untracked outside scope\n", "utf8");
+  const statusBefore = await git(taskRoot, "status", "--porcelain=v1", "--untracked-files=all");
+  const branchBefore = await git(taskRoot, "branch", "--show-current");
+  const headBefore = await git(taskRoot, "rev-parse", "HEAD^{commit}");
+  const baseBefore = legacy.baseCommit;
+
+  const migrated = await service.prepare({
+    taskId,
+    taskNumber: "HUB-142",
+    projectRoot: path.join(root, "AgentHub"),
+  });
+  assert.equal(await git(taskRoot, "sparse-checkout", "list"), "AgentHub");
+  assert.equal(await git(taskRoot, "status", "--porcelain=v1", "--untracked-files=all"), statusBefore);
+  assert.equal(await git(taskRoot, "branch", "--show-current"), branchBefore);
+  assert.equal(await git(taskRoot, "rev-parse", "HEAD^{commit}"), headBefore);
+  assert.equal(migrated.baseCommit, baseBefore);
+  assert.equal(await readFile(path.join(taskRoot, "AgentHub", "package.json"), "utf8"), "{\"dirty\":true}\n");
+  assert.equal(await readFile(path.join(taskRoot, "Other", "dirty.txt"), "utf8"), "dirty outside scope\n");
+  assert.equal(await readFile(path.join(taskRoot, "Other", "untracked.txt"), "utf8"), "untracked outside scope\n");
+  await assert.rejects(() => readFile(path.join(taskRoot, "Other", "excluded.txt"), "utf8"), /ENOENT/u);
+
+  const repeated = await service.prepare({
+    taskId,
+    taskNumber: "HUB-142",
+    projectRoot: migrated.projectRoot,
+  });
+  assert.equal(repeated.projectRoot, migrated.projectRoot);
+  assert.equal(await git(taskRoot, "status", "--porcelain=v1", "--untracked-files=all"), statusBefore);
+
+  const snapshot = await service.snapshot({
+    taskId,
+    taskNumber: "HUB-142",
+    projectRoot: migrated.projectRoot,
+  });
+  assert.deepEqual(snapshot.changedFiles.map((item) => item.path).sort(), [
+    "AgentHub/package.json",
+    "Other/dirty.txt",
+    "Other/untracked.txt",
+  ]);
+});
+
+test("sparse scope normalizes Windows paths and rejects repository escape", () => {
+  const root = process.platform === "win32" ? "C:\\work\\repo" : "/work/repo";
+  const child = path.join(root, "AgentHub", "src");
+  assert.deepEqual(taskSparseCheckoutSelection(root, child), {
+    cone: true,
+    relativePath: path.join("AgentHub", "src"),
+    scope: "AgentHub/src",
+  });
+  assert.deepEqual(taskSparseCheckoutSelection(root, root), {
+    cone: false,
+    relativePath: "",
+    scope: "/*",
+  });
+  assert.throws(
+    () => taskSparseCheckoutSelection(root, path.resolve(root, "..", "escape")),
+    /outside its Git worktree/u,
+  );
 });

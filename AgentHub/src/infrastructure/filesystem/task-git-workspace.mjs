@@ -72,6 +72,20 @@ function pathInside(root, candidate) {
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
 
+export function taskSparseCheckoutSelection(repositoryWorktreeRoot, projectRoot) {
+  const root = canonicalPath(repositoryWorktreeRoot);
+  const candidate = canonicalPath(projectRoot);
+  if (!pathInside(root, candidate)) {
+    throw new Error(`Task project root is outside its Git worktree: ${candidate}`);
+  }
+  const relativePath = path.relative(root, candidate);
+  return {
+    relativePath,
+    cone: Boolean(relativePath),
+    scope: relativePath ? relativePath.split(path.sep).join("/") : "/*",
+  };
+}
+
 function samePath(left, right) {
   const first = canonicalPath(left);
   const second = canonicalPath(right);
@@ -136,7 +150,7 @@ async function worktreeForBranch(repositoryRootValue, branch) {
 async function commitDirtyWorktree(worktreeRoot, message) {
   const dirty = await runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: worktreeRoot });
   if (!dirty) return false;
-  await runGit(["add", "-A", "--", "."], { cwd: worktreeRoot });
+  await runGit(["add", "--sparse", "-A", "--", "."], { cwd: worktreeRoot });
   if (await gitMaybe(["diff", "--cached", "--quiet"], { cwd: worktreeRoot }) !== null) return false;
   await runGit([
     "-c", "user.name=Agent Hub",
@@ -154,23 +168,66 @@ export class TaskGitWorkspaceService {
     this.devBranch = String(devBranch ?? TASK_DEV_BRANCH).trim() || TASK_DEV_BRANCH;
   }
 
-  async #ensureBranchWorktree({ repositoryRoot: repoRoot, branch, worktreeRoot, startCommit, managedRoot }) {
+  async #ensureBranchWorktree({
+    repositoryRoot: repoRoot,
+    branch,
+    worktreeRoot,
+    startCommit,
+    managedRoot,
+    noCheckout = false,
+  }) {
     const existing = await worktreeForBranch(repoRoot, branch);
     if (existing) {
       if (!pathInside(managedRoot, existing)) {
         throw new Error(`Agent Hub branch ${branch} is checked out outside its managed worktree: ${existing}`);
       }
-      return canonicalPath(existing);
+      return { root: canonicalPath(existing), created: false };
     }
     await mkdir(path.dirname(worktreeRoot), { recursive: true });
     const exists = await branchExists(repoRoot, branch);
     await runGit([
       "worktree", "add",
+      ...(noCheckout ? ["--no-checkout"] : []),
       ...(exists ? [] : ["-b", branch]),
       worktreeRoot,
       ...(exists ? [branch] : [startCommit]),
     ], { cwd: repoRoot, timeoutMs: 120_000 });
-    return canonicalPath(worktreeRoot);
+    return { root: canonicalPath(worktreeRoot), created: true };
+  }
+
+  async #ensureSparseTaskWorktree({ worktreeRoot: root, selection, created }) {
+    const statusArgs = ["status", "--porcelain=v1", "-z", "--untracked-files=all"];
+    const [branchBefore, headBefore, statusBefore] = await Promise.all([
+      runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: root }),
+      runGit(["rev-parse", "HEAD^{commit}"], { cwd: root }),
+      runGit(statusArgs, { cwd: root }),
+    ]);
+    await runGit([
+      "sparse-checkout", "set", selection.cone ? "--cone" : "--no-cone", "--", selection.scope,
+    ], {
+      cwd: root,
+      timeoutMs: 120_000,
+    });
+    if (created) await runGit(["checkout"], { cwd: root, timeoutMs: 120_000 });
+    const [branchAfter, headAfter, statusAfter, configured] = await Promise.all([
+      runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: root }),
+      runGit(["rev-parse", "HEAD^{commit}"], { cwd: root }),
+      runGit(statusArgs, { cwd: root }),
+      runGit(["sparse-checkout", "list"], { cwd: root }),
+    ]);
+    if (branchAfter !== branchBefore || headAfter !== headBefore) {
+      throw new Error("Task sparse-checkout changed its branch or HEAD");
+    }
+    if (!created && statusAfter !== statusBefore) {
+      throw new Error("Task sparse-checkout changed existing dirty worktree state");
+    }
+    if (created && statusAfter) {
+      throw new Error("New Task sparse worktree is not clean");
+    }
+    const scopes = configured.split(/\r?\n/u).filter(Boolean);
+    if (scopes.length !== 1 || scopes[0] !== selection.scope) {
+      throw new Error(`Task sparse-checkout scope mismatch: expected ${selection.scope}, got ${configured || "<empty>"}`);
+    }
   }
 
   async #alignExistingTaskBranch({ repositoryRoot: repoRoot, worktreeRoot: root, branch }) {
@@ -189,7 +246,7 @@ export class TaskGitWorkspaceService {
     const devLock = path.join(this.dataDir, "locks", `task-git-dev-${repoKey}`);
     return withInterprocessLocks([devLock], async () => {
       const mainCommit = await preferredMainCommit(repoRoot);
-      const devRoot = await this.#ensureBranchWorktree({
+      const { root: devRoot } = await this.#ensureBranchWorktree({
         repositoryRoot: repoRoot,
         branch: this.devBranch,
         worktreeRoot: path.join(this.devWorktreesRoot, repoKey),
@@ -207,6 +264,9 @@ export class TaskGitWorkspaceService {
 
   async prepare({ taskId, taskNumber = null, projectRoot } = {}) {
     const id = normalizedTaskId(taskId);
+    const selectedRoot = canonicalPath(projectRoot);
+    const selectedWorktreeRoot = await worktreeRoot(selectedRoot);
+    const selection = taskSparseCheckoutSelection(selectedWorktreeRoot, selectedRoot);
     const dev = await this.prepareDev(projectRoot);
     const repoKey = taskRepositoryKey(dev.repositoryRoot);
     const branch = taskBranchName(id, dev.repositoryRoot, taskNumber);
@@ -222,18 +282,29 @@ export class TaskGitWorkspaceService {
       worktreeRoot: taskRootPath,
       branch,
     });
-    const taskRoot = await this.#ensureBranchWorktree({
+    const taskWorktree = await this.#ensureBranchWorktree({
       repositoryRoot: dev.repositoryRoot,
       branch,
       worktreeRoot: taskRootPath,
       managedRoot: path.join(this.taskWorktreesRoot, id),
       startCommit: baseCommit,
+      noCheckout: true,
     });
+    const taskRoot = taskWorktree.root;
+    await this.#ensureSparseTaskWorktree({
+      worktreeRoot: taskRoot,
+      selection,
+      created: taskWorktree.created,
+    });
+    const scopedProjectRoot = canonicalPath(path.resolve(taskRoot, selection.relativePath));
+    if (!pathInside(taskRoot, scopedProjectRoot)) {
+      throw new Error("Task project root escaped its managed worktree");
+    }
     const headCommit = await runGit(["rev-parse", "HEAD^{commit}"], { cwd: taskRoot });
     return {
       taskId: id,
       repositoryRoot: dev.repositoryRoot,
-      projectRoot: taskRoot,
+      projectRoot: scopedProjectRoot,
       branch,
       baseRef,
       baseCommit,
@@ -250,7 +321,7 @@ export class TaskGitWorkspaceService {
     if (!pathInside(this.taskWorktreesRoot, candidate)) return null;
     try {
       const taskRoot = await worktreeRoot(candidate);
-      if (!samePath(taskRoot, candidate) || !pathInside(this.taskWorktreesRoot, taskRoot)) return null;
+      if (!pathInside(taskRoot, candidate) || !pathInside(this.taskWorktreesRoot, taskRoot)) return null;
       const ownerTaskId = path.relative(this.taskWorktreesRoot, taskRoot).split(path.sep)[0];
       if (normalizedTaskId(ownerTaskId) !== id) return null;
       const repoRoot = await repositoryRoot(taskRoot);
@@ -265,16 +336,17 @@ export class TaskGitWorkspaceService {
 
   async snapshot({ taskId, taskNumber = null, projectRoot, turnId = null, summary = "" } = {}) {
     const workspace = await this.prepare({ taskId, taskNumber, projectRoot });
+    const taskRoot = await worktreeRoot(workspace.projectRoot);
     const suffix = String(turnId ?? "").trim() || randomUUID();
     await commitDirtyWorktree(
-      workspace.projectRoot,
+      taskRoot,
       `task(${workspace.taskId.slice(0, 8)}): ${String(summary ?? "").trim() || `snapshot ${suffix}`}`,
     );
-    const headCommit = await runGit(["rev-parse", "HEAD^{commit}"], { cwd: workspace.projectRoot });
+    const headCommit = await runGit(["rev-parse", "HEAD^{commit}"], { cwd: taskRoot });
     const diff = await runGit([
       "-c", "core.quotePath=false",
       "diff", "--name-status", "--find-renames", workspace.baseCommit, headCommit, "--",
-    ], { cwd: workspace.projectRoot });
+    ], { cwd: taskRoot });
     return {
       ...workspace,
       headCommit,
