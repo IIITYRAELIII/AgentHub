@@ -233,7 +233,9 @@ export function createCodexObservabilityComposition({
     discoverHistoricalThreads: () => discoverCodexRollouts(),
     discoverSupplementalThreads: () => discoverCodexSubagentRollouts(),
     scanHistoricalFile: scanCodexHistoricalRolloutInWorker,
+    shouldRunAudit: isHistoricalBackfillIdle,
     shouldRunHistoricalBackfill: isHistoricalBackfillIdle,
+    persistProgress: saveState,
     prepareHistoricalBackfill: async () => {
       const result = await backupCodexHistoricalReconciliation({
         databaseFile: path.join(config.dataDir, "journal.sqlite"),

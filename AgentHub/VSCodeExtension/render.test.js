@@ -1547,12 +1547,21 @@ test("chat refreshes every visible external run without rebuilding a second snap
   assert.match(client, /let visibleStreamTaskIds = new Set\(\)/u);
   assert.match(client, /async function refreshVisibleTaskHistories[\s\S]*Promise\.all\(\[\.\.\.visibleIds\]/u);
   assert.match(client, /const externalLive = currentTask\.running[\s\S]*executionOwner/u);
+  assert.match(client, /const chatVisible = document\.documentElement\.dataset\.view === "chat"/u);
+  assert.match(client, /const refreshExternalHistory = chatVisible && externalLive/u);
   assert.match(client, /refreshExternalHistory[\s\S]*enqueueTaskHistoryLoad\(id, identity/u);
   assert.match(client, /function enqueueTaskHistoryLoad[\s\S]*control\("task-history"[\s\S]*skipSnapshot: true/u);
   assert.match(client, /includeActive: false[\s\S]*knownVersion: historyPageByTask/u);
   assert.match(refresh, /void refreshVisibleTaskHistories\(previousSnapshot, snapshot\)\.catch/u);
   assert.doesNotMatch(refresh, /await refreshVisibleTaskHistories\(previousSnapshot, snapshot\)/u);
   assert.doesNotMatch(refresh, /control\("open-task"/u);
+});
+
+test("journal navigation avoids body-wide select and motion subtree scans", () => {
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const bootstrap = fs.readFileSync(require.resolve("./vscode-bootstrap.js"), "utf8");
+  assert.match(app, /node === journal \|\| journal\.contains\(node\)[\s\S]*node\.querySelector\?\.\("select"\)/u);
+  assert.match(bootstrap, /!node\?\.closest\?\.\("\[data-journal\]"\)[\s\S]*MOTION_TARGET_SELECTOR/u);
 });
 
 test("completed chat keeps probing briefly for late generated images", () => {

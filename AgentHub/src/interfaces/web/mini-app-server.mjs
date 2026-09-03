@@ -666,9 +666,22 @@ export class MiniAppServer {
   }
 
   async #journal() {
-    this.#journalCache = await this.#journalDatabase.payload();
+    this.#journalCache ??= await this.#journalDatabase.payload();
     if (!this.#journalCache) throw new Error("Журнал ещё не создан");
     return this.#journalCache;
+  }
+
+  async #journalMetadata() {
+    const metadata = typeof this.#journalDatabase.metadata === "function"
+      ? await this.#journalDatabase.metadata()
+      : null;
+    if (metadata) return metadata;
+    const journal = await this.#journal();
+    return {
+      updatedAt: journal.updatedAt,
+      version: journal.version,
+      revision: journal.revision,
+    };
   }
 
   async #usageSyncStatus() {
@@ -1633,10 +1646,21 @@ export class MiniAppServer {
     if (url.pathname === "/api/journal") {
       if (!await this.#authorize(request, response)) return;
       try {
-        const journal = await this.#journal();
         const usageSync = await this.#usageSyncStatus();
+        const metadata = await this.#journalMetadata();
+        const requestedEtag = String(request.headers["if-none-match"] ?? "");
+        const metadataEtag = `"${journalPayloadEtag(metadata, usageSync)}"`;
+        if (requestedEtag === metadataEtag) {
+          response.writeHead(304, {
+            ...responseHeaders("application/json; charset=utf-8"),
+            ETag: metadataEtag,
+          });
+          response.end();
+          return;
+        }
+        const journal = await this.#journal();
         const etag = `"${journalPayloadEtag(journal, usageSync)}"`;
-        if (String(request.headers["if-none-match"] ?? "") === etag) {
+        if (requestedEtag === etag) {
           response.writeHead(304, {
             ...responseHeaders("application/json; charset=utf-8"),
             ETag: etag,
@@ -1656,14 +1680,27 @@ export class MiniAppServer {
     if (url.pathname === "/api/journal/days") {
       if (!await this.#authorize(request, response)) return;
       try {
-        const journal = await this.#journal();
+        const journal = await this.#journalMetadata();
         const requestedVersion = String(url.searchParams.get("version") ?? "");
         if (requestedVersion && requestedVersion !== journal.version) {
           json(response, 409, { error: "Журнал обновился.", version: journal.version }, method);
           return;
         }
-        const days = await this.#journalDatabase.fragments("day");
-        json(response, 200, { days, version: journal.version }, method, {
+        const offset = Math.max(0, Math.floor(Number(url.searchParams.get("offset")) || 0));
+        const limit = Math.max(1, Math.min(20, Math.floor(Number(url.searchParams.get("limit")) || 7)));
+        const page = typeof this.#journalDatabase.fragmentPage === "function"
+          ? await this.#journalDatabase.fragmentPage("day", { offset, limit })
+          : {
+              fragments: Object.fromEntries(Object.entries(
+                await this.#journalDatabase.fragments("day"),
+              ).slice(offset, offset + limit)),
+              nextOffset: null,
+            };
+        json(response, 200, {
+          days: page.fragments,
+          nextOffset: page.nextOffset,
+          version: journal.version,
+        }, method, {
           acceptEncoding: request.headers["accept-encoding"],
         });
       } catch (error) {
@@ -1674,7 +1711,7 @@ export class MiniAppServer {
     if (url.pathname === "/api/journal/day" || url.pathname === "/api/journal/turn") {
       if (!await this.#authorize(request, response)) return;
       try {
-        const journal = await this.#journal();
+        const journal = await this.#journalMetadata();
         const requestedVersion = String(url.searchParams.get("version") ?? "");
         if (requestedVersion && requestedVersion !== journal.version) {
           json(response, 409, { error: "Журнал обновился.", version: journal.version }, method);

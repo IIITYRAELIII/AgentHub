@@ -98,7 +98,7 @@ export function createProviderRuntimeWiring({
     if (isStopping() || !codexTransport.running) return;
     try {
       const changed = await codexTerminalAudit.run();
-      if (changed) await saveState();
+      if (changed && !codexTerminalAudit.persistsProgress) await saveState();
     } catch (error) {
       logger.error("Cannot audit Codex terminal turns:", error.message);
     }

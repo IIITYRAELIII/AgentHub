@@ -213,15 +213,15 @@
 
   function taskBoardSnapshotChanges(current = {}, payload = {}, { initialized = true } = {}) {
     const next = {
-      tasks: Array.isArray(payload.tasks) ? payload.tasks.slice() : [],
-      workspaces: Array.isArray(payload.workspaces) ? payload.workspaces.slice() : [],
-      columnOrder: Array.isArray(payload.columnOrder) ? payload.columnOrder.slice() : [],
+      tasks: Array.isArray(payload.tasks) ? payload.tasks : [],
+      workspaces: Array.isArray(payload.workspaces) ? payload.workspaces : [],
+      columnOrder: Array.isArray(payload.columnOrder) ? payload.columnOrder : [],
       notesComment: String(payload.notesComment ?? ""),
       selectedWorkspaceId: payload.selectedWorkspaceId ?? null,
       selectedStreamId: payload.selectedStreamId ?? null,
       provider: payload.provider === "claude" ? "claude" : "codex",
-      conversations: Array.isArray(payload.conversations) ? payload.conversations.slice() : [],
-      deferredInputs: Array.isArray(payload.deferredInputs) ? payload.deferredInputs.slice() : [],
+      conversations: Array.isArray(payload.conversations) ? payload.conversations : [],
+      deferredInputs: Array.isArray(payload.deferredInputs) ? payload.deferredInputs : [],
     };
     const tasksChanged = !sameSnapshotValue(current.tasks ?? [], next.tasks);
     const workspacesChanged = !sameSnapshotValue(current.workspaces ?? [], next.workspaces);

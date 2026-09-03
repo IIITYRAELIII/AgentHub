@@ -180,7 +180,8 @@ export async function createProviderApplicationComposition({
       entry.provider === provider && String(entry.threadId) === String(providerTaskId)
     )),
     globalWorkLogProjectRoots,
-    isHistoricalBackfillIdle: () => false,
+    isHistoricalBackfillIdle: () => !runtimeData.taskRuns.values().some(taskRunIsActive)
+      && runtimeData.deferredInputs.size === 0,
     operationStore: maintenanceOperations,
     streamIdForThread: (threadId) => workspaceCatalogStore.thread({
       provider: "codex",

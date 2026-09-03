@@ -56,6 +56,15 @@ prunes them when files disappear, retries incomplete files only through the same
 strict bounds, and passes valid sessions to the existing durable historical
 byte-offset/checkpoint queue.
 
+Ordinary Codex terminal reconciliation is also resumable and bounded. One idle
+pass scans at most 8 rollout files, 512 KiB and 20 terminal turns, with a 75 ms
+event-loop time budget. It yields before further work whenever a managed run or
+deferred input exists. A partial scan persists its exact file position and
+terminal index before journal projection, so restart/retry continues the same
+batch without replaying the completed prefix. Projection is flushed at most once
+per recovered batch; disabling terminal audit is not an acceptable steady-state
+mitigation.
+
 Periodic usage synchronization must not rebuild the complete journal projection
 on the Hub event loop. Import, merge and account-panel calculation execute in a
 dedicated worker. A remote usage delta updates only the account-usage panel in
@@ -93,6 +102,15 @@ isolated worker; compression favors bounded CPU over the smallest possible
 artifact. Synchronous SQLite stores on the Hub loop reuse initialized handles,
 batch hierarchy metadata reads and use immediate `SQLITE_BUSY` failure with
 asynchronous retry rather than blocking busy waits.
+
+Unchanged journal HTTP/WebView reads resolve their ETag from content-free SQLite
+metadata and do not load the multi-megabyte index HTML. Aggregate journal views
+fetch and materialize no more than two lazy days per animation-frame batch and
+cancel a superseded render. The compatibility day collection endpoint is capped
+at 20 fragments per page. Journal DOM insertion is excluded from body-wide
+themed-select and VS Code motion subtree scans. Periodic external history refresh
+runs only while chat is visible, and unchanged Dashboard collections retain
+their snapshot identity so they do not incur stringify comparison or card rebuild.
 
 
 The “Local Hub” health RTT is not message ACK latency and must not be presented

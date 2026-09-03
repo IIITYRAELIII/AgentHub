@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { open, stat } from "node:fs/promises";
 
 import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
@@ -13,9 +14,14 @@ const DEFAULT_HISTORICAL_SUBAGENT_BACKFILL_BYTES = 32 * 1024 * 1024;
 const DEFAULT_HISTORICAL_ACTIVE_STALE_MS = 30 * 60_000;
 const DEFAULT_SUPPLEMENTAL_DISCOVERY_INTERVAL_MS = 30_000;
 const DEFAULT_HISTORICAL_TURNS_PER_RUN = 25;
+const DEFAULT_LIVE_SCAN_BYTES = 128 * 1024;
+const DEFAULT_AUDIT_BYTES_PER_RUN = 512 * 1024;
+const DEFAULT_AUDIT_THREADS_PER_RUN = 8;
+const DEFAULT_AUDIT_TURNS_PER_RUN = 20;
+const DEFAULT_AUDIT_TIME_MS = 75;
 const ROLLOUT_CHECKPOINT_BYTES = 128;
-const SNAPSHOT_VERSION = 13;
-const COMPATIBLE_SNAPSHOT_VERSIONS = new Set([4, 5, 6, 7, 8, 9, 10, 11, 12, SNAPSHOT_VERSION]);
+const SNAPSHOT_VERSION = 14;
+const COMPATIBLE_SNAPSHOT_VERSIONS = new Set([4, 5, 6, 7, 8, 9, 10, 11, 12, 13, SNAPSHOT_VERSION]);
 
 function timestampMs(value) {
   const numeric = Number(value);
@@ -38,6 +44,16 @@ function restoredPosition(value) {
       : {}),
     ...(String(value?.fileCheckpoint ?? "").trim()
       ? { fileCheckpoint: String(value.fileCheckpoint).trim() }
+      : {}),
+    ...(value?.pendingScan && typeof value.pendingScan === "object"
+      ? {
+          pendingScan: {
+            fingerprint: String(value.pendingScan.fingerprint ?? ""),
+            terminalIndex: Math.max(0, Math.floor(Number(value.pendingScan.terminalIndex) || 0)),
+            nextOffset: Math.max(offset, Math.floor(Number(value.pendingScan.nextOffset) || offset)),
+            resumeState: value.pendingScan.resumeState ?? null,
+          },
+        }
       : {}),
   };
 }
@@ -65,7 +81,7 @@ function rolloutFileIdentity(info) {
 
 function resumablePosition(prior, transcriptPath, info, { requireResumeState = false } = {}) {
   if (prior?.path !== transcriptPath || prior.offset > info.size) return false;
-  if (requireResumeState && !prior.resumeState) return false;
+  if (requireResumeState && !prior.resumeState && !prior.pendingScan) return false;
   const currentIdentity = rolloutFileIdentity(info);
   return !prior.fileIdentity || !currentIdentity || prior.fileIdentity === currentIdentity;
 }
@@ -245,6 +261,13 @@ export class CodexTerminalAudit {
     historicalActiveStaleMs = DEFAULT_HISTORICAL_ACTIVE_STALE_MS,
     supplementalDiscoveryIntervalMs = DEFAULT_SUPPLEMENTAL_DISCOVERY_INTERVAL_MS,
     historicalTurnsPerRun = DEFAULT_HISTORICAL_TURNS_PER_RUN,
+    liveScanBytes = DEFAULT_LIVE_SCAN_BYTES,
+    auditBytesPerRun = DEFAULT_AUDIT_BYTES_PER_RUN,
+    auditThreadsPerRun = DEFAULT_AUDIT_THREADS_PER_RUN,
+    auditTurnsPerRun = DEFAULT_AUDIT_TURNS_PER_RUN,
+    auditTimeMs = DEFAULT_AUDIT_TIME_MS,
+    shouldRunAudit = () => true,
+    persistProgress = null,
     maxPositions = 5_000,
   }) {
     this.listPage = listPage;
@@ -292,6 +315,23 @@ export class CodexTerminalAudit {
       1,
       Math.floor(Number(historicalTurnsPerRun) || DEFAULT_HISTORICAL_TURNS_PER_RUN),
     );
+    this.liveScanBytes = Math.max(16 * 1024, Number(liveScanBytes) || DEFAULT_LIVE_SCAN_BYTES);
+    this.auditBytesPerRun = Math.max(
+      this.liveScanBytes,
+      Number(auditBytesPerRun) || DEFAULT_AUDIT_BYTES_PER_RUN,
+    );
+    this.auditThreadsPerRun = Math.max(
+      1,
+      Math.floor(Number(auditThreadsPerRun) || DEFAULT_AUDIT_THREADS_PER_RUN),
+    );
+    this.auditTurnsPerRun = Math.max(
+      1,
+      Math.floor(Number(auditTurnsPerRun) || DEFAULT_AUDIT_TURNS_PER_RUN),
+    );
+    this.auditTimeMs = Math.max(1, Number(auditTimeMs) || DEFAULT_AUDIT_TIME_MS);
+    this.shouldRunAudit = shouldRunAudit;
+    this.persistProgress = typeof persistProgress === "function" ? persistProgress : null;
+    this.persistsProgress = Boolean(this.persistProgress);
     this.maxPositions = Math.max(100, Number(maxPositions) || 5_000);
     this.completedThroughMs = 0;
     this.positions = new Map();
@@ -301,6 +341,8 @@ export class CodexTerminalAudit {
     this.historicalScanCache = new Map();
     this.historicalTurnIdentities = new Set();
     this.lastSupplementalDiscoveryMs = 0;
+    this.liveProjectionPending = false;
+    this.lastRun = null;
     this.running = false;
   }
 
@@ -315,7 +357,7 @@ export class CodexTerminalAudit {
     // Snapshots v10 and v11 may have completed or interrupted the old
     // per-turn projection pass. Treat them as compatible for live cursors,
     // while rebuilding only the resumable historical queue once under v13.
-    this.historicalSubagentBackfill = [8, 9, 12, SNAPSHOT_VERSION].includes(snapshotVersion)
+    this.historicalSubagentBackfill = [8, 9, 12, 13, SNAPSHOT_VERSION].includes(snapshotVersion)
       ? restoredHistoricalSubagentBackfill(snapshot?.historicalSubagentBackfill)
       : emptyHistoricalSubagentBackfill(compatibleSnapshot);
     this.historicalScanCache.clear();
@@ -326,6 +368,11 @@ export class CodexTerminalAudit {
           .filter(Boolean)
         : [],
     );
+    this.liveProjectionPending = snapshotVersion === SNAPSHOT_VERSION
+      && snapshot?.liveProjectionPending === true;
+    this.lastRun = snapshotVersion === SNAPSHOT_VERSION && snapshot?.lastRun
+      ? structuredClone(snapshot.lastRun)
+      : null;
     if (compatibleSnapshot) {
       for (const entry of Array.isArray(snapshot?.positions) ? snapshot.positions : []) {
         if (!Array.isArray(entry) || typeof entry[0] !== "string") continue;
@@ -348,6 +395,8 @@ export class CodexTerminalAudit {
         ...this.historicalSubagentBackfill,
         processedTurnIdentities: [...this.historicalTurnIdentities],
       },
+      liveProjectionPending: this.liveProjectionPending,
+      lastRun: this.lastRun,
       completedThrough: this.completedThroughMs
         ? new Date(this.completedThroughMs).toISOString()
         : "",
@@ -386,6 +435,52 @@ export class CodexTerminalAudit {
 
   async #projectFor(thread) {
     return await this.resolveProject(thread);
+  }
+
+  #budget(startedAtMs) {
+    return {
+      startedAtMs,
+      bytes: 0,
+      threads: 0,
+      turns: 0,
+      yielded: "",
+    };
+  }
+
+  #hasBudget(budget, { scan = false } = {}) {
+    if (scan && budget.bytes >= this.auditBytesPerRun) {
+      budget.yielded ||= "bytes";
+      return false;
+    }
+    if (scan && budget.threads >= this.auditThreadsPerRun) {
+      budget.yielded ||= "threads";
+      return false;
+    }
+    if (budget.turns >= this.auditTurnsPerRun) {
+      budget.yielded ||= "turns";
+      return false;
+    }
+    if (this.now() - budget.startedAtMs >= this.auditTimeMs) {
+      budget.yielded ||= "time";
+      return false;
+    }
+    if (!this.shouldRunAudit()) {
+      budget.yielded ||= "interactive";
+      return false;
+    }
+    return true;
+  }
+
+  #scanFingerprint(result) {
+    const digest = createHash("sha256");
+    for (const terminal of result?.terminals ?? []) {
+      digest.update(JSON.stringify([
+        String(terminal?.turnId ?? ""),
+        String(terminal?.status ?? ""),
+        String(terminal?.completedAt ?? ""),
+      ])).update("\0");
+    }
+    return `${Math.max(0, Number(result?.nextOffset) || 0)}:${digest.digest("hex")}`;
   }
 
   #removePendingTurn(threadId, turnId) {
@@ -435,19 +530,26 @@ export class CodexTerminalAudit {
     if (pending.turns.size) this.pendingTurns.set(threadId, pending);
   }
 
-  async #auditThread(thread, project, lowerBoundMs, fileInfo = null) {
+  async #auditThread(thread, project, lowerBoundMs, budget, fileInfo = null) {
     const threadId = String(thread?.id ?? "").trim();
     const transcriptPath = String(thread?.path ?? "").trim();
-    if (!threadId || !transcriptPath) return true;
+    if (!threadId || !transcriptPath) return { handled: true, complete: true, progressed: false };
 
     const info = fileInfo ?? await this.statFile(transcriptPath);
     const prior = this.positions.get(threadId);
     const canResume = await this.#canResume(prior, transcriptPath, info);
     const startOffset = canResume ? prior.offset : 0;
+    if (!this.#hasBudget(budget, { scan: true })) {
+      return { handled: true, complete: false, progressed: false };
+    }
+    const remainingBytes = Math.max(1, this.auditBytesPerRun - budget.bytes);
     const result = normalizedLiveScanResult(await this.scanFile(transcriptPath, {
       startOffset,
+      maxBytes: Math.min(this.liveScanBytes, remainingBytes),
       ...(canResume && prior.resumeState ? { resumeState: prior.resumeState } : {}),
     }));
+    budget.threads += 1;
+    budget.bytes += Math.max(0, Number(result.nextOffset) - startOffset);
     const terminals = canResume
       ? result.terminals
       : result.terminals.filter((terminal) => (
@@ -473,19 +575,49 @@ export class CodexTerminalAudit {
       },
     );
 
+    const fingerprint = this.#scanFingerprint(result);
+    let terminalIndex = canResume && prior?.pendingScan?.fingerprint === fingerprint
+      ? Math.min(terminals.length, prior.pendingScan.terminalIndex)
+      : 0;
+    const initialTerminalIndex = terminalIndex;
     let allHandled = true;
-    for (const terminal of terminals) {
+    for (; terminalIndex < terminals.length; terminalIndex += 1) {
+      if (!this.#hasBudget(budget)) break;
+      const terminal = terminals[terminalIndex];
       const candidate = isCodexContextProbeTurn(terminal)
         ? { ...terminal, historical: true, resolveCurrentAccount: true }
         : terminal;
       if (await this.reconcile(thread, project, candidate) === false) {
         allHandled = false;
-      } else {
-        this.#removePendingTurn(threadId, terminal.turnId);
+        break;
+      }
+      budget.turns += 1;
+      this.#removePendingTurn(threadId, terminal.turnId);
+      if (candidate.historical === true || String(thread?.parentThreadId ?? "").trim()) {
+        this.liveProjectionPending = true;
       }
     }
-    if (!allHandled) {
-      return false;
+    if (!allHandled || terminalIndex < terminals.length) {
+      this.#setPosition(threadId, {
+        path: transcriptPath,
+        offset: startOffset,
+        ...(canResume && prior?.resumeState ? { resumeState: prior.resumeState } : {}),
+        pendingScan: {
+          fingerprint,
+          terminalIndex,
+          nextOffset: result.nextOffset,
+          resumeState: result.resumeState ?? null,
+        },
+        ...(rolloutFileIdentity(info) ? { fileIdentity: rolloutFileIdentity(info) } : {}),
+        ...(this.incrementalUsageScan && startOffset > 0
+          ? { fileCheckpoint: await this.readCheckpoint(transcriptPath, startOffset) }
+          : {}),
+      });
+      return {
+        handled: allHandled,
+        complete: false,
+        progressed: terminalIndex > initialTerminalIndex,
+      };
     }
     this.#setPosition(threadId, {
       path: transcriptPath,
@@ -496,22 +628,32 @@ export class CodexTerminalAudit {
         ? { fileCheckpoint: await this.readCheckpoint(transcriptPath, result.nextOffset) }
         : {}),
     });
-    return true;
+    return {
+      handled: true,
+      complete: result.nextOffset >= info.size,
+      progressed: result.nextOffset > startOffset || terminals.length > 0,
+    };
   }
 
-  async #pollPendingTurns(lowerBoundMs) {
+  async #pollPendingTurns(lowerBoundMs, budget) {
     let madeProgress = false;
+    let complete = true;
     const nowMs = this.now();
     for (const [threadId, pending] of [...this.pendingTurns]) {
+      if (!this.#hasBudget(budget)) {
+        complete = false;
+        break;
+      }
       try {
         const project = await this.#projectFor(pending.thread);
         if (!project) continue;
         const position = this.positions.get(threadId);
         const info = await this.statFile(pending.thread.path);
         if (await this.#canResume(position, pending.thread.path, info) && position.offset < info.size) {
-          const handled = await this.#auditThread(pending.thread, project, lowerBoundMs);
-          madeProgress = madeProgress || handled;
-          if (!handled || !this.pendingTurns.has(threadId)) continue;
+          const audit = await this.#auditThread(pending.thread, project, lowerBoundMs, budget, info);
+          madeProgress = madeProgress || audit.progressed;
+          if (!audit.complete) complete = false;
+          if (!audit.handled || !audit.complete || !this.pendingTurns.has(threadId)) continue;
         }
 
         const current = this.pendingTurns.get(threadId);
@@ -529,6 +671,10 @@ export class CodexTerminalAudit {
         current.thread = threadReference(fullThread);
         const turns = new Map((fullThread.turns ?? []).map((turn) => [String(turn?.id ?? ""), turn]));
         for (const turn of [...current.turns.values()]) {
+          if (!this.#hasBudget(budget)) {
+            complete = false;
+            break;
+          }
           if (typeof this.isTurnActive === "function"
             && await this.isTurnActive(current.thread, turn.turnId)) {
             if (typeof this.onTurnActive === "function") {
@@ -553,6 +699,7 @@ export class CodexTerminalAudit {
             ...(contextProbe ? { historical: true, resolveCurrentAccount: true } : {}),
           });
           if (handled === false) continue;
+          budget.turns += 1;
           this.#removePendingTurn(threadId, turn.turnId);
           madeProgress = true;
         }
@@ -562,7 +709,7 @@ export class CodexTerminalAudit {
         // Retain this pending turn unchanged; another rollout must still be auditable.
       }
     }
-    return madeProgress;
+    return { madeProgress, complete };
   }
 
   async #discoverThreads() {
@@ -883,6 +1030,7 @@ export class CodexTerminalAudit {
     if (this.running) return false;
     this.running = true;
     const startedAtMs = this.now();
+    const budget = this.#budget(startedAtMs);
     const bootstrapping = !this.completedThroughMs;
     const lowerBoundMs = bootstrapping
       ? startedAtMs - this.bootstrapWindowMs
@@ -893,11 +1041,15 @@ export class CodexTerminalAudit {
     );
     let madeProgress = false;
     let allHandled = true;
+    let cycleComplete = true;
     const supplementalThreads = [];
     const supplementalThreadIds = new Set();
 
     try {
-      madeProgress = await this.#pollPendingTurns(lowerBoundMs) || madeProgress;
+      if (!this.shouldRunAudit()) return false;
+      const pendingPoll = await this.#pollPendingTurns(lowerBoundMs, budget);
+      madeProgress = pendingPoll.madeProgress || madeProgress;
+      cycleComplete = pendingPoll.complete;
       if (typeof this.discoverSupplementalThreads === "function"
         && startedAtMs - this.lastSupplementalDiscoveryMs >= this.supplementalDiscoveryIntervalMs) {
         const discovered = await this.discoverSupplementalThreads();
@@ -915,6 +1067,10 @@ export class CodexTerminalAudit {
         ...supplementalThreads,
       ];
       for (const thread of threads) {
+        if (!this.#hasBudget(budget, { scan: true })) {
+          cycleComplete = false;
+          break;
+        }
         try {
           const project = await this.#projectFor(thread);
           if (!project || !thread?.path) continue;
@@ -960,14 +1116,17 @@ export class CodexTerminalAudit {
             continue;
           }
           if (olderThanBoundary && !hasUnreadBytes && !backfillMissingSubagent) continue;
-          const handled = await this.#auditThread(
+          if (canResume && prior.offset >= info.size && !backfillMissingSubagent) continue;
+          const audit = await this.#auditThread(
             thread,
             project,
             backfillMissingSubagent ? 0 : lowerBoundMs,
+            budget,
             info,
           );
-          madeProgress = madeProgress || handled;
-          allHandled = allHandled && handled;
+          madeProgress = madeProgress || audit.progressed;
+          allHandled = allHandled && audit.handled;
+          if (!audit.complete) cycleComplete = false;
         } catch {
           // Keep the prior position for this rollout and retry it on a later pass.
           // A damaged or disappeared file must not block other independent threads.
@@ -975,17 +1134,33 @@ export class CodexTerminalAudit {
         }
       }
 
-      if (allHandled) {
+      if (cycleComplete && allHandled) {
         this.subagentBackfillPending = false;
         this.completedThroughMs = startedAtMs;
         madeProgress = true;
       }
-      madeProgress = await this.#runHistoricalSubagentBackfill() || madeProgress;
-      if (!this.historicalSubagentBackfill.pending
-        && this.historicalSubagentBackfill.projectionPending) {
+      if (cycleComplete && this.#hasBudget(budget, { scan: true })) {
+        madeProgress = await this.#runHistoricalSubagentBackfill() || madeProgress;
+      }
+      this.lastRun = {
+        completedAt: new Date(this.now()).toISOString(),
+        elapsedMs: Math.max(0, this.now() - startedAtMs),
+        bytes: budget.bytes,
+        threads: budget.threads,
+        turns: budget.turns,
+        cycleComplete,
+        yielded: budget.yielded,
+      };
+      if (madeProgress && this.persistProgress) await this.persistProgress();
+      if ((this.liveProjectionPending || (
+        !this.historicalSubagentBackfill.pending
+        && this.historicalSubagentBackfill.projectionPending
+      )) && this.shouldRunAudit()) {
         await this.flushHistoricalProjection();
+        this.liveProjectionPending = false;
         this.historicalSubagentBackfill.projectionPending = false;
         madeProgress = true;
+        if (this.persistProgress) await this.persistProgress();
       }
       return madeProgress;
     } finally {

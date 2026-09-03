@@ -166,6 +166,10 @@ test("large journal responses use gzip when the client accepts it", async () => 
   journalDatabase.fragments = async () => ({
     "27.07.2026": largeDay,
   });
+  journalDatabase.fragmentPage = async () => ({
+    fragments: { "27.07.2026": largeDay },
+    nextOffset: null,
+  });
   const server = new MiniAppServer({
     host: "127.0.0.1",
     port: 0,
@@ -186,6 +190,34 @@ test("large journal responses use gzip when the client accepts it", async () => 
     assert.equal(daysResponse.status, 200);
     assert.equal(daysResponse.headers.get("content-encoding"), "gzip");
     assert.match((await daysResponse.json()).days["27.07.2026"], /Журнал/u);
+  } finally {
+    await server.close();
+  }
+});
+
+test("unchanged journal answers from metadata without loading the full payload", async () => {
+  let payloadCalls = 0;
+  const journalDatabase = {
+    metadata: async () => ({
+      updatedAt: "2026-09-03T10:00:00.000Z",
+      version: "sqlite-v-fast",
+      revision: 42,
+    }),
+    payload: async () => {
+      payloadCalls += 1;
+      throw new Error("full payload must not be read for a matching ETag");
+    },
+    subscribe: () => () => {},
+    close() {},
+  };
+  const server = new MiniAppServer({ host: "127.0.0.1", port: 0, journalDatabase });
+  try {
+    const address = await server.start();
+    const response = await fetch(`${address.url}api/journal`, {
+      headers: { "If-None-Match": '"sqlite-v-fast"' },
+    });
+    assert.equal(response.status, 304);
+    assert.equal(payloadCalls, 0);
   } finally {
     await server.close();
   }
@@ -483,6 +515,11 @@ function memoryJournal(html = "") {
   };
   replace(html);
   return {
+    metadata: async () => ({
+      updatedAt: current.updatedAt,
+      version: current.version,
+      revision: current.revision,
+    }),
     payload: async () => ({
       html: current.html,
       updatedAt: current.updatedAt,
@@ -492,6 +529,13 @@ function memoryJournal(html = "") {
     snapshot: async () => structuredClone(current),
     fragment: async (kind, key) => current[kind === "day" ? "days" : "turns"]?.[key] ?? null,
     fragments: async (kind) => structuredClone(current[kind === "day" ? "days" : "turns"] ?? {}),
+    fragmentPage: async (kind, { offset = 0, limit = 7 } = {}) => {
+      const entries = Object.entries(current[kind === "day" ? "days" : "turns"] ?? {});
+      return {
+        fragments: Object.fromEntries(entries.slice(offset, offset + limit)),
+        nextOffset: offset + limit < entries.length ? offset + limit : null,
+      };
+    },
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -1874,8 +1918,8 @@ test("local Mini App reloads a rotated access secret without a server restart", 
 
 test("Mini App serves old days and turn bodies through lazy endpoints", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-mini-app-lazy-"));
-  const days = Array.from({ length: 6 }, (_, index) => {
-    const day = String(6 - index).padStart(2, "0");
+  const days = Array.from({ length: 30 }, (_, index) => {
+    const day = String(30 - index).padStart(2, "0");
     const turnId = `turn-${day}`;
     return [
       "<details data-work-log-day-section>",
@@ -1912,8 +1956,15 @@ test("Mini App serves old days and turn bodies through lazy endpoints", async ()
     assert.equal(daysResponse.status, 200);
     const dayFragments = await daysResponse.json();
     assert.equal(dayFragments.version, index.version);
-    assert.match(dayFragments.days["01.07.2026"], /Ход turn-01/u);
-    assert.doesNotMatch(dayFragments.days["01.07.2026"], /Ответ turn-01/u);
+    assert.equal(Object.keys(dayFragments.days).length, 7);
+    assert.equal(dayFragments.nextOffset, 7);
+
+    const boundedDaysResponse = await fetch(
+      `${address.url}api/journal/days?version=${encodeURIComponent(index.version)}&limit=2`,
+    );
+    const boundedDays = await boundedDaysResponse.json();
+    assert.equal(Object.keys(boundedDays.days).length, 2);
+    assert.equal(boundedDays.nextOffset, 2);
 
     const turnResponse = await fetch(
       `${address.url}api/journal/turn?id=turn-01&version=${encodeURIComponent(index.version)}`,

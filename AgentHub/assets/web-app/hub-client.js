@@ -78,6 +78,8 @@ let selectionTail = Promise.resolve();
 let initialRouteOpening = true;
 const historyRefreshAtByTask = new Map();
 let visibleStreamTaskIds = new Set();
+let boardTaskViewsSource = null;
+let boardTaskViewsCache = [];
 const EXTERNAL_HISTORY_REFRESH_MS = 2_500;
 const HISTORY_ATTACHMENT_REFRESH_MS = 10_000;
 const HISTORY_ATTACHMENT_SETTLE_TIMEOUT_MS = 120_000;
@@ -488,6 +490,7 @@ function cacheAttachmentThumbnail(id, url) {
   if (previous && previous !== url) URL.revokeObjectURL(previous);
   attachmentThumbnailUrls.delete(id);
   attachmentThumbnailUrls.set(id, url);
+  boardTaskViewsSource = null;
   while (attachmentThumbnailUrls.size > MAX_CACHED_ATTACHMENT_THUMBNAILS) {
     const oldestId = attachmentThumbnailUrls.keys().next().value;
     const oldestUrl = attachmentThumbnailUrls.get(oldestId);
@@ -517,6 +520,17 @@ function attachmentView(attachment) {
 
 function attachmentViews(values) {
   return (Array.isArray(values) ? values : []).map(attachmentView);
+}
+
+function boardTaskViews(values) {
+  const source = Array.isArray(values) ? values : [];
+  if (source === boardTaskViewsSource) return boardTaskViewsCache;
+  boardTaskViewsSource = source;
+  boardTaskViewsCache = source.map((task) => ({
+    ...task,
+    attachments: attachmentViews(task.attachments),
+  }));
+  return boardTaskViewsCache;
 }
 
 function nonEmptyAttachmentPatch(values) {
@@ -2002,10 +2016,7 @@ function applySnapshot(snapshot, { materialized = false } = {}) {
     const selectedWorkspaceId = String(selectedTask?.workspaceId ?? "").trim() || null;
     const selectedStreamId = String(selectedTask?.streamId ?? "").trim() || null;
     window.AgentHubTaskBoard?.setSnapshot({
-      tasks: (snapshot.boardTasks ?? []).map((task) => ({
-        ...task,
-        attachments: attachmentViews(task.attachments),
-      })),
+      tasks: boardTaskViews(snapshot.boardTasks),
       workspaces: snapshot.workspaces ?? [],
       columnOrder: snapshot.boardLayout?.columnOrder ?? [],
       notesComment: snapshot.boardLayout?.notesComment ?? "",
@@ -4178,6 +4189,7 @@ function streamChatRoute() {
 async function refreshVisibleTaskHistories(previousSnapshot, snapshot) {
   const visibleIds = new Set(visibleStreamTaskIds);
   if (selectedTaskId) visibleIds.add(selectedTaskId);
+  const chatVisible = document.documentElement.dataset.view === "chat";
   await Promise.all([...visibleIds].map(async (id) => {
     const previousTask = snapshotTask(previousSnapshot, id);
     const currentTask = snapshotTask(snapshot, id);
@@ -4195,12 +4207,12 @@ async function refreshVisibleTaskHistories(previousSnapshot, snapshot) {
       currentTask.run?.executionOwner ?? currentTask.executionOwner ?? "",
     ));
     const lastRefreshAt = Number(historyRefreshAtByTask.get(id)) || 0;
-    const refreshExternalHistory = externalLive
+    const refreshExternalHistory = chatVisible && externalLive
       && Date.now() - lastRefreshAt >= EXTERNAL_HISTORY_REFRESH_MS;
     const catchUpPending = historyNeedsCatchUp(id);
-    const refreshCaughtUpHistory = catchUpPending
+    const refreshCaughtUpHistory = chatVisible && catchUpPending
       && Date.now() - lastRefreshAt >= EXTERNAL_HISTORY_REFRESH_MS;
-    const refreshSettlingAttachments = historyAttachmentsNeedSettling(id)
+    const refreshSettlingAttachments = chatVisible && historyAttachmentsNeedSettling(id)
       && Date.now() - lastRefreshAt >= HISTORY_ATTACHMENT_REFRESH_MS;
     if (!historyMissing && !bindingTransition && !answerTransition
       && !refreshExternalHistory && !refreshCaughtUpHistory && !refreshSettlingAttachments) return;

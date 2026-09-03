@@ -198,6 +198,40 @@
     return Object.freeze({ refresh });
   }
 
+  async function hydrateLazyDays(entries, {
+    dateFor,
+    cachedHtml,
+    fetchHtml,
+    rememberHtml,
+    materialize,
+    isCurrent = () => true,
+    yieldControl = () => Promise.resolve(),
+    batchSize = 2,
+  } = {}) {
+    const values = Array.isArray(entries) ? entries : [];
+    const size = Math.max(1, Math.min(4, Math.floor(Number(batchSize) || 2)));
+    for (let offset = 0; offset < values.length; offset += size) {
+      if (!isCurrent()) return false;
+      const batch = values.slice(offset, offset + size);
+      const resolved = await Promise.all(batch.map(async (entry) => {
+        const date = String(dateFor(entry) ?? "").trim();
+        if (!date) return { entry, html: "" };
+        let html = cachedHtml(date);
+        if (typeof html !== "string" || !html) {
+          html = await fetchHtml(date);
+          if (typeof html === "string" && html) rememberHtml(date, html);
+        }
+        return { entry, html };
+      }));
+      if (!isCurrent()) return false;
+      for (const { entry, html } of resolved) {
+        if (typeof html === "string" && html) materialize(entry, html);
+      }
+      if (offset + size < values.length) await yieldControl();
+    }
+    return true;
+  }
+
   window.AgentHubJournalView = Object.freeze({
     GROUPINGS,
     formatDurationHours,
@@ -213,5 +247,6 @@
     turnIdentity,
     turnDisplayCredits,
     createQueuedJournalRefresh,
+    hydrateLazyDays,
   });
 })();
