@@ -36,13 +36,36 @@ async function callCanaryRead(contextToken) {
 let turnSequence = 0;
 let threadSequence = 0;
 const interruptedTurns = new Set();
+const activeTurns = new Set();
+const pendingElicitations = new Map();
+const delayedTurnMs = Number(process.argv.find((argument) => argument.startsWith("--delay-turn-ms="))?.split("=")[1]) || 0;
 
 function complete(turnId, status = "completed") {
+  activeTurns.delete(turnId);
   write({ method: "turn/completed", params: { turn: { id: turnId, status, items: [] } } });
+}
+
+function start(turnId, threadId) {
+  activeTurns.add(turnId);
+  write({
+    method: "turn/started",
+    params: { threadId, turn: { id: turnId, status: "inProgress", items: [] } },
+  });
 }
 
 async function handle(message) {
   if (message.id == null) return;
+  if (!message.method && pendingElicitations.has(message.id)) {
+    const pending = pendingElicitations.get(message.id);
+    pendingElicitations.delete(message.id);
+    if (message.result?.action !== "accept" || message.result?.content?.approved !== true) {
+      complete(pending.turnId, "failed");
+      return;
+    }
+    await callCanaryRead(pending.contextToken);
+    complete(pending.turnId);
+    return;
+  }
   const params = message.params ?? {};
   if (message.method === "initialize") {
     write({ id: message.id, result: { userAgent: "codex-update-canary-fixture" } });
@@ -67,19 +90,42 @@ async function handle(message) {
     const id = `canary-turn-${turnSequence}`;
     const prompt = String(params.input?.[0]?.text ?? "");
     write({ id: message.id, result: { turn: { id, status: "inProgress" } } });
+    setImmediate(() => start(id, params.threadId));
     if (/at least 10000 words/u.test(prompt)) {
       interruptedTurns.add(id);
       return;
     }
     if (/hub_canary_read/u.test(prompt)) {
       const contextToken = prompt.match(/context_token\s+([0-9A-Za-z_-]+)/u)?.[1] ?? "";
-      await callCanaryRead(contextToken);
+      const elicitationId = `canary-elicitation-${id}`;
+      pendingElicitations.set(elicitationId, { contextToken, turnId: id });
+      write({
+        id: elicitationId,
+        method: "mcpServer/elicitation/request",
+        params: {
+          serverName: process.argv.includes("--wrong-elicitation-server") ? "other" : "agent_hub",
+          threadId: params.threadId,
+          turnId: id,
+          mode: "form",
+          requestedSchema: {
+            type: "object",
+            properties: { approved: { type: "boolean" } },
+            required: ["approved"],
+          },
+        },
+      });
+      return;
     }
     const status = process.argv.includes("--fail-ordinary") && turnSequence === 1 ? "failed" : "completed";
-    setImmediate(() => complete(id, status));
+    if (delayedTurnMs > 0) setTimeout(() => complete(id, status), delayedTurnMs);
+    else setImmediate(() => complete(id, status));
     return;
   }
   if (message.method === "turn/interrupt") {
+    if (!activeTurns.has(params.turnId)) {
+      write({ id: message.id, error: { code: -32600, message: "no active turn to interrupt" } });
+      return;
+    }
     write({ id: message.id, result: {} });
     if (interruptedTurns.delete(params.turnId)) setImmediate(() => complete(params.turnId, "interrupted"));
     return;

@@ -35,6 +35,18 @@ MCP server, so it exercises the App Server/MCP bridge without granting access
 to production Task data. It creates its own Thread and restarts the candidate
 to resume that Thread. Temporary auth material is copied only when needed,
 never logged, and removed in a `finally` path.
+RPC acknowledgement, asynchronous turn completion, cancellation, and total
+scenario deadlines are independent. A failed run retains only a bounded,
+content-free protocol/stderr diagnostic outside the removed runtime so rollout
+failures remain attributable without retaining auth or prompts.
+The canary also owns App Server-to-client protocol requests: it auto-answers
+only a safe form elicitation bound to the exact isolated Agent Hub MCP server,
+Thread, and read turn, and rejects every unbound or unsafe request.
+The interrupt probe waits for the exact `turn/started` event before sending
+`turn/interrupt`; a successful `turn/start` RPC response does not itself cross
+the active-turn boundary.
+Restart waits for the previous child process `close` event before reusing the
+isolated `CODEX_HOME`; a stop request alone is not the ownership handoff.
 
 Configuration has three explicit modes: automatic adoption enabled, automatic
 adoption disabled, and an exact version pin. The existing explicit
@@ -51,7 +63,7 @@ official discovery trust.
 | File replacement during signature or version inspection | Hash before and after Authenticode, then around bounded version execution; reject every transition | A kernel-level attacker remains outside Hub's boundary |
 | File replacement between canary/re-discovery and launch | At the lifecycle launch boundary, re-read durable selection and re-inspect exact path, version, SHA-256, and publisher before allowing `spawn` | Windows cannot provide an immutable executable handle across the final verification-to-spawn instructions |
 | Downgrade or wrong prerelease ordering | SemVer comparison including prerelease identifiers and explicit pin policy | OpenAI version strings outside the supported grammar are rejected, not guessed |
-| Canary hang, protocol incompatibility, or unexpected cost | Per-operation and total deadlines, isolated Thread/runtime, single attempt per identity | A successful canary cannot prove every production workload |
+| Canary hang, protocol incompatibility, or unexpected cost | Separate RPC, model-turn, cancellation and total deadlines; isolated Thread/runtime; single attempt per identity; bounded content-free failure timeline | A successful canary cannot prove every production workload |
 | Update interrupts an active run | Adoption deferred whenever active/recovering Codex runs exist | A process crash remains governed by normal run recovery |
 | Corrupt or split-brain update state | Single owner, atomic replace, schema validation; automatic adoption fails closed while the explicit manual path remains a recovery boundary | Manual edits can require operator repair |
 | Rollback loop prevents Hub startup | At most one LKG rollback attempt per activation failure | If both candidate and LKG fail, provider health is failed and diagnostics retain evidence |

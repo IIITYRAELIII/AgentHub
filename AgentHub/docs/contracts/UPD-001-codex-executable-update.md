@@ -39,7 +39,18 @@ publisher`. A path or a version alone is not an executable identity.
   succeeds. The canary covers App Server initialize/health, new Thread,
   restart/resume of that Thread, ordinary turn, isolated Agent Hub-shaped MCP
   read, cancel, and a successful following turn. Canary runtime state and auth
-  copies are removed after the result is recorded.
+  copies are removed after the result is recorded. Transport RPC acknowledgement,
+  asynchronous model-turn completion, cancellation, and the whole scenario use
+  separate bounded deadlines; an RPC deadline is never reused as a model SLA.
+  Because App Server mediates MCP permission through a client-side elicitation,
+  the canary answers only a safely auto-answerable request bound to its exact
+  isolated `agent_hub` server, Thread, and MCP turn. Every other inbound request
+  fails the canary closed.
+  Cancellation is sent only after the accepted turn emits its exact
+  `turn/started` lifecycle event; RPC acceptance alone is not evidence that a
+  turn is active.
+  Restart/resume begins only after the previous child emits process `close`, so
+  its isolated SQLite state cannot overlap the replacement App Server.
 - Immediately before every App Server process spawn, the lifecycle re-reads the
   durable selected identity and re-inspects the installed executable. The exact
   canonical path, version, SHA-256, and publisher must still match. A mismatch
@@ -63,6 +74,13 @@ Runtime health exposes the configured policy, selected active identity,
 last-known-good identity, highest trusted candidate, canary result, deferred or
 blocked reason, and last error. It never exposes auth material or executable
 contents.
+
+Canary failure also leaves a bounded machine-readable content-free protocol
+timeline and redacted stderr tail under
+`data/codex-executable-canary/last-failure.json`. It records
+phase, method/turn identifiers, statuses, candidate identity, and the bounded
+error only; prompts, the isolated MCP capability, auth material, and response
+contents are excluded. The isolated run directory is still always removed.
 
 ## Readiness evidence
 
