@@ -13,6 +13,7 @@ import {
   startTestContour,
   stopTestContour,
   testContourComponentEnabled,
+  TEST_CONTOUR_RELEASE_CANDIDATE_SOURCE,
   uninstallTestContour,
   verifyTestContour,
 } from "./src/runtime/test-contour-manager.mjs";
@@ -25,6 +26,7 @@ function parseArguments(args) {
     port: undefined,
     allowUninstalled: false,
     requireInstalled: false,
+    releaseCandidate: false,
     withAgent: true,
     json: false,
     model: undefined,
@@ -41,6 +43,7 @@ function parseArguments(args) {
     else if (argument === "--port" && args[index + 1]) options.port = Number(args[++index]);
     else if (argument === "--allow-uninstalled" || argument === "--component-approved") options.allowUninstalled = true;
     else if (argument === "--require-installed") options.requireInstalled = true;
+    else if (argument === "--release-candidate") options.releaseCandidate = true;
     else if (argument === "--no-agent") options.withAgent = false;
     else if (argument === "--model" && args[index + 1]) options.model = args[++index];
     else if (argument === "--release-id" && args[index + 1]) options.releaseId = args[++index];
@@ -51,6 +54,9 @@ function parseArguments(args) {
     else if (argument === "--expected-head" && args[index + 1]) options.expectedHeadCommit = args[++index];
     else if (argument === "--json") options.json = true;
     else throw new Error(`Unknown Test Contour argument: ${argument}`);
+  }
+  if (options.releaseCandidate && command !== "verify") {
+    throw new Error("--release-candidate is supported only by Test Contour verify");
   }
   return options;
 }
@@ -150,6 +156,7 @@ export async function main(args = process.argv.slice(2)) {
       ...common,
       entryFile,
       withAgent: options.withAgent,
+      ...(options.releaseCandidate ? { sourceKind: TEST_CONTOUR_RELEASE_CANDIDATE_SOURCE } : {}),
       ...(options.model ? { model: options.model } : {}),
       ...(options.port ? { port: options.port } : {}),
     });

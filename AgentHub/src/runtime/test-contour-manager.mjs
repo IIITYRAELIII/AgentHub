@@ -20,8 +20,10 @@ import { resolveCodexExecutable } from "../infrastructure/process/codex-executab
 import {
   canonicalPath,
   pathInsideOrSame,
+  samePath,
 } from "../infrastructure/filesystem/config.mjs";
 import { prepareTaskContourSource } from "../infrastructure/filesystem/task-git-workspace.mjs";
+import { assertReleaseCandidateContourSource } from "../infrastructure/filesystem/release-git-workspace.mjs";
 import {
   defaultRuntimeRoot,
   defaultTestContourRoot,
@@ -68,6 +70,8 @@ export const TEST_CONTOUR_MODELS = Object.freeze([
   Object.freeze({ value: TEST_CONTOUR_FAKE_MODEL, label: "Fake Codex · Принято" }),
 ]);
 export const TEST_CONTOUR_COMPONENT = "testContour";
+export const TEST_CONTOUR_DEV_SOURCE = "dev";
+export const TEST_CONTOUR_RELEASE_CANDIDATE_SOURCE = "release-candidate";
 export const TEST_CONTOUR_PORT = 8877;
 export const TEST_CONTOUR_WEB_HOST = "localhost";
 export const PLAYWRIGHT_CORE_VERSION = "1.62.1";
@@ -740,9 +744,28 @@ async function markTestContourWebApp(releaseRoot) {
 export async function resolveTestContourSource({
   root = defaultTestContourRoot(),
   sourceRoot = path.resolve(import.meta.dirname, "..", ".."),
+  sourceKind = TEST_CONTOUR_DEV_SOURCE,
   prepareSource = prepareTaskContourSource,
+  validateReleaseSource = assertReleaseCandidateContourSource,
 } = {}) {
   const isolatedRoot = assertIsolatedTestContourRoot(root, { sourceRoot });
+  if (sourceKind === TEST_CONTOUR_RELEASE_CANDIDATE_SOURCE) {
+    const source = await validateReleaseSource({ sourceRoot });
+    if (source.kind !== TEST_CONTOUR_RELEASE_CANDIDATE_SOURCE
+        || source.branch !== "main"
+        || !String(source.headCommit ?? "").trim()) {
+      throw new Error("release candidate contour must use the exact clean main HEAD");
+    }
+    return {
+      kind: TEST_CONTOUR_RELEASE_CANDIDATE_SOURCE,
+      branch: "main",
+      headCommit: String(source.headCommit).trim(),
+      sourceRoot: canonicalPath(source.sourceRoot),
+    };
+  }
+  if (sourceKind !== TEST_CONTOUR_DEV_SOURCE) {
+    throw new Error(`Unknown Test Contour source kind: ${sourceKind}`);
+  }
   const paths = testContourPaths(isolatedRoot);
   const source = await prepareSource({
     sourceRoot,
@@ -752,6 +775,7 @@ export async function resolveTestContourSource({
     throw new Error("Test Contour candidate must use the exact dev HEAD");
   }
   return {
+    kind: TEST_CONTOUR_DEV_SOURCE,
     branch: source.branch,
     headCommit: String(source.headCommit).trim(),
     sourceRoot: canonicalPath(source.sourceRoot),
@@ -762,22 +786,40 @@ export async function prepareTestContourCandidate({
   root = defaultTestContourRoot(),
   sourceRoot = path.resolve(import.meta.dirname, "..", ".."),
   source = null,
+  sourceKind = TEST_CONTOUR_DEV_SOURCE,
   operation = null,
   port = TEST_CONTOUR_PORT,
   deploy = deployRuntime,
   prepareSource = prepareTaskContourSource,
+  validateReleaseSource = assertReleaseCandidateContourSource,
 } = {}) {
   const isolatedRoot = assertIsolatedTestContourRoot(root, { sourceRoot });
   const marker = await ensureMarker(isolatedRoot);
   const resolvedSource = source ?? await resolveTestContourSource({
     root: isolatedRoot,
     sourceRoot,
+    sourceKind,
     prepareSource,
+    validateReleaseSource,
   });
-  if (resolvedSource.branch !== "dev" || !String(resolvedSource.headCommit ?? "").trim()) {
-    throw new Error("Test Contour candidate must use the exact dev HEAD");
+  const expectedBranch = sourceKind === TEST_CONTOUR_RELEASE_CANDIDATE_SOURCE ? "main" : "dev";
+  if (resolvedSource.kind !== sourceKind
+      || resolvedSource.branch !== expectedBranch
+      || !String(resolvedSource.headCommit ?? "").trim()) {
+    throw new Error(`Test Contour candidate must use the exact ${expectedBranch} HEAD`);
   }
   const candidateSourceRoot = canonicalPath(resolvedSource.sourceRoot);
+  const revalidateReleaseSource = async () => {
+    if (sourceKind !== TEST_CONTOUR_RELEASE_CANDIDATE_SOURCE) return;
+    const current = await validateReleaseSource({ sourceRoot: candidateSourceRoot });
+    if (current.kind !== resolvedSource.kind
+        || current.branch !== resolvedSource.branch
+        || String(current.headCommit).trim() !== resolvedSource.headCommit
+        || !samePath(current.sourceRoot, candidateSourceRoot)) {
+      throw new Error("release candidate contour source identity changed during preparation");
+    }
+  };
+  await revalidateReleaseSource();
   const deployed = await deploy({
     sourceRoot: candidateSourceRoot,
     runtimeRoot: isolatedRoot,
@@ -787,12 +829,14 @@ export async function prepareTestContourCandidate({
     writePointer: async () => {},
     protectPointer: async () => {},
   });
+  await revalidateReleaseSource();
   return {
     root: isolatedRoot,
     releaseId: deployed.releaseId,
     releaseRoot: deployed.releaseRoot,
     contourId: marker.id,
     sourceRoot: candidateSourceRoot,
+    kind: resolvedSource.kind,
     branch: resolvedSource.branch,
     headCommit: resolvedSource.headCommit,
   };
@@ -852,6 +896,7 @@ async function publishPreparedTestContourCandidate({
   };
   await writeTextAtomic(layout.currentFile, `${JSON.stringify(published, null, 2)}\n`);
   const source = {
+    kind: candidate.kind,
     branch: candidate.branch,
     headCommit: candidate.headCommit,
     sourceRoot: candidate.sourceRoot,
@@ -1370,6 +1415,7 @@ async function recoverInterruptedTestContourRefresh(root) {
   const candidate = {
     releaseId: operation.releaseId,
     releaseRoot: runtimeReleaseDirectory(root, operation.releaseId),
+    kind: operation.source.kind ?? TEST_CONTOUR_DEV_SOURCE,
     branch: operation.source.branch,
     headCommit: operation.source.headCommit,
     sourceRoot: operation.source.sourceRoot,
@@ -1397,8 +1443,10 @@ async function refreshTestContourUnlocked({
   sourceRoot,
   port,
   model,
+  sourceKind = TEST_CONTOUR_DEV_SOURCE,
   forceFreshCandidate = false,
   prepareSource = prepareTaskContourSource,
+  validateReleaseSource = assertReleaseCandidateContourSource,
   prepareCandidate = prepareTestContourCandidate,
   stopRuntime = stopTestContourUnlocked,
   launchCandidate = launchTestContourCandidate,
@@ -1406,7 +1454,13 @@ async function refreshTestContourUnlocked({
 } = {}) {
   await recoverInterruptedTestContourRefresh(root);
   const marker = await ensureMarker(root);
-  const source = await resolveTestContourSource({ root, sourceRoot, prepareSource });
+  const source = await resolveTestContourSource({
+    root,
+    sourceRoot,
+    sourceKind,
+    prepareSource,
+    validateReleaseSource,
+  });
   const currentStatus = await readTestContourStatus({ root });
   const currentOperation = currentStatus.operation;
   const exactReadyTarget = currentStatus.running
@@ -1418,6 +1472,7 @@ async function refreshTestContourUnlocked({
     && currentOperation.target?.contourId === marker.id
     && Number(currentOperation.target?.port) === Number(port)
     && currentOperation.target?.model === model
+    && (currentOperation.source?.kind ?? TEST_CONTOUR_DEV_SOURCE) === source.kind
     && currentOperation.source?.branch === source.branch
     && currentOperation.source?.headCommit === source.headCommit
     && canonicalPath(currentOperation.source?.sourceRoot) === canonicalPath(source.sourceRoot)
@@ -1443,7 +1498,16 @@ async function refreshTestContourUnlocked({
     target: { root, contourId: marker.id, port, model },
   });
   try {
-    const candidate = await prepareCandidate({ root, sourceRoot, source, operation, port, model });
+    const candidate = await prepareCandidate({
+      root,
+      sourceRoot,
+      sourceKind,
+      source,
+      operation,
+      port,
+      model,
+      validateReleaseSource,
+    });
     const previousReleaseId = currentStatus.state?.releaseId
       ?? String((await readJson(runtimeLayout(root).currentFile, {}))?.current ?? "").trim()
       ?? null;
@@ -1544,6 +1608,7 @@ async function startTestContourUnlocked({
   sourceRoot = path.resolve(import.meta.dirname, "..", ".."),
   port = TEST_CONTOUR_PORT,
   model = TEST_CONTOUR_MODEL,
+  sourceKind = TEST_CONTOUR_DEV_SOURCE,
   ...dependencies
 } = {}) {
   const isolatedRoot = assertIsolatedTestContourRoot(root, { sourceRoot });
@@ -1554,6 +1619,7 @@ async function startTestContourUnlocked({
       sourceRoot,
       port,
       model,
+      sourceKind,
       ...dependencies,
     });
   }
@@ -1579,6 +1645,7 @@ async function startTestContourUnlocked({
       sourceRoot,
       port,
       model,
+      sourceKind,
       ...dependencies,
     });
   }
@@ -1627,6 +1694,7 @@ async function verifyTestContourUnlocked({
   sourceRoot = path.resolve(import.meta.dirname, "..", ".."),
   withAgent = true,
   model = TEST_CONTOUR_MODEL,
+  sourceKind = TEST_CONTOUR_DEV_SOURCE,
   port = TEST_CONTOUR_PORT,
   startContour = startTestContourUnlocked,
   smokeRunner = null,
@@ -1638,6 +1706,7 @@ async function verifyTestContourUnlocked({
     refresh: true,
     sourceRoot,
     model,
+    sourceKind,
     port,
   });
   const {

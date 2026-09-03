@@ -793,6 +793,40 @@ test("candidate preparation refuses a non-dev source before deployment", async (
   }
 });
 
+test("release candidate source is revalidated around deployment and fails closed on replacement", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-release-contour-guard-"));
+  const sourceRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-release-contour-source-"));
+  let validation = 0;
+  let deployed = false;
+  try {
+    await assert.rejects(
+      prepareTestContourCandidate({
+        root,
+        sourceRoot,
+        sourceKind: "release-candidate",
+        validateReleaseSource: async () => ({
+          kind: "release-candidate",
+          branch: "main",
+          headCommit: ++validation < 3 ? "release-head" : "replacement-head",
+          sourceRoot,
+        }),
+        deploy: async () => {
+          deployed = true;
+          return { releaseId: "release-candidate", releaseRoot: path.join(root, "releases", "release-candidate") };
+        },
+      }),
+      /identity changed during preparation/u,
+    );
+    assert.equal(deployed, true);
+    assert.equal(validation, 3);
+  } finally {
+    await Promise.all([
+      rm(root, { recursive: true, force: true }),
+      rm(sourceRoot, { recursive: true, force: true }),
+    ]);
+  }
+});
+
 test("loopback Telegram adapter captures all synthetic traffic locally", async () => {
   const telegram = new LoopbackTelegramApi();
   try {

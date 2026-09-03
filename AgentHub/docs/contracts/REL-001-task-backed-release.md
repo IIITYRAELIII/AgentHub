@@ -177,6 +177,17 @@ same-target coalescing. The next refresh replaces them; this compatibility guard
 may be removed once all supported contour roots have completed one refresh with
 the full identity.
 
+Ordinary contour start, refresh, verify, and release preflight source resolution
+remains `dev`-only. The publication pipeline's explicit `--release-candidate`
+verification is a separate gate: it resolves source bytes
+directly from the Agent Hub-owned standalone release clone, requires that clone
+to be clean and attached to `main` with `HEAD == refs/heads/main`, and records
+that exact source identity. It never prepares or falls back to a `dev` checkout
+inside the contour root. The ownership/isolation guard remains mandatory, and
+the source identity is checked again immediately before and after candidate
+deployment so a changed clone fails before activation. No ordinary command
+selects this source mode.
+
 The rolling contour is preview evidence, not release proof. Release validation
 still requires the prescribed isolated candidate checks and publication
 pipeline before production side effects.

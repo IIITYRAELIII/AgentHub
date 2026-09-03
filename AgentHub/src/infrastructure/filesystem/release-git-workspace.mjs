@@ -225,6 +225,39 @@ export async function assertReleaseCloneForPublication({ repositoryRoot: request
   return { ...marker, markerFile };
 }
 
+export async function assertReleaseCandidateContourSource({ sourceRoot: requestedRoot } = {}) {
+  const requestedSourceRoot = canonicalPath(String(requestedRoot ?? ""));
+  const marker = await assertReleaseCloneForPublication({ repositoryRoot: requestedSourceRoot });
+  const expectedSourceRoot = canonicalPath(path.join(marker.releaseRoot, "AgentHub"));
+  if (!samePath(requestedSourceRoot, expectedSourceRoot)) {
+    throw new Error("release candidate contour source must be the AgentHub directory of the managed release clone");
+  }
+  const [branch, headCommit, mainCommit, dirty] = await Promise.all([
+    runGit(["symbolic-ref", "--short", "HEAD"], { cwd: marker.releaseRoot }),
+    runGit(["rev-parse", "HEAD^{commit}"], { cwd: marker.releaseRoot }),
+    runGit(["rev-parse", "refs/heads/main^{commit}"], { cwd: marker.releaseRoot }),
+    runGit(["status", "--porcelain=v1", "--untracked-files=all"], { cwd: marker.releaseRoot }),
+  ]);
+  if (branch !== "main") {
+    throw new Error(`release candidate contour source must be attached to main, got ${branch}`);
+  }
+  if (headCommit !== mainCommit) {
+    throw new Error("release candidate contour source HEAD must equal refs/heads/main");
+  }
+  if (dirty) {
+    throw new Error("release candidate contour source must be clean");
+  }
+  return {
+    kind: "release-candidate",
+    branch,
+    headCommit,
+    sourceRoot: expectedSourceRoot,
+    releaseRoot: marker.releaseRoot,
+    releaseGitCommonDir: marker.releaseGitCommonDir,
+    markerFile: marker.markerFile,
+  };
+}
+
 export class ReleaseGitWorkspaceService {
   constructor({ dataDir } = {}) {
     this.dataDir = canonicalPath(String(dataDir ?? ""));

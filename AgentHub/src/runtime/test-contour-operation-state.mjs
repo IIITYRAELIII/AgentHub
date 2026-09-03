@@ -26,6 +26,7 @@ function nowIso(now = new Date()) {
 
 function normalizedSource(source = {}) {
   return {
+    kind: String(source.kind ?? "dev").trim() || "dev",
     branch: String(source.branch ?? "").trim(),
     headCommit: String(source.headCommit ?? "").trim(),
     sourceRoot: path.resolve(String(source.sourceRoot ?? "").trim()),

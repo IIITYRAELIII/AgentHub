@@ -667,7 +667,39 @@ test("verify preserves the requested root and custom port through refresh and sm
     assert.equal(result.smoke.ok, true);
     assert.equal(calls[0].options.root, root);
     assert.equal(calls[0].options.port, port);
+    assert.equal(calls[0].options.sourceKind, "dev");
     assert.equal(calls[1].options.url, `http://127.0.0.1:${port}/`);
+  } finally {
+    await Promise.all([
+      rm(root, { recursive: true, force: true }),
+      rm(`${root}-operation.lock`, { recursive: true, force: true }),
+      rm(sourceRoot, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("verify forwards explicit release-candidate source without changing the default dev contract", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-release-verify-root-"));
+  const sourceRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-release-verify-source-"));
+  let start = null;
+  try {
+    await verifyTestContour({
+      root,
+      sourceRoot,
+      sourceKind: "release-candidate",
+      withAgent: false,
+      startContour: async (options) => {
+        start = options;
+        return {
+          url: "http://127.0.0.1:18880/",
+          model: TEST_CONTOUR_SPARK_MODEL,
+          startedAt: new Date().toISOString(),
+        };
+      },
+      smokeRunner: async () => ({ ok: true, withAgent: false }),
+    });
+    assert.equal(start.sourceKind, "release-candidate");
+    assert.equal(start.refresh, true);
   } finally {
     await Promise.all([
       rm(root, { recursive: true, force: true }),

@@ -7,10 +7,15 @@ import test from "node:test";
 import { promisify } from "node:util";
 
 import {
+  assertReleaseCandidateContourSource,
   assertReleaseCloneForPublication,
   ReleaseGitWorkspaceService,
 } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
+import {
+  resolveTestContourSource,
+  TEST_CONTOUR_RELEASE_CANDIDATE_SOURCE,
+} from "../../../src/runtime/test-contour-manager.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -35,9 +40,11 @@ async function fixture(context) {
   await git(primary, "config", "core.autocrlf", "false");
   await mkdir(path.join(primary, ".team"));
   await mkdir(path.join(primary, "1C_ACCESS"));
+  await mkdir(path.join(primary, "AgentHub"));
   await writeFile(path.join(primary, "app.txt"), "main\n", "utf8");
   await writeFile(path.join(primary, ".team", "participant.json"), "team-main\n", "utf8");
   await writeFile(path.join(primary, "1C_ACCESS", "access.json"), "access-main\n", "utf8");
+  await writeFile(path.join(primary, "AgentHub", "package.json"), "{}\n", "utf8");
   const baseCommit = await commit(primary, "main");
   await git(primary, "push", "-u", "origin", "main");
   return { root, origin, primary, dataDir, baseCommit, service: new ReleaseGitWorkspaceService({ dataDir }) };
@@ -91,6 +98,61 @@ test("release candidate uses an independent clone and leaves a clean primary att
   await assert.rejects(
     assertReleaseCloneForPublication({ repositoryRoot: setup.primary }),
     /requires an Agent Hub-owned independent release clone/u,
+  );
+});
+
+test("release contour resolves the exact clean main from a real managed clone without a dev checkout", async (context) => {
+  const setup = await fixture(context);
+  const resultCommit = await taskResult(setup, context, {
+    file: "AgentHub/release-only.mjs",
+    content: "export const releaseOnly = true;\n",
+  });
+  const candidate = await setup.service.prepareCandidate({
+    planRevision: "plan-release-contour",
+    projectRoot: setup.primary,
+    frozenTasks: [{ taskId: "task-release-contour", resultCommit }],
+  });
+  const releaseHead = await publishCandidate(candidate);
+  const sourceRoot = path.join(candidate.releaseRoot, "AgentHub");
+  const contourRoot = path.join(setup.root, "release-contour");
+
+  const asserted = await assertReleaseCandidateContourSource({ sourceRoot });
+  const resolved = await resolveTestContourSource({
+    root: contourRoot,
+    sourceRoot,
+    sourceKind: TEST_CONTOUR_RELEASE_CANDIDATE_SOURCE,
+    prepareSource: async () => assert.fail("release contour must not prepare a dev checkout"),
+  });
+
+  assert.equal(asserted.branch, "main");
+  assert.equal(asserted.headCommit, releaseHead);
+  assert.equal(resolved.kind, TEST_CONTOUR_RELEASE_CANDIDATE_SOURCE);
+  assert.equal(resolved.branch, "main");
+  assert.equal(resolved.headCommit, releaseHead);
+  assert.equal(path.resolve(resolved.sourceRoot), path.resolve(sourceRoot));
+  await assert.rejects(stat(path.join(contourRoot, "task-git")), { code: "ENOENT" });
+  assert.equal(await git(setup.primary, "symbolic-ref", "HEAD"), "refs/heads/main");
+  assert.equal(await git(setup.primary, "status", "--porcelain=v1"), "");
+});
+
+test("release contour fails closed for dirty or non-main managed clone state", async (context) => {
+  const setup = await fixture(context);
+  const resultCommit = await taskResult(setup, context);
+  const candidate = await setup.service.prepareCandidate({
+    planRevision: "plan-release-contour-guard",
+    projectRoot: setup.primary,
+    frozenTasks: [{ taskId: "task-release-contour-guard", resultCommit }],
+  });
+  const sourceRoot = path.join(candidate.releaseRoot, "AgentHub");
+  await assert.rejects(
+    assertReleaseCandidateContourSource({ sourceRoot }),
+    /must be attached to main/u,
+  );
+  await publishCandidate(candidate);
+  await writeFile(path.join(sourceRoot, "dirty.mjs"), "export {};\n", "utf8");
+  await assert.rejects(
+    assertReleaseCandidateContourSource({ sourceRoot }),
+    /must be clean/u,
   );
 });
 
