@@ -1838,6 +1838,7 @@ function applySnapshot(snapshot, { materialized = false } = {}) {
     agentHub.setExchangeRates(snapshot.exchangeRates ?? null);
     agentHub.setServerStatus(snapshot.server ?? null);
     agentHub.setWorkspaces(snapshot.workspaces ?? [], snapshot.boardLayout?.columnOrder ?? []);
+    agentHub.setArchivedWorkspaces(snapshot.archivedWorkspaces ?? []);
     const maintenanceChanged = new Set([
       ...observeContextCompactions(snapshot.tasks),
       ...observeStreamRotations(previousTasks, snapshot.tasks),
@@ -2835,6 +2836,14 @@ agentHub.on("workspace:folder-rename", ({ fromFolderName, toFolderName }) => run
   applySnapshot(snapshot);
   agentHub.renameWorkspaceFolderCatalog(fromFolderName, toFolderName);
   agentHub.toast(`Папка «${fromFolderName}» переименована в «${toFolderName}»`);
+}));
+agentHub.on("workspace:archive", ({ workspaceId }) => runAction(async () => {
+  applySnapshot(await control("archive-workspace", { workspaceId }));
+  agentHub.toast("Workspace удалён в архив на 3 дня");
+}));
+agentHub.on("workspace:restore", ({ workspaceId }) => runAction(async () => {
+  applySnapshot(await control("restore-workspace", { workspaceId }));
+  agentHub.toast("Workspace восстановлен");
 }));
 agentHub.on("workspace:create", ({
   name, folderName, comment, workingDirectory, taskPrefix, rules, releaseWorkflowEnabled, beforeColumnId,

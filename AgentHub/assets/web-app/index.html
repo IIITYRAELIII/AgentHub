@@ -252,6 +252,16 @@
                 stroke-linecap="round" stroke-width="16"></line>
             </svg>
           </button>
+          <button type="button" class="icon-button workspace-archive-open" data-action="workspace-archive-open"
+            title="Архив удалённых Workspace" aria-label="Архив удалённых Workspace" hidden>
+            <svg data-phosphor-icon="archive-tray" viewBox="0 0 256 256" aria-hidden="true">
+              <rect x="24" y="56" width="208" height="40" rx="8" fill="none" stroke="currentColor"
+                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></rect>
+              <path d="M208 96v104a8 8 0 0 1-8 8H56a8 8 0 0 1-8-8V96M96 136h64" fill="none"
+                stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></path>
+            </svg>
+            <span class="workspace-archive-count" data-workspace-archive-count></span>
+          </button>
           <button type="button" class="icon-button task-new" data-action="workspace-new"
             title="Новый Workspace" aria-label="Новый Workspace">
             <svg data-phosphor-icon="plus" viewBox="0 0 256 256" aria-hidden="true">
@@ -979,6 +989,19 @@
         <button type="submit" class="board-task-primary" data-workspace-card-submit>Сохранить</button>
       </footer>
     </form>
+  </dialog>
+
+  <dialog class="workspace-archive-modal" data-workspace-archive-modal aria-labelledby="workspace-archive-title">
+    <header>
+      <div>
+        <p class="eyebrow">Безопасное удаление</p>
+        <h2 id="workspace-archive-title">Архив Workspace</h2>
+      </div>
+      <button type="button" class="icon-button" data-workspace-archive-close aria-label="Закрыть">×</button>
+    </header>
+    <p class="workspace-archive-note">Workspace хранятся здесь три дня без копирования чатов и Streams, затем удаляются автоматически.</p>
+    <div class="workspace-archive-list" data-workspace-archive-list></div>
+    <p class="workspace-archive-empty" data-workspace-archive-empty>Архив пуст.</p>
   </dialog>
 
   <!-- ================================================= Отдельное представление: журнал === -->

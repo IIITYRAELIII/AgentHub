@@ -147,6 +147,7 @@ function fixture(overrides = {}) {
         return state.workspaces
           ?? [{ id: "workspace-2", name: "Second" }, { id: "workspace-1", name: "First" }];
       },
+      archivedWorkspaces: () => state.archivedWorkspaces ?? [],
       layout: () => {
         state.boardLayoutBuilds += 1;
         return {
@@ -320,10 +321,17 @@ test("desktop task snapshot carries server-side unread state for the account", (
 });
 
 test("desktop snapshot exposes Task board state", async () => {
-  const { desktopSnapshot } = fixture();
+  const { desktopSnapshot } = fixture({
+    archivedWorkspaces: [{ id: "workspace-archived", name: "Archive", purgeAfterMs: 9_000 }],
+  });
   const snapshot = await desktopSnapshot();
   assert.deepEqual(snapshot.boardTasks, [{ id: "board-task-1", text: "Проверить дашборд" }]);
   assert.deepEqual(snapshot.workspaces.map((workspace) => workspace.id), ["workspace-2", "workspace-1"]);
+  assert.deepEqual(snapshot.archivedWorkspaces, [{
+    id: "workspace-archived",
+    name: "Archive",
+    purgeAfterMs: 9_000,
+  }]);
   assert.deepEqual(snapshot.boardLayout, {
     columnOrder: ["workspace:workspace-2", "notes", "workspace:workspace-1"],
     notesComment: "Кино",

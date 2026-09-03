@@ -23,6 +23,27 @@ export function createWorkspaceActions(services) {
       () => services.workspaceCatalogService.createWorkspace(params),
       { resultKey: "createdWorkspace" },
     ),
+    archiveWorkspace: (params) => services.workspaceMutation(
+      () => {
+        const workspaceId = String(params?.workspaceId ?? "").trim();
+        const running = services.catalogEntries().find((entry) => (
+          entry.workspaceId === workspaceId && services.runForTask(entry)
+        ));
+        if (running) throw new Error("Сначала завершите активные ходы в этом Workspace");
+        const selectedWorkspaceId = services.workspaceCatalog
+          .stream(services.selectionStore.streamId)?.workspaceId;
+        const result = services.workspaceCatalogService.archiveWorkspace({ workspaceId });
+        if (selectedWorkspaceId === workspaceId) {
+          services.selectionStore.switchProject(services.selectionStore.activeProjectRoot);
+        }
+        return result;
+      },
+      { resultKey: "archivedWorkspace" },
+    ),
+    restoreWorkspace: (params) => services.workspaceMutation(
+      () => services.workspaceCatalogService.restoreWorkspace(params),
+      { resultKey: "restoredWorkspace" },
+    ),
     createWorkspaceFromStream: (params) => services.workspaceMutation(
       () => {
         const sourceWorkspaceId = services.workspaceCatalog.stream(params?.streamId)?.workspaceId;

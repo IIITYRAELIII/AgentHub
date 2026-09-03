@@ -15,6 +15,9 @@ function fixture({ taskBoard = null } = {}) {
     renameWorkspaceFolder: (...args) => (calls.push(["renameWorkspaceFolder", ...args]), {
       fromFolderName: args[0], toFolderName: args[1], workspaceCount: 2,
     }),
+    archiveWorkspace: (...args) => (calls.push(["archiveWorkspace", ...args]), { id: args[0], archivedAtMs: 1 }),
+    restoreWorkspace: (...args) => (calls.push(["restoreWorkspace", ...args]), { id: args[0], archivedAtMs: null }),
+    archivedWorkspaces: () => [{ id: "workspace-archived" }],
     workspaceDeveloperRules: (...args) => (calls.push(["workspaceDeveloperRules", ...args]), { content: "workspace" }),
     updateWorkspaceDeveloperRules: (...args) => (calls.push(["updateWorkspaceDeveloperRules", ...args]), { content: args[1] }),
     workspace: (id) => ({ id, settings: { releaseWorkflowEnabled: true } }),
@@ -115,6 +118,17 @@ test("Workspace folder rename delegates one atomic catalog mutation", () => {
     workspaceCount: 2,
   });
   assert.deepEqual(calls.at(-1), ["renameWorkspaceFolder", "Клиенты", "Заказчики"]);
+});
+
+test("Workspace archive and restore keep the stable Workspace identity", () => {
+  const { service, calls } = fixture();
+  assert.equal(service.archiveWorkspace({ workspaceId: "workspace-1" }).archivedAtMs, 1);
+  assert.equal(service.restoreWorkspace({ workspaceId: "workspace-1" }).archivedAtMs, null);
+  assert.deepEqual(service.archivedWorkspaces(), [{ id: "workspace-archived" }]);
+  assert.deepEqual(calls.slice(-2), [
+    ["archiveWorkspace", "workspace-1"],
+    ["restoreWorkspace", "workspace-1"],
+  ]);
 });
 
 test("adding a Workspace Task prefix backfills its unnumbered Tasks", () => {

@@ -7,6 +7,7 @@ import test from "node:test";
 
 import {
   DEVELOPER_RULES_MAX_BYTES,
+  WORKSPACE_ARCHIVE_RETENTION_MS,
   WorkspaceCatalogStore,
 } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import {
@@ -34,6 +35,57 @@ async function fixture(t) {
   });
   return store;
 }
+
+test("Workspace archive hides hierarchy, restores intact, and purges after three days", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspace-archive-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  let nowMs = 1_700_000_000_000;
+  let id = 0;
+  const store = new WorkspaceCatalogStore({
+    databaseFile,
+    now: () => nowMs,
+    idFactory: () => `archive-id-${++id}`,
+  });
+  await store.load();
+  t.after(async () => {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const workspace = store.createWorkspace({ name: "Удалённый проект" });
+  const stream = store.createStream({ workspaceId: workspace.id, name: "Основной" });
+  store.bindThread({ provider: "codex", threadId: "thread-1", streamId: stream.id });
+
+  const archived = store.archiveWorkspace(workspace.id);
+  assert.equal(archived.archivedAtMs, nowMs);
+  assert.equal(archived.purgeAfterMs, nowMs + WORKSPACE_ARCHIVE_RETENTION_MS);
+  assert.equal(store.hierarchy().some((item) => item.id === workspace.id), false);
+  assert.deepEqual(store.archivedWorkspaces().map((item) => ({
+    id: item.id,
+    streamCount: item.streamCount,
+    threadCount: item.threadCount,
+  })), [{ id: workspace.id, streamCount: 1, threadCount: 1 }]);
+  assert.equal(store.assignCatalogEntries([{
+    provider: "codex",
+    threadId: "thread-1",
+    title: "Скрытый чат",
+  }]).length, 0);
+
+  nowMs += WORKSPACE_ARCHIVE_RETENTION_MS - 1;
+  assert.equal(store.restoreWorkspace(workspace.id).archivedAtMs, null);
+  assert.equal(store.hierarchy().find((item) => item.id === workspace.id).streams[0].threads.length, 1);
+
+  store.archiveWorkspace(workspace.id);
+  nowMs += WORKSPACE_ARCHIVE_RETENTION_MS;
+  assert.equal(store.archivedWorkspaces().length, 0);
+  assert.equal(store.workspace(workspace.id), null);
+  assert.equal(store.stream(stream.id), null);
+  assert.equal(store.thread({ provider: "codex", threadId: "thread-1" }), null);
+});
+
+test("system Workspace cannot be archived", async (t) => {
+  const store = await fixture(t);
+  assert.throws(() => store.archiveWorkspace(store.ensureExperiments().id), /cannot be archived/u);
+});
 
 test("workspace catalog revision is O(1) state that changes after a write", async (t) => {
   const store = await fixture(t);
@@ -119,6 +171,7 @@ test("Workspace folder rename updates every member atomically and preserves sett
     name: "Другой",
     settings: { catalogFolder: "Внутренние" },
   });
+  store.archiveWorkspace(second.id);
 
   assert.deepEqual(store.renameWorkspaceFolder(" Клиенты ", " Заказчики "), {
     fromFolderName: "Клиенты",

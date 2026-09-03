@@ -74,6 +74,11 @@ const taskList = document.querySelector("[data-task-list]");
 const taskEmpty = document.querySelector("[data-task-empty]");
 const taskCount = document.querySelector("[data-task-count]");
 const taskFilter = document.querySelector("[data-task-filter]");
+const workspaceArchiveOpen = document.querySelector("[data-action='workspace-archive-open']");
+const workspaceArchiveCount = document.querySelector("[data-workspace-archive-count]");
+const workspaceArchiveModal = document.querySelector("[data-workspace-archive-modal]");
+const workspaceArchiveList = document.querySelector("[data-workspace-archive-list]");
+const workspaceArchiveEmpty = document.querySelector("[data-workspace-archive-empty]");
 const activityRail = document.querySelector("[data-activity-rail]");
 const activityRailToggle = document.querySelector("[data-activity-rail-toggle]");
 const activityRailCount = document.querySelector("[data-activity-rail-count]");
@@ -1285,6 +1290,7 @@ document.addEventListener("agenthub:attachment-open", (event) => {
 const state = {
   tasks: [],
   workspaces: [],
+  archivedWorkspaces: [],
   workspaceColumnOrder: [],
   selectedId: null,
   messages: new Map(),   // taskId -> message[]
@@ -1593,6 +1599,41 @@ function populateWorkspaceFolderSelect(selectedName = "") {
     ...names.map((name) => el("option", { value: name, text: name })),
   );
   workspaceCardFolder.value = names.includes(normalizedSelected) ? normalizedSelected : "";
+}
+
+function renderWorkspaceArchive() {
+  const items = window.AgentHubStreamTabs.workspaceArchivePresentation(state.archivedWorkspaces);
+  if (workspaceArchiveOpen) workspaceArchiveOpen.hidden = items.length === 0;
+  if (workspaceArchiveCount) workspaceArchiveCount.textContent = String(items.length);
+  if (workspaceArchiveEmpty) workspaceArchiveEmpty.hidden = items.length > 0;
+  if (!workspaceArchiveList) return;
+  workspaceArchiveList.hidden = items.length === 0;
+  workspaceArchiveList.replaceChildren(...items.map((workspace) => el("article", {
+    class: "workspace-archive-item",
+  }, [
+    el("strong", { text: workspace.name || "Без названия" }),
+    el("span", {
+      text: `${workspace.streamCount} Streams · ${workspace.threadCount} Threads · ${workspace.remainingLabel}`,
+      title: workspace.purgeAfterMs
+        ? `Автоматическое удаление: ${new Date(workspace.purgeAfterMs).toLocaleString("ru-RU")}`
+        : "",
+    }),
+    el("button", {
+      type: "button",
+      class: "board-task-quiet workspace-archive-restore",
+      "data-workspace-archive-restore": workspace.id,
+      text: "Восстановить",
+    }),
+  ])));
+}
+
+function openWorkspaceArchive() {
+  renderWorkspaceArchive();
+  workspaceArchiveModal?.showModal();
+}
+
+function closeWorkspaceArchive() {
+  if (workspaceArchiveModal?.open) workspaceArchiveModal.close();
 }
 
 function restoreCollapsedWorkspaceFolders() {
@@ -3539,6 +3580,19 @@ function ensureWorkspaceContextMenu() {
       if (folderName) createWorkspaceFolder(folderName);
     } else if (kind === "folder-remove") {
       moveWorkspaceToFolder(workspaceId, "");
+    } else if (kind === "archive") {
+      const confirmation = await askText({
+        title: `Для удаления на 3 дня введите: ${workspaceName}`,
+      });
+      if (confirmation == null) return;
+      if (!window.AgentHubStreamTabs.workspaceArchiveNameMatches(
+        workspaceCatalogItem(workspaceId),
+        confirmation,
+      )) {
+        showToast("Название не совпало — Workspace не удалён");
+        return;
+      }
+      emit("workspace:archive", { workspaceId });
     }
   });
   return workspaceContextMenu;
@@ -3595,6 +3649,17 @@ function renderWorkspaceContextMenu(menu, workspace) {
       class: "stream-context-action",
       "data-workspace-menu-action": "folder-remove",
       text: "Убрать из папки",
+    }) : null,
+    workspace?.kind !== "system" ? el("span", {
+      class: "stream-context-label",
+      text: "Безопасность",
+    }) : null,
+    workspace?.kind !== "system" ? el("button", {
+      type: "button",
+      role: "menuitem",
+      class: "stream-context-action stream-context-danger",
+      "data-workspace-menu-action": "archive",
+      text: "Удалить в архив на 3 дня…",
     }) : null,
   );
 }
@@ -7152,6 +7217,15 @@ workspaceCardModal?.addEventListener("close", () => {
   workspaceCardId = "";
   workspaceCardMode = "edit";
 });
+workspaceArchiveList?.addEventListener("click", (event) => {
+  const restore = event.target.closest("[data-workspace-archive-restore]");
+  const workspaceId = String(restore?.dataset?.workspaceArchiveRestore ?? "").trim();
+  if (workspaceId) emit("workspace:restore", { workspaceId });
+});
+document.querySelector("[data-workspace-archive-close]")?.addEventListener("click", closeWorkspaceArchive);
+workspaceArchiveModal?.addEventListener("click", (event) => {
+  if (event.target === workspaceArchiveModal) closeWorkspaceArchive();
+});
 bugReportAttach?.addEventListener("click", () => bugReportFiles?.click());
 bugReportFiles?.addEventListener("change", () => {
   void readBugReportFiles(bugReportFiles.files);
@@ -7968,6 +8042,9 @@ async function handleAction(action, trigger) {
   const taskId = trigger.closest("[data-stream-chat-task-id]")?.dataset.streamChatTaskId
     || state.selectedId;
   switch (action) {
+    case "workspace-archive-open":
+      openWorkspaceArchive();
+      break;
     case "workspace-folder-new": {
       const folderName = await askText({ title: "Название папки Workspace" });
       if (folderName) createWorkspaceFolder(folderName);
@@ -8230,6 +8307,12 @@ const AgentHub = {
     state.workspaces = nextWorkspaces;
     state.workspaceColumnOrder = nextColumnOrder;
     if (journalRendered) updateJournalStreamCount();
+  },
+  setArchivedWorkspaces(workspaces) {
+    const next = Array.isArray(workspaces) ? workspaces.slice() : [];
+    if (sameData(state.archivedWorkspaces, next)) return;
+    state.archivedWorkspaces = next;
+    renderWorkspaceArchive();
   },
   renameWorkspaceFolderCatalog,
   openDialogSettings,

@@ -690,10 +690,12 @@ export function createDesktopSnapshotFactory({
     snapshotTiming.serverStateMs = Math.round((monotonicNow() - phaseStartedAt) * 10) / 10;
     phaseStartedAt = monotonicNow();
     const boardTasks = board.snapshot?.() ?? [];
+    const archivedWorkspaces = board.archivedWorkspaces?.() ?? [];
     const messageReceipts = desktopMessageReceiptSnapshot();
     const snapshot = {
       apiVersion: protocol,
       workspaces,
+      archivedWorkspaces,
       boardTasks,
       boardLayout: board.layout?.() ?? { columnOrder: [], notesComment: "" },
       selected: {

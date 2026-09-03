@@ -947,6 +947,26 @@ test("Workspace folder mutations preserve settings and creation can stay ungroup
   );
 });
 
+test("Workspace archive presentation keeps expiry and exact-name confirmation", async () => {
+  const { workspaceArchiveNameMatches, workspaceArchivePresentation } = await streamTabsApi();
+  assert.deepEqual(JSON.parse(JSON.stringify(workspaceArchivePresentation([{
+    id: "archived",
+    name: "Удалённый",
+    streamCount: 2,
+    threadCount: 5,
+    purgeAfterMs: 1_700_000_000_000 + (26 * 60 * 60 * 1000),
+  }], 1_700_000_000_000))), [{
+    id: "archived",
+    name: "Удалённый",
+    streamCount: 2,
+    threadCount: 5,
+    purgeAfterMs: 1_700_093_600_000,
+    remainingLabel: "Осталось 2 дн.",
+  }]);
+  assert.equal(workspaceArchiveNameMatches({ name: "Точный регистр" }, "Точный регистр"), true);
+  assert.equal(workspaceArchiveNameMatches({ name: "Точный регистр" }, "точный регистр"), false);
+});
+
 test("activity rail markup exposes separate active and recent sections", async () => {
   const [html, appSource, clientSource] = await Promise.all([
     readFile(new URL("../../assets/web-app/index.html", import.meta.url), "utf8"),

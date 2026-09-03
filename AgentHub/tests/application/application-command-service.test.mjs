@@ -10,7 +10,7 @@ function service(calls) {
   const handlers = Object.fromEntries([
     "selectTask", "createTask", "rotateStream", "renameTask", "archiveTask",
     "updateSetting", "cancelRun", "resolveApproval",
-    "renameWorkspace", "updateWorkspaceSettings", "renameWorkspaceFolder", "updateWorkspaceDeveloperRules", "readWorkspaceReleasePlan", "completeWorkspaceRelease", "createWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "createStream",
+    "renameWorkspace", "updateWorkspaceSettings", "renameWorkspaceFolder", "updateWorkspaceDeveloperRules", "readWorkspaceReleasePlan", "completeWorkspaceRelease", "createWorkspace", "archiveWorkspace", "restoreWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "createStream",
     "renameStream", "archiveStream", "updateStreamSettings", "updateStreamDeveloperRules", "moveStream",
   ].map((name) => [name, (...args) => { calls.push({ name, args }); return name; }]));
   return createApplicationCommandService({ handlers });
@@ -68,6 +68,12 @@ test("workspace and stream commands use the shared command path", async () => {
     workspaceId: "workspace-1",
     content: "Workspace rule",
   }, { source: "desktop", userId: "7" });
+  await commands.dispatch("workspace.archive", {
+    workspaceId: "workspace-1",
+  }, { source: "desktop", userId: "7" });
+  await commands.dispatch("workspace.restore", {
+    workspaceId: "workspace-1",
+  }, { source: "desktop", userId: "7" });
   await commands.dispatch("workspace.create-from-stream", {
     streamId: "stream-1",
     name: "New Workspace",
@@ -112,6 +118,14 @@ test("workspace and stream commands use the shared command path", async () => {
     {
       name: "updateWorkspaceDeveloperRules",
       args: [{ workspaceId: "workspace-1", content: "Workspace rule" }],
+    },
+    {
+      name: "archiveWorkspace",
+      args: [{ workspaceId: "workspace-1" }],
+    },
+    {
+      name: "restoreWorkspace",
+      args: [{ workspaceId: "workspace-1" }],
     },
     {
       name: "createWorkspaceFromStream",

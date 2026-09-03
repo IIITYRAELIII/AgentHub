@@ -681,6 +681,25 @@
     };
   }
 
+  function workspaceArchivePresentation(workspaces, nowMs = Date.now()) {
+    return [...(workspaces ?? [])].map((workspace) => {
+      const remainingMs = Math.max(0, Number(workspace?.purgeAfterMs) - nowMs);
+      const hours = Math.max(1, Math.ceil(remainingMs / (60 * 60 * 1000)));
+      return {
+        id: String(workspace?.id ?? ""),
+        name: String(workspace?.name ?? "").trim() || "Без названия",
+        streamCount: Math.max(0, Number(workspace?.streamCount) || 0),
+        threadCount: Math.max(0, Number(workspace?.threadCount) || 0),
+        purgeAfterMs: Number(workspace?.purgeAfterMs) || 0,
+        remainingLabel: hours < 24 ? `Осталось около ${hours} ч.` : `Осталось ${Math.ceil(hours / 24)} дн.`,
+      };
+    }).filter((workspace) => workspace.id);
+  }
+
+  function workspaceArchiveNameMatches(workspace, confirmation) {
+    return String(confirmation ?? "") === String(workspace?.name ?? "");
+  }
+
   function workspaceFamilyKey(group) {
     const name = String(group?.name ?? "").trim();
     const [head] = name.split(/\s+/u);
@@ -1593,6 +1612,8 @@
     workspaceFolderMutation,
     workspaceFolderRenamePlan,
     workspaceCreationSettings,
+    workspaceArchiveNameMatches,
+    workspaceArchivePresentation,
     normalizeWorkspaceFolderName,
     resolveTaskHierarchy,
     STREAM_CARD_MAX_WIDTH,

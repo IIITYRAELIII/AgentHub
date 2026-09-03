@@ -43,6 +43,18 @@ export class WorkspaceCatalogService {
     return this.#store.renameWorkspaceFolder(fromFolderName, toFolderName);
   }
 
+  archiveWorkspace({ workspaceId } = {}) {
+    return this.#store.archiveWorkspace(workspaceId);
+  }
+
+  restoreWorkspace({ workspaceId } = {}) {
+    return this.#store.restoreWorkspace(workspaceId);
+  }
+
+  archivedWorkspaces() {
+    return this.#store.archivedWorkspaces();
+  }
+
   workspaceDeveloperRules({ workspaceId } = {}) {
     return this.#store.workspaceDeveloperRules(workspaceId);
   }
