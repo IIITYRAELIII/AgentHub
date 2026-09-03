@@ -1,4 +1,4 @@
-# ADR-0014 — Trusted automatic Codex executable adoption
+# ADR-0017 — Trusted automatic Codex executable adoption
 
 ## Status
 
