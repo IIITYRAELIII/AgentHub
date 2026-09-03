@@ -200,6 +200,7 @@ export class TaskBoardLaunchService {
       streamName,
       requestId: launchRequestId,
       reassign,
+      expectedRevision: task.revision,
     });
     let stream = this.workspaceCatalog.stream(streamId);
     if (!stream) {

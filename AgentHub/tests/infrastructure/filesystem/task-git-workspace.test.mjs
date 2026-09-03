@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -118,6 +118,25 @@ test("Task Git workspace commits one Task branch and merges it into dev", async 
   }
 });
 
+test("an empty Task diff is explicit no_result even when its HEAD is already ancestral to dev", async (context) => {
+  const root = await repository(context);
+  const dataDir = path.join(root, "..", `${path.basename(root)}-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const service = new TaskGitWorkspaceService({ dataDir });
+  const workspace = await service.prepare({
+    taskId: "10101010-1010-4010-8010-101010101010",
+    projectRoot: root,
+  });
+
+  const result = await service.snapshotAndMerge({ taskId: workspace.taskId, projectRoot: workspace.projectRoot });
+
+  assert.equal(result.snapshot.changedFiles.length, 0);
+  assert.equal(result.integration.alreadyIntegrated, true);
+  assert.equal(result.integration.integrated, false);
+  assert.equal(result.integration.resultProved, false);
+  assert.equal(result.integration.outcome, "no_result");
+});
+
 test("managed Task admission rejects another Task owner and numbered branch", async (context) => {
   const root = await repository(context);
   const dataDir = path.join(root, "..", `${path.basename(root)}-data`);
@@ -167,6 +186,28 @@ test("Task Git workspace aborts a conflicting dev merge without deleting either 
   assert.equal(conflict.integration.integrated, false);
   assert.deepEqual(conflict.integration.conflicts, ["app.txt"]);
   assert.equal(await git(conflict.integration.dev.projectRoot, "status", "--porcelain"), "");
+});
+
+test("startup reconciles MERGE_HEAD, blocks index.lock and clears the block only after repair", async (context) => {
+  const root = await repository(context);
+  const dataDir = path.join(root, "..", `${path.basename(root)}-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const service = new TaskGitWorkspaceService({ dataDir });
+  const dev = await service.prepareDev(root);
+  const mergeHead = await git(dev.projectRoot, "rev-parse", "--git-path", "MERGE_HEAD");
+  const indexLock = await git(dev.projectRoot, "rev-parse", "--git-path", "index.lock");
+  await writeFile(mergeHead, `${"f".repeat(40)}\n`, "utf8");
+  await writeFile(indexLock, "locked\n", "utf8");
+
+  await assert.rejects(() => service.prepareDev(root), /merge --abort failed/u);
+  const blockFile = path.join(dataDir, "integration-blocks", `${path.basename(dev.repositoryRoot).toLowerCase()}.json`);
+  const blocks = await access(path.dirname(blockFile)).then(() => true, () => false);
+  assert.equal(blocks, true);
+
+  await unlink(mergeHead).catch(() => {});
+  await unlink(indexLock);
+  const recovered = await service.prepareDev(root);
+  assert.equal(recovered.branch, "dev");
 });
 
 test("a new Task branch starts from main and never inherits earlier dev-only work", async (context) => {

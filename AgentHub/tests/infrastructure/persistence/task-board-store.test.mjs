@@ -37,6 +37,86 @@ test("Task store revision changes on writes but not reads", async (t) => {
   assert.equal(store.revision, initial + 1);
 });
 
+test("workflow transition atomically CAS-commits status and exact Git references", async (t) => {
+  const store = await fixture(t);
+  const created = store.create({ text: "Atomic transition" });
+  const current = store.task(created.id);
+  store.beginLifecycleTransition(created.id, {
+    operationId: "workflow-1", kind: "workflow", targetWorkflowStatus: "testing",
+    expectedRevision: current.revision,
+  });
+  assert.equal(store.task(created.id).workflowStatus, "new");
+
+  const committed = store.commitWorkflowTransition({
+    operationId: "workflow-1",
+    gitReferences: [{ projectRoot: "D:/repo", branch: "HUB-159", resultCommit: "a".repeat(40) }],
+    evidence: { outcome: "integrated" },
+  });
+
+  assert.equal(committed.workflowStatus, "testing");
+  assert.deepEqual(committed.gitReferences, [{
+    projectRoot: path.resolve("D:/repo"), branch: "HUB-159", resultCommit: "a".repeat(40),
+  }]);
+});
+
+test("workflow CAS failure preserves the previous status and Git references", async (t) => {
+  const store = await fixture(t);
+  const created = store.create({ text: "CAS transition" });
+  const oldReference = store.recordTaskGitReference({
+    taskId: created.id, projectRoot: "D:/repo", branch: "HUB-158",
+    resultSnapshot: { repoRoot: "D:/repo", tree: "b".repeat(40) },
+  });
+  store.beginLifecycleTransition(created.id, {
+    operationId: "workflow-cas", kind: "workflow", targetWorkflowStatus: "testing",
+    expectedRevision: oldReference.revision,
+  });
+  store.updatePresentation(created.id, { title: "Concurrent edit", description: "" });
+
+  assert.throws(() => store.commitWorkflowTransition({
+    operationId: "workflow-cas",
+    gitReferences: [{ projectRoot: "D:/repo", branch: "HUB-159", resultCommit: "c".repeat(40) }],
+  }), /changed while Git evidence was prepared/u);
+  const after = store.task(created.id);
+  assert.equal(after.workflowStatus, "new");
+  assert.equal(after.gitReferences[0].resultCommit, "b".repeat(40));
+});
+
+test("prepare and cancel start enforce one exact owner and revision CAS", async (t) => {
+  const store = await fixture(t);
+  const created = store.create({ text: "Concurrent launch" });
+  store.prepareStart(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", requestId: "owner-1",
+    expectedRevision: created.revision,
+  });
+  assert.throws(() => store.prepareStart(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-2", requestId: "owner-2",
+  }), /already pending/u);
+  assert.throws(
+    () => store.cancelPreparedStart(created.id, { requestId: "owner-2" }),
+    /owner does not match/u,
+  );
+  const cancelled = store.cancelPreparedStart(created.id, { requestId: "owner-1" });
+  assert.equal(cancelled.status, "open");
+  assert.equal(cancelled.startRequestId, null);
+});
+
+test("delete transition keeps the Task durable until cleanup is confirmed successful", async (t) => {
+  const store = await fixture(t);
+  const created = store.create({ text: "Crash-safe delete" });
+  store.beginLifecycleTransition(created.id, {
+    operationId: "delete-1", kind: "delete", expectedRevision: created.revision,
+  });
+  assert.equal(store.task(created.id).id, created.id);
+  store.failLifecycleTransition("delete-1", new Error("cleanup failed"));
+  assert.equal(store.task(created.id).status, "open");
+
+  store.beginLifecycleTransition(created.id, {
+    operationId: "delete-2", kind: "delete", expectedRevision: store.task(created.id).revision,
+  });
+  assert.equal(store.finalizeCleanupTransition("delete-2", { deleteTask: true }).deleted, true);
+  assert.equal(store.task(created.id), null);
+});
+
 test("status integration records a Git result without fabricating a provider turn", async (t) => {
   const store = await fixture(t);
   const task = store.create({ text: "Integrate Task status" });

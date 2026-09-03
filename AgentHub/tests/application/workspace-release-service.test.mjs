@@ -4,7 +4,9 @@ import test from "node:test";
 import { WorkspaceReleaseService } from "../../src/application/workspace-release-service.mjs";
 
 function fixture(plan = {
-  revision: "plan-1", ready: [{ id: "change-1" }], draft: [], blocked: [], conflicts: [],
+  revision: "plan-1", ready: [{ id: "change-1" }],
+  candidates: [{ gitReferences: [{ projectRoot: "D:/repo", resultCommit: "task-result" }] }],
+  draft: [], blocked: [], conflicts: [],
 }, { primarySync = null } = {}) {
   const calls = [];
   const service = new WorkspaceReleaseService({
@@ -16,6 +18,10 @@ function fixture(plan = {
     },
     releasePlanner: { plan: async () => plan },
     releaseGitWorkspaces: {
+      frozenCandidate: async (repositoryRoot) => ({
+        repositoryRoot, planRevision: plan.revision, manifestHash: "manifest",
+        baseCommit: "base", preReleaseHead: "abc",
+      }),
       synchronizePublishedPrimary: async (value) => {
         calls.push(["sync-primary", value]);
         return primarySync ?? { status: "fast_forwarded", publishedRevision: value.publishedRevision };
@@ -23,7 +29,13 @@ function fixture(plan = {
     },
     verifyPublication: async (value) => {
       calls.push(["verify", value]);
-      return { repositories: [{ root: "D:/repo", revision: "abc" }] };
+      return {
+        repositories: [{
+          root: "D:/repo", revision: "abc", planRevision: plan.revision,
+          manifestHash: "manifest", baseCommit: "base", preReleaseHead: "abc",
+        }],
+        agentHubPublication: { generation: "generation-1" },
+      };
     },
   });
   return { calls, service };
@@ -42,15 +54,15 @@ test("release completion verifies repositories before atomically closing ready c
   const { calls, service } = fixture();
   const result = await service.completeRelease({
     workspaceId: "workspace-1",
-    expectedRevision: "abc",
+    expectedRepositories: [{ projectRoot: "D:/repo", revision: "abc" }],
     expectedPlanRevision: "plan-1",
     deploymentVerified: true,
     verificationSummary: "Published and smoke-tested",
   });
   assert.equal(result.publication.verificationSummary, "Published and smoke-tested");
   assert.equal(result.publication.planRevision, "plan-1");
-  assert.deepEqual(calls.map(([name]) => name), ["verify", "sync-primary", "complete"]);
-  assert.deepEqual(calls[1][1], {
+  assert.deepEqual(calls.map(([name]) => name), ["verify", "verify", "complete", "sync-primary"]);
+  assert.deepEqual(calls[3][1], {
     projectRoot: "D:/repo",
     publishedRevision: "abc",
     planRevision: "plan-1",
@@ -62,11 +74,15 @@ test("release completion verifies repositories before atomically closing ready c
     conflictsResolved: false,
     verificationEvidence: {
       planRevision: "plan-1",
-      expectedRevision: "abc",
+      expectedRepositories: [{ projectRoot: "D:/repo", revision: "abc" }],
       verificationSummary: "Published and smoke-tested",
       conflictsResolved: false,
       publication: {
-        repositories: [{ root: "D:/repo", revision: "abc" }],
+        repositories: [{
+          root: "D:/repo", revision: "abc", planRevision: "plan-1",
+          manifestHash: "manifest", baseCommit: "base", preReleaseHead: "abc",
+        }],
+        agentHubPublication: { generation: "generation-1" },
         primarySynchronization: [{ status: "fast_forwarded", publishedRevision: "abc" }],
         verificationSummary: "Published and smoke-tested",
         planRevision: "plan-1",
@@ -81,7 +97,8 @@ test("release completion verifies repositories before atomically closing ready c
 
 test("release completion requires and records explicit resolution of overlapping ready changes", async () => {
   const plan = {
-    revision: "plan-conflict", ready: [{ id: "change-1" }, { id: "change-2" }], draft: [], blocked: [],
+    revision: "plan-conflict", ready: [{ id: "change-1" }, { id: "change-2" }],
+    candidates: [{ gitReferences: [{ projectRoot: "D:/repo", resultCommit: "task-result" }] }], draft: [], blocked: [],
     conflicts: [{ file: "AgentHub/app.js" }],
   };
   const { calls, service } = fixture(plan);
@@ -90,6 +107,7 @@ test("release completion requires and records explicit resolution of overlapping
     expectedPlanRevision: "plan-conflict",
     deploymentVerified: true,
     verificationSummary: "Integrated overlap verified",
+    expectedRepositories: [{ projectRoot: "D:/repo", revision: "abc" }],
   };
   await assert.rejects(() => service.completeRelease(request), /overlapping files/u);
   await service.completeRelease({ ...request, conflictsResolved: true });
@@ -118,11 +136,33 @@ test("manual primary synchronization does not undo verified release completion",
   });
   const result = await service.completeRelease({
     workspaceId: "workspace-1",
-    expectedRevision: "abc",
+    expectedRepositories: [{ projectRoot: "D:/repo", revision: "abc" }],
     expectedPlanRevision: "plan-1",
     deploymentVerified: true,
     verificationSummary: "Published and verified",
   });
   assert.equal(result.publication.primarySynchronization[0].status, "manual_required");
-  assert.deepEqual(calls.map(([name]) => name), ["verify", "sync-primary", "complete"]);
+  assert.deepEqual(calls.map(([name]) => name), ["verify", "verify", "complete", "sync-primary"]);
+});
+
+test("publication generation change between verify and closure blocks Task completion", async () => {
+  const { calls, service } = fixture();
+  let read = 0;
+  service.verifyPublication = async () => ({
+    repositories: [{
+      root: "D:/repo", revision: "abc", planRevision: "plan-1",
+      manifestHash: "manifest", baseCommit: "base", preReleaseHead: "abc",
+    }],
+    agentHubPublication: { generation: `generation-${++read}` },
+  });
+
+  await assert.rejects(() => service.completeRelease({
+    workspaceId: "workspace-1",
+    expectedRepositories: [{ projectRoot: "D:/repo", revision: "abc" }],
+    expectedPlanRevision: "plan-1",
+    deploymentVerified: true,
+    verificationSummary: "Published and verified",
+  }), /generation or exact repository revision changed/u);
+  assert.equal(calls.some(([name]) => name === "complete"), false);
+  assert.equal(calls.some(([name]) => name === "sync-primary"), false);
 });

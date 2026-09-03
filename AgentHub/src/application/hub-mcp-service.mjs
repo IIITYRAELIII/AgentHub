@@ -361,6 +361,36 @@ function compactTask(task) {
   };
 }
 
+const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+function sqliteBusy(error) {
+  return error?.code === "SQLITE_BUSY" || /database is locked|SQLITE_BUSY/iu.test(String(error?.message ?? ""));
+}
+
+function cleanupConfirmation(task, action, preview) {
+  const token = createHash("sha256").update(JSON.stringify({
+    action,
+    taskId: task.id,
+    revision: task.revision,
+    workspaces: (preview.workspaces ?? []).map((item) => ({
+      projectRoot: item.projectRoot, branch: item.branch, headCommit: item.headCommit,
+      dirty: item.dirty, changedPaths: item.changedPaths, untrackedPaths: item.untrackedPaths,
+    })),
+    gitReferences: preview.gitReferences ?? [],
+    deleting: preview.deleting ?? [],
+  })).digest("hex");
+  return {
+    confirmationRequired: true,
+    action,
+    cleanupToken: token,
+    warning: action === "delete"
+      ? "Delete permanently destroys the listed Task Git artifacts, including unpublished work."
+      : "Complete closes the Task and removes only exact results already contained in published main.",
+    task: compactTask(task),
+    preview,
+  };
+}
+
 function tool(name, description, properties = {}, required = []) {
   const mutating = MUTATING_TOOLS.has(name);
   return {
@@ -394,6 +424,7 @@ export class HubMcpService {
   #streamMessenger = async () => { throw new Error("Agent Hub Stream messenger is not ready"); };
   #pendingMutations = new Map();
   #contextCapabilities = new Map();
+  #databaseContention = { retries: 0, exhausted: 0, lastWaitMs: 0, lastAt: null };
 
   constructor({
     workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releasePlanner, releasePreflight, releaseCompleter,
@@ -535,15 +566,19 @@ export class HubMcpService {
       tool("hub_task_claim", "Bind a Dashboard Task to the exact current provider turn, assign its dedicated Git branch/worktree, and make the current Stream its executor. Continue repository work only in the returned gitWorkspace.projectRoot.", {
         task_id: { type: "string" },
       }, ["task_id"]),
-      tool("hub_task_status_update", "Always change a Dashboard Task to any valid workflow status. Await snapshots its Task branch and merges it into dev; Git conflicts are reported but never block the status transition. Done remains visible and does not close the Task.", {
+      tool("hub_task_status_update", "Change workflow status only after exact Git result evidence is integrated. Test/Await/Done fail closed when no result or integration fails.", {
         task_id: { type: "string" },
         status: { type: "string", enum: ["new", "in_progress", "testing", "awaiting_implementation", "done"] },
       }, ["task_id", "status"]),
-      tool("hub_task_complete", "Close and hide a Dashboard task after customer acceptance or when delivery is not required.", {
+      tool("hub_task_complete", "Preview, then explicitly confirm closing a completed Task. Published implementation results are cleaned only after exact verification.", {
         task_id: { type: "string" },
+        confirm_cleanup: { type: "boolean" },
+        expected_cleanup_token: { type: "string" },
       }, ["task_id"]),
-      tool("hub_task_delete", "Permanently delete any Dashboard task by id.", {
+      tool("hub_task_delete", "Preview, then explicitly confirm permanent destructive deletion of a Task and its managed Git artifacts.", {
         task_id: { type: "string" },
+        confirm_cleanup: { type: "boolean" },
+        expected_cleanup_token: { type: "string" },
       }, ["task_id"]),
       tool("hub_task_attachment_read", "Read metadata and bounded text for one attachment of a Dashboard task referenced by id.", {
         task_id: { type: "string" },
@@ -564,12 +599,20 @@ export class HubMcpService {
       }, ["expected_plan_revision"]),
       tool("hub_release_complete", "Complete a release only after clean main revisions and explicit deployment verification.", {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
-        expected_revision: { type: "string" },
+        expected_repositories: {
+          type: "array",
+          description: "Exact published revision for every frozen repository.",
+          items: {
+            type: "object",
+            properties: { projectRoot: { type: "string" }, revision: { type: "string" } },
+            required: ["projectRoot", "revision"],
+          },
+        },
         expected_plan_revision: { type: "string", description: "Exact revision returned by hub_release_plan_get." },
         deployment_verified: { type: "boolean" },
         verification_summary: { type: "string" },
         conflicts_resolved: { type: "boolean", description: "True only after the Architect explicitly resolves every reported overlap." },
-      }, ["expected_plan_revision", "deployment_verified", "verification_summary"]),
+      }, ["expected_plan_revision", "expected_repositories", "deployment_verified", "verification_summary"]),
       tool("hub_events_list", "Read bounded persistent Workspace events after a cursor; this never holds a long poll.", {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
         after_sequence: { type: "integer", minimum: 0, default: 0 },
@@ -673,10 +716,7 @@ export class HubMcpService {
       case "hub_task_complete":
         return this.#completeTask(context, args);
       case "hub_task_delete": {
-        const task = this.#task(context, args.task_id);
-        this.taskBoard.remove({ id: task.id });
-        await this.taskGitWorkspaces?.cleanup?.(task.id);
-        return { deleted: true, task: compactTask(task) };
+        return this.#deleteTask(context, args);
       }
       case "hub_task_attachment_read":
         return this.#readAttachment(context, args);
@@ -977,89 +1017,189 @@ export class HubMcpService {
     return active[0];
   }
 
-  async #updateTaskWorkflowStatus(context, { task_id: taskId, status } = {}) {
+  async #updateTaskWorkflowStatus(context, { task_id: taskId, status, request_id: operationId } = {}) {
     const task = this.#task(context, taskId);
     const workflowStatus = requiredText(status, "task workflow status", 40);
-    let gitWorkspace = null;
-    let preparationError = null;
     const snapshotsResult = ["testing", "awaiting_implementation", "done"].includes(workflowStatus);
-    const targetStreamId = String(task.streamId ?? "").trim() || context.streamId;
-    const projectRoot = snapshotsResult && targetStreamId
-      ? this.#taskProjectRoot(context, targetStreamId, task.workspaceId)
-      : null;
-    if (snapshotsResult && projectRoot && this.taskGitWorkspaces) {
+    const transition = async () => {
+      this.taskBoard.beginLifecycleTransition({
+        id: task.id,
+        operationId,
+        kind: "workflow",
+        targetWorkflowStatus: workflowStatus,
+        expectedRevision: task.revision,
+      });
       try {
-        gitWorkspace = await this.taskGitWorkspaces.prepare({
+        if (!snapshotsResult) {
+          return compactTask(this.taskBoard.commitWorkflowTransition({
+            operationId, gitReferences: [], replaceGitReferences: false, evidence: { outcome: "not_required" },
+          }));
+        }
+        const targetStreamId = String(task.streamId ?? "").trim() || context.streamId;
+        const projectRoot = targetStreamId
+          ? this.#taskProjectRoot(context, targetStreamId, task.workspaceId)
+          : null;
+        if (!projectRoot || !this.taskGitWorkspaces) {
+          throw new Error("Task Git workspace is unavailable; workflow status was not changed");
+        }
+        const gitWorkspace = await this.taskGitWorkspaces.prepare({
           taskId: task.id, taskNumber: task.taskNumber, projectRoot,
         });
-      } catch (error) {
-        preparationError = error;
-      }
-    }
-    const updated = this.taskBoard.requestWorkflowStatus({
-      id: task.id,
-      status: workflowStatus,
-      provider: context.provider,
-      threadId: context.threadId,
-      turnId: null,
-    });
-    if (!snapshotsResult) return compactTask(updated);
-    if (!gitWorkspace) {
-      return {
-        ...compactTask(updated),
-        gitIntegration: {
-          integrated: false,
-          error: preparationError?.message ?? "Task Git workspace is unavailable for this turn",
-        },
-      };
-    }
-    try {
-      const { snapshot, integration } = await this.taskGitWorkspaces.snapshotAndMerge({
-        taskId: task.id,
-        taskNumber: task.taskNumber,
-        projectRoot: gitWorkspace.projectRoot,
-        turnId: null,
-        summary: task.title,
-      });
-      if (integration.integrated && snapshot.changedFiles.length) {
-        this.taskBoard.recordTaskGitReference({
+        const { snapshot, integration } = await this.taskGitWorkspaces.snapshotAndMerge({
           taskId: task.id,
-          projectRoot: snapshot.repositoryRoot,
-          resultSnapshot: snapshot.resultSnapshot,
-          branch: snapshot.branch,
+          taskNumber: task.taskNumber,
+          projectRoot: gitWorkspace.projectRoot,
+          turnId: null,
+          summary: task.title,
         });
-      }
-      const current = this.#task(context, task.id);
-      return {
-        ...compactTask(current),
-        gitWorkspace: {
+        if (!integration.resultProved || !integration.integrated) {
+          throw new Error(integration.error || "Task result was not integrated into dev");
+        }
+        const reference = {
+          projectRoot: snapshot.repositoryRoot,
+          resultCommit: snapshot.headCommit,
           branch: snapshot.branch,
-          projectRoot: snapshot.projectRoot,
-          baseCommit: snapshot.baseCommit,
-          headCommit: snapshot.headCommit,
-        },
-        gitIntegration: {
-          integrated: integration.integrated,
-          alreadyIntegrated: integration.alreadyIntegrated === true,
-          devBranch: integration.dev?.branch ?? "dev",
-          devHeadCommit: integration.dev?.headCommit ?? null,
-          conflicts: integration.conflicts ?? [],
-          error: integration.error ?? null,
-        },
-      };
-    } catch (error) {
-      return {
-        ...compactTask(this.#task(context, task.id)),
-        gitIntegration: { integrated: false, error: error.message },
-      };
-    }
+        };
+        let binding = {};
+        try {
+          const run = this.#currentRun(context);
+          const claimed = this.taskBoard.claimedTaskForTurn?.({
+            provider: context.provider,
+            threadId: context.threadId,
+            turnId: run.turnId,
+          });
+          if (claimed?.id === task.id && claimed.operationId) {
+            binding = {
+              provider: context.provider,
+              threadId: context.threadId,
+              turnId: run.turnId,
+              bindingOperationId: claimed.operationId,
+            };
+          }
+        } catch {
+          binding = {};
+        }
+        const current = this.taskBoard.commitWorkflowTransition({
+          operationId,
+          gitReferences: [reference],
+          ...binding,
+          evidence: {
+            outcome: integration.outcome,
+            resultCommit: snapshot.headCommit,
+            devHeadCommit: integration.dev?.headCommit ?? null,
+          },
+        });
+        return {
+          ...compactTask(current),
+          gitWorkspace: {
+            branch: snapshot.branch,
+            projectRoot: snapshot.projectRoot,
+            baseCommit: snapshot.baseCommit,
+            headCommit: snapshot.headCommit,
+          },
+          gitIntegration: {
+            outcome: integration.outcome,
+            integrated: true,
+            alreadyIntegrated: integration.alreadyIntegrated === true,
+            devBranch: integration.dev?.branch ?? "dev",
+            devHeadCommit: integration.dev?.headCommit ?? null,
+            conflicts: [],
+            error: null,
+          },
+        };
+      } catch (error) {
+        this.taskBoard.failLifecycleTransition(operationId, error);
+        throw error;
+      }
+    };
+    return this.taskGitWorkspaces?.withTaskLock
+      ? this.taskGitWorkspaces.withTaskLock(task.id, transition)
+      : transition();
   }
 
-  async #completeTask(context, { task_id: taskId } = {}) {
+  databaseContentionDiagnostics() {
+    return { ...this.#databaseContention };
+  }
+
+  async #cleanupPreview(task, action) {
+    const preview = this.taskGitWorkspaces?.cleanupPreview
+      ? await this.taskGitWorkspaces.cleanupPreview(task.id, { gitReferences: task.gitReferences })
+      : { taskId: task.id, workspaces: [], gitReferences: task.gitReferences ?? [], dirty: false, unpublished: [], deleting: [] };
+    return cleanupConfirmation(task, action, preview);
+  }
+
+  async #completeTask(context, {
+    task_id: taskId, request_id: operationId, confirm_cleanup: confirmCleanup = false,
+    expected_cleanup_token: expectedCleanupToken = null,
+  } = {}) {
     const task = this.#task(context, taskId);
-    const completed = this.taskBoard.complete({ id: task.id });
-    await this.taskGitWorkspaces?.cleanup?.(task.id);
-    return compactTask(completed);
+    const resumed = this.taskBoard.lifecycleTransition?.(operationId);
+    const resumingCleanup = resumed?.taskId === task.id && resumed.kind === "complete" && resumed.phase === "cleanup";
+    const confirmation = await this.#cleanupPreview(task, "complete");
+    if (confirmCleanup !== true) return confirmation;
+    if (!resumingCleanup && String(expectedCleanupToken ?? "") !== confirmation.cleanupToken) {
+      throw new Error("Task cleanup confirmation is stale or missing; read the preview again");
+    }
+    const hasGitArtifacts = confirmation.preview.workspaces.length > 0 || (task.gitReferences?.length ?? 0) > 0;
+    if (hasGitArtifacts && task.workflowStatus !== "done") {
+      throw new Error("Implementation Task can be completed only after workflow Done");
+    }
+    if (hasGitArtifacts && (task.gitReferences?.length ?? 0) === 0) {
+      throw new Error("Task Complete blocked: no exact result commit is recorded; use Delete only for intentional destruction");
+    }
+    if (confirmation.preview.dirty) throw new Error("Task Complete blocked: managed worktree is dirty");
+    if (hasGitArtifacts && confirmation.preview.unpublished.length) {
+      throw new Error("Task Complete blocked: exact result commit is not contained in published main; use Delete only for intentional destruction");
+    }
+    const complete = async () => {
+      this.taskBoard.beginLifecycleTransition({
+        id: task.id, operationId, kind: "complete", expectedRevision: task.revision,
+      });
+      try {
+        if (hasGitArtifacts) await this.taskGitWorkspaces.cleanup(task.id, {
+          allowDirty: false, requirePublished: true, gitReferences: task.gitReferences,
+        });
+        return compactTask(this.taskBoard.finalizeCleanupTransition(operationId));
+      } catch (error) {
+        this.taskBoard.failLifecycleTransition(operationId, error);
+        throw error;
+      }
+    };
+    return this.taskGitWorkspaces?.withTaskLock
+      ? this.taskGitWorkspaces.withTaskLock(task.id, complete)
+      : complete();
+  }
+
+  async #deleteTask(context, {
+    task_id: taskId, request_id: operationId, confirm_cleanup: confirmCleanup = false,
+    expected_cleanup_token: expectedCleanupToken = null,
+  } = {}) {
+    const task = this.#task(context, taskId);
+    const resumed = this.taskBoard.lifecycleTransition?.(operationId);
+    const resumingCleanup = resumed?.taskId === task.id && resumed.kind === "delete" && resumed.phase === "cleanup";
+    const confirmation = await this.#cleanupPreview(task, "delete");
+    if (confirmCleanup !== true) return confirmation;
+    if (!resumingCleanup && String(expectedCleanupToken ?? "") !== confirmation.cleanupToken) {
+      throw new Error("Task deletion confirmation is stale or missing; read the preview again");
+    }
+    const remove = async () => {
+      this.taskBoard.beginLifecycleTransition({
+        id: task.id, operationId, kind: "delete", expectedRevision: task.revision,
+      });
+      try {
+        await this.taskGitWorkspaces?.cleanup?.(task.id, {
+          allowDirty: true, requirePublished: false, gitReferences: task.gitReferences,
+        });
+        const result = this.taskBoard.finalizeCleanupTransition(operationId, { deleteTask: true });
+        return { deleted: true, task: compactTask(result.task), cleanup: confirmation.preview };
+      } catch (error) {
+        this.taskBoard.failLifecycleTransition(operationId, error);
+        throw error;
+      }
+    };
+    return this.taskGitWorkspaces?.withTaskLock
+      ? this.taskGitWorkspaces.withTaskLock(task.id, remove)
+      : remove();
   }
 
   #isArchitect(context) {
@@ -1094,7 +1234,7 @@ export class HubMcpService {
     const workspaceId = this.#workspace(context, args.workspace_id).id;
     const result = await this.releaseCompleter.completeRelease({
       workspaceId,
-      expectedRevision: optionalText(args.expected_revision, 128),
+      expectedRepositories: Array.isArray(args.expected_repositories) ? args.expected_repositories : [],
       expectedPlanRevision: optionalText(args.expected_plan_revision, 128),
       deploymentVerified: args.deployment_verified === true,
       verificationSummary: optionalText(args.verification_summary, 2_000) ?? "",
@@ -1103,7 +1243,11 @@ export class HubMcpService {
     const cleanupErrors = [];
     for (const task of result.released ?? []) {
       try {
-        await this.taskGitWorkspaces?.cleanup?.(task.id);
+        await this.taskGitWorkspaces?.cleanup?.(task.id, {
+          allowDirty: false,
+          requirePublished: true,
+          gitReferences: task.gitReferences ?? [],
+        });
       } catch (error) {
         cleanupErrors.push({ taskId: task.id, error: error.message });
       }
@@ -1435,7 +1579,30 @@ export class HubMcpService {
 
   async #mutate(context, toolName, args, operation) {
     const requestId = requiredText(args.request_id, "request id", 200);
-    const started = this.workspaceCatalog.beginMcpOperation({
+    const withDatabaseRetry = async (callback) => {
+      const startedAt = Date.now();
+      const deadline = Date.now() + 2_000;
+      let delayMs = 10;
+      for (;;) {
+        try {
+          return callback();
+        } catch (error) {
+          if (!sqliteBusy(error)) throw error;
+          if (Date.now() >= deadline) {
+            this.#databaseContention.exhausted += 1;
+            this.#databaseContention.lastWaitMs = Date.now() - startedAt;
+            this.#databaseContention.lastAt = new Date().toISOString();
+            throw error;
+          }
+          this.#databaseContention.retries += 1;
+          this.#databaseContention.lastWaitMs = Date.now() - startedAt;
+          this.#databaseContention.lastAt = new Date().toISOString();
+          await wait(delayMs);
+          delayMs = Math.min(200, delayMs * 2);
+        }
+      }
+    };
+    const started = await withDatabaseRetry(() => this.workspaceCatalog.beginMcpOperation({
       requestId,
       workspaceId: context.workspaceId,
       streamId: context.streamId,
@@ -1443,25 +1610,42 @@ export class HubMcpService {
       threadId: context.auditThreadId,
       toolName,
       argumentsHash: argumentsHash(args),
-    });
+    }));
     if (started.status === "succeeded") return started.result;
     if (started.status === "failed") throw new Error(started.error || "previous MCP operation failed");
+    if (started.status === "unknown") {
+      throw new Error(`MCP operation outcome is unknown; reconcile authoritatively before retrying request_id ${requestId}`);
+    }
     const inFlight = this.#pendingMutations.get(requestId);
     if (inFlight) return inFlight;
-    if (started.replayed && !["hub_task_start", "hub_task_reassign"].includes(toolName)) {
-      throw new Error("MCP operation with this request_id is still pending");
+    const resumable = new Set([
+      "hub_task_start", "hub_task_reassign", "hub_task_status_update", "hub_task_complete", "hub_task_delete",
+    ]);
+    if (started.replayed && !resumable.has(toolName)) {
+      const reason = new Error("MCP operation outcome requires authoritative reconciliation; blind replay is forbidden");
+      await withDatabaseRetry(() => this.workspaceCatalog.markMcpOperationUnknown?.(requestId, reason));
+      throw reason;
     }
     const pending = (async () => {
+      let effectCompleted = false;
       try {
         const result = await operation();
-        this.workspaceCatalog.completeMcpOperation(requestId, result);
+        effectCompleted = true;
+        await withDatabaseRetry(() => this.workspaceCatalog.completeMcpOperation(requestId, result));
         return result;
       } catch (error) {
+        if (effectCompleted) {
+          await withDatabaseRetry(() => this.workspaceCatalog.markMcpOperationUnknown?.(
+            requestId,
+            new Error(`effect completed but durable receipt failed: ${error.message}`),
+          )).catch(() => {});
+          throw new Error(`MCP effect completed but receipt reconciliation is required for request_id ${requestId}`);
+        }
         if (["hub_task_start", "hub_task_reassign"].includes(toolName)
           && this.#hasPreparedTaskStart(context, args, requestId)) {
           throw error;
         }
-        this.workspaceCatalog.failMcpOperation(requestId, error);
+        await withDatabaseRetry(() => this.workspaceCatalog.failMcpOperation(requestId, error));
         throw error;
       } finally {
         this.#pendingMutations.delete(requestId);

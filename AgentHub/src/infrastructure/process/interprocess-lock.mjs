@@ -7,6 +7,7 @@ const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, mil
 const RELEASE_RETRY_DELAYS_MS = [0, 10, 25, 50, 100, 200];
 const TRANSIENT_LOCK_ERROR_CODES = new Set(["EEXIST", "EPERM", "EACCES", "EBUSY", "ENOTEMPTY"]);
 const inProcessLocks = new Map();
+const PROCESS_INSTANCE_ID = randomUUID();
 
 async function acquireInProcessLock(lockPath) {
   let state = inProcessLocks.get(lockPath);
@@ -49,10 +50,22 @@ async function readOwner(lockPath) {
       token: String(value?.token ?? ""),
       pid: Number(value?.pid),
       createdAt: Number(value?.createdAt),
+      processInstanceId: String(value?.processInstanceId ?? ""),
+      leaseExpiresAt: Number(value?.leaseExpiresAt),
     };
   } catch {
     return null;
   }
+}
+
+async function renewLease(lockPath, token, staleMs) {
+  const owner = await readOwner(lockPath);
+  if (owner?.token !== token) return false;
+  await writeFile(path.join(lockPath, "owner.json"), `${JSON.stringify({
+    ...owner,
+    leaseExpiresAt: Date.now() + staleMs,
+  })}\n`, { encoding: "utf8", flag: "w", mode: 0o600 });
+  return true;
 }
 
 async function retryTransientLockOperation(operation, {
@@ -137,6 +150,8 @@ async function acquire(lockPath, {
   ownerlessStaleMs = Math.min(staleMs, 2_000),
   isProcessAlive = defaultProcessAlive,
   tokenFactory = randomUUID,
+  processInstanceId = PROCESS_INSTANCE_ID,
+  quarantine = quarantineStaleLock,
 } = {}) {
   const deadline = Date.now() + timeoutMs;
   const token = tokenFactory();
@@ -147,7 +162,9 @@ async function acquire(lockPath, {
       await writeFile(path.join(lockPath, "owner.json"), `${JSON.stringify({
         token,
         pid: process.pid,
+        processInstanceId,
         createdAt: Date.now(),
+        leaseExpiresAt: Date.now() + staleMs,
       })}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
       return token;
     } catch (error) {
@@ -165,17 +182,29 @@ async function acquire(lockPath, {
         ? Date.now() - Number(owner.createdAt ?? 0)
         : Date.now() - Number(info?.mtimeMs ?? Date.now());
       const hasOwnerPid = Number.isSafeInteger(owner?.pid) && owner.pid > 0;
+      const identityMatches = owner?.processInstanceId
+        ? owner.processInstanceId === processInstanceId
+        : true;
       // mkdir followed by owner.json is necessarily a two-step protocol.  A
       // directory without an owner is therefore protected by its mtime grace
       // period; it must not be stolen while its creator is writing owner.json.
       // The grace is intentionally shorter than the dead-owner threshold:
       // recursive removal on Windows can remove owner.json and then leave the
       // empty directory behind after a transient filesystem error.
+      const leaseExpired = Number.isFinite(owner?.leaseExpiresAt)
+        ? Date.now() >= owner.leaseExpiresAt
+        : ageMs >= staleMs;
       const canRecover = hasOwnerPid
-        ? !isProcessAlive(owner.pid)
+        ? !isProcessAlive(owner.pid) || (leaseExpired && !identityMatches)
         : ageMs >= ownerlessStaleMs;
       if (canRecover) {
-        await quarantineStaleLock(lockPath, owner?.token);
+        const quarantined = await quarantine(lockPath, owner?.token);
+        if (!quarantined) {
+          if (Date.now() >= deadline) {
+            throw new Error(`Cannot quarantine stale interprocess lock before deadline: ${lockPath}`);
+          }
+          await delay(retryDelayMs);
+        }
         continue;
       }
       if (Date.now() >= deadline) {
@@ -191,6 +220,7 @@ export async function withInterprocessLocks(paths, operation, options = {}) {
   const lockPaths = [...new Set(paths.filter(Boolean).map((value) => `${value}.lock`))].sort();
   const localReleases = [];
   const acquired = [];
+  let heartbeat = null;
   try {
     for (const lockPath of lockPaths) {
       localReleases.push(await acquireInProcessLock(lockPath));
@@ -198,6 +228,13 @@ export async function withInterprocessLocks(paths, operation, options = {}) {
     for (const lockPath of lockPaths) {
       acquired.push({ lockPath, token: await acquire(lockPath, options) });
     }
+    const staleMs = Math.max(500, Number(options.staleMs) || 60_000);
+    heartbeat = setInterval(() => {
+      for (const { lockPath, token } of acquired) {
+        void renewLease(lockPath, token, staleMs).catch(() => {});
+      }
+    }, Math.max(100, Math.min(10_000, Math.floor(staleMs / 3))));
+    heartbeat.unref?.();
     try {
       options.onAcquired?.({
         waitMs: Math.max(0, performance.now() - waitStartedAt),
@@ -206,12 +243,32 @@ export async function withInterprocessLocks(paths, operation, options = {}) {
     } catch {
       // Lock diagnostics are advisory and cannot change the protected operation.
     }
-    return await operation();
+    const result = await operation();
+    const releaseErrors = [];
+    await Promise.all(acquired.reverse().map(async ({ lockPath, token }) => {
+      try {
+        const released = await releaseInterprocessLock(lockPath, token, options);
+        if (!released) throw new Error(`interprocess lock ownership changed before release: ${lockPath}`);
+      } catch (error) {
+        releaseErrors.push({ lockPath, error });
+      }
+    }));
+    acquired.length = 0;
+    if (releaseErrors.length) {
+      try { options.onReleaseError?.(releaseErrors); } catch {}
+    }
+    return result;
   } finally {
+    if (heartbeat) clearInterval(heartbeat);
     try {
-      await Promise.all(acquired.reverse().map(
-        ({ lockPath, token }) => releaseInterprocessLock(lockPath, token),
-      ));
+      await Promise.all(acquired.reverse().map(async ({ lockPath, token }) => {
+        try {
+          const released = await releaseInterprocessLock(lockPath, token, options);
+          if (!released) throw new Error(`interprocess lock ownership changed before release: ${lockPath}`);
+        } catch (error) {
+          try { options.onReleaseError?.([{ lockPath, error }]); } catch {}
+        }
+      }));
     } finally {
       localReleases.reverse().forEach((releaseLocal) => releaseLocal());
     }

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, readdir, rm } from "node:fs/promises";
+import { access, mkdir, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
@@ -15,28 +15,46 @@ import {
 
 export const TASK_DEV_BRANCH = "dev";
 const TASK_BASE_REF_PREFIX = "refs/agent-hub/task-bases/";
+const TASK_RESULT_REF_PREFIX = "refs/agent-hub/task-results/";
 
 function runGit(args, { cwd, timeoutMs = 60_000 } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn("git", args, { cwd, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
     const stdout = [];
     const stderr = [];
+    let timedOut = false;
+    let settled = false;
+    const settle = (callback) => {
+      if (settled) return;
+      settled = true;
+      callback();
+    };
     const timer = setTimeout(() => {
-      child.kill();
-      reject(new Error(`git ${args[0]} timed out after ${timeoutMs} ms`));
+      timedOut = true;
+      if (process.platform === "win32" && child.pid) {
+        const killer = spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+          windowsHide: true, stdio: "ignore",
+        });
+        killer.on("error", () => child.kill("SIGKILL"));
+      } else {
+        child.kill("SIGKILL");
+      }
     }, timeoutMs);
     child.stdout.on("data", (chunk) => stdout.push(chunk));
     child.stderr.on("data", (chunk) => stderr.push(chunk));
     child.on("error", (error) => {
       clearTimeout(timer);
-      reject(error);
+      settle(() => reject(error));
     });
     child.on("close", (code) => {
       clearTimeout(timer);
       const output = Buffer.concat(stdout).toString("utf8").trim();
       const errorText = Buffer.concat(stderr).toString("utf8").trim();
-      if (code === 0) resolve(output);
-      else reject(new Error(errorText || `git ${args[0]} exited with ${code}`));
+      if (timedOut) settle(() => reject(new Error(
+        `git ${args[0]} timed out after ${timeoutMs} ms; process tree stopped`,
+      )));
+      else if (code === 0) settle(() => resolve(output));
+      else settle(() => reject(new Error(errorText || `git ${args[0]} exited with ${code}`)));
     });
   });
 }
@@ -51,6 +69,10 @@ async function gitMaybe(args, options) {
 
 function taskBaseRef(taskId, repoKey) {
   return `${TASK_BASE_REF_PREFIX}${normalizedTaskId(taskId)}/${repoKey}`;
+}
+
+function taskResultRef(taskId, repoKey) {
+  return `${TASK_RESULT_REF_PREFIX}${normalizedTaskId(taskId)}/${repoKey}`;
 }
 
 function parseWorktrees(value) {
@@ -168,6 +190,53 @@ export class TaskGitWorkspaceService {
     this.devBranch = String(devBranch ?? TASK_DEV_BRANCH).trim() || TASK_DEV_BRANCH;
   }
 
+  #taskLock(taskId) {
+    return path.join(this.dataDir, "locks", `task-lifecycle-${normalizedTaskId(taskId)}`);
+  }
+
+  async withTaskLock(taskId, operation) {
+    return withInterprocessLocks([this.#taskLock(taskId)], operation);
+  }
+
+  async #integrationBlockFile(repoRoot) {
+    return path.join(this.dataDir, "integration-blocks", `${taskRepositoryKey(repoRoot)}.json`);
+  }
+
+  async #assertRecoverableDev(repoRoot, devRoot) {
+    const blockFile = await this.#integrationBlockFile(repoRoot);
+    const gitPath = async (name) => path.resolve(await runGit(["rev-parse", "--git-path", name], { cwd: devRoot }));
+    const mergeHead = await gitPath("MERGE_HEAD");
+    const indexLock = await gitPath("index.lock");
+    const hasMerge = await access(mergeHead).then(() => true, () => false);
+    const hasIndexLock = await access(indexLock).then(() => true, () => false);
+    if (hasMerge) {
+      const aborted = await gitMaybe(["merge", "--abort"], { cwd: devRoot });
+      if (aborted === null) {
+        await mkdir(path.dirname(blockFile), { recursive: true });
+        await writeFile(blockFile, `${JSON.stringify({
+          repositoryRoot: repoRoot, devRoot, reason: "merge --abort failed", observedAt: new Date().toISOString(),
+        }, null, 2)}\n`, "utf8");
+        throw new Error(`dev integration is blocked: merge --abort failed (${devRoot})`);
+      }
+    }
+    if (hasIndexLock) {
+      await mkdir(path.dirname(blockFile), { recursive: true });
+      await writeFile(blockFile, `${JSON.stringify({
+        repositoryRoot: repoRoot, devRoot, reason: "index.lock exists", observedAt: new Date().toISOString(),
+      }, null, 2)}\n`, "utf8");
+      throw new Error(`dev integration is blocked: stale index.lock requires operator recovery (${indexLock})`);
+    }
+    const dirty = await runGit(["status", "--porcelain=v1", "--untracked-files=all"], { cwd: devRoot });
+    if (dirty) {
+      await mkdir(path.dirname(blockFile), { recursive: true });
+      await writeFile(blockFile, `${JSON.stringify({
+        repositoryRoot: repoRoot, devRoot, reason: "dirty dev integration worktree", observedAt: new Date().toISOString(),
+      }, null, 2)}\n`, "utf8");
+      throw new Error(`dev integration is blocked: dirty index/worktree (${devRoot})`);
+    }
+    await unlink(blockFile).catch((error) => { if (error?.code !== "ENOENT") throw error; });
+  }
+
   async #ensureBranchWorktree({
     repositoryRoot: repoRoot,
     branch,
@@ -253,6 +322,7 @@ export class TaskGitWorkspaceService {
         managedRoot: this.devWorktreesRoot,
         startCommit: mainCommit,
       });
+      await this.#assertRecoverableDev(repoRoot, devRoot);
       return {
         repositoryRoot: repoRoot,
         projectRoot: devRoot,
@@ -378,7 +448,15 @@ export class TaskGitWorkspaceService {
         const conflicts = String(await gitMaybe(["diff", "--name-only", "--diff-filter=U"], {
           cwd: dev.projectRoot,
         }) ?? "").split(/\r?\n/u).filter(Boolean);
-        await gitMaybe(["merge", "--abort"], { cwd: dev.projectRoot });
+        const aborted = await gitMaybe(["merge", "--abort"], { cwd: dev.projectRoot });
+        try {
+          await this.#assertRecoverableDev(dev.repositoryRoot, dev.projectRoot);
+        } catch (recoveryError) {
+          throw new Error(`${error.message}; integration recovery failed: ${recoveryError.message}`);
+        }
+        if (aborted === null && conflicts.length) {
+          throw new Error(`${error.message}; merge --abort did not complete`);
+        }
         return { integrated: false, conflicts, error: error.message, dev };
       }
     });
@@ -386,10 +464,27 @@ export class TaskGitWorkspaceService {
 
   async snapshotAndMerge(params = {}) {
     const snapshot = await this.snapshot(params);
-    const integration = snapshot.changedFiles.length
-      ? await this.mergeIntoDev(snapshot)
-      : { integrated: true, alreadyIntegrated: true, dev: await this.prepareDev(snapshot.repositoryRoot) };
-    return { snapshot, integration };
+    const integration = await this.mergeIntoDev(snapshot);
+    if (!snapshot.changedFiles.length) {
+      return {
+        snapshot,
+        integration: {
+          ...integration,
+          outcome: "no_result",
+          integrated: false,
+          resultProved: false,
+          error: "Task has no result relative to its immutable base",
+        },
+      };
+    }
+    if (integration.integrated) {
+      await runGit([
+        "update-ref",
+        taskResultRef(snapshot.taskId, taskRepositoryKey(snapshot.repositoryRoot)),
+        snapshot.headCommit,
+      ], { cwd: snapshot.repositoryRoot });
+    }
+    return { snapshot, integration: { ...integration, outcome: integration.integrated ? "integrated" : "conflict", resultProved: integration.integrated } };
   }
 
   async releaseEvidence({ taskId, taskNumber = null, projectRoot, branch, resultCommit } = {}) {
@@ -451,31 +546,92 @@ export class TaskGitWorkspaceService {
       const projectRoot = path.join(root, entry.name);
       const branch = await gitMaybe(["branch", "--show-current"], { cwd: projectRoot });
       if (!branch) continue;
+      const status = await runGit(["status", "--porcelain=v1", "--untracked-files=all"], { cwd: projectRoot });
+      const entries = status.split(/\r?\n/u).filter(Boolean);
+      const repoRoot = await repositoryRoot(projectRoot);
       workspaces.push({
         taskId: id,
         repositoryKey: entry.name,
         projectRoot,
+        repositoryRoot: repoRoot,
         branch,
         headCommit: await runGit(["rev-parse", "HEAD^{commit}"], { cwd: projectRoot }),
+        dirty: entries.length > 0,
+        changedPaths: entries.map((line) => line.slice(3)),
+        untrackedPaths: entries.filter((line) => line.startsWith("?? ")).map((line) => line.slice(3)),
       });
     }
     return workspaces;
   }
 
-  async cleanup(taskId) {
+  async cleanupPreview(taskId, { gitReferences = [] } = {}) {
+    const id = normalizedTaskId(taskId);
+    const workspaces = await this.describe(id);
+    const references = [];
+    for (const reference of gitReferences) {
+      const repoRoot = canonicalPath(reference.projectRoot);
+      const resultCommit = String(reference.resultCommit ?? "").trim();
+      let published = false;
+      let publishedRevision = null;
+      for (const candidate of ["refs/remotes/origin/main", "refs/heads/main"]) {
+        publishedRevision = await gitMaybe(["rev-parse", "--verify", `${candidate}^{commit}`], { cwd: repoRoot });
+        if (publishedRevision && resultCommit && await gitMaybe([
+          "merge-base", "--is-ancestor", resultCommit, publishedRevision,
+        ], { cwd: repoRoot }) !== null) {
+          published = true;
+          break;
+        }
+      }
+      references.push({ ...reference, projectRoot: repoRoot, resultCommit, published, publishedRevision });
+    }
+    const deleting = workspaces.flatMap((workspace) => [
+      { kind: "worktree", path: workspace.projectRoot },
+      { kind: "branch", name: workspace.branch, repositoryRoot: workspace.repositoryRoot },
+      { kind: "base_ref", name: taskBaseRef(id, workspace.repositoryKey), repositoryRoot: workspace.repositoryRoot },
+      { kind: "result_ref", name: taskResultRef(id, workspace.repositoryKey), repositoryRoot: workspace.repositoryRoot },
+    ]);
+    return {
+      taskId: id,
+      workspaces,
+      gitReferences: references,
+      dirty: workspaces.some((item) => item.dirty),
+      unpublished: references.filter((item) => !item.published),
+      deleting,
+    };
+  }
+
+  async cleanup(taskId, { allowDirty = false, requirePublished = false, gitReferences = [] } = {}) {
     const id = normalizedTaskId(taskId);
     const root = path.join(this.taskWorktreesRoot, id);
     if (!pathInside(this.taskWorktreesRoot, root)) throw new Error("Task worktree cleanup escaped its managed root");
-    const workspaces = await this.describe(id);
+    const preview = await this.cleanupPreview(id, { gitReferences });
+    const workspaces = preview.workspaces;
+    if (!allowDirty && preview.dirty) throw new Error("Task cleanup blocked: managed worktree is dirty");
+    if (requirePublished && preview.unpublished.length) {
+      throw new Error("Task cleanup blocked: exact result commit is not contained in published main");
+    }
+    const cleanedRepositories = new Set();
     for (const workspace of workspaces) {
       if (!pathInside(root, workspace.projectRoot)) throw new Error("Task worktree is outside its managed Task root");
       const repoRoot = await repositoryRoot(workspace.projectRoot);
+      const repoKey = taskRepositoryKey(repoRoot);
       await runGit(["worktree", "remove", "--force", workspace.projectRoot], { cwd: repoRoot, timeoutMs: 120_000 });
-      await gitMaybe(["branch", "-D", workspace.branch], { cwd: repoRoot });
-      await gitMaybe(["update-ref", "-d", taskBaseRef(id, workspace.repositoryKey)], { cwd: repoRoot });
+      if (await branchExists(repoRoot, workspace.branch)) await runGit(["branch", "-D", workspace.branch], { cwd: repoRoot });
+      await runGit(["update-ref", "-d", taskBaseRef(id, workspace.repositoryKey)], { cwd: repoRoot });
+      await runGit(["update-ref", "-d", taskResultRef(id, workspace.repositoryKey)], { cwd: repoRoot });
+      cleanedRepositories.add(repoKey);
+    }
+    for (const reference of gitReferences) {
+      const repoRoot = canonicalPath(reference.projectRoot);
+      const repoKey = taskRepositoryKey(repoRoot);
+      if (cleanedRepositories.has(repoKey)) continue;
+      const branch = String(reference.branch ?? "").trim();
+      if (branch && await branchExists(repoRoot, branch)) await runGit(["branch", "-D", branch], { cwd: repoRoot });
+      await runGit(["update-ref", "-d", taskBaseRef(id, repoKey)], { cwd: repoRoot });
+      await runGit(["update-ref", "-d", taskResultRef(id, repoKey)], { cwd: repoRoot });
     }
     await rm(root, { recursive: true, force: true });
-    return { taskId: id, removed: workspaces.length };
+    return { taskId: id, removed: workspaces.length, preview };
   }
 }
 

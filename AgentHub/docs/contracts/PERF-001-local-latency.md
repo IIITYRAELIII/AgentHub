@@ -101,7 +101,10 @@ publication reads one SQLite snapshot and performs JSON encoding plus gzip in an
 isolated worker; compression favors bounded CPU over the smallest possible
 artifact. Synchronous SQLite stores on the Hub loop reuse initialized handles,
 batch hierarchy metadata reads and use immediate `SQLITE_BUSY` failure with
-asynchronous retry rather than blocking busy waits.
+asynchronous retry rather than blocking busy waits. Mutation retries are
+deadline-bounded, yield through timers between attempts and retain the original
+idempotency identity. Exhaustion is a visible contention failure; it must not
+freeze HTTP, SSE or runtime timers or allocate a replacement request identity.
 
 Unchanged journal HTTP/WebView reads resolve their ETag from content-free SQLite
 metadata and do not load the multi-megabyte index HTML. Aggregate journal views

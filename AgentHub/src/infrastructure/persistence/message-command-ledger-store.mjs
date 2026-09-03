@@ -2,7 +2,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { taskOccupancyIdentity } from "../../domain/task-runs.mjs";
 
-const BUSY_TIMEOUT_MS = 5_000;
+const BUSY_TIMEOUT_MS = 0;
 const TERMINAL_STATES = new Set(["completed", "failed", "cancelled"]);
 const ACTIVE_STATES = ["accepted", "queued", "attention-required", "dispatching", "started", "unknown"];
 const DEFAULT_MAX_ACTIVE_COMMANDS = 500;

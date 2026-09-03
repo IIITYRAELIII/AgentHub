@@ -393,6 +393,9 @@ export async function createHubInfrastructure({
     taskGitWorkspaces,
     releaseGitWorkspaces,
   });
+  agentHubRuntimeHealth.setDiagnosticSource("sqliteContention", () => (
+    hubMcpService.databaseContentionDiagnostics()
+  ));
   const mcpAdmissionCoordinator = new McpAdmissionCoordinator();
   const hubMcpServer = new HubMcpServer({
     service: hubMcpService,

@@ -520,6 +520,38 @@ test("MCP mutation audit is idempotent and scoped to its Workspace", async (t) =
   );
 });
 
+test("MCP receipt stays successful when the returned payload exceeds one MiB", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const stream = store.createStream({ workspaceId: workspace.id, name: "MCP" });
+  const operation = {
+    requestId: "large-result", workspaceId: workspace.id, streamId: stream.id,
+    provider: "codex", threadId: "thread-1", toolName: "hub_task_update", argumentsHash: "hash-large",
+  };
+  store.beginMcpOperation(operation);
+  store.completeMcpOperation(operation.requestId, { payload: "x".repeat(1024 * 1024 + 1) });
+  const receipt = store.beginMcpOperation(operation);
+  assert.equal(receipt.status, "succeeded");
+  assert.equal(receipt.result.receiptCompacted, true);
+  assert.equal(receipt.result.outcome, "succeeded");
+});
+
+test("crash-after-begin receipt becomes explicit unknown instead of blind replay", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const stream = store.createStream({ workspaceId: workspace.id, name: "MCP" });
+  const operation = {
+    requestId: "crash-after-begin", workspaceId: workspace.id, streamId: stream.id,
+    provider: "codex", threadId: "thread-1", toolName: "hub_task_update", argumentsHash: "hash-crash",
+  };
+  assert.equal(store.beginMcpOperation(operation).replayed, false);
+  assert.equal(store.beginMcpOperation(operation).replayed, true);
+  store.markMcpOperationUnknown(operation.requestId, new Error("authoritative readback unavailable"));
+  const receipt = store.beginMcpOperation(operation);
+  assert.equal(receipt.status, "unknown");
+  assert.match(receipt.error, /readback unavailable/u);
+});
+
 test("MCP audit resolves only exact successful interstream message provenance", async (t) => {
   const store = await fixture(t);
   const workspace = store.createWorkspace({ name: "Agent HUB" });

@@ -62,9 +62,13 @@ fallbacks.
 
 A successful Test integration records only the deterministic Task branch and
 its accepted immutable result commit on the Task. The base ref and changed-file
-set remain Git data and are derived when a release plan is read. A conflict is
-aborted and returned with exact conflicting paths. Git failure never rejects the
-requested workflow-status transition.
+set remain Git data and are derived when a release plan is read. An empty diff
+is explicit `no_result`, even when the Task HEAD is already ancestral to `dev`,
+and cannot enter Test or Await. A conflict is aborted and returned with exact
+conflicting paths. Snapshot, merge, ancestry verification and recovery complete
+before one row-revision CAS atomically replaces Git references, updates the
+exact operation binding and changes workflow status. Any Git or CAS failure
+preserves the prior status and references.
 
 Moving a Task to `awaiting_implementation` records that its exact immutable
 result is accepted for a future release. The status transition does not build,
@@ -86,8 +90,9 @@ repository. It does not store a second release-authority copy of changed files,
 base/result revision pairs, blobs or manifests. Work-log changed files remain
 diagnostic journal data only. There is no separate readiness row, frozen
 manifest or freeze command. The release plan hashes the current Task revision
-and Git references. Generic status mutation may select any workflow status at
-any time; any intervening Task or accepted-result mutation changes the plan
+and Git references. Generic status mutation may roll back to a non-result status
+at any time, but Test, Await and Done require a proven integrated result. Any
+intervening Task or accepted-result mutation changes the plan
 revision and invalidates an older Architect plan. Provider terminal callbacks
 do not infer file ownership or release readiness.
 
@@ -123,13 +128,32 @@ and the plan hash, then changes only those Tasks to `done` and closes them.
 Generic `done` and
 `hub_task_complete` do not create production evidence.
 
-Post-deployment verification proves that every accepted immutable Task result
-commit is an ancestor of the published `main` revision. It does not compare a
-second stored blob manifest. Once verified, only included Tasks are completed
+Post-deployment verification requires an explicit revision for every frozen
+repository. That revision must equal, not merely contain, the checkpointed
+`preReleaseHead` bound to the exact `{planRevision, manifestHash, baseCommit}`.
+It also proves every accepted immutable Task result is contained, then repeats
+publication revision/generation readback immediately before the Task closure
+transaction. Once verified, only included Tasks are completed
 and their managed branches and worktrees may be removed. Published `main` is
 incorporated into `dev` without discarding later Test work. Remaining Await
 Tasks stay accepted for the next explicit release; Agent Hub does not prebuild a
 mutable next candidate.
+
+## Task close and destructive deletion
+
+`hub_task_complete` and `hub_task_delete` are two-step operations. The first
+call returns a confirmation token and an exact preview of branches, worktrees,
+dirty and untracked paths, result commits, publication state and deletions. A
+confirmed operation is serialized by the Task lifecycle lease and the token is
+revalidated against the current Task revision and Git state.
+
+Complete closes an implementation Task only after workflow Done, rejects dirty
+worktrees and removes a branch plus its protective result ref only when the
+exact result commit is contained in published main. A Task without Git artifacts
+may close as analysis. Delete is the explicit destructive route for unpublished
+results. It records a durable cleanup transition, performs Git cleanup first and
+deletes the Task row only after cleanup succeeds; failure leaves the Task and its
+prior workflow state available.
 
 ## Test Contour
 

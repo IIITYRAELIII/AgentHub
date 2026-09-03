@@ -32,7 +32,18 @@ readback:
 
 - no operation means pre-dispatch and permits a retry with the same id;
 - `succeeded` or `failed` is terminal evidence and forbids another effect;
-- `pending` is unknown and permits reconciliation only with the same id.
+- `pending` permits only operation-specific durable reconciliation with the same
+  id; it is never a generic replay lease;
+- `unknown` is an explicit terminal receipt state when authoritative readback is
+  unavailable or an effect completed but its receipt could not be committed.
+
+Receipt creation is atomic `INSERT OR IGNORE` under the exact identity. Success
+stores a bounded structural result projection rather than arbitrary response
+content, so a result larger than 1 MiB cannot turn an already-applied effect into
+`failed`. Concurrent callers with the same identity share one in-process effect;
+after restart only lifecycle operations with their own durable transition may
+resume. Every other unresolved mutation becomes `unknown` and requires explicit
+authoritative reconciliation.
 
 Composed `functions.exec` calls bind each mutation to the `request_id` in that
 specific nested call's argument object. Missing, duplicate-property and

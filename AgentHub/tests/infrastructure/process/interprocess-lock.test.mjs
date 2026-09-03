@@ -152,3 +152,72 @@ test("failed Windows lock removal cannot leave a live owner forever", async () =
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("expired mismatched process identity recovers despite a reused live PID or EPERM", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-lock-pid-reuse-"));
+  const target = path.join(root, "ledger.json");
+  const lock = `${target}.lock`;
+  try {
+    await mkdir(lock);
+    await writeFile(path.join(lock, "owner.json"), JSON.stringify({
+      token: "previous-process", pid: process.pid, processInstanceId: "different-process-instance",
+      createdAt: 0, leaseExpiresAt: 0,
+    }));
+    let entered = false;
+    await withInterprocessLocks([target], async () => { entered = true; }, {
+      isProcessAlive: () => true,
+      processInstanceId: "current-process-instance",
+      timeoutMs: 100,
+      retryDelayMs: 1,
+    });
+    assert.equal(entered, true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("permanent stale-lock quarantine failure stops at a bounded actionable deadline", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-lock-quarantine-"));
+  const target = path.join(root, "ledger.json");
+  const lock = `${target}.lock`;
+  try {
+    await mkdir(lock);
+    await writeFile(path.join(lock, "owner.json"), JSON.stringify({
+      token: "dead-owner", pid: 999_999, createdAt: 0, leaseExpiresAt: 0,
+      processInstanceId: "old-process",
+    }));
+    const startedAt = Date.now();
+    await assert.rejects(
+      withInterprocessLocks([target], async () => {}, {
+        isProcessAlive: () => false,
+        quarantine: async () => false,
+        timeoutMs: 30,
+        retryDelayMs: 5,
+      }),
+      /Cannot quarantine stale interprocess lock before deadline/u,
+    );
+    assert.ok(Date.now() - startedAt >= 20);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("lock release diagnostics never replace a successful protected operation result", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-lock-release-result-"));
+  const target = path.join(root, "ledger.json");
+  const busy = Object.assign(new Error("busy"), { code: "EBUSY" });
+  const diagnostics = [];
+  try {
+    const result = await withInterprocessLocks([target], async () => "protected-result", {
+      renamePath: async () => { throw busy; },
+      writeOwner: async () => { throw busy; },
+      retryDelaysMs: [0],
+      onReleaseError: (items) => diagnostics.push(...items),
+    });
+    assert.equal(result, "protected-result");
+    assert.equal(diagnostics.length, 1);
+    assert.match(diagnostics[0].error.message, /busy/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

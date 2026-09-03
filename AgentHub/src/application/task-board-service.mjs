@@ -262,6 +262,33 @@ export class TaskBoardService {
     return task;
   }
 
+  beginLifecycleTransition({ id, ...payload } = {}) {
+    requiredMethod(this.store, "beginLifecycleTransition");
+    return this.store.beginLifecycleTransition(id, payload);
+  }
+
+  lifecycleTransition(operationId) {
+    requiredMethod(this.store, "lifecycleTransition");
+    return this.store.lifecycleTransition(operationId);
+  }
+
+  failLifecycleTransition(operationId, error) {
+    requiredMethod(this.store, "failLifecycleTransition");
+    return this.store.failLifecycleTransition(operationId, error);
+  }
+
+  commitWorkflowTransition(payload = {}) {
+    requiredMethod(this.store, "commitWorkflowTransition");
+    const task = this.store.commitWorkflowTransition(payload);
+    this.#event("task.workflow-status.updated", task, { workflowStatus: task.workflowStatus });
+    return task;
+  }
+
+  finalizeCleanupTransition(operationId, payload = {}) {
+    requiredMethod(this.store, "finalizeCleanupTransition");
+    return this.store.finalizeCleanupTransition(operationId, payload);
+  }
+
   recordTaskTurn(payload = {}) {
     const task = this.store.recordTaskTurn(payload);
     if (task) this.#event("task.turn-recorded", task, { turnId: payload.turnId });
@@ -287,10 +314,12 @@ export class TaskBoardService {
     return `${Number(this.store.revision) || 0}:${Number(this.workspaceCatalog.revision) || 0}`;
   }
 
-  prepareStart({ id, workspaceId, streamId, requestId, streamName = null, reassign = false } = {}) {
+  prepareStart({ id, workspaceId, streamId, requestId, streamName = null, reassign = false, expectedRevision = null } = {}) {
     const workspace = this.workspaceCatalog.workspace(workspaceId);
     if (!workspace) throw new Error("Workspace не найден");
-    const task = this.store.prepareStart(id, { workspaceId, streamId, requestId, streamName, reassign });
+    const task = this.store.prepareStart(id, {
+      workspaceId, streamId, requestId, streamName, reassign, expectedRevision,
+    });
     this.#event("task.starting", task);
     return task;
   }
