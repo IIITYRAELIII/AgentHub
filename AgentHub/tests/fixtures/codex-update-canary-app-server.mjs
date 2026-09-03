@@ -1,4 +1,14 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { createInterface } from "node:readline";
+
+if (process.argv.includes("--leak-stderr")) {
+  const auth = await readFile(path.join(process.env.CODEX_HOME, "auth.json"), "utf8");
+  process.stderr.write(`${auth}\n`);
+  process.stderr.write("PROMPT_SECRET_MUST_NOT_PERSIST_4A71\n");
+  process.stderr.write("CAPABILITY_SECRET_MUST_NOT_PERSIST_27C0\n");
+  process.stderr.write("RESPONSE_SECRET_MUST_NOT_PERSIST_681E\n");
+}
 
 function mcpUrl() {
   for (const argument of process.argv.slice(2)) {

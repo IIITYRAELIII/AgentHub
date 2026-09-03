@@ -17,7 +17,30 @@ const DEFAULT_RPC_TIMEOUT_MS = 30_000;
 const DEFAULT_TURN_TIMEOUT_MS = 90_000;
 const DEFAULT_CANCEL_TIMEOUT_MS = 30_000;
 const MAX_PROTOCOL_EVENTS = 200;
-const MAX_STDERR_CHARACTERS = 8_192;
+const MAX_DIAGNOSTIC_COUNT = 1_000_000;
+const SAFE_IDENTIFIER_PATTERN = /^(?:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|canary-(?:thread|turn)-\d+)$/iu;
+const SAFE_PROTOCOL_METHODS = new Set([
+  "remoteControl/status/changed",
+  "thread/started",
+  "thread/settings/updated",
+  "thread/status/changed",
+  "thread/tokenUsage/updated",
+  "turn/started",
+  "turn/completed",
+  "item/started",
+  "item/completed",
+  "item/agentMessage/delta",
+  "account/rateLimits/updated",
+  "mcpServer/startupStatus/updated",
+  "mcpServer/elicitation/request",
+  "serverRequest/resolved",
+]);
+const SAFE_TURN_STATUSES = new Set(["inProgress", "completed", "failed", "interrupted", "cancelled"]);
+const SAFE_FAILURE_CODES = new Set([
+  "CODEX_CANARY_TURN_TIMEOUT",
+  "CODEX_CANARY_PROCESS_EXIT",
+  "CODEX_CANARY_PROTOCOL",
+]);
 
 function withTimeout(operation, timeoutMs, message) {
   let timer;
@@ -29,28 +52,49 @@ function withTimeout(operation, timeoutMs, message) {
 }
 
 function turnId(result) {
-  const id = String(result?.turn?.id ?? result?.turnId ?? "").trim();
+  const id = safeIdentifier(result?.turn?.id ?? result?.turnId);
   if (!id) throw new Error("Codex compatibility canary did not receive a turn id");
   return id;
 }
 
 function threadId(result) {
-  const id = String(result?.thread?.id ?? result?.threadId ?? "").trim();
+  const id = safeIdentifier(result?.thread?.id ?? result?.threadId);
   if (!id) throw new Error("Codex compatibility canary did not receive a thread id");
   return id;
 }
 
-function boundedText(value, limit = MAX_STDERR_CHARACTERS) {
-  const text = String(value ?? "");
-  return text.length <= limit ? text : text.slice(text.length - limit);
+function safeIdentifier(value) {
+  const id = String(value ?? "").trim();
+  return SAFE_IDENTIFIER_PATTERN.test(id) ? id : null;
 }
 
-function redactDiagnosticText(value, sensitiveValues, limit = MAX_STDERR_CHARACTERS) {
-  let text = String(value ?? "");
-  for (const sensitive of sensitiveValues) {
-    if (sensitive) text = text.replaceAll(sensitive, "[REDACTED]");
-  }
-  return boundedText(text, limit);
+function safeProtocolMethod(value) {
+  const method = String(value ?? "");
+  return SAFE_PROTOCOL_METHODS.has(method) ? method : "unknown";
+}
+
+function safeTurnStatus(value) {
+  const status = String(value ?? "");
+  return SAFE_TURN_STATUSES.has(status) ? status : null;
+}
+
+function safeExitSignal(value) {
+  const signal = String(value ?? "");
+  return /^[A-Z][A-Z0-9_-]{0,31}$/u.test(signal) ? signal : null;
+}
+
+function failureKind(error) {
+  if (error?.code === "CODEX_CANARY_TURN_TIMEOUT") return "turn-timeout";
+  if (error?.code === "CODEX_CANARY_PROCESS_EXIT") return "process-exit";
+  if (error?.code === "CODEX_CANARY_PROTOCOL") return "protocol-failure";
+  if (/^Codex RPC [a-z/]+ timed out after \d+ ms$/u.test(String(error?.message ?? ""))) return "rpc-timeout";
+  if (/^Codex compatibility canary timed out after \d+ ms$/u.test(String(error?.message ?? ""))) return "total-timeout";
+  return "scenario-failure";
+}
+
+function safeFailureCode(error) {
+  if (SAFE_FAILURE_CODES.has(error?.code)) return error.code;
+  return Number.isSafeInteger(error?.code) ? error.code : null;
 }
 
 function diagnosticIdentity(candidate) {
@@ -83,8 +127,7 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
   const startedAt = new Date().toISOString();
   const startedAtMs = Date.now();
   const protocolEvents = [];
-  const sensitiveValues = new Set();
-  let stderrTail = "";
+  const stderr = { observed: false, chunks: 0, bytes: 0 };
   let phase = "prepare";
   let canaryThreadId = null;
   let mcpTurnId = null;
@@ -106,10 +149,9 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
 
     let mcpReadCount = 0;
     const canaryContextToken = randomBytes(24).toString("base64url");
-    sensitiveValues.add(canaryContextToken);
     mcpServer = new HubMcpServer({
       secret: randomBytes(32).toString("base64url"),
-      logger: { log() {}, error: (...args) => logger.error?.(...args) },
+      logger: { log() {}, error: () => logger.error?.("Agent Hub canary MCP request failed") },
       service: {
         tools: () => [{
           name: "hub_canary_read",
@@ -130,7 +172,6 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
       },
     });
     await mcpServer.start();
-    sensitiveValues.add(mcpServer.url);
 
     const completed = new Map();
     const waiters = new Map();
@@ -143,25 +184,33 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
     );
     const onMessage = async (message) => {
       record("message", {
-        method: String(message?.method ?? "unknown"),
-        threadId: String(message?.params?.threadId ?? "") || null,
-        turnId: String(message?.params?.turn?.id ?? message?.params?.turnId ?? "") || null,
-        status: String(message?.params?.turn?.status ?? "") || null,
+        method: safeProtocolMethod(message?.method),
+        threadId: safeIdentifier(message?.params?.threadId),
+        turnId: safeIdentifier(message?.params?.turn?.id ?? message?.params?.turnId),
+        status: safeTurnStatus(message?.params?.turn?.status),
         request: message?.id != null,
       });
       if (message?.id != null) {
         if (message.method !== "mcpServer/elicitation/request") {
-          throw new Error(`Unexpected Codex canary client request ${message.method ?? "unknown"}`);
+          throw Object.assign(new Error("Unexpected Codex canary client request"), {
+            code: "CODEX_CANARY_PROTOCOL",
+          });
         }
         const params = message.params ?? {};
         if (String(params.serverName ?? "") !== "agent_hub"
           || String(params.threadId ?? "") !== canaryThreadId
           || String(params.turnId ?? "") !== mcpTurnId
           || params.mode !== "form") {
-          throw new Error("Codex canary received an unbound MCP elicitation request");
+          throw Object.assign(new Error("Codex canary received an unbound MCP elicitation request"), {
+            code: "CODEX_CANARY_PROTOCOL",
+          });
         }
         const response = mcpElicitationAcceptResponse(params);
-        if (!response) throw new Error("Codex canary MCP elicitation is not safely auto-answerable");
+        if (!response) {
+          throw Object.assign(new Error("Codex canary MCP elicitation is not safely auto-answerable"), {
+            code: "CODEX_CANARY_PROTOCOL",
+          });
+        }
         await transport.respond(message.id, response, { expectedGeneration: transport.generation });
         record("elicitation-response-flushed", {
           method: message.method,
@@ -248,13 +297,23 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
         ),
         stopProcessTree: stopProcess,
         onMessage,
-        onExit: ({ detail }) => {
-          if (!expectedStop) failProtocol(new Error(`Codex canary App Server stopped unexpectedly (${detail})`));
+        onExit: ({ code, signal }) => {
+          if (!expectedStop) {
+            record("process-exit", {
+              code: Number.isSafeInteger(code) ? code : null,
+              signal: safeExitSignal(signal),
+            });
+            failProtocol(Object.assign(new Error("Codex canary App Server stopped unexpectedly"), {
+              code: "CODEX_CANARY_PROCESS_EXIT",
+            }));
+          }
         },
         onStderr: (text) => {
-          stderrTail = redactDiagnosticText(
-            `${stderrTail}${stderrTail ? "\n" : ""}${text}`,
-            sensitiveValues,
+          stderr.observed = true;
+          stderr.chunks = Math.min(MAX_DIAGNOSTIC_COUNT, stderr.chunks + 1);
+          stderr.bytes = Math.min(
+            MAX_DIAGNOSTIC_COUNT,
+            stderr.bytes + Buffer.byteLength(String(text ?? ""), "utf8"),
           );
         },
         onInvalidMessage: failProtocol,
@@ -382,6 +441,7 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
     );
     return { ok: true, evidence };
   } catch (error) {
+    const kind = failureKind(error);
     const evidence = {
       schemaVersion: 1,
       startedAt,
@@ -389,18 +449,17 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
       elapsedMs: Date.now() - startedAtMs,
       phase,
       candidate: diagnosticIdentity(candidate),
-      error: {
-        code: String(error?.code ?? "") || null,
-        message: redactDiagnosticText(error?.message, sensitiveValues, 2_000),
-      },
+      failure: { kind, code: safeFailureCode(error) },
       protocolEvents,
-      stderrTail: redactDiagnosticText(stderrTail, sensitiveValues),
+      stderr,
     };
-    await writeFile(failureEvidenceFile, `${JSON.stringify(evidence, null, 2)}\n`, "utf8").catch((writeError) => {
-      logger.error?.("Cannot persist Codex canary failure evidence:", writeError.message);
+    await writeFile(failureEvidenceFile, `${JSON.stringify(evidence, null, 2)}\n`, "utf8").catch(() => {
+      logger.error?.("Cannot persist Codex canary failure evidence");
     });
-    error.canaryEvidence = evidence;
-    throw error;
+    const safeError = new Error(`Codex compatibility canary failed during ${phase} (${kind})`);
+    safeError.code = "CODEX_CANARY_FAILED";
+    safeError.canaryEvidence = evidence;
+    throw safeError;
   } finally {
     await stopCanaryTransport().catch(() => null);
     await mcpServer?.close().catch(() => null);

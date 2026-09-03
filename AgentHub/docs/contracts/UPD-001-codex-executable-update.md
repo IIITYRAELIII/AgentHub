@@ -76,11 +76,14 @@ blocked reason, and last error. It never exposes auth material or executable
 contents.
 
 Canary failure also leaves a bounded machine-readable content-free protocol
-timeline and redacted stderr tail under
+timeline and stderr observation counters under
 `data/codex-executable-canary/last-failure.json`. It records
-phase, method/turn identifiers, statuses, candidate identity, and the bounded
-error only; prompts, the isolated MCP capability, auth material, and response
-contents are excluded. The isolated run directory is still always removed.
+only allowlisted phases, protocol methods, validated Thread/turn identifiers,
+statuses, exit code/signal, candidate identity, failure class/code, timestamps,
+and bounded counts. Arbitrary child stderr, RPC errors, prompts, the isolated
+MCP capability, auth material, and response contents are never retained in the
+file, attached evidence, thrown error, or canary-owned logs. The isolated run
+directory is still always removed.
 
 ## Readiness evidence
 

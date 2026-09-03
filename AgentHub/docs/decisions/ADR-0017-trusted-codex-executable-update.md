@@ -36,9 +36,11 @@ to production Task data. It creates its own Thread and restarts the candidate
 to resume that Thread. Temporary auth material is copied only when needed,
 never logged, and removed in a `finally` path.
 RPC acknowledgement, asynchronous turn completion, cancellation, and total
-scenario deadlines are independent. A failed run retains only a bounded,
-content-free protocol/stderr diagnostic outside the removed runtime so rollout
-failures remain attributable without retaining auth or prompts.
+scenario deadlines are independent. A failed run retains only bounded,
+allowlisted protocol metadata and stderr observation counters outside the
+removed runtime. Arbitrary child text is discarded rather than redacted, so
+rollout failures remain attributable without retaining auth, prompts,
+capabilities, responses, or candidate-controlled error text.
 The canary also owns App Server-to-client protocol requests: it auto-answers
 only a safe form elicitation bound to the exact isolated Agent Hub MCP server,
 Thread, and read turn, and rejects every unbound or unsafe request.
