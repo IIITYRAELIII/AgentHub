@@ -127,12 +127,42 @@ export function normalizeUsageLimitSample(value = {}) {
   };
 }
 
+function compareUtf8Text(left, right) {
+  return Buffer.compare(Buffer.from(String(left ?? ""), "utf8"), Buffer.from(String(right ?? ""), "utf8"));
+}
+
+function compareNullableNumber(left, right) {
+  const leftMissing = left === null;
+  const rightMissing = right === null;
+  if (leftMissing || rightMissing) return leftMissing === rightMissing ? 0 : leftMissing ? -1 : 1;
+  return left - right;
+}
+
 function limitSampleKey(sample) {
-  return JSON.stringify([sample.observedAt, sample.limitId, sample.window]);
+  return JSON.stringify([
+    sample.observedAt,
+    sample.limitId,
+    sample.window,
+    sample.windowMinutes,
+    sample.usedPercent,
+    sample.resetsAt,
+    sample.planType,
+  ]);
+}
+
+function compareUsageLimitSample(left, right) {
+  return compareUtf8Text(left.observedAt, right.observedAt)
+    || compareUtf8Text(left.limitId, right.limitId)
+    || compareUtf8Text(left.window, right.window)
+    || compareNullableNumber(left.windowMinutes, right.windowMinutes)
+    || compareNullableNumber(left.usedPercent, right.usedPercent)
+    || compareUtf8Text(left.resetsAt, right.resetsAt)
+    || compareUtf8Text(left.planType, right.planType);
 }
 
 /**
- * Set union keyed by observation, lane and limit, kept in that sorted order.
+ * Set union keyed by the normalized sample body, kept in canonical UTF-8 byte
+ * order by observation, lane, limit and value fields.
  * The merge is order-independent and idempotent, so two installations holding
  * the same facts compute the same correlation input regardless of arrival order.
  *
@@ -150,11 +180,7 @@ export function mergeUsageLimitSamples(...collections) {
       if (!byKey.has(key)) byKey.set(key, sample);
     }
   }
-  return [...byKey.values()].sort((left, right) => (
-    left.observedAt.localeCompare(right.observedAt)
-    || left.limitId.localeCompare(right.limitId)
-    || left.window.localeCompare(right.window)
-  ));
+  return [...byKey.values()].sort(compareUsageLimitSample);
 }
 
 export function hasForbiddenTurnAccountFields(value) {

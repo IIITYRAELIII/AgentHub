@@ -2,6 +2,7 @@
 
 Model and rationale: [USAGE_CORRELATION_MODEL.md](../architecture/USAGE_CORRELATION_MODEL.md).
 Decision: [ADR-0013](../decisions/ADR-0013-interval-account-attribution.md).
+Limit sample conflict semantics: [ADR-0014](../decisions/ADR-0014-lossless-limit-sample-merge.md).
 
 ## Identity and owner
 
@@ -105,9 +106,13 @@ profile cannot collapse the collision evidence before projection sees it.
 when canonical fields are present, an incoming id is not trusted and boundaries
 recompute it before storage or export.
 
-`limitSamples[]` merges as a set keyed by `(observedAt, limitId, window)`,
-stored in that sorted order. The merge is therefore order-independent and
-idempotent: two installations holding the same fact set compute the same
+`limitSamples[]` merges as a set keyed by the normalized full sample body:
+`(observedAt, limitId, window, windowMinutes, usedPercent, resetsAt, planType)`.
+Exact duplicates collapse. Conflicting samples with the same `(observedAt,
+limitId, window)` but different values are distinct evidence and must both be
+preserved. Samples are stored in canonical UTF-8 byte order by the same field
+sequence, never by locale collation. The merge is therefore order-independent
+and idempotent: two installations holding the same fact set compute the same
 correlation input regardless of arrival order.
 
 A later import from a richer rollout may add samples and move an interval from

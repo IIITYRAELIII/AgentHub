@@ -17,7 +17,7 @@ import re
 import secrets
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -116,10 +116,43 @@ def finite_number(value: Any) -> float | None:
     return number if number == number and abs(number) != float("inf") else None
 
 
+def sample_text_sort_key(value: Any) -> bytes:
+    return text(value).encode("utf-8")
+
+
+def sample_number_sort_key(value: Any) -> tuple[int, float]:
+    number = finite_number(value)
+    return (0, 0.0) if number is None else (1, number)
+
+
+def limit_sample_identity(sample: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        sample["observedAt"],
+        sample["limitId"],
+        sample["window"],
+        sample["windowMinutes"],
+        sample["usedPercent"],
+        sample["resetsAt"],
+        sample["planType"],
+    )
+
+
+def limit_sample_sort_key(sample: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        sample_text_sort_key(sample["observedAt"]),
+        sample_text_sort_key(sample["limitId"]),
+        sample_text_sort_key(sample["window"]),
+        sample_number_sort_key(sample["windowMinutes"]),
+        sample_number_sort_key(sample["usedPercent"]),
+        sample_text_sort_key(sample["resetsAt"]),
+        sample_text_sort_key(sample["planType"]),
+    )
+
+
 def normalize_limit_samples(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
-    by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+    by_key: dict[tuple[Any, ...], dict[str, Any]] = {}
     for item in value:
         if not isinstance(item, dict):
             continue
@@ -129,18 +162,19 @@ def normalize_limit_samples(value: Any) -> list[dict[str, Any]]:
         used_percent = finite_number(item.get("usedPercent"))
         if not observed_at or not limit_id or not window or used_percent is None:
             continue
-        key = (observed_at, limit_id, window)
+        sample = {
+            "observedAt": observed_at,
+            "limitId": limit_id,
+            "window": window,
+            "windowMinutes": finite_number(item.get("windowMinutes")),
+            "usedPercent": used_percent,
+            "resetsAt": timestamp(item.get("resetsAt")),
+            "planType": text(item.get("planType"), 80),
+        }
+        key = limit_sample_identity(sample)
         if key not in by_key:
-            by_key[key] = {
-                "observedAt": observed_at,
-                "limitId": limit_id,
-                "window": window,
-                "windowMinutes": finite_number(item.get("windowMinutes")),
-                "usedPercent": used_percent,
-                "resetsAt": timestamp(item.get("resetsAt")),
-                "planType": text(item.get("planType"), 80),
-            }
-    return [by_key[key] for key in sorted(by_key)]
+            by_key[key] = sample
+    return sorted(by_key.values(), key=limit_sample_sort_key)
 
 
 def b64url_decode(value: str) -> bytes:
@@ -598,12 +632,7 @@ def normalize_event(value: Any, received_at_ms: int) -> UsageEvent:
         if not RUNTIME_HOME_ID_PATTERN.fullmatch(runtime_home_id):
             raise ValueError("invalid runtimeHomeId")
     usage = value.get("usage") if isinstance(value.get("usage"), dict) else {}
-    limit_samples_json = json.dumps(
-        normalize_limit_samples(value.get("limitSamples")),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    limit_samples_json_value = limit_samples_json(value.get("limitSamples"))
     account_key = ""
     attribution = "inferred"
     return UsageEvent(
@@ -617,7 +646,7 @@ def normalize_event(value: Any, received_at_ms: int) -> UsageEvent:
         started_at=started_at,
         schema_version=schema_version,
         runtime_home_id=runtime_home_id,
-        limit_samples_json=limit_samples_json,
+        limit_samples_json=limit_samples_json_value,
         account_key=account_key,
         account_label="",
         account_type="",
@@ -664,6 +693,23 @@ def should_replace(existing: sqlite3.Row | None, incoming: UsageEvent) -> bool:
     if existing is None:
         return True
     return event_rank(incoming) > event_rank(existing)
+
+
+def limit_samples_json(samples: Any) -> str:
+    return json.dumps(
+        normalize_limit_samples(samples),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def merged_event_limit_samples_json(existing: sqlite3.Row | None, incoming: UsageEvent) -> str:
+    incoming_samples = json.loads(incoming.limit_samples_json or "[]")
+    if existing is None:
+        return limit_samples_json(incoming_samples)
+    existing_samples = json.loads(existing["limit_samples_json"] or "[]")
+    return limit_samples_json(existing_samples + incoming_samples)
 
 
 def normalize_auth_observation(value: Any, received_at_ms: int) -> dict[str, Any]:
@@ -820,8 +866,16 @@ def insert_or_update_event(db: sqlite3.Connection, event: UsageEvent) -> str:
         "SELECT * FROM usage_events WHERE event_id=?",
         (event.event_id,),
     ).fetchone()
+    merged_samples_json = merged_event_limit_samples_json(existing, event)
     if not should_replace(existing, event):
+        if existing is not None and existing["limit_samples_json"] != merged_samples_json:
+            db.execute(
+                "UPDATE usage_events SET limit_samples_json=?, server_revision=? WHERE event_id=?",
+                (merged_samples_json, next_server_revision(db), event.event_id),
+            )
+            return "updated"
         return "unchanged"
+    event = replace(event, limit_samples_json=merged_samples_json)
     values = tuple(
         event.__dict__[name] if name != "server_revision" else next_server_revision(db)
         for name in EVENT_COLUMNS.replace(" ", "").split(",")

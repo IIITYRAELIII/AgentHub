@@ -80,7 +80,8 @@ export class WorkLogUsageStore {
   #usageSyncDeviceLabel;
   #usageSyncRuntimeHomeIds;
   #usageSyncIdentity;
-  #publishedAuthObservationKeys = new Set();
+  #publishedAuthObservationStates = new Map();
+  #lastAuthObservationObservedMs = 0;
   #workspaceCatalogStore;
   #beforeProjectionWrite;
   #logger;
@@ -596,36 +597,46 @@ export class WorkLogUsageStore {
     });
   }
 
+  #nextAuthObservationObservedAt() {
+    const observedMs = Math.max(Date.now(), this.#lastAuthObservationObservedMs + 1);
+    this.#lastAuthObservationObservedMs = observedMs;
+    return new Date(observedMs).toISOString();
+  }
+
   async #publishCurrentAuthObservations() {
     if (typeof this.#usageSyncStore?.importSnapshot !== "function") return { added: 0, updated: 0 };
-    const observedAt = new Date().toISOString();
     const observed = (await Promise.all(
-      ["codex", "claude"].map((provider) => this.#currentAuthObservation(provider, observedAt)),
+      ["codex", "claude"].map((provider) => this.#currentAuthObservation(
+        provider,
+        this.#nextAuthObservationObservedAt(),
+      )),
     )).filter(Boolean);
     const facts = [];
-    const pendingKeys = [];
+    const pendingStates = [];
     for (const fact of observed) {
-      const key = JSON.stringify([
+      const lineKey = JSON.stringify([
         fact.deviceId,
         fact.provider,
         fact.runtimeHomeId,
+      ]);
+      const stateKey = JSON.stringify([
         fact.accountKey,
         fact.accountPlan,
         fact.authFingerprint,
       ]);
-      if (this.#publishedAuthObservationKeys.has(key)) continue;
+      if (this.#publishedAuthObservationStates.get(lineKey) === stateKey) continue;
       facts.push(fact);
-      pendingKeys.push(key);
+      pendingStates.push([lineKey, stateKey]);
     }
     if (!facts.length) return { added: 0, updated: 0 };
     const result = await this.#usageSyncStore.importSnapshot({
       version: 1,
       deviceId: this.#usageSyncDeviceId,
       deviceLabel: this.#usageSyncDeviceLabel,
-      exportedAt: observedAt,
+      exportedAt: facts[facts.length - 1]?.observedAt ?? new Date().toISOString(),
       events: facts,
     });
-    for (const key of pendingKeys) this.#publishedAuthObservationKeys.add(key);
+    for (const [lineKey, stateKey] of pendingStates) this.#publishedAuthObservationStates.set(lineKey, stateKey);
     return result;
   }
 

@@ -159,6 +159,44 @@ test("merge adds richer limit samples without moving the original observation ti
   assert.deepEqual(merged.limitSamples.map((sample) => sample.window), ["primary", "secondary"]);
 });
 
+test("merge preserves conflicting limit samples and stays order-independent", () => {
+  const first = normalizeUsageSyncEvent(turn({
+    limitSamples: [{
+      observedAt: "2026-08-20T00:59:10.000Z",
+      limitId: "codex",
+      window: "primary",
+      usedPercent: 10,
+    }],
+  }));
+  const second = normalizeUsageSyncEvent(turn({
+    limitSamples: [{
+      observedAt: "2026-08-20T00:59:10.000Z",
+      limitId: "codex",
+      window: "primary",
+      usedPercent: 20,
+    }],
+  }));
+
+  const [forward] = mergeUsageSyncEvents([first], [second]);
+  const [reverse] = mergeUsageSyncEvents([second], [first]);
+
+  assert.deepEqual(forward.limitSamples, reverse.limitSamples);
+  assert.deepEqual(forward.limitSamples.map((sample) => sample.usedPercent), [10, 20]);
+});
+
+test("limit samples use canonical byte order instead of locale collation", () => {
+  const event = normalizeUsageSyncEvent(turn({
+    limitSamples: [
+      { observedAt: "2026-08-20T00:59:10.000Z", limitId: "z", window: "primary", usedPercent: 1 },
+      { observedAt: "2026-08-20T00:59:10.000Z", limitId: "ä", window: "primary", usedPercent: 1 },
+      { observedAt: "2026-08-20T00:59:10.000Z", limitId: "pro", window: "primary", usedPercent: 1 },
+      { observedAt: "2026-08-20T00:59:10.000Z", limitId: "PRO", window: "primary", usedPercent: 1 },
+    ],
+  }));
+
+  assert.deepEqual(event.limitSamples.map((sample) => sample.limitId), ["PRO", "pro", "z", "ä"]);
+});
+
 test("usage sync snapshot exports schema 2 turn facts without raw ids or accounts", () => {
   const snapshot = usageSyncSnapshotFromLedger({
     "codex\u0000thread-1\u0000turn-1": {
