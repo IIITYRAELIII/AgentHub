@@ -240,7 +240,6 @@ export function createRuntimeOrchestrationComposition({
     selectedTaskWatchIntervalMs,
     attachmentImporter: importCodexDesktopAttachments,
     terminalAuditIntervalMs,
-    terminalAuditEnabled: false,
     logger: taskObserverLogger,
   }));
   const {
