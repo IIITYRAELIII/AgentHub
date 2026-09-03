@@ -58,6 +58,54 @@ function fixture({ planRevision = "plan-1", contourHead = "dev-head", rejectDev 
       };
     },
   });
+  const contourTarget = {
+    root: path.resolve("D:/test-contour"),
+    contourId: "contour-1",
+    port: 8877,
+    model: "fake-codex",
+  };
+  const contourOperation = {
+    operationId: "operation-1",
+    status: "ready",
+    phase: "ready",
+    source: {
+      branch: "dev",
+      headCommit: "dev-head",
+      sourceRoot: path.resolve("D:/dev-worktree/AgentHub"),
+    },
+    target: contourTarget,
+    releaseId: "release-1",
+  };
+  // Keep this compatibility fixture additive so concurrent release-candidate
+  // coverage can retain its own service dependencies and call ordering.
+  service.refreshTestContour = async (request) => {
+    calls.push(["refresh-contour", { sourceRoot: request.sourceRoot }]);
+    return {
+      operationId: contourOperation.operationId,
+      operation: contourOperation,
+      source: contourOperation.source,
+      refreshOutcome: "refreshed",
+    };
+  };
+  service.readTestContourStatus = async () => {
+    calls.push(["read-contour"]);
+    return {
+      running: true,
+      root: contourTarget.root,
+      source: { branch: "dev", headCommit: contourHead },
+      status: "ready",
+      planned: false,
+      operation: contourOperation,
+      state: {
+        contourId: contourTarget.contourId,
+        operationId: contourOperation.operationId,
+        releaseId: contourOperation.releaseId,
+        port: contourTarget.port,
+        model: contourTarget.model,
+      },
+      readback: { outcome: "exact", operation: contourOperation, current: contourOperation },
+    };
+  };
   return { calls, projectRoot, service };
 }
 

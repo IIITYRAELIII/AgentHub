@@ -38,6 +38,45 @@ function readyRepositories(ready = []) {
   }));
 }
 
+function sameContourTarget(left, right) {
+  return Boolean(left && right)
+    && canonicalRoot(left.root) === canonicalRoot(right.root)
+    && String(left.contourId ?? "") === String(right.contourId ?? "")
+    && Number(left.port) === Number(right.port)
+    && String(left.model ?? "") === String(right.model ?? "");
+}
+
+function exactReadyContourReadback({ refreshed, contour, expectedHeadCommit }) {
+  const requested = refreshed?.operation;
+  const readback = contour?.readback;
+  const observed = readback?.operation;
+  const state = contour?.state;
+  const expectedHead = String(expectedHeadCommit ?? "").trim();
+  return Boolean(requested?.operationId)
+    && refreshed?.refreshOutcome === "refreshed"
+    && requested.status === "ready"
+    && requested.phase === "ready"
+    && requested.source?.headCommit === expectedHead
+    && readback?.outcome === "exact"
+    && observed?.operationId === requested.operationId
+    && observed?.status === "ready"
+    && observed?.phase === "ready"
+    && observed?.releaseId === requested.releaseId
+    && observed?.source?.headCommit === expectedHead
+    && sameContourTarget(observed?.target, requested.target)
+    && contour?.running === true
+    && canonicalRoot(contour?.root) === canonicalRoot(requested.target?.root)
+    && contour?.planned === false
+    && contour?.status === "ready"
+    && contour?.operation?.operationId === requested.operationId
+    && state?.operationId === requested.operationId
+    && state?.releaseId === requested.releaseId
+    && state?.contourId === requested.target?.contourId
+    && Number(state?.port) === Number(requested.target?.port)
+    && state?.model === requested.target?.model
+    && contour?.source?.headCommit === expectedHead;
+}
+
 export class WorkspaceReleasePreflightService {
   constructor({
     releasePlanner, taskGitWorkspaces, resolveTestContourSource, refreshTestContour, readTestContourStatus,
@@ -80,9 +119,21 @@ export class WorkspaceReleasePreflightService {
     }
 
     const contourSource = await this.resolveTestContourSource(preparedRepositories);
-    await this.refreshTestContour({ sourceRoot: contourSource.sourceRoot });
-    const contour = await this.readTestContourStatus();
-    if (!contour?.running) throw new Error("refreshed Test Contour is not running");
+    const refreshed = await this.refreshTestContour({
+      sourceRoot: contourSource.sourceRoot,
+      forceFreshCandidate: true,
+    });
+    const expectedContourHead = contourSource.headCommit ?? null;
+    const contour = await this.readTestContourStatus({
+      expectedOperationId: refreshed?.operationId ?? null,
+      expectedHeadCommit: expectedContourHead,
+    });
+    if (!exactReadyContourReadback({ refreshed, contour, expectedHeadCommit: expectedContourHead })) {
+      throw new Error(
+        `refreshed Test Contour readback is not exact-ready: ${contour?.readback?.outcome ?? "missing"}; `
+          + "it does not match dev HEAD or the exact operation target",
+      );
+    }
 
     const repositories = [];
     for (const repository of selectedRepositories) {

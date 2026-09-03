@@ -555,6 +555,7 @@ export class MiniAppServer {
   #publicAuthAttempts = new PublicAuthAttemptLimiter();
   #requireTelegramAuth;
   #telegramRuntime;
+  #testContourRuntimeIdentity;
   #server = null;
   #closePromise = null;
   #workspaceFileRoots;
@@ -590,10 +591,14 @@ export class MiniAppServer {
     workspaceFileRoots = [],
     workspaceFileTransferTickets = null,
     health = agentHubRuntimeHealth,
+    testContourRuntimeIdentity = null,
     handlerCloseTimeoutMs = 1_000,
   } = {}) {
     this.#host = String(host);
     this.#health = health && typeof health.snapshot === "function" ? health : agentHubRuntimeHealth;
+    this.#testContourRuntimeIdentity = testContourRuntimeIdentity
+      ? Object.freeze({ ...testContourRuntimeIdentity })
+      : null;
     this.#handlerCloseTimeoutMs = Math.max(0, Number(handlerCloseTimeoutMs) || 0);
     this.#port = Number(port);
     this.#botToken = String(botToken);
@@ -1563,6 +1568,13 @@ export class MiniAppServer {
       json(response, 200, {
         ok: true,
         ...summary,
+        ...(this.#testContourRuntimeIdentity ? {
+          testContourRuntime: {
+            ...this.#testContourRuntimeIdentity,
+            pid: process.pid,
+            actualPort: this.address()?.port ?? this.#port,
+          },
+        } : {}),
         capabilities: capabilities.map(({ error: _error, ...capability }) => capability),
         ...(startup ? {
           startup: {

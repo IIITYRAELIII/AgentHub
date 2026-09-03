@@ -28,6 +28,12 @@ function parseArguments(args) {
     withAgent: true,
     json: false,
     model: undefined,
+    releaseId: undefined,
+    operationId: undefined,
+    sourceBranch: undefined,
+    sourceHeadCommit: undefined,
+    expectedOperationId: undefined,
+    expectedHeadCommit: undefined,
   };
   for (let index = 1; index < args.length; index += 1) {
     const argument = args[index];
@@ -37,6 +43,12 @@ function parseArguments(args) {
     else if (argument === "--require-installed") options.requireInstalled = true;
     else if (argument === "--no-agent") options.withAgent = false;
     else if (argument === "--model" && args[index + 1]) options.model = args[++index];
+    else if (argument === "--release-id" && args[index + 1]) options.releaseId = args[++index];
+    else if (argument === "--operation-id" && args[index + 1]) options.operationId = args[++index];
+    else if (argument === "--source-branch" && args[index + 1]) options.sourceBranch = args[++index];
+    else if (argument === "--source-head" && args[index + 1]) options.sourceHeadCommit = args[++index];
+    else if (argument === "--expected-operation" && args[index + 1]) options.expectedOperationId = args[++index];
+    else if (argument === "--expected-head" && args[index + 1]) options.expectedHeadCommit = args[++index];
     else if (argument === "--json") options.json = true;
     else throw new Error(`Unknown Test Contour argument: ${argument}`);
   }
@@ -77,12 +89,20 @@ export async function main(args = process.argv.slice(2)) {
   if (options.command === "serve") {
     return serveTestContour({
       ...common,
+      releaseId: options.releaseId,
+      operationId: options.operationId,
+      sourceBranch: options.sourceBranch,
+      sourceHeadCommit: options.sourceHeadCommit,
       ...(options.model ? { model: options.model } : {}),
       ...(options.port ? { port: options.port } : {}),
     });
   }
   if (options.command === "status") {
-    const result = await readTestContourStatus(common);
+    const result = await readTestContourStatus({
+      ...common,
+      expectedOperationId: options.expectedOperationId,
+      expectedHeadCommit: options.expectedHeadCommit,
+    });
     print(result, options.json);
     return result;
   }
@@ -103,6 +123,7 @@ export async function main(args = process.argv.slice(2)) {
       ...common,
       entryFile,
       ...(options.model ? { model: options.model } : {}),
+      ...(options.port ? { port: options.port } : {}),
     };
     const clone = await cloneProductionDataToTestContour(launch);
     const state = await startTestContour(launch);
@@ -119,7 +140,8 @@ export async function main(args = process.argv.slice(2)) {
       ...(options.model ? { model: options.model } : {}),
       ...(options.port ? { port: options.port } : {}),
     });
-    print(`Test Contour готов: ${state.url}`, options.json);
+    if (options.json) print(state, true);
+    else print(`Test Contour готов: ${state.url} (${state.refreshOutcome ?? "started"})`);
     return state;
   }
   if (options.command === "verify") {
@@ -129,6 +151,7 @@ export async function main(args = process.argv.slice(2)) {
       entryFile,
       withAgent: options.withAgent,
       ...(options.model ? { model: options.model } : {}),
+      ...(options.port ? { port: options.port } : {}),
     });
     print({
       ok: true,
