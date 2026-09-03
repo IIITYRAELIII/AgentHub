@@ -46,6 +46,7 @@ const {
 } = window.AgentHubMessageDisclosure;
 const chatSurfacePreference = window.AgentHubChatSurfacePreference;
 const backgroundMotionPreference = window.AgentHubBackgroundMotionPreference;
+const activityRailPreference = window.AgentHubActivityRailPreference;
 const backgroundImageResolver = window.AgentHubBackgroundImageResolver;
 const modalOverlays = window.AgentHubModalOverlays;
 const particleStyle = window.AgentHubParticleStyle;
@@ -71,6 +72,7 @@ const themeSelect = document.querySelector("[data-theme-select]");
 const backgroundSelect = document.querySelector("[data-background-select]");
 const backgroundMotionToggle = document.querySelector("[data-background-motion-toggle]");
 const chatBackgroundToggle = document.querySelector("[data-chat-background-toggle]");
+const activityRailVisibilityToggle = document.querySelector("[data-activity-rail-visibility-toggle]");
 const journalGroupingButtons = [...document.querySelectorAll("[data-journal-grouping]")];
 const journalPrimaryColumn = document.querySelector("[data-journal-primary-column]");
 const journalWorkspaceCount = document.querySelector("[data-journal-workspace-count]");
@@ -161,6 +163,7 @@ const chatLive = document.querySelector("[data-chat-live]");
 const chatStops = [...document.querySelectorAll("[data-chat-stop]")];
 const dialogSettings = document.querySelector("[data-dialog-settings]");
 const dialogSettingsToggle = document.querySelector("[data-dialog-settings-toggle]");
+const dialogSettingsClose = document.querySelector("[data-dialog-settings-close]");
 const dialogWorkingDirectory = document.querySelector("[data-dialog-working-directory]");
 const dialogWorkingDirectoryNote = document.querySelector("[data-dialog-working-directory-note]");
 const dialogStreamRules = document.querySelector("[data-dialog-stream-rules]");
@@ -721,6 +724,11 @@ function applyChatSurface(value, { persist = false } = {}) {
   if (persist) chatSurfacePreference.persist(localStorage, selected);
 }
 
+function applyActivityRailVisibility(value, { persist = false } = {}) {
+  const selected = activityRailPreference.apply(root, activityRailVisibilityToggle, value);
+  if (persist) activityRailPreference.persist(localStorage, selected);
+}
+
 function savedStreamStatusStyle() {
   try {
     const value = localStorage.getItem("agent-hub-stream-status-style")
@@ -905,6 +913,7 @@ telegramFullscreenButton?.addEventListener("click", () => {
 applyBackgroundMotion(backgroundMotionPreference.stored(localStorage));
 applyTheme(savedTheme());
 applyChatSurface(chatSurfacePreference.stored(localStorage));
+applyActivityRailVisibility(activityRailPreference.stored(localStorage));
 applyStreamStatusStyle(savedStreamStatusStyle());
 applyStreamStatusEffect(savedStreamStatusEffect());
 applyActivityStreamDetailedCards(savedActivityStreamDetailedCards());
@@ -932,6 +941,11 @@ backgroundMotionToggle?.addEventListener("change", () => {
 });
 chatBackgroundToggle?.addEventListener("change", () => {
   applyChatSurface(chatBackgroundToggle.checked ? "transparent" : "themed", { persist: true });
+});
+activityRailVisibilityToggle?.addEventListener("change", () => {
+  applyActivityRailVisibility(activityRailVisibilityToggle.checked ? "visible" : "hidden", {
+    persist: true,
+  });
 });
 for (const button of journalGroupingButtons) {
   button.addEventListener("click", () => {
@@ -7344,6 +7358,10 @@ function openDialogSettings() {
 function toggleDialogSettings() {
   setDialogSettingsOpen(dialogSettings.hidden);
 }
+
+dialogSettingsClose?.addEventListener("click", () => {
+  setDialogSettingsOpen(false);
+});
 
 function openPanel() {
   renderGlobalQuickMessagesSettings();

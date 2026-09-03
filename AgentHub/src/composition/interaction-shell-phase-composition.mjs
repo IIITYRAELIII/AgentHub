@@ -201,6 +201,7 @@ export function createInteractionShellPhase({
       streamContextMaintenance: provider.streamContextMaintenance,
       streamMaintenance: provider.streamMaintenance,
       usageSyncAuto: provider.usageSyncAuto,
+      usageSyncRemoteConfigStore: infrastructure.workLogUsageRemoteConfigStore,
     },
     provider: {
       agentProviders: provider.agentProviders,

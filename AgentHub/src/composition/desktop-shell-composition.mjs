@@ -95,6 +95,7 @@ export function createDesktopShellComposition({
     taskVoiceTranscriber,
     attachmentDirectory,
     usageSyncAuto,
+    usageSyncRemoteConfigStore,
   } = runtime;
   const {
     agentProviders,
@@ -537,6 +538,8 @@ export function createDesktopShellComposition({
       taskBoard,
       taskVoiceTranscriber,
       attachmentDirectory,
+      usageSyncAuto,
+      usageSyncRemoteConfigStore,
       workspaceCatalog: workspaceCatalogStore,
     },
     desktop: {

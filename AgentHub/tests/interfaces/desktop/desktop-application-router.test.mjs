@@ -14,7 +14,8 @@ function router(calls, { omit = [] } = {}) {
     "renameWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "renameStream", "moveStream",
     "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
-    "boardWorkspaceMove", "usageSync", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
+    "boardWorkspaceMove",
+    "usageSync", "usageSyncStatus", "usageSyncNow", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
   ].map((name) => [name, handler]));
   for (const name of omit) delete handlers[name];
   return createDesktopApplicationRouter({
@@ -211,6 +212,24 @@ test("Desktop application router moves a Workspace with a narrow folder command"
   ]]);
 });
 
+test("Desktop application router keeps usage sync on the local control surface", async () => {
+  const control = router([]);
+  const result = await control.handleDesktopControl({
+    action: "usage-sync-device-label",
+    params: { deviceLabel: "Tyrael" },
+    context: { source: "desktop-control" },
+  });
+  assert.equal(result.params.deviceLabel, "Tyrael");
+  await assert.rejects(
+    control.handleDesktopControl({
+      action: "usage-sync-status",
+      params: {},
+      context: { source: "telegram" },
+    }),
+    /только локальному Agent Hub/u,
+  );
+});
+
 test("Desktop application router forwards diagnostic events", async () => {
   const control = router([]);
   const result = await control.handleDesktopControl({
@@ -288,7 +307,8 @@ test("Desktop application router accepts a message beside a blocked mutation", a
     "trustedDevices", "createDevicePairing", "revokeDevice",
     "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
-    "boardWorkspaceMove", "usageSync", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
+    "boardWorkspaceMove",
+    "usageSync", "usageSyncStatus", "usageSyncNow", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
   ].map((name) => [name, async () => ({ accepted: true, name })]));
   handlers.restartServer = async () => blocked;
   const control = createDesktopApplicationRouter({
@@ -319,7 +339,8 @@ test("Desktop application router accepts a restart beside a blocked mutation", a
     "trustedDevices", "createDevicePairing", "revokeDevice",
     "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
-    "boardWorkspaceMove", "usageSync", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
+    "boardWorkspaceMove",
+    "usageSync", "usageSyncStatus", "usageSyncNow", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
   ].map((name) => [name, async () => ({ accepted: true, name })]));
   const control = createDesktopApplicationRouter({
     handlers,

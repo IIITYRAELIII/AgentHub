@@ -7026,6 +7026,10 @@ html[data-surface="mobile"]
   grid-template-columns: minmax(0, 1fr) clamp(17rem, 28vw, 22rem);
 }
 
+.stream-chat-columns[data-multi-stream] > .chat-pane[data-dialog-settings-open] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .chat-back {
   display: none;
 }
@@ -7307,16 +7311,33 @@ html[data-surface="mobile"]
   border-bottom: 1px solid var(--line);
   display: flex;
   flex: 0 0 auto;
+  gap: 0.6rem;
   min-height: 3rem;
   padding: 0.7rem 0.9rem;
 }
 
 .dialog-settings-head h2 {
   color: var(--text);
+  flex: 1 1 auto;
   font-family: var(--font-title);
   font-size: 0.95rem;
   font-weight: var(--display-weight);
   margin: 0;
+}
+
+.dialog-settings-close {
+  flex: 0 0 auto;
+}
+
+.stream-chat-columns[data-multi-stream] > .chat-pane[data-dialog-settings-open] .dialog-settings {
+  bottom: 0;
+  box-shadow: -1rem 0 1.8rem rgb(0 0 0 / 0.26);
+  max-width: min(22rem, 100%);
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: clamp(17rem, 28vw, 22rem);
+  z-index: 20;
 }
 
 .dialog-settings-body {

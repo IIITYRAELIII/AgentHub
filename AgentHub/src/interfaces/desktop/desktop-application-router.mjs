@@ -11,12 +11,14 @@ const MUTATION_ACTIONS = Object.freeze([
   "archive-stream", "update-stream-settings", "update-stream-rules", "move-stream",
   "board-task-create", "board-task-ingest", "board-task-update", "board-task-attachment-add", "board-task-status", "board-task-move", "board-task-complete", "board-task-remove",
   "board-task-retry-triage", "board-task-start", "board-column-move", "board-column-comment",
-  "board-workspace-move", "usage-sync", "usage-sync-invite", "usage-sync-enroll",
+  "board-workspace-move",
+  "usage-sync", "usage-sync-status", "usage-sync-now", "usage-sync-invite", "usage-sync-enroll",
   "usage-sync-device-label",
 ]);
 
 const CONCURRENT_MUTATION_ACTIONS = Object.freeze([
   "send-message", "cancel-run", "deferred-input", "restart-server",
+  "usage-sync-now", "usage-sync-invite", "usage-sync-enroll", "usage-sync-device-label",
 ]);
 
 /**
@@ -29,6 +31,11 @@ const LOCAL_ONLY_ACTIONS = Object.freeze([
   "command-trace-timeline",
   "command-trace-percentiles",
   "command-trace-stats",
+  "usage-sync-status",
+  "usage-sync-now",
+  "usage-sync-invite",
+  "usage-sync-enroll",
+  "usage-sync-device-label",
 ]);
 const DEVICE_PAIRING_SOURCES = new Set(["desktop-control", "local-mini-app", "trusted-device"]);
 
@@ -58,7 +65,7 @@ export function createDesktopApplicationRouter({
     "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
     "boardWorkspaceMove",
-    "usageSync", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
+    "usageSync", "usageSyncStatus", "usageSyncNow", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
   ]) requiredFunction(handlers[name], name);
 
   const dispatch = (type, params, context, target) => commands.dispatch(
@@ -144,6 +151,8 @@ export function createDesktopApplicationRouter({
       "board-column-comment": handlers.boardColumnComment,
       "board-workspace-move": handlers.boardWorkspaceMove,
       "usage-sync": handlers.usageSync,
+      "usage-sync-status": handlers.usageSyncStatus,
+      "usage-sync-now": handlers.usageSyncNow,
       "usage-sync-invite": handlers.usageSyncInvite,
       "usage-sync-enroll": handlers.usageSyncEnroll,
       "usage-sync-device-label": handlers.usageSyncDeviceLabel,
