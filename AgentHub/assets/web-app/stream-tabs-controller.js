@@ -641,6 +641,19 @@
     return { workspaceId, folderName: normalized };
   }
 
+  function renderWorkspaceContextMenuChildren(menu, children, currentFolder, createRemoveAction) {
+    const rendered = [...(children ?? [])];
+    if (normalizeWorkspaceFolderName(currentFolder)) {
+      if (typeof createRemoveAction !== "function") {
+        throw new TypeError("Workspace folder remove action factory is required");
+      }
+      const removeAction = createRemoveAction();
+      if (removeAction == null) throw new TypeError("Workspace folder remove action is required");
+      rendered.push(removeAction);
+    }
+    menu.replaceChildren(...rendered);
+  }
+
   function workspaceCreationSettings({
     workingDirectory = "",
     taskPrefix = "",
@@ -1586,6 +1599,7 @@
     workspaceFolderOpen,
     workspaceFolderNames,
     workspaceFolderMutation,
+    renderWorkspaceContextMenuChildren,
     workspaceFolderRenamePlan,
     workspaceCreationSettings,
     normalizeWorkspaceFolderName,

@@ -3565,7 +3565,7 @@ function renderWorkspaceContextMenu(menu, workspace) {
       text: `В папку «${name}»`,
       title: `Переместить Workspace в папку «${name}»`,
     }));
-  menu.replaceChildren(
+  window.AgentHubStreamTabs.renderWorkspaceContextMenuChildren(menu, [
     el("button", {
       type: "button",
       role: "menuitem",
@@ -3589,14 +3589,13 @@ function renderWorkspaceContextMenu(menu, workspace) {
       "data-workspace-menu-action": "folder-new",
       text: "Новая папка…",
     }),
-    currentFolder ? el("button", {
+  ], currentFolder, () => el("button", {
       type: "button",
       role: "menuitem",
       class: "stream-context-action",
       "data-workspace-menu-action": "folder-remove",
       text: "Убрать из папки",
-    }) : null,
-  );
+    }));
 }
 
 function openWorkspaceContextMenu(event, workspaceId) {

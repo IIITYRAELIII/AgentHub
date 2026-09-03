@@ -940,6 +940,61 @@ test("Workspace folder mutations carry only identity and folder while creation c
   );
 });
 
+test("Workspace context menu omits ungroup for an ungrouped Workspace without a null text node", async () => {
+  const { renderWorkspaceContextMenuChildren } = await streamTabsApi();
+  const menu = {
+    childNodes: [],
+    replaceChildren(...children) {
+      this.childNodes = children.map((child) => child?.nodeType
+        ? child
+        : { nodeType: 3, textContent: String(child) });
+    },
+  };
+  const newFolder = {
+    nodeType: 1,
+    textContent: "Новая папка…",
+    dataset: { workspaceMenuAction: "folder-new" },
+  };
+
+  renderWorkspaceContextMenuChildren(menu, [newFolder], null, () => ({
+    nodeType: 1,
+    textContent: "Убрать из папки",
+    dataset: { workspaceMenuAction: "folder-remove" },
+  }));
+
+  assert.deepEqual(menu.childNodes, [newFolder]);
+  assert.equal(menu.childNodes.some((node) => node.textContent === "null"), false);
+  assert.equal(menu.childNodes.some((node) => node.dataset?.workspaceMenuAction === "folder-remove"), false);
+});
+
+test("Workspace context menu renders the localized ungroup action for a grouped Workspace", async () => {
+  const { renderWorkspaceContextMenuChildren } = await streamTabsApi();
+  const menu = {
+    childNodes: [],
+    replaceChildren(...children) {
+      this.childNodes = children.map((child) => child?.nodeType
+        ? child
+        : { nodeType: 3, textContent: String(child) });
+    },
+  };
+  const newFolder = {
+    nodeType: 1,
+    textContent: "Новая папка…",
+    dataset: { workspaceMenuAction: "folder-new" },
+  };
+  const removeFolder = {
+    nodeType: 1,
+    textContent: "Убрать из папки",
+    dataset: { workspaceMenuAction: "folder-remove" },
+  };
+
+  renderWorkspaceContextMenuChildren(menu, [newFolder], "Клиенты", () => removeFolder);
+
+  assert.deepEqual(menu.childNodes, [newFolder, removeFolder]);
+  assert.equal(menu.childNodes.at(-1).textContent, "Убрать из папки");
+  assert.equal(menu.childNodes.at(-1).dataset.workspaceMenuAction, "folder-remove");
+});
+
 test("activity rail markup exposes separate active and recent sections", async () => {
   const [html, appSource, clientSource] = await Promise.all([
     readFile(new URL("../../assets/web-app/index.html", import.meta.url), "utf8"),
