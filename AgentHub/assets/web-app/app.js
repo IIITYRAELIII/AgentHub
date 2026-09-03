@@ -13754,9 +13754,9 @@ function updateJournalSummary(source) {
 }
 
 function currentWorkLogAccountPanel() {
-  return statisticsAccountPanelHost?.querySelector("[data-work-log-account-panel]")?.cloneNode(true)
-    ?? journal.querySelector(":scope > [data-work-log-account-panel]")?.cloneNode(true)
-    ?? null;
+  return JournalAccountPanel
+    .freshAccountPanelSource(journal, statisticsAccountPanelHost)
+    ?.cloneNode(true) ?? null;
 }
 
 let accountPanelRange = JournalAccountPanel.storedRange(localStorage);

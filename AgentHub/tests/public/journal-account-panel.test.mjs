@@ -188,3 +188,66 @@ test("period tile splits the amount from its unit for every usage unit", async (
   assert.deepEqual(split("₽1 234,5"), { amount: "₽1 234,5", unit: "" });
   assert.deepEqual(split(""), { amount: "", unit: "" });
 });
+
+/* Панель переносится узлом на Статистику, поэтому «свежесть» определяется тем,
+   в каком контейнере она сейчас лежит. Фейковые контейнеры отвечают на
+   querySelector и записывают порядок обращений, поэтому правило проверяется
+   поведением, без чтения исходника. */
+function panelHost(panel, { calls = [], name = "" } = {}) {
+  return {
+    calls,
+    querySelector(selector) {
+      calls.push(`${name}:${selector}`);
+      return panel;
+    },
+  };
+}
+
+test("a freshly projected panel wins over the one already mounted on Statistics", async () => {
+  const api = await accountPanelApi();
+  const fresh = { source: "journal" };
+  const mounted = { source: "statistics" };
+  const calls = [];
+
+  const selected = api.freshAccountPanelSource(
+    panelHost(fresh, { calls, name: "journal" }),
+    panelHost(mounted, { calls, name: "statistics" }),
+  );
+
+  assert.equal(selected, fresh);
+  assert.deepEqual(calls, [`journal::scope > ${api.PANEL_SELECTOR}`]);
+});
+
+test("the mounted panel is used only while the journal holds none", async () => {
+  const api = await accountPanelApi();
+  const mounted = { source: "statistics" };
+  const calls = [];
+
+  const selected = api.freshAccountPanelSource(
+    panelHost(null, { calls, name: "journal" }),
+    panelHost(mounted, { calls, name: "statistics" }),
+  );
+
+  assert.equal(selected, mounted);
+  assert.deepEqual(calls, [
+    `journal::scope > ${api.PANEL_SELECTOR}`,
+    `statistics:${api.PANEL_SELECTOR}`,
+  ]);
+});
+
+test("the journal panel is read as a direct child, so nested markup cannot shadow it", async () => {
+  const api = await accountPanelApi();
+  const nested = { source: "nested" };
+  const journalRoot = {
+    querySelector: (selector) => selector.startsWith(":scope >") ? null : nested,
+  };
+
+  assert.equal(api.freshAccountPanelSource(journalRoot, panelHost(null)), null);
+});
+
+test("no panel anywhere resolves to null instead of undefined", async () => {
+  const api = await accountPanelApi();
+
+  assert.equal(api.freshAccountPanelSource(panelHost(null), panelHost(null)), null);
+  assert.equal(api.freshAccountPanelSource(null, undefined), null);
+});

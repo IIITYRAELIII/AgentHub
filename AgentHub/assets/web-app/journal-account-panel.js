@@ -6,6 +6,7 @@
   const RANGE_STORAGE_KEY = "agent-hub:journal-account-range:v1";
   const DEVICES_STORAGE_KEY = "agent-hub:journal-account-devices:v1";
   const AMOUNT_PATTERN = /^(.*?)\s+([GMk]?(?:ПТЭ|cr))$/u;
+  const PANEL_SELECTOR = "[data-work-log-account-panel]";
 
   function availableRanges(available) {
     const list = [...(Array.isArray(available) ? available : RANGE_SEQUENCE)]
@@ -89,6 +90,18 @@
     return allAccountsExpanded(current, accountKeys) ? "Свернуть устройства" : "Показать устройства";
   }
 
+  /* Панель живёт в разметке журнала, но монтируется на страницу Статистики
+     переносом узла, поэтому между рендерами в журнале её нет. Если она там
+     всё-таки есть — это только что пришедшая проекция, и она новее уже
+     смонтированной. Обратный порядок опроса сохранял бы смонтированную копию и
+     терял обновление расхода после каждой синхронизации, поэтому сам порядок
+     живёт здесь, а не в месте вызова. */
+  function freshAccountPanelSource(journalRoot, mountedRoot) {
+    return journalRoot?.querySelector(`:scope > ${PANEL_SELECTOR}`)
+      ?? mountedRoot?.querySelector(PANEL_SELECTOR)
+      ?? null;
+  }
+
   /* Плитка периода показывает число крупно, а единицу — мелко, поэтому
      форматированный расход разбирается на два самостоятельных фрагмента.
      Валютные единицы идут префиксом и остаются одним числом. */
@@ -100,10 +113,12 @@
 
   window.AgentHubJournalAccountPanel = Object.freeze({
     DEVICES_STORAGE_KEY,
+    PANEL_SELECTOR,
     RANGE_SEQUENCE,
     RANGE_STORAGE_KEY,
     allAccountsExpanded,
     devicesToggleLabel,
+    freshAccountPanelSource,
     normalizeRange,
     persistExpandedAccounts,
     persistRange,
