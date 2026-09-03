@@ -110,7 +110,12 @@ test("durable steer persists its exact managed run target", async () => {
   });
 
   const result = await service.defer("steer", [], {
-    target: { provider: "codex", threadId: "thread-1", clientSource: "desktop" },
+    target: {
+      provider: "codex",
+      threadId: "thread-1",
+      modelId: "GPT-5.3-Codex-Spark",
+      clientSource: "desktop",
+    },
     clientUserMessageId: "client-steer-1",
     destination: "queued",
     conflictKind: "message-steer",
@@ -121,6 +126,7 @@ test("durable steer persists its exact managed run target", async () => {
 
   assert.equal(result.item.steerTargetRunId, "run-1");
   assert.equal(result.item.steerTargetTurnId, "turn-1");
+  assert.equal(result.item.modelId, "GPT-5.3-Codex-Spark");
 });
 
 test("failed durable message intake does not leave an executable ghost item", async () => {

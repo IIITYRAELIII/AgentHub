@@ -12,6 +12,7 @@ function fixture() {
     projectRoot: "C:\\repo",
     threadId: "thread-1",
     title: "Task",
+    model: "GPT-5.3-Codex-Spark",
   };
   const calls = [];
   const service = new DesktopTaskService({
@@ -71,6 +72,43 @@ test("Desktop task service resolves streamId before provider references", async 
   assert.equal(target.telegramDeliveryRequested, false);
   assert.equal(target.clientSource, "vscode-extension");
   assert.equal(target.taskTitle, "Agent HUB - Themes");
+  assert.equal(target.modelId, "GPT-5.3-Codex-Spark");
+});
+
+test("Desktop task service prefers the authoritative destination Stream model", async () => {
+  const { service } = fixture();
+  const entry = {
+    streamId: "stream-1",
+    workspaceName: "Agent HUB",
+    streamName: "Themes",
+    provider: "codex",
+    projectRoot: "C:\\repo",
+    threadId: "thread-1",
+    title: "Task",
+    model: "Stale Catalog Model",
+  };
+  service.catalog = () => [entry];
+  service.refreshCatalog = async () => [entry];
+  service.streamSettings = () => ({
+    provider: "codex",
+    model: "gpt-5.3-codex-spark",
+  });
+
+  const target = await service.resolveTarget({ streamId: "stream-1" });
+
+  assert.equal(target.modelId, "gpt-5.3-codex-spark");
+});
+
+test("Desktop task service ignores a Stream model owned by another provider", async () => {
+  const { service } = fixture();
+  service.streamSettings = () => ({
+    provider: "claude",
+    model: "claude-opus-5",
+  });
+
+  const target = await service.resolveTarget({ streamId: "stream-1" });
+
+  assert.equal(target.modelId, "GPT-5.3-Codex-Spark");
 });
 
 test("Desktop task service retargets a stale Stream reference to its current Thread", async () => {

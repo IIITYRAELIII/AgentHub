@@ -50,6 +50,7 @@ export class DesktopTaskService {
     searchMessage = () => null,
     threadsForStream = () => [],
     currentThread = () => null,
+    streamSettings = () => null,
     samePath,
     chatId,
     warn = console.warn,
@@ -65,6 +66,7 @@ export class DesktopTaskService {
     this.searchMessage = searchMessage;
     this.threadsForStream = threadsForStream;
     this.currentThread = currentThread;
+    this.streamSettings = streamSettings;
     this.samePath = samePath;
     this.chatId = chatId;
     this.warn = warn;
@@ -128,6 +130,14 @@ export class DesktopTaskService {
     if (binding?.detachedAtMs != null) {
       throw new Error("Это исторический Thread тестового контура. Сначала создай новый Thread в этом Stream");
     }
+    const settings = entry.streamId ? this.streamSettings(entry.streamId) : null;
+    const settingsProvider = String(settings?.provider ?? "").trim();
+    const settingsModelId = String(settings?.model ?? "").trim();
+    const catalogModelId = String(entry.model ?? "").trim();
+    const modelId = settingsModelId
+      && (!settingsProvider || settingsProvider === String(entry.provider ?? "").trim())
+      ? settingsModelId
+      : catalogModelId || null;
     const messageOrigin = normalizeInterstreamOrigin(context?.messageOrigin);
     return {
       streamId: entry.streamId ?? null,
@@ -136,7 +146,7 @@ export class DesktopTaskService {
       sessionCwd: entry.sessionCwd ?? null,
       threadId: entry.threadId,
       taskTitle: taskDisplayTitle(entry),
-      model: entry.model ?? null,
+      modelId,
       chatId: this.chatId(),
       telegramDeliveryRequested: false,
       clientSource: String(context?.source ?? "desktop").trim() || "desktop",

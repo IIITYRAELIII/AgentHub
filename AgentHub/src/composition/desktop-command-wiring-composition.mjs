@@ -1,6 +1,10 @@
 import { createDesktopCommandComposition } from "./desktop-command-composition.mjs";
 import { createStreamAgentSettingsService } from "../application/stream-agent-settings-service.mjs";
 
+export function destinationStreamSettings(workspaceCatalog, streamId) {
+  return workspaceCatalog?.stream?.(streamId)?.settings ?? null;
+}
+
 export function createWorkspaceActions(services) {
   return {
     renameWorkspace: (params) => services.workspaceMutation(
@@ -132,6 +136,7 @@ export function createDesktopCommandWiring({
       searchMessage: services.searchMessage,
       threadsForStream: services.threadsForStream,
       currentThread: services.currentThread,
+      streamSettings: (streamId) => destinationStreamSettings(services.workspaceCatalog, streamId),
       samePath: services.samePath,
       chatId: state.chatId,
       warn: services.warn,

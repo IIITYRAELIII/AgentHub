@@ -6,6 +6,9 @@ import { TaskRunRegistry } from "../../src/domain/task-runs.mjs";
 
 function harness({
   provider = "codex",
+  currentTarget = null,
+  codexSettings = null,
+  currentPreferences = null,
   beforeCompletion = null,
   completionAborted = null,
   afterCompletion = null,
@@ -15,14 +18,14 @@ function harness({
   const taskRuns = new TaskRunRegistry();
   const service = new ManagedRunLifecycleService({
     taskRuns,
-    currentTarget: () => ({
+    currentTarget: currentTarget ?? (() => ({
       provider, projectRoot: "D:/Work", streamId: "stream-1", threadId: "thread-1", taskTitle: "Task", chatId: 7,
-    }),
+    })),
     findProject: () => ({ name: "Work" }),
-    codexSettings: () => ({}),
-    currentPreferences: () => ({
+    codexSettings: codexSettings ?? (() => ({})),
+    currentPreferences: currentPreferences ?? (() => ({
       model: "gpt", defaultModel: "gpt", reasoningEffort: "high", defaultReasoningEffort: "high", collaborationMode: "default",
-    }),
+    })),
     normalizeCodexModel: (value) => String(value).toLowerCase(),
     modelLabel: (value) => value.toUpperCase(),
     claudeModelLabels: {}, reasoningLabels: { high: "High" },
@@ -72,6 +75,55 @@ test("managed run lifecycle canonicalizes a legacy Codex model label", async () 
 
   assert.equal(run.modelId, "gpt-5.6-sol");
   assert.equal(run.model, "GPT-5.6-SOL");
+});
+
+test("managed run lifecycle gives an explicit destination model precedence over saved and default models", async () => {
+  const { service } = harness({
+    currentTarget: () => ({
+      provider: "codex", projectRoot: "D:/Work", streamId: "stream-b", threadId: "thread-b", taskTitle: "B", chatId: 7,
+    }),
+    codexSettings: () => ({ model: "saved-terra" }),
+    currentPreferences: () => ({
+      model: "selected-b", defaultModel: "fake-codex", reasoningEffort: "high", defaultReasoningEffort: "high", collaborationMode: "default",
+    }),
+  });
+
+  const run = await service.begin("hello", {
+    provider: "codex",
+    projectRoot: "D:/Work",
+    streamId: "stream-a",
+    threadId: "thread-a",
+    taskTitle: "A",
+    modelId: "GPT-5.3-Codex-Spark",
+  });
+
+  assert.equal(run.modelId, "gpt-5.3-codex-spark");
+});
+
+test("managed run lifecycle preserves saved and selected-target model fallbacks", async () => {
+  const currentTarget = () => ({
+    provider: "codex", projectRoot: "D:/Work", streamId: "stream-b", threadId: "thread-b", taskTitle: "B", chatId: 7,
+  });
+  const preferences = () => ({
+    model: "selected-b", defaultModel: "fake-codex", reasoningEffort: "high", defaultReasoningEffort: "high", collaborationMode: "default",
+  });
+  const saved = harness({
+    currentTarget,
+    codexSettings: () => ({ model: "saved-terra" }),
+    currentPreferences: preferences,
+  });
+  const selected = harness({
+    currentTarget,
+    currentPreferences: preferences,
+  });
+
+  const savedRun = await saved.service.begin("saved", {
+    provider: "codex", projectRoot: "D:/Work", streamId: "stream-a", threadId: "thread-a", taskTitle: "A",
+  });
+  const selectedRun = await selected.service.begin("selected", currentTarget());
+
+  assert.equal(savedRun.modelId, "saved-terra");
+  assert.equal(selectedRun.modelId, "selected-b");
 });
 
 test("managed run lifecycle completes and removes the same run", async () => {
