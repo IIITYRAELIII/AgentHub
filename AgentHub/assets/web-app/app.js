@@ -2355,8 +2355,7 @@ function renderTaskWorkspaceFolder(folder) {
         class: "task-workspace-folder-summary",
         title: "Свернуть или раскрыть папку Workspace",
       }, [
-        el("span", { class: "task-workspace-folder-icon", "aria-hidden": "true", text: "▸" }),
-        el("span", { class: "task-workspace-folder-glyph", "aria-hidden": "true" }),
+        ...window.AgentHubStreamTabs.workspaceFolderSummaryIcons(document),
         el("span", { class: "task-workspace-folder-name", text: folder.name }),
         el("span", { class: "task-workspace-folder-count", text: String(items.length) }),
       ]),

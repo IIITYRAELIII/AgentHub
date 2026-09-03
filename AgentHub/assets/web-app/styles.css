@@ -5060,30 +5060,17 @@ html[data-surface="mobile"]
 
 .task-workspace-folder-icon {
   color: var(--text-faint);
-  font-size: 0.72rem;
+  height: 0.72rem;
   transform: rotate(0deg);
   transition: transform 0.14s ease;
+  width: 0.72rem;
 }
 
 .task-workspace-folder-glyph {
-  border: 1.5px solid currentColor;
-  border-radius: 0.18rem;
   color: var(--accent);
-  height: 0.66rem;
+  height: 0.88rem;
   opacity: 0.78;
-  position: relative;
   width: 0.88rem;
-}
-
-.task-workspace-folder-glyph::before {
-  background: currentColor;
-  border-radius: 0.12rem 0.12rem 0 0;
-  content: "";
-  height: 0.18rem;
-  left: 0.06rem;
-  position: absolute;
-  top: -0.25rem;
-  width: 0.4rem;
 }
 
 .task-workspace-folder-details[open] .task-workspace-folder-icon {

@@ -410,6 +410,7 @@ test("every production Phosphor icon creates a real namespaced SVG", async () =>
     "caret-up",
     "clock-counter-clockwise",
     "copy",
+    "folder",
     "pencil-simple",
     "plus",
     "push-pin-simple",
@@ -436,6 +437,41 @@ test("unknown Phosphor icons fail the registry contract", async () => {
     () => createPhosphorIcon(document, "missing-icon"),
     /unknown Phosphor icon: missing-icon/u,
   );
+});
+
+test("Workspace folder summary uses only namespaced Phosphor SVG icons", async () => {
+  const { workspaceFolderSummaryIcons } = await streamTabsApi();
+  const document = {
+    createElementNS: (namespaceURI, localName) => new FakeSvgNode(namespaceURI, localName),
+  };
+
+  const icons = workspaceFolderSummaryIcons(document);
+
+  assert.deepEqual(
+    Array.from(icons, (icon) => icon.attributes.get("data-phosphor-icon")),
+    ["caret-right", "folder"],
+  );
+  for (const icon of icons) {
+    assert.equal(icon.namespaceURI, "http://www.w3.org/2000/svg");
+    assert.equal(icon.localName, "svg");
+    assert.equal(icon.attributes.get("aria-hidden"), "true");
+    assert.ok(icon.attributes.get("class")?.startsWith("task-workspace-folder-"));
+    assert.equal(icon.children.length, 1);
+    assert.equal(icon.children[0].localName, "path");
+    assert.ok(icon.children[0].attributes.get("d"));
+  }
+});
+
+test("Workspace folder production path uses Phosphor icons without raw glyphs", async () => {
+  const [appSource, stylesSource] = await Promise.all([
+    readFile(new URL("../../assets/web-app/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../../assets/web-app/styles.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(appSource, /workspaceFolderSummaryIcons\(document\)/u);
+  assert.doesNotMatch(appSource, /task-workspace-folder-icon[^,\n]*text:\s*"▸"/u);
+  assert.doesNotMatch(stylesSource, /task-workspace-folder-glyph::before/u);
+  assert.doesNotMatch(stylesSource, /task-workspace-folder-glyph\s*\{[^}]*border:/u);
 });
 
 test("open Stream layout preserves physical column order when activity changes", async () => {
