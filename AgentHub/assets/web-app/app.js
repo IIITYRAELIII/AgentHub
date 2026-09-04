@@ -2229,6 +2229,8 @@ function shortModelLabel(value) {
   const source = String(value ?? "").trim();
   if (!source) return "";
   const normalized = source.toLowerCase();
+  if (normalized === "gpt-6-astra" || normalized === "gpt-6 astra") return "Astra";
+  if (normalized.includes("astra")) return source;
   const named = [
     ["terra", "Terra"],
     ["luna", "Luna"],

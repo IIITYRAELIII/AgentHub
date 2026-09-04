@@ -728,6 +728,76 @@ test("an active Stream preserves its answer-ready state", async () => {
   );
 });
 
+test("Astra uses its compact label only in Stream pills and the active Stream header", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  try {
+    const page = await browser.newPage();
+    await openStreamTabsDomFixture(page);
+    const result = await page.evaluate(() => {
+      window.AgentHub.setWorkspaces([{
+        id: "workspace-agent-hub",
+        name: "Agent HUB",
+        title: "Agent HUB",
+      }]);
+      const astraTask = {
+        id: "task-astra",
+        threadId: "thread-astra",
+        workspaceId: "workspace-agent-hub",
+        workspaceName: "Agent HUB",
+        streamId: "stream-astra",
+        streamName: "S4",
+        streamOrdinal: 4,
+        title: "Astra task",
+        provider: "codex",
+        agentLabel: "Codex",
+        modelLabel: "GPT-6 Astra",
+        status: "in_progress",
+        statusLabel: "В работе",
+        lastActivity: "2026-09-05T08:00:00.000Z",
+        unread: false,
+        running: true,
+        selected: true,
+      };
+      window.AgentHub.setTasks([astraTask, {
+        ...astraTask,
+        id: "task-custom-astra",
+        threadId: "thread-custom-astra",
+        streamId: "stream-custom-astra",
+        streamName: "S5",
+        streamOrdinal: 5,
+        modelLabel: "Custom Astra Preview",
+        selected: false,
+      }]);
+      return {
+        header: document.querySelector("[data-stream-header-model]")?.textContent,
+        headerTitle: document.querySelector("[data-stream-header-model]")?.title,
+        astraPill: document.querySelector(
+          '[data-activity-task-id="task-astra"] .task-model',
+        )?.textContent,
+        astraPillTitle: document.querySelector(
+          '[data-activity-task-id="task-astra"] .task-model',
+        )?.title,
+        customPill: document.querySelector(
+          '[data-activity-task-id="task-custom-astra"] .task-model',
+        )?.textContent,
+        customPillTitle: document.querySelector(
+          '[data-activity-task-id="task-custom-astra"] .task-model',
+        )?.title,
+      };
+    });
+
+    assert.equal(result.header, "Astra");
+    assert.equal(result.headerTitle, "GPT-6 Astra");
+    assert.equal(result.astraPill, "Astra");
+    assert.equal(result.astraPillTitle, "GPT-6 Astra");
+    assert.equal(result.customPill, "Custom Astra Preview");
+    assert.equal(result.customPillTitle, "Custom Astra Preview");
+  } finally {
+    await browser.close();
+  }
+});
+
 test("background status changes rerender visible top Stream tabs", async () => {
   const { chromium } = await import("playwright");
   const browser = await launchDomBrowser(chromium);
