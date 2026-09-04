@@ -317,8 +317,32 @@ function rememberCodexImagePaths(metadata, turnId, paths, type = "generated-path
   }
 }
 
-function rememberCodexGeneratedImages(metadata, turnId, entry) {
-  rememberCodexImagePaths(metadata, turnId, generatedImagePaths(entry));
+function rememberPendingGeneratedImageCall(metadata, turnId, entry) {
+  const payload = entry?.payload ?? {};
+  const payloadType = String(payload.type ?? "");
+  if (entry?.type !== "response_item"
+    || !payloadType.endsWith("_call")
+    || payloadType.endsWith("_call_output")) return;
+  const callId = String(payload.call_id ?? "").trim();
+  const tool = String(payload.name ?? "").trim().toLowerCase();
+  const input = String(payload.input ?? payload.arguments ?? "");
+  const imageGenerationCall = tool === "image_gen__imagegen"
+    || tool === "imagegen"
+    || /\btools\.image_gen__imagegen\s*\(/u.test(input);
+  if (!callId || !turnId || !imageGenerationCall) return;
+  metadata.pendingGeneratedImageCalls.set(callId, turnId);
+  while (metadata.pendingGeneratedImageCalls.size > 128) {
+    metadata.pendingGeneratedImageCalls.delete(
+      metadata.pendingGeneratedImageCalls.keys().next().value,
+    );
+  }
+}
+
+function generatedImageOwnerTurnId(metadata, explicitTurnId, entry) {
+  if (explicitTurnId) return explicitTurnId;
+  const callId = String(entry?.payload?.call_id ?? "").trim();
+  const callOwner = callId ? metadata.pendingGeneratedImageCalls.get(callId) : "";
+  return callOwner || "";
 }
 
 function rememberPendingViewImageCall(metadata, turnId, entry) {
@@ -465,24 +489,40 @@ function rememberCodexTraceEntry(metadata, turnId, entry) {
   }
 }
 
-function observeOversizedCodexLine(metadata, activeTurnIds, { head = "", tail = "" } = {}) {
+function observeOversizedCodexLine(metadata, { head = "", tail = "" } = {}) {
   const sample = `${head}\n${tail}`;
   if (/"type"\s*:\s*"image_generation_end"/u.test(sample)) {
     const pathMatch = /"saved_path"\s*:\s*"((?:\\.|[^"\\])*)"/u.exec(sample);
     const savedPath = decodedJsonString(pathMatch?.[1]);
     const turnMatch = /"turn_id"\s*:\s*"([^"\\]+)"/u.exec(sample);
-    const turnId = String(turnMatch?.[1] ?? "").trim()
-      || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
-    if (savedPath) rememberCodexImagePaths(metadata, turnId, [savedPath]);
+    const callId = decodedJsonString(
+      /"call_id"\s*:\s*"((?:\\.|[^"\\])*)"/u.exec(sample)?.[1],
+    );
+    const explicitTurnId = String(turnMatch?.[1] ?? "").trim();
+    const turnId = explicitTurnId
+      || (callId ? metadata.pendingGeneratedImageCalls.get(callId) : "");
+    if (savedPath && turnId) {
+      rememberCodexImagePaths(metadata, turnId, [savedPath]);
+      if (callId) metadata.pendingGeneratedImageCalls.delete(callId);
+    }
   }
   if (
     /"type"\s*:\s*"(?:custom_tool_call_output|customToolCallOutput|function_call_output|functionCallOutput)"/u.test(sample)
     && /Generated images are saved to/u.test(sample)
   ) {
-    const turnId = decodedJsonString(
+    const explicitTurnId = decodedJsonString(
       /"turn_id"\s*:\s*"((?:\\.|[^"\\])*)"/u.exec(sample)?.[1],
     );
-    rememberCodexImagePaths(metadata, turnId, generatedImagePathsFromJsonSample(sample));
+    const callId = decodedJsonString(
+      /"call_id"\s*:\s*"((?:\\.|[^"\\])*)"/u.exec(sample)?.[1],
+    );
+    const turnId = explicitTurnId
+      || (callId ? metadata.pendingGeneratedImageCalls.get(callId) : "");
+    const paths = generatedImagePathsFromJsonSample(sample);
+    if (turnId && paths.length) {
+      rememberCodexImagePaths(metadata, turnId, paths);
+      if (callId) metadata.pendingGeneratedImageCalls.delete(callId);
+    }
   }
   if (
     /"type"\s*:\s*"(?:custom_tool_call_output|customToolCallOutput|function_call_output|functionCallOutput)"/u.test(sample)
@@ -592,10 +632,20 @@ function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
     // VS Code has concurrent turns in one thread.
     rememberCodexTurnMessage(metadata, turnId, responseItemMessage);
   }
-  const generatedImageTurnId = turnId
-    || (entry?.type === "event_msg" && entry.payload?.type === "image_generation_end"
-      && activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
-  if (generatedImageTurnId) rememberCodexGeneratedImages(metadata, generatedImageTurnId, entry);
+  rememberPendingGeneratedImageCall(metadata, turnId, entry);
+  const generatedImageTurnId = generatedImageOwnerTurnId(
+    metadata,
+    turnId,
+    entry,
+  );
+  if (generatedImageTurnId) {
+    const paths = generatedImagePaths(entry);
+    if (paths.length) {
+      rememberCodexImagePaths(metadata, generatedImageTurnId, paths);
+      const callId = String(entry?.payload?.call_id ?? "").trim();
+      if (callId) metadata.pendingGeneratedImageCalls.delete(callId);
+    }
+  }
   if (turnId) rememberPendingViewImageCall(metadata, turnId, entry);
   completePendingViewImageCall(metadata, turnId, entry);
   const responseItemUserContent = entry?.type === "response_item"
@@ -809,6 +859,7 @@ export function parseCodexRolloutActivity(text, options = {}) {
     activityGroups: new Map(),
     activityGroupIndexes: new Map(),
     pendingViewImageCalls: new Map(),
+    pendingGeneratedImageCalls: new Map(),
     pendingUserMessages: [],
     unscopedLatestMessage: "",
     startedAtMsByTurnId: new Map(),
@@ -1012,6 +1063,9 @@ export async function readCodexRolloutActivityOnCurrentThread(
     ))),
     activityGroupIndexes: new Map(),
     pendingViewImageCalls: new Map(appendOnly ? cached.pendingViewImageCalls ?? [] : []),
+    pendingGeneratedImageCalls: new Map(
+      appendOnly ? cached.pendingGeneratedImageCalls ?? [] : [],
+    ),
     pendingUserMessages: appendOnly
       ? (cached.pendingUserMessages ?? []).map((message) => ({ ...message }))
       : [],
@@ -1050,7 +1104,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
         text = text.slice(newline + 1);
         if (discardUntilNewline) {
           appendOversizedTail(line);
-          observeOversizedCodexLine(metadata, activeTurnIds, oversizedLine ?? {});
+          observeOversizedCodexLine(metadata, oversizedLine ?? {});
           oversizedLine = null;
           discardUntilNewline = false;
           continue;
@@ -1073,7 +1127,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
     input.destroy();
   }
   if (discardUntilNewline && oversizedLine?.tail.trimEnd().endsWith("}")) {
-    observeOversizedCodexLine(metadata, activeTurnIds, oversizedLine);
+    observeOversizedCodexLine(metadata, oversizedLine);
     oversizedLine = null;
     discardUntilNewline = false;
   }
@@ -1111,6 +1165,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
     generatedImageSources: [...metadata.generatedImageSources],
     activityGroups: [...metadata.activityGroups],
     pendingViewImageCalls: [...metadata.pendingViewImageCalls],
+    pendingGeneratedImageCalls: [...metadata.pendingGeneratedImageCalls],
     pendingUserMessages: metadata.pendingUserMessages.map((message) => ({ ...message })),
     unscopedLatestMessage: metadata.unscopedLatestMessage,
     discardUntilNewline,

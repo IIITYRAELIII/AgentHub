@@ -174,6 +174,7 @@ export async function createProviderApplicationComposition({
     lastSeenTaskTurnIds: runtimeData.lastSeenTaskTurnIds,
     saveState: api.saveState,
     deliverTurnEndNotification: api.deliverTurnEndNotification,
+    repairTurnEndAttachments: api.repairTurnEndAttachments,
     defaultNotificationChatId,
     findProject,
     resolveTaskByProviderRef: ({ provider, providerTaskId }) => providerCatalog.taskCatalog.find((entry) => (

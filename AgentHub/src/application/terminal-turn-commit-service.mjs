@@ -18,6 +18,40 @@ function terminalKey(value) {
     .join("\0");
 }
 
+function responseAttachments(value) {
+  return Array.isArray(value) ? value.map((item) => structuredClone(item)) : [];
+}
+
+function attachmentKey(value) {
+  return String(value?.id ?? value?.path ?? value?.url ?? "").trim()
+    || JSON.stringify(value ?? null);
+}
+
+function sameAttachments(left, right) {
+  if (left.length !== right.length) return false;
+  return left.every((item, index) => (
+    attachmentKey(item) === attachmentKey(right[index])
+    && (item?.missing === true) === (right[index]?.missing === true)
+  ));
+}
+
+function generatedOutputAttachments(value) {
+  return value.filter((item) => /^codex-generated-/u.test(String(item?.id ?? "")));
+}
+
+function richerAttachments(current, candidate) {
+  if (!candidate.length) return current;
+  if (candidate.length > current.length) return candidate;
+  if (candidate.length < current.length) return current;
+  const sameIdentity = candidate.every((item, index) => (
+    attachmentKey(item) === attachmentKey(current[index])
+  ));
+  if (!sameIdentity) return current;
+  const currentMissing = current.filter((item) => item?.missing === true).length;
+  const candidateMissing = candidate.filter((item) => item?.missing === true).length;
+  return candidateMissing < currentMissing ? candidate : current;
+}
+
 function historySnapshot(run, completion) {
   const source = run ?? {};
   const responseAnnotationReferences = Array.isArray(completion.responseAnnotationReferences)
@@ -78,7 +112,11 @@ export class TerminalTurnCommitService {
     this.terminals = new Map();
   }
 
-  async commit(completion, { run = null, channelIntents = {} } = {}) {
+  async commit(completion, {
+    run = null,
+    channelIntents = {},
+    expectedTerminalRevision = null,
+  } = {}) {
     if (!completion?.provider || !completion?.threadId || !completion?.turnId) {
       throw new Error("terminal completion requires provider, threadId and turnId");
     }
@@ -104,16 +142,19 @@ export class TerminalTurnCommitService {
         turnId: completion.turnId,
         status: completion.status,
         finalAnswer,
-      usageIdentity: usageIdentity(completion),
-      lastMessage,
-      payload: {
-        completion: {
-          ...structuredClone(completion),
-          ...(String(run?.id ?? "").trim() ? { runId: String(run.id).trim() } : {}),
+        usageIdentity: usageIdentity(completion),
+        lastMessage,
+        payload: {
+          completion: {
+            ...structuredClone(completion),
+            ...(String(run?.id ?? "").trim() ? { runId: String(run.id).trim() } : {}),
+          },
+          history: historySnapshot(run, completion),
         },
-        history: historySnapshot(run, completion),
-      },
-      channels: channelIntents,
+        channels: channelIntents,
+        ...Number.isSafeInteger(expectedTerminalRevision)
+          ? { expectedTerminalRevision }
+          : {},
       });
     } catch (error) {
       trace?.finish({ outcome: "failed", metadata: { errorCode: error?.code ?? null } });
@@ -126,6 +167,91 @@ export class TerminalTurnCommitService {
     this.terminals.set(terminalKey(completion), result.terminal);
     result.commandReconciled = await this.#reconcileTerminal(result.terminal);
     return result;
+  }
+
+  async enrichResponseAttachments(identity, {
+    expectedCount = 1,
+    resolveAttachments,
+    maximumAttempts = 4,
+  } = {}) {
+    if (typeof resolveAttachments !== "function") {
+      throw new TypeError("terminal attachment resolver is required");
+    }
+    const targetCount = Math.max(1, Math.floor(Number(expectedCount) || 1));
+    let terminal = await this.get(identity);
+    if (!terminal) return { enriched: false, terminal: null, outbox: null };
+
+    const completionAttachments = responseAttachments(
+      terminal.payload?.completion?.responseAttachments,
+    );
+    const historyAttachments = responseAttachments(
+      terminal.payload?.history?.responseAttachments,
+    );
+    let recovered = richerAttachments(completionAttachments, historyAttachments);
+    let authoritativeRecovery = false;
+    if (recovered.length < targetCount) {
+      const resolved = responseAttachments(await resolveAttachments());
+      authoritativeRecovery = generatedOutputAttachments(resolved).length >= targetCount;
+      recovered = authoritativeRecovery ? resolved : richerAttachments(recovered, resolved);
+    } else if (generatedOutputAttachments(recovered).length < targetCount
+      || generatedOutputAttachments(recovered).length !== recovered.length) {
+      const resolved = responseAttachments(await resolveAttachments());
+      authoritativeRecovery = generatedOutputAttachments(resolved).length >= targetCount;
+      recovered = authoritativeRecovery ? resolved : richerAttachments(recovered, resolved);
+    }
+    if (!recovered.length) return { enriched: false, terminal, outbox: null };
+
+    const attempts = Math.max(1, Math.min(10, Math.floor(Number(maximumAttempts) || 4)));
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      terminal = attempt === 0 ? terminal : await this.get(identity);
+      if (!terminal) return { enriched: false, terminal: null, outbox: null };
+      const currentCompletion = terminal.payload?.completion ?? {};
+      const currentHistory = terminal.payload?.history ?? {};
+      const currentCompletionAttachments = responseAttachments(
+        currentCompletion.responseAttachments,
+      );
+      const currentHistoryAttachments = responseAttachments(
+        currentHistory.responseAttachments,
+      );
+      const currentBest = richerAttachments(
+        currentCompletionAttachments,
+        currentHistoryAttachments,
+      );
+      const currentGenerated = generatedOutputAttachments(currentBest);
+      const desired = authoritativeRecovery && (
+        currentGenerated.length < targetCount || currentGenerated.length !== currentBest.length
+      ) ? recovered : richerAttachments(currentBest, recovered);
+      if (sameAttachments(currentCompletionAttachments, desired)
+        && sameAttachments(currentHistoryAttachments, desired)) {
+        return { enriched: false, terminal, outbox: null };
+      }
+      const result = await this.store.commit({
+        provider: terminal.provider,
+        threadId: terminal.threadId,
+        turnId: terminal.turnId,
+        status: terminal.status,
+        finalAnswer: terminal.finalAnswer,
+        usageIdentity: terminal.usageIdentity,
+        lastMessage: terminal.lastMessage,
+        payload: {
+          ...structuredClone(terminal.payload),
+          completion: {
+            ...structuredClone(currentCompletion),
+            responseAttachments: desired,
+          },
+          history: {
+            ...structuredClone(currentHistory),
+            responseAttachments: desired,
+          },
+        },
+        expectedTerminalRevision: terminal.terminalRevision,
+      });
+      if (result.conflict) continue;
+      this.terminals.set(terminalKey(identity), result.terminal);
+      result.commandReconciled = await this.#reconcileTerminal(result.terminal);
+      return { ...result, enriched: result.created === true };
+    }
+    throw new Error(`terminal attachment enrichment did not settle for ${terminalKey(identity)}`);
   }
 
   async get(identity) {

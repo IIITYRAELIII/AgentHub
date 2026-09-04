@@ -91,16 +91,35 @@ function normalizedLiveScanResult(result) {
   const activeTurns = Array.isArray(result.resumeState?.turns)
     ? result.resumeState.turns
     : result.turns.filter((turn) => turn?.terminal !== true);
+  const attachmentCandidates = new Map((result.attachmentCandidates ?? []).flatMap((candidate) => {
+    const turnId = String(candidate?.turnId ?? "").trim();
+    const sources = (candidate?.generatedImageSources ?? []).filter((source) => (
+      source?.type === "generated-path" && String(source.value ?? "").trim()
+    ));
+    return turnId && sources.length ? [[turnId, sources]] : [];
+  }));
+  const terminalTurnIds = new Set(result.turns
+    .filter((turn) => turn?.terminal === true)
+    .map((turn) => String(turn.turnId)));
   return {
-    terminals: result.turns
+    terminals: [...result.turns
       .filter((turn) => turn?.terminal === true)
       .map((turn) => ({
         turnId: String(turn.turnId),
         status: terminalTurnStatus(turn.status) || "completed",
         completedAt: String(turn.completedAt ?? turn.lastActivityAt ?? ""),
         ...(turn.contextProbe === true ? { contextProbe: true } : {}),
+        ...(attachmentCandidates.has(String(turn.turnId)) ? {
+          generatedImageSources: attachmentCandidates.get(String(turn.turnId)),
+        } : {}),
         usageResult: turn,
-      })),
+      })), ...[...attachmentCandidates].flatMap(([turnId, generatedImageSources]) => (
+        terminalTurnIds.has(turnId) ? [] : [{
+          turnId,
+          attachmentRepairOnly: true,
+          generatedImageSources,
+        }]
+      ))],
     activeTurns: activeTurns.map((turn) => ({
       turnId: String(turn.turnId),
       startedAt: String(turn.startedAt ?? ""),
@@ -214,6 +233,7 @@ function restoredHistoricalSubagentBackfill(value) {
       offset,
       size: Number.isSafeInteger(size) && size >= 0 ? size : 0,
       terminalTurnIndex: Math.max(0, Number(item?.terminalTurnIndex) || 0),
+      attachmentCandidateIndex: Math.max(0, Number(item?.attachmentCandidateIndex) || 0),
       staleTurnIndex: Math.max(0, Number(item?.staleTurnIndex) || 0),
       resumeState: item?.resumeState ?? null,
       activeTurns: Array.isArray(item?.activeTurns) ? item.activeTurns.flatMap((turn) => {
@@ -478,6 +498,8 @@ export class CodexTerminalAudit {
         String(terminal?.turnId ?? ""),
         String(terminal?.status ?? ""),
         String(terminal?.completedAt ?? ""),
+        terminal?.attachmentRepairOnly === true,
+        (terminal?.generatedImageSources ?? []).map((source) => [source?.type, source?.value]),
       ])).update("\0");
     }
     return `${Math.max(0, Number(result?.nextOffset) || 0)}:${digest.digest("hex")}`;
@@ -756,6 +778,7 @@ export class CodexTerminalAudit {
           offset: 0,
           size: Number(info.size) || 0,
           terminalTurnIndex: 0,
+          attachmentCandidateIndex: 0,
           staleTurnIndex: 0,
           activeTurns: [],
         });
@@ -907,6 +930,25 @@ export class CodexTerminalAudit {
         handledTurns += 1;
         if (handledTurns >= this.historicalTurnsPerRun) return changed;
       }
+      const terminalTurnIds = new Set(terminalTurns.map((turn) => String(turn.turnId)));
+      const attachmentCandidates = (historical?.attachmentCandidates ?? []).filter((candidate) => (
+        !terminalTurnIds.has(String(candidate?.turnId ?? ""))
+      ));
+      while (item.attachmentCandidateIndex < attachmentCandidates.length) {
+        if (!this.shouldRunHistoricalBackfill()) return changed;
+        const candidate = attachmentCandidates[item.attachmentCandidateIndex];
+        const handled = await this.reconcile(item.thread, project, {
+          turnId: String(candidate.turnId),
+          attachmentRepairOnly: true,
+          historical: true,
+          generatedImageSources: candidate.generatedImageSources,
+        });
+        if (handled === false) return changed;
+        item.attachmentCandidateIndex += 1;
+        handledTurns += 1;
+        changed = true;
+        if (handledTurns >= this.historicalTurnsPerRun) return changed;
+      }
       if (historical.nextOffset < startOffset
         || (historical.nextOffset === startOffset && startOffset < info.size)) {
         return changed;
@@ -916,6 +958,7 @@ export class CodexTerminalAudit {
       item.size = Number(info.size) || item.size;
       item.resumeState = historical.resumeState ?? null;
       item.activeTurns = historical.resumeState?.turns ?? [];
+      item.attachmentCandidateIndex = 0;
       cached.startOffset = item.offset;
       cached.result = null;
       changed = true;

@@ -18,6 +18,20 @@ function sameHistoricalUsage(record, usageResult, contextProbe) {
     && (record.contextProbe === true) === contextProbe;
 }
 
+function exactGeneratedImageSources(...values) {
+  const result = [];
+  const seen = new Set();
+  for (const value of values) {
+    for (const source of Array.isArray(value) ? value : []) {
+      const path = String(source?.value ?? "").trim();
+      if (source?.type !== "generated-path" || !path || seen.has(path)) continue;
+      seen.add(path);
+      result.push({ type: "generated-path", value: path });
+    }
+  }
+  return result;
+}
+
 export class CodexTerminalReconciliationService {
   constructor({
     notifications,
@@ -36,6 +50,7 @@ export class CodexTerminalReconciliationService {
     rememberSeenTurn,
     saveState,
     deliverNotification,
+    repairTerminalAttachments = async () => ({ enriched: false }),
     resolveTerminalAttachments = async () => [],
     completedGraceMs = 10_000,
     now = Date.now,
@@ -57,6 +72,7 @@ export class CodexTerminalReconciliationService {
     this.rememberSeenTurn = rememberSeenTurn;
     this.saveState = saveState;
     this.deliverNotification = deliverNotification;
+    this.repairTerminalAttachments = repairTerminalAttachments;
     this.resolveTerminalAttachments = resolveTerminalAttachments;
     this.completedGraceMs = completedGraceMs;
     this.now = now;
@@ -80,15 +96,48 @@ export class CodexTerminalReconciliationService {
     const subagentThread = Boolean(String(thread?.parentThreadId ?? "").trim());
     const alreadyDelivered = this.notifications.hasDelivered(identity);
     const pendingCompletion = this.notifications.get(identity);
-    if (!subagentThread
+    if (terminal?.attachmentRepairOnly !== true && !alreadyDelivered && !subagentThread
       && pendingCompletion
       && pendingCompletion.status !== "unknown"
       && pendingCompletion.usageReported) return true;
     if (this.reconciling.has(key)) return false;
     this.reconciling.add(key);
     try {
+      if (terminal?.attachmentRepairOnly === true) {
+        const generatedImageSources = exactGeneratedImageSources(terminal.generatedImageSources);
+        if (!generatedImageSources.length) return true;
+        await this.repairTerminalAttachments(identity, {
+          expectedCount: generatedImageSources.length,
+          resolveAttachments: () => this.resolveTerminalAttachments({
+            threadId: identity.threadId,
+            rolloutPath: thread.path,
+            generatedImageSources,
+          }, identity.turnId),
+        });
+        return true;
+      }
       const usageResult = terminal?.usageResult
         ?? await this.readTurnUsage(thread.path, identity.turnId);
+      const generatedImageSources = exactGeneratedImageSources(
+        terminal?.generatedImageSources,
+        usageResult?.generatedImageSources,
+      );
+      const expectedImageCount = Math.max(
+        generatedImageSources.length,
+        Math.floor(Number(usageResult.imageGenerationCount) || 0),
+      );
+      if (alreadyDelivered && expectedImageCount > 0) {
+        await this.repairTerminalAttachments(identity, {
+          expectedCount: expectedImageCount,
+          resolveAttachments: () => this.resolveTerminalAttachments({
+            threadId: identity.threadId,
+            startedAt: usageResult.startedAt,
+            rolloutPath: thread.path,
+            expectedImageCount,
+            ...(generatedImageSources.length ? { generatedImageSources } : {}),
+          }, identity.turnId),
+        });
+      }
       const contextProbe = terminalContextProbe || isCodexContextProbeTurn(usageResult);
       if (terminal?.historical === true) {
         const existingJournalTurn = await this.workLogStore.getTurn(identity);
@@ -169,6 +218,7 @@ export class CodexTerminalReconciliationService {
         threadId: identity.threadId,
         startedAt: usageResult.startedAt,
         rolloutPath: thread.path,
+        ...(generatedImageSources.length ? { generatedImageSources } : {}),
       }, identity.turnId);
       const completion = this.notifications.recordCompletion({
         ...identity,

@@ -35,6 +35,64 @@ test("terminal audit uses local rollout discovery without Codex thread/list", as
   assert.deepEqual(scans, ["local-thread.jsonl"]);
 });
 
+test("completed rollout audit does not rescan and repairs only a newly appended exact image turn", async () => {
+  let size = 10;
+  const scans = [];
+  const reconciled = [];
+  const options = {
+    now: () => Date.parse("2026-08-16T10:00:00.000Z"),
+    listPage: async () => ({ data: [], nextCursor: null }),
+    discoverHistoricalThreads: async () => [thread(
+      "thread-image",
+      "2026-08-16T09:59:00.000Z",
+      "thread-image.jsonl",
+    )],
+    resolveProject: () => project,
+    statFile: async () => ({ size, mtimeMs: Date.parse("2026-08-16T09:59:00.000Z") }),
+    scanFile: async (_file, { startOffset }) => {
+      scans.push(startOffset);
+      return startOffset === 0 ? {
+        turns: [],
+        attachmentCandidates: [],
+        nextOffset: 10,
+        resumeState: { turns: [] },
+      } : {
+        turns: [],
+        attachmentCandidates: [{
+          turnId: "turn-image-origin",
+          generatedImageSources: [{ type: "generated-path", value: "C:/generated/new.png" }],
+        }],
+        nextOffset: size,
+        resumeState: { turns: [] },
+      };
+    },
+    reconcile: async (_thread, _project, terminal) => {
+      reconciled.push(terminal);
+      return true;
+    },
+  };
+  const initial = new CodexTerminalAudit(options);
+  await initial.run();
+  await initial.run();
+  assert.deepEqual(scans, [0]);
+
+  const reopened = new CodexTerminalAudit(options);
+  reopened.restore(initial.snapshot());
+  await reopened.run();
+  assert.deepEqual(scans, [0]);
+
+  size = 20;
+  await reopened.run();
+  await reopened.run();
+  assert.deepEqual(scans, [0, 10]);
+  assert.equal(reconciled.length, 1);
+  assert.equal(reconciled[0].turnId, "turn-image-origin");
+  assert.equal(reconciled[0].attachmentRepairOnly, true);
+  assert.deepEqual(reconciled[0].generatedImageSources, [
+    { type: "generated-path", value: "C:/generated/new.png" },
+  ]);
+});
+
 function thread(id, updatedAt, path = `${id}.jsonl`) {
   return {
     id,
