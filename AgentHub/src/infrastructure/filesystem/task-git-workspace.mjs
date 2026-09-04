@@ -524,10 +524,11 @@ export class TaskGitWorkspaceService {
     const existingBranch = await gitMaybe(["rev-parse", "--verify", `${branchRef}^{commit}`], { cwd: repoRoot });
     const existingBase = await gitMaybe(["rev-parse", "--verify", `${baseRef}^{commit}`], { cwd: repoRoot });
     const existingAdoption = await gitMaybe(["rev-parse", "--verify", `${adoptionRef}^{commit}`], { cwd: repoRoot });
-    if (existingBranch && existingBranch !== adoptedCommit) {
+    const pristinePreparedBranch = existingBranch === mainCommit && existingBase === mainCommit;
+    if (existingBranch && existingBranch !== adoptedCommit && !pristinePreparedBranch) {
       throw new Error(`Task branch ${branch} already points to another commit`);
     }
-    if (existingBase && existingBase !== adoptedParent) {
+    if (existingBase && existingBase !== adoptedParent && !pristinePreparedBranch) {
       throw new Error(`Task base ref for ${id} already points to another commit`);
     }
     if (existingAdoption && existingAdoption !== adoptedCommit) {
@@ -535,8 +536,27 @@ export class TaskGitWorkspaceService {
     }
     const updates = [];
     const zeroCommit = "0".repeat(40);
-    if (!existingBranch) updates.push(`update ${branchRef} ${adoptedCommit} ${zeroCommit}`);
-    if (!existingBase) updates.push(`update ${baseRef} ${adoptedParent} ${zeroCommit}`);
+    let branchRealignedInWorktree = false;
+    if (pristinePreparedBranch && existingBranch !== adoptedCommit) {
+      const taskWorktree = await worktreeForBranch(repoRoot, branch);
+      if (taskWorktree) {
+        if (!pathInside(path.join(this.taskWorktreesRoot, id), taskWorktree)) {
+          throw new Error(`Task branch ${branch} is checked out outside its managed worktree`);
+        }
+        const dirty = await runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
+          cwd: taskWorktree,
+        });
+        if (dirty) throw new Error(`Task branch ${branch} has uncommitted changes`);
+        await runGit(["reset", "--hard", adoptedCommit], { cwd: taskWorktree, timeoutMs: 120_000 });
+        branchRealignedInWorktree = true;
+      }
+    }
+    if (!branchRealignedInWorktree && existingBranch !== adoptedCommit) {
+      updates.push(`update ${branchRef} ${adoptedCommit} ${existingBranch || zeroCommit}`);
+    }
+    if (existingBase !== adoptedParent) {
+      updates.push(`update ${baseRef} ${adoptedParent} ${existingBase || zeroCommit}`);
+    }
     if (!existingAdoption) updates.push(`update ${adoptionRef} ${adoptedCommit} ${zeroCommit}`);
     if (updates.length) {
       await runGitWithInput(["update-ref", "--stdin"], `start\n${updates.join("\n")}\nprepare\ncommit\n`, {

@@ -138,8 +138,13 @@ test("legacy adoption records only an exact equivalent commit already in main", 
   await git(root, "add", "app.txt", "CHANGELOG.md");
   await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "integrated result");
   const mainResultCommit = await git(root, "rev-parse", "HEAD^{commit}");
+  await writeFile(path.join(root, "later.txt"), "later main work\n", "utf8");
+  await git(root, "add", "later.txt");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "later main work");
   const mainHeadBefore = await git(root, "rev-parse", "main^{commit}");
   const statusBefore = await git(root, "status", "--porcelain=v1", "--untracked-files=all");
+  const prepared = await service.prepare({ taskId, taskNumber: "HUB-98", projectRoot: root });
+  assert.equal(prepared.headCommit, mainHeadBefore);
 
   const adopted = await service.adoptLegacyResult({
     taskId,
@@ -154,6 +159,7 @@ test("legacy adoption records only an exact equivalent commit already in main", 
   assert.equal(adopted.resultCommit, mainResultCommit);
   assert.deepEqual(adopted.changedFiles.map((file) => file.path), ["app.txt"]);
   assert.equal(await git(root, "rev-parse", "HUB-98^{commit}"), mainResultCommit);
+  assert.equal(await git(prepared.projectRoot, "rev-parse", "HEAD^{commit}"), mainResultCommit);
   assert.equal(await git(root, "rev-parse", "main^{commit}"), mainHeadBefore);
   assert.equal(await git(root, "status", "--porcelain=v1", "--untracked-files=all"), statusBefore);
   const evidence = await service.releaseEvidence({
