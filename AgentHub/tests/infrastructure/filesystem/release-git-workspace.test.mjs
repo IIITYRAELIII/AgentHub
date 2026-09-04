@@ -11,6 +11,7 @@ import {
   assertReleaseCloneForPublication,
   ReleaseGitWorkspaceService,
 } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { canonicalPath } from "../../../src/infrastructure/filesystem/config.mjs";
 import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
 import {
   resolveTestContourSource,
@@ -47,7 +48,18 @@ async function fixture(context) {
   await writeFile(path.join(primary, "AgentHub", "package.json"), "{}\n", "utf8");
   const baseCommit = await commit(primary, "main");
   await git(primary, "push", "-u", "origin", "main");
-  return { root, origin, primary, dataDir, baseCommit, service: new ReleaseGitWorkspaceService({ dataDir }) };
+  const canonicalRoot = canonicalPath(root);
+  const canonicalOrigin = canonicalPath(origin);
+  const canonicalPrimary = canonicalPath(primary);
+  const canonicalDataDir = canonicalPath(dataDir);
+  return {
+    root: canonicalRoot,
+    origin: canonicalOrigin,
+    primary: canonicalPrimary,
+    dataDir: canonicalDataDir,
+    baseCommit,
+    service: new ReleaseGitWorkspaceService({ dataDir: canonicalDataDir }),
+  };
 }
 
 async function taskResult({ root, primary }, context, {

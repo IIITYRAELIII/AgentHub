@@ -275,6 +275,16 @@ export class TaskBoardService {
     return task;
   }
 
+  adoptLegacyGitReference(payload = {}) {
+    requiredMethod(this.store, "adoptLegacyGitReference");
+    const task = this.store.adoptLegacyGitReference(payload);
+    this.#event("task.git-reference.adopted", task, {
+      projectRoot: payload.projectRoot,
+      evidenceTurnId: payload.evidenceTurnId,
+    });
+    return task;
+  }
+
   releaseTasks(workspaceId) {
     return this.store.releaseTasks(workspaceId);
   }
