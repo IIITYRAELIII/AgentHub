@@ -495,6 +495,7 @@ test("Codex rollout activity preserves response annotations before formatting th
     JSON.stringify({
       type: "response_item",
       payload: {
+        id: "annotation-client",
         type: "message",
         role: "user",
         content: [{ type: "input_text", text: prompt }],
@@ -1342,38 +1343,35 @@ test("an unscoped Hub message is not duplicated when its provisional turn is con
   assert.deepEqual(result.userMessages.one?.map((message) => message.text), ["Проведи аудит"]);
 });
 
-test("response_item and event_msg whitespace variants remain one user message", () => {
+test("distinct provider items with equal user text remain distinct messages", () => {
   const result = parseCodexRolloutActivity([
     JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "one" } }),
     JSON.stringify({
       type: "response_item",
       payload: {
+        id: "provider-user-one",
         type: "message",
         role: "user",
-        content: [
-          { type: "input_text", text: "Первая строка" },
-          { type: "input_text", text: "Вторая строка" },
-        ],
+        content: [{ type: "input_text", text: "Одинаковый текст" }],
         internal_chat_message_metadata_passthrough: { turn_id: "one" },
       },
     }),
     JSON.stringify({
-      type: "event_msg",
+      type: "response_item",
       payload: {
-        type: "user_message",
-        client_id: "client-one",
-        turn_id: "one",
-        message: "Первая строка\n\n\nВторая строка",
+        id: "provider-user-two",
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "Одинаковый текст" }],
+        internal_chat_message_metadata_passthrough: { turn_id: "one" },
       },
     }),
   ].join("\n"));
 
-  assert.deepEqual(result.userMessages.one, [{
-    itemId: "client-one",
-    clientUserMessageId: "client-one",
-    role: "user",
-    text: "Первая строка\n\n\nВторая строка",
-  }]);
+  assert.deepEqual(result.userMessages.one, [
+    { itemId: "provider-user-one", role: "user", text: "Одинаковый текст" },
+    { itemId: "provider-user-two", role: "user", text: "Одинаковый текст" },
+  ]);
 });
 
 test("rollout response_item restores exact interstream command identity from its envelope", () => {
@@ -1395,6 +1393,7 @@ test("rollout response_item restores exact interstream command identity from its
     JSON.stringify({
       type: "response_item",
       payload: {
+        id: "provider-interstream-projection",
         type: "message",
         role: "user",
         content: [{ type: "input_text", text: message }],
