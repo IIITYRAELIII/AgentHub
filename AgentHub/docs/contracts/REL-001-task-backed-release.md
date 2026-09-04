@@ -220,8 +220,11 @@ already contained in local `main`. Adoption requires an unchanged Task revision,
 no existing Git references, terminal evidence that names both the Task and the
 reported commit, matching single-parent non-`CHANGELOG.md` patch IDs and changed
 path operations, and an adopted commit that is an ancestor of local `main`.
-The operation creates only the deterministic Task branch, base ref and legacy
-adoption marker ref; release evidence for that exact marker excludes every
+The operation creates the deterministic Task branch, base ref and legacy
+adoption marker ref. If an earlier status attempt already prepared that branch
+at current local `main`, adoption may realign only its clean Agent Hub-managed
+worktree and matching base ref to the verified result; any dirty, external or
+otherwise divergent branch fails closed. Release evidence for the exact marker excludes every
 `CHANGELOG.md` because release history is consolidated by Architect. It never
 creates a synthetic commit or moves the registered primary checkout. The Task
 stores the adopted immutable result and an append-only audit row identifying the
