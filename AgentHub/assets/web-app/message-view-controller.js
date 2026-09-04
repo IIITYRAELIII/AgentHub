@@ -230,10 +230,19 @@
   }
 
   function deferredUserMessagePreview(message) {
-    const text = String(message?.text ?? "");
-    if (message?.role !== "user"
-      || text.length < DEFERRED_USER_MESSAGE_THRESHOLD
-      || (Array.isArray(message?.responseAnnotations) && message.responseAnnotations.length)) return null;
+    if (message?.role !== "user") return null;
+    const annotations = Array.isArray(message?.responseAnnotations) ? message.responseAnnotations : [];
+    const text = annotations.length
+      ? [
+          ...annotations.flatMap((item, index) => [
+            `Цитата ${index + 1}`,
+            String(item?.text ?? "").trim(),
+            String(item?.annotation ?? "").trim(),
+          ]),
+          String(message?.responseAnnotationRequest ?? message?.text ?? "").trim(),
+        ].filter(Boolean).join("\n")
+      : String(message?.text ?? "");
+    if (text.length < DEFERRED_USER_MESSAGE_THRESHOLD) return null;
     const head = text.slice(0, DEFERRED_USER_MESSAGE_PREVIEW_CHARS);
     const newline = head.lastIndexOf("\n");
     const space = head.lastIndexOf(" ");
