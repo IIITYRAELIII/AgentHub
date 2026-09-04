@@ -5,8 +5,11 @@
   "order": 30,
   "styles": "theme.css",
   "backgrounds": [
-    { "id": "pulsar", "name": "Мёртвая звезда", "asset": "pulsar-dead-star.png", "preload": true },
-    { "id": "pulsar-twins", "name": "Двойной маяк", "asset": "pulsar-beams.jpg" },
-    { "id": "pulsar-beam", "name": "Луч", "asset": "pulsar-beam.jpg" }
+    { "id": "pulsar", "name": "Полярное сияние", "asset": "pulsar-aurora.png", "preload": true },
+    { "id": "pulsar-abyss", "name": "Биолюминесцентная бездна", "asset": "pulsar-abyss.png" },
+    { "id": "pulsar-field", "name": "Электромагнитное поле", "asset": "pulsar-field.png" },
+    { "id": "pulsar-ice", "name": "Обсидиановый лёд", "asset": "pulsar-ice.png" },
+    { "id": "pulsar-ferrofluid", "name": "Ферромагнитная жидкость", "asset": "pulsar-ferrofluid.png" },
+    { "id": "pulsar-neutron-star", "name": "Нейтронная звезда", "asset": "pulsar-neutron-star.png" }
   ]
 }

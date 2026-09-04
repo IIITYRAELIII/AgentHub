@@ -243,9 +243,9 @@ a:hover {
 /* ================================================================ шапка === */
 
 .app-header {
-  backdrop-filter: blur(18px) saturate(150%);
-  -webkit-backdrop-filter: blur(18px) saturate(150%);
-  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter: var(--shell-header-backdrop-filter, blur(18px) saturate(150%));
+  -webkit-backdrop-filter: var(--shell-header-backdrop-filter, blur(18px) saturate(150%));
+  background: var(--shell-header-background, color-mix(in srgb, var(--bg) 82%, transparent));
   border-bottom: 1px solid var(--line);
   /* Положение верхней оболочки принадлежит Hub, а не теме: декоративный CSS
      может менять материал панели, но не её высоту или привязку к краю. */
@@ -6241,8 +6241,8 @@ html[data-surface="mobile"]
    разрешает темам выбирать только объявленные ниже радиусы и зазоры токенами. */
 @media (min-width: 860px) {
   html:not([data-surface="mobile"]) .app-header {
-    backdrop-filter: blur(18px) saturate(150%) !important;
-    -webkit-backdrop-filter: blur(18px) saturate(150%) !important;
+    backdrop-filter: var(--shell-header-backdrop-filter, blur(18px) saturate(150%)) !important;
+    -webkit-backdrop-filter: var(--shell-header-backdrop-filter, blur(18px) saturate(150%)) !important;
     background: var(--shell-header-background, color-mix(in srgb, var(--bg) 82%, transparent)) !important;
     border: 0 !important;
     border-bottom: var(--shell-header-border, 1px solid var(--line)) !important;
