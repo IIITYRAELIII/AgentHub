@@ -863,10 +863,26 @@
         <span>Статус</span>
         <select data-task-card-status aria-label="Статус задачи"></select>
       </label>
+      <section class="task-card-checklist" aria-label="Чек-лист задачи">
+        <header>
+          <strong>Чек-лист</strong>
+          <output data-task-checklist-progress>0 из 0</output>
+        </header>
+        <form data-task-checklist-add>
+          <input type="text" maxlength="1000" placeholder="Новый пункт" aria-label="Новый пункт чек-листа" required>
+          <button type="submit" class="board-task-primary">Добавить</button>
+        </form>
+        <ol data-task-checklist-items></ol>
+      </section>
+      <section class="task-card-checklist-parent" data-task-checklist-parent hidden>
+        <header><strong>Родительская Task</strong></header>
+        <p data-task-checklist-parent-item></p>
+        <div data-task-checklist-parent-card></div>
+      </section>
       <section class="task-card-release-details" aria-label="Исполнение и изменения">
         <div class="task-card-detail-row">
           <span>Исполнитель</span>
-          <strong data-task-card-executor>Не назначен</strong>
+          <button type="button" class="task-card-executor" data-task-card-executor disabled>Не назначен</button>
         </div>
         <div class="task-card-changed-files" data-task-card-changed-files>
           <span>Изменённые файлы</span>

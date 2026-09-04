@@ -8947,6 +8947,23 @@ const AgentHub = {
   openAttachmentViewer,
   showAttachmentViewer,
   closeAttachmentViewer,
+  openStream(workspaceId, streamId) {
+    const normalizedWorkspaceId = String(workspaceId ?? "").trim();
+    const normalizedStreamId = String(streamId ?? "").trim();
+    const streams = workspaceStreams(state.tasks.filter((task) => (
+      workspaceKey(task) === normalizedWorkspaceId
+    )));
+    const stream = streams.find((candidate) => candidate.id === normalizedStreamId);
+    const target = representativeStreamTask(stream);
+    if (!target) {
+      showToast("Stream недоступен");
+      return false;
+    }
+    state.openStreamsByWorkspace.set(normalizedWorkspaceId, [normalizedStreamId]);
+    state.configuredOpenStreamWorkspaces.add(normalizedWorkspaceId);
+    selectTaskFromUi(target.id);
+    return true;
+  },
   showSelectedTask() {
     setView("chat");
     setPane("chat");

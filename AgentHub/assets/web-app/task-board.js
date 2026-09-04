@@ -361,6 +361,14 @@
     });
   }
 
+  function taskChecklistProgress(task) {
+    const checklist = Array.isArray(task?.checklist) ? task.checklist : [];
+    return {
+      completed: checklist.filter((item) => item?.completed === true).length,
+      total: checklist.length,
+    };
+  }
+
   function changedFileOperationLabel(operation) {
     return ({ added: "Добавлен", modified: "Изменён", deleted: "Удалён" })[operation] ?? operation;
   }
@@ -704,6 +712,7 @@
     taskPresentationUpdate,
     taskSummaryItems,
     taskWorkLogEntries,
+    taskChecklistProgress,
     syncTaskStatusControl,
     taskWorkflowPresentation,
     streamAvailability,
@@ -741,6 +750,14 @@
   const taskCardWorkLog = document.querySelector("[data-task-card-work-log]");
   const taskCardWorkLogEntries = document.querySelector("[data-task-card-work-log-entries]");
   const taskCardStatus = document.querySelector("[data-task-card-status]");
+  const taskChecklistProgressOutput = document.querySelector("[data-task-checklist-progress]");
+  const taskChecklistAddForm = document.querySelector("[data-task-checklist-add]");
+  const taskChecklistAddInput = taskChecklistAddForm?.querySelector("input");
+  const taskChecklistAddButton = taskChecklistAddForm?.querySelector("button[type='submit']");
+  const taskChecklistItems = document.querySelector("[data-task-checklist-items]");
+  const taskChecklistParent = document.querySelector("[data-task-checklist-parent]");
+  const taskChecklistParentItem = document.querySelector("[data-task-checklist-parent-item]");
+  const taskChecklistParentCard = document.querySelector("[data-task-checklist-parent-card]");
   const taskCardOriginal = document.querySelector("[data-task-card-original]");
   const taskCardOriginalToggle = document.querySelector("[data-task-card-original-toggle]");
   const taskCardOriginalText = document.querySelector("[data-task-card-original-text]");
@@ -809,6 +826,8 @@
     savingStatusTaskId: null,
     attachingTaskId: null,
     removingTaskId: null,
+    pendingChecklistActions: new Map(),
+    editingChecklistItemId: null,
     snapshotInitialized: false,
   };
   const taskDeleteDialog = createDeleteDialog({
@@ -1020,6 +1039,12 @@
     return `board-task:${taskId}:${suffix}`;
   }
 
+  function checklistRequestId(taskId) {
+    const suffix = window.crypto?.randomUUID?.()
+      ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    return `task-checklist:${taskId}:${suffix}`;
+  }
+
   function openStart(task) {
     const workspace = workspaceById(task.workspaceId);
     if (!workspace) return;
@@ -1090,9 +1115,171 @@
     state.openTaskId = null;
     state.editingTaskId = null;
     state.editDirty = false;
+    state.editingChecklistItemId = null;
     setTaskCardOriginalExpanded(false);
     taskCardModal?.close?.();
     taskCardModal?.removeAttribute("open");
+  }
+
+  function openTaskExecutor(task, event = null) {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    const presentation = taskExecutorPresentation(task, state.workspaces);
+    if (!presentation.stream) return false;
+    closeTaskCard();
+    window.AgentHub?.openStream?.(presentation.workspace.id, presentation.stream.id);
+    return true;
+  }
+
+  function emitChecklist(task, operation, payload = {}) {
+    if (state.pendingChecklistActions.has(task.id)) return;
+    const requestId = checklistRequestId(task.id);
+    state.pendingChecklistActions.set(task.id, {
+      taskId: task.id,
+      itemId: String(payload.itemId ?? ""),
+      operation,
+      requestId,
+    });
+    renderOpenTaskCard();
+    emit("checklist", {
+      id: task.id,
+      operation,
+      expectedRevision: task.revision,
+      requestId,
+      ...payload,
+    });
+  }
+
+  function checklistAction(label, title, onclick, className = "board-task-quiet") {
+    return node("button", { type: "button", class: className, text: label, title, onclick });
+  }
+
+  function checklistLinkSelect(task, item) {
+    const select = node("select", {
+      class: "task-checklist-link-select",
+      "aria-label": item.linkedTaskId ? "Заменить связанную Task" : "Связать с Task",
+      onchange: (event) => {
+        const linkedTaskId = String(event.currentTarget.value ?? "");
+        if (!linkedTaskId || linkedTaskId === item.linkedTaskId) return;
+        emitChecklist(task, "link", { itemId: item.id, linkedTaskId });
+      },
+    });
+    select.append(node("option", {
+      value: "",
+      text: item.linkedTaskId ? "Заменить Task…" : "Связать Task…",
+    }));
+    for (const candidate of state.tasks.filter((value) => (
+      value.id !== task.id && (value.workspaceId ?? null) === (task.workspaceId ?? null)
+    ))) {
+      select.append(node("option", {
+        value: candidate.id,
+        text: `${candidate.taskNumber || "TASK"} · ${candidate.title || candidate.text}`,
+      }));
+    }
+    select.disabled = state.pendingChecklistActions.has(task.id);
+    return select;
+  }
+
+  function checklistItemEditor(task, item) {
+    const input = node("input", {
+      type: "text",
+      maxlength: "1000",
+      value: item.text,
+      "aria-label": "Текст пункта чек-листа",
+    });
+    input.value = item.text;
+    const form = node("form", {
+      class: "task-checklist-edit",
+      onsubmit: (event) => {
+        event.preventDefault();
+        const text = input.value.trim();
+        if (!text) return;
+        state.editingChecklistItemId = null;
+        emitChecklist(task, "edit", { itemId: item.id, text });
+      },
+    }, [
+      input,
+      checklistAction("Сохранить", "Сохранить пункт", () => form.requestSubmit(), "board-task-primary"),
+      checklistAction("Отмена", "Отменить редактирование", () => {
+        state.editingChecklistItemId = null;
+        renderOpenTaskCard();
+      }),
+    ]);
+    window.requestAnimationFrame(() => input.focus());
+    return form;
+  }
+
+  function renderTaskChecklist(task) {
+    if (!taskChecklistItems || !taskChecklistProgressOutput) return;
+    const checklist = Array.isArray(task.checklist) ? task.checklist : [];
+    const progress = taskChecklistProgress(task);
+    taskChecklistProgressOutput.textContent = `${progress.completed} из ${progress.total}`;
+    taskChecklistItems.replaceChildren(...checklist.map((item, index) => {
+      const busy = state.pendingChecklistActions.has(task.id);
+      const linkedTask = item.linkedTaskId
+        ? state.tasks.find((candidate) => candidate.id === item.linkedTaskId) ?? item.linkedTask
+        : null;
+      const checkbox = node("input", {
+        type: "checkbox",
+        "aria-label": `Выполнено: ${item.text}`,
+        onchange: (event) => emitChecklist(task, "toggle", {
+          itemId: item.id,
+          completed: event.currentTarget.checked,
+        }),
+      });
+      checkbox.checked = item.completed === true;
+      checkbox.disabled = busy;
+      const content = state.editingChecklistItemId === item.id
+        ? checklistItemEditor(task, item)
+        : linkedTask
+          ? taskCard(linkedTask, { compact: true, linked: true })
+          : node("span", { class: "task-checklist-text", text: item.text });
+      const next = checklist[index + 1];
+      const afterNext = checklist[index + 2];
+      const actions = node("div", { class: "task-checklist-actions" }, [
+        ...(index > 0 ? [checklistAction("↑", "Переместить выше", () => emitChecklist(task, "move", {
+          itemId: item.id,
+          beforeItemId: checklist[index - 1].id,
+        }))] : []),
+        ...(next ? [checklistAction("↓", "Переместить ниже", () => emitChecklist(task, "move", {
+          itemId: item.id,
+          beforeItemId: afterNext?.id ?? null,
+        }))] : []),
+        checklistAction("Изменить", "Редактировать текст пункта", () => {
+          state.editingChecklistItemId = item.id;
+          renderOpenTaskCard();
+        }),
+        checklistLinkSelect(task, item),
+        ...(item.linkedTaskId ? [checklistAction("Отвязать", "Оставить Task без удаления", () => (
+          emitChecklist(task, "unlink", { itemId: item.id })
+        ))] : [checklistAction("Вынести", "Создать отдельную Task", () => (
+          emitChecklist(task, "extract", { itemId: item.id })
+        ))]),
+        checklistAction("Удалить", "Удалить пункт", () => emitChecklist(task, "remove", {
+          itemId: item.id,
+        }), "board-task-remove"),
+      ]);
+      for (const control of actions.querySelectorAll?.("button, select") ?? []) control.disabled = busy;
+      return node("li", {
+        class: `task-checklist-item${item.completed ? " is-completed" : ""}${linkedTask ? " is-linked" : ""}`,
+        "data-checklist-item-id": item.id,
+      }, [checkbox, node("div", { class: "task-checklist-body" }, [content, actions])]);
+    }));
+  }
+
+  function renderTaskChecklistParent(task) {
+    if (!taskChecklistParent || !taskChecklistParentItem || !taskChecklistParentCard) return;
+    const relationship = task.checklistParent;
+    const parent = relationship?.task
+      ? state.tasks.find((candidate) => candidate.id === relationship.task.id) ?? relationship.task
+      : null;
+    taskChecklistParent.hidden = !parent;
+    taskChecklistParentItem.textContent = parent
+      ? `Пункт: ${String(relationship.text ?? "").trim() || relationship.itemId}`
+      : "";
+    taskChecklistParentCard.replaceChildren(...(parent
+      ? [taskCard(parent, { compact: true, linked: true })]
+      : []));
   }
 
   function setTaskCardOriginalExpanded(expanded) {
@@ -1110,9 +1297,15 @@
     const saving = state.savingTaskId === taskId;
     const savingStatus = state.savingStatusTaskId === taskId;
     const attaching = state.attachingTaskId === taskId;
+    const savingChecklist = state.pendingChecklistActions.has(taskId);
     if (taskCardTitle) taskCardTitle.disabled = saving;
     if (taskCardDescription) taskCardDescription.disabled = saving;
     if (taskCardStatus) taskCardStatus.disabled = savingStatus;
+    if (taskChecklistAddInput) taskChecklistAddInput.disabled = savingChecklist;
+    if (taskChecklistAddButton) {
+      taskChecklistAddButton.disabled = savingChecklist;
+      taskChecklistAddButton.setAttribute("aria-busy", String(savingChecklist));
+    }
     if (taskCardSaveButton) {
       taskCardSaveButton.disabled = saving;
       taskCardSaveButton.setAttribute("aria-busy", String(saving));
@@ -1191,7 +1384,14 @@
     const attachments = Array.isArray(task.attachments) ? task.attachments : [];
     taskCardAttachments.hidden = attachments.length === 0;
     taskCardAttachments.replaceChildren(...(attachments.length ? [attachmentStrip(attachments)] : []));
-    if (taskCardExecutor) taskCardExecutor.textContent = taskExecutorPresentation(task, state.workspaces).label;
+    if (taskCardExecutor) {
+      const executor = taskExecutorPresentation(task, state.workspaces);
+      taskCardExecutor.textContent = executor.label;
+      taskCardExecutor.disabled = !executor.stream;
+      taskCardExecutor.title = executor.stream ? `Открыть Stream ${executor.label}` : "Stream не назначен или недоступен";
+    }
+    renderTaskChecklist(task);
+    renderTaskChecklistParent(task);
     const changedFileGroups = taskChangedFileGroups(task);
     if (taskCardChangedFiles && taskCardChangedFileGroups) {
       taskCardChangedFiles.hidden = false;
@@ -1282,10 +1482,10 @@
     scheduleTaskCardEditorSizing();
   }
 
-  function taskCard(task, { compact = false } = {}) {
+  function taskCard(task, { compact = false, linked = false } = {}) {
     const completed = task.status === "done";
     const movable = !compact && !completed;
-    const attachable = true;
+    const attachable = !linked;
     const card = node("article", {
       class: `board-task-card${task.status === "started" ? " is-started" : ""}${completed ? " is-completed" : ""}${compact ? " is-compact" : ""}`,
       draggable: attachable ? "true" : null,
@@ -1294,16 +1494,19 @@
       "aria-label": `Открыть задачу ${task.title || task.text}`,
       "data-board-task-id": task.id,
       "data-board-task-movable": movable ? "true" : null,
-      onclick: () => openTaskCard(task),
+      onclick: (event) => {
+        event?.stopPropagation?.();
+        openTaskCard(state.tasks.find((candidate) => candidate.id === task.id) ?? task);
+      },
       onkeydown: (event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
         openTaskCard(task);
       },
-      ondragstart: (event) => {
+      ondragstart: attachable ? (event) => {
         TaskReferences.beginDrag(event.dataTransfer, task);
-      },
-      ondragend: () => TaskReferences.endDrag(),
+      } : null,
+      ondragend: attachable ? () => TaskReferences.endDrag() : null,
     });
     if (movable) {
       card.addEventListener("dragover", (event) => {
@@ -1331,6 +1534,7 @@
       state.workspaces,
       state.statusLanguage,
     );
+    const linkedExecutor = linked ? taskExecutorPresentation(task, state.workspaces) : null;
     card.append(node("div", { class: "board-task-summary" }, [
       node("span", {
         class: `board-task-number${numberSummary.placeholder ? " is-placeholder" : ""}`,
@@ -1338,11 +1542,20 @@
         title: numberSummary.title || null,
         "aria-hidden": numberSummary.placeholder ? "true" : null,
       }),
-      node("span", {
-        class: "board-task-executor",
-        text: executorSummary.text,
-        title: executorSummary.title,
-      }),
+      linked && String(task.streamId ?? "").trim()
+        ? node("button", {
+          type: "button",
+          class: "board-task-executor is-link",
+          text: linkedExecutor?.stream ? executorSummary.text : "Stream недоступен",
+          title: linkedExecutor?.stream ? `Открыть ${executorSummary.title}` : "Stream недоступен",
+          disabled: !linkedExecutor?.stream,
+          onclick: linkedExecutor?.stream ? (event) => openTaskExecutor(task, event) : null,
+        })
+        : node("span", {
+          class: "board-task-executor",
+          text: executorSummary.text,
+          title: executorSummary.title,
+        }),
       node("span", {
         class: "board-task-status",
         "data-workflow-status": statusSummary.status,
@@ -1583,6 +1796,17 @@
     renderTaskCardSaving(task.id);
     emit("status", { id: task.id, status: taskCardStatus.value });
   });
+  taskCardExecutor?.addEventListener("click", (event) => {
+    const task = state.tasks.find((item) => item.id === state.openTaskId);
+    if (task) openTaskExecutor(task, event);
+  });
+  taskChecklistAddForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const task = state.tasks.find((item) => item.id === state.openTaskId);
+    const text = taskChecklistAddInput?.value.trim();
+    if (!task || !text) return;
+    emitChecklist(task, "add", { text });
+  });
   taskCardAttachmentAdd?.addEventListener("click", () => taskCardAttachmentInput?.click());
   taskCardAttachmentInput?.addEventListener("change", () => {
     void readTaskAttachmentFiles(taskCardAttachmentInput.files);
@@ -1676,7 +1900,7 @@
       if (changes.panelChanged) renderWorkspacePanel();
       if (changes.openTaskChanged) renderOpenTaskCard();
     },
-    finishAction({ type, id, succeeded } = {}) {
+    finishAction({ type, id, succeeded, requestId = null, operation = null, itemId = null } = {}) {
       if (type === "update" && state.savingTaskId === id) {
         state.savingTaskId = null;
         if (succeeded) {
@@ -1700,6 +1924,20 @@
       if (type === "attachment-add" && state.attachingTaskId === id) {
         state.attachingTaskId = null;
         renderOpenTaskCard();
+      }
+      if (type === "checklist") {
+        const pending = state.pendingChecklistActions.get(id);
+        if (
+          !pending
+          || pending.requestId !== String(requestId ?? "")
+          || pending.operation !== String(operation ?? "")
+          || pending.itemId !== String(itemId ?? "")
+        ) return;
+        state.pendingChecklistActions.delete(id);
+        if (succeeded && pending.operation === "add" && state.openTaskId === id && taskChecklistAddInput) {
+          taskChecklistAddInput.value = "";
+        }
+        if (state.openTaskId === id) renderOpenTaskCard();
       }
     },
   });

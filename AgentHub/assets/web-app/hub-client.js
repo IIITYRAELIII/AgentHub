@@ -3093,6 +3093,7 @@ document.addEventListener("agenthub:board-action", (event) => {
     const actions = {
       create: "board-task-create",
       update: "board-task-update",
+      checklist: "board-task-checklist",
       status: "board-task-status",
       move: "board-task-move",
       complete: "board-task-complete",
@@ -3126,6 +3127,9 @@ document.addEventListener("agenthub:board-action", (event) => {
       type: detail.type,
       id: detail.id,
       succeeded,
+      requestId: detail.requestId,
+      operation: detail.operation,
+      itemId: detail.itemId,
     });
   });
 });

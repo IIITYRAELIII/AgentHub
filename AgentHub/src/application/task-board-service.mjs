@@ -18,6 +18,7 @@ function withPinnedLast(order, workspaceId) {
 
 export class TaskBoardService {
   #triageTail = Promise.resolve();
+  #checklistEventRecovery = Promise.resolve();
 
   constructor({
     store,
@@ -42,6 +43,11 @@ export class TaskBoardService {
       : 0.82;
     this.logger = logger;
     this.recordEvent = typeof recordEvent === "function" ? recordEvent : null;
+    this.#checklistEventRecovery = Promise.resolve()
+      .then(() => this.#deliverChecklistEvents())
+      .catch((error) => {
+        this.logger.error(`Cannot recover Task checklist events: ${error.message}`);
+      });
   }
 
   close() {
@@ -173,6 +179,39 @@ export class TaskBoardService {
     const task = this.store.updatePresentation(id, { title, description, taskNumber });
     this.#event("task.updated", task);
     return task;
+  }
+
+  async #deliverChecklistEvents() {
+    if (!this.recordEvent || typeof this.store.deliverChecklistEvents !== "function") {
+      return { delivered: 0, diagnostics: [] };
+    }
+    const result = await this.store.deliverChecklistEvents((event) => this.recordEvent(event));
+    for (const diagnostic of result.diagnostics ?? []) {
+      this.logger.error(`Quarantined Task checklist event ${diagnostic.eventId}: ${diagnostic.reason}`);
+    }
+    return result;
+  }
+
+  recoverChecklistEvents() {
+    return this.#deliverChecklistEvents();
+  }
+
+  async updateChecklist(payload = {}) {
+    requiredMethod(this.store, "updateChecklist");
+    await this.#checklistEventRecovery;
+    const parent = this.task(payload.id);
+    const workspace = parent.workspaceId ? this.workspaceCatalog.workspace(parent.workspaceId) : null;
+    const result = await this.store.updateChecklist({
+      ...payload,
+      taskPrefix: workspaceTaskPrefix(workspace?.settings),
+    });
+    await this.#deliverChecklistEvents();
+    return result;
+  }
+
+  checklistRequestResult(payload = {}) {
+    requiredMethod(this.store, "checklistRequestResult");
+    return this.store.checklistRequestResult(payload);
   }
 
   reassignWorkspace(sourceWorkspaceId, targetWorkspaceId) {

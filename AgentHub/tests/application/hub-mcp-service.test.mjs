@@ -89,6 +89,8 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
   const taskEvidenceCalls = [];
   const legacyAdoptionCalls = [];
   const taskClaimCalls = [];
+  const checklistCalls = [];
+  const checklistResults = new Map();
   workspaceCatalog.beginMcpOperation = (operation) => {
     const existing = operations.get(operation.requestId);
     if (existing) {
@@ -121,6 +123,24 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     },
     move: ({ id, bucket, workspaceId = null }) => Object.assign(tasks.get(id), { bucket, workspaceId }),
     update: ({ id, title, description }) => Object.assign(tasks.get(id), { title, description }),
+    updateChecklist: async ({ id, operation, text, completed, itemId, requestId }) => {
+      checklistCalls.push({ id, operation, text, completed, itemId, requestId });
+      const task = tasks.get(id);
+      const checklist = [...(task.checklist ?? [])];
+      if (operation === "add") checklist.push({ id: "item-1", text, completed: false, linkedTaskId: null });
+      if (operation === "toggle") {
+        const item = checklist.find((candidate) => candidate.id === itemId);
+        if (item) item.completed = completed;
+      }
+      Object.assign(task, { checklist, revision: Number(task.revision ?? 1) + 1 });
+      const result = { task, itemId: itemId ?? "item-1", createdTask: null, replayed: false };
+      checklistResults.set(requestId, result);
+      return result;
+    },
+    checklistRequestResult: ({ requestId }) => {
+      const result = checklistResults.get(requestId);
+      return result ? { ...result, replayed: true } : null;
+    },
     markStarted: ({ id, workspaceId, streamId }) => Object.assign(tasks.get(id), {
       status: "started", workflowStatus: "in_progress", workspaceId, streamId,
     }),
@@ -294,6 +314,7 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     taskEvidenceCalls,
     legacyAdoptionCalls,
     taskClaimCalls,
+    checklistCalls,
     taskGitPrepareCalls,
     taskLaunchCalls,
     releaseCalls,
@@ -374,6 +395,46 @@ test("HubMcpService lists and changes Dashboard Tasks across Workspaces", async 
     title: "Updated from another Workspace",
   });
   assert.equal(updated.title, "Updated from another Workspace");
+});
+
+test("HubMcpService validates checklist input and reconciles an exact lost acknowledgement", async (context) => {
+  const {
+    service, token, workspaceCatalog, operations, checklistCalls,
+  } = await fixture(context);
+  const originalComplete = workspaceCatalog.completeMcpOperation;
+  let loseAcknowledgement = true;
+  workspaceCatalog.completeMcpOperation = (requestId, result) => {
+    if (requestId === "checklist-lost-ack" && loseAcknowledgement) {
+      loseAcknowledgement = false;
+      throw new Error("lost outer acknowledgement");
+    }
+    originalComplete(requestId, result);
+  };
+  const input = {
+    context_token: token,
+    request_id: "checklist-lost-ack",
+    task_id: "task-current",
+    expected_task_revision: 1,
+    operation: "add",
+    text: "Проверить миграцию",
+  };
+
+  await assert.rejects(() => service.call("hub_task_checklist_update", input), /lost outer acknowledgement/u);
+  assert.equal(operations.get(input.request_id).status, "pending");
+  const replay = await service.call("hub_task_checklist_update", input);
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.task.checklist[0].text, "Проверить миграцию");
+  assert.equal(checklistCalls.length, 1);
+  assert.equal(operations.get(input.request_id).status, "succeeded");
+
+  await assert.rejects(() => service.call("hub_task_checklist_update", {
+    ...input,
+    request_id: "checklist-invalid-toggle",
+    operation: "toggle",
+    item_id: "item-1",
+    text: undefined,
+  }), /explicit boolean completed/u);
+  assert.equal(checklistCalls.length, 1);
 });
 
 test("HubMcpService supports the first Stream turn before provider Thread assignment", async (context) => {

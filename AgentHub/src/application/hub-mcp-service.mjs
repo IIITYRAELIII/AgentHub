@@ -21,7 +21,7 @@ const MAX_REGISTERED_CONTEXT_CAPABILITIES = 1_000;
 const STREAM_HISTORY_CURSOR_VERSION = 1;
 const DEFAULT_HISTORY_ACTIVITY_LIMIT = 40;
 const MUTATING_TOOLS = new Set([
-  "hub_task_create", "hub_task_update", "hub_task_move", "hub_task_start", "hub_task_reassign", "hub_task_claim", "hub_task_status_update", "hub_task_legacy_git_adopt", "hub_task_complete", "hub_task_delete",
+  "hub_task_create", "hub_task_update", "hub_task_checklist_update", "hub_task_move", "hub_task_start", "hub_task_reassign", "hub_task_claim", "hub_task_status_update", "hub_task_legacy_git_adopt", "hub_task_complete", "hub_task_delete",
   "hub_task_attachment_add", "hub_workspace_rules_update", "hub_stream_rules_update",
   "hub_stream_message_send",
   "hub_release_preflight", "hub_release_complete",
@@ -355,6 +355,8 @@ function compactTask(task) {
     startedAt: task.startedAt,
     completedAt: task.completedAt,
     revision: task.revision,
+    checklist: task.checklist ?? [],
+    checklistParent: task.checklistParent ?? null,
     workLog: task.workLog ?? [],
     gitReferences: task.gitReferences ?? [],
     gitAdoptions: task.gitAdoptions ?? [],
@@ -407,8 +409,8 @@ export class HubMcpService {
       "stream", "activeThread", "workspaceEvents",
     ]) requiredMethod(workspaceCatalog, name);
     for (const name of [
-      "snapshot", "task", "create", "move", "update", "markStarted", "complete", "addAttachment",
-      "claim", "requestWorkflowStatus", "releaseTasks",
+      "snapshot", "task", "create", "move", "update", "updateChecklist", "markStarted", "complete", "addAttachment",
+      "checklistRequestResult", "claim", "requestWorkflowStatus", "releaseTasks",
       "adoptLegacyGitReference",
     ]) {
       requiredMethod(taskBoard, name);
@@ -510,6 +512,19 @@ export class HubMcpService {
         title: { type: "string" },
         description: { type: "string" },
       }, ["task_id"]),
+      tool("hub_task_checklist_update", "Atomically change one checklist item with Task revision CAS. Extract creates an unassigned New Task in the same Workspace.", {
+        task_id: { type: "string" },
+        expected_task_revision: { type: "integer", minimum: 1 },
+        operation: {
+          type: "string",
+          enum: ["add", "edit", "remove", "toggle", "move", "link", "unlink", "extract"],
+        },
+        item_id: { type: "string" },
+        text: { type: "string" },
+        completed: { type: "boolean" },
+        before_item_id: { type: "string" },
+        linked_task_id: { type: "string" },
+      }, ["task_id", "expected_task_revision", "operation"]),
       tool("hub_task_move", "Move or reorder any Dashboard task, optionally into any existing Workspace.", {
         task_id: { type: "string" },
         destination: { type: "string", enum: ["workspace", "backlog", "notes"] },
@@ -670,6 +685,8 @@ export class HubMcpService {
         return this.#createTask(context, args);
       case "hub_task_update":
         return this.#updateTask(context, args);
+      case "hub_task_checklist_update":
+        return this.#updateTaskChecklist(context, args);
       case "hub_task_move":
         return this.#moveTask(context, args);
       case "hub_task_start":
@@ -887,7 +904,7 @@ export class HubMcpService {
 
   #taskById(taskId) {
     const id = requiredText(taskId, "task id", 300);
-    const task = this.taskBoard.snapshot().find((candidate) => candidate.id === id);
+    const task = this.taskBoard.task(id);
     if (!task) throw new Error("task not found");
     return task;
   }
@@ -923,6 +940,71 @@ export class HubMcpService {
       title: nextTitle,
       description: nextDescription,
     }));
+  }
+
+  async #updateTaskChecklist(context, {
+    task_id: taskId,
+    expected_task_revision: expectedRevision,
+    operation,
+    item_id: itemId = null,
+    text = null,
+    completed = null,
+    before_item_id: beforeItemId = null,
+    linked_task_id: linkedTaskId = null,
+    request_id: requestId,
+  } = {}) {
+    const payload = this.#taskChecklistPayload(context, {
+      taskId, expectedRevision, operation, itemId, text, completed, beforeItemId, linkedTaskId, requestId,
+    });
+    return this.#taskChecklistResult(await this.taskBoard.updateChecklist(payload));
+  }
+
+  #taskChecklistPayload(context, {
+    taskId, expectedRevision, operation, itemId, text, completed, beforeItemId, linkedTaskId, requestId,
+  }) {
+    const current = this.#task(context, taskId);
+    const normalizedOperation = requiredText(operation, "checklist operation", 30);
+    if (normalizedOperation === "toggle" && typeof completed !== "boolean") {
+      throw new Error("toggle checklist operation requires explicit boolean completed");
+    }
+    return {
+      id: current.id,
+      operation: normalizedOperation,
+      itemId: optionalText(itemId, 300),
+      text: optionalText(text, 1_000),
+      completed: typeof completed === "boolean" ? completed : null,
+      beforeItemId: optionalText(beforeItemId, 300),
+      linkedTaskId: optionalText(linkedTaskId, 300),
+      expectedRevision,
+      requestId,
+    };
+  }
+
+  #taskChecklistResult(result) {
+    return {
+      task: compactTask(result.task),
+      itemId: result.itemId,
+      createdTask: result.createdTask ? compactTask(result.createdTask) : null,
+      replayed: result.replayed,
+    };
+  }
+
+  async #reconcileTaskChecklist(context, args) {
+    const payload = this.#taskChecklistPayload(context, {
+      taskId: args.task_id,
+      expectedRevision: args.expected_task_revision,
+      operation: args.operation,
+      itemId: args.item_id ?? null,
+      text: args.text ?? null,
+      completed: args.completed,
+      beforeItemId: args.before_item_id ?? null,
+      linkedTaskId: args.linked_task_id ?? null,
+      requestId: args.request_id,
+    });
+    const result = this.taskBoard.checklistRequestResult(payload);
+    if (!result) return null;
+    await this.taskBoard.recoverChecklistEvents?.();
+    return this.#taskChecklistResult(result);
   }
 
   #moveTask(context, {
@@ -1539,23 +1621,60 @@ export class HubMcpService {
     });
     if (started.status === "succeeded") return started.result;
     if (started.status === "failed") throw new Error(started.error || "previous MCP operation failed");
+    if (toolName === "hub_task_checklist_update") {
+      try {
+        this.#taskChecklistPayload(context, {
+          taskId: args.task_id,
+          expectedRevision: args.expected_task_revision,
+          operation: args.operation,
+          itemId: args.item_id ?? null,
+          text: args.text ?? null,
+          completed: args.completed,
+          beforeItemId: args.before_item_id ?? null,
+          linkedTaskId: args.linked_task_id ?? null,
+          requestId: args.request_id,
+        });
+      } catch (error) {
+        this.workspaceCatalog.failMcpOperation(requestId, error);
+        throw error;
+      }
+    }
     const inFlight = this.#pendingMutations.get(requestId);
     if (inFlight) return inFlight;
-    if (started.replayed && !["hub_task_start", "hub_task_reassign"].includes(toolName)) {
+    if (started.replayed && ![
+      "hub_task_start", "hub_task_reassign", "hub_task_checklist_update",
+    ].includes(toolName)) {
       throw new Error("MCP operation with this request_id is still pending");
     }
     const pending = (async () => {
       try {
-        const result = await operation();
-        this.workspaceCatalog.completeMcpOperation(requestId, result);
-        return result;
-      } catch (error) {
-        if (["hub_task_start", "hub_task_reassign"].includes(toolName)
-          && this.#hasPreparedTaskStart(context, args, requestId)) {
+        if (started.replayed && toolName === "hub_task_checklist_update") {
+          const reconciled = await this.#reconcileTaskChecklist(context, args);
+          if (reconciled) {
+            this.workspaceCatalog.completeMcpOperation(requestId, reconciled);
+            return reconciled;
+          }
+        }
+        let result;
+        try {
+          result = await operation();
+        } catch (error) {
+          if (toolName === "hub_task_checklist_update") {
+            const reconciled = await this.#reconcileTaskChecklist(context, args);
+            if (reconciled) {
+              this.workspaceCatalog.completeMcpOperation(requestId, reconciled);
+              return reconciled;
+            }
+          }
+          if (["hub_task_start", "hub_task_reassign"].includes(toolName)
+            && this.#hasPreparedTaskStart(context, args, requestId)) {
+            throw error;
+          }
+          this.workspaceCatalog.failMcpOperation(requestId, error);
           throw error;
         }
-        this.workspaceCatalog.failMcpOperation(requestId, error);
-        throw error;
+        this.workspaceCatalog.completeMcpOperation(requestId, result);
+        return result;
       } finally {
         this.#pendingMutations.delete(requestId);
       }

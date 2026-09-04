@@ -67,6 +67,8 @@ test("hub_task_start carries the audited source Stream into message intake", asy
     create: methodStub(task),
     move: methodStub(task),
     update: methodStub(task),
+    updateChecklist: methodStub({ task, createdTask: null, itemId: null, replayed: false }),
+    checklistRequestResult: () => null,
     markStarted: methodStub(task),
     complete: methodStub(task),
     addAttachment: methodStub(task),

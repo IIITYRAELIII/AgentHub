@@ -34,6 +34,7 @@ function fixture({ activeThread = null, sourceDetails = undefined, voiceTranscri
         return { id: "board-1", rawText: value.text };
       },
       update: (value) => calls.push(["update", value]),
+      updateChecklist: async (value) => calls.push(["checklist", value]),
       addAttachment: (value) => calls.push(["add-attachment", value]),
       setWorkflowStatus: (value) => calls.push(["status", value]),
       move: (value) => calls.push(["move", value]),
@@ -235,6 +236,20 @@ test("dashboard saves edited Task fields", async () => {
     id: "board-1", title: "Новый заголовок", description: "Описание",
   }]);
   assert.deepEqual(calls[1], ["snapshot", { refresh: true }]);
+});
+
+test("dashboard checklist mutation waits for durable completion before snapshot", async () => {
+  const { controller, calls } = fixture();
+  const result = await controller.checklist({
+    id: "board-1", operation: "add", text: "Проверить", expectedRevision: 1, requestId: "check-1",
+  });
+  assert.deepEqual(calls, [
+    ["checklist", {
+      id: "board-1", operation: "add", text: "Проверить", expectedRevision: 1, requestId: "check-1",
+    }],
+    ["snapshot", { refresh: true }],
+  ]);
+  assert.deepEqual(result, { boardTasks: [] });
 });
 
 test("dashboard changes a Task workflow status manually", async () => {

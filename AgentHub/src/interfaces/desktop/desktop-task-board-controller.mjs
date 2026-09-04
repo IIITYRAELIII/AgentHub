@@ -20,7 +20,7 @@ export class DesktopTaskBoardController {
   }
 
   async #mutate(operation) {
-    operation();
+    await operation();
     return this.snapshot({ refresh: true });
   }
 
@@ -110,6 +110,10 @@ export class DesktopTaskBoardController {
 
   update(params) {
     return this.#mutate(() => this.taskBoard.update(params));
+  }
+
+  checklist(params) {
+    return this.#mutate(() => this.taskBoard.updateChecklist(params));
   }
 
   async addAttachments(params) {
