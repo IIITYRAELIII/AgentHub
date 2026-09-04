@@ -97,6 +97,11 @@ test("core-only components need neither Telegram credentials nor Web App", async
       maxFilesPerPass: 8,
     });
     assert.equal(config.codexSandboxMode, "workspace-write");
+    assert.deepEqual(config.codexModels.slice(0, 3), [
+      { value: "gpt-5.5", label: "GPT-5.5" },
+      { value: "gpt-6-astra", label: "GPT-6 Astra" },
+      { value: "gpt-5.6-sol", label: "GPT-5.6-Sol" },
+    ]);
     assert.equal(config.whisperModel, "large-v3-turbo");
     assert.equal(config.whisperDevice, "cuda");
     assert.deepEqual(config.contextAutomation, {
