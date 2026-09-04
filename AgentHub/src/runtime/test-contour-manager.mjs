@@ -307,6 +307,7 @@ export async function reconcileTestContourFakeCodexState({
   if (model !== TEST_CONTOUR_FAKE_MODEL) {
     return { status: "disabled", model, recoveredThreadCount: 0, activeCommandCount: 0 };
   }
+  await mkdir(paths.dataDir, { recursive: true });
   const databaseFile = path.join(paths.dataDir, "journal.sqlite");
   const [catalogThreads, commands, saved, persistedTurnSequence] = await Promise.all([
     persistedTestContourCodexThreads({
