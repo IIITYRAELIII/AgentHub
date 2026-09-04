@@ -21,7 +21,7 @@ const MAX_REGISTERED_CONTEXT_CAPABILITIES = 1_000;
 const STREAM_HISTORY_CURSOR_VERSION = 1;
 const DEFAULT_HISTORY_ACTIVITY_LIMIT = 40;
 const MUTATING_TOOLS = new Set([
-  "hub_task_create", "hub_task_update", "hub_task_move", "hub_task_start", "hub_task_reassign", "hub_task_claim", "hub_task_status_update", "hub_task_complete", "hub_task_delete",
+  "hub_task_create", "hub_task_update", "hub_task_move", "hub_task_start", "hub_task_reassign", "hub_task_claim", "hub_task_status_update", "hub_task_legacy_git_adopt", "hub_task_complete", "hub_task_delete",
   "hub_task_attachment_add", "hub_workspace_rules_update", "hub_stream_rules_update",
   "hub_stream_message_send",
   "hub_release_preflight", "hub_release_complete",
@@ -357,6 +357,7 @@ function compactTask(task) {
     revision: task.revision,
     workLog: task.workLog ?? [],
     gitReferences: task.gitReferences ?? [],
+    gitAdoptions: task.gitAdoptions ?? [],
     attachments: task.attachments ?? [],
   };
 }
@@ -408,6 +409,7 @@ export class HubMcpService {
     for (const name of [
       "snapshot", "task", "create", "move", "update", "markStarted", "complete", "addAttachment",
       "claim", "requestWorkflowStatus", "releaseTasks",
+      "adoptLegacyGitReference",
     ]) {
       requiredMethod(taskBoard, name);
     }
@@ -539,6 +541,14 @@ export class HubMcpService {
         task_id: { type: "string" },
         status: { type: "string", enum: ["new", "in_progress", "testing", "awaiting_implementation", "done"] },
       }, ["task_id", "status"]),
+      tool("hub_task_legacy_git_adopt", "Architect-only migration for a legacy Await Task with no Git reference. It verifies terminal Stream evidence and exact non-changelog patch equivalence to a named commit already in local main before recording immutable Task evidence.", {
+        task_id: { type: "string" },
+        expected_task_revision: { type: "integer", minimum: 1 },
+        evidence_turn_id: { type: "string" },
+        reported_result_commit: { type: "string" },
+        main_result_commit: { type: "string" },
+        confirm_adoption: { type: "boolean", description: "Must be true because this creates release-authority Git references for legacy work." },
+      }, ["task_id", "expected_task_revision", "evidence_turn_id", "reported_result_commit", "main_result_commit", "confirm_adoption"]),
       tool("hub_task_complete", "Close and hide a Dashboard task after customer acceptance or when delivery is not required.", {
         task_id: { type: "string" },
       }, ["task_id"]),
@@ -670,6 +680,9 @@ export class HubMcpService {
         return this.#claimTask(context, args);
       case "hub_task_status_update":
         return this.#updateTaskWorkflowStatus(context, args);
+      case "hub_task_legacy_git_adopt":
+        if (!this.#isArchitect(context)) throw new Error("legacy Git adoption requires an Architect Stream");
+        return this.#adoptLegacyTaskGit(context, args);
       case "hub_task_complete":
         return this.#completeTask(context, args);
       case "hub_task_delete": {
@@ -1066,6 +1079,86 @@ export class HubMcpService {
     return this.#workspace(context).streams.some((stream) => (
       stream.id === context.streamId && stream.settings?.architect === true
     ));
+  }
+
+  async #adoptLegacyTaskGit(context, {
+    task_id: taskId,
+    expected_task_revision: expectedTaskRevision,
+    evidence_turn_id: evidenceTurnId,
+    reported_result_commit: reportedResultCommit,
+    main_result_commit: mainResultCommit,
+    confirm_adoption: confirmAdoption = false,
+    request_id: requestId,
+  } = {}) {
+    if (confirmAdoption !== true) throw new Error("confirm_adoption must be true");
+    if (!this.taskGitWorkspaces) throw new Error("Task Git workspace service is unavailable");
+    const task = this.#task(context, taskId);
+    if (task.workspaceId !== context.workspaceId) throw new Error("Task is outside the Architect Workspace");
+    if (task.status === "done" || task.workflowStatus !== "awaiting_implementation") {
+      throw new Error("Legacy Git adoption requires an open Await Task");
+    }
+    if ((task.gitReferences ?? []).length) throw new Error("Task already has Git evidence");
+    if (Number(task.revision) !== Number(expectedTaskRevision)) {
+      throw new Error("Task revision changed before legacy Git adoption");
+    }
+    const target = this.#streamTarget(context, {
+      stream_id: requiredText(task.streamId, "Task Stream id", 300),
+      workspace_id: task.workspaceId,
+    });
+    const turns = await this.workLog.threadTurns(target.stream.threads, { limit: 50 });
+    const expectedTurnId = requiredText(evidenceTurnId, "evidence turn id", 300);
+    const evidence = turns.find((turn) => (
+      String(turn?.turnId ?? "").trim() === expectedTurnId && String(turn?.status ?? "") === "completed"
+    ));
+    if (!evidence) throw new Error("Completed evidence turn was not found in the Task Stream");
+    const sourceCommit = requiredText(reportedResultCommit, "reported result commit", 100).toLowerCase();
+    const evidenceText = [evidence.title, JSON.stringify(evidence.prompt ?? ""), evidence.body]
+      .map((value) => String(value ?? ""))
+      .join("\n");
+    const taskIdentityPresent = evidenceText.includes(task.id)
+      || (String(task.taskNumber ?? "").trim() && evidenceText.includes(task.taskNumber));
+    if (!taskIdentityPresent || !evidenceText.toLowerCase().includes(sourceCommit)) {
+      throw new Error("Evidence turn does not bind this Task to the reported result commit");
+    }
+    const projectRoot = this.#taskProjectRoot(context, task.streamId, task.workspaceId);
+    if (!projectRoot) throw new Error("Task project root is unavailable");
+    const gitEvidence = await this.taskGitWorkspaces.adoptLegacyResult({
+      taskId: task.id,
+      taskNumber: task.taskNumber,
+      projectRoot,
+      reportedResultCommit: sourceCommit,
+      mainResultCommit: requiredText(mainResultCommit, "main result commit", 100).toLowerCase(),
+    });
+    const adopted = this.taskBoard.adoptLegacyGitReference({
+      taskId: task.id,
+      expectedRevision: expectedTaskRevision,
+      projectRoot: gitEvidence.projectRoot,
+      branch: gitEvidence.branch,
+      reportedResultCommit: gitEvidence.reportedResultCommit,
+      mainResultCommit: gitEvidence.resultCommit,
+      patchId: gitEvidence.patchId,
+      evidenceStreamId: target.stream.id,
+      evidenceProvider: evidence.provider,
+      evidenceThreadId: evidence.threadId,
+      evidenceTurnId: evidence.turnId,
+      actorStreamId: context.streamId,
+      actorProvider: context.provider,
+      actorThreadId: context.threadId,
+      requestId,
+    });
+    return {
+      ...compactTask(adopted),
+      gitAdoption: {
+        projectRoot: gitEvidence.projectRoot,
+        branch: gitEvidence.branch,
+        baseCommit: gitEvidence.baseCommit,
+        reportedResultCommit: gitEvidence.reportedResultCommit,
+        resultCommit: gitEvidence.resultCommit,
+        mainCommit: gitEvidence.mainCommit,
+        patchId: gitEvidence.patchId,
+        changedFiles: gitEvidence.changedFiles,
+      },
+    };
   }
 
   async #releasePlan(context, { workspace_id: workspaceId = null } = {}) {

@@ -15,6 +15,7 @@ import {
 
 export const TASK_DEV_BRANCH = "dev";
 const TASK_BASE_REF_PREFIX = "refs/agent-hub/task-bases/";
+const TASK_LEGACY_ADOPTION_REF_PREFIX = "refs/agent-hub/legacy-adoptions/";
 
 function runGit(args, { cwd, timeoutMs = 60_000 } = {}) {
   return new Promise((resolve, reject) => {
@@ -41,6 +42,32 @@ function runGit(args, { cwd, timeoutMs = 60_000 } = {}) {
   });
 }
 
+function runGitWithInput(args, input, { cwd, timeoutMs = 60_000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("git", args, { cwd, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    const stdout = [];
+    const stderr = [];
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error(`git ${args[0]} timed out after ${timeoutMs} ms`));
+    }, timeoutMs);
+    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      const output = Buffer.concat(stdout).toString("utf8").trim();
+      const errorText = Buffer.concat(stderr).toString("utf8").trim();
+      if (code === 0) resolve(output);
+      else reject(new Error(errorText || `git ${args[0]} exited with ${code}`));
+    });
+    child.stdin.end(input);
+  });
+}
+
 async function gitMaybe(args, options) {
   try {
     return await runGit(args, options);
@@ -51,6 +78,16 @@ async function gitMaybe(args, options) {
 
 function taskBaseRef(taskId, repoKey) {
   return `${TASK_BASE_REF_PREFIX}${normalizedTaskId(taskId)}/${repoKey}`;
+}
+
+function taskLegacyAdoptionRef(taskId, repoKey) {
+  return `${TASK_LEGACY_ADOPTION_REF_PREFIX}${normalizedTaskId(taskId)}/${repoKey}`;
+}
+
+function exactCommitId(value, label) {
+  const commit = String(value ?? "").trim().toLowerCase();
+  if (!/^[0-9a-f]{40}$/u.test(commit)) throw new Error(`${label} must be a full Git commit id`);
+  return commit;
 }
 
 function parseWorktrees(value) {
@@ -139,6 +176,35 @@ async function preferredMainCommit(repositoryRootValue) {
     if (commit) return commit;
   }
   throw new Error(`Cannot resolve main in ${repositoryRootValue}`);
+}
+
+async function localMainCommit(repositoryRootValue) {
+  return runGit(["rev-parse", "--verify", "refs/heads/main^{commit}"], { cwd: repositoryRootValue });
+}
+
+async function singleParentCommit(repositoryRootValue, commit) {
+  const line = await runGit(["rev-list", "--parents", "-n", "1", commit], { cwd: repositoryRootValue });
+  const parts = line.split(/\s+/u).filter(Boolean);
+  if (parts.length !== 2) throw new Error(`Legacy result ${commit} must be a single-parent commit`);
+  return parts[1];
+}
+
+async function commitPatchEvidence(repositoryRootValue, parentCommit, commit) {
+  const pathspecs = ["--", ".", ":(exclude,glob)**/CHANGELOG.md"];
+  const nameStatus = await runGit([
+    "-c", "core.quotePath=false", "diff", "--name-status", "--find-renames",
+    parentCommit, commit, ...pathspecs,
+  ], { cwd: repositoryRootValue });
+  if (!nameStatus) throw new Error(`Legacy result ${commit} has no non-changelog changes`);
+  const patch = await runGit([
+    "diff", "--binary", "--full-index", parentCommit, commit, ...pathspecs,
+  ], { cwd: repositoryRootValue });
+  const patchIdOutput = await runGitWithInput(["patch-id", "--stable"], `${patch}\n`, {
+    cwd: repositoryRootValue,
+  });
+  const patchId = patchIdOutput.split(/\s+/u)[0] ?? "";
+  if (!/^[0-9a-f]{40}$/u.test(patchId)) throw new Error(`Cannot derive patch id for ${commit}`);
+  return { nameStatus, patchId };
 }
 
 async function worktreeForBranch(repositoryRootValue, branch) {
@@ -403,19 +469,90 @@ export class TaskGitWorkspaceService {
     }
     const repoKey = taskRepositoryKey(repoRoot);
     const baseRef = taskBaseRef(id, repoKey);
+    const adoptionRef = taskLegacyAdoptionRef(id, repoKey);
     const baseCommit = await runGit(["rev-parse", "--verify", `${baseRef}^{commit}`], { cwd: repoRoot });
     const acceptedCommit = await runGit(["rev-parse", "--verify", `${String(resultCommit)}^{commit}`], { cwd: repoRoot });
     const branchCommit = await runGit(["rev-parse", "--verify", `refs/heads/${storedBranch}^{commit}`], { cwd: repoRoot });
     await runGit(["merge-base", "--is-ancestor", acceptedCommit, branchCommit], { cwd: repoRoot });
+    const adoptedCommit = await gitMaybe(["rev-parse", "--verify", `${adoptionRef}^{commit}`], { cwd: repoRoot });
+    const pathspecs = adoptedCommit === acceptedCommit
+      ? ["--", ".", ":(exclude,glob)**/CHANGELOG.md"]
+      : ["--"];
     const diff = await runGit([
       "-c", "core.quotePath=false",
-      "diff", "--name-status", "--find-renames", baseCommit, acceptedCommit, "--",
+      "diff", "--name-status", "--find-renames", baseCommit, acceptedCommit, ...pathspecs,
     ], { cwd: repoRoot });
     return {
       projectRoot: repoRoot,
       branch: storedBranch,
       resultCommit: acceptedCommit,
       changedFiles: changedFilesFromNameStatus(diff, repoRoot),
+    };
+  }
+
+  async adoptLegacyResult({
+    taskId, taskNumber = null, projectRoot, reportedResultCommit, mainResultCommit,
+  } = {}) {
+    const id = normalizedTaskId(taskId);
+    const repoRoot = await repositoryRoot(projectRoot);
+    const reportedResultId = exactCommitId(reportedResultCommit, "reported result commit");
+    const mainResultId = exactCommitId(mainResultCommit, "main result commit");
+    const reportedCommit = await runGit([
+      "rev-parse", "--verify", `${reportedResultId}^{commit}`,
+    ], { cwd: repoRoot });
+    const adoptedCommit = await runGit([
+      "rev-parse", "--verify", `${mainResultId}^{commit}`,
+    ], { cwd: repoRoot });
+    const mainCommit = await localMainCommit(repoRoot);
+    await runGit(["merge-base", "--is-ancestor", adoptedCommit, mainCommit], { cwd: repoRoot });
+    const reportedParent = await singleParentCommit(repoRoot, reportedCommit);
+    const adoptedParent = await singleParentCommit(repoRoot, adoptedCommit);
+    const [reportedEvidence, adoptedEvidence] = await Promise.all([
+      commitPatchEvidence(repoRoot, reportedParent, reportedCommit),
+      commitPatchEvidence(repoRoot, adoptedParent, adoptedCommit),
+    ]);
+    if (
+      reportedEvidence.patchId !== adoptedEvidence.patchId
+      || reportedEvidence.nameStatus !== adoptedEvidence.nameStatus
+    ) throw new Error("Legacy result does not match the selected main commit");
+
+    const repoKey = taskRepositoryKey(repoRoot);
+    const branch = taskBranchName(id, repoRoot, taskNumber);
+    const branchRef = `refs/heads/${branch}`;
+    const baseRef = taskBaseRef(id, repoKey);
+    const adoptionRef = taskLegacyAdoptionRef(id, repoKey);
+    const existingBranch = await gitMaybe(["rev-parse", "--verify", `${branchRef}^{commit}`], { cwd: repoRoot });
+    const existingBase = await gitMaybe(["rev-parse", "--verify", `${baseRef}^{commit}`], { cwd: repoRoot });
+    const existingAdoption = await gitMaybe(["rev-parse", "--verify", `${adoptionRef}^{commit}`], { cwd: repoRoot });
+    if (existingBranch && existingBranch !== adoptedCommit) {
+      throw new Error(`Task branch ${branch} already points to another commit`);
+    }
+    if (existingBase && existingBase !== adoptedParent) {
+      throw new Error(`Task base ref for ${id} already points to another commit`);
+    }
+    if (existingAdoption && existingAdoption !== adoptedCommit) {
+      throw new Error(`Legacy adoption ref for ${id} already points to another commit`);
+    }
+    const updates = [];
+    const zeroCommit = "0".repeat(40);
+    if (!existingBranch) updates.push(`update ${branchRef} ${adoptedCommit} ${zeroCommit}`);
+    if (!existingBase) updates.push(`update ${baseRef} ${adoptedParent} ${zeroCommit}`);
+    if (!existingAdoption) updates.push(`update ${adoptionRef} ${adoptedCommit} ${zeroCommit}`);
+    if (updates.length) {
+      await runGitWithInput(["update-ref", "--stdin"], `start\n${updates.join("\n")}\nprepare\ncommit\n`, {
+        cwd: repoRoot,
+      });
+    }
+    return {
+      taskId: id,
+      projectRoot: repoRoot,
+      branch,
+      baseCommit: adoptedParent,
+      reportedResultCommit: reportedCommit,
+      resultCommit: adoptedCommit,
+      mainCommit,
+      patchId: adoptedEvidence.patchId,
+      changedFiles: changedFilesFromNameStatus(adoptedEvidence.nameStatus, repoRoot),
     };
   }
 

@@ -73,6 +73,7 @@ test("hub_task_start carries the audited source Stream into message intake", asy
     claim: methodStub(task),
     requestWorkflowStatus: methodStub(task),
     releaseTasks: methodStub([]),
+    adoptLegacyGitReference: methodStub(task),
   };
   const service = new HubMcpService({
     workspaceCatalog,

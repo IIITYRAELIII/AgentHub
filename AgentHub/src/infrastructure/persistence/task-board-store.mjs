@@ -149,6 +149,31 @@ function configure(database) {
       PRIMARY KEY (task_id, project_root),
       FOREIGN KEY (task_id) REFERENCES hub_board_tasks(id) ON DELETE CASCADE
     ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS hub_task_legacy_git_adoptions (
+      task_id TEXT NOT NULL,
+      task_number TEXT NOT NULL DEFAULT '',
+      project_root TEXT NOT NULL,
+      branch TEXT NOT NULL,
+      reported_result_commit TEXT NOT NULL,
+      main_result_commit TEXT NOT NULL,
+      patch_id TEXT NOT NULL,
+      evidence_stream_id TEXT NOT NULL,
+      evidence_provider TEXT NOT NULL,
+      evidence_thread_id TEXT NOT NULL,
+      evidence_turn_id TEXT NOT NULL,
+      actor_stream_id TEXT NOT NULL,
+      actor_provider TEXT NOT NULL,
+      actor_thread_id TEXT NOT NULL,
+      request_id TEXT NOT NULL,
+      adopted_at_ms INTEGER NOT NULL,
+      PRIMARY KEY (task_id, project_root)
+    ) WITHOUT ROWID;
+    CREATE TRIGGER IF NOT EXISTS hub_task_legacy_git_adoptions_no_update
+      BEFORE UPDATE ON hub_task_legacy_git_adoptions
+      BEGIN SELECT RAISE(ABORT, 'legacy Git adoption audit is immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS hub_task_legacy_git_adoptions_no_delete
+      BEFORE DELETE ON hub_task_legacy_git_adoptions
+      BEGIN SELECT RAISE(ABORT, 'legacy Git adoption audit is immutable'); END;
     CREATE TABLE IF NOT EXISTS hub_task_release_revisions (
       task_id TEXT NOT NULL,
       task_revision INTEGER NOT NULL,
@@ -978,9 +1003,23 @@ export class TaskBoardStore {
       SELECT project_root AS projectRoot, branch, result_commit AS resultCommit
       FROM hub_task_git_references WHERE task_id = ? ORDER BY project_root
     `).all(taskId);
+    const gitAdoptions = database.prepare(`
+      SELECT task_number AS taskNumber, project_root AS projectRoot, branch,
+        reported_result_commit AS reportedResultCommit, main_result_commit AS mainResultCommit,
+        patch_id AS patchId, evidence_stream_id AS evidenceStreamId,
+        evidence_provider AS evidenceProvider, evidence_thread_id AS evidenceThreadId,
+        evidence_turn_id AS evidenceTurnId, actor_stream_id AS actorStreamId,
+        actor_provider AS actorProvider, actor_thread_id AS actorThreadId,
+        request_id AS requestId, adopted_at_ms
+      FROM hub_task_legacy_git_adoptions WHERE task_id = ? ORDER BY project_root
+    `).all(taskId).map(({ adopted_at_ms: adoptedAtMs, ...row }) => ({
+      ...row,
+      adoptedAt: new Date(Number(adoptedAtMs)).toISOString(),
+    }));
     return {
       workLog,
       gitReferences: normalizedTaskGitReferences(gitReferences),
+      gitAdoptions,
     };
   }
 
@@ -1871,6 +1910,60 @@ export class TaskBoardStore {
           SET updated_at_ms = ?, row_revision = row_revision + 1
           WHERE id = ?
         `).run(timestamp, row.id);
+        const task = this.#taskWithRelease(database, this.#taskRow(database, row.id));
+        database.exec("COMMIT");
+        return task;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
+  adoptLegacyGitReference({
+    taskId, expectedRevision, projectRoot, branch, reportedResultCommit, mainResultCommit, patchId,
+    evidenceStreamId, evidenceProvider, evidenceThreadId, evidenceTurnId,
+    actorStreamId, actorProvider, actorThreadId, requestId,
+  } = {}) {
+    const timestamp = this.now();
+    return this.#withDatabase((database) => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const row = this.#taskRow(database, taskId);
+        if (row.status === "done" || row.workflow_status !== "awaiting_implementation") {
+          throw new Error("Legacy Git adoption requires an open Await Task");
+        }
+        if (Number(row.row_revision) !== Number(expectedRevision)) {
+          throw new Error("Task revision changed before legacy Git adoption");
+        }
+        const referenceCount = Number(database.prepare(
+          "SELECT COUNT(*) AS value FROM hub_task_git_references WHERE task_id = ?",
+        ).get(row.id)?.value) || 0;
+        if (referenceCount) throw new Error("Task already has Git evidence");
+        const root = path.resolve(String(projectRoot ?? ""));
+        database.prepare(`
+          INSERT INTO hub_task_git_references (
+            task_id, project_root, branch, result_commit, updated_at_ms
+          ) VALUES (?, ?, ?, ?, ?)
+        `).run(row.id, root, String(branch), String(mainResultCommit), timestamp);
+        database.prepare(`
+          INSERT INTO hub_task_legacy_git_adoptions (
+            task_id, task_number, project_root, branch,
+            reported_result_commit, main_result_commit, patch_id,
+            evidence_stream_id, evidence_provider, evidence_thread_id, evidence_turn_id,
+            actor_stream_id, actor_provider, actor_thread_id, request_id, adopted_at_ms
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          row.id, row.task_number ?? "", root, String(branch),
+          String(reportedResultCommit), String(mainResultCommit), String(patchId),
+          String(evidenceStreamId), String(evidenceProvider), String(evidenceThreadId), String(evidenceTurnId),
+          String(actorStreamId), String(actorProvider), String(actorThreadId), String(requestId), timestamp,
+        );
+        const updated = database.prepare(`
+          UPDATE hub_board_tasks SET updated_at_ms = ?, row_revision = row_revision + 1
+          WHERE id = ? AND row_revision = ? AND workflow_status = 'awaiting_implementation' AND status != 'done'
+        `).run(timestamp, row.id, Number(expectedRevision));
+        if (updated.changes !== 1) throw new Error("Task changed during legacy Git adoption");
         const task = this.#taskWithRelease(database, this.#taskRow(database, row.id));
         database.exec("COMMIT");
         return task;
