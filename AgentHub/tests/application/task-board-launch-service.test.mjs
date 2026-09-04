@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import process from "node:process";
 import test from "node:test";
 
 import { TaskBoardLaunchService } from "../../src/application/task-board-launch-service.mjs";
+import {
+  initializeTaskGitRepository,
+  unprovenProcessTaskGit,
+} from "../helpers/task-git-unproven-process.mjs";
 
 function fixture({ interruptAfterCreate = false, gitWorktree = false, started = false, activeRuns = [], deferredInputs = [] } = {}) {
   const calls = [];
@@ -119,6 +127,79 @@ test("TaskBoardLaunchService starts a Task in its dedicated Git worktree", async
   assert.equal(create[2].workingDirectory, "D:/task-worktree");
   assert.equal(create[2].taskId, "board-1");
   assert.equal(create[2].taskNumber, "AH-42");
+});
+
+test("TaskBoardLaunchService creates the durable guard before spawn and blocks every follow-up until proof", {
+  skip: process.platform !== "win32" ? "Windows taskkill contract" : false,
+}, async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-launch-guard-"));
+  const dataDir = path.join(root, "data");
+  const repositoryRoot = path.join(root, "repository");
+  const taskId = "launch-guard-task";
+  context.after(() => rm(root, { recursive: true, force: true }));
+  await initializeTaskGitRepository(repositoryRoot);
+  const guarded = await unprovenProcessTaskGit({ context, root: repositoryRoot, dataDir, taskId });
+  const task = {
+    id: taskId, taskNumber: "HUB-159", title: "Guarded launch", rawText: "Guarded launch",
+    status: "open", workflowStatus: "new", workspaceId: "workspace-1", streamId: null, revision: 1,
+  };
+  const streams = new Map();
+  let followUpMutations = 0;
+  const taskBoard = {
+    task: () => ({ ...task }),
+    prepareStart: ({ streamId, requestId }) => {
+      followUpMutations += 1;
+      Object.assign(task, { status: "starting", streamId, startRequestId: requestId });
+      return { ...task };
+    },
+    cancelPreparedStart: () => ({ ...task }),
+    markStarted: ({ streamId }) => {
+      followUpMutations += 1;
+      Object.assign(task, { status: "started", streamId });
+      return { ...task };
+    },
+  };
+  const workspaceCatalog = {
+    workspace: () => ({
+      id: "workspace-1", name: "Agent HUB", settings: { workingDirectory: repositoryRoot },
+    }),
+    stream: (id) => streams.get(id) ?? null,
+    activeThread: () => null,
+    createStream: ({ id, workspaceId, name }) => {
+      followUpMutations += 1;
+      const stream = { id, workspaceId, name };
+      streams.set(id, stream);
+      return stream;
+    },
+  };
+  const launch = new TaskBoardLaunchService({
+    taskBoard,
+    workspaceCatalog,
+    taskGitWorkspaces: guarded.service,
+    dispatchCommand: async (_type, payload) => {
+      followUpMutations += 1;
+      return { createdTask: {
+        streamId: payload.streamId, provider: "codex", threadId: "thread-guard", projectRoot: payload.workingDirectory,
+      } };
+    },
+    sendMessage: async () => {
+      followUpMutations += 1;
+      return { accepted: true };
+    },
+  });
+  const params = {
+    id: taskId, workspaceId: "workspace-1", streamName: "Guarded",
+    provider: "codex", launchRequestId: "launch-guard-request",
+  };
+  await assert.rejects(() => launch.start(params), /process tree stop is unproven/u);
+  assert.equal(guarded.guardSeen(), true);
+  await assert.rejects(() => launch.start(params), /unresolved process-tree guard requires operator proof/u);
+  assert.equal(followUpMutations, 0);
+  assert.equal(await guarded.waitForStaleMutation(), "stale mutation attempted");
+  await guarded.proveAndRecover();
+  const resumed = await launch.start(params);
+  assert.equal(resumed.task.status, "started");
+  assert.ok(followUpMutations > 0);
 });
 
 test("TaskBoardLaunchService forwards the audited assignment origin to message intake", async () => {

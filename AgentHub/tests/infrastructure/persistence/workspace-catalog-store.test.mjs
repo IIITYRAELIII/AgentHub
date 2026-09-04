@@ -36,6 +36,35 @@ async function fixture(t) {
   return store;
 }
 
+test("Workspace mutation queue retries real SQLite contention and keeps timers responsive", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspace-contention-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const store = new WorkspaceCatalogStore({ databaseFile });
+  await store.load();
+  const workspace = store.createWorkspace({ name: "Before contention" });
+  const blocker = new DatabaseSync(databaseFile);
+  blocker.exec("PRAGMA busy_timeout = 0; BEGIN IMMEDIATE");
+  let timerFired = false;
+  const timer = setTimeout(() => {
+    timerFired = true;
+    blocker.exec("COMMIT");
+  }, 60);
+  t.after(async () => {
+    clearTimeout(timer);
+    try { blocker.exec("ROLLBACK"); } catch {}
+    blocker.close();
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const updated = await store.runMutation(
+    () => store.renameWorkspace(workspace.id, "After contention"),
+    { requestId: "workspace-contention", timeoutMs: 1_000 },
+  );
+  assert.equal(timerFired, true);
+  assert.equal(updated.name, "After contention");
+  assert.ok(store.mutationDiagnostics().retries > 0);
+});
+
 test("Workspace archive hides hierarchy, restores intact, and purges after three days", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspace-archive-"));
   const databaseFile = path.join(directory, "journal.sqlite");

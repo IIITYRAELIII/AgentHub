@@ -1,11 +1,12 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { access, mkdir, readdir, rm, unlink, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, rm, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
 import { canonicalPath } from "./config.mjs";
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
+import { readPublicationState } from "../persistence/publication-state.mjs";
 import {
   normalizedTaskId,
   TASK_BRANCH_PREFIX,
@@ -17,42 +18,108 @@ export const TASK_DEV_BRANCH = "dev";
 const TASK_BASE_REF_PREFIX = "refs/agent-hub/task-bases/";
 const TASK_RESULT_REF_PREFIX = "refs/agent-hub/task-results/";
 
-export function runTaskGitCommand(args, { cwd, timeoutMs = 60_000, executable = "git" } = {}) {
+export function stopTaskProcessTree(child, { spawnProcess = spawn, timeoutMs = 5_000 } = {}) {
+  if (!child?.pid || process.platform !== "win32") {
+    child?.kill?.("SIGKILL");
+    return Promise.resolve(true);
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer = null;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (!value) child.kill?.("SIGKILL");
+      resolve(value);
+    };
+    let killer;
+    try {
+      killer = spawnProcess("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+        windowsHide: true, stdio: "ignore",
+      });
+    } catch {
+      finish(false);
+      return;
+    }
+    timer = setTimeout(() => {
+      killer.kill?.("SIGKILL");
+      finish(false);
+    }, timeoutMs);
+    killer.once("error", () => finish(false));
+    killer.once("close", (code) => finish(code === 0));
+  });
+}
+
+function taskGitTerminationError(args, timeoutMs, processTreeStopped, cause = "timed out") {
+  const error = new Error(processTreeStopped
+    ? `git ${args[0]} ${cause} after ${timeoutMs} ms; process tree stopped`
+    : `git ${args[0]} ${cause} after ${timeoutMs} ms; process tree stop is unproven`);
+  error.processTreeStopped = processTreeStopped;
+  error.code = processTreeStopped ? "TASK_GIT_TERMINATED" : "TASK_GIT_TREE_UNPROVEN";
+  return error;
+}
+
+export function runTaskGitCommand(args, {
+  cwd, timeoutMs = 60_000, executable = "git", spawnProcess = spawn, signal = null,
+} = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, { cwd, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    if (signal?.aborted) {
+      reject(signal.reason instanceof Error ? signal.reason : new Error("Task Git lease ownership was lost"));
+      return;
+    }
+    const child = spawnProcess(executable, args, { cwd, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
     const stdout = [];
     const stderr = [];
-    let timedOut = false;
+    let termination = null;
+    let terminationOutcome = null;
+    let childClosed = false;
     let settled = false;
     const settle = (callback) => {
       if (settled) return;
       settled = true;
+      signal?.removeEventListener?.("abort", abort);
       callback();
     };
-    const timer = setTimeout(() => {
-      timedOut = true;
-      if (process.platform === "win32" && child.pid) {
-        const killer = spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
-          windowsHide: true, stdio: "ignore",
-        });
-        killer.on("error", () => child.kill("SIGKILL"));
-      } else {
-        child.kill("SIGKILL");
-      }
-    }, timeoutMs);
+    let stopTimer = null;
+    const terminate = (cause) => {
+      if (termination) return;
+      termination = cause;
+      void stopTaskProcessTree(child, { spawnProcess }).then((stopped) => {
+        terminationOutcome = stopped;
+        if (!stopped) {
+          settle(() => reject(taskGitTerminationError(args, timeoutMs, false, cause)));
+          return;
+        }
+        if (settled) return;
+        if (childClosed) {
+          settle(() => reject(taskGitTerminationError(args, timeoutMs, true, cause)));
+          return;
+        }
+        stopTimer = setTimeout(() => settle(() => reject(
+          taskGitTerminationError(args, timeoutMs, true, cause),
+        )), 5_000);
+        stopTimer.unref?.();
+      });
+    };
+    const abort = () => terminate("was fenced");
+    signal?.addEventListener?.("abort", abort, { once: true });
+    const timer = setTimeout(() => terminate("timed out"), timeoutMs);
     child.stdout.on("data", (chunk) => stdout.push(chunk));
     child.stderr.on("data", (chunk) => stderr.push(chunk));
     child.on("error", (error) => {
       clearTimeout(timer);
+      if (stopTimer) clearTimeout(stopTimer);
       settle(() => reject(error));
     });
     child.on("close", (code) => {
+      childClosed = true;
       clearTimeout(timer);
+      if (stopTimer) clearTimeout(stopTimer);
       const output = Buffer.concat(stdout).toString("utf8").trim();
       const errorText = Buffer.concat(stderr).toString("utf8").trim();
-      if (timedOut) settle(() => reject(new Error(
-        `git ${args[0]} timed out after ${timeoutMs} ms; process tree stopped`,
-      )));
+      if (termination && terminationOutcome == null) return;
+      if (termination) settle(() => reject(taskGitTerminationError(args, timeoutMs, terminationOutcome, termination)));
       else if (code === 0) settle(() => resolve(output));
       else settle(() => reject(new Error(errorText || `git ${args[0]} exited with ${code}`)));
     });
@@ -60,6 +127,72 @@ export function runTaskGitCommand(args, { cwd, timeoutMs = 60_000, executable = 
 }
 
 const runGit = runTaskGitCommand;
+
+function requiredGuardLease(lease) {
+  if (typeof lease?.assertOwned !== "function" || typeof lease?.beginProcessTreeGuard !== "function") {
+    throw new Error("Task Git mutation requires an owned process-tree guard lease");
+  }
+  return lease;
+}
+
+function combinedLease(primary, secondary) {
+  requiredGuardLease(primary);
+  if (typeof secondary?.assertOwned !== "function") throw new Error("Task Git dev lock lease is required");
+  const signals = [primary.signal, secondary.signal].filter(Boolean);
+  return {
+    ...primary,
+    ownerId: `${primary.ownerId}|${secondary.ownerId}`,
+    signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0] ?? null,
+    async assertOwned() {
+      await primary.assertOwned();
+      await secondary.assertOwned();
+    },
+  };
+}
+
+export async function runOwnedGit(args, { lease = null, ...options } = {}) {
+  const owner = requiredGuardLease(lease);
+  await owner.assertOwned();
+  const guard = await owner.beginProcessTreeGuard({ args, cwd: options.cwd });
+  try {
+    const result = await runGit(args, { ...options, signal: owner.signal ?? null });
+    await guard.clear({ proof: "natural-process-tree-completion" });
+    await owner.assertOwned();
+    return result;
+  } catch (error) {
+    if (error?.processTreeStopped !== false) {
+      await guard.clear({ proof: error?.processTreeStopped === true
+        ? "bounded-process-tree-stop"
+        : "process-never-started-or-natural-exit" });
+    } else {
+      guard.markUnresolved(error);
+    }
+    throw error;
+  }
+}
+
+async function repositoryIdentityFromPath(value) {
+  let current = canonicalPath(value);
+  for (;;) {
+    const marker = path.join(current, ".git");
+    const markerStat = await stat(marker).catch(() => null);
+    if (markerStat?.isDirectory()) return current;
+    if (markerStat?.isFile()) {
+      const text = await readFile(marker, "utf8");
+      const match = /^gitdir:\s*(.+)$/imu.exec(text);
+      if (!match) return current;
+      const gitDir = path.resolve(current, match[1].trim());
+      const common = await readFile(path.join(gitDir, "commondir"), "utf8").catch(() => "");
+      const commonDir = common.trim() ? path.resolve(gitDir, common.trim()) : gitDir;
+      return canonicalPath(path.basename(commonDir).toLowerCase() === ".git"
+        ? path.dirname(commonDir)
+        : commonDir);
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return canonicalPath(value);
+    current = parent;
+  }
+}
 
 async function gitMaybe(args, options) {
   try {
@@ -171,49 +304,219 @@ async function worktreeForBranch(repositoryRootValue, branch) {
     .find((item) => item.branchRef === branchRef)?.path ?? null;
 }
 
-async function commitDirtyWorktree(worktreeRoot, message) {
-  const dirty = await runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: worktreeRoot });
+async function commitDirtyWorktree(worktreeRoot, message, { lease = null } = {}) {
+  const dirty = await runOwnedGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: worktreeRoot, lease });
   if (!dirty) return false;
-  await runGit(["add", "--sparse", "-A", "--", "."], { cwd: worktreeRoot });
+  await runOwnedGit(["add", "--sparse", "-A", "--", "."], { cwd: worktreeRoot, lease });
   if (await gitMaybe(["diff", "--cached", "--quiet"], { cwd: worktreeRoot }) !== null) return false;
-  await runGit([
+  await runOwnedGit([
     "-c", "user.name=Agent Hub",
     "-c", "user.email=agent-hub@local.invalid",
     "commit", "--no-gpg-sign", "-m", message,
-  ], { cwd: worktreeRoot, timeoutMs: 120_000 });
+  ], { cwd: worktreeRoot, timeoutMs: 120_000, lease });
   return true;
 }
 
 export class TaskGitWorkspaceService {
-  constructor({ dataDir, devBranch = TASK_DEV_BRANCH } = {}) {
+  constructor({
+    dataDir, devBranch = TASK_DEV_BRANCH, readPublication = readPublicationState,
+    runCommand = runTaskGitCommand,
+  } = {}) {
     this.dataDir = canonicalPath(String(dataDir ?? ""));
     this.taskWorktreesRoot = path.join(this.dataDir, "task-worktrees");
     this.devWorktreesRoot = path.join(this.dataDir, "dev-worktrees");
     this.devBranch = String(devBranch ?? TASK_DEV_BRANCH).trim() || TASK_DEV_BRANCH;
+    this.readPublication = readPublication;
+    this.runCommand = runCommand;
+  }
+
+  async #runOwned(args, { lease = null, ...options } = {}) {
+    const owner = requiredGuardLease(lease);
+    await owner.assertOwned();
+    const guard = await owner.beginProcessTreeGuard({ args, cwd: options.cwd });
+    try {
+      const result = await this.runCommand(args, { ...options, signal: owner.signal ?? null });
+      await guard.clear({ proof: "natural-process-tree-completion" });
+      await owner.assertOwned();
+      return result;
+    } catch (error) {
+      if (error?.processTreeStopped !== false) {
+        await guard.clear({ proof: error?.processTreeStopped === true
+          ? "bounded-process-tree-stop"
+          : "process-never-started-or-natural-exit" });
+      } else {
+        guard.markUnresolved(error);
+      }
+      throw error;
+    }
   }
 
   #taskLock(taskId) {
     return path.join(this.dataDir, "locks", `task-lifecycle-${normalizedTaskId(taskId)}`);
   }
 
-  async withTaskLock(taskId, operation) {
-    return withInterprocessLocks([this.#taskLock(taskId)], operation);
+  #processGuardDirectory(taskId) {
+    return path.join(this.dataDir, "task-process-tree-guards", normalizedTaskId(taskId));
+  }
+
+  async #processGuards(taskId) {
+    const directory = this.#processGuardDirectory(taskId);
+    const entries = await readdir(directory, { withFileTypes: true }).catch((error) => {
+      if (error?.code === "ENOENT") return [];
+      throw error;
+    });
+    return entries.filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => path.join(directory, entry.name));
+  }
+
+  async #assertNoProcessTreeGuard(taskId) {
+    const guards = await this.#processGuards(taskId);
+    if (guards.length) {
+      throw new Error(`Task Git admission blocked: unresolved process-tree guard requires operator proof (${guards[0]})`);
+    }
+  }
+
+  async #assertRepositoryProcessTreeClear(repositoryRootValue) {
+    const root = path.join(this.dataDir, "task-process-tree-guards");
+    const taskDirectories = await readdir(root, { withFileTypes: true }).catch((error) => {
+      if (error?.code === "ENOENT") return [];
+      throw error;
+    });
+    for (const taskDirectory of taskDirectories.filter((entry) => entry.isDirectory())) {
+      for (const file of await this.#processGuards(taskDirectory.name)) {
+        const guard = await readFile(file, "utf8").then(JSON.parse, () => null);
+        if (guard?.repositoryRoot && samePath(guard.repositoryRoot, repositoryRootValue)) {
+          throw new Error(`Task Git repository blocked: unresolved process-tree guard requires operator proof (${file})`);
+        }
+      }
+    }
+  }
+
+  async #beginProcessTreeGuard(taskId, lease, { args, cwd } = {}, state) {
+    if (typeof lease?.assertOwned !== "function") throw new Error("Task Git guard owner lease is required");
+    await lease.assertOwned();
+    if (state.unresolved) throw state.unresolved;
+    const repositoryRoot = await repositoryIdentityFromPath(cwd);
+    const guardId = randomUUID();
+    const file = path.join(
+      this.#processGuardDirectory(taskId),
+      `${taskRepositoryKey(repositoryRoot)}.json`,
+    );
+    await mkdir(path.dirname(file), { recursive: true });
+    const record = {
+      version: 1,
+      taskId: normalizedTaskId(taskId),
+      guardId,
+      ownerId: String(lease.ownerId ?? "unknown"),
+      command: Array.isArray(args) ? args.map(String) : [],
+      cwd: canonicalPath(cwd),
+      repositoryRoot,
+      createdAt: new Date().toISOString(),
+    };
+    try {
+      await writeFile(file, `${JSON.stringify(record, null, 2)}\n`, {
+        encoding: "utf8", flag: "wx", mode: 0o600,
+      });
+    } catch (error) {
+      if (error?.code === "EEXIST") {
+        throw new Error(`Task Git admission blocked: unresolved process-tree guard requires operator proof (${file})`);
+      }
+      throw error;
+    }
+    let cleared = false;
+    return {
+      clear: async ({ proof } = {}) => {
+        if (cleared) return;
+        const current = await readFile(file, "utf8").then(JSON.parse, () => null);
+        if (current?.guardId !== guardId) {
+          state.unresolved = new Error(`Task Git process-tree guard ownership changed (${file})`);
+          throw state.unresolved;
+        }
+        await unlink(file);
+        cleared = true;
+        state.active = null;
+        state.lastProof = String(proof ?? "");
+      },
+      markUnresolved: (error) => {
+        state.unresolved = new Error(
+          `Task Git process-tree completion is unproven; operator proof required: ${error?.message ?? error}`,
+        );
+      },
+    };
+  }
+
+  async withTaskLock(taskId, operation, options = {}) {
+    return withInterprocessLocks([this.#taskLock(taskId)], async (lease) => {
+      await this.#assertNoProcessTreeGuard(taskId);
+      return operation(this.#guardedLease(taskId, lease));
+    }, options);
+  }
+
+  #guardedLease(scopeId, lease) {
+    const id = normalizedTaskId(scopeId);
+    const state = { unresolved: null, active: null, lastProof: null };
+    return {
+      ...lease,
+      taskId: id,
+      assertOwned: async () => {
+        await lease.assertOwned();
+        if (state.unresolved) throw state.unresolved;
+      },
+      beginProcessTreeGuard: (context) => this.#beginProcessTreeGuard(id, lease, context, state),
+    };
+  }
+
+  async #withDevLock(repoRoot, outerLease, operation) {
+    const repoKey = taskRepositoryKey(repoRoot);
+    const devLock = path.join(this.dataDir, "locks", `task-git-dev-${repoKey}`);
+    return withInterprocessLocks([devLock], async (devLease) => {
+      const lease = outerLease
+        ? combinedLease(outerLease, devLease)
+        : this.#guardedLease(`repository-${repoKey}`, devLease);
+      return operation(lease);
+    });
+  }
+
+  async recoverProcessTreeGuard(taskId, { repositoryRoot: root, operatorProof } = {}) {
+    if (operatorProof !== "confirmed-no-descendants") {
+      throw new Error("Task Git process-tree guard recovery requires explicit operator proof");
+    }
+    const file = path.join(
+      this.#processGuardDirectory(taskId),
+      `${taskRepositoryKey(canonicalPath(root))}.json`,
+    );
+    const guard = await readFile(file, "utf8").then(JSON.parse, () => null);
+    if (!guard?.guardId || !samePath(guard.repositoryRoot, root)) {
+      throw new Error("Task Git process-tree guard does not match the proved repository");
+    }
+    await unlink(file);
+    return { recovered: true, guard };
   }
 
   async #integrationBlockFile(repoRoot) {
     return path.join(this.dataDir, "integration-blocks", `${taskRepositoryKey(repoRoot)}.json`);
   }
 
-  async #assertRecoverableDev(repoRoot, devRoot) {
+  async #assertRecoverableDev(repoRoot, devRoot, { lease = null } = {}) {
+    await requiredGuardLease(lease).assertOwned();
     const blockFile = await this.#integrationBlockFile(repoRoot);
+    const priorBlock = await readFile(blockFile, "utf8").then(JSON.parse, () => null);
+    if (priorBlock?.processTreeStopUnproven === true) {
+      throw new Error(`dev integration is blocked: process-tree termination requires operator proof (${devRoot})`);
+    }
     const gitPath = async (name) => path.resolve(await runGit(["rev-parse", "--git-path", name], { cwd: devRoot }));
     const mergeHead = await gitPath("MERGE_HEAD");
     const indexLock = await gitPath("index.lock");
     const hasMerge = await access(mergeHead).then(() => true, () => false);
     const hasIndexLock = await access(indexLock).then(() => true, () => false);
     if (hasMerge) {
-      const aborted = await gitMaybe(["merge", "--abort"], { cwd: devRoot });
-      if (aborted === null) {
+      await lease.assertOwned();
+      const aborted = await this.#runOwned(["merge", "--abort"], { cwd: devRoot, lease }).then(
+        () => true,
+        () => false,
+      );
+      await lease.assertOwned();
+      if (!aborted) {
         await mkdir(path.dirname(blockFile), { recursive: true });
         await writeFile(blockFile, `${JSON.stringify({
           repositoryRoot: repoRoot, devRoot, reason: "merge --abort failed", observedAt: new Date().toISOString(),
@@ -245,7 +548,7 @@ export class TaskGitWorkspaceService {
     worktreeRoot,
     startCommit,
     managedRoot,
-    noCheckout = false,
+    noCheckout = false, lease = null,
   }) {
     const existing = await worktreeForBranch(repoRoot, branch);
     if (existing) {
@@ -256,30 +559,30 @@ export class TaskGitWorkspaceService {
     }
     await mkdir(path.dirname(worktreeRoot), { recursive: true });
     const exists = await branchExists(repoRoot, branch);
-    await runGit([
+    await this.#runOwned([
       "worktree", "add",
       ...(noCheckout ? ["--no-checkout"] : []),
       ...(exists ? [] : ["-b", branch]),
       worktreeRoot,
       ...(exists ? [branch] : [startCommit]),
-    ], { cwd: repoRoot, timeoutMs: 120_000 });
+    ], { cwd: repoRoot, timeoutMs: 120_000, lease });
     return { root: canonicalPath(worktreeRoot), created: true };
   }
 
-  async #ensureSparseTaskWorktree({ worktreeRoot: root, selection, created }) {
+  async #ensureSparseTaskWorktree({ worktreeRoot: root, selection, created, lease = null }) {
     const statusArgs = ["status", "--porcelain=v1", "-z", "--untracked-files=all"];
     const [branchBefore, headBefore, statusBefore] = await Promise.all([
       runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: root }),
       runGit(["rev-parse", "HEAD^{commit}"], { cwd: root }),
       runGit(statusArgs, { cwd: root }),
     ]);
-    await runGit([
+    await this.#runOwned([
       "sparse-checkout", "set", selection.cone ? "--cone" : "--no-cone", "--", selection.scope,
     ], {
       cwd: root,
-      timeoutMs: 120_000,
+      timeoutMs: 120_000, lease,
     });
-    if (created) await runGit(["checkout"], { cwd: root, timeoutMs: 120_000 });
+    if (created) await this.#runOwned(["checkout"], { cwd: root, timeoutMs: 120_000, lease });
     const [branchAfter, headAfter, statusAfter, configured] = await Promise.all([
       runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: root }),
       runGit(["rev-parse", "HEAD^{commit}"], { cwd: root }),
@@ -301,58 +604,73 @@ export class TaskGitWorkspaceService {
     }
   }
 
-  async #alignExistingTaskBranch({ repositoryRoot: repoRoot, worktreeRoot: root, branch }) {
+  async #alignExistingTaskBranch({ repositoryRoot: repoRoot, worktreeRoot: root, branch, lease = null }) {
     const registered = parseWorktrees(await runGit(["worktree", "list", "--porcelain"], { cwd: repoRoot }))
       .find((item) => samePath(item.path, root));
     if (!registered) return;
     const currentBranch = await runGit(["branch", "--show-current"], { cwd: root });
     if (currentBranch === branch) return;
     if (await branchExists(repoRoot, branch)) throw new Error(`Task branch already exists: ${branch}`);
-    await runGit(["branch", "-m", branch], { cwd: root });
+    await this.#runOwned(["branch", "-m", branch], { cwd: root, lease });
+  }
+
+  async #prepareDevOwned(projectRoot, repoRoot, lease) {
+    await requiredGuardLease(lease).assertOwned();
+    const mainCommit = await preferredMainCommit(repoRoot);
+    const repoKey = taskRepositoryKey(repoRoot);
+    const { root: devRoot } = await this.#ensureBranchWorktree({
+      repositoryRoot: repoRoot,
+      branch: this.devBranch,
+      worktreeRoot: path.join(this.devWorktreesRoot, repoKey),
+      managedRoot: this.devWorktreesRoot,
+      startCommit: mainCommit,
+      lease,
+    });
+    await this.#assertRecoverableDev(repoRoot, devRoot, { lease });
+    await lease.assertOwned();
+    return {
+      repositoryRoot: repoRoot,
+      projectRoot: devRoot,
+      branch: this.devBranch,
+      headCommit: await this.#runOwned(["rev-parse", "HEAD^{commit}"], { cwd: devRoot, lease }),
+    };
   }
 
   async prepareDev(projectRoot) {
     const repoRoot = await repositoryRoot(projectRoot);
-    const repoKey = taskRepositoryKey(repoRoot);
-    const devLock = path.join(this.dataDir, "locks", `task-git-dev-${repoKey}`);
-    return withInterprocessLocks([devLock], async () => {
-      const mainCommit = await preferredMainCommit(repoRoot);
-      const { root: devRoot } = await this.#ensureBranchWorktree({
-        repositoryRoot: repoRoot,
-        branch: this.devBranch,
-        worktreeRoot: path.join(this.devWorktreesRoot, repoKey),
-        managedRoot: this.devWorktreesRoot,
-        startCommit: mainCommit,
-      });
-      await this.#assertRecoverableDev(repoRoot, devRoot);
-      return {
-        repositoryRoot: repoRoot,
-        projectRoot: devRoot,
-        branch: this.devBranch,
-        headCommit: await runGit(["rev-parse", "HEAD^{commit}"], { cwd: devRoot }),
-      };
-    });
+    await this.#assertRepositoryProcessTreeClear(repoRoot);
+    return this.#withDevLock(repoRoot, null, (lease) => this.#prepareDevOwned(projectRoot, repoRoot, lease));
   }
 
-  async prepare({ taskId, taskNumber = null, projectRoot } = {}) {
+  async prepare(params = {}) {
+    return this.withTaskLock(params.taskId, (lease) => this.prepareOwned({ ...params, lease }));
+  }
+
+  async prepareOwned({ taskId, taskNumber = null, projectRoot, lease = null } = {}) {
     const id = normalizedTaskId(taskId);
+    await requiredGuardLease(lease).assertOwned();
+    await this.#assertNoProcessTreeGuard(id);
     const selectedRoot = canonicalPath(projectRoot);
     const selectedWorktreeRoot = await worktreeRoot(selectedRoot);
     const selection = taskSparseCheckoutSelection(selectedWorktreeRoot, selectedRoot);
-    const dev = await this.prepareDev(projectRoot);
+    const repoRoot = await repositoryRoot(projectRoot);
+    await this.#assertRepositoryProcessTreeClear(repoRoot);
+    return this.#withDevLock(repoRoot, lease, async (ownedLease) => {
+    const dev = await this.#prepareDevOwned(projectRoot, repoRoot, ownedLease);
     const repoKey = taskRepositoryKey(dev.repositoryRoot);
     const branch = taskBranchName(id, dev.repositoryRoot, taskNumber);
     const baseRef = taskBaseRef(id, repoKey);
     let baseCommit = await gitMaybe(["rev-parse", "--verify", `${baseRef}^{commit}`], { cwd: dev.repositoryRoot });
     if (!baseCommit) {
       baseCommit = await preferredMainCommit(dev.repositoryRoot);
-      await runGit(["update-ref", baseRef, baseCommit], { cwd: dev.repositoryRoot });
+      await this.#runOwned(["update-ref", baseRef, baseCommit], { cwd: dev.repositoryRoot, lease: ownedLease });
     }
     const taskRootPath = path.join(this.taskWorktreesRoot, id, repoKey);
     await this.#alignExistingTaskBranch({
       repositoryRoot: dev.repositoryRoot,
       worktreeRoot: taskRootPath,
       branch,
+      lease: ownedLease,
     });
     const taskWorktree = await this.#ensureBranchWorktree({
       repositoryRoot: dev.repositoryRoot,
@@ -361,18 +679,20 @@ export class TaskGitWorkspaceService {
       managedRoot: path.join(this.taskWorktreesRoot, id),
       startCommit: baseCommit,
       noCheckout: true,
+      lease: ownedLease,
     });
     const taskRoot = taskWorktree.root;
     await this.#ensureSparseTaskWorktree({
       worktreeRoot: taskRoot,
       selection,
       created: taskWorktree.created,
+      lease: ownedLease,
     });
     const scopedProjectRoot = canonicalPath(path.resolve(taskRoot, selection.relativePath));
     if (!pathInside(taskRoot, scopedProjectRoot)) {
       throw new Error("Task project root escaped its managed worktree");
     }
-    const headCommit = await runGit(["rev-parse", "HEAD^{commit}"], { cwd: taskRoot });
+    const headCommit = await this.#runOwned(["rev-parse", "HEAD^{commit}"], { cwd: taskRoot, lease: ownedLease });
     return {
       taskId: id,
       repositoryRoot: dev.repositoryRoot,
@@ -383,6 +703,7 @@ export class TaskGitWorkspaceService {
       headCommit,
       gitBaseline: { repoRoot: dev.repositoryRoot, tree: baseCommit },
     };
+    });
   }
 
   async managedRepositoryRoot(projectRoot, { taskId, taskNumber = null } = {}) {
@@ -406,19 +727,26 @@ export class TaskGitWorkspaceService {
     }
   }
 
-  async snapshot({ taskId, taskNumber = null, projectRoot, turnId = null, summary = "" } = {}) {
-    const workspace = await this.prepare({ taskId, taskNumber, projectRoot });
+  async snapshot(params = {}) {
+    return this.withTaskLock(params.taskId, (lease) => this.snapshotOwned({ ...params, lease }));
+  }
+
+  async snapshotOwned({ taskId, taskNumber = null, projectRoot, turnId = null, summary = "", lease = null } = {}) {
+    await requiredGuardLease(lease).assertOwned();
+    await this.#assertNoProcessTreeGuard(taskId);
+    const workspace = await this.prepareOwned({ taskId, taskNumber, projectRoot, lease });
     const taskRoot = await worktreeRoot(workspace.projectRoot);
     const suffix = String(turnId ?? "").trim() || randomUUID();
     await commitDirtyWorktree(
       taskRoot,
       `task(${workspace.taskId.slice(0, 8)}): ${String(summary ?? "").trim() || `snapshot ${suffix}`}`,
+      { lease },
     );
-    const headCommit = await runGit(["rev-parse", "HEAD^{commit}"], { cwd: taskRoot });
-    const diff = await runGit([
+    const headCommit = await this.#runOwned(["rev-parse", "HEAD^{commit}"], { cwd: taskRoot, lease });
+    const diff = await this.#runOwned([
       "-c", "core.quotePath=false",
       "diff", "--name-status", "--find-renames", workspace.baseCommit, headCommit, "--",
-    ], { cwd: taskRoot });
+    ], { cwd: taskRoot, lease });
     return {
       ...workspace,
       headCommit,
@@ -428,35 +756,57 @@ export class TaskGitWorkspaceService {
   }
 
   async mergeIntoDev(snapshot) {
-    const dev = await this.prepareDev(snapshot.repositoryRoot);
-    const devLock = path.join(this.dataDir, "locks", `task-git-dev-${taskRepositoryKey(dev.repositoryRoot)}`);
-    return withInterprocessLocks([devLock], async () => {
+    return this.withTaskLock(snapshot.taskId, (lease) => this.mergeIntoDevOwned(snapshot, { lease }));
+  }
+
+  async mergeIntoDevOwned(snapshot, { lease = null } = {}) {
+    await requiredGuardLease(lease).assertOwned();
+    await this.#assertNoProcessTreeGuard(snapshot.taskId);
+    await this.#assertRepositoryProcessTreeClear(snapshot.repositoryRoot);
+    return this.#withDevLock(snapshot.repositoryRoot, lease, async (ownedLease) => {
+      const dev = await this.#prepareDevOwned(snapshot.repositoryRoot, snapshot.repositoryRoot, ownedLease);
       const isMerged = await gitMaybe(["merge-base", "--is-ancestor", snapshot.headCommit, "HEAD"], {
         cwd: dev.projectRoot,
       }) !== null;
       if (isMerged) return { integrated: true, alreadyIntegrated: true, dev };
       try {
-        await runGit([
+        await ownedLease.assertOwned();
+        await this.#runOwned([
           "-c", "user.name=Agent Hub",
           "-c", "user.email=agent-hub@local.invalid",
           "merge", "--no-ff", "--no-edit", snapshot.headCommit,
-        ], { cwd: dev.projectRoot, timeoutMs: 120_000 });
+        ], { cwd: dev.projectRoot, timeoutMs: 120_000, lease: ownedLease });
+        await ownedLease.assertOwned();
         return {
           integrated: true,
           alreadyIntegrated: false,
-          dev: { ...dev, headCommit: await runGit(["rev-parse", "HEAD^{commit}"], { cwd: dev.projectRoot }) },
+          dev: { ...dev, headCommit: await this.#runOwned(["rev-parse", "HEAD^{commit}"], { cwd: dev.projectRoot, lease: ownedLease }) },
         };
       } catch (error) {
+        if (error?.processTreeStopped === false) {
+          const blockFile = await this.#integrationBlockFile(dev.repositoryRoot);
+          await mkdir(path.dirname(blockFile), { recursive: true });
+          await writeFile(blockFile, `${JSON.stringify({
+            repositoryRoot: dev.repositoryRoot,
+            devRoot: dev.projectRoot,
+            reason: error.message,
+            processTreeStopUnproven: true,
+            observedAt: new Date().toISOString(),
+          }, null, 2)}\n`, "utf8");
+          throw error;
+        }
         const conflicts = String(await gitMaybe(["diff", "--name-only", "--diff-filter=U"], {
           cwd: dev.projectRoot,
         }) ?? "").split(/\r?\n/u).filter(Boolean);
-        const aborted = await gitMaybe(["merge", "--abort"], { cwd: dev.projectRoot });
+        const aborted = await this.#runOwned(["merge", "--abort"], {
+          cwd: dev.projectRoot, lease: ownedLease,
+        }).then(() => true, () => false);
         try {
-          await this.#assertRecoverableDev(dev.repositoryRoot, dev.projectRoot);
+          await this.#assertRecoverableDev(dev.repositoryRoot, dev.projectRoot, { lease: ownedLease });
         } catch (recoveryError) {
           throw new Error(`${error.message}; integration recovery failed: ${recoveryError.message}`);
         }
-        if (aborted === null && conflicts.length) {
+        if (!aborted && conflicts.length) {
           throw new Error(`${error.message}; merge --abort did not complete`);
         }
         return { integrated: false, conflicts, error: error.message, dev };
@@ -464,14 +814,55 @@ export class TaskGitWorkspaceService {
     });
   }
 
+  async reconcile({ projectRoots = [] } = {}) {
+    const repositories = [];
+    for (const registration of projectRoots) {
+      const projectRoot = typeof registration === "string" ? registration : registration?.projectRoot;
+      if (!projectRoot) continue;
+      try {
+        const repoRoot = await repositoryRoot(projectRoot);
+        await this.#assertRepositoryProcessTreeClear(repoRoot);
+        const devRoot = await worktreeForBranch(repoRoot, this.devBranch);
+        if (!devRoot) {
+          repositories.push({ projectRoot, repositoryRoot: repoRoot, status: "ready", devRoot: null });
+          continue;
+        }
+        if (!pathInside(this.devWorktreesRoot, devRoot)) {
+          repositories.push({ projectRoot, repositoryRoot: repoRoot, status: "external", devRoot });
+          continue;
+        }
+        await this.#withDevLock(repoRoot, null, (lease) => (
+          this.#assertRecoverableDev(repoRoot, devRoot, { lease })
+        ));
+        repositories.push({ projectRoot, repositoryRoot: repoRoot, status: "ready", devRoot });
+      } catch (error) {
+        repositories.push({ projectRoot, status: "blocked", reason: error.message });
+      }
+    }
+    return { repositories };
+  }
+
   async snapshotAndMerge(params = {}) {
-    const snapshot = await this.snapshot(params);
-    const integration = await this.mergeIntoDev(snapshot);
+    return this.withTaskLock(params.taskId, (lease) => this.snapshotAndMergeOwned({ ...params, lease }));
+  }
+
+  async snapshotAndMergeOwned(params = {}) {
+    await requiredGuardLease(params.lease).assertOwned();
+    await this.#assertNoProcessTreeGuard(params.taskId);
+    const snapshot = await this.snapshotOwned(params);
+    await params.lease.assertOwned();
     if (!snapshot.changedFiles.length) {
+      const dev = await this.#withDevLock(snapshot.repositoryRoot, params.lease, (ownedLease) => (
+        this.#prepareDevOwned(snapshot.repositoryRoot, snapshot.repositoryRoot, ownedLease)
+      ));
+      const alreadyIntegrated = await gitMaybe([
+        "merge-base", "--is-ancestor", snapshot.headCommit, dev.headCommit,
+      ], { cwd: dev.projectRoot }) !== null;
       return {
         snapshot,
         integration: {
-          ...integration,
+          dev,
+          alreadyIntegrated,
           outcome: "no_result",
           integrated: false,
           resultProved: false,
@@ -479,12 +870,16 @@ export class TaskGitWorkspaceService {
         },
       };
     }
+    await params.lease.assertOwned();
+    const integration = await this.mergeIntoDevOwned(snapshot, { lease: params.lease });
     if (integration.integrated) {
-      await runGit([
+      await params.lease.assertOwned();
+      await this.#runOwned([
         "update-ref",
         taskResultRef(snapshot.taskId, taskRepositoryKey(snapshot.repositoryRoot)),
         snapshot.headCommit,
-      ], { cwd: snapshot.repositoryRoot });
+      ], { cwd: snapshot.repositoryRoot, lease: params.lease });
+      await params.lease.assertOwned();
     }
     return { snapshot, integration: { ...integration, outcome: integration.integrated ? "integrated" : "conflict", resultProved: integration.integrated } };
   }
@@ -570,21 +965,28 @@ export class TaskGitWorkspaceService {
     const id = normalizedTaskId(taskId);
     const workspaces = await this.describe(id);
     const references = [];
+    const publication = await this.readPublication();
     for (const reference of gitReferences) {
       const repoRoot = canonicalPath(reference.projectRoot);
       const resultCommit = String(reference.resultCommit ?? "").trim();
       let published = false;
-      let publishedRevision = null;
-      for (const candidate of ["refs/remotes/origin/main", "refs/heads/main"]) {
-        publishedRevision = await gitMaybe(["rev-parse", "--verify", `${candidate}^{commit}`], { cwd: repoRoot });
-        if (publishedRevision && resultCommit && await gitMaybe([
-          "merge-base", "--is-ancestor", resultCommit, publishedRevision,
-        ], { cwd: repoRoot }) !== null) {
-          published = true;
-          break;
-        }
-      }
-      references.push({ ...reference, projectRoot: repoRoot, resultCommit, published, publishedRevision });
+      const remoteRevision = await gitMaybe([
+        "rev-parse", "--verify", "refs/remotes/origin/main^{commit}",
+      ], { cwd: repoRoot });
+      const durableRevision = String(publication?.revision ?? "").trim();
+      const durableGeneration = String(publication?.generation ?? "").trim();
+      const publishedRevision = durableGeneration && durableRevision === remoteRevision ? remoteRevision : null;
+      if (publishedRevision && resultCommit && await gitMaybe([
+        "merge-base", "--is-ancestor", resultCommit, publishedRevision,
+      ], { cwd: repoRoot }) !== null) published = true;
+      references.push({
+        ...reference,
+        projectRoot: repoRoot,
+        resultCommit,
+        published,
+        publishedRevision,
+        publicationGeneration: publishedRevision ? durableGeneration : null,
+      });
     }
     const deleting = workspaces.flatMap((workspace) => [
       { kind: "worktree", path: workspace.projectRoot },
@@ -592,21 +994,57 @@ export class TaskGitWorkspaceService {
       { kind: "base_ref", name: taskBaseRef(id, workspace.repositoryKey), repositoryRoot: workspace.repositoryRoot },
       { kind: "result_ref", name: taskResultRef(id, workspace.repositoryKey), repositoryRoot: workspace.repositoryRoot },
     ]);
+    for (const reference of references) {
+      const repoKey = taskRepositoryKey(reference.projectRoot);
+      if (reference.branch) deleting.push({ kind: "branch", name: reference.branch, repositoryRoot: reference.projectRoot });
+      deleting.push(
+        { kind: "base_ref", name: taskBaseRef(id, repoKey), repositoryRoot: reference.projectRoot },
+        { kind: "result_ref", name: taskResultRef(id, repoKey), repositoryRoot: reference.projectRoot },
+      );
+    }
+    const uniqueDeleting = [...new Map(deleting.map((item) => [
+      `${item.kind}\0${item.repositoryRoot ?? ""}\0${item.path ?? item.name ?? ""}`, item,
+    ])).values()];
     return {
       taskId: id,
       workspaces,
       gitReferences: references,
       dirty: workspaces.some((item) => item.dirty),
       unpublished: references.filter((item) => !item.published),
-      deleting,
+      deleting: uniqueDeleting,
     };
   }
 
-  async cleanup(taskId, { allowDirty = false, requirePublished = false, gitReferences = [] } = {}) {
+  async cleanup(taskId, options = {}) {
+    return this.withTaskLock(taskId, (lease) => this.cleanupOwned(taskId, { ...options, lease }));
+  }
+
+  async cleanupOwned(taskId, {
+    allowDirty = false, requirePublished = false, gitReferences = [], expectedPreview = null, lease = null,
+  } = {}) {
+    await requiredGuardLease(lease).assertOwned();
     const id = normalizedTaskId(taskId);
+    await this.#assertNoProcessTreeGuard(id);
     const root = path.join(this.taskWorktreesRoot, id);
     if (!pathInside(this.taskWorktreesRoot, root)) throw new Error("Task worktree cleanup escaped its managed root");
     const preview = await this.cleanupPreview(id, { gitReferences });
+    if (expectedPreview) {
+      const expectedPublication = JSON.stringify((expectedPreview.gitReferences ?? []).map((item) => ({
+        projectRoot: item.projectRoot,
+        resultCommit: item.resultCommit,
+        publishedRevision: item.publishedRevision,
+        publicationGeneration: item.publicationGeneration,
+      })));
+      const actualPublication = JSON.stringify((preview.gitReferences ?? []).map((item) => ({
+        projectRoot: item.projectRoot,
+        resultCommit: item.resultCommit,
+        publishedRevision: item.publishedRevision,
+        publicationGeneration: item.publicationGeneration,
+      })));
+      if (actualPublication !== expectedPublication) {
+        throw new Error("Task cleanup blocked: durable publication generation changed after confirmation");
+      }
+    }
     const workspaces = preview.workspaces;
     if (!allowDirty && preview.dirty) throw new Error("Task cleanup blocked: managed worktree is dirty");
     if (requirePublished && preview.unpublished.length) {
@@ -614,24 +1052,34 @@ export class TaskGitWorkspaceService {
     }
     const cleanedRepositories = new Set();
     for (const workspace of workspaces) {
+      await lease.assertOwned();
       if (!pathInside(root, workspace.projectRoot)) throw new Error("Task worktree is outside its managed Task root");
       const repoRoot = await repositoryRoot(workspace.projectRoot);
       const repoKey = taskRepositoryKey(repoRoot);
-      await runGit(["worktree", "remove", "--force", workspace.projectRoot], { cwd: repoRoot, timeoutMs: 120_000 });
-      if (await branchExists(repoRoot, workspace.branch)) await runGit(["branch", "-D", workspace.branch], { cwd: repoRoot });
-      await runGit(["update-ref", "-d", taskBaseRef(id, workspace.repositoryKey)], { cwd: repoRoot });
-      await runGit(["update-ref", "-d", taskResultRef(id, workspace.repositoryKey)], { cwd: repoRoot });
+      await this.#runOwned(["worktree", "remove", "--force", workspace.projectRoot], {
+        cwd: repoRoot, timeoutMs: 120_000, lease,
+      });
+      await lease.assertOwned();
+      if (await branchExists(repoRoot, workspace.branch)) {
+        await this.#runOwned(["branch", "-D", workspace.branch], { cwd: repoRoot, lease });
+      }
+      await this.#runOwned(["update-ref", "-d", taskBaseRef(id, workspace.repositoryKey)], { cwd: repoRoot, lease });
+      await this.#runOwned(["update-ref", "-d", taskResultRef(id, workspace.repositoryKey)], { cwd: repoRoot, lease });
       cleanedRepositories.add(repoKey);
     }
     for (const reference of gitReferences) {
       const repoRoot = canonicalPath(reference.projectRoot);
       const repoKey = taskRepositoryKey(repoRoot);
       if (cleanedRepositories.has(repoKey)) continue;
+      await lease.assertOwned();
       const branch = String(reference.branch ?? "").trim();
-      if (branch && await branchExists(repoRoot, branch)) await runGit(["branch", "-D", branch], { cwd: repoRoot });
-      await runGit(["update-ref", "-d", taskBaseRef(id, repoKey)], { cwd: repoRoot });
-      await runGit(["update-ref", "-d", taskResultRef(id, repoKey)], { cwd: repoRoot });
+      if (branch && await branchExists(repoRoot, branch)) {
+        await this.#runOwned(["branch", "-D", branch], { cwd: repoRoot, lease });
+      }
+      await this.#runOwned(["update-ref", "-d", taskBaseRef(id, repoKey)], { cwd: repoRoot, lease });
+      await this.#runOwned(["update-ref", "-d", taskResultRef(id, repoKey)], { cwd: repoRoot, lease });
     }
+    await lease.assertOwned();
     await rm(root, { recursive: true, force: true });
     return { taskId: id, removed: workspaces.length, preview };
   }

@@ -2,12 +2,18 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import process from "node:process";
 import test from "node:test";
 
 import { HubMcpService } from "../../src/application/hub-mcp-service.mjs";
 import { incomingLedgerRecord } from "../../src/application/work-log-usage-projection.mjs";
+import { AsyncSqliteMutationQueue } from "../../src/infrastructure/persistence/async-sqlite-mutation-queue.mjs";
+import {
+  initializeTaskGitRepository,
+  unprovenProcessTaskGit,
+} from "../helpers/task-git-unproven-process.mjs";
 
-async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
+async function fixture(context, { releaseWorkflowEnabled = false, taskGitWorkspacesFactory = null } = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-mcp-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
   const projectRoot = path.join(directory, "project");
@@ -110,6 +116,9 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     Object.assign(operations.get(requestId), { status: "unknown", error: error.message });
   };
   workspaceCatalog.mcpOperations = () => [...operations.values()];
+  const workspaceMutations = new AsyncSqliteMutationQueue();
+  workspaceCatalog.runMutation = (operation, options) => workspaceMutations.run(operation, options);
+  workspaceCatalog.mutationDiagnostics = () => workspaceMutations.diagnostics();
   const taskBoard = {
     snapshot: () => [...tasks.values()].map((task) => ({ ...task, attachments: task.attachments ?? [] })),
     task: (id) => tasks.get(id) ?? null,
@@ -212,7 +221,7 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
   const preflightCalls = [];
   const releasePlanWorkspaceIds = [];
   const taskGitPrepareCalls = [];
-  const taskGitWorkspaces = {
+  const defaultTaskGitWorkspaces = {
     prepare: async ({ taskId, projectRoot: selectedProjectRoot }) => {
       taskGitPrepareCalls.push({ taskId, projectRoot: selectedProjectRoot });
       return {
@@ -225,6 +234,7 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
         gitBaseline: { repoRoot: selectedProjectRoot, tree: "a".repeat(40) },
       };
     },
+    prepareOwned: async (params) => defaultTaskGitWorkspaces.prepare(params),
     snapshotAndMerge: async ({ taskId }) => ({
       snapshot: {
         taskId,
@@ -245,13 +255,23 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
         dev: { branch: "dev", headCommit: "a".repeat(40) },
       },
     }),
-    withTaskLock: async (_taskId, operation) => operation(),
+    snapshotAndMergeOwned: async (params) => defaultTaskGitWorkspaces.snapshotAndMerge(params),
+    withTaskLock: async (_taskId, operation) => operation({
+      signal: new AbortController().signal,
+      async assertOwned() {},
+    }),
     cleanupPreview: async (taskId, { gitReferences = [] } = {}) => ({
       taskId, workspaces: [], gitReferences, dirty: false,
       unpublished: gitReferences.filter((item) => item.published === false), deleting: [],
     }),
     cleanup: async () => ({ removed: 1 }),
+    cleanupOwned: async (...args) => defaultTaskGitWorkspaces.cleanup(...args),
   };
+  const taskGitWorkspaces = taskGitWorkspacesFactory
+    ? await taskGitWorkspacesFactory({
+        context, directory, projectRoot, streamWorkingDirectory, workspaceWorkingDirectory,
+      })
+    : defaultTaskGitWorkspaces;
   const service = new HubMcpService({
     workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret: "secret",
     taskGitWorkspaces,
@@ -308,6 +328,7 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     foreignWorkspaceWorkingDirectory,
     foreignStreamWorkingDirectory,
     workspaceCatalog,
+    taskBoard,
     tasks,
     operations,
     taskEvidenceCalls,
@@ -848,6 +869,46 @@ test("HubMcpService binds the current turn to its dedicated Task worktree", asyn
   assert.equal(tools.some((tool) => tool.name === "hub_release_preflight"), true);
 });
 
+test("HubMcpService claim keeps an unproven process-tree guard before every Task effect", {
+  skip: process.platform !== "win32" ? "Windows taskkill contract" : false,
+}, async (context) => {
+  let guarded;
+  const state = await fixture(context, {
+    taskGitWorkspacesFactory: async ({ directory, streamWorkingDirectory }) => {
+      await initializeTaskGitRepository(streamWorkingDirectory);
+      guarded = await unprovenProcessTaskGit({
+        context,
+        root: streamWorkingDirectory,
+        dataDir: path.join(directory, "git-data"),
+        taskId: "task-current",
+      });
+      return guarded.service;
+    },
+  });
+  await assert.rejects(() => state.service.call("hub_task_claim", {
+    context_token: state.token,
+    request_id: "claim-unproven-first",
+    task_id: "task-current",
+  }), /process tree stop is unproven/u);
+  assert.equal(guarded.guardSeen(), true);
+  await assert.rejects(() => state.service.call("hub_task_claim", {
+    context_token: state.token,
+    request_id: "claim-unproven-replacement",
+    task_id: "task-current",
+  }), /unresolved process-tree guard requires operator proof/u);
+  assert.equal(state.taskClaimCalls.length, 0);
+  assert.equal(state.tasks.get("task-current").status, "open");
+  assert.equal(await guarded.waitForStaleMutation(), "stale mutation attempted");
+  await guarded.proveAndRecover();
+  const claimed = await state.service.call("hub_task_claim", {
+    context_token: state.token,
+    request_id: "claim-after-operator-proof",
+    task_id: "task-current",
+  });
+  assert.equal(claimed.claimedTurnId, "turn-live");
+  assert.equal(state.taskClaimCalls.length, 1);
+});
+
 test("HubMcpService claim falls back to the Workspace working directory", async (context) => {
   const { service, token, workspaceCatalog, workspaceWorkingDirectory, taskGitPrepareCalls } = await fixture(context);
   const hierarchy = workspaceCatalog.hierarchy;
@@ -1234,6 +1295,46 @@ test("receipt failure after a completed effect becomes unknown and cannot replay
     /outcome is unknown.*reconcile authoritatively/u,
   );
   assert.equal(effects, 1);
+});
+
+test("mutation throw after a possible partial effect is terminal unknown", async (context) => {
+  const { service, token, taskBoard, tasks, operations } = await fixture(context);
+  let effects = 0;
+  taskBoard.update = ({ id, title }) => {
+    effects += 1;
+    tasks.get(id).title = title;
+    throw new Error("crash after task row effect");
+  };
+  const input = {
+    context_token: token,
+    request_id: "task-update-partial-effect",
+    task_id: "task-current",
+    title: "Possibly committed",
+  };
+  await assert.rejects(service.call("hub_task_update", input), /crash after task row effect/u);
+  assert.equal(effects, 1);
+  assert.equal(operations.get(input.request_id).status, "unknown");
+  await assert.rejects(service.call("hub_task_update", input), /outcome is unknown/u);
+  assert.equal(effects, 1);
+});
+
+test("startup receipt reconciliation terminalizes incomplete durable lifecycle receipts", async (context) => {
+  const { service, workspaceCatalog, tasks, operations } = await fixture(context);
+  operations.set("orphan-pending", {
+    requestId: "orphan-pending", toolName: "hub_task_update", status: "pending",
+  });
+  operations.set("workflow-pending", {
+    requestId: "workflow-pending", toolName: "hub_task_status_update", status: "pending",
+  });
+  tasks.get("task-current").lifecycleOperation = {
+    operationId: "workflow-pending", kind: "workflow", targetWorkflowStatus: "testing",
+  };
+  workspaceCatalog.pendingMcpOperations = () => [...operations.values()].filter((item) => item.status === "pending");
+
+  await service.reconcilePendingMcpOperations();
+
+  assert.equal(operations.get("orphan-pending").status, "unknown");
+  assert.equal(operations.get("workflow-pending").status, "unknown");
 });
 
 test("HubMcpService copies project files into task attachments", async (context) => {

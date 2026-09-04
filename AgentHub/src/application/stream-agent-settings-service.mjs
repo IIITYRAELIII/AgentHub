@@ -17,7 +17,7 @@ export function createStreamAgentSettingsService({
     };
   };
 
-  const remember = (requestedStreamId = selectionStore.streamId) => {
+  const remember = async (requestedStreamId = selectionStore.streamId) => {
     const id = streamId(requestedStreamId);
     if (!id) return null;
     const stream = workspaceCatalog.stream(id);

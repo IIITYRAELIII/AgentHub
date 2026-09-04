@@ -220,7 +220,7 @@ export class RunJournalService {
         threadId: completion.threadId,
       });
       if (resolved) {
-        this.workspaceCatalogStore.recordWorkspaceEvent?.({
+        await this.workspaceCatalogStore.recordWorkspaceEvent?.({
           workspaceId: resolved.workspaceId,
           streamId: resolved.streamId,
           type: "run.completed",

@@ -41,9 +41,45 @@ Receipt creation is atomic `INSERT OR IGNORE` under the exact identity. Success
 stores a bounded structural result projection rather than arbitrary response
 content, so a result larger than 1 MiB cannot turn an already-applied effect into
 `failed`. Concurrent callers with the same identity share one in-process effect;
-after restart only lifecycle operations with their own durable transition may
-resume. Every other unresolved mutation becomes `unknown` and requires explicit
-authoritative reconciliation.
+after restart an owned reconciliation worker first marks each receipt
+`reconciling`. A transactionally persisted lifecycle outcome finalizes the
+receipt from authoritative readback without repeating the effect. An incomplete
+transition, prepared launch or missing outcome becomes terminal `unknown`; it is
+never externally replayed.
+
+Startup scans every pending receipt, not only receipts reached by a retry. A
+mutation exception after dispatch is treated as a possibly partial effect and
+therefore becomes `unknown` unless an authoritative readback disproves it.
+Production composition cannot access raw Task/Workspace transactions or the
+callback-based queue primitive. Its immutable asynchronous owners queue the
+complete mutator inventory, including Desktop ingest/reassignment/events,
+bug-report and Telegram capture, MCP receipts/attachments/startup reconciliation,
+handoff metadata, provider catalog/backfill and Spark/Terra binding, settings,
+journal completion, thread binding and Task lifecycle.
+Bounded contention retry surrounds the real transaction, preserves the original
+identity and yields to HTTP, SSE and timers instead of increasing `busy_timeout`.
+The owners expose explicit read and mutation allowlists only; an unclassified
+raw member is not bound into application code. Release completion uses the same
+Task owner. `hub_task_claim` enters Git through public Task admission, which
+creates the durable per-Task/repository process-tree guard before the first
+child process; an unproven survivor blocks claim effects and retries until the
+operator proves the tree absent.
+
+The underlying interprocess lease is represented by an immutable
+token-addressed owner file held by its creator. Stale time alone never permits
+replacement while the recorded PID is live. Every Git fence rereads the exact
+durable token/process identity; recovery requires proven death, exact identity
+mismatch, an owner-written release marker or trusted operator action. Renewal
+does not rewrite the shared pathname, and release removes only its own token
+file, so an old owner cannot retire a replacement swapped into the lock path.
+Task lifecycle fencing is a uniformly asynchronous contract: callers await each
+durable assertion before workflow, cleanup, failure or deletion persistence and
+reject synchronous implementations. Proven-dead or exact-mismatch legacy
+`owner.json` locks are retired only by bounded whole-directory quarantine plus
+post-move identity validation; live or ambiguous legacy owners remain blocked.
+Pending-triage startup recovery awaits its branded Task-owner mutation, and a
+queue failure rejects startup recovery without an unhandled rejection or a
+false successful outcome.
 
 Composed `functions.exec` calls bind each mutation to the `request_id` in that
 specific nested call's argument object. Missing, duplicate-property and

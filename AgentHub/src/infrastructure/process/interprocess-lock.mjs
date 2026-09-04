@@ -1,5 +1,5 @@
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { mkdir, open, readFile, readdir, rename, rm, rmdir, stat } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import path from "node:path";
 
@@ -43,29 +43,219 @@ function defaultProcessAlive(pid) {
   }
 }
 
+function ownerFileName(token) {
+  const digest = createHash("sha256").update(String(token)).digest("hex");
+  return `owner-${digest}.json`;
+}
+
+function ownerPayload(value, extra = {}) {
+  return `${JSON.stringify({
+    token: value.token,
+    pid: value.pid,
+    processInstanceId: value.processInstanceId,
+    createdAt: value.createdAt,
+    leaseExpiresAt: value.leaseExpiresAt,
+    ...extra,
+  })}\n`;
+}
+
 async function readOwner(lockPath) {
   try {
-    const value = JSON.parse(await readFile(path.join(lockPath, "owner.json"), "utf8"));
+    const entries = await readdir(lockPath);
+    const candidates = entries.filter((entry) => entry === "owner.json" || /^owner-[a-f0-9]{64}\.json$/u.test(entry));
+    if (candidates.length === 0) {
+      return entries.length === 0 ? null : { unresolved: true };
+    }
+    if (candidates.length !== 1) return { unresolved: true };
+    const fileName = candidates[0];
+    const value = JSON.parse(await readFile(path.join(lockPath, fileName), "utf8"));
+    const token = String(value?.token ?? "");
+    const format = fileName === "owner.json" ? "legacy" : "token";
+    if (!token || (format === "token" && ownerFileName(token) !== fileName)) {
+      return { unresolved: true };
+    }
     return {
-      token: String(value?.token ?? ""),
+      token,
       pid: Number(value?.pid),
       createdAt: Number(value?.createdAt),
       processInstanceId: String(value?.processInstanceId ?? ""),
       leaseExpiresAt: Number(value?.leaseExpiresAt),
+      releasedAt: value?.releasedAt == null ? Number.NaN : Number(value.releasedAt),
+      fileName,
+      ownerPath: path.join(lockPath, fileName),
+      format,
     };
-  } catch {
-    return null;
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    if (error instanceof SyntaxError) return { unresolved: true };
+    if (["EPERM", "EACCES", "EBUSY"].includes(error?.code)) return { unresolved: true };
+    throw error;
   }
 }
 
-async function renewLease(lockPath, token, staleMs) {
+function sameOwnerIdentity(expected, actual) {
+  return Boolean(
+    expected
+    && actual
+    && !actual.unresolved
+    && actual.token === expected.token
+    && actual.pid === expected.pid
+    && actual.processInstanceId === expected.processInstanceId
+    && actual.fileName === expected.fileName,
+  );
+}
+
+function sameOwner(expected, actual) {
+  return sameOwnerIdentity(expected, actual) && !Number.isFinite(actual.releasedAt);
+}
+
+async function renewLease(lockPath, token, _staleMs, ownership = null) {
+  const expected = ownership?.owner ?? { token };
   const owner = await readOwner(lockPath);
-  if (owner?.token !== token) return false;
-  await writeFile(path.join(lockPath, "owner.json"), `${JSON.stringify({
-    ...owner,
-    leaseExpiresAt: Date.now() + staleMs,
-  })}\n`, { encoding: "utf8", flag: "w", mode: 0o600 });
+  if (ownership?.owner) return sameOwner(expected, owner);
+  return owner?.token === token && !owner?.unresolved && !Number.isFinite(owner?.releasedAt);
+}
+
+async function markReleased(ownership) {
+  if (!ownership?.handle) return;
+  const releasedAt = Date.now();
+  const bytes = Buffer.from(ownerPayload(ownership.owner, { releasedAt }), "utf8");
+  await ownership.handle.write(bytes, 0, bytes.length, 0);
+  await ownership.handle.truncate(bytes.length);
+  await ownership.handle.sync();
+  ownership.owner.releasedAt = releasedAt;
+}
+
+async function closeOwnership(ownership) {
+  if (!ownership?.handle) return;
+  const handle = ownership.handle;
+  ownership.handle = null;
+  await handle.close();
+}
+
+async function removeOwnedEntry(lockPath, owner, {
+  removeOwnerPath = (value) => rm(value, { force: false }),
+  removeLockDirectory = rmdir,
+  retryDelaysMs = RELEASE_RETRY_DELAYS_MS,
+  wait = delay,
+  throwOnFailure = false,
+} = {}) {
+  if (owner?.format !== "token" || !owner.ownerPath) return false;
+  const removal = await retryTransientLockOperation(
+    () => removeOwnerPath(owner.ownerPath),
+    { retryDelaysMs, wait },
+  );
+  if (!removal.completed) {
+    if (throwOnFailure) throw removal.error;
+    return false;
+  }
+  if (removal.missing) return false;
+  await retryTransientLockOperation(
+    () => removeLockDirectory(lockPath),
+    { retryDelaysMs, wait },
+  );
   return true;
+}
+
+async function processIdentityState(owner, {
+  isProcessAlive = defaultProcessAlive,
+  processInstanceId = PROCESS_INSTANCE_ID,
+  processIdentityState: inspectIdentity = null,
+} = {}) {
+  if (Number.isFinite(owner?.releasedAt)) return "released";
+  if (typeof inspectIdentity === "function") {
+    const inspected = await inspectIdentity(owner);
+    if (["alive", "dead", "mismatch", "unknown"].includes(inspected)) return inspected;
+  }
+  if (!Number.isSafeInteger(owner?.pid) || owner.pid < 1) return "unknown";
+  if (!isProcessAlive(owner.pid)) return "dead";
+  if (owner.pid === process.pid
+      && owner.processInstanceId
+      && owner.processInstanceId !== processInstanceId) {
+    return "mismatch";
+  }
+  // A live PID whose exact start identity cannot be inspected is deliberately
+  // treated as live/unknown. Age or a missed heartbeat can never steal it.
+  return "alive";
+}
+
+async function createOwnership(lockPath, token, staleMs, processInstanceId) {
+  const fileName = ownerFileName(token);
+  const ownerPath = path.join(lockPath, fileName);
+  const owner = {
+    token,
+    pid: process.pid,
+    processInstanceId,
+    createdAt: Date.now(),
+    leaseExpiresAt: Date.now() + staleMs,
+    fileName,
+    ownerPath,
+    format: "token",
+  };
+  const handle = await open(ownerPath, "wx", 0o600);
+  try {
+    await handle.writeFile(ownerPayload(owner), "utf8");
+    await handle.sync();
+    return { lockPath, token, owner, handle };
+  } catch (error) {
+    await handle.close().catch(() => {});
+    await rm(ownerPath, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+async function retireStaleLock(lockPath, owner, options = {}) {
+  if (!owner) {
+    try {
+      await rmdir(lockPath);
+      return true;
+    } catch (error) {
+      if (["ENOENT", "ENOTEMPTY", "EEXIST", "EPERM", "EACCES", "EBUSY"].includes(error?.code)) return false;
+      throw error;
+    }
+  }
+  if (owner.unresolved) {
+    return null;
+  }
+  if (owner.format === "legacy") {
+    if (!["dead", "mismatch", "released"].includes(options.identityState)) return null;
+    const current = await readOwner(lockPath);
+    if (!sameOwnerIdentity(owner, current)) return false;
+    const quarantinePath = `${lockPath}.legacy-retired-${randomUUID()}`;
+    const moveLegacyLock = options.moveLegacyLock ?? rename;
+    const removeLegacyLock = options.removeLegacyLock
+      ?? ((value) => rm(value, { recursive: true, force: false }));
+    const moved = await retryTransientLockOperation(
+      () => moveLegacyLock(lockPath, quarantinePath),
+      { retryDelaysMs: options.retryDelaysMs, wait: options.wait },
+    );
+    if (!moved.completed || moved.missing) return false;
+    const quarantinedOwner = await readOwner(quarantinePath);
+    const quarantinedIdentity = quarantinedOwner && !quarantinedOwner.unresolved
+      ? await processIdentityState(quarantinedOwner, options)
+      : "unknown";
+    if (!sameOwnerIdentity(owner, quarantinedOwner)
+        || !["dead", "mismatch", "released"].includes(quarantinedIdentity)) {
+      const restored = await retryTransientLockOperation(
+        () => rename(quarantinePath, lockPath),
+        { retryDelaysMs: options.retryDelaysMs, wait: options.wait },
+      );
+      if (!restored.completed) {
+        throw new Error(`Legacy interprocess lock changed during quarantine; operator recovery required: ${lockPath}`);
+      }
+      return false;
+    }
+    const removed = await retryTransientLockOperation(
+      () => removeLegacyLock(quarantinePath),
+      { retryDelaysMs: options.retryDelaysMs, wait: options.wait },
+    );
+    if (!removed.completed) {
+      throw new Error(`Cannot remove quarantined legacy interprocess lock: ${quarantinePath}`);
+    }
+    return true;
+  }
+  if (owner.format !== "token") return null;
+  return removeOwnedEntry(lockPath, owner, options);
 }
 
 async function retryTransientLockOperation(operation, {
@@ -88,59 +278,33 @@ async function retryTransientLockOperation(operation, {
 }
 
 export async function releaseInterprocessLock(lockPath, token, {
-  renamePath = rename,
-  removePath = rm,
-  writeOwner = writeFile,
+  ownership = null,
+  beforeOwnerRemove = null,
+  removeOwnerPath,
+  removeLockDirectory,
   retryDelaysMs = RELEASE_RETRY_DELAYS_MS,
   wait = delay,
 } = {}) {
+  const held = ownership?.token === token ? ownership : null;
   const owner = await readOwner(lockPath);
-  if (owner?.token !== token) return false;
-
-  const safeToken = String(token || "unknown").replace(/[^A-Za-z0-9_-]/gu, "_").slice(0, 64);
-  const retiredPath = `${lockPath}.released-${Date.now()}-${safeToken}`;
-  const retirement = await retryTransientLockOperation(
-    () => renamePath(lockPath, retiredPath),
-    { retryDelaysMs, wait },
-  );
-  if (retirement.completed) {
-    if (!retirement.missing) {
-      await removePath(retiredPath, { recursive: true, force: true }).catch(() => {});
-    }
-    return true;
+  const expected = held?.owner ?? owner;
+  if (!expected || expected.unresolved || expected.token !== token || !sameOwner(expected, owner)) {
+    await closeOwnership(held).catch(() => {});
+    return false;
   }
-
-  const currentOwner = await readOwner(lockPath);
-  if (currentOwner?.token !== token) return false;
-  const recoverableOwner = `${JSON.stringify({
-    token,
-    pid: 0,
-    createdAt: 0,
-    releasedAt: Date.now(),
-  })}\n`;
-  const fallback = await retryTransientLockOperation(
-    () => writeOwner(path.join(lockPath, "owner.json"), recoverableOwner, {
-      encoding: "utf8",
-      flag: "w",
-      mode: 0o600,
-    }),
-    { retryDelaysMs, wait },
-  );
-  if (!fallback.completed) throw fallback.error;
-  return true;
-}
-
-async function quarantineStaleLock(lockPath, token) {
-  const safeToken = String(token || "unknown").replace(/[^A-Za-z0-9_-]/gu, "_").slice(0, 64);
-  const quarantined = `${lockPath}.stale-${Date.now()}-${safeToken}`;
   try {
-    await rename(lockPath, quarantined);
-  } catch (error) {
-    if (["ENOENT", "EEXIST", "EPERM", "EACCES", "EBUSY"].includes(error?.code)) return false;
-    throw error;
+    await markReleased(held);
+  } finally {
+    await closeOwnership(held);
   }
-  await rm(quarantined, { recursive: true, force: true }).catch(() => {});
-  return true;
+  await beforeOwnerRemove?.({ lockPath, owner: expected });
+  return removeOwnedEntry(lockPath, expected, {
+    removeOwnerPath,
+    removeLockDirectory,
+    retryDelaysMs,
+    wait,
+    throwOnFailure: true,
+  });
 }
 
 async function acquire(lockPath, {
@@ -151,7 +315,10 @@ async function acquire(lockPath, {
   isProcessAlive = defaultProcessAlive,
   tokenFactory = randomUUID,
   processInstanceId = PROCESS_INSTANCE_ID,
-  quarantine = quarantineStaleLock,
+  processIdentityState: inspectProcessIdentity = null,
+  quarantine = retireStaleLock,
+  moveLegacyLock = rename,
+  removeLegacyLock = null,
 } = {}) {
   const deadline = Date.now() + timeoutMs;
   const token = tokenFactory();
@@ -159,14 +326,7 @@ async function acquire(lockPath, {
     try {
       await mkdir(path.dirname(lockPath), { recursive: true });
       await mkdir(lockPath);
-      await writeFile(path.join(lockPath, "owner.json"), `${JSON.stringify({
-        token,
-        pid: process.pid,
-        processInstanceId,
-        createdAt: Date.now(),
-        leaseExpiresAt: Date.now() + staleMs,
-      })}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
-      return token;
+      return await createOwnership(lockPath, token, staleMs, processInstanceId);
     } catch (error) {
       const contention = ["EEXIST", "EPERM", "EACCES", "EBUSY", "ENOTEMPTY"]
         .includes(error?.code);
@@ -181,24 +341,32 @@ async function acquire(lockPath, {
       const ageMs = owner
         ? Date.now() - Number(owner.createdAt ?? 0)
         : Date.now() - Number(info?.mtimeMs ?? Date.now());
-      const hasOwnerPid = Number.isSafeInteger(owner?.pid) && owner.pid > 0;
-      const identityMatches = owner?.processInstanceId
-        ? owner.processInstanceId === processInstanceId
-        : true;
-      // mkdir followed by owner.json is necessarily a two-step protocol.  A
+      // mkdir followed by the immutable token-addressed owner file is a
+      // two-step protocol. A
       // directory without an owner is therefore protected by its mtime grace
-      // period; it must not be stolen while its creator is writing owner.json.
-      // The grace is intentionally shorter than the dead-owner threshold:
-      // recursive removal on Windows can remove owner.json and then leave the
-      // empty directory behind after a transient filesystem error.
-      const leaseExpired = Number.isFinite(owner?.leaseExpiresAt)
-        ? Date.now() >= owner.leaseExpiresAt
-        : ageMs >= staleMs;
-      const canRecover = hasOwnerPid
-        ? !isProcessAlive(owner.pid) || (leaseExpired && !identityMatches)
+      // period; it must not be stolen while its creator is writing that file.
+      // Recovery never relies on age once a durable owner identity exists.
+      const identityState = owner && !owner.unresolved
+        ? await processIdentityState(owner, {
+            isProcessAlive,
+            processInstanceId,
+            processIdentityState: inspectProcessIdentity,
+          })
+        : "unknown";
+      const canRecover = owner
+        ? ["dead", "mismatch", "released"].includes(identityState)
         : ageMs >= ownerlessStaleMs;
       if (canRecover) {
-        const quarantined = await quarantine(lockPath, owner?.token);
+        const quarantined = await quarantine(lockPath, owner, {
+          retryDelaysMs: [0],
+          wait: delay,
+          identityState,
+          isProcessAlive,
+          processInstanceId,
+          processIdentityState: inspectProcessIdentity,
+          moveLegacyLock,
+          removeLegacyLock,
+        });
         if (!quarantined) {
           if (Date.now() >= deadline) {
             throw new Error(`Cannot quarantine stale interprocess lock before deadline: ${lockPath}`);
@@ -221,17 +389,51 @@ export async function withInterprocessLocks(paths, operation, options = {}) {
   const localReleases = [];
   const acquired = [];
   let heartbeat = null;
+  const renewals = new Set();
+  const leaseController = new AbortController();
+  let leaseError = null;
+  const loseLease = (error) => {
+    if (leaseError) return;
+    leaseError = error instanceof Error ? error : new Error(String(error));
+    leaseController.abort(leaseError);
+  };
+  const assertOwned = async () => {
+    if (leaseError) throw leaseError;
+    const ownership = await Promise.all(acquired.map((record) => (
+      renewLease(record.lockPath, record.token, 0, record)
+    )));
+    const lostIndex = ownership.findIndex((owned) => !owned);
+    if (lostIndex >= 0) {
+      loseLease(new Error(`interprocess lock durable ownership was lost: ${acquired[lostIndex].lockPath}`));
+    }
+    if (leaseError) throw leaseError;
+  };
   try {
     for (const lockPath of lockPaths) {
       localReleases.push(await acquireInProcessLock(lockPath));
     }
     for (const lockPath of lockPaths) {
-      acquired.push({ lockPath, token: await acquire(lockPath, options) });
+      acquired.push(await acquire(lockPath, options));
     }
     const staleMs = Math.max(500, Number(options.staleMs) || 60_000);
+    const renew = typeof options.renewLease === "function" ? options.renewLease : renewLease;
     heartbeat = setInterval(() => {
-      for (const { lockPath, token } of acquired) {
-        void renewLease(lockPath, token, staleMs).catch(() => {});
+      for (const record of acquired) {
+        const renewal = Promise.resolve(renew(
+          record.lockPath,
+          record.token,
+          staleMs,
+          record,
+        )).then((renewed) => {
+          renewals.delete(renewal);
+          if (!renewed) loseLease(new Error(`interprocess lock lease ownership was lost: ${record.lockPath}`));
+        }, (error) => {
+          renewals.delete(renewal);
+          loseLease(new Error(
+            `interprocess lock lease renewal failed for ${record.lockPath}: ${error.message}`,
+          ));
+        });
+        renewals.add(renewal);
       }
     }, Math.max(100, Math.min(10_000, Math.floor(staleMs / 3))));
     heartbeat.unref?.();
@@ -243,30 +445,48 @@ export async function withInterprocessLocks(paths, operation, options = {}) {
     } catch {
       // Lock diagnostics are advisory and cannot change the protected operation.
     }
-    const result = await operation();
+    const result = await operation({
+      signal: leaseController.signal,
+      assertOwned,
+      ownerId: acquired.map(({ lockPath, token }) => `${lockPath}:${token}`).join("|"),
+    });
+    if (heartbeat) {
+      clearInterval(heartbeat);
+      heartbeat = null;
+    }
+    await Promise.allSettled([...renewals]);
+    await assertOwned();
     const releaseErrors = [];
-    await Promise.all(acquired.reverse().map(async ({ lockPath, token }) => {
+    const releasing = acquired.splice(0).reverse();
+    await Promise.all(releasing.map(async (record) => {
       try {
-        const released = await releaseInterprocessLock(lockPath, token, options);
-        if (!released) throw new Error(`interprocess lock ownership changed before release: ${lockPath}`);
+        const released = await releaseInterprocessLock(record.lockPath, record.token, {
+          ...options,
+          ownership: record,
+        });
+        if (!released) throw new Error(`interprocess lock ownership changed before release: ${record.lockPath}`);
       } catch (error) {
-        releaseErrors.push({ lockPath, error });
+        releaseErrors.push({ lockPath: record.lockPath, error });
       }
     }));
-    acquired.length = 0;
     if (releaseErrors.length) {
       try { options.onReleaseError?.(releaseErrors); } catch {}
     }
     return result;
   } finally {
     if (heartbeat) clearInterval(heartbeat);
+    await Promise.allSettled([...renewals]);
     try {
-      await Promise.all(acquired.reverse().map(async ({ lockPath, token }) => {
+      const releasing = acquired.splice(0).reverse();
+      await Promise.all(releasing.map(async (record) => {
         try {
-          const released = await releaseInterprocessLock(lockPath, token, options);
-          if (!released) throw new Error(`interprocess lock ownership changed before release: ${lockPath}`);
+          const released = await releaseInterprocessLock(record.lockPath, record.token, {
+            ...options,
+            ownership: record,
+          });
+          if (!released) throw new Error(`interprocess lock ownership changed before release: ${record.lockPath}`);
         } catch (error) {
-          try { options.onReleaseError?.([{ lockPath, error }]); } catch {}
+          try { options.onReleaseError?.([{ lockPath: record.lockPath, error }]); } catch {}
         }
       }));
     } finally {

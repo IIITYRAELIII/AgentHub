@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { createTaskBoardMutationOwner } from "../../src/application/sqlite-mutation-owner.mjs";
 import { WorkspaceReleaseService } from "../../src/application/workspace-release-service.mjs";
 
 function fixture(plan = {
@@ -10,12 +11,13 @@ function fixture(plan = {
 }, { primarySync = null } = {}) {
   const calls = [];
   const service = new WorkspaceReleaseService({
-    store: {
+    store: createTaskBoardMutationOwner({
+      runMutation: (operation) => Promise.resolve().then(operation),
       completeRelease: (workspaceId, options) => {
         calls.push(["complete", workspaceId, options]);
         return { workspaceId, released: plan.ready };
       },
-    },
+    }),
     releasePlanner: { plan: async () => plan },
     releaseGitWorkspaces: {
       frozenCandidate: async (repositoryRoot) => ({
@@ -40,6 +42,15 @@ function fixture(plan = {
   });
   return { calls, service };
 }
+
+test("release completion rejects a raw Task store dependency", () => {
+  assert.throws(() => new WorkspaceReleaseService({
+    store: { completeRelease() {} },
+    releasePlanner: { plan() {} },
+    releaseGitWorkspaces: { frozenCandidate() {}, synchronizePublishedPrimary() {} },
+    verifyPublication() {},
+  }), /Task mutation owner facade/u);
+});
 
 test("release completion requires explicit deployment evidence before changing the registry", async () => {
   const { calls, service } = fixture();

@@ -204,7 +204,7 @@ export class CodexTerraVoiceTranscriber {
       }
       const completedThreadId = parseTaskClassifierThreadId(result.stdout) ?? threadId;
       if (!completedThreadId) throw new Error("Codex Terra не вернул идентификатор Thread");
-      this.#bindThread(completedThreadId);
+      await this.#bindThread(completedThreadId);
       return parseVoiceTranscriptResult(await readFile(outputFile, "utf8"));
     } finally {
       await rm(directory, { recursive: true, force: true }).catch(() => {});
@@ -222,9 +222,9 @@ export class CodexTerraVoiceTranscriber {
     return active?.provider === "codex" ? active.threadId : null;
   }
 
-  #bindThread(threadId) {
+  async #bindThread(threadId) {
     if (!this.workspaceCatalog || !this.streamId) return;
-    this.workspaceCatalog.rebindThread(
+    await this.workspaceCatalog.rebindThread(
       { provider: "codex", threadId },
       {
         streamId: this.streamId,
@@ -232,6 +232,6 @@ export class CodexTerraVoiceTranscriber {
         source: "created",
       },
     );
-    this.workspaceCatalog.setMeta(THREAD_META_KEY, threadId);
+    await this.workspaceCatalog.setMeta(THREAD_META_KEY, threadId);
   }
 }
