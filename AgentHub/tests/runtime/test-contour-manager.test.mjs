@@ -356,6 +356,27 @@ test("Codex test providers are copied only into the marker-owned Test Contour ro
   }
 });
 
+test("Fake Codex recovery initializes a missing Test Contour data directory", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-fake-data-"));
+  try {
+    const { paths } = await installTestContour({ root, run: async () => null });
+    const markerBefore = await readFile(paths.markerFile, "utf8");
+    await rm(paths.dataDir, { recursive: true, force: true });
+
+    const recovery = await reconcileTestContourFakeCodexState({ root });
+
+    assert.equal(recovery.status, "ready");
+    assert.equal(recovery.recoveredThreadCount, 0);
+    assert.deepEqual(
+      JSON.parse(await readFile(paths.fakeCodexStateFile, "utf8")).threads,
+      [],
+    );
+    assert.equal(await readFile(paths.markerFile, "utf8"), markerBefore);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("Fake Codex recovery recreates the exact Thread and preserves five FIFO commands", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-fake-recovery-"));
   const threadId = "10000000-0000-4000-8000-000000000020";
