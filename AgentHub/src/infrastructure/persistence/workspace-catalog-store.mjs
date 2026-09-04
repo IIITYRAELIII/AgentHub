@@ -30,9 +30,8 @@ import {
   withReleasePrimaryWorkspaceRule,
 } from "../../domain/release-primary-workspace-policy.mjs";
 
-const SCHEMA_VERSION = 12;
+const SCHEMA_VERSION = 13;
 export const DEVELOPER_RULES_MAX_BYTES = 32 * 1024;
-export const WORKSPACE_ARCHIVE_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
 const SOURCES = new Set(["created", "discovered", "migration", "rebirth"]);
 const DEVELOPER_RULE_SCOPES = new Set(["workspace", "stream"]);
 const INTERSTREAM_MESSAGE_TOOLS = new Set([
@@ -63,6 +62,19 @@ function configure(database) {
       archived_at_ms INTEGER,
       purge_after_ms INTEGER
     ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS hub_workspace_deletion_fences (
+      workspace_id TEXT PRIMARY KEY,
+      confirmed_name TEXT NOT NULL,
+      deleted_at_ms INTEGER NOT NULL
+    ) WITHOUT ROWID;
+    CREATE TRIGGER IF NOT EXISTS hub_workspaces_no_reuse_after_permanent_delete
+      BEFORE INSERT ON hub_workspaces
+      WHEN EXISTS (
+        SELECT 1 FROM hub_workspace_deletion_fences WHERE workspace_id = NEW.id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'workspace identity was permanently deleted');
+      END;
     CREATE INDEX IF NOT EXISTS hub_workspaces_updated_idx
       ON hub_workspaces(updated_at_ms DESC);
     CREATE TABLE IF NOT EXISTS hub_streams (
@@ -241,6 +253,13 @@ function safeIdentifier(value, name) {
   return id;
 }
 
+function workspaceConflict(message) {
+  const error = new Error(message);
+  error.code = "WORKSPACE_LIFECYCLE_CONFLICT";
+  error.statusCode = 409;
+  return error;
+}
+
 function workspaceFolderName(value) {
   return String(value ?? "").replace(/\s+/gu, " ").trim().slice(0, 80);
 }
@@ -328,10 +347,10 @@ export class WorkspaceCatalogStore {
   async load() {
     await this.#open();
     if (this.#readOnly) return this;
+    this.#migratePermanentWorkspaceArchive();
     this.#migrateReleaseWorkflowSettings();
     this.#migrateWorkspaceDeveloperRules();
     this.#migrateArchitectStreamSettings();
-    this.purgeExpiredWorkspaces();
     this.ensureExperiments();
     return this;
   }
@@ -424,6 +443,20 @@ export class WorkspaceCatalogStore {
       this.#database.prepare(
         "INSERT INTO hub_workspace_catalog_meta (key, value) VALUES (?, ?)",
       ).run(key, "completed");
+    });
+  }
+
+  #migratePermanentWorkspaceArchive() {
+    this.#transaction(() => {
+      this.#database.prepare(`
+        UPDATE hub_workspaces SET purge_after_ms = NULL WHERE purge_after_ms IS NOT NULL
+      `).run();
+      this.#database.exec("DROP INDEX IF EXISTS hub_workspaces_archive_expiry_idx");
+      this.#database.prepare(`
+        INSERT INTO hub_workspace_catalog_meta (key, value)
+        VALUES ('workspace_archive_permanent_v1', 'completed')
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+      `).run();
     });
   }
 
@@ -577,11 +610,10 @@ export class WorkspaceCatalogStore {
     const archivedAtMs = this.#nowMs();
     this.#database.prepare(`
       UPDATE hub_workspaces
-      SET archived_at_ms = ?, purge_after_ms = ?, updated_at_ms = ?
+      SET archived_at_ms = ?, purge_after_ms = NULL, updated_at_ms = ?
       WHERE id = ?
     `).run(
       archivedAtMs,
-      archivedAtMs + WORKSPACE_ARCHIVE_RETENTION_MS,
       archivedAtMs,
       id,
     );
@@ -602,7 +634,6 @@ export class WorkspaceCatalogStore {
   }
 
   archivedWorkspaces() {
-    this.purgeExpiredWorkspaces();
     return this.#database.prepare(`
       SELECT w.id, w.name, w.archived_at_ms, w.purge_after_ms,
         COUNT(DISTINCT s.id) AS stream_count,
@@ -610,26 +641,58 @@ export class WorkspaceCatalogStore {
       FROM hub_workspaces w
       LEFT JOIN hub_streams s ON s.workspace_id = w.id
       LEFT JOIN hub_threads t ON t.stream_id = s.id
-      WHERE w.archived_at_ms IS NOT NULL AND w.purge_after_ms > ?
+      WHERE w.archived_at_ms IS NOT NULL
       GROUP BY w.id
-      ORDER BY w.purge_after_ms, w.name, w.id
-    `).all(this.#nowMs()).map((row) => ({
+      ORDER BY w.archived_at_ms DESC, w.name, w.id
+    `).all().map((row) => ({
       id: String(row.id),
       name: String(row.name),
       archivedAtMs: Number(row.archived_at_ms),
-      purgeAfterMs: Number(row.purge_after_ms),
+      purgeAfterMs: row.purge_after_ms == null ? null : Number(row.purge_after_ms),
       streamCount: Number(row.stream_count) || 0,
       threadCount: Number(row.thread_count) || 0,
     }));
   }
 
-  purgeExpiredWorkspaces() {
-    if (this.#readOnly) return 0;
-    const result = this.#database.prepare(`
-      DELETE FROM hub_workspaces
-      WHERE archived_at_ms IS NOT NULL AND purge_after_ms <= ?
-    `).run(this.#nowMs());
-    return Number(result.changes) || 0;
+  deleteArchivedWorkspace(workspaceId, confirmationName) {
+    const id = safeIdentifier(workspaceId, "workspace id");
+    const confirmedName = String(confirmationName ?? "");
+    return this.#transaction(() => {
+      const fence = this.#database.prepare(
+        "SELECT confirmed_name FROM hub_workspace_deletion_fences WHERE workspace_id = ?",
+      ).get(id);
+      if (fence) {
+        if (confirmedName !== String(fence.confirmed_name)) {
+          throw workspaceConflict("workspace confirmation name does not match");
+        }
+        return { id, name: String(fence.confirmed_name), deleted: true };
+      }
+      const current = this.#database.prepare("SELECT * FROM hub_workspaces WHERE id = ?").get(id);
+      if (!current) throw new Error(`workspace not found: ${id}`);
+      if (current.kind === "system") throw workspaceConflict("system workspace cannot be deleted");
+      if (current.archived_at_ms == null) throw workspaceConflict("workspace must be archived before permanent deletion");
+      if (confirmedName !== String(current.name)) {
+        throw workspaceConflict("workspace confirmation name does not match");
+      }
+      const taskTable = this.#database.prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hub_board_tasks'",
+      ).get();
+      if (taskTable && this.#database.prepare(
+        "SELECT 1 FROM hub_board_tasks WHERE workspace_id = ? LIMIT 1",
+      ).get(id)) throw workspaceConflict("Сначала переместите или удалите связанные Dashboard Task");
+      const deletedAtMs = this.#nowMs();
+      this.#database.prepare(`
+        INSERT INTO hub_workspace_deletion_fences (workspace_id, confirmed_name, deleted_at_ms)
+        VALUES (?, ?, ?)
+      `).run(id, current.name, deletedAtMs);
+      const deleted = this.#database.prepare(`
+        DELETE FROM hub_workspaces
+        WHERE id = ? AND name = ? AND kind = 'user' AND system_key IS NULL
+          AND archived_at_ms IS NOT NULL AND updated_at_ms = ?
+      `).run(id, current.name, current.updated_at_ms);
+      if (Number(deleted.changes) !== 1) throw workspaceConflict("workspace permanent deletion failed");
+      return { id, name: String(current.name), deleted: true };
+    });
   }
 
   releaseWorkflowEnabledForThread(value) {
@@ -1302,7 +1365,6 @@ export class WorkspaceCatalogStore {
   }
 
   hierarchy() {
-    this.purgeExpiredWorkspaces();
     const workspaces = this.#database.prepare(`
       SELECT * FROM hub_workspaces WHERE archived_at_ms IS NULL
       ORDER BY CASE WHEN system_key = '${EXPERIMENTS_SYSTEM_KEY}' THEN 1 ELSE 0 END,

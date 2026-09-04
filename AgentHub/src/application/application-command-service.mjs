@@ -24,7 +24,7 @@ export function createApplicationCommandService({ handlers }) {
   const required = [
     "selectTask", "createTask", "rotateStream", "renameTask", "archiveTask",
     "updateSetting", "cancelRun", "resolveApproval",
-    "renameWorkspace", "updateWorkspaceSettings", "moveWorkspaceToFolder", "renameWorkspaceFolder", "updateWorkspaceDeveloperRules", "readWorkspaceReleasePlan", "completeWorkspaceRelease", "createWorkspace", "archiveWorkspace", "restoreWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "createStream",
+    "renameWorkspace", "updateWorkspaceSettings", "moveWorkspaceToFolder", "renameWorkspaceFolder", "updateWorkspaceDeveloperRules", "readWorkspaceReleasePlan", "completeWorkspaceRelease", "createWorkspace", "archiveWorkspace", "restoreWorkspace", "deleteArchivedWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "createStream",
     "renameStream", "archiveStream", "updateStreamSettings", "updateStreamDeveloperRules", "moveStream",
   ];
   for (const name of required) {
@@ -129,6 +129,10 @@ export function createApplicationCommandService({ handlers }) {
     .register("workspace.restore", {
       mutating: true, target: "none", lane: "global",
       handler: ({ payload }) => handlers.restoreWorkspace(payload),
+    })
+    .register("workspace.delete-archived", {
+      mutating: true, target: "none", lane: "global",
+      handler: ({ payload }) => handlers.deleteArchivedWorkspace(payload),
     })
     .register("workspace.create-from-stream", {
       mutating: true, target: "none", lane: "global",

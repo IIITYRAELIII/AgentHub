@@ -51,6 +51,10 @@ export function createWorkspaceActions(services) {
       () => services.workspaceCatalogService.restoreWorkspace(params),
       { resultKey: "restoredWorkspace" },
     ),
+    deleteArchivedWorkspace: (params) => services.workspaceMutation(
+      () => services.workspaceCatalogService.deleteArchivedWorkspace(params),
+      { resultKey: "deletedWorkspace" },
+    ),
     createWorkspaceFromStream: (params) => services.workspaceMutation(
       () => {
         const sourceWorkspaceId = services.workspaceCatalog.stream(params?.streamId)?.workspaceId;

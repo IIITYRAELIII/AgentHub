@@ -167,7 +167,7 @@ test("Desktop application router exposes runtime health without a Web server", a
   assert.deepEqual(result.params, { maxResponseBytes: 3_500_000 });
 });
 
-test("Desktop application router archives and restores a Workspace by stable id", async () => {
+test("Desktop application router archives, restores, and exactly deletes a Workspace", async () => {
   const calls = [];
   const control = router(calls);
   for (const action of ["archive-workspace", "restore-workspace"]) {
@@ -177,10 +177,17 @@ test("Desktop application router archives and restores a Workspace by stable id"
       context: { source: "desktop", userId: "7" },
     });
   }
+  await control.handleDesktopControl({
+    action: "delete-archived-workspace",
+    params: { workspaceId: "workspace-1", confirmationName: "Exact name" },
+    context: { source: "desktop", userId: "7" },
+  });
   assert.deepEqual(calls.map(([type, payload]) => [type, payload.workspaceId]), [
     ["workspace.archive", "workspace-1"],
     ["workspace.restore", "workspace-1"],
+    ["workspace.delete-archived", "workspace-1"],
   ]);
+  assert.equal(calls[2][1].confirmationName, "Exact name");
 });
 
 test("Desktop application router renames a Workspace folder atomically", async () => {

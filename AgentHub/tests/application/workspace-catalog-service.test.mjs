@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { RunCoordinator } from "../../src/application/run-coordinator.mjs";
 import { WorkspaceCatalogService } from "../../src/application/workspace-catalog-service.mjs";
+import { TaskRunRegistry } from "../../src/domain/task-runs.mjs";
 
-function fixture({ taskBoard = null } = {}) {
+function fixture({ taskBoard = null, blockingRunForWorkspace = () => null } = {}) {
   const calls = [];
   const store = {
     hierarchy: () => [{ id: "workspace-1" }],
@@ -20,6 +22,7 @@ function fixture({ taskBoard = null } = {}) {
     }),
     archiveWorkspace: (...args) => (calls.push(["archiveWorkspace", ...args]), { id: args[0], archivedAtMs: 1 }),
     restoreWorkspace: (...args) => (calls.push(["restoreWorkspace", ...args]), { id: args[0], archivedAtMs: null }),
+    deleteArchivedWorkspace: (...args) => (calls.push(["deleteArchivedWorkspace", ...args]), { id: args[0], deleted: true }),
     archivedWorkspaces: () => [{ id: "workspace-archived" }],
     workspaceDeveloperRules: (...args) => (calls.push(["workspaceDeveloperRules", ...args]), { content: "workspace" }),
     updateWorkspaceDeveloperRules: (...args) => (calls.push(["updateWorkspaceDeveloperRules", ...args]), { content: args[1] }),
@@ -44,7 +47,12 @@ function fixture({ taskBoard = null } = {}) {
   const releaseCompleter = {
     completeRelease: (params) => (calls.push(["completeRelease", params]), params),
   };
-  return { calls, service: new WorkspaceCatalogService({ store, taskBoard, releasePlanner, releaseCompleter }) };
+  return {
+    calls,
+    service: new WorkspaceCatalogService({
+      store, taskBoard, releasePlanner, releaseCompleter, blockingRunForWorkspace,
+    }),
+  };
 }
 
 test("createWorkspace creates its first empty Stream and comment atomically", () => {
@@ -123,14 +131,287 @@ test("Workspace folder rename delegates one atomic catalog mutation", () => {
   assert.deepEqual(calls.at(-1), ["renameWorkspaceFolder", "Клиенты", "Заказчики"]);
 });
 
+test("permanent delete checks the production active-run owner immediately before persistence", () => {
+  const { service, calls } = fixture({
+    blockingRunForWorkspace: (workspaceId) => (workspaceId === "workspace-running" ? { id: "run-1" } : null),
+  });
+  assert.throws(
+    () => service.deleteArchivedWorkspace({
+      workspaceId: "workspace-running", confirmationName: "Running",
+    }),
+    /завершите активные ходы/u,
+  );
+  assert.equal(calls.some(([name]) => name === "deleteArchivedWorkspace"), false);
+});
+
+test("pending direct and deferred admissions block permanent delete before begin", async () => {
+  for (const entry of ["direct", "deferred"]) {
+    let enterPreflight;
+    let releasePreflight;
+    const preflightEntered = new Promise((resolve) => { enterPreflight = resolve; });
+    const preflight = new Promise((resolve) => { releasePreflight = resolve; });
+    const taskRuns = new TaskRunRegistry();
+    let launchCount = 0;
+    let deleteCount = 0;
+    const coordinator = new RunCoordinator({
+      taskRuns,
+      providers: { call: async () => null },
+      externalActivity: async () => {
+        enterPreflight();
+        return preflight;
+      },
+      repositoryConflict: async () => null,
+      deferInput: async (input, temporaryFiles, options) => ({
+        deferred: true,
+        id: `deferred-${entry}`,
+        item: {
+          ...options.target,
+          input,
+          temporaryFiles,
+          clientUserMessageId: options.clientUserMessageId,
+        },
+      }),
+      beginRun: async () => { throw new Error("held admission cancelled before begin"); },
+      rollbackAdmission: async () => {},
+      launchTurn: async () => { launchCount += 1; },
+      rekeyDeferredOccupancy: entry !== "direct" ? async () => {
+        enterPreflight();
+        await preflight;
+        return { changed: false };
+      } : null,
+    });
+    const service = new WorkspaceCatalogService({
+      store: {
+        hierarchy: () => [],
+        deleteArchivedWorkspace: () => {
+          deleteCount += 1;
+          return { id: "workspace-1", deleted: true };
+        },
+      },
+      blockingRunForWorkspace: (workspaceId) => (
+        workspaceId === "workspace-1" && coordinator.hasPendingAdmission((target) => (
+          target.streamId === "stream-1"
+        )) ? { status: "admitting" } : null
+      ),
+    });
+    const target = {
+      provider: "codex",
+      projectRoot: "C:\\Project",
+      streamId: "stream-1",
+      threadId: "thread-1",
+    };
+    let admission;
+    if (entry === "direct") {
+      admission = coordinator.start("message", [], { target });
+    } else if (entry === "deferred") {
+      admission = coordinator.startDeferred({
+        ...target,
+        input: "message",
+        clientUserMessageId: "message-1",
+      });
+    }
+
+    await preflightEntered;
+    assert.equal(coordinator.hasPendingAdmission((candidate) => candidate.streamId === target.streamId), true);
+    assert.throws(
+      () => service.deleteArchivedWorkspace({
+        workspaceId: "workspace-1",
+        confirmationName: "Workspace",
+      }),
+      /завершите активные ходы/u,
+    );
+    releasePreflight(entry === "direct"
+      ? { state: "active", executionOwner: "external" }
+      : null);
+    const result = await admission.catch((error) => error);
+    if (entry !== "direct") assert.match(result.message, /cancelled before begin/u);
+    else assert.equal(result.started, undefined);
+    assert.equal(coordinator.hasPendingAdmission(() => true), false);
+    assert.equal(taskRuns.size, 0);
+    assert.equal(launchCount, 0);
+    assert.equal(deleteCount, 0);
+  }
+});
+
+test("durable client intake blocks delete until its one scheduled run is admitted", async () => {
+  let enterPersistence;
+  let releasePersistence;
+  const persistenceEntered = new Promise((resolve) => { enterPersistence = resolve; });
+  const persistence = new Promise((resolve) => { releasePersistence = resolve; });
+  const taskRuns = new TaskRunRegistry();
+  let launchCount = 0;
+  let deleteCount = 0;
+  let workspaceExists = true;
+  let scheduledAdmission = null;
+  let coordinator;
+  coordinator = new RunCoordinator({
+    taskRuns,
+    providers: { call: async () => null },
+    externalActivity: async () => ({ state: "inactive", executionOwner: null }),
+    repositoryConflict: async () => null,
+    deferInput: async (input, temporaryFiles, options) => {
+      enterPersistence();
+      await persistence;
+      return {
+        deferred: true,
+        id: "deferred-client",
+        item: {
+          ...options.target,
+          input,
+          temporaryFiles,
+          clientUserMessageId: options.clientUserMessageId,
+        },
+      };
+    },
+    beginRun: async (input, target) => taskRuns.add({
+      id: "run-client",
+      ...target,
+      input,
+      status: "running",
+    }),
+    rollbackAdmission: async (run) => { taskRuns.remove(run); },
+    launchTurn: async () => {
+      assert.equal(workspaceExists, true);
+      launchCount += 1;
+    },
+    scheduleDeferred: (item) => {
+      scheduledAdmission = coordinator.startDeferred(item);
+    },
+    rekeyDeferredOccupancy: async () => ({ changed: false }),
+  });
+  const service = new WorkspaceCatalogService({
+    store: {
+      hierarchy: () => [],
+      deleteArchivedWorkspace: () => {
+        workspaceExists = false;
+        deleteCount += 1;
+        return { id: "workspace-1", deleted: true };
+      },
+    },
+    blockingRunForWorkspace: (workspaceId) => (
+      workspaceId === "workspace-1" && (
+        taskRuns.values().some((run) => run.streamId === "stream-1")
+        || coordinator.hasPendingAdmission((target) => target.streamId === "stream-1")
+      ) ? { status: "admitting" } : null
+    ),
+  });
+  const target = {
+    provider: "codex",
+    projectRoot: "C:\\Project",
+    streamId: "stream-1",
+    threadId: "thread-1",
+  };
+
+  const intake = coordinator.acceptClientInput({
+    input: "message",
+    target,
+    clientUserMessageId: "message-1",
+  });
+  await persistenceEntered;
+  assert.equal(coordinator.hasPendingAdmission((candidate) => candidate.streamId === target.streamId), true);
+  assert.throws(
+    () => service.deleteArchivedWorkspace({
+      workspaceId: "workspace-1",
+      confirmationName: "Workspace",
+    }),
+    /завершите активные ходы/u,
+  );
+
+  releasePersistence();
+  const accepted = await intake;
+  assert.equal(accepted.accepted, true);
+  assert.ok(scheduledAdmission);
+  await scheduledAdmission;
+  assert.equal(coordinator.hasPendingAdmission(() => true), false);
+  assert.equal(taskRuns.size, 1);
+  assert.equal(launchCount, 1);
+  assert.equal(deleteCount, 0);
+  assert.equal(workspaceExists, true);
+});
+
+test("a queued client item cannot launch after permanent delete wins before scheduling", async () => {
+  let scheduledItem = null;
+  let launchCount = 0;
+  let workspaceExists = true;
+  const taskRuns = new TaskRunRegistry();
+  const coordinator = new RunCoordinator({
+    taskRuns,
+    providers: { call: async () => null },
+    externalActivity: async () => ({ state: "inactive", executionOwner: null }),
+    repositoryConflict: async () => null,
+    deferInput: async (input, temporaryFiles, options) => ({
+      deferred: true,
+      id: "deferred-client",
+      item: {
+        ...options.target,
+        input,
+        temporaryFiles,
+        clientUserMessageId: options.clientUserMessageId,
+      },
+    }),
+    beginRun: async () => {
+      if (!workspaceExists) {
+        const error = new Error("Run target Workspace or Stream no longer exists");
+        error.code = "RUN_TARGET_NOT_FOUND";
+        throw error;
+      }
+      return assert.fail("deleted Stream must fail before run registration");
+    },
+    rollbackAdmission: async () => {},
+    launchTurn: async () => { launchCount += 1; },
+    scheduleDeferred: (item) => { scheduledItem = item; },
+    rekeyDeferredOccupancy: async () => ({ changed: false }),
+  });
+  const service = new WorkspaceCatalogService({
+    store: {
+      hierarchy: () => [],
+      deleteArchivedWorkspace: () => {
+        workspaceExists = false;
+        return { id: "workspace-1", deleted: true };
+      },
+    },
+    blockingRunForWorkspace: () => (
+      coordinator.hasPendingAdmission(() => true) ? { status: "admitting" } : null
+    ),
+  });
+  const target = {
+    provider: "codex",
+    projectRoot: "C:\\Project",
+    streamId: "stream-1",
+    threadId: "thread-1",
+  };
+
+  await coordinator.acceptClientInput({
+    input: "message",
+    target,
+    clientUserMessageId: "message-1",
+  });
+  assert.ok(scheduledItem);
+  assert.equal(coordinator.hasPendingAdmission(() => true), false);
+  assert.equal(service.deleteArchivedWorkspace({
+    workspaceId: "workspace-1",
+    confirmationName: "Workspace",
+  }).deleted, true);
+  await assert.rejects(
+    coordinator.startDeferred(scheduledItem),
+    (error) => error?.code === "RUN_TARGET_NOT_FOUND",
+  );
+  assert.equal(taskRuns.size, 0);
+  assert.equal(launchCount, 0);
+});
+
 test("Workspace archive and restore keep the stable Workspace identity", () => {
   const { service, calls } = fixture();
   assert.equal(service.archiveWorkspace({ workspaceId: "workspace-1" }).archivedAtMs, 1);
   assert.equal(service.restoreWorkspace({ workspaceId: "workspace-1" }).archivedAtMs, null);
+  assert.equal(service.deleteArchivedWorkspace({
+    workspaceId: "workspace-1", confirmationName: "Agent HUB",
+  }).deleted, true);
   assert.deepEqual(service.archivedWorkspaces(), [{ id: "workspace-archived" }]);
-  assert.deepEqual(calls.slice(-2), [
+  assert.deepEqual(calls.slice(-3), [
     ["archiveWorkspace", "workspace-1"],
     ["restoreWorkspace", "workspace-1"],
+    ["deleteArchivedWorkspace", "workspace-1", "Agent HUB"],
   ]);
 });
 

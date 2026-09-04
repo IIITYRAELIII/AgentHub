@@ -10,11 +10,18 @@ function requiredStore(value) {
 export class WorkspaceCatalogService {
   #store;
 
-  constructor({ store, taskBoard = null, releasePlanner = null, releaseCompleter = null } = {}) {
+  constructor({
+    store,
+    taskBoard = null,
+    releasePlanner = null,
+    releaseCompleter = null,
+    blockingRunForWorkspace = () => null,
+  } = {}) {
     this.#store = requiredStore(store);
     this.taskBoard = taskBoard;
     this.releasePlanner = releasePlanner;
     this.releaseCompleter = releaseCompleter;
+    this.blockingRunForWorkspace = blockingRunForWorkspace;
   }
 
   hierarchy() {
@@ -53,6 +60,16 @@ export class WorkspaceCatalogService {
 
   restoreWorkspace({ workspaceId } = {}) {
     return this.#store.restoreWorkspace(workspaceId);
+  }
+
+  deleteArchivedWorkspace({ workspaceId, confirmationName } = {}) {
+    if (this.blockingRunForWorkspace(String(workspaceId ?? "").trim())) {
+      const error = new Error("Сначала завершите активные ходы в этом Workspace");
+      error.code = "WORKSPACE_LIFECYCLE_CONFLICT";
+      error.statusCode = 409;
+      throw error;
+    }
+    return this.#store.deleteArchivedWorkspace(workspaceId, confirmationName);
   }
 
   archivedWorkspaces() {

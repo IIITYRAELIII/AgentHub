@@ -73,6 +73,7 @@ export function createDesktopCommandComposition({
       createWorkspace: workspaceActions.createWorkspace,
       archiveWorkspace: workspaceActions.archiveWorkspace,
       restoreWorkspace: workspaceActions.restoreWorkspace,
+      deleteArchivedWorkspace: workspaceActions.deleteArchivedWorkspace,
       createWorkspaceFromStream: workspaceActions.createWorkspaceFromStream,
       mergeWorkspaces: workspaceActions.mergeWorkspaces,
       createStream: workspaceActions.createStream,

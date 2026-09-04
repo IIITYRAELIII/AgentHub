@@ -1184,8 +1184,9 @@ export class MiniAppServer {
           acceptEncoding: request.headers["accept-encoding"],
         });
       } catch (error) {
-        this.#reportUnexpected(error, "control");
-        json(response, 400, { ok: false, error: String(error?.message ?? error) }, method);
+        const statusCode = Number(error?.statusCode) === 409 ? 409 : 400;
+        if (statusCode !== 409) this.#reportUnexpected(error, "control");
+        json(response, statusCode, { ok: false, error: String(error?.message ?? error) }, method);
       }
       return;
     }

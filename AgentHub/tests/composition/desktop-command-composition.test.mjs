@@ -13,12 +13,12 @@ function dependencyProxy(overrides = {}) {
   });
 }
 
-test("desktop command composition exposes Workspace archive and restore commands", async () => {
+test("desktop command composition exposes Workspace archive lifecycle commands", async () => {
   const calls = [];
   const workspaceActions = Object.fromEntries([
     "renameWorkspace", "updateWorkspaceSettings", "moveWorkspaceToFolder", "renameWorkspaceFolder", "updateWorkspaceDeveloperRules",
     "readWorkspaceReleasePlan", "completeWorkspaceRelease", "createWorkspace",
-    "archiveWorkspace", "restoreWorkspace", "createWorkspaceFromStream", "mergeWorkspaces",
+    "archiveWorkspace", "restoreWorkspace", "deleteArchivedWorkspace", "createWorkspaceFromStream", "mergeWorkspaces",
     "createStream", "renameStream", "archiveStream", "updateStreamSettings",
     "updateStreamDeveloperRules", "moveStream",
   ].map((name) => [name, (params) => {
@@ -46,9 +46,15 @@ test("desktop command composition exposes Workspace archive and restore commands
     { workspaceId: "workspace-1" },
     { source: "desktop", userId: "7" },
   );
+  await composition.applicationCommands.dispatch(
+    "workspace.delete-archived",
+    { workspaceId: "workspace-1", confirmationName: "Agent HUB" },
+    { source: "desktop", userId: "7" },
+  );
 
   assert.deepEqual(calls, [
     { name: "archiveWorkspace", params: { workspaceId: "workspace-1" } },
     { name: "restoreWorkspace", params: { workspaceId: "workspace-1" } },
+    { name: "deleteArchivedWorkspace", params: { workspaceId: "workspace-1", confirmationName: "Agent HUB" } },
   ]);
 });

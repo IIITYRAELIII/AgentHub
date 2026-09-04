@@ -26,6 +26,12 @@
       "paths": ["assets/web-app/**", "src/interfaces/desktop/desktop-read-model-service.mjs", "src/interfaces/desktop/desktop-task-service.mjs", "src/infrastructure/persistence/task-read-state-store.mjs"]
     },
     {
+      "id": "SYS-002",
+      "title": "Workspace cards and permanent archive",
+      "document": "SYS-002-workspace-lifecycle.md",
+      "paths": ["docs/contracts/SYS-002-workspace-lifecycle.md", "docs/decisions/ADR-0019-permanent-workspace-archive.md", "src/application/agent-preferences-store.mjs", "src/application/application-command-service.mjs", "src/application/run-coordinator.mjs", "src/application/workspace-catalog-service.mjs", "src/composition/desktop-command-composition.mjs", "src/composition/desktop-command-wiring-composition.mjs", "src/composition/desktop-shell-composition.mjs", "src/infrastructure/persistence/task-board-store.mjs", "src/infrastructure/persistence/workspace-catalog-store.mjs", "src/interfaces/desktop/desktop-application-router.mjs", "src/interfaces/web/mini-app-server.mjs", "assets/web-app/app.js", "assets/web-app/hub-client.js", "assets/web-app/index.html", "assets/web-app/stream-tabs-controller.js", "assets/web-app/styles.css"]
+    },
+    {
       "id": "RST-001",
       "title": "Restart and maintenance recovery",
       "document": "RST-001-restart-recovery.md",

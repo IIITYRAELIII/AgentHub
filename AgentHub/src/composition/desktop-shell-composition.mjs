@@ -263,11 +263,23 @@ export function createDesktopShellComposition({
     },
   });
 
+  let desktopRunCoordinator = null;
+  const blockingRunForWorkspace = (workspaceId) => {
+    const activeRun = taskRuns.values().find((run) => (
+      taskRunIsActive(run)
+      && workspaceCatalogStore.stream(run.streamId)?.workspaceId === workspaceId
+    ));
+    if (activeRun) return activeRun;
+    return desktopRunCoordinator?.hasPendingAdmission((target) => (
+      workspaceCatalogStore.stream(target.streamId)?.workspaceId === workspaceId
+    )) ? { status: "admitting" } : null;
+  };
   const workspaceCatalog = new WorkspaceCatalogService({
     store: workspaceCatalogStore,
     taskBoard,
     releasePlanner: taskReleasePlanner,
     releaseCompleter: workspaceReleaseService,
+    blockingRunForWorkspace,
   });
   const workspaceMutation = async (run, { resultKey = "" } = {}) => {
     const result = run();
@@ -501,7 +513,15 @@ export function createDesktopShellComposition({
       taskRuns,
       providers: agentProviders,
       externalActivity: taskExternalActivity,
-      beginRun: (input, target) => managedRunLifecycle.begin(input, target),
+      beginRun: (input, target) => {
+        if (String(target?.streamId ?? "").trim()
+          && !workspaceCatalogStore.stream(target.streamId)) {
+          const error = new Error("Run target Workspace or Stream no longer exists");
+          error.code = "RUN_TARGET_NOT_FOUND";
+          throw error;
+        }
+        return managedRunLifecycle.begin(input, target);
+      },
       rollbackAdmission: (run) => managedRunLifecycle.releaseAdmission(run),
       launchTurn,
       describeAttachments: desktopAttachmentDescriptors,
@@ -567,6 +587,7 @@ export function createDesktopShellComposition({
       applicationCommands: desktopCommands.applicationCommands,
     },
   });
+  desktopRunCoordinator = desktopRunRouter.runCoordinator;
 
   desktopCommandsPort.bind({
     messageTarget: desktopActions.messageTarget,

@@ -4596,9 +4596,36 @@ html[data-view="dashboard"] .task-board-view {
   font-size: 0.7rem;
 }
 
-.workspace-archive-restore {
+.workspace-archive-actions {
+  align-items: center;
+  display: flex;
+  gap: 0.4rem;
   grid-column: 2;
   grid-row: 1 / span 2;
+}
+
+.workspace-archive-delete,
+.workspace-card-archive,
+.stream-card-archive {
+  background: color-mix(in srgb, var(--danger, #ff7b7b) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger, #ff7b7b) 55%, var(--line));
+  border-radius: var(--radius-sm);
+  color: var(--danger, #ff7b7b);
+  cursor: pointer;
+  font: inherit;
+  padding: 0.42rem 0.62rem;
+}
+
+.workspace-archive-delete:hover,
+.workspace-card-archive:hover,
+.stream-card-archive:hover {
+  background: color-mix(in srgb, var(--danger, #ff7b7b) 20%, transparent);
+}
+
+.workspace-card-archive:disabled,
+.stream-card-archive:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 
 .workspace-archive-empty {
@@ -7030,7 +7057,7 @@ html[data-surface="mobile"]
 }
 
 .chat-pane[data-dialog-settings-open] {
-  grid-template-columns: minmax(0, 1fr) clamp(17rem, 28vw, 22rem);
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .chat-back {
@@ -7295,11 +7322,10 @@ html[data-surface="mobile"]
   background:
     radial-gradient(120% 60% at 90% -20%, var(--space-glow-a), transparent 60%),
     color-mix(in srgb, var(--space-base) 96%, transparent);
-  border-left: 1px solid var(--line-strong);
+  border: 1px solid var(--line-strong);
   display: flex;
   flex-direction: column;
-  grid-column: 2;
-  grid-row: 1;
+  height: min(90dvh, 56rem);
   min-height: 0;
   min-width: 0;
   overflow: hidden;
@@ -7309,11 +7335,16 @@ html[data-surface="mobile"]
   display: none;
 }
 
+.dialog-settings:not([open]) {
+  display: none;
+}
+
 .dialog-settings-head {
   align-items: center;
   border-bottom: 1px solid var(--line);
   display: flex;
   flex: 0 0 auto;
+  justify-content: space-between;
   min-height: 3rem;
   padding: 0.7rem 0.9rem;
 }
@@ -7330,6 +7361,64 @@ html[data-surface="mobile"]
   min-height: 0;
   overflow-y: auto;
   padding: 0.85rem 0.8rem max(1rem, env(safe-area-inset-bottom));
+}
+
+.quick-messages-editor {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.quick-messages-editor-controls {
+  display: contents;
+}
+
+.quick-message-editor-rows {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.quick-message-editor-row {
+  align-items: start;
+  display: grid;
+  gap: 0.45rem;
+  grid-template-columns: minmax(7rem, 0.7fr) minmax(10rem, 1.3fr) auto;
+}
+
+.quick-message-editor-row input,
+.quick-message-editor-row textarea,
+.stream-card-name-field input {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font: inherit;
+  padding: 0.45rem 0.55rem;
+  width: 100%;
+}
+
+.quick-message-editor-row textarea {
+  min-height: 3.2rem;
+  resize: vertical;
+}
+
+.quick-message-editor-actions {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.quick-message-editor-actions .compact {
+  min-width: 2rem;
+  padding-inline: 0.42rem;
+}
+
+.quick-message-editor-actions .danger {
+  color: var(--danger, #ff7b7b);
+}
+
+.stream-card-actions {
+  align-items: stretch;
+  display: grid;
+  gap: 0.55rem;
 }
 
 .agent-rules-card {
@@ -10491,13 +10580,14 @@ html[data-surface="mobile"][data-theme] .dialog-settings {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
   background: var(--bg);
-  border-left: 0;
-  grid-column: 1;
-  grid-row: 1;
-  justify-self: end;
+  border: 1px solid var(--line-strong);
   max-width: 24rem;
   width: 100%;
   z-index: 20;
+}
+
+html[data-surface="mobile"] .quick-message-editor-row {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 html[data-surface="mobile"][data-pane="tasks"] .chat {
