@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import { TurnEndDeliveryService } from "../../../src/application/turn-end-delivery-service.mjs";
@@ -59,6 +60,85 @@ test("terminal commit is idempotent and revisions supersede pending projections"
   const revised = await terminal.commit(completion({ finalAnswer: "Corrected final answer" }));
   assert.equal(revised.terminal.terminalRevision, 2);
   assert.deepEqual((await terminal.pending()).map((item) => item.terminalRevision), [2]);
+});
+
+test("terminal owner migrates bounded payload metadata and provides indexed recovery order", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-terminal-metadata-"));
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const databaseFile = path.join(dataDir, "runtime.sqlite");
+  let database = new DatabaseSync(databaseFile);
+  database.exec(`
+    CREATE TABLE provider_turn_terminals (
+      provider TEXT NOT NULL,
+      thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      terminal_revision INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      final_answer TEXT NOT NULL,
+      usage_identity TEXT NOT NULL,
+      last_message_json TEXT,
+      payload_json TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      committed_at TEXT NOT NULL,
+      PRIMARY KEY (provider, thread_id, turn_id)
+    ) WITHOUT ROWID
+  `);
+  const insert = database.prepare(`
+    INSERT INTO provider_turn_terminals (
+      provider, thread_id, turn_id, terminal_revision, status, final_answer,
+      usage_identity, payload_json, content_hash, committed_at
+    ) VALUES ('codex', ?, ?, 1, 'completed', '', '', ?, ?, ?)
+  `);
+  database.exec("BEGIN");
+  for (let index = 0; index < 205; index += 1) {
+    const payloadJson = JSON.stringify({ index, marker: "я".repeat(index % 5) });
+    insert.run(
+      `legacy-thread-${index}`,
+      `legacy-turn-${index}`,
+      payloadJson,
+      `hash-${index}`,
+      new Date(Date.UTC(2026, 8, 5, 0, 0, index)).toISOString(),
+    );
+  }
+  database.exec("COMMIT");
+  database.close();
+
+  const store = new ProviderTurnTerminalStore({ dataDir });
+  assert.ok(await store.get({
+    provider: "codex",
+    threadId: "legacy-thread-204",
+    turnId: "legacy-turn-204",
+  }));
+
+  database = new DatabaseSync(databaseFile);
+  const columns = database.prepare("PRAGMA table_info(provider_turn_terminals)").all();
+  assert.ok(columns.some((column) => column.name === "payload_bytes"));
+  assert.equal(database.prepare(`
+    SELECT count(*) AS count FROM provider_turn_terminals WHERE payload_bytes > 0
+  `).get().count, 200);
+  const plan = database.prepare(`
+    EXPLAIN QUERY PLAN
+    SELECT provider, thread_id, turn_id, committed_at, payload_bytes
+    FROM provider_turn_terminals INDEXED BY provider_turn_terminals_recovery_idx
+    ORDER BY committed_at DESC, provider, thread_id, turn_id
+    LIMIT ?
+  `).all(200).map((row) => String(row.detail));
+  assert.ok(plan.some((detail) => /provider_turn_terminals_recovery_idx/u.test(detail)), plan.join("\n"));
+  assert.ok(plan.every((detail) => !/USE TEMP B-TREE/u.test(detail)), plan.join("\n"));
+  database.close();
+
+  await store.commit(completion({
+    threadId: "new-thread",
+    turnId: "new-turn",
+    payload: { marker: "кириллица" },
+  }));
+  database = new DatabaseSync(databaseFile);
+  const created = database.prepare(`
+    SELECT payload_json, payload_bytes FROM provider_turn_terminals
+    WHERE provider = 'codex' AND thread_id = 'new-thread' AND turn_id = 'new-turn'
+  `).get();
+  assert.equal(created.payload_bytes, Buffer.byteLength(created.payload_json, "utf8"));
+  database.close();
 });
 
 test("terminal attachment changes create a new durable revision", async (context) => {

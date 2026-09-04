@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { codexSubagentActivity } from "../domain/run-activity.mjs";
 import { isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
 import {
@@ -14,6 +15,12 @@ import {
 import { taskReferencePromptDetails } from "../domain/task-board-task.mjs";
 import { codexAssistantResponseProjection } from "../domain/codex-response-annotation.mjs";
 import { normalizedResponseAnnotations } from "../domain/response-annotation-source.mjs";
+import {
+  hasCanonicalUserMessages,
+  mergedUserMessageSnapshotAuthority,
+  mergeCanonicalUserMessages,
+  userMessageSnapshotAuthority,
+} from "../domain/canonical-user-messages.mjs";
 
 export const EMPTY_TURN_COMPLETION_TEXT = "Ход завершён без текстового ответа.";
 
@@ -100,8 +107,6 @@ export function exactTurnReceiptBindings(messages, receipts) {
     receipt,
   ]));
   const bindings = new Map();
-  const unresolvedMessageIndexes = [];
-  const usedClientIds = new Set();
 
   values.forEach((message, index) => {
     if (String(message?.role ?? "") !== "user") return;
@@ -109,20 +114,26 @@ export function exactTurnReceiptBindings(messages, receipts) {
     const receipt = receiptByClientId.get(clientUserMessageId);
     if (receipt) {
       bindings.set(index, receipt);
-      usedClientIds.add(clientUserMessageId);
-      return;
     }
-    if (!clientUserMessageId) unresolvedMessageIndexes.push(index);
-  });
-
-  const remainingReceipts = turnReceipts.filter((receipt) => (
-    !usedClientIds.has(String(receipt.clientUserMessageId).trim())
-  ));
-  if (unresolvedMessageIndexes.length !== remainingReceipts.length) return bindings;
-  unresolvedMessageIndexes.forEach((messageIndex, index) => {
-    bindings.set(messageIndex, remainingReceipts[index]);
   });
   return bindings;
+}
+
+function codexAppServerOccurrenceId(turnId, item, index) {
+  if (!turnId || !Number.isSafeInteger(index) || index < 0) return "";
+  const sourceRecord = JSON.stringify({
+    type: item?.type ?? null,
+    id: item?.id ?? null,
+    content: item?.content ?? null,
+    createdAt: item?.createdAt ?? null,
+  });
+  return `codex-app-server:${createHash("sha256")
+    .update(turnId)
+    .update("\0")
+    .update(String(index))
+    .update("\0")
+    .update(sourceRecord)
+    .digest("hex")}`;
 }
 
 function inlineImageAttachments(value) {
@@ -347,64 +358,12 @@ export function codexTurnActivities(turn) {
     .filter(Boolean);
 }
 
-function uniqueMessageValues(values, keyFor) {
-  const known = new Set();
-  return values.filter((value) => {
-    const key = keyFor(value);
-    if (!key || known.has(key)) return false;
-    known.add(key);
-    return true;
-  });
-}
-
-export function mergeSyntheticRolloutUsers(messages, turnId) {
-  const values = Array.isArray(messages) ? messages : [];
-  const syntheticPattern = new RegExp(`^${turnId}:rollout-user:(\\d+)$`, "u");
-  const synthetic = values.flatMap((message, index) => {
-    if (message?.role !== "user" || message.clientUserMessageId) return [];
-    const match = syntheticPattern.exec(String(message.itemId ?? ""));
-    return match ? [{ index, ordinal: Number(match[1]), message }] : [];
-  });
-  if (!synthetic.length) return values;
-
-  const canonical = values.flatMap((message, index) => {
-    if (message?.role !== "user" || syntheticPattern.test(String(message?.itemId ?? ""))) return [];
-    return [{ index, message }];
-  });
-  const completeCoverage = canonical.length === synthetic.length
-    && canonical.every(({ message }) => Boolean(message.clientUserMessageId))
-    && synthetic.every((projection, ordinal) => projection.ordinal === ordinal);
-  if (!completeCoverage) return values;
-
-  const replacements = new Map();
-  const removed = new Set();
-  for (const projection of synthetic) {
-    const official = canonical[projection.ordinal];
-    const officialText = displayUserPrompt(official.message?.text)
-      || String(official.message?.text ?? "").trim();
-    const projectionText = displayUserPrompt(projection.message?.text)
-      || String(projection.message?.text ?? "").trim();
-    if (!officialText || officialText !== projectionText) return values;
-    const attachmentSources = uniqueMessageValues([
-      ...(Array.isArray(official.message.attachmentSources) ? official.message.attachmentSources : []),
-      ...(Array.isArray(projection.message.attachmentSources) ? projection.message.attachmentSources : []),
-    ], (item) => `${String(item?.type ?? "")}\0${String(item?.value ?? "").toLowerCase()}`);
-    const attachments = uniqueMessageValues([
-      ...(Array.isArray(official.message.attachments) ? official.message.attachments : []),
-      ...(Array.isArray(projection.message.attachments) ? projection.message.attachments : []),
-    ], (item) => String(item?.id ?? item?.path ?? item?.url ?? "").toLowerCase());
-    replacements.set(projection.index, {
-      ...projection.message,
-      ...official.message,
-      ...(attachmentSources.length ? { attachmentSources } : {}),
-      ...(attachments.length ? { attachments } : {}),
-    });
-    removed.add(official.index);
-  }
-  return values.flatMap((message, index) => {
-    if (replacements.has(index)) return [replacements.get(index)];
-    return removed.has(index) ? [] : [message];
-  });
+export function mergeSyntheticRolloutUsers(messages) {
+  // Raw rollout and App Server items remain separate until a downstream owner
+  // has an exact client command identity or collision-safe source occurrence.
+  // This compatibility helper deliberately performs no content, timestamp,
+  // provider-item, or ordinal reconciliation.
+  return Array.isArray(messages) ? messages : [];
 }
 
 function codexTurnMessages(turn, { userAuthor = "" } = {}) {
@@ -445,6 +404,10 @@ function codexTurnMessages(turn, { userAuthor = "" } = {}) {
         ...(String(item.clientId ?? "").trim()
           ? { clientUserMessageId: String(item.clientId).trim() }
           : {}),
+        // App Server may expose clientId only after the same provider item was
+        // first observed. Keep its collision-safe source occurrence across
+        // that enrichment so the canonical owner can replace, not append, it.
+        sourceOccurrenceId: codexAppServerOccurrenceId(turnId, item, index),
         role: "user",
         text,
         ...((interstream?.author ?? String(userAuthor).trim())
@@ -613,6 +576,7 @@ export function codexThreadHistory(turns, options = {}) {
       : visibleAnswer;
     return [{
       id: String(turn?.id ?? ""),
+      userMessageSnapshotAuthority: "complete",
       prompt,
       answer,
       status: String(turn?.status ?? ""),
@@ -747,6 +711,7 @@ export function claudeTranscriptHistory(text) {
     });
     return {
       id: String(entries[entryIndex]?.uuid ?? entryIndex),
+      userMessageSnapshotAuthority: "complete",
       prompt: userPrompt?.text ?? "",
       answer: claudeAssistantText(turnEntries),
       status: completed ? "completed" : "inProgress",
@@ -947,6 +912,9 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
       return {
         itemId: String(message.itemId ?? message.id ?? "").trim(),
         clientUserMessageId,
+        ...(String(message.sourceOccurrenceId ?? "").trim()
+          ? { sourceOccurrenceId: String(message.sourceOccurrenceId).trim() }
+          : {}),
         role: "user",
         text: messageText,
         ...(author ? { author } : {}),
@@ -980,11 +948,15 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
       ...(normalizedTimestamp(message.time) ? { time: normalizedTimestamp(message.time) } : {}),
       index,
     })).filter((message) => message.text);
-  const rootClientUserMessageId = String(activeTurn.clientUserMessageId ?? "").trim();
-  const hasRootUser = suppliedUsers.some((message) => (
-    (rootClientUserMessageId && message.clientUserMessageId === rootClientUserMessageId)
-    || (visiblePrompt && message.text === visiblePrompt)
-  ));
+  const rootClientUserMessageId = String(
+    String(activeTurn.clientUserMessageId ?? "").trim()
+      || (rootOrigin?.requestId ? `mcp:${rootOrigin.requestId}` : ""),
+  ).trim();
+  const currentMessages = Array.isArray(current.messages) ? current.messages : [];
+  const currentUsers = currentMessages.filter((message) => message?.role === "user");
+  const hasRootUser = rootClientUserMessageId
+    ? suppliedUsers.some((message) => message.clientUserMessageId === rootClientUserMessageId)
+    : currentUsers.length > 0 || suppliedUsers.length > 0;
   if (!hasRootUser && (visiblePrompt || attachments.length)) {
     suppliedUsers.unshift({
       itemId: "",
@@ -1008,6 +980,32 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
     });
   }
   suppliedUsers.forEach((message, index) => { message.index = index; });
+  if (suppliedUsers.length && currentUsers.length) {
+    const canonical = hasCanonicalUserMessages(currentUsers);
+    current.messages = [
+      ...mergeCanonicalUserMessages(
+        currentUsers,
+        suppliedUsers.map((message) => {
+          const { index: _index, ...observed } = message;
+          return observed;
+        }),
+        {
+          currentSnapshotAuthority: userMessageSnapshotAuthority(current),
+          snapshotAuthority: userMessageSnapshotAuthority(activeTurn),
+        },
+      ),
+      ...currentMessages
+        .filter((message) => message?.role !== "user")
+        .map((message) => structuredClone(message)),
+    ];
+    if (!canonical && visiblePrompt) current.prompt = visiblePrompt;
+    current.userMessageSnapshotAuthority = mergedUserMessageSnapshotAuthority(
+      currentUsers,
+      current,
+      activeTurn,
+    );
+    suppliedUsers.length = 0;
+  }
   if (suppliedUsers.length) {
     if (visiblePrompt) current.prompt = visiblePrompt;
     else if (!current.prompt && suppliedUsers[0].text) current.prompt = suppliedUsers[0].text;
@@ -1016,75 +1014,26 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
       current.promptOrigin = structuredClone(rootOrigin);
     }
     const messages = Array.isArray(current.messages) ? current.messages : [];
-    for (const incoming of suppliedUsers) {
-      const users = messages.filter((message) => message.role === "user");
-      let user = incoming.itemId
-        ? users.find((message) => String(message.itemId ?? "") === incoming.itemId)
-        : null;
-      if (!user && incoming.clientUserMessageId) {
-        user = users.find((message) => (
-          String(message.clientUserMessageId ?? "") === incoming.clientUserMessageId
-        ));
-      }
-      if (
-        !user
-        && rootClientUserMessageId
-        && incoming.clientUserMessageId === rootClientUserMessageId
-        && incoming.index === 0
-      ) {
-        const unidentifiedRoot = users.filter((message, index) => (
-          index === 0 && !String(message.clientUserMessageId ?? "").trim()
-        ));
-        if (unidentifiedRoot.length === 1) user = unidentifiedRoot[0];
-      }
-      if (
-        !user
-        && incoming.index === 0
-        && incoming.origin?.requestId
-        && incoming.origin.requestId === rootOrigin?.requestId
-        && incoming.clientUserMessageId === `mcp:${incoming.origin.requestId}`
-        && incoming.text
-        && incoming.text === visiblePrompt
-      ) {
-        const unidentifiedRoot = users.filter((message) => (
-          !String(message.clientUserMessageId ?? "").trim()
-          && !normalizeInterstreamOrigin(message.origin)
-          && String(message.text ?? "").trim() === incoming.text
-        ));
-        if (unidentifiedRoot.length === 1) user = unidentifiedRoot[0];
-      }
-      if (!user && !incoming.origin) {
-        const unidentified = users.filter((message) => !String(message.clientUserMessageId ?? "").trim());
-        const matchingText = incoming.text
-          ? unidentified.filter((message) => String(message.text ?? "").trim() === incoming.text)
-          : [];
-        if (matchingText.length === 1) user = matchingText[0];
-        else if (incoming.index === 0 && unidentified.length === 1) user = unidentified[0];
-      }
-      if (!user) {
-        user = {
-          itemId: incoming.itemId || `${turnId || current.id || "active-turn"}:user:${incoming.index}`,
-          role: "user",
-          text: incoming.text,
-        };
-        const firstAgent = messages.findIndex((message) => message.role === "agent");
-        messages.splice(firstAgent < 0 ? messages.length : firstAgent, 0, user);
-      }
-      if (incoming.itemId) user.itemId = incoming.itemId;
-      if (incoming.clientUserMessageId) user.clientUserMessageId = incoming.clientUserMessageId;
-      if (incoming.text) user.text = incoming.text;
-      if (incoming.author) user.author = incoming.author;
-      if (incoming.kind) user.kind = incoming.kind;
-      if (incoming.origin) user.origin = structuredClone(incoming.origin);
-      const timestamp = incoming.time ?? normalizedTimestamp(activeTurn.startedAt);
-      if (!user.time && timestamp) user.time = timestamp;
-      if (incoming.responseAnnotations?.length) user.responseAnnotations = incoming.responseAnnotations;
-      if (incoming.responseAnnotationRequest) user.responseAnnotationRequest = incoming.responseAnnotationRequest;
-      if (incoming.attachments?.length) user.attachments = incoming.attachments;
-      if (incoming.attachmentSources?.length) user.attachmentSources = incoming.attachmentSources;
-    }
+    const users = mergeCanonicalUserMessages(
+      messages.filter((message) => message?.role === "user"),
+      suppliedUsers.map(({ index: _index, ...message }) => message),
+      {
+        currentSnapshotAuthority: userMessageSnapshotAuthority(current),
+        snapshotAuthority: userMessageSnapshotAuthority(activeTurn),
+      },
+    );
     if (attachments.length) current.attachments = attachments;
-    current.messages = messages;
+    current.messages = [
+      ...users,
+      ...messages
+        .filter((message) => message?.role !== "user")
+        .map((message) => structuredClone(message)),
+    ];
+    current.userMessageSnapshotAuthority = mergedUserMessageSnapshotAuthority(
+      messages.filter((message) => message?.role === "user"),
+      current,
+      activeTurn,
+    );
   }
   if (suppliedSubagents.length) {
     const messages = Array.isArray(current.messages) ? current.messages : [];

@@ -26,5 +26,12 @@ a user turn and does not alter the restart/compaction operation schema.
   admitted once under their original `clientUserMessageId`.
 - Process death does not preserve local `running` as fact. Recovery reconciles
   provider state or records an honest terminal timeout/unknown result.
+- Startup performs one bounded read-model reprojection for recent terminal
+  turns whose retained payload identities are all confirmed by exact terminal
+  command-ledger bindings. The reprojection is idempotent, preserves terminal
+  state and never dispatches a provider effect; ambiguous evidence is skipped.
+  Candidate discovery uses terminal-store-owned persisted payload-byte metadata
+  and deterministic covering-index order; the read-model owner never scans or
+  sorts terminal JSON to discover candidates.
 - Restart UI appears only for a real persisted restart phase and cannot hide a
   final response.

@@ -6,6 +6,8 @@ const OUTBOX_STATES = new Set(["pending", "projecting", "delivered", "superseded
 const TELEGRAM_STATES = new Set(["not-requested", "intent", "uncertain", "acked", "failed", "superseded"]);
 const COMMAND_STATES = new Set(["not-required", "intent", "acked", "superseded"]);
 const NON_TERMINAL_STATUSES = new Set(["active", "inprogress", "running", "finishing", "progress"]);
+const TERMINAL_PAYLOAD_METADATA_MIGRATION_LIMIT = 200;
+const TERMINAL_PAYLOAD_METADATA_SAMPLE_CHARS = (2 * 1024 * 1024) + 1;
 
 function text(value) {
   return String(value ?? "").trim();
@@ -104,6 +106,7 @@ function configure(database) {
       usage_identity TEXT NOT NULL,
       last_message_json TEXT,
       payload_json TEXT NOT NULL,
+      payload_bytes INTEGER NOT NULL DEFAULT 0,
       content_hash TEXT NOT NULL,
       committed_at TEXT NOT NULL,
       PRIMARY KEY (provider, thread_id, turn_id)
@@ -133,6 +136,33 @@ function configure(database) {
     CREATE INDEX IF NOT EXISTS provider_turn_terminal_outbox_pending_idx
       ON provider_turn_terminal_outbox(state, created_at, provider, thread_id, turn_id, terminal_revision);
   `);
+  const terminalColumns = new Set(database.prepare("PRAGMA table_info(provider_turn_terminals)").all()
+    .map((column) => String(column.name)));
+  if (!terminalColumns.has("payload_bytes")) {
+    database.exec("ALTER TABLE provider_turn_terminals ADD COLUMN payload_bytes INTEGER NOT NULL DEFAULT 0;");
+  }
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS provider_turn_terminals_recovery_idx
+      ON provider_turn_terminals(committed_at DESC, provider, thread_id, turn_id, payload_bytes);
+  `);
+  // Only the newest bounded recovery window is migrated eagerly. substr caps
+  // legacy blob inspection while still distinguishing every admissible
+  // payload (<= 2 MiB) from an oversized candidate. New writes persist exact
+  // byte length without asking SQLite to rescan JSON.
+  database.prepare(`
+    UPDATE provider_turn_terminals
+    SET payload_bytes = length(CAST(substr(payload_json, 1, ?) AS BLOB))
+    WHERE (provider, thread_id, turn_id) IN (
+      SELECT provider, thread_id, turn_id
+      FROM provider_turn_terminals
+      WHERE payload_bytes = 0
+      ORDER BY committed_at DESC, provider, thread_id, turn_id
+      LIMIT ?
+    )
+  `).run(
+    TERMINAL_PAYLOAD_METADATA_SAMPLE_CHARS,
+    TERMINAL_PAYLOAD_METADATA_MIGRATION_LIMIT,
+  );
   const columns = new Set(database.prepare("PRAGMA table_info(provider_turn_terminal_outbox)").all()
     .map((column) => String(column.name)));
   for (const [name, definition] of [
@@ -287,8 +317,8 @@ export class ProviderTurnTerminalStore {
         database.prepare(`
           INSERT INTO provider_turn_terminals (
             provider, thread_id, turn_id, terminal_revision, status, final_answer,
-            usage_identity, last_message_json, payload_json, content_hash, committed_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            usage_identity, last_message_json, payload_json, payload_bytes, content_hash, committed_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(provider, thread_id, turn_id) DO UPDATE SET
             terminal_revision = excluded.terminal_revision,
             status = excluded.status,
@@ -296,12 +326,13 @@ export class ProviderTurnTerminalStore {
             usage_identity = excluded.usage_identity,
             last_message_json = excluded.last_message_json,
             payload_json = excluded.payload_json,
+            payload_bytes = excluded.payload_bytes,
             content_hash = excluded.content_hash,
             committed_at = excluded.committed_at
         `).run(
           key.provider, key.threadId, key.turnId, terminalRevision, status, finalAnswer,
           usageIdentity, revisionLastMessage ? JSON.stringify(revisionLastMessage) : null,
-          payloadJson, hash, committedAt,
+          payloadJson, Buffer.byteLength(payloadJson, "utf8"), hash, committedAt,
         );
         database.prepare(`
           UPDATE provider_turn_terminal_outbox

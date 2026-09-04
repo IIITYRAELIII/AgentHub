@@ -109,6 +109,158 @@ test("TaskObservationService applies live snapshots and keeps the earliest start
   assert.equal(run.progressStage, "Stage");
 });
 
+test("TaskObservationService keeps accepted authority and every unproven provider occurrence", async () => {
+  const state = fixture();
+  const run = await state.service.create({
+    provider: "codex",
+    projectRoot: "C:/workspace",
+    threadId: "thread-1",
+    taskTitle: "Task",
+  }, 7, {
+    userMessages: [
+      {
+        role: "user",
+        text: "Root",
+        clientUserMessageId: "accepted-root",
+        origin: { streamId: "owned-stream" },
+      },
+      { role: "user", text: "Steer", clientUserMessageId: "accepted-steer" },
+      { role: "user", text: "Root", itemId: "external-owned" },
+    ],
+  }, "turn-1");
+
+  state.service.update(run, {
+    userMessages: [
+      {
+        role: "user",
+        text: "Provider tried to replace root",
+        clientUserMessageId: "accepted-root",
+        itemId: "provider-root",
+        origin: { streamId: "provider-stream" },
+      },
+      { role: "user", text: "Steer", itemId: "rollout-user:0" },
+    ],
+  });
+
+  assert.deepEqual(run.userMessages.map((message) => message.clientUserMessageId).filter(Boolean), [
+    "accepted-root",
+    "accepted-steer",
+  ]);
+  assert.equal(run.userMessages.some((message) => message.itemId === "rollout-user:0"), true);
+  assert.equal(run.userMessages[0].text, "Root");
+  assert.deepEqual(run.userMessages[0].origin, { streamId: "owned-stream" });
+  assert.equal(run.userMessages[0].itemId, "provider-root");
+  assert.equal(run.userMessages.some((message) => message.itemId === "external-owned"), true);
+});
+
+test("TaskObservationService applies the shared complete-snapshot occurrence contract", async () => {
+  const state = fixture();
+  const run = await state.service.create({
+    provider: "codex",
+    projectRoot: "C:/workspace",
+    threadId: "thread-parity",
+    taskTitle: "Task",
+  }, 7, {
+    userMessageSnapshotAuthority: "complete",
+    userMessages: [
+      { role: "user", text: "Owned", clientUserMessageId: "accepted" },
+      { role: "user", text: "Old external", itemId: "collision" },
+    ],
+  }, "turn-parity");
+  const observed = {
+    userMessageSnapshotAuthority: "complete",
+    userMessages: [
+      { role: "user", text: "Provider payload", clientUserMessageId: "accepted" },
+      { role: "user", text: "External one", itemId: "collision" },
+      { role: "user", text: "External two", itemId: "collision" },
+    ],
+  };
+
+  state.service.update(run, observed);
+  const once = structuredClone(run.userMessages);
+  state.service.update(run, observed);
+
+  assert.deepEqual(run.userMessages, once);
+  assert.deepEqual(run.userMessages.map((message) => message.text), [
+    "Owned",
+    "External one",
+    "External two",
+  ]);
+});
+
+test("TaskObservationService replays source-owned incremental occurrences exactly once", async () => {
+  const state = fixture();
+  const run = await state.service.create({
+    provider: "codex",
+    projectRoot: "C:/workspace",
+    threadId: "thread-occurrence",
+    taskTitle: "Task",
+  }, 7, {}, "turn-occurrence");
+  const first = {
+    role: "user",
+    text: "Одинаковый текст",
+    sourceOccurrenceId: `codex-rollout:${"1".repeat(64)}`,
+  };
+  const appended = {
+    ...first,
+    sourceOccurrenceId: `codex-rollout:${"2".repeat(64)}`,
+  };
+
+  for (let replay = 0; replay < 3; replay += 1) {
+    state.service.update(run, {
+      userMessageSnapshotAuthority: "incremental",
+      userMessages: [first],
+    });
+  }
+  assert.equal(run.userMessages.length, 1);
+  state.service.update(run, {
+    userMessageSnapshotAuthority: "incremental",
+    userMessages: [first, appended],
+  });
+  state.service.update(run, {
+    userMessageSnapshotAuthority: "incremental",
+    userMessages: [first, appended],
+  });
+  assert.deepEqual(run.userMessages.map((message) => message.sourceOccurrenceId), [
+    first.sourceOccurrenceId,
+    appended.sourceOccurrenceId,
+  ]);
+});
+
+test("TaskObservationService replaces one source occurrence when exact identity is enriched", async () => {
+  const state = fixture();
+  const sourceOccurrenceId = `codex-app-server:${"a".repeat(64)}`;
+  const run = await state.service.create({
+    provider: "codex",
+    projectRoot: "C:/workspace",
+    threadId: "thread-enrichment",
+    taskTitle: "Task",
+  }, 7, {
+    userMessageSnapshotAuthority: "incremental",
+    userMessages: [{ role: "user", text: "Provider projection", sourceOccurrenceId }],
+  }, "turn-enrichment");
+
+  state.service.update(run, {
+    userMessageSnapshotAuthority: "incremental",
+    userMessages: [{
+      role: "user",
+      text: "Accepted projection",
+      sourceOccurrenceId,
+      clientUserMessageId: "accepted-enrichment",
+      origin: { streamId: "owning-stream" },
+    }],
+  });
+  state.service.update(run, {
+    userMessageSnapshotAuthority: "incremental",
+    userMessages: [{ role: "user", text: "Provider projection", sourceOccurrenceId }],
+  });
+
+  assert.equal(run.userMessages.length, 1);
+  assert.equal(run.userMessages[0].clientUserMessageId, "accepted-enrichment");
+  assert.equal(run.userMessages[0].text, "Accepted projection");
+  assert.deepEqual(run.userMessages[0].origin, { streamId: "owning-stream" });
+});
+
 test("TaskObservationService completes an explicitly displayed observed run", async () => {
   const state = fixture();
   const run = await state.service.create({

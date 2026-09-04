@@ -1,6 +1,11 @@
 import path from "node:path";
 
 import {
+  mergedUserMessageSnapshotAuthority,
+  mergeCanonicalUserMessages,
+  userMessageSnapshotAuthority,
+} from "../domain/canonical-user-messages.mjs";
+import {
   createObservedTaskRun,
   shouldDeliverObservedCompletion,
   updateObservedResponse,
@@ -130,6 +135,7 @@ export class TaskObservationService {
         : "Внешний Claude CLI",
       collaborationMode: "default",
     }, snapshot);
+    run.userMessageSnapshotAuthority = userMessageSnapshotAuthority(snapshot);
     run.gitBaseline = null;
     this.taskRuns.add(run);
     this.invalidateTaskCatalog();
@@ -149,12 +155,22 @@ export class TaskObservationService {
     this.providers.call(run.provider, "applyObservedSnapshot", run, snapshot);
     if (!run.promptPreview && snapshot?.prompt) run.promptPreview = String(snapshot.prompt);
     if (Array.isArray(snapshot?.userMessages)) {
-      run.userMessages = snapshot.userMessages.map((message) => ({ ...message }));
+      const currentUserMessages = run.userMessages;
+      const nextAuthority = mergedUserMessageSnapshotAuthority(
+        currentUserMessages,
+        run,
+        snapshot,
+      );
+      run.userMessages = mergeCanonicalUserMessages(run.userMessages, snapshot.userMessages, {
+        currentSnapshotAuthority: userMessageSnapshotAuthority(run),
+        snapshotAuthority: userMessageSnapshotAuthority(snapshot),
+      });
       const first = run.userMessages[0];
       if (!run.promptPreview && first?.text) run.promptPreview = String(first.text);
       if (!run.clientUserMessageId && first?.clientUserMessageId) {
         run.clientUserMessageId = String(first.clientUserMessageId);
       }
+      run.userMessageSnapshotAuthority = nextAuthority;
     }
     run.progressReasoning = String(snapshot?.reasoning ?? run.progressReasoning);
     run.progressStage = String(snapshot?.stage ?? run.progressStage);

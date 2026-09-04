@@ -42,10 +42,15 @@ release Git snapshot occurs when a Task explicitly moves to `Await`, outside
 provider admission and terminal-delivery latency.
 
 Codex rollout activity fallback runs outside the main Hub event loop. Concurrent
-reads of the same rollout and read options share one in-flight operation, and a
-cold fallback reads at most the latest 16 MiB. Exact App Server state and managed
-run identity remain preferred over JSONL fallback; reducing the scan window must
-not truncate the terminal answer retained by TURN-001.
+reads of the same rollout and read options share one in-flight operation. A cold
+fallback physically reads/projects at most the latest 16 MiB plus two bounded
+256 KiB provenance samples; it never streams the intervening prefix to EOF.
+Provenance requires exactly one valid canonical session record in those samples;
+otherwise unkeyed provider users fail closed. Append-only reads resume from the
+cached raw-byte cursor.
+Exact App Server state and managed run identity remain preferred over JSONL
+fallback; reducing the projection window must not truncate the terminal answer
+retained by TURN-001.
 
 Codex `thread/read` coalescing is single-flight only: a completed read retains no
 Thread payload in Hub memory. Rollout session discovery incrementally parses at
@@ -86,6 +91,22 @@ The first read imports and normalizes legacy JSON only when it is newly imported
 or its persisted ledger version is old; migrated SQLite performs only bounded
 status and point queries. Any compatibility normalization releases its in-memory
 ledger before returning, so `retainedRecords` remains zero after the read.
+
+Legacy terminal identity recovery lists persisted metadata for at most the
+newest 200 terminal rows in deterministic newest-first order from the covering
+`provider_turn_terminals_recovery_idx`, without selecting payload text,
+computing JSON length or building a temporary sort. The terminal-store owner
+persists exact UTF-8 `payload_bytes` on every new revision and migrates at most
+the newest 200 legacy rows from a capped 2 MiB-plus-one-character sample before
+publishing the index. Recovery fetches one exact row at a time, accepts only rows
+whose persisted byte length is at most 2 MiB, reads at most 8 MiB of candidate
+payloads, and admits at
+most 4 MiB of valid JSON objects. Invalid JSON consumes the inspection budget
+but not the admission budget, so a malformed newest row cannot by itself starve
+a valid older candidate. Rows that do not fit either hard aggregate bound are
+skipped fail-closed: they cannot rewrite message identities and remain available
+to their owning terminal store. No SQL window, payload-length expression or
+temporary result materializes/sorts the payloads for all 200 candidates.
 
 Runtime durability saves coalesce pending requests before snapshot capture while
 preserving each caller's persistence fence. After the durable command ledger has

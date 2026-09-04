@@ -634,7 +634,7 @@ test("desktopRunSnapshot exposes live response citation references", () => {
   assert.deepEqual(desktopRunSnapshot(run).responseAnnotationReferences, [{ index: 1 }]);
 });
 
-test("desktopRunSnapshot binds a sparse provider steer to its remaining exact receipt", () => {
+test("desktopRunSnapshot leaves a sparse provider steer unbound from a remaining receipt", () => {
   const receipts = [{
     clientUserMessageId: "client-root",
     createdAt: "2026-07-30T10:00:00.000Z",
@@ -671,9 +671,9 @@ test("desktopRunSnapshot binds a sparse provider steer to its remaining exact re
   }];
 
   const snapshot = desktopRunSnapshot(run);
-  assert.equal(snapshot.userMessages[1].clientUserMessageId, "client-steer");
-  assert.equal(snapshot.userMessages[1].responseAnnotationRequest, "Уточнение со скрином");
-  assert.deepEqual(snapshot.userMessages[1].attachments, [{ id: "screen.png", type: "image/png" }]);
+  assert.equal(snapshot.userMessages[1].clientUserMessageId, "");
+  assert.equal(snapshot.userMessages[1].responseAnnotationRequest, undefined);
+  assert.deepEqual(snapshot.userMessages[1].attachments, []);
 });
 
 test("desktopTaskSnapshot preserves task fields and run precedence", () => {

@@ -372,6 +372,9 @@ export function createDesktopSnapshotFactory({
         return [{
           itemId: String(message.itemId ?? ""),
           clientUserMessageId,
+          ...(String(message.sourceOccurrenceId ?? "").trim()
+            ? { sourceOccurrenceId: String(message.sourceOccurrenceId).trim() }
+            : {}),
           role,
           text,
           ...(message?.kind ? { kind: String(message.kind) } : {}),

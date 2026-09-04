@@ -6,6 +6,24 @@
   keyed by `clientUserMessageId`, not separately appendable cards.
 - Provider entities use `provider + threadId + turnId`; items additionally use
   `itemId + role`.
+- `clientUserMessageId` is the sole Hub ownership signal for a user message.
+  Provider `itemId`, text, time, position and Hub-shaped strings cannot adopt or
+  erase another occurrence. Full-snapshot replacement requires explicit source
+  authority; bounded or otherwise unproven observations remain incremental.
+- Replayed incremental observations coalesce only by an internal
+  `sourceOccurrenceId` bound to an immutable source generation and exact record
+  occurrence. Codex rollout identity uses one validated canonical `session_meta`
+  generation plus the exact raw record start byte coordinate and canonical
+  structural-record fingerprint. The coordinate comes directly from bounded
+  Buffer reads rather than decoded/re-encoded text or filesystem metadata and
+  remains stable when an older equal record leaves a moving tail. Missing,
+  malformed or conflicting
+  provenance projects no unkeyed provider user, so replay cannot append aliases.
+  A later equal record has a different occurrence and remains visible. Capped,
+  evicted, malformed, partial or bounded source data is never exposed as a
+  complete per-turn projection. The App Server adapter retains its exact source
+  occurrence when `clientUserMessageId` arrives later; this same-source evidence
+  replaces the earlier unkeyed entity and preserves Hub payload/origin.
 - `unknown` is displayed as unknown and never inferred as running.
 - Internal probes, measurements and maintenance operations have separate kinds
   and never create user-turn cards.
@@ -84,10 +102,21 @@ Legacy rows without that field use exact `conflictKind=message-intake` only as a
 temporary compatibility boundary; remove it after every retained active command
 has an explicit projection intent. Text, time and display order cannot choose
 the surface or promote a command into history.
-The server applies exact turn-receipt aliases before exposing active or durable
-user items, so a root or steer cannot coexist with its accepted optimistic card.
+The server applies a receipt only to a user item that already carries its exact
+`clientUserMessageId`; receipt count or ordinal position never supplies identity.
 Service-only attachment wrappers such as `<image ...>` are removed from both the
 main text and annotation request while the attachment object remains visible.
+Server-side live, durable, rollout and completion merges share one ownership
+rule: accepted payload and origin win for an exact `clientUserMessageId`, while
+provider metadata may enrich that same entity. Provider item IDs and generated
+ID shapes never establish occurrence identity: colliding, identity-free and
+identical provider occurrences remain separate in mixed and migrated turns.
+An internal source occurrence coordinate may suppress replay of that exact
+observation, but it never adopts a Hub command identity.
+
+History and Journal search documents are independent projections. Rebuilding a
+turn's History-owned documents cannot delete or overwrite Journal-owned
+documents, and repeated reopen/recovery preserves the same source groups.
 
 Terminal states are absorbing. For one provider-turn identity, a committed
 `terminalRevision` wins over every late active/progress/reconnect observation;
@@ -160,10 +189,6 @@ hydration starts strictly as background work and is never awaited by mark-read.
   it is never entity identity and cannot override an ordinary
   `clientUserMessageId`. Remove these guards after all retained snapshots and
   history rows carry explicit operation kinds.
-- The exact provider-turn root fallback remains only for old rows that lack a
-  submission alias. It cannot bind steer or inter-Stream messages and is removed
-  after retained history has `clientUserMessageId` or `submissionId` on every
-  user command.
 - A retained pre-origin MCP message may recover inter-Stream provenance only by
   exact `mcp:<requestId>` lookup of a successful audited
   `hub_stream_message_send`, `hub_task_start` or `hub_task_reassign` operation.

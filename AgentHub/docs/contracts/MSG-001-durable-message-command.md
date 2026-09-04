@@ -6,11 +6,64 @@
 outermost client boundary through receipt, queue, run, provider prompt and
 history. A retry reuses it. Equal text is never an identity.
 
-If a provider omits that identity from some user items in an exact turn, the
-read model subtracts the already bound command identities from that turn's
-ordered durable receipts. It binds the remaining provider items only when the
-remaining item and receipt counts match exactly. Partial or ambiguous coverage
-stays unbound; text, time and attachment names never repair identity.
+If a provider omits that identity from a user item, the item remains unbound.
+A durable receipt may enrich only a provider item that already carries the same
+exact `clientUserMessageId`; receipt count, text, time, attachment names and
+ordinal position never repair identity.
+
+Once a turn contains Hub-owned command identities, every provider refresh is an
+observation. It may merge only an exact `clientUserMessageId`; it cannot
+overwrite the accepted text, origin or chronology. Provider `itemId` values are
+not assumed collision-free and their string shape is never ownership evidence.
+Mixed and provider-only turns preserve every otherwise unproven occurrence in
+provider order, including missing IDs, colliding IDs and equal text.
+An owner may replace its prior provider-only projection wholesale only when
+both snapshots carry the explicit `userMessageSnapshotAuthority=complete`
+contract. Completeness comes from reading the full provider turn/transcript or
+from the persisted canonical projection; a non-empty hydration is not evidence.
+Incremental/bounded-tail observations append every unproven occurrence. Neither
+mode matches occurrences by `itemId`, content, time, position or generated ID
+shape.
+
+An incremental source may make replay idempotent only with an Agent Hub-created
+`sourceOccurrenceId`. For Codex rollout JSONL, the generation hashes the validated
+source-native session id together with its complete canonical `session_meta`
+record. Provenance discovery reads at most the first and last 256 KiB and accepts
+exactly one well-formed bounded identity; missing, malformed or conflicting
+metadata makes provider-owned unkeyed users unavailable rather than assigning a
+nullable/fabricated occurrence. Exact Hub `client_id` records remain admissible.
+Within a proven generation the occurrence uses the exact raw record start byte
+coordinate plus its canonical structural-record fingerprint. The coordinate is
+read directly from the bounded Buffer stream, never reconstructed by decoding
+or re-encoding text and never derived from filesystem paths, inode timestamps
+or provider item IDs. It remains stable when an older byte-identical record
+leaves a moving tail: replay is idempotent, while an actually appended equal
+record has a new immutable coordinate. A bounded exact-record bridge preserves
+identity across a recognized source-preserving rewrite. A changed canonical
+session generation and a new equal occurrence are distinct. The full App Server
+turn adapter creates its
+own exact namespaced evidence and preserves it when that same source item later
+gains `clientUserMessageId`; that exact source evidence may replace the earlier
+unkeyed projection once, but cannot reconcile conflicting Hub identities.
+Provider-supplied IDs and arbitrary occurrence-shaped fields are never accepted
+as Agent Hub evidence.
+
+Snapshot authority is per exact turn. A full parse is `complete` only while no
+user-message cap, turn eviction, malformed/oversized record, partial trailing
+record, parser failure or bounded-tail read affected its evidence. The affected
+turn is `incremental`; an error whose turn cannot be proven makes all returned
+turns incremental. Completing a cached trailing record may restore completeness
+only when the reader retained a full, otherwise lossless generation.
+
+A terminal read-model row that lost its command aliases is repaired only from
+the exact retained terminal payload after every payload `clientUserMessageId`
+is verified against a terminal ledger record with the same
+`provider + threadId + turnId + runId`. Recovery is bounded and idempotent and
+never resubmits the provider effect. Missing, duplicate or conflicting identity
+evidence leaves the row unchanged; content, time and ordinal position are not
+recovery evidence. Once that complete proof exists, the terminal payload is the
+authoritative complete user projection; independent external occurrences in it
+remain distinct, and stale read-model aliases are replaced rather than guessed.
 
 The durable command ledger owns acceptance and dispatch state. UI cards,
 in-memory receipts and runtime snapshots are projections.

@@ -287,10 +287,12 @@ test("sparse durable history does not erase an already known interstream author"
     messages: [{ itemId: "turn-1:user", role: "user", text: "Проверь" }],
   }]);
 
-  assert.equal(history[0].messages[0].author, "Agent HUB - Architect (Codex)");
+  assert.equal(history[0].messages.some((message) => (
+    message.author === "Agent HUB - Architect (Codex)"
+  )), true);
 });
 
-test("durable history collapses a persisted interstream root alias", () => {
+test("durable history preserves an unproven interstream provider root occurrence", () => {
   const origin = {
     kind: "interstream",
     workspaceId: "workspace-1",
@@ -325,11 +327,12 @@ test("durable history collapses a persisted interstream root alias", () => {
     }],
   }]);
 
-  assert.equal(turn.messages.length, 1);
-  assert.equal(turn.messages[0].itemId, "provider-root");
+  assert.equal(turn.messages.length, 2);
+  assert.equal(turn.messages[0].itemId, "managed-root");
   assert.equal(turn.messages[0].clientUserMessageId, "mcp:release-continuation-1");
   assert.equal(turn.messages[0].author, "Agent HUB - Architect (Sol)");
   assert.deepEqual(turn.messages[0].origin, origin);
+  assert.equal(turn.messages[1].itemId, "provider-root");
 });
 
 test("cached history keeps an unmatched older turn before its durable anchor", () => {
@@ -362,7 +365,7 @@ test("durable history orders unmatched turns by their canonical timestamps", () 
   assert.deepEqual(history.map((turn) => turn.id), ["old-turn", "new-turn"]);
 });
 
-test("durable history coalesces transient rollout users in either source order", () => {
+test("durable history replaces only a complete provider snapshot and keeps unproven aliases", () => {
   const turnId = "turn-root-race";
   const canonicalRoot = {
     itemId: "provider-user-item",
@@ -389,27 +392,33 @@ test("durable history coalesces transient rollout users in either source order",
     text: "Повторный текст",
   };
 
-  for (const [hydrated, durable] of [
-    [[canonicalRoot, canonicalSteer], [syntheticRoot, syntheticSteer]],
-    [[syntheticRoot, syntheticSteer], [canonicalRoot, canonicalSteer]],
-  ]) {
-    const [turn] = mergeDurableTaskHistory(
-      [{ id: turnId, messages: hydrated }],
-      [{ id: turnId, messages: durable }],
-    );
-    assert.equal(turn.messages.length, 2);
-    assert.equal(turn.messages[0].itemId, "provider-user-item");
-    assert.equal(turn.messages[0].clientUserMessageId, "client-user-message");
-    assert.deepEqual(turn.messages[0].attachments, [
-      { id: "first.png", type: "image/png" },
-      { id: "second.png", type: "image/png" },
-    ]);
-    assert.equal(turn.messages[1].itemId, "provider-steer-item");
-    assert.equal(turn.messages[1].clientUserMessageId, "client-steer-message");
-  }
+  const [canonicalHydrated] = mergeDurableTaskHistory(
+    [{ id: turnId, userMessageSnapshotAuthority: "complete", messages: [canonicalRoot, canonicalSteer] }],
+    [{ id: turnId, userMessageSnapshotAuthority: "complete", messages: [syntheticRoot, syntheticSteer] }],
+  );
+  assert.deepEqual(canonicalHydrated.messages.map((message) => message.itemId), [
+    "provider-user-item",
+    "provider-steer-item",
+  ]);
+  const [repeatedCanonicalHydration] = mergeDurableTaskHistory(
+    [canonicalHydrated],
+    [canonicalHydrated],
+  );
+  assert.deepEqual(repeatedCanonicalHydration.messages, canonicalHydrated.messages);
+
+  const [unkeyedHydrated] = mergeDurableTaskHistory(
+    [{ id: turnId, userMessageSnapshotAuthority: "complete", messages: [syntheticRoot, syntheticSteer] }],
+    [{ id: turnId, userMessageSnapshotAuthority: "complete", messages: [canonicalRoot, canonicalSteer] }],
+  );
+  assert.deepEqual(unkeyedHydrated.messages.map((message) => message.itemId), [
+    "provider-user-item",
+    "provider-steer-item",
+    `${turnId}:rollout-user:0`,
+    `${turnId}:rollout-user:1`,
+  ]);
 });
 
-test("durable history migrates a sparse canonical steer by its source user slot", () => {
+test("durable history preserves a sparse canonical steer without ordinal migration", () => {
   const turnId = "turn-sparse-steer";
   const syntheticRoot = {
     itemId: `${turnId}:rollout-user:0`,
@@ -430,28 +439,24 @@ test("durable history migrates a sparse canonical steer by its source user slot"
     attachmentSources: [{ type: "path", value: "C:/AgentHub/attachments/canonical.png" }],
   };
 
-  for (const [hydrated, durable] of [
-    [[syntheticRoot, canonicalSteer], [syntheticRoot, syntheticSteer]],
-    [[syntheticRoot, syntheticSteer], [syntheticRoot, canonicalSteer]],
-  ]) {
-    const [turn] = mergeDurableTaskHistory(
-      [{ id: turnId, messages: hydrated }],
-      [{ id: turnId, messages: durable }],
-    );
-    assert.deepEqual(turn.messages.map((message) => message.itemId), [
-      `${turnId}:rollout-user:0`,
-      "canonical-steer",
-    ]);
-    assert.equal(
-      turn.messages[1].clientUserMessageId,
-      "b74897d2-0ba2-48e8-a378-cde19f96dbb2",
-    );
-    assert.deepEqual(turn.messages[1].attachments, [{ id: "legacy.png", type: "image/png" }]);
-    assert.deepEqual(turn.messages[1].attachmentSources, [{
-      type: "path",
-      value: "C:/AgentHub/attachments/canonical.png",
-    }]);
-  }
+  const [canonicalHydrated] = mergeDurableTaskHistory(
+    [{ id: turnId, userMessageSnapshotAuthority: "complete", messages: [syntheticRoot, canonicalSteer] }],
+    [{ id: turnId, userMessageSnapshotAuthority: "complete", messages: [syntheticRoot, syntheticSteer] }],
+  );
+  assert.deepEqual(canonicalHydrated.messages.map((message) => message.itemId), [
+    `${turnId}:rollout-user:0`,
+    "canonical-steer",
+  ]);
+  const [unkeyedHydrated] = mergeDurableTaskHistory(
+    [{ id: turnId, userMessageSnapshotAuthority: "complete", messages: [syntheticRoot, syntheticSteer] }],
+    [{ id: turnId, userMessageSnapshotAuthority: "complete", messages: [syntheticRoot, canonicalSteer] }],
+  );
+  assert.deepEqual(unkeyedHydrated.messages.map((message) => message.itemId), [
+    "canonical-steer",
+    `${turnId}:rollout-user:0`,
+    `${turnId}:rollout-user:1`,
+  ]);
+  assert.equal(unkeyedHydrated.messages[0].clientUserMessageId, "b74897d2-0ba2-48e8-a378-cde19f96dbb2");
 });
 
 test("durable history preserves a real steer beside the root message", () => {
@@ -483,12 +488,14 @@ test("durable history preserves a real steer beside the root message", () => {
   assert.deepEqual(turn.messages.map((message) => message.itemId), [
     "root-client",
     "steer-client",
+    `${turnId}:rollout-user:0`,
   ]);
 });
 
-test("provider hydration repairs stale durable turn and message times", () => {
+test("complete provider hydration replaces an unowned stale message without itemId enrichment", () => {
   const history = mergeDurableTaskHistory([{
     id: "turn-new",
+    userMessageSnapshotAuthority: "complete",
     startedAt: "2026-08-09T20:02:33.000Z",
     completedAt: "2026-08-09T20:03:14.000Z",
     messages: [{
@@ -499,6 +506,7 @@ test("provider hydration repairs stale durable turn and message times", () => {
     }],
   }], [{
     id: "turn-new",
+    userMessageSnapshotAuthority: "complete",
     startedAt: "2026-08-09T19:29:18.000Z",
     completedAt: "2026-08-09T20:03:14.000Z",
     messages: [{
@@ -512,7 +520,75 @@ test("provider hydration repairs stale durable turn and message times", () => {
 
   assert.equal(history[0].startedAt, "2026-08-09T20:02:33.000Z");
   assert.equal(history[0].messages[0].time, "2026-08-09T20:02:33.000Z");
-  assert.deepEqual(history[0].messages[0].attachments, [{ id: "screen.png", type: "image/png" }]);
+  assert.equal(history[0].messages[0].attachments, undefined);
+});
+
+test("desktop history replays source-owned incremental occurrences exactly once", () => {
+  const first = {
+    role: "user",
+    text: "Одинаковый текст",
+    sourceOccurrenceId: `codex-rollout:${"5".repeat(64)}`,
+  };
+  const appended = {
+    ...first,
+    sourceOccurrenceId: `codex-rollout:${"6".repeat(64)}`,
+  };
+  let history = [];
+  const hydrate = (messages) => {
+    history = mergeDurableTaskHistory([{
+      id: "turn-incremental-replay",
+      userMessageSnapshotAuthority: "incremental",
+      messages,
+    }], history);
+  };
+
+  hydrate([first]);
+  hydrate([first]);
+  hydrate([first]);
+  assert.equal(history[0].messages.filter((message) => message.role === "user").length, 1);
+  hydrate([first, appended]);
+  hydrate([first, appended]);
+  assert.deepEqual(
+    history[0].messages.filter((message) => message.role === "user")
+      .map((message) => message.sourceOccurrenceId),
+    [first.sourceOccurrenceId, appended.sourceOccurrenceId],
+  );
+});
+
+test("desktop history replaces an enriched App Server source occurrence", () => {
+  const sourceOccurrenceId = `codex-app-server:${"b".repeat(64)}`;
+  const initial = {
+    role: "user",
+    text: "Provider projection",
+    sourceOccurrenceId,
+  };
+  const enriched = {
+    role: "user",
+    text: "Accepted projection",
+    sourceOccurrenceId,
+    clientUserMessageId: "desktop-accepted",
+    origin: { streamId: "desktop-owner" },
+  };
+  let history = mergeDurableTaskHistory([{
+    id: "desktop-enrichment-turn",
+    userMessageSnapshotAuthority: "incremental",
+    messages: [initial],
+  }], []);
+  history = mergeDurableTaskHistory([{
+    id: "desktop-enrichment-turn",
+    userMessageSnapshotAuthority: "incremental",
+    messages: [enriched],
+  }], history);
+  history = mergeDurableTaskHistory([{
+    id: "desktop-enrichment-turn",
+    userMessageSnapshotAuthority: "incremental",
+    messages: [initial],
+  }], history);
+
+  const users = history[0].messages.filter((message) => message.role === "user");
+  assert.equal(users.length, 1);
+  assert.equal(users[0].clientUserMessageId, "desktop-accepted");
+  assert.deepEqual(users[0].origin, { streamId: "desktop-owner" });
 });
 
 test("desktop task history resolves selection and merges the active run", async () => {
@@ -1663,7 +1739,7 @@ test("desktop task history returns the preceding page for a supplied cursor", as
   assert.equal(older.nextBefore, 7);
 });
 
-test("desktop task history assigns exact turn receipts to synthetic user ordinals", async () => {
+test("desktop task history never assigns turn receipts to unkeyed provider occurrences", async () => {
   const { desktopTaskHistory, state } = fixture({
     run: null,
     receipts: {
@@ -1705,19 +1781,13 @@ test("desktop task history assigns exact turn receipts to synthetic user ordinal
 
   const result = await desktopTaskHistory({ limit: 1, includeActive: false });
 
-  assert.equal(result.items[0].messages[0].clientUserMessageId, "root-receipt");
-  assert.deepEqual(result.items[0].messages[0].attachments, [{
-    id: "root.png",
-    type: "image/png",
-  }]);
-  assert.equal(result.items[0].messages[1].clientUserMessageId, "steer-receipt");
-  assert.deepEqual(result.items[0].messages[1].attachments, [{
-    id: "steer.png",
-    type: "image/png",
-  }]);
+  assert.equal(result.items[0].messages[0].clientUserMessageId, undefined);
+  assert.deepEqual(result.items[0].messages[0].attachments, []);
+  assert.equal(result.items[0].messages[1].clientUserMessageId, undefined);
+  assert.deepEqual(result.items[0].messages[1].attachments, []);
 });
 
-test("desktop task history binds the one missing steer after subtracting known receipt identities", async () => {
+test("desktop task history leaves an external occurrence unbound when one receipt remains", async () => {
   const receipts = [{
     clientUserMessageId: "root-receipt",
     result: { attachments: [] },
@@ -1761,12 +1831,9 @@ test("desktop task history binds the one missing steer after subtracting known r
   }];
 
   const result = await desktopTaskHistory({ limit: 1, includeActive: false });
-  assert.equal(result.items[0].messages[1].clientUserMessageId, "steer-receipt");
+  assert.equal(result.items[0].messages[1].clientUserMessageId, undefined);
   assert.equal(result.items[0].messages[1].responseAnnotationRequest, "Уточнение без service markup");
-  assert.deepEqual(result.items[0].messages[1].attachments, [{
-    id: "steer.png",
-    type: "image/png",
-  }]);
+  assert.deepEqual(result.items[0].messages[1].attachments, []);
 });
 
 test("desktop task history keeps turn attachments on the root user only", async () => {
@@ -1906,6 +1973,7 @@ test("desktop task history hydrates only visible turns and evicts old hydrated t
   const { desktopTaskHistory, state, calls } = fixture({ run: null });
   state.history = Array.from({ length: 42 }, (_, index) => ({
     id: `turn-${index + 1}`,
+    userMessageSnapshotAuthority: "complete",
     prompt: `Вопрос ${index + 1}`,
     answer: `Ответ ${index + 1}`,
     status: "completed",

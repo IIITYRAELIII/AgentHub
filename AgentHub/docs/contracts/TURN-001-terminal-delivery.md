@@ -25,6 +25,11 @@ final status and final content.
   uses the exact reconciled provider final after a bounded settle window.
 - Terminal is absorbing: late running, progress, snapshot or reconnect events
   cannot revive it.
+- A bounded restart reprojection may replace a corrupted terminal user
+  projection only when the retained terminal payload and command ledger prove
+  the same non-empty `provider + threadId + turnId + runId` for every distinct
+  Hub command identity. Missing, duplicate or conflicting proof fails closed;
+  successful reprojection preserves terminal state and never dispatches again.
 - Live, focused, history and badge views derive from the same terminal revision.
 - Versioned response-annotation source locators for user, final agent and
   non-final agent provider items attached to the turn prompt are
