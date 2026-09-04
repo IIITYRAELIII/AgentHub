@@ -89,6 +89,47 @@ user items, so a root or steer cannot coexist with its accepted optimistic card.
 Service-only attachment wrappers such as `<image ...>` are removed from both the
 main text and annotation request while the attachment object remains visible.
 
+Composer recovery uses the same exact `clientUserMessageId`. A transport timeout
+or connection loss leaves the cleared composer unchanged and shows the command
+as `unknown` while snapshot reconciliation is pending. Only an authoritative
+rejection without durable receipt, deferred-input or run evidence may restore
+the submitted payload. Such a restored draft persists its exact request
+identity, exact payload fingerprint and bounded local re-uploadable attachment
+bytes; temporary transport paths are never persisted or reused. On reload the
+client reconstructs retry identity only when the complete recovered payload
+matches that fingerprint. Re-uploadable attachment evidence is accepted only
+after strict base64 decode/canonical round-trip, exact declared-byte-length and
+bounded canonical name/MIME validation; malformed metadata or bytes invalidate
+the whole recovery identity. The persistence owner constructs the exact serialized
+candidate first and grants durable recovery only when its canonical fingerprint
+still equals the submitted payload; truncation, normalization, count or storage
+bounds may not silently weaken this check. Every committed composer mutation
+(text, attachment, Task reference, response annotation or programmatic edit)
+advances an irreversible Task-scoped edit revision and invalidates the old
+identity. Eligible attachment reads fence their exact Task before yielding;
+attachment and annotation callbacks commit only to the captured live Task,
+generation and revision. Refused/no-op file selections, duplicate annotations
+and hash failures do not advance the revision. Later accepted or rejected
+evidence from an older revision cannot clear or replace the edited composition,
+and receipt evidence without one exact current provider/Thread/Stream identity
+cannot complete any composer send.
+An explicit retry of the unchanged restored payload reuses the original request
+identity and uploads recovered attachments again. If browser privacy or quota
+policy, serialization normalization or a configured bound prevents exact atomic
+persistence, the client reports that recovery will not survive reload, retains
+the complete in-memory payload for the current page, persists no partial recovery
+identity and blocks managed runtime reload until the composition is sent or
+explicitly edited into independently persistable state. Recovery invalidation is
+also recorded as a bounded monotonic epoch in an independent IndexedDB store
+before stale local draft data can be trusted again. That authority survives cold
+WebView recreation and is compared before any localStorage recovery identity is
+restored; Task deletion advances the same epoch, so recreating an identical Task
+identity cannot inherit the deleted draft. If the independent authority cannot
+be read or advanced, no stored retry identity is trusted, the current page stays
+fenced, managed reload remains blocked and the UI warns once. The client never
+claims that stale local bytes were durably erased when either store rejects its
+write.
+
 Terminal states are absorbing. For one provider-turn identity, a committed
 `terminalRevision` wins over every late active/progress/reconnect observation;
 lower or duplicate revisions cannot revive the turn. A known positive revision
