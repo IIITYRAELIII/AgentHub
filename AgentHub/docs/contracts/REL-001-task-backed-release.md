@@ -200,6 +200,17 @@ pipeline before production side effects.
 built-in workflow rules. Architect authority is only
 `stream.settings.architect === true`; multiple Architect Streams are allowed.
 
+A Stream with `settings.teamLead=true` sends each exact implementation result
+to an independent Workspace Stream for review; the implementation executor
+does not review its own work. The review request is limited to the Task
+requirements, actual Git diff and consequences of the changes. The Task is
+blocked when those changes fail its requirements, cause or worsen a real
+regression in existing behavior, or add unnecessary functionality that must be
+removed. Pre-existing unrelated defects, impractical edge cases without
+contract impact, unsupported findings and out-of-scope issues do not block the
+Task. A failed result returns to the same executor, and its corrected exact
+result receives another independent review.
+
 The built-in rules require a Task for every change to a repository,
 configuration, data, documentation or another deliverable. Read-only diagnosis,
 explanations and answers do not create Tasks. If diagnosis becomes
