@@ -53,6 +53,9 @@ html[data-theme="verdant"] {
   --provider-none: #789285;
   --provider-codex: #83eda5;
   --provider-claude: #d6c27b;
+  --provider-tone-lightness: 0.79;
+  --provider-tone-chroma: 0.09;
+  --provider-tone-alpha: 0.18;
   --ok: #78d69b;
   --pending: #d3b96b;
 

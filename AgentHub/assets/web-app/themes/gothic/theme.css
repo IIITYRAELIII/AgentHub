@@ -64,6 +64,9 @@ html[data-theme="gothic"] {
   --provider-none: #766a5a;
   --provider-codex: #c8b89e;
   --provider-claude: #b66f4a;
+  --provider-tone-lightness: 0.75;
+  --provider-tone-chroma: 0.07;
+  --provider-tone-alpha: 0.17;
   --ok: #8b9c6a;
   --pending: #c08a4d;
   --dot-input: #b9a88c;

@@ -30,6 +30,9 @@ html[data-theme="orbit"] {
   --selection: rgb(64 183 227 / 28%);
   --brand-gradient: none;
   --brand-shadow: none;
+  --provider-tone-lightness: 0.8;
+  --provider-tone-chroma: 0.09;
+  --provider-tone-alpha: 0.18;
   --pending: #ff7a45;
 
   --radius-lg: 5px;

@@ -61,6 +61,9 @@ html[data-theme="classic"] {
   --provider-none: #848485;
   --provider-codex: #48a0c7;
   --provider-claude: #a7a7a7;
+  --provider-tone-lightness: 0.72;
+  --provider-tone-chroma: 0.015;
+  --provider-tone-alpha: 0.16;
   --comparison-local: #bfbfbf;
   --comparison-deviation: #a7a7a7;
   --comparison-cost: #848485;

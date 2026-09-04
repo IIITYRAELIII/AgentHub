@@ -60,6 +60,9 @@ html[data-theme="kashyyyk"] {
   --provider-none: #849087;
   --provider-codex: #79c4b0;
   --provider-claude: #d7a263;
+  --provider-tone-lightness: 0.78;
+  --provider-tone-chroma: 0.085;
+  --provider-tone-alpha: 0.18;
   --ok: #84bf80;
   --pending: #d4a563;
   --dot-input: #7fc8b6;

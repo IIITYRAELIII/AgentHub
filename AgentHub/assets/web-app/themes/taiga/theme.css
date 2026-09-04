@@ -85,6 +85,9 @@ html[data-theme="taiga"] {
   --provider-none: #768480;
   --provider-codex: #a8c5d2;
   --provider-claude: #d2a26f;
+  --provider-tone-lightness: 0.77;
+  --provider-tone-chroma: 0.07;
+  --provider-tone-alpha: 0.17;
   --ok: #9fc8c0;
   --pending: #d2a46d;
 

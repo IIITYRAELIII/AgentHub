@@ -65,6 +65,9 @@ html[data-theme="dead-space"] {
   --provider-none: #758886;
   --provider-codex: #65dcd4;
   --provider-claude: #d58a3d;
+  --provider-tone-lightness: 0.78;
+  --provider-tone-chroma: 0.09;
+  --provider-tone-alpha: 0.18;
   --ok: #83c9a3;
   --pending: #d78a32;
   --dot-input: #66ded6;

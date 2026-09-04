@@ -70,6 +70,13 @@
   --provider-none: #8797ab;
   --provider-codex: #6cb2ff;
   --provider-claude: #e08a63;
+  /* Реестр провайдеров владеет только hue. Светлость, хрома и прозрачность
+     колонки расхода задаёт активный пакет темы. */
+  --provider-codex-hue: 260;
+  --provider-claude-hue: 35;
+  --provider-tone-lightness: 0.78;
+  --provider-tone-chroma: 0.09;
+  --provider-tone-alpha: 0.18;
   --comparison-local: #f3f7ff;
   --comparison-deviation: #f0b95b;
   --comparison-cost: #d49cff;
@@ -11846,18 +11853,82 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
   min-width: 0;
 }
 
+[data-work-log-account-provider-rail] {
+  align-self: stretch;
+  display: flex;
+  flex: 0 0 var(--rail-width);
+  flex-direction: column;
+  min-height: 1.35rem;
+  overflow: hidden;
+  width: var(--rail-width);
+}
+
+[data-work-log-account-provider-rail-segment] {
+  background: var(--account-provider-color, var(--provider-none));
+  flex: 1 1 0;
+  min-height: 2px;
+}
+
 [data-work-log-account-provider-name] {
-  color: var(--text-soft);
+  align-items: baseline;
+  display: inline-flex;
   font-size: 0.75rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-[data-work-log-account-plan] {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
+[data-work-log-account-provider-label] {
+  color: var(--account-provider-color, var(--text-soft));
+}
+
+[data-work-log-account-provider-separator] {
   color: var(--text-faint);
+}
+
+[data-provider-tone="codex"] {
+  --account-provider-hue: var(--provider-codex-hue);
+  --account-provider-color: oklch(
+    var(--provider-tone-lightness)
+    var(--provider-tone-chroma)
+    var(--account-provider-hue)
+  );
+  --account-provider-tint: oklch(
+    var(--provider-tone-lightness)
+    var(--provider-tone-chroma)
+    var(--account-provider-hue)
+    / var(--provider-tone-alpha)
+  );
+}
+
+[data-provider-tone="claude"] {
+  --account-provider-hue: var(--provider-claude-hue);
+  --account-provider-color: oklch(
+    var(--provider-tone-lightness)
+    var(--provider-tone-chroma)
+    var(--account-provider-hue)
+  );
+  --account-provider-tint: oklch(
+    var(--provider-tone-lightness)
+    var(--provider-tone-chroma)
+    var(--account-provider-hue)
+    / var(--provider-tone-alpha)
+  );
+}
+
+[data-provider-tone="unknown"] {
+  --account-provider-color: var(--provider-none);
+}
+
+[data-work-log-account-plan] {
+  background: var(--account-provider-tint, var(--surface-2));
+  border: 1px solid color-mix(
+    in srgb,
+    var(--account-provider-color, var(--provider-none)) 58%,
+    transparent
+  );
+  border-radius: var(--radius-sm);
+  color: var(--account-provider-color, var(--text-faint));
   font-family: var(--font-numeric);
   font-size: 0.65rem;
   overflow: hidden;
@@ -12263,7 +12334,9 @@ html[data-surface="mobile"] [data-work-log-account-group][data-open] {
   background: var(--surface-2);
   border: 0;
   border-radius: var(--radius-md);
+  overflow: hidden;
   padding: 0.75rem;
+  position: relative;
 }
 
 html[data-surface="mobile"] [data-work-log-account-row],
@@ -12330,17 +12403,26 @@ html[data-surface="mobile"] [data-work-log-account-row] > [data-work-log-account
   order: 60;
 }
 
-html[data-surface="mobile"] [data-work-log-account-provider-name],
-html[data-surface="mobile"] [data-work-log-account-plan] {
+html[data-surface="mobile"] [data-work-log-account-provider-name] {
   border: 0;
-  color: var(--text-faint);
   font-family: var(--font-body);
   font-size: 0.69rem;
   padding: 0;
 }
 
-html[data-surface="mobile"] [data-work-log-account-plan]::before {
-  content: "· ";
+html[data-surface="mobile"] [data-work-log-account-plan] {
+  border: 0;
+  border-radius: calc(var(--radius-sm) * 0.7);
+  font-size: 0.62rem;
+  padding: 0.08rem 0.28rem;
+}
+
+html[data-surface="mobile"] [data-work-log-account-provider-rail] {
+  bottom: 0;
+  left: 0;
+  min-height: 0;
+  position: absolute;
+  top: 0;
 }
 
 html[data-surface="mobile"] [data-work-log-account-row] > [data-work-log-account-share] {

@@ -955,10 +955,17 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
     });
 }
 
-function providerTitle(provider) {
-  if (provider === "codex") return "Codex";
-  if (provider === "claude") return "Claude";
-  return provider;
+const ACCOUNT_PROVIDER_PRESENTATION = Object.freeze({
+  claude: Object.freeze({ title: "Claude", tone: "claude" }),
+  codex: Object.freeze({ title: "Codex", tone: "codex" }),
+});
+
+function providerPresentation(provider) {
+  const key = String(provider ?? "").trim().toLowerCase();
+  return ACCOUNT_PROVIDER_PRESENTATION[key] ?? {
+    title: String(provider ?? "").trim(),
+    tone: "unknown",
+  };
 }
 
 function sortedProviders(providers = {}) {
@@ -975,11 +982,9 @@ function formatProviderCounts(providers = {}) {
 
 /* В строке устройства колонка провайдера несёт только модель: число ходов у
    устройства уже стоит в собственной колонке. */
-function formatProviderNames(providers = {}) {
-  return sortedProviders(providers).map(([provider]) => providerTitle(provider)).join(" · ");
-}
-
-function formatAccountPlan(planType) {
+function formatAccountPlan(planType, providers = {}) {
+  const providerEntries = sortedProviders(providers);
+  if (providerEntries.length !== 1 || !ACCOUNT_PROVIDER_PRESENTATION[providerEntries[0][0]]) return "";
   const raw = String(planType ?? "").trim();
   const normalized = raw.toLowerCase();
   if (!normalized) return "";
@@ -991,8 +996,41 @@ function formatAccountPlan(planType) {
   if (tier === "team") return "Team";
   if (tier === "enterprise") return "Enterprise";
   if (tier === "free") return "Free";
-  if (normalized.includes(":") || normalized.endsWith("_subscription")) return "";
-  return raw;
+  return "";
+}
+
+function formatProviderRail(entries) {
+  if (!entries.length) return "";
+  return '<span data-work-log-account-provider-rail aria-hidden="true">'
+    + entries.map(([provider]) => {
+      const { tone } = providerPresentation(provider);
+      return `<span data-work-log-account-provider-rail-segment data-provider-tone="${escapeHtmlAttribute(tone)}"></span>`;
+    }).join("")
+    + "</span>";
+}
+
+function formatProviderLabels(entries) {
+  if (!entries.length) return "";
+  return '<span data-work-log-account-provider-name>'
+    + entries.map(([provider], index) => {
+      const { title, tone } = providerPresentation(provider);
+      return `${index ? '<span data-work-log-account-provider-separator> · </span>' : ""}`
+        + `<span data-work-log-account-provider-label data-provider-tone="${escapeHtmlAttribute(tone)}">${escapeHtmlText(title)}</span>`;
+    }).join("")
+    + "</span>";
+}
+
+function formatAccountProvider(providers = {}, planType = "", { rail = false } = {}) {
+  const entries = sortedProviders(providers);
+  const plan = formatAccountPlan(planType, providers);
+  const tone = entries.length === 1 ? providerPresentation(entries[0][0]).tone : "";
+  return "<span data-work-log-account-provider>"
+    + (rail ? formatProviderRail(entries) : "")
+    + formatProviderLabels(entries)
+    + (plan && tone !== "unknown"
+      ? `<span data-work-log-account-plan data-provider-tone="${escapeHtmlAttribute(tone)}">${escapeHtmlText(plan)}</span>`
+      : "")
+    + "</span>";
 }
 
 function pluralize(count, [one, few, many]) {
@@ -1126,8 +1164,6 @@ function formatDeviceShareFill(devices, currentIndex, total) {
 function formatAccountUsageRow(account, totalCredits, groupId) {
   const devices = accountDevices(account);
   const uiAccountKey = String(account.uiAccountKey || account.accountKey || "");
-  const providers = formatProviderNames(account.providers);
-  const plan = formatAccountPlan(account.planType);
   const share = totalCredits > 0 && account.credits > 0
     ? Math.round(account.credits / totalCredits * 100)
     : 0;
@@ -1155,14 +1191,7 @@ function formatAccountUsageRow(account, totalCredits, groupId) {
       : "")
     + "</span>"
     + "</span>"
-    + "<span data-work-log-account-provider>"
-    + (providers
-      ? `<span data-work-log-account-provider-name>${escapeHtmlText(providers)}</span>`
-      : "")
-    + (plan
-      ? `<span data-work-log-account-plan>${escapeHtmlText(plan)}</span>`
-      : "")
-    + "</span>"
+    + formatAccountProvider(account.providers, account.planType, { rail: true })
     + `<span data-work-log-account-bar aria-hidden="true">${formatShareSegments(segments)}</span>`
     + `<span data-work-log-account-share>${share}%</span>`
     + `<span data-work-log-account-turns>${account.turns}</span>`
@@ -1176,7 +1205,6 @@ function formatAccountDeviceRow(account, device, index) {
   const share = account.credits > 0 && device.credits > 0
     ? Math.round(device.credits / account.credits * 100)
     : 0;
-  const providers = formatProviderNames(device.providers);
   const shortId = accountDeviceShortId(device);
   const deviceFill = formatDeviceShareFill(devices, index, account.credits);
   return "<div data-work-log-account-device-row "
@@ -1200,11 +1228,7 @@ function formatAccountDeviceRow(account, device, index) {
     + `<span data-work-log-account-device-quality>${escapeHtmlText(formatAccountQuality(device))}</span>`
     + "</span>"
     + "</span>"
-    + "<span data-work-log-account-provider>"
-    + (providers
-      ? `<span data-work-log-account-provider-name>${escapeHtmlText(providers)}</span>`
-      : "")
-    + "</span>"
+    + formatAccountProvider(device.providers)
     + `<span data-work-log-account-bar aria-hidden="true">${deviceFill}</span>`
     + `<span data-work-log-account-share>${share}%</span>`
     + `<span data-work-log-account-turns>${device.turns}</span>`

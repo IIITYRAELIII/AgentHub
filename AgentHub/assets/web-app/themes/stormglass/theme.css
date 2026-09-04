@@ -55,6 +55,9 @@ html[data-theme="stormglass"] {
   --provider-none: #78909c;
   --provider-codex: #7fc9e6;
   --provider-claude: #e0a06d;
+  --provider-tone-lightness: 0.79;
+  --provider-tone-chroma: 0.085;
+  --provider-tone-alpha: 0.18;
   --ok: #74cfae;
   --pending: #ddac68;
 

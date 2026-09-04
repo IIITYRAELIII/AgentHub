@@ -53,6 +53,9 @@ html[data-theme="pulsar"] {
 
   --provider-codex: #3ce6d4;
   --provider-claude: #ffa96a;
+  --provider-tone-lightness: 0.8;
+  --provider-tone-chroma: 0.1;
+  --provider-tone-alpha: 0.18;
 
   --ok: #3ce6d4;
   --pending: #ffc861;

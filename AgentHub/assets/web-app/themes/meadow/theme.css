@@ -51,6 +51,9 @@ html[data-theme="meadow"] {
   --provider-none: #869180;
   --provider-codex: #79c8e4;
   --provider-claude: #efa06a;
+  --provider-tone-lightness: 0.79;
+  --provider-tone-chroma: 0.09;
+  --provider-tone-alpha: 0.18;
   --ok: #8fd0a0;
   --pending: #dcc06a;
 

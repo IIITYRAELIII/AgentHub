@@ -56,6 +56,9 @@ html[data-theme="jedi-archives"] {
   --provider-none: #73777d;
   --provider-codex: #4d86b3;
   --provider-claude: #aa8050;
+  --provider-tone-lightness: 0.48;
+  --provider-tone-chroma: 0.09;
+  --provider-tone-alpha: 0.14;
   --comparison-local: #4b7091;
   --comparison-deviation: #a0703e;
   --comparison-cost: #83718d;

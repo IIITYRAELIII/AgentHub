@@ -51,6 +51,9 @@ html[data-theme="graphite"] {
   --provider-none: oklch(0.55 0.006 260);
   --provider-codex: oklch(0.7 0.01 260);
   --provider-claude: oklch(0.62 0.012 45);
+  --provider-tone-lightness: 0.7;
+  --provider-tone-chroma: 0.025;
+  --provider-tone-alpha: 0.16;
 
   --ok: oklch(0.72 0.05 150);
   --pending: oklch(0.72 0.07 60);
