@@ -213,6 +213,21 @@ discard Tasks or historical publication evidence.
 
 ## Legacy cutover
 
+A legacy open Await Task that predates Task Git references may be adopted only
+through the explicit Architect-only MCP migration. The caller names the exact
+terminal Stream turn, its reported result commit and an exact equivalent commit
+already contained in local `main`. Adoption requires an unchanged Task revision,
+no existing Git references, terminal evidence that names both the Task and the
+reported commit, matching single-parent non-`CHANGELOG.md` patch IDs and changed
+path operations, and an adopted commit that is an ancestor of local `main`.
+The operation creates only the deterministic Task branch, base ref and legacy
+adoption marker ref; release evidence for that exact marker excludes every
+`CHANGELOG.md` because release history is consolidated by Architect. It never
+creates a synthetic commit or moves the registered primary checkout. The Task
+stores the adopted immutable result and an append-only audit row identifying the
+evidence turn, source commit, main commit, patch ID, actor and request. Arbitrary
+`HEAD` adoption and adoption of an already evidenced Task fail closed.
+
 Active legacy registry entries and Task-freeze rows are imported into their Task
 aggregate before cutover. Every source row is exported to append-only history
 and verified by source identity, payload cardinality and SHA-256. Only then are

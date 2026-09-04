@@ -87,6 +87,7 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
   };
   const operations = new Map();
   const taskEvidenceCalls = [];
+  const legacyAdoptionCalls = [];
   const taskClaimCalls = [];
   workspaceCatalog.beginMcpOperation = (operation) => {
     const existing = operations.get(operation.requestId);
@@ -142,6 +143,19 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
       taskEvidenceCalls.push({ taskId, projectRoot: root, branch, resultSnapshot });
       return Object.assign(tasks.get(taskId), {
         gitReferences: [{ projectRoot: root, branch, resultCommit: resultSnapshot.tree }],
+      });
+    },
+    adoptLegacyGitReference: (options) => {
+      legacyAdoptionCalls.push(options);
+      const task = tasks.get(options.taskId);
+      return Object.assign(task, {
+        revision: Number(task.revision) + 1,
+        gitReferences: [{
+          projectRoot: options.projectRoot,
+          branch: options.branch,
+          resultCommit: options.mainResultCommit,
+        }],
+        gitAdoptions: [{ evidenceTurnId: options.evidenceTurnId, patchId: options.patchId }],
       });
     },
     releaseTasks: () => [],
@@ -204,6 +218,19 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
         dev: { branch: "dev", headCommit: "a".repeat(40) },
       },
     }),
+    adoptLegacyResult: async ({
+      taskId, taskNumber, projectRoot: selectedProjectRoot, reportedResultCommit, mainResultCommit,
+    }) => ({
+      taskId,
+      projectRoot: selectedProjectRoot,
+      branch: taskNumber,
+      baseCommit: "0".repeat(40),
+      reportedResultCommit,
+      resultCommit: mainResultCommit,
+      mainCommit: mainResultCommit,
+      patchId: "f".repeat(40),
+      changedFiles: [{ projectRoot: selectedProjectRoot, path: "AgentHub/app.js", operation: "modified" }],
+    }),
     cleanup: async () => ({ removed: 1 }),
   };
   const service = new HubMcpService({
@@ -265,6 +292,7 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     tasks,
     operations,
     taskEvidenceCalls,
+    legacyAdoptionCalls,
     taskClaimCalls,
     taskGitPrepareCalls,
     taskLaunchCalls,
@@ -277,6 +305,56 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     activeRun,
   };
 }
+
+test("Architect adopts exact terminal legacy evidence without accepting arbitrary HEAD", async (context) => {
+  const {
+    service, token, tasks, historyRecordsByThread, targetWorkingDirectory, legacyAdoptionCalls,
+  } = await fixture(context, { releaseWorkflowEnabled: true });
+  const reportedResultCommit = "a".repeat(40);
+  const mainResultCommit = "b".repeat(40);
+  tasks.set("task-legacy", {
+    id: "task-legacy", taskNumber: "HUB-98", title: "Legacy", description: "",
+    bucket: "workspace", status: "open", workflowStatus: "awaiting_implementation",
+    workspaceId: "workspace-1", streamId: "stream-2", boardOrder: 0, revision: 12,
+    gitReferences: [],
+  });
+  historyRecordsByThread.set("thread-2", [{
+    provider: "codex",
+    threadId: "thread-2",
+    turnId: "turn-legacy",
+    title: "HUB-98 completion",
+    prompt: "Finish HUB-98",
+    body: `HUB-98 moved to Await. Exact result commit: ${reportedResultCommit}`,
+    status: "completed",
+  }]);
+
+  const result = await service.call("hub_task_legacy_git_adopt", {
+    context_token: token,
+    request_id: "adopt-legacy-1",
+    task_id: "task-legacy",
+    expected_task_revision: 12,
+    evidence_turn_id: "turn-legacy",
+    reported_result_commit: reportedResultCommit,
+    main_result_commit: mainResultCommit,
+    confirm_adoption: true,
+  });
+
+  assert.equal(result.gitReferences[0].resultCommit, mainResultCommit);
+  assert.equal(result.gitAdoption.projectRoot, targetWorkingDirectory);
+  assert.equal(result.gitAdoption.patchId, "f".repeat(40));
+  assert.equal(legacyAdoptionCalls[0].evidenceTurnId, "turn-legacy");
+
+  await assert.rejects(() => service.call("hub_task_legacy_git_adopt", {
+    context_token: service.contextToken({ provider: "codex", threadId: "thread-2" }),
+    request_id: "adopt-legacy-non-architect",
+    task_id: "task-legacy",
+    expected_task_revision: 13,
+    evidence_turn_id: "turn-legacy",
+    reported_result_commit: reportedResultCommit,
+    main_result_commit: mainResultCommit,
+    confirm_adoption: true,
+  }), /requires an Architect Stream/u);
+});
 
 test("HubMcpService lists and changes Dashboard Tasks across Workspaces", async (context) => {
   const { service, token } = await fixture(context);

@@ -118,6 +118,76 @@ test("Task Git workspace commits one Task branch and merges it into dev", async 
   }
 });
 
+test("legacy adoption records only an exact equivalent commit already in main", async (context) => {
+  const root = await repository(context);
+  const dataDir = path.join(root, "..", `${path.basename(root)}-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const service = new TaskGitWorkspaceService({ dataDir });
+  const taskId = "12121212-1212-4212-8212-121212121212";
+  const baseCommit = await git(root, "rev-parse", "HEAD^{commit}");
+
+  await git(root, "checkout", "-b", "legacy-source");
+  await writeFile(path.join(root, "app.txt"), "legacy result\n", "utf8");
+  await writeFile(path.join(root, "CHANGELOG.md"), "legacy wording\n", "utf8");
+  await git(root, "add", "app.txt", "CHANGELOG.md");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "legacy result");
+  const reportedResultCommit = await git(root, "rev-parse", "HEAD^{commit}");
+  await git(root, "checkout", "main");
+  await writeFile(path.join(root, "app.txt"), "legacy result\n", "utf8");
+  await writeFile(path.join(root, "CHANGELOG.md"), "consolidated release wording\n", "utf8");
+  await git(root, "add", "app.txt", "CHANGELOG.md");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "integrated result");
+  const mainResultCommit = await git(root, "rev-parse", "HEAD^{commit}");
+  const mainHeadBefore = await git(root, "rev-parse", "main^{commit}");
+  const statusBefore = await git(root, "status", "--porcelain=v1", "--untracked-files=all");
+
+  const adopted = await service.adoptLegacyResult({
+    taskId,
+    taskNumber: "HUB-98",
+    projectRoot: root,
+    reportedResultCommit,
+    mainResultCommit,
+  });
+
+  assert.equal(adopted.branch, "HUB-98");
+  assert.equal(adopted.baseCommit, baseCommit);
+  assert.equal(adopted.resultCommit, mainResultCommit);
+  assert.deepEqual(adopted.changedFiles.map((file) => file.path), ["app.txt"]);
+  assert.equal(await git(root, "rev-parse", "HUB-98^{commit}"), mainResultCommit);
+  assert.equal(await git(root, "rev-parse", "main^{commit}"), mainHeadBefore);
+  assert.equal(await git(root, "status", "--porcelain=v1", "--untracked-files=all"), statusBefore);
+  const evidence = await service.releaseEvidence({
+    taskId,
+    taskNumber: "HUB-98",
+    projectRoot: root,
+    branch: adopted.branch,
+    resultCommit: adopted.resultCommit,
+  });
+  assert.deepEqual(evidence.changedFiles.map((file) => file.path), ["app.txt"]);
+
+  await assert.rejects(() => service.adoptLegacyResult({
+    taskId: "14141414-1414-4414-8414-141414141414",
+    taskNumber: "HUB-101",
+    projectRoot: root,
+    reportedResultCommit: "HEAD",
+    mainResultCommit,
+  }), /full Git commit id/u);
+
+  await git(root, "checkout", "-b", "different-source", baseCommit);
+  await writeFile(path.join(root, "app.txt"), "different result\n", "utf8");
+  await git(root, "add", "app.txt");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "different result");
+  const differentCommit = await git(root, "rev-parse", "HEAD^{commit}");
+  await git(root, "checkout", "main");
+  await assert.rejects(() => service.adoptLegacyResult({
+    taskId: "13131313-1313-4313-8313-131313131313",
+    taskNumber: "HUB-100",
+    projectRoot: root,
+    reportedResultCommit: differentCommit,
+    mainResultCommit,
+  }), /does not match/u);
+});
+
 test("managed Task admission rejects another Task owner and numbered branch", async (context) => {
   const root = await repository(context);
   const dataDir = path.join(root, "..", `${path.basename(root)}-data`);

@@ -58,6 +58,54 @@ test("status integration records a Git result without fabricating a provider tur
   assert.deepEqual(recorded.workLog, []);
 });
 
+test("legacy Git adoption is CAS-guarded and keeps an immutable audit", async (t) => {
+  const store = await fixture(t);
+  const created = store.create({ text: "Legacy Await" });
+  store.move(created.id, { bucket: "workspace", workspaceId: "workspace-1" });
+  store.markStarted(created.id, { workspaceId: "workspace-1", streamId: "stream-1" });
+  const awaiting = store.setWorkflowStatus(created.id, "awaiting_implementation");
+  const projectRoot = path.resolve("D:/repo");
+  const adopted = store.adoptLegacyGitReference({
+    taskId: created.id,
+    expectedRevision: awaiting.revision,
+    projectRoot,
+    branch: "HUB-98",
+    reportedResultCommit: "a".repeat(40),
+    mainResultCommit: "b".repeat(40),
+    patchId: "c".repeat(40),
+    evidenceStreamId: "stream-1",
+    evidenceProvider: "codex",
+    evidenceThreadId: "thread-1",
+    evidenceTurnId: "turn-1",
+    actorStreamId: "architect-stream",
+    actorProvider: "codex",
+    actorThreadId: "architect-thread",
+    requestId: "adopt-1",
+  });
+
+  assert.deepEqual(adopted.gitReferences, [{
+    projectRoot,
+    branch: "HUB-98",
+    resultCommit: "b".repeat(40),
+  }]);
+  assert.equal(adopted.gitAdoptions.length, 1);
+  assert.equal(adopted.gitAdoptions[0].reportedResultCommit, "a".repeat(40));
+  assert.equal(adopted.gitAdoptions[0].evidenceTurnId, "turn-1");
+  assert.throws(() => store.adoptLegacyGitReference({
+    taskId: created.id,
+    expectedRevision: awaiting.revision,
+    projectRoot,
+  }), /revision changed|already has Git evidence/u);
+
+  store.close();
+  const inspected = new DatabaseSync(store.databaseFile);
+  assert.throws(
+    () => inspected.prepare("DELETE FROM hub_task_legacy_git_adoptions").run(),
+    /legacy Git adoption audit is immutable/u,
+  );
+  inspected.close();
+});
+
 test("Task store deduplicates Telegram updates and persists capture mode", async (t) => {
   const store = await fixture(t);
   const first = store.create({ text: "  Купить молоко ", source: "telegram", sourceKey: "telegram:1:2" });
