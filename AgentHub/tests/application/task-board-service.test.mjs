@@ -29,6 +29,7 @@ async function fixture(t, classify) {
 
 test("snapshot revision reads owner revisions without building hierarchy or board", () => {
   let hierarchyCalls = 0;
+  const legacyAdoptions = [];
   const store = {
     revision: 7,
     create: () => null,
@@ -46,6 +47,10 @@ test("snapshot revision reads owner revisions without building hierarchy or boar
     recordTaskTurn: () => null,
     releaseTasks: () => [],
     completeRelease: () => null,
+    adoptLegacyGitReference: (payload) => {
+      legacyAdoptions.push(payload);
+      return { id: payload.taskId, workspaceId: "workspace-1", status: "open", bucket: "workspace" };
+    },
   };
   const service = new TaskBoardService({
     store,
@@ -60,6 +65,8 @@ test("snapshot revision reads owner revisions without building hierarchy or boar
 
   assert.equal(service.snapshotRevision, "7:11");
   assert.equal(hierarchyCalls, 0);
+  assert.equal(service.adoptLegacyGitReference({ taskId: "legacy-1", evidenceTurnId: "turn-1" }).id, "legacy-1");
+  assert.deepEqual(legacyAdoptions, [{ taskId: "legacy-1", evidenceTurnId: "turn-1" }]);
 });
 
 test("Spark correction and confident Workspace suggestion place a Task automatically", async (t) => {

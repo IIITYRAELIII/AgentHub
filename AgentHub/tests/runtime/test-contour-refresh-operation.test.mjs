@@ -8,6 +8,8 @@ import path from "node:path";
 import process from "node:process";
 import test from "node:test";
 
+import { canonicalPath } from "../../src/infrastructure/filesystem/config.mjs";
+
 import {
   beginTestContourOperation,
   readTestContourOperationDocument,
@@ -665,7 +667,7 @@ test("verify preserves the requested root and custom port through refresh and sm
       },
     });
     assert.equal(result.smoke.ok, true);
-    assert.equal(calls[0].options.root, root);
+    assert.equal(calls[0].options.root, canonicalPath(root));
     assert.equal(calls[0].options.port, port);
     assert.equal(calls[0].options.sourceKind, "dev");
     assert.equal(calls[1].options.url, `http://127.0.0.1:${port}/`);
@@ -784,7 +786,7 @@ test("ordinary start replaces a persisted release candidate with the exact curre
       kind: "dev",
       branch: "dev",
       headCommit: "dev-head-current",
-      sourceRoot: path.resolve(sourceRoot),
+      sourceRoot: canonicalPath(sourceRoot),
       contourId: "contour-main-to-dev",
       port,
       model: TEST_CONTOUR_SPARK_MODEL,
