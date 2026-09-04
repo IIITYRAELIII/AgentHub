@@ -145,11 +145,19 @@ mutable next candidate.
 call returns a confirmation token and an exact preview of branches, worktrees,
 dirty and untracked paths, result commits, publication state and deletions. A
 confirmed operation is serialized by the Task lifecycle lease and the token is
-revalidated against the current Task revision and Git state.
+revalidated against the current Task revision, Git state and exact durable
+publication generation. Replacing publication evidence at the same revision
+invalidates confirmation before cleanup.
+Both Desktop Dashboard actions and MCP tools enter the same application
+lifecycle owner. The owner acquires the Task lease before computing either the
+preview or the confirmed preview, and enumerates branch/base/result refs from
+all stored Git references even when their worktree is already absent.
 
 Complete closes an implementation Task only after workflow Done, rejects dirty
 worktrees and removes a branch plus its protective result ref only when the
-exact result commit is contained in published main. A Task without Git artifacts
+exact result commit is contained in `origin/main` and durable publication state
+names that same revision and a non-empty generation. A local `main` ref alone is
+never publication evidence. A Task without Git artifacts
 may close as analysis. Delete is the explicit destructive route for unpublished
 results. It records a durable cleanup transition, performs Git cleanup first and
 deletes the Task row only after cleanup succeeds; failure leaves the Task and its
@@ -217,6 +225,13 @@ runtime is replaced by `dev` rather than restarted.
 The rolling contour is preview evidence, not release proof. Release validation
 still requires the prescribed isolated candidate checks and publication
 pipeline before production side effects.
+
+Complete/Delete confirmation is a projection of the authoritative server cleanup
+preview. Before the confirmed request the client displays every available Task
+branch, managed worktree and HEAD, dirty/changed/untracked paths, result commit,
+publication revision/generation/state and exact deletion target. The client does
+not derive cleanup policy or publication authority, and cancellation sends no
+confirmed mutation.
 
 ## Workspace policy and Architect role
 

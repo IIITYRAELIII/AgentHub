@@ -15,6 +15,8 @@ import {
 } from "../domain/interstream-message.mjs";
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
+import { TaskLifecycleService } from "./task-lifecycle-service.mjs";
+import { createWorkspaceCatalogMutationOwner } from "./sqlite-mutation-owner.mjs";
 
 const CONTEXT_TOKEN_VERSION = 1;
 const MAX_REGISTERED_CONTEXT_CAPABILITIES = 1_000;
@@ -361,12 +363,6 @@ function compactTask(task) {
   };
 }
 
-const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
-
-function sqliteBusy(error) {
-  return error?.code === "SQLITE_BUSY" || /database is locked|SQLITE_BUSY/iu.test(String(error?.message ?? ""));
-}
-
 function cleanupConfirmation(task, action, preview) {
   const token = createHash("sha256").update(JSON.stringify({
     action,
@@ -424,11 +420,11 @@ export class HubMcpService {
   #streamMessenger = async () => { throw new Error("Agent Hub Stream messenger is not ready"); };
   #pendingMutations = new Map();
   #contextCapabilities = new Map();
-  #databaseContention = { retries: 0, exhausted: 0, lastWaitMs: 0, lastAt: null };
+  #startupReconciliation = Promise.resolve();
 
   constructor({
     workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releasePlanner, releasePreflight, releaseCompleter,
-    taskGitWorkspaces = null,
+    taskGitWorkspaces = null, taskLifecycle = null,
   } = {}) {
     for (const name of [
       "resolveThread", "workspace", "hierarchy", "developerRulesForStream",
@@ -445,7 +441,9 @@ export class HubMcpService {
     requiredMethod(workLog, "threadTurns");
     requiredMethod(releasePreflight, "preflight");
     requiredMethod(releaseCompleter, "completeRelease");
-    this.workspaceCatalog = workspaceCatalog;
+    this.workspaceCatalog = typeof workspaceCatalog.runMutation === "function"
+      ? createWorkspaceCatalogMutationOwner(workspaceCatalog)
+      : workspaceCatalog;
     this.taskBoard = taskBoard;
     this.workLog = workLog;
     this.attachmentDirectory = path.resolve(requiredText(attachmentDirectory, "attachment directory", 2_000));
@@ -454,6 +452,56 @@ export class HubMcpService {
     this.releaseCompleter = releaseCompleter;
     this.releasePlanner = releasePlanner;
     this.taskGitWorkspaces = taskGitWorkspaces;
+    this.taskLifecycle = taskLifecycle ?? new TaskLifecycleService({
+      taskBoard, workspaceCatalog: this.workspaceCatalog, taskGitWorkspaces,
+    });
+    this.#startupReconciliation = this.reconcilePendingMcpOperations();
+  }
+
+  async reconcilePendingMcpOperations() {
+    if (typeof this.workspaceCatalog.pendingMcpOperations !== "function") return { reconciled: 0 };
+    const lifecycleKinds = new Map([
+      ["hub_task_status_update", "workflow"],
+      ["hub_task_complete", "complete"],
+      ["hub_task_delete", "delete"],
+    ]);
+    let reconciled = 0;
+    for (const receipt of this.workspaceCatalog.pendingMcpOperations()) {
+      await this.workspaceCatalog.beginMcpOperationReconciliation?.(receipt.requestId);
+      const expectedKind = lifecycleKinds.get(receipt.toolName);
+      const transition = expectedKind ? this.taskBoard.lifecycleTransition?.(receipt.requestId) : null;
+      const outcome = expectedKind ? this.taskBoard.lifecycleOutcome?.(receipt.requestId) : null;
+      const exactOutcome = outcome?.operationId === receipt.requestId && outcome?.kind === expectedKind;
+      if (exactOutcome) {
+        let result;
+        if (expectedKind === "workflow") {
+          result = {
+            ...compactTask(outcome.result?.task),
+            ...(outcome.result?.evidence?.response ?? {}),
+          };
+        } else if (expectedKind === "delete") {
+          result = {
+            ...outcome.result?.result,
+            task: compactTask(outcome.result?.result?.task),
+            ...(outcome.result?.evidence ?? {}),
+          };
+        } else {
+          result = compactTask(outcome.result?.result);
+        }
+        await this.workspaceCatalog.completeMcpOperation(receipt.requestId, result);
+        reconciled += 1;
+        continue;
+      }
+      const exactLifecycle = transition?.operationId === receipt.requestId && transition?.kind === expectedKind;
+      const exactLaunch = ["hub_task_start", "hub_task_reassign"].includes(receipt.toolName)
+        && this.taskBoard.snapshot().some((task) => task.startRequestId === receipt.requestId);
+      const reason = exactLifecycle || exactLaunch
+        ? "startup found an incomplete durable transition; external replay is forbidden"
+        : "startup reconciliation found no exact durable lifecycle outcome";
+      await this.workspaceCatalog.markMcpOperationUnknown?.(receipt.requestId, new Error(reason));
+      reconciled += 1;
+    }
+    return { reconciled };
   }
 
   setActiveRuns(value) {
@@ -659,10 +707,12 @@ export class HubMcpService {
   }
 
   async call(name, args = {}) {
+    await this.#startupReconciliation;
     const context = this.#authorize(args.context_token);
     const toolName = String(name ?? "");
     if (MUTATING_TOOLS.has(toolName)) {
-      return this.#mutate(context, toolName, args, () => this.#dispatch(context, toolName, args));
+      const operation = () => this.#dispatch(context, toolName, args);
+      return this.#mutate(context, toolName, args, operation);
     }
     return this.#dispatch(context, toolName, args);
   }
@@ -919,12 +969,12 @@ export class HubMcpService {
     return task;
   }
 
-  #createTask(context, { workspace_id: workspaceId = null, title, description = "" } = {}) {
+  async #createTask(context, { workspace_id: workspaceId = null, title, description = "" } = {}) {
     const targetWorkspace = this.#workspace(context, workspaceId);
     const normalizedTitle = requiredText(title, "task title", 10_000);
     const normalizedDescription = optionalText(description, 50_000) ?? "";
     const text = normalizedDescription ? `${normalizedTitle}\n\n${normalizedDescription}` : normalizedTitle;
-    const created = this.taskBoard.create({
+    const created = await this.taskBoard.create({
       text,
       source: "hub-mcp",
       sourceDetails: {
@@ -938,13 +988,13 @@ export class HubMcpService {
     return compactTask(created);
   }
 
-  #updateTask(context, { task_id: taskId, task_number: taskNumber, title, description } = {}) {
+  async #updateTask(context, { task_id: taskId, task_number: taskNumber, title, description } = {}) {
     const current = this.#task(context, taskId);
     const nextTitle = title == null ? current.title : requiredText(title, "task title", 10_000);
     const nextDescription = description == null
       ? current.description
       : (optionalText(description, 50_000) ?? "");
-    return compactTask(this.taskBoard.update({
+    return compactTask(await this.taskBoard.update({
       id: current.id,
       taskNumber: taskNumber == null ? undefined : requiredText(taskNumber, "task number", 80),
       title: nextTitle,
@@ -952,7 +1002,7 @@ export class HubMcpService {
     }));
   }
 
-  #moveTask(context, {
+  async #moveTask(context, {
     task_id: taskId, destination, workspace_id: workspaceId = null, before_task_id: beforeTaskId = null,
   } = {}) {
     const current = this.#task(context, taskId);
@@ -965,7 +1015,7 @@ export class HubMcpService {
         throw new Error("before task is outside the destination column");
       }
     }
-    return compactTask(this.taskBoard.move({
+    return compactTask(await this.taskBoard.move({
       id: current.id,
       bucket: target,
       workspaceId: targetWorkspaceId,
@@ -981,18 +1031,19 @@ export class HubMcpService {
       ? await this.taskGitWorkspaces.prepare({ taskId: task.id, taskNumber: task.taskNumber, projectRoot })
       : null;
     if (gitWorkspace) active.gitBaseline = gitWorkspace.gitBaseline;
+    const claimed = await this.taskBoard.claim({
+      id: task.id,
+      workspaceId: context.workspaceId,
+      streamId: context.streamId,
+      provider: context.provider,
+      threadId: context.threadId,
+      turnId: active.turnId,
+      operationId,
+      operationKind: "claim",
+      gitBaseline: active.gitBaseline ?? null,
+    });
     return {
-      ...compactTask(this.taskBoard.claim({
-        id: task.id,
-        workspaceId: context.workspaceId,
-        streamId: context.streamId,
-        provider: context.provider,
-        threadId: context.threadId,
-        turnId: active.turnId,
-        operationId,
-        operationKind: "claim",
-        gitBaseline: active.gitBaseline ?? null,
-      })),
+      ...compactTask(claimed),
       claimedTurnId: active.turnId,
       gitWorkspace: gitWorkspace ? {
         branch: gitWorkspace.branch,
@@ -1020,105 +1071,48 @@ export class HubMcpService {
   async #updateTaskWorkflowStatus(context, { task_id: taskId, status, request_id: operationId } = {}) {
     const task = this.#task(context, taskId);
     const workflowStatus = requiredText(status, "task workflow status", 40);
-    const snapshotsResult = ["testing", "awaiting_implementation", "done"].includes(workflowStatus);
-    const transition = async () => {
-      this.taskBoard.beginLifecycleTransition({
-        id: task.id,
-        operationId,
-        kind: "workflow",
-        targetWorkflowStatus: workflowStatus,
-        expectedRevision: task.revision,
+    let binding = {};
+    try {
+      const run = this.#currentRun(context);
+      const claimed = this.taskBoard.claimedTaskForTurn?.({
+        provider: context.provider, threadId: context.threadId, turnId: run.turnId,
       });
-      try {
-        if (!snapshotsResult) {
-          return compactTask(this.taskBoard.commitWorkflowTransition({
-            operationId, gitReferences: [], replaceGitReferences: false, evidence: { outcome: "not_required" },
-          }));
-        }
-        const targetStreamId = String(task.streamId ?? "").trim() || context.streamId;
-        const projectRoot = targetStreamId
-          ? this.#taskProjectRoot(context, targetStreamId, task.workspaceId)
-          : null;
-        if (!projectRoot || !this.taskGitWorkspaces) {
-          throw new Error("Task Git workspace is unavailable; workflow status was not changed");
-        }
-        const gitWorkspace = await this.taskGitWorkspaces.prepare({
-          taskId: task.id, taskNumber: task.taskNumber, projectRoot,
-        });
-        const { snapshot, integration } = await this.taskGitWorkspaces.snapshotAndMerge({
-          taskId: task.id,
-          taskNumber: task.taskNumber,
-          projectRoot: gitWorkspace.projectRoot,
-          turnId: null,
-          summary: task.title,
-        });
-        if (!integration.resultProved || !integration.integrated) {
-          throw new Error(integration.error || "Task result was not integrated into dev");
-        }
-        const reference = {
-          projectRoot: snapshot.repositoryRoot,
-          resultCommit: snapshot.headCommit,
-          branch: snapshot.branch,
+      if (claimed?.id === task.id && claimed.operationId) {
+        binding = {
+          provider: context.provider, threadId: context.threadId, turnId: run.turnId,
+          bindingOperationId: claimed.operationId,
         };
-        let binding = {};
-        try {
-          const run = this.#currentRun(context);
-          const claimed = this.taskBoard.claimedTaskForTurn?.({
-            provider: context.provider,
-            threadId: context.threadId,
-            turnId: run.turnId,
-          });
-          if (claimed?.id === task.id && claimed.operationId) {
-            binding = {
-              provider: context.provider,
-              threadId: context.threadId,
-              turnId: run.turnId,
-              bindingOperationId: claimed.operationId,
-            };
-          }
-        } catch {
-          binding = {};
-        }
-        const current = this.taskBoard.commitWorkflowTransition({
-          operationId,
-          gitReferences: [reference],
-          ...binding,
-          evidence: {
-            outcome: integration.outcome,
-            resultCommit: snapshot.headCommit,
-            devHeadCommit: integration.dev?.headCommit ?? null,
-          },
-        });
-        return {
-          ...compactTask(current),
-          gitWorkspace: {
-            branch: snapshot.branch,
-            projectRoot: snapshot.projectRoot,
-            baseCommit: snapshot.baseCommit,
-            headCommit: snapshot.headCommit,
-          },
-          gitIntegration: {
-            outcome: integration.outcome,
-            integrated: true,
-            alreadyIntegrated: integration.alreadyIntegrated === true,
-            devBranch: integration.dev?.branch ?? "dev",
-            devHeadCommit: integration.dev?.headCommit ?? null,
-            conflicts: [],
-            error: null,
-          },
-        };
-      } catch (error) {
-        this.taskBoard.failLifecycleTransition(operationId, error);
-        throw error;
       }
-    };
-    return this.taskGitWorkspaces?.withTaskLock
-      ? this.taskGitWorkspaces.withTaskLock(task.id, transition)
-      : transition();
+    } catch {}
+    const result = await this.taskLifecycle.updateWorkflowStatus({
+      taskId: task.id,
+      status: workflowStatus,
+      operationId,
+      binding,
+      projectRoot: this.#taskProjectRoot(
+        context,
+        String(task.streamId ?? "").trim() || context.streamId,
+        task.workspaceId,
+      ),
+    });
+    if (!result?.task) return compactTask(result);
+    const { task: updated, ...evidence } = result;
+    return { ...compactTask(updated), ...evidence };
   }
 
   databaseContentionDiagnostics() {
-    return { ...this.#databaseContention };
+    const receipts = this.workspaceCatalog.mutationDiagnostics?.() ?? {};
+    const tasks = this.taskBoard.mutationDiagnostics?.() ?? {};
+    const fallback = {};
+    return {
+      retries: Number(receipts.retries ?? 0) + Number(tasks.retries ?? 0) + Number(fallback.retries ?? 0),
+      exhausted: Number(receipts.exhausted ?? 0) + Number(tasks.exhausted ?? 0) + Number(fallback.exhausted ?? 0),
+      lastWaitMs: Math.max(
+        Number(receipts.lastWaitMs ?? 0), Number(tasks.lastWaitMs ?? 0), Number(fallback.lastWaitMs ?? 0),
+      ),
+      receipts,
+      tasks,
+    };
   }
 
   async #cleanupPreview(task, action) {
@@ -1133,41 +1127,12 @@ export class HubMcpService {
     expected_cleanup_token: expectedCleanupToken = null,
   } = {}) {
     const task = this.#task(context, taskId);
-    const resumed = this.taskBoard.lifecycleTransition?.(operationId);
-    const resumingCleanup = resumed?.taskId === task.id && resumed.kind === "complete" && resumed.phase === "cleanup";
-    const confirmation = await this.#cleanupPreview(task, "complete");
-    if (confirmCleanup !== true) return confirmation;
-    if (!resumingCleanup && String(expectedCleanupToken ?? "") !== confirmation.cleanupToken) {
-      throw new Error("Task cleanup confirmation is stale or missing; read the preview again");
-    }
-    const hasGitArtifacts = confirmation.preview.workspaces.length > 0 || (task.gitReferences?.length ?? 0) > 0;
-    if (hasGitArtifacts && task.workflowStatus !== "done") {
-      throw new Error("Implementation Task can be completed only after workflow Done");
-    }
-    if (hasGitArtifacts && (task.gitReferences?.length ?? 0) === 0) {
-      throw new Error("Task Complete blocked: no exact result commit is recorded; use Delete only for intentional destruction");
-    }
-    if (confirmation.preview.dirty) throw new Error("Task Complete blocked: managed worktree is dirty");
-    if (hasGitArtifacts && confirmation.preview.unpublished.length) {
-      throw new Error("Task Complete blocked: exact result commit is not contained in published main; use Delete only for intentional destruction");
-    }
-    const complete = async () => {
-      this.taskBoard.beginLifecycleTransition({
-        id: task.id, operationId, kind: "complete", expectedRevision: task.revision,
-      });
-      try {
-        if (hasGitArtifacts) await this.taskGitWorkspaces.cleanup(task.id, {
-          allowDirty: false, requirePublished: true, gitReferences: task.gitReferences,
-        });
-        return compactTask(this.taskBoard.finalizeCleanupTransition(operationId));
-      } catch (error) {
-        this.taskBoard.failLifecycleTransition(operationId, error);
-        throw error;
-      }
-    };
-    return this.taskGitWorkspaces?.withTaskLock
-      ? this.taskGitWorkspaces.withTaskLock(task.id, complete)
-      : complete();
+    const result = await this.taskLifecycle.complete({
+      taskId: task.id, operationId, confirmCleanup, expectedCleanupToken,
+    });
+    return result?.confirmationRequired
+      ? { ...result, task: compactTask(result.task) }
+      : compactTask(result);
   }
 
   async #deleteTask(context, {
@@ -1175,31 +1140,12 @@ export class HubMcpService {
     expected_cleanup_token: expectedCleanupToken = null,
   } = {}) {
     const task = this.#task(context, taskId);
-    const resumed = this.taskBoard.lifecycleTransition?.(operationId);
-    const resumingCleanup = resumed?.taskId === task.id && resumed.kind === "delete" && resumed.phase === "cleanup";
-    const confirmation = await this.#cleanupPreview(task, "delete");
-    if (confirmCleanup !== true) return confirmation;
-    if (!resumingCleanup && String(expectedCleanupToken ?? "") !== confirmation.cleanupToken) {
-      throw new Error("Task deletion confirmation is stale or missing; read the preview again");
-    }
-    const remove = async () => {
-      this.taskBoard.beginLifecycleTransition({
-        id: task.id, operationId, kind: "delete", expectedRevision: task.revision,
-      });
-      try {
-        await this.taskGitWorkspaces?.cleanup?.(task.id, {
-          allowDirty: true, requirePublished: false, gitReferences: task.gitReferences,
-        });
-        const result = this.taskBoard.finalizeCleanupTransition(operationId, { deleteTask: true });
-        return { deleted: true, task: compactTask(result.task), cleanup: confirmation.preview };
-      } catch (error) {
-        this.taskBoard.failLifecycleTransition(operationId, error);
-        throw error;
-      }
-    };
-    return this.taskGitWorkspaces?.withTaskLock
-      ? this.taskGitWorkspaces.withTaskLock(task.id, remove)
-      : remove();
+    const result = await this.taskLifecycle.delete({
+      taskId: task.id, operationId, confirmCleanup, expectedCleanupToken,
+    });
+    return result?.confirmationRequired
+      ? { ...result, task: compactTask(result.task) }
+      : { ...result, task: compactTask(result.task) };
   }
 
   #isArchitect(context) {
@@ -1561,7 +1507,7 @@ export class HubMcpService {
     const target = path.join(this.attachmentDirectory, id);
     await writeFile(target, body, { flag: "wx" });
     try {
-      this.taskBoard.addAttachment({ id: task.id, attachment: target });
+      await this.taskBoard.addAttachment({ id: task.id, attachment: target });
     } catch (error) {
       await unlink(target).catch(() => {});
       throw error;
@@ -1579,30 +1525,7 @@ export class HubMcpService {
 
   async #mutate(context, toolName, args, operation) {
     const requestId = requiredText(args.request_id, "request id", 200);
-    const withDatabaseRetry = async (callback) => {
-      const startedAt = Date.now();
-      const deadline = Date.now() + 2_000;
-      let delayMs = 10;
-      for (;;) {
-        try {
-          return callback();
-        } catch (error) {
-          if (!sqliteBusy(error)) throw error;
-          if (Date.now() >= deadline) {
-            this.#databaseContention.exhausted += 1;
-            this.#databaseContention.lastWaitMs = Date.now() - startedAt;
-            this.#databaseContention.lastAt = new Date().toISOString();
-            throw error;
-          }
-          this.#databaseContention.retries += 1;
-          this.#databaseContention.lastWaitMs = Date.now() - startedAt;
-          this.#databaseContention.lastAt = new Date().toISOString();
-          await wait(delayMs);
-          delayMs = Math.min(200, delayMs * 2);
-        }
-      }
-    };
-    const started = await withDatabaseRetry(() => this.workspaceCatalog.beginMcpOperation({
+    const started = await this.workspaceCatalog.beginMcpOperation({
       requestId,
       workspaceId: context.workspaceId,
       streamId: context.streamId,
@@ -1610,7 +1533,7 @@ export class HubMcpService {
       threadId: context.auditThreadId,
       toolName,
       argumentsHash: argumentsHash(args),
-    }));
+    });
     if (started.status === "succeeded") return started.result;
     if (started.status === "failed") throw new Error(started.error || "previous MCP operation failed");
     if (started.status === "unknown") {
@@ -1623,7 +1546,7 @@ export class HubMcpService {
     ]);
     if (started.replayed && !resumable.has(toolName)) {
       const reason = new Error("MCP operation outcome requires authoritative reconciliation; blind replay is forbidden");
-      await withDatabaseRetry(() => this.workspaceCatalog.markMcpOperationUnknown?.(requestId, reason));
+      await this.workspaceCatalog.markMcpOperationUnknown?.(requestId, reason);
       throw reason;
     }
     const pending = (async () => {
@@ -1631,21 +1554,24 @@ export class HubMcpService {
       try {
         const result = await operation();
         effectCompleted = true;
-        await withDatabaseRetry(() => this.workspaceCatalog.completeMcpOperation(requestId, result));
+        await this.workspaceCatalog.completeMcpOperation(requestId, result);
         return result;
       } catch (error) {
         if (effectCompleted) {
-          await withDatabaseRetry(() => this.workspaceCatalog.markMcpOperationUnknown?.(
+          await Promise.resolve(this.workspaceCatalog.markMcpOperationUnknown?.(
             requestId,
             new Error(`effect completed but durable receipt failed: ${error.message}`),
           )).catch(() => {});
           throw new Error(`MCP effect completed but receipt reconciliation is required for request_id ${requestId}`);
         }
-        if (["hub_task_start", "hub_task_reassign"].includes(toolName)
-          && this.#hasPreparedTaskStart(context, args, requestId)) {
-          throw error;
+        const durableLifecycle = ["hub_task_start", "hub_task_reassign"].includes(toolName)
+          && this.#hasPreparedTaskStart(context, args, requestId);
+        if (!durableLifecycle) {
+          await Promise.resolve(this.workspaceCatalog.markMcpOperationUnknown?.(
+            requestId,
+            new Error(`mutation effect is not authoritatively disproved: ${error.message}`),
+          )).catch(() => {});
         }
-        await withDatabaseRetry(() => this.workspaceCatalog.failMcpOperation(requestId, error));
         throw error;
       } finally {
         this.#pendingMutations.delete(requestId);

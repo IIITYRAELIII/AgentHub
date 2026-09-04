@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 
 import { editableWorkspaceDeveloperRules } from "../../domain/editable-workspace-developer-rules.mjs";
 import { normalizeInterstreamOrigin } from "../../domain/interstream-message.mjs";
@@ -329,6 +330,7 @@ export class WorkspaceCatalogStore {
   #readOnly;
   #now;
   #idFactory;
+  #mutations = new AsyncSqliteMutationQueue();
 
   constructor({
     databaseFile,
@@ -768,6 +770,22 @@ export class WorkspaceCatalogStore {
     }
   }
 
+  createWorkspaceWithStream({ name, comment = "", streamName = null, settings = {} } = {}) {
+    return this.#transaction(() => {
+      const workspace = this.createWorkspace({ name, comment, settings });
+      const stream = this.createStream({ workspaceId: workspace.id, name: streamName });
+      return { workspace, stream };
+    });
+  }
+
+  runMutation(operation, options = {}) {
+    return this.#mutations.run(operation, options);
+  }
+
+  mutationDiagnostics() {
+    return this.#mutations.diagnostics();
+  }
+
   completeMcpOperation(requestId, result) {
     const id = safeIdentifier(requestId, "MCP request id");
     const resultJson = compactMcpOperationResult(result);
@@ -794,6 +812,18 @@ export class WorkspaceCatalogStore {
     ).get(id));
   }
 
+  beginMcpOperationReconciliation(requestId) {
+    const id = safeIdentifier(requestId, "MCP request id");
+    const updated = this.#database.prepare(`
+      UPDATE hub_mcp_operations SET receipt_state = 'reconciling'
+      WHERE request_id = ? AND receipt_state IN ('pending', 'reconciling')
+    `).run(id);
+    if (!Number(updated.changes)) throw new Error("MCP operation is not pending reconciliation");
+    return mcpOperationFromRow(this.#database.prepare(
+      "SELECT * FROM hub_mcp_operations WHERE request_id = ?",
+    ).get(id));
+  }
+
   markMcpOperationUnknown(requestId, error) {
     const id = safeIdentifier(requestId, "MCP request id");
     this.#database.prepare(`
@@ -811,6 +841,14 @@ export class WorkspaceCatalogStore {
     return mcpOperationFromRow(this.#database.prepare(
       "SELECT * FROM hub_mcp_operations WHERE request_id = ?",
     ).get(id));
+  }
+
+  pendingMcpOperations() {
+    return this.#database.prepare(`
+      SELECT * FROM hub_mcp_operations
+      WHERE receipt_state IN ('pending', 'reconciling')
+      ORDER BY created_at_ms ASC, request_id ASC
+    `).all().map(mcpOperationFromRow);
   }
 
   mcpOperations(workspaceId, { limit = 50 } = {}) {
@@ -867,6 +905,14 @@ export class WorkspaceCatalogStore {
       for (const stream of streams) this.moveStream(stream.id, targetId);
       this.#database.prepare("DELETE FROM hub_workspaces WHERE id = ?").run(sourceId);
       return this.workspace(targetId);
+    });
+  }
+
+  createWorkspaceFromStream({ streamId, name } = {}) {
+    return this.#transaction(() => {
+      const workspace = this.createWorkspace({ name });
+      const stream = this.moveStream(streamId, workspace.id);
+      return { workspace, stream };
     });
   }
 
@@ -1089,6 +1135,13 @@ export class WorkspaceCatalogStore {
     this.#compactOrdinals(stream.workspaceId);
     this.#removeEmptyWorkspace(stream.workspaceId);
     return this.stream(id);
+  }
+
+  moveStreamOrdered({ streamId, workspaceId, beforeStreamId = undefined } = {}) {
+    return this.#transaction(() => {
+      const moved = this.moveStream(streamId, workspaceId);
+      return beforeStreamId === undefined ? moved : this.reorderStream(streamId, beforeStreamId);
+    });
   }
 
   moveStreamToStart(streamId) {

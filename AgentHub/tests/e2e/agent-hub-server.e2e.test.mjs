@@ -23,6 +23,13 @@ const AGENT_HUB_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const BOT_FILE = path.join(AGENT_HUB_ROOT, "agent-hub-main.mjs");
 const FAKE_CODEX_FILE = path.join(AGENT_HUB_ROOT, "e2e", "fake-codex-app-server.mjs");
 const FAKE_CLAUDE_FILE = path.join(AGENT_HUB_ROOT, "e2e", "fake-claude-cli.mjs");
+
+async function readInterprocessLockOwner(lockDirectory) {
+  const entries = await readdir(lockDirectory);
+  const owner = entries.find((entry) => entry === "owner.json" || /^owner-[a-f0-9]{64}\.json$/u.test(entry));
+  if (!owner) throw new Error("lock owner is absent");
+  return readFile(path.join(lockDirectory, owner), "utf8");
+}
 const FAKE_TTS_FILE = path.join(AGENT_HUB_ROOT, "e2e", "fake-tts-worker.mjs");
 function waitForCodexAccepted(telegram, { after, timeoutMs } = {}) {
   return waitFor(
@@ -133,9 +140,8 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
         `${error.message}\nStage: ${description}\nRestart exit: ${bot?.exitCode ?? "running"}`
         + `\nrestart stdout:\n${currentStdout}\nrestart stderr:\n${currentStderr}`
         + `\nlock:\n${await readFile(lockPath, "utf8").catch((readError) => readError.message)}`
-        + `\njournal lock:\n${await readFile(
-          `${journalDatabaseFile}.lock${path.sep}owner.json`,
-          "utf8",
+        + `\njournal lock:\n${await readInterprocessLockOwner(
+          `${journalDatabaseFile}.lock`,
         ).catch((readError) => readError.message)}`,
         { cause: error },
       );

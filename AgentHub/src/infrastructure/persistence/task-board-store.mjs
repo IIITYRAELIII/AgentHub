@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 
 import {
   LEGACY_TELEGRAM_BUNDLE_PREFIX,
@@ -66,6 +67,7 @@ function configure(database) {
       completed_at_ms INTEGER,
       start_request_id TEXT,
       start_stream_name TEXT,
+      start_destination_stream_id TEXT,
       row_revision INTEGER NOT NULL DEFAULT 1
     );
     CREATE TABLE IF NOT EXISTS hub_board_workspace_order (
@@ -166,6 +168,13 @@ function configure(database) {
     CREATE UNIQUE INDEX IF NOT EXISTS hub_task_lifecycle_active_idx
       ON hub_task_lifecycle_transitions(task_id)
       WHERE phase IN ('pending_git', 'cleanup');
+    CREATE TABLE IF NOT EXISTS hub_task_lifecycle_outcomes (
+      operation_id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('workflow', 'complete', 'delete')),
+      result_json TEXT NOT NULL,
+      completed_at_ms INTEGER NOT NULL
+    ) WITHOUT ROWID;
     CREATE TABLE IF NOT EXISTS hub_task_release_revisions (
       task_id TEXT NOT NULL,
       task_revision INTEGER NOT NULL,
@@ -287,6 +296,9 @@ function configure(database) {
   }
   if (!taskColumns.some((column) => column.name === "start_stream_name")) {
     database.exec("ALTER TABLE hub_board_tasks ADD COLUMN start_stream_name TEXT");
+  }
+  if (!taskColumns.some((column) => column.name === "start_destination_stream_id")) {
+    database.exec("ALTER TABLE hub_board_tasks ADD COLUMN start_destination_stream_id TEXT");
   }
   if (!taskColumns.some((column) => column.name === "workflow_status")) {
     database.exec("ALTER TABLE hub_board_tasks ADD COLUMN workflow_status TEXT NOT NULL DEFAULT 'new'");
@@ -416,6 +428,7 @@ function configure(database) {
         OR NEW.triage_error IS NOT OLD.triage_error OR NEW.started_at_ms IS NOT OLD.started_at_ms
         OR NEW.completed_at_ms IS NOT OLD.completed_at_ms OR NEW.start_request_id IS NOT OLD.start_request_id
         OR NEW.start_stream_name IS NOT OLD.start_stream_name
+        OR NEW.start_destination_stream_id IS NOT OLD.start_destination_stream_id
       )
       BEGIN
         UPDATE hub_board_tasks SET row_revision = OLD.row_revision + 1 WHERE id = OLD.id;
@@ -513,6 +526,21 @@ function ensureColumnOrder(database, workspaceIds, timestamp) {
   ));
 }
 
+function readColumnOrder(database, workspaceIds) {
+  const ids = [...normalizedColumnIds(workspaceIds), NOTES_COLUMN_ID];
+  const rows = database.prepare(`
+    SELECT column_id, position FROM hub_board_column_order
+    ORDER BY position, column_id
+  `).all();
+  const known = new Map(rows.map((row) => [row.column_id, Number(row.position)]));
+  const originalPosition = new Map(ids.map((id, index) => [id, index]));
+  return ids.sort((left, right) => {
+    const leftPosition = known.has(left) ? known.get(left) : Number.MAX_SAFE_INTEGER;
+    const rightPosition = known.has(right) ? known.get(right) : Number.MAX_SAFE_INTEGER;
+    return leftPosition - rightPosition || originalPosition.get(left) - originalPosition.get(right);
+  });
+}
+
 function parseJson(value) {
   try {
     const parsed = JSON.parse(String(value ?? "{}"));
@@ -578,6 +606,7 @@ function taskFromRow(row) {
     revision: Number(row.row_revision) || 1,
     startRequestId: row.start_request_id ?? null,
     startStreamName: row.start_stream_name ?? null,
+    startDestinationStreamId: row.start_destination_stream_id ?? null,
     boardOrder: Number(row.board_order) || 0,
   };
 }
@@ -585,6 +614,7 @@ function taskFromRow(row) {
 export class TaskBoardStore {
   #database;
   #revision = 0;
+  #mutations = new AsyncSqliteMutationQueue();
 
   constructor({ databaseFile, now = () => Date.now(), idFactory = randomUUID } = {}) {
     if (!databaseFile) throw new TypeError("databaseFile is required");
@@ -1508,7 +1538,7 @@ export class TaskBoardStore {
   }
 
   orderedColumnIds(workspaceIds) {
-    return this.#withDatabase((database) => ensureColumnOrder(database, workspaceIds, this.now()));
+    return this.#withDatabase((database) => readColumnOrder(database, workspaceIds));
   }
 
   moveColumn(workspaceIds, { columnId, beforeColumnId = null } = {}) {
@@ -1571,7 +1601,6 @@ export class TaskBoardStore {
       if (currentRequestId && currentRequestId !== normalizedRequestId && !reassign) {
         throw new Error("Task launch is already pending; retry it with the original request_id");
       }
-      if (current.status === "done") throw new Error("Task уже закрыта");
       if (reassign && current.status !== "started") throw new Error("Переназначить можно только запущенную Task");
       if (!reassign && current.status === "started" && !currentRequestId) throw new Error("Task уже запущена");
       if (reassign && String(current.stream_id ?? "") === String(streamId)) {
@@ -1585,19 +1614,23 @@ export class TaskBoardStore {
       } else if (reassign) {
         changed = database.prepare(`
           UPDATE hub_board_tasks
-          SET start_request_id = ?, start_stream_name = ?, updated_at_ms = ?
+          SET start_request_id = ?, start_stream_name = ?, start_destination_stream_id = ?, updated_at_ms = ?
           WHERE id = ? AND row_revision = ? AND status = 'started'
-        `).run(normalizedRequestId, String(streamName ?? "").trim() || null, timestamp, taskId, current.row_revision);
+        `).run(
+          normalizedRequestId, String(streamName ?? "").trim() || null, String(streamId),
+          timestamp, taskId, current.row_revision,
+        );
       } else if (!currentRequestId) {
         changed = database.prepare(`
           UPDATE hub_board_tasks
           SET bucket = 'workspace', status = 'starting', workspace_id = ?, stream_id = ?,
             placement_source = 'manual', start_request_id = ?, start_stream_name = ?,
+            start_destination_stream_id = ?,
             completed_at_ms = NULL, updated_at_ms = ?
           WHERE id = ? AND row_revision = ? AND start_request_id IS NULL
         `).run(
           String(workspaceId), String(streamId), normalizedRequestId,
-          String(streamName ?? "").trim() || null, timestamp, taskId, current.row_revision,
+          String(streamName ?? "").trim() || null, String(streamId), timestamp, taskId, current.row_revision,
         );
       }
       if (!Number(changed.changes)) throw new Error("Task launch ownership CAS failed");
@@ -1609,6 +1642,14 @@ export class TaskBoardStore {
         throw error;
       }
     });
+  }
+
+  runMutation(operation, options = {}) {
+    return this.#mutations.run(operation, options);
+  }
+
+  mutationDiagnostics() {
+    return this.#mutations.diagnostics();
   }
 
   cancelPreparedStart(id, { requestId, reassign = false } = {}) {
@@ -1626,13 +1667,14 @@ export class TaskBoardStore {
       if (reassign) {
         changed = database.prepare(`
           UPDATE hub_board_tasks
-          SET start_request_id = NULL, start_stream_name = NULL, updated_at_ms = ?
+          SET start_request_id = NULL, start_stream_name = NULL, start_destination_stream_id = NULL, updated_at_ms = ?
           WHERE id = ? AND status = 'started' AND start_request_id = ? AND row_revision = ?
         `).run(this.now(), taskId, normalizedRequestId, current.row_revision);
       } else {
         changed = database.prepare(`
           UPDATE hub_board_tasks
           SET status = 'open', stream_id = NULL, start_request_id = NULL, start_stream_name = NULL,
+            start_destination_stream_id = NULL,
             updated_at_ms = ?
           WHERE id = ? AND status = 'starting' AND start_request_id = ? AND row_revision = ?
         `).run(this.now(), taskId, normalizedRequestId, current.row_revision);
@@ -1649,28 +1691,51 @@ export class TaskBoardStore {
     });
   }
 
-  markStarted(id, { workspaceId, streamId, requestId = null } = {}) {
+  markStarted(id, { workspaceId, streamId, requestId = null, expectedRevision = null } = {}) {
     const timestamp = this.now();
     return this.#withDatabase((database) => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
       const normalizedRequestId = String(requestId ?? "").trim();
+      if (!normalizedRequestId) throw new Error("Task launch completion requires its exact request owner");
       const current = this.#taskRow(database, id);
-      if (normalizedRequestId && String(current.start_request_id ?? "") !== normalizedRequestId) {
+      if (String(current.start_request_id ?? "") !== normalizedRequestId) {
         throw new Error("Task launch request does not match the prepared Task");
       }
-      database.prepare(`
+      if (!Number.isInteger(Number(expectedRevision)) || Number(current.row_revision) !== Number(expectedRevision)) {
+        throw new Error("Task launch completion revision CAS failed");
+      }
+      if (!['starting', 'started'].includes(String(current.status))) {
+        throw new Error("Task launch completion state does not match a prepared Task");
+      }
+      if (String(current.workspace_id ?? "") !== String(workspaceId)
+          || String(current.start_destination_stream_id ?? "") !== String(streamId)) {
+        throw new Error("Task launch completion owner does not match its prepared destination");
+      }
+      const changed = database.prepare(`
         UPDATE hub_board_tasks
         SET bucket = 'workspace', status = 'started', workspace_id = ?, stream_id = ?,
           workflow_status = 'in_progress', placement_source = 'manual',
           started_at_ms = COALESCE(started_at_ms, ?),
           completed_at_ms = NULL, updated_at_ms = ?
-        WHERE id = ?
-      `).run(String(workspaceId), String(streamId), timestamp, timestamp, String(id));
+        WHERE id = ? AND row_revision = ? AND start_request_id = ?
+          AND status IN ('starting', 'started') AND workspace_id = ? AND start_destination_stream_id = ?
+      `).run(
+        String(workspaceId), String(streamId), timestamp, timestamp, String(id),
+        Number(expectedRevision), normalizedRequestId, String(workspaceId), String(streamId),
+      );
+      if (!Number(changed.changes)) throw new Error("Task launch completion CAS changed no rows");
       const task = this.#taskWithRelease(
         database,
         database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(String(id)),
       );
       if (!task) throw new Error("Task не найден");
+      database.exec("COMMIT");
       return task;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
     });
   }
 
@@ -1912,6 +1977,27 @@ export class TaskBoardStore {
     });
   }
 
+  lifecycleOutcome(operationId) {
+    const operation = String(operationId ?? "").trim();
+    return this.#withDatabase((database) => {
+      const row = database.prepare(
+        "SELECT * FROM hub_task_lifecycle_outcomes WHERE operation_id = ?",
+      ).get(operation);
+      if (!row) return null;
+      try {
+        return {
+          operationId: row.operation_id,
+          taskId: row.task_id,
+          kind: row.kind,
+          result: JSON.parse(row.result_json),
+          completedAtMs: Number(row.completed_at_ms),
+        };
+      } catch {
+        throw new Error("Task lifecycle outcome is corrupt");
+      }
+    });
+  }
+
   failLifecycleTransition(operationId, error) {
     const operation = String(operationId ?? "").trim();
     return this.#withDatabase((database) => {
@@ -1980,8 +2066,13 @@ export class TaskBoardStore {
           UPDATE hub_task_lifecycle_transitions SET evidence_json = ?, updated_at_ms = ?
           WHERE operation_id = ?
         `).run(JSON.stringify(evidence ?? {}), this.now(), operation);
-        database.prepare("DELETE FROM hub_task_lifecycle_transitions WHERE operation_id = ?").run(operation);
         const task = this.#taskWithRelease(database, this.#taskRow(database, transition.task_id));
+        database.prepare(`
+          INSERT OR REPLACE INTO hub_task_lifecycle_outcomes (
+            operation_id, task_id, kind, result_json, completed_at_ms
+          ) VALUES (?, ?, 'workflow', ?, ?)
+        `).run(operation, transition.task_id, JSON.stringify({ task, evidence: evidence ?? {} }), this.now());
+        database.prepare("DELETE FROM hub_task_lifecycle_transitions WHERE operation_id = ?").run(operation);
         database.exec("COMMIT");
         return task;
       } catch (error) {
@@ -1991,7 +2082,7 @@ export class TaskBoardStore {
     });
   }
 
-  finalizeCleanupTransition(operationId, { deleteTask = false } = {}) {
+  finalizeCleanupTransition(operationId, { deleteTask = false, receiptEvidence = null } = {}) {
     const operation = String(operationId ?? "").trim();
     return this.#withDatabase((database) => {
       database.exec("BEGIN IMMEDIATE");
@@ -2007,9 +2098,14 @@ export class TaskBoardStore {
         }
         let result;
         if (deleteTask) {
+          result = { deleted: true, task: taskFromRow(current) };
+          database.prepare(`
+            INSERT OR REPLACE INTO hub_task_lifecycle_outcomes (
+              operation_id, task_id, kind, result_json, completed_at_ms
+            ) VALUES (?, ?, 'delete', ?, ?)
+          `).run(operation, transition.task_id, JSON.stringify({ result, evidence: receiptEvidence ?? {} }), this.now());
           database.prepare("DELETE FROM hub_board_tasks WHERE id = ? AND row_revision = ?")
             .run(transition.task_id, transition.expected_task_revision);
-          result = { deleted: true, task: taskFromRow(current) };
         } else {
           const changed = database.prepare(`
             UPDATE hub_board_tasks SET status = 'done', completed_at_ms = ?, updated_at_ms = ?
@@ -2017,6 +2113,11 @@ export class TaskBoardStore {
           `).run(this.now(), this.now(), transition.task_id, transition.expected_task_revision);
           if (!Number(changed.changes)) throw new Error("Task complete CAS failed");
           result = this.#taskWithRelease(database, this.#taskRow(database, transition.task_id));
+          database.prepare(`
+            INSERT OR REPLACE INTO hub_task_lifecycle_outcomes (
+              operation_id, task_id, kind, result_json, completed_at_ms
+            ) VALUES (?, ?, 'complete', ?, ?)
+          `).run(operation, transition.task_id, JSON.stringify({ result, evidence: receiptEvidence ?? {} }), this.now());
           database.prepare("DELETE FROM hub_task_lifecycle_transitions WHERE operation_id = ?").run(operation);
         }
         database.exec("COMMIT");

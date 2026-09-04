@@ -100,6 +100,56 @@ test("prepare and cancel start enforce one exact owner and revision CAS", async 
   assert.equal(cancelled.startRequestId, null);
 });
 
+test("markStarted requires exact prepared owner state and revision", async (t) => {
+  const store = await fixture(t);
+  const created = store.create({ text: "Exact launch completion" });
+  const prepared = store.prepareStart(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", requestId: "exact-launch",
+    expectedRevision: created.revision,
+  });
+  assert.throws(() => store.markStarted(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", requestId: "wrong-owner",
+    expectedRevision: prepared.revision,
+  }), /does not match/u);
+  assert.throws(() => store.markStarted(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", requestId: "exact-launch",
+    expectedRevision: prepared.revision - 1,
+  }), /revision CAS/u);
+  const started = store.markStarted(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", requestId: "exact-launch",
+    expectedRevision: prepared.revision,
+  });
+  assert.equal(started.status, "started");
+});
+
+test("Task mutation queue retries the owning transaction without blocking timers", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-contention-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const store = new TaskBoardStore({ databaseFile });
+  const created = store.create({ text: "Before contention" });
+  const blocker = new DatabaseSync(databaseFile);
+  blocker.exec("PRAGMA busy_timeout = 0; BEGIN IMMEDIATE");
+  let timerFired = false;
+  const timer = setTimeout(() => {
+    timerFired = true;
+    blocker.exec("COMMIT");
+  }, 60);
+  t.after(async () => {
+    clearTimeout(timer);
+    try { blocker.exec("ROLLBACK"); } catch {}
+    blocker.close();
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const updated = await store.runMutation(
+    () => store.updatePresentation(created.id, { title: "After contention", description: "" }),
+    { requestId: "task-contention", timeoutMs: 1_000 },
+  );
+  assert.equal(timerFired, true);
+  assert.equal(updated.title, "After contention");
+  assert.ok(store.mutationDiagnostics().retries > 0);
+});
+
 test("delete transition keeps the Task durable until cleanup is confirmed successful", async (t) => {
   const store = await fixture(t);
   const created = store.create({ text: "Crash-safe delete" });
@@ -162,7 +212,13 @@ test("restarting a closed Task clears its completion timestamp", async (t) => {
   const store = await fixture(t);
   const task = store.create({ text: "Исправить запуск" });
   const completed = store.complete(task.id);
-  const restarted = store.markStarted(task.id, { workspaceId: "workspace-1", streamId: "stream-1" });
+  const prepared = store.prepareStart(task.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", requestId: "restart-closed",
+  });
+  const restarted = store.markStarted(task.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", requestId: "restart-closed",
+    expectedRevision: prepared.revision,
+  });
 
   assert.equal(completed.status, "done");
   assert.equal(completed.workflowStatus, "new");
@@ -177,7 +233,13 @@ test("generic Task statuses remain directly editable", async (t) => {
   const created = store.create({ text: "Провести задачу по статусам" });
   assert.equal(created.workflowStatus, "new");
 
-  const started = store.markStarted(created.id, { workspaceId: "workspace-1", streamId: "stream-1" });
+  const prepared = store.prepareStart(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", requestId: "editable-start",
+  });
+  const started = store.markStarted(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", requestId: "editable-start",
+    expectedRevision: prepared.revision,
+  });
   assert.equal(started.workflowStatus, "in_progress");
   assert.equal(store.setWorkflowStatus(created.id, "testing").workflowStatus, "testing");
   assert.equal(
@@ -200,7 +262,13 @@ test("generic Task statuses remain directly editable", async (t) => {
 test("durable reassignment keeps the old executor until the new launch succeeds", async (t) => {
   const store = await fixture(t);
   const created = store.create({ text: "Переназначить Task" });
-  store.markStarted(created.id, { workspaceId: "workspace-1", streamId: "stream-old" });
+  const initialPrepared = store.prepareStart(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-old", requestId: "initial-start",
+  });
+  store.markStarted(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-old", requestId: "initial-start",
+    expectedRevision: initialPrepared.revision,
+  });
 
   const prepared = store.prepareStart(created.id, {
     workspaceId: "workspace-1", streamId: "stream-new", requestId: "reassign-1", reassign: true,
@@ -212,11 +280,12 @@ test("durable reassignment keeps the old executor until the new launch succeeds"
   assert.equal(cancelled.status, "started");
   assert.equal(cancelled.streamId, "stream-old");
 
-  store.prepareStart(created.id, {
+  const secondPrepared = store.prepareStart(created.id, {
     workspaceId: "workspace-1", streamId: "stream-new", requestId: "reassign-2", reassign: true,
   });
   const reassigned = store.markStarted(created.id, {
     workspaceId: "workspace-1", streamId: "stream-new", requestId: "reassign-2",
+    expectedRevision: secondPrepared.revision,
   });
   assert.equal(reassigned.status, "started");
   assert.equal(reassigned.streamId, "stream-new");
@@ -1085,9 +1154,12 @@ test("Completed cutover ignores retired Task state recreated by a previous runti
     workspaceId: "workspace-1",
     taskPrefix: "HUB",
   });
+  const initialPrepared = initial.prepareStart(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-live", requestId: "cutover-start",
+  });
   const expected = initial.markStarted(created.id, {
-    workspaceId: "workspace-1",
-    streamId: "stream-live",
+    workspaceId: "workspace-1", streamId: "stream-live", requestId: "cutover-start",
+    expectedRevision: initialPrepared.revision,
   });
   initial.close();
 

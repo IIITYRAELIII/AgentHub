@@ -1,3 +1,5 @@
+import { isTaskBoardMutationOwner } from "./sqlite-mutation-owner.mjs";
+
 function requiredMethod(value, name) {
   if (typeof value?.[name] !== "function") throw new TypeError(`${name} is required`);
 }
@@ -11,6 +13,9 @@ function requiredPlanRevision(value) {
 export class WorkspaceReleaseService {
   constructor({ store, releasePlanner, releaseGitWorkspaces, verifyPublication } = {}) {
     requiredMethod(store, "completeRelease");
+    if (!isTaskBoardMutationOwner(store)) {
+      throw new TypeError("WorkspaceReleaseService requires the Task mutation owner facade");
+    }
     requiredMethod(releasePlanner, "plan");
     requiredMethod(releaseGitWorkspaces, "synchronizePublishedPrimary");
     requiredMethod(releaseGitWorkspaces, "frozenCandidate");
@@ -63,7 +68,7 @@ export class WorkspaceReleaseService {
     }
     publication.verificationSummary = normalizedSummary;
     publication.planRevision = plan.revision;
-    const completed = this.store.completeRelease(workspaceId, {
+    const completed = await this.store.completeRelease(workspaceId, {
         expectedPlanRevision: plan.revision,
         plan,
         conflictsResolved,
