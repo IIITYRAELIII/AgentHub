@@ -2300,9 +2300,6 @@ function renderTasks() {
         folderNames: workspaceFolderCatalogNames(),
       });
       for (const group of sections.active) taskList.append(renderTaskWorkspaceItem(group));
-      if (sections.active.length && sections.catalog.length) {
-        taskList.append(renderTaskWorkspaceDivider("Все"));
-      }
       for (const entry of sections.catalog) {
         if (entry.type === "workspace") {
           taskList.append(renderTaskWorkspaceItem(entry.group));
@@ -2385,12 +2382,6 @@ function streamMaintenanceKind(task) {
   return String(task?.context?.compaction?.status ?? "") === "running" ? "compaction" : "";
 }
 
-function renderTaskWorkspaceDivider(label) {
-  return el("li", { class: "task-workspace-divider", role: "presentation" }, [
-    el("span", { class: "task-workspace-divider-label", text: label }),
-  ]);
-}
-
 function renderTaskWorkspaceFolder(folder) {
   restoreCollapsedWorkspaceFolders();
   const folderKey = String(folder.key ?? folder.name ?? "").trim();
@@ -2426,7 +2417,7 @@ function renderTaskWorkspaceFolder(folder) {
         el("span", { class: "task-workspace-folder-count", text: String(items.length) }),
       ]),
       el("ul", { class: "task-workspace-folder-list" }, items.length
-        ? items.map((item) => renderTaskWorkspaceItem(item, { family: true }))
+        ? items.map((item) => renderTaskWorkspaceItem(item, { folderMember: true }))
         : [el("li", {
             class: "task-workspace-folder-empty",
             text: "Папка пуста",
@@ -2436,7 +2427,7 @@ function renderTaskWorkspaceFolder(folder) {
   ]);
 }
 
-function renderTaskWorkspaceItem({ id, name, kind, tasks, shortName }, { family = false } = {}) {
+function renderTaskWorkspaceItem({ id, name, kind, tasks }, { folderMember = false } = {}) {
   const selected = workspaceKey(currentTask()) === id;
   const lastActivity = workspaceLastActivity(tasks);
   const unread = tasks.some((task) => task.unread);
@@ -2454,16 +2445,14 @@ function renderTaskWorkspaceItem({ id, name, kind, tasks, shortName }, { family 
     "data-answer-arrived": tasks.some((task) => transientAnswerArrivalTaskIds.has(task.id)) ? "" : null,
     "data-running": running ? "" : null,
     "data-maintenance": maintenance || null,
-    "data-family-member": family ? "" : null,
+    "data-folder-member": folderMember ? "" : null,
     role: "button",
     tabindex: "0",
     "aria-pressed": String(selected),
-    /* Внутри семейства префикс уже стоит в заголовке группы, поэтому в строке
-       остаётся только собственное имя — но полное имя нужно озвучке и поиску. */
-    "aria-label": family ? name : null,
+    "aria-label": folderMember ? name : null,
     title: "ПКМ — редактировать Workspace",
   }, [
-    el("span", { class: "task-workspace-name", text: family ? (shortName || name) : name }),
+    el("span", { class: "task-workspace-name", text: name }),
     el("span", {
       class: "task-workspace-time",
       text: formatRelativeTime(lastActivity),
