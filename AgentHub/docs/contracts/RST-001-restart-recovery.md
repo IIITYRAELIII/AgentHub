@@ -6,6 +6,11 @@ Restart and compaction are persisted operations with `operationId`, kind, exact
 Stream and Thread, optional provider turn identity, status and revision. They are
 not user turns.
 
+The client may show an explicit compaction boundary with its before/after context
+measurement as a system maintenance marker. The internal probe command and
+answer used to obtain that measurement are not user history and are never shown
+as user or agent conversation cards.
+
 Test Contour refresh is a separate persisted infrastructure operation governed
 by REL-001 and ADR-0015. It binds contour root/marker/port and source/release
 identity instead of Stream, Thread or provider turn identity. It is likewise not
