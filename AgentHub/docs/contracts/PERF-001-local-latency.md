@@ -56,6 +56,13 @@ prunes them when files disappear, retries incomplete files only through the same
 strict bounds, and passes valid sessions to the existing durable historical
 byte-offset/checkpoint queue.
 
+Claude external-owner discovery enumerates Windows processes through one
+runtime-scoped snapshot owner, not one helper per session. Concurrent occupancy
+queries share a scan for five seconds. Launch-authority scans bypass a cached
+negative and serialize after any earlier inventory so each admission receives a
+scan requested at its own dequeue fence. Helper stdout plus stderr is capped at
+64 KiB and the child is terminated on timeout or overflow.
+
 Ordinary Codex terminal reconciliation is also resumable and bounded. One idle
 pass scans at most 8 rollout files, 512 KiB and 20 terminal turns, with a 75 ms
 event-loop time budget. It yields before further work whenever a managed run or
@@ -101,7 +108,10 @@ publication reads one SQLite snapshot and performs JSON encoding plus gzip in an
 isolated worker; compression favors bounded CPU over the smallest possible
 artifact. Synchronous SQLite stores on the Hub loop reuse initialized handles,
 batch hierarchy metadata reads and use immediate `SQLITE_BUSY` failure with
-asynchronous retry rather than blocking busy waits.
+asynchronous retry rather than blocking busy waits. Mutation retries are
+deadline-bounded, yield through timers between attempts and retain the original
+idempotency identity. Exhaustion is a visible contention failure; it must not
+freeze HTTP, SSE or runtime timers or allocate a replacement request identity.
 
 Unchanged journal HTTP/WebView reads resolve their ETag from content-free SQLite
 metadata and do not load the multi-megabyte index HTML. Aggregate journal views

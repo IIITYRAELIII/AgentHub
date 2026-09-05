@@ -41,28 +41,31 @@ export class BugReportTaskCapture {
     return Boolean(this.workspaceName);
   }
 
-  capture(report, { text = "" } = {}) {
+  async capture(report, { text = "" } = {}) {
     if (!this.workspaceName) return null;
     const id = String(report?.id ?? "").trim().toLowerCase();
     const folder = String(report?.folder ?? "").trim();
     const reportFile = `${folder.replace(/\\/gu, "/").replace(/\/+$/gu, "")}/report.md`;
-    const task = this.taskBoard.create({
-      text: bugReportTaskText({ id, folder, text }),
-      source: "bug-report",
-      sourceKey: `bug-report:${id}`,
-      sourceDetails: {
-        bugReportId: id,
-        folder,
-        reportFile,
-        screenshots: Math.max(0, Number(report?.screenshots) || 0),
-      },
-    });
-    const expectedName = normalizedWorkspaceName(this.workspaceName);
-    const workspace = this.taskBoard.workspaces().find((item) => (
-      normalizedWorkspaceName(item?.name) === expectedName
-    ));
-    if (!workspace) return task;
-    return this.taskBoard.move({ id: task.id, bucket: "workspace", workspaceId: workspace.id });
+    const operation = async () => {
+      const task = await this.taskBoard.create({
+        text: bugReportTaskText({ id, folder, text }),
+        source: "bug-report",
+        sourceKey: `bug-report:${id}`,
+        sourceDetails: {
+          bugReportId: id,
+          folder,
+          reportFile,
+          screenshots: Math.max(0, Number(report?.screenshots) || 0),
+        },
+      });
+      const expectedName = normalizedWorkspaceName(this.workspaceName);
+      const workspace = this.taskBoard.workspaces().find((item) => (
+        normalizedWorkspaceName(item?.name) === expectedName
+      ));
+      if (!workspace) return task;
+      return this.taskBoard.move({ id: task.id, bucket: "workspace", workspaceId: workspace.id });
+    };
+    return operation();
   }
 
   scan() {
@@ -82,7 +85,7 @@ export class BugReportTaskCapture {
   async #scan() {
     const revision = await this.cursorStore.load();
     const batch = await this.reports.addedSince(revision);
-    for (const report of batch.reports) this.capture(report, { text: report.text });
+    for (const report of batch.reports) await this.capture(report, { text: report.text });
     await this.cursorStore.save(batch.head);
     return { captured: batch.reports.length, baseline: Boolean(batch.baseline), head: batch.head };
   }

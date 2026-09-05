@@ -55,6 +55,29 @@ export function requireDesktopTaskSyncStore(provider) {
   return taskSyncStore;
 }
 
+export function mcpTaskLaunchContext(context = {}) {
+  const source = context && typeof context === "object" && !Array.isArray(context)
+    ? context
+    : {};
+  return {
+    ...source,
+    source: "mcp",
+    clientId: `mcp:${String(source.provider ?? "").trim()}:${String(source.auditThreadId ?? "").trim()}`,
+  };
+}
+
+export function configureMcpTaskLauncher({ hubMcpService, taskBoardLauncher } = {}) {
+  if (typeof hubMcpService?.setTaskLauncher !== "function") {
+    throw new TypeError("hubMcpService.setTaskLauncher is required");
+  }
+  if (typeof taskBoardLauncher?.start !== "function") {
+    throw new TypeError("taskBoardLauncher.start is required");
+  }
+  hubMcpService.setTaskLauncher((params, context) => (
+    taskBoardLauncher.start(params, mcpTaskLaunchContext(context))
+  ));
+}
+
 export function requireRuntimeStateStore(infrastructure) {
   const runtimeStateStore = infrastructure?.runtimeStateStore;
   if (typeof runtimeStateStore?.saveDeferredIntake !== "function") {
@@ -323,6 +346,8 @@ export function createInteractionShellPhase({
       sendMessageTo: clients.sendMessageTo,
       saveState: api.saveState,
       streamHandoff: infrastructure.streamHandoff,
+      stageLaunchAdmission: (run) => provider.claudeRunAdmission.stageLaunch(run),
+      abortLaunchAdmission: (run, ticket) => provider.claudeRunAdmission.abortLaunch(run, ticket),
       commandTrace: infrastructure.commandTraceService,
     },
     diff: {

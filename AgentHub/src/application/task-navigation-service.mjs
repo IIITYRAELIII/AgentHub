@@ -150,7 +150,7 @@ export class TaskNavigationService {
       }
     }
     if (streamSettings && !streamSettings.explicit) {
-      this.rememberStreamAgentSettings?.(binding.streamId ?? null);
+      await this.rememberStreamAgentSettings?.(binding.streamId ?? null);
     }
     this.setLatestDiff(this.storedTaskDiff(this.taskRunKey(this.selectedTask())) ?? "");
     try {

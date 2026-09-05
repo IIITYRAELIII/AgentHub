@@ -97,10 +97,10 @@ test("archiveStream delegates the stable Stream identity to the catalog", () => 
   assert.deepEqual(calls.at(-1), ["archiveStream", "stream-1"]);
 });
 
-test("Workspace settings provide an inherited working directory", () => {
+test("Workspace settings provide an inherited working directory", async () => {
   const { service, calls } = fixture();
   const settings = { workingDirectory: "D:/work/AgentHub" };
-  assert.deepEqual(service.updateWorkspaceSettings({
+  assert.deepEqual(await service.updateWorkspaceSettings({
     workspaceId: "workspace-1", settings,
   }), { settings });
   assert.deepEqual(calls.at(-1), [
@@ -146,20 +146,20 @@ test("Workspace folder move delegates only stable identity and folder name", () 
   assert.deepEqual(calls.at(-1), ["moveWorkspaceToFolder", "workspace-1", "Клиенты"]);
 });
 
-test("adding a Workspace Task prefix backfills its unnumbered Tasks", () => {
+test("adding a Workspace Task prefix backfills its unnumbered Tasks", async () => {
   const assigned = [];
   const { service } = fixture({
     taskBoard: { assignWorkspaceTaskNumbers: (workspaceId) => assigned.push(workspaceId) },
   });
-  service.updateWorkspaceSettings({
+  await service.updateWorkspaceSettings({
     workspaceId: "workspace-1", settings: { taskPrefix: "HUB" },
   });
   assert.deepEqual(assigned, ["workspace-1"]);
 });
 
-test("release workflow disable never blocks on Task state", () => {
+test("release workflow disable never blocks on Task state", async () => {
   const { calls, service } = fixture();
-  const result = service.updateWorkspaceSettings({
+  const result = await service.updateWorkspaceSettings({
     workspaceId: "workspace-1", settings: { releaseWorkflowEnabled: false },
   });
   assert.deepEqual(result, { settings: { releaseWorkflowEnabled: false } });

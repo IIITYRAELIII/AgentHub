@@ -160,12 +160,14 @@ export function createProviderOperationComposition({
       const streamId = selectionStore.streamId;
       selectionStore.setThread(sessionId, { provider: "claude", streamId, title });
       if (streamId && sessionId && !workspaceCatalogStore.thread({ provider: "claude", threadId: sessionId })) {
-        workspaceCatalogStore.bindThread({
+        void workspaceCatalogStore.bindThread({
           provider: "claude",
           threadId: sessionId,
           streamId,
           projectRoot: selectionStore.activeProjectRoot,
           source: "created",
+        }).catch((error) => {
+          console.error("Cannot bind Claude Thread:", error.message);
         });
       }
     },
