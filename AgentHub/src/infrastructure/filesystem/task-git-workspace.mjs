@@ -5,6 +5,7 @@ import path from "node:path";
 import process from "node:process";
 
 import { canonicalPath } from "./config.mjs";
+import { prepareTaskWorktreeDependencies } from "./task-worktree-dependencies.mjs";
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
 import {
   normalizedTaskId,
@@ -164,6 +165,16 @@ async function worktreeRoot(projectRoot) {
   ], { cwd: path.resolve(projectRoot) }));
 }
 
+async function trackedNpmLockfiles(repositoryWorktreeRoot, projectRoot) {
+  const output = await runGit([
+    "ls-files", "-z", "--", "package-lock.json", ":(glob)**/package-lock.json",
+  ], { cwd: repositoryWorktreeRoot });
+  return [...new Set(output.split("\0")
+    .filter(Boolean)
+    .map((lockfile) => canonicalPath(path.resolve(repositoryWorktreeRoot, lockfile)))
+    .filter((lockfile) => pathInside(projectRoot, lockfile)))].sort();
+}
+
 async function branchExists(repositoryRootValue, branch) {
   return await gitMaybe(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], {
     cwd: repositoryRootValue,
@@ -227,11 +238,16 @@ async function commitDirtyWorktree(worktreeRoot, message) {
 }
 
 export class TaskGitWorkspaceService {
-  constructor({ dataDir, devBranch = TASK_DEV_BRANCH } = {}) {
+  constructor({
+    dataDir,
+    devBranch = TASK_DEV_BRANCH,
+    prepareDependencies = prepareTaskWorktreeDependencies,
+  } = {}) {
     this.dataDir = canonicalPath(String(dataDir ?? ""));
     this.taskWorktreesRoot = path.join(this.dataDir, "task-worktrees");
     this.devWorktreesRoot = path.join(this.dataDir, "dev-worktrees");
     this.devBranch = String(devBranch ?? TASK_DEV_BRANCH).trim() || TASK_DEV_BRANCH;
+    this.prepareDependencies = prepareDependencies;
   }
 
   async #ensureBranchWorktree({
@@ -365,6 +381,15 @@ export class TaskGitWorkspaceService {
     const scopedProjectRoot = canonicalPath(path.resolve(taskRoot, selection.relativePath));
     if (!pathInside(taskRoot, scopedProjectRoot)) {
       throw new Error("Task project root escaped its managed worktree");
+    }
+    const lockfiles = await trackedNpmLockfiles(taskRoot, scopedProjectRoot);
+    const dependencyLock = path.join(this.dataDir, "locks", `task-dependencies-${id}-${repoKey}`);
+    if (lockfiles.length > 0) {
+      await this.prepareDependencies({
+        projectRoot: scopedProjectRoot,
+        lockfiles,
+        lockPath: dependencyLock,
+      });
     }
     const headCommit = await runGit(["rev-parse", "HEAD^{commit}"], { cwd: taskRoot });
     return {
