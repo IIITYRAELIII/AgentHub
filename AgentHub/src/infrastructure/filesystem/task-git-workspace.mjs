@@ -5,6 +5,7 @@ import path from "node:path";
 import process from "node:process";
 
 import { canonicalPath } from "./config.mjs";
+import { prepareTaskWorktreeDependencies } from "./task-worktree-dependencies.mjs";
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
 import { readPublicationState } from "../persistence/publication-state.mjs";
 import {
@@ -52,17 +53,20 @@ export function stopTaskProcessTree(child, { spawnProcess = spawn, timeoutMs = 5
   });
 }
 
-function taskGitTerminationError(args, timeoutMs, processTreeStopped, cause = "timed out") {
+function taskGitTerminationError(args, timeoutMs, processTreeStopped, cause = "timed out", commandLabel = "git") {
+  const command = commandLabel === "git" ? `git ${args[0]}` : commandLabel;
   const error = new Error(processTreeStopped
-    ? `git ${args[0]} ${cause} after ${timeoutMs} ms; process tree stopped`
-    : `git ${args[0]} ${cause} after ${timeoutMs} ms; process tree stop is unproven`);
+    ? `${command} ${cause} after ${timeoutMs} ms; process tree stopped`
+    : `${command} ${cause} after ${timeoutMs} ms; process tree stop is unproven`);
   error.processTreeStopped = processTreeStopped;
-  error.code = processTreeStopped ? "TASK_GIT_TERMINATED" : "TASK_GIT_TREE_UNPROVEN";
+  const codePrefix = commandLabel === "git" ? "TASK_GIT" : "TASK_EXTERNAL_PROCESS";
+  error.code = processTreeStopped ? `${codePrefix}_TERMINATED` : `${codePrefix}_TREE_UNPROVEN`;
   return error;
 }
 
 export function runTaskGitCommand(args, {
   cwd, timeoutMs = 60_000, executable = "git", spawnProcess = spawn, signal = null, input = null,
+  commandLabel = "git",
 } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -93,16 +97,16 @@ export function runTaskGitCommand(args, {
       void stopTaskProcessTree(child, { spawnProcess }).then((stopped) => {
         terminationOutcome = stopped;
         if (!stopped) {
-          settle(() => reject(taskGitTerminationError(args, timeoutMs, false, cause)));
+          settle(() => reject(taskGitTerminationError(args, timeoutMs, false, cause, commandLabel)));
           return;
         }
         if (settled) return;
         if (childClosed) {
-          settle(() => reject(taskGitTerminationError(args, timeoutMs, true, cause)));
+          settle(() => reject(taskGitTerminationError(args, timeoutMs, true, cause, commandLabel)));
           return;
         }
         stopTimer = setTimeout(() => settle(() => reject(
-          taskGitTerminationError(args, timeoutMs, true, cause),
+          taskGitTerminationError(args, timeoutMs, true, cause, commandLabel),
         )), 5_000);
         stopTimer.unref?.();
       });
@@ -124,9 +128,14 @@ export function runTaskGitCommand(args, {
       const output = Buffer.concat(stdout).toString("utf8").trim();
       const errorText = Buffer.concat(stderr).toString("utf8").trim();
       if (termination && terminationOutcome == null) return;
-      if (termination) settle(() => reject(taskGitTerminationError(args, timeoutMs, terminationOutcome, termination)));
+      if (termination) settle(() => reject(
+        taskGitTerminationError(args, timeoutMs, terminationOutcome, termination, commandLabel),
+      ));
       else if (code === 0) settle(() => resolve(output));
-      else settle(() => reject(new Error(errorText || `git ${args[0]} exited with ${code}`)));
+      else {
+        const command = commandLabel === "git" ? `git ${args[0]}` : commandLabel;
+        settle(() => reject(new Error(errorText || `${command} exited with ${code}`)));
+      }
     });
     if (input != null) child.stdin.end(input);
   });
@@ -304,6 +313,16 @@ async function worktreeRoot(projectRoot) {
   ], { cwd: path.resolve(projectRoot) }));
 }
 
+async function trackedNpmLockfiles(repositoryWorktreeRoot, projectRoot) {
+  const output = await runGit([
+    "ls-files", "-z", "--", "package-lock.json", ":(glob)**/package-lock.json",
+  ], { cwd: repositoryWorktreeRoot });
+  return [...new Set(output.split("\0")
+    .filter(Boolean)
+    .map((lockfile) => canonicalPath(path.resolve(repositoryWorktreeRoot, lockfile)))
+    .filter((lockfile) => pathInside(projectRoot, lockfile)))].sort();
+}
+
 async function branchExists(repositoryRootValue, branch) {
   return await gitMaybe(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], {
     cwd: repositoryRootValue,
@@ -368,21 +387,25 @@ async function commitDirtyWorktree(worktreeRoot, message, { lease = null } = {})
 
 export class TaskGitWorkspaceService {
   constructor({
-    dataDir, devBranch = TASK_DEV_BRANCH, readPublication = readPublicationState,
+    dataDir,
+    devBranch = TASK_DEV_BRANCH,
+    prepareDependencies = prepareTaskWorktreeDependencies,
+    readPublication = readPublicationState,
     runCommand = runTaskGitCommand,
   } = {}) {
     this.dataDir = canonicalPath(String(dataDir ?? ""));
     this.taskWorktreesRoot = path.join(this.dataDir, "task-worktrees");
     this.devWorktreesRoot = path.join(this.dataDir, "dev-worktrees");
     this.devBranch = String(devBranch ?? TASK_DEV_BRANCH).trim() || TASK_DEV_BRANCH;
+    this.prepareDependencies = prepareDependencies;
     this.readPublication = readPublication;
     this.runCommand = runCommand;
   }
 
-  async #runOwned(args, { lease = null, ...options } = {}) {
+  async #runOwned(args, { lease = null, guardCommand = null, ...options } = {}) {
     const owner = requiredGuardLease(lease);
     await owner.assertOwned();
-    const guard = await owner.beginProcessTreeGuard({ args, cwd: options.cwd });
+    const guard = await owner.beginProcessTreeGuard({ args: guardCommand ?? args, cwd: options.cwd });
     try {
       const result = await this.runCommand(args, { ...options, signal: owner.signal ?? null });
       await guard.clear({ proof: "natural-process-tree-completion" });
@@ -398,6 +421,20 @@ export class TaskGitWorkspaceService {
       }
       throw error;
     }
+  }
+
+  async #runOwnedNpm(args, { cwd, lease = null, timeoutMs = 10 * 60_000 } = {}) {
+    const windows = process.platform === "win32";
+    const executable = windows ? process.env.ComSpec || "cmd.exe" : "npm";
+    const commandArgs = windows ? ["/d", "/s", "/c", "npm.cmd", ...args] : args;
+    return this.#runOwned(commandArgs, {
+      cwd,
+      lease,
+      timeoutMs,
+      executable,
+      commandLabel: "npm",
+      guardCommand: ["npm", ...args],
+    });
   }
 
   #taskLock(taskId) {
@@ -919,6 +956,24 @@ export class TaskGitWorkspaceService {
       const scopedProjectRoot = canonicalPath(path.resolve(taskRoot, selection.relativePath));
       if (!pathInside(taskRoot, scopedProjectRoot)) {
         throw new Error("Task project root escaped its managed worktree");
+      }
+      const lockfiles = await trackedNpmLockfiles(taskRoot, scopedProjectRoot);
+      const dependencyLock = path.join(this.dataDir, "locks", `task-dependencies-${id}-${repoKey}`);
+      if (lockfiles.length > 0) {
+        await withInterprocessLocks([dependencyLock], async (dependencyLease) => {
+          const taskDependencyLease = combinedLease(ownedLease, dependencyLease);
+          await taskDependencyLease.assertOwned();
+          await this.prepareDependencies({
+            projectRoot: scopedProjectRoot,
+            lockfiles,
+            lease: taskDependencyLease,
+            runNpm: (args, options) => this.#runOwnedNpm(args, {
+              ...options,
+              lease: taskDependencyLease,
+            }),
+          });
+          await taskDependencyLease.assertOwned();
+        });
       }
       const headCommit = await this.#runOwned(["rev-parse", "HEAD^{commit}"], {
         cwd: taskRoot, lease: ownedLease,

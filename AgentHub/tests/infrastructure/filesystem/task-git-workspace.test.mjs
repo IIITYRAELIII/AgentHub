@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { access, mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -16,6 +16,7 @@ import {
   taskSparseCheckoutSelection,
   TaskGitWorkspaceService,
 } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
+import { prepareTaskWorktreeDependencies } from "../../../src/infrastructure/filesystem/task-worktree-dependencies.mjs";
 import { canonicalPath } from "../../../src/infrastructure/filesystem/config.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -918,6 +919,195 @@ test("a new Task worktree sparsely materializes only its selected project subtre
   assert.equal(repeated.projectRoot, workspace.projectRoot);
   assert.equal(repeated.branch, workspace.branch);
   assert.equal(await git(taskRoot, "sparse-checkout", "list"), "AgentHub");
+});
+
+test("a clean managed Task worktree resolves its declared test dependency locally", async (context) => {
+  const root = await repository(context);
+  const agentHubRoot = path.join(root, "AgentHub");
+  const publicTests = path.join(agentHubRoot, "tests", "public");
+  const nestedRoot = path.join(agentHubRoot, "tools", "nested");
+  await mkdir(publicTests, { recursive: true });
+  await mkdir(nestedRoot, { recursive: true });
+  const packageJson = {
+    name: "managed-worktree-fixture",
+    private: true,
+    type: "module",
+    devDependencies: { playwright: "1.62.1" },
+  };
+  const lock = {
+    name: "managed-worktree-fixture",
+    lockfileVersion: 3,
+    packages: {
+      "": packageJson,
+      "node_modules/playwright": { version: "1.62.1", dev: true },
+    },
+  };
+  await writeFile(path.join(agentHubRoot, "package.json"), `${JSON.stringify(packageJson, null, 2)}\n`, "utf8");
+  await writeFile(path.join(agentHubRoot, "package-lock.json"), `${JSON.stringify(lock, null, 2)}\n`, "utf8");
+  await writeFile(path.join(nestedRoot, "package.json"), "{\"name\":\"nested\",\"private\":true}\n", "utf8");
+  await writeFile(path.join(nestedRoot, "package-lock.json"), "{\"name\":\"nested\",\"lockfileVersion\":3,\"packages\":{\"\":{\"name\":\"nested\",\"private\":true}}}\n", "utf8");
+  await writeFile(path.join(publicTests, "stream-tabs-controller.test.mjs"), [
+    "import assert from \"node:assert/strict\";",
+    "import test from \"node:test\";",
+    "test(\"declared browser dependency resolves\", async () => {",
+    "  const dependency = await import(\"playwright\");",
+    "  assert.equal(dependency.available, true);",
+    "});",
+    "",
+  ].join("\n"), "utf8");
+  await git(root, "add", "AgentHub/package.json", "AgentHub/package-lock.json", "AgentHub/tests/public/stream-tabs-controller.test.mjs", "AgentHub/tools/nested/package.json", "AgentHub/tools/nested/package-lock.json");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "dom test fixture");
+  const dataDir = path.join(root, "..", `${path.basename(root)}-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  let installCount = 0;
+  const service = new TaskGitWorkspaceService({
+    dataDir,
+    prepareDependencies: (input) => prepareTaskWorktreeDependencies({
+      ...input,
+      runNpm: async (args, { cwd }) => {
+        installCount += 1;
+        assert.deepEqual(args, ["ci", "--include=dev", "--include=optional", "--no-audit", "--no-fund"]);
+        if (path.basename(cwd) === "nested") {
+          await mkdir(path.join(cwd, "node_modules"), { recursive: true });
+          await writeFile(path.join(cwd, "node_modules", ".package-lock.json"), "{\"lockfileVersion\":3,\"packages\":{}}\n", "utf8");
+          return;
+        }
+        await mkdir(path.join(cwd, "node_modules", "playwright"), { recursive: true });
+        await writeFile(path.join(cwd, "node_modules", "playwright", "package.json"), [
+          "{",
+          "  \"name\": \"playwright\",",
+          "  \"version\": \"1.62.1\",",
+          "  \"type\": \"module\",",
+          "  \"exports\": \"./index.mjs\"",
+          "}",
+          "",
+        ].join("\n"), "utf8");
+        await writeFile(path.join(cwd, "node_modules", "playwright", "index.mjs"), "export const available = true;\n", "utf8");
+        await writeFile(path.join(cwd, "node_modules", ".package-lock.json"), `${JSON.stringify({
+          lockfileVersion: 3,
+          packages: { "node_modules/playwright": { version: "1.62.1", dev: true } },
+        }, null, 2)}\n`, "utf8");
+      },
+    }),
+  });
+
+  const workspace = await service.prepare({
+    taskId: "89898989-8989-4989-8989-898989898989",
+    taskNumber: "HUB-163",
+    projectRoot: agentHubRoot,
+  });
+  assert.equal(installCount, 2);
+  await assert.rejects(() => readFile(path.join(agentHubRoot, "node_modules", "playwright", "package.json"), "utf8"), /ENOENT/u);
+  await execFileAsync(process.execPath, ["--test", "tests/public/stream-tabs-controller.test.mjs"], {
+    cwd: workspace.projectRoot,
+    windowsHide: true,
+  });
+  const untrackedRoot = path.join(workspace.projectRoot, "tools", "untracked");
+  await mkdir(untrackedRoot, { recursive: true });
+  await writeFile(path.join(untrackedRoot, "package.json"), "{\"name\":\"untracked\",\"private\":true}\n", "utf8");
+  await writeFile(path.join(untrackedRoot, "package-lock.json"), "{\"name\":\"untracked\",\"lockfileVersion\":3,\"packages\":{\"\":{\"name\":\"untracked\",\"private\":true}}}\n", "utf8");
+
+  const repeated = await service.prepare({
+    taskId: workspace.taskId,
+    taskNumber: "HUB-163",
+    projectRoot: workspace.projectRoot,
+  });
+  assert.equal(repeated.projectRoot, workspace.projectRoot);
+  assert.equal(installCount, 2);
+});
+
+test("Task worktree preparation does not return when dependency bounds fail", async (context) => {
+  const root = await repository(context);
+  const agentHubRoot = path.join(root, "AgentHub");
+  await mkdir(agentHubRoot);
+  const packageJson = { name: "bounded", private: true, dependencies: { first: "1.0.0", second: "1.0.0" } };
+  const lock = {
+    name: "bounded",
+    lockfileVersion: 3,
+    packages: {
+      "": packageJson,
+      "node_modules/first": { version: "1.0.0" },
+      "node_modules/second": { version: "1.0.0" },
+    },
+  };
+  await writeFile(path.join(agentHubRoot, "package.json"), `${JSON.stringify(packageJson, null, 2)}\n`, "utf8");
+  await writeFile(path.join(agentHubRoot, "package-lock.json"), `${JSON.stringify(lock, null, 2)}\n`, "utf8");
+  await git(root, "add", "AgentHub/package.json", "AgentHub/package-lock.json");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "bounded dependencies");
+  const dataDir = path.join(root, "..", `${path.basename(root)}-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  let npmInvoked = false;
+  const service = new TaskGitWorkspaceService({
+    dataDir,
+    prepareDependencies: (input) => prepareTaskWorktreeDependencies({
+      ...input,
+      limits: { maxPackageRoots: 1 },
+      runNpm: async () => { npmInvoked = true; },
+    }),
+  });
+
+  await assert.rejects(() => service.prepare({
+    taskId: "90909090-9090-4090-8090-909090909090",
+    taskNumber: "HUB-163",
+    projectRoot: agentHubRoot,
+  }), /maxPackageRoots=1/u);
+  assert.equal(npmInvoked, false);
+});
+
+test("unproven owned npm tree stop fences dependency preparation and the next owner", async (context) => {
+  const root = await repository(context);
+  const agentHubRoot = path.join(root, "AgentHub");
+  await mkdir(agentHubRoot);
+  const packageJson = { name: "owned-npm", private: true, devDependencies: { browser: "1.0.0" } };
+  const lock = {
+    name: "owned-npm",
+    lockfileVersion: 3,
+    packages: {
+      "": packageJson,
+      "node_modules/browser": { version: "1.0.0" },
+    },
+  };
+  await writeFile(path.join(agentHubRoot, "package.json"), `${JSON.stringify(packageJson, null, 2)}\n`, "utf8");
+  await writeFile(path.join(agentHubRoot, "package-lock.json"), `${JSON.stringify(lock, null, 2)}\n`, "utf8");
+  await git(root, "add", "AgentHub/package.json", "AgentHub/package-lock.json");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "owned npm");
+  const dataDir = path.join(root, "..", `${path.basename(root)}-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  let npmCalls = 0;
+  const service = new TaskGitWorkspaceService({
+    dataDir,
+    runCommand: async (args, options) => {
+      if (options.commandLabel === "npm") {
+        npmCalls += 1;
+        assert.equal(options.signal instanceof AbortSignal, true);
+        const error = new Error("npm ci timed out; descendant survived because tree stop is unproven");
+        error.code = "TASK_EXTERNAL_PROCESS_TREE_UNPROVEN";
+        error.processTreeStopped = false;
+        throw error;
+      }
+      return runTaskGitCommand(args, options);
+    },
+  });
+  const taskId = "91919191-9191-4191-8191-919191919191";
+
+  await assert.rejects(() => service.prepare({
+    taskId,
+    taskNumber: "HUB-163",
+    projectRoot: agentHubRoot,
+  }), /descendant survived.*unproven/u);
+  const guardDirectory = path.join(dataDir, "task-process-tree-guards", taskId);
+  const guardFiles = await readdir(guardDirectory);
+  assert.equal(guardFiles.length, 1);
+  const guard = JSON.parse(await readFile(path.join(guardDirectory, guardFiles[0]), "utf8"));
+  assert.deepEqual(guard.command, [
+    "npm", "ci", "--include=dev", "--include=optional", "--no-audit", "--no-fund",
+  ]);
+  await assert.rejects(() => service.prepare({
+    taskId,
+    taskNumber: "HUB-163",
+    projectRoot: agentHubRoot,
+  }), /unresolved process-tree guard requires operator proof/u);
+  assert.equal(npmCalls, 1);
 });
 
 test("repository-root Tasks use explicit all-path scope without guessing a project subtree", async (context) => {

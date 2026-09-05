@@ -25,6 +25,80 @@ project, so the boundary remains in sparse mode without guessing a narrower
 owner or omitting future top-level paths. Scope resolution fails closed if the
 selected root escapes its source Git worktree.
 
+Before a managed Task worktree is returned or its provider is launched, Agent
+Hub prepares every tracked `package-lock.json` inside the selected sparse
+project with lockfile-locked `npm ci`, including declared development
+and optional dependencies. Platform-incompatible or otherwise failed optional
+packages may be absent as permitted by npm; if an optional package is present,
+its installed identity must match the lockfile. Each `node_modules` is an
+ordinary local directory below its package root in the managed worktree;
+external links and junctions, including links to the primary checkout, fail
+closed. A marker inside the ignored dependency
+directory binds the policy and lockfile hash to a bounded proof over npm's
+local hidden lockfile plus a deterministic enumeration of physical package
+roots, including scoped and nested packages. The physical and hidden-lock sets
+must match, and every package's canonical lock/path name, `version`,
+`integrity`, `resolved` and link identity must match the declared lock wherever
+those fields apply. A non-link alias uses the package name recorded by its lock
+entry; an ordinary package without that metadata uses its canonical path name.
+For a local `file:`/link entry, the resolved target must remain inside the
+managed project after `realpath`, and its physical name and version come from
+the target lock entry and target `package.json`, not the link's alias path. npm
+metadata entries are not package roots. This makes
+repeated preparation idempotent without accepting extra packages, impostors,
+or stale or malformed package metadata, while a changed lockfile requires a
+fresh install. Installation or validation failure fails Task worktree
+preparation instead of returning a falsely ready workspace. Markers contain no
+checkout path or other machine-specific location. Multiple
+tracked lockfiles are prepared serially under one Task/repository interprocess
+lock; untracked lockfiles and lockfiles outside the selected sparse project are
+ignored.
+
+Dependency preparation remains inside the existing Task lifecycle and managed
+dev leases and adds the per-Task/repository dependency lock to that same owner;
+it does not create a second process owner. The combined lease signal and
+durable ownership assertion fence every npm operation. npm runs through the
+Task lifecycle process-tree guard, so lease loss, cancellation or timeout must
+stop and prove completion of the entire descendant tree before preparation can
+return. An unproven stop leaves the persistent guard in place and blocks the
+next owner until the existing operator-proof recovery. Ownership is rechecked
+after external and validation awaits and immediately before and after marker
+promotion; losing it prevents a falsely prepared result.
+
+Dependency proof traversal is bounded before queue growth and directory
+expansion: each source or hidden package lock is at most 16 MiB, with at most
+16 nested `node_modules` levels, 10,000 physical package roots, 5,000 entries
+in one scanned `node_modules` or scope container, and 50,000 directory entries
+in total. Source locks, hidden locks, markers and package metadata are read from
+one opened regular-file handle: its size is checked before allocation, reads
+use bounded chunks, and identity, size and modification time are checked again
+before close; contents are never fetched through a second path-based read.
+Source package entries are collected iteratively; every count, depth and
+structural entry is checked before collection growth. Source preflight accounts
+only for package roots and required scope containers derived from the lock, so
+each declared structural limit remains reachable; service metadata is measured
+only by the physical scanner.
+
+Any source or physical overflow is a preparation error, never a cache miss. A
+post-install validation failure writes bounded durable evidence keyed by the
+exact policy and source-lock hash. Evidence is flushed through a temporary file
+in the same directory and atomically renamed over its destination. Temp-name
+collisions receive at most four new random-name attempts; only a temp file
+successfully created by the current writer may be cleaned up, and exhaustion
+leaves the destination unchanged. Repeated preparation never trusts that
+marker alone: it independently repeats bounded physical validation and returns
+a recorded error without another `npm ci` only when an allowlisted stable code
+and state exactly match the reproduced validator outcome. A valid repaired tree
+removes forged or stale failure evidence. A changed lock or policy permits one
+retry; without matching evidence, a reproducible physical overflow still fails
+before npm, preventing a crash-before-first-marker reinstall loop. Recovery is
+to repair or remove the invalid `node_modules` tree, or change the lock/policy;
+deleting only the failure marker does not authorize another install into the
+same overflowing tree. Invalid trees are never marked prepared, and Agent Hub
+does not return the worktree or launch its provider without an honest result.
+This local integrity cache does not claim protection from a process that can
+modify the source `package-lock.json` itself.
+
 Repeated preparation reapplies the same scope idempotently. An existing
 managed Task worktree is migrated in place without reset, clean, branch/base
 movement or snapshotting: tracked and untracked dirty state must remain
