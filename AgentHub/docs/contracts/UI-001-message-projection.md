@@ -129,6 +129,13 @@ produce user-visible running state. `probe`, `compaction`, `measurement` and
 a user-turn card. An explicit non-probe `operationKind` or ordinary
 `clientUserMessageId` is authoritative user-operation identity even when the
 prompt or final output exactly equals the reserved context-probe sentinel.
+Provider rollout projection fails closed while that identity is reordered: an
+identity-less exact context-probe sentinel is internal and cannot enter the
+canonical user-message, history or running-card projection. A later exact
+ordinary `clientUserMessageId` reclassifies that same provider turn as a visible
+user operation; a later service probe identity keeps it internal. Suppression
+does not discard the separately owned context-usage measurement or maintenance
+record.
 A task snapshot with no active run is authoritative after any available
 completion has been promoted: it removes the cached live card, probe and
 live-user projection even when the previous card was a valid `user-turn`.
@@ -160,10 +167,11 @@ hydration starts strictly as background work and is never awaited by mark-read.
   after one supported release has rewritten every retained terminal record.
 - Pre-UI-001 live/message records without `operationKind` use guards explicitly
   labelled `legacy-*`. Text matching is permitted only for the historical
-  context-probe sentinel when the record also lacks any client operation identity;
-  it is never entity identity and cannot override an ordinary
-  `clientUserMessageId`. Remove these guards after all retained snapshots and
-  history rows carry explicit operation kinds.
+  context-probe sentinel when the record also lacks any client operation identity,
+  including the provider interval before a matching completion item supplies
+  that identity; it is never entity identity and cannot override an ordinary
+  `clientUserMessageId`. Remove these guards after all retained snapshots,
+  history rows and provider events carry explicit operation kinds.
 - The exact provider-turn root fallback remains only for old rows that lack a
   submission alias. It cannot bind steer or inter-Stream messages and is removed
   after retained history has `clientUserMessageId` or `submissionId` on every

@@ -8,7 +8,7 @@ import {
 } from "../../application/task-history.mjs";
 import { TASK_EXECUTION_OWNERS } from "../../domain/task-execution-owner.mjs";
 import {
-  isCodexContextProbeClientId,
+  isCodexContextProbeTurn,
 } from "../../domain/codex-context-probe.mjs";
 import {
   codexAssistantResponseProjection,
@@ -104,6 +104,25 @@ function codexResponseItemMessage(entry, role) {
     .map((item) => String(item?.text ?? "").trim())
     .filter(Boolean)
     .join("\n\n");
+}
+
+function codexCompletedUserMessage(entry) {
+  const item = entry?.type === "event_msg" && entry.payload?.type === "item_completed"
+    ? entry.payload?.item
+    : null;
+  if (String(item?.type ?? "").toLowerCase() !== "usermessage") return null;
+  const text = (Array.isArray(item.content) ? item.content : [])
+    .filter((content) => ["text", "input_text"].includes(
+      String(content?.type ?? "").toLowerCase(),
+    ))
+    .map((content) => String(content?.text ?? "").trim())
+    .filter(Boolean)
+    .join("\n\n");
+  if (!text) return null;
+  return {
+    clientUserMessageId: String(item.client_id ?? "").trim(),
+    text,
+  };
 }
 
 function rememberCodexTurnMessage(metadata, turnId, message) {
@@ -570,7 +589,9 @@ function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
     activeTurnIds.add(turnId);
   }
   rememberCodexTraceEntry(metadata, turnId, entry);
-  const isUserMessage = entry?.type === "event_msg" && entry.payload?.type === "user_message";
+  const completedUserMessage = codexCompletedUserMessage(entry);
+  const isUserMessage = (entry?.type === "event_msg" && entry.payload?.type === "user_message")
+    || completedUserMessage !== null;
   if (
     metadata.pendingUserMessages.length
     && isUserMessage
@@ -647,13 +668,16 @@ function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
     }
   }
   if (isUserMessage) {
-    const attachmentSources = codexUserMessageAttachmentSources(entry);
+    const attachmentSources = completedUserMessage
+      ? []
+      : codexUserMessageAttachmentSources(entry);
     const messageTurnId = turnId;
     if (messageTurnId) {
-      const clientId = String(entry.payload?.client_id ?? "").trim();
+      const clientId = completedUserMessage?.clientUserMessageId
+        ?? String(entry.payload?.client_id ?? "").trim();
       rememberCodexUserMessage(metadata, messageTurnId, {
         clientUserMessageId: clientId,
-        text: entry.payload?.message,
+        text: completedUserMessage?.text ?? entry.payload?.message,
         attachmentSources,
       });
       if (clientId) metadata.vscodeTurnIds.add(messageTurnId);
@@ -735,11 +759,17 @@ function codexCompletedAtMsByTurnId(finalMessages, lastSeenAtByTurnId) {
 }
 
 function withoutCodexContextProbeTurns(activity) {
-  const hidden = new Set(Object.entries(activity.userMessages ?? {})
-    .filter(([, messages]) => (Array.isArray(messages) ? messages : []).some((message) => (
-      isCodexContextProbeClientId(message?.clientUserMessageId)
-    )))
-    .map(([turnId]) => turnId));
+  const candidateTurnIds = new Set([
+    ...Object.keys(activity.userMessages ?? {}),
+    ...Object.keys(activity.latestMessages ?? {}),
+    ...Object.keys(activity.finalMessages ?? {}),
+  ]);
+  const hidden = new Set([...candidateTurnIds].filter((turnId) => (
+    isCodexContextProbeTurn({
+      userMessages: activity.userMessages?.[turnId] ?? [],
+      finalAnswer: activity.finalMessages?.[turnId] ?? activity.latestMessages?.[turnId] ?? "",
+    })
+  )));
   if (!hidden.size) return activity;
   const withoutHiddenKeys = (value) => Object.fromEntries(
     Object.entries(value ?? {}).filter(([turnId]) => !hidden.has(turnId)),

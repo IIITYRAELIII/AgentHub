@@ -598,6 +598,109 @@ test("Codex rollout activity hides the internal context probe turn", () => {
   assert.deepEqual(result.generatedImageSources, {});
 });
 
+test("identity-less provider context probe stays internal before its completion identity", () => {
+  const turnId = "probe-partial";
+  const result = parseCodexRolloutActivity([
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: turnId },
+    }),
+    JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: CODEX_CONTEXT_PROBE_PROMPT }],
+        internal_chat_message_metadata_passthrough: { turn_id: turnId },
+      },
+    }),
+  ].join("\n"));
+
+  assert.equal(result.running, false);
+  assert.deepEqual(result.activeTurnIds, []);
+  assert.deepEqual(result.internalTurnIds, [turnId]);
+  assert.equal(result.latestTurnId, null);
+  assert.deepEqual(result.userMessages, {});
+});
+
+test("provider completion identity keeps a service context probe internal", () => {
+  const turnId = "probe-completed";
+  const result = parseCodexRolloutActivity([
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: turnId },
+    }),
+    JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: CODEX_CONTEXT_PROBE_PROMPT }],
+        internal_chat_message_metadata_passthrough: { turn_id: turnId },
+      },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "item_completed",
+        turn_id: turnId,
+        item: {
+          type: "UserMessage",
+          client_id: "agent-hub-context-probe:completed",
+          content: [{ type: "Text", text: CODEX_CONTEXT_PROBE_PROMPT }],
+        },
+      },
+    }),
+  ].join("\n"));
+
+  assert.equal(result.running, false);
+  assert.deepEqual(result.activeTurnIds, []);
+  assert.deepEqual(result.internalTurnIds, [turnId]);
+  assert.deepEqual(result.userMessages, {});
+});
+
+test("ordinary provider identity makes reserved context probe text user-visible", () => {
+  const turnId = "manual-probe-text";
+  const result = parseCodexRolloutActivity([
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: turnId },
+    }),
+    JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: CODEX_CONTEXT_PROBE_PROMPT }],
+        internal_chat_message_metadata_passthrough: { turn_id: turnId },
+      },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "item_completed",
+        turn_id: turnId,
+        item: {
+          type: "UserMessage",
+          client_id: "desktop-manual-context-probe-text",
+          content: [{ type: "Text", text: CODEX_CONTEXT_PROBE_PROMPT }],
+        },
+      },
+    }),
+  ].join("\n"));
+
+  assert.equal(result.running, true);
+  assert.deepEqual(result.activeTurnIds, [turnId]);
+  assert.deepEqual(result.activeVscodeTurnIds, [turnId]);
+  assert.deepEqual(result.internalTurnIds, []);
+  assert.equal(result.userMessages[turnId]?.length, 1);
+  assert.equal(
+    result.userMessages[turnId]?.[0]?.clientUserMessageId,
+    "desktop-manual-context-probe-text",
+  );
+  assert.equal(result.userMessages[turnId]?.[0]?.text, CODEX_CONTEXT_PROBE_PROMPT);
+});
+
 test("an unscoped user message is assigned to a new concurrent VSC turn", () => {
   const result = parseCodexRolloutActivity([
     JSON.stringify({
