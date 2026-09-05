@@ -795,6 +795,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     });
     assert.equal(healthResponse.headers.get("cache-control"), "no-store");
     assert.match(healthResponse.headers.get("content-security-policy"), /default-src 'self'/);
+    assert.match(healthResponse.headers.get("content-security-policy"), /frame-src https:/);
 
     const journal = await fetch(`${address.url}api/journal`);
     const payload = await journal.json();
@@ -857,6 +858,8 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
       "",
       "background-motion-preference.js",
       "browser-device-auth.js",
+      "embedded-browser.js",
+      "host-message-trust.js",
       "message-view-controller.js",
       "chat-surface-preference.js",
       "navigation-tabs-controller.js",

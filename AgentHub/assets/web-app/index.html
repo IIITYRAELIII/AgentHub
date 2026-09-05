@@ -22,6 +22,7 @@
   <link rel="stylesheet" href="/activity-rail-layout.css">
   <link rel="stylesheet" href="/provider-turn-telemetry.css">
   <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
+  <script src="/host-message-trust.js" defer></script>
   <script src="/browser-device-auth.js" defer></script>
   <script src="/messages/disclosure.js" defer></script>
   <script src="/live-card-render-controller.js" defer></script>
@@ -31,6 +32,7 @@
   <script src="/background-motion-preference.js" defer></script>
   <script src="/background-image-resolver.js" defer></script>
   <script src="/navigation-tabs-controller.js" defer></script>
+  <script src="/embedded-browser.js" defer></script>
   <script src="/stream-tabs-controller.js" defer></script>
   <script src="/activity-rail-layout.js" defer></script>
   <script src="/connection-banner.js" defer></script>
@@ -173,6 +175,15 @@
               stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></path>
           </svg>
           <span>Ничё</span>
+        </button>
+        <button type="button" class="view-tab" data-view-button="browser" aria-pressed="false">
+          <svg data-phosphor-icon="globe" viewBox="0 0 256 256" aria-hidden="true">
+            <circle cx="128" cy="128" r="96" fill="none" stroke="currentColor" stroke-width="16"></circle>
+            <line x1="32" y1="128" x2="224" y2="128" stroke="currentColor" stroke-width="16"></line>
+            <path d="M128 32c28 26 44 58 44 96s-16 70-44 96c-28-26-44-58-44-96s16-70 44-96Z"
+              fill="none" stroke="currentColor" stroke-linejoin="round" stroke-width="16"></path>
+          </svg>
+          <span>Браузер</span>
         </button>
         <button type="button" class="view-tab" data-view-button="server" aria-pressed="false">
           <svg data-phosphor-icon="hard-drives" viewBox="0 0 256 256" aria-hidden="true">
@@ -1481,6 +1492,39 @@
 
   <main class="background-view" data-background-view aria-label="Фон"></main>
 
+  <!-- Внешняя страница работает только в credentialless sandbox: это просмотр,
+       а не доверенный браузерный контекст Agent Hub. -->
+  <main class="embedded-browser-view" data-embedded-browser-view>
+    <header class="embedded-browser-toolbar">
+      <form class="embedded-browser-address-form" data-embedded-browser-form>
+        <input id="embedded-browser-address" type="text" inputmode="url" maxlength="2048"
+          autocomplete="off" autocapitalize="none" spellcheck="false"
+          placeholder="https://developer.mozilla.org" aria-label="HTTPS-адрес" data-embedded-browser-address>
+        <button type="submit" class="chip-button">Открыть</button>
+      </form>
+      <div class="embedded-browser-actions">
+        <button type="button" class="chip-button ghost" data-embedded-browser-reload disabled>Обновить</button>
+        <a class="chip-button ghost" data-embedded-browser-external target="_blank"
+          rel="noopener noreferrer" hidden>Снаружи</a>
+        <button type="button" class="chip-button ghost" data-embedded-browser-clear disabled>Выгрузить</button>
+        <button type="button" class="chip-button ghost" data-embedded-browser-close>Закрыть</button>
+      </div>
+      <p class="embedded-browser-status" data-embedded-browser-status role="status" aria-live="polite">
+        Только публичные HTTPS-сайты. Cookie, формы, pop-up, загрузки и переход поверх Agent Hub отключены.
+      </p>
+    </header>
+    <section class="embedded-browser-stage" aria-label="Встроенная веб-страница">
+      <div class="embedded-browser-placeholder" data-embedded-browser-placeholder>
+        <strong>Изолированный веб-просмотр</strong>
+        <p>Адрес живёт только в этой вкладке. Сайт может запретить показ во фрейме — тогда открой его снаружи.</p>
+      </div>
+      <iframe data-embedded-browser-frame title="Встроенная веб-страница"
+        sandbox="allow-scripts" credentialless referrerpolicy="no-referrer"
+        allow="camera 'none'; clipboard-read 'none'; clipboard-write 'none'; geolocation 'none'; microphone 'none'; payment 'none'; usb 'none'"
+        hidden></iframe>
+    </section>
+  </main>
+
   <!-- ===================================================== Agent Hub Server === -->
   <main class="server-view" data-server-view>
     <div class="server-content">
@@ -1604,7 +1648,7 @@
     </div>
   </main>
 
-  <!-- Мобильная нижняя навигация: задачи · чат · журнал без горизонтальной прокрутки. -->
+  <!-- Мобильная нижняя навигация общих разделов. -->
   <nav class="mobile-nav" data-mobile-nav aria-label="Навигация">
     <button type="button" class="mobile-tab" data-mobile-button="tasks" aria-pressed="true">
       <svg data-phosphor-icon="list-checks" viewBox="0 0 256 256" aria-hidden="true">
@@ -1682,6 +1726,15 @@
           stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></path>
       </svg>
       <span>Фон</span>
+    </button>
+    <button type="button" class="mobile-tab" data-mobile-button="browser" aria-pressed="false">
+      <svg data-phosphor-icon="globe" viewBox="0 0 256 256" aria-hidden="true">
+        <circle cx="128" cy="128" r="96" fill="none" stroke="currentColor" stroke-width="16"></circle>
+        <line x1="32" y1="128" x2="224" y2="128" stroke="currentColor" stroke-width="16"></line>
+        <path d="M128 32c28 26 44 58 44 96s-16 70-44 96c-28-26-44-58-44-96s16-70 44-96Z"
+          fill="none" stroke="currentColor" stroke-linejoin="round" stroke-width="16"></path>
+      </svg>
+      <span>Web</span>
     </button>
     <button type="button" class="mobile-tab" data-mobile-button="server" aria-pressed="false">
       <svg data-phosphor-icon="hard-drives" viewBox="0 0 256 256" aria-hidden="true">

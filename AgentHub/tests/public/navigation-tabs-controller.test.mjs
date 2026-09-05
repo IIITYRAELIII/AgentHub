@@ -15,7 +15,7 @@ async function navigationTabsApi() {
 
 test("every standalone section remains active after storage restoration", async () => {
   const { isStandaloneNavigationTab, storedNavigationTab } = await navigationTabsApi();
-  for (const tab of ["dashboard", "journal", "statistics", "background", "server"]) {
+  for (const tab of ["dashboard", "journal", "statistics", "background", "browser", "server"]) {
     const restored = storedNavigationTab({ getItem: () => tab }, "navigation-key");
     assert.equal(restored, tab);
     assert.equal(isStandaloneNavigationTab(restored), true);

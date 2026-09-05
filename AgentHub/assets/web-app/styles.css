@@ -10644,6 +10644,127 @@ html[data-view="background"] .background-view {
   display: block;
 }
 
+/* ============================================ Изолированный веб-просмотр === */
+
+.embedded-browser-view {
+  box-sizing: border-box;
+  display: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+}
+
+html[data-view="browser"] body {
+  height: 100dvh;
+  overflow: hidden;
+}
+
+html[data-view="browser"] :is(
+  .workspace,
+  .task-board-view,
+  .journal-view,
+  .statistics-view,
+  .background-view,
+  .server-view
+) {
+  display: none;
+}
+
+html[data-view="browser"] .embedded-browser-view {
+  display: flex;
+  flex-direction: column;
+}
+
+.embedded-browser-toolbar {
+  background: color-mix(in srgb, var(--surface-1) 94%, transparent);
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.85rem clamp(0.75rem, 2vw, 1.5rem);
+}
+
+.embedded-browser-address-form {
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: minmax(12rem, 1fr) auto;
+}
+
+.embedded-browser-address-form input {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font: inherit;
+  min-width: 0;
+  padding: 0.55rem 0.7rem;
+}
+
+.embedded-browser-address-form input[aria-invalid="true"] {
+  border-color: var(--danger, #ff7b7b);
+}
+
+.embedded-browser-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.embedded-browser-actions a {
+  text-decoration: none;
+}
+
+.embedded-browser-status {
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin: 0;
+}
+
+.embedded-browser-status[data-kind="error"] {
+  color: var(--danger, #ff7b7b);
+}
+
+.embedded-browser-stage {
+  background: var(--surface-2);
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+}
+
+.embedded-browser-stage iframe {
+  background: #fff;
+  border: 0;
+  height: 100%;
+  width: 100%;
+}
+
+.embedded-browser-placeholder {
+  left: 50%;
+  max-width: 34rem;
+  padding: 1.5rem;
+  position: absolute;
+  text-align: center;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: calc(100% - 2rem);
+}
+
+.embedded-browser-placeholder p {
+  color: var(--muted);
+  margin: 0.5rem 0 0;
+}
+
+html[data-surface="mobile"][data-view="browser"] .embedded-browser-view {
+  padding-bottom: calc(var(--mobile-nav-h) + env(safe-area-inset-bottom));
+}
+
+html[data-surface="mobile"] .embedded-browser-toolbar {
+  padding: 0.65rem;
+}
+
+html[data-surface="mobile"] .embedded-browser-address-form {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
 .msg-annotations {
   display: grid;
   gap: 0.55rem;

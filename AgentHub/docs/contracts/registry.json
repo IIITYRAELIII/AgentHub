@@ -60,6 +60,12 @@
       "title": "Trusted Codex executable update channel",
       "document": "UPD-001-codex-executable-update.md",
       "paths": ["src/infrastructure/process/codex-executable*", "src/composition/codex-app-server-canary.mjs", "src/providers/codex/codex-app-server-lifecycle.mjs", "src/composition/codex-lifecycle-composition.mjs", "src/infrastructure/filesystem/config.mjs", "src/interfaces/web/server-configuration.mjs"]
+    },
+    {
+      "id": "SEC-001",
+      "title": "Embedded web view",
+      "document": "SEC-001-embedded-web-view.md",
+      "paths": ["assets/web-app/host-message-trust.js", "assets/web-app/embedded-browser.js", "assets/web-app/index.html", "assets/web-app/styles.css", "assets/web-app/navigation-tabs-controller.js", "assets/web-app/app.js", "assets/web-app/hub-client.js", "src/interfaces/web/mini-app-server.mjs", "cloudflare-worker/_headers", "cloudflare-worker/src/worker.mjs", "VSCodeExtension/shared-webview.js", "VSCodeExtension/vscode-bootstrap.js"]
     }
   ]
 }

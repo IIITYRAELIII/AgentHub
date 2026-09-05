@@ -373,6 +373,7 @@ function responseHeaders(contentType, {
       "connect-src 'self'",
       "form-action 'none'",
       "frame-ancestors 'none'",
+      "frame-src https:",
       "img-src 'self' data: blob:",
       "object-src 'none'",
       `script-src 'self'${telegramRuntime ? " https://telegram.org" : ""}`,

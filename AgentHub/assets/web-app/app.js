@@ -4,6 +4,7 @@
  *   • «Диалоги» — слева компактный список задач, справа чат выбранной задачи;
  *   • «Журнал» — SQLite-представление журнала с ленивой подгрузкой;
  *   • «Статистика» — учётный расход журнала и история лимитов API.
+ *   • «Браузер» — изолированный просмотр публичной HTTPS-страницы;
  *   • «Сервер» — состояние и безопасное управление локальным Agent Hub.
  *
  * Frontend не хранит собственных задач и сообщений: до подключения backend
@@ -2135,6 +2136,7 @@ function populateBackgroundOptions(theme = root.dataset.theme) {
 
 function setView(view, { persist = true, activate = true } = {}) {
   const next = navigationTabs.isStandaloneNavigationTab(view) ? view : "chat";
+  if (next !== "browser") window.AgentHubEmbeddedBrowser?.deactivate();
   root.dataset.view = next;
   for (const button of document.querySelectorAll("[data-view-button]")) {
     button.setAttribute("aria-pressed", String(button.dataset.viewButton === next));
@@ -2149,9 +2151,11 @@ function setView(view, { persist = true, activate = true } = {}) {
         ? "Stats"
         : next === "background"
           ? "Null"
-          : next === "server"
-            ? "Server"
-            : "Chat";
+          : next === "browser"
+            ? "Web"
+            : next === "server"
+              ? "Server"
+              : "Chat";
   }
   syncMobileNav();
   if (activate) activateView(next);
@@ -8944,6 +8948,9 @@ const AgentHub = {
     lastServerPayload = payload ?? {};
     if (root.dataset.view === "server") renderServerStatus(lastServerPayload);
   },
+  openExternalUrl(url) {
+    emit("resource:open", { resource: { href: String(url ?? "") } });
+  },
   openAttachmentViewer,
   showAttachmentViewer,
   closeAttachmentViewer,
@@ -14459,12 +14466,12 @@ if (journalPolling) {
   window.addEventListener("pagehide", () => journalPolling.stop());
 }
 if (vscodeMode) {
-  window.addEventListener("message", (event) => {
+  window.addEventListener("message", window.AgentHubHostMessageTrust.guardHostMessage((event) => {
     if (event.data?.type === "agenthub:journal-changed") {
       if (journalRequested) void loadJournal({ force: event.data.force === true });
     }
     if (event.data?.type === "theme") applyTheme(event.data.theme);
-  });
+  }));
 }
 
 /* ------------------------------------------------------------- инициализация */

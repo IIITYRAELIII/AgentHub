@@ -1213,7 +1213,7 @@ async function hubFetchWithin(input, init, timeoutMs) {
   }
 }
 
-window.addEventListener("message", (event) => {
+window.addEventListener("message", window.AgentHubHostMessageTrust.guardHostMessage((event) => {
   const message = event.data;
   if (message?.type === "agenthub:runtime-published") {
     reloadForPublishedRuntime();
@@ -1231,7 +1231,7 @@ window.addEventListener("message", (event) => {
       ? markConnectionFailure(error)
       : markCommandRejected(error));
   }
-});
+}));
 
 async function waitRemoteResult(commandId, timeoutMs = DEFAULT_CONTROL_TIMEOUT_MS) {
   await localSessionReady;
