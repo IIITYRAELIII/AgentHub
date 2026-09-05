@@ -60,7 +60,7 @@ function configure(database) {
   database.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
-    PRAGMA busy_timeout = 5000;
+    PRAGMA busy_timeout = 0;
     CREATE TABLE IF NOT EXISTS provider_turn_telemetry (
       provider TEXT NOT NULL,
       thread_id TEXT NOT NULL,

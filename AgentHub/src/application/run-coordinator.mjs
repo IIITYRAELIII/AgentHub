@@ -33,6 +33,9 @@ export function providerThreadAlreadyActive(error) {
   return /thread\s+\S+\s+already has an active writer/iu.test(String(error?.message ?? error ?? ""));
 }
 
+const CLAUDE_EXTERNAL_OWNER_ACTIVE = "ERR_CLAUDE_EXTERNAL_OWNER_ACTIVE";
+const CLAUDE_EXTERNAL_OWNER_UNKNOWN = "ERR_CLAUDE_EXTERNAL_OWNER_UNKNOWN";
+
 function persistentAttachmentDescriptors(describeAttachments, files, persistentFiles) {
   return persistentFiles ? describeAttachments(files) : [];
 }
@@ -129,6 +132,12 @@ export class RunCoordinator {
   activeRun(target) {
     const run = this.taskRuns.forTask(target);
     return taskRunIsActive(run) ? run : null;
+  }
+
+  async deferOccupiedInput(input, attachments, options) {
+    const deferred = await this.deferInput(input, attachments, options);
+    if (!deferred.duplicate) this.scheduleDeferred(deferred.item);
+    return deferred;
   }
 
   admissionBarrier(target) {
@@ -251,7 +260,7 @@ export class RunCoordinator {
       ]);
     if (existingRun || externalActivity.state === "active"
       || (externalActivity.state === "unknown" && !allowUnknownExternalActivity)) {
-      return this.deferInput(input, temporaryFiles, {
+      return this.deferOccupiedInput(input, temporaryFiles, {
         forceSpeechButton,
         executionOwner: existingRun?.executionOwner
           ?? externalActivity.executionOwner
@@ -279,9 +288,21 @@ export class RunCoordinator {
     try {
       run = await this.beginRun(input, target);
     } catch (error) {
+      if ([CLAUDE_EXTERNAL_OWNER_ACTIVE, CLAUDE_EXTERNAL_OWNER_UNKNOWN].includes(error?.code)) {
+        return this.deferOccupiedInput(input, temporaryFiles, {
+          forceSpeechButton,
+          executionOwner: TASK_EXECUTION_OWNERS.EXTERNAL,
+          target,
+          allowForce: error.code === CLAUDE_EXTERNAL_OWNER_UNKNOWN,
+          conflictKind: error.code === CLAUDE_EXTERNAL_OWNER_ACTIVE
+            ? "task-running"
+            : "activity-unknown",
+          persistentFiles,
+        });
+      }
       const concurrentRun = this.activeRun(target);
       if (error.message !== "this task is already running" || !concurrentRun) throw error;
-      return this.deferInput(input, temporaryFiles, {
+      return this.deferOccupiedInput(input, temporaryFiles, {
         forceSpeechButton,
         executionOwner: concurrentRun.executionOwner ?? TASK_EXECUTION_OWNERS.HUB,
         target,
@@ -382,6 +403,7 @@ export class RunCoordinator {
     if (!deferred.duplicate) this.scheduleDeferred(deferred.item, scheduleDelayMs);
     return {
       accepted: ["message-intake", "runtime-restart", "final-answer-active"].includes(reason),
+      providerAccepted: false,
       deferred: true,
       queued: true,
       duplicate: deferred.duplicate === true,
@@ -396,7 +418,7 @@ export class RunCoordinator {
       message: deferred.duplicate === true
         ? "Точный повтор уже находится в очереди и не был добавлен второй раз."
         : reason === "message-intake"
-        ? "Сообщение принято Hub, сохранено и передано на запуск."
+        ? "Сообщение принято Hub и сохранено в очереди; ход провайдера ещё не запущен."
         : reason === "steer-unavailable"
         ? "Текущий ход уже нельзя изменить; сообщение сохранено в очереди."
         : reason === "final-answer-active"
@@ -515,7 +537,7 @@ export class RunCoordinator {
           messageFingerprint,
         });
       }
-      const deferred = await this.deferInput(input, attachments, {
+      const deferred = await this.deferOccupiedInput(input, attachments, {
         executionOwner: existingRun.executionOwner ?? TASK_EXECUTION_OWNERS.HUB,
         target,
         conflictKind: "task-running",
@@ -690,7 +712,7 @@ export class RunCoordinator {
           clientProjectionIntent,
         });
       }
-      const deferred = await this.deferInput(input, attachments, {
+      const deferred = await this.deferOccupiedInput(input, attachments, {
         executionOwner: existingRun?.executionOwner
           ?? externalActivity.executionOwner
           ?? TASK_EXECUTION_OWNERS.EXTERNAL,
@@ -746,7 +768,21 @@ export class RunCoordinator {
         message: `Сообщение сохранено: поток «${repositoryConflict.taskTitle ?? "Без названия"}» уже изменяет тот же Git-репозиторий.`,
       };
     }
-    const run = await this.beginRun(input, { ...target, clientUserMessageId });
+    let run;
+    try {
+      run = await this.beginRun(input, { ...target, clientUserMessageId });
+    } catch (error) {
+      if (![CLAUDE_EXTERNAL_OWNER_ACTIVE, CLAUDE_EXTERNAL_OWNER_UNKNOWN].includes(error?.code)) throw error;
+      return this.queue(input, attachments, {
+        target,
+        executionOwner: TASK_EXECUTION_OWNERS.EXTERNAL,
+        clientUserMessageId,
+        clientProjectionIntent,
+        reason: error.code === CLAUDE_EXTERNAL_OWNER_ACTIVE
+          ? "provider-thread-active"
+          : "provider-temporarily-unavailable",
+      });
+    }
     run.messageAttachments = this.describeAttachments(attachments);
     try {
       await this.launchTurn(run, input, []);

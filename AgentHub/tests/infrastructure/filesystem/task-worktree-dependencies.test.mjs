@@ -227,10 +227,14 @@ test("one interprocess lock coalesces concurrent preparation", async (context) =
     projectRoot,
     lockfiles: [path.join(projectRoot, "package-lock.json")],
     lockPath: path.join(projectRoot, ".locks", "dependencies"),
-    runNpm: async (_args, { cwd }) => {
+    runNpm: async (_args, { cwd, lease, signal }) => {
       installCalls += 1;
+      assert.equal(typeof lease?.assertOwned, "function");
+      assert.equal(signal, lease.signal);
+      await lease.assertOwned();
       signalStarted();
       await installGate;
+      await lease.assertOwned();
       await materializeLockedState(cwd);
     },
   };
@@ -243,6 +247,61 @@ test("one interprocess lock coalesces concurrent preparation", async (context) =
   assert.equal(installCalls, 1);
   assert.equal(firstResult[0].prepared, true);
   assert.equal(concurrentResult[0].prepared, false);
+});
+
+test("lease loss after npm prevents marker promotion", async (context) => {
+  const projectRoot = await npmProject(context);
+  const markerPath = path.join(projectRoot, "node_modules", ".agent-hub-task-dependencies.json");
+  const controller = new AbortController();
+  let lost = false;
+  const leaseError = new Error("fixture dependency lease was stolen");
+  const lease = {
+    signal: controller.signal,
+    assertOwned: async () => {
+      if (lost) throw leaseError;
+    },
+  };
+
+  await assert.rejects(() => prepareTaskWorktreeDependencies({
+    projectRoot,
+    lockfiles: [path.join(projectRoot, "package-lock.json")],
+    lease,
+    runNpm: async (_args, { cwd, lease: receivedLease, signal }) => {
+      assert.equal(receivedLease, lease);
+      assert.equal(signal, controller.signal);
+      await materializeLockedState(cwd);
+      lost = true;
+      controller.abort(leaseError);
+    },
+  }), /lease was stolen/u);
+  await assert.rejects(() => readFile(markerPath, "utf8"), /ENOENT/u);
+});
+
+test("an aborted owned npm operation cannot promote a prepared marker", async (context) => {
+  const projectRoot = await npmProject(context);
+  const markerPath = path.join(projectRoot, "node_modules", ".agent-hub-task-dependencies.json");
+  const controller = new AbortController();
+  const abortError = new Error("fixture npm was fenced");
+  abortError.processTreeStopped = true;
+  const lease = {
+    signal: controller.signal,
+    assertOwned: async () => {
+      if (controller.signal.aborted) throw controller.signal.reason;
+    },
+  };
+
+  await assert.rejects(() => prepareTaskWorktreeDependencies({
+    projectRoot,
+    lockfiles: [path.join(projectRoot, "package-lock.json")],
+    lease,
+    runNpm: async (_args, { lease: receivedLease, signal }) => {
+      assert.equal(receivedLease, lease);
+      assert.equal(signal, controller.signal);
+      controller.abort(abortError);
+      throw abortError;
+    },
+  }), /npm was fenced/u);
+  await assert.rejects(() => readFile(markerPath, "utf8"), /ENOENT/u);
 });
 
 test("failed install leaves no marker and a later call retries", async (context) => {

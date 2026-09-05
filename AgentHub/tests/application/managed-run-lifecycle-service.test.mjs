@@ -12,6 +12,8 @@ function harness({
   beforeCompletion = null,
   completionAborted = null,
   afterCompletion = null,
+  prepareAdmission = null,
+  revokeAdmission = null,
   saveState = null,
 } = {}) {
   const events = [];
@@ -39,12 +41,74 @@ function harness({
     pauseObservation: () => events.push("observer"),
     pauseClaude: () => events.push("claude"),
     stopTyping: () => events.push("typing"),
+    prepareAdmission: prepareAdmission ?? (async () => null),
+    revokeAdmission: revokeAdmission ?? (() => {}),
     beforeCompletion: beforeCompletion ?? (async () => events.push("before")),
     completionAborted: completionAborted ?? (async () => events.push("aborted")),
     afterCompletion: afterCompletion ?? (async () => events.push("after")),
   });
   return { service, taskRuns, events };
 }
+
+test("managed run lifecycle commits the exact prepared launch capability", async () => {
+  let authorizedTarget;
+  let committedRun;
+  const { service } = harness({
+    provider: "claude",
+    prepareAdmission: async (target) => {
+      authorizedTarget = target;
+      return { commit: (run) => { committedRun = run; } };
+    },
+  });
+
+  const run = await service.begin("hello", {
+    provider: "claude",
+    projectRoot: "D:/Work",
+    streamId: "stream-1",
+    threadId: "thread-exact",
+    taskTitle: "Claude",
+  });
+
+  assert.equal(authorizedTarget.threadId, "thread-exact");
+  assert.equal(committedRun, run);
+});
+
+test("managed run lifecycle adoption cannot mint a launch capability", async () => {
+  let preparations = 0;
+  const { service } = harness({
+    provider: "claude",
+    prepareAdmission: async () => {
+      preparations += 1;
+      return null;
+    },
+  });
+
+  await service.adopt("already accepted", {
+    provider: "claude",
+    projectRoot: "D:/Work",
+    streamId: "stream-1",
+    threadId: "thread-existing",
+    taskTitle: "Claude",
+  });
+
+  assert.equal(preparations, 0);
+});
+
+test("managed run lifecycle revokes launch capability before asynchronous completion", async () => {
+  let releaseCompletion;
+  const completion = new Promise((resolve) => { releaseCompletion = resolve; });
+  const events = [];
+  const { service } = harness({
+    revokeAdmission: () => events.push("revoked"),
+    beforeCompletion: async () => completion,
+  });
+  const run = await service.begin("hello");
+
+  const pending = service.complete(run);
+  assert.deepEqual(events, ["revoked"]);
+  releaseCompletion();
+  await pending;
+});
 
 test("managed run lifecycle creates and persists one owned run", async () => {
   const { service, taskRuns, events } = harness();

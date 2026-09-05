@@ -2,12 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { resolveTaskGitRepoRootsForFiles } from "../filesystem/task-git-diff.mjs";
-import {
-  assertCurrentPublicationRevision,
-  gitOutput,
-  parseWorkingTreeStatus,
-  readPublicationState,
-} from "./publication-state.mjs";
+import { gitOutput, readPublicationState } from "./publication-state.mjs";
 
 function pathKey(value) {
   const resolved = path.resolve(value);
@@ -43,17 +38,34 @@ async function assertTaskResultPublished({ repositoryRoot, taskRevision, publish
   await gitOutput(["merge-base", "--is-ancestor", taskRevision, publishedRevision], { cwd: repositoryRoot });
 }
 
+async function repositoryPublishedRevision(repositoryRoot) {
+  try {
+    return await gitOutput(["rev-parse", "refs/remotes/origin/main^{commit}"], { cwd: repositoryRoot });
+  } catch {
+    return gitOutput(["rev-parse", "refs/heads/main^{commit}"], { cwd: repositoryRoot });
+  }
+}
+
 export async function verifyWorkspaceReleasePublication({
-  expectedRevision = null, plan, conflictsResolved = false,
+  expectedRepositories = [], frozenCandidates = [], plan, conflictsResolved = false,
 } = {}, {
   resolveRoots = resolveTaskGitRepoRootsForFiles,
-  status = gitOutput,
-  assertRevision = assertCurrentPublicationRevision,
   identifyRepository = repositoryIdentity,
   assertTaskResult = assertTaskResultPublished,
+  readPublishedRevision = repositoryPublishedRevision,
   readPublication = readPublicationState,
   readPackage = readAgentHubPackage,
 } = {}) {
+  if (!Array.isArray(expectedRepositories) || !expectedRepositories.length) {
+    throw new Error("release completion requires expected_revision for every repository");
+  }
+  const expectedByRoot = new Map(expectedRepositories.map((item) => {
+    const root = String(item?.projectRoot ?? "").trim();
+    const revision = String(item?.revision ?? "").trim();
+    if (!root || !revision) throw new Error("each release repository requires projectRoot and expected revision");
+    return [pathKey(root), { root: path.resolve(root), revision }];
+  }));
+  const frozenByRoot = new Map(frozenCandidates.map((item) => [pathKey(item.repositoryRoot), item]));
   const taskEvidenceByProjectRoot = new Map();
   for (const candidate of plan.candidates ?? []) {
     for (const reference of candidate.gitReferences ?? []) {
@@ -102,9 +114,7 @@ export async function verifyWorkspaceReleasePublication({
 
   const logicalRepositories = new Map();
   for (const repository of repositoriesByRoot.values()) {
-    const identity = expectedRevision
-      ? String(await identifyRepository(repository.root)).trim()
-      : pathKey(repository.root);
+    const identity = String(await identifyRepository(repository.root)).trim();
     if (!identity) throw new Error(`release repository identity is unavailable: ${repository.root}`);
     const logical = logicalRepositories.get(identity) ?? {
       root: repository.root,
@@ -118,42 +128,55 @@ export async function verifyWorkspaceReleasePublication({
 
   const repositories = [];
   for (const repository of logicalRepositories.values()) {
-    if (expectedRevision) {
-      for (const evidence of repository.taskEvidence) {
-        try {
-          await assertTaskResult({
-            repositoryRoot: repository.root,
-            taskRevision: evidence.resultCommit,
-            publishedRevision: expectedRevision,
-          });
-        } catch {
-          throw new Error(
-            `Task result commit ${evidence.resultCommit} is not contained in published revision ${expectedRevision}`,
-          );
-        }
-      }
-      repositories.push({ root: repository.root, revision: expectedRevision });
-      continue;
+    const expected = expectedByRoot.get(pathKey(repository.root));
+    if (!expected) throw new Error(`expected_revision is missing for repository: ${repository.root}`);
+    const frozen = frozenByRoot.get(pathKey(repository.root));
+    if (!frozen) throw new Error(`frozen release checkpoint is missing for repository: ${repository.root}`);
+    if (String(frozen.planRevision) !== String(plan.revision)
+        || !frozen.manifestHash || !frozen.baseCommit || !frozen.preReleaseHead) {
+      throw new Error(`frozen release checkpoint does not match plan ${plan.revision}: ${repository.root}`);
     }
-    const releasePaths = [...repository.files]
-      .map((file) => path.relative(repository.root, file).split(path.sep).join("/"))
-      .sort();
-    const changes = parseWorkingTreeStatus(await status([
-      "status", "--porcelain=v1", "--untracked-files=all", "--", ...releasePaths,
-    ], { cwd: repository.root }));
-    if (changes.length) throw new Error(`release paths are dirty: ${repository.root}`);
-    const revision = await assertRevision({ cwd: repository.root });
-    repositories.push({ root: repository.root, revision });
+    if (expected.revision !== frozen.preReleaseHead) {
+      throw new Error(
+        `published revision must exactly equal frozen PreRelease head ${frozen.preReleaseHead}: ${expected.revision}`,
+      );
+    }
+    const observedRevision = String(await readPublishedRevision(repository.root)).trim();
+    if (observedRevision !== expected.revision) {
+      throw new Error(`published repository revision changed: expected ${expected.revision}, observed ${observedRevision}`);
+    }
+    for (const evidence of repository.taskEvidence) {
+      try {
+        await assertTaskResult({
+          repositoryRoot: repository.root,
+          taskRevision: evidence.resultCommit,
+          publishedRevision: expected.revision,
+        });
+      } catch {
+        throw new Error(
+          `Task result commit ${evidence.resultCommit} is not contained in published revision ${expected.revision}`,
+        );
+      }
+    }
+    repositories.push({
+      root: repository.root,
+      revision: expected.revision,
+      planRevision: frozen.planRevision,
+      manifestHash: frozen.manifestHash,
+      baseCommit: frozen.baseCommit,
+      preReleaseHead: frozen.preReleaseHead,
+    });
   }
-  if (expectedRevision && (repositories.length !== 1 || repositories[0].revision !== expectedRevision)) {
-    throw new Error("release revision does not match expected_revision");
+  if (repositories.length !== expectedByRoot.size) {
+    throw new Error("expected_repositories contains an unrelated repository");
   }
 
   const agentHubRepositories = [];
   for (const repository of logicalRepositories.values()) {
     const agentHubRoot = path.join(repository.root, "AgentHub");
     if (![...repository.files].some((file) => isInside(agentHubRoot, file))) continue;
-    const manifest = await readPackage(repository.root, expectedRevision);
+    const expected = expectedByRoot.get(pathKey(repository.root));
+    const manifest = await readPackage(repository.root, expected.revision);
     if (manifest?.name !== "agent-hub") {
       throw new Error(`Agent Hub package is not found in release repository: ${repository.root}`);
     }
@@ -172,9 +195,11 @@ export async function verifyWorkspaceReleasePublication({
     }
     agentHubPublication = {
       revision: publication.revision,
+      generation: String(publication.generation ?? ""),
       publishedAt: publication.publishedAt ?? null,
       mode: publication.mode ?? null,
     };
+    if (!agentHubPublication.generation) throw new Error("Agent Hub publication generation is missing");
   }
   return { repositories, agentHubPublication };
 }

@@ -524,7 +524,7 @@ function configureRateLimitDatabase(database) {
   database.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
-    PRAGMA busy_timeout = 5000;
+    PRAGMA busy_timeout = 0;
     CREATE TABLE IF NOT EXISTS rate_limit_snapshots (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       observed_at TEXT NOT NULL,

@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, open, opendir, realpath, rename, rm } from "node:fs/promises";
 import path from "node:path";
@@ -49,6 +48,10 @@ async function optionalLstat(target) {
   }
 }
 
+async function assertLeaseOwned(lease) {
+  if (lease) await lease.assertOwned();
+}
+
 async function readBoundedFile(target, {
   maxBytes,
   label,
@@ -91,7 +94,7 @@ async function readBoundedFile(target, {
   }
 }
 
-async function writeJsonAtomically(target, value, { maxBytes, fileSystem }) {
+async function writeJsonAtomically(target, value, { maxBytes, fileSystem, lease = null }) {
   const content = Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");
   if (content.byteLength > maxBytes) throw treeLimitError(`Task dependency evidence exceeds maxBytes=${maxBytes}`);
   let lastCollision;
@@ -102,19 +105,25 @@ async function writeJsonAtomically(target, value, { maxBytes, fileSystem }) {
     let renamed = false;
     try {
       try {
+        await assertLeaseOwned(lease);
         handle = await fileSystem.open(temporary, "wx", 0o600);
         created = true;
+        await assertLeaseOwned(lease);
       } catch (error) {
         if (error?.code !== "EEXIST") throw error;
         lastCollision = error;
         continue;
       }
       await handle.writeFile(content);
+      await assertLeaseOwned(lease);
       if (typeof handle.sync === "function") await handle.sync();
+      await assertLeaseOwned(lease);
       await handle.close();
       handle = null;
+      await assertLeaseOwned(lease);
       await fileSystem.rename(temporary, target);
       renamed = true;
+      await assertLeaseOwned(lease);
       return;
     } finally {
       if (handle) await handle.close().catch(() => {});
@@ -122,43 +131,6 @@ async function writeJsonAtomically(target, value, { maxBytes, fileSystem }) {
     }
   }
   throw lastCollision;
-}
-
-function runNpmCi(args, { cwd, timeoutMs = 10 * 60_000 } = {}) {
-  return new Promise((resolve, reject) => {
-    const windows = process.platform === "win32";
-    const command = windows ? process.env.ComSpec || "cmd.exe" : "npm";
-    const commandArgs = windows ? ["/d", "/s", "/c", "npm.cmd", ...args] : args;
-    const child = spawn(command, commandArgs, {
-      cwd,
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const stdout = [];
-    const stderr = [];
-    let settled = false;
-    const finish = (callback) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      callback();
-    };
-    const timer = setTimeout(() => {
-      child.kill();
-      finish(() => reject(new Error(`npm ci timed out after ${timeoutMs} ms in ${cwd}`)));
-    }, timeoutMs);
-    child.stdout.on("data", (chunk) => stdout.push(chunk));
-    child.stderr.on("data", (chunk) => stderr.push(chunk));
-    child.on("error", (error) => finish(() => reject(error)));
-    child.on("close", (code) => finish(() => {
-      if (code === 0) {
-        resolve({ stdout: Buffer.concat(stdout).toString("utf8") });
-        return;
-      }
-      const errorText = Buffer.concat(stderr).toString("utf8").trim();
-      reject(new Error(errorText || `npm ci exited with ${code} in ${cwd}`));
-    }));
-  });
 }
 
 async function assertLocalNodeModules(packageRoot) {
@@ -633,7 +605,7 @@ function isStableFailureEvidence(failure) {
     && typeof failure.state === "string";
 }
 
-async function recordPostInstallFailure({ packageRoot, fingerprint, validation, fileSystem }) {
+async function recordPostInstallFailure({ packageRoot, fingerprint, validation, fileSystem, lease }) {
   if (!STABLE_FAILURE_CODES.has(validation.code)) {
     throw new Error(`Unsupported Task dependency failure code: ${validation.code}`);
   }
@@ -643,10 +615,11 @@ async function recordPostInstallFailure({ packageRoot, fingerprint, validation, 
     lockfileSha256: fingerprint,
     code: validation.code,
     state: validation.state,
-  }, { maxBytes: MAX_MARKER_BYTES, fileSystem });
+  }, { maxBytes: MAX_MARKER_BYTES, fileSystem, lease });
 }
 
-async function prepareNpmProject({ projectRoot, lockfile, runNpm, limits, fileSystem }) {
+async function prepareNpmProject({ projectRoot, lockfile, runNpm, limits, fileSystem, lease }) {
+  await assertLeaseOwned(lease);
   const packageRoot = path.dirname(lockfile);
   if (!pathInside(projectRoot, packageRoot)) {
     throw new Error(`Task dependency lockfile is outside its project root: ${lockfile}`);
@@ -655,6 +628,7 @@ async function prepareNpmProject({ projectRoot, lockfile, runNpm, limits, fileSy
     optionalLstat(lockfile),
     optionalLstat(path.join(packageRoot, "package.json")),
   ]);
+  await assertLeaseOwned(lease);
   if (!lockfileEntry?.isFile() || lockfileEntry.isSymbolicLink()) {
     throw new Error(`Tracked npm lockfile must be a local file: ${lockfile}`);
   }
@@ -671,6 +645,7 @@ async function prepareNpmProject({ projectRoot, lockfile, runNpm, limits, fileSy
     fileSystem,
     expectedEntry: lockfileEntry,
   });
+  await assertLeaseOwned(lease);
   const lock = JSON.parse(lockfileContent.toString("utf8"));
   const expectedPackages = await linkedPackageExpectations({
     projectRoot,
@@ -679,6 +654,7 @@ async function prepareNpmProject({ projectRoot, lockfile, runNpm, limits, fileSy
     expectedPackages: boundedLockedPackages(lock, limits, { source: true }),
     fileSystem,
   });
+  await assertLeaseOwned(lease);
   const rootOptionalPackages = boundedRootOptionalPackages(lock, limits);
   const fingerprint = createHash("sha256")
     .update(INSTALL_POLICY)
@@ -703,11 +679,16 @@ async function prepareNpmProject({ projectRoot, lockfile, runNpm, limits, fileSy
         fileSystem,
       }),
     ]);
+    await assertLeaseOwned(lease);
     const failurePath = path.join(packageRoot, "node_modules", FAILURE_MARKER_NAME);
     if (recordedFailureMatches(failureMarker, { fingerprint, validation })) throw validation.error;
     const changedPolicyOrLock = isStableFailureEvidence(failureMarker)
       && (failureMarker.policy !== INSTALL_POLICY || failureMarker.lockfileSha256 !== fingerprint);
-    if (failureMarker) await fileSystem.rm(failurePath, { force: true });
+    if (failureMarker) {
+      await assertLeaseOwned(lease);
+      await fileSystem.rm(failurePath, { force: true });
+      await assertLeaseOwned(lease);
+    }
     if (!validation.valid && validation.code === "TASK_DEPENDENCY_TREE_LIMIT" && !changedPolicyOrLock) {
       throw validation.error;
     }
@@ -715,13 +696,21 @@ async function prepareNpmProject({ projectRoot, lockfile, runNpm, limits, fileSy
       && successMarker?.policy === INSTALL_POLICY
       && successMarker.lockfileSha256 === fingerprint
       && successMarker.installedStateSha256 === validation.fingerprint) {
+      await assertLeaseOwned(lease);
       return { manager: "npm", project: relativeProject, lockfile: "package-lock.json", prepared: false, fingerprint };
     }
   }
 
-  await runNpm([...NPM_CI_ARGS], { cwd: packageRoot });
+  if (typeof runNpm !== "function") {
+    throw new Error("Task dependency installation requires an owned external-process runner");
+  }
+  await assertLeaseOwned(lease);
+  await runNpm([...NPM_CI_ARGS], { cwd: packageRoot, lease, signal: lease?.signal ?? null });
+  await assertLeaseOwned(lease);
   if (!await assertLocalNodeModules(packageRoot)) {
+    await assertLeaseOwned(lease);
     await mkdir(path.join(packageRoot, "node_modules"), { recursive: true });
+    await assertLeaseOwned(lease);
   }
   validation = await validateInstalledState({
     projectRoot,
@@ -731,17 +720,23 @@ async function prepareNpmProject({ projectRoot, lockfile, runNpm, limits, fileSy
     limits,
     fileSystem,
   });
+  await assertLeaseOwned(lease);
   if (!validation.valid) {
-    await recordPostInstallFailure({ packageRoot, fingerprint, validation, fileSystem });
+    await recordPostInstallFailure({ packageRoot, fingerprint, validation, fileSystem, lease });
+    await assertLeaseOwned(lease);
     await fileSystem.rm(path.join(packageRoot, "node_modules", MARKER_NAME), { force: true });
+    await assertLeaseOwned(lease);
     throw validation.error;
   }
+  await assertLeaseOwned(lease);
   await writeJsonAtomically(path.join(packageRoot, "node_modules", MARKER_NAME), {
     policy: INSTALL_POLICY,
     lockfileSha256: fingerprint,
     installedStateSha256: validation.fingerprint,
-  }, { maxBytes: MAX_MARKER_BYTES, fileSystem });
+  }, { maxBytes: MAX_MARKER_BYTES, fileSystem, lease });
+  await assertLeaseOwned(lease);
   await fileSystem.rm(path.join(packageRoot, "node_modules", FAILURE_MARKER_NAME), { force: true });
+  await assertLeaseOwned(lease);
   return { manager: "npm", project: relativeProject, lockfile: "package-lock.json", prepared: true, fingerprint };
 }
 
@@ -750,19 +745,34 @@ export async function prepareTaskWorktreeDependencies({
   lockfiles = [],
   lockPath = null,
   limits: limitOverrides = {},
-  runNpm = runNpmCi,
+  runNpm = null,
+  lease = null,
   fileSystem: fileSystemOverrides = {},
 } = {}) {
-  const operation = async () => {
+  if (lockPath && lease) {
+    throw new Error("Task dependency caller must combine its owner with the dependency lock lease");
+  }
+  const operation = async (lockLease = null) => {
+    const activeLease = lease ?? lockLease;
+    await assertLeaseOwned(activeLease);
     const root = path.resolve(String(projectRoot ?? ""));
     const limits = resolvedTreeLimits(limitOverrides);
     const fileSystem = { ...DEFAULT_FILE_SYSTEM, ...fileSystemOverrides };
     const normalizedLockfiles = [...new Set(lockfiles.map((lockfile) => path.resolve(lockfile)))].sort();
     const results = [];
     for (const lockfile of normalizedLockfiles) {
-      results.push(await prepareNpmProject({ projectRoot: root, lockfile, runNpm, limits, fileSystem }));
+      await assertLeaseOwned(activeLease);
+      results.push(await prepareNpmProject({
+        projectRoot: root,
+        lockfile,
+        runNpm,
+        limits,
+        fileSystem,
+        lease: activeLease,
+      }));
+      await assertLeaseOwned(activeLease);
     }
     return results;
   };
-  return lockPath ? withInterprocessLocks([lockPath], operation) : operation();
+  return lockPath ? withInterprocessLocks([lockPath], operation) : operation(lease);
 }

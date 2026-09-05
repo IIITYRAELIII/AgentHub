@@ -1011,7 +1011,7 @@ test("Workspace order follows meaningful activity with deterministic ties", asyn
   );
 });
 
-test("Workspace sections separate active work and group stable project families", async () => {
+test("Workspace sections keep matching prefixes flat outside explicit folders", async () => {
   const { workspaceSections } = await streamTabsApi();
   const groups = [
     { id: "active", name: "Agent HUB", tasks: [{ running: true, lastActivity: "2026-08-10T10:00:00Z" }] },
@@ -1026,27 +1026,16 @@ test("Workspace sections separate active work and group stable project families"
   });
 
   assert.deepEqual(Array.from(sections.active, (group) => group.id), ["active"]);
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(sections.catalog.map((entry) => entry.type === "family"
-      ? {
-          type: entry.type,
-          name: entry.name,
-          items: entry.items.map((item) => ({ id: item.id, shortName: item.shortName })),
-        }
-      : { type: entry.type, id: entry.group.id }))),
-    [
-      { type: "workspace", id: "solo" },
-      {
-        type: "family",
-        name: "FB",
-        items: [
-          { id: "fb-alpha", shortName: "Альфа" },
-          { id: "fb-beta", shortName: "Бета" },
-          { id: "fb-gamma", shortName: "Гамма" },
-        ],
-      },
-    ],
-  );
+  assert.deepEqual(JSON.parse(JSON.stringify(sections.catalog.map((entry) => ({
+    type: entry.type,
+    id: entry.group.id,
+    name: entry.group.name,
+  })))), [
+    { type: "workspace", id: "solo", name: "Отдельный" },
+    { type: "workspace", id: "fb-alpha", name: "FB Альфа" },
+    { type: "workspace", id: "fb-beta", name: "FB Бета" },
+    { type: "workspace", id: "fb-gamma", name: "FB Гамма" },
+  ]);
 });
 
 test("explicit Workspace folders keep members together and empty folders visible", async () => {

@@ -323,6 +323,8 @@ export function createInteractionShellPhase({
       sendMessageTo: clients.sendMessageTo,
       saveState: api.saveState,
       streamHandoff: infrastructure.streamHandoff,
+      stageLaunchAdmission: (run) => provider.claudeRunAdmission.stageLaunch(run),
+      abortLaunchAdmission: (run, ticket) => provider.claudeRunAdmission.abortLaunch(run, ticket),
       commandTrace: infrastructure.commandTraceService,
     },
     diff: {

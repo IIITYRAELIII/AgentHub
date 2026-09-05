@@ -72,10 +72,10 @@ export class TaskCommandService {
   // A Thread created inside an existing Stream continues that Stream, but no
   // provider can resume another provider's native context. Request a Hub-built
   // handoff package so the new Thread does not start blind.
-  #requestStreamHandoff({ stream, provider, previousThread, reason }) {
+  async #requestStreamHandoff({ stream, provider, previousThread, reason }) {
     if (!this.streamHandoff || !previousThread) return;
     try {
-      this.streamHandoff.request({
+      await this.streamHandoff.request({
         streamId: stream.id,
         targetProvider: provider,
         sourceProvider: previousThread.provider,
@@ -85,6 +85,11 @@ export class TaskCommandService {
     } catch (error) {
       console.warn(`Cannot prepare Stream handoff for ${stream.id}: ${error.message}`);
     }
+  }
+
+  #mutateWorkspace(operation, requestId = null) {
+    void requestId;
+    return Promise.resolve().then(operation);
   }
 
   async rename(params) {
@@ -191,7 +196,10 @@ export class TaskCommandService {
       if (!workspace) throw new Error("Workspace не найден");
     }
     if (stream && params.settings && typeof this.workspaceCatalog.updateStreamSettings === "function") {
-      stream = this.workspaceCatalog.updateStreamSettings(stream.id, params.settings);
+      stream = await this.#mutateWorkspace(
+        () => this.workspaceCatalog.updateStreamSettings(stream.id, params.settings),
+        `desktop-stream-settings:${stream.id}`,
+      );
     }
     const streamSettings = {
       ...(stream?.settings ?? sourceStream?.settings ?? {}),
@@ -201,20 +209,20 @@ export class TaskCommandService {
     if (!["codex", "claude"].includes(provider)) throw new Error("Неизвестный агент");
     if (provider !== this.activeProvider()) await this.switchProvider(provider);
     if (!stream && workspace) {
-      stream = this.workspaceCatalog.createStream({
+      stream = await this.#mutateWorkspace(() => this.workspaceCatalog.createStream({
         workspaceId: workspace.id,
         name: params.streamName,
         settings: streamSettings,
-      });
+      }), `desktop-stream-create:${workspace.id}`);
     } else if (!workspace) {
-      workspace = this.workspaceCatalog.createWorkspace({
+      workspace = await this.#mutateWorkspace(() => this.workspaceCatalog.createWorkspace({
         name: String(params.workspaceName ?? "New Workspace").trim(),
-      });
+      }), "desktop-workspace-create");
       createdWorkspace = true;
-      stream = this.workspaceCatalog.createStream({
+      stream = await this.#mutateWorkspace(() => this.workspaceCatalog.createStream({
         workspaceId: workspace.id,
         name: params.streamName,
-      });
+      }), `desktop-stream-create:${workspace.id}`);
     }
     const workingDirectory = [
       params.workingDirectory,
@@ -262,19 +270,22 @@ export class TaskCommandService {
     }
     if (createdWorkspace && !params.workspaceName && created?.title
       && typeof this.workspaceCatalog.renameWorkspace === "function") {
-      workspace = this.workspaceCatalog.renameWorkspace(workspace.id, created.title);
+      workspace = await this.#mutateWorkspace(
+        () => this.workspaceCatalog.renameWorkspace(workspace.id, created.title),
+        `desktop-workspace-rename:${workspace.id}`,
+      );
     }
     if (created?.threadId) {
-      this.workspaceCatalog.bindThread({
+      await this.#mutateWorkspace(() => this.workspaceCatalog.bindThread({
         provider: created.provider,
         threadId: created.threadId,
         streamId: stream.id,
         projectRoot: created.projectRoot,
         source: params.streamId ? "rebirth" : "created",
-      });
+      }), `desktop-thread-bind:${created.provider}:${created.threadId}`);
     }
     if (params.streamId && previousThread?.threadId !== created?.threadId) {
-      this.#requestStreamHandoff({
+      await this.#requestStreamHandoff({
         stream,
         provider,
         previousThread,
