@@ -25,6 +25,77 @@ function completion(overrides = {}) {
   };
 }
 
+test("terminal store strips oversized client identity before serializing payload", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-terminal-bounded-id-"));
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const store = new ProviderTurnTerminalStore({ dataDir });
+  const oversized = "x".repeat(201);
+
+  const result = await store.commit({
+    provider: "codex",
+    threadId: "thread-bounded",
+    turnId: "turn-bounded",
+    status: "completed",
+    finalAnswer: "Done",
+    usageIdentity: "usage",
+    payload: {
+      completion: { clientUserMessageId: oversized },
+      history: {
+        clientUserMessageId: oversized,
+        userMessages: [{ role: "user", text: "Body", clientUserMessageId: oversized }],
+      },
+    },
+  });
+
+  assert.equal(result.terminal.payload.completion.clientUserMessageId, undefined);
+  assert.equal(result.terminal.payload.history.clientUserMessageId, undefined);
+  assert.equal(result.terminal.payload.history.userMessages[0].clientUserMessageId, undefined);
+  assert.equal(result.outbox.command.clientUserMessageId, null);
+});
+
+test("terminal store strips conflicting top-level and root identity", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-terminal-conflicting-id-"));
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const store = new ProviderTurnTerminalStore({ dataDir });
+  const origin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-1",
+    streamName: "Architect",
+    provider: "codex",
+    sourceThreadId: "thread-source",
+    requestId: "request-a",
+  };
+
+  const result = await store.commit({
+    provider: "codex",
+    threadId: "thread-conflict",
+    turnId: "turn-conflict",
+    status: "completed",
+    finalAnswer: "Done",
+    usageIdentity: "usage",
+    payload: {
+      completion: {
+        clientUserMessageId: "mcp:request-a",
+        messageOrigin: origin,
+        userMessages: [{
+          role: "user",
+          text: "raw",
+          clientUserMessageId: "mcp:request-b",
+          origin: { ...origin, requestId: "request-b" },
+        }],
+      },
+      history: {},
+    },
+  });
+
+  assert.equal(result.terminal.payload.completion.clientUserMessageId, undefined);
+  assert.equal(result.terminal.payload.completion.messageOrigin, undefined);
+  assert.equal(result.terminal.payload.completion.userMessages[0].clientUserMessageId, undefined);
+  assert.equal(result.terminal.payload.completion.userMessages[0].origin, undefined);
+  assert.equal(result.outbox.command.clientUserMessageId, null);
+});
+
 test("terminal commit is idempotent and revisions supersede pending projections", async (context) => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-terminal-"));
   context.after(() => rm(dataDir, { recursive: true, force: true }));

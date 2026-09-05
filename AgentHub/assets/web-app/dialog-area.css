@@ -270,6 +270,30 @@ html[data-view="chat"][data-surface][data-theme] {
   padding: 0 !important;
   text-align: left !important;
   width: 100%;
+  z-index: 1;
+}
+
+.stream-tabs-track .stream-tab > .stream-tab-status-layer {
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  z-index: 0;
+}
+
+.stream-tabs-track .stream-tab-card > * {
+  position: relative;
+  z-index: 1;
+}
+
+&[data-theme="pulsar"] .stream-tabs-track :is(.stream-tab-card) {
+  background: var(--pulsar-stream-tab-background) !important;
+  border: 0 !important;
+  border-left: 1px solid var(--pulsar-stream-tab-rail) !important;
+}
+
+&[data-theme="pulsar"] .stream-tabs-track .stream-tab[aria-pressed="true"] :is(.stream-tab-card) {
+  background: var(--pulsar-stream-tab-active-background) !important;
+  border-left-color: var(--accent) !important;
 }
 
 .stream-tabs-track .stream-tab-card:has(> .stream-tab-pin-icon) {
@@ -806,6 +830,11 @@ html[data-view="chat"][data-surface][data-theme] {
   right: 0;
 }
 
+.msg-deferred-preview {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
 .msg-agent .msg-body,
 .msg-live .msg-body {
   background: transparent;
@@ -1301,6 +1330,94 @@ html[data-view="chat"][data-surface][data-theme] {
   margin: 0;
 }
 
+&[data-theme="pulsar"] .chat-log .msg-agent:not(.msg-live),
+&[data-theme="pulsar"] .chat-scroll > .msg-live {
+  background: transparent;
+  border-color: transparent;
+  border-radius: 0;
+  box-shadow: none;
+  position: relative;
+}
+
+&[data-theme="pulsar"] .msg-user {
+  background: transparent;
+  position: relative;
+}
+
+&[data-theme="pulsar"] .msg-agent::before,
+&[data-theme="pulsar"] .msg-live::before,
+&[data-theme="pulsar"] .msg-user::before {
+  border-color: var(--pulsar-message-axis);
+  border-style: solid;
+  border-width: 1px 0;
+  content: "";
+  inset: 0 auto 0 0;
+  pointer-events: none;
+  position: absolute;
+  width: var(--pulsar-message-bracket-depth);
+}
+
+&[data-theme="pulsar"] .msg-agent::before,
+&[data-theme="pulsar"] .msg-live::before,
+&[data-theme="pulsar"] .msg-user::before {
+  border-left-width: 1px;
+}
+
+&[data-theme="pulsar"] .msg-agent::after,
+&[data-theme="pulsar"] .msg-live::after,
+&[data-theme="pulsar"] .msg-user::after {
+  background: var(--pulsar-message-rule);
+  content: "";
+  height: 1px;
+  left: var(--pulsar-message-bracket-depth);
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+  top: 0;
+}
+
+&[data-theme="pulsar"] .msg-agent .msg-head::before,
+&[data-theme="pulsar"] .msg-live .msg-head::before,
+&[data-theme="pulsar"] .msg-user .msg-head::before {
+  background: transparent;
+  border: 1px solid var(--pulsar-message-axis);
+  border-radius: 50%;
+  box-sizing: border-box;
+  content: "";
+  height: var(--pulsar-message-marker-size);
+  left: calc(var(--pulsar-message-marker-size) / -2);
+  pointer-events: none;
+  position: absolute;
+  top: calc(50% - (var(--pulsar-message-marker-size) / 2));
+  width: var(--pulsar-message-marker-size);
+}
+
+&[data-theme="pulsar"] .msg-user .msg-head::before {
+  background: var(--accent);
+  left: auto;
+  right: calc(var(--pulsar-message-marker-size) / -2);
+}
+
+&[data-theme="pulsar"] .msg-user-bubble {
+  background: transparent;
+  border-radius: 0;
+}
+
+&[data-theme="pulsar"]:not([data-surface="mobile"]) .chat-log .msg-stack-user {
+  align-self: flex-end;
+}
+
+&[data-theme="pulsar"] .msg-user::before {
+  border-left-width: 0;
+  border-right-width: 1px;
+  inset: 0 0 0 auto;
+}
+
+&[data-theme="pulsar"] .msg-user::after {
+  left: 0;
+  right: var(--pulsar-message-bracket-depth);
+}
+
 /* Композер. */
 .composer {
   align-self: center;
@@ -1315,6 +1432,15 @@ html[data-view="chat"][data-surface][data-theme] {
   margin: 14px auto 18px;
   padding: 12px 12px 10px 14px;
   width: min(var(--dialog-column-width), calc(100% - 48px));
+}
+
+&[data-theme="pulsar"] .composer {
+  background: var(--pulsar-dialog-composer-background);
+  border-color: transparent;
+  border-bottom-color: var(--pulsar-dialog-composer-rule);
+  border-radius: 0;
+  border-top-color: var(--pulsar-dialog-composer-rule-strong);
+  box-shadow: none;
 }
 
 .composer-main {

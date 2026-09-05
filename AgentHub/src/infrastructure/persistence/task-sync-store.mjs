@@ -621,7 +621,7 @@ function configure(database) {
   database.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
-    PRAGMA busy_timeout = 5000;
+    PRAGMA busy_timeout = 0;
     PRAGMA foreign_keys = ON;
     CREATE TABLE IF NOT EXISTS task_read_model_meta (
       key TEXT PRIMARY KEY,

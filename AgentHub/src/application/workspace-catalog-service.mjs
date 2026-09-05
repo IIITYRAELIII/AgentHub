@@ -22,6 +22,9 @@ export class WorkspaceCatalogService {
   }
 
   createWorkspace({ name, comment = "", streamName = null, settings = {} } = {}) {
+    if (typeof this.#store.createWorkspaceWithStream === "function") {
+      return this.#store.createWorkspaceWithStream({ name, comment, streamName, settings });
+    }
     return this.#store.transaction(() => {
       const workspace = this.#store.createWorkspace({ name, comment, settings });
       const stream = this.#store.createStream({ workspaceId: workspace.id, name: streamName });
@@ -33,9 +36,11 @@ export class WorkspaceCatalogService {
     return this.#store.renameWorkspace(workspaceId, name);
   }
 
-  updateWorkspaceSettings({ workspaceId, settings = {} } = {}) {
-    const workspace = this.#store.updateWorkspaceSettings(workspaceId, settings);
-    if (workspaceTaskPrefix(workspace.settings)) this.taskBoard?.assignWorkspaceTaskNumbers?.(workspaceId);
+  async updateWorkspaceSettings({ workspaceId, settings = {} } = {}) {
+    const workspace = await this.#store.updateWorkspaceSettings(workspaceId, settings);
+    if (workspaceTaskPrefix(workspace.settings) && this.taskBoard?.assignWorkspaceTaskNumbers) {
+      await this.taskBoard.assignWorkspaceTaskNumbers(workspaceId);
+    }
     return workspace;
   }
 
@@ -80,6 +85,9 @@ export class WorkspaceCatalogService {
   }
 
   createWorkspaceFromStream({ streamId, name } = {}) {
+    if (typeof this.#store.createWorkspaceFromStream === "function") {
+      return this.#store.createWorkspaceFromStream({ streamId, name });
+    }
     return this.#store.transaction(() => {
       const workspace = this.#store.createWorkspace({ name });
       const stream = this.#store.moveStream(streamId, workspace.id);
@@ -116,11 +124,12 @@ export class WorkspaceCatalogService {
   }
 
   moveStream({ streamId, workspaceId, beforeStreamId = undefined } = {}) {
+    if (typeof this.#store.moveStreamOrdered === "function") {
+      return this.#store.moveStreamOrdered({ streamId, workspaceId, beforeStreamId });
+    }
     return this.#store.transaction(() => {
       const moved = this.#store.moveStream(streamId, workspaceId);
-      return beforeStreamId === undefined
-        ? moved
-        : this.#store.reorderStream(streamId, beforeStreamId);
+      return beforeStreamId === undefined ? moved : this.#store.reorderStream(streamId, beforeStreamId);
     });
   }
 

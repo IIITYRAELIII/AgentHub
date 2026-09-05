@@ -6,6 +6,7 @@ import {
   TurnEndNotificationRegistry,
   turnEndKey,
 } from "../../src/application/turn-end-notifications.mjs";
+import { createInterstreamMessage } from "../../src/domain/interstream-message.mjs";
 
 function message(overrides = {}) {
   return {
@@ -81,6 +82,51 @@ test("turn-end registry preserves every prompt while merging repeated completion
   ]);
 });
 
+test("turn-end registry keeps the raw inter-Stream prompt for durable projection", () => {
+  const registry = new TurnEndNotificationRegistry();
+  const origin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    sourceThreadId: "thread-architect",
+    requestId: "request-1",
+  };
+  const rawPrompt = createInterstreamMessage({ ...origin, text: "Review the release." });
+  const ready = registry.recordCompletion(completion({
+    prompt: rawPrompt,
+    rawPrompt,
+    clientUserMessageId: "mcp:request-1",
+    messageOrigin: origin,
+    userMessages: [{
+      role: "user",
+      text: "Review the release.",
+      clientUserMessageId: "mcp:request-1",
+      origin,
+    }],
+  }));
+
+  assert.equal(ready.prompt, rawPrompt);
+  assert.deepEqual(ready.prompts, [rawPrompt]);
+});
+
+test("turn-end registry preserves an untrusted envelope-shaped literal", () => {
+  const registry = new TurnEndNotificationRegistry();
+  const literal = createInterstreamMessage({
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    requestId: "request-literal",
+    text: "Keep this literal.",
+  });
+  const ready = registry.recordCompletion(completion({ prompt: literal }));
+
+  assert.equal(ready.prompt, literal);
+});
+
 test("turn-end registry preserves generated response attachments through restore", () => {
   const registry = new TurnEndNotificationRegistry();
   registry.recordCompletion(completion({
@@ -129,6 +175,93 @@ test("a late completion without pricing metadata preserves an exact Fast tier", 
   }));
   assert.equal(ready.model, "gpt-5.4");
   assert.equal(ready.serviceTier, "fast");
+});
+
+test("turn-end completion preserves canonical interstream origin for journal projection", () => {
+  const registry = new TurnEndNotificationRegistry();
+  const messageOrigin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    sourceThreadId: "thread-architect",
+    requestId: "completion-origin-1",
+  };
+  const ready = registry.recordCompletion(completion({
+    clientUserMessageId: "mcp:completion-origin-1",
+    messageOrigin,
+    userMessages: [{
+      role: "user",
+      text: "Начни работу",
+      clientUserMessageId: "mcp:completion-origin-1",
+      origin: messageOrigin,
+    }],
+  }));
+
+  assert.equal(ready.clientUserMessageId, "mcp:completion-origin-1");
+  assert.deepEqual(ready.messageOrigin, { kind: "interstream", ...messageOrigin });
+  assert.deepEqual(new TurnEndNotificationRegistry(registry.snapshot()).get(completion()).messageOrigin, {
+    kind: "interstream",
+    ...messageOrigin,
+  });
+});
+
+test("turn-end completion fails closed on intra-record identity conflicts and oversized ids", () => {
+  const registry = new TurnEndNotificationRegistry();
+  const messageOrigin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    sourceThreadId: "thread-architect",
+    requestId: "completion-origin-1",
+  };
+  for (const [index, value] of [{
+    clientUserMessageId: "mcp:completion-origin-1",
+    messageOrigin,
+    userMessages: [{
+      role: "user",
+      text: "Начни работу",
+      clientUserMessageId: "mcp:completion-origin-2",
+      origin: { ...messageOrigin, requestId: "completion-origin-2" },
+    }],
+  }, {
+    clientUserMessageId: "x".repeat(201),
+    messageOrigin,
+  }].entries()) {
+    const ready = registry.recordCompletion(completion({
+      turnId: `turn-conflict-${index}`,
+      ...value,
+    }));
+    assert.equal(ready.clientUserMessageId, undefined);
+    assert.equal(ready.messageOrigin, undefined);
+  }
+});
+
+test("turn-end completion keeps the first exact client and origin on conflicting retry", () => {
+  const registry = new TurnEndNotificationRegistry();
+  const messageOrigin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    sourceThreadId: "thread-architect",
+    requestId: "completion-origin-1",
+  };
+  registry.recordCompletion(completion({
+    clientUserMessageId: "mcp:completion-origin-1",
+    messageOrigin,
+  }));
+  const ready = registry.recordCompletion(completion({
+    clientUserMessageId: "mcp:completion-origin-2",
+    messageOrigin: { ...messageOrigin, requestId: "completion-origin-2" },
+  }));
+
+  assert.equal(ready.clientUserMessageId, "mcp:completion-origin-1");
+  assert.deepEqual(ready.messageOrigin, { kind: "interstream", ...messageOrigin });
 });
 
 test("completed Codex image generation without token events receives a rough estimate", () => {

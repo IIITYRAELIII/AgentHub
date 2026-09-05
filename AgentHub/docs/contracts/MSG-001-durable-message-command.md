@@ -125,6 +125,55 @@ occupancy can couple otherwise independent lanes. A steer that no longer has
 an active turn is downgraded to ordinary intake before the later-turn FIFO
 choice.
 
+An attention-required lane head created by `task-running` or
+`activity-unknown` is rechecked against current exact occupancy. Once the
+managed or external writer is absent, that same durable command returns to the
+queue and keeps its FIFO identity; the persisted decision state cannot reserve
+the lane forever. Completion wake-up and runtime startup both trigger this
+reconciliation. A stale incomplete Claude transcript alone remains uncertain;
+only a successful exact-session process probe may prove its external writer
+absent, while probe failure stays fail-closed. Unknown provider-start outcomes remain excluded because they
+require exact reconciliation or an explicit user decision before another
+effect.
+Potential owners must match the configured Claude executable and wrapper-prefix
+signature before an exact parsed `--resume` or `--session-id` token can identify
+the session; a process name or flag-shaped command line alone is not evidence.
+An unresolved PATH shim is not an executable signature and therefore cannot
+produce absence authority.
+
+Cached process absence is a queue-reconciliation hint, never launch authority.
+Every Claude managed-run creation, including manual context maintenance,
+crosses the same lifecycle admission capability. Immediately inside `begin`
+and before the run is registered, it performs a fresh global process inventory
+and binds its exact session, generation and scan time to that run object. Live,
+incomplete, stale or changed-to-unknown evidence fails closed without a provider
+effect. Before handoff the launch boundary atomically moves that exact run from
+`prepared` to `staged` and passes a one-use opaque ticket; the Claude provider
+adapter then requires that ticket, `run.provider="claude"`, and atomically
+consumes `staged` immediately before the external effect. Success, provider
+failure, completion, a pre-effect dependency failure, and concurrent or
+sequential replay never restore the capability.
+Copied proof data, another run object, and a provider argument that disagrees
+with the run all fail closed without mutating either the presented or target
+capability. Only an exact abort with the same run and ticket, or lifecycle
+completion/release, may revoke `staged`; foreign evidence cannot revoke a
+legitimate launch. Recovery adoption of an already accepted provider turn is a
+separate non-launching operation and cannot mint launch authority.
+This proof is intentionally point-in-time: an uncooperative external process
+can still start after the scan, so provider-side single-writer rejection remains
+a required fail-closed guard.
+
+The controller synchronously claims the exact queue item before its first
+occupancy or provider `await`. Concurrent wake/backoff callbacks therefore
+share one dispatch owner, and cancellation cannot report success after dispatch
+eligibility has been claimed. A transient persistence failure rolls an
+attention-required transition back to the same pending object; timer-owned
+processing records a payload-free error and retries that exact owner with
+bounded backoff instead of leaking an unhandled rejection.
+Persisted queue errors contain only an allowlisted code and bounded generic
+message. Dependency output, command lines, session identifiers, payload and
+stack text never enter deferred diagnostics or client state.
+
 An explicitly user-paused command remains durable but does not own the runnable
 lane head. Later accepted commands in that exact lane may dispatch in their
 relative FIFO order. Provider-occupancy pauses remain transient lane heads and
@@ -159,6 +208,25 @@ durable `messageOrigin`. The provider input keeps the same origin in the outer
 inter-Stream envelope, including when a Task reference is attached. Task
 assignment therefore remains a service command and cannot be reclassified as a
 human message while crossing intake, queue, run, receipt or history boundaries.
+The envelope is transport-only display data. Raw provider and storage records
+retain it. Queue, live-run, observed-provider and durable-history display
+projections remove it only when its normalized origin exactly matches durable
+`messageOrigin`, or when exact successful MCP audit evidence binds the same
+`mcp:<requestId>` to the stable `workspaceId + streamId + provider +
+sourceThreadId + requestId` identity. Workspace/Stream display names and model
+are descriptive metadata: audit recovery may tolerate their absence or change,
+while any present stable-field conflict fails closed. The audit must retain the
+original inter-Stream tool, immutable arguments hash and a SHA-256 boundary over
+the exact admitted stable origin plus body. The hash is bound before message
+delivery and cannot be replaced by a provider-supplied value. Audit recovery
+unwraps either the retained envelope or its exact body only when that content
+boundary also matches. A reserved-looking client ID alone is never origin
+evidence, and ordinary Desktop ingress cannot claim the `mcp:` namespace. A
+missing, legacy-unbound or conflicting identity leaves the text visible, so
+envelope-shaped ordinary user text is not reclassified or hidden. Managed live
+messages may keep a body-only display projection, but terminal, journal and
+work-log storage retain the raw root prompt and its separately bounded
+`clientUserMessageId` plus authoritative origin.
 
 ## Durable ACK
 
@@ -168,6 +236,11 @@ human message while crossing intake, queue, run, receipt or history boundaries.
 - An ACKed command is recoverable after process death.
 - Lost transport responses are retried with the same identity and cannot create
   duplicate provider effects.
+- A queue ACK states `providerAccepted=false` until an exact run/turn exists;
+  Hub durability is never presented as provider delivery.
+- Cancellation commits durably before cleanup. Once dispatch is in progress,
+  cancellation fails explicitly instead of reporting an effect that may already
+  have reached the provider.
 
 ## Remote attachment transport
 
@@ -207,6 +280,16 @@ wake channel has zero idle GB-s and 146 request-equivalents per day. Deployment
 verification rejects a published budget that differs from these bounds. Durable
 Object unavailability remains an observable `503` service state, not an
 unhandled `500` and not evidence that a command was rejected or completed.
+
+Each open wake channel requires a matching pong within a bounded deadline after
+its heartbeat. A missing pong invalidates the socket and releases the current
+wait directly to the immediate durable pull; reconnect performs another drain.
+Only that matching pong confirms transport liveness; an availability frame does
+not cancel the deadline. Availability revisions are monotonic, and duplicate or
+stale revisions do not trigger another pull while a newer revision remains a
+meaningful wake hint. Pong and availability frames never acknowledge, claim or
+execute a command, so polling remains the single delivery owner and a missed or
+duplicated frame cannot create a second effect.
 
 During rolling deployment, a request without `mode` may still receive the
 legacy full-body response, and a new runtime may accept a binary response from

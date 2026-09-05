@@ -64,6 +64,9 @@ function manualTimers() {
     runIntervals() {
       for (const callback of intervals.values()) callback();
     },
+    timeoutCallbacks() {
+      return [...timeouts.values()];
+    },
   };
 }
 
@@ -83,7 +86,7 @@ test("wake URLs bind the exact GET path and service identity", () => {
   assert.match(target.searchParams.get("signature"), /^[a-f0-9]{64}$/u);
 });
 
-test("wake channel drains on connect, wake, duplicate hint and reconnect", async () => {
+test("one availability revision yields one wake before a newer revision", async () => {
   const timers = manualTimers();
   const sockets = [];
   const channel = new RemoteControlWakeChannel({
@@ -106,7 +109,12 @@ test("wake channel drains on connect, wake, duplicate hint and reconnect", async
   sockets[0].emit("open");
   assert.equal(await connected, "connected");
 
-  const firstWake = channel.wait();
+  let wakePulls = 0;
+  const waitForPull = () => channel.wait().then((reason) => {
+    if (reason === "wake") wakePulls += 1;
+    return reason;
+  });
+  const firstWake = waitForPull();
   sockets[0].emit("message", { data: JSON.stringify({
     protocol: REMOTE_CONTROL_WAKE_PROTOCOL,
     kind: "available",
@@ -118,7 +126,23 @@ test("wake channel drains on connect, wake, duplicate hint and reconnect", async
     revision: 1,
   }) });
   assert.equal(await firstWake, "wake");
-  assert.equal(await channel.wait(), "wake");
+  assert.equal(wakePulls, 1);
+
+  let duplicateSettled = false;
+  const nextWake = waitForPull().then((reason) => {
+    duplicateSettled = true;
+    return reason;
+  });
+  await settleAsyncSetup();
+  assert.equal(duplicateSettled, false);
+  assert.equal(wakePulls, 1);
+  sockets[0].emit("message", { data: JSON.stringify({
+    protocol: REMOTE_CONTROL_WAKE_PROTOCOL,
+    kind: "available",
+    revision: 2,
+  }) });
+  assert.equal(await nextWake, "wake");
+  assert.equal(wakePulls, 2);
 
   sockets[0].emit("close");
   const fallback = channel.wait();
@@ -153,6 +177,169 @@ test("wake channel falls back at the fixed cadence without a socket implementati
   await settleAsyncSetup();
   timers.runTimeouts();
   assert.equal(await waiting, "fallback");
+  channel.close();
+});
+
+test("wake channel abandons a half-open socket and resumes durable polling after a missing pong", async () => {
+  const timers = manualTimers();
+  const sockets = [];
+  const channel = new RemoteControlWakeChannel({
+    createUrl: async () => "wss://hub.example.test/api/control/wake",
+    createSocket: () => {
+      const socket = new FakeSocket();
+      sockets.push(socket);
+      return socket;
+    },
+    fallbackMs: 1_000,
+    heartbeatMs: 10_000,
+    pongTimeoutMs: 1_000,
+    setTimeoutImpl: timers.setTimeout,
+    clearTimeoutImpl: timers.clearTimeout,
+    setIntervalImpl: timers.setInterval,
+    clearIntervalImpl: timers.clearInterval,
+  });
+
+  const connected = channel.wait();
+  await settleAsyncSetup();
+  sockets[0].emit("open");
+  assert.equal(await connected, "connected");
+
+  const halfOpenWait = channel.wait();
+  timers.runIntervals();
+  assert.deepEqual(sockets[0].sent, ["ping"]);
+  timers.runTimeouts();
+  assert.equal(await halfOpenWait, "fallback");
+  assert.equal(sockets[0].closed, true);
+
+  const reconnected = channel.wait();
+  await settleAsyncSetup();
+  assert.equal(sockets.length, 2);
+  sockets[1].emit("open");
+  assert.equal(await reconnected, "connected");
+  channel.close();
+});
+
+test("a pong keeps one wake wait alive until the durable availability hint", async () => {
+  const timers = manualTimers();
+  const socket = new FakeSocket();
+  const channel = new RemoteControlWakeChannel({
+    createUrl: async () => "wss://hub.example.test/api/control/wake",
+    createSocket: () => socket,
+    fallbackMs: 1_000,
+    heartbeatMs: 10_000,
+    pongTimeoutMs: 1_000,
+    setTimeoutImpl: timers.setTimeout,
+    clearTimeoutImpl: timers.clearTimeout,
+    setIntervalImpl: timers.setInterval,
+    clearIntervalImpl: timers.clearInterval,
+  });
+
+  const connected = channel.wait();
+  await settleAsyncSetup();
+  socket.emit("open");
+  assert.equal(await connected, "connected");
+
+  let settled = false;
+  const waiting = channel.wait().then((reason) => {
+    settled = true;
+    return reason;
+  });
+  timers.runIntervals();
+  socket.emit("message", { data: "pong" });
+  timers.runTimeouts();
+  await settleAsyncSetup();
+  assert.equal(settled, false);
+  socket.emit("message", { data: JSON.stringify({
+    protocol: REMOTE_CONTROL_WAKE_PROTOCOL,
+    kind: "available",
+    revision: 2,
+  }) });
+  assert.equal(await waiting, "wake");
+  channel.close();
+});
+
+test("availability does not satisfy the matching pong deadline", async () => {
+  const timers = manualTimers();
+  const socket = new FakeSocket();
+  const channel = new RemoteControlWakeChannel({
+    createUrl: async () => "wss://hub.example.test/api/control/wake",
+    createSocket: () => socket,
+    fallbackMs: 1_000,
+    heartbeatMs: 10_000,
+    pongTimeoutMs: 1_000,
+    setTimeoutImpl: timers.setTimeout,
+    clearTimeoutImpl: timers.clearTimeout,
+    setIntervalImpl: timers.setInterval,
+    clearIntervalImpl: timers.clearInterval,
+  });
+
+  const connected = channel.wait();
+  await settleAsyncSetup();
+  socket.emit("open");
+  assert.equal(await connected, "connected");
+
+  const availability = channel.wait();
+  timers.runIntervals();
+  socket.emit("message", { data: JSON.stringify({
+    protocol: REMOTE_CONTROL_WAKE_PROTOCOL,
+    kind: "available",
+    revision: 1,
+  }) });
+  assert.equal(await availability, "wake");
+
+  const fallback = channel.wait();
+  timers.runTimeouts();
+  assert.equal(await fallback, "fallback");
+  assert.equal(socket.closed, true);
+  channel.close();
+});
+
+test("a stale pong deadline cannot disconnect or disarm a replacement socket", async () => {
+  const timers = manualTimers();
+  const sockets = [];
+  const channel = new RemoteControlWakeChannel({
+    createUrl: async () => "wss://hub.example.test/api/control/wake",
+    createSocket: () => {
+      const socket = new FakeSocket();
+      sockets.push(socket);
+      return socket;
+    },
+    fallbackMs: 1_000,
+    heartbeatMs: 10_000,
+    pongTimeoutMs: 1_000,
+    setTimeoutImpl: timers.setTimeout,
+    clearTimeoutImpl: timers.clearTimeout,
+    setIntervalImpl: timers.setInterval,
+    clearIntervalImpl: timers.clearInterval,
+  });
+
+  const firstConnection = channel.wait();
+  await settleAsyncSetup();
+  sockets[0].emit("open");
+  assert.equal(await firstConnection, "connected");
+  const firstWait = channel.wait();
+  timers.runIntervals();
+  const [staleDeadline] = timers.timeoutCallbacks();
+  sockets[0].emit("close");
+  timers.runTimeouts();
+  assert.equal(await firstWait, "fallback");
+
+  const replacementConnection = channel.wait();
+  await settleAsyncSetup();
+  sockets[1].emit("open");
+  assert.equal(await replacementConnection, "connected");
+  const replacementWait = channel.wait();
+  timers.runIntervals();
+  staleDeadline();
+  assert.equal(sockets[1].closed, false);
+  sockets[1].emit("message", { data: "pong" });
+  timers.runTimeouts();
+  sockets[1].emit("message", { data: JSON.stringify({
+    protocol: REMOTE_CONTROL_WAKE_PROTOCOL,
+    kind: "available",
+    revision: 2,
+  }) });
+  assert.equal(await replacementWait, "wake");
   channel.close();
 });
 

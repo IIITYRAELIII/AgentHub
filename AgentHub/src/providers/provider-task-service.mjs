@@ -75,7 +75,7 @@ export class CodexProviderTaskService {
     });
     const threadId = String(result?.thread?.id ?? "").trim();
     if (!threadId) throw new Error("Codex did not return a thread id");
-    this.#bindCreatedThread({
+    await this.#bindCreatedThread({
       provider: "codex",
       threadId,
       streamId,

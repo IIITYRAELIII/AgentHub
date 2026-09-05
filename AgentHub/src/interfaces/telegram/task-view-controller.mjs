@@ -14,6 +14,7 @@ import {
   userMessageSnapshotAuthority,
 } from "../../domain/canonical-user-messages.mjs";
 import { isCodexAutoCompactionTurnId } from "../../domain/codex-internal-turn.mjs";
+import { interstreamDisplayText } from "../../domain/interstream-message.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { taskRunIsActive, updateTaskRunTitle } from "../../domain/task-runs.mjs";
 
@@ -297,6 +298,7 @@ export function codexRolloutHistory(activity = {}, { userAuthor = "" } = {}) {
       .filter((message) => String(message?.text ?? "").trim())
       .map((message, index) => {
         const rawText = String(message.text).trim();
+        const clientUserMessageId = String(message.clientUserMessageId ?? "").trim();
         const parsedAnnotations = responseAnnotationDetails(rawText);
         const responseAnnotations = Array.isArray(message.responseAnnotations)
           && message.responseAnnotations.length
@@ -307,14 +309,17 @@ export function codexRolloutHistory(activity = {}, { userAuthor = "" } = {}) {
           : parsedAnnotations;
         return {
           itemId: String(message.itemId ?? `${id}:rollout-user:${index}`),
-          ...(String(message.clientUserMessageId ?? "").trim()
-            ? { clientUserMessageId: String(message.clientUserMessageId).trim() }
+          ...(clientUserMessageId
+            ? { clientUserMessageId }
             : {}),
           ...(String(message.sourceOccurrenceId ?? "").trim()
             ? { sourceOccurrenceId: String(message.sourceOccurrenceId).trim() }
             : {}),
           role: "user",
-          text: displayUserPrompt(rawText),
+          text: displayUserPrompt(interstreamDisplayText(rawText, {
+            origin: message.origin ?? message.messageOrigin,
+            clientUserMessageId,
+          })),
           ...(String(userAuthor).trim() ? { author: String(userAuthor).trim() } : {}),
           ...(responseAnnotations?.items.length
             ? {

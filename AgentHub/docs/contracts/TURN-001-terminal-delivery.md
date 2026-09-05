@@ -31,6 +31,10 @@ final status and final content.
   Hub command identity. Missing, duplicate or conflicting proof fails closed;
   successful reprojection preserves terminal state and never dispatches again.
 - Live, focused, history and badge views derive from the same terminal revision.
+- Terminal completion and history payloads retain the raw root prompt separately
+  from body-only live user projections. Their `clientUserMessageId` is nonempty
+  and at most 200 characters; invalid or conflicting provider identity and its
+  origin are omitted before `payload_json` and outbox serialization.
 - Versioned response-annotation source locators for user, final agent and
   non-final agent provider items attached to the turn prompt are
   retained byte-for-byte through terminal history persistence and reload after

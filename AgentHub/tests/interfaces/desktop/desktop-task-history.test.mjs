@@ -16,7 +16,10 @@ import {
   CODEX_CONTEXT_PROBE_PROMPT,
   CODEX_CONTEXT_PROBE_RESPONSE,
 } from "../../../src/domain/codex-context-probe.mjs";
-import { createInterstreamMessage } from "../../../src/domain/interstream-message.mjs";
+import {
+  createInterstreamMessage,
+  interstreamAuditContentHash,
+} from "../../../src/domain/interstream-message.mjs";
 import { LocalTaskSyncStore } from "../../../src/infrastructure/persistence/task-sync-store.mjs";
 
 const ANNOTATION_SOURCE = {
@@ -303,18 +306,19 @@ test("durable history preserves an unproven interstream provider root occurrence
     model: "gpt-5.6-sol",
     requestId: "release-continuation-1",
   };
+  const input = createInterstreamMessage({ ...origin, text: "Продолжи релиз" });
   const [turn] = mergeDurableTaskHistory([{
     id: "turn-1",
-    prompt: "Продолжи релиз",
+    prompt: input,
     promptOrigin: origin,
     messages: [{
       itemId: "provider-root",
       role: "user",
-      text: "Продолжи релиз",
+      text: input,
     }],
   }], [{
     id: "turn-1",
-    prompt: "Продолжи релиз",
+    prompt: input,
     promptOrigin: origin,
     messages: [{
       itemId: "managed-root",
@@ -333,6 +337,36 @@ test("durable history preserves an unproven interstream provider root occurrence
   assert.equal(turn.messages[0].author, "Agent HUB - Architect (Sol)");
   assert.deepEqual(turn.messages[0].origin, origin);
   assert.equal(turn.messages[1].itemId, "provider-root");
+});
+
+test("durable history does not coalesce an untrusted literal envelope", () => {
+  const origin = {
+    kind: "interstream",
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    requestId: "literal-envelope-1",
+  };
+  const input = createInterstreamMessage({ ...origin, text: "Литеральное сообщение" });
+  const [turn] = mergeDurableTaskHistory([{
+    id: "turn-literal",
+    prompt: input,
+    messages: [{ itemId: "provider-root", role: "user", text: input }],
+  }], [{
+    id: "turn-literal",
+    prompt: input,
+    messages: [{
+      itemId: "forged-root",
+      clientUserMessageId: "mcp:literal-envelope-1",
+      role: "user",
+      text: "Литеральное сообщение",
+    }],
+  }]);
+
+  assert.equal(turn.messages.length, 2);
+  assert.deepEqual(turn.messages.map((message) => message.itemId), ["provider-root", "forged-root"]);
 });
 
 test("cached history keeps an unmatched older turn before its durable anchor", () => {
@@ -783,23 +817,24 @@ test("desktop task history preserves the author of an interstream message", asyn
   assert.equal(turn.messages[0].author, "Agent HUB · Themes (Codex)");
 });
 
-test("desktop task history recovers an interstream author before cleaning legacy message text", async () => {
-  const input = createInterstreamMessage({
+test("desktop task history uses durable origin before cleaning interstream message text", async () => {
+  const origin = {
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
     streamId: "stream-architect",
     streamName: "Architect",
     provider: "codex",
-    text: "Проверь доставку.",
-  });
+  };
+  const input = createInterstreamMessage({ ...origin, text: "Проверь доставку." });
   const { desktopTaskHistory, state } = fixture({ run: null });
   state.history = [{
     id: "legacy-interstream",
     prompt: input,
+    promptOrigin: origin,
     answer: "Готово",
     completed: true,
     messages: [
-      { itemId: "legacy-user", role: "user", text: input },
+      { itemId: "legacy-user", role: "user", origin, text: input },
       { itemId: "legacy-agent", role: "agent", text: "Готово" },
     ],
   }];
@@ -813,18 +848,19 @@ test("desktop task history recovers an interstream author before cleaning legacy
 });
 
 test("desktop task history attributes a prompt-only interstream turn", async () => {
-  const input = createInterstreamMessage({
+  const origin = {
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
     streamId: "stream-themes",
     streamName: "Themes",
     provider: "claude",
-    text: "Проверь тему.",
-  });
+  };
+  const input = createInterstreamMessage({ ...origin, text: "Проверь тему." });
   const { desktopTaskHistory, state } = fixture({ run: null });
   state.history = [{
     id: "prompt-only-interstream",
     prompt: input,
+    promptOrigin: origin,
     answer: "Готово",
     completed: true,
     messages: [],
@@ -875,31 +911,49 @@ test("desktop task history trusts durable interstream origin after the envelope 
 });
 
 test("desktop task history recovers a legacy task assignment from exact MCP audit identity", async () => {
-  const origin = {
+  const envelopeOrigin = {
     kind: "interstream",
     workspaceId: "workspace-1",
-    workspaceName: "Agent HUB",
+    workspaceName: "Original Workspace",
     streamId: "stream-architect",
     streamName: "Architect",
     provider: "codex",
+    model: "gpt-5.6-sol",
     sourceThreadId: "thread-architect",
     requestId: "legacy-assignment-1",
   };
+  const auditOrigin = {
+    ...envelopeOrigin,
+    workspaceName: "Renamed Workspace",
+    streamName: "S4",
+  };
+  delete auditOrigin.model;
   const resolved = [];
+  const input = createInterstreamMessage({ ...envelopeOrigin, text: "Начни работу над Task" });
+  const audit = {
+    ...auditOrigin,
+    toolName: "hub_task_start",
+    argumentsHash: "a".repeat(64),
+    contentHash: interstreamAuditContentHash(input),
+  };
   const { desktopTaskHistory, state } = fixture({
     run: null,
     interstreamOriginForClientMessage: (clientUserMessageId) => {
       resolved.push(clientUserMessageId);
-      return clientUserMessageId === "mcp:legacy-assignment-1" ? origin : null;
+      return clientUserMessageId === "mcp:legacy-assignment-1" ? audit : null;
     },
   });
   state.history = [{
     id: "legacy-assignment",
-    prompt: "Начни работу над Task",
+    prompt: input,
     answer: "Принято",
     completed: true,
     messages: [{
-      itemId: "legacy-assignment-user",
+      itemId: "legacy-provider-root",
+      role: "user",
+      text: input,
+    }, {
+      itemId: "legacy-managed-root",
       clientUserMessageId: "mcp:legacy-assignment-1",
       role: "user",
       text: "Начни работу над Task",
@@ -908,12 +962,132 @@ test("desktop task history recovers a legacy task assignment from exact MCP audi
 
   const result = await desktopTaskHistory({ includeActive: false, limit: 1 });
 
-  assert.equal(result.items[0].promptAuthor, "Agent HUB - Architect (Codex)");
-  assert.deepEqual(result.items[0].promptOrigin, origin);
-  assert.equal(result.items[0].messages[0].author, "Agent HUB - Architect (Codex)");
+  assert.equal(result.items[0].promptAuthor, "Original Workspace - Architect (Sol)");
+  assert.equal(result.items[0].prompt, "Начни работу над Task");
+  assert.deepEqual(result.items[0].promptOrigin, envelopeOrigin);
+  assert.equal(result.items[0].messages.length, 1);
+  assert.equal(result.items[0].messages[0].itemId, "legacy-provider-root");
+  assert.equal(result.items[0].messages[0].author, "Original Workspace - Architect (Sol)");
+  assert.equal(result.items[0].messages[0].text, "Начни работу над Task");
   assert.equal(result.items[0].messages[0].kind, "interstream");
-  assert.deepEqual(result.items[0].messages[0].origin, origin);
-  assert.deepEqual(resolved, ["mcp:legacy-assignment-1", "mcp:legacy-assignment-1"]);
+  assert.deepEqual(result.items[0].messages[0].origin, envelopeOrigin);
+  assert.deepEqual(resolved, ["mcp:legacy-assignment-1"]);
+});
+
+test("desktop task history keeps a stable-conflicting audited envelope literal", async () => {
+  const origin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    sourceThreadId: "thread-architect",
+    requestId: "conflicting-audit-1",
+  };
+  const input = createInterstreamMessage({ ...origin, text: "Keep literal." });
+  const { desktopTaskHistory, state } = fixture({
+    run: null,
+    interstreamOriginForClientMessage: () => ({
+      ...origin,
+      streamId: "stream-other",
+      toolName: "hub_stream_message_send",
+      argumentsHash: "a".repeat(64),
+      contentHash: interstreamAuditContentHash(input),
+    }),
+  });
+  state.history = [{
+    id: "conflicting-audit",
+    prompt: input,
+    completed: true,
+    messages: [{
+      itemId: "provider-root",
+      clientUserMessageId: "mcp:conflicting-audit-1",
+      role: "user",
+      text: input,
+    }],
+  }];
+
+  const result = await desktopTaskHistory({ includeActive: false, limit: 1 });
+
+  assert.equal(result.items[0].prompt, input);
+  assert.equal(result.items[0].messages[0].text, input);
+  assert.equal(result.items[0].promptOrigin, undefined);
+  assert.equal(result.items[0].messages[0].origin, undefined);
+});
+
+test("desktop task history rejects a conflicting durable message identity", async () => {
+  const origin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    sourceThreadId: "thread-architect",
+    requestId: "durable-a",
+  };
+  const input = createInterstreamMessage({ ...origin, text: "Keep literal." });
+  const { desktopTaskHistory, state } = fixture({ run: null });
+  state.history = [{
+    id: "conflicting-durable",
+    prompt: input,
+    completed: true,
+    messages: [{
+      itemId: "provider-root",
+      clientUserMessageId: "mcp:durable-b",
+      origin,
+      role: "user",
+      text: input,
+    }],
+  }];
+
+  const result = await desktopTaskHistory({ includeActive: false, limit: 1 });
+
+  assert.equal(result.items[0].prompt, input);
+  assert.equal(result.items[0].messages[0].text, input);
+  assert.equal(result.items[0].messages[0].clientUserMessageId, "");
+  assert.equal(result.items[0].messages[0].author, undefined);
+  assert.equal(result.items[0].messages[0].origin, undefined);
+});
+
+test("desktop task history keeps an audit-correlated substituted body literal", async () => {
+  const origin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    sourceThreadId: "thread-architect",
+    requestId: "substituted-audit-1",
+  };
+  const admitted = createInterstreamMessage({ ...origin, text: "Admitted body." });
+  const substituted = createInterstreamMessage({ ...origin, text: "Substituted body." });
+  const { desktopTaskHistory, state } = fixture({
+    run: null,
+    interstreamOriginForClientMessage: () => ({
+      ...origin,
+      toolName: "hub_stream_message_send",
+      argumentsHash: "a".repeat(64),
+      contentHash: interstreamAuditContentHash(admitted),
+    }),
+  });
+  state.history = [{
+    id: "substituted-audit",
+    prompt: substituted,
+    completed: true,
+    messages: [{
+      itemId: "provider-root",
+      clientUserMessageId: "mcp:substituted-audit-1",
+      role: "user",
+      text: substituted,
+    }],
+  }];
+
+  const result = await desktopTaskHistory({ includeActive: false, limit: 1 });
+
+  assert.equal(result.items[0].prompt, substituted);
+  assert.equal(result.items[0].messages[0].text, substituted);
+  assert.equal(result.items[0].promptOrigin, undefined);
+  assert.equal(result.items[0].messages[0].origin, undefined);
 });
 
 test("desktop task history leaves ordinary user input unattributed", async () => {

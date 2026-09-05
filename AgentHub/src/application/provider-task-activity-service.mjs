@@ -9,6 +9,7 @@ export class ProviderTaskActivityService {
     readCodexThread,
     capturedCodexExecutionOwner,
     claudeTaskSnapshots,
+    claudeRuntimeState,
     readRolloutActivity,
     selectActiveTurnId,
     resolveActivity,
@@ -20,6 +21,9 @@ export class ProviderTaskActivityService {
     this.readCodexThread = readCodexThread;
     this.capturedCodexExecutionOwner = capturedCodexExecutionOwner;
     this.claudeTaskSnapshots = claudeTaskSnapshots;
+    this.claudeRuntimeState = typeof claudeRuntimeState === "function"
+      ? claudeRuntimeState
+      : async () => ({ known: false, hasLiveProcess: true });
     this.readRolloutActivity = readRolloutActivity;
     this.selectActiveTurnId = selectActiveTurnId;
     this.resolveActivity = resolveActivity;
@@ -48,10 +52,32 @@ export class ProviderTaskActivityService {
   }
 
   async readClaude(target) {
+    const {
+      forceFresh = false,
+      notBeforeMs = 0,
+    } = arguments[1] ?? {};
     const snapshot = await this.claudeTaskSnapshots.read(target.threadId);
+    if (!forceFresh && !snapshot?.activityUnknown) {
+      return {
+        state: snapshot?.active ? "active" : "inactive",
+        executionOwner: TASK_EXECUTION_OWNERS.EXTERNAL,
+      };
+    }
+    const runtime = await this.claudeRuntimeState({
+      ...snapshot,
+      sessionId: target.threadId,
+    }, { forceFresh, notBeforeMs });
     return {
-      state: snapshot?.activityUnknown ? "unknown" : snapshot?.active ? "active" : "inactive",
+      state: runtime?.known
+        ? runtime.hasLiveProcess ? "active" : "inactive"
+        : "unknown",
       executionOwner: TASK_EXECUTION_OWNERS.EXTERNAL,
+      processEvidence: {
+        complete: runtime?.complete === true,
+        generation: runtime?.generation ?? null,
+        scannedAt: runtime?.scannedAt ?? null,
+        requestedAfterMs: runtime?.requestedAfterMs ?? 0,
+      },
     };
   }
 }

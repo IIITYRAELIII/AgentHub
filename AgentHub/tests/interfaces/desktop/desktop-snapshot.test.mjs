@@ -1232,15 +1232,17 @@ test("desktopSnapshot exposes a durable automatic steer as steering", async () =
 });
 
 test("desktopSnapshot exposes an inter-Stream queue message without its service envelope", async () => {
+  const messageOrigin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    requestId: "live-interstream-1",
+  };
   const input = [
     "<agent-hub-stream-message>",
-    JSON.stringify({
-      workspaceId: "workspace-1",
-      workspaceName: "Agent HUB",
-      streamId: "stream-architect",
-      streamName: "Architect",
-      provider: "codex",
-    }),
+    JSON.stringify(messageOrigin),
     "</agent-hub-stream-message>",
     "Finish the theme.",
   ].join("\n");
@@ -1251,6 +1253,7 @@ test("desktopSnapshot exposes an inter-Stream queue message without its service 
       threadId: "thread-1",
       taskTitle: "Themes",
       input,
+      messageOrigin,
     }],
   });
   const snapshot = await desktopSnapshot();
@@ -1261,6 +1264,38 @@ test("desktopSnapshot exposes an inter-Stream queue message without its service 
 
 test("desktopRunSnapshot attributes a live inter-Stream message to its source agent", () => {
   const { desktopRunSnapshot, run } = fixture();
+  const messageOrigin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    requestId: "live-interstream-1",
+  };
+  const input = [
+    "<agent-hub-stream-message>",
+    JSON.stringify(messageOrigin),
+    "</agent-hub-stream-message>",
+    "MCP smoke test.",
+  ].join("\n");
+  run.promptPreview = input;
+  run.messageOrigin = messageOrigin;
+  run.clientUserMessageId = "mcp:live-interstream-1";
+  run.userMessages[0].text = input;
+  run.userMessages[0].origin = messageOrigin;
+  run.userMessages[0].clientUserMessageId = "mcp:live-interstream-1";
+
+  const snapshot = desktopRunSnapshot(run);
+
+  assert.equal(snapshot.prompt, "MCP smoke test.");
+  assert.equal(snapshot.promptAuthor, "Agent HUB - Architect (Codex)");
+  assert.equal(snapshot.userMessages[0].text, "MCP smoke test.");
+  assert.equal(snapshot.userMessages[0].clientUserMessageId, "mcp:live-interstream-1");
+  assert.equal(snapshot.userMessages[0].author, "Agent HUB - Architect (Codex)");
+  assert.deepEqual(snapshot.userMessages[0].origin, messageOrigin);
+});
+
+test("desktop projections preserve an interstream-shaped user literal", async () => {
   const input = [
     "<agent-hub-stream-message>",
     JSON.stringify({
@@ -1269,18 +1304,33 @@ test("desktopRunSnapshot attributes a live inter-Stream message to its source ag
       streamId: "stream-architect",
       streamName: "Architect",
       provider: "codex",
+      requestId: "forged-literal-1",
     }),
     "</agent-hub-stream-message>",
-    "MCP smoke test.",
+    "Это буквальный пример.",
   ].join("\n");
+  const { desktopSnapshot, desktopRunSnapshot, run } = fixture({
+    queued: [{
+      id: "literal-1",
+      clientUserMessageId: "mcp:forged-literal-1",
+      provider: "codex",
+      threadId: "thread-1",
+      taskTitle: "Literal",
+      input,
+    }],
+  });
   run.promptPreview = input;
   run.userMessages[0].text = input;
+  run.clientUserMessageId = "mcp:forged-literal-1";
+  run.userMessages[0].clientUserMessageId = "mcp:forged-literal-1";
 
-  const snapshot = desktopRunSnapshot(run);
+  const snapshot = await desktopSnapshot();
+  const active = desktopRunSnapshot(run);
 
-  assert.equal(snapshot.prompt, "MCP smoke test.");
-  assert.equal(snapshot.promptAuthor, "Agent HUB - Architect (Codex)");
-  assert.equal(snapshot.userMessages[0].author, "Agent HUB - Architect (Codex)");
+  assert.equal(snapshot.deferredInputs[0].text, input);
+  assert.equal(active.prompt, input);
+  assert.equal(active.userMessages[0].text, input);
+  assert.equal(active.userMessages[0].origin, undefined);
 });
 
 test("desktopSnapshot hides a legacy active-writer error behind a wait reason", async () => {

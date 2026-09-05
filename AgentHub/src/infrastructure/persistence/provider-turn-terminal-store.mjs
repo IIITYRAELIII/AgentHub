@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { consistentInterstreamRecordIdentity } from "../../domain/interstream-message.mjs";
 import { openRuntimeDatabase } from "./runtime-state-store.mjs";
 
 const OUTBOX_STATES = new Set(["pending", "projecting", "delivered", "superseded"]);
@@ -11,6 +12,11 @@ const TERMINAL_PAYLOAD_METADATA_SAMPLE_CHARS = (2 * 1024 * 1024) + 1;
 
 function text(value) {
   return String(value ?? "").trim();
+}
+
+function boundedClientUserMessageId(value) {
+  const id = text(value);
+  return id && id.length <= 200 && !id.includes("\0") ? id : "";
 }
 
 function identity(value) {
@@ -25,6 +31,43 @@ function identity(value) {
 
 function jsonValue(value) {
   return JSON.parse(JSON.stringify(value ?? null));
+}
+
+function sanitizeMessageIdentity(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const rootMessage = (Array.isArray(value.userMessages) ? value.userMessages : [])
+    .find((message) => message?.role === "user") ?? null;
+  const identity = consistentInterstreamRecordIdentity({
+    clientUserMessageIds: [value.clientUserMessageId, rootMessage?.clientUserMessageId],
+    origins: [
+      value.messageOrigin ?? value.origin,
+      rootMessage?.origin ?? rootMessage?.messageOrigin,
+    ],
+  });
+  if (identity.conflicted) {
+    delete value.clientUserMessageId;
+    delete value.messageOrigin;
+    delete value.origin;
+    if (rootMessage) {
+      delete rootMessage.clientUserMessageId;
+      delete rootMessage.messageOrigin;
+      delete rootMessage.origin;
+    }
+  }
+  if (!identity.conflicted && identity.clientUserMessageId) {
+    value.clientUserMessageId = identity.clientUserMessageId;
+  }
+  if (Array.isArray(value.userMessages)) {
+    value.userMessages = value.userMessages.map((message) => sanitizeMessageIdentity(message));
+  }
+  return value;
+}
+
+function sanitizedTerminalPayload(value) {
+  const payload = jsonValue(value ?? {});
+  sanitizeMessageIdentity(payload?.completion);
+  sanitizeMessageIdentity(payload?.history);
+  return payload;
 }
 
 function contentHash(value) {
@@ -192,7 +235,7 @@ function configure(database) {
   const migrationAt = new Date().toISOString();
   for (const row of legacyCommandRows) {
     const payload = parseJson(row.payload_json, {});
-    const clientUserMessageId = text(
+    const clientUserMessageId = boundedClientUserMessageId(
       payload?.history?.clientUserMessageId ?? payload?.completion?.clientUserMessageId,
     );
     if (clientUserMessageId) {
@@ -255,7 +298,7 @@ export class ProviderTurnTerminalStore {
 
   commit(value) {
     const key = identity(value);
-    const basePayload = jsonValue(value.payload ?? {});
+    const basePayload = sanitizedTerminalPayload(value.payload);
     const status = text(value.status) || "completed";
     const finalAnswer = String(value.finalAnswer ?? "").trim();
     const usageIdentity = text(value.usageIdentity);
@@ -310,7 +353,7 @@ export class ProviderTurnTerminalStore {
           identity: revisionIdentity,
           channel: "telegram",
         } : null;
-        const commandClientUserMessageId = text(
+        const commandClientUserMessageId = boundedClientUserMessageId(
           basePayload?.history?.clientUserMessageId ?? basePayload?.completion?.clientUserMessageId,
         );
         const payloadJson = JSON.stringify(payload);

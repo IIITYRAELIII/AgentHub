@@ -615,23 +615,11 @@
     ));
   }
 
-  /* Список рабочих пространств отвечает сразу на два разных вопроса: «где
-     сейчас идёт работа» и «где вообще живёт проект». Пока это один список,
-     они мешают друг другу: сортировка по активности поднимает наверх целое
-     семейство однотипных пространств, а группировка по семействам, наоборот,
-     прячет то, что горит прямо сейчас.
-
-     Поэтому вопросы разведены. Сверху — короткая лента активных, плоская и
-     без группировки: семейство попадает в неё ровно теми пространствами, где
-     действительно идёт работа. Ниже — каталог, который от активности не
-     зависит: порядок в нём стабильный, и место проекта не прыгает от того,
-     что кто-то в соседнем потоке написал сообщение.
-
-     Семейство определяется по первому слову имени и собирается только когда
-     его носят minGroupSize и больше пространств: две «FB» группой не станут. */
+  /* Активные Workspace остаются наверху, а остальной каталог — в стабильном
+     алфавитном порядке. Только явно выбранные пользователем папки группируют
+     Workspace; совпадающие префиксы имён не меняют структуру каталога. */
   const WORKSPACE_ACTIVE_LIMIT = 6;
   const WORKSPACE_ACTIVE_WINDOW_MS = 3 * 60 * 60 * 1000;
-  const WORKSPACE_GROUP_MIN_SIZE = 3;
   const WORKSPACE_FOLDER_MAX_LENGTH = 80;
 
   function normalizeWorkspaceFolderName(value) {
@@ -727,17 +715,10 @@
     return String(confirmation ?? "") === String(workspace?.name ?? "");
   }
 
-  function workspaceFamilyKey(group) {
-    const name = String(group?.name ?? "").trim();
-    const [head] = name.split(/\s+/u);
-    return head && head.length <= 24 && name.length > head.length ? head : "";
-  }
-
   function workspaceSections(groups, {
     nowMs = Date.now(),
     activeLimit = WORKSPACE_ACTIVE_LIMIT,
     activeWindowMs = WORKSPACE_ACTIVE_WINDOW_MS,
-    minGroupSize = WORKSPACE_GROUP_MIN_SIZE,
     folderNames = [],
   } = {}) {
     const ordered = orderWorkspaceGroups(groups);
@@ -761,18 +742,11 @@
       const folderName = workspaceFolderName(group);
       if (folderName) {
         const items = manualFolders.get(folderName) ?? [];
-        items.push({ ...group, shortName: group.name });
+        items.push(group);
         manualFolders.set(folderName, items);
       } else {
         unassigned.push(group);
       }
-    }
-
-    const families = new Map();
-    for (const group of unassigned) {
-      const key = workspaceFamilyKey(group);
-      if (!key) continue;
-      families.set(key, (families.get(key) ?? 0) + 1);
     }
 
     const catalog = [...manualFolders.entries()]
@@ -785,25 +759,10 @@
           String(left?.name ?? "").localeCompare(String(right?.name ?? ""), "ru")
         )),
       }));
-    const opened = new Map();
     for (const group of [...unassigned].sort((left, right) => (
       String(left?.name ?? "").localeCompare(String(right?.name ?? ""), "ru")
     ))) {
-      const key = workspaceFamilyKey(group);
-      if (!key || (families.get(key) ?? 0) < minGroupSize) {
-        catalog.push({ type: "workspace", group });
-        continue;
-      }
-      let family = opened.get(key);
-      if (!family) {
-        family = { type: "family", key: `family:${key}`, name: key, items: [] };
-        opened.set(key, family);
-        catalog.push(family);
-      }
-      family.items.push({
-        ...group,
-        shortName: String(group.name ?? "").slice(key.length).trim() || group.name,
-      });
+      catalog.push({ type: "workspace", group });
     }
     return { active, catalog };
   }

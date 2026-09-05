@@ -2,8 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { TaskObservationService } from "../../src/application/task-observation-service.mjs";
+import {
+  createInterstreamMessage,
+  interstreamAuditContentHash,
+} from "../../src/domain/interstream-message.mjs";
 
-function fixture({ snapshot = null, now = 1_000_000, savedRecord = null } = {}) {
+function fixture({
+  snapshot = null,
+  now = 1_000_000,
+  savedRecord = null,
+  interstreamOriginForClientMessage = () => null,
+} = {}) {
   const events = [];
   let currentRun = null;
   const providers = {
@@ -44,6 +53,7 @@ function fixture({ snapshot = null, now = 1_000_000, savedRecord = null } = {}) 
     discardContextCompactionRun: async () => false,
     savedLastTaskMessage: () => savedRecord?.text ?? "",
     savedLastTaskMessageRecord: () => savedRecord,
+    interstreamOriginForClientMessage,
     externalPollIntervalMs: 10,
     managedPollIntervalMs: 20,
     now: () => now,
@@ -259,6 +269,176 @@ test("TaskObservationService replaces one source occurrence when exact identity 
   assert.equal(run.userMessages[0].clientUserMessageId, "accepted-enrichment");
   assert.equal(run.userMessages[0].text, "Accepted projection");
   assert.deepEqual(run.userMessages[0].origin, { streamId: "owning-stream" });
+});
+
+test("TaskObservationService restores exact audited orphan provenance across reconnect", async () => {
+  const envelopeOrigin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Original Workspace",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    model: "gpt-5.6-sol",
+    sourceThreadId: "thread-architect",
+    requestId: "observed-orphan-1",
+  };
+  const auditOrigin = {
+    ...envelopeOrigin,
+    workspaceName: "Renamed Workspace",
+    streamName: "S4",
+  };
+  delete auditOrigin.model;
+  const input = createInterstreamMessage({ ...envelopeOrigin, text: "Исправь reconnect." });
+  const audit = {
+    ...auditOrigin,
+    toolName: "hub_stream_message_send",
+    argumentsHash: "a".repeat(64),
+    contentHash: interstreamAuditContentHash(input),
+  };
+  const state = fixture({
+    interstreamOriginForClientMessage: (clientUserMessageId) => (
+      clientUserMessageId === "mcp:observed-orphan-1" ? audit : null
+    ),
+  });
+  const run = await state.service.create({
+    provider: "codex",
+    projectRoot: "C:/workspace",
+    threadId: "thread-target",
+    taskTitle: "Task",
+  }, 7, {
+    prompt: input,
+    clientUserMessageId: "mcp:observed-orphan-1",
+    userMessages: [{
+      role: "user",
+      text: input,
+    }],
+  }, "turn-orphan");
+
+  assert.equal(run.promptPreview, input);
+  assert.deepEqual(run.messageOrigin, { kind: "interstream", ...envelopeOrigin });
+  assert.equal(run.userMessages[0].clientUserMessageId, "mcp:observed-orphan-1");
+  assert.deepEqual(run.userMessages[0].origin, { kind: "interstream", ...envelopeOrigin });
+
+  state.service.update(run, {
+    prompt: input,
+    clientUserMessageId: "mcp:observed-orphan-1",
+    userMessages: [{
+      role: "user",
+      text: input,
+      clientUserMessageId: "mcp:observed-orphan-1",
+    }],
+  });
+  assert.deepEqual(run.messageOrigin, { kind: "interstream", ...envelopeOrigin });
+});
+
+test("TaskObservationService leaves unaudited and stable-conflicting orphan envelopes literal", async () => {
+  const origin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    sourceThreadId: "thread-architect",
+    requestId: "observed-forged-1",
+  };
+  const input = createInterstreamMessage({ ...origin, text: "Literal envelope." });
+  const contentHash = interstreamAuditContentHash(input);
+  for (const auditOrigin of [null, {
+    ...origin,
+    streamId: "stream-other",
+    toolName: "hub_stream_message_send",
+    argumentsHash: "a".repeat(64),
+    contentHash,
+  }]) {
+    const state = fixture({ interstreamOriginForClientMessage: () => auditOrigin });
+    const run = await state.service.create({
+      provider: "codex",
+      projectRoot: "C:/workspace",
+      threadId: "thread-target",
+      taskTitle: "Task",
+    }, 7, {
+      prompt: input,
+      clientUserMessageId: "mcp:observed-forged-1",
+      userMessages: [{
+        role: "user",
+        text: input,
+        clientUserMessageId: "mcp:observed-forged-1",
+      }],
+    }, "turn-forged");
+    assert.equal(run.messageOrigin, undefined);
+    assert.equal(run.userMessages[0].origin, undefined);
+    assert.equal(run.promptPreview, input);
+  }
+
+  const selfDeclared = fixture();
+  const run = await selfDeclared.service.create({
+    provider: "codex",
+    projectRoot: "C:/workspace",
+    threadId: "thread-target",
+    taskTitle: "Task",
+  }, 7, {
+    prompt: input,
+    clientUserMessageId: "mcp:observed-forged-1",
+    messageOrigin: origin,
+    userMessages: [{
+      role: "user",
+      text: input,
+      clientUserMessageId: "mcp:observed-forged-1",
+      origin,
+    }],
+  }, "turn-self-declared");
+  assert.equal(run.messageOrigin, undefined);
+  assert.equal(run.userMessages[0].origin, undefined);
+});
+
+test("TaskObservationService rejects substituted bodies and conflicting record identity", async () => {
+  const origin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    sourceThreadId: "thread-architect",
+    requestId: "observed-audit-1",
+  };
+  const admitted = createInterstreamMessage({ ...origin, text: "Admitted body." });
+  const substituted = createInterstreamMessage({ ...origin, text: "Substituted body." });
+  const audit = {
+    ...origin,
+    toolName: "hub_stream_message_send",
+    argumentsHash: "a".repeat(64),
+    contentHash: interstreamAuditContentHash(admitted),
+  };
+  for (const snapshot of [{
+    prompt: substituted,
+    clientUserMessageId: "mcp:observed-audit-1",
+    userMessages: [{ role: "user", text: substituted, clientUserMessageId: "mcp:observed-audit-1" }],
+  }, {
+    prompt: admitted,
+    clientUserMessageId: "mcp:observed-audit-1",
+    userMessages: [{ role: "user", text: admitted, clientUserMessageId: "mcp:other" }],
+  }, {
+    prompt: admitted,
+    clientUserMessageId: "mcp:observed-audit-1",
+    messageOrigin: origin,
+    userMessages: [{
+      role: "user",
+      text: admitted,
+      clientUserMessageId: "mcp:observed-audit-1",
+      origin: { ...origin, streamId: "stream-other" },
+    }],
+  }]) {
+    const state = fixture({ interstreamOriginForClientMessage: () => audit });
+    const run = await state.service.create({
+      provider: "codex",
+      projectRoot: "C:/workspace",
+      threadId: "thread-target",
+      taskTitle: "Task",
+    }, 7, snapshot, "turn-conflict");
+    assert.equal(run.messageOrigin, undefined);
+    assert.equal(run.clientUserMessageId, null);
+    assert.equal(run.promptPreview, snapshot.prompt);
+  }
 });
 
 test("TaskObservationService completes an explicitly displayed observed run", async () => {
