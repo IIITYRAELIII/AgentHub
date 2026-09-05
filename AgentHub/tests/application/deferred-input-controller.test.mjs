@@ -33,6 +33,7 @@ function fixture(overrides = {}) {
     }),
     setTimeoutImpl: (callback, delay) => { timers.push({ callback, delay }); return timers.length; },
     clearTimeoutImpl: () => {},
+    random: () => 0.5,
     ...overrides,
   });
   return {
@@ -740,6 +741,169 @@ test("DeferredInputController releases a stale task-running decision before late
   await state.controller.process("pending");
   await state.controller.process("queued");
   assert.deepEqual(started, ["pending", "queued"]);
+});
+
+test("DeferredInputController releases a durable activity-unknown lane after its external owner disappears", async () => {
+  let blocked = true;
+  const started = [];
+  const state = fixture({
+    isBlocked: async () => blocked,
+    start: async (item) => started.push(item.id),
+  });
+  const lane = {
+    streamId: "stream-1", provider: "claude", projectRoot: "D:\\Work",
+    threadId: "external-thread", taskTitle: "Task",
+  };
+  state.pendingInputs.set("external", {
+    ...lane,
+    id: "external",
+    conflictKind: "activity-unknown",
+    allowForce: true,
+    createdAt: "2026-07-30T08:00:00.000Z",
+  });
+  state.queuedInputs.set("next", {
+    ...lane,
+    id: "next",
+    conflictKind: "message-intake",
+    createdAt: "2026-07-30T08:01:00.000Z",
+  });
+
+  assert.equal(state.controller.wakeAll(), 1);
+  assert.equal(state.timers[0].delay, 0);
+  state.controller.cancelSchedule("external");
+  await state.controller.process("external");
+  assert.equal(state.pendingInputs.has("external"), true);
+
+  state.controller.cancelSchedule("external");
+  blocked = false;
+  await state.controller.process("external");
+  assert.equal(state.pendingInputs.has("external"), false);
+  assert.equal(state.queuedInputs.get("external").conflictKind, null);
+  assert.equal(state.queuedInputs.get("external").allowForce, false);
+
+  state.controller.cancelSchedule("external");
+  await state.controller.process("external");
+  await state.controller.process("next");
+  assert.deepEqual(started, ["external", "next"]);
+  assert.equal(state.updates.some(([, message]) => /Предыдущий ход завершён/u.test(message)), true);
+});
+
+test("DeferredInputController claims dispatch before awaits so concurrent wake cannot duplicate or falsely cancel", async () => {
+  let releaseOccupancy;
+  const occupancyGate = new Promise((resolve) => { releaseOccupancy = resolve; });
+  const started = [];
+  const state = fixture({
+    occupancy: async () => occupancyGate,
+    start: async (item) => started.push(item.id),
+  });
+  const item = {
+    id: "single-flight",
+    streamId: "stream-1",
+    provider: "codex",
+    threadId: "thread-1",
+    projectRoot: "D:\\Work",
+    conflictKind: "message-steer",
+    createdAt: "2026-07-30T08:00:00.000Z",
+    temporaryFiles: ["screen.png"],
+  };
+  state.queuedInputs.set(item.id, item);
+
+  const first = state.controller.process(item.id);
+  assert.equal(state.controller.isProcessing(item.id), true);
+  assert.equal(!item.dispatchingAt && !state.controller.isProcessing(item.id), false,
+    "the production cancel guard must not acknowledge cancellation after eligibility is claimed");
+  state.controller.wakeLane(item);
+  const duplicate = state.controller.process(item.id);
+  releaseOccupancy({ occupied: false, waitReason: null });
+  await Promise.all([first, duplicate]);
+
+  assert.deepEqual(started, [item.id]);
+  assert.deepEqual(item.temporaryFiles, ["screen.png"]);
+  assert.equal(state.controller.isProcessing(item.id), false);
+});
+
+test("DeferredInputController consumes transient scheduled persist failure and durably retries pending owner", async () => {
+  let persistCalls = 0;
+  const started = [];
+  const state = fixture({
+    persist: async () => {
+      persistCalls += 1;
+      if (persistCalls === 1) throw new Error("transient disk busy");
+    },
+    start: async (item) => started.push(item.id),
+  });
+  const item = {
+    id: "persist-retry",
+    streamId: "stream-1",
+    provider: "claude",
+    threadId: "thread-1",
+    projectRoot: "D:\\Work",
+    taskTitle: "Task",
+    conflictKind: "activity-unknown",
+    createdAt: "2026-07-30T08:00:00.000Z",
+  };
+  state.pendingInputs.set(item.id, item);
+  state.controller.schedule(item, 0);
+
+  await assert.doesNotReject(() => state.timers[0].callback());
+  assert.equal(state.pendingInputs.get(item.id), item);
+  assert.equal(item.lastErrorCode, "ERR_DEFERRED_INPUT_PROCESSING");
+  assert.equal(item.lastError, "Не удалось обработать сохранённое сообщение.");
+  assert.equal(JSON.stringify({ item, transitions: state.transitions }).includes("transient disk busy"), false);
+  assert.equal(persistCalls, 2, "the restored pending owner and observable error must be persisted");
+  assert.equal(state.timers[1].delay, 2_000);
+
+  await state.timers[1].callback();
+  assert.equal(state.queuedInputs.get(item.id), item);
+  assert.equal(item.processRecoveryChecks, undefined);
+  await state.timers[2].callback();
+  assert.deepEqual(started, [item.id]);
+});
+
+test("DeferredInputController removes legacy dependency text from restored durable errors", () => {
+  const pendingInputs = new Map([["legacy", {
+    id: "legacy",
+    lastError: "C:\\secret\\claude.exe --resume private-session",
+  }]]);
+  fixture({ pendingInputs });
+  assert.deepEqual({
+    lastErrorCode: pendingInputs.get("legacy").lastErrorCode,
+    lastError: pendingInputs.get("legacy").lastError,
+  }, {
+    lastErrorCode: "ERR_DEFERRED_INPUT_PROCESSING",
+    lastError: "Не удалось обработать сохранённое сообщение.",
+  });
+});
+
+test("DeferredInputController grows and caps blocked retry backoff while wake preempts it", async () => {
+  const state = fixture({
+    isBlocked: async () => true,
+    retryDelayMs: 1_000,
+    maxRetryDelayMs: 4_000,
+  });
+  const item = {
+    id: "blocked",
+    streamId: "stream-1",
+    provider: "claude",
+    threadId: "thread-1",
+    projectRoot: "D:\\Work",
+    taskTitle: "Task",
+    conflictKind: "activity-unknown",
+    createdAt: "2026-07-30T08:00:00.000Z",
+  };
+  state.pendingInputs.set(item.id, item);
+
+  await state.controller.process(item.id);
+  assert.equal(state.timers.at(-1).delay, 1_000);
+  await state.timers.at(-1).callback();
+  assert.equal(state.timers.at(-1).delay, 2_000);
+  await state.timers.at(-1).callback();
+  assert.equal(state.timers.at(-1).delay, 4_000);
+  await state.timers.at(-1).callback();
+  assert.equal(state.timers.at(-1).delay, 4_000);
+
+  assert.equal(state.controller.wakeLane(item), true);
+  assert.equal(state.timers.at(-1).delay, 0);
 });
 
 test("DeferredInputController adopts a run started before restart instead of duplicating it", async () => {

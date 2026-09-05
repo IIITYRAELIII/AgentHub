@@ -795,6 +795,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     });
     assert.equal(healthResponse.headers.get("cache-control"), "no-store");
     assert.match(healthResponse.headers.get("content-security-policy"), /default-src 'self'/);
+    assert.match(healthResponse.headers.get("content-security-policy"), /frame-src https:/);
 
     const journal = await fetch(`${address.url}api/journal`);
     const payload = await journal.json();
@@ -857,6 +858,8 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
       "",
       "background-motion-preference.js",
       "browser-device-auth.js",
+      "embedded-browser.js",
+      "host-message-trust.js",
       "message-view-controller.js",
       "chat-surface-preference.js",
       "navigation-tabs-controller.js",
@@ -2229,13 +2232,16 @@ test("local Web is served without the third-party Telegram runtime", async () =>
     const local = await fetch(address.url);
     const localBody = await local.text();
     assert.doesNotMatch(localBody, /telegram\.org/u);
+    assert.doesNotMatch(localBody, /telegram-runtime-bootstrap/u);
     assert.match(local.headers.get("content-security-policy"), /script-src 'self';/u);
 
     // A request that arrived through the public edge may still be a Mini App.
     const publicPage = await fetch(address.url, {
       headers: { Host: "hub.example", "X-Forwarded-For": "203.0.113.9" },
     });
-    assert.match(await publicPage.text(), /telegram\.org/u);
+    const publicBody = await publicPage.text();
+    assert.doesNotMatch(publicBody, /telegram\.org/u);
+    assert.match(publicBody, /telegram-runtime-bootstrap\.js/u);
     assert.match(
       publicPage.headers.get("content-security-policy"),
       /script-src 'self' https:\/\/telegram\.org/u,
@@ -2257,7 +2263,9 @@ test("a deployment without Telegram never serves the Telegram runtime", async ()
     const response = await fetch(address.url, {
       headers: { Host: "hub.example", "X-Forwarded-For": "203.0.113.9" },
     });
-    assert.doesNotMatch(await response.text(), /telegram\.org/u);
+    const body = await response.text();
+    assert.doesNotMatch(body, /telegram\.org/u);
+    assert.doesNotMatch(body, /telegram-runtime-bootstrap/u);
     assert.match(response.headers.get("content-security-policy"), /script-src 'self';/u);
   } finally {
     await server.close();

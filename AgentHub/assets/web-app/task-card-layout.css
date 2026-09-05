@@ -121,6 +121,29 @@
   flex-wrap: wrap;
 }
 
+.task-checklist-linked-action {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--line));
+  border-radius: 0.55rem;
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.55rem;
+}
+
+.task-checklist-linked-action p {
+  margin: 0;
+}
+
+.task-checklist-linked-action-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.task-checklist-linked-action-choices button {
+  font-size: 0.68rem;
+}
+
 .task-checklist-actions button,
 .task-checklist-actions select {
   font-size: 0.68rem;

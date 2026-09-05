@@ -11,7 +11,6 @@ import test from "node:test";
 
 import { TaskBoardService } from "../../../src/application/task-board-service.mjs";
 import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
-import { TaskMutationOwner } from "../../../src/infrastructure/persistence/task-mutation-owner.mjs";
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 
 async function fixture(t) {
@@ -42,6 +41,33 @@ function update(store, task, operation, requestId, values = {}) {
     taskPrefix: "HUB",
     ...values,
   });
+}
+
+async function linkedChecklistFixture(store, create, suffix = "linked") {
+  let parent = create(`Parent ${suffix}`);
+  const linked = create(`Linked ${suffix}`);
+  const added = await update(store, parent, "add", `${suffix}-add`, { text: "Linked item" });
+  parent = (await update(store, added.task, "link", `${suffix}-link`, {
+    itemId: added.itemId,
+    linkedTaskId: linked.id,
+  })).task;
+  parent = (await update(store, parent, "toggle", `${suffix}-toggle`, {
+    itemId: added.itemId,
+    completed: true,
+  })).task;
+  return { parent, linked: store.task(linked.id), itemId: added.itemId };
+}
+
+function linkedActionPayload(parent, linked, itemId, action, requestId) {
+  return {
+    id: parent.id,
+    itemId,
+    linkedTaskId: linked.id,
+    action,
+    expectedTaskRevision: parent.revision,
+    expectedLinkedTaskRevision: linked.revision,
+    requestId,
+  };
 }
 
 function legacyHashedChecklistEventId(requestId, kind) {
@@ -120,6 +146,106 @@ test("checklist CAS serializes concurrent writers", async (t) => {
   assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
   assert.equal(results.filter((result) => result.status === "rejected").length, 1);
   assert.equal(store.task(parent.id).checklist.length, 1);
+});
+
+test("linked Task actions persist exact no-op, status choice and idempotent replay", async (t) => {
+  const { store, create, databaseFile } = await fixture(t);
+  const noOp = await linkedChecklistFixture(store, create, "no-op");
+  const beforeNoOp = store.task(noOp.linked.id);
+  const noOpPayload = linkedActionPayload(noOp.parent, noOp.linked, noOp.itemId, "none", "linked-no-op");
+  const firstNoOp = await store.applyChecklistLinkedTaskAction(noOpPayload);
+  assert.equal(firstNoOp.replayed, false);
+  assert.deepEqual(store.task(noOp.linked.id), beforeNoOp);
+  assert.equal((await store.applyChecklistLinkedTaskAction(noOpPayload)).replayed, true);
+
+  const awaiting = await linkedChecklistFixture(store, create, "awaiting");
+  const other = create("Unrelated exact target");
+  await assert.rejects(() => store.applyChecklistLinkedTaskAction({
+    ...linkedActionPayload(awaiting.parent, other, awaiting.itemId, "awaiting_implementation", "wrong-target"),
+  }), /Связь пункта с Task изменилась/u);
+  assert.equal(store.task(other.id).workflowStatus, "new");
+  await store.applyChecklistLinkedTaskAction(linkedActionPayload(
+    awaiting.parent, awaiting.linked, awaiting.itemId, "awaiting_implementation", "linked-awaiting",
+  ));
+  assert.equal(store.task(awaiting.linked.id).workflowStatus, "awaiting_implementation");
+  assert.equal(store.task(other.id).workflowStatus, "new");
+
+  store.close();
+  const reopened = new TaskBoardStore({ databaseFile });
+  assert.equal((await reopened.applyChecklistLinkedTaskAction(noOpPayload)).replayed, true);
+  reopened.close();
+});
+
+test("linked Task action rejects uncheck and release-enabled Workspace without mutation", async (t) => {
+  const { store, create, databaseFile } = await fixture(t);
+  const linked = await linkedChecklistFixture(store, create, "guarded");
+  const unchecked = (await update(store, linked.parent, "toggle", "guarded-uncheck", {
+    itemId: linked.itemId,
+    completed: false,
+  })).task;
+  await assert.rejects(() => store.applyChecklistLinkedTaskAction(linkedActionPayload(
+    unchecked, linked.linked, linked.itemId, "done", "guarded-after-uncheck",
+  )), /больше не отмечен вручную/u);
+  assert.equal(store.task(linked.linked.id).workflowStatus, "new");
+
+  const releaseLinked = await linkedChecklistFixture(store, create, "release");
+  const service = new TaskBoardService({
+    store,
+    workspaceCatalog: {
+      hierarchy: () => [],
+      workspace: (id) => id === releaseLinked.parent.workspaceId
+        ? { id, settings: { releaseWorkflowEnabled: true } }
+        : null,
+    },
+  });
+  const payload = linkedActionPayload(
+    releaseLinked.parent, releaseLinked.linked, releaseLinked.itemId, "done", "release-suppressed",
+  );
+  assert.deepEqual(await service.applyChecklistLinkedTaskAction(payload), {
+    suppressed: true,
+    reason: "release_workflow_enabled",
+  });
+  assert.equal(store.task(releaseLinked.linked.id).workflowStatus, "new");
+  const database = new DatabaseSync(databaseFile);
+  assert.equal(database.prepare(`
+    SELECT COUNT(*) AS value FROM hub_task_checklist_linked_actions WHERE request_id = ?
+  `).get(payload.requestId).value, 0);
+  database.close();
+});
+
+test("Done and close persists partial failure then resumes the exact request", async (t) => {
+  const { store, create, databaseFile } = await fixture(t);
+  const linked = await linkedChecklistFixture(store, create, "done-close");
+  const payload = linkedActionPayload(
+    linked.parent, linked.linked, linked.itemId, "done_and_close", "done-close-action",
+  );
+  const blocker = new DatabaseSync(databaseFile);
+  blocker.exec(`
+    CREATE TRIGGER fail_linked_task_close
+    BEFORE UPDATE OF status ON hub_board_tasks
+    WHEN NEW.id = '${linked.linked.id}' AND NEW.status = 'done'
+    BEGIN
+      SELECT RAISE(ABORT, 'forced close failure');
+    END;
+  `);
+  await assert.rejects(() => store.applyChecklistLinkedTaskAction(payload), /forced close failure/u);
+  let current = store.task(linked.linked.id);
+  assert.equal(current.workflowStatus, "done");
+  assert.notEqual(current.status, "done");
+  assert.equal(blocker.prepare(`
+    SELECT phase FROM hub_task_checklist_linked_actions WHERE request_id = ?
+  `).get(payload.requestId).phase, "status_applied");
+  blocker.exec("DROP TRIGGER fail_linked_task_close");
+  blocker.close();
+
+  const resumed = await store.applyChecklistLinkedTaskAction(payload);
+  assert.equal(resumed.replayed, true);
+  current = store.task(linked.linked.id);
+  assert.equal(current.workflowStatus, "done");
+  assert.equal(current.status, "done");
+  const revision = current.revision;
+  assert.equal((await store.applyChecklistLinkedTaskAction(payload)).replayed, true);
+  assert.equal(store.task(linked.linked.id).revision, revision);
 });
 
 test("linked Task completion flows one way and broken links preserve the item", async (t) => {
@@ -214,6 +340,38 @@ test("extract creates one unassigned New Task in the parent Workspace", async (t
   assert.equal(store.list().filter((task) => task.source === "hub-checklist").length, 2);
 });
 
+test("Backlog and Notes extract fail before receipt, Task creation or link mutation", async (t) => {
+  const { store, databaseFile } = await fixture(t);
+  for (const bucket of ["backlog", "notes"]) {
+    let parent = store.create({
+      text: `${bucket} parent`, bucket, triageStatus: "disabled",
+    });
+    const added = await update(store, parent, "add", `${bucket}-extract-add`, {
+      text: "Must stay local",
+    });
+    parent = added.task;
+    await store.deliverChecklistEvents(() => {});
+    const requestId = `${bucket}-extract-denied`;
+    const taskIdsBefore = store.list().map((task) => task.id);
+
+    await assert.rejects(() => update(store, parent, "extract", requestId, {
+      itemId: added.itemId,
+    }), /существующего Workspace/u);
+
+    const unchanged = store.task(parent.id);
+    assert.equal(unchanged.revision, parent.revision);
+    assert.equal(unchanged.checklist[0].linkedTaskId, null);
+    assert.deepEqual(store.list().map((task) => task.id), taskIdsBefore);
+    assert.equal(store.list().filter((task) => task.source === "hub-checklist").length, 0);
+    const database = new DatabaseSync(databaseFile);
+    assert.equal(database.prepare(`
+      SELECT COUNT(*) AS value FROM hub_task_checklist_requests WHERE request_id = ?
+    `).get(requestId).value, 0);
+    database.close();
+    assert.equal((await store.deliverChecklistEvents(() => {})).delivered, 0);
+  }
+});
+
 test("existing databases migrate old Tasks to an empty checklist", async (t) => {
   const { store, create, databaseFile } = await fixture(t);
   const legacy = create("Legacy Task");
@@ -228,9 +386,16 @@ test("existing databases migrate old Tasks to an empty checklist", async (t) => 
   assert.equal(task.checklistParent, null);
 });
 
-test("Task mutation owner yields to HTTP and timers during real SQLite contention", async (t) => {
+test("canonical Task mutation owner yields to HTTP and timers during real SQLite contention", async (t) => {
   const { store, create, databaseFile } = await fixture(t);
   const parent = create("Contended parent");
+  const taskBoard = new TaskBoardService({
+    store,
+    workspaceCatalog: {
+      hierarchy: () => [],
+      workspace: () => ({ settings: { taskPrefix: "HUB" } }),
+    },
+  });
   const blocker = new DatabaseSync(databaseFile);
   blocker.exec("PRAGMA busy_timeout = 0; BEGIN IMMEDIATE;");
   const server = http.createServer((_request, response) => response.end("responsive"));
@@ -243,7 +408,7 @@ test("Task mutation owner yields to HTTP and timers during real SQLite contentio
 
   let timerFired = false;
   setTimeout(() => { timerFired = true; }, 5);
-  const pending = update(store, parent, "add", "contended-add", { text: "One effect" });
+  const pending = update(taskBoard, parent, "add", "contended-add", { text: "One effect" });
   const address = server.address();
   const response = await fetch(`http://127.0.0.1:${address.port}/health`);
   assert.equal(await response.text(), "responsive");
@@ -254,16 +419,22 @@ test("Task mutation owner yields to HTTP and timers during real SQLite contentio
 
   const result = await pending;
   assert.equal(result.task.checklist.length, 1);
-  const replay = await update(store, parent, "add", "contended-add", { text: "One effect" });
+  const replay = await update(taskBoard, parent, "add", "contended-add", { text: "One effect" });
   assert.equal(replay.replayed, true);
   assert.equal(store.task(parent.id).checklist.length, 1);
 });
 
-test("Task mutation owner bounds SQLite busy retry", async (t) => {
+test("canonical Task mutation owner bounds SQLite busy retry", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-checklist-bounded-"));
   const databaseFile = path.join(directory, "runtime.sqlite");
-  const owner = new TaskMutationOwner({ retryDelaysMs: [0, 5, 10] });
-  const store = new TaskBoardStore({ databaseFile, taskMutationOwner: owner });
+  const store = new TaskBoardStore({ databaseFile });
+  const taskBoard = new TaskBoardService({
+    store,
+    workspaceCatalog: {
+      hierarchy: () => [],
+      workspace: () => ({ settings: { taskPrefix: "HUB" } }),
+    },
+  });
   t.after(async () => {
     store.close();
     await rm(directory, { recursive: true, force: true });
@@ -273,7 +444,7 @@ test("Task mutation owner bounds SQLite busy retry", async (t) => {
   });
   const blocker = new DatabaseSync(databaseFile);
   blocker.exec("PRAGMA busy_timeout = 0; BEGIN IMMEDIATE;");
-  await assert.rejects(() => update(store, parent, "add", "bounded-add", { text: "Blocked" }), /locked/u);
+  await assert.rejects(() => update(taskBoard, parent, "add", "bounded-add", { text: "Blocked" }), /locked/u);
   blocker.exec("ROLLBACK");
   blocker.close();
   assert.deepEqual(store.task(parent.id).checklist, []);

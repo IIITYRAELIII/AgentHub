@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { HubMcpService } from "../../src/application/hub-mcp-service.mjs";
+import { createInterstreamMessage } from "../../src/domain/interstream-message.mjs";
 
 function methodStub(result = null) {
   return () => result;
@@ -54,6 +55,9 @@ test("hub_task_start carries the audited source Stream into message intake", asy
       operations.set(operation.requestId, value);
       return value;
     },
+    bindMcpOperationInterstreamContentHash: (requestId, contentHash) => {
+      Object.assign(operations.get(requestId), { interstreamContentHash: contentHash });
+    },
     completeMcpOperation: (requestId, result) => {
       Object.assign(operations.get(requestId), { status: "succeeded", result });
     },
@@ -74,6 +78,10 @@ test("hub_task_start carries the audited source Stream into message intake", asy
     addAttachment: methodStub(task),
     claim: methodStub(task),
     requestWorkflowStatus: methodStub(task),
+    beginLifecycleTransition: methodStub(task),
+    commitWorkflowTransition: methodStub(task),
+    failLifecycleTransition: methodStub(task),
+    finalizeCleanupTransition: methodStub(task),
     releaseTasks: methodStub([]),
     adoptLegacyGitReference: methodStub(task),
   };
@@ -95,6 +103,10 @@ test("hub_task_start carries the audited source Stream into message intake", asy
   let launch = null;
   service.setTaskLauncher(async (params, context) => {
     launch = { params, context };
+    context.bindInterstreamAuditContent(createInterstreamMessage({
+      ...context.messageOrigin,
+      text: params.message,
+    }));
     return {
       task: { ...task, status: "started", workflowStatus: "in_progress", streamId: "stream-architect" },
       target: { streamId: "stream-architect", provider: "codex", threadId: "thread-target" },

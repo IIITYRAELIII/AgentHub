@@ -11,6 +11,9 @@ const TASK_CHECKLIST_REQUEST_ID_MAX_LENGTH = 200;
 const LEGACY_TASK_CHECKLIST_EVENT_ID_PREFIX = "task-checklist:";
 const TASK_CHECKLIST_EVENT_ID_PREFIX = "task-checklist-v2:";
 const TASK_CHECKLIST_PROJECTION_BATCH_SIZE = 250;
+const TASK_CHECKLIST_LINKED_ACTIONS = Object.freeze([
+  "none", "awaiting_implementation", "done", "done_and_close",
+]);
 
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
@@ -75,6 +78,7 @@ function taskSummary(row) {
     status: row.status,
     workspaceId: row.workspace_id ?? null,
     streamId: row.stream_id ?? null,
+    revision: Number(row.exact_row_revision ?? row.row_revision) || 1,
   };
 }
 
@@ -105,6 +109,22 @@ export function configureTaskChecklist(database) {
       created_task_id TEXT,
       created_at_ms INTEGER NOT NULL,
       FOREIGN KEY (task_id) REFERENCES hub_board_tasks(id) ON DELETE CASCADE
+    ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS hub_task_checklist_linked_actions (
+      request_id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      item_id TEXT NOT NULL,
+      linked_task_id TEXT NOT NULL,
+      action TEXT NOT NULL CHECK (action IN ('none', 'awaiting_implementation', 'done', 'done_and_close')),
+      arguments_hash TEXT NOT NULL,
+      expected_task_revision TEXT NOT NULL,
+      expected_linked_task_revision TEXT NOT NULL,
+      phase TEXT NOT NULL CHECK (phase IN ('pending', 'status_applied', 'completed')),
+      applied_linked_task_revision TEXT,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL,
+      FOREIGN KEY (task_id) REFERENCES hub_board_tasks(id) ON DELETE CASCADE,
+      FOREIGN KEY (linked_task_id) REFERENCES hub_board_tasks(id) ON DELETE CASCADE
     ) WITHOUT ROWID;
     CREATE TABLE IF NOT EXISTS hub_task_checklist_event_outbox (
       id TEXT PRIMARY KEY,
@@ -195,7 +215,8 @@ export function taskChecklistProjectionMap(database, taskIds) {
         linked.raw_text AS linked_raw_text, linked.title AS linked_title,
         linked.corrected_text AS linked_corrected_text, linked.status AS linked_status,
         linked.workflow_status AS linked_workflow_status,
-        linked.workspace_id AS linked_workspace_id, linked.stream_id AS linked_stream_id
+        linked.workspace_id AS linked_workspace_id, linked.stream_id AS linked_stream_id,
+        CAST(linked.row_revision AS TEXT) AS linked_exact_row_revision
       FROM hub_task_checklist_items AS item
       LEFT JOIN hub_board_tasks AS linked ON linked.id = item.linked_task_id
       WHERE item.task_id IN (${placeholders})
@@ -223,6 +244,7 @@ export function taskChecklistProjectionMap(database, taskIds) {
       workflow_status: row.linked_workflow_status,
       workspace_id: row.linked_workspace_id,
       stream_id: row.linked_stream_id,
+      exact_row_revision: row.linked_exact_row_revision,
     }) : null;
     ensure(row.task_id).checklist.push({
       id: row.id,
@@ -442,7 +464,14 @@ export function taskChecklistRequestOutcome(database, payload) {
   const replay = database.prepare(`
     SELECT * FROM hub_task_checklist_requests WHERE request_id = ?
   `).get(identity.requestId);
-  if (!replay) return null;
+  if (!replay) {
+    if (database.prepare(`
+      SELECT 1 FROM hub_task_checklist_linked_actions WHERE request_id = ?
+    `).get(identity.requestId)) {
+      throw new Error("request id уже использован для действия связанной Task");
+    }
+    return null;
+  }
   if (
     replay.task_id !== identity.taskId
     || replay.operation !== identity.operation
@@ -455,6 +484,166 @@ export function taskChecklistRequestOutcome(database, payload) {
     createdTaskId: replay.created_task_id ?? null,
     replayed: true,
   };
+}
+
+function taskChecklistLinkedActionIdentity(payload = {}) {
+  const taskId = String(payload.taskId ?? payload.id ?? "").trim();
+  const itemId = String(payload.itemId ?? "").trim();
+  const linkedTaskId = String(payload.linkedTaskId ?? "").trim();
+  const requestId = String(payload.requestId ?? "").trim();
+  const action = String(payload.action ?? "").trim();
+  const expectedTaskRevision = String(payload.expectedTaskRevision ?? "").trim();
+  const expectedLinkedTaskRevision = String(payload.expectedLinkedTaskRevision ?? "").trim();
+  if (
+    !taskId || !itemId || !linkedTaskId || !requestId
+    || requestId.length > TASK_CHECKLIST_REQUEST_ID_MAX_LENGTH
+    || requestId.includes("\0")
+    || !TASK_CHECKLIST_LINKED_ACTIONS.includes(action)
+    || !/^[1-9]\d*$/u.test(expectedTaskRevision)
+    || !/^[1-9]\d*$/u.test(expectedLinkedTaskRevision)
+  ) {
+    throw new Error("Действие связанной Task требует точную связь, request id и актуальные revisions");
+  }
+  const semantic = {
+    taskId, itemId, linkedTaskId, action, expectedTaskRevision, expectedLinkedTaskRevision,
+  };
+  return { ...semantic, requestId, hash: argumentsHash(semantic) };
+}
+
+function checklistLinkedActionReceipt(database, identity) {
+  const receipt = database.prepare(`
+    SELECT * FROM hub_task_checklist_linked_actions WHERE request_id = ?
+  `).get(identity.requestId);
+  if (!receipt) {
+    if (database.prepare(`
+      SELECT 1 FROM hub_task_checklist_requests WHERE request_id = ?
+    `).get(identity.requestId)) {
+      throw new Error("request id уже использован для другой операции чек-листа");
+    }
+    return null;
+  }
+  if (
+    receipt.task_id !== identity.taskId
+    || receipt.item_id !== identity.itemId
+    || receipt.linked_task_id !== identity.linkedTaskId
+    || receipt.action !== identity.action
+    || receipt.arguments_hash !== identity.hash
+  ) {
+    throw new Error("request id уже использован для другого действия связанной Task");
+  }
+  return receipt;
+}
+
+function exactChecklistLinkedActionState(database, identity) {
+  const state = database.prepare(`
+    SELECT parent.workspace_id AS parent_workspace_id,
+      CAST(parent.row_revision AS TEXT) AS parent_revision,
+      item.manual_completed, item.linked_task_id,
+      linked.workspace_id AS linked_workspace_id,
+      linked.workflow_status AS linked_workflow_status,
+      CAST(linked.row_revision AS TEXT) AS linked_revision
+    FROM hub_board_tasks AS parent
+    JOIN hub_task_checklist_items AS item ON item.task_id = parent.id AND item.id = ?
+    JOIN hub_board_tasks AS linked ON linked.id = item.linked_task_id
+    WHERE parent.id = ?
+  `).get(identity.itemId, identity.taskId);
+  if (!state || state.linked_task_id !== identity.linkedTaskId) {
+    throw new Error("Связь пункта с Task изменилась; обновите карточку");
+  }
+  if (Number(state.manual_completed) !== 1) {
+    throw new Error("Пункт больше не отмечен вручную");
+  }
+  if (!state.parent_workspace_id || state.parent_workspace_id !== state.linked_workspace_id) {
+    throw new Error("Связанная Task больше не принадлежит Workspace пункта");
+  }
+  return state;
+}
+
+export function mutateTaskChecklistLinkedAction(database, payload, { now } = {}) {
+  const identity = taskChecklistLinkedActionIdentity(payload);
+  let receipt = checklistLinkedActionReceipt(database, identity);
+  const replayed = Boolean(receipt);
+  const timestamp = now();
+  if (!receipt) {
+    const state = exactChecklistLinkedActionState(database, identity);
+    if (state.parent_revision !== identity.expectedTaskRevision) {
+      throw new Error("Task revision changed; reload the card and retry");
+    }
+    if (state.linked_revision !== identity.expectedLinkedTaskRevision) {
+      throw new Error("Linked Task revision changed; reload the card and retry");
+    }
+    const phase = identity.action === "none" ? "completed" : "pending";
+    database.prepare(`
+      INSERT INTO hub_task_checklist_linked_actions (
+        request_id, task_id, item_id, linked_task_id, action, arguments_hash,
+        expected_task_revision, expected_linked_task_revision, phase,
+        applied_linked_task_revision, created_at_ms, updated_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+    `).run(
+      identity.requestId, identity.taskId, identity.itemId, identity.linkedTaskId,
+      identity.action, identity.hash, identity.expectedTaskRevision,
+      identity.expectedLinkedTaskRevision, phase, timestamp, timestamp,
+    );
+    receipt = checklistLinkedActionReceipt(database, identity);
+  }
+  if (receipt.phase === "completed") {
+    return { ...identity, phase: "completed", completed: true, replayed };
+  }
+  const state = exactChecklistLinkedActionState(database, identity);
+  if (receipt.phase === "pending") {
+    if (state.linked_revision !== identity.expectedLinkedTaskRevision) {
+      throw new Error("Linked Task revision changed; reload the card and retry");
+    }
+    const workflowStatus = identity.action === "awaiting_implementation"
+      ? "awaiting_implementation"
+      : "done";
+    if (workflowStatus !== "awaiting_implementation") {
+      database.prepare(`
+        UPDATE hub_task_turn_bindings SET requested_workflow_status = NULL
+        WHERE task_id = ? AND requested_workflow_status IS NOT NULL
+      `).run(identity.linkedTaskId);
+    }
+    const update = database.prepare(`
+      UPDATE hub_board_tasks
+      SET workflow_status = ?, completed_at_ms = NULL, updated_at_ms = ?
+      WHERE id = ? AND row_revision = ?
+    `).run(workflowStatus, timestamp, identity.linkedTaskId, Number(identity.expectedLinkedTaskRevision));
+    if (Number(update.changes) !== 1) {
+      throw new Error("Linked Task revision changed; reload the card and retry");
+    }
+    const appliedRevision = String(database.prepare(`
+      SELECT row_revision FROM hub_board_tasks WHERE id = ?
+    `).get(identity.linkedTaskId)?.row_revision ?? "");
+    const phase = identity.action === "done_and_close" ? "status_applied" : "completed";
+    database.prepare(`
+      UPDATE hub_task_checklist_linked_actions
+      SET phase = ?, applied_linked_task_revision = ?, updated_at_ms = ?
+      WHERE request_id = ?
+    `).run(phase, appliedRevision, timestamp, identity.requestId);
+    return { ...identity, phase, completed: phase === "completed", replayed };
+  }
+  if (identity.action !== "done_and_close" || receipt.phase !== "status_applied") {
+    throw new Error("Некорректная durable-фаза действия связанной Task");
+  }
+  if (
+    state.linked_workflow_status !== "done"
+    || state.linked_revision !== String(receipt.applied_linked_task_revision ?? "")
+  ) {
+    throw new Error("Linked Task changed after marking Done; close was not applied");
+  }
+  const close = database.prepare(`
+    UPDATE hub_board_tasks
+    SET status = 'done', completed_at_ms = ?, updated_at_ms = ?
+    WHERE id = ? AND row_revision = ? AND workflow_status = 'done'
+  `).run(timestamp, timestamp, identity.linkedTaskId, Number(state.linked_revision));
+  if (Number(close.changes) !== 1) {
+    throw new Error("Linked Task changed after marking Done; close was not applied");
+  }
+  database.prepare(`
+    UPDATE hub_task_checklist_linked_actions SET phase = 'completed', updated_at_ms = ?
+    WHERE request_id = ?
+  `).run(timestamp, identity.requestId);
+  return { ...identity, phase: "completed", completed: true, replayed };
 }
 
 export function markTaskChecklistEventDelivered(database, eventId, timestamp) {
@@ -479,6 +668,9 @@ export function mutateTaskChecklist(database, payload, {
     FROM hub_board_tasks WHERE id = ?
   `).get(taskId);
   if (!task) throw new Error("Задача не найдена");
+  if (operation === "extract" && !task.workspace_id) {
+    throw new Error("Вынести пункт можно только из Task существующего Workspace");
+  }
   if (String(task.exact_row_revision) !== expectedRevision) {
     throw new Error("Task revision changed; reload the card and retry");
   }

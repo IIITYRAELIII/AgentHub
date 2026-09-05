@@ -35,6 +35,7 @@ function fixture({ activeThread = null, sourceDetails = undefined, voiceTranscri
       },
       update: (value) => calls.push(["update", value]),
       updateChecklist: async (value) => calls.push(["checklist", value]),
+      applyChecklistLinkedTaskAction: async (value) => calls.push(["checklist-linked-action", value]),
       addAttachment: (value) => calls.push(["add-attachment", value]),
       setWorkflowStatus: (value) => calls.push(["status", value]),
       move: (value) => calls.push(["move", value]),
@@ -47,6 +48,11 @@ function fixture({ activeThread = null, sourceDetails = undefined, voiceTranscri
         status: "open", streamId: null, startStreamName: null, startRequestId: null,
       }),
       markStarted: (value) => calls.push(["started", value]),
+    },
+    taskLifecycle: {
+      updateWorkflowStatus: async (value) => { calls.push(["lifecycle-status", value]); return task; },
+      complete: async (value) => { calls.push(["lifecycle-complete", value]); return task; },
+      delete: async (value) => { calls.push(["lifecycle-delete", value]); return { deleted: true, task }; },
     },
     workspaceCatalog: {
       workspace: (id) => id === "workspace-1" ? { id, name: "Agent Hub" } : null,
@@ -252,11 +258,47 @@ test("dashboard checklist mutation waits for durable completion before snapshot"
   assert.deepEqual(result, { boardTasks: [] });
 });
 
+test("dashboard linked Task action waits for durable completion before snapshot", async () => {
+  const { controller, calls } = fixture();
+  const params = {
+    id: "board-1", itemId: "item-1", linkedTaskId: "board-2", action: "done",
+    expectedTaskRevision: 4, expectedLinkedTaskRevision: 2, requestId: "linked-action-1",
+  };
+  const result = await controller.checklistLinkedTaskAction(params);
+  assert.deepEqual(calls, [
+    ["checklist-linked-action", params],
+    ["snapshot", { refresh: true }],
+  ]);
+  assert.deepEqual(result, { boardTasks: [] });
+});
+
 test("dashboard changes a Task workflow status manually", async () => {
   const { controller, calls } = fixture();
   await controller.status({ id: "board-1", status: "testing" });
-  assert.deepEqual(calls[0], ["status", { id: "board-1", status: "testing" }]);
+  assert.deepEqual(calls[0], ["lifecycle-status", {
+    taskId: "board-1", status: "testing", operationId: "",
+  }]);
   assert.deepEqual(calls[1], ["snapshot", { refresh: true }]);
+});
+
+test("dashboard Complete and Delete use the shared lifecycle owner", async () => {
+  const { controller, calls } = fixture();
+  await controller.complete({
+    id: "board-1", confirmCleanup: true, expectedCleanupToken: "complete-token",
+  }, { commandId: "desktop-complete" });
+  await controller.remove({
+    id: "board-1", confirmCleanup: true, expectedCleanupToken: "delete-token",
+  }, { commandId: "desktop-delete" });
+  assert.deepEqual(calls.filter(([kind]) => kind.startsWith("lifecycle-")), [
+    ["lifecycle-complete", {
+      taskId: "board-1", operationId: "desktop-complete",
+      confirmCleanup: true, expectedCleanupToken: "complete-token",
+    }],
+    ["lifecycle-delete", {
+      taskId: "board-1", operationId: "desktop-delete",
+      confirmCleanup: true, expectedCleanupToken: "delete-token",
+    }],
+  ]);
 });
 
 test("legacy Workspace move adapts to the shared column contract", async () => {
@@ -306,6 +348,6 @@ test("starting a Task can create a new Stream before sending", async () => {
     id: "board-1", workspaceId: "workspace-1", streamName: "Dashboard", provider: "codex",
   });
   assert.equal(calls[0][1], "task.create");
-  assert.equal(calls[0][2].streamName, "Dashboard");
+  assert.match(calls[0][2].streamId, /^task-launch-/u);
   assert.equal(calls[1][1].streamId, "stream-new");
 });

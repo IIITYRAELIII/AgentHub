@@ -30,6 +30,75 @@
     fitWidth: fitTaskCardWidth,
   });
 
+  function cleanupValue(value, fallback = "<нет>") {
+    const text = String(value ?? "").trim();
+    return text || fallback;
+  }
+
+  function cleanupPaths(title, values) {
+    const paths = (Array.isArray(values) ? values : []).map((value) => cleanupValue(value)).filter(Boolean);
+    return [`${title}:`, ...(paths.length ? paths.map((value) => `  - ${value}`) : ["  - <нет>"])];
+  }
+
+  function taskCleanupConfirmationText(confirmation = {}) {
+    const preview = confirmation.preview ?? {};
+    const lines = [cleanupValue(confirmation.warning, "Подтвердите удаление артефактов Task."), "", "Состояние Task Git:"];
+    const workspaces = Array.isArray(preview.workspaces) ? preview.workspaces : [];
+    if (!workspaces.length) lines.push("  <managed worktree отсутствует>");
+    for (const [index, workspace] of workspaces.entries()) {
+      lines.push(
+        `  Checkout ${index + 1}:`,
+        `    Ветка: ${cleanupValue(workspace.branch)}`,
+        `    Worktree: ${cleanupValue(workspace.projectRoot)}`,
+        `    HEAD: ${cleanupValue(workspace.headCommit)}`,
+        `    Состояние: ${workspace.dirty === true ? "dirty" : "clean"}`,
+        ...cleanupPaths("    Изменённые пути", workspace.changedPaths),
+        ...cleanupPaths("    Untracked пути", workspace.untrackedPaths),
+      );
+    }
+    lines.push("", `Общее dirty-состояние: ${preview.dirty === true ? "dirty" : "clean"}`, "", "Результат и публикация:");
+    const references = Array.isArray(preview.gitReferences) ? preview.gitReferences : [];
+    if (!references.length) lines.push("  <result commit отсутствует>");
+    for (const [index, reference] of references.entries()) {
+      lines.push(
+        `  Результат ${index + 1}:`,
+        `    Репозиторий: ${cleanupValue(reference.projectRoot)}`,
+        `    Ветка: ${cleanupValue(reference.branch)}`,
+        `    Result commit: ${cleanupValue(reference.resultCommit)}`,
+        `    Publication state: ${reference.published === true ? "published" : "unpublished"}`,
+        `    Publication revision: ${cleanupValue(reference.publishedRevision)}`,
+        `    Publication generation: ${cleanupValue(reference.publicationGeneration)}`,
+      );
+    }
+    lines.push("", "Будет удалено:");
+    const deleting = Array.isArray(preview.deleting) ? preview.deleting : [];
+    if (!deleting.length) lines.push("  - <ничего>");
+    for (const item of deleting) {
+      const target = cleanupValue(item.path ?? item.name);
+      const repository = cleanupValue(item.repositoryRoot, "");
+      lines.push(`  - [${cleanupValue(item.kind, "artifact")}] ${target}${repository ? ` (repo: ${repository})` : ""}`);
+    }
+    return lines.join("\n");
+  }
+
+  async function confirmTaskCleanup({ confirmation, action, params = {}, request, confirm = window.confirm } = {}) {
+    if (typeof request !== "function") throw new TypeError("Task cleanup request is required");
+    if (typeof confirm !== "function") throw new TypeError("Task cleanup confirmation UI is required");
+    const text = taskCleanupConfirmationText(confirmation);
+    if (!confirm(text)) return { confirmed: false, text, result: null };
+    const result = await request(action, {
+      ...params,
+      confirmCleanup: true,
+      expectedCleanupToken: confirmation?.cleanupToken,
+    });
+    return { confirmed: true, text, result };
+  }
+
+  window.AgentHubTaskCleanupConfirmation = Object.freeze({
+    confirm: confirmTaskCleanup,
+    format: taskCleanupConfirmationText,
+  });
+
   function createAutoGrowTextarea({ textarea, getStyle = (element) => window.getComputedStyle(element) } = {}) {
     function resize() {
       if (!textarea) return 0;
@@ -827,6 +896,7 @@
     attachingTaskId: null,
     removingTaskId: null,
     pendingChecklistActions: new Map(),
+    checklistLinkedActionPrompts: new Map(),
     editingChecklistItemId: null,
     snapshotInitialized: false,
   };
@@ -1045,6 +1115,12 @@
     return `task-checklist:${taskId}:${suffix}`;
   }
 
+  function checklistLinkedActionRequestId(taskId) {
+    const suffix = window.crypto?.randomUUID?.()
+      ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    return `task-checklist-linked:${taskId}:${suffix}`;
+  }
+
   function openStart(task) {
     const workspace = workspaceById(task.workspaceId);
     if (!workspace) return;
@@ -1133,12 +1209,15 @@
 
   function emitChecklist(task, operation, payload = {}) {
     if (state.pendingChecklistActions.has(task.id)) return;
+    const { promptLinkedTaskId = null, ...commandPayload } = payload;
     const requestId = checklistRequestId(task.id);
     state.pendingChecklistActions.set(task.id, {
       taskId: task.id,
       itemId: String(payload.itemId ?? ""),
       operation,
       requestId,
+      completed: payload.completed === true,
+      linkedTaskId: String(promptLinkedTaskId ?? ""),
     });
     renderOpenTaskCard();
     emit("checklist", {
@@ -1146,8 +1225,55 @@
       operation,
       expectedRevision: task.revision,
       requestId,
-      ...payload,
+      ...commandPayload,
     });
+  }
+
+  function emitChecklistLinkedTaskAction(prompt, action) {
+    if (prompt.pending) return;
+    prompt.pending = true;
+    prompt.selectedAction ??= action;
+    renderOpenTaskCard();
+    emit("checklist-linked-task-action", {
+      id: prompt.taskId,
+      itemId: prompt.itemId,
+      linkedTaskId: prompt.linkedTaskId,
+      action: prompt.selectedAction,
+      expectedTaskRevision: prompt.expectedTaskRevision,
+      expectedLinkedTaskRevision: prompt.expectedLinkedTaskRevision,
+      requestId: prompt.requestId,
+    });
+  }
+
+  function checklistLinkedTaskActionPrompt(task, item) {
+    const prompt = state.checklistLinkedActionPrompts.get(task.id);
+    if (!prompt || prompt.itemId !== item.id) return null;
+    if (
+      item.manualCompleted !== true
+      || item.linkedTaskId !== prompt.linkedTaskId
+      || workspaceById(task.workspaceId)?.settings?.releaseWorkflowEnabled === true
+    ) {
+      state.checklistLinkedActionPrompts.delete(task.id);
+      return null;
+    }
+    const choices = [
+      ["none", "Ничего не делать"],
+      ["awaiting_implementation", "Отметить Awaiting implementation"],
+      ["done", "Отметить Done"],
+      ["done_and_close", "Отметить Done и закрыть"],
+    ];
+    return node("section", {
+      class: "task-checklist-linked-action",
+      "aria-label": "Действие со связанной Task",
+    }, [
+      node("p", { text: "Что сделать со связанной Task?" }),
+      node("div", { class: "task-checklist-linked-action-choices" }, choices.map(([action, label]) => {
+        const button = checklistAction(label, label, () => emitChecklistLinkedTaskAction(prompt, action),
+          action === "none" ? "board-task-quiet" : "board-task-primary");
+        button.disabled = prompt.pending || (prompt.selectedAction != null && prompt.selectedAction !== action);
+        return button;
+      })),
+    ]);
   }
 
   function checklistAction(label, title, onclick, className = "board-task-quiet") {
@@ -1213,6 +1339,7 @@
     if (!taskChecklistItems || !taskChecklistProgressOutput) return;
     const checklist = Array.isArray(task.checklist) ? task.checklist : [];
     const progress = taskChecklistProgress(task);
+    const canExtract = Boolean(workspaceById(task.workspaceId));
     taskChecklistProgressOutput.textContent = `${progress.completed} из ${progress.total}`;
     taskChecklistItems.replaceChildren(...checklist.map((item, index) => {
       const busy = state.pendingChecklistActions.has(task.id);
@@ -1225,6 +1352,7 @@
         onchange: (event) => emitChecklist(task, "toggle", {
           itemId: item.id,
           completed: event.currentTarget.checked,
+          promptLinkedTaskId: item.linkedTaskId,
         }),
       });
       checkbox.checked = item.completed === true;
@@ -1252,18 +1380,23 @@
         checklistLinkSelect(task, item),
         ...(item.linkedTaskId ? [checklistAction("Отвязать", "Оставить Task без удаления", () => (
           emitChecklist(task, "unlink", { itemId: item.id })
-        ))] : [checklistAction("Вынести", "Создать отдельную Task", () => (
+        ))] : canExtract ? [checklistAction("Вынести", "Создать отдельную Task", () => (
           emitChecklist(task, "extract", { itemId: item.id })
-        ))]),
+        ))] : []),
         checklistAction("Удалить", "Удалить пункт", () => emitChecklist(task, "remove", {
           itemId: item.id,
         }), "board-task-remove"),
       ]);
       for (const control of actions.querySelectorAll?.("button, select") ?? []) control.disabled = busy;
+      const linkedActionPrompt = checklistLinkedTaskActionPrompt(task, item);
       return node("li", {
         class: `task-checklist-item${item.completed ? " is-completed" : ""}${linkedTask ? " is-linked" : ""}`,
         "data-checklist-item-id": item.id,
-      }, [checkbox, node("div", { class: "task-checklist-body" }, [content, actions])]);
+      }, [checkbox, node("div", { class: "task-checklist-body" }, [
+        content,
+        ...(linkedActionPrompt ? [linkedActionPrompt] : []),
+        actions,
+      ])]);
     }));
   }
 
@@ -1937,6 +2070,37 @@
         if (succeeded && pending.operation === "add" && state.openTaskId === id && taskChecklistAddInput) {
           taskChecklistAddInput.value = "";
         }
+        if (succeeded && pending.operation === "toggle" && pending.completed && pending.linkedTaskId) {
+          const task = state.tasks.find((candidate) => candidate.id === id);
+          const item = task?.checklist?.find((candidate) => candidate.id === pending.itemId);
+          const linkedTask = state.tasks.find((candidate) => candidate.id === pending.linkedTaskId)
+            ?? item?.linkedTask;
+          const workspace = workspaceById(task?.workspaceId);
+          if (
+            task && item?.manualCompleted === true
+            && item.linkedTaskId === pending.linkedTaskId
+            && linkedTask?.revision
+            && workspace?.settings?.releaseWorkflowEnabled !== true
+          ) {
+            state.checklistLinkedActionPrompts.set(id, {
+              taskId: id,
+              itemId: pending.itemId,
+              linkedTaskId: pending.linkedTaskId,
+              expectedTaskRevision: task.revision,
+              expectedLinkedTaskRevision: linkedTask.revision,
+              requestId: checklistLinkedActionRequestId(id),
+              selectedAction: null,
+              pending: false,
+            });
+          }
+        }
+        if (state.openTaskId === id) renderOpenTaskCard();
+      }
+      if (type === "checklist-linked-task-action") {
+        const prompt = state.checklistLinkedActionPrompts.get(id);
+        if (!prompt || prompt.requestId !== String(requestId ?? "")) return;
+        if (succeeded) state.checklistLinkedActionPrompts.delete(id);
+        else prompt.pending = false;
         if (state.openTaskId === id) renderOpenTaskCard();
       }
     },

@@ -92,7 +92,7 @@ const task = (values = {}) => ({
   ...values,
 });
 
-async function setBoard(page, tasks, openTaskId = "parent") {
+async function setBoard(page, tasks, openTaskId = "parent", workspaceValue = workspace) {
   await page.evaluate(({ tasks: values, workspace: value, openTaskId: id }) => {
     window.AgentHubTaskBoard.setSnapshot({
       tasks: values,
@@ -100,7 +100,7 @@ async function setBoard(page, tasks, openTaskId = "parent") {
       columnOrder: [`workspace:${value.id}`],
     });
     document.dispatchEvent(new CustomEvent("agenthub:task-reference-open", { detail: { taskId: id } }));
-  }, { tasks, workspace, openTaskId });
+  }, { tasks, workspace: workspaceValue, openTaskId });
 }
 
 async function resetAction(page) {
@@ -229,6 +229,152 @@ test("linked checklist items use Task cards and support open, replace, unlink an
     }] }), child]);
     await page.locator('button[title="Создать отдельную Task"]').click();
     assert.equal((await page.evaluate(() => window.__boardActions.at(-1))).operation, "extract");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("Backlog and Notes checklist items do not offer extract", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchEdge(chromium);
+  try {
+    const page = await browser.newPage();
+    await openFixture(page);
+    for (const bucket of ["backlog", "notes"]) {
+      await setBoard(page, [task({
+        bucket,
+        workspaceId: null,
+        streamId: null,
+        checklist: [{
+          id: `${bucket}-plain`, text: "Keep in place", completed: false, position: 0,
+        }],
+      })]);
+      assert.equal(await page.locator('button[title="Создать отдельную Task"]').count(), 0);
+    }
+    assert.deepEqual(await page.evaluate(() => window.__boardActions), []);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("manual linked check offers exactly four non-release actions and retries one exact choice", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchEdge(chromium);
+  try {
+    const page = await browser.newPage();
+    await openFixture(page);
+    const child = task({
+      id: "child", taskNumber: "HUB-165", title: "Child", status: "open",
+      workflowStatus: "new", streamId: null, revision: 3,
+    });
+    const pendingParent = task({ checklist: [{
+      id: "linked", text: "Linked", completed: false, manualCompleted: false, position: 0,
+      linkedTaskId: child.id, linkedTask: child,
+    }] });
+    await setBoard(page, [pendingParent, child]);
+    await page.locator('[data-checklist-item-id="linked"] input[type="checkbox"]').click();
+    const toggle = await page.evaluate(() => window.__boardActions.at(-1));
+    assert.equal(toggle.type, "checklist");
+    assert.equal(toggle.completed, true);
+    assert.equal(Object.hasOwn(toggle, "promptLinkedTaskId"), false);
+
+    const checkedParent = task({ revision: 6, checklist: [{
+      id: "linked", text: "Linked", completed: true, manualCompleted: true, position: 0,
+      linkedTaskId: child.id, linkedTask: child,
+    }] });
+    await setBoard(page, [checkedParent, child]);
+    await page.evaluate((action) => window.AgentHubTaskBoard.finishAction({ ...action, succeeded: true }), toggle);
+    const prompt = page.getByRole("region", { name: "Действие со связанной Task" });
+    await assert.doesNotReject(() => prompt.waitFor({ state: "visible" }));
+    assert.deepEqual(await prompt.getByRole("button").allTextContents(), [
+      "Ничего не делать",
+      "Отметить Awaiting implementation",
+      "Отметить Done",
+      "Отметить Done и закрыть",
+    ]);
+    await prompt.getByRole("button", { name: "Отметить Done", exact: true }).click();
+    const first = await page.evaluate(() => window.__boardActions.at(-1));
+    assert.deepEqual({
+      type: first.type,
+      id: first.id,
+      itemId: first.itemId,
+      linkedTaskId: first.linkedTaskId,
+      action: first.action,
+      expectedTaskRevision: first.expectedTaskRevision,
+      expectedLinkedTaskRevision: first.expectedLinkedTaskRevision,
+    }, {
+      type: "checklist-linked-task-action",
+      id: "parent",
+      itemId: "linked",
+      linkedTaskId: "child",
+      action: "done",
+      expectedTaskRevision: 6,
+      expectedLinkedTaskRevision: 3,
+    });
+    await page.evaluate((action) => window.AgentHubTaskBoard.finishAction({ ...action, succeeded: false }), first);
+    assert.equal(await prompt.getByRole("button", { name: "Отметить Awaiting implementation" }).isDisabled(), true);
+    await prompt.getByRole("button", { name: "Отметить Done", exact: true }).click();
+    const retry = await page.evaluate(() => window.__boardActions.at(-1));
+    assert.equal(retry.requestId, first.requestId);
+    assert.equal(retry.action, first.action);
+    await page.evaluate((action) => window.AgentHubTaskBoard.finishAction({ ...action, succeeded: true }), retry);
+    assert.equal(await prompt.count(), 0);
+    assert.equal(await page.locator('[data-checklist-item-id="linked"] input[type="checkbox"]').isChecked(), true);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("release workflow, no-op, uncheck and automatic sync never mutate implicitly", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchEdge(chromium);
+  try {
+    const page = await browser.newPage();
+    await openFixture(page);
+    const child = task({
+      id: "child", taskNumber: "HUB-165", title: "Child", status: "open",
+      workflowStatus: "new", streamId: null, revision: 3,
+    });
+    const linkedItem = (values = {}) => ({
+      id: "linked", text: "Linked", completed: false, manualCompleted: false, position: 0,
+      linkedTaskId: child.id, linkedTask: child, ...values,
+    });
+    const releaseWorkspace = { ...workspace, settings: { releaseWorkflowEnabled: true } };
+    const releaseParent = task({ checklist: [linkedItem()] });
+    await setBoard(page, [releaseParent, child], "parent", releaseWorkspace);
+    await page.locator('[data-checklist-item-id="linked"] input[type="checkbox"]').click();
+    let action = await page.evaluate(() => window.__boardActions.at(-1));
+    await setBoard(page, [task({ revision: 6, checklist: [linkedItem({ completed: true, manualCompleted: true })] }), child], "parent", releaseWorkspace);
+    await page.evaluate((value) => window.AgentHubTaskBoard.finishAction({ ...value, succeeded: true }), action);
+    assert.equal(await page.getByRole("region", { name: "Действие со связанной Task" }).count(), 0);
+    assert.equal((await page.evaluate(() => window.__boardActions)).length, 1);
+
+    const nonRelease = { ...workspace, settings: { releaseWorkflowEnabled: false } };
+    await setBoard(page, [task({ revision: 7, checklist: [linkedItem({ completed: true, manualCompleted: true })] }), child], "parent", nonRelease);
+    await page.locator('[data-checklist-item-id="linked"] input[type="checkbox"]').click();
+    action = await page.evaluate(() => window.__boardActions.at(-1));
+    await setBoard(page, [task({ revision: 8, checklist: [linkedItem()] }), child], "parent", nonRelease);
+    await page.evaluate((value) => window.AgentHubTaskBoard.finishAction({ ...value, succeeded: true }), action);
+    assert.equal(await page.getByRole("region", { name: "Действие со связанной Task" }).count(), 0);
+
+    const automaticChild = { ...child, workflowStatus: "done", revision: 4 };
+    await setBoard(page, [task({ revision: 9, checklist: [linkedItem({
+      completed: true, manualCompleted: false, linkedTask: automaticChild,
+    })] }), automaticChild], "parent", nonRelease);
+    assert.equal(await page.getByRole("region", { name: "Действие со связанной Task" }).count(), 0);
+
+    await setBoard(page, [task({ revision: 10, checklist: [linkedItem()] }), child], "parent", nonRelease);
+    await page.locator('[data-checklist-item-id="linked"] input[type="checkbox"]').click();
+    action = await page.evaluate(() => window.__boardActions.at(-1));
+    await setBoard(page, [task({ revision: 11, checklist: [linkedItem({ completed: true, manualCompleted: true })] }), child], "parent", nonRelease);
+    await page.evaluate((value) => window.AgentHubTaskBoard.finishAction({ ...value, succeeded: true }), action);
+    await page.getByRole("button", { name: "Ничего не делать", exact: true }).click();
+    const noOp = await page.evaluate(() => window.__boardActions.at(-1));
+    assert.equal(noOp.action, "none");
+    assert.equal(noOp.linkedTaskId, "child");
+    await page.evaluate((value) => window.AgentHubTaskBoard.finishAction({ ...value, succeeded: true }), noOp);
+    assert.equal(await page.getByRole("region", { name: "Действие со связанной Task" }).count(), 0);
+    assert.equal(await page.locator('[data-checklist-item-id="linked"] input[type="checkbox"]').isChecked(), true);
   } finally {
     await browser.close();
   }
