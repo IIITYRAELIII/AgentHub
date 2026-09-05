@@ -206,7 +206,7 @@ export async function createClientInterfaceComposition({
         screenshots: files.map((file, index) => ({ file, type: descriptors[index]?.type })),
       });
       try {
-        bugReportTasks.capture(result, { text: params?.text });
+        await bugReportTasks.capture(result, { text: params?.text });
         await bugReportTasks.scan();
       } catch (error) {
         console.warn(`Cannot add bug report ${result.id} to Dashboard: ${error.message}`);

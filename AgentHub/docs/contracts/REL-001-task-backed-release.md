@@ -79,13 +79,26 @@ are proven restored. Dirty dev or a published-revision mismatch is
 `manual_required`; an abort that cannot prove restoration throws. No Task
 preparation or integration is reported as successful in either case.
 
+The one-time bootstrap for an already-diverged managed `dev` is itself a Task
+result: under the same Task and dev locks, the snapshot owner accepts a pending
+Task-worktree merge only when its exact `MERGE_HEAD` is the current managed dev
+head. The resulting two-parent Task snapshot contains current `main` and the
+previous dev line. Integration recognizes those two proven ancestors and merges
+the Task result directly instead of first replaying the conflicting main-to-dev
+merge. Until the owner snapshots and integrates that result, neither `dev` nor
+the registered primary checkout is changed.
+
 A successful Test integration records only the deterministic Task branch and
 its accepted immutable result commit on the Task. The base ref and changed-file
 set remain Git data and are derived when a release plan is read. A conflict is
 returned with exact conflicting paths only after the Task merge abort proves the
 pre-merge dev head and clean status were restored. Abort failure or partial
-restoration throws instead of reporting an ordinary conflict. Git failure never
-rejects the requested workflow-status transition.
+restoration throws instead of reporting an ordinary conflict. An empty diff is
+explicit `no_result`, even when the Task HEAD is already ancestral to `dev`, and
+cannot enter Test or Await. Snapshot, merge, ancestry verification and recovery
+complete before one row-revision CAS atomically replaces Git references, updates
+the exact operation binding and changes workflow status. Any Git, recovery or
+CAS failure preserves the prior status and references.
 
 Moving a Task to `awaiting_implementation` records that its exact immutable
 result is accepted for a future release. The status transition does not build,
@@ -107,8 +120,9 @@ repository. It does not store a second release-authority copy of changed files,
 base/result revision pairs, blobs or manifests. Work-log changed files remain
 diagnostic journal data only. There is no separate readiness row, frozen
 manifest or freeze command. The release plan hashes the current Task revision
-and Git references. Generic status mutation may select any workflow status at
-any time; any intervening Task or accepted-result mutation changes the plan
+and Git references. Generic status mutation may roll back to a non-result status
+at any time, but Test, Await and Done require a proven integrated result. Any
+intervening Task or accepted-result mutation changes the plan
 revision and invalidates an older Architect plan. Provider terminal callbacks
 do not infer file ownership or release readiness.
 
@@ -144,9 +158,12 @@ and the plan hash, then changes only those Tasks to `done` and closes them.
 Generic `done` and
 `hub_task_complete` do not create production evidence.
 
-Post-deployment verification proves that every accepted immutable Task result
-commit is an ancestor of the published `main` revision. It does not compare a
-second stored blob manifest. Once verified, only included Tasks are completed
+Post-deployment verification requires an explicit revision for every frozen
+repository. That revision must equal, not merely contain, the checkpointed
+`preReleaseHead` bound to the exact `{planRevision, manifestHash, baseCommit}`.
+It also proves every accepted immutable Task result is contained, then repeats
+publication revision/generation readback immediately before the Task closure
+transaction. Once verified, only included Tasks are completed
 and their managed branches and worktrees may be removed. Published `main` is
 incorporated into `dev` without discarding later Test work. Remaining Await
 Tasks stay accepted for the next explicit release; Agent Hub does not prebuild a
@@ -158,6 +175,30 @@ distinguishes `already_current`, `fast_forwarded`, `merged`, `conflict`, and
 `manual_required`. Publication and Task completion remain truthful when local
 dev needs manual reconciliation: publication is not rolled back, but dev
 integration is never represented as successful.
+
+## Task close and destructive deletion
+
+`hub_task_complete` and `hub_task_delete` are two-step operations. The first
+call returns a confirmation token and an exact preview of branches, worktrees,
+dirty and untracked paths, result commits, publication state and deletions. A
+confirmed operation is serialized by the Task lifecycle lease and the token is
+revalidated against the current Task revision, Git state and exact durable
+publication generation. Replacing publication evidence at the same revision
+invalidates confirmation before cleanup.
+Both Desktop Dashboard actions and MCP tools enter the same application
+lifecycle owner. The owner acquires the Task lease before computing either the
+preview or the confirmed preview, and enumerates branch/base/result refs from
+all stored Git references even when their worktree is already absent.
+
+Complete closes an implementation Task only after workflow Done, rejects dirty
+worktrees and removes a branch plus its protective result ref only when the
+exact result commit is contained in `origin/main` and durable publication state
+names that same revision and a non-empty generation. A local `main` ref alone is
+never publication evidence. A Task without Git artifacts
+may close as analysis. Delete is the explicit destructive route for unpublished
+results. It records a durable cleanup transition, performs Git cleanup first and
+deletes the Task row only after cleanup succeeds; failure leaves the Task and its
+prior workflow state available.
 
 ## Test Contour
 
@@ -221,6 +262,13 @@ runtime is replaced by `dev` rather than restarted.
 The rolling contour is preview evidence, not release proof. Release validation
 still requires the prescribed isolated candidate checks and publication
 pipeline before production side effects.
+
+Complete/Delete confirmation is a projection of the authoritative server cleanup
+preview. Before the confirmed request the client displays every available Task
+branch, managed worktree and HEAD, dirty/changed/untracked paths, result commit,
+publication revision/generation/state and exact deletion target. The client does
+not derive cleanup policy or publication authority, and cancellation sends no
+confirmed mutation.
 
 ## Workspace policy and Architect role
 

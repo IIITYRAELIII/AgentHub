@@ -14,6 +14,7 @@ import {
   codexAssistantResponseProjection,
   visibleCodexAssistantText,
 } from "../../domain/codex-response-annotation.mjs";
+import { interstreamMessageDetails } from "../../domain/interstream-message.mjs";
 import { codexParentThreadId } from "./codex-subagent-accounting.mjs";
 import {
   pinCodexRolloutActivityCacheInWorker,
@@ -129,34 +130,38 @@ function rememberCodexTurnMessage(metadata, turnId, message) {
 
 function rememberCodexUserMessage(metadata, turnId, {
   clientUserMessageId = "",
+  providerItemId = "",
   text = "",
   attachmentSources = [],
 } = {}) {
   const notification = codexSubagentNotificationDetails(text);
+  const interstream = notification ? null : interstreamMessageDetails(text);
   const responseAnnotations = notification ? null : responseAnnotationDetails(text);
   const value = notification?.text ?? displayUserPrompt(text);
   if (!turnId || !value) return;
-  const clientId = String(clientUserMessageId ?? "").trim();
+  const clientId = String(clientUserMessageId ?? "").trim()
+    || (interstream?.requestId ? `mcp:${interstream.requestId}` : "");
+  const providerId = String(providerItemId ?? "").trim();
   const messages = metadata.userMessages.get(turnId) ?? [];
-  const logicalKey = (message) => String(message ?? "")
-    .replace(/\r\n?/gu, "\n")
-    .replace(/[ \t]+/gu, " ")
-    .replace(/\n{3,}/gu, "\n\n")
-    .trim();
-  const valueKey = logicalKey(value);
   const duplicateIndex = messages.findIndex((item) => (
     (clientId && item.clientUserMessageId === clientId)
+    || (providerId && item.itemId === providerId)
     || (notification?.agentThreadId && item.agentThreadId === notification.agentThreadId)
-    || (logicalKey(item.text) === valueKey && (!clientId || !item.clientUserMessageId))
   ));
   const message = {
     itemId: clientId
+      || providerId
       || (notification?.agentThreadId ? `${turnId}:subagent:${notification.agentThreadId}` : "")
       || `${turnId}:rollout-user:${messages.length}`,
     ...(clientId ? { clientUserMessageId: clientId } : {}),
     role: notification ? "agent" : "user",
     text: value,
     ...(notification ?? {}),
+    ...(interstream ? {
+      author: interstream.author,
+      kind: "interstream",
+      origin: structuredClone(interstream.origin),
+    } : {}),
     ...(responseAnnotations?.items.length
       ? {
         responseAnnotations: responseAnnotations.items.map((annotation) => ({ ...annotation })),
@@ -608,9 +613,15 @@ function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
   ));
   const responseItemUserMessage = codexResponseItemMessage(entry, "user");
   if (turnId && responseItemUserMessage) {
-    rememberCodexUserMessage(metadata, turnId, { text: responseItemUserMessage });
+    rememberCodexUserMessage(metadata, turnId, {
+      providerItemId: entry.payload?.id,
+      text: responseItemUserMessage,
+    });
   } else if (turnId && responseItemHasImage) {
-    rememberCodexUserMessage(metadata, turnId, { text: "Изображение" });
+    rememberCodexUserMessage(metadata, turnId, {
+      providerItemId: entry.payload?.id,
+      text: "Изображение",
+    });
   }
   if (entry?.type === "event_msg" && entry.payload?.type === "agent_message") {
     const messageTurnId = turnId || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");

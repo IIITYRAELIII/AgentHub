@@ -806,6 +806,11 @@ html[data-view="chat"][data-surface][data-theme] {
   right: 0;
 }
 
+.msg-deferred-preview {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
 .msg-agent .msg-body,
 .msg-live .msg-body {
   background: transparent;
