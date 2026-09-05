@@ -5956,11 +5956,7 @@ html[data-surface="mobile"]
 :root[data-stream-status-effect]:not([data-stream-status-effect="off"])
   .task-workspace-item[data-running],
 :root[data-stream-status-effect]:not([data-stream-status-effect="off"])
-  .task-workspace-item[data-unread]:not([data-running]),
-:root[data-stream-status-effect]:not([data-stream-status-effect="off"])
-  .stream-tab[data-running] .stream-tab-card,
-:root[data-stream-status-effect]:not([data-stream-status-effect="off"])
-  .stream-tab[data-answer-ready] .stream-tab-card {
+  .task-workspace-item[data-unread]:not([data-running]) {
   border-color: var(--accent-line);
 }
 
@@ -5975,7 +5971,7 @@ html[data-surface="mobile"]
 /* Спокойный: неподвижная сигнальная точка во время хода и зафиксированная
    верхняя риска после ответа. */
 :root[data-stream-status-effect="calm"] .task-workspace-item[data-running]::before,
-:root[data-stream-status-effect="calm"] .stream-tab[data-running] .stream-tab-card::before {
+:root[data-stream-status-effect="calm"] .stream-tab[data-running] .stream-tab-status-layer::before {
   background: var(--accent);
   border-radius: 50%;
   box-shadow: 0 0 0.48rem color-mix(in srgb, var(--accent) 58%, transparent);
@@ -5990,7 +5986,7 @@ html[data-surface="mobile"]
 }
 
 :root[data-stream-status-effect="calm"] .task-workspace-item[data-unread]:not([data-running])::before,
-:root[data-stream-status-effect="calm"] .stream-tab[data-answer-ready] .stream-tab-card::before {
+:root[data-stream-status-effect="calm"] .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
   background: linear-gradient(90deg, transparent, var(--accent) 20%, var(--accent) 80%, transparent);
   content: "";
   height: 1.5px;
@@ -6005,9 +6001,9 @@ html[data-surface="mobile"]
 :root[data-stream-status-style="fill"][data-stream-status-effect="calm"]
   .task-workspace-item[data-unread]:not([data-running])::before,
 :root[data-stream-status-style="fill"][data-stream-status-effect="calm"]
-  .stream-tab[data-running] .stream-tab-card::before,
+  .stream-tab[data-running] .stream-tab-status-layer::before,
 :root[data-stream-status-style="fill"][data-stream-status-effect="calm"]
-  .stream-tab[data-answer-ready] .stream-tab-card::before {
+  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
   background: var(--accent);
   border-radius: inherit;
   box-shadow: none;
@@ -6020,14 +6016,14 @@ html[data-surface="mobile"]
 :root[data-stream-status-style="fill"][data-stream-status-effect="calm"]
   .task-workspace-item[data-unread]:not([data-running])::before,
 :root[data-stream-status-style="fill"][data-stream-status-effect="calm"]
-  .stream-tab[data-answer-ready] .stream-tab-card::before {
+  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
   opacity: 0.13;
 }
 
 /* Импульс: сигнал проходит по контуру, а готовый ответ дважды отвечает
    коротким маяком и остаётся со спокойной световой отметкой. */
 :root[data-stream-status-effect="impulse"] .task-workspace-item[data-running]::after,
-:root[data-stream-status-effect="impulse"] .stream-tab[data-running] .stream-tab-card::after {
+:root[data-stream-status-effect="impulse"] .stream-tab[data-running] .stream-tab-status-layer::after {
   animation: stream-running-wave 2.2s linear infinite;
   background: linear-gradient(90deg, transparent 0%, var(--accent) 44%, var(--accent) 56%, transparent 100%);
   border-radius: inherit;
@@ -6047,7 +6043,7 @@ html[data-surface="mobile"]
 :root[data-stream-status-effect="impulse"]
   .task-workspace-item[data-unread]:not([data-running])::before,
 :root[data-stream-status-effect="impulse"]
-  .stream-tab[data-answer-ready] .stream-tab-card::before {
+  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
   --stream-status-peak: 1;
   border: 2px solid var(--accent);
   border-radius: inherit;
@@ -6062,14 +6058,14 @@ html[data-surface="mobile"]
 :root[data-stream-status-effect="impulse"]
   .task-workspace-item[data-unread][data-answer-arrived]:not([data-running])::before,
 :root[data-stream-status-effect="impulse"]
-  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-card::before {
+  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-status-layer::before {
   animation: stream-answer-ready 1.45s ease-out 2;
 }
 
 :root[data-stream-status-style="fill"][data-stream-status-effect="impulse"]
   .task-workspace-item[data-running]::after,
 :root[data-stream-status-style="fill"][data-stream-status-effect="impulse"]
-  .stream-tab[data-running] .stream-tab-card::after {
+  .stream-tab[data-running] .stream-tab-status-layer::after {
   filter: none;
   inset: 0;
   opacity: 0.34;
@@ -6083,7 +6079,7 @@ html[data-surface="mobile"]
 :root[data-stream-status-style="fill"][data-stream-status-effect="impulse"]
   .task-workspace-item[data-unread]:not([data-running])::before,
 :root[data-stream-status-style="fill"][data-stream-status-effect="impulse"]
-  .stream-tab[data-answer-ready] .stream-tab-card::before {
+  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
   --stream-status-peak: 0.42;
   background: var(--accent);
   border: 0;
@@ -6095,7 +6091,7 @@ html[data-surface="mobile"]
 /* Сканер: узкий луч проверяет канал; готовность фиксируется быстрой
    центральной развёрткой, которая не продолжает мигать. */
 :root[data-stream-status-effect="scanner"] .task-workspace-item[data-running]::after,
-:root[data-stream-status-effect="scanner"] .stream-tab[data-running] .stream-tab-card::after {
+:root[data-stream-status-effect="scanner"] .stream-tab[data-running] .stream-tab-status-layer::after {
   animation: stream-scanner-pass 1.85s linear infinite;
   background: linear-gradient(90deg, transparent 0%, var(--accent) 40%, var(--accent) 60%, transparent 100%);
   border-radius: inherit;
@@ -6116,11 +6112,11 @@ html[data-surface="mobile"]
 :root[data-stream-status-style="edge"][data-stream-status-effect="impulse"]
   .task-workspace-item[data-running]::after,
 :root[data-stream-status-style="edge"][data-stream-status-effect="impulse"]
-  .stream-tab[data-running] .stream-tab-card::after,
+  .stream-tab[data-running] .stream-tab-status-layer::after,
 :root[data-stream-status-style="edge"][data-stream-status-effect="scanner"]
   .task-workspace-item[data-running]::after,
 :root[data-stream-status-style="edge"][data-stream-status-effect="scanner"]
-  .stream-tab[data-running] .stream-tab-card::after {
+  .stream-tab[data-running] .stream-tab-status-layer::after {
   padding: 0;
   -webkit-mask:
     linear-gradient(#000 0 0) top / 100% 2px no-repeat,
@@ -6135,7 +6131,7 @@ html[data-surface="mobile"]
 :root[data-stream-status-effect="scanner"]
   .task-workspace-item[data-unread]:not([data-running])::after,
 :root[data-stream-status-effect="scanner"]
-  .stream-tab[data-answer-ready] .stream-tab-card::after {
+  .stream-tab[data-answer-ready] .stream-tab-status-layer::after {
   background: linear-gradient(90deg, transparent, var(--accent) 14%, var(--accent) 86%, transparent);
   border-radius: 2px;
   box-shadow: 0 0 9px color-mix(in srgb, var(--accent) 55%, transparent);
@@ -6151,14 +6147,14 @@ html[data-surface="mobile"]
 :root[data-stream-status-effect="scanner"]
   .task-workspace-item[data-unread][data-answer-arrived]:not([data-running])::after,
 :root[data-stream-status-effect="scanner"]
-  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-card::after {
+  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-status-layer::after {
   animation: stream-scanner-lock 0.72s ease-out 2;
 }
 
 :root[data-stream-status-style="fill"][data-stream-status-effect="scanner"]
   .task-workspace-item[data-running]::after,
 :root[data-stream-status-style="fill"][data-stream-status-effect="scanner"]
-  .stream-tab[data-running] .stream-tab-card::after {
+  .stream-tab[data-running] .stream-tab-status-layer::after {
   filter: none;
   inset: 0;
   opacity: 0.28;
@@ -6172,7 +6168,7 @@ html[data-surface="mobile"]
 :root[data-stream-status-style="fill"][data-stream-status-effect="scanner"]
   .task-workspace-item[data-unread]:not([data-running])::before,
 :root[data-stream-status-style="fill"][data-stream-status-effect="scanner"]
-  .stream-tab[data-answer-ready] .stream-tab-card::before {
+  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
   background: var(--accent);
   border-radius: inherit;
   content: "";
@@ -6185,11 +6181,11 @@ html[data-surface="mobile"]
 /* Энергия: ход циклически набирает заряд слева направо; после ответа заряд
    дважды расширяется и остаётся заполненным до открытия Stream. */
 :root[data-stream-status-effect="energy"] .task-workspace-item[data-running]::before,
-:root[data-stream-status-effect="energy"] .stream-tab[data-running] .stream-tab-card::before,
+:root[data-stream-status-effect="energy"] .stream-tab[data-running] .stream-tab-status-layer::before,
 :root[data-stream-status-effect="energy"]
   .task-workspace-item[data-unread]:not([data-running])::before,
 :root[data-stream-status-effect="energy"]
-  .stream-tab[data-answer-ready] .stream-tab-card::before {
+  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
   background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 46%, transparent), var(--accent));
   border-radius: 3px;
   box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 50%, transparent);
@@ -6204,25 +6200,25 @@ html[data-surface="mobile"]
 }
 
 :root[data-stream-status-effect="energy"] .task-workspace-item[data-running]::before,
-:root[data-stream-status-effect="energy"] .stream-tab[data-running] .stream-tab-card::before {
+:root[data-stream-status-effect="energy"] .stream-tab[data-running] .stream-tab-status-layer::before {
   animation: stream-energy-charge 2.65s cubic-bezier(0.22, 0.65, 0.3, 1) infinite;
 }
 
 :root[data-stream-status-effect="energy"]
   .task-workspace-item[data-unread][data-answer-arrived]:not([data-running])::before,
 :root[data-stream-status-effect="energy"]
-  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-card::before {
+  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-status-layer::before {
   animation: stream-energy-ready 0.92s ease-out 2;
 }
 
 :root[data-stream-status-style="fill"][data-stream-status-effect="energy"]
   .task-workspace-item[data-running]::before,
 :root[data-stream-status-style="fill"][data-stream-status-effect="energy"]
-  .stream-tab[data-running] .stream-tab-card::before,
+  .stream-tab[data-running] .stream-tab-status-layer::before,
 :root[data-stream-status-style="fill"][data-stream-status-effect="energy"]
   .task-workspace-item[data-unread]:not([data-running])::before,
 :root[data-stream-status-style="fill"][data-stream-status-effect="energy"]
-  .stream-tab[data-answer-ready] .stream-tab-card::before {
+  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
   border-radius: inherit;
   box-shadow: none;
   height: auto;
@@ -6233,7 +6229,7 @@ html[data-surface="mobile"]
 :root[data-stream-status-style="fill"][data-stream-status-effect="energy"]
   .task-workspace-item[data-unread]:not([data-running])::before,
 :root[data-stream-status-style="fill"][data-stream-status-effect="energy"]
-  .stream-tab[data-answer-ready] .stream-tab-card::before {
+  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
   opacity: 0.4;
 }
 
@@ -6764,19 +6760,19 @@ html[data-surface="mobile"]
 
 @media (prefers-reduced-motion: reduce) {
   :root[data-stream-status-effect="impulse"] .task-workspace-item[data-running]::after,
-  :root[data-stream-status-effect="impulse"] .stream-tab[data-running] .stream-tab-card::after {
+  :root[data-stream-status-effect="impulse"] .stream-tab[data-running] .stream-tab-status-layer::after {
     animation: none;
     transform: translateX(70%);
   }
 
   :root[data-stream-status-effect="scanner"] .task-workspace-item[data-running]::after,
-  :root[data-stream-status-effect="scanner"] .stream-tab[data-running] .stream-tab-card::after {
+  :root[data-stream-status-effect="scanner"] .stream-tab[data-running] .stream-tab-status-layer::after {
     animation: none;
     transform: translateX(96%);
   }
 
   :root[data-stream-status-effect="energy"] .task-workspace-item[data-running]::before,
-  :root[data-stream-status-effect="energy"] .stream-tab[data-running] .stream-tab-card::before {
+  :root[data-stream-status-effect="energy"] .stream-tab[data-running] .stream-tab-status-layer::before {
     animation: none;
     opacity: 0.72;
     transform: scaleX(0.72);
@@ -6787,9 +6783,9 @@ html[data-surface="mobile"]
   :root[data-stream-status-effect]:not([data-stream-status-effect="off"])
     .task-workspace-item[data-unread]:not([data-running])::after,
   :root[data-stream-status-effect]:not([data-stream-status-effect="off"])
-    .stream-tab[data-answer-ready] .stream-tab-card::before,
+    .stream-tab[data-answer-ready] .stream-tab-status-layer::before,
   :root[data-stream-status-effect]:not([data-stream-status-effect="off"])
-    .stream-tab[data-answer-ready] .stream-tab-card::after {
+    .stream-tab[data-answer-ready] .stream-tab-status-layer::after {
     animation: none;
   }
 }

@@ -2834,7 +2834,10 @@ function renderStreamTabs() {
       ...attributes,
       class: "stream-tab",
       draggable: window.AgentHubStreamTabs.streamsAreDraggable(streamOrderMode, surface) ? "true" : null,
-    }, [el("span", { class: "stream-tab-card" }, content())]);
+    }, [
+      el("span", { class: "stream-tab-status-layer", "aria-hidden": "true" }),
+      el("span", { class: "stream-tab-card" }, content()),
+    ]);
     overflowItems.push(el("button", {
       ...attributes,
       class: "stream-overflow-item",
