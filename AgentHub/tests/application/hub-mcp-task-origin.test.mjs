@@ -76,6 +76,10 @@ test("hub_task_start carries the audited source Stream into message intake", asy
     addAttachment: methodStub(task),
     claim: methodStub(task),
     requestWorkflowStatus: methodStub(task),
+    beginLifecycleTransition: methodStub(task),
+    commitWorkflowTransition: methodStub(task),
+    failLifecycleTransition: methodStub(task),
+    finalizeCleanupTransition: methodStub(task),
     releaseTasks: methodStub([]),
     adoptLegacyGitReference: methodStub(task),
   };

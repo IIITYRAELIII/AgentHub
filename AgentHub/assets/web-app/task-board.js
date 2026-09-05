@@ -30,6 +30,75 @@
     fitWidth: fitTaskCardWidth,
   });
 
+  function cleanupValue(value, fallback = "<нет>") {
+    const text = String(value ?? "").trim();
+    return text || fallback;
+  }
+
+  function cleanupPaths(title, values) {
+    const paths = (Array.isArray(values) ? values : []).map((value) => cleanupValue(value)).filter(Boolean);
+    return [`${title}:`, ...(paths.length ? paths.map((value) => `  - ${value}`) : ["  - <нет>"])];
+  }
+
+  function taskCleanupConfirmationText(confirmation = {}) {
+    const preview = confirmation.preview ?? {};
+    const lines = [cleanupValue(confirmation.warning, "Подтвердите удаление артефактов Task."), "", "Состояние Task Git:"];
+    const workspaces = Array.isArray(preview.workspaces) ? preview.workspaces : [];
+    if (!workspaces.length) lines.push("  <managed worktree отсутствует>");
+    for (const [index, workspace] of workspaces.entries()) {
+      lines.push(
+        `  Checkout ${index + 1}:`,
+        `    Ветка: ${cleanupValue(workspace.branch)}`,
+        `    Worktree: ${cleanupValue(workspace.projectRoot)}`,
+        `    HEAD: ${cleanupValue(workspace.headCommit)}`,
+        `    Состояние: ${workspace.dirty === true ? "dirty" : "clean"}`,
+        ...cleanupPaths("    Изменённые пути", workspace.changedPaths),
+        ...cleanupPaths("    Untracked пути", workspace.untrackedPaths),
+      );
+    }
+    lines.push("", `Общее dirty-состояние: ${preview.dirty === true ? "dirty" : "clean"}`, "", "Результат и публикация:");
+    const references = Array.isArray(preview.gitReferences) ? preview.gitReferences : [];
+    if (!references.length) lines.push("  <result commit отсутствует>");
+    for (const [index, reference] of references.entries()) {
+      lines.push(
+        `  Результат ${index + 1}:`,
+        `    Репозиторий: ${cleanupValue(reference.projectRoot)}`,
+        `    Ветка: ${cleanupValue(reference.branch)}`,
+        `    Result commit: ${cleanupValue(reference.resultCommit)}`,
+        `    Publication state: ${reference.published === true ? "published" : "unpublished"}`,
+        `    Publication revision: ${cleanupValue(reference.publishedRevision)}`,
+        `    Publication generation: ${cleanupValue(reference.publicationGeneration)}`,
+      );
+    }
+    lines.push("", "Будет удалено:");
+    const deleting = Array.isArray(preview.deleting) ? preview.deleting : [];
+    if (!deleting.length) lines.push("  - <ничего>");
+    for (const item of deleting) {
+      const target = cleanupValue(item.path ?? item.name);
+      const repository = cleanupValue(item.repositoryRoot, "");
+      lines.push(`  - [${cleanupValue(item.kind, "artifact")}] ${target}${repository ? ` (repo: ${repository})` : ""}`);
+    }
+    return lines.join("\n");
+  }
+
+  async function confirmTaskCleanup({ confirmation, action, params = {}, request, confirm = window.confirm } = {}) {
+    if (typeof request !== "function") throw new TypeError("Task cleanup request is required");
+    if (typeof confirm !== "function") throw new TypeError("Task cleanup confirmation UI is required");
+    const text = taskCleanupConfirmationText(confirmation);
+    if (!confirm(text)) return { confirmed: false, text, result: null };
+    const result = await request(action, {
+      ...params,
+      confirmCleanup: true,
+      expectedCleanupToken: confirmation?.cleanupToken,
+    });
+    return { confirmed: true, text, result };
+  }
+
+  window.AgentHubTaskCleanupConfirmation = Object.freeze({
+    confirm: confirmTaskCleanup,
+    format: taskCleanupConfirmationText,
+  });
+
   function createAutoGrowTextarea({ textarea, getStyle = (element) => window.getComputedStyle(element) } = {}) {
     function resize() {
       if (!textarea) return 0;

@@ -92,7 +92,7 @@ export function createDesktopMessageController({
       if (typeof context?.bindInterstreamAuditContent !== "function") {
         throw new Error("Межпоточное сообщение не связано с MCP audit");
       }
-      context.bindInterstreamAuditContent(referencedInput);
+      await context.bindInterstreamAuditContent(referencedInput);
     }
     const input = attachments.length
       ? messageInputWithAttachments(referencedInput, attachments, descriptors)

@@ -30,7 +30,7 @@ export class ManagedRunLifecycleService {
       "normalizeCodexModel", "modelLabel", "persistTaskDiff", "syncRun",
       "invalidateCatalog", "saveState", "scheduleProgressStart", "clearSelectedDiff",
       "clearApprovals", "pauseObservation", "pauseClaude", "stopTyping",
-      "beforeCompletion", "completionAborted", "afterCompletion",
+      "prepareAdmission", "revokeAdmission", "beforeCompletion", "completionAborted", "afterCompletion",
     ]) requiredFunction(dependencies[name], name);
     if (!dependencies.taskRuns?.add || !dependencies.taskRuns?.remove) {
       throw new TypeError("taskRuns registry is required");
@@ -39,6 +39,14 @@ export class ManagedRunLifecycleService {
   }
 
   async begin(input, target = null) {
+    return this.#begin(input, target, { authorize: true });
+  }
+
+  async adopt(input, target = null) {
+    return this.#begin(input, target, { authorize: false });
+  }
+
+  async #begin(input, target, { authorize }) {
     const d = this.#d;
     const commandId = String(target?.clientUserMessageId ?? "").trim();
     const admissionSpan = d.commandTrace?.startBestEffortSpan?.({
@@ -52,6 +60,13 @@ export class ManagedRunLifecycleService {
     const project = d.findProject(projectRoot);
     const targetThreadId = target?.threadId ?? current.threadId;
     const taskTitle = target?.taskTitle ?? current.taskTitle;
+    const admission = authorize ? await d.prepareAdmission({
+      ...target,
+      provider,
+      projectRoot,
+      threadId: targetThreadId,
+      taskTitle,
+    }) : null;
     if (provider === "claude" && targetThreadId) {
       d.clearClaudeCancellation?.({ provider, threadId: targetThreadId });
     }
@@ -91,6 +106,7 @@ export class ManagedRunLifecycleService {
       clientSource: String(target?.clientSource ?? "telegram").trim() || "telegram",
       ...(messageOrigin ? { messageOrigin } : {}),
     });
+    admission?.commit?.(run);
     run.submittedAt = target?.deferredInput?.createdAt ?? target?.submittedAt ?? run.startedAt;
     if (run.promptPreview) {
       run.userMessages = [{
@@ -136,6 +152,7 @@ export class ManagedRunLifecycleService {
     if (!run || run.admissionReleased === true) return;
     if (run.admissionReleasing) return run.admissionReleasing;
     const d = this.#d;
+    d.revokeAdmission(run);
     run.admissionReleasing = (async () => {
       await this.markCompleted(run);
       d.taskRuns.remove(run);

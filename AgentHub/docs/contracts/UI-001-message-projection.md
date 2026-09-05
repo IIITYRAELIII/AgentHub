@@ -9,6 +9,10 @@
 - `unknown` is displayed as unknown and never inferred as running.
 - Internal probes, measurements and maintenance operations have separate kinds
   and never create user-turn cards.
+- The ordinary browser shell never waits on the third-party Telegram runtime.
+  A same-origin parser bootstrap requests that runtime only when Telegram launch
+  parameters or a native Telegram bridge are already present, preserving the
+  runtime-before-app ordering required by Mini App authentication.
 - Unread state is computed from the latest canonical final revision versus a
   monotonic account read cursor.
 - `mark-read` names the exact final revision already shown to the client; history
@@ -76,6 +80,9 @@ to its immutable `clientProjectionIntent=conversation`. A busy-origin command
 with `clientProjectionIntent=queue` remains queue-only if admission later finds
 the Stream idle. Attention-required and ambiguous commands remain queue-owned.
 Reconciliation never renders both forms and never loses the logical entity.
+Every canonical queue row exposes an explicit cancellation action. The action
+removes a waiting or attention-required command only after durable commit; if
+dispatch already owns it, the UI reports that cancellation was not confirmed.
 
 Direct ACK, remote-result reconciliation and snapshot reconciliation use the
 same classifier. Receipt snapshots are bounded. The durable explicit projection
@@ -125,6 +132,13 @@ produce user-visible running state. `probe`, `compaction`, `measurement` and
 a user-turn card. An explicit non-probe `operationKind` or ordinary
 `clientUserMessageId` is authoritative user-operation identity even when the
 prompt or final output exactly equals the reserved context-probe sentinel.
+Provider rollout projection fails closed while that identity is reordered: an
+identity-less exact context-probe sentinel is internal and cannot enter the
+canonical user-message, history or running-card projection. A later exact
+ordinary `clientUserMessageId` reclassifies that same provider turn as a visible
+user operation; a later service probe identity keeps it internal. Suppression
+does not discard the separately owned context-usage measurement or maintenance
+record.
 A task snapshot with no active run is authoritative after any available
 completion has been promoted: it removes the cached live card, probe and
 live-user projection even when the previous card was a valid `user-turn`.
@@ -156,10 +170,11 @@ hydration starts strictly as background work and is never awaited by mark-read.
   after one supported release has rewritten every retained terminal record.
 - Pre-UI-001 live/message records without `operationKind` use guards explicitly
   labelled `legacy-*`. Text matching is permitted only for the historical
-  context-probe sentinel when the record also lacks any client operation identity;
-  it is never entity identity and cannot override an ordinary
-  `clientUserMessageId`. Remove these guards after all retained snapshots and
-  history rows carry explicit operation kinds.
+  context-probe sentinel when the record also lacks any client operation identity,
+  including the provider interval before a matching completion item supplies
+  that identity; it is never entity identity and cannot override an ordinary
+  `clientUserMessageId`. Remove these guards after all retained snapshots,
+  history rows and provider events carry explicit operation kinds.
 - The exact provider-turn root fallback remains only for old rows that lack a
   submission alias. It cannot bind steer or inter-Stream messages and is removed
   after retained history has `clientUserMessageId` or `submissionId` on every

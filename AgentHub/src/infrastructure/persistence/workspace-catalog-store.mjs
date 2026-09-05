@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 
 import { editableWorkspaceDeveloperRules } from "../../domain/editable-workspace-developer-rules.mjs";
 import { normalizeInterstreamOrigin } from "../../domain/interstream-message.mjs";
@@ -45,7 +46,7 @@ function configure(database) {
   database.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
-    PRAGMA busy_timeout = 5000;
+    PRAGMA busy_timeout = 0;
     PRAGMA foreign_keys = ON;
     CREATE TABLE IF NOT EXISTS hub_workspace_catalog_meta (
       key TEXT PRIMARY KEY,
@@ -105,6 +106,7 @@ function configure(database) {
       arguments_hash TEXT NOT NULL,
       interstream_content_hash TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL CHECK (status IN ('pending', 'succeeded', 'failed')),
+      receipt_state TEXT NOT NULL DEFAULT 'pending',
       result_json TEXT,
       error_text TEXT NOT NULL DEFAULT '',
       created_at_ms INTEGER NOT NULL,
@@ -179,6 +181,10 @@ function configure(database) {
   const threadColumns = database.prepare("PRAGMA table_info(hub_threads)").all();
   if (!threadColumns.some((column) => column.name === "detached_at_ms")) {
     database.exec("ALTER TABLE hub_threads ADD COLUMN detached_at_ms INTEGER");
+  }
+  if (!operationColumns.some((column) => column.name === "receipt_state")) {
+    database.exec("ALTER TABLE hub_mcp_operations ADD COLUMN receipt_state TEXT NOT NULL DEFAULT 'pending'");
+    database.exec("UPDATE hub_mcp_operations SET receipt_state = status");
   }
 }
 
@@ -288,12 +294,24 @@ function mcpOperationFromRow(row) {
     toolName: String(row.tool_name),
     argumentsHash: String(row.arguments_hash),
     interstreamContentHash: String(row.interstream_content_hash ?? ""),
-    status: String(row.status),
+    status: String(row.receipt_state ?? row.status),
     result,
     error: String(row.error_text ?? ""),
     createdAtMs: Number(row.created_at_ms) || 0,
     completedAtMs: row.completed_at_ms == null ? null : Number(row.completed_at_ms),
   };
+}
+
+function compactMcpOperationResult(result) {
+  const serialized = JSON.stringify(result ?? null);
+  if (Buffer.byteLength(serialized, "utf8") <= 64 * 1024) return serialized;
+  const taskId = String(result?.task?.id ?? result?.taskId ?? "").trim() || null;
+  return JSON.stringify({
+    receiptCompacted: true,
+    outcome: "succeeded",
+    taskId,
+    resultType: Array.isArray(result) ? "array" : typeof result,
+  });
 }
 
 function workspaceEventFromRow(row) {
@@ -317,6 +335,7 @@ export class WorkspaceCatalogStore {
   #readOnly;
   #now;
   #idFactory;
+  #mutations = new AsyncSqliteMutationQueue();
 
   constructor({
     databaseFile,
@@ -724,6 +743,16 @@ export class WorkspaceCatalogStore {
     const normalizedThreadId = safeIdentifier(threadId, "thread id");
     const tool = safeIdentifier(toolName, "MCP tool name");
     const hash = safeIdentifier(argumentsHash, "MCP arguments hash");
+    this.#database.exec("BEGIN IMMEDIATE");
+    try {
+    const inserted = this.#database.prepare(`
+      INSERT OR IGNORE INTO hub_mcp_operations (
+        request_id, workspace_id, stream_id, provider, provider_thread_id,
+        tool_name, arguments_hash, status, receipt_state, created_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', ?)
+    `).run(
+      id, workspace, stream, normalizedProvider, normalizedThreadId, tool, hash, this.#nowMs(),
+    );
     const existing = mcpOperationFromRow(this.#database.prepare(
       "SELECT * FROM hub_mcp_operations WHERE request_id = ?",
     ).get(id));
@@ -735,19 +764,31 @@ export class WorkspaceCatalogStore {
         && existing.toolName === tool
         && existing.argumentsHash === hash;
       if (!matches) throw new Error("MCP request_id was already used for another operation");
-      return { ...existing, replayed: true };
+      const replayed = !Number(inserted.changes);
+      this.#database.exec("COMMIT");
+      return { ...existing, replayed };
     }
-    this.#database.prepare(`
-      INSERT INTO hub_mcp_operations (
-        request_id, workspace_id, stream_id, provider, provider_thread_id,
-        tool_name, arguments_hash, status, created_at_ms
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
-    `).run(
-      id, workspace, stream, normalizedProvider, normalizedThreadId, tool, hash, this.#nowMs(),
-    );
-    return { ...mcpOperationFromRow(this.#database.prepare(
-      "SELECT * FROM hub_mcp_operations WHERE request_id = ?",
-    ).get(id)), replayed: false };
+    throw new Error("MCP operation receipt insert failed");
+    } catch (error) {
+      this.#database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  createWorkspaceWithStream({ name, comment = "", streamName = null, settings = {} } = {}) {
+    return this.#transaction(() => {
+      const workspace = this.createWorkspace({ name, comment, settings });
+      const stream = this.createStream({ workspaceId: workspace.id, name: streamName });
+      return { workspace, stream };
+    });
+  }
+
+  runMutation(operation, options = {}) {
+    return this.#mutations.run(operation, options);
+  }
+
+  mutationDiagnostics() {
+    return this.#mutations.diagnostics();
   }
 
   bindMcpOperationInterstreamContentHash(requestId, contentHash) {
@@ -768,7 +809,7 @@ export class WorkspaceCatalogStore {
     if (!operation.interstreamContentHash) {
       this.#database.prepare(`
         UPDATE hub_mcp_operations SET interstream_content_hash = ?
-        WHERE request_id = ? AND status = 'pending' AND interstream_content_hash = ''
+        WHERE request_id = ? AND receipt_state = 'pending' AND interstream_content_hash = ''
       `).run(hash, id);
     }
     return this.mcpOperation(id);
@@ -782,12 +823,11 @@ export class WorkspaceCatalogStore {
       && INTERSTREAM_MESSAGE_TOOLS.has(operation.toolName)
       && !operation.interstreamContentHash
     ) throw new Error("MCP interstream operation has no admitted content hash");
-    const resultJson = JSON.stringify(result ?? null);
-    if (Buffer.byteLength(resultJson, "utf8") > 1024 * 1024) throw new Error("MCP audit result is too large");
+    const resultJson = compactMcpOperationResult(result);
     const updated = this.#database.prepare(`
       UPDATE hub_mcp_operations
-      SET status = 'succeeded', result_json = ?, error_text = '', completed_at_ms = ?
-      WHERE request_id = ? AND status = 'pending'
+      SET status = 'succeeded', receipt_state = 'succeeded', result_json = ?, error_text = '', completed_at_ms = ?
+      WHERE request_id = ? AND receipt_state IN ('pending', 'reconciling')
     `).run(resultJson, this.#nowMs(), id);
     if (!Number(updated.changes)) throw new Error("MCP operation is not pending");
     return mcpOperationFromRow(this.#database.prepare(
@@ -799,9 +839,33 @@ export class WorkspaceCatalogStore {
     const id = safeIdentifier(requestId, "MCP request id");
     this.#database.prepare(`
       UPDATE hub_mcp_operations
-      SET status = 'failed', result_json = NULL, error_text = ?, completed_at_ms = ?
-      WHERE request_id = ? AND status = 'pending'
+      SET status = 'failed', receipt_state = 'failed', result_json = NULL, error_text = ?, completed_at_ms = ?
+      WHERE request_id = ? AND receipt_state IN ('pending', 'reconciling')
     `).run(String(error?.message ?? error ?? "MCP operation failed").slice(0, 4000), this.#nowMs(), id);
+    return mcpOperationFromRow(this.#database.prepare(
+      "SELECT * FROM hub_mcp_operations WHERE request_id = ?",
+    ).get(id));
+  }
+
+  beginMcpOperationReconciliation(requestId) {
+    const id = safeIdentifier(requestId, "MCP request id");
+    const updated = this.#database.prepare(`
+      UPDATE hub_mcp_operations SET receipt_state = 'reconciling'
+      WHERE request_id = ? AND receipt_state IN ('pending', 'reconciling')
+    `).run(id);
+    if (!Number(updated.changes)) throw new Error("MCP operation is not pending reconciliation");
+    return mcpOperationFromRow(this.#database.prepare(
+      "SELECT * FROM hub_mcp_operations WHERE request_id = ?",
+    ).get(id));
+  }
+
+  markMcpOperationUnknown(requestId, error) {
+    const id = safeIdentifier(requestId, "MCP request id");
+    this.#database.prepare(`
+      UPDATE hub_mcp_operations
+      SET receipt_state = 'unknown', error_text = ?, completed_at_ms = ?
+      WHERE request_id = ? AND receipt_state IN ('pending', 'reconciling')
+    `).run(String(error?.message ?? error ?? "authoritative reconciliation is unavailable").slice(0, 4000), this.#nowMs(), id);
     return mcpOperationFromRow(this.#database.prepare(
       "SELECT * FROM hub_mcp_operations WHERE request_id = ?",
     ).get(id));
@@ -812,6 +876,14 @@ export class WorkspaceCatalogStore {
     return mcpOperationFromRow(this.#database.prepare(
       "SELECT * FROM hub_mcp_operations WHERE request_id = ?",
     ).get(id));
+  }
+
+  pendingMcpOperations() {
+    return this.#database.prepare(`
+      SELECT * FROM hub_mcp_operations
+      WHERE receipt_state IN ('pending', 'reconciling')
+      ORDER BY created_at_ms ASC, request_id ASC
+    `).all().map(mcpOperationFromRow);
   }
 
   mcpOperations(workspaceId, { limit = 50 } = {}) {
@@ -876,6 +948,14 @@ export class WorkspaceCatalogStore {
       for (const stream of streams) this.moveStream(stream.id, targetId);
       this.#database.prepare("DELETE FROM hub_workspaces WHERE id = ?").run(sourceId);
       return this.workspace(targetId);
+    });
+  }
+
+  createWorkspaceFromStream({ streamId, name } = {}) {
+    return this.#transaction(() => {
+      const workspace = this.createWorkspace({ name });
+      const stream = this.moveStream(streamId, workspace.id);
+      return { workspace, stream };
     });
   }
 
@@ -1098,6 +1178,13 @@ export class WorkspaceCatalogStore {
     this.#compactOrdinals(stream.workspaceId);
     this.#removeEmptyWorkspace(stream.workspaceId);
     return this.stream(id);
+  }
+
+  moveStreamOrdered({ streamId, workspaceId, beforeStreamId = undefined } = {}) {
+    return this.#transaction(() => {
+      const moved = this.moveStream(streamId, workspaceId);
+      return beforeStreamId === undefined ? moved : this.reorderStream(streamId, beforeStreamId);
+    });
   }
 
   moveStreamToStart(streamId) {
