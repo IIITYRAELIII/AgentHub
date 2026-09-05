@@ -30,7 +30,7 @@ import {
   withReleasePrimaryWorkspaceRule,
 } from "../../domain/release-primary-workspace-policy.mjs";
 
-const SCHEMA_VERSION = 12;
+const SCHEMA_VERSION = 13;
 export const DEVELOPER_RULES_MAX_BYTES = 32 * 1024;
 export const WORKSPACE_ARCHIVE_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
 const SOURCES = new Set(["created", "discovered", "migration", "rebirth"]);
@@ -103,6 +103,7 @@ function configure(database) {
       provider_thread_id TEXT NOT NULL,
       tool_name TEXT NOT NULL,
       arguments_hash TEXT NOT NULL,
+      interstream_content_hash TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL CHECK (status IN ('pending', 'succeeded', 'failed')),
       result_json TEXT,
       error_text TEXT NOT NULL DEFAULT '',
@@ -168,6 +169,10 @@ function configure(database) {
       WHERE archived_at_ms IS NOT NULL;
   `);
   const streamColumns = database.prepare("PRAGMA table_info(hub_streams)").all();
+  const operationColumns = database.prepare("PRAGMA table_info(hub_mcp_operations)").all();
+  if (!operationColumns.some((column) => column.name === "interstream_content_hash")) {
+    database.exec("ALTER TABLE hub_mcp_operations ADD COLUMN interstream_content_hash TEXT NOT NULL DEFAULT ''");
+  }
   if (!streamColumns.some((column) => column.name === "settings_json")) {
     database.exec("ALTER TABLE hub_streams ADD COLUMN settings_json TEXT NOT NULL DEFAULT '{}'");
   }
@@ -282,6 +287,7 @@ function mcpOperationFromRow(row) {
     threadId: String(row.provider_thread_id),
     toolName: String(row.tool_name),
     argumentsHash: String(row.arguments_hash),
+    interstreamContentHash: String(row.interstream_content_hash ?? ""),
     status: String(row.status),
     result,
     error: String(row.error_text ?? ""),
@@ -744,8 +750,38 @@ export class WorkspaceCatalogStore {
     ).get(id)), replayed: false };
   }
 
+  bindMcpOperationInterstreamContentHash(requestId, contentHash) {
+    const id = safeIdentifier(requestId, "MCP request id");
+    const hash = safeIdentifier(contentHash, "interstream content hash");
+    if (!/^[a-f0-9]{64}$/u.test(hash)) throw new Error("invalid interstream content hash");
+    const operation = this.mcpOperation(id);
+    if (!operation || !INTERSTREAM_MESSAGE_TOOLS.has(operation.toolName)) {
+      throw new Error("MCP operation cannot carry interstream content");
+    }
+    if (operation.status !== "pending") {
+      if (operation.interstreamContentHash === hash) return operation;
+      throw new Error("MCP operation is not pending");
+    }
+    if (operation.interstreamContentHash && operation.interstreamContentHash !== hash) {
+      throw new Error("MCP interstream content does not match the original admission");
+    }
+    if (!operation.interstreamContentHash) {
+      this.#database.prepare(`
+        UPDATE hub_mcp_operations SET interstream_content_hash = ?
+        WHERE request_id = ? AND status = 'pending' AND interstream_content_hash = ''
+      `).run(hash, id);
+    }
+    return this.mcpOperation(id);
+  }
+
   completeMcpOperation(requestId, result) {
     const id = safeIdentifier(requestId, "MCP request id");
+    const operation = this.mcpOperation(id);
+    if (
+      operation
+      && INTERSTREAM_MESSAGE_TOOLS.has(operation.toolName)
+      && !operation.interstreamContentHash
+    ) throw new Error("MCP interstream operation has no admitted content hash");
     const resultJson = JSON.stringify(result ?? null);
     if (Buffer.byteLength(resultJson, "utf8") > 1024 * 1024) throw new Error("MCP audit result is too large");
     const updated = this.#database.prepare(`
@@ -805,7 +841,7 @@ export class WorkspaceCatalogStore {
     const workspace = this.workspace(operation.workspaceId);
     const stream = this.stream(operation.streamId);
     if (!workspace || !stream || stream.workspaceId !== workspace.id) return null;
-    return normalizeInterstreamOrigin({
+    const origin = normalizeInterstreamOrigin({
       workspaceId: workspace.id,
       workspaceName: workspace.name,
       streamId: stream.id,
@@ -814,6 +850,14 @@ export class WorkspaceCatalogStore {
       sourceThreadId: operation.threadId,
       requestId,
     });
+    if (!origin || !operation.interstreamContentHash) return null;
+    return {
+      ...origin,
+      origin,
+      toolName: operation.toolName,
+      argumentsHash: operation.argumentsHash,
+      contentHash: operation.interstreamContentHash,
+    };
   }
 
   mergeWorkspaces(sourceWorkspaceId, targetWorkspaceId) {

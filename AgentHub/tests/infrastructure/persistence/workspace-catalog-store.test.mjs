@@ -6,6 +6,11 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import {
+  createInterstreamMessage,
+  interstreamAuditContentHash,
+} from "../../../src/domain/interstream-message.mjs";
+
+import {
   DEVELOPER_RULES_MAX_BYTES,
   WORKSPACE_ARCHIVE_RETENTION_MS,
   WorkspaceCatalogStore,
@@ -531,10 +536,26 @@ test("MCP audit resolves only exact successful interstream message provenance", 
     provider: "codex",
     threadId: "thread-architect",
     toolName: "hub_task_start",
-    argumentsHash: "hash-assignment-1",
+    argumentsHash: "a".repeat(64),
   };
   store.beginMcpOperation(operation);
   assert.equal(store.interstreamOriginForClientMessage("mcp:assignment-1"), null);
+  assert.throws(
+    () => store.completeMcpOperation(operation.requestId, { task: { id: "task-1" } }),
+    /no admitted content hash/u,
+  );
+  const rawMessage = createInterstreamMessage({
+    workspaceId: workspace.id,
+    workspaceName: "Agent HUB",
+    streamId: stream.id,
+    streamName: "Architect",
+    provider: "codex",
+    sourceThreadId: "thread-architect",
+    requestId: "assignment-1",
+    text: "Начать работу",
+  });
+  const contentHash = interstreamAuditContentHash(rawMessage);
+  store.bindMcpOperationInterstreamContentHash(operation.requestId, contentHash);
   store.completeMcpOperation(operation.requestId, { task: { id: "task-1" } });
 
   assert.deepEqual(store.interstreamOriginForClientMessage("mcp:assignment-1"), {
@@ -546,6 +567,19 @@ test("MCP audit resolves only exact successful interstream message provenance", 
     provider: "codex",
     sourceThreadId: "thread-architect",
     requestId: "assignment-1",
+    origin: {
+      kind: "interstream",
+      workspaceId: workspace.id,
+      workspaceName: "Agent HUB",
+      streamId: stream.id,
+      streamName: "Architect",
+      provider: "codex",
+      sourceThreadId: "thread-architect",
+      requestId: "assignment-1",
+    },
+    toolName: "hub_task_start",
+    argumentsHash: "a".repeat(64),
+    contentHash,
   });
   assert.equal(store.interstreamOriginForClientMessage("assignment-1"), null);
   assert.equal(store.interstreamOriginForClientMessage("mcp:missing"), null);

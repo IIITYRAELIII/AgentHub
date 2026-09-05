@@ -3,7 +3,9 @@ import path from "node:path";
 import { createManagedTaskRun, taskRunKey } from "../domain/task-runs.mjs";
 import { TASK_EXECUTION_OWNERS, taskExecutionRuntimeLabel } from "../domain/task-execution-owner.mjs";
 import {
+  interstreamDisplayText,
   interstreamOriginAuthor,
+  normalizeInterstreamClientUserMessageId,
   normalizeInterstreamOrigin,
 } from "../domain/interstream-message.mjs";
 
@@ -65,6 +67,7 @@ export class ManagedRunLifecycleService {
         ?? (targetThreadId === current.threadId ? preferences.reasoningEffort : preferences.defaultReasoningEffort)
       : preferences.reasoningEffort);
     const messageOrigin = normalizeInterstreamOrigin(target?.messageOrigin);
+    const rawPrompt = runInputPreview(input);
     const run = createManagedTaskRun({
       streamId: target?.streamId ?? current.streamId ?? null,
       provider,
@@ -74,8 +77,9 @@ export class ManagedRunLifecycleService {
       sessionCwd: target?.sessionCwd ?? null,
       threadId: targetThreadId,
       taskTitle,
-      promptPreview: runInputPreview(input),
-      clientUserMessageId: String(target?.clientUserMessageId ?? "").trim() || null,
+      promptPreview: rawPrompt,
+      rawPrompt,
+      clientUserMessageId: normalizeInterstreamClientUserMessageId(target?.clientUserMessageId),
       model: provider === "codex" ? d.modelLabel(modelId) : d.claudeModelLabels?.[modelId],
       modelId,
       reasoning: d.reasoningLabels?.[reasoningId],
@@ -94,7 +98,10 @@ export class ManagedRunLifecycleService {
         ...(run.clientUserMessageId
           ? { clientUserMessageId: run.clientUserMessageId }
           : {}),
-        text: run.promptPreview,
+        text: interstreamDisplayText(run.promptPreview, {
+          origin: messageOrigin,
+          clientUserMessageId: run.clientUserMessageId,
+        }),
         ...(messageOrigin ? {
           kind: "interstream",
           origin: structuredClone(messageOrigin),

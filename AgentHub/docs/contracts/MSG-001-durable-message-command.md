@@ -106,6 +106,25 @@ durable `messageOrigin`. The provider input keeps the same origin in the outer
 inter-Stream envelope, including when a Task reference is attached. Task
 assignment therefore remains a service command and cannot be reclassified as a
 human message while crossing intake, queue, run, receipt or history boundaries.
+The envelope is transport-only display data. Raw provider and storage records
+retain it. Queue, live-run, observed-provider and durable-history display
+projections remove it only when its normalized origin exactly matches durable
+`messageOrigin`, or when exact successful MCP audit evidence binds the same
+`mcp:<requestId>` to the stable `workspaceId + streamId + provider +
+sourceThreadId + requestId` identity. Workspace/Stream display names and model
+are descriptive metadata: audit recovery may tolerate their absence or change,
+while any present stable-field conflict fails closed. The audit must retain the
+original inter-Stream tool, immutable arguments hash and a SHA-256 boundary over
+the exact admitted stable origin plus body. The hash is bound before message
+delivery and cannot be replaced by a provider-supplied value. Audit recovery
+unwraps either the retained envelope or its exact body only when that content
+boundary also matches. A reserved-looking client ID alone is never origin
+evidence, and ordinary Desktop ingress cannot claim the `mcp:` namespace. A
+missing, legacy-unbound or conflicting identity leaves the text visible, so
+envelope-shaped ordinary user text is not reclassified or hidden. Managed live
+messages may keep a body-only display projection, but terminal, journal and
+work-log storage retain the raw root prompt and its separately bounded
+`clientUserMessageId` plus authoritative origin.
 
 ## Durable ACK
 

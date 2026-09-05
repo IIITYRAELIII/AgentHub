@@ -6,6 +6,7 @@ import test from "node:test";
 
 import { HubMcpService } from "../../src/application/hub-mcp-service.mjs";
 import { incomingLedgerRecord } from "../../src/application/work-log-usage-projection.mjs";
+import { createInterstreamMessage } from "../../src/domain/interstream-message.mjs";
 
 async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-mcp-"));
@@ -101,7 +102,20 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     operations.set(operation.requestId, created);
     return created;
   };
+  workspaceCatalog.bindMcpOperationInterstreamContentHash = (requestId, contentHash) => {
+    const operation = operations.get(requestId);
+    if (operation.interstreamContentHash && operation.interstreamContentHash !== contentHash) {
+      throw new Error("MCP interstream content does not match the original admission");
+    }
+    operation.interstreamContentHash = contentHash;
+    return operation;
+  };
   workspaceCatalog.completeMcpOperation = (requestId, result) => {
+    const operation = operations.get(requestId);
+    if (["hub_stream_message_send", "hub_task_start", "hub_task_reassign"].includes(operation.toolName)
+      && !operation.interstreamContentHash) {
+      throw new Error("MCP interstream operation has no admitted content hash");
+    }
     Object.assign(operations.get(requestId), { status: "succeeded", result });
   };
   workspaceCatalog.failMcpOperation = (requestId, error) => {
@@ -256,8 +270,12 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     },
   });
   const taskLaunchCalls = [];
-  service.setTaskLauncher(async ({ id, workspaceId, streamId, ...options }) => {
+  service.setTaskLauncher(async ({ id, workspaceId, streamId, ...options }, launchContext) => {
     taskLaunchCalls.push({ id, workspaceId, streamId, ...options });
+    launchContext.bindInterstreamAuditContent(createInterstreamMessage({
+      ...launchContext.messageOrigin,
+      text: options.message || "Task launch",
+    }));
     const selectedProjectRoot = streamId === "stream-3"
       ? foreignStreamWorkingDirectory
       : streamId === "stream-2" ? targetWorkingDirectory
@@ -401,7 +419,9 @@ test("HubMcpService falls back to Stream context while a rotated Thread is not b
 });
 
 test("HubMcpService starts the current Workspace task in the current Stream", async (context) => {
-  const { service, token, streamWorkingDirectory, taskGitPrepareCalls, taskLaunchCalls } = await fixture(context);
+  const {
+    service, token, operations, streamWorkingDirectory, taskGitPrepareCalls, taskLaunchCalls,
+  } = await fixture(context);
   const task = await service.call("hub_task_start", {
     context_token: token, request_id: "start-task", task_id: "task-current", confirm_launch: true,
   });
@@ -411,6 +431,8 @@ test("HubMcpService starts the current Workspace task in the current Stream", as
   assert.equal(taskGitPrepareCalls[0].projectRoot, streamWorkingDirectory);
   assert.equal("workingDirectory" in taskLaunchCalls[0], false);
   assert.match(task.gitWorkspace.projectRoot, /task-worktree[\\/]task-current$/u);
+  assert.equal(operations.get("start-task").status, "succeeded");
+  assert.match(operations.get("start-task").interstreamContentHash, /^[a-f0-9]{64}$/u);
 });
 
 test("HubMcpService starts a Task from the target Stream working directory", async (context) => {
@@ -456,7 +478,7 @@ test("HubMcpService reports Stream availability from active turns and queued inp
 });
 
 test("HubMcpService reassigns a started Task and preserves assignment context", async (context) => {
-  const { service, token, tasks, taskLaunchCalls } = await fixture(context);
+  const { service, token, operations, tasks, taskLaunchCalls } = await fixture(context);
   Object.assign(tasks.get("task-current"), {
     status: "started", workflowStatus: "in_progress", streamId: "stream-1",
   });
@@ -475,6 +497,8 @@ test("HubMcpService reassigns a started Task and preserves assignment context", 
   assert.equal(result.task.streamId, "stream-2");
   assert.equal(taskLaunchCalls[0].reassign, true);
   assert.equal(taskLaunchCalls[0].message, "Пришли результат в Architect.");
+  assert.equal(operations.get("reassign-task").status, "succeeded");
+  assert.match(operations.get("reassign-task").interstreamContentHash, /^[a-f0-9]{64}$/u);
 });
 
 test("HubMcpService blocks reassignment while the current executor is busy", async (context) => {
@@ -660,12 +684,16 @@ test("Task status integration resolves an executor root in another Workspace", a
 test("HubMcpService resumes an interrupted pending task start with the same request id", async (context) => {
   const { service, token, operations, tasks } = await fixture(context);
   let launches = 0;
-  service.setTaskLauncher(async ({ id, workspaceId, streamId, launchRequestId }) => {
+  service.setTaskLauncher(async ({ id, workspaceId, streamId, launchRequestId }, launchContext) => {
     launches += 1;
     if (launches === 1) {
       Object.assign(tasks.get(id), { status: "starting", startRequestId: launchRequestId, streamId });
       throw new Error("interrupted before MCP receipt completion");
     }
+    launchContext.bindInterstreamAuditContent(createInterstreamMessage({
+      ...launchContext.messageOrigin,
+      text: "Task launch",
+    }));
     return {
       task: { id, status: "started" },
       target: { streamId, provider: "codex", threadId: "thread-1", workspaceId },
@@ -973,10 +1001,24 @@ test("hub_stream_history projects active content and deterministic lifecycle sta
     id: "tool-1", type: "tool", label: "Используется инструмент",
     detail: "agent_hub/hub_task_get", status: "running", time: "2026-09-01T13:00:01.000Z",
   };
+  const messageOrigin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    requestId: "foreign-live-1",
+  };
   const firstRun = {
     id: "run-foreign-1", provider: "codex", streamId: "stream-3", threadId: "thread-3",
     turnId: "turn-foreign-1", status: "running", taskTitle: "Foreign live",
-    promptPreview: "Inspect foreign state", progressStage: "Reading",
+    promptPreview: createInterstreamMessage({
+      ...messageOrigin,
+      text: "Inspect foreign state",
+    }),
+    messageOrigin,
+    clientUserMessageId: "mcp:foreign-live-1",
+    progressStage: "Reading",
     progressReasoning: "Hub-visible progress summary", responseText: "Visible partial answer",
     activities: [visibleActivity, { ...visibleActivity, id: "tool-2", detail: "second" }],
     hiddenChainOfThought: "must never be exposed",

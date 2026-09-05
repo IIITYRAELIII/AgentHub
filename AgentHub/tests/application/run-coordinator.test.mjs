@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { activeTurnNotSteerable, RunCoordinator } from "../../src/application/run-coordinator.mjs";
+import { createInterstreamMessage } from "../../src/domain/interstream-message.mjs";
 
 function fixture(overrides = {}) {
   const calls = [];
@@ -610,6 +611,45 @@ test("RunCoordinator keeps exact Codex commentary steering available", async () 
 
   assert.equal(result.steered, true);
   assert.equal(f.calls.filter(([name]) => name === "provider").length, 1);
+});
+
+test("RunCoordinator keeps the provider envelope out of a live interstream steer card", async () => {
+  const origin = {
+    kind: "interstream",
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    sourceThreadId: "thread-architect",
+    requestId: "steer-1",
+  };
+  const input = createInterstreamMessage({ ...origin, text: "Проверь текущий ход." });
+  const active = {
+    id: "active",
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    status: "running",
+    executionOwner: "hub",
+    userMessages: [],
+  };
+  const f = fixture({ taskRuns: { forTask: () => active } });
+
+  await f.coordinator.steer({
+    input,
+    target: {
+      ...f.target,
+      messageOrigin: origin,
+      steerTargetRunId: "active",
+      steerTargetTurnId: "turn-1",
+    },
+    clientUserMessageId: "mcp:steer-1",
+  });
+
+  assert.equal(f.calls.find(([name]) => name === "provider")[3].input, input);
+  assert.equal(active.userMessages[0].text, "Проверь текущий ход.");
+  assert.deepEqual(active.userMessages[0].origin, origin);
 });
 
 test("RunCoordinator ignores final-answer markers outside the exact Codex run identity", async () => {

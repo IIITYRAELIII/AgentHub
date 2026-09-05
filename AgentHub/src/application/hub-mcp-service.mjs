@@ -12,6 +12,8 @@ import {
 import {
   createInterstreamOrigin,
   createInterstreamMessage,
+  interstreamAuditContentHash,
+  interstreamDisplayText,
 } from "../domain/interstream-message.mjs";
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
@@ -299,7 +301,10 @@ function boundedActiveTurn(run, { includeBody, maximumActivities }) {
     turnId: String(run?.turnId ?? "").trim() || null,
     runId: String(run?.id ?? ""),
     title: compactText(run?.taskTitle ?? "", 500),
-    prompt: compactText(displayUserPrompt(run?.promptPreview), 2_000),
+    prompt: compactText(displayUserPrompt(interstreamDisplayText(run?.promptPreview, {
+      origin: run?.messageOrigin,
+      clientUserMessageId: run?.clientUserMessageId,
+    })), 2_000),
     startedAt: run?.startedAt ?? null,
     completedAt: null,
     status: "active",
@@ -403,7 +408,8 @@ export class HubMcpService {
     for (const name of [
       "resolveThread", "workspace", "hierarchy", "developerRulesForStream",
       "updateWorkspaceDeveloperRules", "updateStreamDeveloperRules",
-      "beginMcpOperation", "completeMcpOperation", "failMcpOperation", "mcpOperations",
+      "beginMcpOperation", "bindMcpOperationInterstreamContentHash",
+      "completeMcpOperation", "failMcpOperation", "mcpOperations",
       "stream", "activeThread", "workspaceEvents",
     ]) requiredMethod(workspaceCatalog, name);
     for (const name of [
@@ -1255,6 +1261,12 @@ export class HubMcpService {
       ...(String(sourceRun?.modelId ?? "").trim() ? { model: sourceRun.modelId } : {}),
       ...(String(sourceRun?.reasoningId ?? "").trim() ? { reasoning: sourceRun.reasoningId } : {}),
     } : null;
+    const bindInterstreamAuditContent = (rawMessage) => (
+      this.workspaceCatalog.bindMcpOperationInterstreamContentHash(
+        normalizedRequestId,
+        interstreamAuditContentHash(rawMessage),
+      )
+    );
     const result = await this.#taskLauncher({
       id: task.id,
       workspaceId: targetWorkspace.id,
@@ -1267,7 +1279,7 @@ export class HubMcpService {
       followUpMode: "queue",
       launchRequestId: normalizedRequestId,
       clientUserMessageId: `mcp:${normalizedRequestId}`,
-    }, { ...context, messageOrigin });
+    }, { ...context, messageOrigin, bindInterstreamAuditContent });
     const gitWorkspace = result.gitWorkspace ?? null;
     return {
       task: compactTask(result.task),
@@ -1309,6 +1321,10 @@ export class HubMcpService {
       ...messageOrigin,
       text: requiredText(text, "message text", 100_000),
     });
+    this.workspaceCatalog.bindMcpOperationInterstreamContentHash(
+      normalizedRequestId,
+      interstreamAuditContentHash(message),
+    );
     const delivery = await this.#streamMessenger({
       streamId: targetStreamId,
       text: message,
@@ -1318,6 +1334,12 @@ export class HubMcpService {
       source: "mcp",
       clientId: `mcp:${context.provider}:${context.auditThreadId}`,
       messageOrigin,
+      bindInterstreamAuditContent: (rawMessage) => (
+        this.workspaceCatalog.bindMcpOperationInterstreamContentHash(
+          normalizedRequestId,
+          interstreamAuditContentHash(rawMessage),
+        )
+      ),
     });
     return {
       source: {

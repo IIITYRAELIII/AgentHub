@@ -3,6 +3,7 @@ import { stat } from "node:fs/promises";
 
 import { legacyTaskRunKeys, taskRunKey } from "../domain/task-runs.mjs";
 import { isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
+import { normalizeInterstreamClientUserMessageId } from "../domain/interstream-message.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
 import { conciseTurnTitle } from "./turn-title.mjs";
 
@@ -101,7 +102,7 @@ export class RunJournalService {
       operationKind: String(run.operationKind ?? "").trim()
         || (run.contextProbe === true ? "probe" : "user-turn"),
       contextProbe: run.contextProbe === true,
-      clientUserMessageId: String(run.clientUserMessageId ?? "").trim() || null,
+      clientUserMessageId: normalizeInterstreamClientUserMessageId(run.clientUserMessageId),
     };
     if (
       current
@@ -199,6 +200,8 @@ export class RunJournalService {
       title: title || (body ? conciseTurnTitle(body, completion.status) : ""),
       body,
       prompt: journalPrompt(completion),
+      clientUserMessageId: completion.clientUserMessageId,
+      messageOrigin: completion.messageOrigin,
       changedFiles: completion.changedFiles,
       diff: completion.diff,
       skillsUsed: completion.skillsUsed,

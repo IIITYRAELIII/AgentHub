@@ -3,6 +3,7 @@ import {
   TASK_EXECUTION_OWNERS,
 } from "../domain/task-execution-owner.mjs";
 import {
+  interstreamDisplayText,
   interstreamOriginAuthor,
   normalizeInterstreamOrigin,
 } from "../domain/interstream-message.mjs";
@@ -593,15 +594,19 @@ export class RunCoordinator {
       if (!userMessages.some((message) => (
         String(message?.clientUserMessageId ?? "") === clientUserMessageId
       ))) {
+        const rawText = typeof input === "string"
+          ? input
+          : input.filter((item) => item?.type === "text")
+            .map((item) => String(item.text ?? ""))
+            .filter(Boolean)
+            .join("\n");
         userMessages.push({
           role: "user",
           clientUserMessageId,
-          text: typeof input === "string"
-            ? input
-            : input.filter((item) => item?.type === "text")
-              .map((item) => String(item.text ?? ""))
-              .filter(Boolean)
-              .join("\n"),
+          text: interstreamDisplayText(rawText, {
+            origin: messageOrigin,
+            clientUserMessageId,
+          }),
           ...(messageOrigin ? {
             kind: "interstream",
             origin: structuredClone(messageOrigin),

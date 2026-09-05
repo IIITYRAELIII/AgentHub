@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { ManagedRunLifecycleService } from "../../src/application/managed-run-lifecycle-service.mjs";
+import { createInterstreamMessage } from "../../src/domain/interstream-message.mjs";
 import { TaskRunRegistry } from "../../src/domain/task-runs.mjs";
 
 function harness({
@@ -52,6 +53,7 @@ test("managed run lifecycle creates and persists one owned run", async () => {
 
   assert.equal(taskRuns.forTask(run), run);
   assert.equal(run.promptPreview, "hello");
+  assert.equal(run.rawPrompt, "hello");
   assert.deepEqual(run.userMessages, [{
     role: "user",
     text: "hello",
@@ -75,6 +77,16 @@ test("managed run preserves durable submission time separately from provider sta
   assert.equal(run.userMessages[0].submittedAt, run.submittedAt);
   assert.equal(run.userMessages[0].startedAt, run.startedAt);
   assert.equal(run.userMessages[0].time, run.submittedAt);
+});
+
+test("managed run lifecycle omits an oversized provider client message id", async () => {
+  const { service } = harness();
+  const run = await service.begin("hello", {
+    clientUserMessageId: `provider:${"x".repeat(201)}`,
+  });
+
+  assert.equal(run.clientUserMessageId, null);
+  assert.equal(run.userMessages[0].clientUserMessageId, undefined);
 });
 
 test("managed run lifecycle does not capture Git baselines for provider turns", async () => {
@@ -274,13 +286,20 @@ test("managed run lifecycle keeps interstream identity on the active user messag
     sourceThreadId: "thread-themes",
     requestId: "request-run",
   };
+  const input = createInterstreamMessage({ ...messageOrigin, text: "проверь сообщение" });
 
-  const run = await service.begin("проверь сообщение", { messageOrigin });
+  const run = await service.begin(input, {
+    clientUserMessageId: "mcp:request-run",
+    messageOrigin,
+  });
 
+  assert.equal(run.promptPreview, input);
+  assert.equal(run.rawPrompt, input);
   assert.deepEqual(run.messageOrigin, messageOrigin);
   assert.deepEqual(run.userMessages[0], {
     role: "user",
     kind: "interstream",
+    clientUserMessageId: "mcp:request-run",
     origin: messageOrigin,
     author: "Agent HUB - Themes (Terra)",
     text: "проверь сообщение",

@@ -167,8 +167,18 @@ hydration starts strictly as background work and is never awaited by mark-read.
 - A retained pre-origin MCP message may recover inter-Stream provenance only by
   exact `mcp:<requestId>` lookup of a successful audited
   `hub_stream_message_send`, `hub_task_start` or `hub_task_reassign` operation.
+  Recovery compares stable Workspace, Stream, provider, source Thread and
+  request IDs; mutable display names and model are descriptive metadata, while
+  any stable conflict fails closed. The successful audit also carries the
+  immutable MCP arguments hash and a pre-delivery SHA-256 boundary over the
+  exact stable origin plus body; a matching request ID with substituted content
+  remains literal. Ordinary ingress cannot mint this reserved command namespace.
   Its source Workspace and Stream are rendered with the explicit service marker
   `Служебное`; text, time and display order are never attribution evidence.
+  Live, reconnect and delayed history frames apply the same exact identity
+  before rendering: a verified transport envelope is never exposed, while an
+  envelope-shaped literal with no matching durable/audited identity remains
+  ordinary readable user content.
   Remove this read-only guard after every retained MCP message carries durable
   `messageOrigin`. Rows without both durable origin and exact successful audit
   evidence remain unattributed rather than receiving a guessed backfill.

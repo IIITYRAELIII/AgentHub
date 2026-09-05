@@ -48,3 +48,11 @@ succeeds; it is never converted to a null operation.
 
 Logs contain tool and operation identity, status and recovery outcome, but not
 the context capability or tool arguments.
+
+For `hub_stream_message_send`, `hub_task_start` and `hub_task_reassign`, the
+pending operation is bound before provider delivery to one immutable SHA-256 of
+the exact stable inter-Stream origin and body assembled by message intake. A
+successful operation without that bound content is invalid. Read-side legacy
+origin recovery requires the successful tool, exact `mcp:<request_id>`, stored
+arguments hash and stored content hash; absent pre-migration content hashes fail
+closed and are not reconstructed from message text or ordering.
