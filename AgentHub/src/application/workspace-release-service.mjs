@@ -9,14 +9,16 @@ function requiredPlanRevision(value) {
 }
 
 export class WorkspaceReleaseService {
-  constructor({ store, releasePlanner, releaseGitWorkspaces, verifyPublication } = {}) {
+  constructor({ store, releasePlanner, releaseGitWorkspaces, taskGitWorkspaces, verifyPublication } = {}) {
     requiredMethod(store, "completeRelease");
     requiredMethod(releasePlanner, "plan");
     requiredMethod(releaseGitWorkspaces, "synchronizePublishedPrimary");
+    requiredMethod(taskGitWorkspaces, "synchronizeMainIntoDev");
     if (typeof verifyPublication !== "function") throw new TypeError("verifyPublication is required");
     this.store = store;
     this.releasePlanner = releasePlanner;
     this.releaseGitWorkspaces = releaseGitWorkspaces;
+    this.taskGitWorkspaces = taskGitWorkspaces;
     this.verifyPublication = verifyPublication;
   }
 
@@ -51,6 +53,22 @@ export class WorkspaceReleaseService {
       } catch (error) {
         publication.primarySynchronization.push({
           status: "manual_required",
+          projectRoot: repository.root,
+          reason: error.message,
+        });
+      }
+    }
+    publication.devSynchronization = [];
+    for (const repository of publication.repositories) {
+      try {
+        publication.devSynchronization.push(await this.taskGitWorkspaces.synchronizeMainIntoDev({
+          projectRoot: repository.root,
+          publishedRevision: repository.revision,
+        }));
+      } catch (error) {
+        publication.devSynchronization.push({
+          status: "manual_required",
+          integrated: false,
           projectRoot: repository.root,
           reason: error.message,
         });

@@ -60,11 +60,32 @@ that root. Git defines the base, result, operation, blobs and patch. Provider
 receipts, final text, timestamps and shared dirty trees are never ownership
 fallbacks.
 
+`TaskGitWorkspaceService` is the single owner of published/current `main` to
+managed `dev` synchronization. Under the repository's existing dev lock it
+fetches one explicit `refs/heads/main:refs/remotes/origin/main` refspec with
+tags and recursive submodule fetch disabled, resolves the exact current main
+commit, verifies that the managed dev worktree is clean, and then incorporates
+that commit before new Task preparation, Task integration, and release
+preflight. Remote tag settings cannot widen this fetch: local `main`, remote
+`dev`, protective branches, and every tag ref remain unchanged. It never checks
+out or updates the registered primary worktree and never creates or pushes
+`origin/dev`. A new Task still starts from the exact main commit returned by
+that locked operation, not from rolling Test content.
+
+If `main` and `dev` diverge, the owner creates a local merge commit whose result
+must contain both the former dev head and current main as ancestors. A conflict
+is collected, aborted, and reported only after the dev head and clean worktree
+are proven restored. Dirty dev or a published-revision mismatch is
+`manual_required`; an abort that cannot prove restoration throws. No Task
+preparation or integration is reported as successful in either case.
+
 A successful Test integration records only the deterministic Task branch and
 its accepted immutable result commit on the Task. The base ref and changed-file
 set remain Git data and are derived when a release plan is read. A conflict is
-aborted and returned with exact conflicting paths. Git failure never rejects the
-requested workflow-status transition.
+returned with exact conflicting paths only after the Task merge abort proves the
+pre-merge dev head and clean status were restored. Abort failure or partial
+restoration throws instead of reporting an ordinary conflict. Git failure never
+rejects the requested workflow-status transition.
 
 Moving a Task to `awaiting_implementation` records that its exact immutable
 result is accepted for a future release. The status transition does not build,
@@ -130,6 +151,13 @@ and their managed branches and worktrees may be removed. Published `main` is
 incorporated into `dev` without discarding later Test work. Remaining Await
 Tasks stay accepted for the next explicit release; Agent Hub does not prebuild a
 mutable next candidate.
+
+Verified release completion invokes the same Task Git owner with each exact
+published repository revision. The returned `devSynchronization` evidence
+distinguishes `already_current`, `fast_forwarded`, `merged`, `conflict`, and
+`manual_required`. Publication and Task completion remain truthful when local
+dev needs manual reconciliation: publication is not rolled back, but dev
+integration is never represented as successful.
 
 ## Test Contour
 

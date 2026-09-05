@@ -170,8 +170,23 @@ async function branchExists(repositoryRootValue, branch) {
   }) !== null;
 }
 
-async function preferredMainCommit(repositoryRootValue) {
-  for (const ref of ["refs/remotes/origin/main", "refs/heads/main", "HEAD"]) {
+async function refreshPreferredMainCommit(repositoryRootValue) {
+  const origin = await gitMaybe(["remote", "get-url", "origin"], { cwd: repositoryRootValue });
+  if (origin) {
+    await runGit([
+      "-c", "remote.origin.tagOpt=--no-tags",
+      "-c", "fetch.recurseSubmodules=false",
+      "fetch", "--no-tags", "--no-recurse-submodules",
+      "origin", "+refs/heads/main:refs/remotes/origin/main",
+    ], {
+      cwd: repositoryRootValue,
+      timeoutMs: 300_000,
+    });
+    return runGit(["rev-parse", "--verify", "refs/remotes/origin/main^{commit}"], {
+      cwd: repositoryRootValue,
+    });
+  }
+  for (const ref of ["refs/heads/main", "HEAD"]) {
     const commit = await gitMaybe(["rev-parse", "--verify", `${ref}^{commit}`], { cwd: repositoryRootValue });
     if (commit) return commit;
   }
@@ -306,26 +321,129 @@ export class TaskGitWorkspaceService {
     await runGit(["branch", "-m", branch], { cwd: root });
   }
 
-  async prepareDev(projectRoot) {
+  async #withDevLock(projectRoot, operation) {
     const repoRoot = await repositoryRoot(projectRoot);
     const repoKey = taskRepositoryKey(repoRoot);
     const devLock = path.join(this.dataDir, "locks", `task-git-dev-${repoKey}`);
-    return withInterprocessLocks([devLock], async () => {
-      const mainCommit = await preferredMainCommit(repoRoot);
-      const { root: devRoot } = await this.#ensureBranchWorktree({
-        repositoryRoot: repoRoot,
-        branch: this.devBranch,
-        worktreeRoot: path.join(this.devWorktreesRoot, repoKey),
-        managedRoot: this.devWorktreesRoot,
-        startCommit: mainCommit,
-      });
+    return withInterprocessLocks([devLock], () => operation({ repoRoot, repoKey }));
+  }
+
+  async #synchronizeMainIntoDevOwned({ repoRoot, repoKey, expectedMainCommit = null }) {
+    const mainCommit = await refreshPreferredMainCommit(repoRoot);
+    const expected = String(expectedMainCommit ?? "").trim().toLowerCase();
+    if (expected && mainCommit !== expected) {
       return {
+        status: "manual_required",
+        integrated: false,
+        repositoryRoot: repoRoot,
+        mainCommit,
+        expectedMainCommit: expected,
+        reason: `current main ${mainCommit} does not match published revision ${expected}`,
+      };
+    }
+    const { root: devRoot } = await this.#ensureBranchWorktree({
+      repositoryRoot: repoRoot,
+      branch: this.devBranch,
+      worktreeRoot: path.join(this.devWorktreesRoot, repoKey),
+      managedRoot: this.devWorktreesRoot,
+      startCommit: mainCommit,
+    });
+    const devHeadBefore = await runGit(["rev-parse", "HEAD^{commit}"], { cwd: devRoot });
+    const statusBefore = await runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
+      cwd: devRoot,
+    });
+    if (statusBefore) {
+      return {
+        status: "manual_required",
+        integrated: false,
         repositoryRoot: repoRoot,
         projectRoot: devRoot,
         branch: this.devBranch,
-        headCommit: await runGit(["rev-parse", "HEAD^{commit}"], { cwd: devRoot }),
+        mainCommit,
+        devHeadBefore,
+        headCommit: devHeadBefore,
+        reason: "managed dev worktree has uncommitted changes",
       };
-    });
+    }
+    const mainAlreadyIntegrated = await gitMaybe(["merge-base", "--is-ancestor", mainCommit, devHeadBefore], {
+      cwd: devRoot,
+    }) !== null;
+    if (mainAlreadyIntegrated) {
+      return {
+        status: "already_current",
+        integrated: true,
+        repositoryRoot: repoRoot,
+        projectRoot: devRoot,
+        branch: this.devBranch,
+        mainCommit,
+        devHeadBefore,
+        headCommit: devHeadBefore,
+      };
+    }
+    const fastForward = await gitMaybe(["merge-base", "--is-ancestor", devHeadBefore, mainCommit], {
+      cwd: devRoot,
+    }) !== null;
+    try {
+      await runGit([
+        "-c", "user.name=Agent Hub",
+        "-c", "user.email=agent-hub@local.invalid",
+        "merge", ...(fastForward ? ["--ff-only"] : ["--no-ff", "--no-edit"]), mainCommit,
+      ], { cwd: devRoot, timeoutMs: 300_000 });
+      const headCommit = await runGit(["rev-parse", "HEAD^{commit}"], { cwd: devRoot });
+      await runGit(["merge-base", "--is-ancestor", mainCommit, headCommit], { cwd: devRoot });
+      await runGit(["merge-base", "--is-ancestor", devHeadBefore, headCommit], { cwd: devRoot });
+      return {
+        status: fastForward ? "fast_forwarded" : "merged",
+        integrated: true,
+        repositoryRoot: repoRoot,
+        projectRoot: devRoot,
+        branch: this.devBranch,
+        mainCommit,
+        devHeadBefore,
+        headCommit,
+      };
+    } catch (error) {
+      const conflicts = String(await gitMaybe(["diff", "--name-only", "--diff-filter=U"], {
+        cwd: devRoot,
+      }) ?? "").split(/\r?\n/u).filter(Boolean);
+      const aborted = await gitMaybe(["merge", "--abort"], { cwd: devRoot });
+      const [headCommit, statusAfter] = await Promise.all([
+        runGit(["rev-parse", "HEAD^{commit}"], { cwd: devRoot }),
+        runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: devRoot }),
+      ]);
+      if (aborted === null || headCommit !== devHeadBefore || statusAfter !== statusBefore) {
+        throw new Error(`main to dev synchronization failed and could not restore dev ${devHeadBefore}: ${error.message}`);
+      }
+      return {
+        status: conflicts.length ? "conflict" : "manual_required",
+        integrated: false,
+        repositoryRoot: repoRoot,
+        projectRoot: devRoot,
+        branch: this.devBranch,
+        mainCommit,
+        devHeadBefore,
+        headCommit,
+        conflicts,
+        reason: error.message,
+      };
+    }
+  }
+
+  async prepareDev(projectRoot) {
+    const synchronization = await this.synchronizeMainIntoDev({ projectRoot });
+    if (!synchronization.integrated) {
+      const conflicts = synchronization.conflicts?.length
+        ? `; conflicts: ${synchronization.conflicts.join(", ")}`
+        : "";
+      throw new Error(`main to dev synchronization requires manual resolution: ${synchronization.reason}${conflicts}`);
+    }
+    return synchronization;
+  }
+
+  async synchronizeMainIntoDev({ projectRoot, publishedRevision = null } = {}) {
+    return this.#withDevLock(projectRoot, ({ repoRoot, repoKey }) => (
+      this.#synchronizeMainIntoDevOwned({ repoRoot, repoKey, expectedMainCommit: publishedRevision })
+    ));
   }
 
   async prepare({ taskId, taskNumber = null, projectRoot } = {}) {
@@ -339,7 +457,7 @@ export class TaskGitWorkspaceService {
     const baseRef = taskBaseRef(id, repoKey);
     let baseCommit = await gitMaybe(["rev-parse", "--verify", `${baseRef}^{commit}`], { cwd: dev.repositoryRoot });
     if (!baseCommit) {
-      baseCommit = await preferredMainCommit(dev.repositoryRoot);
+      baseCommit = dev.mainCommit;
       await runGit(["update-ref", baseRef, baseCommit], { cwd: dev.repositoryRoot });
     }
     const taskRootPath = path.join(this.taskWorktreesRoot, id, repoKey);
@@ -422,30 +540,80 @@ export class TaskGitWorkspaceService {
   }
 
   async mergeIntoDev(snapshot) {
-    const dev = await this.prepareDev(snapshot.repositoryRoot);
-    const devLock = path.join(this.dataDir, "locks", `task-git-dev-${taskRepositoryKey(dev.repositoryRoot)}`);
-    return withInterprocessLocks([devLock], async () => {
-      const isMerged = await gitMaybe(["merge-base", "--is-ancestor", snapshot.headCommit, "HEAD"], {
+    return this.#withDevLock(snapshot.repositoryRoot, async ({ repoRoot, repoKey }) => {
+      const dev = await this.#synchronizeMainIntoDevOwned({ repoRoot, repoKey });
+      if (!dev.integrated) {
+        return {
+          integrated: false,
+          conflicts: dev.conflicts ?? [],
+          error: `main to dev synchronization requires manual resolution: ${dev.reason}`,
+          dev,
+        };
+      }
+      const devHeadBefore = await runGit(["rev-parse", "HEAD^{commit}"], { cwd: dev.projectRoot });
+      const statusBefore = await runGit([
+        "status", "--porcelain=v1", "-z", "--untracked-files=all",
+      ], { cwd: dev.projectRoot });
+      if (statusBefore) {
+        return {
+          integrated: false,
+          conflicts: [],
+          error: "managed dev worktree changed before Task result merge",
+          dev: { ...dev, headCommit: devHeadBefore },
+        };
+      }
+      const isMerged = await gitMaybe([
+        "merge-base", "--is-ancestor", snapshot.headCommit, devHeadBefore,
+      ], {
         cwd: dev.projectRoot,
       }) !== null;
-      if (isMerged) return { integrated: true, alreadyIntegrated: true, dev };
+      if (isMerged) {
+        return {
+          integrated: true,
+          alreadyIntegrated: true,
+          dev: { ...dev, headCommit: devHeadBefore },
+        };
+      }
       try {
         await runGit([
           "-c", "user.name=Agent Hub",
           "-c", "user.email=agent-hub@local.invalid",
           "merge", "--no-ff", "--no-edit", snapshot.headCommit,
         ], { cwd: dev.projectRoot, timeoutMs: 120_000 });
+        const headCommit = await runGit(["rev-parse", "HEAD^{commit}"], { cwd: dev.projectRoot });
+        await runGit(["merge-base", "--is-ancestor", snapshot.headCommit, headCommit], {
+          cwd: dev.projectRoot,
+        });
+        await runGit(["merge-base", "--is-ancestor", devHeadBefore, headCommit], {
+          cwd: dev.projectRoot,
+        });
         return {
           integrated: true,
           alreadyIntegrated: false,
-          dev: { ...dev, headCommit: await runGit(["rev-parse", "HEAD^{commit}"], { cwd: dev.projectRoot }) },
+          dev: { ...dev, headCommit },
         };
       } catch (error) {
         const conflicts = String(await gitMaybe(["diff", "--name-only", "--diff-filter=U"], {
           cwd: dev.projectRoot,
         }) ?? "").split(/\r?\n/u).filter(Boolean);
-        await gitMaybe(["merge", "--abort"], { cwd: dev.projectRoot });
-        return { integrated: false, conflicts, error: error.message, dev };
+        const aborted = await gitMaybe(["merge", "--abort"], { cwd: dev.projectRoot });
+        const [headCommit, statusAfter] = await Promise.all([
+          gitMaybe(["rev-parse", "HEAD^{commit}"], { cwd: dev.projectRoot }),
+          gitMaybe(["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
+            cwd: dev.projectRoot,
+          }),
+        ]);
+        if (aborted === null || headCommit !== devHeadBefore || statusAfter !== statusBefore) {
+          throw new Error(
+            `Task result merge failed and could not restore managed dev ${devHeadBefore}: ${error.message}`,
+          );
+        }
+        return {
+          integrated: false,
+          conflicts,
+          error: error.message,
+          dev: { ...dev, headCommit },
+        };
       }
     });
   }

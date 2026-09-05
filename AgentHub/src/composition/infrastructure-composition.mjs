@@ -379,6 +379,7 @@ export async function createHubInfrastructure({
     store: taskBoardStore,
     releasePlanner: taskReleasePlanner,
     releaseGitWorkspaces,
+    taskGitWorkspaces,
     verifyPublication: verifyWorkspaceReleasePublication,
   });
   const hubMcpService = new HubMcpService({

@@ -5,7 +5,7 @@ import { WorkspaceReleaseService } from "../../src/application/workspace-release
 
 function fixture(plan = {
   revision: "plan-1", ready: [{ id: "change-1" }], draft: [], blocked: [], conflicts: [],
-}, { primarySync = null } = {}) {
+}, { primarySync = null, devSync = null } = {}) {
   const calls = [];
   const service = new WorkspaceReleaseService({
     store: {
@@ -19,6 +19,12 @@ function fixture(plan = {
       synchronizePublishedPrimary: async (value) => {
         calls.push(["sync-primary", value]);
         return primarySync ?? { status: "fast_forwarded", publishedRevision: value.publishedRevision };
+      },
+    },
+    taskGitWorkspaces: {
+      synchronizeMainIntoDev: async (value) => {
+        calls.push(["sync-dev", value]);
+        return devSync ?? { status: "merged", integrated: true, mainCommit: value.publishedRevision };
       },
     },
     verifyPublication: async (value) => {
@@ -49,13 +55,17 @@ test("release completion verifies repositories before atomically closing ready c
   });
   assert.equal(result.publication.verificationSummary, "Published and smoke-tested");
   assert.equal(result.publication.planRevision, "plan-1");
-  assert.deepEqual(calls.map(([name]) => name), ["verify", "sync-primary", "complete"]);
+  assert.deepEqual(calls.map(([name]) => name), ["verify", "sync-primary", "sync-dev", "complete"]);
   assert.deepEqual(calls[1][1], {
     projectRoot: "D:/repo",
     publishedRevision: "abc",
     planRevision: "plan-1",
   });
-  const { plan: completedPlan, ...completionOptions } = calls[2][2];
+  assert.deepEqual(calls[2][1], {
+    projectRoot: "D:/repo",
+    publishedRevision: "abc",
+  });
+  const { plan: completedPlan, ...completionOptions } = calls[3][2];
   assert.equal(completedPlan.revision, "plan-1");
   assert.deepEqual(completionOptions, {
     expectedPlanRevision: "plan-1",
@@ -68,6 +78,7 @@ test("release completion verifies repositories before atomically closing ready c
       publication: {
         repositories: [{ root: "D:/repo", revision: "abc" }],
         primarySynchronization: [{ status: "fast_forwarded", publishedRevision: "abc" }],
+        devSynchronization: [{ status: "merged", integrated: true, mainCommit: "abc" }],
         verificationSummary: "Published and smoke-tested",
         planRevision: "plan-1",
       },
@@ -94,8 +105,8 @@ test("release completion requires and records explicit resolution of overlapping
   await assert.rejects(() => service.completeRelease(request), /overlapping files/u);
   await service.completeRelease({ ...request, conflictsResolved: true });
   assert.equal(calls[0][1].conflictsResolved, true);
-  assert.equal(calls[2][2].conflictsResolved, true);
-  assert.equal(calls[2][2].verificationEvidence.conflictsResolved, true);
+  assert.equal(calls[3][2].conflictsResolved, true);
+  assert.equal(calls[3][2].verificationEvidence.conflictsResolved, true);
 });
 
 test("release completion binds publication evidence to the exact observed plan revision", async () => {
@@ -124,5 +135,30 @@ test("manual primary synchronization does not undo verified release completion",
     verificationSummary: "Published and verified",
   });
   assert.equal(result.publication.primarySynchronization[0].status, "manual_required");
-  assert.deepEqual(calls.map(([name]) => name), ["verify", "sync-primary", "complete"]);
+  assert.deepEqual(calls.map(([name]) => name), ["verify", "sync-primary", "sync-dev", "complete"]);
+});
+
+test("release completion records a dev conflict without hiding publication success", async () => {
+  const { calls, service } = fixture(undefined, {
+    devSync: {
+      status: "conflict",
+      integrated: false,
+      mainCommit: "abc",
+      devHeadBefore: "dev-before",
+      headCommit: "dev-before",
+      conflicts: ["AgentHub/app.js"],
+      reason: "merge conflict",
+    },
+  });
+  const result = await service.completeRelease({
+    workspaceId: "workspace-1",
+    expectedRevision: "abc",
+    expectedPlanRevision: "plan-1",
+    deploymentVerified: true,
+    verificationSummary: "Published and verified",
+  });
+  assert.equal(result.publication.devSynchronization[0].status, "conflict");
+  assert.equal(result.publication.devSynchronization[0].integrated, false);
+  assert.deepEqual(result.publication.devSynchronization[0].conflicts, ["AgentHub/app.js"]);
+  assert.deepEqual(calls.map(([name]) => name), ["verify", "sync-primary", "sync-dev", "complete"]);
 });
