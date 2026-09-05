@@ -5,6 +5,7 @@ import {
   taskViewMessages,
   TaskViewController,
 } from "../../../src/interfaces/telegram/task-view-controller.mjs";
+import { createInterstreamMessage } from "../../../src/domain/interstream-message.mjs";
 
 function controller(overrides = {}) {
   return new TaskViewController({
@@ -131,6 +132,15 @@ test("Codex history refresh reads the rollout directly without blocking App Serv
   let providerReads = 0;
   let snapshotInput = null;
   let rolloutOptions = null;
+  const input = createInterstreamMessage({
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    requestId: "telegram-history-1",
+    text: "Новый запрос",
+  });
   const view = controller({
     findCodexRolloutPath: async () => "C:/rollout.jsonl",
     ensureCodex: async () => { providerReads += 1; },
@@ -139,7 +149,20 @@ test("Codex history refresh reads the rollout directly without blocking App Serv
       rolloutOptions = options;
       return {
         activeTurnIds: ["turn-live"],
-        userMessages: { "turn-live": [{ text: "Новый запрос" }] },
+        userMessages: {
+          "turn-live": [{
+            text: input,
+            clientUserMessageId: "mcp:telegram-history-1",
+            origin: {
+              workspaceId: "workspace-1",
+              workspaceName: "Agent HUB",
+              streamId: "stream-architect",
+              streamName: "Architect",
+              provider: "codex",
+              requestId: "telegram-history-1",
+            },
+          }],
+        },
         latestMessages: { "turn-live": "Промежуточный ответ" },
         finalMessages: {},
       };
@@ -165,6 +188,8 @@ test("Codex history refresh reads the rollout directly without blocking App Serv
   assert.equal(snapshotInput.rolloutPath, "C:/rollout.jsonl");
   assert.equal(rolloutOptions.tailBytes, 16 * 1024 * 1024);
   assert.deepEqual(result.history.map((item) => item.id), ["turn-old", "turn-live"]);
+  assert.equal(result.history[1].prompt, "Новый запрос");
+  assert.equal(result.history[1].messages[0].text, "Новый запрос");
 });
 
 test("Codex history removes a context probe turn identified by rollout metadata", async () => {

@@ -22,10 +22,10 @@ function fixture(workspaces = [{ id: "agent-hub", name: "Agent HUB" }]) {
   return { calls, taskBoard };
 }
 
-test("personal bug report capture places a Task into Agent HUB by name without Telegram triage", () => {
+test("personal bug report capture places a Task into Agent HUB by name without Telegram triage", async () => {
   const { calls, taskBoard } = fixture([{ id: "agent-hub", name: "  agent   hub " }]);
   const capture = new BugReportTaskCapture({ taskBoard, workspaceName: "Agent HUB" });
-  const result = capture.capture({
+  const result = await capture.capture({
     id: "12345678-1234-4234-8234-123456789abc",
     folder: "AgentHub/Bugs/bug-12345678-1234-4234-8234-123456789abc",
     screenshots: 2,
@@ -47,9 +47,9 @@ test("personal bug report capture places a Task into Agent HUB by name without T
   }]);
 });
 
-test("missing configured Workspace leaves a fresh bug report in Backlog", () => {
+test("missing configured Workspace leaves a fresh bug report in Backlog", async () => {
   const { calls, taskBoard } = fixture([{ id: "other", name: "Other" }]);
-  const result = new BugReportTaskCapture({ taskBoard, workspaceName: "Agent HUB" }).capture({
+  const result = await new BugReportTaskCapture({ taskBoard, workspaceName: "Agent HUB" }).capture({
     id: "12345678-1234-4234-8234-123456789abc",
     folder: "AgentHub/Bugs/bug-12345678-1234-4234-8234-123456789abc",
   }, { text: "Проверить fallback" });
@@ -58,9 +58,9 @@ test("missing configured Workspace leaves a fresh bug report in Backlog", () => 
   assert.equal(calls.length, 1);
 });
 
-test("bug report capture is disabled when no personal Workspace name is configured", () => {
+test("bug report capture is disabled when no personal Workspace name is configured", async () => {
   const capture = new BugReportTaskCapture({ workspaceName: "" });
-  assert.equal(capture.capture({ id: "id", folder: "folder" }, { text: "Не создавать" }), null);
+  assert.equal(await capture.capture({ id: "id", folder: "folder" }, { text: "Не создавать" }), null);
 });
 
 test("bug report Task text stays bounded and always contains its report path", () => {

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createInterstreamMessage } from "../../src/domain/interstream-message.mjs";
 import { messageWithTaskReferences } from "../../src/domain/task-board-task.mjs";
 import {
   codexExplicitFinalTurnAnswer,
@@ -399,7 +400,7 @@ test("Codex internal prompt envelopes never become user messages", () => {
   ]);
 });
 
-test("inter-Stream messages retain their source author without exposing the envelope", () => {
+test("provider history preserves a literal inter-Stream envelope without durable identity", () => {
   const prompt = [
     "<agent-hub-stream-message>",
     JSON.stringify({
@@ -417,11 +418,12 @@ test("inter-Stream messages retain their source author without exposing the enve
     status: "inProgress",
     items: [{ type: "userMessage", content: [{ type: "text", text: prompt }] }],
   }]);
-  assert.equal(displayUserPrompt(prompt), "Release the ready changes.");
-  assert.equal(exchange.messages[0].author, "Agent Hub - Architect (Codex)");
+  assert.equal(displayUserPrompt(prompt), prompt);
+  assert.equal(exchange.prompt, prompt);
+  assert.equal(exchange.messages[0].author, undefined);
 });
 
-test("legacy inter-Stream messages remain readable without an agent suffix", () => {
+test("legacy envelope shape alone does not assign an inter-Stream author", () => {
   const prompt = [
     "<agent-hub-stream-message>",
     JSON.stringify({
@@ -438,7 +440,8 @@ test("legacy inter-Stream messages remain readable without an agent suffix", () 
     status: "completed",
     items: [{ type: "userMessage", content: [{ type: "text", text: prompt }] }],
   }]);
-  assert.equal(exchange.messages[0].author, "Agent Hub - Architect");
+  assert.equal(exchange.prompt, prompt);
+  assert.equal(exchange.messages[0].author, undefined);
 });
 
 test("Codex abort marker never replaces the user's original prompt", () => {
@@ -704,6 +707,85 @@ test("codexThreadHistory preserves item ids and the official user-message client
     { itemId: "item-steer", clientUserMessageId: "client-steer", role: "user" },
     { itemId: "agent-live", clientUserMessageId: undefined, role: "agent" },
   ]);
+});
+
+test("codexThreadHistory preserves raw interstream transport and exact client identity", () => {
+  const origin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    requestId: "history-1",
+  };
+  const input = createInterstreamMessage({ ...origin, text: "Проверь историю." });
+  const [interstream, forged, literal] = codexThreadHistory([{
+    id: "turn-interstream",
+    status: "completed",
+    items: [{
+      id: "user-interstream",
+      clientId: "mcp:history-1",
+      origin,
+      type: "userMessage",
+      content: [{ type: "text", text: input }],
+    }],
+  }, {
+    id: "turn-forged",
+    status: "completed",
+    items: [{
+      id: "user-forged",
+      clientId: "mcp:history-1",
+      type: "userMessage",
+      content: [{ type: "text", text: input }],
+    }],
+  }, {
+    id: "turn-literal",
+    status: "completed",
+    items: [{
+      id: "user-literal",
+      clientId: "ordinary-message",
+      type: "userMessage",
+      content: [{ type: "text", text: input }],
+    }],
+  }]);
+
+  assert.equal(interstream.prompt, input);
+  assert.equal(interstream.messages[0].clientUserMessageId, "mcp:history-1");
+  assert.equal(interstream.messages[0].author, undefined);
+  assert.equal(forged.prompt, input);
+  assert.equal(forged.messages[0].author, undefined);
+  assert.equal(literal.prompt, input);
+  assert.equal(literal.messages[0].author, undefined);
+});
+
+test("claudeTranscriptHistory does not infer interstream identity from envelope shape", () => {
+  const origin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "claude",
+    requestId: "claude-history-1",
+  };
+  const input = createInterstreamMessage({ ...origin, text: "Проверь Claude history." });
+  const literal = claudeTranscriptHistory(JSON.stringify({
+    type: "user",
+    uuid: "claude-literal",
+    message: { role: "user", content: input },
+  }))[0];
+  const trusted = claudeTranscriptHistory(JSON.stringify({
+    type: "user",
+    uuid: "claude-trusted",
+    clientUserMessageId: "mcp:claude-history-1",
+    messageOrigin: origin,
+    message: { role: "user", content: input },
+  }))[0];
+
+  assert.equal(literal.prompt, input);
+  assert.equal(literal.messages[0].author, undefined);
+  assert.equal(trusted.prompt, input);
+  assert.equal(trusted.messages[0].clientUserMessageId, "mcp:claude-history-1");
+  assert.equal(trusted.messages[0].author, undefined);
 });
 
 test("claudeTranscriptHistory separates consecutive user turns", () => {
@@ -1186,7 +1268,7 @@ test("active inter-Stream root adopts its exact managed identity without a dupli
   assert.deepEqual(users[0].origin, origin);
 });
 
-test("active inter-Stream root reconciles its provider alias by request identity", () => {
+test("active inter-Stream root does not guess a body-only provider alias", () => {
   const origin = {
     kind: "interstream",
     workspaceId: "workspace-1",
@@ -1223,11 +1305,13 @@ test("active inter-Stream root reconciles its provider alias by request identity
   });
 
   const users = history[0].messages.filter((message) => message.role === "user");
-  assert.equal(users.length, 1);
+  assert.equal(users.length, 2);
   assert.equal(users[0].itemId, "provider-root");
-  assert.equal(users[0].clientUserMessageId, "mcp:architect-continuation-without-client-id");
-  assert.equal(users[0].author, "Agent HUB - Architect (Sol)");
-  assert.deepEqual(users[0].origin, origin);
+  assert.equal(users[0].clientUserMessageId, undefined);
+  assert.equal(users[0].author, undefined);
+  assert.equal(users[1].clientUserMessageId, "mcp:architect-continuation-without-client-id");
+  assert.equal(users[1].author, "Agent HUB - Architect (Sol)");
+  assert.deepEqual(users[1].origin, origin);
 });
 
 test("displayUserPrompt unwraps Codex Desktop file metadata", () => {

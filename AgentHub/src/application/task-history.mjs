@@ -1,9 +1,9 @@
 import { codexSubagentActivity } from "../domain/run-activity.mjs";
 import { isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
 import {
-  interstreamMessageDetails,
   interstreamOriginAuthor,
   normalizeInterstreamOrigin,
+  trustedInterstreamMessageDetails,
 } from "../domain/interstream-message.mjs";
 import {
   isClaudeInterruptEntry,
@@ -421,6 +421,7 @@ function codexTurnMessages(turn, { userAuthor = "" } = {}) {
   const messages = items.flatMap((item, index) => {
     if (item?.type === "userMessage") {
       const rawText = textContent(item.content);
+      const clientUserMessageId = String(item.clientId ?? "").trim();
       const rawNotification = codexSubagentNotificationDetails(rawText);
       const notification = rawNotification && codexSubagentNotificationDetails(rawText, {
         model: subagentModels.get(rawNotification.agentThreadId) ?? rawNotification.model,
@@ -433,23 +434,21 @@ function codexTurnMessages(turn, { userAuthor = "" } = {}) {
           ? { time: normalizedTimestamp(item.createdAt ?? turn?.completedAt ?? turn?.updatedAt) }
           : {}),
       }];
-      const interstream = interstreamMessageDetails(rawText);
       const envelope = desktopPromptEnvelope(rawText);
       const taskReferences = userTaskReferencePromptDetails(rawText)?.references ?? [];
       const attachmentSources = codexAttachmentSources(item.content, envelope, rawText);
       const responseAnnotations = responseAnnotationDetails(rawText);
       const text = displayUserPrompt(rawText)
         || (attachmentSources.length ? (envelope ? "Вложение" : "Изображение") : "");
+      const author = String(userAuthor).trim();
       return text || taskReferences.length ? [{
         itemId: messageItemId(turnId, "user", item, index),
-        ...(String(item.clientId ?? "").trim()
-          ? { clientUserMessageId: String(item.clientId).trim() }
+        ...(clientUserMessageId
+          ? { clientUserMessageId }
           : {}),
         role: "user",
         text,
-        ...((interstream?.author ?? String(userAuthor).trim())
-          ? { author: interstream?.author ?? String(userAuthor).trim() }
-          : {}),
+        ...(author ? { author } : {}),
         ...(responseAnnotations?.items.length
           ? {
             responseAnnotations: responseAnnotations.items.map((annotation) => ({ ...annotation })),
@@ -563,8 +562,6 @@ export function displayUserPrompt(value) {
 
 function unwrappedUserPrompt(value) {
   let text = String(value ?? "").trim();
-  const interstream = interstreamMessageDetails(text);
-  if (interstream) text = interstream.text;
   const envelope = desktopPromptEnvelope(text);
   if (envelope) text = envelope.text;
   return text;
@@ -670,8 +667,12 @@ function claudeUserPromptDetails(entry) {
   if (isClaudeSyntheticUserEntry(entry)) return null;
   const rawText = textContent(entry.message?.content);
   const transport = claudeTransportPromptDetails(rawText);
+  const clientUserMessageId = String(
+    entry.clientUserMessageId ?? entry.message?.clientUserMessageId ?? "",
+  ).trim();
   return {
     text: displayUserPrompt(transport.text),
+    clientUserMessageId,
     taskReferences: userTaskReferencePromptDetails(transport.text)?.references ?? [],
     attachmentSources: transport.attachmentSources,
   };
@@ -679,11 +680,6 @@ function claudeUserPromptDetails(entry) {
 
 function claudeUserPrompt(entry) {
   return claudeUserPromptDetails(entry)?.text ?? "";
-}
-
-function claudeUserAuthor(entry) {
-  if (entry?.type !== "user" || entry.message?.role !== "user") return "";
-  return interstreamMessageDetails(textContent(entry.message?.content))?.author ?? "";
 }
 
 function claudeUserPromptVisible(entry) {
@@ -707,6 +703,9 @@ function claudeUserHistoryMessage(entry, index) {
   const userPrompt = claudeUserPromptDetails(entry);
   return {
     itemId: String(entry?.uuid ?? `${index}:user`),
+    ...(userPrompt?.clientUserMessageId
+      ? { clientUserMessageId: userPrompt.clientUserMessageId }
+      : {}),
     role: "user",
     text: userPrompt?.text ?? "",
     ...(userPrompt?.taskReferences.length
@@ -715,7 +714,6 @@ function claudeUserHistoryMessage(entry, index) {
     ...(userPrompt?.attachmentSources.length
       ? { attachmentSources: userPrompt.attachmentSources.map((source) => ({ ...source })) }
       : {}),
-    ...(claudeUserAuthor(entry) ? { author: claudeUserAuthor(entry) } : {}),
     ...(normalizedTimestamp(entry?.timestamp) ? { time: normalizedTimestamp(entry?.timestamp) } : {}),
   };
 }
@@ -874,11 +872,15 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
 
   const turnId = String(activeTurn.turnId ?? activeTurn.id ?? "").trim();
   const rawPrompt = String(activeTurn.prompt ?? "").trim();
-  const rootInterstream = interstreamMessageDetails(rawPrompt);
-  const rootOrigin = normalizeInterstreamOrigin(activeTurn.messageOrigin) ?? rootInterstream?.origin;
+  const rootClientUserMessageId = String(activeTurn.clientUserMessageId ?? "").trim();
+  const rootInterstream = trustedInterstreamMessageDetails(rawPrompt, {
+    origin: activeTurn.messageOrigin,
+    clientUserMessageId: rootClientUserMessageId,
+  });
+  const rootOrigin = normalizeInterstreamOrigin(activeTurn.messageOrigin);
   const rootAuthor = interstreamOriginAuthor(rootOrigin);
   const responseAnnotations = responseAnnotationDetails(rawPrompt);
-  const visiblePrompt = displayUserPrompt(rawPrompt);
+  const visiblePrompt = displayUserPrompt(rootInterstream?.text ?? rawPrompt);
   const attachments = Array.isArray(activeTurn.attachments)
     ? activeTurn.attachments.map((attachment) => ({ ...attachment }))
     : [];
@@ -935,13 +937,20 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
     .filter((message) => message?.role === "user")
     .map((message, index) => {
       const rawMessageText = String(message.text ?? "");
-      const interstream = interstreamMessageDetails(rawMessageText);
-      const origin = normalizeInterstreamOrigin(message.origin) ?? interstream?.origin;
-      const author = interstreamOriginAuthor(origin) || String(message.author ?? "").trim();
-      const messageText = displayUserPrompt(rawMessageText);
       const directClientUserMessageId = String(
-        message.clientUserMessageId ?? message.clientId ?? "",
+        message.clientUserMessageId
+          ?? message.clientId
+          ?? "",
       ).trim();
+      const directOrigin = message.origin
+        ?? message.messageOrigin;
+      const interstream = trustedInterstreamMessageDetails(rawMessageText, {
+        origin: directOrigin,
+        clientUserMessageId: directClientUserMessageId,
+      });
+      const origin = normalizeInterstreamOrigin(directOrigin);
+      const author = interstreamOriginAuthor(origin) || String(message.author ?? "").trim();
+      const messageText = displayUserPrompt(interstream?.text ?? rawMessageText);
       const clientUserMessageId = directClientUserMessageId
         || (origin?.requestId ? `mcp:${origin.requestId}` : "");
       return {
@@ -980,10 +989,10 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
       ...(normalizedTimestamp(message.time) ? { time: normalizedTimestamp(message.time) } : {}),
       index,
     })).filter((message) => message.text);
-  const rootClientUserMessageId = String(activeTurn.clientUserMessageId ?? "").trim();
   const hasRootUser = suppliedUsers.some((message) => (
-    (rootClientUserMessageId && message.clientUserMessageId === rootClientUserMessageId)
-    || (visiblePrompt && message.text === visiblePrompt)
+    rootClientUserMessageId
+      ? message.clientUserMessageId === rootClientUserMessageId
+      : visiblePrompt && message.text === visiblePrompt
   ));
   if (!hasRootUser && (visiblePrompt || attachments.length)) {
     suppliedUsers.unshift({
@@ -1034,22 +1043,6 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
       ) {
         const unidentifiedRoot = users.filter((message, index) => (
           index === 0 && !String(message.clientUserMessageId ?? "").trim()
-        ));
-        if (unidentifiedRoot.length === 1) user = unidentifiedRoot[0];
-      }
-      if (
-        !user
-        && incoming.index === 0
-        && incoming.origin?.requestId
-        && incoming.origin.requestId === rootOrigin?.requestId
-        && incoming.clientUserMessageId === `mcp:${incoming.origin.requestId}`
-        && incoming.text
-        && incoming.text === visiblePrompt
-      ) {
-        const unidentifiedRoot = users.filter((message) => (
-          !String(message.clientUserMessageId ?? "").trim()
-          && !normalizeInterstreamOrigin(message.origin)
-          && String(message.text ?? "").trim() === incoming.text
         ));
         if (unidentifiedRoot.length === 1) user = unidentifiedRoot[0];
       }

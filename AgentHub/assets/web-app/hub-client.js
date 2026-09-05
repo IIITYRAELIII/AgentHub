@@ -1213,7 +1213,7 @@ async function hubFetchWithin(input, init, timeoutMs) {
   }
 }
 
-window.addEventListener("message", (event) => {
+window.addEventListener("message", window.AgentHubHostMessageTrust.guardHostMessage((event) => {
   const message = event.data;
   if (message?.type === "agenthub:runtime-published") {
     reloadForPublishedRuntime();
@@ -1231,7 +1231,7 @@ window.addEventListener("message", (event) => {
       ? markConnectionFailure(error)
       : markCommandRejected(error));
   }
-});
+}));
 
 async function waitRemoteResult(commandId, timeoutMs = DEFAULT_CONTROL_TIMEOUT_MS) {
   await localSessionReady;
@@ -3093,6 +3093,8 @@ document.addEventListener("agenthub:board-action", (event) => {
     const actions = {
       create: "board-task-create",
       update: "board-task-update",
+      checklist: "board-task-checklist",
+      "checklist-linked-task-action": "board-task-checklist-linked-action",
       status: "board-task-status",
       move: "board-task-move",
       complete: "board-task-complete",
@@ -3114,7 +3116,17 @@ document.addEventListener("agenthub:board-action", (event) => {
     const action = actions[detail.type];
     if (!action) return;
     const { type: _type, ...params } = detail;
-    const result = await control(action, params);
+    let result = await control(action, params);
+    if (["complete", "remove"].includes(detail.type) && result.lifecycleResult?.confirmationRequired) {
+      const decision = await window.AgentHubTaskCleanupConfirmation.confirm({
+        confirmation: result.lifecycleResult,
+        action,
+        params,
+        request: control,
+      });
+      if (!decision.confirmed) return;
+      result = decision.result;
+    }
     succeeded = true;
     applySnapshot(result);
     if (detail.type === "start") agentHub.showSelectedTask();
@@ -3126,6 +3138,9 @@ document.addEventListener("agenthub:board-action", (event) => {
       type: detail.type,
       id: detail.id,
       succeeded,
+      requestId: detail.requestId,
+      operation: detail.operation,
+      itemId: detail.itemId,
     });
   });
 });

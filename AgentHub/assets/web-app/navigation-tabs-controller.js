@@ -8,6 +8,7 @@
     "journal",
     "statistics",
     "background",
+    "browser",
     "server",
   ]);
   const STANDALONE_NAVIGATION_TABS = new Set([
@@ -15,6 +16,7 @@
     "journal",
     "statistics",
     "background",
+    "browser",
     "server",
   ]);
 

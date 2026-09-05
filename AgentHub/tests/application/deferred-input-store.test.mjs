@@ -48,3 +48,25 @@ test("unbound queued commands share one provisional Stream lane", () => {
     streamId: "stream-1", provider: "codex", threadId: "thread-1",
   }), false);
 });
+
+test("deferred input diagnostics expose state without message payload", () => {
+  const store = new DeferredInputStore();
+  store.put({
+    id: "pending", streamId: "stream-1", provider: "claude", threadId: "thread-1",
+    clientUserMessageId: "client-pending", input: "private prompt",
+    conflictKind: "activity-unknown", createdAt: "2026-09-03T15:29:50.062Z",
+  }, "pending");
+  store.put({
+    id: "dispatching", streamId: "stream-1", provider: "claude", threadId: "thread-1",
+    clientUserMessageId: "client-dispatching", input: "another private prompt",
+    conflictKind: "message-intake", dispatchingAt: "2026-09-03T15:30:00.000Z",
+  }, "queued");
+
+  const diagnostics = store.diagnostics();
+  assert.deepEqual(diagnostics.map(({ id, state }) => ({ id, state })), [
+    { id: "pending", state: "pending" },
+    { id: "dispatching", state: "dispatching" },
+  ]);
+  assert.equal(diagnostics.some((entry) => Object.hasOwn(entry, "input")), false);
+  assert.equal(diagnostics[0].conflictKind, "activity-unknown");
+});
