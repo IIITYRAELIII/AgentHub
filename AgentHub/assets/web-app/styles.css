@@ -5076,32 +5076,6 @@ html[data-surface="mobile"]
   transition: background 0.14s ease, border-color 0.14s ease;
 }
 
-/* Заголовок семейства — не строка списка, а надпись на полке: он ничего не
-   открывает, поэтому набран тише самих пространств и не претендует на клик. */
-.task-workspace-divider {
-  align-items: center;
-  display: flex;
-  gap: 0.5rem;
-  list-style: none;
-  margin: 0.62rem 0 0.3rem;
-  padding: 0 0.62rem;
-}
-
-.task-workspace-divider::after {
-  background: var(--line);
-  content: "";
-  flex: 1 1 auto;
-  height: 1px;
-}
-
-.task-workspace-divider-label {
-  color: var(--text-faint);
-  flex: 0 0 auto;
-  font-size: 0.66rem;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-}
-
 .task-rail-actions {
   align-items: center;
   display: inline-flex;
@@ -5257,7 +5231,7 @@ html[data-surface="mobile"]
 }
 
 /* Внутри папки строки сдвинуты — видно, что они принадлежат заголовку. */
-.task-workspace-item[data-family-member] {
+.task-workspace-item[data-folder-member] {
   margin: 0;
 }
 
