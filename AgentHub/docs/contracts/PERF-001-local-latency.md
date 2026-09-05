@@ -56,6 +56,13 @@ prunes them when files disappear, retries incomplete files only through the same
 strict bounds, and passes valid sessions to the existing durable historical
 byte-offset/checkpoint queue.
 
+Claude external-owner discovery enumerates Windows processes through one
+runtime-scoped snapshot owner, not one helper per session. Concurrent occupancy
+queries share a scan for five seconds. Launch-authority scans bypass a cached
+negative and serialize after any earlier inventory so each admission receives a
+scan requested at its own dequeue fence. Helper stdout plus stderr is capped at
+64 KiB and the child is terminated on timeout or overflow.
+
 Ordinary Codex terminal reconciliation is also resumable and bounded. One idle
 pass scans at most 8 rollout files, 512 KiB and 20 terminal turns, with a 75 ms
 event-loop time budget. It yields before further work whenever a managed run or

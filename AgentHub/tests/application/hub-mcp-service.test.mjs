@@ -509,9 +509,14 @@ test("HubMcpService uses the Workspace working directory for a new Stream", asyn
 
 test("HubMcpService reports Stream availability from active turns and queued input", async (context) => {
   const { service, token } = await fixture(context);
-  service.setDeferredInputs(() => [{ id: "queued-1", provider: "codex", threadId: "thread-2" }]);
+  service.setDeferredInputs(() => [{
+    id: "queued-1", provider: "codex", threadId: "thread-2",
+    clientUserMessageId: "client-queued-1", state: "dispatching",
+    conflictKind: "message-intake", dispatchingAt: "2026-09-03T15:29:50.062Z",
+  }]);
 
   const result = await service.call("hub_parallel_streams_list", { context_token: token });
+  const active = await service.call("hub_active_runs_list", { context_token: token });
   const current = result.streams.find((stream) => stream.id === "stream-1");
   const queued = result.streams.find((stream) => stream.id === "stream-2");
   assert.equal(current.activeRuns.length, 1);
@@ -519,6 +524,10 @@ test("HubMcpService reports Stream availability from active turns and queued inp
   assert.equal(current.available, false);
   assert.equal(queued.activeRuns.length, 0);
   assert.equal(queued.queuedInputCount, 1);
+  assert.equal(queued.stalledDeferredInputCount, 1);
+  assert.equal(queued.deferredInputs[0].state, "dispatching");
+  assert.equal(queued.deferredInputs[0].clientUserMessageId, "client-queued-1");
+  assert.equal(active.deferredInputs[0].stalled, true);
   assert.equal(queued.available, false);
 });
 

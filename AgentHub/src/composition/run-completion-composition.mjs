@@ -37,6 +37,8 @@ export function createRunCompletionComposition({
   beforeCompletion,
   completionAborted,
   afterCompletion,
+  prepareRunAdmission,
+  revokeRunAdmission,
   turnEndNotifications,
   runJournal,
   lastSeenTaskTurnIds,
@@ -85,6 +87,8 @@ export function createRunCompletionComposition({
     beforeCompletion,
     completionAborted,
     afterCompletion,
+    prepareAdmission: prepareRunAdmission,
+    revokeAdmission: revokeRunAdmission,
     commandTrace,
   });
 
