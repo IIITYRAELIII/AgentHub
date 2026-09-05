@@ -155,6 +155,16 @@ verification rejects a published budget that differs from these bounds. Durable
 Object unavailability remains an observable `503` service state, not an
 unhandled `500` and not evidence that a command was rejected or completed.
 
+Each open wake channel requires a matching pong within a bounded deadline after
+its heartbeat. A missing pong invalidates the socket and releases the current
+wait directly to the immediate durable pull; reconnect performs another drain.
+Only that matching pong confirms transport liveness; an availability frame does
+not cancel the deadline. Availability revisions are monotonic, and duplicate or
+stale revisions do not trigger another pull while a newer revision remains a
+meaningful wake hint. Pong and availability frames never acknowledge, claim or
+execute a command, so polling remains the single delivery owner and a missed or
+duplicated frame cannot create a second effect.
+
 During rolling deployment, a request without `mode` may still receive the
 legacy full-body response, and a new runtime may accept a binary response from
 an old Worker that ignored `mode=manifest`. This migration guard is removed
