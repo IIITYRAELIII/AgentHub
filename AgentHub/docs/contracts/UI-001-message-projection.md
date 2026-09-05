@@ -9,6 +9,10 @@
 - `unknown` is displayed as unknown and never inferred as running.
 - Internal probes, measurements and maintenance operations have separate kinds
   and never create user-turn cards.
+- The ordinary browser shell never waits on the third-party Telegram runtime.
+  A same-origin parser bootstrap requests that runtime only when Telegram launch
+  parameters or a native Telegram bridge are already present, preserving the
+  runtime-before-app ordering required by Mini App authentication.
 - Unread state is computed from the latest canonical final revision versus a
   monotonic account read cursor.
 - `mark-read` names the exact final revision already shown to the client; history
