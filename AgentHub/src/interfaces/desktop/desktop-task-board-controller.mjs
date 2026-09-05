@@ -1,11 +1,12 @@
 import { realpath, stat } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { TaskBoardLaunchService } from "../../application/task-board-launch-service.mjs";
 import { MAX_ATTACHMENT_BYTES } from "../../domain/attachment-files.mjs";
 import { pathInsideOrSame } from "../../infrastructure/filesystem/config.mjs";
 
 export class DesktopTaskBoardController {
-  constructor({ taskBoard, workspaceCatalog, dispatchCommand, sendMessage, taskLauncher = null, voiceTranscriber = null, attachmentDirectory = null, snapshot, logger = console } = {}) {
+  constructor({ taskBoard, workspaceCatalog, dispatchCommand, sendMessage, taskLauncher = null, taskLifecycle = null, voiceTranscriber = null, attachmentDirectory = null, snapshot, logger = console } = {}) {
     this.taskBoard = taskBoard;
     this.workspaceCatalog = workspaceCatalog;
     this.dispatchCommand = dispatchCommand;
@@ -13,6 +14,7 @@ export class DesktopTaskBoardController {
     this.taskLauncher = taskLauncher ?? new TaskBoardLaunchService({
       taskBoard, workspaceCatalog, dispatchCommand, sendMessage,
     });
+    this.taskLifecycle = taskLifecycle;
     this.voiceTranscriber = voiceTranscriber;
     this.attachmentDirectory = attachmentDirectory ? path.resolve(attachmentDirectory) : null;
     this.snapshot = snapshot;
@@ -20,14 +22,14 @@ export class DesktopTaskBoardController {
   }
 
   async #mutate(operation) {
-    operation();
+    await operation();
     return this.snapshot({ refresh: true });
   }
 
   create(params) {
     return this.#mutate(() => {
       if (!this.workspaceCatalog.workspace(params.workspaceId)) throw new Error("Workspace не найден");
-      this.taskBoard.create({
+      return this.taskBoard.create({
         text: params.text, source: "hub", bucket: "workspace", workspaceId: params.workspaceId,
       });
     });
@@ -41,9 +43,10 @@ export class DesktopTaskBoardController {
       ...(attachments.length ? { attachments } : {}),
       ...(transcription.failures.length ? { voiceTranscriptionFailures: transcription.failures } : {}),
     };
-    let task;
-    if (Number.isSafeInteger(params.mergeMessageId)) {
-      task = this.taskBoard.mergeSourceMessage({
+    const mutate = () => {
+      let task;
+      if (Number.isSafeInteger(params.mergeMessageId)) {
+        task = this.taskBoard.mergeSourceMessage({
         source: "telegram",
         chatId: params.sourceDetails?.chatId,
         userId: params.sourceDetails?.userId,
@@ -51,10 +54,10 @@ export class DesktopTaskBoardController {
         text: transcription.text,
         sourceDetails,
       });
-    } else if (Number.isSafeInteger(params.replyMessageId)) {
-      const replyText = transcription.text;
-      task = replyText
-        ? this.taskBoard.appendSourceMessage({
+      } else if (Number.isSafeInteger(params.replyMessageId)) {
+        const replyText = transcription.text;
+        task = replyText
+          ? this.taskBoard.appendSourceMessage({
           source: "telegram",
           chatId: params.sourceDetails?.chatId,
           userId: params.sourceDetails?.userId,
@@ -63,21 +66,24 @@ export class DesktopTaskBoardController {
           sourceDetails,
           attachments,
         })
-        : this.taskBoard.attachToSourceMessage({
+          : this.taskBoard.attachToSourceMessage({
           source: "telegram",
           chatId: params.sourceDetails?.chatId,
           userId: params.sourceDetails?.userId,
           messageId: params.replyMessageId,
           attachments,
         });
-    } else {
-      task = this.taskBoard.create({
+      } else {
+        task = this.taskBoard.create({
         text: transcription.text,
         source: "telegram",
         sourceKey: params.sourceKey,
         sourceDetails,
-      });
-    }
+        });
+      }
+      return task;
+    };
+    const task = await mutate();
     await this.snapshot({ refresh: true });
     return { taskId: task.id, rawText: task.rawText };
   }
@@ -112,6 +118,14 @@ export class DesktopTaskBoardController {
     return this.#mutate(() => this.taskBoard.update(params));
   }
 
+  checklist(params) {
+    return this.#mutate(() => this.taskBoard.updateChecklist(params));
+  }
+
+  checklistLinkedTaskAction(params) {
+    return this.#mutate(() => this.taskBoard.applyChecklistLinkedTaskAction(params));
+  }
+
   async addAttachments(params) {
     if (!this.attachmentDirectory) throw new Error("Хранилище вложений недоступно");
     const attachments = Array.isArray(params.attachments) ? [...new Set(params.attachments)] : [];
@@ -126,13 +140,19 @@ export class DesktopTaskBoardController {
       }
       files.push(file);
     }
-    return this.#mutate(() => {
-      for (const file of files) this.taskBoard.addAttachment({ id: params.id, attachment: file });
+    return this.#mutate(async () => {
+      for (const file of files) await this.taskBoard.addAttachment({ id: params.id, attachment: file });
     });
   }
 
-  status(params) {
-    return this.#mutate(() => this.taskBoard.setWorkflowStatus(params));
+  async status(params, context = {}) {
+    if (!this.taskLifecycle) throw new Error("Task lifecycle service is unavailable");
+    const result = await this.taskLifecycle.updateWorkflowStatus({
+      taskId: params.id,
+      status: params.status,
+      operationId: String(params.operationId ?? context.commandId ?? "").trim(),
+    });
+    return { ...await this.snapshot({ refresh: true }), lifecycleResult: result };
   }
 
   moveColumn(params) {
@@ -157,12 +177,26 @@ export class DesktopTaskBoardController {
     });
   }
 
-  complete(params) {
-    return this.#mutate(() => this.taskBoard.complete(params));
+  async complete(params, context = {}) {
+    if (!this.taskLifecycle) throw new Error("Task lifecycle service is unavailable");
+    const result = await this.taskLifecycle.complete({
+      taskId: params.id,
+      operationId: String(params.operationId ?? context.commandId ?? "").trim(),
+      confirmCleanup: params.confirmCleanup === true,
+      expectedCleanupToken: params.expectedCleanupToken ?? null,
+    });
+    return { ...await this.snapshot({ refresh: true }), lifecycleResult: result };
   }
 
-  remove(params) {
-    return this.#mutate(() => this.taskBoard.remove(params));
+  async remove(params, context = {}) {
+    if (!this.taskLifecycle) throw new Error("Task lifecycle service is unavailable");
+    const result = await this.taskLifecycle.delete({
+      taskId: params.id,
+      operationId: String(params.operationId ?? context.commandId ?? "").trim(),
+      confirmCleanup: params.confirmCleanup === true,
+      expectedCleanupToken: params.expectedCleanupToken ?? null,
+    });
+    return { ...await this.snapshot({ refresh: true }), lifecycleResult: result };
   }
 
   retryTriage(params) {
@@ -172,7 +206,7 @@ export class DesktopTaskBoardController {
   async start(params, context = {}) {
     const result = await this.taskLauncher.start({
       ...params,
-      launchRequestId: String(params.launchRequestId ?? params.clientUserMessageId ?? "").trim() || null,
+      launchRequestId: String(params.launchRequestId ?? params.clientUserMessageId ?? "").trim() || randomUUID(),
     }, context);
     return {
       ...await this.snapshot({ refresh: true }),

@@ -9,7 +9,112 @@ import {
   TASK_EXECUTION_OWNERS,
   taskExecutionRuntimeLabel,
 } from "../domain/task-execution-owner.mjs";
+import {
+  consistentInterstreamRecordIdentity,
+  interstreamMessageDetails,
+  normalizeInterstreamClientUserMessageId,
+  normalizeInterstreamOrigin,
+  sameInterstreamOrigin,
+  trustedAuditedInterstreamBodyDetails,
+  trustedInterstreamMessageDetails,
+} from "../domain/interstream-message.mjs";
 import { TaskObserverController } from "./task-observer-controller.mjs";
+
+function observedSnapshotIdentity(snapshot, interstreamOriginForClientMessage, knownIdentity = {}) {
+  const sourceMessages = Array.isArray(snapshot?.userMessages) ? snapshot.userMessages : [];
+  const rootIndex = sourceMessages.findIndex((message) => message?.role === "user");
+  const sourceRootMessage = sourceMessages[rootIndex >= 0 ? rootIndex : 0] ?? null;
+  const incomingIdentity = consistentInterstreamRecordIdentity({
+    clientUserMessageIds: [
+      snapshot?.clientUserMessageId,
+      sourceRootMessage?.clientUserMessageId ?? sourceRootMessage?.clientId,
+    ],
+    origins: [
+      snapshot?.messageOrigin ?? snapshot?.origin,
+      sourceRootMessage?.origin ?? sourceRootMessage?.messageOrigin,
+    ],
+  });
+  const knownClientUserMessageId = normalizeInterstreamClientUserMessageId(
+    knownIdentity?.clientUserMessageId,
+  );
+  const knownOrigin = normalizeInterstreamOrigin(knownIdentity?.messageOrigin);
+  const clientUserMessageId = incomingIdentity.clientUserMessageId ?? knownClientUserMessageId;
+  const knownConflict = Boolean(
+    incomingIdentity.conflicted
+    || (incomingIdentity.clientUserMessageId
+      && knownClientUserMessageId
+      && incomingIdentity.clientUserMessageId !== knownClientUserMessageId)
+    || (incomingIdentity.messageOrigin
+      && knownOrigin
+      && !sameInterstreamOrigin(incomingIdentity.messageOrigin, knownOrigin)),
+  );
+  if (knownConflict) {
+    return {
+      userMessages: sourceMessages.map((message) => ({ ...message })),
+      clientUserMessageId: null,
+      messageOrigin: null,
+      conflicted: true,
+    };
+  }
+  const preservedOrigin = knownOrigin && (
+    !knownClientUserMessageId
+    || !clientUserMessageId
+    || knownClientUserMessageId === clientUserMessageId
+  ) ? knownOrigin : null;
+  const rawPrompt = String(snapshot?.rawPrompt ?? snapshot?.prompt ?? sourceRootMessage?.text ?? "");
+  const parsedOrigin = interstreamMessageDetails(rawPrompt)?.origin ?? null;
+  const durableOrigin = preservedOrigin;
+  if (parsedOrigin && (
+    (incomingIdentity.messageOrigin && !sameInterstreamOrigin(parsedOrigin, incomingIdentity.messageOrigin))
+    || (durableOrigin && !sameInterstreamOrigin(parsedOrigin, durableOrigin))
+  )) {
+    return {
+      userMessages: sourceMessages.map((message) => ({ ...message })),
+      clientUserMessageId: null,
+      messageOrigin: null,
+      conflicted: true,
+    };
+  }
+  const durableDetails = durableOrigin ? trustedInterstreamMessageDetails(rawPrompt, {
+    origin: durableOrigin,
+    clientUserMessageId,
+  }) : null;
+  const auditedOrigin = !durableDetails && clientUserMessageId
+    ? interstreamOriginForClientMessage(clientUserMessageId)
+    : null;
+  const auditedDetails = auditedOrigin ? trustedInterstreamMessageDetails(rawPrompt, {
+    origin: auditedOrigin,
+    clientUserMessageId,
+    audited: true,
+  }) ?? trustedAuditedInterstreamBodyDetails(rawPrompt, {
+    origin: auditedOrigin,
+    clientUserMessageId,
+  }) : null;
+  const messageOrigin = durableDetails?.origin
+    ?? auditedDetails?.origin
+    ?? (durableOrigin && !rawPrompt.trim().startsWith("<agent-hub-stream-message>")
+      ? durableOrigin
+      : null);
+  const rootedMessages = messageOrigin ? sourceMessages.map((message, index) => {
+    if (index !== (rootIndex >= 0 ? rootIndex : 0)) return message;
+    const messageClientUserMessageId = normalizeInterstreamClientUserMessageId(
+      message?.clientUserMessageId ?? message?.clientId,
+    );
+    if (messageClientUserMessageId && messageClientUserMessageId !== clientUserMessageId) {
+      return message;
+    }
+    return {
+      ...message,
+      clientUserMessageId,
+      origin: messageOrigin,
+    };
+  }) : sourceMessages.map((message) => ({ ...message }));
+  return {
+    userMessages: rootedMessages,
+    clientUserMessageId: clientUserMessageId || null,
+    messageOrigin,
+  };
+}
 
 export class TaskObservationService {
   constructor({
@@ -30,6 +135,7 @@ export class TaskObservationService {
     completeRun,
     discardContextCompactionRun,
     savedLastTaskMessageRecord,
+    interstreamOriginForClientMessage = () => null,
     externalPollIntervalMs,
     managedPollIntervalMs,
     now = Date.now,
@@ -54,6 +160,7 @@ export class TaskObservationService {
     this.completeRun = completeRun;
     this.discardContextCompactionRun = discardContextCompactionRun;
     this.savedLastTaskMessageRecord = savedLastTaskMessageRecord;
+    this.interstreamOriginForClientMessage = interstreamOriginForClientMessage;
     this.now = now;
     this.logger = logger;
 
@@ -96,6 +203,10 @@ export class TaskObservationService {
   }
 
   async create(binding, targetChatId, snapshot, turnId = null) {
+    const observedIdentity = observedSnapshotIdentity(
+      snapshot,
+      this.interstreamOriginForClientMessage,
+    );
     const executionOwner = binding.provider === "codex"
       ? snapshot.executionOwner ?? TASK_EXECUTION_OWNERS.EXTERNAL
       : TASK_EXECUTION_OWNERS.EXTERNAL;
@@ -109,12 +220,9 @@ export class TaskObservationService {
       turnId,
       taskTitle: binding.taskTitle,
       promptPreview: snapshot.prompt ?? snapshot.userMessages?.[0]?.text ?? "",
-      clientUserMessageId: snapshot.clientUserMessageId
-        ?? snapshot.userMessages?.[0]?.clientUserMessageId
-        ?? null,
-      userMessages: Array.isArray(snapshot.userMessages)
-        ? snapshot.userMessages.map((message) => ({ ...message }))
-        : [],
+      clientUserMessageId: observedIdentity.clientUserMessageId,
+      userMessages: observedIdentity.userMessages,
+      ...(observedIdentity.messageOrigin ? { messageOrigin: observedIdentity.messageOrigin } : {}),
       model: binding.provider === "codex" && snapshot.model
         ? this.modelLabel(snapshot.model)
         : null,
@@ -143,18 +251,32 @@ export class TaskObservationService {
   }
 
   update(run, snapshot) {
+    const observedIdentity = observedSnapshotIdentity(
+      snapshot,
+      this.interstreamOriginForClientMessage,
+      {
+        clientUserMessageId: run.clientUserMessageId,
+        messageOrigin: run.messageOrigin,
+      },
+    );
     const previousReasoning = run.progressReasoning;
     const previousStage = run.progressStage;
     const responseChanged = updateObservedResponse(run, snapshot?.answer);
     this.providers.call(run.provider, "applyObservedSnapshot", run, snapshot);
     if (!run.promptPreview && snapshot?.prompt) run.promptPreview = String(snapshot.prompt);
     if (Array.isArray(snapshot?.userMessages)) {
-      run.userMessages = snapshot.userMessages.map((message) => ({ ...message }));
+      run.userMessages = observedIdentity.userMessages;
       const first = run.userMessages[0];
       if (!run.promptPreview && first?.text) run.promptPreview = String(first.text);
-      if (!run.clientUserMessageId && first?.clientUserMessageId) {
-        run.clientUserMessageId = String(first.clientUserMessageId);
+      if (!observedIdentity.conflicted && !run.clientUserMessageId && first?.clientUserMessageId) {
+        run.clientUserMessageId = normalizeInterstreamClientUserMessageId(first.clientUserMessageId);
       }
+    }
+    if (!observedIdentity.conflicted && !run.clientUserMessageId && observedIdentity.clientUserMessageId) {
+      run.clientUserMessageId = observedIdentity.clientUserMessageId;
+    }
+    if (!observedIdentity.conflicted && observedIdentity.messageOrigin) {
+      run.messageOrigin = observedIdentity.messageOrigin;
     }
     run.progressReasoning = String(snapshot?.reasoning ?? run.progressReasoning);
     run.progressStage = String(snapshot?.stage ?? run.progressStage);

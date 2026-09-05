@@ -122,6 +122,14 @@ const batchedMessageRenders = new Map();
 let deferredClientUserMessageIds = new Set();
 let activeRunClientUserMessageIds = new Set();
 let previousCanonicalCompletionKeys = new Set();
+let composerRecoveryReady = false;
+const composerRecoveryBarrier = agentHub.whenComposerRecoveryReady().then(() => {
+  composerRecoveryReady = true;
+  // A snapshot may have arrived through an alternate application path while
+  // recovery was opening. Reconcile it only after restored retry identities
+  // are visible, without letting the completion-key dedupe consume it early.
+  if (lastSnapshot) canonicalAcceptedEvidence(lastSnapshot);
+});
 const sendTaskGenerationById = new Map();
 let messageRenderBatchDepth = 0;
 const MAX_OUTGOING_MESSAGES_PER_TASK = 100;
@@ -809,6 +817,7 @@ function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
 }
 
 function canonicalAcceptedEvidence(snapshot) {
+  if (!composerRecoveryReady) return false;
   const tasks = snapshot?.tasks ?? [];
   const byClientId = new Map();
   const add = (evidence) => {
@@ -842,6 +851,7 @@ function canonicalAcceptedEvidence(snapshot) {
     }
   }
   previousCanonicalCompletionKeys = currentKeys;
+  return true;
 }
 
 function applyMessageReceipts(snapshot) {
@@ -1307,7 +1317,7 @@ async function hubFetchWithin(input, init, timeoutMs) {
   }
 }
 
-window.addEventListener("message", (event) => {
+window.addEventListener("message", window.AgentHubHostMessageTrust.guardHostMessage((event) => {
   const message = event.data;
   if (message?.type === "agenthub:runtime-published") {
     reloadForPublishedRuntime();
@@ -1325,7 +1335,7 @@ window.addEventListener("message", (event) => {
       ? markConnectionFailure(error)
       : markCommandRejected(error));
   }
-});
+}));
 
 async function waitRemoteResult(commandId, timeoutMs = DEFAULT_CONTROL_TIMEOUT_MS) {
   await localSessionReady;
@@ -3214,6 +3224,8 @@ document.addEventListener("agenthub:board-action", (event) => {
     const actions = {
       create: "board-task-create",
       update: "board-task-update",
+      checklist: "board-task-checklist",
+      "checklist-linked-task-action": "board-task-checklist-linked-action",
       status: "board-task-status",
       move: "board-task-move",
       complete: "board-task-complete",
@@ -3235,7 +3247,17 @@ document.addEventListener("agenthub:board-action", (event) => {
     const action = actions[detail.type];
     if (!action) return;
     const { type: _type, ...params } = detail;
-    const result = await control(action, params);
+    let result = await control(action, params);
+    if (["complete", "remove"].includes(detail.type) && result.lifecycleResult?.confirmationRequired) {
+      const decision = await window.AgentHubTaskCleanupConfirmation.confirm({
+        confirmation: result.lifecycleResult,
+        action,
+        params,
+        request: control,
+      });
+      if (!decision.confirmed) return;
+      result = decision.result;
+    }
     succeeded = true;
     applySnapshot(result);
     if (detail.type === "start") agentHub.showSelectedTask();
@@ -3247,6 +3269,9 @@ document.addEventListener("agenthub:board-action", (event) => {
       type: detail.type,
       id: detail.id,
       succeeded,
+      requestId: detail.requestId,
+      operation: detail.operation,
+      itemId: detail.itemId,
     });
   });
 });
@@ -4375,6 +4400,7 @@ async function refresh({ reportError = false } = {}) {
   refreshTimer = null;
   refreshing = true;
   try {
+    await composerRecoveryBarrier;
     const previousSnapshot = lastSnapshot;
     await prepareSnapshotTransport();
     let snapshotResult = await control(
@@ -4430,6 +4456,7 @@ agentHub.on("connection:retry", () => void refresh({ reportError: false }));
 void runAction(async () => {
   agentHub.setConnection("connecting");
   try {
+    await composerRecoveryBarrier;
     let routed = false;
     if (streamChatRoute()) {
       // A stable Stream route needs the first snapshot to resolve its current

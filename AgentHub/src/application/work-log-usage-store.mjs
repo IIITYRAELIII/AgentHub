@@ -83,6 +83,7 @@ export class WorkLogUsageStore {
   #publishedAuthObservationStates = new Map();
   #lastAuthObservationObservedMs = 0;
   #workspaceCatalogStore;
+  #workspaceAssignments = new Map();
   #beforeProjectionWrite;
   #logger;
 
@@ -665,8 +666,23 @@ export class WorkLogUsageStore {
 
   #workspaceResolver() {
     return this.#workspaceCatalogStore
-      ? (reference) => this.#workspaceCatalogStore.resolveThread(reference)
-        ?? this.#workspaceCatalogStore.assignUnknownThread(reference, { source: "discovered" })
+      ? (reference) => {
+        const resolved = this.#workspaceCatalogStore.resolveThread(reference);
+        if (resolved) return resolved;
+        const key = `${String(reference?.provider ?? "").toLowerCase()}\0${String(reference?.threadId ?? "")}`;
+        if (!this.#workspaceAssignments.has(key)) {
+          const pending = this.#workspaceCatalogStore.assignUnknownThread(
+            reference,
+            { source: "discovered" },
+          );
+          if (!pending || typeof pending.then !== "function") return pending ?? null;
+          const assignment = Promise.resolve(pending).catch((error) => {
+            this.#logger?.warn?.(`Cannot assign journal Thread to Workspace: ${error.message}`);
+          }).finally(() => this.#workspaceAssignments.delete(key));
+          this.#workspaceAssignments.set(key, assignment);
+        }
+        return null;
+      }
       : null;
   }
 
@@ -737,6 +753,8 @@ export class WorkLogUsageStore {
     title,
     body,
     prompt,
+    clientUserMessageId,
+    messageOrigin,
     changedFiles,
     diff,
     skillsUsed,
@@ -790,6 +808,8 @@ export class WorkLogUsageStore {
         body,
         text,
         prompt,
+        clientUserMessageId,
+        messageOrigin,
         changedFiles,
         diff,
         skillsUsed,
@@ -850,6 +870,8 @@ export class WorkLogUsageStore {
     title,
     body,
     prompt,
+    clientUserMessageId,
+    messageOrigin,
     changedFiles,
     diff,
     skillsUsed,
@@ -895,6 +917,8 @@ export class WorkLogUsageStore {
           body,
           text,
           prompt,
+          clientUserMessageId,
+          messageOrigin,
           changedFiles,
           diff,
           skillsUsed,
@@ -946,6 +970,8 @@ export class WorkLogUsageStore {
         body,
         text,
         prompt,
+        clientUserMessageId,
+        messageOrigin,
         changedFiles,
         diff,
         skillsUsed,
@@ -1061,6 +1087,7 @@ export class WorkLogUsageStore {
 
   close() {
     return Promise.all([
+      ...this.#workspaceAssignments.values(),
       this.#repository.close(),
       this.#usageSyncStore?.close?.(),
     ]).then(() => undefined);

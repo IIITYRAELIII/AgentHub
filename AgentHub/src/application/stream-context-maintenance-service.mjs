@@ -305,7 +305,7 @@ export class StreamContextMaintenanceService {
     const threadId = normalized(rotated?.thread?.id);
     if (!threadId) throw new Error("Codex App Server не создал новый Thread");
     const projectRoot = binding.projectRoot || source.projectRoot;
-    this.workspaceCatalog.bindThread({
+    await this.workspaceCatalog.bindThread({
       provider: "codex",
       threadId,
       streamId: stream.id,

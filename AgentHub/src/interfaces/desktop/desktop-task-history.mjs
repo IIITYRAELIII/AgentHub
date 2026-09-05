@@ -17,9 +17,13 @@ import {
   isCodexAutoCompactionTurnId,
 } from "../../domain/codex-internal-turn.mjs";
 import {
-  interstreamMessageDetails,
+  consistentInterstreamRecordIdentity,
   interstreamOriginAuthor,
+  normalizeInterstreamClientUserMessageId,
   normalizeInterstreamOrigin,
+  sameInterstreamOrigin,
+  trustedAuditedInterstreamBodyDetails,
+  trustedInterstreamMessageDetails,
 } from "../../domain/interstream-message.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { taskRunIsActive } from "../../domain/task-runs.mjs";
@@ -157,32 +161,39 @@ function syntheticMigrationPair(left, right, turnId, ordinal) {
 
 function coalesceInterstreamRootAlias(messages, turn) {
   const values = Array.isArray(messages) ? messages : [];
-  const turnOrigin = normalizeInterstreamOrigin(turn?.promptOrigin)
-    ?? interstreamMessageDetails(turn?.prompt)?.origin;
+  const turnOrigin = normalizeInterstreamOrigin(turn?.promptOrigin);
   const requestId = String(turnOrigin?.requestId ?? "").trim();
-  const prompt = displayUserPrompt(turn?.prompt) || String(turn?.prompt ?? "").trim();
-  if (!requestId || !prompt) return values;
+  const clientUserMessageId = requestId ? `mcp:${requestId}` : "";
+  const promptInterstream = trustedInterstreamMessageDetails(turn?.prompt, {
+    origin: turnOrigin,
+    clientUserMessageId,
+  });
+  if (!requestId || !promptInterstream) return values;
 
   const canonical = values.flatMap((message, index) => {
-    const origin = normalizeInterstreamOrigin(message?.origin);
+    const origin = normalizeInterstreamOrigin(message?.origin ?? message?.messageOrigin);
+    const messageClientUserMessageId = String(message?.clientUserMessageId ?? "").trim();
     return message?.role === "user"
-      && origin?.requestId === requestId
-      && String(message?.clientUserMessageId ?? "").trim() === `mcp:${requestId}`
-      && normalizedUserText(message) === prompt
+      && sameInterstreamOrigin(origin, turnOrigin)
+      && messageClientUserMessageId === clientUserMessageId
       ? [{ index, message }]
       : [];
   });
   if (canonical.length !== 1) return values;
 
-  const aliases = values.flatMap((message, index) => (
-    message?.role === "user"
-    && index !== canonical[0].index
-    && !String(message?.clientUserMessageId ?? "").trim()
-    && !normalizeInterstreamOrigin(message?.origin)
-    && normalizedUserText(message) === prompt
-      ? [{ index, message }]
-      : []
-  ));
+  const aliases = values.flatMap((message, index) => {
+    if (
+      message?.role !== "user"
+      || index === canonical[0].index
+      || String(message?.clientUserMessageId ?? "").trim()
+      || normalizeInterstreamOrigin(message?.origin ?? message?.messageOrigin)
+    ) return [];
+    const interstream = trustedInterstreamMessageDetails(message?.text, {
+      origin: turnOrigin,
+      clientUserMessageId,
+    });
+    return interstream ? [{ index, message }] : [];
+  });
   if (aliases.length !== 1) return values;
 
   const alias = aliases[0];
@@ -230,7 +241,12 @@ function mergeDurableMessages(hydratedMessages, durableMessages, turnId, turn) {
       || (clientId && String(message?.clientUserMessageId ?? "").trim() === clientId)
     ));
     let migrationPair = null;
-    if (index < 0 && durable?.role === "user") {
+    if (
+      index < 0
+      && durable?.role === "user"
+      && !String(durable?.clientUserMessageId ?? "").trim().startsWith("mcp:")
+      && !normalizeInterstreamOrigin(durable?.origin ?? durable?.messageOrigin)
+    ) {
       const ordinal = durableOrdinals.get(durableIndex);
       const hydrated = hydratedUsers.get(ordinal);
       migrationPair = hydrated
@@ -732,13 +748,52 @@ export function createDesktopTaskHistoryFactory({
         const source = pageSources[index];
         const itemProvider = source?.provider ?? provider;
         const itemThreadId = source?.threadId ?? selectedThreadId;
-        const promptInterstream = interstreamMessageDetails(item.prompt);
-        const promptClientUserMessageId = String((Array.isArray(item.messages) ? item.messages : [])
-          .find((message) => String(message?.role ?? "") === "user")
-          ?.clientUserMessageId ?? "").trim();
-        const promptOrigin = normalizeInterstreamOrigin(item.promptOrigin)
-          ?? promptInterstream?.origin
-          ?? normalizeInterstreamOrigin(interstreamOriginForClientMessage(promptClientUserMessageId));
+        const auditedOrigins = new Map();
+        const auditedOriginForClientMessage = (clientUserMessageId) => {
+          const clientId = String(clientUserMessageId ?? "").trim();
+          if (!clientId) return null;
+          if (!auditedOrigins.has(clientId)) {
+            auditedOrigins.set(clientId, interstreamOriginForClientMessage(clientId));
+          }
+          return auditedOrigins.get(clientId);
+        };
+        const promptClientIds = [...new Set((Array.isArray(item.messages) ? item.messages : [])
+          .flatMap((message) => {
+            const clientUserMessageId = String(message?.clientUserMessageId ?? "").trim();
+            return String(message?.role ?? "") === "user" && clientUserMessageId
+              ? [clientUserMessageId]
+              : [];
+          }))];
+        const durablePromptOrigin = normalizeInterstreamOrigin(item.promptOrigin);
+        const durablePromptClientUserMessageId = durablePromptOrigin?.requestId
+          && promptClientIds.includes(`mcp:${durablePromptOrigin.requestId}`)
+          ? `mcp:${durablePromptOrigin.requestId}`
+          : "";
+        const auditedPromptIdentities = durablePromptOrigin ? [] : promptClientIds.flatMap(
+          (clientUserMessageId) => {
+            const origin = auditedOriginForClientMessage(clientUserMessageId);
+            const details = origin && (trustedInterstreamMessageDetails(item.prompt, {
+              origin,
+              clientUserMessageId,
+              audited: true,
+            }) ?? trustedAuditedInterstreamBodyDetails(item.prompt, {
+              origin,
+              clientUserMessageId,
+            }));
+            return details ? [{ clientUserMessageId, origin: details.origin, details }] : [];
+          },
+        );
+        const auditedPromptIdentity = auditedPromptIdentities.length === 1
+          ? auditedPromptIdentities[0]
+          : null;
+        const promptClientUserMessageId = durablePromptClientUserMessageId
+          || auditedPromptIdentity?.clientUserMessageId
+          || "";
+        const promptOrigin = durablePromptOrigin ?? auditedPromptIdentity?.origin ?? null;
+        const promptInterstream = auditedPromptIdentity?.details ?? trustedInterstreamMessageDetails(item.prompt, {
+          origin: promptOrigin,
+          clientUserMessageId: promptClientUserMessageId,
+        });
         const promptAuthor = interstreamOriginAuthor(promptOrigin)
           || String(item.promptAuthor ?? "").trim();
         return {
@@ -748,7 +803,7 @@ export function createDesktopTaskHistoryFactory({
           // infer it from the current response envelope.
           provider: itemProvider,
           threadId: itemThreadId,
-          prompt: displayUserPrompt(item.prompt),
+          prompt: displayUserPrompt(promptInterstream?.text ?? item.prompt),
           ...(promptAuthor ? { promptAuthor } : {}),
           ...(promptOrigin ? { promptOrigin } : {}),
           promptAnnotations: normalizedResponseAnnotations(item.promptAnnotations),
@@ -767,7 +822,41 @@ export function createDesktopTaskHistoryFactory({
             ? { activityGroups: item.activityGroups }
             : {}),
           messages: (() => {
-            const sourceMessages = Array.isArray(item.messages) ? item.messages : [];
+            const sourceMessages = coalesceInterstreamRootAlias(
+              (Array.isArray(item.messages) ? item.messages : []).map((message) => {
+                const identity = consistentInterstreamRecordIdentity({
+                  clientUserMessageIds: [message?.clientUserMessageId],
+                  origins: [message?.origin ?? message?.messageOrigin],
+                });
+                if (identity.conflicted) {
+                  const value = { ...message };
+                  delete value.clientUserMessageId;
+                  delete value.origin;
+                  delete value.messageOrigin;
+                  return value;
+                }
+                const clientUserMessageId = identity.clientUserMessageId ?? "";
+                if (identity.messageOrigin) {
+                  return {
+                    ...message,
+                    ...(clientUserMessageId ? { clientUserMessageId } : {}),
+                    origin: identity.messageOrigin,
+                  };
+                }
+                const auditedOrigin = auditedOriginForClientMessage(clientUserMessageId);
+                const details = auditedOrigin && (trustedInterstreamMessageDetails(message?.text, {
+                  origin: auditedOrigin,
+                  clientUserMessageId,
+                  audited: true,
+                }) ?? trustedAuditedInterstreamBodyDetails(message?.text, {
+                  origin: auditedOrigin,
+                  clientUserMessageId,
+                }));
+                if (details) return { ...message, origin: details.origin };
+                return message;
+              }),
+              { prompt: item.prompt, promptOrigin },
+            );
             const rootUserIndex = sourceMessages.findIndex((message) => (
               String(message?.role ?? "") === "user"
             ));
@@ -798,6 +887,9 @@ export function createDesktopTaskHistoryFactory({
                   ?? receipt?.clientUserMessageId
                   ?? "",
               ).trim();
+              const identityClientUserMessageId = normalizeInterstreamClientUserMessageId(
+                message.clientUserMessageId,
+              ) ?? "";
               const messageAttachments = Array.isArray(message.attachments)
                 ? message.attachments
                 : [];
@@ -821,17 +913,31 @@ export function createDesktopTaskHistoryFactory({
                     ? itemAttachments
                     : promptTaskReferences)
                 .map((attachment) => ({ ...attachment }));
-              const interstream = role === "user" ? interstreamMessageDetails(sourceText) : null;
-              const origin = role === "user"
-                ? normalizeInterstreamOrigin(message?.origin)
-                  ?? interstream?.origin
-                  ?? normalizeInterstreamOrigin(interstreamOriginForClientMessage(clientUserMessageId))
+              const durableOrigin = role === "user"
+                ? normalizeInterstreamOrigin(message?.origin ?? message?.messageOrigin)
                 : null;
+              const auditedOrigin = role === "user" && identityClientUserMessageId
+                ? auditedOriginForClientMessage(identityClientUserMessageId)
+                : null;
+              const identityOrigin = role === "user" ? durableOrigin ?? auditedOrigin : null;
+              const interstream = role === "user" ? trustedInterstreamMessageDetails(sourceText, {
+                origin: identityOrigin,
+                clientUserMessageId: identityClientUserMessageId,
+                audited: !durableOrigin && Boolean(auditedOrigin),
+              }) ?? (!durableOrigin && auditedOrigin
+                ? trustedAuditedInterstreamBodyDetails(sourceText, {
+                  origin: auditedOrigin,
+                  clientUserMessageId: identityClientUserMessageId,
+                })
+                : null) : null;
+              const origin = interstream?.origin ?? durableOrigin;
               const author = interstreamOriginAuthor(origin) || String(message?.author ?? "").trim();
               const messageKind = origin
                 ? "interstream"
                 : String(message?.kind ?? "").trim();
-              const text = role === "user" ? displayUserPrompt(sourceText) : sourceText;
+              const text = role === "user"
+                ? displayUserPrompt(interstream?.text ?? sourceText)
+                : sourceText;
               const responseAnnotations = role === "user" && Array.isArray(
                 receipt?.result?.responseAnnotations ?? message.responseAnnotations,
               )

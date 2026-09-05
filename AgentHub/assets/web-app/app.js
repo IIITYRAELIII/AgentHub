@@ -4,6 +4,7 @@
  *   • «Диалоги» — слева компактный список задач, справа чат выбранной задачи;
  *   • «Журнал» — SQLite-представление журнала с ленивой подгрузкой;
  *   • «Статистика» — учётный расход журнала и история лимитов API.
+ *   • «Браузер» — изолированный просмотр публичной HTTPS-страницы;
  *   • «Сервер» — состояние и безопасное управление локальным Agent Hub.
  *
  * Frontend не хранит собственных задач и сообщений: до подключения backend
@@ -1397,6 +1398,8 @@ let composerRecoveryAuthorityTrusted = false;
 let composerRecoveryAuthorityEpoch = 0;
 let composerRecoveryAuthorityPending = 0;
 let composerRecoveryAuthorityInitialization = null;
+let composerDraftRestoreInitialization = null;
+let composerDraftRestoreReady = false;
 let composerRecoveryAuthorityTail = Promise.resolve();
 let composerRecoveryAuthorityDatabase = null;
 let pendingComposerRequest = null;
@@ -1488,6 +1491,23 @@ function ensureComposerRecoveryAuthority() {
   return composerRecoveryAuthorityInitialization;
 }
 
+function ensureComposerDraftsRestored() {
+  if (!composerDraftRestoreInitialization) {
+    composerDraftRestoreInitialization = (async () => {
+      await ensureComposerRecoveryAuthority();
+      try {
+        restorePersistedDrafts();
+        if (state.selectedId) restoreDraft();
+      } catch {
+        reportComposerRecoveryFailure();
+      } finally {
+        composerDraftRestoreReady = true;
+      }
+    })();
+  }
+  return composerDraftRestoreInitialization;
+}
+
 async function bumpComposerRecoveryAuthority() {
   await ensureComposerRecoveryAuthority();
   if (!composerRecoveryAuthorityTrusted) throw new Error("Recovery authority unavailable");
@@ -1565,6 +1585,10 @@ function restorePersistedDrafts() {
   for (const entry of persisted.slice(0, DRAFT_STORAGE_MAX_TASKS)) {
     const taskId = String(entry?.taskId ?? "").trim();
     if (!taskId) continue;
+    // A snapshot can make the composer interactive while IndexedDB is still
+    // opening. Never let a late persisted read replace a draft the user has
+    // already edited in this page generation.
+    if (composerDraftReconciliation.revision(taskId) !== 0) continue;
     const text = normalizedDraftText(entry.text);
     const annotations = normalizedDraftAnnotations(entry.annotations);
     const taskReferences = (Array.isArray(entry?.taskReferences) ? entry.taskReferences : [])
@@ -2461,6 +2485,7 @@ function populateBackgroundOptions(theme = root.dataset.theme) {
 
 function setView(view, { persist = true, activate = true } = {}) {
   const next = navigationTabs.isStandaloneNavigationTab(view) ? view : "chat";
+  if (next !== "browser") window.AgentHubEmbeddedBrowser?.deactivate();
   root.dataset.view = next;
   for (const button of document.querySelectorAll("[data-view-button]")) {
     button.setAttribute("aria-pressed", String(button.dataset.viewButton === next));
@@ -2475,9 +2500,11 @@ function setView(view, { persist = true, activate = true } = {}) {
         ? "Stats"
         : next === "background"
           ? "Null"
-          : next === "server"
-            ? "Server"
-            : "Chat";
+          : next === "browser"
+            ? "Web"
+            : next === "server"
+              ? "Server"
+              : "Chat";
   }
   syncMobileNav();
   if (activate) activateView(next);
@@ -2626,9 +2653,6 @@ function renderTasks() {
         folderNames: workspaceFolderCatalogNames(),
       });
       for (const group of sections.active) taskList.append(renderTaskWorkspaceItem(group));
-      if (sections.active.length && sections.catalog.length) {
-        taskList.append(renderTaskWorkspaceDivider("Все"));
-      }
       for (const entry of sections.catalog) {
         if (entry.type === "workspace") {
           taskList.append(renderTaskWorkspaceItem(entry.group));
@@ -2711,12 +2735,6 @@ function streamMaintenanceKind(task) {
   return String(task?.context?.compaction?.status ?? "") === "running" ? "compaction" : "";
 }
 
-function renderTaskWorkspaceDivider(label) {
-  return el("li", { class: "task-workspace-divider", role: "presentation" }, [
-    el("span", { class: "task-workspace-divider-label", text: label }),
-  ]);
-}
-
 function renderTaskWorkspaceFolder(folder) {
   restoreCollapsedWorkspaceFolders();
   const folderKey = String(folder.key ?? folder.name ?? "").trim();
@@ -2752,7 +2770,7 @@ function renderTaskWorkspaceFolder(folder) {
         el("span", { class: "task-workspace-folder-count", text: String(items.length) }),
       ]),
       el("ul", { class: "task-workspace-folder-list" }, items.length
-        ? items.map((item) => renderTaskWorkspaceItem(item, { family: true }))
+        ? items.map((item) => renderTaskWorkspaceItem(item, { folderMember: true }))
         : [el("li", {
             class: "task-workspace-folder-empty",
             text: "Папка пуста",
@@ -2762,7 +2780,7 @@ function renderTaskWorkspaceFolder(folder) {
   ]);
 }
 
-function renderTaskWorkspaceItem({ id, name, kind, tasks, shortName }, { family = false } = {}) {
+function renderTaskWorkspaceItem({ id, name, kind, tasks }, { folderMember = false } = {}) {
   const selected = workspaceKey(currentTask()) === id;
   const lastActivity = workspaceLastActivity(tasks);
   const unread = tasks.some((task) => task.unread);
@@ -2780,16 +2798,14 @@ function renderTaskWorkspaceItem({ id, name, kind, tasks, shortName }, { family 
     "data-answer-arrived": tasks.some((task) => transientAnswerArrivalTaskIds.has(task.id)) ? "" : null,
     "data-running": running ? "" : null,
     "data-maintenance": maintenance || null,
-    "data-family-member": family ? "" : null,
+    "data-folder-member": folderMember ? "" : null,
     role: "button",
     tabindex: "0",
     "aria-pressed": String(selected),
-    /* Внутри семейства префикс уже стоит в заголовке группы, поэтому в строке
-       остаётся только собственное имя — но полное имя нужно озвучке и поиску. */
-    "aria-label": family ? name : null,
+    "aria-label": folderMember ? name : null,
     title: "ПКМ — редактировать Workspace",
   }, [
-    el("span", { class: "task-workspace-name", text: family ? (shortName || name) : name }),
+    el("span", { class: "task-workspace-name", text: name }),
     el("span", {
       class: "task-workspace-time",
       text: formatRelativeTime(lastActivity),
@@ -3160,7 +3176,10 @@ function renderStreamTabs() {
       ...attributes,
       class: "stream-tab",
       draggable: window.AgentHubStreamTabs.streamsAreDraggable(streamOrderMode, surface) ? "true" : null,
-    }, [el("span", { class: "stream-tab-card" }, content())]);
+    }, [
+      el("span", { class: "stream-tab-status-layer", "aria-hidden": "true" }),
+      el("span", { class: "stream-tab-card" }, content()),
+    ]);
     overflowItems.push(el("button", {
       ...attributes,
       class: "stream-overflow-item",
@@ -5066,13 +5085,30 @@ function messageDisclosureId(article) {
   return String(article.dataset.messageId ?? "").trim();
 }
 
+const deferredUserMessageBodyRenderers = new WeakMap();
+
+function configureDeferredUserMessageBody(body, { renderPreview, renderFull, expanded = false }) {
+  const state = { expanded: null, renderFull, renderPreview };
+  deferredUserMessageBodyRenderers.set(body, state);
+  syncDeferredUserMessageBody(body, expanded);
+}
+
+function syncDeferredUserMessageBody(body, expanded) {
+  const state = deferredUserMessageBodyRenderers.get(body);
+  if (!state || state.expanded === expanded) return;
+  body.replaceChildren();
+  (expanded ? state.renderFull : state.renderPreview)(body);
+  state.expanded = expanded;
+}
+
 function updateUserMessageDisclosure(article) {
   const body = article.querySelector(".msg-body[data-user-message-disclosure]");
   if (!body) return;
   const bubble = article.querySelector(".msg-user-bubble");
   if (!bubble) return;
   const id = messageDisclosureId(article);
-  const overflows = hasCollapsedOverflow(body.scrollHeight, USER_MESSAGE_COLLAPSE_HEIGHT_PX);
+  const deferred = deferredUserMessageBodyRenderers.has(body);
+  const overflows = deferred || hasCollapsedOverflow(body.scrollHeight, USER_MESSAGE_COLLAPSE_HEIGHT_PX);
   const existing = article.querySelector("[data-message-disclosure]");
   if (!overflows) {
     body.classList.remove("is-collapsed");
@@ -5081,7 +5117,8 @@ function updateUserMessageDisclosure(article) {
     return;
   }
 
-  const expanded = id && expandedUserMessageIds.has(id);
+  const expanded = Boolean(id && expandedUserMessageIds.has(id));
+  syncDeferredUserMessageBody(body, expanded);
   body.classList.toggle("is-collapsed", !expanded);
   const button = existing ?? el("button", {
     type: "button",
@@ -5103,6 +5140,7 @@ function updateUserMessageDisclosure(article) {
   button.setAttribute("aria-expanded", String(expanded));
   button.onclick = () => {
     const nextExpanded = body.classList.contains("is-collapsed");
+    syncDeferredUserMessageBody(body, nextExpanded);
     body.classList.toggle("is-collapsed", !nextExpanded);
     if (id) {
       if (nextExpanded) expandedUserMessageIds.add(id);
@@ -5844,13 +5882,33 @@ function activityItemNode(activity) {
   ]);
 }
 
+const deferredDisclosureControllers = new WeakMap();
+
+function configureDeferredDisclosure(details, content, renderContent) {
+  const existing = deferredDisclosureControllers.get(details);
+  if (existing) existing.update(renderContent);
+  else deferredDisclosureControllers.set(
+    details,
+    MessageView.createDeferredDisclosureController(details, content, renderContent),
+  );
+  return details;
+}
+
+function syncDeferredDisclosure(details) {
+  deferredDisclosureControllers.get(details)?.sync();
+}
+
 function activityFeedNode(activities) {
   const values = Array.isArray(activities) ? activities : [];
   if (!values.length) return null;
-  return el("details", { class: "activity-feed" }, [
+  const content = el("div", { class: "activity-list", "data-deferred-disclosure-content": "" });
+  const details = el("details", { class: "activity-feed" }, [
     activityDisclosureSummary({ count: values.length }),
-    el("div", { class: "activity-list" }, values.map(activityItemNode)),
+    content,
   ]);
+  return configureDeferredDisclosure(details, content, (target) => {
+    target.replaceChildren(...values.map(activityItemNode));
+  });
 }
 
 function visibleTurnTraceGroups(groups) {
@@ -5872,7 +5930,11 @@ function turnTraceGroupsNode(values, { liveStage = "", openGroupIds = [] } = {})
     return section;
   });
   if (content.activities.length) {
-    blocks.push(el("details", {
+    const activityContent = el("div", {
+      class: "activity-list",
+      "data-deferred-disclosure-content": "",
+    });
+    const activityDetails = el("details", {
       class: "turn-trace-activities",
       "data-trace-group-id": TURN_TRACE_ACTIVITY_GROUP_ID,
       open: liveTraceDisclosureOpen({
@@ -5881,8 +5943,11 @@ function turnTraceGroupsNode(values, { liveStage = "", openGroupIds = [] } = {})
       }),
     }, [
       activityDisclosureSummary({ count: content.activities.length, stage: liveStage }),
-      el("div", { class: "activity-list" }, content.activities.map(activityItemNode)),
-    ]));
+      activityContent,
+    ]);
+    blocks.push(configureDeferredDisclosure(activityDetails, activityContent, (target) => {
+      target.replaceChildren(...content.activities.map(activityItemNode));
+    }));
   }
   return el("div", { class: "turn-trace-groups" }, blocks);
 }
@@ -5892,26 +5957,31 @@ function turnTraceNode(groups) {
   if (!values.length) return null;
   const activityCount = values.reduce((total, group) => total + (group.activities?.length ?? 0), 0);
   const content = turnTraceContent(values);
-  const expanded = el("div", { class: "turn-trace-groups" });
-  content.reasoningBlocks.forEach((reasoning, index) => {
-    const reasoningNode = el("div", { class: "turn-trace-reasoning" });
-    renderMarkdown(reasoningNode, reasoning);
-    expanded.append(el("section", {
-      class: "turn-trace-block",
-      "data-trace-index": String(index),
-    }, [reasoningNode]));
-  });
-  if (content.activities.length) {
-    expanded.append(el("div", { class: "activity-list" }, content.activities.map(activityItemNode)));
-  }
   const summary = turnTraceSummary({
     reasoningCount: content.reasoningBlocks.length,
     activityCount,
   });
-  return el("details", { class: "turn-trace" }, [
+  const expanded = el("div", {
+    class: "turn-trace-groups",
+    "data-deferred-disclosure-content": "",
+  });
+  const details = el("details", { class: "turn-trace" }, [
     activityDisclosureSummary(summary),
     expanded,
   ]);
+  return configureDeferredDisclosure(details, expanded, (target) => {
+    content.reasoningBlocks.forEach((reasoning, index) => {
+      const reasoningNode = el("div", { class: "turn-trace-reasoning" });
+      renderMarkdown(reasoningNode, reasoning);
+      target.append(el("section", {
+        class: "turn-trace-block",
+        "data-trace-index": String(index),
+      }, [reasoningNode]));
+    });
+    if (content.activities.length) {
+      target.append(el("div", { class: "activity-list" }, content.activities.map(activityItemNode)));
+    }
+  });
 }
 
 function messageActionButton({ icon, label, action, onClick }) {
@@ -6038,16 +6108,30 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
     class: "msg-body",
     ...(role === "user" ? { "data-user-message-disclosure": "" } : {}),
   });
-  // Markdown собирается только безопасными DOM-узлами; сырой HTML не исполняется.
-  if (!renderResponseAnnotations(body, message)) {
+  const renderBody = (target) => {
+    target.replaceChildren();
+    // Markdown собирается только безопасными DOM-узлами; сырой HTML не исполняется.
+    if (renderResponseAnnotations(target, message)) return;
     const text = role === "system"
       ? MessageView.normalizeSystemEventText(message.text ?? "")
       : message.text ?? "";
     if (role === "agent" && Array.isArray(message.responseCitationPresentations)
       && message.responseCitationPresentations.length) {
-      renderAgentResponseBody(body, message, text, currentFileLinkContext(task));
-    } else renderMarkdown(body, text, currentFileLinkContext(task), role);
-  }
+      renderAgentResponseBody(target, message, text, currentFileLinkContext(task));
+    } else renderMarkdown(target, text, currentFileLinkContext(task), role);
+  };
+  const deferredPreview = MessageView.deferredUserMessagePreview(message);
+  if (deferredPreview != null) {
+    body.dataset.deferredMessageBody = "";
+    configureDeferredUserMessageBody(body, {
+      expanded: Boolean(message.id && expandedUserMessageIds.has(message.id)),
+      renderPreview: (target) => target.append(el("p", {
+        class: "msg-deferred-preview",
+        text: deferredPreview,
+      })),
+      renderFull: renderBody,
+    });
+  } else renderBody(body);
 
   if (maintenance) article.append(body);
   else article.append(head);
@@ -6260,6 +6344,15 @@ function revealResponseCitationSource(article, surface) {
   }
 }
 
+function materializeDeferredCitationSource(article, surfaceKind) {
+  if (!article || surfaceKind !== "message-body") return;
+  const body = article.querySelector(".msg-body[data-deferred-message-body]");
+  if (!body || !deferredUserMessageBodyRenderers.has(body)) return;
+  const disclosure = article.querySelector("[data-message-disclosure]");
+  if (body.classList.contains("is-collapsed") && disclosure) disclosure.click();
+  else syncDeferredUserMessageBody(body, true);
+}
+
 async function focusResponseCitationSource(button) {
   const target = responseCitationSources.get(button);
   const source = normalizedResponseAnnotationSource(target?.source);
@@ -6271,6 +6364,13 @@ async function focusResponseCitationSource(button) {
   const article = rootNode?.matches?.("article.msg, details.msg")
     ? rootNode
     : rootNode?.querySelector?.("article.msg, details.msg");
+  materializeDeferredCitationSource(article, source.surfaceKind);
+  if (article && source.surfaceKind === "trace-reasoning") {
+    for (const details of article.querySelectorAll("details.turn-trace")) {
+      details.open = true;
+      syncDeferredDisclosure(details);
+    }
+  }
   const surface = responseAnnotationSourceSurface(article, source);
   if (!article || !surface) return false;
   const range = domRangeFromOffsets(surface, source.start, source.end);
@@ -6420,9 +6520,10 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
       visible: renderParts.activityFeed.visible,
     });
     activityFeed.hidden = !renderParts.activityFeed.visible;
-    node.querySelector("[data-activity-list]").replaceChildren(
-      ...renderParts.activityFeed.activities.map(activityItemNode),
-    );
+    const activityList = node.querySelector("[data-activity-list]");
+    configureDeferredDisclosure(activityFeed, activityList, (target) => {
+      target.replaceChildren(...renderParts.activityFeed.activities.map(activityItemNode));
+    });
   });
   liveCardRenderController.reconcile(node, "activity-feed-summary", renderParts.activityFeedSummary, () => {
     renderActivityDisclosureSummary(node.querySelector("[data-activity-summary]"), {
@@ -6619,7 +6720,7 @@ function renderQueueForTask(taskId, container) {
       }
       actions.push(el("button", {
         type: "button", class: "queue-remove", "data-action": "queue-remove", "data-queue-id": entry.id,
-        title: "Убрать отложенное сообщение", "aria-label": "Убрать отложенное сообщение", text: "×",
+        title: "Отменить отложенное сообщение", "aria-label": "Отменить отложенное сообщение", text: "Отменить",
       }));
     }
     const entryAnnotations = Array.isArray(entry.annotations) ? entry.annotations : [];
@@ -8924,8 +9025,12 @@ const AgentHub = {
       epoch: composerRecoveryAuthorityEpoch,
       pending: composerRecoveryAuthorityPending,
       ready: composerRecoveryAuthorityReady,
+      restored: composerDraftRestoreReady,
       trusted: composerRecoveryAuthorityTrusted,
     });
+  },
+  whenComposerRecoveryReady() {
+    return ensureComposerDraftsRestored();
   },
   prepareForRuntimeReload,
   setConnectionQuality({ latencyMs = null } = {}) {
@@ -9371,9 +9476,29 @@ const AgentHub = {
     lastServerPayload = payload ?? {};
     if (root.dataset.view === "server") renderServerStatus(lastServerPayload);
   },
+  openExternalUrl(url) {
+    emit("resource:open", { resource: { href: String(url ?? "") } });
+  },
   openAttachmentViewer,
   showAttachmentViewer,
   closeAttachmentViewer,
+  openStream(workspaceId, streamId) {
+    const normalizedWorkspaceId = String(workspaceId ?? "").trim();
+    const normalizedStreamId = String(streamId ?? "").trim();
+    const streams = workspaceStreams(state.tasks.filter((task) => (
+      workspaceKey(task) === normalizedWorkspaceId
+    )));
+    const stream = streams.find((candidate) => candidate.id === normalizedStreamId);
+    const target = representativeStreamTask(stream);
+    if (!target) {
+      showToast("Stream недоступен");
+      return false;
+    }
+    state.openStreamsByWorkspace.set(normalizedWorkspaceId, [normalizedStreamId]);
+    state.configuredOpenStreamWorkspaces.add(normalizedWorkspaceId);
+    selectTaskFromUi(target.id);
+    return true;
+  },
   showSelectedTask() {
     setView("chat");
     setPane("chat");
@@ -14886,22 +15011,19 @@ if (journalPolling) {
   window.addEventListener("pagehide", () => journalPolling.stop());
 }
 if (vscodeMode) {
-  window.addEventListener("message", (event) => {
+  window.addEventListener("message", window.AgentHubHostMessageTrust.guardHostMessage((event) => {
     if (event.data?.type === "agenthub:journal-changed") {
       if (journalRequested) void loadJournal({ force: event.data.force === true });
     }
     if (event.data?.type === "theme") applyTheme(event.data.theme);
-  });
+  }));
 }
 
 /* ------------------------------------------------------------- инициализация */
 
 AgentHub.setConnection(telegramMode ? "online" : "connecting");
 const taskDurationTimer = window.setInterval(refreshTaskDurations, 1_000);
-void ensureComposerRecoveryAuthority().then(() => {
-  restorePersistedDrafts();
-  if (state.selectedId) restoreDraft();
-});
+void ensureComposerDraftsRestored();
 window.addEventListener("pagehide", () => {
   saveDraft();
   clearInterval(taskDurationTimer);

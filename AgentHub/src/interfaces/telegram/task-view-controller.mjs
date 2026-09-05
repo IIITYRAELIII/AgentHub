@@ -8,6 +8,7 @@ import {
 } from "../../application/task-history.mjs";
 import { taskViewCallbackData } from "./task-view-callback.mjs";
 import { isCodexAutoCompactionTurnId } from "../../domain/codex-internal-turn.mjs";
+import { interstreamDisplayText } from "../../domain/interstream-message.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { taskRunIsActive, updateTaskRunTitle } from "../../domain/task-runs.mjs";
 
@@ -46,7 +47,7 @@ function withPreservedSubmissionIdentity(sourceItem, cachedItem) {
     .find(Boolean);
   const messages = Array.isArray(sourceItem?.messages) ? sourceItem.messages : [];
   const userIndex = messages.findIndex((message) => message?.role === "user");
-  if (!clientUserMessageId || userIndex < 0) return sourceItem;
+  if (!clientUserMessageId || clientUserMessageId.startsWith("mcp:") || userIndex < 0) return sourceItem;
   return {
     ...sourceItem,
     messages: messages.map((message, index) => (
@@ -268,6 +269,7 @@ export function codexRolloutHistory(activity = {}, { userAuthor = "" } = {}) {
       .filter((message) => String(message?.text ?? "").trim())
       .map((message, index) => {
         const rawText = String(message.text).trim();
+        const clientUserMessageId = String(message.clientUserMessageId ?? "").trim();
         const parsedAnnotations = responseAnnotationDetails(rawText);
         const responseAnnotations = Array.isArray(message.responseAnnotations)
           && message.responseAnnotations.length
@@ -278,11 +280,14 @@ export function codexRolloutHistory(activity = {}, { userAuthor = "" } = {}) {
           : parsedAnnotations;
         return {
           itemId: String(message.itemId ?? `${id}:rollout-user:${index}`),
-          ...(String(message.clientUserMessageId ?? "").trim()
-            ? { clientUserMessageId: String(message.clientUserMessageId).trim() }
+          ...(clientUserMessageId
+            ? { clientUserMessageId }
             : {}),
           role: "user",
-          text: displayUserPrompt(rawText),
+          text: displayUserPrompt(interstreamDisplayText(rawText, {
+            origin: message.origin ?? message.messageOrigin,
+            clientUserMessageId,
+          })),
           ...(String(userAuthor).trim() ? { author: String(userAuthor).trim() } : {}),
           ...(responseAnnotations?.items.length
             ? {

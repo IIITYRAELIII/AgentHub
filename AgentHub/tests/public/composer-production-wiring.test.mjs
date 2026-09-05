@@ -131,15 +131,57 @@ async function openFixture(page, {
   fixtureSnapshot = snapshot(),
   expectedTaskId = "stream-a",
   recoveryAuthorityAvailable = true,
+  holdRecoveryAuthority = false,
 } = {}) {
   const diagnostics = [];
   page.on("pageerror", (error) => diagnostics.push(error.message));
   page.on("console", (message) => {
     if (message.type() === "error") diagnostics.push(message.text());
   });
-  await page.addInitScript(({ initialSnapshot, initialDrafts, authorityAvailable }) => {
+  await page.addInitScript(({
+    initialSnapshot, initialDrafts, authorityAvailable, holdAuthority,
+  }) => {
     if (!authorityAvailable) {
       Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: null });
+    } else if (holdAuthority) {
+      const nativeIndexedDB = globalThis.indexedDB;
+      const heldSuccesses = [];
+      Object.defineProperty(globalThis, "indexedDB", {
+        configurable: true,
+        value: {
+          open(...args) {
+            const nativeRequest = nativeIndexedDB.open(...args);
+            const request = {
+              error: null,
+              result: null,
+              onblocked: null,
+              onerror: null,
+              onsuccess: null,
+              onupgradeneeded: null,
+            };
+            nativeRequest.onupgradeneeded = (event) => {
+              request.result = nativeRequest.result;
+              request.onupgradeneeded?.(event);
+            };
+            nativeRequest.onblocked = (event) => {
+              request.error = nativeRequest.error;
+              request.onblocked?.(event);
+            };
+            nativeRequest.onerror = (event) => {
+              request.error = nativeRequest.error;
+              request.onerror?.(event);
+            };
+            nativeRequest.onsuccess = (event) => {
+              request.result = nativeRequest.result;
+              heldSuccesses.push(() => request.onsuccess?.(event));
+            };
+            return request;
+          },
+        },
+      });
+      window.__releaseComposerRecoveryAuthority = () => {
+        for (const release of heldSuccesses.splice(0)) release();
+      };
     }
     if (!crypto.subtle) {
       Object.defineProperty(crypto, "subtle", { value: {
@@ -265,6 +307,7 @@ async function openFixture(page, {
     initialSnapshot: fixtureSnapshot,
     initialDrafts: persistedDrafts,
     authorityAvailable: recoveryAuthorityAvailable,
+    holdAuthority: holdRecoveryAuthority,
   });
   await page.route("**/*", async (route) => {
     const requestUrl = new URL(route.request().url());
@@ -305,14 +348,18 @@ async function openFixture(page, {
     }
   });
   await page.goto("http://agent-hub.test/", { waitUntil: "load" });
-  try {
-    await page.waitForFunction((taskId) => document.querySelector(`[data-stream-task-id='${taskId}']`), expectedTaskId, {
-      timeout: 5_000,
-    });
-    await page.waitForFunction(() => window.AgentHub?.composerRecoveryDiagnostics?.().ready === true);
-  } catch {
-    const log = await page.evaluate(() => localStorage.getItem("fixture:bridge-log"));
-    throw new Error(`production fixture did not start: ${diagnostics.join(" | ")} | log=${log}`);
+  if (expectedTaskId) {
+    try {
+      await page.waitForFunction((taskId) => document.querySelector(`[data-stream-task-id='${taskId}']`), expectedTaskId, {
+        timeout: 5_000,
+      });
+      await page.waitForFunction(() => (
+        window.AgentHub?.composerRecoveryDiagnostics?.().restored === true
+      ));
+    } catch {
+      const log = await page.evaluate(() => localStorage.getItem("fixture:bridge-log"));
+      throw new Error(`production fixture did not start: ${diagnostics.join(" | ")} | log=${log}`);
+    }
   }
   return diagnostics;
 }
@@ -447,6 +494,57 @@ async function attachTaskReference(page, {
     document.querySelectorAll("[data-attachments] .attachment-task-reference").length > 0
   ));
 }
+
+test("production startup restores recovery before applying accepted snapshot evidence", {
+  timeout: 90_000,
+}, async () => {
+  const browser = await launchBrowser();
+  const page = await browser.newPage();
+  const requestId = "startup-accepted-recovery";
+  const acceptedSnapshot = snapshot([{
+    provider: "codex",
+    threadId: "thread-a",
+    clientUserMessageId: requestId,
+    accepted: true,
+    deferred: true,
+    conflictKind: "message-intake",
+    clientProjectionIntent: "queue",
+  }]);
+  try {
+    const diagnostics = await openFixture(page, {
+      persistedDrafts: [persistedRecovery({
+        requestId,
+        text: "stale accepted payload",
+      })],
+      fixtureSnapshot: acceptedSnapshot,
+      expectedTaskId: "",
+      holdRecoveryAuthority: true,
+    });
+    await page.waitForFunction(() => typeof window.__releaseComposerRecoveryAuthority === "function");
+    assert.equal((await bridgeCalls(page, "snapshot")).length, 0);
+
+    await page.evaluate(() => window.__releaseComposerRecoveryAuthority());
+    await page.waitForFunction(() => (
+      window.AgentHub?.composerRecoveryDiagnostics?.().restored === true
+      && document.querySelector("[data-stream-task-id='stream-a']")
+    ));
+    await page.waitForFunction(() => document.querySelector("[data-composer-input]")?.value === "");
+    const persistedAfterAcceptance = await page.evaluate(() => (
+      localStorage.getItem("agent-hub:composer-drafts:v1:vscode")
+    ));
+    assert.equal(persistedAfterAcceptance, null);
+
+    await page.locator("[data-composer-input]").fill("new input after startup reconciliation");
+    await refreshWithReceipt(page, acceptedSnapshot.messageReceipts[0]);
+    await page.waitForFunction(() => (
+      document.querySelector("[data-composer-input]")?.value
+        === "new input after startup reconciliation"
+    ));
+    assert.deepEqual(diagnostics, []);
+  } finally {
+    await browser.close();
+  }
+});
 
 test("production index/app/hub-client preserves exact mixed-attachment retry across reload", async () => {
   const browser = await launchBrowser();
