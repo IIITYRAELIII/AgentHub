@@ -76,6 +76,9 @@ to its immutable `clientProjectionIntent=conversation`. A busy-origin command
 with `clientProjectionIntent=queue` remains queue-only if admission later finds
 the Stream idle. Attention-required and ambiguous commands remain queue-owned.
 Reconciliation never renders both forms and never loses the logical entity.
+Every canonical queue row exposes an explicit cancellation action. The action
+removes a waiting or attention-required command only after durable commit; if
+dispatch already owns it, the UI reports that cancellation was not confirmed.
 
 Direct ACK, remote-result reconciliation and snapshot reconciliation use the
 same classifier. Receipt snapshots are bounded. The durable explicit projection

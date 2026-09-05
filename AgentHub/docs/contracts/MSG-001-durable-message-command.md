@@ -72,6 +72,55 @@ occupancy can couple otherwise independent lanes. A steer that no longer has
 an active turn is downgraded to ordinary intake before the later-turn FIFO
 choice.
 
+An attention-required lane head created by `task-running` or
+`activity-unknown` is rechecked against current exact occupancy. Once the
+managed or external writer is absent, that same durable command returns to the
+queue and keeps its FIFO identity; the persisted decision state cannot reserve
+the lane forever. Completion wake-up and runtime startup both trigger this
+reconciliation. A stale incomplete Claude transcript alone remains uncertain;
+only a successful exact-session process probe may prove its external writer
+absent, while probe failure stays fail-closed. Unknown provider-start outcomes remain excluded because they
+require exact reconciliation or an explicit user decision before another
+effect.
+Potential owners must match the configured Claude executable and wrapper-prefix
+signature before an exact parsed `--resume` or `--session-id` token can identify
+the session; a process name or flag-shaped command line alone is not evidence.
+An unresolved PATH shim is not an executable signature and therefore cannot
+produce absence authority.
+
+Cached process absence is a queue-reconciliation hint, never launch authority.
+Every Claude managed-run creation, including manual context maintenance,
+crosses the same lifecycle admission capability. Immediately inside `begin`
+and before the run is registered, it performs a fresh global process inventory
+and binds its exact session, generation and scan time to that run object. Live,
+incomplete, stale or changed-to-unknown evidence fails closed without a provider
+effect. Before handoff the launch boundary atomically moves that exact run from
+`prepared` to `staged` and passes a one-use opaque ticket; the Claude provider
+adapter then requires that ticket, `run.provider="claude"`, and atomically
+consumes `staged` immediately before the external effect. Success, provider
+failure, completion, a pre-effect dependency failure, and concurrent or
+sequential replay never restore the capability.
+Copied proof data, another run object, and a provider argument that disagrees
+with the run all fail closed without mutating either the presented or target
+capability. Only an exact abort with the same run and ticket, or lifecycle
+completion/release, may revoke `staged`; foreign evidence cannot revoke a
+legitimate launch. Recovery adoption of an already accepted provider turn is a
+separate non-launching operation and cannot mint launch authority.
+This proof is intentionally point-in-time: an uncooperative external process
+can still start after the scan, so provider-side single-writer rejection remains
+a required fail-closed guard.
+
+The controller synchronously claims the exact queue item before its first
+occupancy or provider `await`. Concurrent wake/backoff callbacks therefore
+share one dispatch owner, and cancellation cannot report success after dispatch
+eligibility has been claimed. A transient persistence failure rolls an
+attention-required transition back to the same pending object; timer-owned
+processing records a payload-free error and retries that exact owner with
+bounded backoff instead of leaking an unhandled rejection.
+Persisted queue errors contain only an allowlisted code and bounded generic
+message. Dependency output, command lines, session identifiers, payload and
+stack text never enter deferred diagnostics or client state.
+
 An explicitly user-paused command remains durable but does not own the runnable
 lane head. Later accepted commands in that exact lane may dispatch in their
 relative FIFO order. Provider-occupancy pauses remain transient lane heads and
@@ -115,6 +164,11 @@ human message while crossing intake, queue, run, receipt or history boundaries.
 - An ACKed command is recoverable after process death.
 - Lost transport responses are retried with the same identity and cannot create
   duplicate provider effects.
+- A queue ACK states `providerAccepted=false` until an exact run/turn exists;
+  Hub durability is never presented as provider delivery.
+- Cancellation commits durably before cleanup. Once dispatch is in progress,
+  cancellation fails explicitly instead of reporting an effect that may already
+  have reached the provider.
 
 ## Remote attachment transport
 

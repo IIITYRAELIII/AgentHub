@@ -48,3 +48,12 @@ succeeds; it is never converted to a null operation.
 
 Logs contain tool and operation identity, status and recovery outcome, but not
 the context capability or tool arguments.
+
+## Queue diagnostics
+
+`hub_active_runs_list` and `hub_parallel_streams_list` expose bounded,
+payload-free deferred-input summaries separately from live runs. The summary
+includes exact Stream/provider/Thread and command identity, queue state, wait
+reason, state age and a stalled marker after sixty seconds in `dispatching` or
+`reconciling`. A deferred command never
+becomes a synthetic live run merely to make blocked admission observable.

@@ -39,7 +39,9 @@ export function createRuntimeTimersComposition({
 
   function startRuntimeTimers() {
     codexContextMaintenance.schedulePeriodic();
-    for (const item of queuedInputs.values()) scheduleQueuedInput(item, 500);
+    if (!deferredInputController.wakeAll()) {
+      for (const item of queuedInputs.values()) scheduleQueuedInput(item, 500);
+    }
     if (telegramEnabled) scheduleDeliveryOutboxFlush(1_000);
     selectedTaskWatch.schedule(500);
     scheduleCodexTerminalAudit(500);

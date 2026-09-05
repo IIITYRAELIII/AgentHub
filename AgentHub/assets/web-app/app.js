@@ -6293,7 +6293,7 @@ function renderQueueForTask(taskId, container) {
       }
       actions.push(el("button", {
         type: "button", class: "queue-remove", "data-action": "queue-remove", "data-queue-id": entry.id,
-        title: "Убрать отложенное сообщение", "aria-label": "Убрать отложенное сообщение", text: "×",
+        title: "Отменить отложенное сообщение", "aria-label": "Отменить отложенное сообщение", text: "Отменить",
       }));
     }
     const entryAnnotations = Array.isArray(entry.annotations) ? entry.annotations : [];

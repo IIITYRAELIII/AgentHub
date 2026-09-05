@@ -8068,6 +8068,14 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   color: #ff9d9d;
 }
 
+.queue-remove {
+  border: 1px solid color-mix(in srgb, #ff9d9d 38%, transparent);
+  border-radius: var(--radius-chip);
+  font-size: 0.7rem;
+  line-height: normal;
+  padding: 0.2rem 0.55rem;
+}
+
 /* ======================================================= композер === */
 
 .composer {

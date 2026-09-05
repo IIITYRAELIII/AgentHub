@@ -23,7 +23,11 @@ function fixture(overrides = {}) {
         return { providerResult: true };
       },
     },
-    externalActivity: async () => ({ state: "inactive", executionOwner: null }),
+    externalActivity: async () => ({
+      state: "inactive",
+      executionOwner: null,
+      processEvidence: { complete: true, generation: 1, scannedAt: "2026-09-05T08:00:00.000Z" },
+    }),
     repositoryConflict: async () => null,
     deferInput: async (...args) => {
       calls.push(["defer", ...args]);
@@ -153,8 +157,10 @@ test("RunCoordinator durably accepts idle intake before external activity checks
   });
 
   assert.equal(result.accepted, true);
+  assert.equal(result.providerAccepted, false);
   assert.equal(result.queued, true);
   assert.equal(result.reason, "message-intake");
+  assert.match(result.message, /ход провайдера ещё не запущен/u);
   assert.equal(result.clientProjectionIntent, "conversation");
   assert.equal(externalChecks, 0);
   assert.equal(f.calls.find(([name]) => name === "defer")[3].conflictKind, "message-intake");
@@ -456,10 +462,57 @@ test("RunCoordinator rolls back admission before queueing an active writer", asy
 test("RunCoordinator preserves unknown external activity for explicit action", async () => {
   const f = fixture({
     externalActivity: async () => ({ state: "unknown", executionOwner: "external" }),
+    deferInput: async (...args) => {
+      f.calls.push(["defer", ...args]);
+      return { id: "activity-unknown", item: { id: "activity-unknown" } };
+    },
+    scheduleDeferred: (item, delay) => f.calls.push(["schedule", item, delay]),
   });
   await f.coordinator.start("message", [], { target: f.target });
   assert.equal(f.calls[1][3].allowForce, true);
   assert.equal(f.calls[1][3].conflictKind, "activity-unknown");
+  assert.deepEqual(f.calls[2], ["schedule", { id: "activity-unknown" }, undefined]);
+});
+
+test("RunCoordinator defers when the common Claude lifecycle admission rejects a live owner", async () => {
+  const f = fixture({
+    beginRun: async () => {
+      const error = new Error("Claude external owner is active.");
+      error.code = "ERR_CLAUDE_EXTERNAL_OWNER_ACTIVE";
+      throw error;
+    },
+    deferInput: async (...args) => ({ deferred: true, item: { id: "deferred-live" }, args }),
+  });
+  const result = await f.coordinator.start("queued", [], { target: {
+    ...f.target,
+    provider: "claude",
+    streamId: "stream-1",
+  } });
+  assert.equal(result.deferred, true);
+  assert.equal(result.args[2].conflictKind, "task-running");
+  assert.equal(f.calls.some(([name]) => name === "launch"), false);
+});
+
+test("RunCoordinator preserves the lifecycle-bound Claude proof through launch", async () => {
+  const proof = Object.freeze({
+    sessionId: "thread-1",
+    generation: 12,
+    scannedAt: "2026-09-05T08:00:02.000Z",
+    requestedAfterMs: 12_345,
+  });
+  let launchedRun;
+  const f = fixture({
+    beginRun: async (_input, target) => ({ ...f.run, ...target, externalOwnerProof: proof }),
+    launchTurn: async (run) => { launchedRun = run; },
+  });
+  await f.coordinator.startDeferred({
+    ...f.target,
+    provider: "claude",
+    streamId: "stream-1",
+    input: "queued",
+    clientUserMessageId: "message-proof",
+  });
+  assert.equal(launchedRun.externalOwnerProof, proof);
 });
 
 test("RunCoordinator detects a registration race and defers the input", async () => {

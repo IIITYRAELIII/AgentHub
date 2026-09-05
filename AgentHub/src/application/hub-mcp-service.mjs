@@ -20,6 +20,7 @@ const CONTEXT_TOKEN_VERSION = 1;
 const MAX_REGISTERED_CONTEXT_CAPABILITIES = 1_000;
 const STREAM_HISTORY_CURSOR_VERSION = 1;
 const DEFAULT_HISTORY_ACTIVITY_LIMIT = 40;
+const DEFERRED_INPUT_STALLED_AFTER_MS = 60_000;
 const MUTATING_TOOLS = new Set([
   "hub_task_create", "hub_task_update", "hub_task_move", "hub_task_start", "hub_task_reassign", "hub_task_claim", "hub_task_status_update", "hub_task_legacy_git_adopt", "hub_task_complete", "hub_task_delete",
   "hub_task_attachment_add", "hub_workspace_rules_update", "hub_stream_rules_update",
@@ -453,10 +454,10 @@ export class HubMcpService {
       tool("hub_workspace_get", "Return any existing Workspace and all of its Streams and Threads.", {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
       }),
-      tool("hub_parallel_streams_list", "List Streams and occupancy for any existing Workspace.", {
+      tool("hub_parallel_streams_list", "List Streams, live runs and payload-free deferred-input occupancy for any existing Workspace.", {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
       }),
-      tool("hub_active_runs_list", "List compact live-run status for any existing Workspace.", {
+      tool("hub_active_runs_list", "List compact live-run status plus separate payload-free deferred-input diagnostics for any existing Workspace.", {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
       }),
       tool("hub_stream_history", "Read a bounded snapshot of completed and active turns for any Hub Stream. This never long-polls.", {
@@ -863,7 +864,9 @@ export class HubMcpService {
           ...stream,
           current: stream.id === context.streamId,
           activeRuns,
+          deferredInputs: queuedInputs,
           queuedInputCount: queuedInputs.length,
+          stalledDeferredInputCount: queuedInputs.filter((input) => input.stalled).length,
           available: activeRuns.length === 0 && queuedInputs.length === 0,
         };
       }),
@@ -1382,13 +1385,39 @@ export class HubMcpService {
       }
       const stream = streamId ? this.workspaceCatalog.stream(streamId) : null;
       if (!stream || stream.workspaceId !== workspaceId) return [];
-      return [{ id: String(input?.id ?? ""), streamId }];
+      const state = String(input?.state ?? "queued").trim() || "queued";
+      const stateSince = String(
+        input?.dispatchingAt ?? input?.lastAttemptAt ?? input?.createdAt ?? "",
+      ).trim();
+      const stateSinceMs = Date.parse(stateSince);
+      const ageMs = Number.isFinite(stateSinceMs) ? Math.max(0, Date.now() - stateSinceMs) : null;
+      return [{
+        id: String(input?.id ?? ""),
+        streamId,
+        provider: String(input?.provider ?? ""),
+        threadId: String(input?.threadId ?? ""),
+        clientUserMessageId: String(input?.clientUserMessageId ?? ""),
+        state,
+        conflictKind: String(input?.conflictKind ?? ""),
+        waitReason: String(input?.waitReason ?? ""),
+        createdAt: String(input?.createdAt ?? ""),
+        stateSince: stateSince || null,
+        ageMs,
+        attempts: Math.max(0, Number(input?.attempts) || 0),
+        stalled: ["dispatching", "reconciling"].includes(state)
+          && ageMs != null
+          && ageMs >= DEFERRED_INPUT_STALLED_AFTER_MS,
+      }];
     });
   }
 
   #activeRunsForWorkspace(context, { workspace_id: workspaceId = null } = {}) {
     const targetWorkspaceId = this.#workspace(context, workspaceId).id;
-    return { workspaceId: targetWorkspaceId, runs: this.#activeRunSummaries(targetWorkspaceId) };
+    return {
+      workspaceId: targetWorkspaceId,
+      runs: this.#activeRunSummaries(targetWorkspaceId),
+      deferredInputs: this.#deferredInputSummaries(targetWorkspaceId),
+    };
   }
 
   async #streamHistory(context, {
