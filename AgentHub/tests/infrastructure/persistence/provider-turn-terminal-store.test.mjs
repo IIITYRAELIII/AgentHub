@@ -56,7 +56,7 @@ test("terminal store strips oversized client identity before serializing payload
   assert.equal(result.terminal.payload.completion.clientUserMessageId, undefined);
   assert.equal(result.terminal.payload.history.clientUserMessageId, undefined);
   assert.equal(result.terminal.payload.history.userMessages[0].clientUserMessageId, undefined);
-  assert.equal(result.outbox.command.clientUserMessageId, null);
+  assert.equal(result.outbox.channels.command.clientUserMessageId, null);
 });
 
 test("terminal store strips conflicting top-level and root identity", async (context) => {
@@ -99,7 +99,7 @@ test("terminal store strips conflicting top-level and root identity", async (con
   assert.equal(result.terminal.payload.completion.messageOrigin, undefined);
   assert.equal(result.terminal.payload.completion.userMessages[0].clientUserMessageId, undefined);
   assert.equal(result.terminal.payload.completion.userMessages[0].origin, undefined);
-  assert.equal(result.outbox.command.clientUserMessageId, null);
+  assert.equal(result.outbox.channels.command.clientUserMessageId, null);
 });
 
 test("terminal commit is idempotent and revisions supersede pending projections", async (context) => {
@@ -137,6 +137,34 @@ test("terminal commit is idempotent and revisions supersede pending projections"
   const revised = await terminal.commit(completion({ finalAnswer: "Corrected final answer" }));
   assert.equal(revised.terminal.terminalRevision, 2);
   assert.deepEqual((await terminal.pending()).map((item) => item.terminalRevision), [2]);
+});
+
+test("terminal owner waits asynchronously for a transient runtime database writer", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-terminal-contention-"));
+  const store = new ProviderTurnTerminalStore({ dataDir, mutationTimeoutMs: 1_000 });
+  await store.get({ provider: "codex", threadId: "thread-lock", turnId: "turn-lock" });
+  const blocker = new DatabaseSync(path.join(dataDir, "runtime.sqlite"));
+  context.after(async () => {
+    blocker.close();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  blocker.exec("BEGIN IMMEDIATE;");
+
+  const committed = store.commit({
+    provider: "codex",
+    threadId: "thread-lock",
+    turnId: "turn-lock",
+    status: "completed",
+    finalAnswer: "Done after contention",
+    usageIdentity: "usage-lock",
+    payload: { completion: {}, history: {} },
+  });
+  setTimeout(() => blocker.exec("COMMIT;"), 75);
+
+  const result = await committed;
+  assert.equal(result.created, true);
+  assert.equal(result.terminal.finalAnswer, "Done after contention");
+  assert.equal(result.outbox.state, "pending");
 });
 
 test("terminal owner migrates bounded payload metadata and provides indexed recovery order", async (context) => {

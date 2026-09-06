@@ -218,6 +218,31 @@ test("CodexRunFinalizer releases admission when durable channel materialization 
   assert.equal(state.events.at(-1)[0], "complete");
 });
 
+test("CodexRunFinalizer keeps a failed terminal commit replayable and releases once after retry", async () => {
+  const state = fixture();
+  const value = { ...run(), status: "finishing" };
+  let attempts = 0;
+  state.finalizer.commitTerminal = async (completion) => {
+    attempts += 1;
+    state.events.push(["commit-attempt", attempts]);
+    if (attempts === 1) throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
+    return {
+      terminal: { ...completion, terminalRevision: 1 },
+      outbox: { ...completion, terminalRevision: 1 },
+    };
+  };
+
+  await assert.rejects(state.finalizer.finalize(value, { answer: "Final" }), /database is locked/u);
+  assert.equal(value.status, "running");
+  assert.equal(state.events.some(([name]) => name === "complete"), false);
+  assert.equal(state.events.filter(([name]) => name === "save").length, 1);
+
+  value.status = "finishing";
+  await state.finalizer.finalize(value, { answer: "Final" });
+  assert.equal(attempts, 2);
+  assert.equal(state.events.filter(([name]) => name === "complete").length, 1);
+});
+
 test("CodexRunFinalizer does not treat an audited completion as a Telegram request", async () => {
   const state = fixture({ existingCompletion: { turnId: "turn-1" } });
   const value = run();
