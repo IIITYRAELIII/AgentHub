@@ -7,7 +7,14 @@ import {
   withoutCodexInspectionAttachments,
 } from "../../application/task-history.mjs";
 import { taskViewCallbackData } from "./task-view-callback.mjs";
+import {
+  hasCanonicalUserMessages,
+  mergedUserMessageSnapshotAuthority,
+  mergeCanonicalUserMessages,
+  userMessageSnapshotAuthority,
+} from "../../domain/canonical-user-messages.mjs";
 import { isCodexAutoCompactionTurnId } from "../../domain/codex-internal-turn.mjs";
+import { interstreamDisplayText } from "../../domain/interstream-message.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { taskRunIsActive, updateTaskRunTitle } from "../../domain/task-runs.mjs";
 
@@ -38,23 +45,6 @@ function renamedTurnIndex(merged, item, sourceIds, adopted) {
   });
 }
 
-/* Транскрипт не знает clientUserMessageId, а без него клиент не сводит
-   оптимистичное сообщение с сохранённым. Переносим его с заменяемого элемента. */
-function withPreservedSubmissionIdentity(sourceItem, cachedItem) {
-  const clientUserMessageId = (Array.isArray(cachedItem?.messages) ? cachedItem.messages : [])
-    .map((message) => String(message?.clientUserMessageId ?? "").trim())
-    .find(Boolean);
-  const messages = Array.isArray(sourceItem?.messages) ? sourceItem.messages : [];
-  const userIndex = messages.findIndex((message) => message?.role === "user");
-  if (!clientUserMessageId || userIndex < 0) return sourceItem;
-  return {
-    ...sourceItem,
-    messages: messages.map((message, index) => (
-      index === userIndex ? { ...message, clientUserMessageId } : message
-    )),
-  };
-}
-
 /* Порядок ленты задаётся положением хода в массиве, поэтому ход, дочитанный из
    источника позже, обязан встать по своему времени, а не в конец. Элемент без
    времени остаётся привязанным к предшественнику. */
@@ -75,6 +65,7 @@ function chronologicalTurns(turns) {
 function mergeDurableHistory(cachedHistory, sourceHistory, {
   adoptRenamedTurns = false,
   chronological = false,
+  preserveCanonicalUserMessages = false,
 } = {}) {
   const merged = (Array.isArray(cachedHistory) ? cachedHistory : [])
     .map((item) => structuredClone(item));
@@ -86,14 +77,16 @@ function mergeDurableHistory(cachedHistory, sourceHistory, {
     const id = String(item?.id ?? "");
     const index = id ? positions.get(id) : undefined;
     if (index !== undefined) {
-      merged[index] = structuredClone(item);
+      merged[index] = preserveCanonicalUserMessages
+        ? mergeObservedTurn(merged[index], item)
+        : structuredClone(item);
       continue;
     }
     const renamed = adoptRenamedTurns
       ? renamedTurnIndex(merged, item, sourceIds, adopted)
       : -1;
     if (renamed >= 0) {
-      merged[renamed] = withPreservedSubmissionIdentity(structuredClone(item), merged[renamed]);
+      merged[renamed] = mergeObservedTurn(merged[renamed], item);
       adopted.add(renamed);
       if (id) positions.set(id, renamed);
       continue;
@@ -172,6 +165,35 @@ function mergeMessageAttachments(target, source) {
   return merged;
 }
 
+function mergeObservedTurn(current, observed) {
+  const currentMessages = Array.isArray(current?.messages) ? current.messages : [];
+  const observedMessages = Array.isArray(observed?.messages) ? observed.messages : [];
+  const currentUsers = currentMessages.filter((message) => message?.role === "user");
+  const observedUsers = observedMessages.filter((message) => message?.role === "user");
+  const canonical = hasCanonicalUserMessages(currentUsers);
+  const users = mergeCanonicalUserMessages(currentUsers, observedUsers, {
+    currentSnapshotAuthority: userMessageSnapshotAuthority(current),
+    snapshotAuthority: userMessageSnapshotAuthority(observed),
+  });
+  const observedNonUsers = observedMessages.filter((message) => message?.role !== "user");
+  const currentNonUsers = currentMessages.filter((message) => message?.role !== "user");
+  return {
+    ...structuredClone(current),
+    ...structuredClone(observed),
+    userMessageSnapshotAuthority: mergedUserMessageSnapshotAuthority(
+      currentUsers,
+      current,
+      observed,
+    ),
+    ...(canonical && current?.prompt ? { prompt: current.prompt } : {}),
+    messages: [
+      ...users,
+      ...(observedNonUsers.length ? observedNonUsers : currentNonUsers)
+        .map((message) => structuredClone(message)),
+    ],
+  };
+}
+
 function mergeAuthoritativeRolloutTurn(current, rollout) {
   const currentMessages = Array.isArray(current?.messages) ? current.messages : [];
   const rolloutMessages = Array.isArray(rollout?.messages) ? rollout.messages : [];
@@ -179,11 +201,12 @@ function mergeAuthoritativeRolloutTurn(current, rollout) {
   const rolloutAgents = rolloutMessages.filter((message) => message?.role === "agent");
   const currentUsers = currentMessages.filter((message) => message?.role === "user");
   const currentAgents = currentMessages.filter((message) => message?.role === "agent");
-  const hasActualRolloutUser = rolloutUsers.some((message) => (
-    !String(message?.itemId ?? "").endsWith(":rollout-user:placeholder")
-  ));
+  const hasActualRolloutUser = rollout.userMessagesObserved === true;
   const users = hasActualRolloutUser
-    ? rolloutUsers.map((message, index) => mergeMessageAttachments(message, currentUsers[index]))
+    ? mergeCanonicalUserMessages(currentUsers, rolloutUsers, {
+      currentSnapshotAuthority: userMessageSnapshotAuthority(current),
+      snapshotAuthority: userMessageSnapshotAuthority(rollout),
+    })
     : currentUsers.map((message) => structuredClone(message));
   const agents = rolloutAgents.length
     ? rolloutAgents.map((message, index) => mergeMessageAttachments(
@@ -193,7 +216,14 @@ function mergeAuthoritativeRolloutTurn(current, rollout) {
     : currentAgents.map((message) => structuredClone(message));
   return {
     ...current,
-    ...(hasActualRolloutUser && rollout.prompt ? { prompt: rollout.prompt } : {}),
+    userMessageSnapshotAuthority: mergedUserMessageSnapshotAuthority(
+      currentUsers,
+      current,
+      rollout,
+    ),
+    ...(hasActualRolloutUser && rollout.prompt && !hasCanonicalUserMessages(currentUsers)
+      ? { prompt: rollout.prompt }
+      : {}),
     ...(rollout.answer ? { answer: rollout.answer } : {}),
     status: rollout.status || current?.status,
     active: Boolean(rollout.active),
@@ -268,6 +298,7 @@ export function codexRolloutHistory(activity = {}, { userAuthor = "" } = {}) {
       .filter((message) => String(message?.text ?? "").trim())
       .map((message, index) => {
         const rawText = String(message.text).trim();
+        const clientUserMessageId = String(message.clientUserMessageId ?? "").trim();
         const parsedAnnotations = responseAnnotationDetails(rawText);
         const responseAnnotations = Array.isArray(message.responseAnnotations)
           && message.responseAnnotations.length
@@ -278,11 +309,17 @@ export function codexRolloutHistory(activity = {}, { userAuthor = "" } = {}) {
           : parsedAnnotations;
         return {
           itemId: String(message.itemId ?? `${id}:rollout-user:${index}`),
-          ...(String(message.clientUserMessageId ?? "").trim()
-            ? { clientUserMessageId: String(message.clientUserMessageId).trim() }
+          ...(clientUserMessageId
+            ? { clientUserMessageId }
+            : {}),
+          ...(String(message.sourceOccurrenceId ?? "").trim()
+            ? { sourceOccurrenceId: String(message.sourceOccurrenceId).trim() }
             : {}),
           role: "user",
-          text: displayUserPrompt(rawText),
+          text: displayUserPrompt(interstreamDisplayText(rawText, {
+            origin: message.origin ?? message.messageOrigin,
+            clientUserMessageId,
+          })),
           ...(String(userAuthor).trim() ? { author: String(userAuthor).trim() } : {}),
           ...(responseAnnotations?.items.length
             ? {
@@ -333,6 +370,10 @@ export function codexRolloutHistory(activity = {}, { userAuthor = "" } = {}) {
       status: completed ? "completed" : active ? "inProgress" : "stopped",
       active,
       completed,
+      userMessagesObserved: users.length > 0,
+      userMessageSnapshotAuthority: activity.userMessageSnapshotAuthorityByTurnId?.[id]
+        ?? activity.userMessageSnapshotAuthority
+        ?? "incremental",
       ...(responseAnnotations.length
         ? {
           promptAnnotations: responseAnnotations.map((annotation) => ({ ...annotation })),
@@ -398,7 +439,9 @@ function mergeCodexHistory(cachedHistory, sourceHistory, rolloutHistory, interna
   const hidden = new Set((Array.isArray(internalTurnIds) ? internalTurnIds : [])
     .map((value) => String(value ?? "").trim())
     .filter(Boolean));
-  const merged = mergeDurableHistory(cachedHistory, sourceHistory)
+  const merged = mergeDurableHistory(cachedHistory, sourceHistory, {
+    preserveCanonicalUserMessages: true,
+  })
     .filter((item) => (
       !isCodexAutoCompactionTurnId(item?.id)
       && !hidden.has(String(item?.id ?? "").trim())
@@ -416,6 +459,7 @@ function mergeCodexHistory(cachedHistory, sourceHistory, rolloutHistory, interna
     let current = merged[index];
     const hasAuthoritativeContent = Boolean(
       item.answer
+      || item.userMessagesObserved === true
       || item.messages?.some((message) => message?.role === "agent"),
     );
     if (hasAuthoritativeContent) {
@@ -445,7 +489,7 @@ function mergeCodexHistory(cachedHistory, sourceHistory, rolloutHistory, interna
         status: "completed",
         active: false,
         completed: true,
-        messages: mergeAttachmentSources(item.messages, current.messages),
+        messages: mergeAuthoritativeRolloutTurn(current, item).messages,
         ...(item.promptAnnotations?.length
           ? {
             promptAnnotations: item.promptAnnotations.map((annotation) => ({ ...annotation })),
@@ -458,29 +502,11 @@ function mergeCodexHistory(cachedHistory, sourceHistory, rolloutHistory, interna
     if (item.promptAnnotations?.length) {
       const annotations = item.promptAnnotations.map((annotation) => ({ ...annotation }));
       const request = item.promptRequest ?? item.prompt ?? "";
-      const rolloutUser = item.messages?.find(
-        (message) => message?.role === "user" && message?.responseAnnotations?.length,
-      );
-      const messages = Array.isArray(current?.messages)
-        ? current.messages.map((message) => ({ ...message }))
-        : [];
-      const userIndex = messages.findIndex((message) => message?.role === "user");
-      if (userIndex >= 0) {
-        messages[userIndex] = {
-          ...messages[userIndex],
-          ...(rolloutUser ?? {}),
-          responseAnnotations: annotations,
-          responseAnnotationRequest: request,
-        };
-      } else if (Array.isArray(item.messages)) {
-        messages.push(...item.messages.map((message) => structuredClone(message)));
-      }
       merged[index] = {
         ...current,
         prompt: item.prompt || current.prompt,
         promptAnnotations: annotations,
         promptRequest: request,
-        messages,
       };
     }
   }

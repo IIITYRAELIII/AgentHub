@@ -42,10 +42,15 @@ release Git snapshot occurs when a Task explicitly moves to `Await`, outside
 provider admission and terminal-delivery latency.
 
 Codex rollout activity fallback runs outside the main Hub event loop. Concurrent
-reads of the same rollout and read options share one in-flight operation, and a
-cold fallback reads at most the latest 16 MiB. Exact App Server state and managed
-run identity remain preferred over JSONL fallback; reducing the scan window must
-not truncate the terminal answer retained by TURN-001.
+reads of the same rollout and read options share one in-flight operation. A cold
+fallback physically reads/projects at most the latest 16 MiB plus two bounded
+256 KiB provenance samples; it never streams the intervening prefix to EOF.
+Provenance requires exactly one valid canonical session record in those samples;
+otherwise unkeyed provider users fail closed. Append-only reads resume from the
+cached raw-byte cursor.
+Exact App Server state and managed run identity remain preferred over JSONL
+fallback; reducing the projection window must not truncate the terminal answer
+retained by TURN-001.
 
 Codex `thread/read` coalescing is single-flight only: a completed read retains no
 Thread payload in Hub memory. Rollout session discovery incrementally parses at
@@ -55,6 +60,13 @@ failing the process. Discovery retains at most 128 parsed sessions and 32 MiB,
 prunes them when files disappear, retries incomplete files only through the same
 strict bounds, and passes valid sessions to the existing durable historical
 byte-offset/checkpoint queue.
+
+Claude external-owner discovery enumerates Windows processes through one
+runtime-scoped snapshot owner, not one helper per session. Concurrent occupancy
+queries share a scan for five seconds. Launch-authority scans bypass a cached
+negative and serialize after any earlier inventory so each admission receives a
+scan requested at its own dequeue fence. Helper stdout plus stderr is capped at
+64 KiB and the child is terminated on timeout or overflow.
 
 Ordinary Codex terminal reconciliation is also resumable and bounded. One idle
 pass scans at most 8 rollout files, 512 KiB and 20 terminal turns, with a 75 ms
@@ -87,6 +99,22 @@ or its persisted ledger version is old; migrated SQLite performs only bounded
 status and point queries. Any compatibility normalization releases its in-memory
 ledger before returning, so `retainedRecords` remains zero after the read.
 
+Legacy terminal identity recovery lists persisted metadata for at most the
+newest 200 terminal rows in deterministic newest-first order from the covering
+`provider_turn_terminals_recovery_idx`, without selecting payload text,
+computing JSON length or building a temporary sort. The terminal-store owner
+persists exact UTF-8 `payload_bytes` on every new revision and migrates at most
+the newest 200 legacy rows from a capped 2 MiB-plus-one-character sample before
+publishing the index. Recovery fetches one exact row at a time, accepts only rows
+whose persisted byte length is at most 2 MiB, reads at most 8 MiB of candidate
+payloads, and admits at
+most 4 MiB of valid JSON objects. Invalid JSON consumes the inspection budget
+but not the admission budget, so a malformed newest row cannot by itself starve
+a valid older candidate. Rows that do not fit either hard aggregate bound are
+skipped fail-closed: they cannot rewrite message identities and remain available
+to their owning terminal store. No SQL window, payload-length expression or
+temporary result materializes/sorts the payloads for all 200 candidates.
+
 Runtime durability saves coalesce pending requests before snapshot capture while
 preserving each caller's persistence fence. After the durable command ledger has
 projected a snapshot, exact ledger-owned pending inputs, queued inputs and
@@ -101,7 +129,10 @@ publication reads one SQLite snapshot and performs JSON encoding plus gzip in an
 isolated worker; compression favors bounded CPU over the smallest possible
 artifact. Synchronous SQLite stores on the Hub loop reuse initialized handles,
 batch hierarchy metadata reads and use immediate `SQLITE_BUSY` failure with
-asynchronous retry rather than blocking busy waits.
+asynchronous retry rather than blocking busy waits. Mutation retries are
+deadline-bounded, yield through timers between attempts and retain the original
+idempotency identity. Exhaustion is a visible contention failure; it must not
+freeze HTTP, SSE or runtime timers or allocate a replacement request identity.
 
 Unchanged journal HTTP/WebView reads resolve their ETag from content-free SQLite
 metadata and do not load the multi-megabyte index HTML. Aggregate journal views

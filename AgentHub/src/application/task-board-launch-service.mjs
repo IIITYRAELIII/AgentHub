@@ -43,8 +43,15 @@ export class TaskBoardLaunchService {
     this.logger = logger;
   }
 
+  #mutation(operation, requestId) {
+    void requestId;
+    return Promise.resolve().then(operation);
+  }
+
   async start(params, context = {}) {
     const task = this.taskBoard.task(params.id);
+    const launchRequestId = String(params.launchRequestId ?? "").trim();
+    if (!launchRequestId) throw new Error("Task launch requires a durable launch request identity");
     const workspaceId = String(params.workspaceId ?? task.workspaceId ?? "").trim();
     const workspace = this.workspaceCatalog.workspace(workspaceId);
     if (!workspace || task.workspaceId !== workspace.id) {
@@ -86,97 +93,10 @@ export class TaskBoardLaunchService {
       ...params,
       ...(gitWorkspace ? { workingDirectory: gitWorkspace.projectRoot } : {}),
     };
-    const launchRequestId = String(params.launchRequestId ?? "").trim();
-    if (launchRequestId) {
-      return this.#resumeDurableLaunch({
-        task, workspace, requestedStreamId, requestedStreamName, launchRequestId,
-        params: launchParams, gitWorkspace, context, reassign,
-      });
-    }
-    params = launchParams;
-    let target;
-    if (requestedStreamId) {
-      const stream = this.workspaceCatalog.stream(requestedStreamId);
-      if (!stream || stream.workspaceId !== workspace.id) {
-        throw new Error("Stream не найден в выбранном Workspace");
-      }
-      const thread = this.workspaceCatalog.activeThread(stream.id);
-      if (thread && (!params.workingDirectory || samePath(thread.projectRoot, params.workingDirectory))) {
-        target = {
-          streamId: stream.id,
-          provider: thread.provider,
-          threadId: thread.threadId,
-          projectRoot: thread.projectRoot,
-        };
-        await this.dispatchCommand("task.select", { taskTitle: workspace.name }, context, { target });
-      } else {
-        const created = await this.dispatchCommand("task.create", {
-          provider: params.provider,
-          streamId: stream.id,
-          taskId: task.id,
-          taskNumber: task.taskNumber,
-          ...(params.settings ? { settings: params.settings } : {}),
-          ...(params.workingDirectory ? {
-            workingDirectory: params.workingDirectory,
-            handoffReason: "Task Git worktree",
-          } : {}),
-        }, context);
-        target = created.createdTask;
-      }
-    } else {
-      const streamName = (requestedStreamName || taskDisplayText(task)).slice(0, 80);
-      const created = await this.dispatchCommand("task.create", {
-        provider: params.provider,
-        workspaceId: workspace.id,
-        streamName,
-        taskId: task.id,
-        taskNumber: task.taskNumber,
-        ...(params.settings ? { settings: params.settings } : {}),
-        ...(params.workingDirectory ? { workingDirectory: params.workingDirectory } : {}),
-      }, context);
-      target = created.createdTask;
-    }
-    const delivery = await this.sendMessage({
-      text: String(params.message ?? ""),
-      displayText: `Task: ${taskDisplayTitle(task)}`,
-      taskReferences: [{ taskId: task.id, intent: "start" }],
-      streamId: target.streamId,
-      provider: target.provider,
-      threadId: target.threadId,
-      projectRoot: target.projectRoot,
-      clientUserMessageId: String(params.clientUserMessageId ?? context?.commandId ?? "").trim()
-        || `board-task:${task.id}`,
-      followUpMode: String(params.followUpMode ?? "").trim(),
-    }, context);
-    const started = this.taskBoard.markStarted({
-      id: task.id,
-      workspaceId: workspace.id,
-      streamId: target.streamId,
+    return this.#resumeDurableLaunch({
+      task, workspace, requestedStreamId, requestedStreamName, launchRequestId,
+      params: launchParams, gitWorkspace, context, reassign,
     });
-    if (delivery?.deferred && this.recordEvent) {
-      try {
-        this.recordEvent({
-          workspaceId: workspace.id,
-          streamId: target.streamId,
-          type: "task.blocked",
-          subjectId: task.id,
-          payload: {
-            taskId: task.id,
-            reason: delivery.reason ?? "deferred",
-            message: delivery.message ?? "",
-          },
-        });
-      } catch (error) {
-        this.logger.error(`Cannot record blocker event for Task ${task.id}:`, error.message);
-      }
-    }
-    return {
-      task: started,
-      target,
-      delivery,
-      gitWorkspace,
-      startedBoardTask: { id: task.id, streamId: target.streamId },
-    };
   }
 
   async #resumeDurableLaunch({
@@ -193,28 +113,32 @@ export class TaskBoardLaunchService {
     }
     const streamId = requestedStreamId || plannedStreamId(task.id, launchRequestId);
     const streamName = requestedStreamId ? null : (requestedStreamName || taskDisplayText(task)).slice(0, 80);
-    const prepared = this.taskBoard.prepareStart({
+    const prepared = await this.#mutation(() => this.taskBoard.prepareStart({
       id: task.id,
       workspaceId: workspace.id,
       streamId,
       streamName,
       requestId: launchRequestId,
       reassign,
-    });
+      expectedRevision: task.revision,
+    }), launchRequestId);
     let stream = this.workspaceCatalog.stream(streamId);
     if (!stream) {
       try {
         if (typeof this.workspaceCatalog.createStream !== "function") {
           throw new Error("Workspace catalog cannot create a planned Stream");
         }
-        stream = this.workspaceCatalog.createStream({
+        stream = await this.workspaceCatalog.createStream({
           id: streamId,
           workspaceId: workspace.id,
           name: prepared.startStreamName || streamName,
           settings: params.settings ?? {},
         });
       } catch (error) {
-        this.taskBoard.cancelPreparedStart({ id: task.id, requestId: launchRequestId, reassign });
+        await this.#mutation(
+          () => this.taskBoard.cancelPreparedStart({ id: task.id, requestId: launchRequestId, reassign }),
+          launchRequestId,
+        );
         throw error;
       }
     }
@@ -254,12 +178,13 @@ export class TaskBoardLaunchService {
         || `board-task:${prepared.id}:${launchRequestId}`,
       followUpMode: String(params.followUpMode ?? "").trim(),
     }, context);
-    const started = this.taskBoard.markStarted({
+    const started = await this.#mutation(() => this.taskBoard.markStarted({
       id: prepared.id,
       workspaceId: workspace.id,
       streamId: target.streamId,
       requestId: launchRequestId,
-    });
+      ...(prepared.revision == null ? {} : { expectedRevision: prepared.revision }),
+    }), launchRequestId);
     return {
       task: started,
       target,

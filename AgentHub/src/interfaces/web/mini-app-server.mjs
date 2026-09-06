@@ -322,10 +322,13 @@ function deviceSessionCookie(token, expiresAt, { secure = false } = {}) {
     + `${secure ? "; Secure" : ""}`;
 }
 
-const TELEGRAM_RUNTIME_SCRIPT = /\s*<script src="https:\/\/telegram\.org\/[^"]*"><\/script>/u;
+const TELEGRAM_RUNTIME_SCRIPTS = [
+  /\s*<script src="https:\/\/telegram\.org\/[^"]*"><\/script>/gu,
+  /\s*<script src="\/telegram-runtime-bootstrap(?:\.[a-f0-9]{12})?\.js(?:\?[^"]*)?"><\/script>/gu,
+];
 
 export function withoutTelegramRuntime(html) {
-  return String(html).replace(TELEGRAM_RUNTIME_SCRIPT, "");
+  return TELEGRAM_RUNTIME_SCRIPTS.reduce((body, pattern) => body.replace(pattern, ""), String(html));
 }
 
 function loopbackAddress(value) {
@@ -373,6 +376,7 @@ function responseHeaders(contentType, {
       "connect-src 'self'",
       "form-action 'none'",
       "frame-ancestors 'none'",
+      "frame-src https:",
       "img-src 'self' data: blob:",
       "object-src 'none'",
       `script-src 'self'${telegramRuntime ? " https://telegram.org" : ""}`,

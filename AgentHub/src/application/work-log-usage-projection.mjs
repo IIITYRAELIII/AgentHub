@@ -10,6 +10,11 @@ import { isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
 import { isCodexAutoCompactionTurnId } from "../domain/codex-internal-turn.mjs";
 import { isInheritedSubagentTurn } from "../domain/subagent-turn-identity.mjs";
 import { taskDisplayTitle } from "../domain/task-display-title.mjs";
+import {
+  normalizeInterstreamClientUserMessageId,
+  normalizeInterstreamOrigin,
+  sameInterstreamOrigin,
+} from "../domain/interstream-message.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
 import {
   addCreditBreakdown,
@@ -2966,6 +2971,8 @@ export function incomingLedgerRecord({
   body,
   text,
   prompt,
+  clientUserMessageId,
+  messageOrigin,
   changedFiles,
   diff,
   skillsUsed,
@@ -2983,6 +2990,12 @@ export function incomingLedgerRecord({
   const accountFields = normalizedAccountFields({ account, accountKey, accountAttribution });
   const normalizedEstimatedCredits = normalizeEstimatedCredits(estimatedCredits);
   const normalizedEstimateKind = String(estimateKind ?? "").trim();
+  const normalizedClientUserMessageId = normalizeInterstreamClientUserMessageId(clientUserMessageId);
+  const suppliedMessageOrigin = normalizeInterstreamOrigin(messageOrigin);
+  const normalizedMessageOrigin = suppliedMessageOrigin?.requestId
+    && normalizedClientUserMessageId !== `mcp:${suppliedMessageOrigin.requestId}`
+    ? null
+    : suppliedMessageOrigin;
   return {
     workLogId,
     projectRoot: normalizeProjectRoot(projectRoot),
@@ -3011,6 +3024,8 @@ export function incomingLedgerRecord({
     title: String(title ?? "").trim(),
     body: String(body ?? text ?? "").trim(),
     prompt: displayUserPrompt(prompt),
+    clientUserMessageId: normalizedClientUserMessageId,
+    ...(normalizedMessageOrigin ? { messageOrigin: normalizedMessageOrigin } : {}),
     changedFiles: Array.isArray(changedFiles)
       ? changedFiles.map((file) => String(file).trim()).filter(Boolean)
       : [],
@@ -3066,6 +3081,22 @@ export function mergeLedgerRecord(existing, incoming) {
     if (incoming.accountPlan) existing.accountPlan = incoming.accountPlan;
     existing.accountAttribution = incoming.accountAttribution;
   }
+  const existingClientUserMessageId = normalizeInterstreamClientUserMessageId(existing.clientUserMessageId);
+  const incomingClientUserMessageId = normalizeInterstreamClientUserMessageId(incoming.clientUserMessageId);
+  if (existing.clientUserMessageId && !existingClientUserMessageId) {
+    existing.clientUserMessageId = null;
+    delete existing.messageOrigin;
+  }
+  if (!existingClientUserMessageId && incomingClientUserMessageId) {
+    existing.clientUserMessageId = incomingClientUserMessageId;
+  }
+  const effectiveClientUserMessageId = normalizeInterstreamClientUserMessageId(existing.clientUserMessageId);
+  if (
+    incoming.messageOrigin
+    && incomingClientUserMessageId
+    && incomingClientUserMessageId === effectiveClientUserMessageId
+    && (!existing.messageOrigin || sameInterstreamOrigin(existing.messageOrigin, incoming.messageOrigin))
+  ) existing.messageOrigin = incoming.messageOrigin;
   for (const field of [
     "projectRoot",
     "provider",

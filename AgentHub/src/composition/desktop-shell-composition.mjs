@@ -282,7 +282,7 @@ export function createDesktopShellComposition({
     blockingRunForWorkspace,
   });
   const workspaceMutation = async (run, { resultKey = "" } = {}) => {
-    const result = run();
+    const result = await run();
     invalidateTaskCatalog();
     await saveState();
     const snapshot = await desktopReadSystem.desktopSnapshot({ refresh: true });
@@ -514,8 +514,11 @@ export function createDesktopShellComposition({
       providers: agentProviders,
       externalActivity: taskExternalActivity,
       beginRun: (input, target) => {
-        if (String(target?.streamId ?? "").trim()
-          && !workspaceCatalogStore.stream(target.streamId)) {
+        const targetStreamId = String(target?.streamId ?? "").trim();
+        const targetStream = targetStreamId ? workspaceCatalogStore.stream(targetStreamId) : null;
+        if (targetStreamId && (
+          !targetStream || workspaceCatalog.permanentDeletionPending(targetStream.workspaceId)
+        )) {
           const error = new Error("Run target Workspace or Stream no longer exists");
           error.code = "RUN_TARGET_NOT_FOUND";
           throw error;

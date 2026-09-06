@@ -6,6 +6,7 @@ export function destinationStreamSettings(workspaceCatalog, streamId) {
 }
 
 export function createWorkspaceActions(services) {
+  const taskMutation = (operation) => Promise.resolve().then(operation);
   return {
     renameWorkspace: (params) => services.workspaceMutation(
       () => services.workspaceCatalogService.renameWorkspace(params),
@@ -56,22 +57,23 @@ export function createWorkspaceActions(services) {
       { resultKey: "deletedWorkspace" },
     ),
     createWorkspaceFromStream: (params) => services.workspaceMutation(
-      () => {
+      async () => {
         const sourceWorkspaceId = services.workspaceCatalog.stream(params?.streamId)?.workspaceId;
-        const result = services.workspaceCatalogService.createWorkspaceFromStream(params);
+        const result = await services.workspaceCatalogService.createWorkspaceFromStream(params);
         if (sourceWorkspaceId && !services.workspaceCatalog.workspace(sourceWorkspaceId)) {
-          services.taskBoard.reassignWorkspace(sourceWorkspaceId, result.workspace.id);
+          await taskMutation(
+            () => services.taskBoard.reassignWorkspace(sourceWorkspaceId, result.workspace.id),
+          );
         }
         return result;
       },
     ),
     mergeWorkspaces: (params) => services.workspaceMutation(
-      () => {
-        const result = services.workspaceCatalogService.mergeWorkspaces(params);
-        services.taskBoard.reassignWorkspace(
-          params?.sourceWorkspaceId,
-          params?.targetWorkspaceId,
-        );
+      async () => {
+        const result = await services.workspaceCatalogService.mergeWorkspaces(params);
+        await taskMutation(() => services.taskBoard.reassignWorkspace(
+          params?.sourceWorkspaceId, params?.targetWorkspaceId,
+        ));
         return result;
       },
     ),
@@ -99,11 +101,13 @@ export function createWorkspaceActions(services) {
       () => services.workspaceCatalogService.updateStreamDeveloperRules(params),
     ),
     moveStream: (params) => services.workspaceMutation(
-      () => {
+      async () => {
         const sourceWorkspaceId = services.workspaceCatalog.stream(params?.streamId)?.workspaceId;
-        const result = services.workspaceCatalogService.moveStream(params);
+        const result = await services.workspaceCatalogService.moveStream(params);
         if (sourceWorkspaceId && !services.workspaceCatalog.workspace(sourceWorkspaceId)) {
-          services.taskBoard.reassignWorkspace(sourceWorkspaceId, params?.workspaceId);
+          await taskMutation(
+            () => services.taskBoard.reassignWorkspace(sourceWorkspaceId, params?.workspaceId),
+          );
         }
         return result;
       },

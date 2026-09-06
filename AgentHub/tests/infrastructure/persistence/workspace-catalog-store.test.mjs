@@ -6,6 +6,11 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import {
+  createInterstreamMessage,
+  interstreamAuditContentHash,
+} from "../../../src/domain/interstream-message.mjs";
+
+import {
   DEVELOPER_RULES_MAX_BYTES,
   WorkspaceCatalogStore,
 } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
@@ -35,6 +40,35 @@ async function fixture(t) {
   });
   return store;
 }
+
+test("Workspace mutation queue retries real SQLite contention and keeps timers responsive", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspace-contention-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const store = new WorkspaceCatalogStore({ databaseFile });
+  await store.load();
+  const workspace = store.createWorkspace({ name: "Before contention" });
+  const blocker = new DatabaseSync(databaseFile);
+  blocker.exec("PRAGMA busy_timeout = 0; BEGIN IMMEDIATE");
+  let timerFired = false;
+  const timer = setTimeout(() => {
+    timerFired = true;
+    blocker.exec("COMMIT");
+  }, 60);
+  t.after(async () => {
+    clearTimeout(timer);
+    try { blocker.exec("ROLLBACK"); } catch {}
+    blocker.close();
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const updated = await store.runMutation(
+    () => store.renameWorkspace(workspace.id, "After contention"),
+    { requestId: "workspace-contention", timeoutMs: 1_000 },
+  );
+  assert.equal(timerFired, true);
+  assert.equal(updated.name, "After contention");
+  assert.ok(store.mutationDiagnostics().retries > 0);
+});
 
 test("Workspace archive hides hierarchy, restores intact, and never expires", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspace-archive-"));
@@ -146,27 +180,79 @@ test("Task attachment and permanent delete serialize without orphan or false suc
   const catalog = new WorkspaceCatalogStore({ databaseFile });
   await catalog.load();
   const taskBoard = new TaskBoardStore({ databaseFile });
+  const layout = new DatabaseSync(databaseFile);
   t.after(async () => {
+    layout.close();
     taskBoard.close();
     catalog.close();
     await rm(directory, { recursive: true, force: true });
   });
+  const seedLayout = (workspaceId, position) => {
+    layout.prepare(`
+      INSERT INTO hub_board_workspace_order (workspace_id, position, updated_at_ms)
+      VALUES (?, ?, 1)
+    `).run(workspaceId, position);
+    layout.prepare(`
+      INSERT INTO hub_board_column_order (column_id, position, updated_at_ms)
+      VALUES (?, ?, 1)
+    `).run(workspaceId, position);
+  };
+  const layoutRows = (workspaceId) => ({
+    legacy: layout.prepare(
+      "SELECT position FROM hub_board_workspace_order WHERE workspace_id = ?",
+    ).get(workspaceId)?.position ?? null,
+    current: layout.prepare(
+      "SELECT position FROM hub_board_column_order WHERE column_id = ?",
+    ).get(workspaceId)?.position ?? null,
+  });
   const attached = catalog.createWorkspace({ id: "workspace-attached", name: "Attached" });
   catalog.archiveWorkspace(attached.id);
+  seedLayout(attached.id, 5);
   taskBoard.create({ text: "Attached Task", bucket: "workspace", workspaceId: attached.id });
   assert.throws(
     () => catalog.deleteArchivedWorkspace(attached.id, attached.name),
     /связанные Dashboard Task/u,
   );
   assert.equal(catalog.workspace(attached.id).id, attached.id);
+  assert.deepEqual(layoutRows(attached.id), { legacy: 5, current: 5 });
+
+  const rollback = catalog.createWorkspace({ id: "workspace-rollback", name: "Rollback" });
+  catalog.archiveWorkspace(rollback.id);
+  seedLayout(rollback.id, 7);
+  layout.exec(`
+    CREATE TRIGGER block_workspace_layout_cleanup
+    BEFORE DELETE ON hub_board_column_order
+    WHEN OLD.column_id = 'workspace-rollback'
+    BEGIN
+      SELECT RAISE(ABORT, 'layout cleanup blocked');
+    END
+  `);
+  assert.throws(
+    () => catalog.deleteArchivedWorkspace(rollback.id, rollback.name),
+    /layout cleanup blocked/u,
+  );
+  assert.equal(catalog.workspace(rollback.id).id, rollback.id);
+  assert.deepEqual(layoutRows(rollback.id), { legacy: 7, current: 7 });
+  assert.equal(layout.prepare(
+    "SELECT 1 FROM hub_workspace_deletion_fences WHERE workspace_id = ?",
+  ).get(rollback.id), undefined);
+  layout.exec("DROP TRIGGER block_workspace_layout_cleanup");
 
   const deleted = catalog.createWorkspace({ id: "workspace-deleted-first", name: "Deleted first" });
   catalog.archiveWorkspace(deleted.id);
+  seedLayout(deleted.id, 10_000);
   assert.equal(catalog.deleteArchivedWorkspace(deleted.id, deleted.name).deleted, true);
+  assert.deepEqual(layoutRows(deleted.id), { legacy: null, current: null });
+  seedLayout(deleted.id, 20_000);
+  assert.equal(catalog.deleteArchivedWorkspace(deleted.id, deleted.name).deleted, true);
+  assert.deepEqual(layoutRows(deleted.id), { legacy: null, current: null });
   assert.throws(
     () => taskBoard.create({ text: "Late Task", bucket: "workspace", workspaceId: deleted.id }),
     /workspace was permanently deleted/u,
   );
+  const future = catalog.createWorkspace({ id: "workspace-future", name: "Future" });
+  taskBoard.moveColumn([attached.id, future.id], { columnId: future.id, beforeColumnId: "notes" });
+  assert.ok(layoutRows(future.id).current < 100);
 });
 
 test("system Workspace cannot be archived", async (t) => {
@@ -609,6 +695,38 @@ test("MCP mutation audit is idempotent and scoped to its Workspace", async (t) =
   );
 });
 
+test("MCP receipt stays successful when the returned payload exceeds one MiB", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const stream = store.createStream({ workspaceId: workspace.id, name: "MCP" });
+  const operation = {
+    requestId: "large-result", workspaceId: workspace.id, streamId: stream.id,
+    provider: "codex", threadId: "thread-1", toolName: "hub_task_update", argumentsHash: "hash-large",
+  };
+  store.beginMcpOperation(operation);
+  store.completeMcpOperation(operation.requestId, { payload: "x".repeat(1024 * 1024 + 1) });
+  const receipt = store.beginMcpOperation(operation);
+  assert.equal(receipt.status, "succeeded");
+  assert.equal(receipt.result.receiptCompacted, true);
+  assert.equal(receipt.result.outcome, "succeeded");
+});
+
+test("crash-after-begin receipt becomes explicit unknown instead of blind replay", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const stream = store.createStream({ workspaceId: workspace.id, name: "MCP" });
+  const operation = {
+    requestId: "crash-after-begin", workspaceId: workspace.id, streamId: stream.id,
+    provider: "codex", threadId: "thread-1", toolName: "hub_task_update", argumentsHash: "hash-crash",
+  };
+  assert.equal(store.beginMcpOperation(operation).replayed, false);
+  assert.equal(store.beginMcpOperation(operation).replayed, true);
+  store.markMcpOperationUnknown(operation.requestId, new Error("authoritative readback unavailable"));
+  const receipt = store.beginMcpOperation(operation);
+  assert.equal(receipt.status, "unknown");
+  assert.match(receipt.error, /readback unavailable/u);
+});
+
 test("MCP audit resolves only exact successful interstream message provenance", async (t) => {
   const store = await fixture(t);
   const workspace = store.createWorkspace({ name: "Agent HUB" });
@@ -620,10 +738,26 @@ test("MCP audit resolves only exact successful interstream message provenance", 
     provider: "codex",
     threadId: "thread-architect",
     toolName: "hub_task_start",
-    argumentsHash: "hash-assignment-1",
+    argumentsHash: "a".repeat(64),
   };
   store.beginMcpOperation(operation);
   assert.equal(store.interstreamOriginForClientMessage("mcp:assignment-1"), null);
+  assert.throws(
+    () => store.completeMcpOperation(operation.requestId, { task: { id: "task-1" } }),
+    /no admitted content hash/u,
+  );
+  const rawMessage = createInterstreamMessage({
+    workspaceId: workspace.id,
+    workspaceName: "Agent HUB",
+    streamId: stream.id,
+    streamName: "Architect",
+    provider: "codex",
+    sourceThreadId: "thread-architect",
+    requestId: "assignment-1",
+    text: "Начать работу",
+  });
+  const contentHash = interstreamAuditContentHash(rawMessage);
+  store.bindMcpOperationInterstreamContentHash(operation.requestId, contentHash);
   store.completeMcpOperation(operation.requestId, { task: { id: "task-1" } });
 
   assert.deepEqual(store.interstreamOriginForClientMessage("mcp:assignment-1"), {
@@ -635,6 +769,19 @@ test("MCP audit resolves only exact successful interstream message provenance", 
     provider: "codex",
     sourceThreadId: "thread-architect",
     requestId: "assignment-1",
+    origin: {
+      kind: "interstream",
+      workspaceId: workspace.id,
+      workspaceName: "Agent HUB",
+      streamId: stream.id,
+      streamName: "Architect",
+      provider: "codex",
+      sourceThreadId: "thread-architect",
+      requestId: "assignment-1",
+    },
+    toolName: "hub_task_start",
+    argumentsHash: "a".repeat(64),
+    contentHash,
   });
   assert.equal(store.interstreamOriginForClientMessage("assignment-1"), null);
   assert.equal(store.interstreamOriginForClientMessage("mcp:missing"), null);

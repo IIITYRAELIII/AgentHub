@@ -4,6 +4,7 @@
  *   • «Диалоги» — слева компактный список задач, справа чат выбранной задачи;
  *   • «Журнал» — SQLite-представление журнала с ленивой подгрузкой;
  *   • «Статистика» — учётный расход журнала и история лимитов API.
+ *   • «Браузер» — изолированный просмотр публичной HTTPS-страницы;
  *   • «Сервер» — состояние и безопасное управление локальным Agent Hub.
  *
  * Frontend не хранит собственных задач и сообщений: до подключения backend
@@ -1373,10 +1374,10 @@ const state = {
 let transientAnswerArrivalTaskIds = new Set();
 const observedAnswerFinalIdentityByTaskId = new Map();
 
-/* Черновики принадлежат конкретному клиенту и задаче. Вложение остаётся в
- * памяти страницы: data:-URL скриншотов может превысить лимит localStorage.
- * Набранный текст и аннотации сохраняем синхронно, чтобы жест «назад»,
- * пересоздание WebView или краткая потеря связи не стирали сообщение. */
+/* Черновики принадлежат конкретному клиенту и задаче. Обычные вложения остаются
+ * в памяти страницы. Только payload, который Hub точно отклонил, может быть
+ * сохранён для явного retry: сохраняем исходный data:-URL, но никогда не
+ * временный transport path. Quota/privacy отказ остаётся явным и fail-closed. */
 const drafts = new Map();
 const DRAFT_STORAGE_VERSION = "agent-hub:composer-drafts:v1";
 
@@ -1393,8 +1394,35 @@ function renderConnectionQuality() {
 }
 const DRAFT_STORAGE_MAX_TASKS = 100;
 const DRAFT_STORAGE_MAX_TEXT = 100_000;
+const DRAFT_RECOVERY_MAX_ATTACHMENTS = 8;
+const DRAFT_RECOVERY_MAX_ATTACHMENT_CHARS = 4_000_000;
+const DRAFT_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
+const DRAFT_ATTACHMENT_MAX_TOTAL_BYTES = 20 * 1024 * 1024;
+const DRAFT_RECOVERY_AUTHORITY_DB = "agent-hub-composer-recovery-v1";
+const DRAFT_RECOVERY_AUTHORITY_STORE = "surfaces";
+const composerTaskGenerations = new Map();
+let composerRecoveryWarningShown = false;
+let composerRecoveryAuthorityReady = false;
+let composerRecoveryAuthorityTrusted = false;
+let composerRecoveryAuthorityEpoch = 0;
+let composerRecoveryAuthorityPending = 0;
+let composerRecoveryAuthorityInitialization = null;
+let composerDraftRestoreInitialization = null;
+let composerDraftRestoreReady = false;
+let composerRecoveryAuthorityTail = Promise.resolve();
+let composerRecoveryAuthorityDatabase = null;
 let pendingComposerRequest = null;
 const retryComposerRequests = new Map();
+const composerDraftReconciliation = window.AgentHubComposerDraftReconciliation.create({
+  drafts,
+  retries: retryComposerRequests,
+  persist: (options) => persistDrafts(options),
+  render: (taskId) => {
+    if (state.selectedId === taskId) restoreDraft();
+  },
+  persistenceFailed: () => reportComposerRecoveryFailure(),
+  invalidateRecovery: ({ taskId, requestId }) => recordRecoveryInvalidation(taskId, requestId),
+});
 
 function draftStorageSurface() {
   if (vscodeMode) return "vscode";
@@ -1405,6 +1433,137 @@ function draftStorageSurface() {
 
 function draftStorageKey() {
   return `${DRAFT_STORAGE_VERSION}:${draftStorageSurface()}`;
+}
+
+function reportComposerRecoveryFailure() {
+  if (composerRecoveryWarningShown) return;
+  composerRecoveryWarningShown = true;
+  showToast(
+    "Браузер не может точно сохранить или инвалидировать восстановленное сообщение. Повтори отправку до перезагрузки; обновление интерфейса заблокировано.",
+  );
+}
+
+function composerRecoveryAuthorityRequest(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error ?? new Error("IndexedDB request failed"));
+  });
+}
+
+function openComposerRecoveryAuthority() {
+  if (composerRecoveryAuthorityDatabase) return Promise.resolve(composerRecoveryAuthorityDatabase);
+  if (!globalThis.indexedDB) return Promise.reject(new Error("IndexedDB is unavailable"));
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DRAFT_RECOVERY_AUTHORITY_DB, 1);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(DRAFT_RECOVERY_AUTHORITY_STORE)) {
+        request.result.createObjectStore(DRAFT_RECOVERY_AUTHORITY_STORE, { keyPath: "surface" });
+      }
+    };
+    request.onsuccess = () => {
+      composerRecoveryAuthorityDatabase = request.result;
+      composerRecoveryAuthorityDatabase.onversionchange = () => {
+        composerRecoveryAuthorityDatabase.close();
+        composerRecoveryAuthorityDatabase = null;
+        composerRecoveryAuthorityTrusted = false;
+      };
+      resolve(composerRecoveryAuthorityDatabase);
+    };
+    request.onerror = () => reject(request.error ?? new Error("IndexedDB open failed"));
+    request.onblocked = () => reject(new Error("IndexedDB upgrade blocked"));
+  });
+}
+
+async function readComposerRecoveryAuthority() {
+  try {
+    const database = await openComposerRecoveryAuthority();
+    const transaction = database.transaction(DRAFT_RECOVERY_AUTHORITY_STORE, "readonly");
+    const record = await composerRecoveryAuthorityRequest(
+      transaction.objectStore(DRAFT_RECOVERY_AUTHORITY_STORE).get(draftStorageSurface()),
+    );
+    const epoch = Number(record?.epoch ?? 0);
+    if (!Number.isSafeInteger(epoch) || epoch < 0) throw new Error("Invalid recovery epoch");
+    composerRecoveryAuthorityEpoch = epoch;
+    composerRecoveryAuthorityTrusted = true;
+  } catch {
+    composerRecoveryAuthorityTrusted = false;
+    reportComposerRecoveryFailure();
+  } finally {
+    composerRecoveryAuthorityReady = true;
+  }
+}
+
+function ensureComposerRecoveryAuthority() {
+  if (!composerRecoveryAuthorityInitialization) {
+    composerRecoveryAuthorityInitialization = readComposerRecoveryAuthority();
+  }
+  return composerRecoveryAuthorityInitialization;
+}
+
+function ensureComposerDraftsRestored() {
+  if (!composerDraftRestoreInitialization) {
+    composerDraftRestoreInitialization = (async () => {
+      await ensureComposerRecoveryAuthority();
+      try {
+        restorePersistedDrafts();
+        if (state.selectedId) restoreDraft();
+      } catch {
+        reportComposerRecoveryFailure();
+      } finally {
+        composerDraftRestoreReady = true;
+      }
+    })();
+  }
+  return composerDraftRestoreInitialization;
+}
+
+async function bumpComposerRecoveryAuthority() {
+  await ensureComposerRecoveryAuthority();
+  if (!composerRecoveryAuthorityTrusted) throw new Error("Recovery authority unavailable");
+  const database = await openComposerRecoveryAuthority();
+  const transaction = database.transaction(DRAFT_RECOVERY_AUTHORITY_STORE, "readwrite");
+  const store = transaction.objectStore(DRAFT_RECOVERY_AUTHORITY_STORE);
+  const current = await composerRecoveryAuthorityRequest(store.get(draftStorageSurface()));
+  const previousEpoch = Number(current?.epoch ?? 0);
+  if (!Number.isSafeInteger(previousEpoch) || previousEpoch < 0
+    || previousEpoch >= Number.MAX_SAFE_INTEGER) throw new Error("Recovery epoch exhausted");
+  const nextEpoch = previousEpoch + 1;
+  store.put({ surface: draftStorageSurface(), epoch: nextEpoch, updatedAt: Date.now() });
+  await new Promise((resolve, reject) => {
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error ?? new Error("Recovery authority write failed"));
+    transaction.onabort = () => reject(transaction.error ?? new Error("Recovery authority write aborted"));
+  });
+  composerRecoveryAuthorityEpoch = nextEpoch;
+  composerRecoveryAuthorityTrusted = true;
+}
+
+function recordRecoveryInvalidation(taskId, requestId, { clearNonDurableWhenPersisted = true } = {}) {
+  const id = String(requestId ?? "").trim();
+  if (!id) return true;
+  composerRecoveryAuthorityPending += 1;
+  composerRecoveryAuthorityTail = composerRecoveryAuthorityTail.then(async () => {
+    try {
+      await bumpComposerRecoveryAuthority();
+      discardPersistedRecovery(id);
+    } catch {
+      composerRecoveryAuthorityTrusted = false;
+      reportComposerRecoveryFailure();
+    } finally {
+      composerRecoveryAuthorityPending = Math.max(0, composerRecoveryAuthorityPending - 1);
+    }
+    if (composerRecoveryAuthorityPending === 0 && composerRecoveryAuthorityTrusted) {
+      const represented = persistDrafts();
+      const draft = drafts.get(taskId);
+      if (clearNonDurableWhenPersisted && represented
+        && draft?.recoveryNonDurable === true && !draft.recoveryRequestId) {
+        delete draft.recoveryNonDurable;
+      }
+    }
+  });
+  // The monotonic durable write is asynchronous. Until it commits, runtime
+  // reload remains blocked and this invalidation must not be called durable.
+  return false;
 }
 
 function normalizedDraftText(value) {
@@ -1431,17 +1590,126 @@ function restorePersistedDrafts() {
     return;
   }
   if (!Array.isArray(persisted)) return;
+  let invalidRecoveryFound = false;
   for (const entry of persisted.slice(0, DRAFT_STORAGE_MAX_TASKS)) {
     const taskId = String(entry?.taskId ?? "").trim();
     if (!taskId) continue;
+    // A snapshot can make the composer interactive while IndexedDB is still
+    // opening. Never let a late persisted read replace a draft the user has
+    // already edited in this page generation.
+    if (composerDraftReconciliation.revision(taskId) !== 0) continue;
     const text = normalizedDraftText(entry.text);
     const annotations = normalizedDraftAnnotations(entry.annotations);
     const taskReferences = (Array.isArray(entry?.taskReferences) ? entry.taskReferences : [])
       .map((reference) => TaskReferences.normalize(reference))
       .filter(Boolean);
-    if (!text && annotations.length === 0 && taskReferences.length === 0) continue;
-    drafts.set(taskId, { text, attachments: [], taskReferences, annotations });
+    const recoveryRequestId = String(entry?.recoveryRequestId ?? "").trim();
+    const recoveryFingerprint = String(entry?.recoveryFingerprint ?? "");
+    const rawRecoveryMetadata = Boolean(recoveryRequestId && recoveryFingerprint);
+    const recoveryEpoch = Number(entry?.recoveryEpoch);
+    const authorityMatches = composerRecoveryAuthorityReady
+      && composerRecoveryAuthorityTrusted
+      && Number.isSafeInteger(recoveryEpoch)
+      && recoveryEpoch === composerRecoveryAuthorityEpoch;
+    const durablyInvalidated = rawRecoveryMetadata
+      && composerRecoveryAuthorityReady
+      && composerRecoveryAuthorityTrusted
+      && Number.isSafeInteger(recoveryEpoch)
+      && recoveryEpoch < composerRecoveryAuthorityEpoch;
+    if (durablyInvalidated) continue;
+    const recoveredAttachments = rawRecoveryMetadata && authorityMatches
+      ? normalizedRecoveryAttachments(entry?.attachments)
+      : [];
+    const attachments = recoveredAttachments ?? [];
+    const exactRecovery = Boolean(rawRecoveryMetadata && authorityMatches && recoveredAttachments)
+      && window.AgentHubComposerDraftReconciliation.recoveryFingerprint({
+        taskId,
+        text,
+        attachments,
+        taskReferences,
+        annotations,
+      }) === recoveryFingerprint;
+    const invalidRecovery = rawRecoveryMetadata && !exactRecovery;
+    if (invalidRecovery) {
+      invalidRecoveryFound = true;
+      recordRecoveryInvalidation(taskId, recoveryRequestId, { clearNonDurableWhenPersisted: false });
+    }
+    if (!text && annotations.length === 0 && taskReferences.length === 0 && attachments.length === 0
+      && !invalidRecovery) continue;
+    composerDraftReconciliation.restore(taskId, {
+      text,
+      attachments,
+      taskReferences,
+      annotations,
+      ...(exactRecovery ? {
+        recoveryRequestId,
+        recoveryFingerprint,
+        recoveryEpoch,
+      } : {}),
+      ...(invalidRecovery ? { recoveryNonDurable: true } : {}),
+    });
   }
+  if (invalidRecoveryFound) reportComposerRecoveryFailure();
+}
+
+function composerTaskIdentity(task) {
+  if (!task) return "";
+  return JSON.stringify([
+    String(task.id ?? ""),
+    String(task.provider ?? ""),
+    String(task.threadId ?? ""),
+    String(task.streamId ?? ""),
+    String(task.workspaceId ?? ""),
+  ]);
+}
+
+function updateComposerTaskGenerations(previousTasks, nextTasks) {
+  const previous = new Map((previousTasks ?? []).map((task) => [task.id, composerTaskIdentity(task)]));
+  const next = new Map((nextTasks ?? []).map((task) => [task.id, composerTaskIdentity(task)]));
+  for (const id of new Set([...previous.keys(), ...next.keys()])) {
+    if (previous.get(id) === next.get(id)) continue;
+    composerTaskGenerations.set(id, (composerTaskGenerations.get(id) ?? 0) + 1);
+  }
+}
+
+function removeComposerTask(taskId) {
+  const id = String(taskId ?? "").trim();
+  if (!id) return;
+  if (pendingComposerRequest?.taskId === id) {
+    recordRecoveryInvalidation(id, pendingComposerRequest.requestId);
+    pendingComposerRequest = null;
+  }
+  composerDraftReconciliation.remove(id);
+  attachmentOperationSequences.delete(id);
+  annotationOperationSequences.delete(id);
+}
+
+function captureComposerTaskOperation(taskId = state.selectedId) {
+  const id = String(taskId ?? "").trim();
+  const task = state.tasks.find((candidate) => candidate.id === id);
+  if (!id || !task) return null;
+  return {
+    taskId: id,
+    taskIdentity: composerTaskIdentity(task),
+    taskGeneration: composerTaskGenerations.get(id) ?? 0,
+    editRevision: composerDraftReconciliation.revision(id),
+  };
+}
+
+function composerTaskOperationCurrent(operation) {
+  if (!operation) return false;
+  const task = state.tasks.find((candidate) => candidate.id === operation.taskId);
+  return Boolean(task)
+    && composerTaskIdentity(task) === operation.taskIdentity
+    && (composerTaskGenerations.get(operation.taskId) ?? 0) === operation.taskGeneration
+    && composerDraftReconciliation.revision(operation.taskId) === operation.editRevision;
+}
+
+function advanceComposerAsyncOperationFence(taskId) {
+  const id = String(taskId ?? "").trim();
+  if (!id) return;
+  attachmentOperationSequences.set(id, (attachmentOperationSequences.get(id) ?? 0) + 1);
+  annotationOperationSequences.set(id, (annotationOperationSequences.get(id) ?? 0) + 1);
 }
 
 function taskNavigationData(task) {
@@ -1491,27 +1759,109 @@ function changedTaskIds(previousTasks, nextTasks, project) {
   return changed;
 }
 
-function persistDrafts() {
-  const persisted = [...drafts.entries()]
-    .filter(([taskId, draft]) => String(taskId).trim() && (
-      draft?.text || draft?.annotations?.length || draft?.taskReferences?.length
-    ))
-    .slice(-DRAFT_STORAGE_MAX_TASKS)
-    .map(([taskId, draft]) => ({
-      taskId,
-      text: normalizedDraftText(draft.text),
-      taskReferences: (draft.taskReferences ?? [])
-        .map((reference) => TaskReferences.normalize(reference))
-        .filter(Boolean),
-      annotations: normalizedDraftAnnotations(draft.annotations),
-    }));
+function discardPersistedRecovery(requestId) {
   try {
-    if (persisted.length) localStorage.setItem(draftStorageKey(), JSON.stringify(persisted));
+    const current = JSON.parse(localStorage.getItem(draftStorageKey()) ?? "[]");
+    const scrubbed = Array.isArray(current)
+      ? current.filter((entry) => String(entry?.recoveryRequestId ?? "") !== requestId)
+      : [];
+    if (scrubbed.length) localStorage.setItem(draftStorageKey(), JSON.stringify(scrubbed));
     else localStorage.removeItem(draftStorageKey());
     return true;
   } catch {
-    // Privacy-mode WebView or a full storage quota: the in-memory draft still survives navigation.
-    return persisted.length === 0;
+    try {
+      localStorage.removeItem(draftStorageKey());
+      return true;
+    } catch {
+      // The independent IndexedDB epoch remains authoritative across WebView
+      // recreation even when the stale localStorage record cannot be scrubbed.
+      return false;
+    }
+  }
+}
+
+function persistDrafts({ requiredRecoveryRequestId = "" } = {}) {
+  let requiredRecoveryRepresented = !requiredRecoveryRequestId;
+  let everyDraftRepresented = true;
+  let recoveryCharacters = 0;
+  const eligible = [...drafts.entries()]
+    .filter(([taskId, draft]) => String(taskId).trim() && (
+      draft?.text || draft?.annotations?.length || draft?.taskReferences?.length
+      || draft?.attachments?.length
+    ));
+  const selected = eligible.slice(-DRAFT_STORAGE_MAX_TASKS);
+  if (selected.length !== eligible.length) everyDraftRepresented = false;
+  const persisted = selected
+    .map(([taskId, draft]) => {
+      const recoveryRequestId = String(draft?.recoveryRequestId ?? "").trim();
+      const recoveryFingerprint = String(draft?.recoveryFingerprint ?? "");
+      const rawAttachments = Array.isArray(draft?.attachments) ? draft.attachments : [];
+      const attachmentCharacters = recoveryRequestId ? rawAttachments.reduce((sum, attachment) => (
+        sum + String(attachment?.dataUrl ?? "").length
+      ), 0) : 0;
+      const withinSurfaceBound = recoveryCharacters + attachmentCharacters
+        <= DRAFT_RECOVERY_MAX_ATTACHMENT_CHARS;
+      const recoveryAttachments = recoveryRequestId && withinSurfaceBound
+        ? window.AgentHubComposerDraftReconciliation.recoveryAttachments(rawAttachments, {
+          maxCount: DRAFT_RECOVERY_MAX_ATTACHMENTS,
+          maxDataUrlCharacters: DRAFT_RECOVERY_MAX_ATTACHMENT_CHARS - recoveryCharacters,
+          maxBytes: DRAFT_ATTACHMENT_MAX_BYTES,
+          maxTotalBytes: DRAFT_ATTACHMENT_MAX_TOTAL_BYTES,
+        })
+        : recoveryRequestId ? null : [];
+      const candidate = {
+        taskId,
+        text: normalizedDraftText(draft.text),
+        taskReferences: (draft.taskReferences ?? [])
+          .map((reference) => TaskReferences.normalize(reference))
+          .filter(Boolean),
+        annotations: normalizedDraftAnnotations(draft.annotations),
+      };
+      const exactRecovery = Boolean(
+        composerRecoveryAuthorityReady
+        && composerRecoveryAuthorityTrusted
+        && composerRecoveryAuthorityPending === 0
+        && recoveryRequestId
+        && recoveryFingerprint
+        && recoveryAttachments
+      )
+        && window.AgentHubComposerDraftReconciliation.recoveryFingerprint({
+          ...candidate,
+          attachments: recoveryAttachments,
+        }) === recoveryFingerprint;
+      if (exactRecovery) recoveryCharacters += attachmentCharacters;
+      const serializedAttachments = exactRecovery ? recoveryAttachments : [];
+      const exactSerializedPayload = String(draft?.text ?? "") === candidate.text
+        && JSON.stringify(draft?.taskReferences ?? []) === JSON.stringify(candidate.taskReferences)
+        && JSON.stringify(draft?.annotations ?? []) === JSON.stringify(candidate.annotations)
+        && (rawAttachments.length === 0 || exactRecovery);
+      if (!exactSerializedPayload) everyDraftRepresented = false;
+      if (recoveryRequestId && !exactRecovery) everyDraftRepresented = false;
+      if (recoveryRequestId === requiredRecoveryRequestId && exactRecovery) {
+        requiredRecoveryRepresented = true;
+      }
+      return {
+        ...candidate,
+        ...(exactRecovery ? {
+          recoveryRequestId,
+          recoveryFingerprint,
+          recoveryEpoch: composerRecoveryAuthorityEpoch,
+          attachments: recoveryAttachments,
+        } : {}),
+      };
+    })
+    .filter(Boolean);
+  if (!requiredRecoveryRepresented) {
+    discardPersistedRecovery(requiredRecoveryRequestId);
+    return false;
+  }
+  try {
+    if (persisted.length) localStorage.setItem(draftStorageKey(), JSON.stringify(persisted));
+    else localStorage.removeItem(draftStorageKey());
+    return everyDraftRepresented;
+  } catch {
+    if (requiredRecoveryRequestId) discardPersistedRecovery(requiredRecoveryRequestId);
+    return false;
   }
 }
 
@@ -2249,6 +2599,7 @@ function populateBackgroundOptions(theme = root.dataset.theme) {
 
 function setView(view, { persist = true, activate = true } = {}) {
   const next = navigationTabs.isStandaloneNavigationTab(view) ? view : "chat";
+  if (next !== "browser") window.AgentHubEmbeddedBrowser?.deactivate();
   root.dataset.view = next;
   for (const button of document.querySelectorAll("[data-view-button]")) {
     button.setAttribute("aria-pressed", String(button.dataset.viewButton === next));
@@ -2263,9 +2614,11 @@ function setView(view, { persist = true, activate = true } = {}) {
         ? "Stats"
         : next === "background"
           ? "Null"
-          : next === "server"
-            ? "Server"
-            : "Chat";
+          : next === "browser"
+            ? "Web"
+            : next === "server"
+              ? "Server"
+              : "Chat";
   }
   syncMobileNav();
   if (activate) activateView(next);
@@ -2414,9 +2767,6 @@ function renderTasks() {
         folderNames: workspaceFolderCatalogNames(),
       });
       for (const group of sections.active) taskList.append(renderTaskWorkspaceItem(group));
-      if (sections.active.length && sections.catalog.length) {
-        taskList.append(renderTaskWorkspaceDivider("Все"));
-      }
       for (const entry of sections.catalog) {
         if (entry.type === "workspace") {
           taskList.append(renderTaskWorkspaceItem(entry.group));
@@ -2499,12 +2849,6 @@ function streamMaintenanceKind(task) {
   return String(task?.context?.compaction?.status ?? "") === "running" ? "compaction" : "";
 }
 
-function renderTaskWorkspaceDivider(label) {
-  return el("li", { class: "task-workspace-divider", role: "presentation" }, [
-    el("span", { class: "task-workspace-divider-label", text: label }),
-  ]);
-}
-
 function renderTaskWorkspaceFolder(folder) {
   restoreCollapsedWorkspaceFolders();
   const folderKey = String(folder.key ?? folder.name ?? "").trim();
@@ -2540,7 +2884,7 @@ function renderTaskWorkspaceFolder(folder) {
         el("span", { class: "task-workspace-folder-count", text: String(items.length) }),
       ]),
       el("ul", { class: "task-workspace-folder-list" }, items.length
-        ? items.map((item) => renderTaskWorkspaceItem(item, { family: true }))
+        ? items.map((item) => renderTaskWorkspaceItem(item, { folderMember: true }))
         : [el("li", {
             class: "task-workspace-folder-empty",
             text: "Папка пуста",
@@ -2550,7 +2894,7 @@ function renderTaskWorkspaceFolder(folder) {
   ]);
 }
 
-function renderTaskWorkspaceItem({ id, name, kind, tasks, shortName }, { family = false } = {}) {
+function renderTaskWorkspaceItem({ id, name, kind, tasks }, { folderMember = false } = {}) {
   const selected = workspaceKey(currentTask()) === id;
   const lastActivity = workspaceLastActivity(tasks);
   const unread = tasks.some((task) => task.unread);
@@ -2568,16 +2912,14 @@ function renderTaskWorkspaceItem({ id, name, kind, tasks, shortName }, { family 
     "data-answer-arrived": tasks.some((task) => transientAnswerArrivalTaskIds.has(task.id)) ? "" : null,
     "data-running": running ? "" : null,
     "data-maintenance": maintenance || null,
-    "data-family-member": family ? "" : null,
+    "data-folder-member": folderMember ? "" : null,
     role: "button",
     tabindex: "0",
     "aria-pressed": String(selected),
-    /* Внутри семейства префикс уже стоит в заголовке группы, поэтому в строке
-       остаётся только собственное имя — но полное имя нужно озвучке и поиску. */
-    "aria-label": family ? name : null,
+    "aria-label": folderMember ? name : null,
     title: "ПКМ — редактировать Workspace",
   }, [
-    el("span", { class: "task-workspace-name", text: family ? (shortName || name) : name }),
+    el("span", { class: "task-workspace-name", text: name }),
     el("span", {
       class: "task-workspace-time",
       text: formatRelativeTime(lastActivity),
@@ -2948,7 +3290,10 @@ function renderStreamTabs() {
       ...attributes,
       class: "stream-tab",
       draggable: window.AgentHubStreamTabs.streamsAreDraggable(streamOrderMode, surface) ? "true" : null,
-    }, [el("span", { class: "stream-tab-card" }, content())]);
+    }, [
+      el("span", { class: "stream-tab-status-layer", "aria-hidden": "true" }),
+      el("span", { class: "stream-tab-card" }, content()),
+    ]);
     overflowItems.push(el("button", {
       ...attributes,
       class: "stream-overflow-item",
@@ -3558,9 +3903,8 @@ function attachTaskReferenceToComposer(targetTaskId, reference) {
     return false;
   }
   const nextReferences = TaskReferences.merge(draft.taskReferences, reference);
-  drafts.set(targetTaskId, { ...draft, taskReferences: nextReferences });
-  if (state.selectedId === targetTaskId) restoreDraft();
-  persistDrafts();
+  setTaskReferences(nextReferences);
+  saveDraft({ userEdited: true });
   composerInput.focus({ preventScroll: true });
   composer.scrollIntoView({ block: "nearest", behavior: "smooth" });
   showToast(`Task «${reference.title}» прикреплена к сообщению`);
@@ -4802,13 +5146,30 @@ function messageDisclosureId(article) {
   return String(article.dataset.messageId ?? "").trim();
 }
 
+const deferredUserMessageBodyRenderers = new WeakMap();
+
+function configureDeferredUserMessageBody(body, { renderPreview, renderFull, expanded = false }) {
+  const state = { expanded: null, renderFull, renderPreview };
+  deferredUserMessageBodyRenderers.set(body, state);
+  syncDeferredUserMessageBody(body, expanded);
+}
+
+function syncDeferredUserMessageBody(body, expanded) {
+  const state = deferredUserMessageBodyRenderers.get(body);
+  if (!state || state.expanded === expanded) return;
+  body.replaceChildren();
+  (expanded ? state.renderFull : state.renderPreview)(body);
+  state.expanded = expanded;
+}
+
 function updateUserMessageDisclosure(article) {
   const body = article.querySelector(".msg-body[data-user-message-disclosure]");
   if (!body) return;
   const bubble = article.querySelector(".msg-user-bubble");
   if (!bubble) return;
   const id = messageDisclosureId(article);
-  const overflows = hasCollapsedOverflow(body.scrollHeight, USER_MESSAGE_COLLAPSE_HEIGHT_PX);
+  const deferred = deferredUserMessageBodyRenderers.has(body);
+  const overflows = deferred || hasCollapsedOverflow(body.scrollHeight, USER_MESSAGE_COLLAPSE_HEIGHT_PX);
   const existing = article.querySelector("[data-message-disclosure]");
   if (!overflows) {
     body.classList.remove("is-collapsed");
@@ -4817,7 +5178,8 @@ function updateUserMessageDisclosure(article) {
     return;
   }
 
-  const expanded = id && expandedUserMessageIds.has(id);
+  const expanded = Boolean(id && expandedUserMessageIds.has(id));
+  syncDeferredUserMessageBody(body, expanded);
   body.classList.toggle("is-collapsed", !expanded);
   const button = existing ?? el("button", {
     type: "button",
@@ -4839,6 +5201,7 @@ function updateUserMessageDisclosure(article) {
   button.setAttribute("aria-expanded", String(expanded));
   button.onclick = () => {
     const nextExpanded = body.classList.contains("is-collapsed");
+    syncDeferredUserMessageBody(body, nextExpanded);
     body.classList.toggle("is-collapsed", !nextExpanded);
     if (id) {
       if (nextExpanded) expandedUserMessageIds.add(id);
@@ -5580,13 +5943,33 @@ function activityItemNode(activity) {
   ]);
 }
 
+const deferredDisclosureControllers = new WeakMap();
+
+function configureDeferredDisclosure(details, content, renderContent) {
+  const existing = deferredDisclosureControllers.get(details);
+  if (existing) existing.update(renderContent);
+  else deferredDisclosureControllers.set(
+    details,
+    MessageView.createDeferredDisclosureController(details, content, renderContent),
+  );
+  return details;
+}
+
+function syncDeferredDisclosure(details) {
+  deferredDisclosureControllers.get(details)?.sync();
+}
+
 function activityFeedNode(activities) {
   const values = Array.isArray(activities) ? activities : [];
   if (!values.length) return null;
-  return el("details", { class: "activity-feed" }, [
+  const content = el("div", { class: "activity-list", "data-deferred-disclosure-content": "" });
+  const details = el("details", { class: "activity-feed" }, [
     activityDisclosureSummary({ count: values.length }),
-    el("div", { class: "activity-list" }, values.map(activityItemNode)),
+    content,
   ]);
+  return configureDeferredDisclosure(details, content, (target) => {
+    target.replaceChildren(...values.map(activityItemNode));
+  });
 }
 
 function visibleTurnTraceGroups(groups) {
@@ -5608,7 +5991,11 @@ function turnTraceGroupsNode(values, { liveStage = "", openGroupIds = [] } = {})
     return section;
   });
   if (content.activities.length) {
-    blocks.push(el("details", {
+    const activityContent = el("div", {
+      class: "activity-list",
+      "data-deferred-disclosure-content": "",
+    });
+    const activityDetails = el("details", {
       class: "turn-trace-activities",
       "data-trace-group-id": TURN_TRACE_ACTIVITY_GROUP_ID,
       open: liveTraceDisclosureOpen({
@@ -5617,8 +6004,11 @@ function turnTraceGroupsNode(values, { liveStage = "", openGroupIds = [] } = {})
       }),
     }, [
       activityDisclosureSummary({ count: content.activities.length, stage: liveStage }),
-      el("div", { class: "activity-list" }, content.activities.map(activityItemNode)),
-    ]));
+      activityContent,
+    ]);
+    blocks.push(configureDeferredDisclosure(activityDetails, activityContent, (target) => {
+      target.replaceChildren(...content.activities.map(activityItemNode));
+    }));
   }
   return el("div", { class: "turn-trace-groups" }, blocks);
 }
@@ -5628,26 +6018,31 @@ function turnTraceNode(groups) {
   if (!values.length) return null;
   const activityCount = values.reduce((total, group) => total + (group.activities?.length ?? 0), 0);
   const content = turnTraceContent(values);
-  const expanded = el("div", { class: "turn-trace-groups" });
-  content.reasoningBlocks.forEach((reasoning, index) => {
-    const reasoningNode = el("div", { class: "turn-trace-reasoning" });
-    renderMarkdown(reasoningNode, reasoning);
-    expanded.append(el("section", {
-      class: "turn-trace-block",
-      "data-trace-index": String(index),
-    }, [reasoningNode]));
-  });
-  if (content.activities.length) {
-    expanded.append(el("div", { class: "activity-list" }, content.activities.map(activityItemNode)));
-  }
   const summary = turnTraceSummary({
     reasoningCount: content.reasoningBlocks.length,
     activityCount,
   });
-  return el("details", { class: "turn-trace" }, [
+  const expanded = el("div", {
+    class: "turn-trace-groups",
+    "data-deferred-disclosure-content": "",
+  });
+  const details = el("details", { class: "turn-trace" }, [
     activityDisclosureSummary(summary),
     expanded,
   ]);
+  return configureDeferredDisclosure(details, expanded, (target) => {
+    content.reasoningBlocks.forEach((reasoning, index) => {
+      const reasoningNode = el("div", { class: "turn-trace-reasoning" });
+      renderMarkdown(reasoningNode, reasoning);
+      target.append(el("section", {
+        class: "turn-trace-block",
+        "data-trace-index": String(index),
+      }, [reasoningNode]));
+    });
+    if (content.activities.length) {
+      target.append(el("div", { class: "activity-list" }, content.activities.map(activityItemNode)));
+    }
+  });
 }
 
 function messageActionButton({ icon, label, action, onClick }) {
@@ -5669,7 +6064,7 @@ function editUserMessage(message) {
   composerInput.value = String(message?.text ?? "");
   autosizeComposer();
   updateSendState();
-  saveDraft();
+  saveDraft({ userEdited: true });
   composerInput.focus({ preventScroll: true });
   composer.scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
@@ -5688,6 +6083,7 @@ function repeatAgentMessage(message) {
   composerInput.value = String(prompt.text ?? "");
   autosizeComposer();
   updateSendState();
+  saveDraft({ userEdited: true });
   submitComposer();
 }
 
@@ -5773,16 +6169,30 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
     class: "msg-body",
     ...(role === "user" ? { "data-user-message-disclosure": "" } : {}),
   });
-  // Markdown собирается только безопасными DOM-узлами; сырой HTML не исполняется.
-  if (!renderResponseAnnotations(body, message)) {
+  const renderBody = (target) => {
+    target.replaceChildren();
+    // Markdown собирается только безопасными DOM-узлами; сырой HTML не исполняется.
+    if (renderResponseAnnotations(target, message)) return;
     const text = role === "system"
       ? MessageView.normalizeSystemEventText(message.text ?? "")
       : message.text ?? "";
     if (role === "agent" && Array.isArray(message.responseCitationPresentations)
       && message.responseCitationPresentations.length) {
-      renderAgentResponseBody(body, message, text, currentFileLinkContext(task));
-    } else renderMarkdown(body, text, currentFileLinkContext(task), role);
-  }
+      renderAgentResponseBody(target, message, text, currentFileLinkContext(task));
+    } else renderMarkdown(target, text, currentFileLinkContext(task), role);
+  };
+  const deferredPreview = MessageView.deferredUserMessagePreview(message);
+  if (deferredPreview != null) {
+    body.dataset.deferredMessageBody = "";
+    configureDeferredUserMessageBody(body, {
+      expanded: Boolean(message.id && expandedUserMessageIds.has(message.id)),
+      renderPreview: (target) => target.append(el("p", {
+        class: "msg-deferred-preview",
+        text: deferredPreview,
+      })),
+      renderFull: renderBody,
+    });
+  } else renderBody(body);
 
   if (maintenance) article.append(body);
   else article.append(head);
@@ -5995,6 +6405,15 @@ function revealResponseCitationSource(article, surface) {
   }
 }
 
+function materializeDeferredCitationSource(article, surfaceKind) {
+  if (!article || surfaceKind !== "message-body") return;
+  const body = article.querySelector(".msg-body[data-deferred-message-body]");
+  if (!body || !deferredUserMessageBodyRenderers.has(body)) return;
+  const disclosure = article.querySelector("[data-message-disclosure]");
+  if (body.classList.contains("is-collapsed") && disclosure) disclosure.click();
+  else syncDeferredUserMessageBody(body, true);
+}
+
 async function focusResponseCitationSource(button) {
   const target = responseCitationSources.get(button);
   const source = normalizedResponseAnnotationSource(target?.source);
@@ -6006,6 +6425,13 @@ async function focusResponseCitationSource(button) {
   const article = rootNode?.matches?.("article.msg, details.msg")
     ? rootNode
     : rootNode?.querySelector?.("article.msg, details.msg");
+  materializeDeferredCitationSource(article, source.surfaceKind);
+  if (article && source.surfaceKind === "trace-reasoning") {
+    for (const details of article.querySelectorAll("details.turn-trace")) {
+      details.open = true;
+      syncDeferredDisclosure(details);
+    }
+  }
   const surface = responseAnnotationSourceSurface(article, source);
   if (!article || !surface) return false;
   const range = domRangeFromOffsets(surface, source.start, source.end);
@@ -6155,9 +6581,10 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
       visible: renderParts.activityFeed.visible,
     });
     activityFeed.hidden = !renderParts.activityFeed.visible;
-    node.querySelector("[data-activity-list]").replaceChildren(
-      ...renderParts.activityFeed.activities.map(activityItemNode),
-    );
+    const activityList = node.querySelector("[data-activity-list]");
+    configureDeferredDisclosure(activityFeed, activityList, (target) => {
+      target.replaceChildren(...renderParts.activityFeed.activities.map(activityItemNode));
+    });
   });
   liveCardRenderController.reconcile(node, "activity-feed-summary", renderParts.activityFeedSummary, () => {
     renderActivityDisclosureSummary(node.querySelector("[data-activity-summary]"), {
@@ -6354,7 +6781,7 @@ function renderQueueForTask(taskId, container) {
       }
       actions.push(el("button", {
         type: "button", class: "queue-remove", "data-action": "queue-remove", "data-queue-id": entry.id,
-        title: "Убрать отложенное сообщение", "aria-label": "Убрать отложенное сообщение", text: "×",
+        title: "Отменить отложенное сообщение", "aria-label": "Отменить отложенное сообщение", text: "Отменить",
       }));
     }
     const entryAnnotations = Array.isArray(entry.annotations) ? entry.annotations : [];
@@ -6463,6 +6890,7 @@ function runSlashCommand(command) {
   composerInput.value = "";
   autosizeComposer();
   updateSendState();
+  saveDraft({ userEdited: true });
   closeSlashMenu();
   if (entry.run) entry.run();
   else if (entry.action) handleAction(entry.action, slashButton);
@@ -6486,7 +6914,7 @@ function updateSendState() {
 composerInput.addEventListener("input", () => {
   autosizeComposer();
   updateSendState();
-  saveDraft();
+  saveDraft({ userEdited: true });
   slashSelection = 0;
   renderSlashMenu();
 });
@@ -6559,7 +6987,7 @@ function sendComposerRequest({
     && payloadAttachments.length === 0
     && payloadTaskReferences.length === 0
     && payloadAnnotations.length === 0) return;
-  const fingerprint = JSON.stringify({
+  const fingerprint = window.AgentHubComposerDraftReconciliation.recoveryFingerprint({
     taskId: state.selectedId,
     rawText,
     attachments: payloadAttachments,
@@ -6580,8 +7008,13 @@ function sendComposerRequest({
     taskReferences: payloadTaskReferences,
     annotations: payloadAnnotations,
     restoreOnReject,
+    editRevision: composerDraftReconciliation.revision(state.selectedId),
   };
   if (clearComposer) {
+    // Sending is itself a composition boundary. A FileReader or annotation
+    // hash that started from the pre-send draft must not reapply that draft
+    // after the accepted send has cleared it.
+    advanceComposerAsyncOperationFence(state.selectedId);
     drafts.set(state.selectedId, { text: "", attachments: [], taskReferences: [], annotations: [] });
     composerInput.value = "";
     setAttachments([]);
@@ -6651,41 +7084,33 @@ function insertQuickMessage(entry) {
   insertTextAtCaret(composerInput, text);
 }
 
-function completeComposerSend(requestId, accepted) {
+function completeComposerSend(requestId, { outcome = "unknown", taskId = "" } = {}) {
   const pending = pendingComposerRequest;
-  if (!pending || pending.requestId !== requestId) return;
-  pendingComposerRequest = null;
-  if (accepted) {
-    retryComposerRequests.delete(pending.taskId);
-  } else {
-    retryComposerRequests.set(pending.taskId, {
-      requestId: pending.requestId,
-      fingerprint: pending.fingerprint,
-    });
-    const draft = drafts.get(pending.taskId);
-    const untouched = draft
-      && !draft.text
-      && (draft.attachments ?? []).length === 0
-      && (draft.taskReferences ?? []).length === 0
-      && (draft.annotations ?? []).length === 0;
-    if (pending.restoreOnReject !== false && untouched) {
-      drafts.set(pending.taskId, {
-        text: pending.rawText,
-        attachments: pending.attachments,
-        taskReferences: pending.taskReferences,
-        annotations: pending.annotations,
-      });
-      if (state.selectedId === pending.taskId) restoreDraft();
-    }
-  }
+  const completion = composerDraftReconciliation.complete({
+    pending,
+    requestId,
+    taskId,
+    outcome,
+  });
+  pendingComposerRequest = completion.pending;
   updateSendState();
-  saveDraft();
+  return completion;
+}
+
+function normalizedRecoveryAttachments(value) {
+  return window.AgentHubComposerDraftReconciliation.recoveryAttachments(value, {
+    maxCount: DRAFT_RECOVERY_MAX_ATTACHMENTS,
+    maxDataUrlCharacters: DRAFT_RECOVERY_MAX_ATTACHMENT_CHARS,
+    maxBytes: DRAFT_ATTACHMENT_MAX_BYTES,
+    maxTotalBytes: DRAFT_ATTACHMENT_MAX_TOTAL_BYTES,
+  });
 }
 
 /* ---- вложения (превью через data:-URL, blob: закрыт CSP) ---- */
 
 let attachments = [];
 let taskReferences = [];
+const attachmentOperationSequences = new Map();
 
 function currentAttachments() {
   return attachments;
@@ -6881,24 +7306,57 @@ attachmentsBox.addEventListener("click", (event) => {
   if (taskReferenceRemove) {
     const index = Number(taskReferenceRemove.dataset.taskReferenceIndex);
     setTaskReferences(taskReferences.filter((_, itemIndex) => itemIndex !== index));
-    saveDraft();
+    saveDraft({ userEdited: true });
     return;
   }
   const remove = event.target.closest("[data-attachment-index]");
   if (!remove) return;
   const index = Number(remove.dataset.attachmentIndex);
   setAttachments(attachments.filter((_, i) => i !== index));
-  saveDraft();
+  saveDraft({ userEdited: true });
 });
 
 async function readAttachmentFiles(files) {
-  const selected = [...files].filter((file) => file && file.size > 0);
+  const operation = captureComposerTaskOperation();
+  if (!operation) return;
+  const initialDraft = composerDraftSnapshot(operation.taskId);
+  const selected = [...files].filter((file) => (
+    file && Number.isSafeInteger(file.size) && file.size > 0
+  ));
   if (selected.length === 0) return;
   const limit = 8;
-  const room = Math.max(0, limit - attachments.length);
-  const accepted = selected.slice(0, room).filter((file) => file.size <= 20 * 1024 * 1024);
-  const oversized = selected.slice(0, room).length - accepted.length;
-  const loaded = await Promise.all(accepted.map((file) => new Promise((resolve, reject) => {
+  const room = Math.max(0, limit - initialDraft.attachments.length);
+  const existingBytes = initialDraft.attachments.reduce((sum, item) => sum + (Number(item?.size) || 0), 0);
+  let remainingBytes = Math.max(0, DRAFT_ATTACHMENT_MAX_TOTAL_BYTES - existingBytes);
+  let oversized = 0;
+  let unsafe = 0;
+  const accepted = [];
+  for (const file of selected.slice(0, room)) {
+    const metadata = window.AgentHubComposerDraftReconciliation.safeAttachmentMetadata({
+      name: file.name,
+      type: file.type || "application/octet-stream",
+      size: file.size,
+    }, { maxBytes: DRAFT_ATTACHMENT_MAX_BYTES });
+    if (!metadata) {
+      unsafe += 1;
+      continue;
+    }
+    if (file.size > remainingBytes) {
+      oversized += 1;
+      continue;
+    }
+    accepted.push(file);
+    remainingBytes -= file.size;
+  }
+  if (accepted.length === 0) {
+    if (room === 0 || selected.length > room) showToast(`Можно приложить не больше ${limit} файлов.`);
+    else if (unsafe) showToast("Имя или тип файла небезопасны для отправки.");
+    else if (oversized) showToast("Общий размер вложений не должен превышать 20 МБ.");
+    return;
+  }
+  const operationSequence = (attachmentOperationSequences.get(operation.taskId) ?? 0) + 1;
+  attachmentOperationSequences.set(operation.taskId, operationSequence);
+  const settled = await Promise.allSettled(accepted.map((file) => new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve({
       name: file.name,
@@ -6908,16 +7366,33 @@ async function readAttachmentFiles(files) {
     });
     reader.onerror = () => reject(new Error(`Не удалось прочитать файл «${file.name}»`));
     reader.readAsDataURL(file);
-  }))).catch((error) => {
-    showToast(error.message);
-    return [];
+  })));
+  const failed = settled.find((result) => result.status === "rejected");
+  if (failed) {
+    showToast(failed.reason?.message ?? "Не удалось прочитать вложение");
+    return;
+  }
+  const loaded = settled.map((result) => result.value);
+  const canonical = window.AgentHubComposerDraftReconciliation.recoveryAttachments(loaded, {
+    maxCount: limit,
+    maxBytes: DRAFT_ATTACHMENT_MAX_BYTES,
+    maxTotalBytes: DRAFT_ATTACHMENT_MAX_TOTAL_BYTES - existingBytes,
   });
-  if (loaded.length) {
-    setAttachments([...attachments, ...loaded].slice(0, limit));
-    saveDraft();
+  if (!canonical) {
+    showToast("Вложение не прошло проверку целостности.");
+    return;
+  }
+  if (attachmentOperationSequences.get(operation.taskId) === operationSequence
+    && composerTaskOperationCurrent(operation)) {
+    composerDraftReconciliation.save(operation.taskId, {
+      ...initialDraft,
+      attachments: [...initialDraft.attachments, ...canonical].slice(0, limit),
+    }, { userEdited: true });
+    if (state.selectedId === operation.taskId) restoreDraft();
   }
   if (selected.length > room) showToast(`Можно приложить не больше ${limit} файлов.`);
-  else if (oversized) showToast("Размер одного файла не должен превышать 20 МБ.");
+  else if (unsafe) showToast("Часть файлов отклонена: небезопасное имя или тип.");
+  else if (oversized) showToast("Общий размер вложений не должен превышать 20 МБ.");
 }
 
 document.querySelector("[data-action='attach']").addEventListener("click", () => fileInput.click());
@@ -7009,6 +7484,7 @@ let annotations = [];
 let pendingAnnotationSelection = null;
 let lastAnnotationSelection = null;
 let lastTouchSelectionAt = 0;
+const annotationOperationSequences = new Map();
 const TOUCH_CONTEXT_MENU_WINDOW_MS = 3_000;
 
 function currentAnnotations() {
@@ -7049,7 +7525,7 @@ annotationsBox.addEventListener("click", (event) => {
   const remove = event.target.closest("[data-annotation-index]");
   if (!remove) return;
   setAnnotations(annotations.filter((_, i) => Number(remove.dataset.annotationIndex) !== i));
-  saveDraft();
+  saveDraft({ userEdited: true });
 });
 
 annotationsBox.addEventListener("input", (event) => {
@@ -7061,7 +7537,7 @@ annotationsBox.addEventListener("input", (event) => {
     ...annotations[index],
     annotation: String(input.value ?? "").slice(0, 20_000),
   };
-  saveDraft();
+  saveDraft({ userEdited: true });
 });
 
 annotationsBox.addEventListener("keydown", (event) => {
@@ -7228,20 +7704,40 @@ async function addAnnotation(selection) {
     showToast("Выделите фрагмент сообщения или рассуждения.");
     return false;
   }
-  const next = await responseAnnotationFromSelection(selection);
+  const operation = captureComposerTaskOperation();
+  if (!operation) return false;
+  const operationSequence = (annotationOperationSequences.get(operation.taskId) ?? 0) + 1;
+  annotationOperationSequences.set(operation.taskId, operationSequence);
+  let next;
+  try {
+    next = await responseAnnotationFromSelection(selection);
+  } catch {
+    next = null;
+  }
   if (!next) {
     showToast("Не удалось подтвердить источник выделенного фрагмента.");
     return false;
   }
-  if (annotations.some((annotation) => duplicateResponseAnnotation(annotation, next))) {
+  if (annotationOperationSequences.get(operation.taskId) !== operationSequence
+    || !composerTaskOperationCurrent(operation)) return false;
+  const current = composerDraftSnapshot(operation.taskId);
+  if (current.annotations.some((annotation) => duplicateResponseAnnotation(annotation, next))) {
     showToast("Этот фрагмент уже добавлен.");
     return false;
   }
-  setAnnotations([...annotations, next]);
-  lastAnnotationSelection = null;
-  window.getSelection()?.removeAllRanges();
-  annotationsBox.querySelector(`[data-annotation-comment-index="${annotations.length - 1}"]`)?.focus();
-  saveDraft();
+  const nextAnnotations = [...current.annotations, next];
+  composerDraftReconciliation.save(operation.taskId, {
+    ...current,
+    annotations: nextAnnotations,
+  }, { userEdited: true });
+  if (state.selectedId === operation.taskId) {
+    restoreDraft();
+    lastAnnotationSelection = null;
+    window.getSelection()?.removeAllRanges();
+    annotationsBox.querySelector(
+      `[data-annotation-comment-index="${nextAnnotations.length - 1}"]`,
+    )?.focus();
+  }
   return true;
 }
 
@@ -7376,15 +7872,29 @@ window.addEventListener("scroll", closeResourceContextMenu, true);
 
 /* ---- черновики ---- */
 
-function saveDraft() {
+function composerDraftSnapshot(taskId) {
+  const id = String(taskId ?? "").trim();
+  if (id && state.selectedId === id) {
+    return window.AgentHubComposerDraftReconciliation.normalizedDraft({
+      ...(drafts.get(id) ?? {}),
+      text: composerInput.value,
+      attachments: attachments.slice(),
+      taskReferences: taskReferences.slice(),
+      annotations: annotations.slice(),
+    });
+  }
+  return window.AgentHubComposerDraftReconciliation.normalizedDraft(
+    drafts.get(id) ?? window.AgentHubComposerDraftReconciliation.emptyDraft(),
+  );
+}
+
+function saveDraft({ userEdited = false } = {}) {
   if (!state.selectedId) return;
-  drafts.set(state.selectedId, {
-    text: composerInput.value,
-    attachments: attachments.slice(),
-    taskReferences: taskReferences.slice(),
-    annotations: annotations.slice(),
-  });
-  persistDrafts();
+  composerDraftReconciliation.save(
+    state.selectedId,
+    composerDraftSnapshot(state.selectedId),
+    { userEdited },
+  );
 }
 
 function prepareForRuntimeReload() {
@@ -8716,7 +9226,12 @@ async function handleAction(action, trigger) {
       break;
     case "slash-menu":
       if (slashMenu.hidden) {
-        if (!composerInput.value.trim()) composerInput.value = "/";
+        if (!composerInput.value.trim()) {
+          composerInput.value = "/";
+          autosizeComposer();
+          updateSendState();
+          saveDraft({ userEdited: true });
+        }
         composerInput.focus();
         renderSlashMenu({ force: true });
       } else {
@@ -8771,6 +9286,18 @@ const AgentHub = {
   },
   off(type, handler) {
     listeners.get(type)?.delete(handler);
+  },
+  composerRecoveryDiagnostics() {
+    return Object.freeze({
+      epoch: composerRecoveryAuthorityEpoch,
+      pending: composerRecoveryAuthorityPending,
+      ready: composerRecoveryAuthorityReady,
+      restored: composerDraftRestoreReady,
+      trusted: composerRecoveryAuthorityTrusted,
+    });
+  },
+  whenComposerRecoveryReady() {
+    return ensureComposerDraftsRestored();
   },
   prepareForRuntimeReload,
   setConnectionQuality({ latencyMs = null } = {}) {
@@ -8830,6 +9357,10 @@ const AgentHub = {
       workspaceKey(previousSelectedTask) !== workspaceKey(nextSelectedTask)
       || streamKey(previousSelectedTask) !== streamKey(nextSelectedTask)
     );
+    const nextTaskIds = new Set(nextTasks.map((task) => String(task?.id ?? "").trim()).filter(Boolean));
+    for (const previousTask of previousTasks) {
+      if (!nextTaskIds.has(String(previousTask?.id ?? "").trim())) removeComposerTask(previousTask.id);
+    }
     if (state.workspaceMessageSearch.open && nextSelectedTask
       && state.workspaceMessageSearch.workspaceId !== workspaceKey(nextSelectedTask)) {
       closeWorkspaceMessageSearch({ restoreFocus: false });
@@ -8851,6 +9382,7 @@ const AgentHub = {
       observedAnswerFinalIdentityByTaskId,
     );
     if (selectionChanged && state.selectedId) saveDraft();
+    updateComposerTaskGenerations(previousTasks, nextTasks);
     state.tasks = nextTasks;
     state.selectedId = nextSelectedId;
     if (selectionChanged || selectedTaskLocationChanged) {
@@ -9015,8 +9547,8 @@ const AgentHub = {
       renderLive();
     } else refreshSupplementaryStreamChat(taskId);
   },
-  completeSend(requestId, { accepted = false } = {}) {
-    completeComposerSend(requestId, accepted);
+  completeSend(requestId, options = {}) {
+    return completeComposerSend(requestId, options);
   },
   completeBugReport(result = {}) {
     applyBugReportFlowState(bugReportFlow.complete(result));
@@ -9211,9 +9743,29 @@ const AgentHub = {
     lastServerPayload = payload ?? {};
     if (root.dataset.view === "server") renderServerStatus(lastServerPayload);
   },
+  openExternalUrl(url) {
+    emit("resource:open", { resource: { href: String(url ?? "") } });
+  },
   openAttachmentViewer,
   showAttachmentViewer,
   closeAttachmentViewer,
+  openStream(workspaceId, streamId) {
+    const normalizedWorkspaceId = String(workspaceId ?? "").trim();
+    const normalizedStreamId = String(streamId ?? "").trim();
+    const streams = workspaceStreams(state.tasks.filter((task) => (
+      workspaceKey(task) === normalizedWorkspaceId
+    )));
+    const stream = streams.find((candidate) => candidate.id === normalizedStreamId);
+    const target = representativeStreamTask(stream);
+    if (!target) {
+      showToast("Stream недоступен");
+      return false;
+    }
+    state.openStreamsByWorkspace.set(normalizedWorkspaceId, [normalizedStreamId]);
+    state.configuredOpenStreamWorkspaces.add(normalizedWorkspaceId);
+    selectTaskFromUi(target.id);
+    return true;
+  },
   showSelectedTask() {
     setView("chat");
     setPane("chat");
@@ -14726,19 +15278,19 @@ if (journalPolling) {
   window.addEventListener("pagehide", () => journalPolling.stop());
 }
 if (vscodeMode) {
-  window.addEventListener("message", (event) => {
+  window.addEventListener("message", window.AgentHubHostMessageTrust.guardHostMessage((event) => {
     if (event.data?.type === "agenthub:journal-changed") {
       if (journalRequested) void loadJournal({ force: event.data.force === true });
     }
     if (event.data?.type === "theme") applyTheme(event.data.theme);
-  });
+  }));
 }
 
 /* ------------------------------------------------------------- инициализация */
 
 AgentHub.setConnection(telegramMode ? "online" : "connecting");
 const taskDurationTimer = window.setInterval(refreshTaskDurations, 1_000);
-restorePersistedDrafts();
+void ensureComposerDraftsRestored();
 window.addEventListener("pagehide", () => {
   saveDraft();
   clearInterval(taskDurationTimer);

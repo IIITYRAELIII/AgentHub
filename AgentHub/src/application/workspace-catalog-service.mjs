@@ -9,6 +9,7 @@ function requiredStore(value) {
 
 export class WorkspaceCatalogService {
   #store;
+  #pendingPermanentDeletions = new Map();
 
   constructor({
     store,
@@ -29,6 +30,9 @@ export class WorkspaceCatalogService {
   }
 
   createWorkspace({ name, comment = "", streamName = null, settings = {} } = {}) {
+    if (typeof this.#store.createWorkspaceWithStream === "function") {
+      return this.#store.createWorkspaceWithStream({ name, comment, streamName, settings });
+    }
     return this.#store.transaction(() => {
       const workspace = this.#store.createWorkspace({ name, comment, settings });
       const stream = this.#store.createStream({ workspaceId: workspace.id, name: streamName });
@@ -40,9 +44,11 @@ export class WorkspaceCatalogService {
     return this.#store.renameWorkspace(workspaceId, name);
   }
 
-  updateWorkspaceSettings({ workspaceId, settings = {} } = {}) {
-    const workspace = this.#store.updateWorkspaceSettings(workspaceId, settings);
-    if (workspaceTaskPrefix(workspace.settings)) this.taskBoard?.assignWorkspaceTaskNumbers?.(workspaceId);
+  async updateWorkspaceSettings({ workspaceId, settings = {} } = {}) {
+    const workspace = await this.#store.updateWorkspaceSettings(workspaceId, settings);
+    if (workspaceTaskPrefix(workspace.settings) && this.taskBoard?.assignWorkspaceTaskNumbers) {
+      await this.taskBoard.assignWorkspaceTaskNumbers(workspaceId);
+    }
     return workspace;
   }
 
@@ -62,14 +68,36 @@ export class WorkspaceCatalogService {
     return this.#store.restoreWorkspace(workspaceId);
   }
 
+  permanentDeletionPending(workspaceId) {
+    return (this.#pendingPermanentDeletions.get(String(workspaceId ?? "").trim()) ?? 0) > 0;
+  }
+
   deleteArchivedWorkspace({ workspaceId, confirmationName } = {}) {
-    if (this.blockingRunForWorkspace(String(workspaceId ?? "").trim())) {
+    const id = String(workspaceId ?? "").trim();
+    if (this.blockingRunForWorkspace(id)) {
       const error = new Error("Сначала завершите активные ходы в этом Workspace");
       error.code = "WORKSPACE_LIFECYCLE_CONFLICT";
       error.statusCode = 409;
       throw error;
     }
-    return this.#store.deleteArchivedWorkspace(workspaceId, confirmationName);
+    this.#pendingPermanentDeletions.set(id, (this.#pendingPermanentDeletions.get(id) ?? 0) + 1);
+    const release = () => {
+      const remaining = (this.#pendingPermanentDeletions.get(id) ?? 1) - 1;
+      if (remaining > 0) this.#pendingPermanentDeletions.set(id, remaining);
+      else this.#pendingPermanentDeletions.delete(id);
+    };
+    let result;
+    try {
+      result = this.#store.deleteArchivedWorkspace(workspaceId, confirmationName);
+    } catch (error) {
+      release();
+      throw error;
+    }
+    if (typeof result?.then !== "function") {
+      release();
+      return result;
+    }
+    return Promise.resolve(result).finally(release);
   }
 
   archivedWorkspaces() {
@@ -97,6 +125,9 @@ export class WorkspaceCatalogService {
   }
 
   createWorkspaceFromStream({ streamId, name } = {}) {
+    if (typeof this.#store.createWorkspaceFromStream === "function") {
+      return this.#store.createWorkspaceFromStream({ streamId, name });
+    }
     return this.#store.transaction(() => {
       const workspace = this.#store.createWorkspace({ name });
       const stream = this.#store.moveStream(streamId, workspace.id);
@@ -133,11 +164,12 @@ export class WorkspaceCatalogService {
   }
 
   moveStream({ streamId, workspaceId, beforeStreamId = undefined } = {}) {
+    if (typeof this.#store.moveStreamOrdered === "function") {
+      return this.#store.moveStreamOrdered({ streamId, workspaceId, beforeStreamId });
+    }
     return this.#store.transaction(() => {
       const moved = this.#store.moveStream(streamId, workspaceId);
-      return beforeStreamId === undefined
-        ? moved
-        : this.#store.reorderStream(streamId, beforeStreamId);
+      return beforeStreamId === undefined ? moved : this.#store.reorderStream(streamId, beforeStreamId);
     });
   }
 

@@ -49,4 +49,4 @@
   newline at the caret, and Meta+Enter preserves the main composer steer action.
   IME composition, repeated keydown and a pending send cannot duplicate it.
 
-See [ADR-0019](../decisions/ADR-0019-permanent-workspace-archive.md).
+See [ADR-0021](../decisions/ADR-0021-permanent-workspace-archive.md).
