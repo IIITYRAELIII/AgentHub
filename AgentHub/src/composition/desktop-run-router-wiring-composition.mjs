@@ -273,6 +273,8 @@ export function createDesktopRunRouterWiring({
       trustedDevices: desktop.trustedDevices,
       createDevicePairing: desktop.createDevicePairing,
       revokeDevice: desktop.revokeDevice,
+      messagePinSet: (params) => services.streamMessagePins.set(params),
+      messagePinsClear: (params) => services.streamMessagePins.clear(params),
       boardTaskCreate: (params) => taskBoardController.create(params),
       boardTaskIngest: (params) => taskBoardController.ingest(params),
       boardTaskUpdate: (params) => taskBoardController.update(params),

@@ -1051,6 +1051,7 @@ export class MiniAppServer {
             workspacesVersion: boundedVersion("workspacesVersion"),
             boardTasksVersion: boundedVersion("boardTasksVersion"),
             messageReceiptsVersion: boundedVersion("messageReceiptsVersion"),
+            messagePinsVersion: boundedVersion("messagePinsVersion"),
           },
           context: authorization,
         });

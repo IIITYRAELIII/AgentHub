@@ -20,7 +20,7 @@ const PRIVILEGED_CONTROL_SOURCES = Object.freeze(["desktop-control", "local-mini
 const RECEIPT_SHAPE = "__agentHubControlReceiptShape";
 const SNAPSHOT_RESULT_KEYS = Object.freeze([
   "apiVersion", "workspaces", "boardTasks", "boardLayout", "selected", "settings",
-  "pendingApprovals", "messageReceipts", "deferredInputs", "restartPending",
+  "pendingApprovals", "messageReceipts", "messagePins", "deferredInputs", "restartPending",
   "restartWaiting", "restartBlockingCount", "exchangeRates", "activeCount", "server",
   "tasks", "conversations", "collectionDeltas", "generatedAt", "version", "notModified",
 ]);

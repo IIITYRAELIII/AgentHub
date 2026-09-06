@@ -10359,6 +10359,19 @@ html[data-surface="mobile"] .limits-chart-svg {
   transform: translate(-50%, 0.6rem);
   transition: opacity 0.2s ease, transform 0.2s ease;
   z-index: 80;
+  align-items: center;
+  display: flex;
+  gap: 0.75rem;
+}
+
+.toast button {
+  background: transparent;
+  border: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  padding: 0;
 }
 
 .toast.visible {

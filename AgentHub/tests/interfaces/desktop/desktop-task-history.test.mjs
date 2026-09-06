@@ -1899,6 +1899,10 @@ test("desktop task history preserves subagent identity metadata", async () => {
     model: "gpt-5.6-terra",
     time: null,
     attachments: [],
+    pinEligible: false,
+    messageKey: "",
+    sourceAlias: '["codex","thread-1","turn-subagent","agent-child","agent"]',
+    semanticSlot: "",
   });
 });
 

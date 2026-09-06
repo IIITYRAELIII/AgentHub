@@ -34,6 +34,7 @@ test("snapshot transport materializes bootstrap resets and conversation naming",
         version: "receipts-1",
         reset: [{ provider: "codex", threadId: "thread-1", clientUserMessageId: "message-1" }],
       },
+      messagePins: { version: "pins-1", reset: [{ id: "pin-1", streamId: "stream-1" }] },
     },
   });
 
@@ -44,6 +45,7 @@ test("snapshot transport materializes bootstrap resets and conversation naming",
   }]);
   assert.deepEqual(plain(snapshot.workspaces), [{ id: "workspace-1" }]);
   assert.deepEqual(plain(snapshot.boardTasks), [{ id: "task-1" }]);
+  assert.deepEqual(plain(snapshot.messagePins), [{ id: "pin-1", streamId: "stream-1" }]);
   assert.deepEqual(plain(snapshot.archivedWorkspaces), [{ id: "workspace-archived", purgeAfterMs: 123 }]);
   assert.equal(snapshot.conversations, undefined);
   assert.equal(snapshot.collectionDeltas, undefined);
@@ -55,6 +57,7 @@ test("snapshot transport materializes bootstrap resets and conversation naming",
     workspacesVersion: "workspaces-1",
     boardTasksVersion: "board-1",
     messageReceiptsVersion: "receipts-1",
+    messagePinsVersion: "pins-1",
   });
 });
 
@@ -65,10 +68,12 @@ test("snapshot transport applies ordered upserts and removals", async () => {
     workspaces: [{ id: "workspace-1" }, { id: "workspace-2", name: "Old" }],
     boardTasks: [{ id: "task-1" }],
     messageReceipts: [],
+    messagePins: [{ id: "pin-old" }],
     collectionVersions: {
       workspaces: "workspaces-1",
       boardTasks: "board-1",
       messageReceipts: "receipts-1",
+      messagePins: "pins-1",
       conversations: "conversations-1",
     },
   };
@@ -91,6 +96,13 @@ test("snapshot transport applies ordered upserts and removals", async () => {
       },
       boardTasks: { baseVersion: "board-1", version: "board-1" },
       messageReceipts: { baseVersion: "receipts-1", version: "receipts-1" },
+      messagePins: {
+        baseVersion: "pins-1",
+        version: "pins-2",
+        upserts: [{ id: "pin-new" }],
+        removed: ["pin-old"],
+        order: ["pin-new"],
+      },
     },
   });
 
@@ -98,6 +110,7 @@ test("snapshot transport applies ordered upserts and removals", async () => {
   assert.deepEqual(plain(snapshot.workspaces), [{ id: "workspace-3" }, { id: "workspace-2", name: "New" }]);
   assert.deepEqual(plain(snapshot.boardTasks), previous.boardTasks);
   assert.deepEqual(plain(snapshot.messageReceipts), previous.messageReceipts);
+  assert.deepEqual(plain(snapshot.messagePins), [{ id: "pin-new" }]);
 });
 
 test("snapshot transport rejects a delta without a local baseline", async () => {
@@ -109,6 +122,7 @@ test("snapshot transport rejects a delta without a local baseline", async () => 
       workspaces: { version: "workspaces-1" },
       boardTasks: { version: "board-1", reset: [] },
       messageReceipts: { version: "receipts-1", reset: [] },
+      messagePins: { version: "pins-1", reset: [] },
     },
   }), /no local baseline/u);
 });
@@ -120,11 +134,13 @@ test("snapshot transport rejects the wrong base and drops local ghosts by author
     workspaces: [{ id: "workspace-1" }, { id: "ghost" }],
     boardTasks: [],
     messageReceipts: [],
+    messagePins: [],
     collectionVersions: {
       conversations: "conversations-1",
       workspaces: "workspaces-1",
       boardTasks: "board-1",
       messageReceipts: "receipts-1",
+      messagePins: "pins-1",
     },
   };
   const deltas = {
@@ -138,6 +154,7 @@ test("snapshot transport rejects the wrong base and drops local ghosts by author
     },
     boardTasks: { baseVersion: "board-1", version: "board-1" },
     messageReceipts: { baseVersion: "receipts-1", version: "receipts-1" },
+    messagePins: { baseVersion: "pins-1", version: "pins-1" },
   };
 
   const repaired = api.materialize(previous, { apiVersion: 4, collectionDeltas: deltas });

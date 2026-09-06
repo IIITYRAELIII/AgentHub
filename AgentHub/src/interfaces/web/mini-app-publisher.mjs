@@ -73,6 +73,8 @@ const CONTROL_ACTIONS = new Set([
   "trusted-devices",
   "create-device-pairing",
   "revoke-device",
+  "message-pin-set",
+  "message-pins-clear",
   "board-task-attachment-add",
 ]);
 const CONTROL_SOURCES = new Set(["telegram-mini-app", "trusted-device", "shared-dashboard-bot"]);

@@ -11,6 +11,7 @@ function router(calls, { omit = [] } = {}) {
     "updateServerConfiguration", "readPreTurnInstructions", "updateGlobalPreTurnInstructions",
     "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport", "reportDiagnostic",
     "trustedDevices", "createDevicePairing", "revokeDevice",
+    "messagePinSet", "messagePinsClear",
     "renameWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "renameStream", "moveStream",
     "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
@@ -48,6 +49,22 @@ test("Desktop application router addresses mutations explicitly", async () => {
   assert.equal(calls[0][0], "task.select");
   assert.equal(calls[0][2].clientId, "desktop:7");
   assert.equal(calls[0][3].target.streamId, "stream-1");
+});
+
+test("Desktop application router exposes durable message pin mutations", async () => {
+  const control = router([]);
+  const pinned = await control.handleDesktopControl({
+    action: "message-pin-set",
+    params: { streamId: "stream-1", messageKey: "message:v1:answer", pinned: true },
+    context: { source: "trusted-device", userId: "7" },
+  });
+  const cleared = await control.handleDesktopControl({
+    action: "message-pins-clear",
+    params: { streamId: "stream-1" },
+    context: { source: "trusted-device", userId: "7" },
+  });
+  assert.equal(pinned.params.pinned, true);
+  assert.equal(cleared.params.streamId, "stream-1");
 });
 
 test("Desktop application router creates a Workspace from an existing Stream", async () => {
@@ -286,6 +303,7 @@ test("Desktop application router accepts a message beside a blocked mutation", a
     "updateServerConfiguration", "readPreTurnInstructions", "updateGlobalPreTurnInstructions",
     "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport", "reportDiagnostic",
     "trustedDevices", "createDevicePairing", "revokeDevice",
+    "messagePinSet", "messagePinsClear",
     "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
     "boardWorkspaceMove", "usageSync", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
@@ -317,6 +335,7 @@ test("Desktop application router accepts a restart beside a blocked mutation", a
     "updateServerConfiguration", "readPreTurnInstructions", "updateGlobalPreTurnInstructions",
     "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport", "reportDiagnostic",
     "trustedDevices", "createDevicePairing", "revokeDevice",
+    "messagePinSet", "messagePinsClear",
     "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
     "boardWorkspaceMove", "usageSync", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",

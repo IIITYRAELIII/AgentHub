@@ -8,6 +8,7 @@ import {
 import { MessageReceiptRegistry } from "../infrastructure/persistence/message-receipts.mjs";
 import { TaskDiffStore } from "../infrastructure/persistence/task-diff-store.mjs";
 import { LocalTaskSyncStore } from "../infrastructure/persistence/task-sync-store.mjs";
+import { StreamMessagePinStore } from "../infrastructure/persistence/stream-message-pin-store.mjs";
 
 export async function createRuntimeDataComposition({
   config,
@@ -28,6 +29,9 @@ export async function createRuntimeDataComposition({
     canonicalizeProjectRoot: (projectRoot) => findProject(projectRoot)?.path ?? projectRoot,
     canonicalizeValue: (value) => canonicalizeProjectRoots(value, projects),
   });
+  const messagePins = new StreamMessagePinStore({
+    databaseFile: path.join(config.dataDir, "journal.sqlite"),
+  });
   await Promise.all([taskDiffs.load(), taskSyncStore.load()]);
   await taskSyncStore.save();
 
@@ -40,6 +44,7 @@ export async function createRuntimeDataComposition({
     queuedInputs: deferredInputs.queued,
     taskDiffs,
     taskSyncStore,
+    messagePins,
     lastSeenTaskTurnIds: new Map(),
     turnTemporaryFiles: new Map(),
     turnSpeechButtons: new Map(),

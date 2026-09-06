@@ -8,6 +8,7 @@
     workspaces: (item) => String(item?.id ?? ""),
     boardTasks: (item) => String(item?.id ?? ""),
     messageReceipts: receiptKey,
+    messagePins: (item) => String(item?.id ?? ""),
   });
 
   class SnapshotCollectionBaselineError extends Error {
@@ -76,6 +77,7 @@
       workspacesVersion: String(versions.workspaces ?? ""),
       boardTasksVersion: String(versions.boardTasks ?? ""),
       messageReceiptsVersion: String(versions.messageReceipts ?? ""),
+      messagePinsVersion: String(versions.messagePins ?? ""),
     };
   }
 

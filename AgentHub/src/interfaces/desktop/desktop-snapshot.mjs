@@ -87,6 +87,7 @@ export function createDesktopSnapshotFactory({
   settings,
   deferred,
   receipts = {},
+  pins = {},
   approvals,
   restart,
   exchangeRates,
@@ -108,6 +109,7 @@ export function createDesktopSnapshotFactory({
   const messageReceiptDelta = createSnapshotCollectionDelta({
     keyOf: (item) => [item?.provider, item?.threadId, item?.clientUserMessageId].join("\u0000"),
   });
+  const messagePinDelta = createSnapshotCollectionDelta({ keyOf: (item) => item?.id });
   let catalogRefresh = null;
 
   function catalogActiveRun(entry, lastMessage) {
@@ -591,6 +593,7 @@ export function createDesktopSnapshotFactory({
     workspacesVersion = "",
     boardTasksVersion = "",
     messageReceiptsVersion = "",
+    messagePinsVersion = "",
   } = {}) {
     const snapshotStartedAt = monotonicNow();
     const snapshotTiming = {};
@@ -616,6 +619,7 @@ export function createDesktopSnapshotFactory({
       workspaces: String(workspacesVersion),
       boardTasks: String(boardTasksVersion),
       messageReceipts: String(messageReceiptsVersion),
+      messagePins: String(messagePinsVersion),
     };
     let phaseStartedAt = monotonicNow();
     const beforeRevision = refresh ? null : await sourceRevision(revisionParams);
@@ -717,6 +721,7 @@ export function createDesktopSnapshotFactory({
     const boardTasks = board.snapshot?.() ?? [];
     const archivedWorkspaces = board.archivedWorkspaces?.() ?? [];
     const messageReceipts = desktopMessageReceiptSnapshot();
+    const messagePins = pins.snapshot?.() ?? [];
     const snapshot = {
       apiVersion: protocol,
       workspaces,
@@ -797,6 +802,7 @@ export function createDesktopSnapshotFactory({
       },
       pendingApprovals: approvals.snapshot(),
       messageReceipts,
+      messagePins,
       deferredInputs: [
         ...deferred.pendingValues().map((item) => ({
           id: item.id,
@@ -862,6 +868,7 @@ export function createDesktopSnapshotFactory({
       workspaces: workspaceDelta(workspaces, workspacesVersion),
       boardTasks: boardTaskDelta(boardTasks, boardTasksVersion),
       messageReceipts: messageReceiptDelta(messageReceipts, messageReceiptsVersion),
+      messagePins: messagePinDelta(messagePins, messagePinsVersion),
     } : null;
     const collectionVersions = collectionDeltas ? Object.fromEntries(
       Object.entries(collectionDeltas).map(([name, delta]) => [name, delta.version]),
@@ -870,6 +877,7 @@ export function createDesktopSnapshotFactory({
       workspaces: _workspaces,
       boardTasks: _boardTasks,
       messageReceipts: _messageReceipts,
+      messagePins: _messagePins,
       conversations: _conversations,
       ...transportSnapshot
     } = protocol >= 4 ? snapshot : {};

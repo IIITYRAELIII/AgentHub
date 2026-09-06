@@ -13,6 +13,7 @@ const MUTATION_ACTIONS = Object.freeze([
   "board-task-retry-triage", "board-task-start", "board-column-move", "board-column-comment",
   "board-workspace-move", "usage-sync", "usage-sync-invite", "usage-sync-enroll",
   "usage-sync-device-label",
+  "message-pin-set", "message-pins-clear",
 ]);
 
 const CONCURRENT_MUTATION_ACTIONS = Object.freeze([
@@ -59,6 +60,7 @@ export function createDesktopApplicationRouter({
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
     "boardWorkspaceMove",
     "usageSync", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
+    "messagePinSet", "messagePinsClear",
   ]) requiredFunction(handlers[name], name);
 
   const dispatch = (type, params, context, target) => commands.dispatch(
@@ -112,6 +114,8 @@ export function createDesktopApplicationRouter({
         return handlers.createDevicePairing(params, context);
       },
       "revoke-device": handlers.revokeDevice,
+      "message-pin-set": handlers.messagePinSet,
+      "message-pins-clear": handlers.messagePinsClear,
       "rename-workspace": (params, context) => dispatch("workspace.rename", params, context),
       "update-workspace-settings": (params, context) => dispatch("workspace.settings.update", params, context),
       "move-workspace-to-folder": (params, context) => dispatch("workspace.folder.move", params, context),

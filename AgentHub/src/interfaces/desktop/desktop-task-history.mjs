@@ -23,6 +23,7 @@ import {
 } from "../../domain/interstream-message.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { taskRunIsActive } from "../../domain/task-runs.mjs";
+import { withDurableMessageMetadata } from "../../domain/stream-message-pin.mjs";
 
 const MAX_CACHED_HISTORIES = 12;
 const MAX_CACHED_TURNS_PER_HISTORY = 40;
@@ -741,7 +742,7 @@ export function createDesktopTaskHistoryFactory({
           ?? normalizeInterstreamOrigin(interstreamOriginForClientMessage(promptClientUserMessageId));
         const promptAuthor = interstreamOriginAuthor(promptOrigin)
           || String(item.promptAuthor ?? "").trim();
-        return {
+        const projectedTurn = {
           id: String(item.id ?? ""),
           // Stream history is an aggregate of sequential provider Threads.
           // Preserve each turn's source identity instead of making consumers
@@ -899,6 +900,10 @@ export function createDesktopTaskHistoryFactory({
             });
           })(),
         };
+        return withDurableMessageMetadata(projectedTurn, {
+          provider: itemProvider,
+          threadId: itemThreadId,
+        });
       }),
     };
     const fitted = responseBudget.fit(payload, {
