@@ -2620,6 +2620,17 @@ html[data-surface="mobile"] .eyebrow {
   display: none;
 }
 
+/* В модальных карточках надзаголовок не дублирует нижнюю навигацию, а у
+   карточки Stream он вообще единственное название окна, поэтому на телефоне
+   шапка карточки остаётся подписанной. */
+html[data-surface="mobile"] .dialog-settings-head .eyebrow,
+html[data-surface="mobile"] .workspace-card-modal .eyebrow,
+html[data-surface="mobile"] .workspace-archive-modal .eyebrow,
+html[data-surface="mobile"] .task-card-modal .eyebrow,
+html[data-surface="mobile"] .task-start-modal .eyebrow {
+  display: block;
+}
+
 /* Название раздела на телефоне дублирует подписанную вкладку нижней
    навигации, поэтому из шапки оно убирается визуально, но остаётся в
    структуре страницы для скринридера. */
@@ -4284,7 +4295,29 @@ html[data-view="dashboard"] .task-board-view {
 
 .task-card-modal > footer {
   border-top: 1px solid var(--line);
+  gap: 0.5rem;
   margin-top: 0;
+}
+
+/* Действия футера одного размера; удаление отделено и уходит к правому краю,
+   а при переносе строки остаётся справа, а не повисает под кнопками. */
+.task-card-modal > footer .board-task-quiet,
+.task-card-modal > footer .board-task-remove {
+  border-radius: var(--radius-md);
+  font-size: 0.76rem;
+  padding: 0.48rem 0.6rem;
+}
+
+.task-card-modal > footer .board-task-remove {
+  margin-inline-start: auto;
+}
+
+.task-card-modal > footer > * {
+  min-height: 2.15rem;
+}
+
+.task-card-modal > footer .board-task-destination {
+  flex: 0 1 11rem;
 }
 
 .task-card-modal h2,
@@ -4307,6 +4340,13 @@ html[data-view="dashboard"] .task-board-view {
 .task-card-editor {
   display: grid;
   gap: 0.75rem;
+}
+
+/* Сохранение относится к паре полей выше, а не ко всей карточке, поэтому
+   кнопка не растягивается на всю ширину и не спорит с действиями футера. */
+.task-card-editor > .board-task-primary {
+  justify-self: end;
+  min-height: 2.15rem;
 }
 
 .task-card-editor label {
@@ -4516,6 +4556,10 @@ html[data-view="dashboard"] .task-board-view {
   color: var(--text);
   max-height: min(90dvh, 56rem);
   max-width: 42rem;
+  /* Форма берёт max-height диалога через inherit, поэтому рамка диалога
+     добавляла ровно свои 2px переполнения и рядом с полосой прокрутки полей
+     появлялась вторая, внешняя. Прокручиваются только поля. */
+  overflow: hidden;
   padding: 0;
   width: calc(100% - 2rem);
 }
@@ -4660,7 +4704,23 @@ html[data-view="dashboard"] .task-board-view {
 
 .workspace-card-modal footer {
   border-top: 1px solid var(--line);
+  gap: 0.5rem;
   justify-content: flex-end;
+}
+
+/* «Отмена» остаётся тише «Сохранить», но обе кнопки одного размера. */
+.workspace-card-modal footer button {
+  min-height: 2.15rem;
+}
+
+.workspace-card-modal footer .board-task-quiet {
+  border-radius: var(--radius-md);
+  font-size: 0.76rem;
+  padding: 0.48rem 0.72rem;
+}
+
+.workspace-card-modal footer .board-task-quiet:hover {
+  color: var(--text);
 }
 
 .workspace-card-modal h2,
@@ -4789,18 +4849,32 @@ html[data-view="dashboard"] .task-board-view {
   color: var(--danger);
 }
 
+/* Та же раскладка, что у переключателей ролей Stream: подпись слева,
+   пояснение следом, тумблер прижат к правому краю карточки. */
 .workspace-release-workflow-setting {
   align-items: center;
-  display: flex;
+  display: grid;
   gap: 0.55rem;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   position: relative;
 }
 
 .workspace-release-workflow-switch {
-  align-items: center;
   cursor: pointer;
-  display: flex !important;
-  gap: 0.6rem !important;
+  display: contents !important;
+}
+
+.workspace-release-workflow-switch .switch-text {
+  grid-area: 1 / 1;
+}
+
+.workspace-release-workflow-help-popover {
+  grid-area: 1 / 2;
+}
+
+.workspace-release-workflow-switch .switch-track {
+  grid-area: 1 / 3;
+  justify-self: end;
 }
 
 .workspace-release-workflow-help-popover {
@@ -4870,10 +4944,30 @@ html[data-view="dashboard"] .task-board-view {
   gap: 0.35rem;
 }
 
+/* Подпись, знак вопроса и тумблер — ячейки одной строки, поэтому тумблеры
+   ролей стоят на той же вертикали, что «Автоподтверждение» над ними. */
 .stream-role-setting-heading {
   align-items: center;
-  display: flex;
+  display: grid;
   gap: 0.45rem;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.stream-role-setting-heading .setting-switch {
+  display: contents;
+}
+
+.stream-role-setting-heading .switch-text {
+  grid-area: 1 / 1;
+}
+
+.stream-role-setting-heading .stream-role-help-popover {
+  grid-area: 1 / 2;
+}
+
+.stream-role-setting-heading .switch-track {
+  grid-area: 1 / 3;
+  justify-self: end;
 }
 
 .stream-role-help-popover {
@@ -4942,8 +5036,14 @@ html[data-view="dashboard"] .task-board-view {
   margin: 0;
 }
 
+/* Короткие значения не растягиваются на всю карточку: поле по длине данных
+   читается как короткое, а не как ещё одна строка полной ширины. */
 .workspace-card-fields input[type="number"] {
   max-width: 8rem;
+}
+
+.workspace-card-fields [data-workspace-card-task-prefix] {
+  max-width: 12rem;
 }
 
 .workspace-card-fields input:disabled {
@@ -7297,6 +7397,10 @@ html[data-surface="mobile"]
 }
 
 .dialog-settings {
+  /* Общая мера правой колонки карточки: чип агента, селекты и тумблеры
+     выстраиваются по одному левому и правому краю. */
+  --dialog-control-width: 13rem;
+  --dialog-control-height: 2.125rem;
   background:
     radial-gradient(120% 60% at 90% -20%, var(--space-glow-a), transparent 60%),
     color-mix(in srgb, var(--space-base) 96%, transparent);
@@ -7341,13 +7445,42 @@ html[data-surface="mobile"]
   padding: 0.85rem 0.8rem max(1rem, env(safe-area-inset-bottom));
 }
 
+/* Подпись и счётчик — одна строка формата «название — значение», как у
+   соседних настроек; редактор и кнопка занимают полную ширину под ней. */
 .quick-messages-editor {
+  align-items: center;
+  column-gap: 0.7rem;
   display: grid;
-  gap: 0.55rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  row-gap: 0.55rem;
+}
+
+.quick-messages-editor > .setting-name {
+  grid-column: 1;
+}
+
+.quick-messages-editor > .setting-value {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  grid-column: 2;
+  justify-self: end;
 }
 
 .quick-messages-editor-controls {
   display: contents;
+}
+
+.quick-messages-editor .quick-message-editor-rows {
+  grid-column: 1 / -1;
+}
+
+.quick-messages-editor .quick-message-editor-rows:empty {
+  display: none;
+}
+
+.quick-messages-editor [data-quick-message-add] {
+  grid-column: 1 / -1;
+  justify-self: start;
 }
 
 .quick-message-editor-rows {
@@ -7397,6 +7530,18 @@ html[data-surface="mobile"]
   align-items: stretch;
   display: grid;
   gap: 0.55rem;
+}
+
+/* Все действия одной высоты, а необратимое отделено от обычных пропуском. */
+.stream-card-actions .chip-button {
+  justify-content: center;
+  min-height: 2.45rem;
+}
+
+.stream-card-actions .stream-card-archive {
+  border-radius: var(--radius-chip);
+  font-size: 0.76rem;
+  margin-top: 0.45rem;
 }
 
 .stream-agent-rules {
@@ -7473,10 +7618,21 @@ html[data-surface="mobile"]
   grid-template-columns: minmax(0, auto) minmax(0, 1fr);
 }
 
+/* Чипы агента занимают ту же колонку, что селекты соседних строк: ширина
+   и высота контролов карточки общие, иначе строка «Агент» выпадала из ряда. */
 .dialog-agent-options {
-  grid-template-columns: repeat(auto-fit, minmax(5.8rem, auto));
-  justify-content: end;
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+  justify-content: stretch;
   justify-self: end;
+  max-width: var(--dialog-control-width);
+  width: 100%;
+}
+
+.dialog-agent-options .option-chip {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+  min-height: var(--dialog-control-height);
 }
 
 .dialog-agent {
@@ -9675,7 +9831,7 @@ html[data-surface="mobile"] .chat-stop-bottom > span {
 }
 
 .dialog-settings .setting-row > .themed-select {
-  max-width: 13rem;
+  max-width: var(--dialog-control-width);
 }
 
 .theme-picker .themed-select,
