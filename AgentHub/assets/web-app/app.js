@@ -149,6 +149,18 @@ const streamHeaderModelSeparator = document.querySelector("[data-stream-header-m
 const streamHeaderBranch = document.querySelector("[data-stream-header-branch]");
 const streamHeaderBranchSeparator = document.querySelector("[data-stream-header-branch-separator]");
 const streamHeaderMessageCount = document.querySelector("[data-stream-header-message-count]");
+const messagePinShelf = document.querySelector("[data-message-pin-shelf]");
+const messagePinCurrent = document.querySelector("[data-message-pin-current]");
+const messagePinPosition = document.querySelector("[data-message-pin-position]");
+const messagePinPrevious = document.querySelector("[data-message-pin-previous]");
+const messagePinNext = document.querySelector("[data-message-pin-next]");
+const messagePinsOpen = document.querySelector("[data-message-pins-open]");
+const messagePinStatus = document.querySelector("[data-message-pin-status]");
+const messagePinsModal = document.querySelector("[data-message-pins-modal]");
+const messagePinsList = document.querySelector("[data-message-pins-list]");
+const messagePinsClear = document.querySelector("[data-message-pins-clear]");
+const messagePinsClearModal = document.querySelector("[data-message-pins-clear-modal]");
+const messagePinsClearCopy = document.querySelector("[data-message-pins-clear-copy]");
 const chatEmpty = document.querySelector("[data-chat-empty]");
 const chatEmptyText = document.querySelector("[data-chat-empty-text]");
 const chatScroll = document.querySelector("[data-chat-scroll]");
@@ -1271,9 +1283,19 @@ function refreshTaskDurations() {
 }
 
 let toastTimer = 0;
-function showToast(message) {
+function showToast(message, action = null) {
   if (!message) return;
-  toast.textContent = message;
+  toast.replaceChildren(el("span", { text: message }));
+  if (action?.label && typeof action.onClick === "function") {
+    const button = el("button", { type: "button", text: action.label });
+    button.addEventListener("click", () => {
+      clearTimeout(toastTimer);
+      toast.hidden = true;
+      toast.classList.remove("visible");
+      action.onClick();
+    }, { once: true });
+    toast.append(button);
+  }
   toast.hidden = false;
   toast.classList.add("visible");
   clearTimeout(toastTimer);
@@ -1360,6 +1382,10 @@ const state = {
   collapsedWorkspaceFolders: new Set(),
   workspaceFolderNames: new Set(),
   visibleStreamTaskIds: [],
+  messagePins: [],
+  activeMessagePinByStream: new Map(),
+  pendingMessagePinKeys: new Set(),
+  messagePinMutationBackups: new Map(),
 };
 let transientAnswerArrivalTaskIds = new Set();
 const observedAnswerFinalIdentityByTaskId = new Map();
@@ -1509,6 +1535,219 @@ function persistDrafts() {
 function currentTask() {
   return state.tasks.find((task) => task.id === state.selectedId) ?? null;
 }
+
+function pinsForTask(task = currentTask()) {
+  const streamId = String(task?.streamId ?? "").trim();
+  return streamId ? state.messagePins.filter((pin) => pin.streamId === streamId) : [];
+}
+
+function activePinForTask(task = currentTask()) {
+  const pins = pinsForTask(task);
+  if (!pins.length) return null;
+  const streamId = String(task.streamId);
+  const selectedPinId = state.activeMessagePinByStream.get(streamId);
+  const index = Math.max(0, pins.findIndex((pin) => pin.id === selectedPinId));
+  const pin = pins[index] ?? pins[0];
+  state.activeMessagePinByStream.set(streamId, pin.id);
+  return { pin, pins, index };
+}
+
+function pinMetaLabel(pin) {
+  const role = pin?.role === "user" ? "Вы" : String(pin?.author ?? "Агент").trim() || "Агент";
+  const timestamp = MessageView.messageTimestampLabel(pin?.time);
+  return [role, timestamp].filter(Boolean).join(" · ");
+}
+
+function messagePinIcon(name, className = "") {
+  return window.AgentHubStreamTabs.createPhosphorIcon(document, name, className);
+}
+
+function jumpToMessagePin(pin) {
+  if (!pin?.available) return;
+  emit("message-pin:open", { pin });
+}
+
+function setActiveMessagePin(indexDelta) {
+  const current = activePinForTask();
+  if (!current || current.pins.length < 2) return;
+  const index = (current.index + indexDelta + current.pins.length) % current.pins.length;
+  state.activeMessagePinByStream.set(current.pin.streamId, current.pins[index].id);
+  renderMessagePinShelf();
+}
+
+function renderMessagePinShelf() {
+  if (!messagePinShelf) return;
+  const current = activePinForTask();
+  messagePinShelf.hidden = !current;
+  if (!current) return;
+  const { pin, pins, index } = current;
+  messagePinCurrent.replaceChildren(
+    el("span", { class: "message-pin-current-meta", text: pinMetaLabel(pin) }),
+    el("span", {
+      class: "message-pin-current-preview",
+      text: pin.available ? pin.preview : `Недоступно · ${pin.preview}`,
+    }),
+  );
+  messagePinCurrent.disabled = !pin.available;
+  messagePinCurrent.title = pin.available ? "Перейти к сообщению" : "Исходное сообщение недоступно";
+  messagePinPosition.textContent = `${index + 1} из ${pins.length}`;
+  messagePinPrevious.disabled = pins.length < 2;
+  messagePinNext.disabled = pins.length < 2;
+  messagePinStatus.textContent = pin.available
+    ? `Закреплённое сообщение ${index + 1} из ${pins.length}`
+    : `Закреплённое сообщение ${index + 1} из ${pins.length} недоступно`;
+}
+
+function closeMessagePins() {
+  messagePinsModal?.close();
+  messagePinsOpen?.focus({ preventScroll: true });
+}
+
+function renderMessagePinsList() {
+  if (!messagePinsList) return;
+  const pins = pinsForTask();
+  messagePinsList.replaceChildren(...pins.map((pin) => {
+    const pending = state.pendingMessagePinKeys.has(pin.messageKey);
+    const row = el("article", {
+      class: "message-pin-row",
+      "data-message-pin-id": pin.id,
+      ...(pin.available ? {} : { "data-unavailable": "" }),
+    });
+    row.append(
+      el("div", { class: "message-pin-row-copy" }, [
+        el("span", { class: "message-pin-row-meta", text: pinMetaLabel(pin) }),
+        el("p", { text: pin.preview }),
+        pin.available ? null : el("span", { class: "message-pin-unavailable", text: "Исходное сообщение недоступно" }),
+      ]),
+      el("div", { class: "message-pin-row-actions" }, [
+        el("button", {
+          type: "button",
+          class: "chip-button",
+          text: "Перейти",
+          disabled: !pin.available,
+          "data-message-pin-jump": pin.id,
+        }),
+        el("button", {
+          type: "button",
+          class: "chip-button ghost",
+          text: "Открепить",
+          disabled: pending,
+          "data-message-pin-remove": pin.id,
+        }),
+      ]),
+    );
+    return row;
+  }));
+  messagePinsClear.disabled = pins.length === 0;
+}
+
+function openMessagePins() {
+  renderMessagePinsList();
+  const mobileSheet = surface === "mobile" || window.innerWidth <= 760;
+  if (messagePinsModal && !mobileSheet && messagePinShelf) {
+    const rect = messagePinShelf.getBoundingClientRect();
+    const width = Math.min(620, window.innerWidth - 32);
+    messagePinsModal.style.left = `${Math.max(16, Math.min(window.innerWidth - width - 16, rect.right - width))}px`;
+    messagePinsModal.style.top = `${Math.min(window.innerHeight - 160, rect.bottom + 6)}px`;
+  } else {
+    messagePinsModal?.style.removeProperty("left");
+    messagePinsModal?.style.removeProperty("top");
+  }
+  messagePinsModal?.showModal();
+}
+
+function requestMessagePinChange({ message = null, pin = null, pinned, undoToken = "" }) {
+  const task = currentTask();
+  const streamId = String(task?.streamId ?? pin?.streamId ?? "").trim();
+  const messageKey = String(message?.messageKey ?? pin?.messageKey ?? "").trim();
+  if (!streamId || (!messageKey && !undoToken)) return;
+  const mutationId = crypto.randomUUID();
+  const previous = state.messagePins.slice();
+  state.messagePinMutationBackups.set(mutationId, { pins: previous, messageKey });
+  if (pinned && !undoToken) {
+    state.messagePins = [{
+      id: `optimistic:${mutationId}`,
+      streamId,
+      messageKey,
+      provider: message.provider ?? task.provider,
+      taskThreadId: message.threadId ?? task.threadId,
+      turnThreadId: message.threadId ?? task.threadId,
+      turnId: message.turnId,
+      itemId: message.itemId,
+      role: message.role,
+      preview: String(message.text ?? "").replace(/\s+/gu, " ").trim().slice(0, 320),
+      author: message.author ?? "",
+      time: message.time ?? null,
+      pinnedAt: new Date().toISOString(),
+      available: true,
+    }, ...state.messagePins];
+  } else if (!undoToken) {
+    state.messagePins = state.messagePins.filter((candidate) => candidate.id !== pin?.id);
+  }
+  if (messageKey) state.pendingMessagePinKeys.add(messageKey);
+  renderMessagePinShelf();
+  renderMessagePinsList();
+  renderMessages({ preserveTop: true });
+  emit("message-pin:set", {
+    mutationId,
+    pinned,
+    streamId,
+    pinId: pin?.id,
+    messageKey,
+    undoToken,
+    provider: message?.provider,
+    taskThreadId: message?.threadId,
+    turnId: message?.turnId,
+    itemId: message?.itemId,
+    role: message?.role,
+  });
+}
+
+messagePinPrevious?.replaceChildren(messagePinIcon("caret-left"));
+messagePinNext?.replaceChildren(messagePinIcon("caret-right"));
+messagePinsOpen?.replaceChildren(messagePinIcon("list-bullets"));
+messagePinCurrent?.addEventListener("click", () => jumpToMessagePin(activePinForTask()?.pin));
+messagePinPrevious?.addEventListener("click", () => setActiveMessagePin(-1));
+messagePinNext?.addEventListener("click", () => setActiveMessagePin(1));
+messagePinsOpen?.addEventListener("click", openMessagePins);
+document.querySelector("[data-message-pins-close]")?.addEventListener("click", closeMessagePins);
+modalOverlays?.installDismissibleOverlay({ dialog: messagePinsModal, close: closeMessagePins });
+messagePinsList?.addEventListener("click", (event) => {
+  const jump = event.target.closest("[data-message-pin-jump]");
+  const remove = event.target.closest("[data-message-pin-remove]");
+  const pinId = String(jump?.dataset.messagePinJump ?? remove?.dataset.messagePinRemove ?? "");
+  const pin = state.messagePins.find((candidate) => candidate.id === pinId);
+  if (!pin) return;
+  if (jump) {
+    closeMessagePins();
+    jumpToMessagePin(pin);
+  } else requestMessagePinChange({ pin, pinned: false });
+});
+messagePinsClear?.addEventListener("click", () => {
+  const count = pinsForTask().length;
+  if (!count) return;
+  messagePinsClearCopy.textContent = `${count} закреплённых сообщений будут откреплены.`;
+  messagePinsClearModal?.showModal();
+});
+function closeMessagePinsClear() {
+  messagePinsClearModal?.close();
+  messagePinsClear?.focus({ preventScroll: true });
+}
+document.querySelector("[data-message-pins-clear-cancel]")?.addEventListener("click", closeMessagePinsClear);
+modalOverlays?.installDismissibleOverlay({ dialog: messagePinsClearModal, close: closeMessagePinsClear });
+document.querySelector("[data-message-pins-clear-confirm]")?.addEventListener("click", () => {
+  const task = currentTask();
+  const streamId = String(task?.streamId ?? "").trim();
+  if (!streamId) return;
+  const mutationId = crypto.randomUUID();
+  state.messagePinMutationBackups.set(mutationId, { pins: state.messagePins.slice(), messageKey: "" });
+  state.messagePins = state.messagePins.filter((pin) => pin.streamId !== streamId);
+  closeMessagePinsClear();
+  closeMessagePins();
+  renderMessagePinShelf();
+  renderMessages({ preserveTop: true });
+  emit("message-pins:clear", { mutationId, streamId });
+});
 
 function streamKey(task) {
   return String(task?.streamId ?? "").trim()
@@ -2995,7 +3234,24 @@ function renderStreamChatPreview(task) {
   if (!queue.hidden) log.append(queue);
   scroll.append(log);
   const scrollDown = createChatScrollDownButton(scroll, task);
-  preview.append(head, scroll, scrollDown);
+  const previewPins = pinsForTask(task);
+  const pin = previewPins[0];
+  const shelf = pin ? el("button", {
+    type: "button",
+    class: "message-pin-shelf stream-chat-preview-pins",
+    title: pin.available ? "Перейти к закреплённому сообщению" : "Исходное сообщение недоступно",
+    disabled: !pin.available,
+  }, [
+    messagePinIcon("push-pin-simple", "message-pin-shelf-icon"),
+    el("span", { class: "message-pin-current-preview", text: pin.preview }),
+    el("span", { class: "message-pin-position", text: `1 из ${previewPins.length}` }),
+  ]) : null;
+  shelf?.addEventListener("click", () => {
+    selectTaskFromUi(task.id);
+    state.activeMessagePinByStream.set(String(task.streamId), pin.id);
+    jumpToMessagePin(pin);
+  });
+  preview.append(head, ...(shelf ? [shelf] : []), scroll, scrollDown);
   window.requestAnimationFrame(() => {
     chatScrollControllers.get(scroll)?.pinNow();
   });
@@ -4327,6 +4583,7 @@ function renderChat() {
     streamChatColumns?.removeAttribute("data-multi-stream");
     publishVisibleStreamTasks([]);
     renderStreamChatHeader(null);
+    renderMessagePinShelf();
     renderComposerQuickMessages();
     setDialogSettingsOpen(false);
     return;
@@ -4340,6 +4597,7 @@ function renderChat() {
 
   renderDialogSettings();
   renderStreamChatHeader(task);
+  renderMessagePinShelf();
   for (const stop of chatStops) stop.hidden = !task.running;
   renderContextUsage(task);
   renderStreamTabs();
@@ -4994,6 +5252,7 @@ function renderMessages({
     });
   }
   scheduleUserMessageDisclosureSync(prependedNodes);
+  syncMessagePinActions();
   if (anchor) {
     restoreChatAnchor(anchor);
     scrollController?.addUnread(newTailMessages);
@@ -5589,13 +5848,15 @@ function turnTraceNode(groups) {
   ]);
 }
 
-function messageActionButton({ icon, label, action, onClick }) {
+function messageActionButton({ icon, label, action, onClick, pressed = null, disabled = false }) {
   const button = el("button", {
     type: "button",
     class: "msg-action",
     title: label,
     "aria-label": `${label} сообщение`,
     [`data-message-${action}`]: "",
+    ...(pressed === null ? {} : { "aria-pressed": String(pressed) }),
+    disabled,
   }, [
     window.AgentHubStreamTabs.createPhosphorIcon(document, icon, "msg-action-icon"),
     el("span", { text: label }),
@@ -5640,6 +5901,21 @@ function renderMessageActions(message, role) {
     action: "copy",
     onClick: () => emit("clipboard:write", request),
   }));
+  if (message.pinEligible === true && message.messageKey) {
+    const pin = pinsForTask().find((candidate) => candidate.messageKey === message.messageKey);
+    const pinned = Boolean(pin);
+    actions.push(messageActionButton({
+      icon: "push-pin-simple",
+      label: pinned ? "Открепить" : "Закрепить",
+      action: "pin",
+      pressed: pinned,
+      disabled: state.pendingMessagePinKeys.has(message.messageKey),
+      onClick: () => {
+        const currentPin = pinsForTask().find((candidate) => candidate.messageKey === message.messageKey);
+        requestMessagePinChange({ message, pin: currentPin, pinned: !currentPin });
+      },
+    }));
+  }
   if (role === "user") actions.push(messageActionButton({
     icon: "pencil-simple",
     label: "Редактировать",
@@ -5655,6 +5931,21 @@ function renderMessageActions(message, role) {
   return actions.length ? el("div", { class: "msg-actions" }, actions) : null;
 }
 
+function syncMessagePinActions() {
+  for (const button of chatLog.querySelectorAll("[data-message-pin]")) {
+    const article = button.closest(".msg-stack")?.querySelector("[data-message-key]");
+    const messageKey = String(article?.dataset.messageKey ?? "");
+    const pinned = pinsForTask().some((pin) => pin.messageKey === messageKey);
+    const label = pinned ? "Открепить" : "Закрепить";
+    button.setAttribute("aria-pressed", String(pinned));
+    button.setAttribute("aria-label", `${label} сообщение`);
+    button.title = label;
+    button.disabled = state.pendingMessagePinKeys.has(messageKey);
+    const caption = button.querySelector("span");
+    if (caption) caption.textContent = label;
+  }
+}
+
 function renderMessage(message, { readOnly = false, task = currentTask() } = {}) {
   const role = message.role === "user" ? "user" : message.role === "system" ? "system" : "agent";
   const maintenance = role === "system" && message.kind === "maintenance";
@@ -5666,6 +5957,7 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
     "data-message-id": message.id ?? "",
     "data-turn-id": message.turnId ?? "",
     "data-item-id": message.itemId ?? "",
+    "data-message-key": message.messageKey ?? "",
     "data-delivery-state": message.deliveryState ?? "",
     "data-provider": String(task?.provider ?? "none"),
     ...(subagent ? { "data-subagent-response": true } : {}),
@@ -8810,6 +9102,46 @@ const AgentHub = {
     state.workspaceMessageSearch.error = String(message ?? "Не удалось выполнить поиск");
     renderWorkspaceMessageSearch();
   },
+  setMessagePins(pins) {
+    const next = Array.isArray(pins) ? pins.slice() : [];
+    if (sameData(state.messagePins, next)) return;
+    state.messagePins = next;
+    for (const [streamId, pinId] of state.activeMessagePinByStream) {
+      if (!next.some((pin) => pin.streamId === streamId && pin.id === pinId)) {
+        state.activeMessagePinByStream.delete(streamId);
+      }
+    }
+    renderMessagePinShelf();
+    renderMessagePinsList();
+    renderMessages({ preserveTop: true });
+    renderStreamChatDeck({ force: true });
+  },
+  completeMessagePinMutation(mutationId, result = {}) {
+    const backup = state.messagePinMutationBackups.get(mutationId);
+    if (!backup) return;
+    state.messagePinMutationBackups.delete(mutationId);
+    if (backup.messageKey) state.pendingMessagePinKeys.delete(backup.messageKey);
+    if (result.error) {
+      state.messagePins = backup.pins;
+      showToast(String(result.error));
+    } else if (Array.isArray(result.messagePins)) {
+      state.messagePins = result.messagePins;
+      if (result.undoToken && result.removedPin) {
+        showToast("Сообщение откреплено", {
+          label: "Отменить",
+          onClick: () => requestMessagePinChange({
+            pin: result.removedPin,
+            pinned: true,
+            undoToken: result.undoToken,
+          }),
+        });
+      }
+    }
+    renderMessagePinShelf();
+    renderMessagePinsList();
+    renderMessages({ preserveTop: true });
+    renderStreamChatDeck({ force: true });
+  },
   openWorkspaceMessageSearch,
   closeWorkspaceMessageSearch,
   focusMessage({ turnId, itemId } = {}) {
@@ -8818,12 +9150,17 @@ const AgentHub = {
       && String(node.dataset.itemId ?? "") === String(itemId ?? "")
     ));
     if (!target) return false;
-    chatLog.querySelectorAll("[data-search-match]").forEach((node) => {
+    chatLog.querySelectorAll("[data-search-match], [data-pin-highlight]").forEach((node) => {
       node.removeAttribute("data-search-match");
+      node.removeAttribute("data-pin-highlight");
     });
-    target.setAttribute("data-search-match", "");
-    target.scrollIntoView({ block: "center", behavior: "smooth" });
-    window.setTimeout(() => target.removeAttribute("data-search-match"), 4_000);
+    target.setAttribute("data-pin-highlight", "");
+    target.tabIndex = -1;
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    target.scrollIntoView({ block: "center", behavior: reducedMotion ? "auto" : "smooth" });
+    target.focus({ preventScroll: true });
+    if (messagePinStatus) messagePinStatus.textContent = "Закреплённое сообщение показано";
+    window.setTimeout(() => target.removeAttribute("data-pin-highlight"), 4_000);
     return true;
   },
   /** running=true подсвечивает индикатор и показывает «Стоп». */

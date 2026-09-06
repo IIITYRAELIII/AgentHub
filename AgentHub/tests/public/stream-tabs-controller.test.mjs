@@ -473,14 +473,17 @@ test("every production Phosphor icon creates a real namespaced SVG", async () =>
     "arrow-clockwise",
     "arrows-down-up",
     "caret-down",
+    "caret-left",
     "caret-right",
     "caret-up",
     "clock-counter-clockwise",
     "copy",
     "folder",
+    "list-bullets",
     "pencil-simple",
     "plus",
     "push-pin-simple",
+    "trash",
   ]) {
     const icon = createPhosphorIcon(document, name, "stream-order-icon");
     assert.equal(icon.namespaceURI, "http://www.w3.org/2000/svg");

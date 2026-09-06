@@ -11,6 +11,10 @@ import {
 } from "../../domain/interstream-message.mjs";
 import { normalizedCodexResponseAnnotationReferences } from "../../domain/codex-response-annotation.mjs";
 import { normalizedResponseAnnotations } from "../../domain/response-annotation-source.mjs";
+import {
+  indexedDurableMessageMetadata,
+  withDurableMessageMetadata,
+} from "../../domain/stream-message-pin.mjs";
 
 const FORMAT_VERSION = 1;
 const TASK_SCHEMA_VERSION = 9;
@@ -1120,26 +1124,26 @@ export class LocalTaskSyncStore {
     }
     return turns.map((row) => {
       const promptOrigin = parseInterstreamOrigin(row.prompt_origin_json);
-      return {
-      id: String(row.id ?? ""),
-      prompt: String(row.prompt ?? ""),
-      ...(row.prompt_author ? { promptAuthor: String(row.prompt_author) } : {}),
-      ...(promptOrigin ? { promptOrigin } : {}),
-      answer: String(row.answer ?? ""),
-      status: String(row.status ?? ""),
-      active: Number(row.active) === 1,
-      completed: Number(row.completed) === 1,
-      ...(row.started_at ? { startedAt: String(row.started_at) } : {}),
-      ...(row.completed_at ? { completedAt: String(row.completed_at) } : {}),
-      promptAnnotations: cleanResponseAnnotations(parseJsonArray(row.prompt_annotations_json)),
-      ...(row.prompt_request ? { promptRequest: String(row.prompt_request) } : {}),
-      attachments: parseJsonArray(row.attachments_json),
-      activities: parseJsonArray(row.activities_json),
-      ...(parseJsonArray(row.activity_groups_json).length
-        ? { activityGroups: parseJsonArray(row.activity_groups_json) }
-        : {}),
-      messages: messagesByTurn.get(`${row.provider}\0${row.thread_id}\0${Number(row.position)}`) ?? [],
-      };
+      return withDurableMessageMetadata({
+        id: String(row.id ?? ""),
+        prompt: String(row.prompt ?? ""),
+        ...(row.prompt_author ? { promptAuthor: String(row.prompt_author) } : {}),
+        ...(promptOrigin ? { promptOrigin } : {}),
+        answer: String(row.answer ?? ""),
+        status: String(row.status ?? ""),
+        active: Number(row.active) === 1,
+        completed: Number(row.completed) === 1,
+        ...(row.started_at ? { startedAt: String(row.started_at) } : {}),
+        ...(row.completed_at ? { completedAt: String(row.completed_at) } : {}),
+        promptAnnotations: cleanResponseAnnotations(parseJsonArray(row.prompt_annotations_json)),
+        ...(row.prompt_request ? { promptRequest: String(row.prompt_request) } : {}),
+        attachments: parseJsonArray(row.attachments_json),
+        activities: parseJsonArray(row.activities_json),
+        ...(parseJsonArray(row.activity_groups_json).length
+          ? { activityGroups: parseJsonArray(row.activity_groups_json) }
+          : {}),
+        messages: messagesByTurn.get(`${row.provider}\0${row.thread_id}\0${Number(row.position)}`) ?? [],
+      }, { provider: row.provider, threadId: row.thread_id });
     });
   }
 
@@ -1950,7 +1954,7 @@ export class LocalTaskSyncStore {
       cleanText(itemId, 200),
     );
     if (!row) return null;
-    return {
+    const value = {
       provider: String(row.provider),
       threadId: String(row.thread_id),
       turnThreadId: String(row.turn_thread_id),
@@ -1962,6 +1966,44 @@ export class LocalTaskSyncStore {
       attachmentNames: String(row.attachment_names ?? "").split(/\s*\n\s*/u).filter(Boolean),
       occurredAt: row.occurred_at ? String(row.occurred_at) : null,
     };
+    return { ...value, ...indexedDurableMessageMetadata(value) };
+  }
+
+  durableMessageCandidate({ provider, threadId, turnId, itemId, role } = {}) {
+    const normalizedProvider = cleanText(provider, 20).toLowerCase();
+    const normalizedThreadId = cleanText(threadId, 100);
+    const normalizedTurnId = cleanText(turnId, 100);
+    const normalizedItemId = cleanText(itemId, 200);
+    const normalizedRole = cleanText(role, 20);
+    const row = this.#database.prepare(`
+      SELECT * FROM task_read_model_turns
+      WHERE provider = ? AND thread_id = ? AND id = ?
+      ORDER BY position DESC LIMIT 1
+    `).get(normalizedProvider, normalizedThreadId, normalizedTurnId);
+    if (row) {
+      const turn = this.#hydrateHistoryRows([row])[0];
+      const message = turn?.messages?.find((candidate) => (
+        String(candidate?.itemId ?? "") === normalizedItemId
+        && String(candidate?.role ?? "") === normalizedRole
+      ));
+      if (message) {
+        return {
+          provider: normalizedProvider,
+          threadId: normalizedThreadId,
+          turnThreadId: normalizedThreadId,
+          turnId: normalizedTurnId,
+          ...message,
+          occurredAt: message.time ?? (message.role === "user" ? turn.startedAt : turn.completedAt) ?? null,
+        };
+      }
+    }
+    const indexed = this.searchMessage({
+      provider: normalizedProvider,
+      threadId: normalizedThreadId,
+      turnId: normalizedTurnId,
+      itemId: normalizedItemId,
+    });
+    return indexed?.role === normalizedRole ? indexed : null;
   }
 
   messageSearchStatus(references = []) {

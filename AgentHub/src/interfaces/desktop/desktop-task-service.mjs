@@ -291,6 +291,13 @@ export class DesktopTaskService {
           itemId: indexedMessage.itemId,
           role: indexedMessage.role,
           text: indexedMessage.text,
+          messageKey: indexedMessage.messageKey,
+          sourceAlias: indexedMessage.sourceAlias,
+          semanticSlot: indexedMessage.semanticSlot,
+          pinEligible: indexedMessage.pinEligible === true,
+          ...(indexedMessage.clientUserMessageId
+            ? { clientUserMessageId: indexedMessage.clientUserMessageId }
+            : {}),
           ...(indexedMessage.author ? { author: indexedMessage.author } : {}),
           time: indexedMessage.occurredAt,
           attachments: indexedMessage.attachmentNames.map((name) => ({ name })),

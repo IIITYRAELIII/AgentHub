@@ -104,6 +104,7 @@ function fixture(overrides = {}) {
     pending: [],
     queued: [],
     receipts: [],
+    messagePins: [],
     revision: "initial",
     snapshotBuilds: 0,
     boardSnapshotBuilds: 0,
@@ -233,6 +234,9 @@ function fixture(overrides = {}) {
       recent: () => state.receipts,
       forMessage: overrides.receiptForMessage ?? (() => null),
       forTurn: overrides.receiptsForTurn ?? (() => []),
+    },
+    pins: {
+      snapshot: () => state.messagePins,
     },
     approvals: {
       snapshot: () => [{ id: "approval-1" }],
@@ -552,6 +556,19 @@ test("desktop snapshot exposes bounded delivery receipts for client reconciliati
     responseAnnotationRequest: "",
     attachments: [],
   }]);
+});
+
+test("desktop snapshot exposes durable Stream message pins", async () => {
+  const { desktopSnapshot, state } = fixture();
+  state.messagePins = [{
+    id: "pin-1",
+    streamId: "stream-1",
+    messageKey: "message:v1:answer",
+    preview: "Точный ответ",
+    available: true,
+  }];
+  const snapshot = await desktopSnapshot({ snapshotProtocol: 4 });
+  assert.deepEqual(snapshot.collectionDeltas.messagePins.reset, state.messagePins);
 });
 
 test("desktopContextSnapshot marks a completed compaction until fresh usage arrives", () => {
@@ -1414,6 +1431,7 @@ test("snapshot protocol v4 renames conversations and sends collection deltas", a
     workspacesVersion: first.collectionDeltas.workspaces.version,
     boardTasksVersion: "",
     messageReceiptsVersion: first.collectionDeltas.messageReceipts.version,
+    messagePinsVersion: first.collectionDeltas.messagePins.version,
   });
   assert.notEqual(recovered.notModified, true);
   assert.deepEqual(recovered.collectionDeltas.boardTasks.reset, [{
@@ -1434,6 +1452,7 @@ test("snapshot protocol v4 renames conversations and sends collection deltas", a
     workspacesVersion: first.collectionDeltas.workspaces.version,
     boardTasksVersion: first.collectionDeltas.boardTasks.version,
     messageReceiptsVersion: first.collectionDeltas.messageReceipts.version,
+    messagePinsVersion: first.collectionDeltas.messagePins.version,
   });
 
   assert.equal(next.collectionDeltas.workspaces.reset, undefined);
@@ -1463,6 +1482,7 @@ test("unchanged snapshot reports a measured revision cache hit", async () => {
     workspacesVersion: first.collectionDeltas.workspaces.version,
     boardTasksVersion: first.collectionDeltas.boardTasks.version,
     messageReceiptsVersion: first.collectionDeltas.messageReceipts.version,
+    messagePinsVersion: first.collectionDeltas.messagePins.version,
   });
   assert.equal(unchanged.notModified, true);
   assert.equal(unchanged.snapshotTiming.cacheHit, true);

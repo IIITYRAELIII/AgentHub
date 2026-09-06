@@ -138,6 +138,9 @@ export function createDesktopReadSystemWiring({
         forTurn: services.receiptsForTurn,
         recent: services.recentReceipts,
       },
+      pins: {
+        snapshot: services.messagePinsSnapshot,
+      },
       approvals: {
         snapshot: services.approvalSnapshot,
       },

@@ -43,6 +43,54 @@ const USER_ANNOTATION_SOURCE = {
   surfaceIndex: 0,
 };
 
+test("task read model resolves exact durable pin candidates", async (t) => {
+  const filePath = await storeFile();
+  const store = new LocalTaskSyncStore({ filePath });
+  await store.load();
+  t.after(async () => {
+    store.close();
+    await rm(path.dirname(filePath), { recursive: true, force: true });
+  });
+  store.recordHistory(task, [{
+    id: "turn-pinned",
+    status: "completed",
+    completed: true,
+    startedAt: "2026-09-06T10:00:00.000Z",
+    completedAt: "2026-09-06T10:01:00.000Z",
+    messages: [
+      { itemId: "user-pinned", role: "user", clientUserMessageId: "command-pinned", text: "Сделай" },
+      { itemId: "agent-progress", role: "agent", text: "Делаю" },
+      { itemId: "agent-pinned", role: "agent", text: "Готово" },
+    ],
+  }], {}, Date.now());
+
+  const user = store.durableMessageCandidate({
+    provider: task.provider,
+    threadId: task.threadId,
+    turnId: "turn-pinned",
+    itemId: "user-pinned",
+    role: "user",
+  });
+  const progress = store.durableMessageCandidate({
+    provider: task.provider,
+    threadId: task.threadId,
+    turnId: "turn-pinned",
+    itemId: "agent-progress",
+    role: "agent",
+  });
+  const answer = store.durableMessageCandidate({
+    provider: task.provider,
+    threadId: task.threadId,
+    turnId: "turn-pinned",
+    itemId: "agent-pinned",
+    role: "agent",
+  });
+  assert.equal(user.pinEligible, true);
+  assert.equal(progress.pinEligible, false);
+  assert.equal(answer.pinEligible, true);
+  assert.notEqual(user.messageKey, answer.messageKey);
+});
+
 async function storeFile() {
   const directory = await mkdtemp(path.join(os.tmpdir(), "telegram-task-sync-"));
   return path.join(directory, "task-sync.json");

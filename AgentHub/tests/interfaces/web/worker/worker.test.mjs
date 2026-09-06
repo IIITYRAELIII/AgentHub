@@ -1110,6 +1110,16 @@ test("Worker relay rejects unsupported actions, attachments, and unsigned servic
   });
 
   assert.deepEqual(workerModule.validateControlCommand({
+    id: "018f6c86-3f34-7a31-8f27-16f5b96cce16",
+    action: "message-pin-set",
+    params: { streamId: "stream-1", messageKey: "message:v1:answer", pinned: false },
+  }), {
+    id: "018f6c86-3f34-7a31-8f27-16f5b96cce16",
+    action: "message-pin-set",
+    params: { streamId: "stream-1", messageKey: "message:v1:answer", pinned: false },
+  });
+
+  assert.deepEqual(workerModule.validateControlCommand({
     id: "018f6c86-3f34-7a31-8f27-16f5b96cce14",
     action: "board-task-attachment-add",
     params: {

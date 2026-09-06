@@ -5,6 +5,7 @@ import { createDesktopTaskCreationPreparation } from "./desktop-task-creation-co
 import { WorkspaceCatalogService } from "../application/workspace-catalog-service.mjs";
 import { ClientTaskSelectionService } from "../application/client-task-selection-service.mjs";
 import { agentHubRuntimeHealth } from "../application/runtime-health.mjs";
+import { StreamMessagePinService } from "../application/stream-message-pin-service.mjs";
 
 export function createDesktopShellComposition({
   config,
@@ -53,6 +54,7 @@ export function createDesktopShellComposition({
   const {
     taskRuns,
     taskSyncStore,
+    messagePins,
     taskRunIsActive,
     backgroundJobs,
     rateLimitTelemetry,
@@ -147,6 +149,12 @@ export function createDesktopShellComposition({
     findRepositoryWriteConflict,
   } = repositories;
 
+  const streamMessagePins = new StreamMessagePinService({
+    store: messagePins,
+    workspaceCatalog: workspaceCatalogStore,
+    resolveMessage: (identity) => taskSyncStore.durableMessageCandidate(identity),
+  });
+
   const desktopReadSystem = createDesktopReadSystemWiring({
     config,
     models,
@@ -218,6 +226,7 @@ export function createDesktopShellComposition({
           messages: runtime.lastTaskMessageRevision(),
           readState: taskReadStateStore.revision,
           receipts: desktopMessageReceipts.revision,
+          messagePins: messagePins.revision,
           exchangeRates: usdRubRateStore.snapshot(),
           server: await serverControlController.snapshot({ activeCount: 0, restart: null }),
         });
@@ -241,6 +250,7 @@ export function createDesktopShellComposition({
       describeAttachments: desktopAttachmentDescriptors,
       receiptForMessage: (identity) => desktopMessageReceipts.get(identity),
       recentReceipts: () => desktopMessageReceipts.snapshot(),
+      messagePinsSnapshot: () => streamMessagePins.snapshot(),
       receiptsForTurn: (identity) => desktopMessageReceipts.findAllByTurn(identity),
       interstreamOriginForClientMessage: (clientUserMessageId) => (
         workspaceCatalogStore.interstreamOriginForClientMessage(clientUserMessageId)
@@ -356,6 +366,7 @@ export function createDesktopShellComposition({
       runForTask: (target) => taskRuns.forTask(target),
       taskBoard,
       workspaceCatalog: workspaceCatalogStore,
+      streamMessagePins,
       updateRunTitle: updateTaskRunTitle,
       catalogEntryIsSelected,
       selection: {
@@ -538,6 +549,7 @@ export function createDesktopShellComposition({
       taskVoiceTranscriber,
       attachmentDirectory,
       workspaceCatalog: workspaceCatalogStore,
+      streamMessagePins,
     },
     desktop: {
       snapshot: desktopReadSystem.desktopSnapshot,
