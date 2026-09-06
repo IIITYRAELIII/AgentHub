@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -9,6 +9,9 @@ import { TurnEndDeliveryService } from "../../../src/application/turn-end-delive
 import { TerminalTurnCommitService } from "../../../src/application/terminal-turn-commit-service.mjs";
 import { ProviderTurnTerminalStore } from "../../../src/infrastructure/persistence/provider-turn-terminal-store.mjs";
 import { MessageCommandLedgerStore } from "../../../src/infrastructure/persistence/message-command-ledger-store.mjs";
+import { CodexTerminalAudit } from "../../../src/providers/codex/codex-terminal-audit.mjs";
+import { CodexTerminalReconciliationService } from "../../../src/providers/codex/codex-terminal-reconciliation-service.mjs";
+import { scanCodexHistoricalRollout } from "../../../src/providers/codex/codex-turn-usage.mjs";
 
 function completion(overrides = {}) {
   return {
@@ -232,6 +235,607 @@ test("terminal attachment changes create a new durable revision", async (context
   assert.equal(first.terminal.terminalRevision, 1);
   assert.equal(revised.terminal.terminalRevision, 2);
   assert.deepEqual(revised.terminal.payload.completion.responseAttachments.map((item) => item.id), [
+    "codex-generated-one.png",
+    "codex-generated-two.png",
+  ]);
+});
+
+test("delivered terminal repairs generated outputs durably after restart without duplicate replay", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-terminal-image-repair-"));
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const firstTerminal = new TerminalTurnCommitService({
+    store: new ProviderTurnTerminalStore({ dataDir }),
+  });
+  const first = await firstTerminal.commit(completion({
+    imageGenerationCount: 3,
+    responseAttachments: [],
+  }), {
+    run: {
+      id: "run-image",
+      streamId: "stream-image",
+      clientUserMessageId: "message-image",
+      responseItemId: "response-image",
+      userMessages: [{ role: "user", text: "Три варианта" }],
+      activities: [{ id: "imagegen-1", status: "completed" }],
+    },
+  });
+  const projected = [];
+  const deliveryDependencies = {
+    notifications: { values: () => [], markDelivered() {} },
+    taskRuns: { forEvent: () => null },
+    persistHistory: async (history) => { projected.push(structuredClone(history)); },
+    projectTurn: async () => null,
+    rememberLastMessage() {},
+    rememberSeenTurn() {},
+    saveState: async () => {},
+    logger: { error() {} },
+  };
+  const firstDelivery = new TurnEndDeliveryService({
+    ...deliveryDependencies,
+    terminalCommits: firstTerminal,
+  });
+  await firstDelivery.deliverOutbox(first.outbox);
+
+  const restartedTerminal = new TerminalTurnCommitService({
+    store: new ProviderTurnTerminalStore({ dataDir }),
+  });
+  const restartedDelivery = new TurnEndDeliveryService({
+    ...deliveryDependencies,
+    terminalCommits: restartedTerminal,
+  });
+  const attachments = [
+    { id: "codex-generated-one.png", name: "Изображение", type: "image/png" },
+    { id: "codex-generated-two.png", name: "Изображение", type: "image/png" },
+    { id: "codex-generated-three.png", name: "Изображение", type: "image/png", missing: true },
+  ];
+  let resolutions = 0;
+  const repair = () => restartedDelivery.reconcileResponseAttachments(completion(), {
+    expectedCount: 3,
+    resolveAttachments: async () => {
+      resolutions += 1;
+      return attachments;
+    },
+  });
+
+  const repaired = await repair();
+  const replay = await repair();
+  const reopened = new TerminalTurnCommitService({
+    store: new ProviderTurnTerminalStore({ dataDir }),
+  });
+  const durable = await reopened.get(completion());
+
+  assert.equal(repaired.enriched, true);
+  assert.equal(repaired.delivered, true);
+  assert.equal(repaired.terminal.terminalRevision, 2);
+  assert.equal(replay.enriched, false);
+  assert.equal(resolutions, 1);
+  assert.equal(projected.length, 2);
+  assert.deepEqual(projected[1].responseAttachments, attachments);
+  assert.equal(projected[1].id, "run-image");
+  assert.equal(projected[1].clientUserMessageId, "message-image");
+  assert.deepEqual(projected[1].userMessages, [{ role: "user", text: "Три варианта" }]);
+  assert.deepEqual(projected[1].activities, [{ id: "imagegen-1", status: "completed" }]);
+  assert.deepEqual(durable.payload.completion.responseAttachments, attachments);
+  assert.deepEqual(durable.payload.history.responseAttachments, attachments);
+  assert.equal(durable.terminalRevision, 2);
+  assert.deepEqual(
+    (await reopened.pending()).filter((item) => item.channels.projection.state === "pending"),
+    [],
+  );
+});
+
+test("current-shape delayed output repairs one exact count-less terminal after reopen", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-terminal-current-image-"));
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const rollout = path.join(dataDir, "rollout.jsonl");
+  const origin = completion({ threadId: "thread-origin", turnId: "turn-origin" });
+  const unrelated = completion({ threadId: origin.threadId, turnId: "turn-intervening" });
+  const initial = new TerminalTurnCommitService({
+    store: new ProviderTurnTerminalStore({ dataDir }),
+  });
+  await initial.commit(origin);
+  await initial.commit(unrelated);
+  assert.equal(Object.hasOwn(origin, "imageGenerationCount"), false);
+
+  const generatedPaths = ["C:/generated/one.png", "C:/generated/two.png", "C:/generated/three.png"];
+  await writeFile(rollout, [
+    {
+      timestamp: "2026-08-25T12:00:00.000Z",
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: origin.turnId },
+    },
+    {
+      timestamp: "2026-08-25T12:00:01.000Z",
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call",
+        name: "exec",
+        call_id: "call-image-current",
+        input: "await tools.image_gen__imagegen({prompt: 'three variants'})",
+        internal_chat_message_metadata_passthrough: { turn_id: origin.turnId },
+      },
+    },
+    {
+      timestamp: "2026-08-25T12:00:02.000Z",
+      type: "event_msg",
+      payload: { type: "task_complete", turn_id: origin.turnId, last_agent_message: "Готово" },
+    },
+  ].map((entry) => JSON.stringify(entry)).join("\n"), "utf8");
+
+  const thread = {
+    id: origin.threadId,
+    cwd: "C:/workspace",
+    path: rollout,
+    updatedAt: "2026-08-25T12:00:00.000Z",
+  };
+  const auditOptions = (reconcile) => ({
+    now: () => Date.parse("2026-08-25T12:05:00.000Z"),
+    listPage: async () => ({ data: [], nextCursor: null }),
+    discoverHistoricalThreads: async () => [thread],
+    readThread: async () => null,
+    resolveProject: async () => ({ path: "C:/workspace" }),
+    reconcile,
+    liveScanBytes: 1024 * 1024,
+    auditBytesPerRun: 1024 * 1024,
+    auditTimeMs: 10_000,
+  });
+  const beforeOutput = [];
+  const initialAudit = new CodexTerminalAudit(auditOptions(async (_thread, _project, terminal) => {
+    beforeOutput.push(terminal);
+    return true;
+  }));
+  await initialAudit.run();
+  const checkpointBeforeOutput = initialAudit.snapshot();
+  assert.equal(beforeOutput.length, 1);
+  assert.equal(beforeOutput[0].turnId, origin.turnId);
+  assert.equal(beforeOutput[0].attachmentRepairOnly, undefined);
+  assert.deepEqual(checkpointBeforeOutput.positions[0][1].resumeState.imageGenerationCalls, [
+    ["call-image-current", origin.turnId],
+  ]);
+
+  await appendFile(rollout, `\n${[
+    { type: "compacted", payload: { replacement_history: [] } },
+    { type: "event_msg", payload: { type: "task_started", turn_id: "turn-intervening" } },
+    {
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "assistant",
+        phase: "final_answer",
+        content: [{ type: "output_text", text: "Поздний ответ" }],
+        internal_chat_message_metadata_passthrough: { turn_id: "turn-intervening" },
+      },
+    },
+    {
+      type: "response_item",
+      payload: {
+        type: "function_call_output",
+        call_id: "call-image-current",
+        output: [
+          { type: "input_image", image_url: "data:image/png;base64,aGVsbG8=" },
+          ...generatedPaths.map((savedPath) => ({
+            type: "input_text",
+            text: `Generated images are saved to C:/generated as ${savedPath} by default.`,
+          })),
+        ],
+      },
+    },
+    {
+      type: "event_msg",
+      payload: {
+        type: "image_generation_end",
+        status: "completed",
+        saved_path: "C:/generated/unkeyed-must-not-migrate.png",
+      },
+    },
+  ].map((entry) => JSON.stringify(entry)).join("\n")}`, "utf8");
+
+  const scan = await scanCodexHistoricalRollout(rollout);
+  const originUsage = scan.turns.find((turn) => turn.turnId === origin.turnId);
+  const laterUsage = scan.turns.find((turn) => turn.turnId === unrelated.turnId);
+  const candidate = scan.attachmentCandidates.find((item) => item.turnId === origin.turnId);
+  assert.equal(originUsage.imageGenerationCount, 0);
+  assert.equal(laterUsage.imageGenerationCount, 0);
+  assert.deepEqual(candidate.generatedImageSources.map((source) => source.value), generatedPaths);
+  assert.equal(scan.attachmentCandidates.some((item) => item.turnId === unrelated.turnId), false);
+  assert.equal(scan.attachmentCandidates.some((item) => (
+    item.generatedImageSources.some((source) => source.value.includes("unkeyed-must-not-migrate"))
+  )), false);
+
+  const reopened = new TerminalTurnCommitService({
+    store: new ProviderTurnTerminalStore({ dataDir }),
+  });
+  let imports = 0;
+  const reconciliation = new CodexTerminalReconciliationService({
+    notifications: { hasDelivered: () => true, get: () => null },
+    turnStarts: new Map(),
+    workLogStore: {},
+    accountingThread: async () => ({}),
+    subagentParentTurnId: async () => "",
+    readTurnUsage: async () => { throw new Error("repair-only provenance must not reread usage"); },
+    taskGitDiff: async () => "",
+    dataDir,
+    projectTurn: async () => null,
+    taskTitle: async () => "",
+    defaultChatId: () => 0,
+    fallbackMessage: () => "",
+    rememberLastMessage() {},
+    rememberSeenTurn() {},
+    saveState: async () => {},
+    deliverNotification: async () => {},
+    repairTerminalAttachments: (identity, options) => reopened.enrichResponseAttachments(identity, options),
+    resolveTerminalAttachments: async ({ generatedImageSources }) => {
+      imports += 1;
+      return generatedImageSources.map((source) => ({
+        id: `codex-generated-${path.basename(source.value)}`,
+        name: "Изображение",
+        type: "image/png",
+      }));
+    },
+  });
+  const observedCandidates = [];
+  const reopenedAudit = new CodexTerminalAudit(auditOptions(async (...args) => {
+    const terminal = args[2];
+    observedCandidates.push(terminal);
+    return await reconciliation.reconcile(...args);
+  }));
+  reopenedAudit.restore(checkpointBeforeOutput);
+  await reopenedAudit.run();
+  const afterRepair = reopenedAudit.snapshot();
+  const replayedAudit = new CodexTerminalAudit(auditOptions((...args) => reconciliation.reconcile(...args)));
+  replayedAudit.restore(afterRepair);
+  await replayedAudit.run();
+
+  const finalStore = new TerminalTurnCommitService({
+    store: new ProviderTurnTerminalStore({ dataDir }),
+  });
+  const repaired = await finalStore.get(origin);
+  const untouched = await finalStore.get(unrelated);
+  assert.equal(imports, 1);
+  assert.equal(observedCandidates.length, 1);
+  assert.equal(observedCandidates[0].turnId, origin.turnId);
+  assert.equal(observedCandidates[0].attachmentRepairOnly, true);
+  assert.equal(Object.hasOwn(observedCandidates[0], "expectedCount"), false);
+  assert.equal(repaired.terminalRevision, 2);
+  assert.deepEqual(repaired.payload.completion.responseAttachments.map((item) => item.id), [
+    "codex-generated-one.png",
+    "codex-generated-two.png",
+    "codex-generated-three.png",
+  ]);
+  assert.deepEqual(repaired.payload.history.responseAttachments, repaired.payload.completion.responseAttachments);
+  assert.equal(untouched.terminalRevision, 1);
+  assert.deepEqual(untouched.payload.completion.responseAttachments ?? [], []);
+});
+
+test("v14 EOF audit migrates once and repairs delivered generated output after rebirth", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-terminal-v14-image-migration-"));
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const rollout = path.join(dataDir, "rollout-v14.jsonl");
+  const origin = completion({ threadId: "thread-v14", turnId: "turn-v14" });
+  const generatedPath = "C:/generated/v14-output.png";
+  const rolloutText = [
+    {
+      timestamp: "2026-08-25T12:00:00.000Z",
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: origin.turnId },
+    },
+    {
+      timestamp: "2026-08-25T12:00:01.000Z",
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call",
+        name: "exec",
+        call_id: "call-image-v14",
+        input: "await tools.image_gen__imagegen({prompt: 'one output'})",
+        internal_chat_message_metadata_passthrough: { turn_id: origin.turnId },
+      },
+    },
+    {
+      timestamp: "2026-08-25T12:00:02.000Z",
+      type: "response_item",
+      payload: {
+        type: "function_call_output",
+        call_id: "call-image-v14",
+        output: [{
+          type: "input_text",
+          text: `Generated images are saved to C:/generated as ${generatedPath} by default.`,
+        }],
+      },
+    },
+    {
+      timestamp: "2026-08-25T12:00:03.000Z",
+      type: "event_msg",
+      payload: { type: "task_complete", turn_id: origin.turnId, last_agent_message: "Готово" },
+    },
+  ].map((entry) => JSON.stringify(entry)).join("\n");
+  await writeFile(rollout, rolloutText, "utf8");
+
+  const initialTerminal = new TerminalTurnCommitService({
+    store: new ProviderTurnTerminalStore({ dataDir }),
+  });
+  const initialCommit = await initialTerminal.commit(origin, {
+    run: {
+      id: "run-v14",
+      streamId: "stream-v14",
+      clientUserMessageId: "message-v14",
+      responseItemId: "response-v14",
+      userMessages: [{ role: "user", text: "Нарисуй изображение" }],
+    },
+  });
+  const historyProjections = [];
+  const deliveryDependencies = {
+    notifications: { values: () => [], markDelivered() {} },
+    taskRuns: { forEvent: () => null },
+    persistHistory: async (history) => { historyProjections.push(structuredClone(history)); },
+    projectTurn: async () => null,
+    rememberLastMessage() {},
+    rememberSeenTurn() {},
+    saveState: async () => {},
+    logger: { error() {} },
+  };
+  const initialDelivery = new TurnEndDeliveryService({
+    ...deliveryDependencies,
+    terminalCommits: initialTerminal,
+  });
+  await initialDelivery.deliverOutbox(initialCommit.outbox);
+
+  const reopenedTerminal = new TerminalTurnCommitService({
+    store: new ProviderTurnTerminalStore({ dataDir }),
+  });
+  const reopenedDelivery = new TurnEndDeliveryService({
+    ...deliveryDependencies,
+    terminalCommits: reopenedTerminal,
+  });
+  let imports = 0;
+  let historicalScans = 0;
+  let historicalUsage = null;
+  const reconciliation = new CodexTerminalReconciliationService({
+    notifications: { hasDelivered: () => true, get: () => null },
+    turnStarts: new Map(),
+    workLogStore: {
+      getTurn: async () => historicalUsage && ({
+        provisional: false,
+        usageReported: historicalUsage.reported === true,
+        usage: historicalUsage.usage,
+        estimatedCredits: historicalUsage.estimatedCredits,
+        estimateKind: historicalUsage.estimateKind,
+        imageGenerationCount: historicalUsage.imageGenerationCount,
+        model: historicalUsage.model,
+        serviceTier: historicalUsage.serviceTier,
+        contextProbe: false,
+      }),
+    },
+    accountingThread: async () => ({}),
+    subagentParentTurnId: async () => "",
+    readTurnUsage: async () => { throw new Error("v14 migration must use scanned exact-turn usage"); },
+    taskGitDiff: async () => "",
+    dataDir,
+    projectTurn: async () => null,
+    taskTitle: async () => "",
+    defaultChatId: () => 0,
+    fallbackMessage: () => "",
+    rememberLastMessage() {},
+    rememberSeenTurn() {},
+    saveState: async () => {},
+    deliverNotification: async () => {},
+    repairTerminalAttachments: (identity, options) => (
+      reopenedDelivery.reconcileResponseAttachments(identity, options)
+    ),
+    resolveTerminalAttachments: async ({ generatedImageSources }) => {
+      imports += 1;
+      assert.deepEqual(generatedImageSources, [
+        { type: "generated-path", value: generatedPath },
+      ]);
+      return [{
+        id: "codex-generated-v14-output.png",
+        name: "Изображение",
+        type: "image/png",
+      }];
+    },
+    logger: { log() {}, error() {} },
+  });
+  const discoveredThread = {
+    id: origin.threadId,
+    cwd: "C:/workspace",
+    path: rollout,
+    updatedAt: "2026-08-25T12:00:03.000Z",
+  };
+  const auditOptions = {
+    now: () => Date.parse("2026-08-25T12:05:00.000Z"),
+    listPage: async () => ({ data: [], nextCursor: null }),
+    discoverHistoricalThreads: async () => [discoveredThread],
+    resolveProject: async () => ({ path: "C:/workspace" }),
+    reconcile: (...args) => reconciliation.reconcile(...args),
+    scanHistoricalFile: async (thread) => {
+      historicalScans += 1;
+      const scan = await scanCodexHistoricalRollout(thread.path);
+      historicalUsage = scan.turns.find((turn) => turn.turnId === origin.turnId) ?? null;
+      return scan;
+    },
+    shouldRunAudit: () => true,
+    shouldRunHistoricalBackfill: () => true,
+    prepareHistoricalBackfill: async () => ({ backupFile: "v14-migration.sqlite" }),
+    flushHistoricalProjection: async () => {},
+    liveScanBytes: 16 * 1024,
+    auditBytesPerRun: 16 * 1024,
+    auditTimeMs: 10_000,
+  };
+  const eofOffset = Buffer.byteLength(rolloutText, "utf8");
+  const preFixV14Snapshot = {
+    version: 14,
+    completedThrough: "2026-08-25T12:04:00.000Z",
+    positions: [[origin.threadId, {
+      path: rollout,
+      offset: eofOffset,
+      resumeState: { turns: [], activeTurnIds: [], imageGenerationCalls: [] },
+    }]],
+    pendingTurns: [],
+    historicalSubagentBackfill: {
+      pending: false,
+      initialized: true,
+      prepared: true,
+      backupFile: "pre-fix-v14.sqlite",
+      totalFiles: 1,
+      completedFiles: 1,
+      processedTurns: 1,
+      projectionPending: false,
+      queue: [],
+      processedTurnIdentities: [`${origin.threadId}\0${origin.turnId}`],
+    },
+  };
+
+  const migratedAudit = new CodexTerminalAudit(auditOptions);
+  migratedAudit.restore(preFixV14Snapshot);
+  assert.equal(migratedAudit.snapshot().historicalSubagentBackfill.pending, true);
+  await migratedAudit.run();
+  const migratedSnapshot = migratedAudit.snapshot();
+
+  assert.equal(migratedSnapshot.version, 15);
+  assert.equal(migratedSnapshot.historicalSubagentBackfill.pending, false);
+  assert.equal(migratedSnapshot.historicalSubagentBackfill.completedFiles, 1);
+  assert.equal(historicalScans, 1);
+  assert.equal(historicalUsage.imageGenerationCount, 0);
+  assert.equal(imports, 1);
+  assert.equal(historyProjections.length, 2);
+  assert.deepEqual(historyProjections[1].responseAttachments.map((item) => item.id), [
+    "codex-generated-v14-output.png",
+  ]);
+
+  const rebornAudit = new CodexTerminalAudit(auditOptions);
+  rebornAudit.restore(migratedSnapshot);
+  await rebornAudit.run();
+  await rebornAudit.run();
+  assert.equal(historicalScans, 1);
+  assert.equal(imports, 1);
+  assert.equal(historyProjections.length, 2);
+
+  const hydrated = await new TerminalTurnCommitService({
+    store: new ProviderTurnTerminalStore({ dataDir }),
+  }).get(origin);
+  assert.equal(hydrated.terminalRevision, 2);
+  assert.deepEqual(hydrated.payload.completion.responseAttachments.map((item) => item.id), [
+    "codex-generated-v14-output.png",
+  ]);
+  assert.deepEqual(
+    hydrated.payload.history.responseAttachments,
+    hydrated.payload.completion.responseAttachments,
+  );
+});
+
+test("attachment repair retries CAS and preserves a newer terminal completion", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-terminal-image-race-"));
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const terminal = new TerminalTurnCommitService({
+    store: new ProviderTurnTerminalStore({ dataDir }),
+  });
+  const racingTerminal = new TerminalTurnCommitService({
+    store: new ProviderTurnTerminalStore({ dataDir }),
+  });
+  await terminal.commit(completion({ responseAttachments: [] }), {
+    run: { id: "run-before", userMessages: [{ role: "user", text: "До гонки" }] },
+  });
+  let releaseResolver;
+  let resolverStarted;
+  const started = new Promise((resolve) => { resolverStarted = resolve; });
+  const gate = new Promise((resolve) => { releaseResolver = resolve; });
+  const repairing = terminal.enrichResponseAttachments(completion(), {
+    expectedCount: 1,
+    resolveAttachments: async () => {
+      resolverStarted();
+      await gate;
+      return [{ id: "codex-generated-late.png", type: "image/png" }];
+    },
+  });
+  await started;
+  await racingTerminal.commit(completion({ finalAnswer: "Newer final answer" }), {
+    run: { id: "run-after", userMessages: [{ role: "user", text: "После гонки" }] },
+  });
+  releaseResolver();
+
+  const result = await repairing;
+  const durable = await terminal.get(completion());
+  assert.equal(result.enriched, true);
+  assert.equal(durable.terminalRevision, 3);
+  assert.equal(durable.payload.completion.finalAnswer, "Newer final answer");
+  assert.equal(durable.payload.history.id, "run-after");
+  assert.deepEqual(durable.payload.history.userMessages, [{ role: "user", text: "После гонки" }]);
+  assert.deepEqual(durable.payload.history.responseAttachments, [
+    { id: "codex-generated-late.png", type: "image/png" },
+  ]);
+});
+
+test("late attachment repair revises only the exact originating terminal", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-terminal-image-owner-"));
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const terminal = new TerminalTurnCommitService({
+    store: new ProviderTurnTerminalStore({ dataDir }),
+  });
+  const origin = completion({
+    turnId: "turn-origin",
+    finalAnswer: "Original final",
+    imageGenerationCount: 2,
+    responseAttachments: [],
+  });
+  const intervening = completion({
+    turnId: "turn-intervening",
+    finalAnswer: "Intervening final",
+    responseAttachments: [],
+  });
+  await terminal.commit(origin, {
+    run: { id: "run-origin", userMessages: [{ role: "user", text: "Generate" }] },
+  });
+  await terminal.commit(intervening, {
+    run: { id: "run-intervening", userMessages: [{ role: "user", text: "Next" }] },
+  });
+  const generated = [
+    { id: "codex-generated-origin-one.png", type: "image/png" },
+    { id: "codex-generated-origin-two.png", type: "image/png" },
+  ];
+
+  const repaired = await terminal.enrichResponseAttachments(origin, {
+    expectedCount: 2,
+    resolveAttachments: async () => generated,
+  });
+  const reopened = new TerminalTurnCommitService({
+    store: new ProviderTurnTerminalStore({ dataDir }),
+  });
+  const durableOrigin = await reopened.get(origin);
+  const durableIntervening = await reopened.get(intervening);
+
+  assert.equal(repaired.enriched, true);
+  assert.equal(durableOrigin.terminalRevision, 2);
+  assert.deepEqual(durableOrigin.payload.completion.responseAttachments, generated);
+  assert.deepEqual(durableOrigin.payload.history.responseAttachments, generated);
+  assert.equal(durableIntervening.terminalRevision, 1);
+  assert.equal(durableIntervening.finalAnswer, "Intervening final");
+  assert.deepEqual(durableIntervening.payload.completion.responseAttachments, []);
+  assert.deepEqual(durableIntervening.payload.history.responseAttachments, []);
+});
+
+test("authoritative output repair replaces input and view image descriptors", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-terminal-image-scope-"));
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const terminal = new TerminalTurnCommitService({
+    store: new ProviderTurnTerminalStore({ dataDir }),
+  });
+  await terminal.commit(completion({
+    imageGenerationCount: 2,
+    responseAttachments: [
+      { id: "codex-viewed-reference.png", type: "image/png" },
+      { id: "codex-displayed-input.png", type: "image/png" },
+    ],
+  }));
+
+  await terminal.enrichResponseAttachments(completion(), {
+    expectedCount: 2,
+    resolveAttachments: async () => [
+      { id: "codex-generated-one.png", type: "image/png" },
+      { id: "codex-generated-two.png", type: "image/png" },
+    ],
+  });
+
+  const durable = await terminal.get(completion());
+  assert.deepEqual(durable.payload.completion.responseAttachments.map((item) => item.id), [
     "codex-generated-one.png",
     "codex-generated-two.png",
   ]);

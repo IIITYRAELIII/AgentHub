@@ -298,6 +298,13 @@ export class ProviderTurnTerminalStore {
 
   commit(value) {
     const key = identity(value);
+    const expectedTerminalRevision = value.expectedTerminalRevision == null
+      ? null
+      : Number(value.expectedTerminalRevision);
+    if (expectedTerminalRevision != null
+      && (!Number.isSafeInteger(expectedTerminalRevision) || expectedTerminalRevision < 1)) {
+      throw new Error("expected terminal revision must be a positive safe integer");
+    }
     const basePayload = sanitizedTerminalPayload(value.payload);
     const status = text(value.status) || "completed";
     const finalAnswer = String(value.finalAnswer ?? "").trim();
@@ -319,6 +326,16 @@ export class ProviderTurnTerminalStore {
       try {
         database.exec("BEGIN IMMEDIATE");
         const current = selectTerminal(database, key);
+        if (expectedTerminalRevision != null
+          && current?.terminalRevision !== expectedTerminalRevision) {
+          database.exec("COMMIT");
+          return {
+            terminal: current,
+            outbox: current ? selectOutbox(database, current) : null,
+            created: false,
+            conflict: true,
+          };
+        }
         if (NON_TERMINAL_STATUSES.has(status.toLowerCase())) {
           if (!current) throw new Error(`cannot commit non-terminal provider turn status ${status}`);
           database.exec("COMMIT");

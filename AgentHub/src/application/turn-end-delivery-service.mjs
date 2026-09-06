@@ -131,6 +131,14 @@ export class TurnEndDeliveryService {
     }
   }
 
+  async reconcileResponseAttachments(identity, options = {}) {
+    if (!this.terminalCommits?.enrichResponseAttachments) return { enriched: false };
+    const result = await this.terminalCommits.enrichResponseAttachments(identity, options);
+    if (!result?.enriched) return result;
+    await this.deliverOutbox(result.outbox);
+    return { ...result, delivered: true };
+  }
+
   async deliverOutbox(item) {
     if (!item || !this.terminalCommits) return false;
     const key = turnEndKey(item);

@@ -93,6 +93,21 @@ test("assistant image importer returns a safe placeholder for a missing private 
   }
 });
 
+test("assistant image importer keeps a safe generated-output placeholder when its source is missing", async () => {
+  const state = await fixture();
+  try {
+    const missing = path.join(state.generated, "missing-output.png");
+    const [result] = await state.importer([{ type: "generated-path", value: missing }]);
+
+    assert.equal(result.missing, true);
+    assert.equal(result.name, "Изображение");
+    assert.match(result.id, /^codex-generated-[0-9a-f]{64}\.png$/u);
+    assert.doesNotMatch(JSON.stringify(result), /missing-output\.png|generated[\\/]/iu);
+  } finally {
+    await rm(state.root, { recursive: true, force: true });
+  }
+});
+
 test("assistant image importer reuses its durable copy after the source disappears", async () => {
   const state = await fixture();
   try {

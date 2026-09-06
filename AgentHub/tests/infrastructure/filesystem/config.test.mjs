@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -97,6 +97,11 @@ test("core-only components need neither Telegram credentials nor Web App", async
       maxFilesPerPass: 8,
     });
     assert.equal(config.codexSandboxMode, "workspace-write");
+    assert.deepEqual(config.codexModels.slice(0, 3), [
+      { value: "gpt-5.5", label: "GPT-5.5" },
+      { value: "gpt-6-astra", label: "GPT-6 Astra" },
+      { value: "gpt-5.6-sol", label: "GPT-5.6-Sol" },
+    ]);
     assert.equal(config.whisperModel, "large-v3-turbo");
     assert.equal(config.whisperDevice, "cuda");
     assert.deepEqual(config.contextAutomation, {
@@ -129,6 +134,58 @@ test("core-only components need neither Telegram credentials nor Web App", async
     else process.env.SENTRY_ENVIRONMENT = previousSentryEnvironment;
     if (previousSentryRelease == null) delete process.env.SENTRY_RELEASE;
     else process.env.SENTRY_RELEASE = previousSentryRelease;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("shipped and legacy default Codex catalogs include Astra without changing custom allowlists", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-codex-model-catalog-"));
+  const configFile = path.join(root, "config.json");
+  const previous = process.env.AGENT_HUB_CONFIG;
+  const legacyShippedModels = [
+    { value: "gpt-5.5", label: "GPT-5.5" },
+    { value: "gpt-5.6-sol", label: "GPT-5.6-Sol" },
+    { value: "gpt-5.6-terra", label: "GPT-5.6-Terra" },
+    { value: "gpt-5.6-luna", label: "GPT-5.6-Luna" },
+    { value: "gpt-5.4", label: "GPT-5.4" },
+    { value: "gpt-5.4-mini", label: "GPT-5.4-Mini" },
+    { value: "gpt-5.3-codex-spark", label: "GPT-5.3-Codex-Spark" },
+  ];
+  const astraModel = { value: "gpt-6-astra", label: "GPT-6 Astra" };
+  try {
+    process.env.AGENT_HUB_CONFIG = configFile;
+    const baseConfig = {
+      components: { telegram: false, miniApp: false, androidApp: false },
+      projectRoot: root,
+    };
+    await writeFile(configFile, JSON.stringify({
+      ...baseConfig,
+      codexModels: legacyShippedModels,
+    }), "utf8");
+    assert.deepEqual((await loadConfig()).codexModels, [
+      legacyShippedModels[0],
+      astraModel,
+      ...legacyShippedModels.slice(1),
+    ]);
+
+    const customModels = legacyShippedModels.map((model, index) => (
+      index === 0 ? { ...model, label: "Team Default" } : model
+    ));
+    await writeFile(configFile, JSON.stringify({ ...baseConfig, codexModels: customModels }), "utf8");
+    assert.deepEqual((await loadConfig()).codexModels, customModels);
+
+    const example = JSON.parse(await readFile(
+      new URL("../../../config.example.json", import.meta.url),
+      "utf8",
+    ));
+    assert.deepEqual(example.codexModels.slice(0, 3), [
+      legacyShippedModels[0],
+      astraModel,
+      legacyShippedModels[1],
+    ]);
+  } finally {
+    if (previous == null) delete process.env.AGENT_HUB_CONFIG;
+    else process.env.AGENT_HUB_CONFIG = previous;
     await rm(root, { recursive: true, force: true });
   }
 });

@@ -2696,6 +2696,8 @@ function shortModelLabel(value) {
   const source = String(value ?? "").trim();
   if (!source) return "";
   const normalized = source.toLowerCase();
+  if (normalized === "gpt-6-astra" || normalized === "gpt-6 astra") return "Astra";
+  if (normalized.includes("astra")) return source;
   const named = [
     ["terra", "Terra"],
     ["luna", "Luna"],
@@ -3597,7 +3599,10 @@ taskList.addEventListener("click", (event) => {
   else if (workspaceDblclickCandidate?.node !== workspace
     || workspaceDblclickCandidate?.workspaceId !== workspaceId) workspaceDblclickCandidate = null;
   const target = representativeWorkspaceTask(state.tasks.filter((task) => workspaceKey(task) === workspaceId));
-  if (target) selectTaskFromUi(target.id, { preserveTaskList: true });
+  if (target) selectTaskFromUi(target.id, {
+    preserveTaskList: true,
+    preservePane: surface === "mobile",
+  });
 });
 taskList.addEventListener("dblclick", (event) => {
   const candidate = workspaceDblclickCandidate;
@@ -4467,7 +4472,11 @@ function syncStreamTabsSelection() {
   }
 }
 
-function selectTaskFromUi(id, { preserveTaskList = false, preserveStreamTabs = false } = {}) {
+function selectTaskFromUi(id, {
+  preserveTaskList = false,
+  preserveStreamTabs = false,
+  preservePane = false,
+} = {}) {
   if (!id) return;
   saveDraft();
   state.selectedId = id;
@@ -4481,7 +4490,7 @@ function selectTaskFromUi(id, { preserveTaskList = false, preserveStreamTabs = f
   if (preserveTaskList) syncTaskListSelection();
   else renderTasks();
   renderChat({ preserveStreamTabs });
-  setPane("chat");
+  if (!preservePane) setPane("chat");
   emit("task:select", { id });
 }
 

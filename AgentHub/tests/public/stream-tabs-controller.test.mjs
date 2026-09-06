@@ -859,6 +859,76 @@ test("an active Stream preserves its answer-ready state", async () => {
   );
 });
 
+test("Astra uses its compact label only in Stream pills and the active Stream header", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  try {
+    const page = await browser.newPage();
+    await openStreamTabsDomFixture(page);
+    const result = await page.evaluate(() => {
+      window.AgentHub.setWorkspaces([{
+        id: "workspace-agent-hub",
+        name: "Agent HUB",
+        title: "Agent HUB",
+      }]);
+      const astraTask = {
+        id: "task-astra",
+        threadId: "thread-astra",
+        workspaceId: "workspace-agent-hub",
+        workspaceName: "Agent HUB",
+        streamId: "stream-astra",
+        streamName: "S4",
+        streamOrdinal: 4,
+        title: "Astra task",
+        provider: "codex",
+        agentLabel: "Codex",
+        modelLabel: "GPT-6 Astra",
+        status: "in_progress",
+        statusLabel: "В работе",
+        lastActivity: "2026-09-05T08:00:00.000Z",
+        unread: false,
+        running: true,
+        selected: true,
+      };
+      window.AgentHub.setTasks([astraTask, {
+        ...astraTask,
+        id: "task-custom-astra",
+        threadId: "thread-custom-astra",
+        streamId: "stream-custom-astra",
+        streamName: "S5",
+        streamOrdinal: 5,
+        modelLabel: "Custom Astra Preview",
+        selected: false,
+      }]);
+      return {
+        header: document.querySelector("[data-stream-header-model]")?.textContent,
+        headerTitle: document.querySelector("[data-stream-header-model]")?.title,
+        astraPill: document.querySelector(
+          '[data-activity-task-id="task-astra"] .task-model',
+        )?.textContent,
+        astraPillTitle: document.querySelector(
+          '[data-activity-task-id="task-astra"] .task-model',
+        )?.title,
+        customPill: document.querySelector(
+          '[data-activity-task-id="task-custom-astra"] .task-model',
+        )?.textContent,
+        customPillTitle: document.querySelector(
+          '[data-activity-task-id="task-custom-astra"] .task-model',
+        )?.title,
+      };
+    });
+
+    assert.equal(result.header, "Astra");
+    assert.equal(result.headerTitle, "GPT-6 Astra");
+    assert.equal(result.astraPill, "Astra");
+    assert.equal(result.astraPillTitle, "GPT-6 Astra");
+    assert.equal(result.customPill, "Custom Astra Preview");
+    assert.equal(result.customPillTitle, "Custom Astra Preview");
+  } finally {
+    await browser.close();
+  }
+});
+
 test("background status changes rerender visible top Stream tabs", async () => {
   const { chromium } = await import("playwright");
   const browser = await launchDomBrowser(chromium);
@@ -1294,6 +1364,96 @@ test("backend permanent-delete rejection retains archive UI and restores exact a
   } finally {
     await backend.close();
     await page?.unrouteAll({ behavior: "ignoreErrors" });
+    await browser.close();
+  }
+});
+
+test("mobile Workspace click preserves its dblclick target while desktop click still opens chat", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  const installFixture = async (page) => page.evaluate(() => {
+    const shared = {
+      status: "ready",
+      statusLabel: "Готов",
+      lastActivity: "2026-09-04T08:00:00.000Z",
+      running: false,
+      unread: false,
+      streamSettings: {},
+    };
+    window.AgentHub.setWorkspaces([{
+      id: "workspace-1", name: "One", settings: {},
+    }, {
+      id: "workspace-2", name: "Two", settings: {},
+    }], ["workspace:workspace-1", "workspace:workspace-2", "notes"]);
+    window.AgentHub.setTasks([{
+      ...shared,
+      id: "task-one",
+      selected: false,
+      workspaceId: "workspace-1",
+      workspaceName: "One",
+      streamId: "stream-one",
+      streamName: "One stream",
+      streamOrdinal: 1,
+      provider: "codex",
+      agentLabel: "Codex",
+    }, {
+      ...shared,
+      id: "task-two",
+      selected: true,
+      workspaceId: "workspace-2",
+      workspaceName: "Two",
+      streamId: "stream-two",
+      streamName: "Two stream",
+      streamOrdinal: 1,
+      provider: "claude",
+      agentLabel: "Claude",
+    }]);
+  });
+  try {
+    const mobile = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    await openStreamTabsDomFixture(mobile);
+    await installFixture(mobile);
+    const mobileWorkspace = mobile.locator('[data-workspace-select="workspace-1"]');
+    await mobileWorkspace.click();
+    assert.deepEqual(await mobile.evaluate(() => ({
+      surface: document.documentElement.dataset.surface,
+      pane: document.documentElement.dataset.pane,
+      selected: document.querySelector('[data-workspace-select="workspace-1"]')?.getAttribute("aria-pressed"),
+      cardOpen: document.querySelector("[data-workspace-card-modal]")?.open,
+    })), {
+      surface: "mobile",
+      pane: "tasks",
+      selected: "true",
+      cardOpen: false,
+    });
+    await mobileWorkspace.focus();
+    await mobileWorkspace.dblclick();
+    assert.equal(await mobile.locator("[data-workspace-card-modal]").evaluate((node) => node.open), true);
+    await mobile.keyboard.press("Escape");
+    assert.equal(await mobileWorkspace.evaluate((node) => document.activeElement === node), true);
+    await mobile.close();
+
+    const desktop = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    await openStreamTabsDomFixture(desktop);
+    await installFixture(desktop);
+    const desktopWorkspace = desktop.locator('[data-workspace-select="workspace-1"]');
+    await desktopWorkspace.click();
+    assert.deepEqual(await desktop.evaluate(() => ({
+      surface: document.documentElement.dataset.surface,
+      pane: document.documentElement.dataset.pane,
+      selected: document.querySelector('[data-workspace-select="workspace-1"]')?.getAttribute("aria-pressed"),
+      cardOpen: document.querySelector("[data-workspace-card-modal]")?.open,
+    })), {
+      surface: "desktop",
+      pane: "chat",
+      selected: "true",
+      cardOpen: false,
+    });
+    await desktopWorkspace.focus();
+    await desktopWorkspace.dblclick();
+    assert.equal(await desktop.locator("[data-workspace-card-modal]").evaluate((node) => node.open), true);
+    await desktop.close();
+  } finally {
     await browser.close();
   }
 });
