@@ -151,12 +151,14 @@ test("Codex lifecycle commits generated images when no managed run owns the term
   await f.controller.handle(request("turn-complete", f.projectRoot, {
     status: "completed",
     finalAnswer: "Done",
+    generatedImageSources: [{ type: "generated-path", value: "C:/generated/dragon.png" }],
   }));
 
   assert.deepEqual(calls, [{
     run: {
       threadId: "thread-1",
       startedAt: "2026-09-01T10:00:00.000Z",
+      generatedImageSources: [{ type: "generated-path", value: "C:/generated/dragon.png" }],
     },
     turnId: "turn-1",
   }]);
@@ -166,8 +168,9 @@ test("Codex lifecycle commits generated images when no managed run owns the term
 test("Codex lifecycle leaves every managed run terminal to the finalizer", async () => {
   for (const status of ["running", "finishing", "completed"]) {
     let resolverCalls = 0;
+    const run = { status };
     const f = await fixture({
-      run: { status },
+      run,
       resolveTerminalAttachments: async () => {
         resolverCalls += 1;
         return [];
@@ -176,11 +179,15 @@ test("Codex lifecycle leaves every managed run terminal to the finalizer", async
     await f.controller.handle(request("turn-complete", f.projectRoot, {
       status: "completed",
       finalAnswer: "Done",
+      generatedImageSources: [{ type: "generated-path", value: "C:/generated/dragon.png" }],
     }));
 
     assert.equal(resolverCalls, 0, status);
     assert.deepEqual(f.recorded[0].responseAttachments, [], status);
     assert.deepEqual(f.deliveredCompletions, [], status);
+    assert.deepEqual(run.generatedImageSources, [
+      { type: "generated-path", value: "C:/generated/dragon.png" },
+    ], status);
   }
 });
 
