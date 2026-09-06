@@ -11,7 +11,10 @@ import { ProviderTurnTerminalStore } from "../../../src/infrastructure/persisten
 import { MessageCommandLedgerStore } from "../../../src/infrastructure/persistence/message-command-ledger-store.mjs";
 import { CodexTerminalAudit } from "../../../src/providers/codex/codex-terminal-audit.mjs";
 import { CodexTerminalReconciliationService } from "../../../src/providers/codex/codex-terminal-reconciliation-service.mjs";
-import { scanCodexHistoricalRollout } from "../../../src/providers/codex/codex-turn-usage.mjs";
+import {
+  readCodexTurnUsage,
+  scanCodexHistoricalRollout,
+} from "../../../src/providers/codex/codex-turn-usage.mjs";
 
 function completion(overrides = {}) {
   return {
@@ -505,6 +508,154 @@ test("current-shape delayed output repairs one exact count-less terminal after r
   assert.deepEqual(repaired.payload.history.responseAttachments, repaired.payload.completion.responseAttachments);
   assert.equal(untouched.terminalRevision, 1);
   assert.deepEqual(untouched.payload.completion.responseAttachments ?? [], []);
+});
+
+test("current exec ImageGen result repairs exact empty terminal and survives reopen", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-terminal-current-imagegen-"));
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const rollout = path.join(dataDir, "rollout-current-imagegen.jsonl");
+  const identity = {
+    provider: "codex",
+    threadId: "thread-current-imagegen",
+    turnId: "turn-current-imagegen",
+  };
+  const generatedPath = "C:/generated/dragon.png";
+  const exact = (payload) => ({
+    ...payload,
+    internal_chat_message_metadata_passthrough: { turn_id: identity.turnId },
+  });
+  await writeFile(rollout, `${[
+    { type: "event_msg", payload: { type: "task_started", turn_id: identity.turnId } },
+    {
+      type: "response_item",
+      payload: exact({
+        type: "custom_tool_call",
+        name: "exec",
+        call_id: "call-current-imagegen",
+        input: "const output = await tools.image_gen__imagegen({prompt: 'dragon'}); generatedImage(output);",
+      }),
+    },
+    {
+      type: "response_item",
+      payload: exact({
+        type: "custom_tool_call_output",
+        call_id: "call-current-imagegen",
+        output: [
+          { type: "input_text", text: "Script completed" },
+          { type: "input_image", image_url: "data:image/png;base64,b3V0cHV0" },
+          {
+            type: "input_text",
+            text: `Generated images are saved to C:/generated as ${generatedPath} by default.`,
+          },
+        ],
+      }),
+    },
+    {
+      type: "response_item",
+      payload: exact({
+        type: "message",
+        role: "assistant",
+        phase: "final_answer",
+        content: [{ type: "output_text", text: "Вот дракон." }],
+      }),
+    },
+    {
+      type: "event_msg",
+      payload: {
+        type: "task_complete",
+        turn_id: identity.turnId,
+        last_agent_message: "Вот дракон.",
+      },
+    },
+  ].map((entry) => JSON.stringify(entry)).join("\n")}\n`, "utf8");
+
+  const emptyTerminal = new TerminalTurnCommitService({
+    store: new ProviderTurnTerminalStore({ dataDir }),
+  });
+  await emptyTerminal.commit(completion({
+    ...identity,
+    finalAnswer: "Вот дракон.",
+    imageGenerationCount: null,
+    responseAttachments: [],
+  }), {
+    run: { id: "run-current-imagegen", userMessages: [{ role: "user", text: "нарисуй дракона" }] },
+  });
+
+  const usageResult = await readCodexTurnUsage(rollout, identity.turnId, { attempts: 1 });
+  assert.equal(usageResult.imageGenerationCount, 0);
+  assert.deepEqual(usageResult.generatedImageSources, [
+    { type: "generated-path", value: generatedPath },
+  ]);
+
+  const repairOwner = new TerminalTurnCommitService({
+    store: new ProviderTurnTerminalStore({ dataDir }),
+  });
+  let imports = 0;
+  const reconciliation = new CodexTerminalReconciliationService({
+    notifications: {
+      hasDelivered: () => true,
+      get: () => null,
+      takePendingMessage: () => null,
+    },
+    turnStarts: new Map(),
+    workLogStore: { getTurn: async () => null },
+    accountingThread: async (thread) => ({
+      threadId: thread.id,
+      parentThreadId: "",
+      thread,
+      isSubagent: false,
+    }),
+    subagentParentTurnId: async () => "",
+    readTurnUsage: async () => usageResult,
+    taskGitDiff: async () => "",
+    dataDir,
+    changedFilesForRun: () => [],
+    projectTurn: async () => null,
+    taskTitle: async () => "",
+    defaultChatId: () => 0,
+    fallbackMessage: () => "",
+    rememberLastMessage() {},
+    rememberSeenTurn() {},
+    saveState: async () => {},
+    deliverNotification: async () => {},
+    repairTerminalAttachments: (target, options) => (
+      repairOwner.enrichResponseAttachments(target, options)
+    ),
+    resolveTerminalAttachments: async ({ generatedImageSources }) => {
+      imports += 1;
+      return generatedImageSources.map((source) => ({
+        id: `codex-generated-${path.basename(source.value)}`,
+        name: "Изображение",
+        type: "image/png",
+      }));
+    },
+  });
+  assert.equal(await reconciliation.reconcile(
+    { id: identity.threadId, path: rollout },
+    { path: "C:/workspace" },
+    {
+      turnId: identity.turnId,
+      status: "completed",
+      completedAt: "2026-08-25T12:00:00.000Z",
+      authoritative: true,
+      usageResult,
+    },
+  ), true);
+
+  const reopened = await new TerminalTurnCommitService({
+    store: new ProviderTurnTerminalStore({ dataDir }),
+  }).get(identity);
+  assert.equal(imports, 1);
+  assert.equal(reopened.terminalRevision, 2);
+  assert.deepEqual(reopened.payload.completion.responseAttachments, [{
+    id: "codex-generated-dragon.png",
+    name: "Изображение",
+    type: "image/png",
+  }]);
+  assert.deepEqual(
+    reopened.payload.history.responseAttachments,
+    reopened.payload.completion.responseAttachments,
+  );
 });
 
 test("v14 EOF audit migrates once and repairs delivered generated output after rebirth", async (context) => {

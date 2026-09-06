@@ -684,6 +684,85 @@ test("rollout scan counts completed imagegen calls for the exact turn", () => {
   assert.equal(result.estimateKind, "imagegen-default");
 });
 
+test("exact turn usage retains current exec ImageGen output provenance without accounting count", () => {
+  const savedPath = "C:/generated/dragon.png";
+  const text = [
+    line({ type: "event_msg", payload: { type: "task_started", turn_id: "turn-dragon" } }),
+    line(response("turn-dragon", "custom_tool_call", {
+      name: "exec",
+      call_id: "call-dragon",
+      input: "const result = await tools.image_gen__imagegen({prompt: 'dragon'}); generatedImage(result);",
+    })),
+    line(response("turn-dragon", "custom_tool_call_output", {
+      call_id: "call-dragon",
+      output: [
+        { type: "input_text", text: "Script completed" },
+        { type: "input_image", image_url: "data:image/png;base64,cmVmZXJlbmNl" },
+        {
+          type: "input_text",
+          text: `Generated images are saved to C:/generated as ${savedPath} by default.`,
+        },
+      ],
+    })),
+    line(response("turn-dragon", "message", {
+      role: "assistant",
+      phase: "final_answer",
+      content: [{ type: "output_text", text: "Вот дракон." }],
+    })),
+    line({
+      type: "event_msg",
+      payload: { type: "task_complete", turn_id: "turn-dragon", last_agent_message: "Вот дракон." },
+    }),
+  ].join("\n");
+
+  const result = codexTurnUsageFromJsonl(text, "turn-dragon");
+  assert.equal(result.terminal, true);
+  assert.equal(result.finalAnswer, "Вот дракон.");
+  assert.equal(result.imageGenerationCount, 0);
+  assert.deepEqual(result.generatedImageSources, [{ type: "generated-path", value: savedPath }]);
+});
+
+test("exact turn usage fails closed for reused call ownership but honors explicit turn provenance", () => {
+  const callId = "call-reused-imagegen";
+  const ambiguousPath = "C:/generated/ambiguous.png";
+  const exactPath = "C:/generated/exact-origin.png";
+  const imageCall = (turnId) => line(response(turnId, "custom_tool_call", {
+    name: "exec",
+    call_id: callId,
+    input: "await tools.image_gen__imagegen({prompt: 'variant'})",
+  }));
+  const output = (turnId, savedPath) => line({
+    type: "response_item",
+    payload: {
+      type: "custom_tool_call_output",
+      call_id: callId,
+      output: [{
+        type: "input_text",
+        text: `Generated images are saved to C:/generated as ${savedPath} by default.`,
+      }],
+      ...(turnId
+        ? { internal_chat_message_metadata_passthrough: { turn_id: turnId } }
+        : {}),
+    },
+  });
+  const text = [
+    line({ type: "event_msg", payload: { type: "task_started", turn_id: "turn-origin" } }),
+    imageCall("turn-origin"),
+    line({ type: "event_msg", payload: { type: "task_complete", turn_id: "turn-origin" } }),
+    line({ type: "event_msg", payload: { type: "task_started", turn_id: "turn-later" } }),
+    imageCall("turn-later"),
+    output("", ambiguousPath),
+    output("turn-origin", exactPath),
+    line({ type: "event_msg", payload: { type: "task_complete", turn_id: "turn-later" } }),
+  ].join("\n");
+
+  assert.deepEqual(
+    codexTurnUsageFromJsonl(text, "turn-origin").generatedImageSources,
+    [{ type: "generated-path", value: exactPath }],
+  );
+  assert.deepEqual(codexTurnUsageFromJsonl(text, "turn-later").generatedImageSources, []);
+});
+
 test("rollout scan records explicit skills and completed MCP calls without payload data", () => {
   const text = [
     line({ type: "event_msg", payload: { type: "task_started", turn_id: "turn-1" } }),
