@@ -45,10 +45,14 @@ test("Stream Team Lead is an independent persisted boolean", async () => {
   );
 });
 
-test("Stream Team Lead tooltip explains review and Stream numbering in Russian", async () => {
+test("Stream Team Lead tooltip explains independent review governance in Russian", async () => {
   const settings = await roleSettingsApi();
   const text = settings.teamLeadTooltip.join("\n");
-  assert.match(text, /ревью результата каждой Task.*не проходит ревью.*исполнителю на доработку.*повторно проверь/iu);
+  assert.match(text, /независимое ревью.*другому потоку Workspace.*Исполнитель не проверяет собственную работу/iu);
+  assert.match(text, /ограничь ревью требованиями Task.*фактическим diff.*последствиями внесённых изменений/iu);
+  assert.match(text, /не выполняют её требования.*вызывают или усиливают любую реальную регрессию.*лишнюю функциональность.*удалить/iu);
+  assert.match(text, /Старые независимые проблемы.*искусственные крайние случаи.*без воспроизводимых доказательств.*вне scope не блокируют/iu);
+  assert.match(text, /верни ту же Task исполнителю.*снова передай исправленный результат на независимое ревью/iu);
   assert.match(text, /максимальный номер.*S<number>.*прибавь 1.*назови новый S2/iu);
 
   const children = [];

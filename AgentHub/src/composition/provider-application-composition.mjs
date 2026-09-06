@@ -9,6 +9,10 @@ import { readClaudeAccount } from "../providers/claude/claude-account.mjs";
 import { ClaudeContextMaintenanceService } from "../providers/claude/claude-context-maintenance-service.mjs";
 import { processIsAlive } from "../providers/claude/claude-run-io.mjs";
 import { readClaudeSessionSnapshot } from "../providers/claude/claude-session-reader.mjs";
+import {
+  ClaudeRunAdmissionGate,
+  ClaudeRuntimeOwner,
+} from "../providers/claude/claude-runtime-owner.mjs";
 import { readCodexTurnUsage } from "../providers/codex/codex-turn-usage.mjs";
 import {
   codexObservedRuntimeActive,
@@ -46,6 +50,24 @@ import { createRuntimeDataComposition } from "./runtime-data-composition.mjs";
 import { RuntimeTimerCoordinator } from "../runtime/runtime-timer-coordinator.mjs";
 import { createTaskCatalogFinalizationComposition } from "./task-catalog-finalization-composition.mjs";
 import { delay } from "./runtime-timers-composition.mjs";
+
+export function createClaudeRunAdmissionBoundary({
+  resolveClaudeInvocation,
+  agentHubPid = process.pid,
+  runtimeOwner = null,
+} = {}) {
+  if (!runtimeOwner && typeof resolveClaudeInvocation !== "function") {
+    throw new TypeError("resolveClaudeInvocation is required");
+  }
+  const claudeRuntimeOwner = runtimeOwner ?? new ClaudeRuntimeOwner({
+    agentHubPid,
+    invocation: resolveClaudeInvocation(),
+  });
+  return {
+    claudeRuntimeOwner,
+    claudeRunAdmission: new ClaudeRunAdmissionGate({ runtimeOwner: claudeRuntimeOwner }),
+  };
+}
 
 export async function createProviderApplicationComposition({
   config,
@@ -143,6 +165,9 @@ export async function createProviderApplicationComposition({
     getProjectRoot: selectedProjectRoot,
     stopProcessTree: late.stopProcessTree,
   });
+  const { claudeRuntimeOwner, claudeRunAdmission } = createClaudeRunAdmissionBoundary({
+    resolveClaudeInvocation: providerProcess.resolveClaudeInvocation,
+  });
   const accounting = createRunAccountingComposition({
     runJournal,
     refreshTaskDiff: api.refreshTaskDiff,
@@ -158,7 +183,7 @@ export async function createProviderApplicationComposition({
   });
   const maintenanceOperations = new MaintenanceOperationStore({ dataDir: config.dataDir });
   hubMcpService.setActiveRuns(() => runtimeData.taskRuns.values());
-  hubMcpService.setDeferredInputs(() => runtimeData.deferredInputs.values());
+  hubMcpService.setDeferredInputs(() => runtimeData.deferredInputs.diagnostics());
 
   const codexObservability = createCodexObservabilityComposition({
     config,
@@ -238,6 +263,8 @@ export async function createProviderApplicationComposition({
         scheduleDeferredRestartIfReady: api.scheduleDeferredRestartIfReady,
       });
     },
+    prepareRunAdmission: (target) => claudeRunAdmission.prepare(target),
+    revokeRunAdmission: (run) => claudeRunAdmission.revoke(run),
     turnEndNotifications,
     runJournal,
     lastSeenTaskTurnIds: runtimeData.lastSeenTaskTurnIds,
@@ -491,6 +518,8 @@ export async function createProviderApplicationComposition({
     startClaudeTurn: api.startClaudeTurn,
     steerClaudeTurn: api.steerClaudeTurn,
     claudeTaskSnapshots: providerSnapshots.claudeTaskSnapshots,
+    claudeRuntimeOwner,
+    claudeRunAdmission,
     backfillWorkLogPricingMetadata: api.backfillWorkLogPricingMetadata,
     readCodexThreadTitleHistories,
     rememberCodexRolloutPath: codexObservability.rememberRolloutPath,
@@ -554,6 +583,7 @@ export async function createProviderApplicationComposition({
     turnTokenUsage: codexObservability.turnTokenUsage,
     contextCompactions: codexObservability.compactions,
     maintenanceOperations,
+    claudeRunAdmission,
     codexTurnStarts: codexObservability.turnStarts,
     codexHookReceipts: codexObservability.hookReceipts,
     replaceCodexHookReceipts: codexObservability.replaceHookReceipts,

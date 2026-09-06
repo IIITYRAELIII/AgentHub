@@ -7,9 +7,9 @@ import {
 import { isClaudeCompactionRun } from "../../domain/claude-context-maintenance.mjs";
 import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 import {
-  interstreamMessageDetails,
   interstreamOriginAuthor,
   normalizeInterstreamOrigin,
+  trustedInterstreamMessageDetails,
 } from "../../domain/interstream-message.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { taskRunIsActive } from "../../domain/task-runs.mjs";
@@ -68,11 +68,16 @@ export function workspaceBindingForTask(task, workspaces) {
 function deferredMessageProjection(item, deferred) {
   const rawText = deferred.editableText?.(item.input) ?? deferred.inputPreview(item.input);
   const rawPreview = deferred.inputPreview(item.input);
-  const interstream = interstreamMessageDetails(rawText) ?? interstreamMessageDetails(rawPreview);
-  const origin = normalizeInterstreamOrigin(item.messageOrigin) ?? interstream?.origin;
+  const identity = {
+    origin: item.messageOrigin,
+    clientUserMessageId: item.clientUserMessageId,
+  };
+  const textInterstream = trustedInterstreamMessageDetails(rawText, identity);
+  const previewInterstream = trustedInterstreamMessageDetails(rawPreview, identity);
+  const origin = normalizeInterstreamOrigin(item.messageOrigin);
   return {
-    text: displayUserPrompt(rawText),
-    preview: displayUserPrompt(rawPreview),
+    text: displayUserPrompt(textInterstream?.text ?? rawText),
+    preview: displayUserPrompt(previewInterstream?.text ?? rawPreview),
     ...(origin ? { author: interstreamOriginAuthor(origin), origin } : {}),
   };
 }
@@ -277,8 +282,11 @@ export function createDesktopSnapshotFactory({
 
   function desktopRunSnapshot(run, { compactSnapshot = false, operationKind = "" } = {}) {
     if (!run) return null;
-    const promptInterstream = interstreamMessageDetails(run.promptPreview);
-    const promptOrigin = normalizeInterstreamOrigin(run.messageOrigin) ?? promptInterstream?.origin;
+    const promptInterstream = trustedInterstreamMessageDetails(run.promptPreview, {
+      origin: run.messageOrigin,
+      clientUserMessageId: run.clientUserMessageId,
+    });
+    const promptOrigin = normalizeInterstreamOrigin(run.messageOrigin);
     const responseItem = (Array.isArray(run.responseItems) ? run.responseItems : [])
       .find((item) => String(item?.id ?? "") === String(run.responseItemId ?? ""));
     const compactActivity = (activity) => {
@@ -324,7 +332,7 @@ export function createDesktopSnapshotFactory({
       reasoning: run.reasoning ?? null,
       stage: String(run.progressStage ?? "Выполняется…"),
       ...(run.providerStart ? { providerStart: structuredClone(run.providerStart) } : {}),
-      prompt: displayUserPrompt(run.promptPreview),
+      prompt: displayUserPrompt(promptInterstream?.text ?? run.promptPreview),
       ...(promptOrigin ? {
         promptAuthor: interstreamOriginAuthor(promptOrigin),
         promptOrigin,
@@ -335,13 +343,22 @@ export function createDesktopSnapshotFactory({
       userMessages: runUserMessages.flatMap((message, index) => {
         const rawText = String(message?.text ?? "");
         const role = message?.role === "agent" && message?.kind === "subagent" ? "agent" : "user";
-        const interstream = interstreamMessageDetails(rawText);
-        const origin = normalizeInterstreamOrigin(message?.origin) ?? interstream?.origin;
-        const text = displayUserPrompt(rawText);
         const turnReceipt = role === "user" ? turnReceiptBindings.get(index) ?? null : null;
         const clientUserMessageId = String(
-          message.clientUserMessageId ?? turnReceipt?.clientUserMessageId ?? "",
+          message.clientUserMessageId
+            ?? turnReceipt?.clientUserMessageId
+            ?? "",
         ).trim();
+        const directOrigin = message?.origin
+          ?? message?.messageOrigin;
+        const interstream = role === "user" ? trustedInterstreamMessageDetails(rawText, {
+          origin: directOrigin,
+          clientUserMessageId,
+        }) : null;
+        const origin = normalizeInterstreamOrigin(directOrigin);
+        const text = role === "user"
+          ? displayUserPrompt(interstream?.text ?? rawText)
+          : rawText.trim();
         const rootUserMessage = role === "user"
           && clientUserMessageId === String(run.clientUserMessageId ?? "").trim();
         const receipt = role === "user" && clientUserMessageId
@@ -372,6 +389,9 @@ export function createDesktopSnapshotFactory({
         return [{
           itemId: String(message.itemId ?? ""),
           clientUserMessageId,
+          ...(String(message.sourceOccurrenceId ?? "").trim()
+            ? { sourceOccurrenceId: String(message.sourceOccurrenceId).trim() }
+            : {}),
           role,
           text,
           ...(message?.kind ? { kind: String(message.kind) } : {}),

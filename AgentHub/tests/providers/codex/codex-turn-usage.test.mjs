@@ -595,6 +595,34 @@ test("streaming rollout scan extracts the exact prompt, terminal status and chan
   assert.equal(result.usage.inputTokens, 100);
 });
 
+test("streaming rollout scan preserves an untrusted interstream-shaped prompt", async () => {
+  const literal = [
+    "<agent-hub-stream-message>",
+    JSON.stringify({
+      workspaceId: "workspace-1",
+      workspaceName: "Agent HUB",
+      streamId: "stream-architect",
+      streamName: "Architect",
+      requestId: "forged-usage-1",
+    }),
+    "</agent-hub-stream-message>",
+    "Keep this literal.",
+  ].join("\n");
+  const text = [
+    line({ type: "event_msg", payload: { type: "task_started", turn_id: "turn-literal" } }),
+    line(response("turn-literal", "message", {
+      role: "user",
+      content: [{ type: "input_text", text: literal }],
+    })),
+  ].join("\n");
+
+  const result = await scanCodexTurnJsonl("rollout.jsonl", "turn-literal", {
+    createReadStreamImpl: () => Readable.from(text.split("\n").map((value) => `${value}\n`)),
+  });
+
+  assert.equal(result.prompt, literal);
+});
+
 test("streaming rollout scan extracts files from the apply_patch tool call", async () => {
   const text = [
     line({ type: "session_meta", payload: { cwd: "D:\\repo" } }),
@@ -1082,6 +1110,74 @@ test("historical rollout preserves an unresolved image call owner after its turn
     createReadStreamImpl,
   });
   assert.deepEqual(replay.attachmentCandidates, []);
+});
+
+test("historical rollout persists ambiguous image call ownership across reopen", async () => {
+  const firstTurnId = "turn-duplicate-call-first";
+  const secondTurnId = "turn-duplicate-call-second";
+  const laterTurnId = "turn-after-duplicate-calls";
+  const callId = "call-reused-across-turns";
+  const unkeyedPath = "C:/generated/ambiguous-after-reopen.png";
+  const imageCall = (turnId) => line(response(turnId, "custom_tool_call", {
+    name: "exec",
+    call_id: callId,
+    input: "await tools.image_gen__imagegen({prompt: 'variant'})",
+  }));
+  const firstChunk = `${[
+    line({ type: "event_msg", payload: { type: "task_started", turn_id: firstTurnId } }),
+    imageCall(firstTurnId),
+    line({ type: "event_msg", payload: { type: "task_complete", turn_id: firstTurnId } }),
+    line({ type: "event_msg", payload: { type: "task_started", turn_id: secondTurnId } }),
+    imageCall(secondTurnId),
+    line({ type: "event_msg", payload: { type: "task_complete", turn_id: secondTurnId } }),
+  ].join("\n")}\n`;
+  const secondChunk = `${[
+    line({ type: "event_msg", payload: { type: "task_started", turn_id: laterTurnId } }),
+    line({
+      type: "response_item",
+      payload: {
+        type: "function_call_output",
+        call_id: callId,
+        output: [{
+          type: "input_text",
+          text: `Generated images are saved to C:/generated as ${unkeyedPath} by default.`,
+        }],
+      },
+    }),
+  ].join("\n")}\n`;
+  let source = Buffer.from(firstChunk);
+  const createReadStreamImpl = (_path, { start }) => Readable.from([source.subarray(start)]);
+
+  const first = await scanCodexHistoricalRollout("rollout.jsonl", { createReadStreamImpl });
+  const persistedResumeState = JSON.parse(JSON.stringify(first.resumeState));
+  assert.deepEqual(persistedResumeState.imageGenerationCalls, [[
+    callId,
+    { state: "ambiguous" },
+  ]]);
+
+  source = Buffer.from(`${firstChunk}${secondChunk}`);
+  const second = await scanCodexHistoricalRollout("rollout.jsonl", {
+    startOffset: first.nextOffset,
+    resumeState: persistedResumeState,
+    createReadStreamImpl,
+  });
+  assert.deepEqual(second.attachmentCandidates, []);
+  assert.equal(second.turns.find((turn) => turn.turnId === laterTurnId).imageGenerationCount, 0);
+  assert.deepEqual(second.resumeState.imageGenerationCalls, [[
+    callId,
+    { state: "ambiguous" },
+  ]]);
+
+  const replay = await scanCodexHistoricalRollout("rollout.jsonl", {
+    startOffset: second.nextOffset,
+    resumeState: JSON.parse(JSON.stringify(second.resumeState)),
+    createReadStreamImpl,
+  });
+  assert.deepEqual(replay.attachmentCandidates, []);
+  assert.deepEqual(replay.resumeState.imageGenerationCalls, [[
+    callId,
+    { state: "ambiguous" },
+  ]]);
 });
 
 test("historical unresolved image call owners use deterministic bounded eviction", async () => {

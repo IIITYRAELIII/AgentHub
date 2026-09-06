@@ -19,6 +19,7 @@ function fixture({ sourceSurvives = false } = {}) {
       renameWorkspaceFolder: (params) => (calls.push(["folder", params]), params),
       archiveWorkspace: ({ workspaceId }) => ({ id: workspaceId, archivedAtMs: 1 }),
       restoreWorkspace: ({ workspaceId }) => ({ id: workspaceId, archivedAtMs: null }),
+      deleteArchivedWorkspace: (params) => (calls.push(["delete", params]), { id: params.workspaceId, deleted: true }),
       createWorkspaceFromStream: () => {
         workspaces.add("created");
         if (!sourceSurvives) workspaces.delete("source");
@@ -36,6 +37,7 @@ function fixture({ sourceSurvives = false } = {}) {
     },
     taskBoard: {
       reassignWorkspace: (...args) => calls.push(args),
+      snapshot: () => [],
     },
     selectionStore: {
       streamId: "stream",
@@ -128,6 +130,14 @@ test("archiving a Workspace is blocked while one of its Threads is running", asy
     actions.archiveWorkspace({ workspaceId: "source" }),
     /завершите активные ходы/u,
   );
+});
+
+test("permanent Workspace deletion crosses the mutation boundary once", async () => {
+  const { actions, calls } = fixture();
+  assert.deepEqual(await actions.deleteArchivedWorkspace({
+    workspaceId: "source", confirmationName: "Source",
+  }), { id: "source", deleted: true });
+  assert.deepEqual(calls, [["delete", { workspaceId: "source", confirmationName: "Source" }]]);
 });
 
 test("moving a Workspace to a folder uses the dedicated Workspace mutation", async () => {

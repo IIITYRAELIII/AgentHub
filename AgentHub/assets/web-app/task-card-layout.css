@@ -26,6 +26,151 @@
   resize: none;
 }
 
+.task-card-checklist {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.75rem;
+}
+
+.task-card-checklist-parent {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.75rem;
+}
+
+.task-card-checklist-parent[hidden] {
+  display: none;
+}
+
+.task-card-checklist-parent p {
+  color: var(--text-faint);
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.task-card-checklist > header,
+.task-card-checklist form,
+.task-checklist-actions {
+  align-items: center;
+  display: flex;
+  gap: 0.45rem;
+}
+
+.task-card-checklist > header {
+  justify-content: space-between;
+}
+
+.task-card-checklist output {
+  color: var(--text-faint);
+  font-size: 0.72rem;
+}
+
+.task-card-checklist form input,
+.task-checklist-link-select {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font: inherit;
+  min-width: 0;
+  padding: 0.45rem 0.55rem;
+}
+
+.task-card-checklist form input {
+  flex: 1 1 auto;
+}
+
+.task-card-checklist ol {
+  display: grid;
+  gap: 0.55rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.task-checklist-item {
+  align-items: start;
+  border-top: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  padding-top: 0.55rem;
+}
+
+.task-checklist-body {
+  display: grid;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.task-checklist-text {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.task-checklist-item.is-completed .task-checklist-text {
+  color: var(--text-faint);
+  text-decoration: line-through;
+}
+
+.task-checklist-actions {
+  flex-wrap: wrap;
+}
+
+.task-checklist-linked-action {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--line));
+  border-radius: 0.55rem;
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.55rem;
+}
+
+.task-checklist-linked-action p {
+  margin: 0;
+}
+
+.task-checklist-linked-action-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.task-checklist-linked-action-choices button {
+  font-size: 0.68rem;
+}
+
+.task-checklist-actions button,
+.task-checklist-actions select {
+  font-size: 0.68rem;
+}
+
+.task-checklist-item .board-task-card {
+  cursor: pointer;
+  width: 100%;
+}
+
+.task-card-executor,
+.board-task-executor.is-link {
+  appearance: none;
+  background: none;
+  border: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-align: left;
+}
+
+.task-card-executor:disabled {
+  color: var(--text-faint);
+  cursor: default;
+}
+
 @media (max-width: 40rem) {
   .task-card-modal {
     max-height: calc(100dvh - 1rem);

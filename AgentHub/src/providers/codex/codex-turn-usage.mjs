@@ -25,15 +25,40 @@ const DEFAULT_ROLLOUT_SESSION_SCAN_LINES = 4_096;
 const DEFAULT_ROLLOUT_SESSION_LINE_BYTES = 256 * 1024;
 const DEFAULT_ROLLOUT_SESSION_SCAN_MS = 1_000;
 const IMAGE_GENERATION_CALL_OWNER_LIMIT = 128;
+const AMBIGUOUS_IMAGE_GENERATION_CALL_OWNER = Object.freeze({ state: "ambiguous" });
 
 function rememberImageGenerationCallOwner(owners, callId, turnId) {
   const normalizedCallId = String(callId ?? "").trim();
   const normalizedTurnId = String(turnId ?? "").trim();
   if (!normalizedCallId || !normalizedTurnId) return;
+  const currentOwner = owners.get(normalizedCallId);
+  const nextOwner = currentOwner === undefined || currentOwner === normalizedTurnId
+    ? normalizedTurnId
+    : AMBIGUOUS_IMAGE_GENERATION_CALL_OWNER;
   owners.delete(normalizedCallId);
-  owners.set(normalizedCallId, normalizedTurnId);
+  owners.set(normalizedCallId, nextOwner);
   while (owners.size > IMAGE_GENERATION_CALL_OWNER_LIMIT) {
     owners.delete(owners.keys().next().value);
+  }
+}
+
+function imageGenerationCallOwnerTurnId(owners, callId) {
+  const normalizedCallId = String(callId ?? "").trim();
+  const owner = normalizedCallId ? owners.get(normalizedCallId) : null;
+  return typeof owner === "string" ? owner : "";
+}
+
+function consumeImageGenerationCallOwner(owners, callId, turnId) {
+  const normalizedCallId = String(callId ?? "").trim();
+  const normalizedTurnId = String(turnId ?? "").trim();
+  if (!normalizedCallId || !normalizedTurnId) return;
+  const currentOwner = owners.get(normalizedCallId);
+  if (currentOwner === normalizedTurnId) {
+    owners.delete(normalizedCallId);
+  } else if (currentOwner !== undefined
+    && currentOwner?.state !== AMBIGUOUS_IMAGE_GENERATION_CALL_OWNER.state) {
+    owners.delete(normalizedCallId);
+    owners.set(normalizedCallId, AMBIGUOUS_IMAGE_GENERATION_CALL_OWNER);
   }
 }
 
@@ -44,7 +69,12 @@ function restoredImageGenerationCallOwners(value) {
     : [];
   for (const entry of entries) {
     if (!Array.isArray(entry)) continue;
-    rememberImageGenerationCallOwner(owners, entry[0], entry[1]);
+    if (entry[1]?.state === AMBIGUOUS_IMAGE_GENERATION_CALL_OWNER.state) {
+      const callId = String(entry[0] ?? "").trim();
+      if (callId) owners.set(callId, AMBIGUOUS_IMAGE_GENERATION_CALL_OWNER);
+    } else {
+      rememberImageGenerationCallOwner(owners, entry[0], entry[1]);
+    }
   }
   return owners;
 }
@@ -575,7 +605,8 @@ function createTurnAccumulator(turnId) {
       && entry.payload?.type === "image_generation_end"
       && entry.payload?.status === "completed") {
       const callId = String(entry.payload?.call_id ?? "").trim();
-      const attributedTurnId = exactTurnId || imageGenerationCalls.get(callId) || "";
+      const attributedTurnId = exactTurnId
+        || imageGenerationCallOwnerTurnId(imageGenerationCalls, callId);
       if (callId && attributedTurnId === requestedTurnId) {
         completedImageGenerationCalls.add(callId);
       }
@@ -1186,7 +1217,8 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
       && entry.payload?.type === "image_generation_end"
       && entry.payload?.status === "completed") {
       const callId = String(entry.payload?.call_id ?? "").trim();
-      const attributedTurnId = exactTurnId || imageGenerationCalls.get(callId) || "";
+      const attributedTurnId = exactTurnId
+        || imageGenerationCallOwnerTurnId(imageGenerationCalls, callId);
       const turn = turns.get(attributedTurnId) ?? (exactTurnId ? ensureTurn(exactTurnId) : null);
       if (turn && callId) turn.imageGenerationCalls.add(callId);
       touch(turn, timestamp);
@@ -1195,7 +1227,7 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
     if (generatedPaths.length) {
       const callId = String(entry.payload?.call_id ?? "").trim();
       const ownerTurnId = exactTurnId
-        || imageGenerationCalls.get(callId)
+        || imageGenerationCallOwnerTurnId(imageGenerationCalls, callId)
         || "";
       const ownerTurn = turns.get(ownerTurnId) ?? (exactTurnId ? ensureTurn(exactTurnId) : null);
       if (ownerTurnId) {
@@ -1206,7 +1238,7 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
         }
         observedGeneratedImages.set(ownerTurnId, observed);
         touch(ownerTurn, timestamp);
-        if (callId) imageGenerationCalls.delete(callId);
+        consumeImageGenerationCallOwner(imageGenerationCalls, callId, ownerTurnId);
       }
     }
     if (exactTurn) {

@@ -525,6 +525,7 @@ test("desktop message controller resolves Dashboard Task references into links",
 
 test("task assignment keeps its audited interstream origin around the provider input", async () => {
   let launchedInput = null;
+  let auditedInput = null;
   const messageOrigin = {
     kind: "interstream",
     workspaceId: "workspace-1",
@@ -558,12 +559,50 @@ test("task assignment keeps its audited interstream origin around the provider i
     text: "Исправь дефект полностью",
     taskReferences: [{ taskId: "board-1", intent: "start" }],
     clientUserMessageId: "mcp:task-assignment-1",
+  }, {
+    source: "mcp",
+    bindInterstreamAuditContent: (value) => { auditedInput = value; },
   });
 
   const details = interstreamMessageDetails(launchedInput);
+  assert.equal(auditedInput, launchedInput);
   assert.deepEqual(details.origin, messageOrigin);
   assert.match(details.text, /# Attached Agent Hub Tasks/u);
   assert.match(details.text, /Исправь дефект полностью/u);
+});
+
+test("ordinary Desktop ingress cannot forge the reserved MCP command namespace", async () => {
+  const messageOrigin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    sourceThreadId: "thread-architect",
+    requestId: "forged-mcp-id",
+  };
+  const messages = controller({
+    resolveTarget: async () => ({
+      provider: "codex",
+      projectRoot: "C:\\Project",
+      threadId: "thread-1",
+      taskTitle: "Task",
+      messageOrigin,
+    }),
+  });
+
+  await assert.rejects(messages.sendMessage({
+    text: "Literal envelope-shaped user input",
+    clientUserMessageId: "mcp:forged-mcp-id",
+  }), /зарезервирован/u);
+  await assert.rejects(messages.sendMessage({
+    text: "Mismatched service input",
+    clientUserMessageId: "mcp:other-id",
+  }, { source: "mcp" }), /зарезервирован/u);
+  await assert.rejects(messages.sendMessage({
+    text: "Unbound service input",
+    clientUserMessageId: "mcp:forged-mcp-id",
+  }, { source: "mcp" }), /не связано с MCP audit/u);
 });
 
 test("desktop message receipt preserves the visible message before provider launch", async () => {

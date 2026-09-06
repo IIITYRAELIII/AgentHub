@@ -112,6 +112,20 @@ function publicThread(thread, includeTurns = true) {
   };
 }
 
+function threadReadProjection(thread) {
+  const projected = structuredClone(publicThread(thread, true));
+  projected.turns = projected.turns.map((turn) => {
+    if (!String(turn?.prompt ?? "").includes("[unkeyed-history-tail]")) return turn;
+    const userItems = turn.items.filter((item) => item?.type === "userMessage");
+    const tailUser = userItems.at(-1);
+    if (tailUser) delete tailUser.clientId;
+    turn.items = turn.items.filter((item) => item?.type !== "userMessage");
+    if (tailUser) turn.items.unshift(tailUser);
+    return turn;
+  });
+  return projected;
+}
+
 function promptText(input) {
   return (Array.isArray(input) ? input : [])
     .filter((item) => item?.type === "text")
@@ -205,24 +219,6 @@ function finishTurn(thread, turn, { status = "completed", answer = null } = {}) 
     },
   });
   notify("turn/diff/updated", { threadId: thread.id, turnId: turn.id, diff: `diff --fake ${turn.id}` });
-  notify("turn/completed", {
-    threadId: thread.id,
-    turn: structuredClone(turn),
-  });
-}
-
-function finishTurnWithoutNewAnswer(thread, turn) {
-  if (turn.status !== "inProgress") return;
-  turn.status = "completed";
-  if (thread.externalRolloutPath && turn.external === true) {
-    appendFileSync(thread.externalRolloutPath, `${JSON.stringify({
-      timestamp: new Date().toISOString(),
-      type: "event_msg",
-      payload: { type: "task_complete", turn_id: turn.id },
-    })}\n`, "utf8");
-  }
-  thread.updatedAt = Math.floor(Date.now() / 1000);
-  save();
   notify("turn/completed", {
     threadId: thread.id,
     turn: structuredClone(turn),
@@ -343,13 +339,15 @@ function startExternalTurn(thread, {
   initialAnswer = "",
 }) {
   if (thread.turns.some((turn) => turn.status === "inProgress")) return;
+  const turnId = uuid("turn", state.nextTurn++);
+  const clientId = `fake-vscode-${turnId}`;
   const turn = {
-    id: uuid("turn", state.nextTurn++),
+    id: turnId,
     status: "inProgress",
     prompt,
     external: true,
     items: [
-      { type: "userMessage", content: [{ type: "text", text: prompt }] },
+      { type: "userMessage", clientId, content: [{ type: "text", text: prompt }] },
       ...(initialAnswer ? [{ type: "agentMessage", text: initialAnswer, phase: "commentary" }] : []),
     ],
   };
@@ -362,7 +360,7 @@ function startExternalTurn(thread, {
     JSON.stringify({
       timestamp: new Date().toISOString(),
       type: "session_meta",
-      payload: { originator: "codex_vscode", source: "vscode" },
+      payload: { id: `session-${thread.id}`, originator: "codex_vscode", source: "vscode" },
     }),
     JSON.stringify({
       timestamp: new Date().toISOString(),
@@ -384,7 +382,7 @@ function startExternalTurn(thread, {
       type: "event_msg",
       payload: {
         type: "user_message",
-        client_id: `fake-vscode-${turn.id}`,
+        client_id: clientId,
         message: prompt,
       },
     }),
@@ -538,7 +536,11 @@ function handleRequest(message) {
     const thread = threadById(params.threadId);
     if (!thread) return send({ id, error: { message: `thread not found: ${params.threadId}` } });
     save();
-    reply(id, { thread: publicThread(thread, params.includeTurns !== false) });
+    reply(id, {
+      thread: params.includeTurns === false
+        ? publicThread(thread, false)
+        : threadReadProjection(thread),
+    });
     return;
   }
   if (method === "thread/loaded/list") {
@@ -585,7 +587,9 @@ function handleRequest(message) {
         const externalTurn = thread.turns.find((turn) => (
           turn.status === "inProgress" && turn.prompt === "[external-unchanged] VSCode task"
         ));
-        if (externalTurn) finishTurnWithoutNewAnswer(thread, externalTurn);
+        if (externalTurn) finishTurn(thread, externalTurn, {
+          answer: "Накопленный внешний текст",
+        });
       }
     }
     save();

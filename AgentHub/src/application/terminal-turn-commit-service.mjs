@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
 
+import {
+  consistentInterstreamRecordIdentity,
+  normalizeInterstreamClientUserMessageId,
+} from "../domain/interstream-message.mjs";
+
 function usageIdentity(completion) {
   const value = {
     usage: completion?.usage ?? {},
@@ -54,6 +59,37 @@ function richerAttachments(current, candidate) {
 
 function historySnapshot(run, completion) {
   const source = run ?? {};
+  const rootMessage = (Array.isArray(source.userMessages) ? source.userMessages : [])
+    .find((message) => message?.role === "user") ?? null;
+  const identity = consistentInterstreamRecordIdentity({
+    clientUserMessageIds: [
+      source.clientUserMessageId,
+      completion.clientUserMessageId,
+      rootMessage?.clientUserMessageId,
+    ],
+    origins: [
+      source.messageOrigin,
+      completion.messageOrigin,
+      rootMessage?.origin ?? rootMessage?.messageOrigin,
+    ],
+  });
+  const userMessages = (Array.isArray(source.userMessages) ? source.userMessages : []).map((message) => {
+    const value = structuredClone(message);
+    const messageIdentity = consistentInterstreamRecordIdentity({
+      clientUserMessageIds: [value?.clientUserMessageId],
+      origins: [value?.origin ?? value?.messageOrigin],
+    });
+    if (messageIdentity.conflicted || (message === rootMessage && identity.conflicted)) {
+      delete value.clientUserMessageId;
+      delete value.origin;
+      delete value.messageOrigin;
+      return value;
+    }
+    if (messageIdentity.clientUserMessageId) {
+      value.clientUserMessageId = messageIdentity.clientUserMessageId;
+    }
+    return value;
+  });
   const responseAnnotationReferences = Array.isArray(completion.responseAnnotationReferences)
     && completion.responseAnnotationReferences.length
     ? completion.responseAnnotationReferences
@@ -66,7 +102,7 @@ function historySnapshot(run, completion) {
     threadId: completion.threadId,
     turnId: completion.turnId,
     taskTitle: completion.taskTitle,
-    promptPreview: String(source.promptPreview ?? completion.prompt ?? ""),
+    promptPreview: String(source.rawPrompt ?? source.promptPreview ?? completion.prompt ?? ""),
     responseText: String(completion.finalAnswer ?? source.responseText ?? ""),
     ...(responseAnnotationReferences?.length
       ? {
@@ -76,9 +112,16 @@ function historySnapshot(run, completion) {
       }
       : {}),
     responseItemId: String(source.responseItemId ?? ""),
-    clientUserMessageId: String(source.clientUserMessageId ?? "") || null,
+    clientUserMessageId: identity.conflicted
+      ? null
+      : normalizeInterstreamClientUserMessageId(
+        identity.clientUserMessageId ?? completion.clientUserMessageId,
+      ),
+    ...(!identity.conflicted && identity.messageOrigin
+      ? { messageOrigin: structuredClone(identity.messageOrigin) }
+      : {}),
     submittedAt: source.submittedAt ?? source.userMessages?.[0]?.submittedAt ?? source.userMessages?.[0]?.time ?? source.startedAt ?? null,
-    userMessages: Array.isArray(source.userMessages) ? structuredClone(source.userMessages) : [],
+    userMessages,
     activities: Array.isArray(source.activities) ? structuredClone(source.activities) : [],
     activityGroups: Array.isArray(source.activityGroups) ? structuredClone(source.activityGroups) : [],
     messageAttachments: Array.isArray(source.messageAttachments)
@@ -121,13 +164,40 @@ export class TerminalTurnCommitService {
       throw new Error("terminal completion requires provider, threadId and turnId");
     }
     const finalAnswer = String(completion.finalAnswer ?? "").trim();
+    const durableCompletion = structuredClone(completion);
+    const completionRootMessage = (Array.isArray(durableCompletion.userMessages)
+      ? durableCompletion.userMessages
+      : []).find((message) => message?.role === "user") ?? null;
+    const completionIdentity = consistentInterstreamRecordIdentity({
+      clientUserMessageIds: [
+        durableCompletion.clientUserMessageId,
+        completionRootMessage?.clientUserMessageId,
+      ],
+      origins: [
+        durableCompletion.messageOrigin,
+        completionRootMessage?.origin ?? completionRootMessage?.messageOrigin,
+      ],
+    });
+    if (completionIdentity.conflicted) {
+      delete durableCompletion.clientUserMessageId;
+      delete durableCompletion.messageOrigin;
+      if (completionRootMessage) {
+        delete completionRootMessage.clientUserMessageId;
+        delete completionRootMessage.origin;
+        delete completionRootMessage.messageOrigin;
+      }
+    } else if (completionIdentity.clientUserMessageId) {
+      durableCompletion.clientUserMessageId = completionIdentity.clientUserMessageId;
+    }
     const body = finalAnswer || String(completion.message?.text ?? "").trim();
     const lastMessage = completion.aggregateOnly ? null : {
       text: body,
       updatedAt: completion.completedAt,
       startedAt: completion.startedAt || null,
     };
-    const commandId = String(run?.clientUserMessageId ?? completion.clientUserMessageId ?? "").trim();
+    const commandId = normalizeInterstreamClientUserMessageId(
+      run?.clientUserMessageId ?? completion.clientUserMessageId,
+    ) ?? "";
     const trace = this.commandTrace?.startBestEffortSpan?.({
       commandId,
       stage: "terminal-commit",
@@ -146,10 +216,10 @@ export class TerminalTurnCommitService {
         lastMessage,
         payload: {
           completion: {
-            ...structuredClone(completion),
+            ...durableCompletion,
             ...(String(run?.id ?? "").trim() ? { runId: String(run.id).trim() } : {}),
           },
-          history: historySnapshot(run, completion),
+          history: historySnapshot(run, durableCompletion),
         },
         channels: channelIntents,
         ...Number.isSafeInteger(expectedTerminalRevision)
@@ -311,9 +381,9 @@ export class TerminalTurnCommitService {
     if (!terminal || !this.messageCommands) return false;
     const completion = terminal.payload?.completion ?? {};
     const history = terminal.payload?.history ?? {};
-    const clientUserMessageId = String(
+    const clientUserMessageId = normalizeInterstreamClientUserMessageId(
       history.clientUserMessageId ?? completion.clientUserMessageId ?? "",
-    ).trim();
+    );
     if (!clientUserMessageId) return false;
     const normalizedStatus = String(terminal.status ?? completion.status ?? "completed").trim().toLowerCase();
     const commandState = normalizedStatus === "completed"

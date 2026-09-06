@@ -115,10 +115,11 @@ async function sharedWebviewHtml(webview, locations) {
     .replace(/<script\b[^>]*\bsrc="\/browser-device-auth\.js"[^>]*><\/script>\s*/iu, "");
   const firstRuntimeScript = /<script\b(?=[^>]*\bsrc="\/[^"]+")[^>]*><\/script>/iu;
   if (!firstRuntimeScript.test(html)) throw new Error("Не найдена точка запуска Agent Hub");
-  html = html.replace(
-    firstRuntimeScript,
-    `<script src="${resource(webview, bootstrap)}" defer></script>$&`,
-  );
+  const hostTrustScript = /<script\b(?=[^>]*\bsrc="\/host-message-trust\.js")[^>]*><\/script>/iu;
+  const bootstrapScript = `<script src="${resource(webview, bootstrap)}" defer></script>`;
+  html = hostTrustScript.test(html)
+    ? html.replace(hostTrustScript, `$&${bootstrapScript}`)
+    : html.replace(firstRuntimeScript, `${bootstrapScript}$&`);
   const rewritten = await rewriteRuntimeAssetReferences(html, webview, runtimeUri, clientAssets);
   html = rewritten.html;
   const csp = [
@@ -127,6 +128,7 @@ async function sharedWebviewHtml(webview, locations) {
     `style-src ${webview.cspSource} 'nonce-${nonce}'`,
     `script-src ${webview.cspSource} 'nonce-${nonce}'`,
     "connect-src http://127.0.0.1:* http://localhost:* http://[::1]:*",
+    "frame-src https:",
     "font-src 'none'",
   ].join("; ");
   html = html.replace(

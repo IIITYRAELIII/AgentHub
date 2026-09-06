@@ -20,8 +20,11 @@ const DEFAULT_AUDIT_THREADS_PER_RUN = 8;
 const DEFAULT_AUDIT_TURNS_PER_RUN = 20;
 const DEFAULT_AUDIT_TIME_MS = 75;
 const ROLLOUT_CHECKPOINT_BYTES = 128;
-const SNAPSHOT_VERSION = 14;
-const COMPATIBLE_SNAPSHOT_VERSIONS = new Set([4, 5, 6, 7, 8, 9, 10, 11, 12, 13, SNAPSHOT_VERSION]);
+const SNAPSHOT_VERSION = 15;
+const COMPATIBLE_SNAPSHOT_VERSIONS = new Set([
+  4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, SNAPSHOT_VERSION,
+]);
+const HISTORICAL_BACKFILL_STATE_VERSIONS = new Set([8, 9, 12, 13, SNAPSHOT_VERSION]);
 
 function timestampMs(value) {
   const numeric = Number(value);
@@ -369,6 +372,7 @@ export class CodexTerminalAudit {
   restore(snapshot) {
     const snapshotVersion = Number(snapshot?.version);
     const compatibleSnapshot = COMPATIBLE_SNAPSHOT_VERSIONS.has(snapshotVersion);
+    const compatibleHistoricalBackfill = HISTORICAL_BACKFILL_STATE_VERSIONS.has(snapshotVersion);
     this.completedThroughMs = compatibleSnapshot ? timestampMs(snapshot?.completedThrough) : 0;
     this.positions.clear();
     this.pendingTurns.clear();
@@ -376,13 +380,19 @@ export class CodexTerminalAudit {
       || (compatibleSnapshot && snapshot?.subagentBackfillPending === true);
     // Snapshots v10 and v11 may have completed or interrupted the old
     // per-turn projection pass. Treat them as compatible for live cursors,
-    // while rebuilding only the resumable historical queue once under v13.
-    this.historicalSubagentBackfill = [8, 9, 12, 13, SNAPSHOT_VERSION].includes(snapshotVersion)
+    // while rebuilding only the resumable historical queue once.
+    // v14 could already be at live EOF with its historical pass completed
+    // before generated-output provenance produced attachment repair candidates.
+    // Preserve its live byte cursors, but rebuild the existing bounded durable
+    // historical queue once under v15. A persisted v15 completion never scans
+    // those files again unless new live bytes arrive through their exact cursor.
+    this.historicalSubagentBackfill = compatibleHistoricalBackfill
       ? restoredHistoricalSubagentBackfill(snapshot?.historicalSubagentBackfill)
       : emptyHistoricalSubagentBackfill(compatibleSnapshot);
     this.historicalScanCache.clear();
     this.historicalTurnIdentities = new Set(
-      Array.isArray(snapshot?.historicalSubagentBackfill?.processedTurnIdentities)
+      compatibleHistoricalBackfill
+        && Array.isArray(snapshot?.historicalSubagentBackfill?.processedTurnIdentities)
         ? snapshot.historicalSubagentBackfill.processedTurnIdentities
           .map((value) => String(value ?? "").trim())
           .filter(Boolean)

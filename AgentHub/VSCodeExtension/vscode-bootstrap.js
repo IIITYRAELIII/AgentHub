@@ -89,7 +89,13 @@ window.addEventListener("load", resumeWebviewMotion, { once: true });
 document.addEventListener("visibilitychange", resumeWebviewMotion);
 window.addEventListener("pagehide", () => motionObserver.disconnect(), { once: true });
 
-window.addEventListener("message", (event) => {
+const guardHostMessage = window.AgentHubHostMessageTrust?.guardHostMessage
+  ?? ((listener) => (event) => {
+    const source = event?.source ?? null;
+    if (source !== null && source !== window) return undefined;
+    return listener(event);
+  });
+window.addEventListener("message", guardHostMessage((event) => {
   const message = event.data;
   if (message?.type === "agenthub:session-result") {
     const request = pendingSessions.get(String(message.id ?? ""));
@@ -153,7 +159,7 @@ window.addEventListener("message", (event) => {
     status: Number(message.status) || 500,
     headers: message.headers ?? { "Content-Type": "application/json; charset=utf-8" },
   }));
-});
+}));
 
 function requestDirectSession() {
   const id = `session-${Date.now()}-${++sequence}`;
