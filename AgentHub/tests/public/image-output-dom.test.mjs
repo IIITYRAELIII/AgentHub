@@ -290,12 +290,13 @@ test("shipped remote viewer opens a production-sized image from its durable reso
   }
 });
 
-test("shipped Telegram viewer loads the production publisher shape through authenticated Blob URL", async () => {
+test("shipped Telegram viewer opens a user-upload through the production publisher and authenticated Blob URL", async () => {
   const { chromium } = await import("playwright");
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-telegram-viewer-"));
   const attachments = path.join(root, "attachments");
   const secretFile = path.join(root, "sync.secret");
-  const source = path.join(attachments, "image-telegram.png");
+  const attachmentId = "04dff530-14f8-4a48-b1df-16e8308af291--aW1hZ2UucG5n.png";
+  const source = path.join(attachments, attachmentId);
   const fullBody = await readFile(new URL(
     "../../assets/wallpapers/telegram-gothic-void-desktop-v2.png",
     import.meta.url,
@@ -372,9 +373,10 @@ test("shipped Telegram viewer loads the production publisher shape through authe
               expiresAt: Date.now() + 60_000,
             };
           }
-          assert.equal(params.id, "image-telegram.png");
+          assert.equal(params.id, attachmentId);
           publishedAccess = await service.open(params, { source: "telegram-mini-app" });
           assert.equal(publishedAccess.url, undefined);
+          assert.equal(publishedAccess.name, "image.png");
           return publishedAccess;
         },
         resource: async (url, route) => {
@@ -420,13 +422,13 @@ test("shipped Telegram viewer loads the production publisher shape through authe
       }]);
       window.AgentHub.setMessages(taskId, [{
         id: "turn-telegram-image",
-        itemId: "turn-telegram-image:agent:final",
+        itemId: "turn-telegram-image:user:prompt",
         turnId: "turn-telegram-image",
-        role: "agent",
-        text: "Telegram image",
+        role: "user",
+        text: "User screenshot",
         attachments: [{
-          id: "image-telegram.png",
-          name: "Изображение",
+          id: "04dff530-14f8-4a48-b1df-16e8308af291--aW1hZ2UucG5n.png",
+          name: "image.png",
           type: "image/png",
           thumbnailUrl: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
         }, {
@@ -439,7 +441,7 @@ test("shipped Telegram viewer loads the production publisher shape through authe
     });
 
     await page.locator('[data-mobile-button="chat"]').click();
-    await page.locator('.msg-agent[data-turn-id="turn-telegram-image"] .attachment-image')
+    await page.locator('.msg-user[data-turn-id="turn-telegram-image"] .attachment-image')
       .first()
       .click();
     await page.waitForFunction(() => {

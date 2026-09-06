@@ -143,6 +143,7 @@ test("Dashboard transport probe exposes a bounded ordered attachment manifest", 
 class MemoryStorage {
   values = new Map();
   alarmAt = null;
+  listCalls = [];
 
   async get(key) {
     if (Array.isArray(key)) {
@@ -164,6 +165,7 @@ class MemoryStorage {
   }
 
   async list({ prefix = "", start = "", startAfter = "", end = "", limit = Number.POSITIVE_INFINITY } = {}) {
+    this.listCalls.push({ prefix, start, startAfter, end, limit });
     return new Map([...this.values]
       .filter(([key]) => (
         key.startsWith(prefix)
@@ -2537,6 +2539,10 @@ test("Worker serves temporary historical attachment views only to their owner", 
     "base64",
   );
   const bodyHash = createHash("sha256").update(png).digest("hex");
+  for (let index = 0; index < 512; index += 1) {
+    await storage.put(`control:attachment-chunk:legacy-${index}:0`, new Uint8Array(1_024));
+  }
+  storage.listCalls = [];
   let response = await workerModule.default.fetch(signedBinaryServiceRequest(
     "https://hub.test/api/control/attachment/view/push",
     png,
@@ -2549,6 +2555,8 @@ test("Worker serves temporary historical attachment views only to their owner", 
     },
   ), env);
   assert.equal(response.status, 201);
+  assert.ok(storage.listCalls.some(({ prefix }) => prefix === "control:attachment-manifest:"));
+  assert.equal(storage.listCalls.some(({ prefix }) => prefix === "control:attachment:"), false);
 
   response = await workerModule.default.fetch(new Request(
     `https://hub.test/api/attachment/view?id=${id}`,
@@ -2591,7 +2599,7 @@ test("Worker serves temporary historical attachment views only to their owner", 
   ), env);
   assert.equal(response.status, 404);
 
-  const manifestKey = `control:attachment:${id}`;
+  const manifestKey = `control:attachment-manifest:${id}`;
   const expired = await storage.get(manifestKey);
   expired.expiresAt = Date.now() - 1;
   await storage.put(manifestKey, expired);

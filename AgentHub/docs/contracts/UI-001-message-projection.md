@@ -39,6 +39,10 @@
   durable resource URL. A Telegram Mini App attachment-view descriptor remains
   bound to its authenticated user: the client fetches it with the `tma` header
   and gives the viewer a transient Blob URL, never a credential in the URL.
+  Worker attachment manifests and binary chunks occupy disjoint key prefixes;
+  publication and expiry accounting enumerate only the bounded manifest set and
+  never materialize previously stored image chunks. Exact legacy manifest keys
+  remain readable until their bounded capability expires.
   Neither path base64-copies the full attachment. Loading is fenced by the exact
   viewer generation, gallery index and resource token. Navigation, close or a
   newer open aborts only the matching pending fetch and revokes only its transient

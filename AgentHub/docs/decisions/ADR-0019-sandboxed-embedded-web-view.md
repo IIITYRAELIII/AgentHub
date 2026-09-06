@@ -21,12 +21,16 @@ ephemeral, unload it when the user leaves the view and provide an
 external-browser escape hatch for sites that prohibit framing.
 
 Opaque sandboxing does not suppress `parent.postMessage`. All host-message
-receivers therefore share a positive source boundary: native VS Code messages
-with no page source and same-window messages are accepted, while every iframe,
-opener or nested foreign browsing context is rejected before payload parsing.
-The embedded-frame source is registered for its full lifecycle and old sources
-remain denied after unload or replacement. Origin or payload shape alone is not
-used as authentication.
+receivers therefore share a positive source boundary: same-window messages and
+native channels with no page source are accepted, while every registered
+iframe, opener or nested foreign browsing context is rejected before payload
+parsing. Current VS Code relays native messages through its same-origin outer
+webview frame rather than exposing a null source. That one additional channel
+requires both the acquired VS Code API capability and an event origin exactly
+equal to the current opaque `vscode-webview:` origin; ordinary web pages cannot
+claim it. The embedded-frame source is registered for its full lifecycle and
+old sources remain denied after unload or replacement. Origin or payload shape
+alone is not used as authentication.
 
 Initial URL admission rejects IP literals, the current Hub hostname, local and
 single-label names, `.onion`, `.alt`, other configured special-use suffixes and

@@ -47,6 +47,9 @@ const DASHBOARD_BOT_PRECEDING_COMMENT_MAX_MESSAGE_GAP = 4;
 const SYNC_STAGING_EXPIRY_MS = 30 * 60 * 1_000;
 const STORAGE_DELETE_BATCH_SIZE = 128;
 const REMOTE_ATTACHMENT_PREFIX = "remote-attachment:";
+const ATTACHMENT_MANIFEST_PREFIX = "control:attachment-manifest:";
+const LEGACY_ATTACHMENT_MANIFEST_PREFIX = "control:attachment:";
+const ATTACHMENT_CHUNK_PREFIX = "control:attachment-chunk:";
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const ATTACHMENT_STORAGE_CHUNK_BYTES = 1024 * 1024;
 export const ATTACHMENT_TRANSPORT_PROTOCOL = "agent-hub-attachment-chunks-v1";
@@ -2582,15 +2585,25 @@ export class JournalStore extends DurableObject {
   }
 
   async #attachmentManifests(storage = this.ctx.storage) {
-    return [...(await storage.list({ prefix: "control:attachment:" })).values()];
+    return [...(await storage.list({ prefix: ATTACHMENT_MANIFEST_PREFIX })).values()];
+  }
+
+  async #attachmentManifest(id, storage = this.ctx.storage) {
+    const key = `${ATTACHMENT_MANIFEST_PREFIX}${id}`;
+    const manifest = await storage.get(key);
+    if (manifest) return { key, manifest };
+    const legacyKey = `${LEGACY_ATTACHMENT_MANIFEST_PREFIX}${id}`;
+    const legacyManifest = await storage.get(legacyKey);
+    return legacyManifest ? { key: legacyKey, manifest: legacyManifest } : null;
   }
 
   async #deleteAttachment(manifest, storage = this.ctx.storage) {
     await storage.delete([
-      `control:attachment:${manifest.id}`,
+      `${ATTACHMENT_MANIFEST_PREFIX}${manifest.id}`,
+      `${LEGACY_ATTACHMENT_MANIFEST_PREFIX}${manifest.id}`,
       ...Array.from(
         { length: Number(manifest.chunkCount) || 0 },
-        (_, index) => `control:attachment-chunk:${manifest.id}:${index}`,
+        (_, index) => `${ATTACHMENT_CHUNK_PREFIX}${manifest.id}:${index}`,
       ),
     ]);
   }
@@ -2613,7 +2626,7 @@ export class JournalStore extends DurableObject {
     const absoluteOffset = index * ATTACHMENT_TRANSPORT_CHUNK_BYTES;
     const storageIndex = Math.floor(absoluteOffset / ATTACHMENT_STORAGE_CHUNK_BYTES);
     const storageOffset = absoluteOffset % ATTACHMENT_STORAGE_CHUNK_BYTES;
-    const storageKey = `control:attachment-chunk:${manifest.id}:${storageIndex}`;
+    const storageKey = `${ATTACHMENT_CHUNK_PREFIX}${manifest.id}:${storageIndex}`;
     let stored = storageChunks?.get(storageIndex);
     if (stored == null) {
       stored = await this.ctx.storage.get(storageKey);
@@ -3042,8 +3055,9 @@ export class JournalStore extends DurableObject {
       const now = Date.now();
       return this.ctx.storage.transaction(async (storage) => {
         const manifests = await this.#cleanupAttachments(now, storage);
-        const key = `control:attachment:${id}`;
-        const existing = await storage.get(key);
+        const key = `${ATTACHMENT_MANIFEST_PREFIX}${id}`;
+        const existingRecord = await this.#attachmentManifest(id, storage);
+        const existing = existingRecord?.manifest;
         if (existing) {
           if (
             existing.userId !== userId
@@ -3087,7 +3101,7 @@ export class JournalStore extends DurableObject {
         await storage.put({
           [key]: manifest,
           ...Object.fromEntries(chunks.map((chunk, index) => [
-            `control:attachment-chunk:${id}:${index}`,
+            `${ATTACHMENT_CHUNK_PREFIX}${id}:${index}`,
             chunk,
           ])),
         });
@@ -3120,8 +3134,9 @@ export class JournalStore extends DurableObject {
       const now = Date.now();
       return this.ctx.storage.transaction(async (storage) => {
         const manifests = await this.#cleanupAttachments(now, storage);
-        const key = `control:attachment:${id}`;
-        const existing = await storage.get(key);
+        const key = `${ATTACHMENT_MANIFEST_PREFIX}${id}`;
+        const existingRecord = await this.#attachmentManifest(id, storage);
+        const existing = existingRecord?.manifest;
         if (existing) {
           if (
             existing.userId !== userId
@@ -3162,7 +3177,7 @@ export class JournalStore extends DurableObject {
         await storage.put({
           [key]: manifest,
           ...Object.fromEntries(chunks.map((chunk, index) => [
-            `control:attachment-chunk:${id}:${index}`,
+            `${ATTACHMENT_CHUNK_PREFIX}${id}:${index}`,
             chunk,
           ])),
         });
@@ -3176,14 +3191,18 @@ export class JournalStore extends DurableObject {
       if (!CONTROL_ID_PATTERN.test(id) || !userId) {
         return json({ error: "invalid attachment view request" }, 400);
       }
-      await this.#cleanupAttachments();
-      const manifest = await this.ctx.storage.get(`control:attachment:${id}`);
+      const record = await this.#attachmentManifest(id);
+      const manifest = record?.manifest;
+      if (manifest && Number(manifest.expiresAt ?? 0) <= Date.now()) {
+        await this.#deleteAttachment(manifest);
+        return json({ error: "attachment view not found" }, 404);
+      }
       if (!manifest || manifest.userId !== userId || manifest.viewOnly !== true) {
         return json({ error: "attachment view not found" }, 404);
       }
       const chunkKeys = Array.from(
         { length: manifest.chunkCount },
-        (_, index) => `control:attachment-chunk:${id}:${index}`,
+        (_, index) => `${ATTACHMENT_CHUNK_PREFIX}${id}:${index}`,
       );
       const chunks = await this.ctx.storage.get(chunkKeys);
       if (chunks.size !== manifest.chunkCount) return json({ error: "attachment view is incomplete" }, 503);
@@ -3216,8 +3235,12 @@ export class JournalStore extends DurableObject {
       if (!CONTROL_ID_PATTERN.test(id) || !userId || !CONTROL_ID_PATTERN.test(commandId)) {
         return json({ error: "invalid remote attachment request" }, 400);
       }
-      await this.#cleanupAttachments();
-      const manifest = await this.ctx.storage.get(`control:attachment:${id}`);
+      const record = await this.#attachmentManifest(id);
+      const manifest = record?.manifest;
+      if (manifest && Number(manifest.expiresAt ?? 0) <= Date.now()) {
+        await this.#deleteAttachment(manifest);
+        return json({ error: "remote attachment not found" }, 404);
+      }
       if (
         !manifest
         || manifest.userId !== userId
@@ -3229,7 +3252,7 @@ export class JournalStore extends DurableObject {
       if (payload?.mode != null) return this.#attachmentTransportResponse(manifest, payload);
       const chunkKeys = Array.from(
         { length: manifest.chunkCount },
-        (_, index) => `control:attachment-chunk:${id}:${index}`,
+        (_, index) => `${ATTACHMENT_CHUNK_PREFIX}${id}:${index}`,
       );
       const chunks = await this.ctx.storage.get(chunkKeys);
       if (chunks.size !== manifest.chunkCount) return json({ error: "remote attachment is incomplete" }, 503);
@@ -3285,11 +3308,12 @@ export class JournalStore extends DurableObject {
         }
         const attachmentManifests = [];
         for (const attachmentId of attachmentIds) {
-          const manifest = await storage.get(`control:attachment:${attachmentId}`);
+          const attachmentRecord = await this.#attachmentManifest(attachmentId, storage);
+          const manifest = attachmentRecord?.manifest;
           if (!manifest || manifest.userId !== userId) {
             return json({ error: "remote attachment not found" }, 404);
           }
-          attachmentManifests.push(manifest);
+          attachmentManifests.push(attachmentRecord);
         }
         const record = {
           ...command,
@@ -3310,10 +3334,10 @@ export class JournalStore extends DurableObject {
           [record.expiryKey]: { id: record.id },
           [CONTROL_ACTIVE_COUNT_KEY]: activeCount + 1,
           [CONTROL_WAKE_REVISION_KEY]: wakeRevision,
-          ...Object.fromEntries(attachmentManifests.map((manifest) => {
+          ...Object.fromEntries(attachmentManifests.map(({ key: manifestKey, manifest }) => {
             manifest.commandIds = [...new Set([...(manifest.commandIds ?? []), command.id])];
             manifest.expiresAt = Math.max(manifest.expiresAt, record.expiresAt);
-            return [`control:attachment:${manifest.id}`, manifest];
+            return [manifestKey, manifest];
           })),
         });
         return json(this.#controlStatus(record), 202);
@@ -3427,8 +3451,9 @@ export class JournalStore extends DurableObject {
           [CONTROL_ACTIVE_COUNT_KEY]: activeCount,
         });
         for (const attachmentId of command.attachmentIds ?? []) {
-          const attachmentKey = `control:attachment:${attachmentId}`;
-          const manifest = await storage.get(attachmentKey);
+          const attachmentRecord = await this.#attachmentManifest(attachmentId, storage);
+          const attachmentKey = attachmentRecord?.key;
+          const manifest = attachmentRecord?.manifest;
           if (!manifest) continue;
           manifest.commandIds = (manifest.commandIds ?? []).filter((commandId) => commandId !== command.id);
           if (manifest.commandIds.length) await storage.put(attachmentKey, manifest);

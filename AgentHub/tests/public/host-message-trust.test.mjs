@@ -51,3 +51,65 @@ test("active and replaced frame messages cannot request a runtime reload", async
   receiveRuntimeMessage({ source: null, data: { type: "agenthub:runtime-published" } });
   assert.equal(reloads, 1);
 });
+
+test("current VS Code wrapper source completes host control without trusting web frames", async () => {
+  const vscodeWindow = {
+    __agentHubVscode: Object.freeze({ postMessage() {} }),
+    location: {
+      origin: "vscode-webview://current-panel",
+      protocol: "vscode-webview:",
+    },
+  };
+  const { api } = await hostMessageTrust();
+  const vscodeHostWrapper = {};
+  const embeddedFrame = {};
+  const unrelatedFrame = {};
+  api.registerEmbeddedFrame({ contentWindow: embeddedFrame });
+
+  const received = [];
+  const guarded = api.guardHostMessage((event) => received.push(event.data), vscodeWindow);
+  const hostResult = {
+    type: "agenthub:control-result",
+    id: "bridge-resolve-image",
+    ok: true,
+    result: { url: "https://file+.vscode-resource.vscode-cdn.net/generated.png" },
+  };
+  guarded({
+    source: vscodeHostWrapper,
+    origin: vscodeWindow.location.origin,
+    data: hostResult,
+  });
+  guarded({
+    source: embeddedFrame,
+    origin: vscodeWindow.location.origin,
+    data: { type: "agenthub:control-result", id: "forged-registered-frame" },
+  });
+  guarded({
+    source: unrelatedFrame,
+    origin: "https://remote.example.org",
+    data: { type: "agenthub:control-result", id: "foreign-origin" },
+  });
+
+  assert.deepEqual(received, [hostResult]);
+  assert.equal(api.isTrustedAgentHubHostMessage({
+    source: vscodeHostWrapper,
+    origin: vscodeWindow.location.origin,
+  }, vscodeWindow), true);
+  assert.equal(api.isTrustedAgentHubHostMessage({
+    source: embeddedFrame,
+    origin: vscodeWindow.location.origin,
+  }, vscodeWindow), false);
+  assert.equal(api.isTrustedAgentHubHostMessage({
+    source: unrelatedFrame,
+    origin: "https://remote.example.org",
+  }, vscodeWindow), false);
+
+  const ordinaryWindow = {
+    __agentHubVscode: vscodeWindow.__agentHubVscode,
+    location: { origin: "https://agent-hub.test", protocol: "https:" },
+  };
+  assert.equal(api.isTrustedAgentHubHostMessage({
+    source: unrelatedFrame,
+    origin: ordinaryWindow.location.origin,
+  }, ordinaryWindow), false);
+});

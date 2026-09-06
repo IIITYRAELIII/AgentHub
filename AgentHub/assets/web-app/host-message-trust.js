@@ -13,13 +13,28 @@
     return source ?? null;
   }
 
+  function isVscodeHostMessage(event, windowRef) {
+    const source = event?.source ?? null;
+    const protocol = String(windowRef?.location?.protocol ?? "").toLowerCase();
+    const pageOrigin = String(windowRef?.location?.origin ?? "");
+    return objectSource(source)
+      && protocol === "vscode-webview:"
+      && pageOrigin !== ""
+      && pageOrigin !== "null"
+      && String(event?.origin ?? "") === pageOrigin
+      && Boolean(windowRef?.__agentHubVscode);
+  }
+
   function isTrustedAgentHubHostMessage(event, windowRef = window) {
     const source = event?.source ?? null;
     if (objectSource(source) && embeddedFrameSources.has(source)) return false;
-    /* VS Code host messages have no page Window source. Same-window messages
-       remain available for the web shell; every iframe, opener and nested
-       foreign browsing context fails closed independently of message shape. */
-    return source === null || source === windowRef;
+    /* VS Code 1.133 relays native host messages through its same-origin outer
+       webview frame, so those events carry that wrapper WindowProxy rather
+       than a null source. The native API capability plus the exact opaque
+       vscode-webview origin identifies that channel. Ordinary web surfaces
+       retain the stricter null/self rule, and every registered embedded frame
+       remains denied before origin is considered. */
+    return source === null || source === windowRef || isVscodeHostMessage(event, windowRef);
   }
 
   function guardHostMessage(listener, windowRef = window) {
