@@ -33,6 +33,7 @@ test("Codex Stop hook forwards exact turn usage to the Agent Hub Server", async 
         reasoningOutputTokens: 1,
         totalTokens: 12,
       },
+      generatedImageSources: [{ type: "generated-path", value: "C:/generated/dragon.png" }],
     }),
     forward: async (command, args, options) => {
       received = { command, payload: JSON.parse(args[0]), options };
@@ -47,6 +48,9 @@ test("Codex Stop hook forwards exact turn usage to the Agent Hub Server", async 
   assert.deepEqual(received.payload.changedFiles, ["AgentHub/first.mjs"]);
   assert.match(received.payload.diff, /Update File: AgentHub\/first\.mjs/u);
   assert.equal(received.payload.usage.inputTokens, 10);
+  assert.deepEqual(received.payload.generatedImageSources, [
+    { type: "generated-path", value: "C:/generated/dragon.png" },
+  ]);
   assert.equal(received.options.environment.CODEX_THREAD_ID, "thread-1");
 });
 

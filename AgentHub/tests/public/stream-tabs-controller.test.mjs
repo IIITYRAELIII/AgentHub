@@ -1195,12 +1195,16 @@ test("Workspace and Stream cards expose behavioral editing and quick reply contr
     const cardSpacing = await page.evaluate(() => {
       const save = document.querySelector("[data-dialog-stream-rules-save]").getBoundingClientRect();
       const rules = document.querySelector(".stream-agent-rules").getBoundingClientRect();
+      const rulesCardNode = document.querySelector(".agent-rules-card");
+      const rulesCard = rulesCardNode.getBoundingClientRect();
+      const rulesCardStyle = getComputedStyle(rulesCardNode);
       const section = document.querySelector(".stream-card-actions-section").getBoundingClientRect();
       const title = document.querySelector(".stream-card-actions-section .settings-section-title").getBoundingClientRect();
       const card = document.querySelector(".stream-card-actions").getBoundingClientRect();
       const pin = document.querySelector("[data-stream-card-pin]").getBoundingClientRect();
       const archive = document.querySelector("[data-stream-card-archive]").getBoundingClientRect();
       return {
+        insideRulesCard: rulesCard.bottom - Number.parseFloat(rulesCardStyle.borderBottomWidth) - save.bottom,
         afterRulesSave: rules.bottom - save.bottom,
         beforeActions: title.top - section.top,
         beforePin: pin.top - card.top,
@@ -1516,6 +1520,264 @@ test("mobile Workspace click preserves its dblclick target while desktop click s
   }
 });
 
+test("current and other Workspace or Stream native dblclicks survive exact-identity rerenders in Edge", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  const screenshotDirectory = String(process.env.HUB157_QA_SCREENSHOT_DIR ?? "").trim();
+  const scenarios = [
+    {
+      name: "selected-workspace",
+      kind: "workspace",
+      id: "workspace-1",
+      expectedName: "One",
+      selected: true,
+      forceFirstClickRerender: true,
+    },
+    {
+      name: "unselected-workspace",
+      kind: "workspace",
+      id: "workspace-2",
+      expectedName: "Two",
+      selected: false,
+      forceFirstClickRerender: false,
+    },
+    {
+      name: "selected-stream",
+      kind: "stream",
+      id: "stream-one",
+      expectedName: "One stream",
+      selected: true,
+      forceFirstClickRerender: false,
+    },
+    {
+      name: "unselected-stream",
+      kind: "stream",
+      id: "stream-other",
+      expectedName: "Other stream",
+      selected: false,
+      forceFirstClickRerender: false,
+    },
+  ];
+  const targetFor = (page, scenario, region) => {
+    const row = scenario.kind === "workspace"
+      ? page.locator(`[data-workspace-select="${scenario.id}"]`)
+      : page.locator(`.stream-tabs-track [data-stream-tab-id="${scenario.id}"]`);
+    if (region === "text") {
+      return scenario.kind === "workspace"
+        ? row.locator(".task-workspace-name")
+        : row.locator(".stream-tab-title");
+    }
+    if (region === "status") {
+      return scenario.kind === "workspace"
+        ? row
+        : row.locator(".provider-dot");
+    }
+    return row;
+  };
+  try {
+    for (const [surface, viewport] of [
+      ["desktop", { width: 1440, height: 1000 }],
+      ["mobile", { width: 390, height: 844 }],
+    ]) {
+      const problems = [];
+      const page = await browser.newPage({ viewport });
+      page.on("console", (message) => {
+        if (["warning", "error"].includes(message.type())) {
+          const location = message.location().url;
+          if (!["https://agent-hub.test/health", "https://agent-hub.test/events"].includes(location)) {
+            problems.push(`${message.type()}: ${message.text()} (${location})`);
+          }
+        }
+      });
+      page.on("pageerror", (error) => problems.push(`pageerror: ${error.message}`));
+      await openStreamTabsDomFixture(page);
+      await page.evaluate(() => {
+        const shared = {
+          status: "ready",
+          statusLabel: "Готов",
+          lastActivity: "2026-09-04T08:00:00.000Z",
+          running: false,
+          unread: false,
+          streamSettings: {},
+        };
+        window.AgentHub.setWorkspaces([{
+          id: "workspace-1", name: "One", settings: {},
+        }, {
+          id: "workspace-2", name: "Two", settings: {},
+        }], ["workspace:workspace-1", "workspace:workspace-2", "notes"]);
+        window.AgentHub.setTasks([{
+          ...shared,
+          id: "task-one",
+          selected: true,
+          workspaceId: "workspace-1",
+          workspaceName: "One",
+          streamId: "stream-one",
+          streamName: "One stream",
+          streamOrdinal: 1,
+          provider: "codex",
+          agentLabel: "Codex",
+        }, {
+          ...shared,
+          id: "task-one-other",
+          selected: false,
+          workspaceId: "workspace-1",
+          workspaceName: "One",
+          streamId: "stream-other",
+          streamName: "Other stream",
+          streamOrdinal: 2,
+          provider: "claude",
+          agentLabel: "Claude",
+        }, {
+          ...shared,
+          id: "task-two",
+          selected: false,
+          workspaceId: "workspace-2",
+          workspaceName: "Two",
+          streamId: "stream-two",
+          streamName: "Two stream",
+          streamOrdinal: 1,
+          provider: "codex",
+          agentLabel: "Codex",
+        }]);
+
+        const nodeIds = new WeakMap();
+        let nextNodeId = 1;
+        const nodeId = (node) => {
+          if (!nodeIds.has(node)) nodeIds.set(node, nextNodeId++);
+          return nodeIds.get(node);
+        };
+        window.__hub157NativeTrace = [];
+        window.__hub157DialogOpenCounts = { workspace: 0, stream: 0 };
+        window.__hub157ForceSelectedWorkspaceRerender = false;
+        window.__hub157PatchOrdinal = 0;
+        for (const type of ["pointerdown", "pointerup", "click", "dblclick"]) {
+          document.addEventListener(type, (event) => {
+            const row = event.target.closest?.(
+              "[data-workspace-select], [data-stream-tab-id][data-workspace-id]",
+            );
+            if (!row) return;
+            const logicalId = row.dataset.workspaceSelect
+              ? `workspace:${row.dataset.workspaceSelect}`
+              : `stream:${row.dataset.workspaceId}:${row.dataset.streamTabId}:${row.dataset.streamTaskId}`;
+            window.__hub157NativeTrace.push({
+              type,
+              detail: event.detail,
+              logicalId,
+              rowNodeId: nodeId(row),
+              targetClass: String(event.target.className ?? ""),
+            });
+          }, true);
+        }
+        window.addEventListener("click", (event) => {
+          const workspace = event.target.closest?.('[data-workspace-select="workspace-1"]');
+          if (!window.__hub157ForceSelectedWorkspaceRerender || event.detail !== 1 || !workspace) return;
+          window.__hub157PatchOrdinal += 1;
+          window.AgentHub.patchTask("task-one", {
+            lastActivity: `2026-09-04T08:00:${String(window.__hub157PatchOrdinal).padStart(2, "0")}.000Z`,
+          });
+        });
+        const nativeShowModal = HTMLDialogElement.prototype.showModal;
+        HTMLDialogElement.prototype.showModal = function showModal(...args) {
+          if (this.matches("[data-workspace-card-modal]")) {
+            window.__hub157DialogOpenCounts.workspace += 1;
+          } else if (this.matches("[data-dialog-settings]")) {
+            window.__hub157DialogOpenCounts.stream += 1;
+          }
+          return nativeShowModal.apply(this, args);
+        };
+      });
+
+      for (const scenario of scenarios) {
+        if (surface === "mobile") {
+          await page.locator(`[data-mobile-button="${scenario.kind === "workspace" ? "tasks" : "chat"}"]`).click();
+        }
+        await page.evaluate(() => window.AgentHub.selectTask("task-one"));
+        const singleTarget = targetFor(page, scenario, "text");
+        const beforeSingle = await page.evaluate((kind) => window.__hub157DialogOpenCounts[kind], scenario.kind);
+        await singleTarget.click();
+        assert.equal(
+          await page.locator(scenario.kind === "workspace"
+            ? "[data-workspace-card-modal]"
+            : "[data-dialog-settings]").evaluate((node) => node.open),
+          false,
+          `${surface}/${scenario.name}: a single click must not open the card`,
+        );
+        assert.equal(
+          await page.evaluate((kind) => window.__hub157DialogOpenCounts[kind], scenario.kind),
+          beforeSingle,
+          `${surface}/${scenario.name}: a single click must not call showModal`,
+        );
+
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+          await page.evaluate(() => window.AgentHub.selectTask("task-one"));
+          await page.evaluate(({ forceFirstClickRerender }) => {
+            window.__hub157ForceSelectedWorkspaceRerender = forceFirstClickRerender;
+            window.__hub157NativeTrace = [];
+          }, scenario);
+          const region = ["text", "status", "padding"][attempt % 3];
+          const target = targetFor(page, scenario, region);
+          const beforeOpen = await page.evaluate((kind) => window.__hub157DialogOpenCounts[kind], scenario.kind);
+          if (region === "padding" || (region === "status" && scenario.kind === "workspace")) {
+            const box = await target.boundingBox();
+            assert.ok(box, `${surface}/${scenario.name}: target row is visible`);
+            await page.mouse.dblclick(
+              region === "status" ? box.x + box.width - 8 : box.x + (box.width / 2),
+              region === "status" ? box.y + (box.height / 2) : box.y + box.height - 3,
+              { delay: 35 },
+            );
+          } else {
+            await target.dblclick({ delay: 35 });
+          }
+          const dialog = page.locator(scenario.kind === "workspace"
+            ? "[data-workspace-card-modal]"
+            : "[data-dialog-settings]");
+          const trace = await page.evaluate(() => window.__hub157NativeTrace);
+          assert.equal(await dialog.evaluate((node) => node.open), true, JSON.stringify({
+            surface, scenario: scenario.name, attempt, region, trace,
+          }));
+          assert.equal(
+            await page.evaluate((kind) => window.__hub157DialogOpenCounts[kind], scenario.kind),
+            beforeOpen + 1,
+            `${surface}/${scenario.name}/${attempt}: native dblclick opens exactly once`,
+          );
+          const actualName = await page.locator(scenario.kind === "workspace"
+            ? "[data-workspace-card-name]"
+            : "[data-dialog-stream-name]").inputValue();
+          assert.equal(actualName, scenario.expectedName, `${surface}/${scenario.name}: exact card identity`);
+          assert.deepEqual(trace.map(({ type, detail }) => [type, detail]), [
+            ["pointerdown", 0],
+            ["pointerup", 0],
+            ["click", 1],
+            ["pointerdown", 0],
+            ["pointerup", 0],
+            ["click", 2],
+            ["dblclick", 2],
+          ], `${surface}/${scenario.name}/${region}: native event sequence`);
+          assert.equal(new Set(trace.map(({ logicalId }) => logicalId)).size, 1);
+          if (scenario.forceFirstClickRerender) {
+            assert.equal(new Set(trace.map(({ rowNodeId }) => rowNodeId)).size, 2,
+              `${surface}/${scenario.name}: the same logical Workspace is legitimately replaced`);
+          }
+          if (screenshotDirectory && scenario.name === "selected-workspace" && attempt === 0) {
+            console.log(`HUB157_DBLCLICK_TRACE ${surface} ${JSON.stringify(trace)}`);
+            await page.screenshot({
+              path: path.join(screenshotDirectory, `hub157-selected-workspace-dblclick-${surface}.png`),
+              fullPage: false,
+            });
+          }
+          await page.keyboard.press("Escape");
+          assert.equal(await dialog.evaluate((node) => node.open), false);
+        }
+        await page.evaluate(() => { window.__hub157ForceSelectedWorkspaceRerender = false; });
+      }
+      assert.deepEqual(problems, []);
+      await page.close();
+    }
+  } finally {
+    await browser.close();
+  }
+});
+
 test("Stream card opens on 20 repeated native dblclicks per viewport without console failures", async () => {
   const { chromium } = await import("playwright");
   const browser = await launchDomBrowser(chromium);
@@ -1558,24 +1820,41 @@ test("Stream card opens on 20 repeated native dblclicks per viewport without con
     }]);
   });
   const measureCardGaps = (page) => page.evaluate(() => {
-    const save = document.querySelector("[data-dialog-stream-rules-save]").getBoundingClientRect();
+    const saveNode = document.querySelector("[data-dialog-stream-rules-save]");
+    const save = saveNode.getBoundingClientRect();
+    const saveStyle = getComputedStyle(saveNode);
     const rules = document.querySelector(".stream-agent-rules").getBoundingClientRect();
+    const rulesCardNode = document.querySelector(".agent-rules-card");
+    const rulesCard = rulesCardNode.getBoundingClientRect();
+    const rulesCardStyle = getComputedStyle(rulesCardNode);
     const section = document.querySelector(".stream-card-actions-section").getBoundingClientRect();
     const title = document.querySelector(".stream-card-actions-section .settings-section-title").getBoundingClientRect();
     const card = document.querySelector(".stream-card-actions").getBoundingClientRect();
     const pin = document.querySelector("[data-stream-card-pin]").getBoundingClientRect();
     const archive = document.querySelector("[data-stream-card-archive]").getBoundingClientRect();
     return {
+      insideRulesCard: Number((
+        rulesCard.bottom - Number.parseFloat(rulesCardStyle.borderBottomWidth) - save.bottom
+      ).toFixed(2)),
       afterRulesSave: Number((rules.bottom - save.bottom).toFixed(2)),
       beforeActions: Number((title.top - section.top).toFixed(2)),
       beforePin: Number((pin.top - card.top).toFixed(2)),
       afterArchive: Number((card.bottom - archive.bottom).toFixed(2)),
+      boxModel: {
+        cardPaddingBottom: rulesCardStyle.paddingBottom,
+        cardBorderBottom: rulesCardStyle.borderBottomWidth,
+        cardGap: rulesCardStyle.gap,
+        saveMarginBottom: saveStyle.marginBottom,
+        savePaddingBottom: saveStyle.paddingBottom,
+        saveBorderBottom: saveStyle.borderBottomWidth,
+      },
     };
   });
   try {
     for (const [surface, viewport] of [
       ["desktop", { width: 1440, height: 1000 }],
       ["mobile", { width: 390, height: 844 }],
+      ["mobile-short", { width: 390, height: 520 }],
     ]) {
       const problems = [];
       const page = await browser.newPage({ viewport });
@@ -1590,7 +1869,7 @@ test("Stream card opens on 20 repeated native dblclicks per viewport without con
       page.on("pageerror", (error) => problems.push(`pageerror: ${error.message}`));
       await openStreamTabsDomFixture(page);
       await installFixture(page);
-      if (surface === "mobile") await page.locator('[data-mobile-button="chat"]').click();
+      if (surface.startsWith("mobile")) await page.locator('[data-mobile-button="chat"]').click();
       for (let attempt = 0; attempt < 20; attempt += 1) {
         const tab = page.locator('.stream-tabs-track .stream-tab[data-stream-tab-id="stream-one"]');
         await tab.dblclick();
@@ -1605,12 +1884,42 @@ test("Stream card opens on 20 repeated native dblclicks per viewport without con
         .stream-agent-rules { padding-bottom: 0 !important; }
         .stream-card-actions-section { padding-top: 0 !important; }
         .settings-card.stream-card-actions { padding-block: 0 !important; }
+        .settings-card.agent-rules-card { padding-bottom: 0 !important; }
       ` });
       const baselineGaps = await measureCardGaps(page);
       await baselineStyle.evaluate((node) => node.remove());
       const correctedGaps = await measureCardGaps(page);
-      for (const gap of Object.values(correctedGaps)) assert.ok(gap >= 6, JSON.stringify(correctedGaps));
       if (screenshotDirectory) {
+        console.log(`HUB157_QA_GEOMETRY ${surface} ${JSON.stringify({ baselineGaps, correctedGaps })}`);
+      }
+      for (const gap of [
+        correctedGaps.insideRulesCard,
+        correctedGaps.afterRulesSave,
+        correctedGaps.beforeActions,
+        correctedGaps.beforePin,
+        correctedGaps.afterArchive,
+      ]) assert.ok(gap >= 6, JSON.stringify(correctedGaps));
+      const bottomVisibility = await page.evaluate(() => {
+        const body = document.querySelector(".dialog-settings-body");
+        const card = document.querySelector(".agent-rules-card");
+        const save = document.querySelector("[data-dialog-stream-rules-save]");
+        card.scrollIntoView({ block: "end" });
+        const bodyRect = body.getBoundingClientRect();
+        const cardRect = card.getBoundingClientRect();
+        const saveRect = save.getBoundingClientRect();
+        return {
+          cardBottom: Number(cardRect.bottom.toFixed(2)),
+          bodyBottom: Number(bodyRect.bottom.toFixed(2)),
+          saveBottom: Number(saveRect.bottom.toFixed(2)),
+          clipped: cardRect.bottom > bodyRect.bottom + 1 || saveRect.bottom >= cardRect.bottom,
+        };
+      });
+      assert.equal(bottomVisibility.clipped, false, JSON.stringify(bottomVisibility));
+      if (screenshotDirectory) {
+        await page.screenshot({
+          path: path.join(screenshotDirectory, `hub157-rules-gap-${surface}.png`),
+          fullPage: false,
+        });
         await page.locator(".dialog-settings-body").evaluate((node) => { node.scrollTop = node.scrollHeight; });
         await page.locator("[data-stream-card-move]").click();
         await page.screenshot({
@@ -1619,7 +1928,7 @@ test("Stream card opens on 20 repeated native dblclicks per viewport without con
         });
         await page.keyboard.press("Escape");
         await page.keyboard.press("Escape");
-        if (surface === "mobile") await page.locator('[data-mobile-button="tasks"]').click();
+        if (surface.startsWith("mobile")) await page.locator('[data-mobile-button="tasks"]').click();
         const workspace = page.locator('[data-workspace-select="workspace-1"]');
         await workspace.dblclick();
         await page.locator(".workspace-card-fields").evaluate((node) => { node.scrollTop = node.scrollHeight; });
@@ -1628,7 +1937,6 @@ test("Stream card opens on 20 repeated native dblclicks per viewport without con
           fullPage: false,
         });
         await page.keyboard.press("Escape");
-        console.log(`HUB157_QA_GEOMETRY ${surface} ${JSON.stringify({ baselineGaps, correctedGaps })}`);
       }
       assert.deepEqual(problems, []);
       await page.close();
@@ -1638,7 +1946,7 @@ test("Stream card opens on 20 repeated native dblclicks per viewport without con
   }
 });
 
-test("Stream card survives stable rerenders while stale dblclick identity fails closed in installed Edge", async () => {
+test("Workspace and Stream cards survive logical-identity rerenders while stale dblclick identity fails closed in Edge", async () => {
   const { chromium } = await import("playwright");
   const browser = await launchDomBrowser(chromium);
   try {
@@ -1708,7 +2016,8 @@ test("Stream card survives stable rerenders while stale dblclick identity fails 
           ?.getAttribute("aria-pressed"),
       };
     });
-    assert.deepEqual(replacedWorkspaceResult, { open: false, selected: "true" });
+    assert.deepEqual(replacedWorkspaceResult, { open: true, selected: "true" });
+    await page.keyboard.press("Escape");
 
     const rerenderedStreamResult = await page.evaluate(() => {
       const known = document.querySelector('[data-stream-tab-id="stream-known"]');

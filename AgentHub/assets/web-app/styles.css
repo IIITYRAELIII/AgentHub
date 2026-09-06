@@ -7450,8 +7450,9 @@ html[data-surface="mobile"]
   outline: none;
 }
 
-.agent-rules-card {
+.settings-card.agent-rules-card {
   gap: 0;
+  padding-bottom: 0.5rem;
 }
 
 .stream-agent-rules textarea {

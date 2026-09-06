@@ -534,6 +534,7 @@ function createTurnAccumulator(turnId) {
   const patches = [];
   const imageGenerationCalls = new Map();
   const completedImageGenerationCalls = new Set();
+  const generatedImageSources = new Set();
   const spawnedSubagents = new Map();
 
   const accept = (entry) => {
@@ -590,16 +591,9 @@ function createTurnAccumulator(turnId) {
       model = String(entry.payload?.model ?? latestModel).trim();
       serviceTier = String(entry.payload?.service_tier ?? latestServiceTier).trim() || "default";
     }
-    if (entry?.type === "response_item"
-      && entry.payload?.type === "function_call"
-      && entry.payload?.name === "imagegen"
-      && entry.payload?.call_id
-      && exactTurnId) {
-      rememberImageGenerationCallOwner(
-        imageGenerationCalls,
-        entry.payload.call_id,
-        exactTurnId,
-      );
+    const imageCallId = imageGenerationCallId(entry);
+    if (imageCallId && exactTurnId) {
+      rememberImageGenerationCallOwner(imageGenerationCalls, imageCallId, exactTurnId);
     }
     if (entry?.type === "event_msg"
       && entry.payload?.type === "image_generation_end"
@@ -609,6 +603,16 @@ function createTurnAccumulator(turnId) {
         || imageGenerationCallOwnerTurnId(imageGenerationCalls, callId);
       if (callId && attributedTurnId === requestedTurnId) {
         completedImageGenerationCalls.add(callId);
+      }
+    }
+    const generatedPaths = generatedImageOutputPaths(entry);
+    if (generatedPaths.length) {
+      const callId = String(entry.payload?.call_id ?? "").trim();
+      const attributedTurnId = exactTurnId
+        || imageGenerationCallOwnerTurnId(imageGenerationCalls, callId);
+      if (attributedTurnId === requestedTurnId) {
+        for (const generatedPath of generatedPaths) generatedImageSources.add(generatedPath);
+        consumeImageGenerationCallOwner(imageGenerationCalls, callId, attributedTurnId);
       }
     }
     const spawned = subagentActivity(entry);
@@ -691,6 +695,10 @@ function createTurnAccumulator(turnId) {
       spawnedSubagents: [...spawnedSubagents.values()],
       toolMetricsKnown: true,
       imageGenerationCount,
+      generatedImageSources: [...generatedImageSources].map((value) => ({
+        type: "generated-path",
+        value,
+      })),
       estimatedCredits: imageGenerationCount * IMAGE_GENERATION_ESTIMATE_CREDITS,
       estimateKind: imageGenerationCount > 0 ? "imagegen-default" : "",
       limitSamples,

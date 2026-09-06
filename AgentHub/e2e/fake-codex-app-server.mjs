@@ -142,6 +142,30 @@ function schedule(callback, delayMs) {
   timers.add(timer);
 }
 
+function appendManagedRollout(thread, entries) {
+  if (!thread.managedRolloutPath) {
+    thread.managedRolloutPath = path.join(
+      path.dirname(statePath),
+      `${thread.id}-managed-rollout.jsonl`,
+    );
+    thread.path = thread.managedRolloutPath;
+    thread.managedRolloutOrdinal = 0;
+    writeFileSync(thread.managedRolloutPath, `${JSON.stringify({
+      timestamp: new Date().toISOString(),
+      ordinal: thread.managedRolloutOrdinal++,
+      type: "session_meta",
+      payload: { id: `managed-session-${thread.id}`, originator: "codex_vscode" },
+    })}\n`, "utf8");
+  }
+  const lines = entries.map(({ type, payload }) => JSON.stringify({
+    timestamp: new Date().toISOString(),
+    ordinal: thread.managedRolloutOrdinal++,
+    type,
+    payload,
+  }));
+  appendFileSync(thread.managedRolloutPath, `${lines.join("\n")}\n`, "utf8");
+}
+
 function scheduleHubMcpBridgeItem(thread, turn, prompt) {
   let toolName = null;
   let requestId = null;
@@ -188,6 +212,26 @@ function finishTurn(thread, turn, { status = "completed", answer = null } = {}) 
   if (turn.status !== "inProgress") return;
   const text = answer ?? `Готово: ${turn.prompt}`;
   turn.status = status;
+  if (turn.managedRolloutPair === true) {
+    appendManagedRollout(thread, [{
+      type: "response_item",
+      payload: {
+        id: `${turn.id}:rollout-agent`,
+        type: "message",
+        role: "assistant",
+        phase: "final_answer",
+        content: [{ type: "output_text", text }],
+        internal_chat_message_metadata_passthrough: { turn_id: turn.id },
+      },
+    }, {
+      type: "event_msg",
+      payload: {
+        type: status === "interrupted" ? "turn_aborted" : "task_complete",
+        turn_id: turn.id,
+        ...(status === "interrupted" ? {} : { last_agent_message: text }),
+      },
+    }]);
+  }
   if (thread.externalRolloutPath && turn.external === true) {
     appendFileSync(thread.externalRolloutPath, `${JSON.stringify({
       timestamp: new Date().toISOString(),
@@ -241,6 +285,38 @@ function startTurn(params) {
     }],
   };
   thread.turns.push(turn);
+  if (prompt.includes("[rollout-exact-pair]")) {
+    turn.managedRolloutPair = true;
+    appendManagedRollout(thread, [{
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: turn.id },
+    }, {
+      type: "response_item",
+      payload: {
+        id: `${turn.id}:raw-user`,
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: prompt }],
+        internal_chat_message_metadata_passthrough: {
+          turn_id: turn.id,
+          content_item_kinds: ["user.text"],
+        },
+      },
+    }, {
+      type: "event_msg",
+      payload: {
+        type: "item_completed",
+        thread_id: thread.id,
+        turn_id: turn.id,
+        item: {
+          type: "UserMessage",
+          id: `${turn.id}:completed-user`,
+          client_id: String(params.clientUserMessageId ?? ""),
+          content: [{ type: "text", text: prompt, text_elements: [] }],
+        },
+      },
+    }]);
+  }
   thread.preview = prompt || thread.preview;
   thread.updatedAt = Math.floor(Date.now() / 1000);
   save();

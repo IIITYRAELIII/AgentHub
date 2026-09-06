@@ -3595,9 +3595,8 @@ taskList.addEventListener("click", (event) => {
   const workspace = event.target.closest("[data-workspace-select]");
   if (!workspace) return;
   const workspaceId = String(workspace.dataset.workspaceSelect ?? "");
-  if (event.detail === 1) workspaceDblclickCandidate = { node: workspace, workspaceId };
-  else if (workspaceDblclickCandidate?.node !== workspace
-    || workspaceDblclickCandidate?.workspaceId !== workspaceId) workspaceDblclickCandidate = null;
+  if (event.detail === 1) workspaceDblclickCandidate = { workspaceId };
+  else if (workspaceDblclickCandidate?.workspaceId !== workspaceId) workspaceDblclickCandidate = null;
   const target = representativeWorkspaceTask(state.tasks.filter((task) => workspaceKey(task) === workspaceId));
   if (target) selectTaskFromUi(target.id, {
     preserveTaskList: true,
@@ -3609,7 +3608,7 @@ taskList.addEventListener("dblclick", (event) => {
   workspaceDblclickCandidate = null;
   const workspace = event.target.closest?.("[data-workspace-select]");
   const workspaceId = String(workspace?.dataset.workspaceSelect ?? "");
-  if (!candidate || candidate.node !== workspace || candidate.workspaceId !== workspaceId
+  if (!candidate || candidate.workspaceId !== workspaceId
     || !workspace?.isConnected || !taskList.contains(workspace) || !workspaceCatalogItem(workspaceId)) return;
   openWorkspaceCard(workspaceId);
 });
