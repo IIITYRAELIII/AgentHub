@@ -8,6 +8,10 @@ import { codexTurnAnswer } from "./codex-turn-answers.mjs";
 import { codexThreadHistory } from "../../application/task-history.mjs";
 import { codexThreadWaitingOnApproval } from "./codex-approvals.mjs";
 import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
+import {
+  mergeCanonicalUserMessages,
+  mergedUserMessageSnapshotAuthority,
+} from "../../domain/canonical-user-messages.mjs";
 
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
@@ -68,6 +72,7 @@ export function codexTurnSnapshot(turn, threadStatus = null) {
   const prompt = exchange?.prompt ?? "";
   return {
     answer,
+    userMessageSnapshotAuthority: "complete",
     finalAnswer: codexFinalTurnAnswer(turn),
     reasoning: "",
     prompt,
@@ -93,15 +98,37 @@ export function codexTurnSnapshot(turn, threadStatus = null) {
 }
 
 function withRolloutUserIdentity(snapshot, rolloutState) {
-  const userMessages = Array.isArray(rolloutState?.userMessages)
+  const rolloutMessages = Array.isArray(rolloutState?.userMessages)
     ? rolloutState.userMessages.map((message) => ({ ...message }))
     : [];
-  if (!userMessages.length) return snapshot;
-  const rootUser = userMessages.find((message) => message?.role !== "agent");
+  if (!rolloutMessages.length) return snapshot;
+  const currentMessages = Array.isArray(snapshot?.userMessages) ? snapshot.userMessages : [];
+  const currentUsers = currentMessages.filter((message) => message?.role === "user");
+  const currentOther = currentMessages.filter((message) => message?.role !== "user");
+  const observedUsers = rolloutMessages.filter((message) => message?.role === "user");
+  const observedOther = rolloutMessages.filter((message) => message?.role !== "user");
+  const observedAuthority = rolloutState?.userMessageSnapshotAuthority ?? "incremental";
+  const userMessages = [
+    ...mergeCanonicalUserMessages(currentUsers, observedUsers, {
+      currentSnapshotAuthority: snapshot?.userMessageSnapshotAuthority ?? "complete",
+      snapshotAuthority: observedAuthority,
+    }),
+    ...currentOther.map((message) => ({ ...message })),
+    ...observedOther.map((message) => ({ ...message })),
+  ];
+  const rootUser = userMessages.find((message) => message?.role === "user");
   const prompt = String(rootUser?.text ?? "").trim();
-  const clientUserMessageId = String(rootUser?.clientUserMessageId ?? "").trim();
+  const clientUserMessageId = String(
+    userMessages.find((message) => message?.role === "user" && message?.clientUserMessageId)
+      ?.clientUserMessageId ?? "",
+  ).trim();
   return {
     ...snapshot,
+    userMessageSnapshotAuthority: mergedUserMessageSnapshotAuthority(
+      currentUsers,
+      snapshot,
+      { userMessageSnapshotAuthority: observedAuthority },
+    ),
     ...(prompt ? { prompt } : {}),
     clientUserMessageId: clientUserMessageId || snapshot.clientUserMessageId || null,
     userMessages,
@@ -335,6 +362,9 @@ export class CodexTaskSnapshotService {
     const rootUser = state.userMessages.find((message) => message?.role !== "agent");
     return {
       answer: overrides.active ? state.latestAnswer : state.finalAnswer,
+      userMessageSnapshotAuthority: activity.userMessageSnapshotAuthorityByTurnId?.[state.turnId]
+        ?? activity.userMessageSnapshotAuthority
+        ?? "incremental",
       finalAnswer: state.finalAnswer,
       reasoning: "",
       prompt: rootUser?.text ?? "",

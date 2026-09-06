@@ -57,6 +57,7 @@ function harness(overrides = {}) {
     rememberSeenTurn: (...args) => calls.push(["seen", ...args]),
     saveState: async () => calls.push(["save"]),
     deliverNotification: async (completion) => calls.push(["deliver", completion.turnId]),
+    repairTerminalAttachments: async (...args) => calls.push(["repair-attachments", ...args]),
     resolveTerminalAttachments: async () => [],
     now: () => Date.parse("2026-08-04T12:00:00.000Z"),
     logger: {
@@ -222,6 +223,57 @@ test("delivered provisional turn is corrected without a second notification", as
     name === "remember" && message === "Исправленный ответ"
   )), true);
   assert.equal(calls.some(([name]) => name === "seen"), true);
+});
+
+test("delivered historical ImageGen turn repairs its durable terminal before usage short-circuit", async () => {
+  const generated = [
+    { id: "codex-generated-one.png", name: "Изображение", type: "image/png" },
+    { id: "codex-generated-two.png", name: "Изображение", type: "image/png" },
+  ];
+  const resolverCalls = [];
+  const repairCalls = [];
+  const { service, delivered } = harness({
+    workLogStore: {
+      getTurn: async () => ({
+        provisional: false,
+        usageReported: true,
+        usage: { totalTokens: 10 },
+        imageGenerationCount: 2,
+      }),
+    },
+    resolveTerminalAttachments: async (run, turnId) => {
+      resolverCalls.push({ run, turnId });
+      return generated;
+    },
+    repairTerminalAttachments: async (identity, options) => {
+      repairCalls.push({ identity, expectedCount: options.expectedCount });
+      return { enriched: true, attachments: await options.resolveAttachments() };
+    },
+  });
+  delivered.add("turn-image");
+
+  const result = await service.reconcile(thread, project, {
+    turnId: "turn-image",
+    status: "completed",
+    completedAt: "2026-08-04T10:00:00.000Z",
+    historical: true,
+    usageResult: usage({ imageGenerationCount: 2 }),
+  });
+
+  assert.equal(result, true);
+  assert.deepEqual(repairCalls, [{
+    identity: { provider: "codex", threadId: "thread-1", turnId: "turn-image" },
+    expectedCount: 2,
+  }]);
+  assert.deepEqual(resolverCalls, [{
+    run: {
+      threadId: "thread-1",
+      startedAt: undefined,
+      rolloutPath: "rollout.jsonl",
+      expectedImageCount: 2,
+    },
+    turnId: "turn-image",
+  }]);
 });
 
 test("subagent terminal turn is aggregated into its parent task without delivery", async () => {

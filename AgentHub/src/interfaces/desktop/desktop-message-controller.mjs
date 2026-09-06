@@ -77,10 +77,23 @@ export function createDesktopMessageController({
     });
     const responseAnnotationRequest = String(params.responseAnnotationRequest ?? "").trim();
     const messageOrigin = normalizeInterstreamOrigin(target.messageOrigin);
+    if (clientUserMessageId.startsWith("mcp:") && (
+      transport !== "mcp"
+      || !messageOrigin?.requestId
+      || clientUserMessageId !== `mcp:${messageOrigin.requestId}`
+    )) {
+      throw new Error("Идентификатор mcp: зарезервирован для подтверждённых межпоточных сообщений");
+    }
     const taskReferencedInput = messageWithTaskReferences(text, taskReferences);
     const referencedInput = messageOrigin && !interstreamMessageDetails(taskReferencedInput)
       ? createInterstreamMessage({ ...messageOrigin, text: taskReferencedInput })
       : taskReferencedInput;
+    if (transport === "mcp") {
+      if (typeof context?.bindInterstreamAuditContent !== "function") {
+        throw new Error("Межпоточное сообщение не связано с MCP audit");
+      }
+      await context.bindInterstreamAuditContent(referencedInput);
+    }
     const input = attachments.length
       ? messageInputWithAttachments(referencedInput, attachments, descriptors)
       : referencedInput;

@@ -184,6 +184,37 @@ test("Codex lifecycle leaves every managed run terminal to the finalizer", async
   }
 });
 
+test("Codex lifecycle preserves managed message origin over provider-only user projection", async () => {
+  const messageOrigin = {
+    kind: "interstream",
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    sourceThreadId: "thread-architect",
+    requestId: "lifecycle-origin-1",
+  };
+  const f = await fixture({
+    run: {
+      status: "running",
+      rawPrompt: "raw provider envelope",
+      clientUserMessageId: "mcp:lifecycle-origin-1",
+      messageOrigin,
+    },
+  });
+
+  await f.controller.handle(request("turn-complete", f.projectRoot, {
+    status: "completed",
+    finalAnswer: "Done",
+    userMessages: [{ role: "user", text: "Provider projection without origin" }],
+  }));
+
+  assert.equal(f.recorded[0].clientUserMessageId, "mcp:lifecycle-origin-1");
+  assert.deepEqual(f.recorded[0].messageOrigin, messageOrigin);
+  assert.equal(f.recorded[0].rawPrompt, "raw provider envelope");
+});
+
 test("Codex lifecycle preserves Hub terminal ownership after the managed run leaves the index", async () => {
   let resolverCalls = 0;
   const f = await fixture({

@@ -5,6 +5,13 @@ import {
   visibleCodexAssistantText,
 } from "../domain/codex-response-annotation.mjs";
 import { estimateMissingCodexUsage } from "../domain/codex-usage-estimate.mjs";
+import {
+  consistentInterstreamRecordIdentity,
+  interstreamMessageDetails,
+  normalizeInterstreamClientUserMessageId,
+  normalizeInterstreamOrigin,
+  sameInterstreamOrigin,
+} from "../domain/interstream-message.mjs";
 import { normalizeServiceTier, normalizeTokenUsage } from "../domain/token-usage.mjs";
 import { mergeUsageLimitSamples } from "../domain/usage-facts.mjs";
 import { normalizeWorkLogId } from "./work-log-usage-projection.mjs";
@@ -62,17 +69,20 @@ function normalizedMessage(value) {
   };
 }
 
-function normalizedPrompts(value) {
+function normalizedPrompts(value, rootMessage) {
+  const userMessages = Array.isArray(value?.userMessages) ? value.userMessages : [];
+  const rootIndex = userMessages.indexOf(rootMessage);
+  const rawPrompt = String(value?.rawPrompt ?? value?.prompt ?? "").trim();
   const values = [
-    ...(Array.isArray(value?.prompts) ? value.prompts : []),
-    ...(Array.isArray(value?.userMessages)
-      ? value.userMessages.map((message) => message?.text)
-      : []),
+    ...(rawPrompt ? [rawPrompt] : []),
+    ...(userMessages.length
+      ? userMessages.flatMap((message, index) => (
+        rawPrompt && index === rootIndex ? [] : [message?.text]
+      ))
+      : Array.isArray(value?.prompts) ? value.prompts : []),
   ]
     .map((prompt) => String(prompt ?? "").trim())
     .filter(Boolean);
-  const legacy = String(value?.prompt ?? "").trim();
-  if (legacy && !values.includes(legacy)) values.unshift(legacy);
   return [...new Set(values)].slice(0, 100);
 }
 
@@ -97,7 +107,30 @@ function normalizedCompletion(value) {
   const projectRoot = String(value?.projectRoot ?? "").trim();
   if (!base || !turnId || !projectRoot) return null;
   const usageReported = value.usageReported === true;
-  const prompts = normalizedPrompts(value);
+  const rootMessage = Array.isArray(value?.userMessages)
+    ? value.userMessages.find((message) => message?.role === "user") ?? value.userMessages[0]
+    : null;
+  const identity = consistentInterstreamRecordIdentity({
+    clientUserMessageIds: [value?.clientUserMessageId, rootMessage?.clientUserMessageId],
+    origins: [
+      value?.messageOrigin ?? value?.origin,
+      rootMessage?.origin ?? rootMessage?.messageOrigin,
+    ],
+  });
+  const rawPrompt = String(value?.rawPrompt ?? value?.prompt ?? "");
+  const parsedOrigin = interstreamMessageDetails(rawPrompt)?.origin ?? null;
+  const rawOriginConflict = Boolean(
+    parsedOrigin
+    && identity.messageOrigin
+    && !sameInterstreamOrigin(parsedOrigin, identity.messageOrigin),
+  );
+  const clientUserMessageId = identity.conflicted || rawOriginConflict
+    ? null
+    : normalizeInterstreamClientUserMessageId(identity.clientUserMessageId);
+  const messageOrigin = identity.conflicted || rawOriginConflict
+    ? null
+    : normalizeInterstreamOrigin(value?.messageOrigin);
+  const prompts = normalizedPrompts(value, rootMessage);
   const estimate = base.provider === "codex"
     ? estimateMissingCodexUsage({
       status: value.status,
@@ -164,9 +197,10 @@ function normalizedCompletion(value) {
       ? { operationKind: String(value.operationKind).trim().toLowerCase() }
       : {}),
     ...(typeof value.contextProbe === "boolean" ? { contextProbe: value.contextProbe } : {}),
-    ...(String(value.clientUserMessageId ?? "").trim()
-      ? { clientUserMessageId: String(value.clientUserMessageId).trim() }
+    ...(clientUserMessageId
+      ? { clientUserMessageId }
       : {}),
+    ...(messageOrigin ? { messageOrigin } : {}),
     prompt: prompts[0] ?? "",
     prompts,
     finalAnswer: answerProjection.text.trim(),
@@ -300,7 +334,16 @@ export class TurnEndNotificationRegistry {
     completion.startedAt = completion.startedAt || incoming.startedAt;
     if (incoming.operationKind) completion.operationKind = incoming.operationKind;
     if (typeof incoming.contextProbe === "boolean") completion.contextProbe = incoming.contextProbe;
-    if (incoming.clientUserMessageId) completion.clientUserMessageId = incoming.clientUserMessageId;
+    if (incoming.clientUserMessageId && (
+      !completion.clientUserMessageId
+      || completion.clientUserMessageId === incoming.clientUserMessageId
+    )) completion.clientUserMessageId = incoming.clientUserMessageId;
+    if (incoming.messageOrigin && (
+      !completion.messageOrigin
+      || sameInterstreamOrigin(completion.messageOrigin, incoming.messageOrigin)
+    ) && completion.clientUserMessageId === incoming.clientUserMessageId) {
+      completion.messageOrigin = incoming.messageOrigin;
+    }
     completion.prompts = [...new Set([
       ...(Array.isArray(completion.prompts) ? completion.prompts : [completion.prompt]),
       ...incoming.prompts,

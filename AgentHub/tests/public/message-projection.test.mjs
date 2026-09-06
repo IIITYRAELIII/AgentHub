@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 
+import { mergeCanonicalUserMessages } from "../../src/domain/canonical-user-messages.mjs";
+
 async function projectionApi() {
   const source = await readFile(
     new URL("../../assets/web-app/messages/projection.js", import.meta.url),
@@ -237,6 +239,43 @@ test("Codex production history, live and outgoing aliases project one root and o
       projected.map((message) => message.clientUserMessageId).sort(),
       ["client-root", "client-steer"],
     );
+  }
+});
+
+test("a truncated unkeyed refresh cannot leave optimistic duplicates after navigation", async () => {
+  const projection = await projectionApi();
+  const canonical = ["root", "steer"].map((suffix) => ({
+    role: "user",
+    provider: "codex",
+    threadId: "thread-production",
+    turnId: "turn-production",
+    itemId: `owned-${suffix}`,
+    clientUserMessageId: `client-${suffix}`,
+    text: "Одинаковый текст",
+    operationKind: "user-turn",
+    projectionAuthority: "canonical",
+    projectionState: "completed",
+  }));
+  const refreshed = mergeCanonicalUserMessages(canonical, [{
+    role: "user",
+    itemId: "rollout-tail",
+    text: "Одинаковый текст",
+  }]);
+  const outgoing = canonical.map((message) => ({
+    ...message,
+    itemId: message.clientUserMessageId,
+    submissionId: message.clientUserMessageId,
+    projectionAuthority: "optimistic",
+    projectionState: "optimistic",
+  }));
+
+  for (const values of [[...outgoing, ...refreshed], [...refreshed, ...outgoing]]) {
+    const projected = plain(projection.projectCanonicalMessages(values));
+    assert.equal(projected.length, 2);
+    assert.deepEqual(projected.map((message) => message.clientUserMessageId), [
+      "client-root",
+      "client-steer",
+    ]);
   }
 });
 

@@ -101,6 +101,8 @@ function productionRoute({
     pauseObservation: () => {},
     pauseClaude: () => {},
     stopTyping: () => {},
+    prepareAdmission: async () => null,
+    revokeAdmission: () => {},
     beforeCompletion: async () => {},
     completionAborted: async () => {},
     afterCompletion: async () => {},

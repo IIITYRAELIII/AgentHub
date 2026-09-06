@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { readdir, readFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import vm from "node:vm";
 
@@ -26,7 +30,32 @@ async function launchDomBrowser(chromium) {
   return chromium.launch({ headless: true });
 }
 
-async function openStreamTabsDomFixture(page) {
+async function openStreamTabsDomFixture(page, {
+  includeHubClient = false,
+  control = null,
+} = {}) {
+  const initialSnapshot = {
+    apiVersion: 3,
+    version: "hub157-browser-snapshot",
+    server: { status: "online" },
+    tasks: [],
+    workspaces: [],
+    archivedWorkspaces: [],
+    boardTasks: [],
+    boardLayout: { columnOrder: [] },
+    deferredInputs: [],
+    messageReceipts: [],
+    pendingApprovals: [],
+    settings: {
+      provider: "codex",
+      models: [],
+      modelOptionsByProvider: {},
+      reasoningOptions: [],
+      reasoningOptionsByProvider: {},
+      modeOptions: [],
+      quickMessages: { global: [], workspaces: {}, streams: {} },
+    },
+  };
   await page.route("**/*", async (route) => {
     const requestUrl = new URL(route.request().url());
     if (requestUrl.hostname !== "agent-hub.test") {
@@ -35,12 +64,28 @@ async function openStreamTabsDomFixture(page) {
     }
     if (requestUrl.pathname === "/") {
       const source = await readFile(new URL("index.html", WEB_APP_ROOT), "utf8");
-      const body = source
+      let body = source
         .replace(/\s*<script src="https:\/\/telegram\.org\/[^>]+><\/script>/u, "")
-        .replace(/\s*<script src="\/browser-device-auth\.js" defer><\/script>/u, "")
-        .replace(/\s*<script src="\/hub-client\.js" defer><\/script>/u, "")
-        .replace("</head>", `<script type="application/json" data-theme-catalog>${TEST_THEME_CATALOG}</script></head>`);
+        .replace(/\s*<script src="\/browser-device-auth\.js" defer><\/script>/u, "");
+      if (!includeHubClient) {
+        body = body.replace(/\s*<script src="\/hub-client\.js" defer><\/script>/u, "");
+      }
+      body = body.replace("</head>", `<script type="application/json" data-theme-catalog>${TEST_THEME_CATALOG}</script></head>`);
       await route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body });
+      return;
+    }
+    if (requestUrl.pathname === "/api/snapshot") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(initialSnapshot) });
+      return;
+    }
+    if (requestUrl.pathname === "/api/control" && route.request().method() === "POST") {
+      const request = route.request().postDataJSON();
+      const response = await control?.(request) ?? { status: 200, body: { ok: true, result: initialSnapshot } };
+      await route.fulfill({
+        status: response.status ?? 200,
+        contentType: "application/json",
+        body: JSON.stringify(response.body ?? response),
+      });
       return;
     }
     if (requestUrl.pathname === "/work-log.css") {
@@ -66,8 +111,92 @@ async function openStreamTabsDomFixture(page) {
       await route.fulfill({ status: 404, body: "Not found" });
     }
   });
-  await page.goto("http://agent-hub.test/", { waitUntil: "load" });
+  await page.goto("https://agent-hub.test/", { waitUntil: "load" });
   await page.waitForFunction(() => typeof window.AgentHub === "object");
+  if (includeHubClient) {
+    await page.waitForFunction(() => document.querySelector("[data-connection-label]")?.textContent !== "");
+  }
+}
+
+async function startPermanentDeleteConflictBackend() {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-delete-conflict-backend-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const imports = {
+    catalog: new URL("../../src/infrastructure/persistence/workspace-catalog-store.mjs", import.meta.url).href,
+    board: new URL("../../src/infrastructure/persistence/task-board-store.mjs", import.meta.url).href,
+    server: new URL("../../src/interfaces/web/mini-app-server.mjs", import.meta.url).href,
+  };
+  const script = `(async () => {
+    const [{ WorkspaceCatalogStore }, { TaskBoardStore }, { MiniAppServer }] = await Promise.all([
+      import(process.argv[2]), import(process.argv[3]), import(process.argv[4]),
+    ]);
+    const databaseFile = process.argv[1];
+    const catalog = new WorkspaceCatalogStore({
+      databaseFile, instanceId: "hub157-edge-backend", leaseDurationMs: 10000,
+    });
+    await catalog.load();
+    const board = new TaskBoardStore({ databaseFile });
+    const workspace = catalog.createWorkspace({ id: "archived-rejected", name: "Rejected Archive" });
+    catalog.createStream({ id: "archived-rejected-stream", workspaceId: workspace.id });
+    board.create({
+      text: "Durable attachment blocks deletion", bucket: "workspace", workspaceId: workspace.id,
+      taskPrefix: "HUB", triageStatus: "disabled",
+    });
+    catalog.archiveWorkspace(workspace.id);
+    const snapshot = {
+      apiVersion: 3, version: "hub157-backend", server: { status: "online" }, tasks: [],
+      workspaces: [], boardTasks: [], boardLayout: { columnOrder: [] }, deferredInputs: [],
+      messageReceipts: [], pendingApprovals: [], settings: { provider: "codex", models: [],
+        modelOptionsByProvider: {}, reasoningOptions: [], reasoningOptionsByProvider: {},
+        modeOptions: [], quickMessages: { global: [], workspaces: {}, streams: {} } },
+    };
+    const server = new MiniAppServer({
+      host: "127.0.0.1", port: 0,
+      journalDatabase: { html: () => "", version: "test", subscribe: () => () => {} },
+      controlHandler: async ({ action, params }) => {
+        if (action === "delete-archived-workspace") {
+          await catalog.deleteArchivedWorkspace(params.workspaceId, params.confirmationName);
+        }
+        return snapshot;
+      },
+    });
+    const address = await server.start();
+    process.stdout.write(JSON.stringify({ url: address.url }) + "\\n");
+  })().catch((error) => { console.error(error); process.exit(1); });`;
+  const child = spawn(process.execPath, [
+    "--eval", script, databaseFile, imports.catalog, imports.board, imports.server,
+  ], { stdio: ["ignore", "pipe", "pipe"] });
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  let stdout = "";
+  let stderr = "";
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  const ready = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`backend start timed out: ${stderr}`)), 5_000);
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+      const newline = stdout.indexOf("\n");
+      if (newline < 0) return;
+      clearTimeout(timer);
+      resolve(JSON.parse(stdout.slice(0, newline)));
+    });
+    child.once("exit", (code) => {
+      clearTimeout(timer);
+      if (code !== 0) reject(new Error(`backend exited ${code}: ${stderr}`));
+    });
+    child.once("error", reject);
+  });
+  return {
+    ...ready,
+    async close() {
+      if (child.exitCode == null) {
+        const closed = once(child, "close");
+        child.kill("SIGTERM");
+        await closed;
+      }
+      await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+    },
+  };
 }
 
 class FakeTarget {
@@ -305,7 +434,7 @@ test("desktop Stream settings are theme-independent and keep stable geometry", a
   assert.equal(resolveStableStreamCardWidth(widths, "new-stream"), 0);
 });
 
-test("quick messages merge Workspace and Stream scopes without duplicates", async () => {
+test("quick messages preserve structured mappings and scope order", async () => {
   const {
     quickMessagesCountLabel,
     quickMessagesForStream,
@@ -322,14 +451,16 @@ test("quick messages merge Workspace and Stream scopes without duplicates", asyn
   };
 
   assert.deepEqual(
-    JSON.parse(JSON.stringify(quickMessagesForStream(selection, "workspace-1", "stream-1").map(({ scope, label, text }) => ({
-      scope, label, text,
+    JSON.parse(JSON.stringify(quickMessagesForStream(selection, "workspace-1", "stream-1").map(({ scope, title, text }) => ({
+      scope, title, text,
     })))),
     [
-      { scope: "global", label: "пинг", text: "пинг" },
-      { scope: "workspace", label: "релизь", text: "релизь" },
-      { scope: "workspace", label: "Тесты", text: "запусти тесты" },
-      { scope: "stream", label: "продолжай", text: "продолжай" },
+      { scope: "global", title: "пинг", text: "пинг" },
+      { scope: "workspace", title: "релизь", text: "релизь" },
+      { scope: "workspace", title: "Тесты", text: "запусти тесты" },
+      { scope: "stream", title: "Release", text: "релизь" },
+      { scope: "stream", title: "продолжай", text: "продолжай" },
+      { scope: "stream", title: "пинг", text: "пинг" },
     ],
   );
   assert.equal(
@@ -345,12 +476,12 @@ test("quick messages merge Workspace and Stream scopes without duplicates", asyn
   assert.deepEqual(
     JSON.parse(JSON.stringify(setQuickMessagesForScope(selection, "stream", "stream-1", []))),
     {
-      global: [{ id: "пинг", label: "пинг", text: "пинг" }],
+      global: [{ title: "пинг", text: "пинг" }],
       streams: {},
       workspaces: {
         "workspace-1": [
-          { id: "релизь", label: "релизь", text: "релизь" },
-          { id: "Тесты", label: "Тесты", text: "запусти тесты" },
+          { title: "релизь", text: "релизь" },
+          { title: "Тесты", text: "запусти тесты" },
         ],
       },
     },
@@ -358,18 +489,18 @@ test("quick messages merge Workspace and Stream scopes without duplicates", asyn
   assert.deepEqual(
     JSON.parse(JSON.stringify(setQuickMessagesForScope(selection, "global", "", ["везде"]))),
     {
-      global: [{ id: "везде", label: "везде", text: "везде" }],
+      global: [{ title: "везде", text: "везде" }],
       streams: {
         "stream-1": [
-          { id: "Release", label: "Release", text: "релизь" },
-          { id: "продолжай", label: "продолжай", text: "продолжай" },
-          { id: "пинг", label: "пинг", text: "пинг" },
+          { title: "Release", text: "релизь" },
+          { title: "продолжай", text: "продолжай" },
+          { title: "пинг", text: "пинг" },
         ],
       },
       workspaces: {
         "workspace-1": [
-          { id: "релизь", label: "релизь", text: "релизь" },
-          { id: "Тесты", label: "Тесты", text: "запусти тесты" },
+          { title: "релизь", text: "релизь" },
+          { title: "Тесты", text: "запусти тесты" },
         ],
       },
     },
@@ -931,6 +1062,445 @@ test("background status changes rerender visible top Stream tabs", async () => {
   }
 });
 
+test("Workspace and Stream cards expose behavioral editing and quick reply contracts", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  try {
+    const page = await browser.newPage();
+    await openStreamTabsDomFixture(page);
+    await page.evaluate(() => {
+      window.__hub157Intents = [];
+      document.addEventListener("agenthub:intent", (event) => {
+        window.__hub157Intents.push(structuredClone(event.detail));
+      });
+      const shared = {
+        workspaceId: "workspace-1",
+        workspaceName: "Agent HUB",
+        workspaceSettings: { catalogFolder: "Team" },
+        status: "ready",
+        statusLabel: "Готов",
+        lastActivity: "2026-09-04T08:00:00.000Z",
+        running: false,
+        unread: false,
+        streamSettings: {},
+      };
+      window.__hub157Tasks = [{
+        ...shared,
+        id: "task-codex",
+        selected: true,
+        streamId: "stream-codex",
+        streamName: "Codex Stream",
+        streamOrdinal: 1,
+        provider: "codex",
+        threadId: "thread-codex",
+        agentLabel: "Codex",
+      }, {
+        ...shared,
+        id: "task-claude",
+        selected: false,
+        streamId: "stream-claude",
+        streamName: "Claude Stream",
+        streamOrdinal: 2,
+        provider: "claude",
+        threadId: "thread-claude",
+        agentLabel: "Claude",
+      }];
+      window.AgentHub.setWorkspaces([{
+        id: "workspace-1", name: "Agent HUB", settings: { catalogFolder: "Team" },
+      }, {
+        id: "workspace-2", name: "Archive", settings: { catalogFolder: "Other" },
+      }], ["workspace:workspace-1", "workspace:workspace-2", "notes"]);
+      window.AgentHub.setSelection({
+        quickMessages: {
+          global: [],
+          workspaces: {
+            "workspace-1": [{ title: "Workspace reply", text: "WORKSPACE" }],
+          },
+          streams: {
+            "stream-codex": [{ title: "Stream reply", text: "STREAM" }],
+          },
+        },
+      });
+      window.AgentHub.setTasks(window.__hub157Tasks);
+      window.__hub157Message = {
+        id: "message-1",
+        itemId: "item-1",
+        turnId: "turn-1",
+        threadId: "thread-codex",
+        provider: "codex",
+        role: "agent",
+        author: "Codex",
+        text: "Quoted source text",
+        time: "08:00",
+      };
+      window.AgentHub.setMessages("task-codex", [window.__hub157Message]);
+    });
+
+    const workspace = page.locator('[data-workspace-select="workspace-1"]');
+    await workspace.click();
+    assert.equal(await page.locator("[data-workspace-card-modal]").evaluate((node) => node.open), false);
+    await workspace.dispatchEvent("contextmenu", { clientX: 80, clientY: 80 });
+    assert.deepEqual(await page.locator(".workspace-context-menu:not([hidden]) [role=menuitem]").allTextContents(), [
+      "Редактировать…",
+    ]);
+    await page.keyboard.press("Escape");
+
+    await workspace.focus();
+    await workspace.dblclick();
+    assert.equal(await page.locator("[data-workspace-card-modal]").evaluate((node) => node.open), true);
+    assert.equal(await page.locator("[data-workspace-card-form] input").first().getAttribute("data-workspace-card-name"), "");
+    assert.equal(await page.locator("[data-workspace-card-folder]").inputValue(), "Team");
+    await page.locator('[data-workspace-card-quick-messages] [data-quick-message-title]').fill("Workspace edited");
+    await page.locator("[data-workspace-card-comment]").focus();
+    await page.locator("[data-workspace-card-folder]").evaluate((node) => {
+      node.value = "Other";
+      node.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await page.locator("[data-workspace-card-submit]").click();
+    const workspaceUpdate = await page.evaluate(() => window.__hub157Intents.find((item) => item.type === "workspace:update"));
+    assert.equal(workspaceUpdate.folderName, "Other");
+    assert.equal(await page.evaluate(() => window.__hub157Intents.some((item) => (
+      item.type === "selection:set"
+      && item.key === "quickMessages"
+      && item.value.workspaces["workspace-1"][0].title === "Workspace edited"
+    ))), true);
+
+    const codexTab = page.locator('.stream-tabs-track .stream-tab[data-stream-tab-id="stream-codex"]');
+    await codexTab.dispatchEvent("contextmenu", { clientX: 100, clientY: 100 });
+    assert.deepEqual(await page.locator(".stream-context-menu:not(.workspace-context-menu):not([hidden]) [role=menuitem]").allTextContents(), [
+      "Редактировать…",
+      "Ротация",
+      "Продолжить в Claude",
+    ]);
+    await page.keyboard.press("Escape");
+    await codexTab.focus();
+    await codexTab.dblclick();
+    assert.equal(await page.locator("[data-dialog-settings]").evaluate((node) => node.open), true);
+    assert.equal(await page.locator("[data-dialog-settings] input").first().getAttribute("data-dialog-stream-name"), "");
+    assert.equal(await page.locator("[data-dialog-stream-name]").inputValue(), "Codex Stream");
+    await page.locator("[data-dialog-stream-name]").fill("Renamed Stream");
+    await page.locator("[data-dialog-working-directory]").focus();
+    assert.equal(await page.evaluate(() => window.__hub157Intents.some((item) => (
+      item.type === "stream:rename" && item.streamId === "stream-codex" && item.name === "Renamed Stream"
+    ))), true);
+    assert.equal(await page.locator("[data-stream-card-continue-provider]").textContent(), "Продолжить в Claude");
+    assert.equal(await page.locator("[data-stream-card-move-target] option").nth(1).textContent(), "Archive");
+    await page.keyboard.press("Escape");
+    assert.equal(await page.locator("[data-dialog-settings]").evaluate((node) => node.open), false);
+    assert.equal(await page.evaluate(() => document.activeElement?.dataset?.streamTabId), "stream-codex");
+
+    await page.evaluate(() => window.AgentHub.setTasks(window.__hub157Tasks.map((task) => ({
+      ...task, selected: task.id === "task-claude",
+    }))));
+    const claudeTab = page.locator('.stream-tabs-track .stream-tab[data-stream-tab-id="stream-claude"]');
+    await claudeTab.dispatchEvent("contextmenu", { clientX: 120, clientY: 100 });
+    assert.deepEqual(await page.locator(".stream-context-menu:not(.workspace-context-menu):not([hidden]) [role=menuitem]").allTextContents(), [
+      "Редактировать…",
+      "Ротация",
+      "Продолжить в Codex",
+    ]);
+
+    await page.evaluate(() => window.AgentHub.setTasks(window.__hub157Tasks));
+    const composer = page.locator("[data-composer-input]");
+    await composer.fill("AB");
+    await composer.evaluate((node) => node.setSelectionRange(1, 1));
+    const workspaceReply = page.locator("[data-composer-quick-messages] [data-quick-message-index]")
+      .filter({ hasText: "Workspace edited" });
+    await workspaceReply.click();
+    assert.equal(await composer.inputValue(), "AWORKSPACEB");
+    assert.deepEqual(await composer.evaluate((node) => [node.selectionStart, node.selectionEnd]), [10, 10]);
+    assert.equal(await page.evaluate(() => window.__hub157Intents.filter((item) => item.type === "message:send").length), 0);
+
+    const annotationAdded = await page.evaluate(async () => {
+      window.AgentHub.selectTask("task-codex");
+      window.AgentHub.setMessages("task-codex", [{
+        ...window.__hub157Message,
+        id: "message-quote",
+        itemId: "item-quote",
+      }]);
+      const source = [...document.querySelectorAll("[data-chat-log] > [data-message-key]")]
+        .find((node) => node.textContent.includes("Quoted source text"));
+      const body = source?.querySelector(".msg-body");
+      const range = document.createRange();
+      range.selectNodeContents(body);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return window.AgentHub.addSelectedAnnotation();
+    });
+    assert.equal(annotationAdded, true);
+    const comment = page.locator("[data-annotation-comment-index='0']");
+    await comment.fill("XY");
+    await comment.evaluate((node) => node.setSelectionRange(1, 1));
+    const streamReply = page.locator("[data-composer-quick-messages] [data-quick-message-index]")
+      .filter({ hasText: "Stream reply" });
+    await streamReply.click();
+    assert.equal(await comment.inputValue(), "XSTREAMY");
+
+    const composerBeforeQuickSend = await composer.inputValue();
+    const commentBeforeQuickSend = await comment.inputValue();
+    await streamReply.click({ modifiers: ["Control"] });
+    const quickSend = await page.evaluate(() => window.__hub157Intents.filter((item) => item.type === "message:send").at(-1));
+    assert.equal(quickSend.text, "STREAM");
+    assert.deepEqual(quickSend.annotations, []);
+    assert.deepEqual(quickSend.attachments, []);
+    assert.deepEqual(quickSend.taskReferences, []);
+    assert.equal(await composer.inputValue(), composerBeforeQuickSend);
+    assert.equal(await comment.inputValue(), commentBeforeQuickSend);
+    await page.evaluate((requestId) => window.AgentHub.completeSend(requestId, { accepted: true }), quickSend.requestId);
+
+    const sendsBeforeKeyboard = await page.evaluate(() => window.__hub157Intents.filter((item) => item.type === "message:send").length);
+    await comment.press("Control+Enter");
+    assert.equal((await comment.inputValue()).includes("\n"), true);
+    await comment.evaluate((node) => node.setSelectionRange(1, 1));
+    await comment.press("Shift+Enter");
+    assert.deepEqual(await comment.evaluate((node) => [node.selectionStart, node.selectionEnd]), [2, 2]);
+    assert.equal(await page.locator("[data-annotation-comment-index='0']").count(), 1);
+    await comment.dispatchEvent("keydown", { key: "Enter", isComposing: true });
+    await comment.dispatchEvent("keydown", { key: "Enter", repeat: true });
+    assert.equal(await page.evaluate(() => window.__hub157Intents.filter((item) => item.type === "message:send").length), sendsBeforeKeyboard);
+    await comment.press("Enter");
+    const quoteSend = await page.evaluate(() => window.__hub157Intents.filter((item) => item.type === "message:send").at(-1));
+    assert.equal(quoteSend.text, composerBeforeQuickSend);
+    assert.equal(quoteSend.annotations.length, 1);
+    assert.equal(await page.evaluate(() => window.__hub157Intents.filter((item) => item.type === "message:send").length), sendsBeforeKeyboard + 1);
+    await page.evaluate((requestId) => window.AgentHub.completeSend(requestId, { accepted: true }), quoteSend.requestId);
+
+    await composer.fill("Steer composition");
+    const metaAnnotationAdded = await page.evaluate(() => {
+      const source = [...document.querySelectorAll("[data-chat-log] > [data-message-key]")]
+        .find((node) => node.textContent.includes("Quoted source text"));
+      const body = source?.querySelector(".msg-body");
+      const range = document.createRange();
+      range.selectNodeContents(body);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return window.AgentHub.addSelectedAnnotation();
+    });
+    assert.equal(metaAnnotationAdded, true);
+    const metaComment = page.locator("[data-annotation-comment-index='0']");
+    await metaComment.fill("Steer quote");
+    await page.evaluate(() => window.AgentHub.setRunning("task-codex", true));
+    await metaComment.dispatchEvent("keydown", { key: "Enter", metaKey: true });
+    const metaSend = await page.evaluate(() => window.__hub157Intents.filter((item) => item.type === "message:send").at(-1));
+    assert.equal(metaSend.text, "Steer composition");
+    assert.equal(metaSend.annotations[0].annotation, "Steer quote");
+    assert.equal(metaSend.followUpMode, "steer");
+    assert.equal(metaSend.deferWhileRunning, false);
+    assert.equal(await page.locator("[data-annotation-comment-index='0']").count(), 0);
+
+    await page.evaluate(() => window.AgentHub.setArchivedWorkspaces([{
+      id: "archived-1", name: "Exact Archive", streamCount: 2, threadCount: 3, purgeAfterMs: 1,
+    }]));
+    await page.locator("[data-action='workspace-archive-open']").click();
+    await page.locator("[data-workspace-archive-delete='archived-1']").click();
+    assert.match(await page.locator("[data-text-dialog-title]").textContent(), /необратимо/u);
+    await page.locator("[data-text-dialog-input]").fill("wrong");
+    await page.locator("[data-text-dialog-ok]").click();
+    assert.equal(await page.evaluate(() => window.__hub157Intents.some((item) => item.type === "workspace:delete-permanently")), false);
+    await page.locator("[data-workspace-archive-delete='archived-1']").click();
+    await page.locator("[data-text-dialog-input]").fill("Exact Archive");
+    await page.locator("[data-text-dialog-ok]").click();
+    assert.deepEqual(await page.evaluate(() => window.__hub157Intents.filter((item) => (
+      item.type === "workspace:delete-permanently"
+    )).at(-1)), {
+      type: "workspace:delete-permanently",
+      workspaceId: "archived-1",
+      confirmationName: "Exact Archive",
+    });
+  } finally {
+    await browser.close();
+  }
+});
+
+test("backend permanent-delete rejection retains archive UI and restores exact action focus in installed Edge", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  const backend = await startPermanentDeleteConflictBackend();
+  const commands = [];
+  let page;
+  try {
+    page = await browser.newPage();
+    await openStreamTabsDomFixture(page, {
+      includeHubClient: true,
+      control: async (request) => {
+        commands.push(structuredClone(request));
+        const response = await fetch(`${backend.url}api/control`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(request),
+        });
+        return { status: response.status, body: await response.json() };
+      },
+    });
+    await page.evaluate(() => window.AgentHub.setArchivedWorkspaces([{
+      id: "archived-rejected",
+      name: "Rejected Archive",
+      streamCount: 2,
+      threadCount: 3,
+      purgeAfterMs: null,
+    }]));
+    await page.locator("[data-action='workspace-archive-open']").click();
+    await page.locator("[data-workspace-archive-delete='archived-rejected']").click();
+    await page.locator("[data-text-dialog-input]").fill("Rejected Archive");
+    await page.locator("[data-text-dialog-ok]").click();
+
+    await page.locator("[data-toast]").filter({
+      hasText: "Сначала переместите или удалите связанные Dashboard Task",
+    }).waitFor({ state: "visible" });
+    assert.deepEqual(commands.filter(({ action }) => action === "delete-archived-workspace")
+      .map(({ action, params }) => ({ action, params })), [{
+      action: "delete-archived-workspace",
+      params: {
+        workspaceId: "archived-rejected",
+        confirmationName: "Rejected Archive",
+      },
+    }]);
+    assert.equal(await page.locator("[data-workspace-archive-modal]").evaluate((node) => node.open), true);
+    const deleteAction = page.locator("[data-workspace-archive-delete='archived-rejected']");
+    assert.equal(await deleteAction.count(), 1);
+    assert.equal(await deleteAction.evaluate((node) => document.activeElement === node), true);
+  } finally {
+    await backend.close();
+    await page?.unrouteAll({ behavior: "ignoreErrors" });
+    await browser.close();
+  }
+});
+
+test("card dblclick identity and provider continuation fail closed in installed Edge", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  try {
+    const page = await browser.newPage();
+    await openStreamTabsDomFixture(page);
+    await page.evaluate(() => {
+      const shared = {
+        status: "ready",
+        statusLabel: "Готов",
+        lastActivity: "2026-09-04T08:00:00.000Z",
+        running: false,
+        unread: false,
+        streamSettings: {},
+      };
+      window.AgentHub.setWorkspaces([{
+        id: "workspace-1", name: "One", settings: {},
+      }, {
+        id: "workspace-2", name: "Two", settings: {},
+      }], ["workspace:workspace-1", "workspace:workspace-2", "notes"]);
+      window.AgentHub.setTasks([{
+        ...shared,
+        id: "task-known",
+        selected: true,
+        workspaceId: "workspace-1",
+        workspaceName: "One",
+        streamId: "stream-known",
+        streamName: "Known",
+        streamOrdinal: 1,
+        provider: "codex",
+        agentLabel: "Codex",
+      }, {
+        ...shared,
+        id: "task-other",
+        selected: false,
+        workspaceId: "workspace-1",
+        workspaceName: "One",
+        streamId: "stream-other",
+        streamName: "Other",
+        streamOrdinal: 2,
+        provider: "claude",
+        agentLabel: "Claude",
+      }, {
+        ...shared,
+        id: "task-second-workspace",
+        selected: false,
+        workspaceId: "workspace-2",
+        workspaceName: "Two",
+        streamId: "stream-second-workspace",
+        streamName: "Second workspace",
+        streamOrdinal: 1,
+        provider: "codex",
+        agentLabel: "Codex",
+      }]);
+    });
+
+    const replacedWorkspaceResult = await page.evaluate(() => {
+      const original = document.querySelector('[data-workspace-select="workspace-1"]');
+      original.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+      const replacement = original.cloneNode(true);
+      original.replaceWith(replacement);
+      replacement.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 2 }));
+      replacement.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, detail: 2 }));
+      return {
+        open: document.querySelector("[data-workspace-card-modal]").open,
+        selected: document.querySelector('[data-workspace-select="workspace-1"]')
+          ?.getAttribute("aria-pressed"),
+      };
+    });
+    assert.deepEqual(replacedWorkspaceResult, { open: false, selected: "true" });
+
+    const reorderedStreamResult = await page.evaluate(() => {
+      const known = document.querySelector('[data-stream-tab-id="stream-known"]');
+      const other = document.querySelector('[data-stream-tab-id="stream-other"]');
+      known.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+      known.before(other);
+      other.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 2 }));
+      other.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, detail: 2 }));
+      return {
+        open: document.querySelector("[data-dialog-settings]").open,
+        selectedTaskId: document.querySelector('[data-stream-tab-id="stream-other"]')
+          ?.dataset.streamTaskId,
+      };
+    });
+    assert.deepEqual(reorderedStreamResult, { open: false, selectedTaskId: "task-other" });
+
+    await page.evaluate(() => {
+      const shared = {
+        workspaceId: "workspace-1",
+        workspaceName: "One",
+        status: "ready",
+        statusLabel: "Готов",
+        lastActivity: "2026-09-04T08:00:00.000Z",
+        running: false,
+        unread: false,
+        streamSettings: {},
+      };
+      window.AgentHub.setTasks([{
+        ...shared,
+        id: "task-absent-provider",
+        selected: true,
+        streamId: "stream-absent-provider",
+        streamName: "Absent provider",
+        streamOrdinal: 1,
+      }, {
+        ...shared,
+        id: "task-unknown-provider",
+        selected: false,
+        streamId: "stream-unknown-provider",
+        streamName: "Unknown provider",
+        streamOrdinal: 2,
+        provider: "future-provider",
+      }]);
+    });
+    for (const streamId of ["stream-absent-provider", "stream-unknown-provider"]) {
+      const tab = page.locator(`.stream-tabs-track [data-stream-tab-id="${streamId}"]`);
+      await tab.dispatchEvent("contextmenu", { clientX: 120, clientY: 100 });
+      const actions = page.locator(".stream-context-menu:not(.workspace-context-menu):not([hidden]) [role=menuitem]");
+      assert.deepEqual(await actions.allTextContents(), [
+        "Редактировать…",
+        "Ротация",
+        "Продолжение недоступно",
+      ]);
+      assert.equal(await actions.nth(1).isDisabled(), true);
+      assert.equal(await actions.nth(2).isDisabled(), true);
+      assert.equal(await actions.nth(2).getAttribute("data-provider"), "");
+      await page.keyboard.press("Escape");
+    }
+  } finally {
+    await browser.close();
+  }
+});
+
 test("Stream display identity never exposes a blank name", async () => {
   const { streamDisplayName } = await streamTabsApi();
   assert.equal(streamDisplayName({ name: " Architect ", ordinal: 2 }, 3), "Architect");
@@ -1081,7 +1651,7 @@ test("Workspace order follows meaningful activity with deterministic ties", asyn
   );
 });
 
-test("Workspace sections separate active work and group stable project families", async () => {
+test("Workspace sections keep matching prefixes flat outside explicit folders", async () => {
   const { workspaceSections } = await streamTabsApi();
   const groups = [
     { id: "active", name: "Agent HUB", tasks: [{ running: true, lastActivity: "2026-08-10T10:00:00Z" }] },
@@ -1096,27 +1666,16 @@ test("Workspace sections separate active work and group stable project families"
   });
 
   assert.deepEqual(Array.from(sections.active, (group) => group.id), ["active"]);
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(sections.catalog.map((entry) => entry.type === "family"
-      ? {
-          type: entry.type,
-          name: entry.name,
-          items: entry.items.map((item) => ({ id: item.id, shortName: item.shortName })),
-        }
-      : { type: entry.type, id: entry.group.id }))),
-    [
-      { type: "workspace", id: "solo" },
-      {
-        type: "family",
-        name: "FB",
-        items: [
-          { id: "fb-alpha", shortName: "Альфа" },
-          { id: "fb-beta", shortName: "Бета" },
-          { id: "fb-gamma", shortName: "Гамма" },
-        ],
-      },
-    ],
-  );
+  assert.deepEqual(JSON.parse(JSON.stringify(sections.catalog.map((entry) => ({
+    type: entry.type,
+    id: entry.group.id,
+    name: entry.group.name,
+  })))), [
+    { type: "workspace", id: "solo", name: "Отдельный" },
+    { type: "workspace", id: "fb-alpha", name: "FB Альфа" },
+    { type: "workspace", id: "fb-beta", name: "FB Бета" },
+    { type: "workspace", id: "fb-gamma", name: "FB Гамма" },
+  ]);
 });
 
 test("explicit Workspace folders keep members together and empty folders visible", async () => {
@@ -1238,7 +1797,7 @@ test("Workspace folder mutations carry only identity and folder while creation c
   );
 });
 
-test("Workspace archive presentation keeps expiry and exact-name confirmation", async () => {
+test("Workspace archive presentation cancels expiry and keeps exact-name confirmation", async () => {
   const { workspaceArchiveNameMatches, workspaceArchivePresentation } = await streamTabsApi();
   assert.deepEqual(JSON.parse(JSON.stringify(workspaceArchivePresentation([{
     id: "archived",
@@ -1246,71 +1805,15 @@ test("Workspace archive presentation keeps expiry and exact-name confirmation", 
     streamCount: 2,
     threadCount: 5,
     purgeAfterMs: 1_700_000_000_000 + (26 * 60 * 60 * 1000),
-  }], 1_700_000_000_000))), [{
+  }]))), [{
     id: "archived",
     name: "Удалённый",
     streamCount: 2,
     threadCount: 5,
-    purgeAfterMs: 1_700_093_600_000,
-    remainingLabel: "Осталось 2 дн.",
+    purgeAfterMs: null,
   }]);
   assert.equal(workspaceArchiveNameMatches({ name: "Точный регистр" }, "Точный регистр"), true);
   assert.equal(workspaceArchiveNameMatches({ name: "Точный регистр" }, "точный регистр"), false);
-});
-
-test("Workspace context menu omits ungroup for an ungrouped Workspace without a null text node", async () => {
-  const { renderWorkspaceContextMenuChildren } = await streamTabsApi();
-  const menu = {
-    childNodes: [],
-    replaceChildren(...children) {
-      this.childNodes = children.map((child) => child?.nodeType
-        ? child
-        : { nodeType: 3, textContent: String(child) });
-    },
-  };
-  const newFolder = {
-    nodeType: 1,
-    textContent: "Новая папка…",
-    dataset: { workspaceMenuAction: "folder-new" },
-  };
-
-  renderWorkspaceContextMenuChildren(menu, [newFolder], null, () => ({
-    nodeType: 1,
-    textContent: "Убрать из папки",
-    dataset: { workspaceMenuAction: "folder-remove" },
-  }));
-
-  assert.deepEqual(menu.childNodes, [newFolder]);
-  assert.equal(menu.childNodes.some((node) => node.textContent === "null"), false);
-  assert.equal(menu.childNodes.some((node) => node.dataset?.workspaceMenuAction === "folder-remove"), false);
-});
-
-test("Workspace context menu renders the localized ungroup action for a grouped Workspace", async () => {
-  const { renderWorkspaceContextMenuChildren } = await streamTabsApi();
-  const menu = {
-    childNodes: [],
-    replaceChildren(...children) {
-      this.childNodes = children.map((child) => child?.nodeType
-        ? child
-        : { nodeType: 3, textContent: String(child) });
-    },
-  };
-  const newFolder = {
-    nodeType: 1,
-    textContent: "Новая папка…",
-    dataset: { workspaceMenuAction: "folder-new" },
-  };
-  const removeFolder = {
-    nodeType: 1,
-    textContent: "Убрать из папки",
-    dataset: { workspaceMenuAction: "folder-remove" },
-  };
-
-  renderWorkspaceContextMenuChildren(menu, [newFolder], "Клиенты", () => removeFolder);
-
-  assert.deepEqual(menu.childNodes, [newFolder, removeFolder]);
-  assert.equal(menu.childNodes.at(-1).textContent, "Убрать из папки");
-  assert.equal(menu.childNodes.at(-1).dataset.workspaceMenuAction, "folder-remove");
 });
 
 test("activity rail markup exposes separate active and recent sections", async () => {
