@@ -178,8 +178,8 @@ const streamCardPin = document.querySelector("[data-stream-card-pin]");
 const streamCardWorkspace = document.querySelector("[data-stream-card-workspace]");
 const streamCardRotate = document.querySelector("[data-stream-card-rotate]");
 const streamCardContinueProvider = document.querySelector("[data-stream-card-continue-provider]");
-const streamCardMoveTarget = document.querySelector("[data-stream-card-move-target]");
 const streamCardMove = document.querySelector("[data-stream-card-move]");
+const streamCardMoveMenu = document.querySelector("[data-stream-card-move-menu]");
 const streamCardArchive = document.querySelector("[data-stream-card-archive]");
 const workspaceMessageSearch = document.querySelector("[data-workspace-message-search]");
 const workspaceMessageSearchToggle = document.querySelector("[data-workspace-message-search-toggle]");
@@ -3849,14 +3849,12 @@ streamTabs?.addEventListener("click", (event) => {
   const tab = event.target.closest("[data-stream-tab-id][data-workspace-id]");
   if (!tab) return;
   const candidate = {
-    node: tab,
     workspaceId: String(tab.dataset.workspaceId ?? ""),
     streamId: String(tab.dataset.streamTabId ?? ""),
     taskId: String(tab.dataset.streamTaskId ?? ""),
   };
   if (event.detail === 1) streamDblclickCandidate = candidate;
-  else if (streamDblclickCandidate?.node !== candidate.node
-    || streamDblclickCandidate?.workspaceId !== candidate.workspaceId
+  else if (streamDblclickCandidate?.workspaceId !== candidate.workspaceId
     || streamDblclickCandidate?.streamId !== candidate.streamId
     || streamDblclickCandidate?.taskId !== candidate.taskId) streamDblclickCandidate = null;
   const overflowMenu = streamTabs.querySelector("[data-stream-tabs-overflow-menu]");
@@ -3877,7 +3875,7 @@ streamTabs?.addEventListener("dblclick", (event) => {
   const streamId = String(tab?.dataset.streamTabId ?? "");
   const taskId = String(tab?.dataset.streamTaskId ?? "");
   const task = state.tasks.find((entry) => entry.id === taskId);
-  if (!candidate || candidate.node !== tab || candidate.workspaceId !== workspaceId
+  if (!candidate || candidate.workspaceId !== workspaceId
     || candidate.streamId !== streamId || candidate.taskId !== taskId
     || !tab?.isConnected || !streamTabs.contains(tab) || !task
     || workspaceKey(task) !== workspaceId || String(task.streamId ?? "") !== streamId) return;
@@ -7948,6 +7946,7 @@ function setDialogSettingsOpen(open) {
     emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
   }
   const visible = Boolean(open && currentTask());
+  if (!visible && streamCardMoveMenu?.matches(":popover-open")) streamCardMoveMenu.hidePopover();
   chatPane.toggleAttribute("data-dialog-settings-open", visible);
   dialogSettingsToggle.setAttribute("aria-pressed", String(visible));
   if (visible) {
@@ -8503,17 +8502,23 @@ function renderDialogSettings() {
       ? "Сначала завершите текущий ход"
       : oppositeProvider ? "Продолжить Stream в противоположном провайдере" : "Провайдер Stream не определён";
   }
-  if (streamCardMoveTarget) {
-    const previous = streamCardMoveTarget.value;
-    const options = workspaceMenuOptions(workspaceId);
-    streamCardMoveTarget.replaceChildren(
-      el("option", { value: "", text: options.length ? "Выберите Workspace" : "Нет доступных Workspace" }),
-      ...options.map((workspace) => el("option", { value: workspace.id, text: workspace.name })),
-    );
-    streamCardMoveTarget.value = options.some((workspace) => workspace.id === previous) ? previous : "";
-    streamCardMoveTarget.disabled = !streamId || options.length === 0;
+  const moveOptions = workspaceMenuOptions(workspaceId);
+  if (streamCardMoveMenu) {
+    streamCardMoveMenu.replaceChildren(...moveOptions.map((workspace) => el("button", {
+      type: "button",
+      class: "stream-card-move-option",
+      role: "menuitem",
+      "data-stream-card-move-workspace": workspace.id,
+      text: workspace.name,
+    })));
   }
-  if (streamCardMove) streamCardMove.disabled = !streamId || !streamCardMoveTarget?.value;
+  if (streamCardMove) {
+    streamCardMove.disabled = !streamId || moveOptions.length === 0
+      || typeof streamCardMoveMenu?.showPopover !== "function";
+    streamCardMove.title = moveOptions.length
+      ? "Выбрать Workspace и сразу перенести Stream"
+      : "Нет доступных Workspace для переноса";
+  }
   if (streamCardArchive) {
     streamCardArchive.disabled = !streamId || running;
     streamCardArchive.title = running ? "Сначала завершите активный ход в этом Stream" : "Архивировать Stream";
@@ -8544,6 +8549,22 @@ function selectDialogSetting(group, value) {
     emit("selection:set", { key: group, value });
   }
   renderOptions();
+}
+
+function openStreamCardMoveMenu() {
+  if (!streamCardMoveMenu || !streamCardMove || streamCardMove.disabled
+    || typeof streamCardMoveMenu.showPopover !== "function") return;
+  streamCardMoveMenu.showPopover();
+  const anchor = streamCardMove.getBoundingClientRect();
+  const menu = streamCardMoveMenu.getBoundingClientRect();
+  const left = Math.max(8, Math.min(anchor.left, window.innerWidth - menu.width - 8));
+  const below = anchor.bottom + 6;
+  const top = below + menu.height <= window.innerHeight - 8
+    ? below
+    : Math.max(8, anchor.top - menu.height - 6);
+  streamCardMoveMenu.style.left = `${left}px`;
+  streamCardMoveMenu.style.top = `${top}px`;
+  streamCardMoveMenu.querySelector("[role='menuitem']")?.focus({ preventScroll: true });
 }
 
 settingsPanel?.addEventListener("click", async (event) => {
@@ -8586,11 +8607,21 @@ dialogSettings.addEventListener("click", (event) => {
     setDialogSettingsOpen(false);
     return;
   }
-  if (event.target.closest("[data-stream-card-move]")) {
-    const targetWorkspaceId = String(streamCardMoveTarget?.value ?? "");
-    if (!streamId || !targetWorkspaceId || streamCardMove?.disabled) return;
+  const moveOption = event.target.closest("[data-stream-card-move-workspace]");
+  if (moveOption) {
+    const targetWorkspaceId = String(moveOption.dataset.streamCardMoveWorkspace ?? "");
+    const allowed = workspaceMenuOptions(workspaceId).some((workspace) => workspace.id === targetWorkspaceId);
+    if (!streamId || !allowed) {
+      if (streamCardMoveMenu?.matches(":popover-open")) streamCardMoveMenu.hidePopover();
+      renderDialogSettings();
+      return;
+    }
     emit("stream:move", { streamId, workspaceId: targetWorkspaceId });
     setDialogSettingsOpen(false);
+    return;
+  }
+  if (event.target.closest("[data-stream-card-move]")) {
+    openStreamCardMoveMenu();
     return;
   }
   if (event.target.closest("[data-stream-card-archive]")) {
@@ -8621,10 +8652,6 @@ dialogSettings.addEventListener("change", (event) => {
     if (name !== String(task.streamName ?? task.streamDisplayName ?? "")) {
       emit("stream:rename", { streamId: task.streamId, name });
     }
-    return;
-  }
-  if (event.target.closest("[data-stream-card-move-target]")) {
-    if (streamCardMove) streamCardMove.disabled = !streamCardMoveTarget.value;
     return;
   }
   const setting = event.target.closest("select[data-dialog-options]");
@@ -8686,6 +8713,9 @@ dialogSettings.addEventListener("close", () => {
   chatPane.toggleAttribute("data-dialog-settings-open", false);
   dialogSettingsToggle.setAttribute("aria-pressed", "false");
   returnFocus?.focus?.({ preventScroll: true });
+});
+streamCardMoveMenu?.addEventListener("toggle", (event) => {
+  streamCardMove?.setAttribute("aria-expanded", String(event.newState === "open"));
 });
 
 dialogStreamRules?.addEventListener("input", () => {
