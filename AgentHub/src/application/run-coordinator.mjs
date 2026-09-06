@@ -60,6 +60,8 @@ function codexFinalAnswerStarted(run, target) {
 export class RunCoordinator {
   #lanes = new Map();
   #intakeLanes = new Map();
+  #pendingAdmissions = new Map();
+  #nextPendingAdmissionId = 0;
 
   constructor({
     taskRuns,
@@ -228,8 +230,30 @@ export class RunCoordinator {
     return this.serializeIn(this.#intakeLanes, target, operation);
   }
 
+  async withPendingAdmission(target, operation) {
+    const id = ++this.#nextPendingAdmissionId;
+    const admissionTarget = Object.freeze({
+      streamId: String(target?.streamId ?? "").trim(),
+      provider: String(target?.provider ?? "").trim().toLowerCase(),
+      threadId: String(target?.threadId ?? "").trim(),
+    });
+    this.#pendingAdmissions.set(id, admissionTarget);
+    try {
+      return await operation();
+    } finally {
+      this.#pendingAdmissions.delete(id);
+    }
+  }
+
+  hasPendingAdmission(matcher) {
+    if (typeof matcher !== "function") throw new TypeError("pending admission matcher is required");
+    return [...this.#pendingAdmissions.values()].some((target) => matcher(target));
+  }
+
   start(input, temporaryFiles = [], options = {}) {
-    return this.serialize(options.target, () => this.startUnlocked(input, temporaryFiles, options));
+    return this.withPendingAdmission(options.target, () => (
+      this.serialize(options.target, () => this.startUnlocked(input, temporaryFiles, options))
+    ));
   }
 
   async startUnlocked(input, temporaryFiles = [], {
@@ -326,7 +350,9 @@ export class RunCoordinator {
   }
 
   startDeferred(item) {
-    return this.serialize(item, () => this.startDeferredUnlocked(item));
+    return this.withPendingAdmission(item, () => (
+      this.serialize(item, () => this.startDeferredUnlocked(item))
+    ));
   }
 
   async startDeferredUnlocked(item) {
@@ -474,7 +500,9 @@ export class RunCoordinator {
   }
 
   acceptClientInput(request) {
-    return this.serializeIntake(request.target, () => this.acceptClientInputUnlocked(request));
+    return this.withPendingAdmission(request.target, () => (
+      this.serializeIntake(request.target, () => this.acceptClientInputUnlocked(request))
+    ));
   }
 
   async acceptClientInputUnlocked({
@@ -654,7 +682,9 @@ export class RunCoordinator {
   }
 
   submitClientInput(request) {
-    return this.serialize(request.target, () => this.submitClientInputUnlocked(request));
+    return this.withPendingAdmission(request.target, () => (
+      this.serialize(request.target, () => this.submitClientInputUnlocked(request))
+    ));
   }
 
   async submitClientInputUnlocked({

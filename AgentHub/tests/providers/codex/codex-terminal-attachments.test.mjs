@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   CODEX_TERMINAL_ATTACHMENT_TAIL_BYTES,
+  codexTerminalAttachmentSources,
   createCodexTerminalAttachmentResolver,
 } from "../../../src/providers/codex/codex-terminal-attachments.mjs";
 import { parseCodexRolloutActivity } from "../../../src/providers/codex/codex-rollout-activity.mjs";
@@ -18,7 +19,7 @@ test("terminal resolver imports all ideate outputs from a production-shaped roll
       const output = (savedPath) => ({
         type: "response_item",
         payload: {
-          type: "custom_tool_call_output",
+          type: "function_call_output",
           output: [
             { type: "input_image", image_url: "data:image/png;base64,aGVsbG8=" },
             {
@@ -32,6 +33,7 @@ test("terminal resolver imports all ideate outputs from a production-shaped roll
       return parseCodexRolloutActivity([
         { type: "event_msg", payload: { type: "task_started", turn_id: "turn-ideate" } },
         output("C:/generated/one.png"),
+        { type: "compacted", payload: { turn_id: "internal-compaction" } },
         output("C:/generated/two.png"),
         output("C:/generated/three.png"),
         { type: "event_msg", payload: { type: "task_complete", turn_id: "turn-ideate", last_agent_message: "Три концепта Rain" } },
@@ -59,6 +61,51 @@ test("terminal resolver imports all ideate outputs from a production-shaped roll
     "codex-generated-two.png",
     "codex-generated-three.png",
   ]);
+});
+
+test("terminal sources exclude reference, input and view_image materializations", () => {
+  assert.deepEqual(codexTerminalAttachmentSources({
+    generatedImageSources: {
+      "turn-output": [
+        { type: "path", value: "C:/input/reference.png" },
+        { type: "view-path", value: "C:/input/viewed.png" },
+        { type: "display-path", value: "C:/input/displayed.png" },
+        { type: "generated-path", value: "C:/generated/one.png" },
+        { type: "generated-path", value: "C:/generated/two.png" },
+      ],
+    },
+  }, "turn-output"), [
+    { type: "generated-path", value: "C:/generated/one.png" },
+    { type: "generated-path", value: "C:/generated/two.png" },
+  ]);
+});
+
+test("known ImageGen recovery imports exact parser provenance without rereading the rollout", async () => {
+  let reads = 0;
+  const imported = [];
+  const resolver = createCodexTerminalAttachmentResolver({
+    knownRolloutPath: async () => "C:/rollout.jsonl",
+    readRolloutActivity: async () => { reads += 1; return {}; },
+    importAttachments: async (sources) => {
+      imported.push(...sources);
+      return [{ id: "codex-generated-before-rebirth.png" }];
+    },
+  });
+
+  const result = await resolver({
+    threadId: "thread-reborn",
+    generatedImageSources: [{
+      type: "generated-path",
+      value: "C:/generated/before-rebirth.png",
+    }],
+  }, "turn-before-rebirth");
+
+  assert.deepEqual(result, [{ id: "codex-generated-before-rebirth.png" }]);
+  assert.equal(reads, 0);
+  assert.deepEqual(imported, [{
+    type: "generated-path",
+    value: "C:/generated/before-rebirth.png",
+  }]);
 });
 
 test("terminal resolver retries until the exact rollout final is visible", async () => {

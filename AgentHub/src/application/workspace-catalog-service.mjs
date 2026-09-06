@@ -9,12 +9,20 @@ function requiredStore(value) {
 
 export class WorkspaceCatalogService {
   #store;
+  #pendingPermanentDeletions = new Map();
 
-  constructor({ store, taskBoard = null, releasePlanner = null, releaseCompleter = null } = {}) {
+  constructor({
+    store,
+    taskBoard = null,
+    releasePlanner = null,
+    releaseCompleter = null,
+    blockingRunForWorkspace = () => null,
+  } = {}) {
     this.#store = requiredStore(store);
     this.taskBoard = taskBoard;
     this.releasePlanner = releasePlanner;
     this.releaseCompleter = releaseCompleter;
+    this.blockingRunForWorkspace = blockingRunForWorkspace;
   }
 
   hierarchy() {
@@ -58,6 +66,38 @@ export class WorkspaceCatalogService {
 
   restoreWorkspace({ workspaceId } = {}) {
     return this.#store.restoreWorkspace(workspaceId);
+  }
+
+  permanentDeletionPending(workspaceId) {
+    return (this.#pendingPermanentDeletions.get(String(workspaceId ?? "").trim()) ?? 0) > 0;
+  }
+
+  deleteArchivedWorkspace({ workspaceId, confirmationName } = {}) {
+    const id = String(workspaceId ?? "").trim();
+    if (this.blockingRunForWorkspace(id)) {
+      const error = new Error("Сначала завершите активные ходы в этом Workspace");
+      error.code = "WORKSPACE_LIFECYCLE_CONFLICT";
+      error.statusCode = 409;
+      throw error;
+    }
+    this.#pendingPermanentDeletions.set(id, (this.#pendingPermanentDeletions.get(id) ?? 0) + 1);
+    const release = () => {
+      const remaining = (this.#pendingPermanentDeletions.get(id) ?? 1) - 1;
+      if (remaining > 0) this.#pendingPermanentDeletions.set(id, remaining);
+      else this.#pendingPermanentDeletions.delete(id);
+    };
+    let result;
+    try {
+      result = this.#store.deleteArchivedWorkspace(workspaceId, confirmationName);
+    } catch (error) {
+      release();
+      throw error;
+    }
+    if (typeof result?.then !== "function") {
+      release();
+      return result;
+    }
+    return Promise.resolve(result).finally(release);
   }
 
   archivedWorkspaces() {

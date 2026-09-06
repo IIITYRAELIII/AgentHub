@@ -1523,6 +1523,37 @@ test("Mini App exposes control failures to the guarded diagnostics boundary", as
   }
 });
 
+test("Mini App preserves an expected lifecycle conflict as HTTP 409", async () => {
+  const captured = [];
+  const conflict = Object.assign(new Error("Workspace has an unresolved run admission"), {
+    code: "WORKSPACE_LIFECYCLE_CONFLICT",
+    statusCode: 409,
+  });
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(),
+    controlHandler: async () => { throw conflict; },
+    reportUnexpectedError: (error, context) => captured.push({ error, context }),
+  });
+  try {
+    const address = await server.start();
+    const response = await fetch(`${address.url}api/control`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "delete-archived-workspace", params: {} }),
+    });
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), {
+      ok: false,
+      error: "Workspace has an unresolved run admission",
+    });
+    assert.deepEqual(captured, []);
+  } finally {
+    await server.close();
+  }
+});
+
 test("local Mini App downloads and copies files only from configured Workspace roots", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspace-file-"));
   const workspace = path.join(directory, "workspace");

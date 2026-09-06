@@ -31,6 +31,8 @@ const CODEX_ROLLOUT_OCCURRENCE_CACHE_LIMIT = 512;
 const CODEX_AGENT_MESSAGE_CHARS = 200_000;
 const CODEX_ACTIVITY_CACHE_LIMIT = 200;
 const CODEX_ACTIVE_ACTIVITY_CACHE_LIMIT = 16;
+const GENERATED_IMAGE_CALL_OWNER_LIMIT = 128;
+const AMBIGUOUS_GENERATED_IMAGE_CALL_OWNER = Object.freeze({ state: "ambiguous" });
 const LEGACY_TURN_ID = "__legacy__";
 const codexActivityCache = new Map();
 const codexActiveActivityCache = new Map();
@@ -284,6 +286,46 @@ function codexCompletedUserMessage(entry) {
   };
 }
 
+function codexRolloutOrdinal(entry) {
+  const value = Number(entry?.ordinal);
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function bindCompletedCodexUserProjection(metadata, entry, completedUserMessage) {
+  // Codex emits one submitted user occurrence as an adjacent response_item /
+  // item_completed pair. Turn + raw ordinal adjacency is the protocol evidence;
+  // text, timestamps and provider item ids are deliberately not identity.
+  const pending = metadata.pendingUserResponseProjection ?? null;
+  metadata.pendingUserResponseProjection = null;
+  const clientUserMessageId = String(completedUserMessage?.clientUserMessageId ?? "").trim();
+  const ordinal = codexRolloutOrdinal(entry);
+  const turnId = codexEntryTurnId(entry);
+  if (!pending || !clientUserMessageId || ordinal === null
+    || pending.role !== "user" || ordinal !== pending.ordinal + 1
+    || !turnId || turnId !== pending.turnId) return "";
+
+  const messages = metadata.userMessages.get(turnId) ?? [];
+  const index = messages.findLastIndex((message) => {
+    if (message?.role !== "user") return false;
+    const messageClientId = String(message?.clientUserMessageId ?? "").trim();
+    if (messageClientId && messageClientId !== clientUserMessageId) return false;
+    const occurrenceId = String(message?.sourceOccurrenceId ?? "").trim();
+    return pending.sourceOccurrenceId
+      ? occurrenceId === pending.sourceOccurrenceId
+      : !occurrenceId && String(message?.itemId ?? "").trim() === pending.itemId;
+  });
+  if (index < 0) return "";
+
+  const sourceOccurrenceId = String(messages[index]?.sourceOccurrenceId ?? "").trim();
+  messages[index] = {
+    ...messages[index],
+    itemId: clientUserMessageId,
+    clientUserMessageId,
+  };
+  metadata.userMessages.set(turnId, messages);
+  return sourceOccurrenceId;
+}
+
 function rememberCodexTurnMessage(metadata, turnId, message) {
   const projection = codexAssistantResponseProjection(message);
   const value = projection.text.trim();
@@ -317,7 +359,7 @@ function rememberCodexUserMessage(metadata, turnId, {
   const interstream = notification ? null : interstreamMessageDetails(text);
   const responseAnnotations = notification ? null : responseAnnotationDetails(text);
   const value = notification?.text ?? displayUserPrompt(text);
-  if (!turnId || !value) return;
+  if (!turnId || !value) return null;
   const clientId = String(clientUserMessageId ?? "").trim()
     || (interstream?.requestId ? `mcp:${interstream.requestId}` : "");
   const providerItemId = String(itemId ?? "").trim();
@@ -358,6 +400,8 @@ function rememberCodexUserMessage(metadata, turnId, {
       ...message,
       itemId: clientId ? message.itemId : duplicate.itemId,
     };
+    metadata.userMessages.set(turnId, messages);
+    return messages[duplicateIndex];
   } else {
     messages.push(message);
   }
@@ -367,6 +411,7 @@ function rememberCodexUserMessage(metadata, turnId, {
     metadata.userMessages.delete(metadata.userMessages.keys().next().value);
     metadata.userProjectionIncomplete = true;
   }
+  return message;
 }
 
 function codexUserMessageAttachmentSources(entry) {
@@ -505,8 +550,53 @@ function rememberCodexImagePaths(metadata, turnId, paths, type = "generated-path
   }
 }
 
-function rememberCodexGeneratedImages(metadata, turnId, entry) {
-  rememberCodexImagePaths(metadata, turnId, generatedImagePaths(entry));
+function rememberPendingGeneratedImageCall(metadata, turnId, entry) {
+  const payload = entry?.payload ?? {};
+  const payloadType = String(payload.type ?? "");
+  if (entry?.type !== "response_item"
+    || !payloadType.endsWith("_call")
+    || payloadType.endsWith("_call_output")) return;
+  const callId = String(payload.call_id ?? "").trim();
+  const tool = String(payload.name ?? "").trim().toLowerCase();
+  const input = String(payload.input ?? payload.arguments ?? "");
+  const imageGenerationCall = tool === "image_gen__imagegen"
+    || tool === "imagegen"
+    || /\btools\.image_gen__imagegen\s*\(/u.test(input);
+  if (!callId || !turnId || !imageGenerationCall) return;
+  const currentOwner = metadata.pendingGeneratedImageCalls.get(callId);
+  const nextOwner = currentOwner === undefined || currentOwner === turnId
+    ? turnId
+    : AMBIGUOUS_GENERATED_IMAGE_CALL_OWNER;
+  metadata.pendingGeneratedImageCalls.delete(callId);
+  metadata.pendingGeneratedImageCalls.set(callId, nextOwner);
+  while (metadata.pendingGeneratedImageCalls.size > GENERATED_IMAGE_CALL_OWNER_LIMIT) {
+    metadata.pendingGeneratedImageCalls.delete(
+      metadata.pendingGeneratedImageCalls.keys().next().value,
+    );
+  }
+}
+
+function pendingGeneratedImageCallOwner(metadata, callId) {
+  const owner = callId ? metadata.pendingGeneratedImageCalls.get(callId) : null;
+  return typeof owner === "string" ? owner : "";
+}
+
+function consumePendingGeneratedImageCall(metadata, callId, turnId) {
+  if (!callId || !turnId) return;
+  const currentOwner = metadata.pendingGeneratedImageCalls.get(callId);
+  if (currentOwner === turnId) {
+    metadata.pendingGeneratedImageCalls.delete(callId);
+  } else if (currentOwner !== undefined
+    && currentOwner?.state !== AMBIGUOUS_GENERATED_IMAGE_CALL_OWNER.state) {
+    metadata.pendingGeneratedImageCalls.delete(callId);
+    metadata.pendingGeneratedImageCalls.set(callId, AMBIGUOUS_GENERATED_IMAGE_CALL_OWNER);
+  }
+}
+
+function generatedImageOwnerTurnId(metadata, explicitTurnId, entry) {
+  if (explicitTurnId) return explicitTurnId;
+  const callId = String(entry?.payload?.call_id ?? "").trim();
+  return pendingGeneratedImageCallOwner(metadata, callId);
 }
 
 function rememberPendingViewImageCall(metadata, turnId, entry) {
@@ -653,24 +743,40 @@ function rememberCodexTraceEntry(metadata, turnId, entry) {
   }
 }
 
-function observeOversizedCodexLine(metadata, activeTurnIds, { head = "", tail = "" } = {}) {
+function observeOversizedCodexLine(metadata, { head = "", tail = "" } = {}) {
   const sample = `${head}\n${tail}`;
   if (/"type"\s*:\s*"image_generation_end"/u.test(sample)) {
     const pathMatch = /"saved_path"\s*:\s*"((?:\\.|[^"\\])*)"/u.exec(sample);
     const savedPath = decodedJsonString(pathMatch?.[1]);
     const turnMatch = /"turn_id"\s*:\s*"([^"\\]+)"/u.exec(sample);
-    const turnId = String(turnMatch?.[1] ?? "").trim()
-      || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
-    if (savedPath) rememberCodexImagePaths(metadata, turnId, [savedPath]);
+    const callId = decodedJsonString(
+      /"call_id"\s*:\s*"((?:\\.|[^"\\])*)"/u.exec(sample)?.[1],
+    );
+    const explicitTurnId = String(turnMatch?.[1] ?? "").trim();
+    const turnId = explicitTurnId
+      || pendingGeneratedImageCallOwner(metadata, callId);
+    if (savedPath && turnId) {
+      rememberCodexImagePaths(metadata, turnId, [savedPath]);
+      consumePendingGeneratedImageCall(metadata, callId, turnId);
+    }
   }
   if (
     /"type"\s*:\s*"(?:custom_tool_call_output|customToolCallOutput|function_call_output|functionCallOutput)"/u.test(sample)
     && /Generated images are saved to/u.test(sample)
   ) {
-    const turnId = decodedJsonString(
+    const explicitTurnId = decodedJsonString(
       /"turn_id"\s*:\s*"((?:\\.|[^"\\])*)"/u.exec(sample)?.[1],
     );
-    rememberCodexImagePaths(metadata, turnId, generatedImagePathsFromJsonSample(sample));
+    const callId = decodedJsonString(
+      /"call_id"\s*:\s*"((?:\\.|[^"\\])*)"/u.exec(sample)?.[1],
+    );
+    const turnId = explicitTurnId
+      || pendingGeneratedImageCallOwner(metadata, callId);
+    const paths = generatedImagePathsFromJsonSample(sample);
+    if (turnId && paths.length) {
+      rememberCodexImagePaths(metadata, turnId, paths);
+      consumePendingGeneratedImageCall(metadata, callId, turnId);
+    }
   }
   if (
     /"type"\s*:\s*"(?:custom_tool_call_output|customToolCallOutput|function_call_output|functionCallOutput)"/u.test(sample)
@@ -770,6 +876,11 @@ function observeCodexEntry(
   }
   rememberCodexTraceEntry(metadata, turnId, entry);
   const completedUserMessage = codexCompletedUserMessage(entry);
+  const completedSourceOccurrenceId = bindCompletedCodexUserProjection(
+    metadata,
+    entry,
+    completedUserMessage,
+  );
   const isUserMessage = (entry?.type === "event_msg" && entry.payload?.type === "user_message")
     || completedUserMessage !== null;
   if (
@@ -798,10 +909,20 @@ function observeCodexEntry(
     // VS Code has concurrent turns in one thread.
     rememberCodexTurnMessage(metadata, turnId, responseItemMessage);
   }
-  const generatedImageTurnId = turnId
-    || (entry?.type === "event_msg" && entry.payload?.type === "image_generation_end"
-      && activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
-  if (generatedImageTurnId) rememberCodexGeneratedImages(metadata, generatedImageTurnId, entry);
+  rememberPendingGeneratedImageCall(metadata, turnId, entry);
+  const generatedImageTurnId = generatedImageOwnerTurnId(
+    metadata,
+    turnId,
+    entry,
+  );
+  if (generatedImageTurnId) {
+    const paths = generatedImagePaths(entry);
+    if (paths.length) {
+      rememberCodexImagePaths(metadata, generatedImageTurnId, paths);
+      const callId = String(entry?.payload?.call_id ?? "").trim();
+      consumePendingGeneratedImageCall(metadata, callId, generatedImageTurnId);
+    }
+  }
   if (turnId) rememberPendingViewImageCall(metadata, turnId, entry);
   completePendingViewImageCall(metadata, turnId, entry);
   const responseItemUserContent = entry?.type === "response_item"
@@ -815,17 +936,37 @@ function observeCodexEntry(
   const responseItemUserMessage = codexResponseItemMessage(entry, "user");
   const sourceProven = Boolean(sourceOccurrenceId) || metadata.requireSourceProvenance !== true;
   if (turnId && responseItemUserMessage && sourceProven) {
-    rememberCodexUserMessage(metadata, turnId, {
+    const projected = rememberCodexUserMessage(metadata, turnId, {
       itemId: entry.payload?.id,
       sourceOccurrenceId,
       text: responseItemUserMessage,
     });
+    const ordinal = codexRolloutOrdinal(entry);
+    if (projected?.role === "user" && ordinal !== null) {
+      metadata.pendingUserResponseProjection = {
+        turnId,
+        ordinal,
+        role: projected.role,
+        itemId: String(projected.itemId ?? "").trim(),
+        sourceOccurrenceId: String(projected.sourceOccurrenceId ?? "").trim(),
+      };
+    }
   } else if (turnId && responseItemHasImage && sourceProven) {
-    rememberCodexUserMessage(metadata, turnId, {
+    const projected = rememberCodexUserMessage(metadata, turnId, {
       itemId: entry.payload?.id,
       sourceOccurrenceId,
       text: "Изображение",
     });
+    const ordinal = codexRolloutOrdinal(entry);
+    if (projected?.role === "user" && ordinal !== null) {
+      metadata.pendingUserResponseProjection = {
+        turnId,
+        ordinal,
+        role: projected.role,
+        itemId: String(projected.itemId ?? "").trim(),
+        sourceOccurrenceId: String(projected.sourceOccurrenceId ?? "").trim(),
+      };
+    }
   }
   if (entry?.type === "event_msg" && entry.payload?.type === "agent_message") {
     const messageTurnId = turnId || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
@@ -861,7 +1002,7 @@ function observeCodexEntry(
       if (clientId || sourceProven) {
         rememberCodexUserMessage(metadata, messageTurnId, {
           clientUserMessageId: clientId,
-          sourceOccurrenceId,
+          sourceOccurrenceId: completedSourceOccurrenceId || sourceOccurrenceId,
           text: completedUserMessage?.text ?? entry.payload?.message,
           attachmentSources,
         });
@@ -1044,7 +1185,9 @@ export function parseCodexRolloutActivity(text, options = {}) {
     activityGroups: new Map(),
     activityGroupIndexes: new Map(),
     pendingViewImageCalls: new Map(),
+    pendingGeneratedImageCalls: new Map(),
     pendingUserMessages: [],
+    pendingUserResponseProjection: null,
     unscopedLatestMessage: "",
     startedAtMsByTurnId: new Map(),
     incompleteUserTurnIds: new Set(),
@@ -1072,6 +1215,7 @@ export function parseCodexRolloutActivity(text, options = {}) {
           ),
         );
       } catch {
+        metadata.pendingUserResponseProjection = null;
         metadata.userProjectionIncomplete = true;
       }
     }
@@ -1284,9 +1428,15 @@ export async function readCodexRolloutActivityOnCurrentThread(
     ))),
     activityGroupIndexes: new Map(),
     pendingViewImageCalls: new Map(appendOnly ? cached.pendingViewImageCalls ?? [] : []),
+    pendingGeneratedImageCalls: new Map(
+      appendOnly ? cached.pendingGeneratedImageCalls ?? [] : [],
+    ),
     pendingUserMessages: appendOnly
       ? (cached.pendingUserMessages ?? []).map((message) => ({ ...message }))
       : [],
+    pendingUserResponseProjection: appendOnly && cached.pendingUserResponseProjection
+      ? { ...cached.pendingUserResponseProjection }
+      : null,
     unscopedLatestMessage: appendOnly ? String(cached.unscopedLatestMessage ?? "") : "",
     startedAtMsByTurnId: new Map(appendOnly ? cached.startedAtMsByTurnId ?? [] : []),
     incompleteUserTurnIds: new Set(appendOnly ? cached.incompleteUserTurnIds ?? [] : []),
@@ -1392,7 +1542,10 @@ export async function readCodexRolloutActivityOnCurrentThread(
         );
       }
     } catch {
-      if (selected) metadata.userProjectionIncomplete = true;
+      if (selected) {
+        metadata.pendingUserResponseProjection = null;
+        metadata.userProjectionIncomplete = true;
+      }
     }
   };
   try {
@@ -1408,7 +1561,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
         if (discardUntilNewline) {
           appendOversizedTail(rawLine);
           if (oversizedLine?.selected) {
-            observeOversizedCodexLine(metadata, activeTurnIds, {
+            observeOversizedCodexLine(metadata, {
               head: oversizedLine.head.toString("utf8"),
               tail: oversizedLine.tail.toString("utf8"),
             });
@@ -1421,7 +1574,10 @@ export async function readCodexRolloutActivityOnCurrentThread(
       }
       if (pending.length > maximumLineBytes) {
         const selected = appendOnly || pendingStartOffset >= observationStart;
-        if (selected) metadata.userProjectionIncomplete = true;
+        if (selected) {
+          metadata.pendingUserResponseProjection = null;
+          metadata.userProjectionIncomplete = true;
+        }
         if (!oversizedLine) {
           oversizedLine = {
             head: pending.subarray(0, oversizedSampleLimit),
@@ -1440,7 +1596,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
   }
   if (discardUntilNewline && oversizedLine?.tail.toString("utf8").trimEnd().endsWith("}")) {
     if (oversizedLine.selected) {
-      observeOversizedCodexLine(metadata, activeTurnIds, {
+      observeOversizedCodexLine(metadata, {
         head: oversizedLine.head.toString("utf8"),
         tail: oversizedLine.tail.toString("utf8"),
       });
@@ -1502,7 +1658,11 @@ export async function readCodexRolloutActivityOnCurrentThread(
     generatedImageSources: [...metadata.generatedImageSources],
     activityGroups: [...metadata.activityGroups],
     pendingViewImageCalls: [...metadata.pendingViewImageCalls],
+    pendingGeneratedImageCalls: [...metadata.pendingGeneratedImageCalls],
     pendingUserMessages: metadata.pendingUserMessages.map((message) => ({ ...message })),
+    pendingUserResponseProjection: metadata.pendingUserResponseProjection
+      ? { ...metadata.pendingUserResponseProjection }
+      : null,
     unscopedLatestMessage: metadata.unscopedLatestMessage,
     ...snapshotAuthority,
     sourceStartedAtZero,

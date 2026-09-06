@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 const WORKSPACE_MUTATIONS = new Set([
   "ensureExperiments", "createWorkspace", "createWorkspaceWithStream", "renameWorkspace", "updateWorkspaceComment",
   "updateWorkspaceSettings", "moveWorkspaceToFolder", "renameWorkspaceFolder",
-  "archiveWorkspace", "restoreWorkspace", "purgeExpiredWorkspaces",
+  "archiveWorkspace", "restoreWorkspace", "deleteArchivedWorkspace",
   "updateWorkspaceDeveloperRules", "recordWorkspaceEvent", "beginMcpOperation",
   "bindMcpOperationInterstreamContentHash",
   "completeMcpOperation", "failMcpOperation", "beginMcpOperationReconciliation",

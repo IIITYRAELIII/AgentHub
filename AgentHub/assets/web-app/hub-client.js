@@ -3135,11 +3135,25 @@ agentHub.on("workspace:folder-rename", ({ fromFolderName, toFolderName }) => run
 }));
 agentHub.on("workspace:archive", ({ workspaceId }) => runAction(async () => {
   applySnapshot(await control("archive-workspace", { workspaceId }));
-  agentHub.toast("Workspace удалён в архив на 3 дня");
+  agentHub.toast("Workspace перемещён в бессрочный архив");
 }));
 agentHub.on("workspace:restore", ({ workspaceId }) => runAction(async () => {
   applySnapshot(await control("restore-workspace", { workspaceId }));
   agentHub.toast("Workspace восстановлен");
+}));
+agentHub.on("workspace:delete-permanently", ({ workspaceId, confirmationName }) => runAction(async () => {
+  try {
+    applySnapshot(await control("delete-archived-workspace", { workspaceId, confirmationName }));
+    agentHub.toast("Workspace удалён окончательно");
+  } catch (error) {
+    document.dispatchEvent(new CustomEvent("agenthub:workspace-delete-rejected", {
+      detail: {
+        workspaceId,
+        error: String(error?.message ?? error),
+      },
+    }));
+    throw error;
+  }
 }));
 agentHub.on("workspace:create", ({
   name, folderName, comment, workingDirectory, taskPrefix, rules, releaseWorkflowEnabled, beforeColumnId,
@@ -3167,7 +3181,7 @@ agentHub.on("workspace:create", ({
   applySnapshot(snapshot);
 }));
 agentHub.on("workspace:update", ({
-  workspaceId, name, comment, workingDirectory, taskPrefix, rules, releaseWorkflowEnabled,
+  workspaceId, name, folderName, comment, workingDirectory, taskPrefix, rules, releaseWorkflowEnabled,
   beforeColumnId,
 }) => runAction(async () => {
   if (!lastSnapshot?.boardLayout) {
@@ -3178,11 +3192,13 @@ agentHub.on("workspace:update", ({
   let snapshot = lastSnapshot;
   const nextSettings = {
     ...(workspace?.settings ?? {}),
+    catalogFolder: String(folderName ?? "").trim(),
     workingDirectory: String(workingDirectory ?? "").trim(),
     taskPrefix: String(taskPrefix ?? "").trim(),
     releaseWorkflowEnabled: releaseWorkflowEnabled === true,
   };
-  const settingsChanged = nextSettings.workingDirectory !== String(workspace?.settings?.workingDirectory ?? "")
+  const settingsChanged = nextSettings.catalogFolder !== String(workspace?.settings?.catalogFolder ?? "")
+    || nextSettings.workingDirectory !== String(workspace?.settings?.workingDirectory ?? "")
     || nextSettings.taskPrefix !== String(workspace?.settings?.taskPrefix ?? "")
     || nextSettings.releaseWorkflowEnabled !== (workspace?.settings?.releaseWorkflowEnabled === true);
   if (settingsChanged) {

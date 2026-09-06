@@ -20,8 +20,11 @@ const DEFAULT_AUDIT_THREADS_PER_RUN = 8;
 const DEFAULT_AUDIT_TURNS_PER_RUN = 20;
 const DEFAULT_AUDIT_TIME_MS = 75;
 const ROLLOUT_CHECKPOINT_BYTES = 128;
-const SNAPSHOT_VERSION = 14;
-const COMPATIBLE_SNAPSHOT_VERSIONS = new Set([4, 5, 6, 7, 8, 9, 10, 11, 12, 13, SNAPSHOT_VERSION]);
+const SNAPSHOT_VERSION = 16;
+const COMPATIBLE_SNAPSHOT_VERSIONS = new Set([
+  4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, SNAPSHOT_VERSION,
+]);
+const HISTORICAL_BACKFILL_STATE_VERSIONS = new Set([8, 9, 12, 13, SNAPSHOT_VERSION]);
 
 function timestampMs(value) {
   const numeric = Number(value);
@@ -91,16 +94,35 @@ function normalizedLiveScanResult(result) {
   const activeTurns = Array.isArray(result.resumeState?.turns)
     ? result.resumeState.turns
     : result.turns.filter((turn) => turn?.terminal !== true);
+  const attachmentCandidates = new Map((result.attachmentCandidates ?? []).flatMap((candidate) => {
+    const turnId = String(candidate?.turnId ?? "").trim();
+    const sources = (candidate?.generatedImageSources ?? []).filter((source) => (
+      source?.type === "generated-path" && String(source.value ?? "").trim()
+    ));
+    return turnId && sources.length ? [[turnId, sources]] : [];
+  }));
+  const terminalTurnIds = new Set(result.turns
+    .filter((turn) => turn?.terminal === true)
+    .map((turn) => String(turn.turnId)));
   return {
-    terminals: result.turns
+    terminals: [...result.turns
       .filter((turn) => turn?.terminal === true)
       .map((turn) => ({
         turnId: String(turn.turnId),
         status: terminalTurnStatus(turn.status) || "completed",
         completedAt: String(turn.completedAt ?? turn.lastActivityAt ?? ""),
         ...(turn.contextProbe === true ? { contextProbe: true } : {}),
+        ...(attachmentCandidates.has(String(turn.turnId)) ? {
+          generatedImageSources: attachmentCandidates.get(String(turn.turnId)),
+        } : {}),
         usageResult: turn,
-      })),
+      })), ...[...attachmentCandidates].flatMap(([turnId, generatedImageSources]) => (
+        terminalTurnIds.has(turnId) ? [] : [{
+          turnId,
+          attachmentRepairOnly: true,
+          generatedImageSources,
+        }]
+      ))],
     activeTurns: activeTurns.map((turn) => ({
       turnId: String(turn.turnId),
       startedAt: String(turn.startedAt ?? ""),
@@ -214,6 +236,7 @@ function restoredHistoricalSubagentBackfill(value) {
       offset,
       size: Number.isSafeInteger(size) && size >= 0 ? size : 0,
       terminalTurnIndex: Math.max(0, Number(item?.terminalTurnIndex) || 0),
+      attachmentCandidateIndex: Math.max(0, Number(item?.attachmentCandidateIndex) || 0),
       staleTurnIndex: Math.max(0, Number(item?.staleTurnIndex) || 0),
       resumeState: item?.resumeState ?? null,
       activeTurns: Array.isArray(item?.activeTurns) ? item.activeTurns.flatMap((turn) => {
@@ -349,6 +372,7 @@ export class CodexTerminalAudit {
   restore(snapshot) {
     const snapshotVersion = Number(snapshot?.version);
     const compatibleSnapshot = COMPATIBLE_SNAPSHOT_VERSIONS.has(snapshotVersion);
+    const compatibleHistoricalBackfill = HISTORICAL_BACKFILL_STATE_VERSIONS.has(snapshotVersion);
     this.completedThroughMs = compatibleSnapshot ? timestampMs(snapshot?.completedThrough) : 0;
     this.positions.clear();
     this.pendingTurns.clear();
@@ -356,13 +380,19 @@ export class CodexTerminalAudit {
       || (compatibleSnapshot && snapshot?.subagentBackfillPending === true);
     // Snapshots v10 and v11 may have completed or interrupted the old
     // per-turn projection pass. Treat them as compatible for live cursors,
-    // while rebuilding only the resumable historical queue once under v13.
-    this.historicalSubagentBackfill = [8, 9, 12, 13, SNAPSHOT_VERSION].includes(snapshotVersion)
+    // while rebuilding only the resumable historical queue once.
+    // v15 could already be at live EOF with its historical pass completed
+    // before the exact-turn reader understood current exec ImageGen outputs.
+    // Preserve its live byte cursors, but rebuild the existing bounded durable
+    // historical queue once under v16. A persisted v16 completion never scans
+    // those files again unless new live bytes arrive through their exact cursor.
+    this.historicalSubagentBackfill = compatibleHistoricalBackfill
       ? restoredHistoricalSubagentBackfill(snapshot?.historicalSubagentBackfill)
       : emptyHistoricalSubagentBackfill(compatibleSnapshot);
     this.historicalScanCache.clear();
     this.historicalTurnIdentities = new Set(
-      Array.isArray(snapshot?.historicalSubagentBackfill?.processedTurnIdentities)
+      compatibleHistoricalBackfill
+        && Array.isArray(snapshot?.historicalSubagentBackfill?.processedTurnIdentities)
         ? snapshot.historicalSubagentBackfill.processedTurnIdentities
           .map((value) => String(value ?? "").trim())
           .filter(Boolean)
@@ -478,6 +508,8 @@ export class CodexTerminalAudit {
         String(terminal?.turnId ?? ""),
         String(terminal?.status ?? ""),
         String(terminal?.completedAt ?? ""),
+        terminal?.attachmentRepairOnly === true,
+        (terminal?.generatedImageSources ?? []).map((source) => [source?.type, source?.value]),
       ])).update("\0");
     }
     return `${Math.max(0, Number(result?.nextOffset) || 0)}:${digest.digest("hex")}`;
@@ -756,6 +788,7 @@ export class CodexTerminalAudit {
           offset: 0,
           size: Number(info.size) || 0,
           terminalTurnIndex: 0,
+          attachmentCandidateIndex: 0,
           staleTurnIndex: 0,
           activeTurns: [],
         });
@@ -907,6 +940,25 @@ export class CodexTerminalAudit {
         handledTurns += 1;
         if (handledTurns >= this.historicalTurnsPerRun) return changed;
       }
+      const terminalTurnIds = new Set(terminalTurns.map((turn) => String(turn.turnId)));
+      const attachmentCandidates = (historical?.attachmentCandidates ?? []).filter((candidate) => (
+        !terminalTurnIds.has(String(candidate?.turnId ?? ""))
+      ));
+      while (item.attachmentCandidateIndex < attachmentCandidates.length) {
+        if (!this.shouldRunHistoricalBackfill()) return changed;
+        const candidate = attachmentCandidates[item.attachmentCandidateIndex];
+        const handled = await this.reconcile(item.thread, project, {
+          turnId: String(candidate.turnId),
+          attachmentRepairOnly: true,
+          historical: true,
+          generatedImageSources: candidate.generatedImageSources,
+        });
+        if (handled === false) return changed;
+        item.attachmentCandidateIndex += 1;
+        handledTurns += 1;
+        changed = true;
+        if (handledTurns >= this.historicalTurnsPerRun) return changed;
+      }
       if (historical.nextOffset < startOffset
         || (historical.nextOffset === startOffset && startOffset < info.size)) {
         return changed;
@@ -916,6 +968,7 @@ export class CodexTerminalAudit {
       item.size = Number(info.size) || item.size;
       item.resumeState = historical.resumeState ?? null;
       item.activeTurns = historical.resumeState?.turns ?? [];
+      item.attachmentCandidateIndex = 0;
       cached.startOffset = item.offset;
       cached.result = null;
       changed = true;

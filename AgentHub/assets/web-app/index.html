@@ -470,9 +470,10 @@
           <span class="chat-scroll-label">Вниз</span>
           <span class="chat-scroll-count" hidden>0</span>
         </button>
-        <aside class="dialog-settings" data-dialog-settings hidden aria-label="Настройки диалога">
+        <dialog class="dialog-settings stream-card-modal" data-dialog-settings hidden
+          aria-label="Карточка Stream">
           <header class="dialog-settings-head">
-            <h2>Настройки диалога</h2>
+            <p class="eyebrow">Stream</p>
             <button type="button" class="icon-button dialog-settings-close" data-action="task-settings"
               data-dialog-settings-close title="Закрыть настройки диалога"
               aria-label="Закрыть настройки диалога">
@@ -486,8 +487,12 @@
           </header>
           <div class="dialog-settings-body">
             <section class="settings-section">
-              <h3 class="settings-section-title">Текущая задача</h3>
+              <h3 class="settings-section-title">Параметры</h3>
               <div class="settings-card">
+                <label class="setting-stack stream-card-name-field">
+                  <span class="setting-name">Наименование</span>
+                  <input type="text" maxlength="120" data-dialog-stream-name required>
+                </label>
                 <div class="setting-row dialog-agent-row">
                   <span class="setting-name">Агент</span>
                   <div class="setting-options dialog-agent-options" data-dialog-agent
@@ -569,14 +574,13 @@
                     </span>
                   </span>
                 </div>
-                <div class="quick-messages-settings-row">
+                <div class="quick-messages-editor">
                   <span class="setting-name">Быстрые ответы потока</span>
-                  <span class="quick-messages-settings-control">
-                    <span class="setting-value" data-dialog-stream-quick-messages-count>Не заданы</span>
-                    <button type="button" class="chip-button" data-dialog-stream-quick-messages>
-                      Настроить…
-                    </button>
-                  </span>
+                  <span class="setting-value" data-dialog-stream-quick-messages-count>Не заданы</span>
+                  <div class="quick-messages-editor-controls" data-dialog-stream-quick-messages>
+                    <div class="quick-message-editor-rows" data-quick-message-rows></div>
+                    <button type="button" class="chip-button" data-quick-message-add>+ Добавить ответ</button>
+                  </div>
                 </div>
               </div>
             </section>
@@ -597,8 +601,24 @@
                   data-dialog-stream-rules-save>Сохранить правила Stream</button>
               </div>
             </section>
+            <section class="settings-section stream-card-actions-section">
+              <h3 class="settings-section-title">Действия</h3>
+              <div class="settings-card stream-card-actions">
+                <button type="button" class="chip-button" data-stream-card-pin></button>
+                <button type="button" class="chip-button" data-stream-card-workspace>Открыть карточку Workspace</button>
+                <button type="button" class="chip-button" data-stream-card-rotate>Ротация</button>
+                <button type="button" class="chip-button" data-stream-card-continue-provider></button>
+                <button type="button" class="chip-button" data-stream-card-move
+                  aria-haspopup="menu" aria-expanded="false">Перенести в другой Workspace</button>
+                <button type="button" class="chip-button stream-card-archive" data-stream-card-archive>
+                  Архивировать Stream
+                </button>
+              </div>
+              <div class="stream-card-move-menu" data-stream-card-move-menu popover="auto"
+                role="menu" aria-label="Выбор Workspace для переноса"></div>
+            </section>
           </div>
-      </aside>
+      </dialog>
       </div>
       </div>
 
@@ -1023,14 +1043,13 @@
             <output data-workspace-card-rules-count>0 / 32 КиБ</output>
           </span>
         </label>
-        <div class="quick-messages-settings-row workspace-card-quick-messages">
+        <div class="quick-messages-editor workspace-card-quick-messages">
           <span class="setting-name">Быстрые ответы Workspace</span>
-          <span class="quick-messages-settings-control">
-            <span class="setting-value" data-workspace-card-quick-messages-count>Не заданы</span>
-            <button type="button" class="chip-button" data-workspace-card-quick-messages>
-              Настроить…
-            </button>
-          </span>
+          <span class="setting-value" data-workspace-card-quick-messages-count>Не заданы</span>
+          <div class="quick-messages-editor-controls" data-workspace-card-quick-messages>
+            <div class="quick-message-editor-rows" data-quick-message-rows></div>
+            <button type="button" class="chip-button" data-quick-message-add>+ Добавить ответ</button>
+          </div>
         </div>
         <div class="workspace-release-workflow-setting">
           <label class="setting-switch workspace-release-workflow-switch">
@@ -1050,6 +1069,14 @@
           <span>Порядковый номер в Дашборде</span>
           <input type="number" min="1" step="1" data-workspace-card-order required>
         </label>
+        <section class="settings-section workspace-card-actions-section">
+          <h3 class="settings-section-title">Действия</h3>
+          <div class="settings-card workspace-card-actions">
+            <button type="button" class="workspace-card-archive" data-workspace-card-archive>
+              Архивировать
+            </button>
+          </div>
+        </section>
       </section>
       <footer>
         <button type="button" class="board-task-quiet" data-workspace-card-cancel>Отмена</button>
@@ -1073,7 +1100,7 @@
         </svg>
       </button>
     </header>
-    <p class="workspace-archive-note">Workspace хранятся здесь три дня без копирования чатов и Streams, затем удаляются автоматически.</p>
+    <p class="workspace-archive-note">Workspace хранятся бессрочно, пока вы явно не восстановите или окончательно не удалите их.</p>
     <div class="workspace-archive-list" data-workspace-archive-list></div>
     <p class="workspace-archive-empty" data-workspace-archive-empty>Архив пуст.</p>
   </dialog>

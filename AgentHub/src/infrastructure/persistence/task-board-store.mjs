@@ -82,6 +82,27 @@ function configure(database) {
       start_destination_stream_id TEXT,
       row_revision INTEGER NOT NULL DEFAULT 1
     );
+    CREATE TABLE IF NOT EXISTS hub_workspace_deletion_fences (
+      workspace_id TEXT PRIMARY KEY,
+      confirmed_name TEXT NOT NULL,
+      deleted_at_ms INTEGER NOT NULL
+    ) WITHOUT ROWID;
+    CREATE TRIGGER IF NOT EXISTS hub_board_tasks_no_deleted_workspace_insert
+      BEFORE INSERT ON hub_board_tasks
+      WHEN NEW.workspace_id IS NOT NULL AND EXISTS (
+        SELECT 1 FROM hub_workspace_deletion_fences WHERE workspace_id = NEW.workspace_id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'workspace was permanently deleted');
+      END;
+    CREATE TRIGGER IF NOT EXISTS hub_board_tasks_no_deleted_workspace_update
+      BEFORE UPDATE OF workspace_id ON hub_board_tasks
+      WHEN NEW.workspace_id IS NOT NULL AND EXISTS (
+        SELECT 1 FROM hub_workspace_deletion_fences WHERE workspace_id = NEW.workspace_id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'workspace was permanently deleted');
+      END;
     CREATE TABLE IF NOT EXISTS hub_board_workspace_order (
       workspace_id TEXT PRIMARY KEY,
       position INTEGER NOT NULL,

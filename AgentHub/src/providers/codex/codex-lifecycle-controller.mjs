@@ -199,6 +199,17 @@ export class CodexLifecycleController {
       ? [...new Set(Array.isArray(run.rolloutChangedFiles) ? run.rolloutChangedFiles : [])]
       : [];
     const changedFiles = payloadChangedFiles.length ? payloadChangedFiles : rolloutChangedFiles;
+    const generatedImageSources = (Array.isArray(payload.generatedImageSources)
+      ? payload.generatedImageSources
+      : []).flatMap((source) => {
+      const value = String(source?.value ?? "").trim();
+      return source?.type === "generated-path" && value
+        ? [{ type: "generated-path", value }]
+        : [];
+    });
+    if (run && generatedImageSources.length) {
+      run.generatedImageSources = generatedImageSources;
+    }
     const executionOwner = normalizeTaskExecutionOwner(
       turnStart?.executionOwner ?? payload.executionOwner ?? run?.executionOwner,
     );
@@ -207,6 +218,7 @@ export class CodexLifecycleController {
       ? await d.resolveTerminalAttachments?.({
         threadId: identity.threadId,
         startedAt: payload.startedAt ?? turnStart?.startedAt,
+        ...(generatedImageSources.length ? { generatedImageSources } : {}),
       }, payload.turnId) ?? []
       : [];
     const completion = d.turnEndNotifications.recordCompletion({

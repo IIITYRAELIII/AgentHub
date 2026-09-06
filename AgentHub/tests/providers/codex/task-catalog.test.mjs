@@ -1874,6 +1874,140 @@ test("response_item and exact event_msg remain separate until exact projection b
   ]);
 });
 
+test("exact adjacent rollout completion binds two sequential user projections once", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-rollout-user-binding-"));
+  const rollout = path.join(directory, "rollout.jsonl");
+  const threadId = "production-thread";
+  const turns = [{
+    turnId: "production-turn-one",
+    clientUserMessageId: "production-client-one",
+    responseItemId: "msg-production-one",
+    answer: "Ответ один",
+  }, {
+    turnId: "production-turn-two",
+    clientUserMessageId: "production-client-two",
+    responseItemId: "msg-production-two",
+    answer: "Ответ два",
+  }];
+  let ordinal = 0;
+  const entry = (type, payload) => JSON.stringify({ ordinal: ordinal++, type, payload });
+  const userEntries = ({ turnId, clientUserMessageId, responseItemId }) => [
+    entry("event_msg", { type: "task_started", turn_id: turnId }),
+    entry("response_item", {
+      id: responseItemId,
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "Одинаковый ввод" }],
+      internal_chat_message_metadata_passthrough: {
+        turn_id: turnId,
+        content_item_kinds: ["user.text"],
+      },
+    }),
+    entry("event_msg", {
+      type: "item_completed",
+      thread_id: threadId,
+      turn_id: turnId,
+      item: {
+        type: "UserMessage",
+        id: `${turnId}:completed-user`,
+        client_id: clientUserMessageId,
+        content: [{ type: "text", text: "Одинаковый ввод", text_elements: [] }],
+      },
+    }),
+  ];
+  const finalEntries = ({ turnId, answer }) => [
+    entry("response_item", {
+      id: `${turnId}:assistant`,
+      type: "message",
+      role: "assistant",
+      phase: "final_answer",
+      content: [{ type: "output_text", text: answer }],
+      internal_chat_message_metadata_passthrough: { turn_id: turnId },
+    }),
+    entry("event_msg", { type: "task_complete", turn_id: turnId, last_agent_message: answer }),
+  ];
+
+  try {
+    const session = entry("session_meta", {
+      id: "production-rollout-generation",
+      originator: "codex_vscode",
+    });
+    const firstUser = userEntries(turns[0]);
+    await writeFile(rollout, `${[session, firstUser[0], firstUser[1]].join("\n")}\n`, "utf8");
+
+    const beforeCompletion = await readCodexRolloutActivity(rollout, {
+      freshnessMs: Number.POSITIVE_INFINITY,
+    });
+    const provisional = beforeCompletion.userMessages[turns[0].turnId][0];
+    assert.equal(provisional.clientUserMessageId, undefined);
+    assert.ok(provisional.sourceOccurrenceId);
+
+    await appendFile(rollout, `${[firstUser[2], ...finalEntries(turns[0])].join("\n")}\n`, "utf8");
+    const firstCompleted = await readCodexRolloutActivity(rollout, {
+      freshnessMs: Number.POSITIVE_INFINITY,
+    });
+    assert.deepEqual(firstCompleted.userMessages[turns[0].turnId], [{
+      itemId: turns[0].clientUserMessageId,
+      clientUserMessageId: turns[0].clientUserMessageId,
+      sourceOccurrenceId: provisional.sourceOccurrenceId,
+      role: "user",
+      text: "Одинаковый ввод",
+    }]);
+    assert.equal(firstCompleted.finalMessages[turns[0].turnId], turns[0].answer);
+
+    await appendFile(rollout, `${[
+      ...userEntries(turns[1]),
+      ...finalEntries(turns[1]),
+    ].join("\n")}\n`, "utf8");
+    const completed = await readCodexRolloutActivity(rollout, {
+      freshnessMs: Number.POSITIVE_INFINITY,
+    });
+    const replay = await readCodexRolloutActivity(rollout, {
+      freshnessMs: Number.POSITIVE_INFINITY,
+      reparseTail: true,
+    });
+    for (const turn of turns) {
+      assert.equal(completed.userMessages[turn.turnId].length, 1);
+      assert.equal(completed.userMessages[turn.turnId][0].clientUserMessageId,
+        turn.clientUserMessageId);
+      assert.ok(completed.userMessages[turn.turnId][0].sourceOccurrenceId);
+      assert.equal(completed.finalMessages[turn.turnId], turn.answer);
+      assert.deepEqual(replay.userMessages[turn.turnId], completed.userMessages[turn.turnId]);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("non-adjacent exact completion cannot consume a provider-owned occurrence", () => {
+  const result = parseCodexRolloutActivity([
+    JSON.stringify({ ordinal: 1, type: "event_msg", payload: {
+      type: "task_started", turn_id: "separate-turn",
+    } }),
+    JSON.stringify({ ordinal: 2, type: "response_item", payload: {
+      id: "external-provider-user",
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "Внешний ввод" }],
+      internal_chat_message_metadata_passthrough: { turn_id: "separate-turn" },
+    } }),
+    JSON.stringify({ ordinal: 3, type: "world_state", payload: {} }),
+    JSON.stringify({ ordinal: 4, type: "event_msg", payload: {
+      type: "item_completed",
+      turn_id: "separate-turn",
+      item: {
+        type: "UserMessage",
+        client_id: "managed-client",
+        content: [{ type: "text", text: "Управляемый ввод" }],
+      },
+    } }),
+  ].join("\n"), { sourceObservationGeneration: "separate-generation" });
+
+  assert.deepEqual(result.userMessages["separate-turn"].map((message) => (
+    message.clientUserMessageId ?? message.itemId
+  )), ["external-provider-user", "managed-client"]);
+});
+
 test("rollout response_item restores exact interstream command identity from its envelope", () => {
   const turnId = "interstream-turn";
   const requestId = "hub143-readonly-audit-s6-v1";
@@ -2092,6 +2226,246 @@ test("custom imagegen output keeps its exact turn while other turns remain activ
   });
 });
 
+test("delayed imagegen output remains owned by its originating turn across compaction and later turns", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-delayed-image-owner-"));
+  const rolloutPath = path.join(directory, "rollout.jsonl");
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const originTurnId = "turn-image-origin";
+  const interveningTurnId = "turn-after-compaction";
+  const laterActiveTurnId = "turn-active-when-image-arrives";
+  const currentCallId = "call-current-image-shape";
+  const legacyCallId = "call-legacy-image-event";
+  const currentPath = "C:\\generated\\current-shape.png";
+  const legacyPath = "C:\\generated\\legacy-event.png";
+  const unkeyedPath = "C:\\generated\\unkeyed-must-not-migrate.png";
+  const call = (callId) => JSON.stringify({
+    type: "response_item",
+    payload: {
+      type: "custom_tool_call",
+      name: "exec",
+      call_id: callId,
+      input: "const result = await tools.image_gen__imagegen({prompt: 'variant'}); generatedImage(result);",
+      internal_chat_message_metadata_passthrough: { turn_id: originTurnId },
+    },
+  });
+
+  await writeFile(rolloutPath, [
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: originTurnId },
+    }),
+    call(currentCallId),
+    call(legacyCallId),
+    JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "task_complete",
+        turn_id: originTurnId,
+        last_agent_message: "Original final without hydrated images",
+      },
+    }),
+  ].join("\n"), "utf8");
+  await readCodexRolloutActivity(rolloutPath, { freshnessMs: Number.POSITIVE_INFINITY });
+
+  await appendFile(rolloutPath, `\n${[
+    JSON.stringify({ type: "compacted", payload: { replacement_history: [] } }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: interveningTurnId },
+    }),
+    JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "assistant",
+        phase: "final_answer",
+        content: [{ type: "output_text", text: "Intervening final" }],
+        internal_chat_message_metadata_passthrough: { turn_id: interveningTurnId },
+      },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "task_complete",
+        turn_id: interveningTurnId,
+        last_agent_message: "Intervening final",
+      },
+    }),
+  ].join("\n")}`, "utf8");
+  await readCodexRolloutActivity(rolloutPath, { freshnessMs: Number.POSITIVE_INFINITY });
+
+  await appendFile(rolloutPath, `\n${[
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: laterActiveTurnId },
+    }),
+    JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "function_call_output",
+        call_id: currentCallId,
+        output: [
+          { type: "input_image", image_url: "data:image/png;base64,aGVsbG8=" },
+          {
+            type: "input_text",
+            text: `Generated images are saved to C:\\generated as ${currentPath} by default.`,
+          },
+        ],
+      },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "image_generation_end",
+        call_id: legacyCallId,
+        saved_path: legacyPath,
+      },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "image_generation_end",
+        saved_path: unkeyedPath,
+      },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "task_complete",
+        turn_id: laterActiveTurnId,
+        last_agent_message: "Later final",
+      },
+    }),
+  ].join("\n")}`, "utf8");
+
+  const result = await readCodexRolloutActivity(rolloutPath, {
+    freshnessMs: Number.POSITIVE_INFINITY,
+  });
+  assert.deepEqual(result.generatedImageSources, {
+    [originTurnId]: [
+      { type: "generated-path", value: currentPath },
+      { type: "generated-path", value: legacyPath },
+    ],
+  });
+  assert.equal(result.generatedImageSources[interveningTurnId], undefined);
+  assert.equal(result.generatedImageSources[laterActiveTurnId], undefined);
+});
+
+test("unkeyed delayed imagegen output is not assigned to the sole later active turn", async (context) => {
+  const originTurnId = "turn-image-origin";
+  const laterTurnId = "turn-later-active";
+  const entries = [
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: originTurnId },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "task_complete", turn_id: originTurnId, last_agent_message: "Original" },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: laterTurnId },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "image_generation_end",
+        status: "completed",
+        saved_path: "C:\\generated\\unkeyed-delayed.png",
+      },
+    }),
+  ];
+  const result = parseCodexRolloutActivity(entries.join("\n"));
+
+  assert.deepEqual(result.activeTurnIds, [laterTurnId]);
+  assert.deepEqual(result.generatedImageSources ?? {}, {});
+
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-unkeyed-image-owner-"));
+  const rolloutPath = path.join(directory, "rollout.jsonl");
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const oversized = JSON.parse(entries.at(-1));
+  oversized.payload.result = "a".repeat(16_384);
+  await writeFile(rolloutPath, [...entries.slice(0, -1), JSON.stringify(oversized)].join("\n"), "utf8");
+  const oversizedResult = await readCodexRolloutActivity(rolloutPath, {
+    freshnessMs: Number.POSITIVE_INFINITY,
+    maximumLineBytes: 256,
+    tailBytes: 32 * 1024,
+  });
+  assert.deepEqual(oversizedResult.activeTurnIds, [laterTurnId]);
+  assert.deepEqual(oversizedResult.generatedImageSources ?? {}, {});
+});
+
+test("duplicate imagegen call IDs stay ambiguous across live append checkpoints", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-ambiguous-image-owner-"));
+  const rolloutPath = path.join(directory, "rollout.jsonl");
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const originTurnId = "turn-duplicate-call-origin";
+  const laterTurnId = "turn-duplicate-call-later";
+  const callId = "call-reused-by-two-turns";
+  const unkeyedPath = "C:\\generated\\ambiguous-output.png";
+  const explicitPath = "C:\\generated\\explicit-origin-output.png";
+  const imageCall = (turnId) => JSON.stringify({
+    type: "response_item",
+    payload: {
+      type: "custom_tool_call",
+      name: "exec",
+      call_id: callId,
+      input: "const result = await tools.image_gen__imagegen({prompt: 'variant'}); generatedImage(result);",
+      internal_chat_message_metadata_passthrough: { turn_id: turnId },
+    },
+  });
+
+  await writeFile(rolloutPath, [
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: originTurnId },
+    }),
+    imageCall(originTurnId),
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "task_complete", turn_id: originTurnId, last_agent_message: "Origin" },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: laterTurnId },
+    }),
+    imageCall(laterTurnId),
+  ].join("\n"), "utf8");
+  await readCodexRolloutActivity(rolloutPath, { freshnessMs: Number.POSITIVE_INFINITY });
+
+  await appendFile(rolloutPath, `\n${[
+    JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "image_generation_end",
+        status: "completed",
+        call_id: callId,
+        saved_path: unkeyedPath,
+      },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "image_generation_end",
+        status: "completed",
+        turn_id: originTurnId,
+        call_id: callId,
+        saved_path: explicitPath,
+      },
+    }),
+  ].join("\n")}`, "utf8");
+
+  const result = await readCodexRolloutActivity(rolloutPath, {
+    freshnessMs: Number.POSITIVE_INFINITY,
+  });
+  assert.deepEqual(result.generatedImageSources, {
+    [originTurnId]: [{ type: "generated-path", value: explicitPath }],
+  });
+  assert.equal(result.generatedImageSources[laterTurnId], undefined);
+  assert.doesNotMatch(JSON.stringify(result.generatedImageSources), /ambiguous-output/u);
+});
+
 test("Codex rollout activity links a returned view_image to its local source", () => {
   const turnId = "turn-view-image";
   const callId = "call-view-image";
@@ -2161,6 +2535,16 @@ test("rollout reader recovers an oversized image_generation_end without loading 
       JSON.stringify({
         type: "event_msg",
         payload: { type: "task_started", turn_id: turnId },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call",
+          name: "exec",
+          call_id: "call-image",
+          input: "const result = await tools.image_gen__imagegen({prompt: 'variant'}); generatedImage(result);",
+          internal_chat_message_metadata_passthrough: { turn_id: turnId },
+        },
       }),
       JSON.stringify({
         type: "event_msg",

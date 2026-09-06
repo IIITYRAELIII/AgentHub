@@ -96,6 +96,17 @@ test("production Workspace owner hides raw transaction access and queues handoff
   assert.ok(rawWorkspace.mutationDiagnostics().retries > 0);
 });
 
+test("permanent Workspace deletion is classified on the canonical mutation owner", async (context) => {
+  const { rawWorkspace, workspaceOwner, workspace } = await fixture(context);
+  await workspaceOwner.archiveWorkspace(workspace.id);
+  assert.deepEqual(await workspaceOwner.deleteArchivedWorkspace(workspace.id, workspace.name), {
+    id: workspace.id,
+    name: workspace.name,
+    deleted: true,
+  });
+  assert.equal(rawWorkspace.workspace(workspace.id), null);
+});
+
 test("catalog assignment and provider rebind use the mandatory Workspace owner", async (context) => {
   const { root, databaseFile, rawWorkspace, workspaceOwner, stream } = await fixture(context);
   const builder = new ProviderTaskCatalogBuilder({

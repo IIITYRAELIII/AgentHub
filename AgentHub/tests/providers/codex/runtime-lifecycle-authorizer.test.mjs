@@ -16,7 +16,14 @@ const dependencies = {
   readThread: async () => ({ thread: { path: "D:/rollouts/thread-1.jsonl", cwd: "D:/project" } }),
   readActivity: async () => ({ activeTurnIds: ["active-turn"] }),
   readUsage: async (_path, turnId) => turnId === "terminal-turn"
-    ? { terminal: true, status: "completed", finalAnswer: "authoritative answer", usage: { inputTokens: 12 }, reported: true }
+    ? {
+      terminal: true,
+      status: "completed",
+      finalAnswer: "authoritative answer",
+      usage: { inputTokens: 12 },
+      reported: true,
+      generatedImageSources: [{ type: "generated-path", value: "C:/generated/dragon.png" }],
+    }
     : { terminal: false },
   findProject: (cwd) => cwd === "D:/project" ? { path: cwd } : null,
 };
@@ -30,6 +37,9 @@ test("lifecycle authorization rejects fabricated turns and replaces terminal fie
   const payload = JSON.parse(authorized.args[0]);
   assert.equal(authorized.cwd, "D:/project");
   assert.equal(payload.finalAnswer, "authoritative answer");
+  assert.deepEqual(payload.generatedImageSources, [
+    { type: "generated-path", value: "C:/generated/dragon.png" },
+  ]);
   assert.equal(payload.source, "verified-codex-rollout");
 });
 

@@ -12,9 +12,9 @@ import {
 
 import {
   DEVELOPER_RULES_MAX_BYTES,
-  WORKSPACE_ARCHIVE_RETENTION_MS,
   WorkspaceCatalogStore,
 } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
+import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
 import {
   LEGACY_TASK_BRANCH_RELEASE_WORKFLOW_DEVELOPER_RULES,
   LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_RU_V1,
@@ -70,7 +70,7 @@ test("Workspace mutation queue retries real SQLite contention and keeps timers r
   assert.ok(store.mutationDiagnostics().retries > 0);
 });
 
-test("Workspace archive hides hierarchy, restores intact, and purges after three days", async (t) => {
+test("Workspace archive hides hierarchy, restores intact, and never expires", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspace-archive-"));
   const databaseFile = path.join(directory, "journal.sqlite");
   let nowMs = 1_700_000_000_000;
@@ -91,7 +91,7 @@ test("Workspace archive hides hierarchy, restores intact, and purges after three
 
   const archived = store.archiveWorkspace(workspace.id);
   assert.equal(archived.archivedAtMs, nowMs);
-  assert.equal(archived.purgeAfterMs, nowMs + WORKSPACE_ARCHIVE_RETENTION_MS);
+  assert.equal(archived.purgeAfterMs, null);
   assert.equal(store.hierarchy().some((item) => item.id === workspace.id), false);
   assert.deepEqual(store.archivedWorkspaces().map((item) => ({
     id: item.id,
@@ -104,21 +104,162 @@ test("Workspace archive hides hierarchy, restores intact, and purges after three
     title: "Скрытый чат",
   }]).length, 0);
 
-  nowMs += WORKSPACE_ARCHIVE_RETENTION_MS - 1;
+  nowMs += 365 * 24 * 60 * 60 * 1000;
   assert.equal(store.restoreWorkspace(workspace.id).archivedAtMs, null);
   assert.equal(store.hierarchy().find((item) => item.id === workspace.id).streams[0].threads.length, 1);
 
   store.archiveWorkspace(workspace.id);
-  nowMs += WORKSPACE_ARCHIVE_RETENTION_MS;
-  assert.equal(store.archivedWorkspaces().length, 0);
+  nowMs += 365 * 24 * 60 * 60 * 1000;
+  assert.deepEqual(store.archivedWorkspaces().map((item) => item.id), [workspace.id]);
+  assert.equal(store.workspace(workspace.id).id, workspace.id);
+  assert.equal(store.stream(stream.id).id, stream.id);
+  assert.equal(store.thread({ provider: "codex", threadId: "thread-1" }).threadId, "thread-1");
+});
+
+test("startup cancels every legacy archive purge deadline before projection", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspace-archive-migration-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  let store = new WorkspaceCatalogStore({ databaseFile, now: () => 100 });
+  await store.load();
+  const workspace = store.createWorkspace({ name: "Legacy archive" });
+  store.archiveWorkspace(workspace.id);
+  store.close();
+  const raw = new DatabaseSync(databaseFile);
+  raw.prepare("UPDATE hub_workspaces SET purge_after_ms = 50 WHERE id = ?").run(workspace.id);
+  raw.exec(`CREATE INDEX IF NOT EXISTS hub_workspaces_archive_expiry_idx
+    ON hub_workspaces(purge_after_ms) WHERE archived_at_ms IS NOT NULL`);
+  raw.close();
+  store = new WorkspaceCatalogStore({ databaseFile, now: () => 1_000 });
+  await store.load();
+  t.after(async () => {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  assert.equal(store.workspace(workspace.id).purgeAfterMs, null);
+  assert.deepEqual(store.archivedWorkspaces().map((item) => item.id), [workspace.id]);
+  const migrated = new DatabaseSync(databaseFile);
+  assert.equal(migrated.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'hub_workspaces_archive_expiry_idx'",
+  ).get(), undefined);
+  migrated.close();
+});
+
+test("permanent delete requires archive and exact current name and is idempotent", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ id: "workspace-delete", name: "Exact name" });
+  store.createStream({ workspaceId: workspace.id });
+  assert.throws(
+    () => store.deleteArchivedWorkspace(workspace.id, workspace.name),
+    /must be archived/u,
+  );
+  store.archiveWorkspace(workspace.id);
+  assert.throws(
+    () => store.deleteArchivedWorkspace(workspace.id, "Wrong name"),
+    /confirmation name does not match/u,
+  );
+  assert.deepEqual(store.deleteArchivedWorkspace(workspace.id, workspace.name), {
+    id: workspace.id,
+    name: workspace.name,
+    deleted: true,
+  });
+  assert.deepEqual(store.deleteArchivedWorkspace(workspace.id, workspace.name), {
+    id: workspace.id,
+    name: workspace.name,
+    deleted: true,
+  });
   assert.equal(store.workspace(workspace.id), null);
-  assert.equal(store.stream(stream.id), null);
-  assert.equal(store.thread({ provider: "codex", threadId: "thread-1" }), null);
+  assert.throws(
+    () => store.createWorkspace({ id: workspace.id, name: "Replacement" }),
+    /identity was permanently deleted/u,
+  );
+});
+
+test("Task attachment and permanent delete serialize without orphan or false success", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspace-task-delete-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const catalog = new WorkspaceCatalogStore({ databaseFile });
+  await catalog.load();
+  const taskBoard = new TaskBoardStore({ databaseFile });
+  const layout = new DatabaseSync(databaseFile);
+  t.after(async () => {
+    layout.close();
+    taskBoard.close();
+    catalog.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const seedLayout = (workspaceId, position) => {
+    layout.prepare(`
+      INSERT INTO hub_board_workspace_order (workspace_id, position, updated_at_ms)
+      VALUES (?, ?, 1)
+    `).run(workspaceId, position);
+    layout.prepare(`
+      INSERT INTO hub_board_column_order (column_id, position, updated_at_ms)
+      VALUES (?, ?, 1)
+    `).run(workspaceId, position);
+  };
+  const layoutRows = (workspaceId) => ({
+    legacy: layout.prepare(
+      "SELECT position FROM hub_board_workspace_order WHERE workspace_id = ?",
+    ).get(workspaceId)?.position ?? null,
+    current: layout.prepare(
+      "SELECT position FROM hub_board_column_order WHERE column_id = ?",
+    ).get(workspaceId)?.position ?? null,
+  });
+  const attached = catalog.createWorkspace({ id: "workspace-attached", name: "Attached" });
+  catalog.archiveWorkspace(attached.id);
+  seedLayout(attached.id, 5);
+  taskBoard.create({ text: "Attached Task", bucket: "workspace", workspaceId: attached.id });
+  assert.throws(
+    () => catalog.deleteArchivedWorkspace(attached.id, attached.name),
+    /связанные Dashboard Task/u,
+  );
+  assert.equal(catalog.workspace(attached.id).id, attached.id);
+  assert.deepEqual(layoutRows(attached.id), { legacy: 5, current: 5 });
+
+  const rollback = catalog.createWorkspace({ id: "workspace-rollback", name: "Rollback" });
+  catalog.archiveWorkspace(rollback.id);
+  seedLayout(rollback.id, 7);
+  layout.exec(`
+    CREATE TRIGGER block_workspace_layout_cleanup
+    BEFORE DELETE ON hub_board_column_order
+    WHEN OLD.column_id = 'workspace-rollback'
+    BEGIN
+      SELECT RAISE(ABORT, 'layout cleanup blocked');
+    END
+  `);
+  assert.throws(
+    () => catalog.deleteArchivedWorkspace(rollback.id, rollback.name),
+    /layout cleanup blocked/u,
+  );
+  assert.equal(catalog.workspace(rollback.id).id, rollback.id);
+  assert.deepEqual(layoutRows(rollback.id), { legacy: 7, current: 7 });
+  assert.equal(layout.prepare(
+    "SELECT 1 FROM hub_workspace_deletion_fences WHERE workspace_id = ?",
+  ).get(rollback.id), undefined);
+  layout.exec("DROP TRIGGER block_workspace_layout_cleanup");
+
+  const deleted = catalog.createWorkspace({ id: "workspace-deleted-first", name: "Deleted first" });
+  catalog.archiveWorkspace(deleted.id);
+  seedLayout(deleted.id, 10_000);
+  assert.equal(catalog.deleteArchivedWorkspace(deleted.id, deleted.name).deleted, true);
+  assert.deepEqual(layoutRows(deleted.id), { legacy: null, current: null });
+  seedLayout(deleted.id, 20_000);
+  assert.equal(catalog.deleteArchivedWorkspace(deleted.id, deleted.name).deleted, true);
+  assert.deepEqual(layoutRows(deleted.id), { legacy: null, current: null });
+  assert.throws(
+    () => taskBoard.create({ text: "Late Task", bucket: "workspace", workspaceId: deleted.id }),
+    /workspace was permanently deleted/u,
+  );
+  const future = catalog.createWorkspace({ id: "workspace-future", name: "Future" });
+  taskBoard.moveColumn([attached.id, future.id], { columnId: future.id, beforeColumnId: "notes" });
+  assert.ok(layoutRows(future.id).current < 100);
 });
 
 test("system Workspace cannot be archived", async (t) => {
   const store = await fixture(t);
-  assert.throws(() => store.archiveWorkspace(store.ensureExperiments().id), /cannot be archived/u);
+  const system = store.ensureExperiments();
+  assert.throws(() => store.archiveWorkspace(system.id), /cannot be archived/u);
+  assert.throws(() => store.deleteArchivedWorkspace(system.id, system.name), /cannot be deleted/u);
 });
 
 test("workspace catalog revision is O(1) state that changes after a write", async (t) => {
