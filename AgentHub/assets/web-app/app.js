@@ -1552,6 +1552,56 @@ function activePinForTask(task = currentTask()) {
   return { pin, pins, index };
 }
 
+function setActiveMessagePinId(streamId, pinId = "") {
+  const normalizedStreamId = String(streamId ?? "").trim();
+  if (!normalizedStreamId) return;
+  if (pinId) state.activeMessagePinByStream.set(normalizedStreamId, pinId);
+  else state.activeMessagePinByStream.delete(normalizedStreamId);
+}
+
+function selectedMessagePinId(streamId, pins = state.messagePins) {
+  const streamPins = pins.filter((pin) => pin.streamId === streamId);
+  const selectedPinId = state.activeMessagePinByStream.get(streamId);
+  return streamPins.some((pin) => pin.id === selectedPinId)
+    ? selectedPinId
+    : streamPins[0]?.id ?? "";
+}
+
+function selectMessagePinAfterRemoval({ streamId, removedIndex, pins = state.messagePins }) {
+  const streamPins = pins.filter((pin) => pin.streamId === streamId);
+  if (!streamPins.length) {
+    setActiveMessagePinId(streamId);
+    return;
+  }
+  const index = Math.min(Math.max(0, removedIndex), streamPins.length - 1);
+  setActiveMessagePinId(streamId, streamPins[index].id);
+}
+
+function reconcilePendingMessagePins(pins) {
+  let reconciled = pins.slice();
+  for (const backup of state.messagePinMutationBackups.values()) {
+    if (backup.pinned) {
+      const committed = reconciled.find((pin) => (
+        pin.streamId === backup.streamId && pin.messageKey === backup.messageKey
+      ));
+      if (committed) {
+        if (state.activeMessagePinByStream.get(backup.streamId) === backup.optimisticPinId) {
+          setActiveMessagePinId(backup.streamId, committed.id);
+        }
+        continue;
+      }
+      const optimistic = state.messagePins.find((pin) => pin.id === backup.optimisticPinId);
+      if (optimistic) reconciled.unshift(optimistic);
+      continue;
+    }
+    reconciled = reconciled.filter((pin) => !(
+      pin.streamId === backup.streamId
+      && (pin.id === backup.targetPinId || pin.messageKey === backup.messageKey)
+    ));
+  }
+  return reconciled;
+}
+
 function pinMetaLabel(pin) {
   const role = pin?.role === "user" ? "Вы" : String(pin?.author ?? "Агент").trim() || "Агент";
   const timestamp = MessageView.messageTimestampLabel(pin?.time);
@@ -1663,10 +1713,23 @@ function requestMessagePinChange({ message = null, pin = null, pinned, undoToken
   if (!streamId || (!messageKey && !undoToken)) return;
   const mutationId = crypto.randomUUID();
   const previous = state.messagePins.slice();
-  state.messagePinMutationBackups.set(mutationId, { pins: previous, messageKey });
+  const streamPins = previous.filter((candidate) => candidate.streamId === streamId);
+  const selectedPinId = selectedMessagePinId(streamId, previous);
+  const removedIndex = Math.max(0, streamPins.findIndex((candidate) => candidate.id === pin?.id));
+  const backup = {
+    pins: previous,
+    messageKey,
+    streamId,
+    selectedPinId,
+    targetPinId: pin?.id ?? "",
+    removedIndex,
+    pinned: Boolean(pinned),
+    optimisticPinId: "",
+  };
   if (pinned && !undoToken) {
+    backup.optimisticPinId = `optimistic:${mutationId}`;
     state.messagePins = [{
-      id: `optimistic:${mutationId}`,
+      id: backup.optimisticPinId,
       streamId,
       messageKey,
       provider: message.provider ?? task.provider,
@@ -1681,9 +1744,14 @@ function requestMessagePinChange({ message = null, pin = null, pinned, undoToken
       pinnedAt: new Date().toISOString(),
       available: true,
     }, ...state.messagePins];
+    setActiveMessagePinId(streamId, backup.optimisticPinId);
   } else if (!undoToken) {
     state.messagePins = state.messagePins.filter((candidate) => candidate.id !== pin?.id);
+    if (selectedPinId === pin?.id) {
+      selectMessagePinAfterRemoval({ streamId, removedIndex });
+    }
   }
+  state.messagePinMutationBackups.set(mutationId, backup);
   if (messageKey) state.pendingMessagePinKeys.add(messageKey);
   renderMessagePinShelf();
   renderMessagePinsList();
@@ -9103,7 +9171,7 @@ const AgentHub = {
     renderWorkspaceMessageSearch();
   },
   setMessagePins(pins) {
-    const next = Array.isArray(pins) ? pins.slice() : [];
+    const next = reconcilePendingMessagePins(Array.isArray(pins) ? pins : []);
     if (sameData(state.messagePins, next)) return;
     state.messagePins = next;
     for (const [streamId, pinId] of state.activeMessagePinByStream) {
@@ -9123,9 +9191,24 @@ const AgentHub = {
     if (backup.messageKey) state.pendingMessagePinKeys.delete(backup.messageKey);
     if (result.error) {
       state.messagePins = backup.pins;
+      setActiveMessagePinId(backup.streamId, backup.selectedPinId);
       showToast(String(result.error));
     } else if (Array.isArray(result.messagePins)) {
       state.messagePins = result.messagePins;
+      if (backup.pinned) {
+        const committed = result.messagePins.find((pin) => (
+          pin.streamId === backup.streamId && pin.messageKey === backup.messageKey
+        ));
+        setActiveMessagePinId(backup.streamId, committed?.id);
+      } else if (backup.selectedPinId === backup.targetPinId) {
+        selectMessagePinAfterRemoval({
+          streamId: backup.streamId,
+          removedIndex: backup.removedIndex,
+          pins: result.messagePins,
+        });
+      } else if (!result.messagePins.some((pin) => pin.id === backup.selectedPinId)) {
+        setActiveMessagePinId(backup.streamId);
+      }
       if (result.undoToken && result.removedPin) {
         showToast("Сообщение откреплено", {
           label: "Отменить",

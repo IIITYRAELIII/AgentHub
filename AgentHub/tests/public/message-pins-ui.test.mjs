@@ -122,6 +122,24 @@ async function capture(page, name) {
   await page.screenshot({ path: `${directory}/${name}.png`, fullPage: true });
 }
 
+function messagePin(id, messageKey, preview) {
+  return {
+    id,
+    streamId: "stream-1",
+    messageKey,
+    provider: "codex",
+    taskThreadId: "thread-old",
+    turnThreadId: "thread-old",
+    turnId: `turn-${id}`,
+    itemId: `item-${id}`,
+    role: "agent",
+    preview,
+    author: "Codex",
+    time: "2026-09-06T10:00:00.000Z",
+    available: true,
+  };
+}
+
 test("production message pin UI exposes carousel, list, unavailable state, pin action and exact highlight", async () => {
   const { chromium } = await import("playwright");
   const browser = await chromium.launch(process.platform === "win32"
@@ -213,6 +231,135 @@ test("narrow VS Code WebView uses the shared responsive pin bottom sheet", async
     const box = await page.locator("[data-message-pins-modal]").boundingBox();
     assert.ok(box.y + box.height >= 826 && box.y + box.height <= 846);
     await capture(page, "vscode-webview-narrow-list");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("pin mutations preserve deterministic carousel selection and rollback", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch(process.platform === "win32"
+    ? { channel: "msedge", headless: true }
+    : { headless: true });
+  const pinA = messagePin("pin-a", "message:v1:a", "Закрепление A");
+  const pinB = messagePin("pin-b", "message:v1:b", "Закрепление B");
+  const pinC = messagePin("pin-c", "message:v1:c", "Закрепление C");
+  try {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    await page.addInitScript(() => {
+      let mutationSequence = 0;
+      if (typeof crypto.randomUUID !== "function") Object.defineProperty(crypto, "randomUUID", {
+        value: () => `00000000-0000-4000-8000-${String(++mutationSequence).padStart(12, "0")}`,
+      });
+    });
+    await openProductionUi(page);
+    await seed(page);
+    await page.evaluate(() => {
+      window.__messagePinIntents = [];
+      document.addEventListener("agenthub:intent", (event) => {
+        if (event.detail?.type === "message-pin:set") window.__messagePinIntents.push(event.detail);
+      });
+      window.AgentHub.setMessages("task-1", [{
+        id: "message-1",
+        provider: "codex",
+        threadId: "thread-old",
+        turnId: "turn-1",
+        itemId: "answer-1",
+        messageKey: "message:v1:answer",
+        pinEligible: true,
+        role: "agent",
+        author: "Codex",
+        text: "Точный закреплённый ответ",
+        time: "2026-09-06T10:00:00.000Z",
+      }, {
+        id: "message-new",
+        provider: "codex",
+        threadId: "thread-new",
+        turnId: "turn-new",
+        itemId: "user-new",
+        messageKey: "message:v1:new",
+        pinEligible: true,
+        role: "user",
+        author: "Вы",
+        text: "Новое закрепление",
+        time: "2026-09-06T10:01:00.000Z",
+      }]);
+    });
+    const initialPins = [pinA, pinB];
+    await page.evaluate((pins) => window.AgentHub.setMessagePins(pins), initialPins);
+
+    await page.locator("[data-message-pin-next]").click();
+    assert.equal(await page.locator("[data-message-pin-position]").textContent(), "2 из 2");
+    const newMessage = page.locator("[data-chat-log] .msg-stack", {
+      has: page.locator("[data-item-id='user-new']"),
+    });
+    const newMessagePin = newMessage.locator("[data-message-pin]");
+    assert.equal(await newMessagePin.isDisabled(), false);
+    await newMessagePin.evaluate((button) => button.click());
+    assert.equal(await page.locator("[data-message-pin-current] .message-pin-current-preview").textContent(), "Новое закрепление");
+    assert.equal(await page.locator("[data-message-pin-position]").textContent(), "1 из 3");
+
+    await page.evaluate((pins) => window.AgentHub.setMessagePins(pins), initialPins);
+    assert.equal(await page.locator("[data-message-pin-current] .message-pin-current-preview").textContent(), "Новое закрепление");
+    const committedNew = messagePin("pin-new", "message:v1:new", "Новое закрепление");
+    committedNew.role = "user";
+    committedNew.author = "Вы";
+    const committedPins = [committedNew, ...initialPins];
+    await page.evaluate((pins) => window.AgentHub.setMessagePins(pins), committedPins);
+    assert.equal(await page.locator("[data-message-pin-current] .message-pin-current-preview").textContent(), "Новое закрепление");
+    const pinIntent = await page.evaluate(() => window.__messagePinIntents.at(-1));
+    await page.evaluate(({ mutationId, pins }) => {
+      window.AgentHub.completeMessagePinMutation(mutationId, { messagePins: pins });
+    }, { mutationId: pinIntent.mutationId, pins: committedPins });
+    assert.equal(await page.locator("[data-message-pin-current] .message-pin-current-preview").textContent(), "Новое закрепление");
+    assert.equal(await page.locator("[data-message-pin-position]").textContent(), "1 из 3");
+
+    await page.evaluate((pins) => {
+      window.AgentHub.setMessagePins([]);
+      window.AgentHub.setMessagePins(pins);
+    }, [pinA, pinB, pinC]);
+    await page.locator("[data-message-pin-next]").click();
+    await page.locator("[data-message-pins-open]").click();
+    await page.locator("[data-message-pin-remove='pin-b']").click();
+    assert.equal(await page.locator("[data-message-pin-current] .message-pin-current-preview").textContent(), "Закрепление C");
+    assert.equal(await page.locator("[data-message-pin-position]").textContent(), "2 из 2");
+    const middleIntent = await page.evaluate(() => window.__messagePinIntents.at(-1));
+    await page.evaluate(({ mutationId, pins }) => {
+      window.AgentHub.completeMessagePinMutation(mutationId, { messagePins: pins });
+    }, { mutationId: middleIntent.mutationId, pins: [pinA, pinC] });
+    assert.equal(await page.locator("[data-message-pin-current] .message-pin-current-preview").textContent(), "Закрепление C");
+    await page.locator("[data-message-pins-close]").click();
+
+    await page.evaluate((pins) => {
+      window.AgentHub.setMessagePins([]);
+      window.AgentHub.setMessagePins(pins);
+    }, [pinA, pinB, pinC]);
+    await page.locator("[data-message-pin-previous]").click();
+    await page.locator("[data-message-pins-open]").click();
+    await page.locator("[data-message-pin-remove='pin-c']").click();
+    assert.equal(await page.locator("[data-message-pin-current] .message-pin-current-preview").textContent(), "Закрепление B");
+    assert.equal(await page.locator("[data-message-pin-position]").textContent(), "2 из 2");
+    const lastIntent = await page.evaluate(() => window.__messagePinIntents.at(-1));
+    await page.evaluate(({ mutationId, pins }) => {
+      window.AgentHub.completeMessagePinMutation(mutationId, { messagePins: pins });
+    }, { mutationId: lastIntent.mutationId, pins: [pinA, pinB] });
+    assert.equal(await page.locator("[data-message-pin-current] .message-pin-current-preview").textContent(), "Закрепление B");
+    await page.locator("[data-message-pins-close]").click();
+
+    await page.evaluate((pins) => {
+      window.AgentHub.setMessagePins([]);
+      window.AgentHub.setMessagePins(pins);
+    }, [pinA, pinB, pinC]);
+    await page.locator("[data-message-pin-next]").click();
+    await page.locator("[data-message-pins-open]").click();
+    await page.locator("[data-message-pin-remove='pin-b']").click();
+    const rollbackIntent = await page.evaluate(() => window.__messagePinIntents.at(-1));
+    await page.evaluate((mutationId) => {
+      window.AgentHub.completeMessagePinMutation(mutationId, { error: "Не удалось открепить" });
+    }, rollbackIntent.mutationId);
+    assert.equal(await page.locator("[data-message-pin-id]").count(), 3);
+    assert.equal(await page.locator("[data-message-pin-current] .message-pin-current-preview").textContent(), "Закрепление B");
+    assert.equal(await page.locator("[data-message-pin-position]").textContent(), "2 из 3");
   } finally {
     await browser.close();
   }
