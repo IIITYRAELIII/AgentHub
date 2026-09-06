@@ -471,12 +471,9 @@
           <span class="chat-scroll-count" hidden>0</span>
         </button>
         <dialog class="dialog-settings stream-card-modal" data-dialog-settings hidden
-          aria-labelledby="stream-card-title">
+          aria-label="Карточка Stream">
           <header class="dialog-settings-head">
-            <div>
-              <p class="eyebrow">Stream</p>
-              <h2 id="stream-card-title">Карточка Stream</h2>
-            </div>
+            <p class="eyebrow">Stream</p>
             <button type="button" class="icon-button dialog-settings-close" data-action="task-settings"
               data-dialog-settings-close title="Закрыть настройки диалога"
               aria-label="Закрыть настройки диалога">
@@ -604,22 +601,21 @@
                   data-dialog-stream-rules-save>Сохранить правила Stream</button>
               </div>
             </section>
-            <section class="settings-section">
+            <section class="settings-section stream-card-actions-section">
               <h3 class="settings-section-title">Действия</h3>
               <div class="settings-card stream-card-actions">
                 <button type="button" class="chip-button" data-stream-card-pin></button>
                 <button type="button" class="chip-button" data-stream-card-workspace>Открыть карточку Workspace</button>
                 <button type="button" class="chip-button" data-stream-card-rotate>Ротация</button>
                 <button type="button" class="chip-button" data-stream-card-continue-provider></button>
-                <label class="setting-stack">
-                  <span class="setting-name">Перенести в Workspace</span>
-                  <select data-stream-card-move-target aria-label="Целевой Workspace"></select>
-                </label>
-                <button type="button" class="chip-button" data-stream-card-move>Перенести</button>
+                <button type="button" class="chip-button" data-stream-card-move
+                  aria-haspopup="menu" aria-expanded="false">Перенести в другой Workspace</button>
                 <button type="button" class="chip-button stream-card-archive" data-stream-card-archive>
                   Архивировать Stream
                 </button>
               </div>
+              <div class="stream-card-move-menu" data-stream-card-move-menu popover="auto"
+                role="menu" aria-label="Выбор Workspace для переноса"></div>
             </section>
           </div>
       </dialog>
@@ -1073,11 +1069,16 @@
           <span>Порядковый номер в Дашборде</span>
           <input type="number" min="1" step="1" data-workspace-card-order required>
         </label>
+        <section class="settings-section workspace-card-actions-section">
+          <h3 class="settings-section-title">Действия</h3>
+          <div class="settings-card workspace-card-actions">
+            <button type="button" class="workspace-card-archive" data-workspace-card-archive>
+              Архивировать
+            </button>
+          </div>
+        </section>
       </section>
       <footer>
-        <button type="button" class="workspace-card-archive" data-workspace-card-archive>
-          Архивировать
-        </button>
         <button type="button" class="board-task-quiet" data-workspace-card-cancel>Отмена</button>
         <button type="submit" class="board-task-primary" data-workspace-card-submit>Сохранить</button>
       </footer>

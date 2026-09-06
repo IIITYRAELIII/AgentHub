@@ -794,7 +794,7 @@ test("terminal audit migrates v7 and imports an external parent with four subage
   );
   assert.ok(recovered.every((value) => value.project === project));
   assert.ok(recovered.every((value) => value.turnId.startsWith("turn-")));
-  assert.equal(audit.snapshot().version, 15);
+  assert.equal(audit.snapshot().version, 16);
   assert.equal(audit.snapshot().historicalSubagentBackfill.pending, false);
   assert.equal(audit.snapshot().historicalSubagentBackfill.completedFiles, 5);
 });
@@ -1145,7 +1145,7 @@ test("terminal audit reruns v11 historical reconciliation once after preparing a
   assert.deepEqual(preparations, ["prepared"]);
   assert.deepEqual(scans, ["previously-completed.jsonl"]);
   const checkpoint = audit.snapshot();
-  assert.equal(checkpoint.version, 15);
+  assert.equal(checkpoint.version, 16);
   assert.equal(checkpoint.historicalSubagentBackfill.pending, false);
   assert.equal(checkpoint.historicalSubagentBackfill.prepared, true);
   assert.equal(

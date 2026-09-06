@@ -658,12 +658,12 @@ test("current exec ImageGen result repairs exact empty terminal and survives reo
   );
 });
 
-test("v14 EOF audit migrates once and repairs delivered generated output after rebirth", async (context) => {
-  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-terminal-v14-image-migration-"));
+test("v15 EOF audit migrates once and repairs delivered current ImageGen output", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-terminal-v15-image-migration-"));
   context.after(() => rm(dataDir, { recursive: true, force: true }));
-  const rollout = path.join(dataDir, "rollout-v14.jsonl");
-  const origin = completion({ threadId: "thread-v14", turnId: "turn-v14" });
-  const generatedPath = "C:/generated/v14-output.png";
+  const rollout = path.join(dataDir, "rollout-v15.jsonl");
+  const origin = completion({ threadId: "thread-v15", turnId: "turn-v15" });
+  const generatedPath = "C:/generated/v15-output.png";
   const rolloutText = [
     {
       timestamp: "2026-08-25T12:00:00.000Z",
@@ -676,7 +676,7 @@ test("v14 EOF audit migrates once and repairs delivered generated output after r
       payload: {
         type: "custom_tool_call",
         name: "exec",
-        call_id: "call-image-v14",
+        call_id: "call-image-v15",
         input: "await tools.image_gen__imagegen({prompt: 'one output'})",
         internal_chat_message_metadata_passthrough: { turn_id: origin.turnId },
       },
@@ -685,12 +685,16 @@ test("v14 EOF audit migrates once and repairs delivered generated output after r
       timestamp: "2026-08-25T12:00:02.000Z",
       type: "response_item",
       payload: {
-        type: "function_call_output",
-        call_id: "call-image-v14",
-        output: [{
-          type: "input_text",
-          text: `Generated images are saved to C:/generated as ${generatedPath} by default.`,
-        }],
+        type: "custom_tool_call_output",
+        call_id: "call-image-v15",
+        output: [
+          { type: "input_image", image_url: "data:image/png;base64,aW5wdXQ=" },
+          {
+            type: "input_text",
+            text: `Generated images are saved to C:/generated as ${generatedPath} by default.`,
+          },
+        ],
+        internal_chat_message_metadata_passthrough: { turn_id: origin.turnId },
       },
     },
     {
@@ -706,10 +710,10 @@ test("v14 EOF audit migrates once and repairs delivered generated output after r
   });
   const initialCommit = await initialTerminal.commit(origin, {
     run: {
-      id: "run-v14",
-      streamId: "stream-v14",
-      clientUserMessageId: "message-v14",
-      responseItemId: "response-v14",
+      id: "run-v15",
+      streamId: "stream-v15",
+      clientUserMessageId: "message-v15",
+      responseItemId: "response-v15",
       userMessages: [{ role: "user", text: "Нарисуй изображение" }],
     },
   });
@@ -758,7 +762,7 @@ test("v14 EOF audit migrates once and repairs delivered generated output after r
     },
     accountingThread: async () => ({}),
     subagentParentTurnId: async () => "",
-    readTurnUsage: async () => { throw new Error("v14 migration must use scanned exact-turn usage"); },
+    readTurnUsage: async () => { throw new Error("v15 migration must use scanned exact-turn usage"); },
     taskGitDiff: async () => "",
     dataDir,
     projectTurn: async () => null,
@@ -778,7 +782,7 @@ test("v14 EOF audit migrates once and repairs delivered generated output after r
         { type: "generated-path", value: generatedPath },
       ]);
       return [{
-        id: "codex-generated-v14-output.png",
+        id: "codex-generated-v15-output.png",
         name: "Изображение",
         type: "image/png",
       }];
@@ -805,15 +809,15 @@ test("v14 EOF audit migrates once and repairs delivered generated output after r
     },
     shouldRunAudit: () => true,
     shouldRunHistoricalBackfill: () => true,
-    prepareHistoricalBackfill: async () => ({ backupFile: "v14-migration.sqlite" }),
+    prepareHistoricalBackfill: async () => ({ backupFile: "v15-migration.sqlite" }),
     flushHistoricalProjection: async () => {},
     liveScanBytes: 16 * 1024,
     auditBytesPerRun: 16 * 1024,
     auditTimeMs: 10_000,
   };
   const eofOffset = Buffer.byteLength(rolloutText, "utf8");
-  const preFixV14Snapshot = {
-    version: 14,
+  const preFixV15Snapshot = {
+    version: 15,
     completedThrough: "2026-08-25T12:04:00.000Z",
     positions: [[origin.threadId, {
       path: rollout,
@@ -825,7 +829,7 @@ test("v14 EOF audit migrates once and repairs delivered generated output after r
       pending: false,
       initialized: true,
       prepared: true,
-      backupFile: "pre-fix-v14.sqlite",
+      backupFile: "pre-fix-v15.sqlite",
       totalFiles: 1,
       completedFiles: 1,
       processedTurns: 1,
@@ -836,12 +840,12 @@ test("v14 EOF audit migrates once and repairs delivered generated output after r
   };
 
   const migratedAudit = new CodexTerminalAudit(auditOptions);
-  migratedAudit.restore(preFixV14Snapshot);
+  migratedAudit.restore(preFixV15Snapshot);
   assert.equal(migratedAudit.snapshot().historicalSubagentBackfill.pending, true);
   await migratedAudit.run();
   const migratedSnapshot = migratedAudit.snapshot();
 
-  assert.equal(migratedSnapshot.version, 15);
+  assert.equal(migratedSnapshot.version, 16);
   assert.equal(migratedSnapshot.historicalSubagentBackfill.pending, false);
   assert.equal(migratedSnapshot.historicalSubagentBackfill.completedFiles, 1);
   assert.equal(historicalScans, 1);
@@ -849,7 +853,7 @@ test("v14 EOF audit migrates once and repairs delivered generated output after r
   assert.equal(imports, 1);
   assert.equal(historyProjections.length, 2);
   assert.deepEqual(historyProjections[1].responseAttachments.map((item) => item.id), [
-    "codex-generated-v14-output.png",
+    "codex-generated-v15-output.png",
   ]);
 
   const rebornAudit = new CodexTerminalAudit(auditOptions);
@@ -865,7 +869,7 @@ test("v14 EOF audit migrates once and repairs delivered generated output after r
   }).get(origin);
   assert.equal(hydrated.terminalRevision, 2);
   assert.deepEqual(hydrated.payload.completion.responseAttachments.map((item) => item.id), [
-    "codex-generated-v14-output.png",
+    "codex-generated-v15-output.png",
   ]);
   assert.deepEqual(
     hydrated.payload.history.responseAttachments,
