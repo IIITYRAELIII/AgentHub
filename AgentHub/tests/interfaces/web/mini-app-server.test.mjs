@@ -629,13 +629,15 @@ test("Mini App serves only safe persistent message attachment names", async () =
   });
   try {
     await mkdir(attachments, { recursive: true });
-    const body = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const body = Buffer.alloc(2_784_684);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(body);
     await writeFile(path.join(attachments, "message-1.png"), body);
     await writeFile(thumbnail, Buffer.from("small-preview"));
     const address = await server.start();
     const image = await fetch(`${address.url}api/message-attachment/message-1.png`);
     assert.equal(image.status, 200);
     assert.equal(image.headers.get("content-type"), "image/png");
+    assert.equal(image.headers.get("content-length"), "2784684");
     assert.deepEqual(Buffer.from(await image.arrayBuffer()), body);
     const preview = await fetch(`${address.url}api/message-attachment/message-1.png?preview=1`);
     assert.equal(preview.status, 200);

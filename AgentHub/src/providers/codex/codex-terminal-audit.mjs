@@ -447,6 +447,10 @@ export class CodexTerminalAudit {
     };
   }
 
+  hasPendingHistoricalMaintenance() {
+    return this.historicalSubagentBackfill.pending === true;
+  }
+
   #setPosition(threadId, position) {
     this.positions.delete(threadId);
     this.positions.set(threadId, position);
@@ -808,7 +812,7 @@ export class CodexTerminalAudit {
     return true;
   }
 
-  async #runHistoricalSubagentBackfill() {
+  async #runHistoricalSubagentBackfill({ localOnlyAccounting = false } = {}) {
     const backfill = this.historicalSubagentBackfill;
     if (!backfill.pending) return false;
     // Historical migration is maintenance work.  Never let it contend with
@@ -860,7 +864,7 @@ export class CodexTerminalAudit {
             completedAt: turn.completedAt || turn.lastActivityAt,
             historical: true,
             usageResult: turn,
-          });
+          }, { localOnlyAccounting });
           if (handled === false) return changed;
           this.historicalTurnIdentities.add(identity);
           backfill.processedTurns += 1;
@@ -887,7 +891,7 @@ export class CodexTerminalAudit {
               authoritative: true,
               historical: true,
               usageResult: turn,
-            });
+            }, { localOnlyAccounting });
             if (handled === false) return changed;
             this.historicalTurnIdentities.add(identity);
             backfill.processedTurns += 1;
@@ -931,7 +935,7 @@ export class CodexTerminalAudit {
           completedAt: turn.completedAt || turn.lastActivityAt,
           historical: true,
           usageResult: turn,
-        });
+        }, { localOnlyAccounting });
         if (handled === false) return changed;
         this.historicalTurnIdentities.add(identity);
         backfill.processedTurns += 1;
@@ -952,7 +956,7 @@ export class CodexTerminalAudit {
           attachmentRepairOnly: true,
           historical: true,
           generatedImageSources: candidate.generatedImageSources,
-        });
+        }, { localOnlyAccounting });
         if (handled === false) return changed;
         item.attachmentCandidateIndex += 1;
         handledTurns += 1;
@@ -990,7 +994,7 @@ export class CodexTerminalAudit {
             authoritative: true,
             historical: true,
             usageResult: turn,
-          });
+          }, { localOnlyAccounting });
           if (handled === false) return changed;
           this.historicalTurnIdentities.add(identity);
           backfill.processedTurns += 1;
@@ -1018,7 +1022,7 @@ export class CodexTerminalAudit {
       if (await this.reconcile(item.thread, project, {
         ...terminal,
         historical: true,
-      }) === false) {
+      }, { localOnlyAccounting }) === false) {
         allHandled = false;
       } else {
         this.historicalTurnIdentities.add(identity);
@@ -1059,7 +1063,7 @@ export class CodexTerminalAudit {
             ).toISOString(),
             authoritative: true,
             historical: true,
-          });
+          }, { localOnlyAccounting });
           if (handled === false) activeHandled = false;
           else {
             this.historicalTurnIdentities.add(identity);
@@ -1077,6 +1081,43 @@ export class CodexTerminalAudit {
       if (!backfill.queue.length) backfill.pending = false;
     }
     return changed;
+  }
+
+  async #flushCompletedHistoricalProjection() {
+    if (this.historicalSubagentBackfill.pending
+      || !this.historicalSubagentBackfill.projectionPending
+      || !this.shouldRunAudit()) return false;
+    await this.flushHistoricalProjection();
+    this.historicalSubagentBackfill.projectionPending = false;
+    return true;
+  }
+
+  async runHistoricalMaintenance({ localOnlyAccounting = false } = {}) {
+    if (this.running || !this.hasPendingHistoricalMaintenance()) return false;
+    this.running = true;
+    const startedAtMs = this.now();
+    try {
+      if (!this.shouldRunAudit() || !this.shouldRunHistoricalBackfill()) return false;
+      let changed = await this.#runHistoricalSubagentBackfill({ localOnlyAccounting });
+      this.lastRun = {
+        completedAt: new Date(this.now()).toISOString(),
+        elapsedMs: Math.max(0, this.now() - startedAtMs),
+        bytes: 0,
+        threads: 0,
+        turns: 0,
+        cycleComplete: !this.historicalSubagentBackfill.pending,
+        yielded: this.historicalSubagentBackfill.pending ? "historical-maintenance" : "",
+        maintenanceOnly: true,
+      };
+      if (changed && this.persistProgress) await this.persistProgress();
+      if (await this.#flushCompletedHistoricalProjection()) {
+        changed = true;
+        if (this.persistProgress) await this.persistProgress();
+      }
+      return changed;
+    } finally {
+      this.running = false;
+    }
   }
 
   async run() {
@@ -1100,6 +1141,17 @@ export class CodexTerminalAudit {
 
     try {
       if (!this.shouldRunAudit()) return false;
+      // A versioned historical repair is a bounded local migration. Give it
+      // one owned pass and persist its checkpoint before live reconciliation:
+      // a slow or stalled live rollout must not starve an already-known repair.
+      if (this.hasPendingHistoricalMaintenance()) {
+        madeProgress = await this.#runHistoricalSubagentBackfill() || madeProgress;
+        if (madeProgress && this.persistProgress) await this.persistProgress();
+        if (await this.#flushCompletedHistoricalProjection()) {
+          madeProgress = true;
+          if (this.persistProgress) await this.persistProgress();
+        }
+      }
       const pendingPoll = await this.#pollPendingTurns(lowerBoundMs, budget);
       madeProgress = pendingPoll.madeProgress || madeProgress;
       cycleComplete = pendingPoll.complete;
@@ -1191,9 +1243,6 @@ export class CodexTerminalAudit {
         this.subagentBackfillPending = false;
         this.completedThroughMs = startedAtMs;
         madeProgress = true;
-      }
-      if (cycleComplete && this.#hasBudget(budget, { scan: true })) {
-        madeProgress = await this.#runHistoricalSubagentBackfill() || madeProgress;
       }
       this.lastRun = {
         completedAt: new Date(this.now()).toISOString(),

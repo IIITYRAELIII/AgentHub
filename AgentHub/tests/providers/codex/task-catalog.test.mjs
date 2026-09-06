@@ -1874,6 +1874,140 @@ test("response_item and exact event_msg remain separate until exact projection b
   ]);
 });
 
+test("exact adjacent rollout completion binds two sequential user projections once", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-rollout-user-binding-"));
+  const rollout = path.join(directory, "rollout.jsonl");
+  const threadId = "production-thread";
+  const turns = [{
+    turnId: "production-turn-one",
+    clientUserMessageId: "production-client-one",
+    responseItemId: "msg-production-one",
+    answer: "Ответ один",
+  }, {
+    turnId: "production-turn-two",
+    clientUserMessageId: "production-client-two",
+    responseItemId: "msg-production-two",
+    answer: "Ответ два",
+  }];
+  let ordinal = 0;
+  const entry = (type, payload) => JSON.stringify({ ordinal: ordinal++, type, payload });
+  const userEntries = ({ turnId, clientUserMessageId, responseItemId }) => [
+    entry("event_msg", { type: "task_started", turn_id: turnId }),
+    entry("response_item", {
+      id: responseItemId,
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "Одинаковый ввод" }],
+      internal_chat_message_metadata_passthrough: {
+        turn_id: turnId,
+        content_item_kinds: ["user.text"],
+      },
+    }),
+    entry("event_msg", {
+      type: "item_completed",
+      thread_id: threadId,
+      turn_id: turnId,
+      item: {
+        type: "UserMessage",
+        id: `${turnId}:completed-user`,
+        client_id: clientUserMessageId,
+        content: [{ type: "text", text: "Одинаковый ввод", text_elements: [] }],
+      },
+    }),
+  ];
+  const finalEntries = ({ turnId, answer }) => [
+    entry("response_item", {
+      id: `${turnId}:assistant`,
+      type: "message",
+      role: "assistant",
+      phase: "final_answer",
+      content: [{ type: "output_text", text: answer }],
+      internal_chat_message_metadata_passthrough: { turn_id: turnId },
+    }),
+    entry("event_msg", { type: "task_complete", turn_id: turnId, last_agent_message: answer }),
+  ];
+
+  try {
+    const session = entry("session_meta", {
+      id: "production-rollout-generation",
+      originator: "codex_vscode",
+    });
+    const firstUser = userEntries(turns[0]);
+    await writeFile(rollout, `${[session, firstUser[0], firstUser[1]].join("\n")}\n`, "utf8");
+
+    const beforeCompletion = await readCodexRolloutActivity(rollout, {
+      freshnessMs: Number.POSITIVE_INFINITY,
+    });
+    const provisional = beforeCompletion.userMessages[turns[0].turnId][0];
+    assert.equal(provisional.clientUserMessageId, undefined);
+    assert.ok(provisional.sourceOccurrenceId);
+
+    await appendFile(rollout, `${[firstUser[2], ...finalEntries(turns[0])].join("\n")}\n`, "utf8");
+    const firstCompleted = await readCodexRolloutActivity(rollout, {
+      freshnessMs: Number.POSITIVE_INFINITY,
+    });
+    assert.deepEqual(firstCompleted.userMessages[turns[0].turnId], [{
+      itemId: turns[0].clientUserMessageId,
+      clientUserMessageId: turns[0].clientUserMessageId,
+      sourceOccurrenceId: provisional.sourceOccurrenceId,
+      role: "user",
+      text: "Одинаковый ввод",
+    }]);
+    assert.equal(firstCompleted.finalMessages[turns[0].turnId], turns[0].answer);
+
+    await appendFile(rollout, `${[
+      ...userEntries(turns[1]),
+      ...finalEntries(turns[1]),
+    ].join("\n")}\n`, "utf8");
+    const completed = await readCodexRolloutActivity(rollout, {
+      freshnessMs: Number.POSITIVE_INFINITY,
+    });
+    const replay = await readCodexRolloutActivity(rollout, {
+      freshnessMs: Number.POSITIVE_INFINITY,
+      reparseTail: true,
+    });
+    for (const turn of turns) {
+      assert.equal(completed.userMessages[turn.turnId].length, 1);
+      assert.equal(completed.userMessages[turn.turnId][0].clientUserMessageId,
+        turn.clientUserMessageId);
+      assert.ok(completed.userMessages[turn.turnId][0].sourceOccurrenceId);
+      assert.equal(completed.finalMessages[turn.turnId], turn.answer);
+      assert.deepEqual(replay.userMessages[turn.turnId], completed.userMessages[turn.turnId]);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("non-adjacent exact completion cannot consume a provider-owned occurrence", () => {
+  const result = parseCodexRolloutActivity([
+    JSON.stringify({ ordinal: 1, type: "event_msg", payload: {
+      type: "task_started", turn_id: "separate-turn",
+    } }),
+    JSON.stringify({ ordinal: 2, type: "response_item", payload: {
+      id: "external-provider-user",
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "Внешний ввод" }],
+      internal_chat_message_metadata_passthrough: { turn_id: "separate-turn" },
+    } }),
+    JSON.stringify({ ordinal: 3, type: "world_state", payload: {} }),
+    JSON.stringify({ ordinal: 4, type: "event_msg", payload: {
+      type: "item_completed",
+      turn_id: "separate-turn",
+      item: {
+        type: "UserMessage",
+        client_id: "managed-client",
+        content: [{ type: "text", text: "Управляемый ввод" }],
+      },
+    } }),
+  ].join("\n"), { sourceObservationGeneration: "separate-generation" });
+
+  assert.deepEqual(result.userMessages["separate-turn"].map((message) => (
+    message.clientUserMessageId ?? message.itemId
+  )), ["external-provider-user", "managed-client"]);
+});
+
 test("rollout response_item restores exact interstream command identity from its envelope", () => {
   const turnId = "interstream-turn";
   const requestId = "hub143-readonly-audit-s6-v1";

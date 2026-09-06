@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { consistentInterstreamRecordIdentity } from "../../domain/interstream-message.mjs";
+import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 import { openRuntimeDatabase } from "./runtime-state-store.mjs";
 
 const OUTBOX_STATES = new Set(["pending", "projecting", "delivered", "superseded"]);
@@ -274,15 +275,24 @@ function selectOutbox(database, key) {
 export class ProviderTurnTerminalStore {
   #dataDir;
   #tail = Promise.resolve();
+  #mutations = new AsyncSqliteMutationQueue();
+  #mutationTimeoutMs;
   #configured = false;
 
-  constructor({ dataDir }) {
+  constructor({ dataDir, mutationTimeoutMs = 5_000 }) {
     if (!dataDir) throw new Error("ProviderTurnTerminalStore dataDir is required");
     this.#dataDir = dataDir;
+    this.#mutationTimeoutMs = Math.max(1, Number(mutationTimeoutMs) || 5_000);
   }
 
-  #enqueue(operation) {
-    const next = this.#tail.then(operation, operation);
+  #enqueue(operation, requestId = null) {
+    const execute = requestId
+      ? () => this.#mutations.run(operation, {
+          timeoutMs: this.#mutationTimeoutMs,
+          requestId,
+        })
+      : operation;
+    const next = this.#tail.then(execute, execute);
     this.#tail = next.catch(() => {});
     return next;
   }
@@ -445,7 +455,7 @@ export class ProviderTurnTerminalStore {
       } finally {
         database.close();
       }
-    });
+    }, `${key.provider}\0${key.threadId}\0${key.turnId}`);
   }
 
   get(value) {

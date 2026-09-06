@@ -1457,6 +1457,7 @@ export class MiniAppServer {
         send(response, 200, metadata.type, await readFile(target), method, {
           headers: {
             "Cache-Control": "private, max-age=300",
+            "Content-Length": String(info.size),
             "X-Content-Type-Options": "nosniff",
             ...(metadata.isImage ? {} : { "Content-Disposition": downloadDisposition(metadata.name) }),
           },

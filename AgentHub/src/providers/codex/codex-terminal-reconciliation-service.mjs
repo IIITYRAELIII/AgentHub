@@ -80,7 +80,7 @@ export class CodexTerminalReconciliationService {
     this.reconciling = new Set();
   }
 
-  async reconcile(thread, project, terminal) {
+  async reconcile(thread, project, terminal, { localOnlyAccounting = false } = {}) {
     const terminalContextProbe = isCodexContextProbeTurn(terminal);
     if (terminalContextProbe && terminal?.historical !== true) return true;
     const completedAtMs = Date.parse(String(terminal?.completedAt ?? ""));
@@ -146,7 +146,9 @@ export class CodexTerminalReconciliationService {
           return true;
         }
       }
-      const accountingThread = await this.accountingThread(thread);
+      const accountingThread = await this.accountingThread(thread, {
+        localOnly: localOnlyAccounting,
+      });
       const parentTurnId = accountingThread.isSubagent
         ? await this.subagentParentTurnId(thread, accountingThread)
         : "";

@@ -3595,9 +3595,8 @@ taskList.addEventListener("click", (event) => {
   const workspace = event.target.closest("[data-workspace-select]");
   if (!workspace) return;
   const workspaceId = String(workspace.dataset.workspaceSelect ?? "");
-  if (event.detail === 1) workspaceDblclickCandidate = { node: workspace, workspaceId };
-  else if (workspaceDblclickCandidate?.node !== workspace
-    || workspaceDblclickCandidate?.workspaceId !== workspaceId) workspaceDblclickCandidate = null;
+  if (event.detail === 1) workspaceDblclickCandidate = { workspaceId };
+  else if (workspaceDblclickCandidate?.workspaceId !== workspaceId) workspaceDblclickCandidate = null;
   const target = representativeWorkspaceTask(state.tasks.filter((task) => workspaceKey(task) === workspaceId));
   if (target) selectTaskFromUi(target.id, {
     preserveTaskList: true,
@@ -3609,7 +3608,7 @@ taskList.addEventListener("dblclick", (event) => {
   workspaceDblclickCandidate = null;
   const workspace = event.target.closest?.("[data-workspace-select]");
   const workspaceId = String(workspace?.dataset.workspaceSelect ?? "");
-  if (!candidate || candidate.node !== workspace || candidate.workspaceId !== workspaceId
+  if (!candidate || candidate.workspaceId !== workspaceId
     || !workspace?.isConnected || !taskList.contains(workspace) || !workspaceCatalogItem(workspaceId)) return;
   openWorkspaceCard(workspaceId);
 });
@@ -4898,6 +4897,33 @@ let attachmentViewerOpen = false;
 let attachmentViewerGallery = [];
 let attachmentViewerIndex = 0;
 let attachmentViewerReturnFocus = null;
+let attachmentViewerGeneration = 0;
+let attachmentViewerLoadTimer = null;
+let attachmentViewerDeadlineAt = 0;
+const ATTACHMENT_VIEWER_LOAD_TIMEOUT_MS = Math.max(
+  1,
+  Number(window.__agentHubAttachmentViewerLoadTimeoutMs) || 30_000,
+);
+
+function attachmentViewerLoadAuthority({
+  generation = attachmentViewerGeneration,
+  index = attachmentViewerIndex,
+} = {}) {
+  const current = attachmentViewerOpen
+    && generation === attachmentViewerGeneration
+    && index === attachmentViewerIndex;
+  const remainingMs = current
+    ? Math.max(0, attachmentViewerDeadlineAt - performance.now())
+    : 0;
+  return Object.freeze({
+    current,
+    owned: current && remainingMs > 0,
+    generation: attachmentViewerGeneration,
+    index: attachmentViewerIndex,
+    deadlineAt: attachmentViewerDeadlineAt,
+    remainingMs,
+  });
+}
 
 function syncAttachmentViewerControls() {
   const length = attachmentViewerGallery.length;
@@ -4909,37 +4935,142 @@ function syncAttachmentViewerControls() {
   attachmentViewerCounter.textContent = length > 1 ? `${attachmentViewerIndex + 1} / ${length}` : "";
 }
 
+function clearAttachmentViewerLoad() {
+  if (attachmentViewerLoadTimer != null) window.clearTimeout(attachmentViewerLoadTimer);
+  attachmentViewerLoadTimer = null;
+  attachmentViewerImage.onload = null;
+  attachmentViewerImage.onerror = null;
+}
+
+function disposeAttachmentViewerResource(generation = attachmentViewerGeneration) {
+  document.dispatchEvent(new CustomEvent("agenthub:attachment-viewer-dispose", {
+    detail: { generation, index: attachmentViewerIndex },
+  }));
+}
+
+function setAttachmentViewerLoading(message = "Загрузка…", error = false) {
+  attachmentViewerLoading.textContent = String(message || "Не удалось загрузить изображение");
+  attachmentViewerLoading.classList.toggle("is-error", error);
+  attachmentViewerLoading.hidden = false;
+}
+
+function settleAttachmentViewerLoad({ generation, index, loaded, message = "" }) {
+  if (!attachmentViewerOpen
+    || generation !== attachmentViewerGeneration
+    || index !== attachmentViewerIndex) return false;
+  const loadedInTime = loaded && performance.now() <= attachmentViewerDeadlineAt;
+  if (!loadedInTime) disposeAttachmentViewerResource(generation);
+  clearAttachmentViewerLoad();
+  if (loadedInTime) {
+    attachmentViewerImage.hidden = false;
+    attachmentViewerLoading.hidden = true;
+    attachmentViewerLoading.classList.remove("is-error");
+    return true;
+  }
+  attachmentViewerImage.removeAttribute("src");
+  attachmentViewerImage.hidden = true;
+  setAttachmentViewerLoading(
+    message || (loaded ? "Изображение не загрузилось вовремя" : "Не удалось загрузить изображение"),
+    true,
+  );
+  return true;
+}
+
+function loadAttachmentViewerSource({ source = "", name = "Изображение", generation, index }) {
+  const authority = attachmentViewerLoadAuthority({ generation, index });
+  if (!authority.owned) return false;
+  clearAttachmentViewerLoad();
+  attachmentViewerImage.removeAttribute("src");
+  attachmentViewerImage.hidden = true;
+  attachmentViewerImage.alt = String(name || "Изображение");
+  setAttachmentViewerLoading();
+  attachmentViewerLoadTimer = window.setTimeout(() => {
+    settleAttachmentViewerLoad({
+      generation,
+      index,
+      loaded: false,
+      message: "Изображение не загрузилось вовремя",
+    });
+  }, Math.max(1, authority.remainingMs));
+  const resource = String(source ?? "").trim();
+  if (!resource) return true;
+  attachmentViewerImage.onload = () => {
+    settleAttachmentViewerLoad({ generation, index, loaded: true });
+  };
+  attachmentViewerImage.onerror = () => {
+    settleAttachmentViewerLoad({
+      generation,
+      index,
+      loaded: false,
+      message: "Не удалось загрузить изображение",
+    });
+  };
+  attachmentViewerImage.src = resource;
+  return true;
+}
+
 function openAttachmentViewer({ dataUrl = "", name = "Изображение", gallery = [], index = 0 } = {}) {
   if (!attachmentViewerOpen) attachmentViewerReturnFocus = document.activeElement;
+  disposeAttachmentViewerResource();
   attachmentViewerGallery = resourceInteractions.imageGallery(
     Array.isArray(gallery) && gallery.length ? gallery : [{ dataUrl, name, type: "image/*" }],
   );
   attachmentViewerIndex = resourceInteractions.galleryIndex(index, attachmentViewerGallery.length);
   const selected = attachmentViewerGallery[attachmentViewerIndex] ?? { dataUrl, name };
   const selectedDataUrl = String(selected.dataUrl ?? dataUrl ?? "");
+  attachmentViewerGeneration += 1;
+  const generation = attachmentViewerGeneration;
+  attachmentViewerDeadlineAt = performance.now() + ATTACHMENT_VIEWER_LOAD_TIMEOUT_MS;
   attachmentViewerOpen = true;
   attachmentViewer.hidden = false;
   if (!attachmentViewer.open) {
     if (typeof attachmentViewer.showModal === "function") attachmentViewer.showModal();
     else attachmentViewer.setAttribute("open", "");
   }
-  attachmentViewerImage.hidden = !selectedDataUrl;
-  attachmentViewerLoading.hidden = Boolean(selectedDataUrl);
-  attachmentViewerImage.alt = String(selected.name ?? name);
-  attachmentViewerImage.src = selectedDataUrl;
   syncAttachmentViewerControls();
   root.dataset.overlay = "attachment";
   attachmentViewer.focus({ preventScroll: true });
+  loadAttachmentViewerSource({
+    source: selectedDataUrl,
+    name: selected.name ?? name,
+    generation,
+    index: attachmentViewerIndex,
+  });
+  return generation;
 }
 
-function showAttachmentViewer({ dataUrl, name = "Изображение", index = attachmentViewerIndex } = {}) {
-  if (!attachmentViewerOpen) openAttachmentViewer();
-  if (resourceInteractions.galleryIndex(index, attachmentViewerGallery.length) !== attachmentViewerIndex) return;
-  attachmentViewerImage.alt = name;
-  attachmentViewerImage.src = String(dataUrl ?? "");
-  attachmentViewerImage.hidden = !dataUrl;
-  attachmentViewerLoading.hidden = Boolean(dataUrl);
+function showAttachmentViewer({
+  dataUrl,
+  name = "Изображение",
+  index = attachmentViewerIndex,
+  generation = attachmentViewerGeneration,
+  transient = false,
+} = {}) {
+  if (!attachmentViewerOpen) {
+    if (generation !== attachmentViewerGeneration) return false;
+    generation = openAttachmentViewer({ name, index });
+  }
+  if (!attachmentViewerLoadAuthority({ generation, index }).owned) return false;
+  if (resourceInteractions.galleryIndex(index, attachmentViewerGallery.length) !== attachmentViewerIndex) return false;
+  if (!transient) {
+    const selected = attachmentViewerGallery[attachmentViewerIndex] ?? {};
+    attachmentViewerGallery[attachmentViewerIndex] = { ...selected, dataUrl: String(dataUrl ?? "") };
+  }
   syncAttachmentViewerControls();
+  return loadAttachmentViewerSource({
+    source: dataUrl,
+    name,
+    generation,
+    index: attachmentViewerIndex,
+  });
+}
+
+function failAttachmentViewer({
+  message = "Не удалось загрузить изображение",
+  index = attachmentViewerIndex,
+  generation = attachmentViewerGeneration,
+} = {}) {
+  return settleAttachmentViewerLoad({ generation, index, loaded: false, message });
 }
 
 function moveAttachmentViewer(direction) {
@@ -4950,31 +5081,42 @@ function moveAttachmentViewer(direction) {
     attachmentViewerGallery.length,
   );
   if (nextIndex === attachmentViewerIndex) return false;
+  disposeAttachmentViewerResource();
   attachmentViewerIndex = nextIndex;
+  attachmentViewerGeneration += 1;
+  const generation = attachmentViewerGeneration;
+  attachmentViewerDeadlineAt = performance.now() + ATTACHMENT_VIEWER_LOAD_TIMEOUT_MS;
   const attachment = attachmentViewerGallery[attachmentViewerIndex];
   const dataUrl = String(attachment?.dataUrl ?? "");
-  attachmentViewerImage.alt = String(attachment?.name ?? "Изображение");
-  attachmentViewerImage.src = dataUrl;
-  attachmentViewerImage.hidden = !dataUrl;
-  attachmentViewerLoading.hidden = Boolean(dataUrl);
   syncAttachmentViewerControls();
+  loadAttachmentViewerSource({
+    source: dataUrl,
+    name: attachment?.name,
+    generation,
+    index: attachmentViewerIndex,
+  });
   if (!dataUrl) emit("attachment:load", {
     attachment,
     gallery: attachmentViewerGallery,
     index: attachmentViewerIndex,
+    generation,
   });
   return true;
 }
 
 function closeAttachmentViewer() {
   if (!attachmentViewerOpen) return false;
+  disposeAttachmentViewerResource();
   attachmentViewerOpen = false;
+  attachmentViewerGeneration += 1;
+  attachmentViewerDeadlineAt = 0;
+  clearAttachmentViewerLoad();
   if (attachmentViewer.open && typeof attachmentViewer.close === "function") attachmentViewer.close();
   else attachmentViewer.removeAttribute("open");
   attachmentViewer.hidden = true;
   attachmentViewerImage.removeAttribute("src");
   attachmentViewerImage.hidden = true;
-  attachmentViewerLoading.hidden = false;
+  setAttachmentViewerLoading();
   attachmentViewerGallery = [];
   attachmentViewerIndex = 0;
   delete root.dataset.overlay;
@@ -9786,7 +9928,9 @@ const AgentHub = {
     emit("resource:open", { resource: { href: String(url ?? "") } });
   },
   openAttachmentViewer,
+  attachmentViewerLoadAuthority,
   showAttachmentViewer,
+  failAttachmentViewer,
   closeAttachmentViewer,
   openStream(workspaceId, streamId) {
     const normalizedWorkspaceId = String(workspaceId ?? "").trim();

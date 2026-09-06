@@ -76,6 +76,10 @@ terminal index before journal projection, so restart/retry continues the same
 batch without replaying the completed prefix. Projection is flushed at most once
 per recovered batch; disabling terminal audit is not an acceptable steady-state
 mitigation.
+When the Codex transport is offline or reconnecting, versioned historical
+maintenance resolves subagent accounting roots only from retained rollout files.
+It must not attempt provider RPC before falling back locally; an unavailable or
+ambiguous local parent leaves the bounded durable checkpoint pending for retry.
 
 Periodic usage synchronization must not rebuild the complete journal projection
 on the Hub event loop. Import, merge and account-panel calculation execute in a

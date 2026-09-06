@@ -2556,13 +2556,51 @@ test("Worker serves temporary historical attachment views only to their owner", 
   ), env);
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("Content-Type"), "image/png");
+  assert.equal(response.headers.get("Content-Length"), String(png.length));
+  assert.equal(response.headers.get("Cache-Control"), "private, no-store");
+  assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff");
   assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
+
+  response = await workerModule.default.fetch(new Request(
+    `https://hub.test/api/attachment/view?id=${id}`,
+    { headers: { Authorization: `tma ${telegramInitData(botToken, 42)}` } },
+  ), env);
+  assert.equal(response.status, 200);
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
+
+  response = await workerModule.default.fetch(new Request(
+    `https://hub.test/api/attachment/view?id=${id}`,
+  ), env);
+  assert.equal(response.status, 401);
+
+  response = await workerModule.default.fetch(new Request(
+    `https://hub.test/api/attachment/view?id=${id}`,
+    { headers: { Authorization: `tma ${telegramInitData(botToken, 42)}forged` } },
+  ), env);
+  assert.equal(response.status, 401);
+
+  response = await workerModule.default.fetch(new Request(
+    "https://hub.test/api/attachment/view?id=018f6c86-3f34-7a31-8f27-16f5b96cce42",
+    { headers: { Authorization: `tma ${telegramInitData(botToken, 42)}` } },
+  ), env);
+  assert.equal(response.status, 404);
 
   response = await workerModule.default.fetch(new Request(
     `https://hub.test/api/attachment/view?id=${id}`,
     { headers: { Authorization: `tma ${telegramInitData(botToken, 84)}` } },
   ), env);
   assert.equal(response.status, 404);
+
+  const manifestKey = `control:attachment:${id}`;
+  const expired = await storage.get(manifestKey);
+  expired.expiresAt = Date.now() - 1;
+  await storage.put(manifestKey, expired);
+  response = await workerModule.default.fetch(new Request(
+    `https://hub.test/api/attachment/view?id=${id}`,
+    { headers: { Authorization: `tma ${telegramInitData(botToken, 42)}` } },
+  ), env);
+  assert.equal(response.status, 404);
+  assert.equal(await storage.get(manifestKey), undefined);
 
   response = await workerModule.default.fetch(new Request(
     "https://hub.test/api/control/attachment/view/push",

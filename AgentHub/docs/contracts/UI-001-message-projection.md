@@ -35,6 +35,18 @@
   monotonic account read cursor.
 - `mark-read` names the exact final revision already shown to the client; history
   hydration remains background work.
+- A ready image attachment on VS Code or a trusted-cookie surface opens from its
+  durable resource URL. A Telegram Mini App attachment-view descriptor remains
+  bound to its authenticated user: the client fetches it with the `tma` header
+  and gives the viewer a transient Blob URL, never a credential in the URL.
+  Neither path base64-copies the full attachment. Loading is fenced by the exact
+  viewer generation, gallery index and resource token. Navigation, close or a
+  newer open aborts only the matching pending fetch and revokes only its transient
+  Blob URL. One absolute 30-second deadline starts when that generation opens;
+  control resolution, authenticated fetch, Blob materialization and browser image
+  decode share its remaining budget and never restart it. Every unresolved or
+  failed image therefore leaves the loading state within that deadline with a
+  visible error, and late work cannot replace or dispose a newer generation.
 - Current Codex limits expose every available provider window separately. A
   healthy short window cannot hide an exhausted longer window for the same model.
 - Codex response-annotation locators cross the provider boundary as unique

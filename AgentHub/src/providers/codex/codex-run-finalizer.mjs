@@ -161,33 +161,51 @@ export class CodexRunFinalizer {
     const shouldDeliver = deliver ?? (run.telegramDeliveryRequested !== false);
     const message = [visibleAnswer, this.formatUsage(resolvedTracker)].filter(Boolean).join("\n\n");
     const telegramRequested = shouldDeliver && Number.isSafeInteger(completion.chatId);
-    const committed = await this.commitTerminal(completion, {
-      run,
-      channelIntents: {
-        telegram: {
-          requested: telegramRequested,
-          run: {
-            id: run.id ?? null,
-            streamId: run.streamId ?? null,
-            provider: "codex",
-            projectRoot: run.projectRoot,
-            threadId: run.threadId,
-            turnId: completedTurnId,
-            taskTitle: completion.taskTitle,
-            chatId: completion.chatId,
-            modelId: run.modelId ?? null,
-            serviceTier: run.serviceTier ?? null,
-            finishedProgressMessageIds: [...(run.finishedProgressMessageIds ?? [])],
+    let committed;
+    try {
+      committed = await this.commitTerminal(completion, {
+        run,
+        channelIntents: {
+          telegram: {
+            requested: telegramRequested,
+            run: {
+              id: run.id ?? null,
+              streamId: run.streamId ?? null,
+              provider: "codex",
+              projectRoot: run.projectRoot,
+              threadId: run.threadId,
+              turnId: completedTurnId,
+              taskTitle: completion.taskTitle,
+              chatId: completion.chatId,
+              modelId: run.modelId ?? null,
+              serviceTier: run.serviceTier ?? null,
+              finishedProgressMessageIds: [...(run.finishedProgressMessageIds ?? [])],
+            },
+            answer: visibleAnswer,
+            message,
+            speechText: visibleAnswer,
+            forceSpeechButton,
+            silent,
+            description,
           },
-          answer: visibleAnswer,
-          message,
-          speechText: visibleAnswer,
-          forceSpeechButton,
-          silent,
-          description,
         },
-      },
-    });
+      });
+    } catch (error) {
+      // The exact provider terminal is replayable by the existing observation
+      // and audit owners. Keep the run eligible for that replay if durability
+      // is temporarily unavailable; a one-shot event must not strand the lane
+      // forever in the intermediate `finishing` state.
+      if (run.status === "finishing") {
+        run.status = "running";
+        await this.saveState().catch((saveError) => {
+          this.logger.error(
+            `Cannot persist replayable terminal state for ${completedTurnId}:`,
+            saveError.message,
+          );
+        });
+      }
+      throw error;
+    }
     run.responseText = String(
       committed.terminal?.finalAnswer ?? completion.finalAnswer ?? answer ?? "",
     ).trim();
