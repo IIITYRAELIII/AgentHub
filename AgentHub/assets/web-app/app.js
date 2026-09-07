@@ -2476,14 +2476,6 @@ function quickMessagesCountText(entries) {
   return count ? window.AgentHubStreamTabs.quickMessagesCountLabel(count) : "Не заданы";
 }
 
-function renderQuickMessagesControl(countElement, button, entries, disabled = false) {
-  if (countElement) countElement.textContent = quickMessagesCountText(entries);
-  if (button) {
-    button.disabled = Boolean(disabled);
-    button.setAttribute("aria-busy", String(disabled));
-  }
-}
-
 function quickMessageEditorEntries(container) {
   return [...(container?.querySelectorAll("[data-quick-message-row]") ?? [])].map((row) => ({
     title: String(row.querySelector("[data-quick-message-title]")?.value ?? "").trim(),
@@ -2592,12 +2584,17 @@ function handleQuickMessageEditorChange(container, scope, scopeId) {
 }
 
 function renderGlobalQuickMessagesSettings() {
-  renderQuickMessagesControl(
-    settingsGlobalQuickMessagesCount,
+  const entries = quickMessagesForScope("global");
+  const pending = state.pendingSelections.has("quickMessages");
+  if (settingsGlobalQuickMessagesCount) {
+    settingsGlobalQuickMessagesCount.textContent = quickMessagesCountText(entries);
+  }
+  renderQuickMessagesEditor(
     settingsGlobalQuickMessages,
-    quickMessagesForScope("global"),
-    state.pendingSelections.has("quickMessages"),
+    entries,
+    pending,
   );
+  settingsGlobalQuickMessages?.setAttribute("aria-busy", String(pending));
 }
 
 function renderWorkspaceCardQuickMessages(workspaceId = workspaceCardId) {
@@ -2636,22 +2633,6 @@ function renderQuickMessageSettingsControls() {
   renderGlobalQuickMessagesSettings();
   renderWorkspaceCardQuickMessages();
   renderStreamQuickMessagesSettings();
-}
-
-async function editQuickMessagesForScope(scope, scopeId, title) {
-  const id = String(scopeId ?? "").trim();
-  if (scope !== "global" && !id) return;
-  const quickMessages = window.AgentHubStreamTabs.normalizeQuickMessages(state.selection.quickMessages);
-  const key = scope === "global" ? "global" : scope === "workspace" ? "workspaces" : "streams";
-  const current = scope === "global" ? quickMessages.global : quickMessages[key][id] ?? [];
-  const value = window.AgentHubStreamTabs.quickMessagesToText(current);
-  const text = await askText({
-    title: `Prompt-шаблоны: ${title}`,
-    value,
-    multiline: true,
-  });
-  if (text === null) return;
-  saveQuickMessagesForScope(scope, id, window.AgentHubStreamTabs.quickMessagesFromText(text));
 }
 
 function quickMessageScopeLabel(scope) {
@@ -9098,11 +9079,14 @@ function openStreamCardMoveMenu() {
   streamCardMoveMenu.querySelector("[role='menuitem']")?.focus({ preventScroll: true });
 }
 
-settingsPanel?.addEventListener("click", async (event) => {
-  const globalQuickMessages = event.target.closest("[data-settings-global-quick-messages]");
-  if (!globalQuickMessages) return;
-  await editQuickMessagesForScope("global", "", "Глобальные");
-  renderGlobalQuickMessagesSettings();
+settingsPanel?.addEventListener("click", (event) => {
+  if (!event.target.closest("[data-quick-message-add], [data-quick-message-action]")) return;
+  handleQuickMessageEditorClick(event, settingsGlobalQuickMessages, "global", "");
+});
+
+settingsPanel?.addEventListener("change", (event) => {
+  if (!event.target.closest("[data-quick-message-title], [data-quick-message-text]")) return;
+  handleQuickMessageEditorChange(settingsGlobalQuickMessages, "global", "");
 });
 
 dialogSettings.addEventListener("click", (event) => {
