@@ -1154,7 +1154,6 @@ def snapshot_envelope(
     events: list[dict[str, Any]] | None = None,
     summary_only: bool = False,
 ) -> dict[str, Any]:
-    all_events = snapshot_events(db)
     current_revision = current_server_revision(db)
     envelope = {
         "version": 1,
@@ -1162,16 +1161,20 @@ def snapshot_envelope(
         "datasetGeneration": current_dataset_generation(db),
         "exportedAt": utc_now_iso(),
         "serverRevision": current_revision,
-        "factSummary": usage_fact_summary(all_events),
     }
     if device_id:
         envelope["deviceId"] = device_id
     if since_revision is not None:
         envelope["sinceRevision"] = since_revision
     if summary_only:
+        all_events = snapshot_events(db)
+        envelope["factSummary"] = usage_fact_summary(all_events)
         envelope["events"] = []
     else:
-        envelope["events"] = all_events if events is None else events
+        response_events = snapshot_events(db) if events is None else events
+        if events is None:
+            envelope["factSummary"] = usage_fact_summary(response_events)
+        envelope["events"] = response_events
     return envelope
 
 
@@ -1229,7 +1232,6 @@ def ingest_snapshot(
         "usageFactSchemaVersion": USAGE_FACT_SCHEMA_VERSION,
         "datasetGeneration": current_dataset_generation(db),
         "serverRevision": revision,
-        "factSummary": usage_fact_summary(snapshot_events(db)),
         "added": added,
         "updated": updated + label_updates,
         "unchanged": unchanged,
@@ -1261,12 +1263,13 @@ def export_changes(
         kind="changes",
     )
     since_revision = max(0, integer(payload.get("sinceRevision")))
+    summary_only = bool(payload.get("summaryOnly"))
     return snapshot_envelope(
         db,
         device_id=device_id,
         since_revision=since_revision,
-        events=snapshot_events(db, "WHERE server_revision > ?", (since_revision,)),
-        summary_only=bool(payload.get("summaryOnly")),
+        events=None if summary_only else snapshot_events(db, "WHERE server_revision > ?", (since_revision,)),
+        summary_only=summary_only,
     )
 
 

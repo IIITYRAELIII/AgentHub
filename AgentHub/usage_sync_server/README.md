@@ -30,12 +30,13 @@ snapshot for import on another Agent Hub installation.
 `/api/enrollment-code` also uses the same signed headers and returns a new
 one-time enrollment code; only an already enrolled device can create it.
 
-Snapshot and changes responses include `usageFactSchemaVersion`,
-`datasetGeneration`, `serverRevision` and a deterministic `factSummary` over the
-complete normalized fact set. Clients bind their pull cursor to the server
-generation and local store generation, and run a full reconciliation when that
-tuple is missing or changes. A request body with `summaryOnly: true` returns the
-same metadata with `events: []` for bounded anti-entropy checks.
+Push, snapshot and changes responses include `usageFactSchemaVersion`,
+`datasetGeneration` and `serverRevision`. Full snapshot and `summaryOnly`
+responses also include a deterministic `factSummary` over the complete
+normalized fact set. Clients bind their pull cursor to the server generation and
+local store generation, and run a full reconciliation when that tuple is missing
+or changes. A request body with `summaryOnly: true` returns the same metadata
+with `events: []` for bounded anti-entropy checks.
 
 Local Agent Hub client flow:
 

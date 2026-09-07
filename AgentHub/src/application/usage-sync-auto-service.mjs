@@ -337,8 +337,13 @@ export class UsageSyncAutoService {
       localStateAfterPull = typeof this.workLogUsageStore.usageSyncState === "function"
         ? await this.workLogUsageStore.usageSyncState()
         : { localStoreGeneration: "", factSummary: null };
+      const antiEntropySnapshot = runAntiEntropy
+        ? await this.#usageSummary(client)
+        : null;
       const postPullInvalidReasons = [];
-      const remoteGeneration = text(remoteSnapshot.datasetGeneration || serverGenerationAfterPush);
+      const remoteGeneration = text(
+        antiEntropySnapshot?.datasetGeneration || remoteSnapshot.datasetGeneration || serverGenerationAfterPush,
+      );
       if (
         cursorRevision
         && remoteGeneration
@@ -352,7 +357,7 @@ export class UsageSyncAutoService {
       if (cursorRevision && Number(remoteSnapshot.serverRevision ?? 0) < cursorRevision) {
         postPullInvalidReasons.push("server-revision-regressed");
       }
-      const remoteSummary = remoteSnapshot.factSummary || push.factSummary || null;
+      const remoteSummary = antiEntropySnapshot?.factSummary || null;
       const summaryMismatch = Boolean(remoteSummary && !sameFactSummary(localStateAfterPull.factSummary, remoteSummary));
       antiEntropyMismatch = runAntiEntropy && summaryMismatch;
       if (postPullInvalidReasons.length || antiEntropyMismatch) {
@@ -433,6 +438,11 @@ export class UsageSyncAutoService {
 
   #now() {
     return this.now();
+  }
+
+  async #usageSummary(client) {
+    if (typeof client.summary === "function") return client.summary();
+    return client.pull({ summaryOnly: true });
   }
 
   async #ensureRepairProjection() {

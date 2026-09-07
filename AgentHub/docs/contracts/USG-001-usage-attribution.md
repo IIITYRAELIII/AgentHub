@@ -25,14 +25,18 @@ Server push and pull responses include `usageFactSchemaVersion: 2`. Clients use
 this marker to distinguish an upgraded server from a legacy server that accepted
 schema 2 JSON but returned/stored it through the old schema 1 path.
 
-Snapshot and changes responses from an upgraded server also include:
+Push, snapshot and changes responses from an upgraded server also include:
 
 - `datasetGeneration`: a server-local random generation for the current usage
   dataset. It is stable across process restarts and changes only when the server
   dataset is replaced or rebuilt.
 - `serverRevision`: the current monotonic server revision of the dataset.
-- `factSummary`: deterministic `{ version, count, byType, digest }` over the
-  complete normalized fact set, not only the returned delta.
+
+Full snapshot responses and explicit `summaryOnly` anti-entropy responses also
+include `factSummary`: deterministic `{ version, count, byType, digest }` over
+the complete normalized fact set, not only the returned delta. Normal push and
+incremental changes responses must not compute the full summary on every sync
+cycle.
 
 `factSummary.digest` is `sha256:` over canonical JSON lines sorted by UTF-8 byte
 order. Each line includes the fact type, canonical identity and normalized fact

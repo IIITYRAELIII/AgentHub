@@ -22,6 +22,7 @@ function fixture({
   localUsageStates = [{ localStoreGeneration: "", factSummary: null }],
   remoteEvents = [{ id: "remote-1" }],
   pullResults = null,
+  summaryResult = null,
   accountBackfillResult = { applied: true, updated: 2 },
   pushResult = null,
   delayPush = false,
@@ -111,6 +112,10 @@ function fixture({
           events.push(["pull", options]);
           if (queuedPullResults?.length) return queuedPullResults.shift();
           return { version: 1, serverRevision: 9, events: remoteEvents };
+        },
+        summary: async () => {
+          events.push(["summary"]);
+          return summaryResult ?? { version: 1, serverRevision: 9, events: [] };
         },
       };
     },
@@ -356,13 +361,18 @@ test("UsageSyncAutoService repairs bounded anti-entropy summary mismatches", asy
       rejected: 0,
       serverRevision: 9,
       datasetGeneration: "server-generation-1",
+    },
+    summaryResult: {
+      version: 1,
+      serverRevision: 9,
+      datasetGeneration: "server-generation-1",
       factSummary: summary,
+      events: [],
     },
     pullResults: [{
       version: 1,
       serverRevision: 9,
       datasetGeneration: "server-generation-1",
-      factSummary: summary,
       events: [],
     }, {
       version: 1,
@@ -378,6 +388,7 @@ test("UsageSyncAutoService repairs bounded anti-entropy summary mismatches", asy
   assert.equal(result.antiEntropy.checked, true);
   assert.equal(result.antiEntropy.mismatch, true);
   assert.equal(result.repair?.converged, true);
+  assert.equal(state.events.filter(([name]) => name === "summary").length, 1);
   assert.deepEqual(state.events.filter(([name]) => name === "pull").map(([, options]) => options), [
     { sinceRevision: 8 },
     undefined,

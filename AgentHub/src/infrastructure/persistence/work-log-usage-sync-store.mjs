@@ -438,7 +438,7 @@ export class WorkLogUsageSyncStore {
   }
 
   /** Applies the domain merge rule and writes only rows that actually change. */
-  #upsert(database, events) {
+  #upsert(database, events, { transaction = true } = {}) {
     const byId = new Map();
     for (const value of Array.isArray(events) ? events : []) {
       const event = normalizeUsageSyncEvent(value);
@@ -506,12 +506,12 @@ export class WorkLogUsageSyncStore {
         device_label = excluded.device_label,
         observed_at = excluded.observed_at
     `);
-    database.exec("BEGIN IMMEDIATE");
+    if (transaction) database.exec("BEGIN IMMEDIATE");
     try {
       for (const event of changes) statement.run(...eventParameters(event));
-      database.exec("COMMIT");
+      if (transaction) database.exec("COMMIT");
     } catch (error) {
-      database.exec("ROLLBACK");
+      if (transaction) database.exec("ROLLBACK");
       throw error;
     }
     return { added, updated: changes.length - added };
@@ -601,7 +601,7 @@ export class WorkLogUsageSyncStore {
     return { added, updated };
   }
 
-  #upsertFacts(database, facts) {
+  #upsertFacts(database, facts, { transaction = true } = {}) {
     const turns = [];
     const auth = [];
     const limits = [];
@@ -612,16 +612,28 @@ export class WorkLogUsageSyncStore {
       else if (fact.type === USAGE_FACT_TYPES.LIMIT_OBSERVATION) limits.push(fact);
       else turns.push(fact);
     }
-    const turnResult = this.#upsert(database, turns);
-    const authResult = this.#upsertAuthObservations(database, auth);
-    const limitResult = this.#upsertLimitObservations(database, limits);
-    return {
-      added: turnResult.added + authResult.added + limitResult.added,
-      updated: turnResult.updated + authResult.updated + limitResult.updated,
-      turns: turnResult,
-      authObservations: authResult,
-      limitObservations: limitResult,
+    const operation = () => {
+      const turnResult = this.#upsert(database, turns, { transaction: false });
+      const authResult = this.#upsertAuthObservations(database, auth);
+      const limitResult = this.#upsertLimitObservations(database, limits);
+      return {
+        added: turnResult.added + authResult.added + limitResult.added,
+        updated: turnResult.updated + authResult.updated + limitResult.updated,
+        turns: turnResult,
+        authObservations: authResult,
+        limitObservations: limitResult,
+      };
     };
+    if (!transaction) return operation();
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      const result = operation();
+      database.exec("COMMIT");
+      return result;
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   #enqueue(operation) {
@@ -738,11 +750,12 @@ export class WorkLogUsageSyncStore {
         ? remoteSnapshot
         : remoteSnapshot?.events ?? [];
       const normalized = events.map(normalizeUsageFact).filter(Boolean);
-      const result = this.#upsertFacts(database, normalized);
       const remoteIds = new Set(normalized.map(usageFactIdentity).filter(Boolean));
       let pruned = 0;
+      let result = { added: 0, updated: 0 };
       database.exec("BEGIN IMMEDIATE");
       try {
+        result = this.#upsertFacts(database, normalized, { transaction: false });
         for (const [table, idColumn] of [
           ["usage_sync_events", "event_id"],
           ["usage_auth_observations", "observation_id"],
@@ -783,11 +796,18 @@ export class WorkLogUsageSyncStore {
 
   replaceEvents(events) {
     return this.#enqueue((database) => {
-      database.exec("DELETE FROM usage_sync_events");
-      database.exec("DELETE FROM usage_auth_observations");
-      database.exec("DELETE FROM usage_limit_observations");
-      this.#upsertFacts(database, events);
-      return { replaced: this.#count(database), file: this.#databaseFile };
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        database.exec("DELETE FROM usage_sync_events");
+        database.exec("DELETE FROM usage_auth_observations");
+        database.exec("DELETE FROM usage_limit_observations");
+        this.#upsertFacts(database, events, { transaction: false });
+        database.exec("COMMIT");
+        return { replaced: this.#count(database), file: this.#databaseFile };
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
     });
   }
 
