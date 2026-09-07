@@ -96,6 +96,89 @@ function addMetric(target, value, knownKey, totalKey, unknownKey) {
   target[totalKey] += value;
 }
 
+function decodedAttribute(value) {
+  return String(value ?? "")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&#39;", "'")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&");
+}
+
+function stringListAttribute(value) {
+  try {
+    const parsed = JSON.parse(decodedAttribute(value));
+    return Array.isArray(parsed)
+      ? parsed.map((item) => boundedText(item, 256)).filter(Boolean).slice(0, 100)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+const RESOURCE_BUCKET_FIELDS = [
+  "date",
+  "dayMs",
+  "workspaceId",
+  "workspaceName",
+  "workspaceKind",
+  "streamId",
+  "streamDisplayName",
+  "streamOrdinal",
+  "provider",
+  "turnCount",
+  "credits",
+  "knownCredits",
+  "unknownCredits",
+  "durationSeconds",
+  "knownDurations",
+  "unknownDurations",
+  "latestAt",
+];
+
+export function resourceVirtualJournalSummary(value) {
+  if (!value || Number(value.version) !== 1 || !Array.isArray(value.buckets)) {
+    return { version: 1, buckets: [] };
+  }
+  return {
+    version: 1,
+    buckets: value.buckets.map((bucket) => Object.fromEntries(
+      RESOURCE_BUCKET_FIELDS.map((field) => [field, bucket?.[field]]),
+    )),
+  };
+}
+
+export function scopedVirtualJournalSummary(value, {
+  workspaceId = "",
+  streamId = "",
+  provider = "",
+  fromMs = 0,
+  toMs = 0,
+} = {}) {
+  if (!value || Number(value.version) !== 1 || !Array.isArray(value.buckets)) {
+    return { version: 1, buckets: [] };
+  }
+  const workspace = boundedText(workspaceId, 256);
+  const stream = boundedText(streamId, 256);
+  const providerName = boundedText(provider, 32);
+  const rangeStart = Number.isSafeInteger(Number(fromMs)) && Number(fromMs) > 0
+    ? Number(fromMs)
+    : 0;
+  const rangeEnd = Number.isSafeInteger(Number(toMs)) && Number(toMs) > 0
+    ? Number(toMs)
+    : 0;
+  return {
+    version: 1,
+    buckets: value.buckets.filter((bucket) => (
+      (!workspace || boundedText(bucket?.workspaceId, 256) === workspace)
+      && (!stream || boundedText(bucket?.streamId, 256) === stream)
+      && (!providerName || boundedText(bucket?.provider, 32) === providerName)
+      && (!rangeStart || Number(bucket?.dayMs) >= rangeStart)
+      && (!rangeEnd || Number(bucket?.dayMs) < rangeEnd)
+    )),
+  };
+}
+
 export function virtualJournalDaySections(html) {
   const source = String(html ?? "");
   const opening = /<details\b[^>]*data-work-log-day-section[^>]*>/giu;
@@ -204,6 +287,21 @@ export function buildVirtualJournalProjection(sections) {
           knownDurations: 0,
           unknownDurations: 0,
           latestAt: 0,
+          fileTouches: 0,
+          knownFileTouches: 0,
+          unknownFileTouches: 0,
+          changedLines: 0,
+          knownChangedLines: 0,
+          unknownChangedLines: 0,
+          subagentTurns: 0,
+          knownSubagentTurns: 0,
+          unknownSubagentTurns: 0,
+          skillNames: new Set(),
+          mcpCallCount: 0,
+          mcpTools: new Set(),
+          mcpFailures: 0,
+          knownToolMetricTurns: 0,
+          unknownToolMetricTurns: 0,
         };
         bucket.turnCount += 1;
         addMetric(
@@ -224,6 +322,43 @@ export function buildVirtualJournalProjection(sections) {
           bucket.latestAt,
           Date.parse(attribute(entry.opening, "data-work-log-turn-completed-at")) || 0,
         );
+        addMetric(
+          bucket,
+          finiteMetric(attribute(entry.opening, "data-work-log-turn-file-count")),
+          "knownFileTouches",
+          "fileTouches",
+          "unknownFileTouches",
+        );
+        addMetric(
+          bucket,
+          finiteMetric(attribute(entry.opening, "data-work-log-turn-change-lines")),
+          "knownChangedLines",
+          "changedLines",
+          "unknownChangedLines",
+        );
+        const subagent = attribute(entry.opening, "data-work-log-turn-subagent");
+        if (subagent === "0" || subagent === "1") {
+          bucket.knownSubagentTurns += 1;
+          if (subagent === "1") bucket.subagentTurns += 1;
+        } else {
+          bucket.unknownSubagentTurns += 1;
+        }
+        const skills = attribute(entry.opening, "data-work-log-turn-skills");
+        const mcpCalls = attribute(entry.opening, "data-work-log-turn-mcp-calls");
+        if (skills && mcpCalls !== "") {
+          for (const name of stringListAttribute(skills)) bucket.skillNames.add(name);
+          for (const tool of stringListAttribute(
+            attribute(entry.opening, "data-work-log-turn-mcp-tools"),
+          )) bucket.mcpTools.add(tool);
+          bucket.mcpCallCount += Math.max(0, Number(mcpCalls) || 0);
+          bucket.mcpFailures += Math.max(
+            0,
+            Number(attribute(entry.opening, "data-work-log-turn-mcp-failures")) || 0,
+          );
+          bucket.knownToolMetricTurns += 1;
+        } else {
+          bucket.unknownToolMetricTurns += 1;
+        }
         buckets.set(key, bucket);
       }
       for (const entry of rowTurns.filter((candidate) => (
@@ -261,7 +396,11 @@ export function buildVirtualJournalProjection(sections) {
   return {
     summary: {
       version: 1,
-      buckets: [...buckets.values()].sort((left, right) => (
+      buckets: [...buckets.values()].map((bucket) => ({
+        ...bucket,
+        skillNames: [...bucket.skillNames].sort((left, right) => left.localeCompare(right)),
+        mcpTools: [...bucket.mcpTools].sort((left, right) => left.localeCompare(right)),
+      })).sort((left, right) => (
         right.dayMs - left.dayMs
         || right.credits - left.credits
         || left.workspaceName.localeCompare(right.workspaceName, "ru")

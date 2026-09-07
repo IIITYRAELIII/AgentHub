@@ -540,6 +540,8 @@ function memoryJournal(html = "") {
       };
     },
     turnPage: async ({
+      expectedVersion = "",
+      profileMode = "",
       workspaceId = "",
       streamId = "",
       provider = "",
@@ -549,6 +551,14 @@ function memoryJournal(html = "") {
       offset = 0,
       limit = 20,
     } = {}) => {
+      if (expectedVersion && expectedVersion !== current.version) {
+        return {
+          conflict: true,
+          version: current.version,
+          turns: [],
+          nextOffset: null,
+        };
+      }
       const filtered = (current.entries ?? []).filter((entry) => (
         (!workspaceId || entry.workspaceId === workspaceId)
         && (!streamId || entry.streamId === streamId)
@@ -560,6 +570,8 @@ function memoryJournal(html = "") {
       const boundedLimit = Math.max(1, Math.min(50, Number(limit) || 20));
       const turns = filtered.slice(Number(offset) || 0, (Number(offset) || 0) + boundedLimit);
       return {
+        conflict: false,
+        version: current.version,
         turns: turns.map(({ turnRef, date, html: turnHtml }) => ({
           turnRef,
           date,
@@ -568,6 +580,7 @@ function memoryJournal(html = "") {
         nextOffset: filtered.length > (Number(offset) || 0) + turns.length
           ? (Number(offset) || 0) + turns.length
           : null,
+        ...(profileMode === "stream" ? { profileSummary: current.summary } : {}),
       };
     },
     subscribe(listener) {
@@ -2034,6 +2047,10 @@ test("Mini App serves compact totals first and bounded turn shells on demand", a
     '<div data-work-log-turn-entry data-work-log-turn-provider="codex"',
     ' data-work-log-turn-thread-id="thread-1" data-work-log-turn-id="turn-1"',
     ' data-work-log-turn-depth="0" data-work-log-turn-credits="42"',
+    ' data-work-log-turn-file-count="3" data-work-log-turn-change-lines="12"',
+    ' data-work-log-turn-subagent="0" data-work-log-turn-skills="[&quot;journal&quot;]"',
+    ' data-work-log-turn-mcp-calls="1" data-work-log-turn-mcp-tools="[&quot;hub/read&quot;]"',
+    ' data-work-log-turn-mcp-failures="0"',
     ' data-work-log-turn-duration-seconds="90"',
     ' data-work-log-turn-completed-at="2026-08-01T12:00:00.000Z">',
     '<details data-work-log-turn-details><summary>Ход 1</summary>',
@@ -2050,11 +2067,12 @@ test("Mini App serves compact totals first and bounded turn shells on demand", a
     const index = await (await fetch(`${address.url}api/journal`)).json();
     assert.equal(index.summary.buckets.length, 1);
     assert.equal(index.summary.buckets[0].credits, 42);
+    assert.equal(Object.hasOwn(index.summary.buckets[0], "fileTouches"), false);
     assert.doesNotMatch(index.html, /Ход 1|Полная детализация/u);
 
     const response = await fetch(
       `${address.url}api/journal/turns?workspaceId=workspace-1&streamId=stream-1`
-      + `&limit=200&version=${encodeURIComponent(index.version)}`,
+      + `&profileMode=stream&limit=200&version=${encodeURIComponent(index.version)}`,
     );
     assert.equal(response.status, 200);
     const page = await response.json();
@@ -2062,6 +2080,9 @@ test("Mini App serves compact totals first and bounded turn shells on demand", a
     assert.equal(page.nextOffset, null);
     assert.match(page.turns[0].html, /Ход 1/u);
     assert.doesNotMatch(page.turns[0].html, /Полная детализация/u);
+    assert.equal(page.version, index.version);
+    assert.equal(page.profileSummary.buckets[0].fileTouches, 3);
+    assert.deepEqual(page.profileSummary.buckets[0].skillNames, ["journal"]);
     assert.equal((await fetch(
       `${address.url}api/journal/turns?workspaceId=workspace-1&version=old`,
     )).status, 409);

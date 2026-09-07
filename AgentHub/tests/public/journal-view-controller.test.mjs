@@ -89,6 +89,17 @@ test("virtual journal groups streams by workspace and sorts them by included usa
     knownDurations: 1,
     unknownDurations: 0,
     latestAt: Date.UTC(2026, 8, 6, 10),
+    fileTouches: 2,
+    knownFileTouches: 1,
+    changedLines: 5,
+    knownChangedLines: 1,
+    subagentTurns: 0,
+    knownSubagentTurns: 1,
+    skillNames: ["journal"],
+    mcpCallCount: 1,
+    mcpTools: ["agent_hub/hub_task_get"],
+    mcpFailures: 0,
+    knownToolMetricTurns: 1,
     ...overrides,
   });
   const summary = { version: 1, buckets: [
@@ -116,6 +127,10 @@ test("virtual journal groups streams by workspace and sorts them by included usa
   assert.equal(workspaceScope.turnCount, 3);
   assert.equal(workspaceScope.durationSeconds, 90);
   assert.equal(workspaceScope.credits, 40);
+  assert.equal(workspaceScope.fileTouches, 6);
+  assert.equal(workspaceScope.changedLines, 15);
+  assert.equal(workspaceScope.skillCount, 1);
+  assert.equal(workspaceScope.mcpCallCount, 3);
   assert.deepEqual(
     Array.from(workspaceScope.workspaces[0].streams, (stream) => stream.id),
     ["stream-high", "stream-low", "stream-claude"],

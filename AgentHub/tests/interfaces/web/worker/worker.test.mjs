@@ -1095,6 +1095,17 @@ test("Worker journal exposes compact totals and bounded turn pages separately", 
     streamId: "stream-1",
     provider: "codex",
     turnCount: 60,
+    fileTouches: 12,
+    knownFileTouches: 60,
+    skillNames: ["journal"],
+  }, {
+    date: "02.08.2026",
+    dayMs: Date.UTC(2026, 7, 2),
+    workspaceId: "workspace-2",
+    streamId: "stream-2",
+    provider: "codex",
+    turnCount: 1,
+    fileTouches: 99,
   }] };
   assert.equal((await store.fetch(new Request("https://journal.internal/sync", {
     method: "POST",
@@ -1111,14 +1122,17 @@ test("Worker journal exposes compact totals and bounded turn pages separately", 
   }))).status, 200);
 
   const index = await (await store.fetch(new Request("https://journal.internal/journal"))).json();
-  assert.deepEqual(index.summary, summary);
+  assert.equal(index.summary.buckets[0].turnCount, 60);
+  assert.equal(Object.hasOwn(index.summary.buckets[0], "fileTouches"), false);
   assert.equal(Object.hasOwn(index, "turnEntries"), false);
 
   const first = await (await store.fetch(new Request(
-    "https://journal.internal/journal/turns?workspaceId=workspace-1&streamId=stream-1&limit=200",
+    "https://journal.internal/journal/turns?workspaceId=workspace-1&streamId=stream-1&profileMode=stream&limit=200",
   ))).json();
   assert.equal(first.turns.length, 50);
   assert.equal(first.nextOffset, 50);
+  assert.equal(first.profileSummary.buckets.length, 1);
+  assert.equal(first.profileSummary.buckets[0].fileTouches, 12);
   const second = await (await store.fetch(new Request(
     "https://journal.internal/journal/turns?workspaceId=workspace-1&streamId=stream-1&offset=50",
   ))).json();

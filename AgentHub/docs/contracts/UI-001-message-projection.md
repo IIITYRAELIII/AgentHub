@@ -121,7 +121,10 @@ currently included credit total descending, with stable recency and identity
 ties. Disabling Claude usage excludes Claude credits from headers, group totals
 and ordering while retaining Claude turns and their duration as journal facts.
 Opening a group, Stream and turn are separate lazy actions; a collapsed group
-does not materialize turn DOM.
+does not materialize turn DOM. In `stream` mode the first Stream retains the
+established default-open overview, profile and task-profile presentation; only
+that Stream's bounded profile summary and first turn-shell page are fetched.
+Every other Stream remains collapsed and resource-only until explicitly opened.
 
 ## Legacy chronology
 

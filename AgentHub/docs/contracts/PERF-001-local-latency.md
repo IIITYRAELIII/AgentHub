@@ -113,9 +113,12 @@ hydrates day fragments merely to regroup them. Expanding a scope reads at most
 and completion-range fields; expanding one turn then reads only its exact durable
 fragment. Summary and turn index replace atomically with the journal projection,
 while an index-only account-panel update preserves both. The compatibility day
-fragments perform one atomic schema migration into the same index and compact
-initial HTML without loading the complete usage ledger; that migration changes
-the ETag. The compatibility day collection endpoint remains capped at 20
+fragments perform one SQLite transaction covering schema DDL, column changes,
+data/index projection and schema-version publication; any failure leaves the
+reopened store wholly on the prior schema. A turn-page request validates its
+expected source version and reads the bounded index page in one SQLite snapshot,
+returning the version actually read rather than mixing revisions. The migration
+changes the ETag. The compatibility day collection endpoint remains capped at 20
 fragments per page. Journal DOM
 insertion is excluded from body-wide themed-select and VS Code motion subtree
 scans. Periodic external history refresh runs only while chat is visible, and

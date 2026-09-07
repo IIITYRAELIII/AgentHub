@@ -1740,13 +1740,10 @@ export class MiniAppServer {
     if (url.pathname === "/api/journal/turns") {
       if (!await this.#authorize(request, response)) return;
       try {
-        const journal = await this.#journalMetadata();
         const requestedVersion = String(url.searchParams.get("version") ?? "");
-        if (requestedVersion && requestedVersion !== journal.version) {
-          json(response, 409, { error: "Журнал обновился.", version: journal.version }, method);
-          return;
-        }
         const page = await this.#journalDatabase.turnPage({
+          expectedVersion: requestedVersion,
+          profileMode: url.searchParams.get("profileMode"),
           workspaceId: url.searchParams.get("workspaceId"),
           streamId: url.searchParams.get("streamId"),
           provider: url.searchParams.get("provider"),
@@ -1756,7 +1753,11 @@ export class MiniAppServer {
           offset: url.searchParams.get("offset"),
           limit: url.searchParams.get("limit"),
         });
-        json(response, 200, { ...page, version: journal.version }, method, {
+        if (page.conflict) {
+          json(response, 409, { error: "Журнал обновился.", version: page.version }, method);
+          return;
+        }
+        json(response, 200, page, method, {
           acceptEncoding: request.headers["accept-encoding"],
         });
       } catch (error) {

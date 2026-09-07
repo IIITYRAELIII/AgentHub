@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import {
   buildVirtualJournalProjection,
   compactVirtualJournalHtml,
+  scopedVirtualJournalSummary,
   virtualJournalDaySections,
 } from "../../domain/journal-virtual-projection.mjs";
 import { applyLedgerDelta } from "./incremental-ledger.mjs";
@@ -21,6 +22,10 @@ function configure(database) {
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
     PRAGMA busy_timeout = 5000;
+  `);
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    database.exec(`
     CREATE TABLE IF NOT EXISTS journal_meta (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       schema_version INTEGER NOT NULL,
@@ -92,43 +97,52 @@ function configure(database) {
     ) WITHOUT ROWID;
     INSERT OR IGNORE INTO journal_store_meta (key, value) VALUES ('revision', '0');
     INSERT OR IGNORE INTO journal_store_meta (key, value) VALUES ('ledger_version', '9');
-  `);
-  const journalMetaColumns = new Set(database.prepare("PRAGMA table_info(journal_meta)")
-    .all().map((row) => row.name));
-  const missingVirtualProjectionColumn = !journalMetaColumns.has("summary_json");
-  if (missingVirtualProjectionColumn) {
-    database.exec(`
-      ALTER TABLE journal_meta
-      ADD COLUMN summary_json TEXT NOT NULL DEFAULT '{"version":1,"buckets":[]}'
     `);
+    const journalMetaColumns = new Set(database.prepare("PRAGMA table_info(journal_meta)")
+      .all().map((row) => row.name));
+    const missingVirtualProjectionColumn = !journalMetaColumns.has("summary_json");
+    if (missingVirtualProjectionColumn) {
+      database.exec(`
+        ALTER TABLE journal_meta
+        ADD COLUMN summary_json TEXT NOT NULL DEFAULT '{"version":1,"buckets":[]}'
+      `);
+    }
+    const virtualProjectionMigration = missingVirtualProjectionColumn
+      || Number(database.prepare("SELECT schema_version FROM journal_meta WHERE id = 1")
+        .get()?.schema_version ?? SCHEMA_VERSION) < SCHEMA_VERSION;
+    const journalRecordColumns = new Set(database.prepare("PRAGMA table_info(journal_records)")
+      .all().map((row) => row.name));
+    if (!journalRecordColumns.has("observed_at_ms")) {
+      database.exec("ALTER TABLE journal_records ADD COLUMN observed_at_ms INTEGER");
+    }
+    if (!journalRecordColumns.has("changed_revision")) {
+      database.exec("ALTER TABLE journal_records ADD COLUMN changed_revision INTEGER NOT NULL DEFAULT 0");
+      const migrationRevision = Math.max(1, Number(database.prepare(
+        "SELECT value FROM journal_store_meta WHERE key = 'revision'",
+      ).get()?.value) || 0);
+      database.prepare("UPDATE journal_records SET changed_revision = ?").run(migrationRevision);
+      database.prepare("UPDATE journal_store_meta SET value = ? WHERE key = 'revision'")
+        .run(String(migrationRevision));
+    }
+    database.exec(`
+      UPDATE journal_records
+      SET observed_at_ms = completed_at_ms
+      WHERE observed_at_ms IS NULL;
+      CREATE INDEX IF NOT EXISTS journal_records_observed_idx
+        ON journal_records(observed_at_ms, provider, thread_id, turn_id);
+      CREATE INDEX IF NOT EXISTS journal_records_changed_idx
+        ON journal_records(changed_revision, provider, thread_id, turn_id);
+    `);
+    if (virtualProjectionMigration) migrateStoredVirtualProjection(database);
+    database.exec("COMMIT");
+  } catch (error) {
+    try {
+      database.exec("ROLLBACK");
+    } catch {
+      // Preserve the migration failure when SQLite already rolled back the transaction.
+    }
+    throw error;
   }
-  const virtualProjectionMigration = missingVirtualProjectionColumn
-    || Number(database.prepare("SELECT schema_version FROM journal_meta WHERE id = 1")
-      .get()?.schema_version ?? SCHEMA_VERSION) < SCHEMA_VERSION;
-  const journalRecordColumns = new Set(database.prepare("PRAGMA table_info(journal_records)")
-    .all().map((row) => row.name));
-  if (!journalRecordColumns.has("observed_at_ms")) {
-    database.exec("ALTER TABLE journal_records ADD COLUMN observed_at_ms INTEGER");
-  }
-  if (!journalRecordColumns.has("changed_revision")) {
-    database.exec("ALTER TABLE journal_records ADD COLUMN changed_revision INTEGER NOT NULL DEFAULT 0");
-    const migrationRevision = Math.max(1, Number(database.prepare(
-      "SELECT value FROM journal_store_meta WHERE key = 'revision'",
-    ).get()?.value) || 0);
-    database.prepare("UPDATE journal_records SET changed_revision = ?").run(migrationRevision);
-    database.prepare("UPDATE journal_store_meta SET value = ? WHERE key = 'revision'")
-      .run(String(migrationRevision));
-  }
-  database.exec(`
-    UPDATE journal_records
-    SET observed_at_ms = completed_at_ms
-    WHERE observed_at_ms IS NULL;
-    CREATE INDEX IF NOT EXISTS journal_records_observed_idx
-      ON journal_records(observed_at_ms, provider, thread_id, turn_id);
-    CREATE INDEX IF NOT EXISTS journal_records_changed_idx
-      ON journal_records(changed_revision, provider, thread_id, turn_id);
-  `);
-  if (virtualProjectionMigration) migrateStoredVirtualProjection(database);
 }
 
 function tableExists(database, name) {
@@ -314,7 +328,7 @@ function migrateStoredVirtualProjection(database) {
     const html = /<div\b[^>]*data-work-log-row/iu.test(section.html)
       ? section.html
       : storedDays.get(section.date);
-    if (!html) return;
+    if (!html) throw new Error(`Stored journal day cannot be migrated: ${section.date}`);
     sections.push({ ...section, html });
     seenDates.add(section.date);
   }
@@ -327,20 +341,13 @@ function migrateStoredVirtualProjection(database) {
     sourceVersion: String(meta.source_version ?? ""),
     virtualProjectionVersion: 1,
   }));
-  database.exec("BEGIN IMMEDIATE");
-  try {
-    database.exec("DELETE FROM journal_turn_index;");
-    upsertVirtualEntries(database, virtual.entries);
-    database.prepare(`
-      UPDATE journal_meta
-      SET schema_version = ?, source_version = ?, html = ?, summary_json = ?
-      WHERE id = 1
-    `).run(SCHEMA_VERSION, migratedVersion, compactHtml, JSON.stringify(virtual.summary));
-    database.exec("COMMIT");
-  } catch (error) {
-    database.exec("ROLLBACK");
-    throw error;
-  }
+  database.exec("DELETE FROM journal_turn_index;");
+  upsertVirtualEntries(database, virtual.entries);
+  database.prepare(`
+    UPDATE journal_meta
+    SET schema_version = ?, source_version = ?, html = ?, summary_json = ?
+    WHERE id = 1
+  `).run(SCHEMA_VERSION, migratedVersion, compactHtml, JSON.stringify(virtual.summary));
 }
 
 function writeProjection(database, payload, {
@@ -506,9 +513,13 @@ export class JournalDatabase {
   #subscriptionTimer = null;
   #observedRevision = null;
   #pollingRevision = false;
+  #turnPageSnapshotHook;
 
-  constructor(file) {
+  constructor(file, { turnPageSnapshotHook = null } = {}) {
     this.#file = path.resolve(file);
+    this.#turnPageSnapshotHook = typeof turnPageSnapshotHook === "function"
+      ? turnPageSnapshotHook
+      : null;
   }
 
   async #open() {
@@ -1134,6 +1145,8 @@ export class JournalDatabase {
   }
 
   async turnPage({
+    expectedVersion = "",
+    profileMode = "",
     workspaceId = "",
     streamId = "",
     provider = "",
@@ -1144,6 +1157,8 @@ export class JournalDatabase {
     limit = 20,
   } = {}) {
     const database = await this.#open();
+    const requestedVersion = String(expectedVersion ?? "").trim().slice(0, 128);
+    const requestedProfileMode = String(profileMode ?? "").trim() === "stream" ? "stream" : "";
     const workspace = String(workspaceId ?? "").trim().slice(0, 256);
     const stream = String(streamId ?? "").trim().slice(0, 256);
     const providerName = String(provider ?? "").trim().slice(0, 32);
@@ -1175,22 +1190,62 @@ export class JournalDatabase {
       clauses.push("completed_at_ms < ?");
       parameters.push(rangeEnd);
     }
-    const rows = database.prepare(`
-      SELECT turn_ref AS turnRef, date, html
-      FROM journal_turn_index
-      ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""}
-      ORDER BY completed_at_ms DESC, turn_ref
-      LIMIT ? OFFSET ?
-    `).all(
-      ...parameters,
-      boundedLimit + 1,
-      boundedOffset,
-    );
-    const page = rows.slice(0, boundedLimit);
-    return {
-      turns: page.map((row) => ({ turnRef: row.turnRef, date: row.date, html: row.html })),
-      nextOffset: rows.length > boundedLimit ? boundedOffset + page.length : null,
-    };
+    database.exec("BEGIN");
+    try {
+      const meta = database.prepare(
+        "SELECT source_version, summary_json FROM journal_meta WHERE id = 1",
+      ).get();
+      const actualVersion = String(meta?.source_version ?? "");
+      await this.#turnPageSnapshotHook?.({ version: actualVersion });
+      if (requestedVersion && requestedVersion !== actualVersion) {
+        database.exec("COMMIT");
+        return { conflict: true, version: actualVersion, turns: [], nextOffset: null };
+      }
+      const rows = database.prepare(`
+        SELECT turn_ref AS turnRef, date, html
+        FROM journal_turn_index
+        ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""}
+        ORDER BY completed_at_ms DESC, turn_ref
+        LIMIT ? OFFSET ?
+      `).all(
+        ...parameters,
+        boundedLimit + 1,
+        boundedOffset,
+      );
+      const page = rows.slice(0, boundedLimit);
+      let profileSummary = null;
+      if (requestedProfileMode) {
+        try {
+          const parsed = JSON.parse(String(meta?.summary_json ?? ""));
+          if (parsed && Number(parsed.version) === 1 && Array.isArray(parsed.buckets)) {
+            profileSummary = scopedVirtualJournalSummary(parsed, {
+              workspaceId: workspace,
+              streamId: stream,
+              provider: providerName,
+              fromMs: rangeStart,
+              toMs: rangeEnd,
+            });
+          }
+        } catch {
+          profileSummary = { version: 1, buckets: [] };
+        }
+      }
+      database.exec("COMMIT");
+      return {
+        conflict: false,
+        version: actualVersion,
+        turns: page.map((row) => ({ turnRef: row.turnRef, date: row.date, html: row.html })),
+        nextOffset: rows.length > boundedLimit ? boundedOffset + page.length : null,
+        ...(profileSummary ? { profileSummary } : {}),
+      };
+    } catch (error) {
+      try {
+        database.exec("ROLLBACK");
+      } catch {
+        // Preserve the read failure when SQLite already ended the transaction.
+      }
+      throw error;
+    }
   }
 
   close() {

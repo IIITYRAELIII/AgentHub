@@ -113,6 +113,17 @@
       knownDurations: 0,
       unknownDurations: 0,
       latestAt: 0,
+      fileTouches: 0,
+      knownFileTouches: 0,
+      changedLines: 0,
+      knownChangedLines: 0,
+      subagentTurns: 0,
+      knownSubagentTurns: 0,
+      skillNames: new Set(),
+      mcpCallCount: 0,
+      mcpTools: new Set(),
+      mcpFailures: 0,
+      knownToolMetricTurns: 0,
     };
   }
 
@@ -127,6 +138,21 @@
       target.knownCredits += Math.max(0, Number(bucket?.knownCredits) || 0);
       target.unknownCredits += Math.max(0, Number(bucket?.unknownCredits) || 0);
     }
+    target.fileTouches += Math.max(0, Number(bucket?.fileTouches) || 0);
+    target.knownFileTouches += Math.max(0, Number(bucket?.knownFileTouches) || 0);
+    target.changedLines += Math.max(0, Number(bucket?.changedLines) || 0);
+    target.knownChangedLines += Math.max(0, Number(bucket?.knownChangedLines) || 0);
+    target.subagentTurns += Math.max(0, Number(bucket?.subagentTurns) || 0);
+    target.knownSubagentTurns += Math.max(0, Number(bucket?.knownSubagentTurns) || 0);
+    for (const name of Array.isArray(bucket?.skillNames) ? bucket.skillNames : []) {
+      if (String(name).trim()) target.skillNames.add(String(name).trim());
+    }
+    target.mcpCallCount += Math.max(0, Number(bucket?.mcpCallCount) || 0);
+    target.mcpFailures += Math.max(0, Number(bucket?.mcpFailures) || 0);
+    target.knownToolMetricTurns += Math.max(0, Number(bucket?.knownToolMetricTurns) || 0);
+    for (const tool of Array.isArray(bucket?.mcpTools) ? bucket.mcpTools : []) {
+      if (String(tool).trim()) target.mcpTools.add(String(tool).trim());
+    }
     return target;
   }
 
@@ -135,6 +161,15 @@
       ...value,
       credits: value.knownCredits ? value.credits : null,
       durationSeconds: value.knownDurations ? value.durationSeconds : null,
+      fileTouches: value.knownFileTouches ? value.fileTouches : null,
+      changedLines: value.knownChangedLines ? value.changedLines : null,
+      subagentShare: value.knownSubagentTurns
+        ? value.subagentTurns / value.knownSubagentTurns * 100
+        : null,
+      skillNames: [...value.skillNames].sort((left, right) => left.localeCompare(right)),
+      skillCount: value.knownToolMetricTurns ? value.skillNames.size : null,
+      mcpCallCount: value.knownToolMetricTurns ? value.mcpCallCount : null,
+      mcpTools: [...value.mcpTools].sort((left, right) => left.localeCompare(right)),
     };
   }
 
@@ -198,6 +233,7 @@
           ? Date.parse(`${date.slice(6)}-${date.slice(3, 5)}-${date.slice(0, 2)}T00:00:00Z`) || 0
           : period?.sort ?? 0,
         sourceDate: date,
+        provider: grouping === "stream" ? "stream" : grouping,
         ...emptyMetrics(),
         workspaces: new Map(),
       };

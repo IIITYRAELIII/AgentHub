@@ -3550,6 +3550,40 @@ export class JournalStore extends DurableObject {
         sampledAt: block.match(/data-sampled-at="([^"]*)"/iu)?.[1] ?? "",
       });
     }
+    const publicVirtualSummary = (value) => {
+      const fields = [
+        "date", "dayMs", "workspaceId", "workspaceName", "workspaceKind", "streamId",
+        "streamDisplayName", "streamOrdinal", "provider", "turnCount", "credits",
+        "knownCredits", "unknownCredits", "durationSeconds", "knownDurations",
+        "unknownDurations", "latestAt",
+      ];
+      return {
+        version: 1,
+        buckets: Number(value?.version) === 1 && Array.isArray(value?.buckets)
+          ? value.buckets.map((bucket) => Object.fromEntries(
+              fields.map((field) => [field, bucket?.[field]]),
+            ))
+          : [],
+      };
+    };
+    const scopedVirtualSummary = (value, {
+      workspaceId = "",
+      streamId = "",
+      provider = "",
+      fromMs = 0,
+      toMs = 0,
+    } = {}) => ({
+      version: 1,
+      buckets: Number(value?.version) === 1 && Array.isArray(value?.buckets)
+        ? value.buckets.filter((bucket) => (
+            (!workspaceId || String(bucket?.workspaceId ?? "") === workspaceId)
+            && (!streamId || String(bucket?.streamId ?? "") === streamId)
+            && (!provider || String(bucket?.provider ?? "") === provider)
+            && (!fromMs || Number(bucket?.dayMs) >= fromMs)
+            && (!toMs || Number(bucket?.dayMs) < toMs)
+          ))
+        : [],
+    });
     if (request.method === "GET" && [
       "/journal",
       "/journal/day",
@@ -3607,6 +3641,15 @@ export class JournalStore extends DurableObject {
           turns: page.map((entry) => ({ turnRef: entry.turnRef, date: entry.date, html: entry.html })),
           nextOffset: matches.length > offset + page.length ? offset + page.length : null,
           version: payload.version,
+          ...(url.searchParams.get("profileMode") === "stream"
+            ? { profileSummary: scopedVirtualSummary(payload.summary, {
+                workspaceId: String(url.searchParams.get("workspaceId") ?? "").trim().slice(0, 256),
+                streamId: String(url.searchParams.get("streamId") ?? "").trim().slice(0, 256),
+                provider: String(url.searchParams.get("provider") ?? "").trim().slice(0, 32),
+                fromMs,
+                toMs,
+              }) }
+            : {}),
         });
       }
       const knownVersion = String(request.headers.get("If-None-Match") ?? "");
@@ -3614,7 +3657,7 @@ export class JournalStore extends DurableObject {
       if (knownVersion === etag) return new Response(null, { status: 304, headers: { ETag: etag } });
       const response = json({
         html: payload.html,
-        summary: payload.summary ?? { version: 1, buckets: [] },
+        summary: publicVirtualSummary(payload.summary),
         updatedAt: payload.updatedAt,
         version: payload.version,
       });

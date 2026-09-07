@@ -394,6 +394,73 @@ test("materialized journal summary and turn pages survive SQLite reopen", async 
   }
 });
 
+test("turn paging validates and reads one immutable SQLite version", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-journal-page-version-"));
+  const file = path.join(root, "journal.sqlite");
+  const writer = new JournalDatabase(file);
+  let replacement = null;
+  let interleaved = false;
+  const reader = new JournalDatabase(file, {
+    turnPageSnapshotHook: async () => {
+      if (interleaved) return;
+      interleaved = true;
+      replacement = await writer.replaceProjection({
+        html: "<main>B</main>",
+        summary: { version: 1, buckets: [] },
+        entries: [{
+          turnRef: "turn-ref-b",
+          date: "02.08.2026",
+          dayMs: Date.UTC(2026, 7, 2),
+          workspaceId: "workspace-1",
+          streamId: "stream-1",
+          provider: "codex",
+          threadId: "thread-1",
+          turnId: "turn-b",
+          completedAtMs: Date.UTC(2026, 7, 2, 12),
+          html: '<div data-work-log-turn-entry data-work-log-turn-id="turn-b">B</div>',
+        }],
+      });
+    },
+  });
+  try {
+    const first = await writer.replaceProjection({
+      html: "<main>A</main>",
+      summary: { version: 1, buckets: [] },
+      entries: [{
+        turnRef: "turn-ref-a",
+        date: "01.08.2026",
+        dayMs: Date.UTC(2026, 7, 1),
+        workspaceId: "workspace-1",
+        streamId: "stream-1",
+        provider: "codex",
+        threadId: "thread-1",
+        turnId: "turn-a",
+        completedAtMs: Date.UTC(2026, 7, 1, 12),
+        html: '<div data-work-log-turn-entry data-work-log-turn-id="turn-a">A</div>',
+      }],
+    });
+    const page = await reader.turnPage({
+      expectedVersion: first.version,
+      workspaceId: "workspace-1",
+    });
+    assert.equal(page.conflict, false);
+    assert.equal(page.version, first.version);
+    assert.deepEqual(page.turns.map((entry) => entry.turnRef), ["turn-ref-a"]);
+    assert.notEqual(replacement.version, first.version);
+    const stale = await reader.turnPage({
+      expectedVersion: first.version,
+      workspaceId: "workspace-1",
+    });
+    assert.equal(stale.conflict, true);
+    assert.equal(stale.version, replacement.version);
+    assert.deepEqual(stale.turns, []);
+  } finally {
+    reader.close();
+    writer.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("schema v2 upgrades existing day shells into one complete virtual index", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-journal-v2-"));
   const file = path.join(root, "journal.sqlite");
@@ -451,6 +518,79 @@ test("schema v2 upgrades existing day shells into one complete virtual index", a
     reopened.close();
   } finally {
     database.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("schema v2 migration rolls back DDL data and version after an injected failure", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-journal-v2-rollback-"));
+  const file = path.join(root, "journal.sqlite");
+  const sourceDay = indexedDay("02.08.2026", {
+    turnRef: "ref-current",
+    turnId: "turn-current",
+    credits: 20,
+    completedAt: "2026-08-02T12:00:00.000Z",
+  });
+  const legacy = new DatabaseSync(file);
+  legacy.exec(`
+    CREATE TABLE journal_meta (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      schema_version INTEGER NOT NULL,
+      source_version TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      html TEXT NOT NULL
+    );
+    CREATE TABLE journal_days (date TEXT PRIMARY KEY, html TEXT NOT NULL) WITHOUT ROWID;
+    CREATE TABLE journal_turns (id TEXT PRIMARY KEY, html TEXT NOT NULL) WITHOUT ROWID;
+    INSERT INTO journal_meta
+      (id, schema_version, source_version, updated_at, html)
+    VALUES
+      (1, 2, 'sha256:legacy', '2026-08-02T12:00:00.000Z', '${sourceDay.replaceAll("'", "''")}');
+    CREATE TRIGGER fail_virtual_migration
+    BEFORE UPDATE OF schema_version ON journal_meta
+    WHEN NEW.schema_version = 3
+    BEGIN
+      SELECT RAISE(ABORT, 'injected virtual migration failure');
+    END;
+  `);
+  legacy.close();
+
+  const failed = new JournalDatabase(file);
+  await assert.rejects(failed.payload(), /injected virtual migration failure/u);
+  failed.close();
+  const inspected = new DatabaseSync(file);
+  assert.equal(
+    inspected.prepare("PRAGMA table_info(journal_meta)").all()
+      .some((column) => column.name === "summary_json"),
+    false,
+  );
+  assert.equal(
+    inspected.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'journal_turn_index'")
+      .get(),
+    undefined,
+  );
+  assert.equal(inspected.prepare("SELECT schema_version FROM journal_meta WHERE id = 1").get().schema_version, 2);
+  inspected.exec("DROP TRIGGER fail_virtual_migration");
+  inspected.close();
+
+  const reopened = new JournalDatabase(file);
+  try {
+    assert.equal((await reopened.payload()).summary.buckets.length, 1);
+    assert.deepEqual(
+      (await reopened.turnPage({ workspaceId: "workspace-1" })).turns
+        .map((entry) => entry.turnRef),
+      ["ref-current"],
+    );
+    const upgraded = new DatabaseSync(file, { readOnly: true });
+    assert.equal(upgraded.prepare("SELECT schema_version FROM journal_meta WHERE id = 1").get().schema_version, 3);
+    assert.equal(
+      upgraded.prepare("PRAGMA table_info(journal_meta)").all()
+        .some((column) => column.name === "summary_json"),
+      true,
+    );
+    upgraded.close();
+  } finally {
+    reopened.close();
     await rm(root, { recursive: true, force: true });
   }
 });

@@ -14362,6 +14362,7 @@ function applyVirtualTurnQuery(node, scope, workspace, stream = null) {
   node.dataset.virtualProvider = query.provider;
   node.dataset.virtualFromMs = String(query.fromMs);
   node.dataset.virtualToMs = String(query.toMs);
+  if (scope.mode === "stream") node.dataset.virtualProfileMode = "stream";
 }
 
 function virtualTurnTable() {
@@ -14482,7 +14483,21 @@ function virtualScopeSection(scope, index) {
     const stream = workspace?.streams[0];
     if (workspace && stream) {
       applyVirtualTurnQuery(expanded, scope, workspace, stream);
-      expanded.append(virtualTurnTable());
+      const overview = document.createElement("div");
+      overview.dataset.journalGroupOverview = "";
+      const metrics = document.createElement("div");
+      metrics.dataset.journalVirtualProfileMetrics = "";
+      metrics.append(el("span", { text: "Профиль загружается при раскрытии." }));
+      const body = document.createElement("div");
+      body.dataset.journalTurnList = "";
+      body.append(
+        el("span", { "data-journal-section-label": "", text: "Ходы" }),
+        virtualTurnTable(),
+      );
+      overview.append(metrics, body);
+      const profile = document.createElement("div");
+      profile.dataset.journalVirtualTaskProfile = "";
+      expanded.append(overview, profile);
     }
   } else if (scope.mode === "workspace") {
     expanded.append(virtualTemporalContent(scope));
@@ -14491,7 +14506,26 @@ function virtualScopeSection(scope, index) {
     expanded.append(virtualTemporalContent(scope));
   }
   details.append(expanded);
+  if (scope.mode === "stream" && index === 0) details.open = true;
   return details;
+}
+
+function renderVirtualStreamProfiles(summary) {
+  const profiles = JournalView.virtualJournalScopes(summary, "stream", {
+    includeClaudeUsage: state.selection.includeClaudeUsage !== false,
+    groupClaude: groupClaudeTasks,
+  });
+  const byKey = new Map(profiles.map((profile) => [profile.key, profile]));
+  for (const details of journal.querySelectorAll(
+    'details[data-journal-virtual-scope][data-journal-virtual-mode="stream"]',
+  )) {
+    const group = byKey.get(details.dataset.journalVirtualScope);
+    if (!group) continue;
+    const metrics = details.querySelector("[data-journal-virtual-profile-metrics]");
+    const profile = details.querySelector("[data-journal-virtual-task-profile]");
+    if (metrics) metrics.replaceWith(journalProfileMetrics(group));
+    if (profile) profile.replaceChildren(taskProfile(group, profiles));
+  }
 }
 
 function virtualJournalTotals() {
@@ -14538,6 +14572,14 @@ function renderVirtualJournal() {
   disableLocalLinks();
   const saved = groupingStates[grouping];
   if (saved) restoreOpenState(saved);
+  for (const opened of list.querySelectorAll(
+    'details[data-journal-virtual-scope][data-journal-virtual-mode="stream"][open]',
+  )) {
+    const turns = opened.querySelector(
+      ":scope > [data-journal-ledger-expanded][data-journal-virtual-turns]",
+    );
+    if (turns) void appendVirtualTurnPage(turns);
+  }
   journalRendered = true;
   journal.setAttribute("aria-busy", "false");
 }
@@ -14558,9 +14600,11 @@ async function appendVirtualTurnPage(container, { nextPage = false } = {}) {
       provider: container.dataset.virtualProvider ?? "",
       fromMs: container.dataset.virtualFromMs ?? "0",
       toMs: container.dataset.virtualToMs ?? "0",
+      profileMode: container.dataset.virtualProfileMode ?? "",
       offset: String(offset),
       limit: "30",
     });
+    if (payload.profileSummary) renderVirtualStreamProfiles(payload.profileSummary);
     table.querySelector("[data-journal-turn-show-more]")?.remove();
     const known = new Set([...table.querySelectorAll("[data-work-log-turn-entry]")]
       .map((entry) => JournalView.turnIdentity(entry.dataset)).filter(Boolean));
