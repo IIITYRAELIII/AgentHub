@@ -1093,18 +1093,44 @@ test("Worker alarm removes expired staging chunks without touching the published
 test("Worker journal exposes compact totals and bounded turn pages separately", async () => {
   const workerModule = await loadWorker();
   const store = new workerModule.JournalStore({ storage: new MemoryStorage() }, {});
-  const turnEntries = Array.from({ length: 60 }, (_, index) => ({
-    turnRef: `ref-${String(index).padStart(2, "0")}`,
-    date: "01.08.2026",
-    dayMs: Date.UTC(2026, 7, 1),
-    workspaceId: "workspace-1",
-    streamId: "stream-1",
-    provider: "codex",
-    threadId: "thread-1",
-    turnId: `turn-${index}`,
-    completedAtMs: Date.UTC(2026, 7, 1, 12) - index,
-    html: `<div data-work-log-turn-entry data-work-log-turn-id="turn-${index}">Ход</div>`,
-  }));
+  const turnEntries = [
+    ...Array.from({ length: 60 }, (_, index) => ({
+      turnRef: `ref-${String(index).padStart(2, "0")}`,
+      date: "01.08.2026",
+      dayMs: Date.UTC(2026, 7, 1),
+      workspaceId: "workspace-1",
+      streamId: "stream-1",
+      provider: "codex",
+      threadId: "thread-1",
+      turnId: `turn-${index}`,
+      completedAtMs: Date.UTC(2026, 7, 1, 12) - index,
+      html: `<div data-work-log-turn-entry data-work-log-turn-id="turn-${index}">Ход</div>`,
+    })),
+    {
+      turnRef: "ref-week",
+      date: "03.08.2026",
+      dayMs: Date.UTC(2026, 7, 3),
+      workspaceId: "workspace-1",
+      streamId: "stream-2",
+      provider: "claude",
+      threadId: "thread-2",
+      turnId: "turn-week",
+      completedAtMs: Date.UTC(2026, 7, 3, 12),
+      html: '<div data-work-log-turn-entry data-work-log-turn-id="turn-week">Ход</div>',
+    },
+    {
+      turnRef: "ref-month",
+      date: "20.08.2026",
+      dayMs: Date.UTC(2026, 7, 20),
+      workspaceId: "workspace-1",
+      streamId: "stream-2",
+      provider: "codex",
+      threadId: "thread-3",
+      turnId: "turn-month",
+      completedAtMs: Date.UTC(2026, 7, 20, 12),
+      html: '<div data-work-log-turn-entry data-work-log-turn-id="turn-month">Ход</div>',
+    },
+  ];
   const summary = { version: 1, buckets: [{
     date: "01.08.2026",
     workspaceId: "workspace-1",
@@ -1164,6 +1190,23 @@ test("Worker journal exposes compact totals and bounded turn pages separately", 
   ))).json();
   assert.equal(ranged.turns.length, 10);
   assert.equal(ranged.nextOffset, 10);
+  for (const [mode, fromMs, toMs, expected] of [
+    ["date", Date.UTC(2026, 7, 1), Date.UTC(2026, 7, 2), 10],
+    ["week", Date.UTC(2026, 7, 1), Date.UTC(2026, 7, 8), 11],
+    ["month", Date.UTC(2026, 7, 1), Date.UTC(2026, 8, 1), 12],
+    ["workspace", 0, 0, 12],
+  ]) {
+    const page = await (await store.fetch(new Request(
+      "https://journal.internal/journal/turns?workspaceId=workspace-1&offset=50&limit=50"
+      + `${fromMs ? `&fromMs=${fromMs}&toMs=${toMs}` : ""}`,
+    ))).json();
+    assert.equal(page.turns.length, expected, mode);
+    assert.equal(page.nextOffset, null, mode);
+  }
+  const codexWorkspace = await (await store.fetch(new Request(
+    "https://journal.internal/journal/turns?workspaceId=workspace-1&provider=codex&offset=50&limit=50",
+  ))).json();
+  assert.equal(codexWorkspace.turns.length, 11);
   assert.equal((await store.fetch(new Request(
     "https://journal.internal/journal/turns?workspaceId=workspace-1&version=old",
   ))).status, 409);
@@ -1283,6 +1326,64 @@ test("Worker journal turn pages read only materialized bounded index keys", asyn
   assert.ok(storage.getTrace.flat().every((key) => (
     key === "journal-projection-manifest" || key.startsWith("journal-projection:")
   )));
+});
+
+test("Worker profile cohort retains the exact requested mixed-provider Stream", async () => {
+  const worker = await loadWorker();
+  const storage = new MemoryStorage();
+  const store = new worker.JournalStore({ storage }, {});
+  const peerBuckets = Array.from({ length: 2_048 }, (_, index) => ({
+    date: "07.09.2026",
+    dayMs: Date.UTC(2026, 8, 7),
+    workspaceId: `workspace-${index}`,
+    streamId: `stream-${index}`,
+    provider: "codex",
+    latestAt: 10_000 - index,
+    credits: 10_000 - index,
+    fileTouches: index + 1,
+  }));
+  const requestedBuckets = ["codex", "claude"].map((provider, index) => ({
+    date: "01.01.2020",
+    dayMs: Date.UTC(2020, 0, 1),
+    workspaceId: "workspace-required",
+    streamId: "stream-required",
+    provider,
+    latestAt: index + 1,
+    credits: index + 1,
+    fileTouches: 50 + index,
+  }));
+  assert.equal((await store.fetch(new Request("https://journal.internal/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      html: "<main></main>",
+      summary: { version: 1, buckets: [...peerBuckets, ...requestedBuckets] },
+      turnEntries: [],
+      days: {},
+      turns: {},
+      version: "journal-profile-required-v1",
+      updatedAt: "2026-09-07T23:59:00.000Z",
+    }),
+  }))).status, 200);
+  storage.resetReadTrace();
+
+  const response = await store.fetch(new Request(
+    "https://journal.internal/journal/turns?workspaceId=workspace-required"
+    + "&streamId=stream-required&profileMode=stream",
+  ));
+  assert.equal(response.status, 200);
+  const page = await response.json();
+  const requested = page.profileSummary.buckets.filter((bucket) => (
+    bucket.workspaceId === "workspace-required" && bucket.streamId === "stream-required"
+  ));
+  assert.deepEqual(requested.map((bucket) => bucket.provider).sort(), ["claude", "codex"]);
+  assert.equal(new Set(page.profileSummary.buckets.map((bucket) => (
+    `${bucket.workspaceId}\u001f${bucket.streamId}\u001f${bucket.provider}`
+  ))).size, page.profileSummary.buckets.length);
+  assert.equal(page.profileSummary.buckets.length, 2_050);
+  assert.equal(page.profileSummary.truncated, true);
+  assert.equal(storage.listTrace.length, 0);
+  assert.ok(storage.getTrace.flat().every((key) => !key.includes("turn-shell")));
 });
 
 test("Worker relay rejects unsupported actions, attachments, and unsigned service calls", async () => {

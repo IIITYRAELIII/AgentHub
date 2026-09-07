@@ -123,10 +123,12 @@ and ordering while retaining Claude turns and their duration as journal facts.
 Opening a group, Stream and turn are separate lazy actions; a collapsed group
 does not materialize turn DOM. In `stream` mode the first Stream retains the
 established default-open overview, profile and task-profile presentation; only
-that Stream's first turn-shell page and a bounded aggregate-only cohort of
-comparable visible Streams are fetched. The cohort supplies a real cross-Stream
-profile baseline without fetching another Stream's turn shells or bodies. Every
-other Stream remains collapsed and resource-only until explicitly opened.
+that Stream's first turn-shell page, its exact aggregate profile across every
+represented provider and a bounded aggregate-only cohort of comparable visible
+Streams are fetched. The requested Stream is retained even when it falls outside
+the bounded peer cohort. The cohort supplies a real cross-Stream profile baseline
+without fetching another Stream's turn shells or bodies. Every other Stream
+remains collapsed and resource-only until explicitly opened.
 
 ## Legacy chronology
 

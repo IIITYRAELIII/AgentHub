@@ -46,7 +46,7 @@ const DASHBOARD_BOT_PRECEDING_COMMENT_MAX_CHARS = 160;
 const DASHBOARD_BOT_PRECEDING_COMMENT_MAX_MESSAGE_GAP = 4;
 const SYNC_STAGING_EXPIRY_MS = 30 * 60 * 1_000;
 const STORAGE_DELETE_BATCH_SIZE = 128;
-const JOURNAL_PROJECTION_LAYOUT_VERSION = 1;
+const JOURNAL_PROJECTION_LAYOUT_VERSION = 2;
 const JOURNAL_PROJECTION_MANIFEST_KEY = "journal-projection-manifest";
 const JOURNAL_PROJECTION_PREFIX = "journal-projection:";
 const JOURNAL_PROJECTION_CHUNK_BYTES = 96 * 1_024;
@@ -1464,7 +1464,7 @@ function publicVirtualSummary(value) {
   };
 }
 
-function profileCohortSummary(value) {
+function profileCohortBuckets(value) {
   const streams = new Map();
   for (const bucket of Number(value?.version) === 1 && Array.isArray(value?.buckets)
     ? value.buckets
@@ -1508,25 +1508,41 @@ function profileCohortSummary(value) {
     }
     streams.set(key, aggregate);
   }
-  const ordered = [...streams.values()].sort((left, right) => (
+  return [...streams.values()].sort((left, right) => (
     right.latestAt - left.latestAt
     || right.credits - left.credits
     || left.workspaceId.localeCompare(right.workspaceId)
     || left.streamId.localeCompare(right.streamId)
-  ));
+  )).map((bucket) => ({
+    ...bucket,
+    skillNames: [...bucket.skillNames].sort((left, right) => left.localeCompare(right)),
+    mcpTools: [...bucket.mcpTools].sort((left, right) => left.localeCompare(right)),
+  }));
+}
+
+function boundedProfileCohortSummary(ordered) {
   return {
     version: 1,
-    buckets: ordered.slice(0, JOURNAL_PROFILE_COHORT_LIMIT).map((bucket) => ({
-      ...bucket,
-      skillNames: [...bucket.skillNames].sort((left, right) => left.localeCompare(right)),
-      mcpTools: [...bucket.mcpTools].sort((left, right) => left.localeCompare(right)),
-    })),
+    buckets: ordered.slice(0, JOURNAL_PROFILE_COHORT_LIMIT),
     truncated: ordered.length > JOURNAL_PROFILE_COHORT_LIMIT,
   };
 }
 
-function journalProjectionPrefix(syncId) {
-  return `${JOURNAL_PROJECTION_PREFIX}${syncId}:`;
+function journalProfileStreamIdentity(workspaceId, streamId) {
+  return stableStringify({
+    workspaceId: String(workspaceId ?? "").trim().slice(0, 256),
+    streamId: String(streamId ?? "").trim().slice(0, 256),
+  });
+}
+
+function profileBucketIdentity(bucket) {
+  return [bucket?.workspaceId, bucket?.streamId, bucket?.provider].map((value) => (
+    String(value ?? "").trim()
+  )).join("\u001f");
+}
+
+function journalProjectionPrefix(syncId, layoutVersion = JOURNAL_PROJECTION_LAYOUT_VERSION) {
+  return `${JOURNAL_PROJECTION_PREFIX}v${layoutVersion}:${syncId}:`;
 }
 
 function appendProjectionBytes(entries, prefix, value) {
@@ -1578,6 +1594,23 @@ function normalizedJournalTurn(entry) {
 
 function journalScopeQueries(entry) {
   const queries = [];
+  if (entry.workspaceId) {
+    queries.push({ workspaceId: entry.workspaceId, streamId: "", provider: "", threadId: "" });
+    if (entry.provider) {
+      queries.push({
+        workspaceId: entry.workspaceId,
+        streamId: "",
+        provider: entry.provider,
+        threadId: "",
+      });
+      if (entry.threadId) queries.push({
+        workspaceId: entry.workspaceId,
+        streamId: "",
+        provider: entry.provider,
+        threadId: entry.threadId,
+      });
+    }
+  }
   if (entry.workspaceId && entry.streamId) {
     queries.push({ workspaceId: entry.workspaceId, streamId: entry.streamId, provider: "", threadId: "" });
     if (entry.provider) {
@@ -1611,7 +1644,8 @@ async function materializedJournalProjection(payload, syncId) {
   const prefix = journalProjectionPrefix(syncId);
   const entries = [];
   const summary = publicVirtualSummary(payload?.summary);
-  const profileSummary = profileCohortSummary(payload?.summary);
+  const profileBuckets = profileCohortBuckets(payload?.summary);
+  const profileSummary = boundedProfileCohortSummary(profileBuckets);
   const html = appendProjectionBytes(entries, `${prefix}index-html`, payload?.html);
   const summaryBytes = appendProjectionBytes(entries, `${prefix}summary`, JSON.stringify(summary));
   const profileBytes = appendProjectionBytes(
@@ -1634,6 +1668,22 @@ async function materializedJournalProjection(payload, syncId) {
       entries.push([`${prefix}${kind}-meta:${hash}`, descriptor]);
     })
   )));
+  const profileStreams = new Map();
+  for (const bucket of profileBuckets) {
+    const identity = journalProfileStreamIdentity(bucket.workspaceId, bucket.streamId);
+    const buckets = profileStreams.get(identity) ?? [];
+    buckets.push(bucket);
+    profileStreams.set(identity, buckets);
+  }
+  await Promise.all([...profileStreams].map(async ([identity, buckets]) => {
+    const hash = await sha256(identity);
+    const descriptor = appendProjectionBytes(
+      entries,
+      `${prefix}profile-stream:${hash}`,
+      JSON.stringify({ version: 1, buckets, truncated: false }),
+    );
+    entries.push([`${prefix}profile-stream-meta:${hash}`, descriptor]);
+  }));
   const turns = (Array.isArray(payload?.turnEntries) ? payload.turnEntries : [])
     .map(normalizedJournalTurn)
     .filter(Boolean)
@@ -3095,6 +3145,7 @@ export class JournalStore extends DurableObject {
       version: String(payload?.version ?? ""),
       updatedAt: String(payload?.updatedAt ?? ""),
       previousSyncId: String(current?.syncId ?? ""),
+      previousLayoutVersion: Number(current?.layoutVersion) || 0,
     };
     await this.ctx.storage.transaction(async (storage) => {
       await storage.put(JOURNAL_PROJECTION_MANIFEST_KEY, manifest);
@@ -3102,7 +3153,10 @@ export class JournalStore extends DurableObject {
     });
     const retiredSyncId = String(current?.previousSyncId ?? "");
     if (retiredSyncId && retiredSyncId !== syncId) {
-      await deleteStoragePrefix(this.ctx.storage, journalProjectionPrefix(retiredSyncId));
+      await deleteStoragePrefix(this.ctx.storage, journalProjectionPrefix(
+        retiredSyncId,
+        Number(current?.previousLayoutVersion) || Number(current?.layoutVersion) || 1,
+      ));
     }
     this.#cachedPayload = null;
     return manifest;
@@ -3112,13 +3166,14 @@ export class JournalStore extends DurableObject {
     const manifest = await this.ctx.storage.get(JOURNAL_PROJECTION_MANIFEST_KEY);
     if (Number(manifest?.layoutVersion) !== JOURNAL_PROJECTION_LAYOUT_VERSION
       || !SYNC_ID_PATTERN.test(String(manifest?.syncId ?? ""))) return null;
-    const meta = await this.ctx.storage.get(`${journalProjectionPrefix(manifest.syncId)}meta`);
+    const prefix = journalProjectionPrefix(manifest.syncId, manifest.layoutVersion);
+    const meta = await this.ctx.storage.get(`${prefix}meta`);
     if (Number(meta?.layoutVersion) !== JOURNAL_PROJECTION_LAYOUT_VERSION
       || String(meta?.syncId ?? "") !== String(manifest.syncId)
       || String(meta?.version ?? "") !== String(manifest.version ?? "")) {
       throw new Error("Проекция журнала повреждена.");
     }
-    return { manifest, meta, prefix: journalProjectionPrefix(manifest.syncId) };
+    return { manifest, meta, prefix };
   }
 
   async #projectionJson(projection, field) {
@@ -3141,6 +3196,40 @@ export class JournalStore extends DurableObject {
     return readProjectionBytes(this.ctx.storage, `${projection.prefix}${kind}:${hash}`, descriptor);
   }
 
+  async #projectionProfileSummary(projection, query) {
+    const cohort = await this.#projectionJson(projection, "profileSummary");
+    if (!query.workspaceId || !query.streamId) return cohort;
+    const source = await this.#projectionFragment(
+      projection,
+      "profile-stream",
+      journalProfileStreamIdentity(query.workspaceId, query.streamId),
+    );
+    if (source === null) return cohort;
+    let required;
+    try {
+      required = JSON.parse(source);
+    } catch {
+      throw new Error("Проекция журнала повреждена.");
+    }
+    const requiredBuckets = Array.isArray(required?.buckets) ? required.buckets : [];
+    const requiredByKey = new Map(requiredBuckets.map((bucket) => [profileBucketIdentity(bucket), bucket]));
+    const included = new Set();
+    const buckets = (Array.isArray(cohort?.buckets) ? cohort.buckets : []).map((bucket) => {
+      const key = profileBucketIdentity(bucket);
+      const exact = requiredByKey.get(key);
+      if (exact) included.add(key);
+      return exact ?? bucket;
+    });
+    for (const bucket of requiredBuckets) {
+      if (!included.has(profileBucketIdentity(bucket))) buckets.push(bucket);
+    }
+    return {
+      version: 1,
+      buckets,
+      truncated: Boolean(cohort?.truncated),
+    };
+  }
+
   async #projectionTurnPage(projection, {
     workspaceId = "",
     streamId = "",
@@ -3158,7 +3247,7 @@ export class JournalStore extends DurableObject {
       provider: String(provider ?? "").trim().slice(0, 32),
       threadId: String(threadId ?? "").trim().slice(0, 256),
     };
-    const supported = (query.workspaceId && query.streamId && (!query.threadId || query.provider))
+    const supported = (query.workspaceId && (!query.threadId || query.provider))
       || (!query.workspaceId && !query.streamId && query.provider);
     if (!supported) throw new Error("Неподдерживаемая область журнала.");
     const rangeStart = Math.max(0, Number(fromMs) || 0);
@@ -3212,7 +3301,7 @@ export class JournalStore extends DurableObject {
       nextOffset: total > boundedOffset + turns.length ? boundedOffset + turns.length : null,
       version: projection.meta.version,
       ...(includeProfile
-        ? { profileSummary: await this.#projectionJson(projection, "profileSummary") }
+        ? { profileSummary: await this.#projectionProfileSummary(projection, query) }
         : {}),
     };
   }
