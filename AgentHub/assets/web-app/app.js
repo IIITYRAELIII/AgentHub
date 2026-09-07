@@ -73,6 +73,7 @@ const backgroundSelect = document.querySelector("[data-background-select]");
 const backgroundMotionToggle = document.querySelector("[data-background-motion-toggle]");
 const chatBackgroundToggle = document.querySelector("[data-chat-background-toggle]");
 const journalGroupingButtons = [...document.querySelectorAll("[data-journal-grouping]")];
+const journalStreamGroupToggle = document.querySelector("[data-journal-stream-group-toggle]");
 const journalPrimaryColumn = document.querySelector("[data-journal-primary-column]");
 const journalWorkspaceCount = document.querySelector("[data-journal-workspace-count]");
 const journalTotalCredits = document.querySelector("[data-journal-total-credits]");
@@ -341,12 +342,14 @@ const comparisonViewModeButtons = [...document.querySelectorAll("[data-compariso
 /* --------------------------------------------------------- Telegram / темы */
 
 let journalHtml = "";
+let journalSummary = null;
 let grouping = "workspace";
 let usageUnit = "cr";
 let usdRubRate = null;
 let usdRubEffectiveDate = "";
 let exchangeRatesInitialized = false;
 let groupClaudeTasks = false;
+let groupJournalTurnsByStream = true;
 let streamOrderMode = "activity";
 const groupingStates = { date: null, week: null, month: null, stream: null, workspace: null };
 const journalDaySelections = new Map();
@@ -914,6 +917,29 @@ function selectClaudeGrouping(value, { persist = false } = {}) {
   }
 }
 
+function savedJournalStreamGrouping() {
+  try {
+    return localStorage.getItem("agent-hub-journal-stream-groups") !== "off";
+  } catch {
+    return true;
+  }
+}
+
+function selectJournalStreamGrouping(value, { persist = false } = {}) {
+  groupJournalTurnsByStream = value !== false;
+  if (journalStreamGroupToggle) journalStreamGroupToggle.checked = groupJournalTurnsByStream;
+  if (persist) {
+    try {
+      localStorage.setItem(
+        "agent-hub-journal-stream-groups",
+        groupJournalTurnsByStream ? "on" : "off",
+      );
+    } catch {
+      // Настройка останется активной до закрытия WebView.
+    }
+  }
+}
+
 telegram?.ready();
 telegram?.expand();
 telegram?.disableVerticalSwipes?.();
@@ -932,8 +958,13 @@ applyStreamOrderMode("activity");
 applyActivityRecentPeriod(DEFAULT_ACTIVITY_RECENT_MINUTES);
 selectUsageUnit(savedUsageUnit());
 selectClaudeGrouping(savedClaudeGrouping());
+selectJournalStreamGrouping(savedJournalStreamGrouping());
 claudeGroupToggle?.addEventListener("change", () => {
   selectClaudeGrouping(claudeGroupToggle.checked, { persist: true });
+  if (journalHtml) void renderJournal();
+});
+journalStreamGroupToggle?.addEventListener("change", () => {
+  selectJournalStreamGrouping(journalStreamGroupToggle.checked, { persist: true });
   if (journalHtml) void renderJournal();
 });
 for (const button of usageUnitButtons) {
@@ -13573,6 +13604,9 @@ function captureOpenState() {
         threadId: item.dataset.workLogThreadId,
       }))
       .filter((item) => item.provider && item.threadId),
+    virtualScopes: [...journal.querySelectorAll("details[data-journal-virtual-scope][open]")]
+      .map((item) => item.dataset.journalVirtualScope)
+      .filter(Boolean),
   };
 }
 
@@ -13724,6 +13758,11 @@ function restoreOpenState(openState) {
       `details[data-work-log-task-group]`
       + `[data-work-log-provider="${selectorValue(task.provider)}"]`
       + `[data-work-log-thread-id="${selectorValue(task.threadId)}"]`,
+    )?.setAttribute("open", "");
+  }
+  for (const key of openState.virtualScopes ?? []) {
+    journal.querySelector(
+      `details[data-journal-virtual-scope="${selectorValue(key)}"]`,
     )?.setAttribute("open", "");
   }
 }
@@ -14565,13 +14604,18 @@ function taskGroupsFrom(source, { workspace = null, hierarchy = "" } = {}) {
         } else {
           group.unknownDurations += 1;
         }
-        const creditValue = entry.dataset.workLogTurnCredits;
-        const credits = creditValue === undefined ? Number.NaN : Number(creditValue);
-        if (Number.isFinite(credits) && credits >= 0) {
-          group.credits += credits;
-          group.knownCredits += 1;
-        } else {
-          group.unknownCredits += 1;
+        const entryProvider = String(
+          entry.dataset.workLogTurnProvider ?? provider,
+        ).trim().toLowerCase();
+        if (state.selection.includeClaudeUsage !== false || entryProvider !== "claude") {
+          const creditValue = entry.dataset.workLogTurnCredits;
+          const credits = creditValue === undefined ? Number.NaN : Number(creditValue);
+          if (Number.isFinite(credits) && credits >= 0) {
+            group.credits += credits;
+            group.knownCredits += 1;
+          } else {
+            group.unknownCredits += 1;
+          }
         }
         const completedAt = Date.parse(entry.dataset.workLogTurnCompletedAt ?? "");
         if (Number.isFinite(completedAt)) group.latestAt = Math.max(group.latestAt, completedAt);
@@ -15232,6 +15276,322 @@ function replaceJournalGroupedContent(content) {
   mountStatisticsAccountPanel();
 }
 
+function virtualStreamUsage(stream) {
+  const usage = document.createElement("span");
+  usage.dataset.workLogStreamUsage = "";
+  usage.append(
+    el("span", { text: `${Math.max(0, Number(stream.turnCount) || 0)} ход.` }),
+    stream.knownCredits
+      ? usageBadge(formatUsageValue(stream.credits), stream.credits)
+      : el("span", { text: "расход —" }),
+    stream.knownDurations
+      ? el("span", { text: formatTaskDuration(stream.durationSeconds) })
+      : el("span", { text: "время —" }),
+  );
+  return usage;
+}
+
+function applyVirtualTurnQuery(node, scope, workspace, stream = null) {
+  const query = JournalView.virtualTurnQuery(scope, workspace, stream);
+  node.dataset.journalVirtualTurns = "";
+  node.dataset.virtualWorkspaceId = query.workspaceId;
+  node.dataset.virtualStreamId = query.streamId;
+  node.dataset.virtualProvider = query.provider;
+  node.dataset.virtualFromMs = String(query.fromMs);
+  node.dataset.virtualToMs = String(query.toMs);
+  if (scope.mode === "stream") node.dataset.virtualProfileMode = "stream";
+}
+
+function virtualTurnTable() {
+  const table = document.createElement("div");
+  table.dataset.journalTurnTable = "";
+  return table;
+}
+
+function virtualStreamDetails(scope, workspace, stream) {
+  const details = document.createElement("details");
+  details.dataset.workLogStream = "";
+  details.dataset.workLogStreamId = stream.id;
+  details.dataset.workLogWorkspaceId = workspace.id;
+  applyVirtualTurnQuery(details, scope, workspace, stream);
+  const summary = document.createElement("summary");
+  summary.dataset.workLogStreamSummary = "";
+  summary.append(
+    el("span", { "data-work-log-stream-title": "", text: stream.name }),
+    virtualStreamUsage(stream),
+  );
+  const body = document.createElement("div");
+  body.dataset.workLogStreamTurns = "";
+  body.append(virtualTurnTable());
+  details.append(summary, body);
+  return details;
+}
+
+function virtualWorkspaceTurns(scope, workspace) {
+  const body = document.createElement("div");
+  body.dataset.journalVirtualFlatTurns = "";
+  applyVirtualTurnQuery(body, scope, workspace);
+  body.append(virtualTurnTable());
+  return body;
+}
+
+function virtualWorkspaceContent(scope, workspace) {
+  if (!groupJournalTurnsByStream) return virtualWorkspaceTurns(scope, workspace);
+  const streams = document.createElement("div");
+  streams.dataset.workLogWorkspaceStreams = "";
+  for (const stream of workspace.streams) {
+    streams.append(virtualStreamDetails(scope, workspace, stream));
+  }
+  return streams;
+}
+
+function virtualTemporalContent(scope) {
+  const expanded = document.createElement("div");
+  expanded.dataset.journalDayExpanded = "";
+  const picker = document.createElement("div");
+  picker.dataset.journalDayPicker = "";
+  picker.append(el("span", { "data-journal-section-label": "", text: "Workspace" }));
+  const panels = document.createElement("div");
+  panels.dataset.journalDayPanels = "";
+  const remembered = journalDaySelections.get(scope.key);
+  const selected = scope.workspaces.some((workspace) => workspace.id === remembered)
+    ? remembered
+    : scope.workspaces[0]?.id ?? "";
+  if (selected) journalDaySelections.set(scope.key, selected);
+  for (const workspace of scope.workspaces) {
+    const active = workspace.id === selected;
+    const item = document.createElement("div");
+    item.dataset.journalDayPickerItem = "";
+    item.toggleAttribute("data-selected", active);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.journalDaySelect = workspace.id;
+    button.setAttribute("aria-pressed", String(active));
+    const credits = el("span", { "data-journal-day-picker-credits": "" });
+    if (workspace.knownCredits) {
+      credits.append(usageBadge(formatUsageValue(workspace.credits), workspace.credits));
+    } else {
+      credits.textContent = "—";
+    }
+    button.append(
+      el("span", { "data-journal-day-picker-title": "", text: workspace.name }),
+      el("span", {
+        "data-journal-day-picker-turns": "",
+        text: `${workspace.turnCount} ходов`,
+      }),
+      credits,
+    );
+    item.append(button);
+    picker.append(item);
+    const panel = document.createElement("section");
+    panel.dataset.journalDayPanel = workspace.id;
+    panel.dataset.workLogWorkspace = "";
+    panel.dataset.workLogWorkspaceId = workspace.id;
+    panel.hidden = !active;
+    panel.append(virtualWorkspaceContent(scope, workspace));
+    panels.append(panel);
+  }
+  expanded.append(picker, panels);
+  return expanded;
+}
+
+function virtualScopeSection(scope, index) {
+  const details = document.createElement("details");
+  details.dataset.workLogTaskGroup = "";
+  details.dataset.journalLedgerRow = "";
+  details.dataset.journalVirtualScope = scope.key;
+  details.dataset.journalVirtualMode = scope.mode;
+  if (scope.mode === "date") {
+    details.dataset.workLogDaySection = "";
+    details.dataset.journalDayDate = scope.key;
+  }
+  if (scope.mode === "workspace" && scope.workspaces[0]) {
+    details.dataset.workLogWorkspace = "";
+    details.dataset.workLogWorkspaceId = scope.workspaces[0].id;
+  }
+  const label = scope.mode === "stream"
+    ? `${scope.workspaces[0]?.name ?? "Workspace"} — ${scope.label}`
+    : scope.label;
+  details.append(journalLedgerSummary(scope, { label, showStreams: false }));
+  const expanded = document.createElement("div");
+  expanded.dataset.journalLedgerExpanded = "";
+  if (scope.mode === "stream") {
+    const workspace = scope.workspaces[0];
+    const stream = workspace?.streams[0];
+    if (workspace && stream) {
+      applyVirtualTurnQuery(expanded, scope, workspace, stream);
+      const overview = document.createElement("div");
+      overview.dataset.journalGroupOverview = "";
+      const metrics = document.createElement("div");
+      metrics.dataset.journalVirtualProfileMetrics = "";
+      metrics.append(el("span", { text: "Профиль загружается при раскрытии." }));
+      const body = document.createElement("div");
+      body.dataset.journalTurnList = "";
+      body.append(
+        el("span", { "data-journal-section-label": "", text: "Ходы" }),
+        virtualTurnTable(),
+      );
+      overview.append(metrics, body);
+      const profile = document.createElement("div");
+      profile.dataset.journalVirtualTaskProfile = "";
+      expanded.append(overview, profile);
+    }
+  } else if (scope.mode === "workspace") {
+    expanded.append(virtualTemporalContent(scope));
+  } else {
+    details.dataset.journalDayDate = scope.key;
+    expanded.append(virtualTemporalContent(scope));
+  }
+  details.append(expanded);
+  if (scope.mode === "stream" && index === 0) details.open = true;
+  return details;
+}
+
+function renderVirtualStreamProfiles(summary, scopeKey) {
+  const profiles = JournalView.virtualJournalScopes(summary, "stream", {
+    includeClaudeUsage: state.selection.includeClaudeUsage !== false,
+    groupClaude: groupClaudeTasks,
+  });
+  const byKey = new Map(profiles.map((profile) => [profile.key, profile]));
+  for (const details of journal.querySelectorAll(
+    'details[data-journal-virtual-scope][data-journal-virtual-mode="stream"]',
+  )) {
+    if (details.dataset.journalVirtualScope !== scopeKey) continue;
+    const group = byKey.get(details.dataset.journalVirtualScope);
+    if (!group) continue;
+    const metrics = details.querySelector("[data-journal-virtual-profile-metrics]");
+    const profile = details.querySelector("[data-journal-virtual-task-profile]");
+    if (metrics) metrics.replaceWith(journalProfileMetrics(group));
+    if (profile) profile.replaceChildren(taskProfile(group, profiles));
+  }
+}
+
+function virtualJournalTotals() {
+  const scopes = JournalView.virtualJournalScopes(journalSummary, "stream", {
+    includeClaudeUsage: state.selection.includeClaudeUsage !== false,
+    groupClaude: groupClaudeTasks,
+  });
+  return {
+    scopes,
+    totals: JournalView.summarizeGroups(scopes),
+  };
+}
+
+function updateVirtualJournalSummary() {
+  const { scopes, totals } = virtualJournalTotals();
+  if (journalWorkspaceCount) {
+    journalWorkspaceCount.textContent = scopes.length.toLocaleString("ru-RU");
+  }
+  if (journalTotalCredits) {
+    journalTotalCredits.replaceChildren(
+      totals.knownCredits
+        ? usageBadge(formatUsageValue(totals.credits), totals.credits)
+        : document.createTextNode("—"),
+    );
+  }
+  if (journalTotalDuration) {
+    journalTotalDuration.textContent = totals.knownDurations
+      ? formatTaskDuration(totals.durationSeconds)
+      : "—";
+  }
+}
+
+function renderVirtualJournal() {
+  const scopes = JournalView.virtualJournalScopes(journalSummary, grouping, {
+    includeClaudeUsage: state.selection.includeClaudeUsage !== false,
+    groupClaude: groupClaudeTasks,
+  });
+  const list = document.createElement("div");
+  list.dataset.workLogTaskGroups = "";
+  scopes.forEach((scope, index) => list.append(virtualScopeSection(scope, index)));
+  updateVirtualJournalSummary();
+  replaceJournalGroupedContent(list);
+  refreshUsageUnits(journal);
+  disableLocalLinks();
+  const saved = groupingStates[grouping];
+  if (saved) restoreOpenState(saved);
+  for (const opened of list.querySelectorAll(
+    'details[data-journal-virtual-scope][data-journal-virtual-mode="stream"][open]',
+  )) {
+    const turns = opened.querySelector(
+      ":scope > [data-journal-ledger-expanded][data-journal-virtual-turns]",
+    );
+    if (turns) void appendVirtualTurnPage(turns);
+  }
+  journalRendered = true;
+  journal.setAttribute("aria-busy", "false");
+}
+
+async function appendVirtualTurnPage(container, { nextPage = false } = {}) {
+  if (!container?.isConnected || container.dataset.virtualLoading === "true") return;
+  if (container.dataset.virtualLoaded === "true" && !nextPage) return;
+  const table = container.querySelector(":scope [data-journal-turn-table]")
+    ?? container.querySelector("[data-journal-turn-table]");
+  if (!table) return;
+  const offset = nextPage ? Math.max(0, Number(container.dataset.virtualNextOffset) || 0) : 0;
+  container.dataset.virtualLoading = "true";
+  container.setAttribute("aria-busy", "true");
+  try {
+    const payload = await fetchJournalFragment("/api/journal/turns", {
+      workspaceId: container.dataset.virtualWorkspaceId ?? "",
+      streamId: container.dataset.virtualStreamId ?? "",
+      provider: container.dataset.virtualProvider ?? "",
+      fromMs: container.dataset.virtualFromMs ?? "0",
+      toMs: container.dataset.virtualToMs ?? "0",
+      profileMode: container.dataset.virtualProfileMode ?? "",
+      offset: String(offset),
+      limit: "30",
+    });
+    if (payload.profileSummary) {
+      renderVirtualStreamProfiles(
+        payload.profileSummary,
+        container.closest("[data-journal-virtual-scope]")?.dataset.journalVirtualScope ?? "",
+      );
+      delete container.dataset.virtualProfileMode;
+    }
+    table.querySelector("[data-journal-turn-show-more]")?.remove();
+    const known = new Set([...table.querySelectorAll("[data-work-log-turn-entry]")]
+      .map((entry) => JournalView.turnIdentity(entry.dataset)).filter(Boolean));
+    for (const item of Array.isArray(payload.turns) ? payload.turns : []) {
+      const template = document.createElement("template");
+      template.innerHTML = String(item?.html ?? "").trim();
+      const entry = template.content.firstElementChild;
+      if (!entry?.matches("[data-work-log-turn-entry]")) continue;
+      const identity = JournalView.turnIdentity(entry.dataset);
+      if (identity && known.has(identity)) continue;
+      if (identity) known.add(identity);
+      table.append(groupedTurn(entry, String(item?.date ?? "")));
+    }
+    if (!table.children.length) {
+      table.append(el("span", { "data-journal-turn-empty": "", text: "Ходов нет." }));
+    }
+    if (payload.nextOffset !== null && payload.nextOffset !== undefined) {
+      container.dataset.virtualNextOffset = String(payload.nextOffset);
+      const more = document.createElement("button");
+      more.type = "button";
+      more.dataset.journalTurnShowMore = "";
+      more.textContent = "Показать ещё";
+      more.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void appendVirtualTurnPage(container, { nextPage: true });
+      });
+      table.append(more);
+    } else {
+      delete container.dataset.virtualNextOffset;
+    }
+    container.dataset.virtualLoaded = "true";
+    refreshUsageUnits(table);
+    disableLocalLinks(table);
+  } catch (error) {
+    container.title = error.message;
+    showToast(`Не удалось загрузить ходы: ${error.message}`);
+  } finally {
+    delete container.dataset.virtualLoading;
+    container.removeAttribute("aria-busy");
+  }
+}
+
 function applyJournalGrouping() {
   decorateDayHeadings(journal);
   upgradeLegacyWorkspaceGroups(journal);
@@ -15271,6 +15631,11 @@ async function renderJournal() {
   journal.replaceChildren(template.content.cloneNode(true));
   removeJournalRateLimits();
   try {
+    if (JournalView.virtualSummaryBuckets(journalSummary).length) {
+      if (sequence !== journalRenderSequence) return;
+      renderVirtualJournal();
+      return;
+    }
     if (JournalView.requiresCompleteHistory(grouping)) {
       await hydrateAllLazyDays({ isCurrent: () => sequence === journalRenderSequence });
     }
@@ -15600,6 +15965,7 @@ async function requestJournal({ force = false, announce = false } = {}) {
       if (versionChanged) journalDayHtmlCache.clear();
       currentVersion = payload.version;
       journalHtml = payload.html;
+      journalSummary = payload.summary ?? null;
       await renderJournal();
       persistOpenState();
     }
@@ -15697,6 +16063,11 @@ journal.addEventListener("click", (event) => {
     for (const panel of day.querySelectorAll("[data-journal-day-panel]")) {
       panel.hidden = panel.dataset.journalDayPanel !== key;
     }
+    const selectedPanel = day.querySelector(
+      `[data-journal-day-panel="${selectorValue(key)}"]`,
+    );
+    const flatTurns = selectedPanel?.querySelector("[data-journal-virtual-flat-turns]");
+    if (flatTurns && day.open) void appendVirtualTurnPage(flatTurns);
     return;
   }
   const collapse = event.target.closest("[data-work-log-collapse-turns]");
@@ -15747,6 +16118,22 @@ journal.addEventListener("toggle", (event) => {
   }
   if (opened.matches?.("details[data-work-log-turn-details][data-lazy-turn-id][open]")) {
     void loadLazyTurn(opened);
+  }
+  if (opened.matches?.("details[data-work-log-stream][data-journal-virtual-turns][open]")) {
+    void appendVirtualTurnPage(opened);
+  }
+  if (opened.matches?.("details[data-journal-virtual-scope][open]")) {
+    if (opened.matches('[data-journal-virtual-mode="stream"]')) {
+      const turns = opened.querySelector(
+        ":scope > [data-journal-ledger-expanded][data-journal-virtual-turns]",
+      );
+      if (turns) void appendVirtualTurnPage(turns);
+    } else {
+      const selectedPanel = opened.querySelector("[data-journal-day-panel]:not([hidden])");
+      const flatTurns = selectedPanel?.querySelector("[data-journal-virtual-flat-turns]")
+        ?? opened.querySelector(":scope > [data-journal-ledger-expanded] > [data-journal-virtual-flat-turns]");
+      if (flatTurns) void appendVirtualTurnPage(flatTurns);
+    }
   }
   if (opened.matches?.("details[data-work-log-task-group][open]")) {
     appendTaskGroupTurnPage(opened);
