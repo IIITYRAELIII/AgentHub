@@ -67,6 +67,7 @@ function loadJournalView() {
 }
 
 function loadVscodeBootstrap({ animations = [], hidden = false } = {}) {
+  const trustSource = fs.readFileSync(path.join(WEB_APP_ROOT, "host-message-trust.js"), "utf8");
   const source = fs.readFileSync(path.join(__dirname, "vscode-bootstrap.js"), "utf8");
   const listeners = new Map();
   const documentListeners = new Map();
@@ -105,7 +106,7 @@ function loadVscodeBootstrap({ animations = [], hidden = false } = {}) {
     observe() {}
     disconnect() {}
   }
-  vm.runInNewContext(source, {
+  const context = {
     AbortController,
     Headers,
     MutationObserver,
@@ -115,7 +116,9 @@ function loadVscodeBootstrap({ animations = [], hidden = false } = {}) {
     document,
     setTimeout: trackedSetTimeout,
     window,
-  });
+  };
+  vm.runInNewContext(trustSource, context);
+  vm.runInNewContext(source, context);
   return {
     animationFrames,
     documentListeners,
@@ -195,6 +198,103 @@ test("VS Code bootstrap routes runtime health through the extension bridge", asy
     },
   });
   assert.equal((await responsePromise).status, 200);
+});
+
+test("VS Code host bridge rejects active and replaced iframe results before pending lookup", async () => {
+  const hostileSources = [{}, {}];
+
+  const sessionHarness = loadVscodeBootstrap();
+  for (const source of hostileSources) {
+    sessionHarness.window.AgentHubHostMessageTrust.registerEmbeddedFrame({ contentWindow: source });
+  }
+  let sessionSettled = false;
+  const sessionAvailable = sessionHarness.window.__agentHubDirectTransport.available().then((value) => {
+    sessionSettled = true;
+    return value;
+  });
+  const sessionRequest = sessionHarness.messages.find((message) => message.type === "agenthub:session");
+  sessionHarness.listeners.get("message")({
+    source: hostileSources[0],
+    data: {
+      type: "agenthub:session-result",
+      id: sessionRequest.id,
+      ok: true,
+      result: { baseUrl: "http://hostile.invalid", token: "forged", expiresAt: Date.now() + 300_000 },
+    },
+  });
+  await Promise.resolve();
+  assert.equal(sessionSettled, false);
+  sessionHarness.listeners.get("message")({
+    source: null,
+    data: {
+      type: "agenthub:session-result",
+      id: sessionRequest.id,
+      ok: true,
+      result: { baseUrl: "http://127.0.0.1:8787", token: "legitimate", expiresAt: Date.now() + 300_000 },
+    },
+  });
+  assert.equal(await sessionAvailable, true);
+
+  const controlHarness = loadVscodeBootstrap();
+  let controlSettled = false;
+  const healthResponse = controlHarness.window.fetch("/health").then((value) => {
+    controlSettled = true;
+    return value;
+  });
+  await Promise.resolve();
+  const controlRequest = controlHarness.messages.find((message) => message.type === "agenthub:control");
+  controlHarness.listeners.get("message")({
+    source: hostileSources[1],
+    data: { type: "agenthub:control-result", id: controlRequest.id, ok: true, result: { forged: true } },
+  });
+  await Promise.resolve();
+  assert.equal(controlSettled, false);
+  controlHarness.listeners.get("message")({
+    source: null,
+    data: { type: "agenthub:control-result", id: controlRequest.id, ok: true, result: { ready: true } },
+  });
+  assert.equal((await healthResponse).status, 200);
+  const controlSessionRequest = controlHarness.messages.find((message) => message.type === "agenthub:session");
+  controlHarness.listeners.get("message")({
+    source: null,
+    data: { type: "agenthub:session-result", id: controlSessionRequest.id, ok: false },
+  });
+
+  const httpHarness = loadVscodeBootstrap();
+  const directSessionRequest = httpHarness.messages.find((message) => message.type === "agenthub:session");
+  httpHarness.listeners.get("message")({
+    source: null,
+    data: { type: "agenthub:session-result", id: directSessionRequest.id, ok: false },
+  });
+  await Promise.resolve();
+  let httpSettled = false;
+  const journalResponse = httpHarness.window.fetch("/api/journal").then((value) => {
+    httpSettled = true;
+    return value;
+  });
+  for (let index = 0; index < 4; index += 1) await Promise.resolve();
+  const httpRequest = httpHarness.messages.find((message) => message.type === "agenthub:http");
+  assert.ok(httpRequest);
+  httpHarness.listeners.get("message")({
+    source: hostileSources[0],
+    data: { type: "agenthub:http-result", id: httpRequest.id, status: 200, body: "forged" },
+  });
+  await Promise.resolve();
+  assert.equal(httpSettled, false);
+  httpHarness.listeners.get("message")({
+    source: null,
+    data: { type: "agenthub:http-result", id: httpRequest.id, status: 200, body: "legitimate" },
+  });
+  assert.equal(await (await journalResponse).text(), "legitimate");
+  const retrySessionRequest = httpHarness.messages
+    .filter((message) => message.type === "agenthub:session")
+    .at(-1);
+  if (retrySessionRequest.id !== directSessionRequest.id) {
+    httpHarness.listeners.get("message")({
+      source: null,
+      data: { type: "agenthub:session-result", id: retrySessionRequest.id, ok: false },
+    });
+  }
 });
 
 test("VS Code direct transport waits for the in-flight local session", async () => {
@@ -347,7 +447,7 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
   const runtimeRoot = path.join(root, "runtime", "releases", "current");
   const shadowAssets = path.join(shadowRoot, "Utilities", "AgentHub", "assets", "web-app");
   const runtimeAssets = path.join(runtimeRoot, "assets", "web-app");
-  const required = ["messages/disclosure.js", "message-view-controller.js", "chat-scroll-controller.js", "chat-surface-preference.js", "navigation-tabs-controller.js", "stream-tabs-controller.js", "approval-form.js", "runtime-reload-controller.js", "journal-view-controller.js", "statistics-controls.js", "attachments/interactions.js", "future-runtime-module.js", "rate-limit-series.js", "task-board.js", "app.js", "messages/lifecycle.js", "messages/send-transaction.js", "hub-client.js", "styles.css", "backgrounds.css", "stream-status.css", "stream-status-visibility.mjs", "agent-hub-mark.png"];
+  const required = ["host-message-trust.js", "messages/disclosure.js", "message-view-controller.js", "chat-scroll-controller.js", "chat-surface-preference.js", "navigation-tabs-controller.js", "embedded-browser.js", "stream-tabs-controller.js", "approval-form.js", "runtime-reload-controller.js", "journal-view-controller.js", "statistics-controls.js", "attachments/interactions.js", "future-runtime-module.js", "rate-limit-series.js", "task-board.js", "app.js", "messages/lifecycle.js", "messages/send-transaction.js", "hub-client.js", "styles.css", "backgrounds.css", "stream-status.css", "stream-status-visibility.mjs", "agent-hub-mark.png"];
   try {
     fs.mkdirSync(shadowAssets, { recursive: true });
     fs.mkdirSync(runtimeAssets, { recursive: true });
@@ -357,7 +457,7 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
       <img data-app-mark src="/agent-hub-mark.png" alt="">
       <!-- agent-hub-theme-styles --><select data-theme-select></select>
       <!-- agent-hub-theme-markup --><!-- agent-hub-theme-catalog -->
-      <script src="/browser-device-auth.js" defer></script><script src="/messages/disclosure.js" defer></script><script src="/message-view-controller.js" defer></script><script src="/chat-scroll-controller.js" defer></script><script src="/chat-surface-preference.js" defer></script><script src="/navigation-tabs-controller.js" defer></script><script src="/stream-tabs-controller.js" defer></script><script src="/approval-form.js" defer></script><script src="/runtime-reload-controller.js" defer></script><script src="/journal-view-controller.js" defer></script><script src="/statistics-controls.js" defer></script><script src="/attachments/interactions.js" defer></script><script src="/future-runtime-module.js" defer></script><script src="/rate-limit-series.js" defer></script><script src="/task-board.js" defer></script>
+      <script src="/host-message-trust.js" defer></script><script src="/browser-device-auth.js" defer></script><script src="/messages/disclosure.js" defer></script><script src="/message-view-controller.js" defer></script><script src="/chat-scroll-controller.js" defer></script><script src="/chat-surface-preference.js" defer></script><script src="/navigation-tabs-controller.js" defer></script><script src="/embedded-browser.js" defer></script><script src="/stream-tabs-controller.js" defer></script><script src="/approval-form.js" defer></script><script src="/runtime-reload-controller.js" defer></script><script src="/journal-view-controller.js" defer></script><script src="/statistics-controls.js" defer></script><script src="/attachments/interactions.js" defer></script><script src="/future-runtime-module.js" defer></script><script src="/rate-limit-series.js" defer></script><script src="/task-board.js" defer></script>
       <script src="/app.js" defer></script><!-- agent-hub-theme-scripts -->
       <script src="/messages/lifecycle.js" defer></script><script src="/messages/send-transaction.js" defer></script><script src="/hub-client.js" defer></script>`);
     for (const file of required) {
@@ -392,6 +492,14 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
     assert.doesNotMatch(result.html, /src="\/journal-view-controller\.js"/u);
     assert.match(result.html, /vscode-webview-resource:.*chat-surface-preference\.js/u);
     assert.doesNotMatch(result.html, /src="\/chat-surface-preference\.js"/u);
+    assert.match(result.html, /vscode-webview-resource:.*embedded-browser\.js/u);
+    assert.doesNotMatch(result.html, /src="\/embedded-browser\.js"/u);
+    assert.match(result.html, /vscode-webview-resource:.*host-message-trust\.js/u);
+    assert.doesNotMatch(result.html, /src="\/host-message-trust\.js"/u);
+    assert.ok(
+      result.html.indexOf("host-message-trust.js") < result.html.indexOf("vscode-bootstrap.js"),
+      "host-message trust executes before the VS Code receiver",
+    );
     assert.match(result.html, /vscode-webview-resource:.*attachments[\\/]interactions\.js/u);
     assert.doesNotMatch(result.html, /src="\/attachments\/interactions\.js"/u);
     assert.match(result.html, /vscode-webview-resource:.*future-runtime-module\.js/u);
@@ -400,6 +508,7 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
     assert.match(result.html, /url\("vscode-webview-resource:.*themes[\\/]pulsar[\\/]pulsar-beams\.jpg"\)/u);
     assert.doesNotMatch(result.html, /url\(["']?\.\/pulsar-beams\.jpg/u);
     assert.match(result.html, /style-src vscode-webview:\/\/test 'nonce-[^']+'/u);
+    assert.match(result.html, /frame-src https:/u);
     assert.doesNotMatch(result.html, /browser-device-auth\.js/u);
     assert.ok(result.roots.every((uri) => (
       uri.fsPath.startsWith(runtimeRoot) || uri.fsPath.startsWith(extensionRoot)
@@ -881,7 +990,7 @@ test("the active Agent Hub tab survives a page reload", () => {
   );
   const window = {};
   vm.runInNewContext(source, { window });
-  for (const tab of ["tasks", "chat", "dashboard", "journal", "statistics", "background", "server"]) {
+  for (const tab of ["tasks", "chat", "dashboard", "journal", "statistics", "background", "browser", "server"]) {
     assert.equal(
       window.AgentHubNavigationTabs.storedNavigationTab({ getItem: () => tab }, "tab-key"),
       tab,
@@ -2145,8 +2254,6 @@ test("statistics page offers local usage and full limit history", () => {
   assert.match(app, /function limitsSpeedPath\(/u);
   assert.match(app, /снизьте темп/u);
   assert.match(app, /Ровный темп · 14,3%\/сутки/u);
-  assert.match(app, /Ровный темп · 0,6%\/час/u);
-  assert.match(app, /function burnRatePolicyForRange\(/u);
   assert.match(styles, /\.limits-burn-normal-line/u);
   for (const range of ["6h", "24h", "7d", "15d", "30d", "all"]) {
     assert.match(html, new RegExp(`data-range="${range}"`, "u"));

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -17,14 +18,18 @@ import {
 } from "../../domain/stream-message-pin.mjs";
 
 const FORMAT_VERSION = 1;
-const TASK_SCHEMA_VERSION = 9;
+const TASK_SCHEMA_VERSION = 11;
 const MODEL_BACKFILL_VERSION = "1";
 const SUBAGENT_MODEL_BACKFILL_VERSION = "1";
-const SEARCH_BACKFILL_VERSION = "3";
+const SEARCH_BACKFILL_VERSION = "4";
 const TERMINAL_HISTORY_BACKFILL_VERSION = "4";
 const DEFAULT_HISTORY_LIMIT = 50;
 const DEFAULT_RUNNING_FRESHNESS_MS = 10 * 60 * 1000;
 const DEFAULT_TASK_LIMIT = 1_000;
+const TERMINAL_IDENTITY_RECOVERY_LIMIT = 200;
+const TERMINAL_IDENTITY_RECOVERY_PAYLOAD_MAX_BYTES = 2 * 1024 * 1024;
+const TERMINAL_IDENTITY_RECOVERY_TOTAL_BYTES = 4 * 1024 * 1024;
+const TERMINAL_IDENTITY_RECOVERY_INSPECTION_BYTES = 8 * 1024 * 1024;
 
 function cleanText(value, limit) {
   return String(value ?? "").trim().slice(0, limit);
@@ -116,43 +121,6 @@ function withoutPromptlessAnswerEchoes(history) {
   return values;
 }
 
-function mergePersistedSyntheticRoot(turn) {
-  const messages = Array.isArray(turn?.messages) ? turn.messages : [];
-  const syntheticId = `${String(turn?.id ?? "").trim()}:rollout-user:0`;
-  const syntheticIndex = messages.findIndex((message) => (
-    message.role === "user"
-    && message.itemId === syntheticId
-    && !message.clientUserMessageId
-  ));
-  if (syntheticIndex < 0) return turn;
-  const canonicalIndex = messages.findIndex((message, index) => (
-    index < syntheticIndex
-    && message.role === "user"
-    && Boolean(message.clientUserMessageId)
-  ));
-  if (canonicalIndex < 0) return turn;
-  const canonical = messages[canonicalIndex];
-  const knownAttachments = new Set();
-  const attachments = [
-    ...(Array.isArray(canonical.attachments) ? canonical.attachments : []),
-    ...(Array.isArray(messages[syntheticIndex].attachments)
-      ? messages[syntheticIndex].attachments
-      : []),
-  ].filter((attachment) => {
-    const id = String(attachment?.id ?? "").trim().toLowerCase();
-    if (!id || knownAttachments.has(id)) return false;
-    knownAttachments.add(id);
-    return true;
-  });
-  return {
-    ...turn,
-    messages: messages.flatMap((message, index) => {
-      if (index === canonicalIndex) return [{ ...canonical, attachments }];
-      return index === syntheticIndex ? [] : [message];
-    }),
-  };
-}
-
 function withoutRepeatedClientMessages(history) {
   const seen = new Set();
   return history.map((turn) => ({
@@ -182,6 +150,8 @@ function cleanHistory(history, limit, { provider = "" } = {}) {
       const promptOrigin = normalizeInterstreamOrigin(item?.promptOrigin);
       const promptAuthor = interstreamOriginAuthor(promptOrigin)
         || cleanText(item?.promptAuthor, 1_000);
+      const sourceMessages = Array.isArray(item?.messages) ? item.messages : [];
+      const messagesTruncated = sourceMessages.length > 100;
       return {
         id: cleanText(item?.id, 100),
         prompt: cleanText(item?.prompt, 12_000),
@@ -191,6 +161,12 @@ function cleanHistory(history, limit, { provider = "" } = {}) {
         status: cleanText(item?.status, 40),
         active: item?.active === true,
         completed: item?.completed === true,
+        ...(item?.userMessageAuthority === "terminal-ledger"
+          ? { userMessageAuthority: "terminal-ledger" }
+          : {}),
+        ...(item?.userMessageSnapshotAuthority === "complete" && !messagesTruncated
+          ? { userMessageSnapshotAuthority: "complete" }
+          : {}),
         promptAnnotations: cleanResponseAnnotations(item?.promptAnnotations),
         ...(cleanText(item?.promptRequest, 12_000)
           ? { promptRequest: cleanText(item.promptRequest, 12_000) }
@@ -202,7 +178,7 @@ function cleanHistory(history, limit, { provider = "" } = {}) {
         ...(cleanActivityGroups(item?.activityGroups).length
           ? { activityGroups: cleanActivityGroups(item.activityGroups) }
           : {}),
-        messages: (Array.isArray(item?.messages) ? item.messages : [])
+        messages: sourceMessages
         .slice(-100)
         .flatMap((message) => {
           const role = cleanText(message?.role, 20);
@@ -226,6 +202,9 @@ function cleanHistory(history, limit, { provider = "" } = {}) {
             itemId,
             ...(message?.clientUserMessageId
               ? { clientUserMessageId: cleanText(message.clientUserMessageId, 200) }
+              : {}),
+            ...(message?.sourceOccurrenceId
+              ? { sourceOccurrenceId: cleanText(message.sourceOccurrenceId, 200) }
               : {}),
             role,
             text,
@@ -260,7 +239,7 @@ function cleanHistory(history, limit, { provider = "" } = {}) {
         }),
       };
     });
-  const normalized = withoutRepeatedClientMessages(cleaned.map(mergePersistedSyntheticRoot));
+  const normalized = withoutRepeatedClientMessages(cleaned);
   return withoutPromptlessAnswerEchoes(withoutInternalContextTurns(normalized)).slice(-limit);
 }
 
@@ -291,6 +270,26 @@ function preserveTerminalHistory(terminals, history) {
     const terminal = terminals.get(String(turn?.id ?? "").trim());
     const status = String(turn?.status ?? "").trim().toLowerCase();
     const incomingIsTerminal = turn?.completed === true || TERMINAL_TURN_STATUSES.has(status);
+    if (terminal?.userMessageAuthority === "terminal-ledger" && incomingIsTerminal) {
+      return {
+        ...turn,
+        prompt: terminal.prompt,
+        promptAuthor: terminal.promptAuthor,
+        promptOrigin: terminal.promptOrigin,
+        promptAnnotations: terminal.promptAnnotations,
+        promptRequest: terminal.promptRequest,
+        attachments: terminal.attachments,
+        userMessageAuthority: "terminal-ledger",
+        messages: [
+          ...(Array.isArray(terminal.messages) ? terminal.messages : [])
+            .filter((message) => message?.role === "user")
+            .map((message) => structuredClone(message)),
+          ...(Array.isArray(turn?.messages) ? turn.messages : [])
+            .filter((message) => message?.role !== "user")
+            .map((message) => structuredClone(message)),
+        ],
+      };
+    }
     return terminal && !incomingIsTerminal ? structuredClone(terminal) : turn;
   });
 }
@@ -493,6 +492,77 @@ function parseJsonArray(value) {
   }
 }
 
+function parseJsonObject(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  try {
+    const parsed = JSON.parse(String(value ?? "{}"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function exactLedgerTerminalBinding(row, {
+  provider,
+  threadId,
+  turnId,
+  runId,
+  clientUserMessageId,
+}) {
+  if (!row || String(row.client_user_message_id ?? "").trim() !== clientUserMessageId) return false;
+  if (!TERMINAL_TURN_STATUSES.has(String(row.state ?? "").trim().toLowerCase())) return false;
+  const item = parseJsonObject(row.item_json);
+  const receipt = parseJsonObject(row.receipt_json);
+  const receiptResult = parseJsonObject(receipt.result);
+  const result = parseJsonObject(row.result_json);
+  const allExact = (field, expected, normalize = (value) => value) => {
+    const values = [result, receiptResult, receipt, item]
+      .map((value) => String(value?.[field] ?? "").trim())
+      .filter(Boolean)
+      .map(normalize);
+    return values.length > 0 && values.every((value) => value === normalize(expected));
+  };
+  return allExact("provider", provider, (value) => value.toLowerCase())
+    && allExact("threadId", threadId)
+    && allExact("turnId", turnId)
+    && Boolean(runId)
+    && allExact("runId", runId);
+}
+
+function recoverTerminalTurnMessages(turn, terminalPayload, ledgerStatement, identity) {
+  const history = terminalPayload?.history ?? {};
+  const provider = String(identity?.provider ?? "").trim().toLowerCase();
+  const threadId = String(identity?.threadId ?? "").trim();
+  const turnId = String(identity?.turnId ?? "").trim();
+  const runId = String(history?.id ?? "").trim();
+  if (String(history?.provider ?? "").trim().toLowerCase() !== provider
+    || String(history?.threadId ?? "").trim() !== threadId
+    || String(history?.turnId ?? "").trim() !== turnId) return turn;
+  const authoritativeUsers = Array.isArray(history.userMessages)
+    ? history.userMessages.filter((message) => message?.role !== "agent")
+    : [];
+  const ids = authoritativeUsers
+    .map((message) => String(message?.clientUserMessageId ?? "").trim())
+    .filter(Boolean);
+  if (!ids.length || new Set(ids).size !== ids.length) return turn;
+  if (!ids.every((clientUserMessageId) => exactLedgerTerminalBinding(
+    ledgerStatement.get(clientUserMessageId),
+    { provider, threadId, turnId, runId, clientUserMessageId },
+  ))) return turn;
+
+  const currentMessages = Array.isArray(turn?.messages) ? turn.messages : [];
+  const currentAgents = currentMessages.filter((message) => message?.role !== "user");
+  return {
+    ...turn,
+    userMessageAuthority: "terminal-ledger",
+    ...(String(history.promptPreview ?? "").trim() ? { prompt: history.promptPreview } : {}),
+    messages: [
+      ...authoritativeUsers.map((message) => structuredClone(message)),
+      ...currentAgents.map((message) => structuredClone(message)),
+    ],
+  };
+}
+
 function normalizedSearchTerms(value) {
   return String(value ?? "")
     .normalize("NFKC")
@@ -521,7 +591,19 @@ function compactSearchSnippet(value, terms, limit = 220) {
   return `${start > 0 ? "…" : ""}${text.slice(start, end).trim()}${end < text.length ? "…" : ""}`;
 }
 
-function searchDocumentKey({ provider, threadId, turnId, itemId, role }) {
+function searchDocumentKey({
+  provider,
+  threadId,
+  turnId,
+  itemId,
+  role,
+  source = "history",
+  occurrence = "",
+}) {
+  return JSON.stringify([provider, threadId, turnId, itemId, role, source, String(occurrence)]);
+}
+
+function legacySearchDocumentKey({ provider, threadId, turnId, itemId, role }) {
   return JSON.stringify([provider, threadId, turnId, itemId, role]);
 }
 
@@ -543,7 +625,7 @@ function configure(database) {
   database.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
-    PRAGMA busy_timeout = 5000;
+    PRAGMA busy_timeout = 0;
     PRAGMA foreign_keys = ON;
     CREATE TABLE IF NOT EXISTS task_read_model_meta (
       key TEXT PRIMARY KEY,
@@ -590,6 +672,8 @@ function configure(database) {
       attachments_json TEXT NOT NULL,
       activities_json TEXT NOT NULL,
       activity_groups_json TEXT NOT NULL DEFAULT '[]',
+      user_message_authority TEXT NOT NULL DEFAULT '',
+      user_message_snapshot_authority TEXT NOT NULL DEFAULT '',
       PRIMARY KEY (provider, thread_id, position),
       FOREIGN KEY (provider, thread_id)
         REFERENCES task_read_model_tasks (provider, thread_id) ON DELETE CASCADE
@@ -603,6 +687,7 @@ function configure(database) {
       position INTEGER NOT NULL,
       item_id TEXT NOT NULL,
       client_user_message_id TEXT,
+      source_occurrence_id TEXT NOT NULL DEFAULT '',
       role TEXT NOT NULL CHECK (role IN ('user', 'agent')),
       text TEXT NOT NULL,
       author TEXT NOT NULL DEFAULT '',
@@ -696,9 +781,18 @@ function configure(database) {
   if (!turnColumns.has("activity_groups_json")) {
     database.exec("ALTER TABLE task_read_model_turns ADD COLUMN activity_groups_json TEXT NOT NULL DEFAULT '[]'");
   }
+  if (!turnColumns.has("user_message_authority")) {
+    database.exec("ALTER TABLE task_read_model_turns ADD COLUMN user_message_authority TEXT NOT NULL DEFAULT ''");
+  }
+  if (!turnColumns.has("user_message_snapshot_authority")) {
+    database.exec("ALTER TABLE task_read_model_turns ADD COLUMN user_message_snapshot_authority TEXT NOT NULL DEFAULT ''");
+  }
   const messageColumns = new Set(database.prepare(
     "PRAGMA table_info(task_read_model_messages)",
   ).all().map((column) => String(column.name)));
+  if (!messageColumns.has("source_occurrence_id")) {
+    database.exec("ALTER TABLE task_read_model_messages ADD COLUMN source_occurrence_id TEXT NOT NULL DEFAULT ''");
+  }
   if (!messageColumns.has("response_annotations_json")) {
     database.exec("ALTER TABLE task_read_model_messages ADD COLUMN response_annotations_json TEXT NOT NULL DEFAULT '[]'");
   }
@@ -1019,6 +1113,8 @@ function historyPageQuery(references, {
 export class LocalTaskSyncStore {
   #filePath;
   #databaseFile;
+  #terminalDatabaseFile;
+  #messageCommandDatabaseFile;
   #database = null;
   #historyLimit;
   #taskLimit;
@@ -1028,6 +1124,8 @@ export class LocalTaskSyncStore {
   constructor({
     filePath,
     databaseFile = path.join(path.dirname(filePath), "journal.sqlite"),
+    terminalDatabaseFile = path.join(path.dirname(databaseFile), "runtime.sqlite"),
+    messageCommandDatabaseFile = path.join(path.dirname(databaseFile), "message-command-ledger.sqlite"),
     historyLimit = DEFAULT_HISTORY_LIMIT,
     taskLimit = DEFAULT_TASK_LIMIT,
     canonicalizeProjectRoot = (projectRoot) => projectRoot,
@@ -1035,6 +1133,8 @@ export class LocalTaskSyncStore {
   }) {
     this.#filePath = path.resolve(filePath);
     this.#databaseFile = path.resolve(databaseFile);
+    this.#terminalDatabaseFile = path.resolve(terminalDatabaseFile);
+    this.#messageCommandDatabaseFile = path.resolve(messageCommandDatabaseFile);
     this.#historyLimit = Math.max(1, Number(historyLimit) || DEFAULT_HISTORY_LIMIT);
     this.#taskLimit = Math.max(1, Number(taskLimit) || DEFAULT_TASK_LIMIT);
     this.#canonicalizeProjectRoot = canonicalizeProjectRoot;
@@ -1102,6 +1202,9 @@ export class LocalTaskSyncStore {
         ...(row.client_user_message_id
           ? { clientUserMessageId: String(row.client_user_message_id) }
           : {}),
+        ...(row.source_occurrence_id
+          ? { sourceOccurrenceId: String(row.source_occurrence_id) }
+          : {}),
         role: String(row.role),
         text: String(row.text),
         ...(row.author ? { author: String(row.author) } : {}),
@@ -1133,6 +1236,12 @@ export class LocalTaskSyncStore {
         status: String(row.status ?? ""),
         active: Number(row.active) === 1,
         completed: Number(row.completed) === 1,
+        ...(row.user_message_authority === "terminal-ledger"
+          ? { userMessageAuthority: "terminal-ledger" }
+          : {}),
+        ...(row.user_message_snapshot_authority === "complete"
+          ? { userMessageSnapshotAuthority: "complete" }
+          : {}),
         ...(row.started_at ? { startedAt: String(row.started_at) } : {}),
         ...(row.completed_at ? { completedAt: String(row.completed_at) } : {}),
         promptAnnotations: cleanResponseAnnotations(parseJsonArray(row.prompt_annotations_json)),
@@ -1298,6 +1407,121 @@ export class LocalTaskSyncStore {
     }
   }
 
+  #recoverTerminalCommandIdentities() {
+    if (!existsSync(this.#terminalDatabaseFile) || !existsSync(this.#messageCommandDatabaseFile)) {
+      return 0;
+    }
+    let terminalDatabase;
+    let ledgerDatabase;
+    try {
+      terminalDatabase = new DatabaseSync(this.#terminalDatabaseFile, { readOnly: true });
+      ledgerDatabase = new DatabaseSync(this.#messageCommandDatabaseFile, { readOnly: true });
+      const hasTerminals = terminalDatabase.prepare(`
+        SELECT 1 AS present FROM sqlite_schema
+        WHERE type = 'table' AND name = 'provider_turn_terminals'
+      `).get();
+      const hasLedger = ledgerDatabase.prepare(`
+        SELECT 1 AS present FROM sqlite_schema
+        WHERE type = 'table' AND name = 'message_commands'
+      `).get();
+      if (!hasTerminals || !hasLedger) return 0;
+      const terminalColumns = new Set(terminalDatabase
+        .prepare("PRAGMA table_info(provider_turn_terminals)").all()
+        .map((column) => String(column.name)));
+      const ledgerColumns = new Set(ledgerDatabase
+        .prepare("PRAGMA table_info(message_commands)").all()
+        .map((column) => String(column.name)));
+      if (!["provider", "thread_id", "turn_id", "payload_json", "payload_bytes", "committed_at"]
+        .every((column) => terminalColumns.has(column))
+        || !["client_user_message_id", "state", "item_json", "receipt_json", "result_json"]
+          .every((column) => ledgerColumns.has(column))) return 0;
+      const recoveryIndexColumns = terminalDatabase
+        .prepare("PRAGMA index_info(provider_turn_terminals_recovery_idx)").all()
+        .map((column) => String(column.name));
+      if (JSON.stringify(recoveryIndexColumns) !== JSON.stringify([
+        "committed_at", "provider", "thread_id", "turn_id", "payload_bytes",
+      ])) return 0;
+      const candidates = terminalDatabase.prepare(`
+        SELECT provider, thread_id, turn_id,
+          committed_at, payload_bytes
+        FROM provider_turn_terminals INDEXED BY provider_turn_terminals_recovery_idx
+        ORDER BY committed_at DESC, provider, thread_id, turn_id
+        LIMIT ?
+      `).all(TERMINAL_IDENTITY_RECOVERY_LIMIT);
+      const payloadByRow = terminalDatabase.prepare(`
+        SELECT payload_json FROM provider_turn_terminals
+        WHERE provider = ? AND thread_id = ? AND turn_id = ?
+      `);
+      const ledger = ledgerDatabase.prepare(`
+        SELECT client_user_message_id, state, item_json, receipt_json, result_json
+        FROM message_commands WHERE client_user_message_id = ?
+      `);
+      const histories = new Map();
+      let recovered = 0;
+      let inspectedBytes = 0;
+      let acceptedBytes = 0;
+      for (const candidate of candidates) {
+        const payloadBytes = Number(candidate.payload_bytes) || 0;
+        if (payloadBytes <= 0
+          || payloadBytes > TERMINAL_IDENTITY_RECOVERY_PAYLOAD_MAX_BYTES
+          || inspectedBytes + payloadBytes > TERMINAL_IDENTITY_RECOVERY_INSPECTION_BYTES) {
+          continue;
+        }
+        const payloadJson = payloadByRow.get(
+          candidate.provider,
+          candidate.thread_id,
+          candidate.turn_id,
+        )?.payload_json;
+        inspectedBytes += payloadBytes;
+        let terminalPayload = null;
+        try {
+          const parsed = JSON.parse(String(payloadJson ?? ""));
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            terminalPayload = parsed;
+          }
+        } catch {
+          // Malformed terminal evidence is skipped without consuming the valid
+          // payload admission budget.
+        }
+        if (!terminalPayload) continue;
+        if (acceptedBytes + payloadBytes > TERMINAL_IDENTITY_RECOVERY_TOTAL_BYTES) continue;
+        acceptedBytes += payloadBytes;
+        const provider = String(candidate.provider);
+        const threadId = String(candidate.thread_id);
+        const turnId = String(candidate.turn_id);
+        const key = `${provider}\0${threadId}`;
+        const history = histories.get(key) ?? this.#readHistory({ provider, threadId });
+        histories.set(key, history);
+        const position = history.findIndex((turn) => String(turn?.id ?? "").trim() === turnId);
+        if (position < 0) continue;
+        const nextTurn = recoverTerminalTurnMessages(
+          history[position],
+          terminalPayload,
+          ledger,
+          { provider, threadId, turnId },
+        );
+        if (JSON.stringify(nextTurn) === JSON.stringify(history[position])) continue;
+        history[position] = nextTurn;
+        recovered += 1;
+      }
+      for (const [key, history] of histories) {
+        const [provider, threadId] = key.split("\0");
+        const task = this.#readTask({ provider, threadId }, true);
+        if (!task) continue;
+        const cleaned = cleanHistory(history, this.#historyLimit, { provider });
+        if (JSON.stringify(task.history) === JSON.stringify(cleaned)) continue;
+        const next = { ...task, history: cleaned };
+        this.#writeTask(next);
+        this.#writeHistory(next, cleaned);
+        this.#writeSearchHistory(next, cleaned);
+      }
+      return recovered;
+    } finally {
+      terminalDatabase?.close();
+      ledgerDatabase?.close();
+    }
+  }
+
   #backfillModelsFromJournal() {
     const tasks = this.#database.prepare(`
       SELECT provider, thread_id FROM task_read_model_tasks
@@ -1367,16 +1591,18 @@ export class LocalTaskSyncStore {
         provider, thread_id, position, id, prompt, answer, status, active,
         completed, started_at, completed_at, prompt_author, prompt_origin_json,
         prompt_annotations_json, prompt_request,
-        attachments_json, activities_json, activity_groups_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        attachments_json, activities_json, activity_groups_json, user_message_authority,
+        user_message_snapshot_authority
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertMessage = this.#database.prepare(`
       INSERT INTO task_read_model_messages (
         provider, thread_id, turn_position, position, item_id,
-        client_user_message_id, role, text, author, kind, agent_thread_id, model, phase, time,
+        client_user_message_id, source_occurrence_id, role, text, author, kind,
+        agent_thread_id, model, phase, time,
         origin_json, response_annotations_json, response_annotation_request,
         response_annotation_references_json, attachments_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     history.forEach((turn, turnPosition) => {
       insertTurn.run(
@@ -1398,6 +1624,8 @@ export class LocalTaskSyncStore {
         JSON.stringify(turn.attachments),
         JSON.stringify(turn.activities),
         JSON.stringify(turn.activityGroups ?? []),
+        turn.userMessageAuthority ?? "",
+        turn.userMessageSnapshotAuthority ?? "",
       );
       turn.messages.forEach((message, messagePosition) => {
         insertMessage.run(
@@ -1407,6 +1635,7 @@ export class LocalTaskSyncStore {
           messagePosition,
           message.itemId,
           message.clientUserMessageId ?? null,
+          message.sourceOccurrenceId ?? "",
           message.role,
           message.text,
           message.author ?? "",
@@ -1428,6 +1657,11 @@ export class LocalTaskSyncStore {
   #writeSearchDocument(document, { replace = true } = {}) {
     const occurredAt = String(document.occurredAt ?? "").trim() || null;
     const occurredAtMs = occurredAt ? Date.parse(occurredAt) : 0;
+    const source = document.source ?? "history";
+    this.#database.prepare(`
+      DELETE FROM task_message_search_documents
+      WHERE document_key = ? AND source = ?
+    `).run(legacySearchDocumentKey(document), source);
     const values = [
       searchDocumentKey(document),
       document.provider,
@@ -1442,7 +1676,7 @@ export class LocalTaskSyncStore {
       String(document.attachmentNames ?? "").trim(),
       occurredAt,
       Number.isFinite(occurredAtMs) ? occurredAtMs : 0,
-      document.source ?? "history",
+      source,
     ];
     const conflict = replace ? `DO UPDATE SET
       turn_thread_id = excluded.turn_thread_id,
@@ -1502,7 +1736,7 @@ export class LocalTaskSyncStore {
     const turns = Array.isArray(history) ? history : [];
     const removeTurn = this.#database.prepare(`
       DELETE FROM task_message_search_documents
-      WHERE provider = ? AND thread_id = ? AND turn_id = ?
+      WHERE provider = ? AND thread_id = ? AND turn_id = ? AND source = 'history'
     `);
     for (const turn of turns) {
       if (!turn.id) continue;
@@ -1558,6 +1792,7 @@ export class LocalTaskSyncStore {
           occurredAt: message?.time
             ?? (message.role === "user" ? turn.startedAt : turn.completedAt),
           source: "history",
+          occurrence: position,
         });
       }
     }
@@ -1739,6 +1974,7 @@ export class LocalTaskSyncStore {
     await this.#open();
     await this.#migrateLegacyFile();
     this.#transaction(() => {
+      this.#recoverTerminalCommandIdentities();
       this.#runVersionedBackfill(
         "backfill_task_message_search_version",
         SEARCH_BACKFILL_VERSION,

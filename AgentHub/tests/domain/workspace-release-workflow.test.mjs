@@ -135,7 +135,23 @@ test("Team Lead rules are independent and compose after Architect rules", () => 
   assert.match(TEAM_LEAD_DEVELOPER_RULES, /Never use subagents/u);
   assert.match(
     TEAM_LEAD_DEVELOPER_RULES,
-    /Review the result of every Task.*does not pass review.*return the same Task.*review the corrected result again/iu,
+    /exact result.*independent review by another Workspace Stream.*must not review its own work/iu,
+  );
+  assert.match(
+    TEAM_LEAD_DEVELOPER_RULES,
+    /review request.*Task requirements.*actual diff.*consequences of the changes/iu,
+  );
+  assert.match(
+    TEAM_LEAD_DEVELOPER_RULES,
+    /fail its requirements.*cause or worsen any real regression.*unnecessary functionality that must be removed/iu,
+  );
+  assert.match(
+    TEAM_LEAD_DEVELOPER_RULES,
+    /Pre-existing unrelated defects.*artificial edge cases.*unsupported findings.*out-of-scope issues must not block/iu,
+  );
+  assert.match(
+    TEAM_LEAD_DEVELOPER_RULES,
+    /return the same Task to its executor for correction.*corrected result to independent review again/iu,
   );
   assert.match(TEAM_LEAD_DEVELOPER_RULES, /highest number.*S<number>.*add one.*name the new Stream S2/iu);
   assert.match(TEAM_LEAD_DEVELOPER_RULES, /provider, model, and reasoning/u);

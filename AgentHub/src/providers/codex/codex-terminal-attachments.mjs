@@ -23,7 +23,7 @@ export function codexTerminalAttachmentSources(activity, turnId) {
   return (Array.isArray(activity?.generatedImageSources?.[turnId])
     ? activity.generatedImageSources[turnId]
     : [])
-    .filter((source) => ["generated-path", "display-path"].includes(source?.type))
+    .filter((source) => source?.type === "generated-path")
     .map((source) => ({ ...source }));
 }
 
@@ -38,8 +38,21 @@ export function createCodexTerminalAttachmentResolver({
   return async function resolveCodexTerminalAttachments(run, turnId) {
     try {
       const normalizedTurnId = String(turnId ?? "").trim();
+      const exactSources = (Array.isArray(run?.generatedImageSources)
+        ? run.generatedImageSources
+        : []).filter((source) => (
+        source?.type === "generated-path" && String(source.value ?? "").trim()
+      ));
+      if (exactSources.length) {
+        if (typeof importAttachments !== "function") return [];
+        const attachments = await importAttachments(exactSources);
+        return Array.isArray(attachments)
+          ? attachments.map((attachment) => ({ ...attachment }))
+          : [];
+      }
       let bestAttachments = [];
-      for (const retryDelayMs of retryDelaysMs) {
+      const delays = run?.historicalRecovery === true ? retryDelaysMs.slice(0, 1) : retryDelaysMs;
+      for (const retryDelayMs of delays) {
         if (retryDelayMs > 0) await wait(retryDelayMs);
         const rolloutPath = String(run?.rolloutPath ?? "").trim()
           || await knownRolloutPath?.(run?.threadId, run?.startedAt);

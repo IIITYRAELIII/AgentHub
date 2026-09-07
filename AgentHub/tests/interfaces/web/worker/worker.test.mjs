@@ -143,6 +143,7 @@ test("Dashboard transport probe exposes a bounded ordered attachment manifest", 
 class MemoryStorage {
   values = new Map();
   alarmAt = null;
+  listCalls = [];
 
   async get(key) {
     if (Array.isArray(key)) {
@@ -164,6 +165,7 @@ class MemoryStorage {
   }
 
   async list({ prefix = "", start = "", startAfter = "", end = "", limit = Number.POSITIVE_INFINITY } = {}) {
+    this.listCalls.push({ prefix, start, startAfter, end, limit });
     return new Map([...this.values]
       .filter(([key]) => (
         key.startsWith(prefix)
@@ -189,6 +191,31 @@ class MemoryStorage {
 
   async deleteAlarm() {
     this.alarmAt = null;
+  }
+}
+
+class RollbackFaultStorage extends MemoryStorage {
+  failDeleteKey = null;
+
+  async delete(key) {
+    const keys = Array.isArray(key) ? key : [key];
+    if (this.failDeleteKey && keys.includes(this.failDeleteKey)) {
+      this.failDeleteKey = null;
+      throw new Error("injected attachment manifest promotion failure");
+    }
+    return super.delete(key);
+  }
+
+  async transaction(callback) {
+    const values = new Map(this.values);
+    const alarmAt = this.alarmAt;
+    try {
+      return await callback(this);
+    } catch (error) {
+      this.values = values;
+      this.alarmAt = alarmAt;
+      throw error;
+    }
   }
 }
 
@@ -2528,6 +2555,210 @@ test("Worker relay stores user-bound file uploads and serves them only to their 
   assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
 });
 
+test("Worker expires or atomically promotes exact legacy attachment manifests before mutation", async () => {
+  const workerModule = await loadWorker();
+  const storage = new RollbackFaultStorage();
+  const store = new workerModule.JournalStore({ storage }, {});
+  const botToken = "123456:test-token";
+  const syncSecret = "l".repeat(64);
+  const env = {
+    TELEGRAM_BOT_TOKEN: botToken,
+    ALLOWED_USER_IDS: "42,84",
+    SYNC_SECRET: syncSecret,
+    JOURNAL: { getByName: () => store },
+    ASSETS: { fetch: async () => new Response("asset") },
+  };
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64",
+  );
+  const bodyHash = createHash("sha256").update(png).digest("hex");
+  const authorization = `tma ${telegramInitData(botToken, 42)}`;
+  const currentKey = (id) => `control:attachment-manifest:${id}`;
+  const legacyKey = (id) => `control:attachment:${id}`;
+  const chunkKey = (id) => `control:attachment-chunk:${id}:0`;
+  const seedLegacy = async ({
+    id,
+    expiresAt,
+    userId = "42",
+    viewOnly = false,
+    commandIds = [],
+  }) => {
+    const manifest = {
+      id,
+      userId,
+      contentType: "image/png",
+      name: "image.png",
+      bodyHash,
+      size: png.length,
+      chunkCount: 1,
+      commandIds,
+      ...(viewOnly ? { viewOnly: true } : {}),
+      createdAt: Date.now() - 60_000,
+      expiresAt,
+    };
+    await storage.put({
+      [legacyKey(id)]: manifest,
+      [chunkKey(id)]: png,
+    });
+    return manifest;
+  };
+  const upload = (id) => workerModule.default.fetch(new Request("https://hub.test/api/attachment", {
+    method: "POST",
+    headers: {
+      Authorization: authorization,
+      "Content-Type": "image/png",
+      "X-Agent-Hub-File-Name": encodeURIComponent("image.png"),
+      "X-Agent-Hub-Attachment-Id": id,
+    },
+    body: png,
+  }), env);
+  const viewUpload = (id) => workerModule.default.fetch(signedBinaryServiceRequest(
+    "https://hub.test/api/control/attachment/view/push",
+    png,
+    syncSecret,
+    {
+      "Content-Type": "image/png",
+      "X-Agent-Hub-User-Id": "42",
+      "X-Agent-Hub-Attachment-Id": id,
+      "X-Agent-Hub-Attachment-Hash": bodyHash,
+      "X-Agent-Hub-File-Name": encodeURIComponent("image.png"),
+    },
+  ), env);
+  const enqueue = (id, commandId) => workerModule.default.fetch(new Request("https://hub.test/api/control", {
+    method: "POST",
+    headers: { Authorization: authorization, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      id: commandId,
+      action: "send-message",
+      params: { text: "Legacy", attachments: [`remote-attachment:${id}`] },
+    }),
+  }), env);
+
+  const expiredUploadId = "018f6c86-3f34-7a31-8f27-16f5b96cce51";
+  await seedLegacy({ id: expiredUploadId, expiresAt: Date.now() - 1 });
+  let response = await upload(expiredUploadId);
+  assert.equal(response.status, 201);
+  const uploaded = await response.json();
+  assert.ok(uploaded.expiresAt > Date.now());
+  assert.equal(await storage.get(legacyKey(expiredUploadId)), undefined);
+  assert.ok(await storage.get(currentKey(expiredUploadId)));
+
+  const expiredViewId = "018f6c86-3f34-7a31-8f27-16f5b96cce52";
+  await seedLegacy({ id: expiredViewId, expiresAt: Date.now() - 1, viewOnly: true });
+  response = await viewUpload(expiredViewId);
+  assert.equal(response.status, 201);
+  const uploadedView = await response.json();
+  assert.ok(uploadedView.expiresAt > Date.now());
+  assert.equal(await storage.get(legacyKey(expiredViewId)), undefined);
+  assert.ok(await storage.get(currentKey(expiredViewId)));
+
+  const liveUploadId = "018f6c86-3f34-7a31-8f27-16f5b96cce58";
+  await seedLegacy({ id: liveUploadId, expiresAt: Date.now() + 60_000 });
+  response = await upload(liveUploadId);
+  assert.equal(response.status, 200);
+  assert.equal(await storage.get(legacyKey(liveUploadId)), undefined);
+  assert.ok(await storage.get(currentKey(liveUploadId)));
+
+  const liveViewId = "018f6c86-3f34-7a31-8f27-16f5b96cce59";
+  await seedLegacy({ id: liveViewId, expiresAt: Date.now() + 60_000, viewOnly: true });
+  response = await workerModule.default.fetch(new Request(
+    `https://hub.test/api/attachment/view?id=${liveViewId}`,
+    { headers: { Authorization: authorization } },
+  ), env);
+  assert.equal(response.status, 200);
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
+  assert.ok(await storage.get(legacyKey(liveViewId)));
+  assert.equal(await storage.get(currentKey(liveViewId)), undefined);
+  response = await workerModule.default.fetch(new Request(
+    `https://hub.test/api/attachment/view?id=${liveViewId}`,
+    { headers: { Authorization: `tma ${telegramInitData(botToken, 84)}` } },
+  ), env);
+  assert.equal(response.status, 404);
+  assert.ok(await storage.get(legacyKey(liveViewId)));
+  response = await viewUpload(liveViewId);
+  assert.equal(response.status, 200);
+  assert.equal(await storage.get(legacyKey(liveViewId)), undefined);
+  assert.ok(await storage.get(currentKey(liveViewId)));
+
+  const expiredEnqueueId = "018f6c86-3f34-7a31-8f27-16f5b96cce53";
+  const expiredCommandId = "018f6c86-3f34-7a31-8f27-16f5b96cce63";
+  await seedLegacy({ id: expiredEnqueueId, expiresAt: Date.now() - 1 });
+  response = await enqueue(expiredEnqueueId, expiredCommandId);
+  assert.equal(response.status, 404);
+  assert.equal(await storage.get(legacyKey(expiredEnqueueId)), undefined);
+  assert.equal(await storage.get(currentKey(expiredEnqueueId)), undefined);
+  assert.equal(await storage.get(chunkKey(expiredEnqueueId)), undefined);
+  assert.equal(await storage.get(`control:command:${expiredCommandId}`), undefined);
+
+  const liveId = "018f6c86-3f34-7a31-8f27-16f5b96cce54";
+  const liveCommandId = "018f6c86-3f34-7a31-8f27-16f5b96cce64";
+  await seedLegacy({ id: liveId, expiresAt: Date.now() + 60_000 });
+  response = await enqueue(liveId, liveCommandId);
+  assert.equal(response.status, 202);
+  assert.equal(await storage.get(legacyKey(liveId)), undefined);
+  let promoted = await storage.get(currentKey(liveId));
+  assert.deepEqual(promoted.commandIds, [liveCommandId]);
+  response = await enqueue(liveId, liveCommandId);
+  assert.equal(response.status, 200);
+  promoted = await storage.get(currentKey(liveId));
+  assert.deepEqual(promoted.commandIds, [liveCommandId]);
+
+  response = await workerModule.default.fetch(
+    signedServiceRequest("https://hub.test/api/control/pull", { limit: 10 }, syncSecret),
+    env,
+  );
+  assert.ok((await response.json()).commands.some(({ id }) => id === liveCommandId));
+  const retainedCommandId = "018f6c86-3f34-7a31-8f27-16f5b96cce65";
+  promoted = { ...await storage.get(currentKey(liveId)), commandIds: [liveCommandId, retainedCommandId] };
+  await storage.put(legacyKey(liveId), promoted);
+  await storage.delete(currentKey(liveId));
+  response = await workerModule.default.fetch(
+    signedServiceRequest("https://hub.test/api/control/result", {
+      id: liveCommandId,
+      userId: "42",
+      ok: true,
+      result: { accepted: true },
+    }, syncSecret),
+    env,
+  );
+  assert.equal(response.status, 200);
+  assert.equal(await storage.get(legacyKey(liveId)), undefined);
+  assert.deepEqual((await storage.get(currentKey(liveId))).commandIds, [retainedCommandId]);
+
+  const otherOwnerId = "018f6c86-3f34-7a31-8f27-16f5b96cce55";
+  await seedLegacy({ id: otherOwnerId, expiresAt: Date.now() + 60_000, userId: "84" });
+  response = await enqueue(otherOwnerId, "018f6c86-3f34-7a31-8f27-16f5b96cce66");
+  assert.equal(response.status, 404);
+  assert.ok(await storage.get(legacyKey(otherOwnerId)));
+  assert.equal(await storage.get(currentKey(otherOwnerId)), undefined);
+
+  const mixedId = "018f6c86-3f34-7a31-8f27-16f5b96cce56";
+  const mixedLegacy = await seedLegacy({ id: mixedId, expiresAt: Date.now() + 60_000 });
+  await storage.put(currentKey(mixedId), { ...mixedLegacy });
+  response = await upload(mixedId);
+  assert.equal(response.status, 409);
+  response = await enqueue(mixedId, "018f6c86-3f34-7a31-8f27-16f5b96cce67");
+  assert.equal(response.status, 409);
+  assert.ok(await storage.get(legacyKey(mixedId)));
+  assert.ok(await storage.get(currentKey(mixedId)));
+
+  const rollbackId = "018f6c86-3f34-7a31-8f27-16f5b96cce57";
+  const rollbackCommandId = "018f6c86-3f34-7a31-8f27-16f5b96cce68";
+  await seedLegacy({ id: rollbackId, expiresAt: Date.now() + 60_000 });
+  storage.failDeleteKey = legacyKey(rollbackId);
+  response = await enqueue(rollbackId, rollbackCommandId);
+  assert.equal(response.status, 400);
+  assert.match((await response.json()).error, /promotion failure/u);
+  assert.ok(await storage.get(legacyKey(rollbackId)));
+  assert.equal(await storage.get(currentKey(rollbackId)), undefined);
+  assert.equal(await storage.get(`control:command:${rollbackCommandId}`), undefined);
+  response = await enqueue(rollbackId, rollbackCommandId);
+  assert.equal(response.status, 202);
+  assert.equal(await storage.get(legacyKey(rollbackId)), undefined);
+  assert.ok(await storage.get(currentKey(rollbackId)));
+});
+
 test("Worker serves temporary historical attachment views only to their owner", async () => {
   const workerModule = await loadWorker();
   const storage = new MemoryStorage();
@@ -2547,6 +2778,10 @@ test("Worker serves temporary historical attachment views only to their owner", 
     "base64",
   );
   const bodyHash = createHash("sha256").update(png).digest("hex");
+  for (let index = 0; index < 512; index += 1) {
+    await storage.put(`control:attachment-chunk:legacy-${index}:0`, new Uint8Array(1_024));
+  }
+  storage.listCalls = [];
   let response = await workerModule.default.fetch(signedBinaryServiceRequest(
     "https://hub.test/api/control/attachment/view/push",
     png,
@@ -2559,6 +2794,8 @@ test("Worker serves temporary historical attachment views only to their owner", 
     },
   ), env);
   assert.equal(response.status, 201);
+  assert.ok(storage.listCalls.some(({ prefix }) => prefix === "control:attachment-manifest:"));
+  assert.equal(storage.listCalls.some(({ prefix }) => prefix === "control:attachment:"), false);
 
   response = await workerModule.default.fetch(new Request(
     `https://hub.test/api/attachment/view?id=${id}`,
@@ -2566,13 +2803,51 @@ test("Worker serves temporary historical attachment views only to their owner", 
   ), env);
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("Content-Type"), "image/png");
+  assert.equal(response.headers.get("Content-Length"), String(png.length));
+  assert.equal(response.headers.get("Cache-Control"), "private, no-store");
+  assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff");
   assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
+
+  response = await workerModule.default.fetch(new Request(
+    `https://hub.test/api/attachment/view?id=${id}`,
+    { headers: { Authorization: `tma ${telegramInitData(botToken, 42)}` } },
+  ), env);
+  assert.equal(response.status, 200);
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
+
+  response = await workerModule.default.fetch(new Request(
+    `https://hub.test/api/attachment/view?id=${id}`,
+  ), env);
+  assert.equal(response.status, 401);
+
+  response = await workerModule.default.fetch(new Request(
+    `https://hub.test/api/attachment/view?id=${id}`,
+    { headers: { Authorization: `tma ${telegramInitData(botToken, 42)}forged` } },
+  ), env);
+  assert.equal(response.status, 401);
+
+  response = await workerModule.default.fetch(new Request(
+    "https://hub.test/api/attachment/view?id=018f6c86-3f34-7a31-8f27-16f5b96cce42",
+    { headers: { Authorization: `tma ${telegramInitData(botToken, 42)}` } },
+  ), env);
+  assert.equal(response.status, 404);
 
   response = await workerModule.default.fetch(new Request(
     `https://hub.test/api/attachment/view?id=${id}`,
     { headers: { Authorization: `tma ${telegramInitData(botToken, 84)}` } },
   ), env);
   assert.equal(response.status, 404);
+
+  const manifestKey = `control:attachment-manifest:${id}`;
+  const expired = await storage.get(manifestKey);
+  expired.expiresAt = Date.now() - 1;
+  await storage.put(manifestKey, expired);
+  response = await workerModule.default.fetch(new Request(
+    `https://hub.test/api/attachment/view?id=${id}`,
+    { headers: { Authorization: `tma ${telegramInitData(botToken, 42)}` } },
+  ), env);
+  assert.equal(response.status, 404);
+  assert.equal(await storage.get(manifestKey), undefined);
 
   response = await workerModule.default.fetch(new Request(
     "https://hub.test/api/control/attachment/view/push",

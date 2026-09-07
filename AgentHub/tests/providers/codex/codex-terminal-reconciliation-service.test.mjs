@@ -57,6 +57,7 @@ function harness(overrides = {}) {
     rememberSeenTurn: (...args) => calls.push(["seen", ...args]),
     saveState: async () => calls.push(["save"]),
     deliverNotification: async (completion) => calls.push(["deliver", completion.turnId]),
+    repairTerminalAttachments: async (...args) => calls.push(["repair-attachments", ...args]),
     resolveTerminalAttachments: async () => [],
     now: () => Date.parse("2026-08-04T12:00:00.000Z"),
     logger: {
@@ -224,6 +225,57 @@ test("delivered provisional turn is corrected without a second notification", as
   assert.equal(calls.some(([name]) => name === "seen"), true);
 });
 
+test("delivered historical ImageGen turn repairs its durable terminal before usage short-circuit", async () => {
+  const generated = [
+    { id: "codex-generated-one.png", name: "Изображение", type: "image/png" },
+    { id: "codex-generated-two.png", name: "Изображение", type: "image/png" },
+  ];
+  const resolverCalls = [];
+  const repairCalls = [];
+  const { service, delivered } = harness({
+    workLogStore: {
+      getTurn: async () => ({
+        provisional: false,
+        usageReported: true,
+        usage: { totalTokens: 10 },
+        imageGenerationCount: 2,
+      }),
+    },
+    resolveTerminalAttachments: async (run, turnId) => {
+      resolverCalls.push({ run, turnId });
+      return generated;
+    },
+    repairTerminalAttachments: async (identity, options) => {
+      repairCalls.push({ identity, expectedCount: options.expectedCount });
+      return { enriched: true, attachments: await options.resolveAttachments() };
+    },
+  });
+  delivered.add("turn-image");
+
+  const result = await service.reconcile(thread, project, {
+    turnId: "turn-image",
+    status: "completed",
+    completedAt: "2026-08-04T10:00:00.000Z",
+    historical: true,
+    usageResult: usage({ imageGenerationCount: 2 }),
+  });
+
+  assert.equal(result, true);
+  assert.deepEqual(repairCalls, [{
+    identity: { provider: "codex", threadId: "thread-1", turnId: "turn-image" },
+    expectedCount: 2,
+  }]);
+  assert.deepEqual(resolverCalls, [{
+    run: {
+      threadId: "thread-1",
+      startedAt: undefined,
+      rolloutPath: "rollout.jsonl",
+      expectedImageCount: 2,
+    },
+    turnId: "turn-image",
+  }]);
+});
+
 test("subagent terminal turn is aggregated into its parent task without delivery", async () => {
   const { service, calls, completions } = harness({
     accountingThread: async () => ({
@@ -249,6 +301,26 @@ test("subagent terminal turn is aggregated into its parent task without delivery
   assert.equal(projection[1].aggregateOnly, true);
   assert.equal(projection[1].taskThreadId, "parent-thread");
   assert.equal(projection[1].parentTurnId, "parent-turn");
+});
+
+test("historical reconciliation forwards the local-only accounting boundary", async () => {
+  const accountingOptions = [];
+  const { service } = harness({
+    accountingThread: async (value, options) => {
+      accountingOptions.push(options);
+      return { threadId: value.id, parentThreadId: "", thread: value, isSubagent: false };
+    },
+  });
+
+  await service.reconcile(thread, project, {
+    turnId: "historical-local-turn",
+    status: "completed",
+    completedAt: "2026-08-04T10:00:00.000Z",
+    historical: true,
+    usageResult: usage(),
+  }, { localOnlyAccounting: true });
+
+  assert.deepEqual(accountingOptions, [{ localOnly: true }]);
 });
 
 test("the same terminal turn cannot reconcile concurrently", async () => {

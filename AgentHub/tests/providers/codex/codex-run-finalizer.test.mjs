@@ -107,6 +107,31 @@ test("CodexRunFinalizer adopts audited start data and completes one durable deli
   assert.equal(terminalIntent.message, "Final\n\nUsage");
 });
 
+test("CodexRunFinalizer preserves canonical message origin independently of provider users", async () => {
+  const state = fixture();
+  const value = run();
+  value.clientUserMessageId = "mcp:finalizer-origin-1";
+  value.messageOrigin = {
+    kind: "interstream",
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    sourceThreadId: "thread-architect",
+    requestId: "finalizer-origin-1",
+  };
+  value.rawPrompt = "<agent-hub-stream-message>\nraw transport\n</agent-hub-stream-message>\nBody";
+  value.userMessages = [{ role: "user", text: "Provider projection without origin" }];
+
+  await state.finalizer.finalize(value, { answer: "Final" });
+
+  const recorded = state.events.find(([name]) => name === "record")[1];
+  assert.equal(recorded.clientUserMessageId, "mcp:finalizer-origin-1");
+  assert.deepEqual(recorded.messageOrigin, value.messageOrigin);
+  assert.equal(recorded.rawPrompt, value.rawPrompt);
+});
+
 test("CodexRunFinalizer publishes the exact terminal answer before the completed snapshot", async () => {
   const state = fixture();
   const value = run();
@@ -191,6 +216,31 @@ test("CodexRunFinalizer releases admission when durable channel materialization 
       < state.events.findIndex(([name]) => name === "terminal"),
   );
   assert.equal(state.events.at(-1)[0], "complete");
+});
+
+test("CodexRunFinalizer keeps a failed terminal commit replayable and releases once after retry", async () => {
+  const state = fixture();
+  const value = { ...run(), status: "finishing" };
+  let attempts = 0;
+  state.finalizer.commitTerminal = async (completion) => {
+    attempts += 1;
+    state.events.push(["commit-attempt", attempts]);
+    if (attempts === 1) throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
+    return {
+      terminal: { ...completion, terminalRevision: 1 },
+      outbox: { ...completion, terminalRevision: 1 },
+    };
+  };
+
+  await assert.rejects(state.finalizer.finalize(value, { answer: "Final" }), /database is locked/u);
+  assert.equal(value.status, "running");
+  assert.equal(state.events.some(([name]) => name === "complete"), false);
+  assert.equal(state.events.filter(([name]) => name === "save").length, 1);
+
+  value.status = "finishing";
+  await state.finalizer.finalize(value, { answer: "Final" });
+  assert.equal(attempts, 2);
+  assert.equal(state.events.filter(([name]) => name === "complete").length, 1);
 });
 
 test("CodexRunFinalizer does not treat an audited completion as a Telegram request", async () => {

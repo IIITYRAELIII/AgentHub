@@ -47,7 +47,7 @@ export class StreamHandoffService {
     this.#logger = logger;
   }
 
-  request({
+  async request({
     streamId,
     targetProvider,
     sourceProvider = "",
@@ -65,7 +65,7 @@ export class StreamHandoffService {
       reason: streamHandoffReason(reason),
       requestedAt: this.#now().toISOString(),
     };
-    this.#catalog.setMeta(key, JSON.stringify(pending));
+    await this.#catalog.setMeta(key, JSON.stringify(pending));
     return pending;
   }
 
@@ -79,7 +79,9 @@ export class StreamHandoffService {
       return value?.targetProvider ? value : null;
     } catch (error) {
       this.#logger.warn?.(`Cannot read Stream handoff request for ${streamId}: ${error.message}`);
-      this.#clear(key);
+      void this.#clear(key).catch((clearError) => {
+        this.#logger.warn?.(`Cannot clear invalid Stream handoff request for ${streamId}: ${clearError.message}`);
+      });
       return null;
     }
   }
@@ -96,7 +98,7 @@ export class StreamHandoffService {
     // nor drop the package that the new Thread is waiting for.
     if (currentThreadId && currentThreadId === pending.sourceThreadId) return "";
     if (pending.targetProvider !== targetProvider) {
-      this.#clear(key);
+      await this.#clear(key);
       return "";
     }
     const stream = this.#catalog.stream?.(pending.streamId) ?? null;
@@ -121,17 +123,17 @@ export class StreamHandoffService {
       requestedAt: pending.requestedAt,
       turns,
     });
-    this.#clear(key);
+    await this.#clear(key);
     return handoff;
   }
 
   discard(streamId) {
-    this.#clear(metaKey(streamId));
+    return this.#clear(metaKey(streamId));
   }
 
-  #clear(key) {
+  async #clear(key) {
     if (!key) return;
-    if (typeof this.#catalog.deleteMeta === "function") this.#catalog.deleteMeta(key);
-    else this.#catalog.setMeta(key, "");
+    if (typeof this.#catalog.deleteMeta === "function") await this.#catalog.deleteMeta(key);
+    else await this.#catalog.setMeta(key, "");
   }
 }

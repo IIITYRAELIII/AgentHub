@@ -24,6 +24,60 @@ const DEFAULT_ROLLOUT_SESSION_SCAN_BYTES = 1024 * 1024;
 const DEFAULT_ROLLOUT_SESSION_SCAN_LINES = 4_096;
 const DEFAULT_ROLLOUT_SESSION_LINE_BYTES = 256 * 1024;
 const DEFAULT_ROLLOUT_SESSION_SCAN_MS = 1_000;
+const IMAGE_GENERATION_CALL_OWNER_LIMIT = 128;
+const AMBIGUOUS_IMAGE_GENERATION_CALL_OWNER = Object.freeze({ state: "ambiguous" });
+
+function rememberImageGenerationCallOwner(owners, callId, turnId) {
+  const normalizedCallId = String(callId ?? "").trim();
+  const normalizedTurnId = String(turnId ?? "").trim();
+  if (!normalizedCallId || !normalizedTurnId) return;
+  const currentOwner = owners.get(normalizedCallId);
+  const nextOwner = currentOwner === undefined || currentOwner === normalizedTurnId
+    ? normalizedTurnId
+    : AMBIGUOUS_IMAGE_GENERATION_CALL_OWNER;
+  owners.delete(normalizedCallId);
+  owners.set(normalizedCallId, nextOwner);
+  while (owners.size > IMAGE_GENERATION_CALL_OWNER_LIMIT) {
+    owners.delete(owners.keys().next().value);
+  }
+}
+
+function imageGenerationCallOwnerTurnId(owners, callId) {
+  const normalizedCallId = String(callId ?? "").trim();
+  const owner = normalizedCallId ? owners.get(normalizedCallId) : null;
+  return typeof owner === "string" ? owner : "";
+}
+
+function consumeImageGenerationCallOwner(owners, callId, turnId) {
+  const normalizedCallId = String(callId ?? "").trim();
+  const normalizedTurnId = String(turnId ?? "").trim();
+  if (!normalizedCallId || !normalizedTurnId) return;
+  const currentOwner = owners.get(normalizedCallId);
+  if (currentOwner === normalizedTurnId) {
+    owners.delete(normalizedCallId);
+  } else if (currentOwner !== undefined
+    && currentOwner?.state !== AMBIGUOUS_IMAGE_GENERATION_CALL_OWNER.state) {
+    owners.delete(normalizedCallId);
+    owners.set(normalizedCallId, AMBIGUOUS_IMAGE_GENERATION_CALL_OWNER);
+  }
+}
+
+function restoredImageGenerationCallOwners(value) {
+  const owners = new Map();
+  const entries = Array.isArray(value)
+    ? value.slice(-IMAGE_GENERATION_CALL_OWNER_LIMIT)
+    : [];
+  for (const entry of entries) {
+    if (!Array.isArray(entry)) continue;
+    if (entry[1]?.state === AMBIGUOUS_IMAGE_GENERATION_CALL_OWNER.state) {
+      const callId = String(entry[0] ?? "").trim();
+      if (callId) owners.set(callId, AMBIGUOUS_IMAGE_GENERATION_CALL_OWNER);
+    } else {
+      rememberImageGenerationCallOwner(owners, entry[0], entry[1]);
+    }
+  }
+  return owners;
+}
 
 function rolloutSessionCacheKey(file) {
   return path.resolve(file).toLowerCase();
@@ -201,6 +255,53 @@ function entryTurnId(entry) {
       ?? entry?.payload?.turn_id
       ?? "",
   ).trim();
+}
+
+function imageGenerationCallId(entry) {
+  const payload = entry?.payload ?? {};
+  const payloadType = String(payload.type ?? "");
+  if (entry?.type !== "response_item"
+    || !payloadType.endsWith("_call")
+    || payloadType.endsWith("_call_output")) return "";
+  const callId = String(payload.call_id ?? "").trim();
+  const name = String(payload.name ?? "").trim().toLowerCase();
+  const input = String(payload.input ?? payload.arguments ?? "");
+  return callId && (
+    name === "imagegen"
+    || name === "image_gen__imagegen"
+    || /\btools\.image_gen__imagegen\s*\(/u.test(input)
+  ) ? callId : "";
+}
+
+function generatedImagePathsFromText(value) {
+  const paths = [];
+  const pattern = /Generated images are saved to[\s\S]*?\sas\s+((?:[A-Za-z]:)?(?:\\|\/)[^"\r\n]+?\.(?:png|jpe?g|webp|gif|bmp))/giu;
+  for (const match of String(value ?? "").matchAll(pattern)) {
+    const candidate = String(match[1] ?? "").replace(/\\\\/gu, "\\").trim();
+    if (candidate) paths.push(candidate);
+  }
+  return [...new Set(paths)];
+}
+
+function generatedImageOutputPaths(entry) {
+  const payload = entry?.payload ?? {};
+  if (entry?.type === "event_msg" && payload.type === "image_generation_end") {
+    const value = String(payload.saved_path ?? "").trim();
+    return value ? [value] : [];
+  }
+  if (entry?.type !== "response_item" || ![
+    "custom_tool_call_output",
+    "customToolCallOutput",
+    "function_call_output",
+    "functionCallOutput",
+  ].includes(String(payload.type ?? ""))) return [];
+  const blocks = Array.isArray(payload.output)
+    ? payload.output
+    : Array.isArray(payload.content) ? payload.content : [];
+  return generatedImagePathsFromText(blocks
+    .filter((block) => ["input_text", "output_text", "text"].includes(String(block?.type ?? "")))
+    .map((block) => String(block?.text ?? ""))
+    .join("\n"));
 }
 
 function normalizedRolloutUsage(value) {
@@ -433,6 +534,7 @@ function createTurnAccumulator(turnId) {
   const patches = [];
   const imageGenerationCalls = new Map();
   const completedImageGenerationCalls = new Set();
+  const generatedImageSources = new Set();
   const spawnedSubagents = new Map();
 
   const accept = (entry) => {
@@ -489,22 +591,28 @@ function createTurnAccumulator(turnId) {
       model = String(entry.payload?.model ?? latestModel).trim();
       serviceTier = String(entry.payload?.service_tier ?? latestServiceTier).trim() || "default";
     }
-    if (entry?.type === "response_item"
-      && entry.payload?.type === "function_call"
-      && entry.payload?.name === "imagegen"
-      && entry.payload?.call_id
-      && exactTurnId) {
-      imageGenerationCalls.set(String(entry.payload.call_id), exactTurnId);
+    const imageCallId = imageGenerationCallId(entry);
+    if (imageCallId && exactTurnId) {
+      rememberImageGenerationCallOwner(imageGenerationCalls, imageCallId, exactTurnId);
     }
     if (entry?.type === "event_msg"
       && entry.payload?.type === "image_generation_end"
       && entry.payload?.status === "completed") {
       const callId = String(entry.payload?.call_id ?? "").trim();
-      const attributedTurnId = imageGenerationCalls.get(callId)
-        || latestResponseTurnId
-        || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
+      const attributedTurnId = exactTurnId
+        || imageGenerationCallOwnerTurnId(imageGenerationCalls, callId);
       if (callId && attributedTurnId === requestedTurnId) {
         completedImageGenerationCalls.add(callId);
+      }
+    }
+    const generatedPaths = generatedImageOutputPaths(entry);
+    if (generatedPaths.length) {
+      const callId = String(entry.payload?.call_id ?? "").trim();
+      const attributedTurnId = exactTurnId
+        || imageGenerationCallOwnerTurnId(imageGenerationCalls, callId);
+      if (attributedTurnId === requestedTurnId) {
+        for (const generatedPath of generatedPaths) generatedImageSources.add(generatedPath);
+        consumeImageGenerationCallOwner(imageGenerationCalls, callId, attributedTurnId);
       }
     }
     const spawned = subagentActivity(entry);
@@ -587,6 +695,10 @@ function createTurnAccumulator(turnId) {
       spawnedSubagents: [...spawnedSubagents.values()],
       toolMetricsKnown: true,
       imageGenerationCount,
+      generatedImageSources: [...generatedImageSources].map((value) => ({
+        type: "generated-path",
+        value,
+      })),
       estimatedCredits: imageGenerationCount * IMAGE_GENERATION_ESTIMATE_CREDITS,
       estimateKind: imageGenerationCount > 0 ? "imagegen-default" : "",
       limitSamples,
@@ -904,6 +1016,7 @@ function createHistoricalTurn(turnId) {
     mcpCalls: new Map(),
     spawnedSubagents: new Map(),
     imageGenerationCalls: new Set(),
+    generatedImageSources: new Set(),
     estimatedCredits: 0,
     estimateKind: "",
     model: "",
@@ -938,6 +1051,13 @@ function restoreHistoricalTurn(value) {
       spawned?.threadId ? [[String(spawned.threadId), spawned]] : []
     ))),
     imageGenerationCalls: new Set(value?.imageGenerationCalls ?? []),
+    generatedImageSources: new Set((value?.generatedImageSources ?? []).flatMap((source) => {
+      const candidate = typeof source === "string"
+        ? source
+        : source?.type === "generated-path" ? source.value : "";
+      const normalized = String(candidate ?? "").trim();
+      return normalized ? [normalized] : [];
+    })),
     limitSamples: mergeUsageLimitSamples(value?.limitSamples),
   };
 }
@@ -952,7 +1072,8 @@ function historicalTurnResult(turn, latestModel, latestServiceTier) {
     && !turn.patches.length
     && !turn.mcpCalls.size
     && !turn.spawnedSubagents.size
-    && !turn.imageGenerationCalls.size;
+    && !turn.imageGenerationCalls.size
+    && !turn.generatedImageSources.size;
   return {
     ...turn,
     changedFiles: [...turn.changedFiles],
@@ -961,6 +1082,10 @@ function historicalTurnResult(turn, latestModel, latestServiceTier) {
     mcpCalls: [...turn.mcpCalls.values()],
     spawnedSubagents: [...turn.spawnedSubagents.values()],
     imageGenerationCalls: [...turn.imageGenerationCalls],
+    generatedImageSources: [...turn.generatedImageSources].map((value) => ({
+      type: "generated-path",
+      value,
+    })),
     toolMetricsKnown: true,
     imageGenerationCount,
     estimatedCredits: imageGenerationCount * IMAGE_GENERATION_ESTIMATE_CREDITS,
@@ -988,7 +1113,10 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
     .filter(Boolean);
   const turns = new Map(restoredTurns.map((turn) => [turn.turnId, turn]));
   const activeTurnIds = new Set(resumeState?.activeTurnIds ?? restoredTurns.map((turn) => turn.turnId));
-  const imageGenerationCalls = new Map(resumeState?.imageGenerationCalls ?? []);
+  const imageGenerationCalls = restoredImageGenerationCallOwners(
+    resumeState?.imageGenerationCalls,
+  );
+  const observedGeneratedImages = new Map();
   const knownSkills = new Set(resumeState?.knownSkills ?? []);
   let latestResponseTurnId = String(resumeState?.latestResponseTurnId ?? "").trim();
   let latestStartedTurnId = String(resumeState?.latestStartedTurnId ?? "").trim();
@@ -1089,23 +1217,37 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
         entry.payload?.service_tier ?? latestServiceTier,
       ).trim() || "default";
     }
-    if (entry?.type === "response_item"
-      && entry.payload?.type === "function_call"
-      && entry.payload?.name === "imagegen"
-      && entry.payload?.call_id
-      && exactTurnId) {
-      imageGenerationCalls.set(String(entry.payload.call_id), exactTurnId);
+    const imageCallId = imageGenerationCallId(entry);
+    if (imageCallId && exactTurnId) {
+      rememberImageGenerationCallOwner(imageGenerationCalls, imageCallId, exactTurnId);
     }
     if (entry?.type === "event_msg"
       && entry.payload?.type === "image_generation_end"
       && entry.payload?.status === "completed") {
       const callId = String(entry.payload?.call_id ?? "").trim();
-      const attributedTurnId = imageGenerationCalls.get(callId)
-        || latestResponseTurnId
-        || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
-      const turn = ensureTurn(attributedTurnId);
+      const attributedTurnId = exactTurnId
+        || imageGenerationCallOwnerTurnId(imageGenerationCalls, callId);
+      const turn = turns.get(attributedTurnId) ?? (exactTurnId ? ensureTurn(exactTurnId) : null);
       if (turn && callId) turn.imageGenerationCalls.add(callId);
       touch(turn, timestamp);
+    }
+    const generatedPaths = generatedImageOutputPaths(entry);
+    if (generatedPaths.length) {
+      const callId = String(entry.payload?.call_id ?? "").trim();
+      const ownerTurnId = exactTurnId
+        || imageGenerationCallOwnerTurnId(imageGenerationCalls, callId)
+        || "";
+      const ownerTurn = turns.get(ownerTurnId) ?? (exactTurnId ? ensureTurn(exactTurnId) : null);
+      if (ownerTurnId) {
+        const observed = observedGeneratedImages.get(ownerTurnId) ?? new Set();
+        for (const generatedPath of generatedPaths) {
+          ownerTurn?.generatedImageSources.add(generatedPath);
+          observed.add(generatedPath);
+        }
+        observedGeneratedImages.set(ownerTurnId, observed);
+        touch(ownerTurn, timestamp);
+        consumeImageGenerationCallOwner(imageGenerationCalls, callId, ownerTurnId);
+      }
     }
     if (exactTurn) {
       for (const name of skillReads(entry, knownSkills)) exactTurn.skillsUsed.add(name);
@@ -1205,13 +1347,15 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
       source: "",
     },
     turns: turnResults,
+    attachmentCandidates: [...observedGeneratedImages].map(([turnId, paths]) => ({
+      turnId,
+      generatedImageSources: [...paths].map((value) => ({ type: "generated-path", value })),
+    })),
     nextOffset,
     resumeState: {
       turns: activeResults,
       activeTurnIds: [...activeTurnIds],
-      imageGenerationCalls: [...imageGenerationCalls.entries()].filter(([, turnId]) => (
-        activeTurnIds.has(turnId)
-      )),
+      imageGenerationCalls: [...imageGenerationCalls.entries()],
       knownSkills: [...knownSkills],
       latestResponseTurnId,
       latestStartedTurnId,

@@ -700,6 +700,25 @@ export class ReleaseGitWorkspaceService {
     });
   }
 
+  async frozenCandidate(projectRoot) {
+    const primary = await primarySnapshot(projectRoot);
+    const layout = this.#layout(primary.root);
+    const checkpoint = await readJson(layout.checkpointFile);
+    if (!checkpoint?.planRevision || !checkpoint?.manifestHash
+        || !checkpoint?.baseCommit || !checkpoint?.preReleaseHead) {
+      throw new Error(`release checkpoint is incomplete: ${layout.checkpointFile}`);
+    }
+    return {
+      repositoryRoot: primary.root,
+      releaseRoot: layout.releaseRoot,
+      checkpointFile: layout.checkpointFile,
+      planRevision: String(checkpoint.planRevision),
+      manifestHash: String(checkpoint.manifestHash),
+      baseCommit: String(checkpoint.baseCommit),
+      preReleaseHead: String(checkpoint.preReleaseHead),
+    };
+  }
+
   async synchronizePublishedPrimary({ projectRoot, publishedRevision, planRevision = null } = {}) {
     const target = String(publishedRevision ?? "").trim();
     const initial = await primarySnapshot(projectRoot);

@@ -1,4 +1,4 @@
-# ADR-0019: Await-only PreRelease from effective dev deltas
+# ADR-0024: Await-only PreRelease from effective dev deltas
 
 ## Status
 
