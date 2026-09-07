@@ -14348,6 +14348,9 @@ function virtualUsageShare(value, total, known = true) {
 function virtualStreamUsage(stream, workspace) {
   const usage = document.createElement("span");
   usage.dataset.workLogStreamUsage = "";
+  const creditShare = stream.knownCredits
+    ? virtualUsageShare(stream.credits, workspace.credits, workspace.knownCredits)
+    : "";
   usage.append(
     stream.knownDurations
       ? el("span", {
@@ -14362,9 +14365,9 @@ function virtualStreamUsage(stream, workspace) {
     stream.knownCredits
       ? el("span", { "data-work-log-stream-credits": "" }, [
         usageBadge(formatUsageValue(stream.credits), stream.credits),
-        document.createTextNode(virtualUsageShare(stream.credits, workspace.credits, workspace.knownCredits)),
       ])
       : el("span", { text: "расход —" }),
+    el("span", { "data-work-log-stream-credit-share": "", text: creditShare }),
   );
   return usage;
 }
