@@ -19,13 +19,23 @@ Public endpoints:
 - `POST /api/enrollment-code`
 - `POST /api/usage`
 - `POST /api/snapshot`
+- `POST /api/changes`
 
 `/api/usage` verifies `X-AgentHub-Device-Id` and `X-AgentHub-Signature` against
 the enrolled Ed25519 public key, then upserts only events owned by that device.
 `/api/snapshot` uses the same headers and returns the shared pseudonymized
 snapshot for import on another Agent Hub installation.
+`/api/changes` uses the same headers and returns records with
+`server_revision > sinceRevision`; old clients may keep using `/api/snapshot`.
 `/api/enrollment-code` also uses the same signed headers and returns a new
 one-time enrollment code; only an already enrolled device can create it.
+
+Snapshot and changes responses include `usageFactSchemaVersion`,
+`datasetGeneration`, `serverRevision` and a deterministic `factSummary` over the
+complete normalized fact set. Clients bind their pull cursor to the server
+generation and local store generation, and run a full reconciliation when that
+tuple is missing or changes. A request body with `summaryOnly: true` returns the
+same metadata with `events: []` for bounded anti-entropy checks.
 
 Local Agent Hub client flow:
 
