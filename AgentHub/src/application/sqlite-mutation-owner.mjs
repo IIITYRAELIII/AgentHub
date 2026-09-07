@@ -29,7 +29,7 @@ const TASK_MUTATIONS = new Set([
   "cancelPreparedStart", "markStarted", "complete", "setWorkflowStatus", "claim",
   "requestWorkflowStatus", "beginLifecycleTransition", "failLifecycleTransition",
   "commitWorkflowTransition", "finalizeCleanupTransition", "recordTaskTurn",
-  "recordTaskGitReference", "completeRelease", "remove", "setCaptureEnabled",
+  "recordTaskGitReference", "adoptLegacyGitReference", "completeRelease", "remove", "setCaptureEnabled",
 ]);
 
 const TASK_READS = new Set([
