@@ -9743,29 +9743,6 @@ html[data-surface="mobile"] .chat-stop-bottom > span {
   overflow-wrap: anywhere;
 }
 
-.quick-messages-settings-control {
-  align-items: center;
-  display: flex;
-  gap: 0.75rem;
-  justify-content: space-between;
-  min-width: 0;
-}
-
-.quick-messages-settings-control .setting-value {
-  color: var(--text-muted);
-  flex: 1 1 auto;
-  font-size: 0.78rem;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.quick-messages-settings-control > .chip-button {
-  flex: 0 0 auto;
-  justify-content: center;
-}
-
 .setting-field select option {
   background: var(--bg);
   color: var(--text);
