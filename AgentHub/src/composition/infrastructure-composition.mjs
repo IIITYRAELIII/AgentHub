@@ -61,6 +61,7 @@ import {
   ensureDashBotTerraStream,
 } from "../providers/codex/codex-terra-voice-transcriber.mjs";
 import { RuntimeNotificationController } from "../runtime/runtime-notification-controller.mjs";
+import { readPublicationState } from "../infrastructure/persistence/publication-state.mjs";
 import { readTestContourStatus, startTestContour } from "../runtime/test-contour-manager.mjs";
 import { sentryDiagnostics } from "../infrastructure/diagnostics/sentry-diagnostics.mjs";
 import { createCommandTraceComposition } from "./command-trace-composition.mjs";
@@ -374,11 +375,13 @@ export async function createHubInfrastructure({
       ...options,
     }),
     readTestContourStatus,
+    readPublicationState,
   });
   const workspaceReleaseService = new WorkspaceReleaseService({
     store: taskBoardStore,
     releasePlanner: taskReleasePlanner,
     releaseGitWorkspaces,
+    releasePreflight: workspaceReleasePreflight,
     verifyPublication: verifyWorkspaceReleasePublication,
   });
   const hubMcpService = new HubMcpService({

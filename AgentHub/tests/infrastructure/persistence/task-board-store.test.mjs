@@ -627,7 +627,7 @@ test("Await Tasks expose only their immutable Git references to the release plan
   assert.deepEqual(releaseTasks.find((task) => task.id === blocked.id).gitReferences, []);
 });
 
-test("a new Await request clears stale evidence until the Task branch is integrated again", async (t) => {
+test("a new Await request preserves accepted evidence until replacement integration succeeds", async (t) => {
   const store = await fixture(t);
   const projectRoot = path.resolve("D:/repo");
   const task = store.create({ text: "Retry integration" });
@@ -648,7 +648,8 @@ test("a new Await request clears stale evidence until the Task branch is integra
     resultSnapshot: { repoRoot: projectRoot, tree: "b".repeat(40) },
   });
   store.setWorkflowStatus(task.id, "awaiting_implementation");
-  assert.equal(store.task(task.id).gitReferences.length, 1);
+  const accepted = store.task(task.id).gitReferences;
+  assert.equal(accepted.length, 1);
 
   store.requestWorkflowStatus(task.id, {
     status: "awaiting_implementation",
@@ -658,7 +659,7 @@ test("a new Await request clears stale evidence until the Task branch is integra
     operationId: identity.operationId,
   });
 
-  assert.deepEqual(store.task(task.id).gitReferences, []);
+  assert.deepEqual(store.task(task.id).gitReferences, accepted);
 });
 
 test("rolling a Task back clears its pending awaiting intent", async (t) => {
@@ -886,9 +887,19 @@ test("release completion CAS-checks the exact Task Git reference", async (t) => 
     expectedPlanRevision: plan.revision,
     plan,
     verificationEvidence: { publishedRevision: "c".repeat(40) },
+    awaitRebuild: {
+      planRevision: plan.revision,
+      fallbackProjectRoots: [projectRoot],
+    },
   });
   assert.deepEqual(result.released[0].gitReferences, candidate.gitReferences);
   assert.equal(store.task(task.id).workflowStatus, "done");
+  assert.deepEqual(store.awaitRebuildPending(identity.workspaceId), {
+    planRevision: plan.revision,
+    fallbackProjectRoots: [projectRoot],
+  });
+  assert.equal(store.clearAwaitRebuildPending(identity.workspaceId), true);
+  assert.equal(store.awaitRebuildPending(identity.workspaceId), null);
 });
 
 function createLegacyReleaseSchema(database) {

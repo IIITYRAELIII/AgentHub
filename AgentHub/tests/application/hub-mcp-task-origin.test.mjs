@@ -82,7 +82,11 @@ test("hub_task_start carries the audited source Stream into message intake", asy
     attachmentDirectory: "D:/attachments",
     secret: "test-secret",
     releasePlanner: { plan: async () => ({}) },
-    releasePreflight: { preflight: async () => ({}) },
+    releasePreflight: {
+      preflight: async () => ({}),
+      prepareAwaitSet: async () => ({}),
+      withAwaitTransition: async (_workspaceId, operation) => operation(),
+    },
     releaseCompleter: { completeRelease: async () => ({}) },
   });
   service.setActiveRuns(() => [{

@@ -485,8 +485,74 @@ export class TaskGitWorkspaceService {
     return {
       projectRoot: repoRoot,
       branch: storedBranch,
+      baseCommit,
       resultCommit: acceptedCommit,
       changedFiles: changedFilesFromNameStatus(diff, repoRoot),
+    };
+  }
+
+  async releaseIntegrationEvidence({ projectRoot, tasks = [] } = {}) {
+    const dev = await this.prepareDev(projectRoot);
+    const firstParentHistory = String(await runGit([
+      "log", "--first-parent", "--reverse", "--format=%H%x00%P", dev.headCommit,
+    ], { cwd: dev.projectRoot })).split(/\r?\n/u).filter(Boolean).map((line, order) => {
+      const [commit, parentsText = ""] = line.split("\0");
+      return { commit, parents: parentsText.split(" ").filter(Boolean), order };
+    });
+    const claimedIntegrations = new Map();
+    const resolvedTasks = [];
+    for (const task of tasks) {
+      const taskRevision = Number(task.taskRevision);
+      if (!Number.isInteger(taskRevision) || taskRevision < 1) {
+        throw new Error(`Task ${task.taskId} requires an exact positive revision for release integration evidence`);
+      }
+      const evidence = await this.releaseEvidence(task);
+      const lineage = new Set(String(await runGit([
+        "rev-list", "--first-parent", evidence.resultCommit, `^${evidence.baseCommit}`,
+      ], { cwd: dev.projectRoot })).split(/\r?\n/u).filter(Boolean));
+      const integrations = firstParentHistory.filter((entry) => (
+        entry.parents.slice(1).some((parent) => lineage.has(parent))
+      )).map((entry) => ({
+        commit: entry.commit,
+        parent: entry.parents[0],
+        order: entry.order,
+      }));
+      const resultIntegrated = await gitMaybe([
+        "merge-base", "--is-ancestor", evidence.resultCommit, dev.headCommit,
+      ], { cwd: dev.projectRoot }) !== null;
+      if (!resultIntegrated) {
+        throw new Error(`Task result commit ${evidence.resultCommit} is not integrated into dev ${dev.headCommit}`);
+      }
+      if (!integrations.length) {
+        const mainCommit = await preferredMainCommit(evidence.projectRoot);
+        const includedInMain = await gitMaybe([
+          "merge-base", "--is-ancestor", evidence.resultCommit, mainCommit,
+        ], { cwd: dev.projectRoot }) !== null;
+        if (!includedInMain) {
+          throw new Error(`Task ${task.taskId} has no exact first-parent integration in dev`);
+        }
+      }
+      for (const integration of integrations) {
+        const owner = claimedIntegrations.get(integration.commit);
+        if (owner && owner !== task.taskId) {
+          throw new Error(`dev integration ${integration.commit} is ambiguously owned by Tasks ${owner} and ${task.taskId}`);
+        }
+        claimedIntegrations.set(integration.commit, task.taskId);
+      }
+      resolvedTasks.push({
+        taskId: String(task.taskId),
+        taskRevision,
+        resultCommit: evidence.resultCommit,
+        integrations,
+      });
+    }
+    return {
+      ...dev,
+      tasks: resolvedTasks.sort((left, right) => (
+        (left.integrations[0]?.order ?? Number.MAX_SAFE_INTEGER)
+        - (right.integrations[0]?.order ?? Number.MAX_SAFE_INTEGER)
+        || left.taskId.localeCompare(right.taskId)
+      )),
     };
   }
 

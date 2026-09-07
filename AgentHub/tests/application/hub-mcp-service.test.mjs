@@ -22,10 +22,12 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     ["task-current", {
       id: "task-current", title: "Current", description: "", bucket: "workspace",
       status: "open", workflowStatus: "new", workspaceId: "workspace-1", streamId: null, boardOrder: 0,
+      revision: 1,
     }],
     ["task-foreign", {
       id: "task-foreign", title: "Foreign", description: "", bucket: "workspace",
       status: "open", workflowStatus: "new", workspaceId: "workspace-2", streamId: null, boardOrder: 0,
+      revision: 1,
     }],
   ]);
   const workspaceCatalog = {
@@ -130,9 +132,15 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
         status: "started", workflowStatus: "in_progress", streamId, claimedTurnId: turnId, gitBaseline,
       });
     },
-    requestWorkflowStatus: ({ id, status, turnId }) => Object.assign(tasks.get(id), {
-      workflowStatus: status, requestedWorkflowStatus: status, requestedTurnId: turnId,
-    }),
+    requestWorkflowStatus: ({ id, status, turnId, expectedRevision, expectedStatus }) => {
+      const task = tasks.get(id);
+      if (expectedRevision != null && task.revision !== expectedRevision) throw new Error("Task revision changed");
+      if (expectedStatus != null && task.workflowStatus !== expectedStatus) throw new Error("Task status changed");
+      return Object.assign(task, {
+        workflowStatus: status, requestedWorkflowStatus: status, requestedTurnId: turnId,
+        revision: task.revision + 1,
+      });
+    },
     recordTaskTurn: ({ taskId, operationId, changedFiles, branch, resultSnapshot }) => {
       taskEvidenceCalls.push({ taskId, operationId, changedFiles, branch, resultSnapshot });
       return Object.assign(tasks.get(taskId), {
@@ -143,6 +151,7 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
       taskEvidenceCalls.push({ taskId, projectRoot: root, branch, resultSnapshot });
       return Object.assign(tasks.get(taskId), {
         gitReferences: [{ projectRoot: root, branch, resultCommit: resultSnapshot.tree }],
+        revision: tasks.get(taskId).revision + 1,
       });
     },
     adoptLegacyGitReference: (options) => {
@@ -185,6 +194,7 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
   };
   const releaseCalls = [];
   const preflightCalls = [];
+  const awaitSetCalls = [];
   const releasePlanWorkspaceIds = [];
   const taskGitPrepareCalls = [];
   const taskGitWorkspaces = {
@@ -233,6 +243,17 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     }),
     cleanup: async () => ({ removed: 1 }),
   };
+  const releasePreflight = {
+    withAwaitTransition: async (_workspaceId, operation) => operation(),
+    prepareAwaitSet: async (options) => {
+      awaitSetCalls.push(options);
+      return { ...options, rebuilt: true, releaseCandidates: [] };
+    },
+    preflight: async (options) => {
+      preflightCalls.push(options);
+      return { ...options, testContour: { running: true, headCommit: "dev-head" } };
+    },
+  };
   const service = new HubMcpService({
     workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret: "secret",
     taskGitWorkspaces,
@@ -242,12 +263,7 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
         return { workspaceId, revision: "plan-1", candidates: [], ready: [], draft: [], blocked: [], conflicts: [] };
       },
     },
-    releasePreflight: {
-      preflight: async (options) => {
-        preflightCalls.push(options);
-        return { ...options, testContour: { running: true, headCommit: "dev-head" } };
-      },
-    },
+    releasePreflight,
     releaseCompleter: {
       completeRelease: async (options) => {
         releaseCalls.push(options);
@@ -298,8 +314,10 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     taskLaunchCalls,
     releaseCalls,
     preflightCalls,
+    awaitSetCalls,
     releasePlanWorkspaceIds,
     taskGitWorkspaces,
+    releasePreflight,
     sentMessages,
     historyRecordsByThread,
     activeRun,
@@ -568,7 +586,7 @@ test("release-enabled Task statuses can be changed and rolled back directly", as
   assert.equal(done.workflowStatus, "done");
 });
 
-test("Await status remains selected and no evidence is recorded when the Task branch conflicts with dev", async (context) => {
+test("Await transition stays in Test when the Task branch conflicts with dev", async (context) => {
   const { service, token, taskGitWorkspaces, taskEvidenceCalls } = await fixture(context, { releaseWorkflowEnabled: true });
   taskGitWorkspaces.snapshotAndMerge = async ({ taskId }) => ({
     snapshot: {
@@ -597,10 +615,33 @@ test("Await status remains selected and no evidence is recorded when the Task br
     status: "awaiting_implementation",
   });
 
-  assert.equal(result.workflowStatus, "awaiting_implementation");
+  assert.equal(result.workflowStatus, "testing");
   assert.equal(result.gitIntegration.integrated, false);
   assert.deepEqual(result.gitIntegration.conflicts, ["app.mjs"]);
+  assert.match(result.preReleaseIntegration.error, /requires successful dev integration/u);
   assert.equal(taskEvidenceCalls.length, 0);
+});
+
+test("failed removal from Await restores membership instead of leaving stale PreRelease", async (context) => {
+  const { service, token, tasks, releasePreflight } = await fixture(context, { releaseWorkflowEnabled: true });
+  Object.assign(tasks.get("task-current"), {
+    status: "started",
+    workflowStatus: "awaiting_implementation",
+    streamId: "stream-1",
+    gitReferences: [{ projectRoot: "D:/repo", branch: "HUB-1", resultCommit: "a".repeat(40) }],
+  });
+  releasePreflight.prepareAwaitSet = async () => { throw new Error("candidate rebuild failed"); };
+
+  const result = await service.call("hub_task_status_update", {
+    context_token: token,
+    request_id: "task-await-removal-failure",
+    task_id: "task-current",
+    status: "in_progress",
+  });
+
+  assert.equal(result.workflowStatus, "awaiting_implementation");
+  assert.equal(tasks.get("task-current").workflowStatus, "awaiting_implementation");
+  assert.match(result.preReleaseIntegration.error, /candidate rebuild failed/u);
 });
 
 test("Task status integration uses its executor Stream root without reassigning it", async (context) => {
@@ -751,10 +792,12 @@ test("HubMcpService exposes cursor events and publication-gated release completi
   assert.equal(events.nextSequence, 5);
   const preflight = await service.call("hub_release_preflight", {
     context_token: token, request_id: "preflight-1", expected_plan_revision: "plan-1",
+    approved_local_main_commit: "local-main", approved_origin_main_commit: "origin-main",
   });
   assert.equal(preflight.testContour.headCommit, "dev-head");
   assert.deepEqual(preflightCalls[0], {
     workspaceId: "workspace-1", expectedPlanRevision: "plan-1", conflictsResolved: false,
+    approvedLocalMainCommit: "local-main", approvedOriginMainCommit: "origin-main",
   });
   const release = await service.call("hub_release_complete", {
     context_token: token, request_id: "release-1", expected_revision: "abc", expected_plan_revision: "plan-1",

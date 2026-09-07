@@ -63,14 +63,16 @@ fallbacks.
 A successful Test integration records only the deterministic Task branch and
 its accepted immutable result commit on the Task. The base ref and changed-file
 set remain Git data and are derived when a release plan is read. A conflict is
-aborted and returned with exact conflicting paths. Git failure never rejects the
-requested workflow-status transition.
+aborted and returned with exact conflicting paths. A failed Test integration is
+reported without destroying either branch. A failed Await integration keeps the
+Task in Test.
 
-Moving a Task to `awaiting_implementation` records that its exact immutable
-result is accepted for a future release. The status transition does not build,
-rebuild or mutate `PreRelease`. A ready Await Task requires a valid exact result
-and successful `dev` integration; invalid or missing evidence is explicitly
-blocked from release without rejecting the selected Task status.
+Moving a Task to `awaiting_implementation` requires a valid exact result,
+successful `dev` integration and successful atomic rebuild of the Await-only
+`PreRelease`. An Await result must be reproducible without code owned only by a
+Task in Test, In Progress or New. Such a dependency is prohibited: Agent Hub
+does not silently promote the dependency, keeps the dependent Task in Test and
+requires an explicit user decision, normally consolidation into one Task.
 
 ## Task Git reference and CAS
 
@@ -99,18 +101,43 @@ derives repository-relative operations from the internal base ref to that exact
 commit. Tasks with a valid non-empty Git result are candidates; Tasks missing or
 invalid references are returned as `blocked` and are never silently omitted.
 Open `done` Tasks remain an Architect audit set. Plan revision hashes current
-Task IDs, row revisions and Git references. Conflict detection reads the
-Git-derived plan projection, never work-log files or a shared mutable tree.
+Task IDs, row revisions and Git references. File-overlap detection reads the
+Git-derived plan projection and is diagnostic, not a conflict verdict. The
+integration authority is the exact sequence of first-parent `dev` merge deltas
+owned by each accepted result.
 
-At explicit release start, Architect reads and selects the exact ready Await
-set, updates from `origin/main`, builds `PreRelease` from current `main` plus the
-selected exact Task results, and then freezes the exact release-plan revision,
-included Await Task IDs and resulting `PreRelease` head. `dev` is never merged
-into `PreRelease`; Test-only work cannot enter a release. Architect writes one
-consolidated `CHANGELOG.md` entry in `PreRelease` when that file exists,
-validates the exact frozen revision, integrates it into `main`, and publishes
-`main`. Later Await Tasks are not silently added. Only a Stream with
-`settings.architect=true` may record verified release completion.
+`PreRelease` is rebuilt from the approved `main` and exactly the current Await
+set whenever an accepted result changes membership or identity. The builder
+applies every selected Task's effective first-parent `dev` integration deltas in
+their original `dev` order and writes one aggregate commit. It never merges
+`dev` and never replays broad Task result snapshots. Therefore Test-only work is
+excluded while compatible edits to the same file compose normally; an actual
+delta-application failure is a conflict and blocks Await.
+
+Await membership changes are serialized by one Workspace release lock. The
+Task status write is CAS-guarded by its exact row revision and prior status, and
+candidate preparation rechecks the complete plan revision before publishing
+the result. Entering Await rolls back to Test when preparation fails; removal
+from Await restores the prior Await membership when rebuilding the remaining
+set fails. Concurrent or stale transitions cannot publish an older plan over a
+newer Await set.
+
+At explicit release start, Architect fetches without changing local `main` and
+uses `publication-state.json.revision` from the last successful publication as
+the comparison baseline. It compares local `main`, `origin/main` and the
+proposed release base. Every commit reachable from either main since that exact
+published revision is disclosed to the user with commit identity, authors and
+committers, available GitHub logins, signatures, files and impact. Preflight
+returns `main_review_required` before Test Contour refresh or candidate
+materialization until the caller repeats the exact local and origin SHA values
+approved by the user. No pull, merge or rebase occurs before the user's
+include/exclude decision.
+Architect then freezes the approved main SHA, plan revision, included Task IDs
+and revisions, result commits, dev integration commits, aggregate PreRelease
+head and candidate head. A consolidated `CHANGELOG.md` entry is added to that
+candidate when the file exists. Immediately before push, `origin/main` is
+fetched again; movement from the approved SHA stops publication for a new user
+decision. Only a Stream with `settings.architect=true` may publish or complete.
 
 The frozen candidate remains immutable. If an included Task changes, is
 withdrawn or is excluded before completion, its Task revision or Git reference
@@ -128,8 +155,16 @@ commit is an ancestor of the published `main` revision. It does not compare a
 second stored blob manifest. Once verified, only included Tasks are completed
 and their managed branches and worktrees may be removed. Published `main` is
 incorporated into `dev` without discarding later Test work. Remaining Await
-Tasks stay accepted for the next explicit release; Agent Hub does not prebuild a
-mutable next candidate.
+Tasks stay accepted for the next explicit release and the mutable Await-only
+`PreRelease` is rebuilt from them.
+
+Release completion records a pending Await-rebuild marker in the same database
+transaction that completes the published Tasks. A failed post-publication
+rebuild does not report the publication as failed: completion returns an exact
+`retry_required` result while retaining that durable marker. Repeating release
+completion detects the marker before plan validation, retries only the remaining
+Await rematerialization, never completes the published Tasks twice, and clears
+the marker only after success.
 
 ## Test Contour
 
@@ -243,13 +278,18 @@ Git-reference authority.
 
 `PreRelease` is materialized only in an Agent Hub-owned standalone clone under
 runtime data. Its Git common directory is distinct from the registered primary
-Workspace. It imports the exact frozen Task results without sharing branch
+Workspace. It composes exact effective `dev` integration deltas without sharing branch
 ownership; a linked worktree is never a release holder. Publication entrypoints
 require the independent-clone marker and reject the primary Workspace.
 
 The clone writes a content-addressed execution manifest and retry checkpoint
-containing the exact plan revision, `origin/main` base, Task IDs, result commits
-and `PreRelease` head. This is audit evidence, not a second readiness authority.
+containing the exact plan revision, approved `origin/main` base, Task IDs,
+Task row revisions, result commits, ordered integration commits and parents,
+and `PreRelease` head. Candidate construction happens on a detached temporary
+state. Only a completely applied and revalidated candidate may replace the
+`PreRelease` ref and checkpoint through a compare-and-set update. Any conflict,
+validation failure or failed ref/checkpoint transition preserves the previous
+good branch and checkpoint. This evidence is not a second readiness authority.
 Retry may reuse it only when the complete frozen identity and head match.
 
 The registered primary must own and remain attached to `refs/heads/main` before

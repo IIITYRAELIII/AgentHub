@@ -415,6 +415,8 @@ export class HubMcpService {
     }
     requiredMethod(workLog, "threadTurns");
     requiredMethod(releasePreflight, "preflight");
+    requiredMethod(releasePreflight, "prepareAwaitSet");
+    requiredMethod(releasePreflight, "withAwaitTransition");
     requiredMethod(releaseCompleter, "completeRelease");
     this.workspaceCatalog = workspaceCatalog;
     this.taskBoard = taskBoard;
@@ -537,7 +539,7 @@ export class HubMcpService {
       tool("hub_task_claim", "Bind a Dashboard Task to the exact current provider turn, assign its dedicated Git branch/worktree, and make the current Stream its executor. Continue repository work only in the returned gitWorkspace.projectRoot.", {
         task_id: { type: "string" },
       }, ["task_id"]),
-      tool("hub_task_status_update", "Always change a Dashboard Task to any valid workflow status. Await snapshots its Task branch and merges it into dev; Git conflicts are reported but never block the status transition. Done remains visible and does not close the Task.", {
+      tool("hub_task_status_update", "Change a Dashboard Task workflow status. Await snapshots into dev and atomically rebuilds the Await-only PreRelease; failed dev or PreRelease integration keeps the Task in Test. Done remains visible and does not close the Task.", {
         task_id: { type: "string" },
         status: { type: "string", enum: ["new", "in_progress", "testing", "awaiting_implementation", "done"] },
       }, ["task_id", "status"]),
@@ -570,6 +572,8 @@ export class HubMcpService {
       tool("hub_release_preflight", "Refresh Test Contour from dev and verify the exact selected Task results are integrated before release.", {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
         expected_plan_revision: { type: "string", description: "Exact revision returned by hub_release_plan_get." },
+        approved_local_main_commit: { type: "string", description: "Exact local main SHA after the user reviewed every commit since the last successful publication." },
+        approved_origin_main_commit: { type: "string", description: "Exact origin/main SHA after the user reviewed every commit since the last successful publication." },
         conflicts_resolved: { type: "boolean", description: "True only after the Architect explicitly resolves every reported overlap." },
       }, ["expected_plan_revision"]),
       tool("hub_release_complete", "Complete a release only after clean main revisions and explicit deployment verification.", {
@@ -990,14 +994,27 @@ export class HubMcpService {
     return active[0];
   }
 
-  async #updateTaskWorkflowStatus(context, { task_id: taskId, status } = {}) {
+  async #updateTaskWorkflowStatus(context, input = {}) {
+    const task = this.#task(context, input.task_id);
+    const workflowStatus = requiredText(input.status, "task workflow status", 40);
+    if (task.workflowStatus === "awaiting_implementation" || workflowStatus === "awaiting_implementation") {
+      return this.releasePreflight.withAwaitTransition(task.workspaceId, () => (
+        this.#updateTaskWorkflowStatusLocked(context, input)
+      ));
+    }
+    return this.#updateTaskWorkflowStatusLocked(context, input);
+  }
+
+  async #updateTaskWorkflowStatusLocked(context, { task_id: taskId, status } = {}) {
     const task = this.#task(context, taskId);
+    const wasAwaiting = task.workflowStatus === "awaiting_implementation";
     const workflowStatus = requiredText(status, "task workflow status", 40);
+    const affectsAwait = wasAwaiting || workflowStatus === "awaiting_implementation";
     let gitWorkspace = null;
     let preparationError = null;
     const snapshotsResult = ["testing", "awaiting_implementation", "done"].includes(workflowStatus);
     const targetStreamId = String(task.streamId ?? "").trim() || context.streamId;
-    const projectRoot = snapshotsResult && targetStreamId
+    const projectRoot = (snapshotsResult || wasAwaiting) && targetStreamId
       ? this.#taskProjectRoot(context, targetStreamId, task.workspaceId)
       : null;
     if (snapshotsResult && projectRoot && this.taskGitWorkspaces) {
@@ -1012,14 +1029,48 @@ export class HubMcpService {
     const updated = this.taskBoard.requestWorkflowStatus({
       id: task.id,
       status: workflowStatus,
+      expectedRevision: task.revision,
+      expectedStatus: task.workflowStatus,
       provider: context.provider,
       threadId: context.threadId,
       turnId: null,
     });
-    if (!snapshotsResult) return compactTask(updated);
+    let transitionTask = updated;
+    const rollback = () => {
+      const current = this.#task(context, task.id);
+      if (!affectsAwait || current.workflowStatus !== workflowStatus) return current;
+      return this.taskBoard.requestWorkflowStatus({
+        id: task.id,
+        status: workflowStatus === "awaiting_implementation" ? "testing" : task.workflowStatus,
+        expectedRevision: current.revision,
+        expectedStatus: workflowStatus,
+        provider: context.provider,
+        threadId: context.threadId,
+        turnId: null,
+      });
+    };
+    if (!snapshotsResult) {
+      if (wasAwaiting) {
+        try {
+          const preReleaseIntegration = await this.releasePreflight.prepareAwaitSet({
+            workspaceId: task.workspaceId,
+            fallbackProjectRoots: projectRoot ? [projectRoot] : [],
+          });
+          return { ...compactTask(updated), preReleaseIntegration };
+        } catch (error) {
+          const rolledBack = rollback();
+          return {
+            ...compactTask(rolledBack),
+            preReleaseIntegration: { rebuilt: false, error: error.message },
+          };
+        }
+      }
+      return compactTask(updated);
+    }
     if (!gitWorkspace) {
+      const current = affectsAwait ? rollback() : updated;
       return {
-        ...compactTask(updated),
+        ...compactTask(current),
         gitIntegration: {
           integrated: false,
           error: preparationError?.message ?? "Task Git workspace is unavailable for this turn",
@@ -1035,14 +1086,47 @@ export class HubMcpService {
         summary: task.title,
       });
       if (integration.integrated && snapshot.changedFiles.length) {
-        this.taskBoard.recordTaskGitReference({
+        transitionTask = this.taskBoard.recordTaskGitReference({
           taskId: task.id,
           projectRoot: snapshot.repositoryRoot,
           resultSnapshot: snapshot.resultSnapshot,
           branch: snapshot.branch,
         });
       }
-      const current = this.#task(context, task.id);
+      if (workflowStatus === "awaiting_implementation" && !integration.integrated) {
+        const rolledBack = rollback();
+        return {
+          ...compactTask(rolledBack),
+          gitWorkspace: {
+            branch: snapshot.branch,
+            projectRoot: snapshot.projectRoot,
+            baseCommit: snapshot.baseCommit,
+            headCommit: snapshot.headCommit,
+          },
+          gitIntegration: {
+            integrated: false,
+            alreadyIntegrated: false,
+            devBranch: integration.dev?.branch ?? "dev",
+            devHeadCommit: integration.dev?.headCommit ?? null,
+            conflicts: integration.conflicts ?? [],
+            error: integration.error ?? null,
+          },
+          preReleaseIntegration: { rebuilt: false, error: "Await requires successful dev integration" },
+        };
+      }
+      let preReleaseIntegration = null;
+      if (workflowStatus === "awaiting_implementation" || wasAwaiting) {
+        try {
+          preReleaseIntegration = await this.releasePreflight.prepareAwaitSet({
+            workspaceId: task.workspaceId,
+            fallbackProjectRoots: [snapshot.repositoryRoot],
+          });
+        } catch (error) {
+          preReleaseIntegration = { rebuilt: false, error: error.message };
+          transitionTask = rollback();
+        }
+      }
+      const current = transitionTask ?? this.#task(context, task.id);
       return {
         ...compactTask(current),
         gitWorkspace: {
@@ -1059,10 +1143,23 @@ export class HubMcpService {
           conflicts: integration.conflicts ?? [],
           error: integration.error ?? null,
         },
+        ...(preReleaseIntegration ? { preReleaseIntegration } : {}),
       };
     } catch (error) {
+      let current = this.#task(context, task.id);
+      try {
+        if (affectsAwait) current = rollback();
+      } catch (rollbackError) {
+        return {
+          ...compactTask(current),
+          gitIntegration: {
+            integrated: false,
+            error: `${error.message}; workflow rollback failed: ${rollbackError.message}`,
+          },
+        };
+      }
       return {
-        ...compactTask(this.#task(context, task.id)),
+        ...compactTask(current),
         gitIntegration: { integrated: false, error: error.message },
       };
     }
@@ -1578,6 +1675,8 @@ export class HubMcpService {
     return this.releasePreflight.preflight({
       workspaceId,
       expectedPlanRevision: optionalText(args.expected_plan_revision, 128),
+      approvedLocalMainCommit: optionalText(args.approved_local_main_commit, 128),
+      approvedOriginMainCommit: optionalText(args.approved_origin_main_commit, 128),
       conflictsResolved: args.conflicts_resolved === true,
     });
   }
