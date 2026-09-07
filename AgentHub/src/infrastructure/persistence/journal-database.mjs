@@ -9,6 +9,7 @@ import { readJsonWithBackup } from "./state-store.mjs";
 const SCHEMA_VERSION = 2;
 const LEDGER_VERSION = 9;
 const LEGACY_IMPORT_KEY = "work-log-usage-v1";
+const ACCOUNT_USAGE_PROJECTION_VERSION_KEY = "account_usage_projection_version";
 const JOURNAL_DAY_ORDER = "substr(date, 7, 4), substr(date, 4, 2), substr(date, 1, 2)";
 
 function configure(database) {
@@ -68,6 +69,8 @@ function configure(database) {
     ) WITHOUT ROWID;
     INSERT OR IGNORE INTO journal_store_meta (key, value) VALUES ('revision', '0');
     INSERT OR IGNORE INTO journal_store_meta (key, value) VALUES ('ledger_version', '9');
+    INSERT OR IGNORE INTO journal_store_meta (key, value)
+      VALUES ('account_usage_projection_version', '');
   `);
   const journalRecordColumns = new Set(database.prepare("PRAGMA table_info(journal_records)")
     .all().map((row) => row.name));
@@ -204,6 +207,19 @@ function advanceRevision(database) {
   return revisionOf(database);
 }
 
+function storeMetadataValue(database, key) {
+  return String(database.prepare(
+    "SELECT value FROM journal_store_meta WHERE key = ?",
+  ).get(key)?.value ?? "");
+}
+
+function writeStoreMetadataValue(database, key, value) {
+  database.prepare(`
+    INSERT INTO journal_store_meta (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(key, String(value ?? ""));
+}
+
 function projectionVersion(payload) {
   return sha256Version(JSON.stringify({
     html: payload.html,
@@ -215,6 +231,7 @@ function projectionVersion(payload) {
 function writeProjection(database, payload, {
   updatedAt = new Date().toISOString(),
   version = "",
+  accountUsageProjectionVersion = null,
 } = {}) {
   const html = String(payload.html ?? "");
   const days = payload.days ?? {};
@@ -251,6 +268,13 @@ function writeProjection(database, payload, {
       updated_at = excluded.updated_at,
       html = excluded.html
   `).run(SCHEMA_VERSION, resolvedVersion, String(updatedAt), String(payload.html ?? ""));
+  if (accountUsageProjectionVersion != null) {
+    writeStoreMetadataValue(
+      database,
+      ACCOUNT_USAGE_PROJECTION_VERSION_KEY,
+      accountUsageProjectionVersion,
+    );
+  }
   return resolvedVersion;
 }
 
@@ -791,6 +815,7 @@ export class JournalDatabase {
     expectedRevision,
     updatedAt = new Date().toISOString(),
     version = "",
+    accountUsageProjectionVersion = null,
   } = {}) {
     const database = await this.#open();
     database.exec("BEGIN IMMEDIATE");
@@ -818,6 +843,13 @@ export class JournalDatabase {
           updated_at = excluded.updated_at,
           html = excluded.html
       `).run(SCHEMA_VERSION, resolvedVersion, String(updatedAt), String(html ?? ""));
+      if (accountUsageProjectionVersion != null) {
+        writeStoreMetadataValue(
+          database,
+          ACCOUNT_USAGE_PROJECTION_VERSION_KEY,
+          accountUsageProjectionVersion,
+        );
+      }
       revision = advanceRevision(database);
       database.exec("COMMIT");
     } catch (error) {
@@ -848,6 +880,13 @@ export class JournalDatabase {
       version: String(row.source_version ?? ""),
       revision: revisionOf(database),
     };
+  }
+
+  async accountUsageProjectionVersion() {
+    return storeMetadataValue(
+      await this.#open(),
+      ACCOUNT_USAGE_PROJECTION_VERSION_KEY,
+    );
   }
 
   async snapshot() {

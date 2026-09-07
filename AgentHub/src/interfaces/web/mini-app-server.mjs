@@ -544,6 +544,7 @@ export class MiniAppServer {
   #handlerCloseTimeoutMs;
   #journalCache = null;
   #journalDatabase;
+  #journalProjectionService;
   #usageSyncRemoteConfigStore;
   #usageSyncService;
   #ownsJournalDatabase;
@@ -586,6 +587,7 @@ export class MiniAppServer {
     workLogCssFile = path.join(AGENT_HUB_ROOT, "work-log.css"),
     journalDatabase = null,
     journalDatabaseFile = null,
+    journalProjectionService = null,
     usageSyncRemoteConfigStore = null,
     usageSyncService = null,
     workspaceFileRoots = [],
@@ -636,6 +638,10 @@ export class MiniAppServer {
       throw new Error("Mini App journalDatabase or journalDatabaseFile is required");
     }
     this.#journalDatabase = journalDatabase ?? new JournalDatabase(journalDatabaseFile);
+    this.#journalProjectionService = journalProjectionService
+      && typeof journalProjectionService.ensureAccountUsageProjectionCurrent === "function"
+      ? journalProjectionService
+      : null;
     this.#usageSyncRemoteConfigStore = usageSyncRemoteConfigStore;
     this.#usageSyncService = validUsageSyncService(usageSyncService) ? usageSyncService : null;
     this.#ownsJournalDatabase = !journalDatabase;
@@ -672,6 +678,9 @@ export class MiniAppServer {
   }
 
   async #journalMetadata() {
+    const projection = await this.#journalProjectionService
+      ?.ensureAccountUsageProjectionCurrent();
+    if (projection?.projected) this.#journalCache = null;
     const metadata = typeof this.#journalDatabase.metadata === "function"
       ? await this.#journalDatabase.metadata()
       : null;
