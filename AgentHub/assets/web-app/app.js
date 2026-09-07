@@ -11847,9 +11847,7 @@ function statusFromUsagePayload(payload) {
 function applyUsageHistory(payload) {
   const data = payload && typeof payload === "object" ? payload : null;
   if (data?.turnTimeMode && normalizeTurnTimeMode(data.turnTimeMode) !== turnTimeMode) return;
-  const selectedAccount = resolvedStatisticsAccountKey();
-  const requestedAccount = selectedAccount === ALL_STATISTICS_ACCOUNTS ? "" : selectedAccount;
-  if (String(data?.accountKey ?? "") !== requestedAccount) return;
+  if (String(data?.accountKey ?? "")) return;
   usageState.payload = data;
   usageState.error = data?.error ? String(data.error) : "";
   if (data?.range) usageState.range = normalizeRange(data.range);
@@ -11860,18 +11858,16 @@ function applyUsageHistory(payload) {
 
 function requestUsageHistory(range, { force = false } = {}) {
   usageState.range = persistRange(localStorage, USAGE_RANGE_KEY, range);
-  const selectedAccount = resolvedStatisticsAccountKey();
-  const accountKey = selectedAccount === ALL_STATISTICS_ACCOUNTS ? "" : selectedAccount;
   const cached = usageState.payload
     && !usageState.payload.error
     && normalizeRange(usageState.payload.range) === usageState.range
-    && String(usageState.payload.accountKey ?? "") === accountKey
+    && !String(usageState.payload.accountKey ?? "")
     && normalizeTurnTimeMode(usageState.payload.turnTimeMode) === turnTimeMode;
   usageState.status = cached && !force ? statusFromUsagePayload(usageState.payload) : "loading";
   usageState.error = "";
   renderUsageRanges();
   renderUsageHistory();
-  emit("usage:open", { range: usageState.range, accountKey, turnTimeMode });
+  emit("usage:open", { range: usageState.range, turnTimeMode });
 }
 
 function renderUsageRanges() {
@@ -12446,10 +12442,11 @@ function renderUsageHistory() {
   if (status === "ready") {
     buildUsageChart(payload);
     renderUsageBurnSummary(payload, burnAnalysis);
+    const scopeNote = "Учтён весь локальный расход; расход других устройств — только в интервалы активности того же аккаунта на этом компьютере.";
     if (intensity) {
       usageNote.textContent = burnAnalysis?.forecastAvailable
-        ? "EMA считает календарный темп расхода cr/мин; прогноз суток не использует неизвестные лимиты Codex или Claude."
-        : "EMA считает календарный темп cr/мин. Суточный прогноз показывается только на диапазоне 24 ч, где известен расход с полуночи.";
+        ? `${scopeNote} EMA считает календарный темп расхода cr/мин; прогноз суток не использует неизвестные лимиты Codex или Claude.`
+        : `${scopeNote} EMA считает календарный темп cr/мин. Суточный прогноз показывается только на диапазоне 24 ч, где известен расход с полуночи.`;
     } else {
       renderUsageBurnSummary(null, null);
       const unpriced = Math.max(0, Number(payload.unpricedCount) || 0);
@@ -12466,7 +12463,7 @@ function renderUsageHistory() {
       if (rate && usageState.rateBasis === "task" && untimed) {
         notes.push(`Без длительности и вне скорости по времени задач: ${untimed}.`);
       }
-      usageNote.textContent = notes.join(" ") || "Все показанные ходы тарифицированы и имеют длительность.";
+      usageNote.textContent = `${scopeNote} ${notes.join(" ") || "Все показанные ходы тарифицированы и имеют длительность."}`;
     }
   }
 }

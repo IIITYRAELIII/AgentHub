@@ -3251,7 +3251,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
   localDeviceId = "",
   localDeviceLabel = "",
   accountKey = "",
-  accountActivity = [],
+  accountActivity = null,
 } = {}) {
   const normalizedRange = range === "all" || Object.hasOwn(USAGE_HISTORY_RANGES, range)
     ? range
@@ -3262,6 +3262,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
   const requestedProvider = String(provider ?? "").trim().toLowerCase();
   const requestedAccountKey = String(accountKey ?? "").trim();
   const normalizedTimeMode = normalizedTurnTimeMode(turnTimeMode);
+  const filterSyncedByAccountActivity = Array.isArray(accountActivity);
   const accountActivityIntervals = new Map((Array.isArray(accountActivity) ? accountActivity : [])
     .map((entry) => [
       String(entry?.accountKey ?? "").trim(),
@@ -3300,8 +3301,9 @@ export function buildWorkLogUsageHistory(turns = {}, {
       const recordAccountKey = String(record.accountKey ?? "").trim();
       if (!recordAccountKey) return false;
       if (requestedAccountKey && recordAccountKey !== requestedAccountKey) return false;
+      if (!filterSyncedByAccountActivity) return true;
       const activity = accountActivityIntervals.get(recordAccountKey);
-      if (!activity) return true;
+      if (!activity) return false;
       const pointMs = turnUsageTimeMs(record, normalizedTimeMode);
       return activity.some((interval) => pointMs >= interval.from && pointMs < interval.to);
     });
