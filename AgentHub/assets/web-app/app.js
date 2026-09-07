@@ -14339,19 +14339,67 @@ function replaceJournalGroupedContent(content) {
   mountStatisticsAccountPanel();
 }
 
-function virtualStreamUsage(stream) {
+function virtualUsageShare(value, total, known = true) {
+  if (!known || !(Number(total) > 0)) return "";
+  const share = Math.max(0, Math.min(100, Number(value) / Number(total) * 100));
+  return ` (${Math.round(share)}%)`;
+}
+
+function virtualStreamUsage(stream, workspace) {
   const usage = document.createElement("span");
   usage.dataset.workLogStreamUsage = "";
   usage.append(
-    el("span", { text: `${Math.max(0, Number(stream.turnCount) || 0)} ход.` }),
+    el("span", {
+      text: `${Math.max(0, Number(stream.turnCount) || 0)} ход.${virtualUsageShare(
+        stream.turnCount,
+        workspace.turnCount,
+      )}`,
+    }),
     stream.knownCredits
-      ? usageBadge(formatUsageValue(stream.credits), stream.credits)
+      ? el("span", {}, [
+        usageBadge(formatUsageValue(stream.credits), stream.credits),
+        document.createTextNode(virtualUsageShare(stream.credits, workspace.credits, workspace.knownCredits)),
+      ])
       : el("span", { text: "расход —" }),
     stream.knownDurations
-      ? el("span", { text: formatTaskDuration(stream.durationSeconds) })
+      ? el("span", {
+        text: `${formatTaskDuration(stream.durationSeconds)}${virtualUsageShare(
+          stream.durationSeconds,
+          workspace.durationSeconds,
+          workspace.knownDurations,
+        )}`,
+      })
       : el("span", { text: "время —" }),
   );
   return usage;
+}
+
+function virtualWorkspaceUsage(scope, workspace) {
+  const metrics = document.createElement("span");
+  metrics.dataset.journalDayPickerMetrics = "";
+  metrics.append(
+    el("span", {
+      "data-journal-day-picker-turns": "",
+      text: `${workspace.turnCount} ходов${virtualUsageShare(workspace.turnCount, scope.turnCount)}`,
+    }),
+    workspace.knownCredits
+      ? el("span", { "data-journal-day-picker-credits": "" }, [
+        usageBadge(formatUsageValue(workspace.credits), workspace.credits),
+        document.createTextNode(virtualUsageShare(workspace.credits, scope.credits, scope.knownCredits)),
+      ])
+      : el("span", { "data-journal-day-picker-credits": "", text: "расход —" }),
+    el("span", {
+      "data-journal-day-picker-duration": "",
+      text: workspace.knownDurations
+        ? `${formatTaskDuration(workspace.durationSeconds)}${virtualUsageShare(
+          workspace.durationSeconds,
+          scope.durationSeconds,
+          scope.knownDurations,
+        )}`
+        : "время —",
+    }),
+  );
+  return metrics;
 }
 
 function applyVirtualTurnQuery(node, scope, workspace, stream = null) {
@@ -14381,7 +14429,7 @@ function virtualStreamDetails(scope, workspace, stream) {
   summary.dataset.workLogStreamSummary = "";
   summary.append(
     el("span", { "data-work-log-stream-title": "", text: stream.name }),
-    virtualStreamUsage(stream),
+    virtualStreamUsage(stream, workspace),
   );
   const body = document.createElement("div");
   body.dataset.workLogStreamTurns = "";
@@ -14430,19 +14478,9 @@ function virtualTemporalContent(scope) {
     button.type = "button";
     button.dataset.journalDaySelect = workspace.id;
     button.setAttribute("aria-pressed", String(active));
-    const credits = el("span", { "data-journal-day-picker-credits": "" });
-    if (workspace.knownCredits) {
-      credits.append(usageBadge(formatUsageValue(workspace.credits), workspace.credits));
-    } else {
-      credits.textContent = "—";
-    }
     button.append(
       el("span", { "data-journal-day-picker-title": "", text: workspace.name }),
-      el("span", {
-        "data-journal-day-picker-turns": "",
-        text: `${workspace.turnCount} ходов`,
-      }),
-      credits,
+      virtualWorkspaceUsage(scope, workspace),
     );
     item.append(button);
     picker.append(item);

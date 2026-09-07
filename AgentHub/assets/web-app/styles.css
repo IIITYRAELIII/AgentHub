@@ -1057,6 +1057,18 @@ main {
   --row-accent: var(--provider-none);
 }
 
+.journal [data-work-log-workspace-streams] details[data-work-log-stream] {
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.journal [data-work-log-workspace-streams] details[data-work-log-stream]
+  + details[data-work-log-stream] {
+  margin-top: 0.38rem;
+}
+
 .journal details[data-work-log-stream][data-work-log-provider="codex"] {
   --row-accent: var(--provider-codex);
 }
@@ -1066,9 +1078,7 @@ main {
 }
 
 .journal details[data-work-log-stream][open] {
-  align-items: start;
-  display: grid;
-  grid-template-columns: 17.5rem minmax(0, 1fr);
+  display: block;
 }
 
 .journal details[data-work-log-stream]:not([open]) > :not(summary) {
@@ -1083,13 +1093,29 @@ main {
   column-gap: 0.5rem;
   cursor: pointer;
   display: grid;
-  grid-column: 1;
   grid-template-columns: minmax(0, 1fr) auto;
   list-style: none;
   min-width: 0;
   padding: 0.55rem;
-  position: sticky;
-  top: calc(var(--header-height) + 0.6rem);
+  position: static;
+}
+
+.journal [data-work-log-workspace-streams] summary[data-work-log-stream-summary] {
+  min-height: 2.35rem;
+  padding: 0;
+}
+
+.journal [data-work-log-workspace-streams] span[data-work-log-stream-title] {
+  background: transparent;
+  border: 0;
+  border-left: var(--rail-width) solid var(--row-accent);
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0.55rem 0.68rem;
+}
+
+.journal [data-work-log-workspace-streams] span[data-work-log-stream-usage] {
+  padding-right: 0.7rem;
 }
 
 .journal summary[data-work-log-stream-summary]::-webkit-details-marker {
@@ -1154,8 +1180,13 @@ main {
 }
 
 .journal div[data-work-log-stream-turns] {
-  grid-column: 2;
   min-width: 0;
+  padding: 0 0 0.45rem 1.05rem;
+}
+
+.journal [data-work-log-workspace-streams] div[data-work-log-stream-turns] {
+  border-top: 1px solid var(--line);
+  padding: 0;
 }
 
 .journal div[data-work-log-stream-turns] > div[data-work-log-row] {
@@ -11407,7 +11438,7 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
 }
 
 .journal [data-journal-turn-table] [data-work-log-turn-share] {
-  display: none;
+  display: inline;
 }
 
 .journal [data-journal-turn-table] [data-work-log-turn-title] {
@@ -11450,7 +11481,7 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
 }
 
 [data-journal-day-picker-item] > button {
-  align-items: baseline;
+  align-items: center;
   background: transparent;
   border: 0;
   color: var(--text-soft);
@@ -11490,21 +11521,27 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
   font-size: 0.74rem;
 }
 
+[data-journal-day-picker-metrics] {
+  align-items: flex-end;
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  font-family: var(--font-numeric);
+  font-size: 0.68rem;
+  gap: 0.18rem;
+  white-space: nowrap;
+}
+
+[data-journal-day-picker-duration] {
+  color: var(--text-muted);
+}
+
 [data-journal-day-picker-turns] {
   color: var(--text-muted);
-  display: none;
   flex: 0 0 auto;
   font-family: var(--font-numeric);
   font-size: 0.68rem;
   text-transform: uppercase;
-}
-
-[data-journal-day-picker-item][data-selected] [data-journal-day-picker-turns] {
-  display: inline;
-}
-
-[data-journal-day-picker-item][data-selected] [data-journal-day-picker-credits] {
-  display: none;
 }
 
 [data-journal-day-breakdown] {

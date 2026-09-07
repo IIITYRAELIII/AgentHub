@@ -298,13 +298,15 @@
     const providers = Array.isArray(stream?.providers)
       ? stream.providers
       : Array.isArray(workspace?.providers) ? workspace.providers : [];
+    const workspaceId = String(stream?.queryWorkspaceId
+      ?? workspace?.queryWorkspaceId
+      ?? workspace?.id
+      ?? "");
+    const streamId = String(stream?.queryStreamId ?? stream?.id ?? "");
     return {
-      workspaceId: String(stream?.queryWorkspaceId
-        ?? workspace?.queryWorkspaceId
-        ?? workspace?.id
-        ?? ""),
-      streamId: String(stream?.queryStreamId ?? stream?.id ?? ""),
-      provider: providers.length === 1 ? String(providers[0]) : "",
+      workspaceId,
+      streamId,
+      provider: !workspaceId && !streamId && providers.length === 1 ? String(providers[0]) : "",
       fromMs: Math.max(0, Number(scope?.fromMs) || 0),
       toMs: Math.max(0, Number(scope?.toMs) || 0),
     };
