@@ -11,16 +11,24 @@ const rateLimitSeriesSource = await readFile(
 const rateLimitSeriesContext = {};
 vm.runInNewContext(rateLimitSeriesSource, rateLimitSeriesContext);
 const rateLimitSeries = rateLimitSeriesContext.AgentHubRateLimitSeries;
-const { interpolateRateLimitGaps } = rateLimitSeries;
 const start = app.indexOf("function parseClaudeResetAt");
 const end = app.indexOf("\nfunction formatResetCountdown", start);
 assert.ok(start >= 0 && end > start, "weekly burn-rate policy must be present");
 const policy = app.slice(start, end);
 
 function calculate(series, options = {}) {
-  const context = { series, options, interpolateRateLimitGaps, AgentHubRateLimitSeries: rateLimitSeries };
+  const context = { series, options, AgentHubRateLimitSeries: rateLimitSeries };
   vm.runInNewContext(
     `${policy}\nglobalThis.result = weeklyBurnRatePoints(series, options);`,
+    context,
+  );
+  return JSON.parse(JSON.stringify(context.result));
+}
+
+function chartScale(series, weeklyRate) {
+  const context = { series, weeklyRate };
+  vm.runInNewContext(
+    `${policy}\nconst scale = limitsSpeedChartScale(series);\nglobalThis.result = { scale, rate: limitsSpeedChartRate(weeklyRate, scale.chartMaximum) };`,
     context,
   );
   return JSON.parse(JSON.stringify(context.result));
@@ -35,28 +43,10 @@ function pathFor(points) {
   return context.result;
 }
 
-function finitePoints(points) {
-  const context = { points, AgentHubRateLimitSeries: rateLimitSeries };
+function finitePoints(points, field) {
+  const context = { points, field, AgentHubRateLimitSeries: rateLimitSeries };
   vm.runInNewContext(
-    `${policy}\nglobalThis.result = limitsFiniteSpeedPoints(points);`,
-    context,
-  );
-  return JSON.parse(JSON.stringify(context.result));
-}
-
-function waitsForData(speedFullWindow, latest, range) {
-  const context = { speedFullWindow, latest, range, AgentHubRateLimitSeries: rateLimitSeries };
-  vm.runInNewContext(
-    `${policy}\nglobalThis.result = shouldWaitForBurnRateData(speedFullWindow, latest, range);`,
-    context,
-  );
-  return context.result;
-}
-
-function calculateForRange(series, range) {
-  const context = { series, range, interpolateRateLimitGaps, AgentHubRateLimitSeries: rateLimitSeries };
-  vm.runInNewContext(
-    `${policy}\nglobalThis.result = weeklyBurnRatePoints(series, burnRatePolicyForRange(range));`,
+    `${policy}\nglobalThis.result = limitsFiniteSpeedPoints(points, field);`,
     context,
   );
   return JSON.parse(JSON.stringify(context.result));
@@ -66,7 +56,7 @@ function at(points, iso) {
   return points.find((point) => point.raw?.at === iso);
 }
 
-test("weekly burn rate compares rolling usage with the remaining safe pace", () => {
+test("current and 24-hour rates agree during a steady workload", () => {
   const reset = "2026-08-08T00:00:00.000Z";
   const points = calculate({
     id: "codex:secondary",
@@ -78,20 +68,131 @@ test("weekly burn rate compares rolling usage with the remaining safe pace", () 
     ],
   });
 
-  const first = at(points, "2026-08-01T00:00:00.000Z");
   const second = at(points, "2026-08-02T00:00:00.000Z");
   const third = at(points, "2026-08-03T00:00:00.000Z");
-  assert.equal(first.actualRate, null);
-  assert.equal(second.actualRate, 175);
-  assert.equal(second.sampleSpanMs, 24 * 60 * 60_000);
-  assert.equal(second.targetRate, 87.5);
-  assert.equal(second.overTarget, true);
-  assert.equal(third.actualRate, 175);
-  assert.equal(third.targetRate, 70);
-  assert.equal(third.deviationRate, 105);
+  assert.ok(Math.abs(second.actualRate - 175) < 1);
+  assert.ok(Math.abs(second.averageRate - 175) < 1e-9);
+  assert.equal(second.averageSpanMs, 24 * 60 * 60_000);
+  assert.equal(second.averagePreliminary, false);
+  assert.ok(Math.abs(third.actualRate - 175) < 0.01);
+  assert.ok(Math.abs(third.averageRate - 175) < 1e-9);
 });
 
-test("weekly burn rate marks a pace below the dynamic allowance as safe", () => {
+test("idle observations lower the three-hour current rate", () => {
+  const reset = "2026-08-08T00:00:00.000Z";
+  const points = calculate({
+    id: "codex:secondary",
+    window: "secondary",
+    points: [
+      { at: "2026-08-01T00:00:00.000Z", usedPercent: 0, resetsAt: reset },
+      { at: "2026-08-01T03:00:00.000Z", usedPercent: 6, resetsAt: reset },
+      { at: "2026-08-01T06:00:00.000Z", usedPercent: 6, resetsAt: reset },
+      { at: "2026-08-01T09:00:00.000Z", usedPercent: 6, resetsAt: reset },
+    ],
+  });
+
+  const active = at(points, "2026-08-01T03:00:00.000Z");
+  const firstIdle = at(points, "2026-08-01T06:00:00.000Z");
+  const secondIdle = at(points, "2026-08-01T09:00:00.000Z");
+  assert.ok(active.actualRate > firstIdle.actualRate);
+  assert.ok(firstIdle.actualRate > secondIdle.actualRate);
+  assert.ok(Math.abs(firstIdle.actualRate - active.actualRate / 2) < 1e-6);
+});
+
+test("the first rounded percentage warms up instead of becoming a full spike", () => {
+  const fiveMinutes = 5 * 60_000;
+  const points = rateLimitSeries.smoothedRateLimitConsumption([
+    { atMs: 0, usedPercent: 0, raw: {} },
+    { atMs: fiveMinutes, usedPercent: 1, raw: {} },
+  ]);
+
+  const latestDailyRate = points.at(-1).currentRate / 7;
+  assert.ok(latestDailyRate > 0);
+  assert.ok(latestDailyRate < 10);
+  assert.equal(points.at(-1).currentPreliminary, true);
+});
+
+test("a reset keeps one continuous speed history", () => {
+  const points = calculate({
+    id: "codex:secondary",
+    window: "secondary",
+    points: [
+      { at: "2026-08-07T12:00:00.000Z", usedPercent: 20, resetsAt: "2026-08-08T00:00:00.000Z" },
+      { at: "2026-08-07T21:00:00.000Z", usedPercent: 29, resetsAt: "2026-08-08T00:00:00.000Z" },
+      { at: "2026-08-08T03:00:00.000Z", usedPercent: 3, resetsAt: "2026-08-15T00:00:00.000Z" },
+      { at: "2026-08-08T12:00:00.000Z", usedPercent: 12, resetsAt: "2026-08-15T00:00:00.000Z" },
+    ],
+  });
+
+  const boundary = points.find((point) => point.resetBoundary);
+  const before = at(points, "2026-08-07T21:00:00.000Z");
+  const after = at(points, "2026-08-08T03:00:00.000Z");
+  assert.ok(boundary);
+  assert.equal(boundary.continuityIndex, before.continuityIndex);
+  assert.equal(after.continuityIndex, before.continuityIndex);
+  assert.ok(Number.isFinite(after.actualRate));
+  assert.ok(Number.isFinite(after.averageRate));
+  assert.equal(pathFor([
+    { x: 1, y: 2, continuityIndex: before.continuityIndex },
+    { x: 3, y: 4, continuityIndex: after.continuityIndex },
+  ]), "M1.0 2.0 L3.0 4.0");
+});
+
+for (const [name, beforeUsed, afterUsed] of [
+  ["increasing", 2, 3],
+  ["equal", 2, 2],
+]) {
+  test(`${name} usage still recognizes a full weekly rollover`, () => {
+    const points = calculate({
+      id: "codex:secondary",
+      window: "secondary",
+      points: [
+        { at: "2026-08-07T22:00:00.000Z", usedPercent: beforeUsed, resetsAt: "2026-08-08T00:00:00.000Z" },
+        { at: "2026-08-08T02:00:00.000Z", usedPercent: afterUsed, resetsAt: "2026-08-15T00:00:00.000Z" },
+      ],
+    });
+
+    const boundary = points.find((point) => point.resetBoundary);
+    const latest = at(points, "2026-08-08T02:00:00.000Z");
+    assert.ok(boundary);
+    assert.equal(boundary.raw.at, "2026-08-08T00:00:00.000Z");
+    assert.equal(latest.cumulativeUsed, afterUsed);
+    assert.equal(latest.cycleIndex, 1);
+  });
+}
+
+test("a reset forecast jitter does not create a rollover", () => {
+  const points = calculate({
+    id: "codex:secondary",
+    window: "secondary",
+    points: [
+      { at: "2026-08-01T00:00:00.000Z", usedPercent: 2, resetsAt: "2026-08-08T00:00:00.000Z" },
+      { at: "2026-08-01T01:00:00.000Z", usedPercent: 3, resetsAt: "2026-08-08T00:20:00.000Z" },
+    ],
+  });
+
+  assert.equal(points.some((point) => point.resetBoundary), false);
+  assert.equal(points.at(-1).cycleIndex, 0);
+  assert.equal(points.at(-1).cumulativeUsed, 1);
+});
+
+test("the 24-hour average is visibly preliminary only while history is short", () => {
+  const reset = "2026-08-08T00:00:00.000Z";
+  const points = calculate({
+    id: "codex:secondary",
+    window: "secondary",
+    points: [
+      { at: "2026-08-01T00:00:00.000Z", usedPercent: 0, resetsAt: reset },
+      { at: "2026-08-01T06:00:00.000Z", usedPercent: 4, resetsAt: reset },
+      { at: "2026-08-02T06:00:00.000Z", usedPercent: 12, resetsAt: reset },
+    ],
+  });
+
+  assert.equal(at(points, "2026-08-01T06:00:00.000Z").averagePreliminary, true);
+  assert.equal(at(points, "2026-08-02T06:00:00.000Z").averagePreliminary, false);
+});
+
+test("the remaining safe pace still controls the status color", () => {
   const points = calculate({
     id: "claude:week",
     window: "week",
@@ -102,80 +203,30 @@ test("weekly burn rate marks a pace below the dynamic allowance as safe", () => 
   });
 
   const latest = at(points, "2026-08-02T00:00:00.000Z");
-  assert.equal(latest.actualRate, 35);
   const expectedTarget = 95 / (latest.resetMs - latest.atMs) * (7 * 24 * 60 * 60_000);
   assert.ok(Math.abs(latest.targetRate - expectedTarget) < 1e-9);
   assert.equal(latest.overTarget, false);
 });
 
-test("weekly burn rate waits for an almost complete 24-hour window", () => {
-  const reset = "2026-08-08T00:00:00.000Z";
-  const points = calculate({
-    id: "codex:secondary",
-    window: "secondary",
-    points: [
-      { at: "2026-08-01T00:00:00.000Z", usedPercent: 0, resetsAt: reset },
-      { at: "2026-08-01T06:00:00.000Z", usedPercent: 8, resetsAt: reset },
-      { at: "2026-08-01T23:30:00.000Z", usedPercent: 20, resetsAt: reset },
-    ],
-  });
+test("an off-scale target near reset does not flatten current and average rates", () => {
+  const targetWeeklyRate = 14_400 * 7;
+  const result = chartScale([{
+    ratePoints: [{
+      actualRate: 10 * 7,
+      averageRate: 12 * 7,
+      targetRate: targetWeeklyRate,
+    }],
+  }], targetWeeklyRate);
 
-  assert.equal(at(points, "2026-08-01T06:00:00.000Z").actualRate, null);
-  assert.ok(Number.isFinite(at(points, "2026-08-01T23:30:00.000Z").actualRate));
+  assert.equal(result.scale.chartMaximum, 15);
+  assert.equal(result.scale.normalDailyRate, 100 / 7);
+  assert.equal(result.scale.maximumDailyRate, 100 / 7);
+  assert.equal(result.rate.dailyRate, 14_400);
+  assert.equal(result.rate.plottedDailyRate, 15);
+  assert.equal(result.rate.offScale, true);
 });
 
-for (const range of ["6h", "24h"]) {
-  test(`${range} speed uses the latest hour instead of waiting for a day`, () => {
-    const reset = "2026-08-08T00:00:00.000Z";
-    const points = calculateForRange({
-      id: "codex:secondary",
-      window: "secondary",
-      points: [
-        { at: "2026-08-01T00:00:00.000Z", usedPercent: 10, resetsAt: reset },
-        { at: "2026-08-01T00:50:00.000Z", usedPercent: 11, resetsAt: reset },
-      ],
-    }, range);
-
-    const latest = at(points, "2026-08-01T00:50:00.000Z");
-    assert.ok(Number.isFinite(latest.actualRate));
-    assert.equal(latest.cycleIndex, 0);
-  });
-}
-
-test("speed chart starts a new path at every weekly reset", () => {
-  assert.equal(pathFor([
-    { x: 1, y: 2, cycleIndex: 0 },
-    { x: 3, y: 4, cycleIndex: 0 },
-    { x: 5, y: 6, cycleIndex: 1 },
-  ]), "M1.0 2.0 L3.0 4.0 M5.0 6.0");
-});
-
-test("preliminary reset anchor closes the path gap at the cycle boundary", () => {
-  assert.equal(pathFor([
-    { x: 1, y: 80, cycleIndex: 0, pathSegmentIndex: 1 },
-    { x: 3, y: 0, cycleIndex: 1, pathSegmentIndex: 1, resetAnchor: true },
-    { x: 5, y: 0, cycleIndex: 1, pathSegmentIndex: 1 },
-  ]), "M1.0 80.0 L3.0 0.0 L5.0 0.0");
-});
-
-test("missing speed samples break the actual-rate path", () => {
-  const points = finitePoints([
-    { actualRate: 160, cycleIndex: 0 },
-    { actualRate: null, cycleIndex: 0 },
-    { actualRate: 0, cycleIndex: 0 },
-  ]).map((point, index) => ({ ...point, x: index + 1, y: index + 2 }));
-
-  assert.equal(pathFor(points), "M1.0 2.0 M2.0 3.0");
-});
-
-test("full-window setting alone enables waiting for speed data", () => {
-  const latest = { cycleAgeMs: 30 * 60_000 };
-  assert.equal(waitsForData(true, latest, "24h"), true);
-  assert.equal(waitsForData(false, latest, "24h"), false);
-  assert.equal(waitsForData(true, { cycleAgeMs: 50 * 60_000 }, "24h"), false);
-});
-
-test("a moving reset forecast does not fragment one monotonic cycle", () => {
+test("a moving reset forecast does not fragment a monotonic cycle", () => {
   const points = calculate({
     id: "codex:secondary",
     window: "secondary",
@@ -185,70 +236,56 @@ test("a moving reset forecast does not fragment one monotonic cycle", () => {
     ],
   });
 
-  const first = at(points, "2026-08-01T00:00:00.000Z");
   const latest = at(points, "2026-08-01T23:30:00.000Z");
-  assert.equal(first.cycleIndex, 0);
   assert.equal(latest.cycleIndex, 0);
+  assert.equal(latest.continuityIndex, 0);
   assert.ok(Number.isFinite(latest.actualRate));
 });
 
-test("daily speed tolerates sparse snapshots around the 24-hour baseline", () => {
+test("rate corrections do not count the same consumption twice", () => {
+  const hour = 60 * 60_000;
+  const points = rateLimitSeries.smoothedRateLimitConsumption([
+    { atMs: 0, usedPercent: 10, raw: {} },
+    { atMs: hour, usedPercent: 12, raw: {} },
+    { atMs: 2 * hour, usedPercent: 11, raw: {} },
+    { atMs: 3 * hour, usedPercent: 12, raw: {} },
+  ]);
+
+  assert.equal(points.at(-1).cumulativeUsed, 2);
+});
+
+test("a downward provider correction is not mistaken for a reset", () => {
   const reset = "2026-08-08T00:00:00.000Z";
   const points = calculate({
     id: "codex:secondary",
     window: "secondary",
     points: [
-      { at: "2026-08-01T00:00:00.000Z", usedPercent: 10, resetsAt: reset },
-      { at: "2026-08-02T06:00:00.000Z", usedPercent: 30, resetsAt: reset },
+      { at: "2026-08-02T00:00:00.000Z", usedPercent: 10, resetsAt: reset },
+      { at: "2026-08-02T03:00:00.000Z", usedPercent: 12, resetsAt: reset },
+      { at: "2026-08-02T06:00:00.000Z", usedPercent: 11, resetsAt: reset },
+      { at: "2026-08-02T09:00:00.000Z", usedPercent: 12, resetsAt: reset },
     ],
   });
 
-  assert.ok(Number.isFinite(at(points, "2026-08-02T06:00:00.000Z").actualRate));
+  assert.equal(points.some((point) => point.resetBoundary), false);
+  assert.equal(points.at(-1).cumulativeUsed, 2);
 });
 
-test("weekly burn rate never carries a negative delta across a reset", () => {
-  const points = calculate({
-    id: "codex:secondary",
-    window: "secondary",
-    points: [
-      { at: "2026-08-07T22:00:00.000Z", usedPercent: 98, resetsAt: "2026-08-08T00:00:00.000Z" },
-      { at: "2026-08-08T02:00:00.000Z", usedPercent: 2, resetsAt: "2026-08-15T00:00:00.000Z" },
-    ],
-  });
+test("speed paths break on account changes and missing values", () => {
+  assert.equal(pathFor([
+    { x: 1, y: 2, continuityIndex: 0 },
+    { x: 3, y: 4, continuityIndex: 1 },
+  ]), "M1.0 2.0 M3.0 4.0");
 
-  assert.equal(points[1].actualRate, null);
-  assert.equal(points[1].overTarget, false);
+  const points = finitePoints([
+    { actualRate: 160, continuityIndex: 0 },
+    { actualRate: null, continuityIndex: 0 },
+    { actualRate: 0, continuityIndex: 0 },
+  ]).map((point, index) => ({ ...point, x: index + 1, y: index + 2 }));
+  assert.equal(pathFor(points), "M1.0 2.0 M2.0 3.0");
 });
 
-test("preliminary speed fills the post-reset gap with zero without inventing an account baseline", () => {
-  const options = { minimumSpanMs: 0, showResetStartAsZero: true };
-  const resetPoints = calculate({
-    id: "codex:primary",
-    window: "primary",
-    points: [
-      { at: "2026-08-07T22:00:00.000Z", usedPercent: 14, accountKey: "same", resetsAt: "2026-08-08T00:00:00.000Z", windowDurationMins: 10080 },
-      { at: "2026-08-08T02:00:00.000Z", usedPercent: 6, accountKey: "same", resetsAt: "2026-08-15T00:00:00.000Z", windowDurationMins: 10080 },
-    ],
-  }, options);
-  const accountPoints = calculate({
-    id: "codex:primary",
-    window: "primary",
-    points: [
-      { at: "2026-08-01T00:00:00.000Z", usedPercent: 10, accountKey: "old", resetsAt: "2026-08-08T00:00:00.000Z", windowDurationMins: 10080 },
-      { at: "2026-08-02T00:00:00.000Z", usedPercent: 30, accountKey: "new", resetsAt: "2026-08-08T00:00:00.000Z", windowDurationMins: 10080 },
-    ],
-  }, options);
-
-  assert.equal(resetPoints[0].actualRate, null);
-  assert.equal(resetPoints[1].raw.at, "2026-08-08T00:00:00.000Z");
-  assert.equal(resetPoints[1].actualRate, 0);
-  assert.equal(resetPoints[1].resetAnchor, true);
-  assert.equal(resetPoints[2].actualRate, 0);
-  assert.equal(resetPoints[2].sampleSpanMs, 0);
-  assert.equal(accountPoints[1].actualRate, null);
-});
-
-test("weekly burn rate never spans two accounts", () => {
+test("weekly speed never spans two accounts", () => {
   const points = calculate({
     id: "codex:secondary",
     window: "secondary",
@@ -259,7 +296,7 @@ test("weekly burn rate never spans two accounts", () => {
   });
 
   assert.equal(points[1].actualRate, null);
-  assert.equal(points[1].cycleIndex, 1);
+  assert.notEqual(points[1].continuityIndex, points[0].continuityIndex);
 });
 
 test("speed mode excludes a known short limit window", () => {

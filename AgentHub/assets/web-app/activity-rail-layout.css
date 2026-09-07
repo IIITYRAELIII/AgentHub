@@ -176,9 +176,7 @@ html[data-activity-task-column="separate"]:not([data-surface="mobile"])
 
 html[data-activity-task-column="separate"]:not([data-surface="mobile"])
   .workspace-task-section.is-workspace {
-  flex-grow: 1;
   flex-shrink: 1000;
-  margin-top: auto;
   min-height: 2.75rem;
 }
 

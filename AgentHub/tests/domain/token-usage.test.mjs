@@ -19,12 +19,18 @@ import {
 } from "../../src/domain/token-usage.mjs";
 
 const SOL = "gpt-5.6-sol";
+const ASTRA = "gpt-6-astra";
 
-test("official model rates and Fast multipliers are explicit", () => {
+test("model rates and Fast multipliers are explicit", () => {
   assert.deepEqual(modelCreditRates(SOL), {
     input: 125,
     cachedInput: 12.5,
     output: 750,
+  });
+  assert.deepEqual(modelCreditRates(ASTRA), {
+    input: 312.5,
+    cachedInput: 31.25,
+    output: 1_875,
   });
   assert.deepEqual(modelCreditRates("gpt-5.6-terra"), {
     input: 62.5,
@@ -54,6 +60,21 @@ test("official model rates and Fast multipliers are explicit", () => {
   assert.equal(fastModeCreditMultiplier("gpt-5.5", "fast"), 2.5);
   assert.equal(fastModeCreditMultiplier("gpt-5.4", "fast"), 2);
   assert.equal(fastModeCreditMultiplier(SOL, "default"), 1);
+});
+
+test("Astra costs five base units and two and a half Sol units", () => {
+  const usage = {
+    inputTokens: 1_000_000,
+    cachedInputTokens: 100_000,
+    outputTokens: 50_000,
+    reasoningOutputTokens: 10_000,
+  };
+  const astra = turnCredits(usage, { model: ASTRA });
+  const sol = turnCredits(usage, { model: SOL });
+  const base = turnCredits(usage, { model: "gpt-5.6-terra" });
+
+  assert.equal(astra, sol * 2.5);
+  assert.equal(astra, base * 5);
 });
 
 test("credit calculation separates uncached input, cache, output and reasoning", () => {

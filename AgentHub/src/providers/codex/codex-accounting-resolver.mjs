@@ -9,18 +9,20 @@ export class CodexAccountingResolver {
     this.#d = dependencies;
   }
 
-  async accountingThread(thread) {
+  async accountingThread(thread, { localOnly = false } = {}) {
     const targetThreadId = String(thread?.id ?? "").trim();
     const cached = this.#roots.get(targetThreadId);
     if (cached) return cached;
     const d = this.#d;
     const resolved = await resolveCodexAccountingThread(thread, {
       readThread: async (parentThreadId) => {
-        try {
-          const response = await d.readThread(parentThreadId);
-          if (response?.thread?.id) return response.thread;
-        } catch {
-          // Archived threads may no longer be readable through the App Server.
+        if (!localOnly) {
+          try {
+            const response = await d.readThread(parentThreadId);
+            if (response?.thread?.id) return response.thread;
+          } catch {
+            // Archived threads may no longer be readable through the App Server.
+          }
         }
         const transcriptPath = await d.findRollout(parentThreadId);
         if (!transcriptPath) return null;

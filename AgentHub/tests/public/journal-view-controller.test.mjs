@@ -60,13 +60,123 @@ test("Claude Work grouping remains available in both hierarchy modes", async () 
   assert.deepEqual({ ...api.groupIdentity(row, "workspace", true) }, expected);
 });
 
-test("day grouping keeps historical days lazy while aggregate views require them", async () => {
+test("every journal grouping stays on the compact summary", async () => {
   const api = await journalViewApi();
   assert.equal(api.requiresCompleteHistory("date"), false);
-  assert.equal(api.requiresCompleteHistory("stream"), true);
-  assert.equal(api.requiresCompleteHistory("workspace"), true);
-  assert.equal(api.requiresCompleteHistory("week"), true);
-  assert.equal(api.requiresCompleteHistory("month"), true);
+  assert.equal(api.requiresCompleteHistory("stream"), false);
+  assert.equal(api.requiresCompleteHistory("workspace"), false);
+  assert.equal(api.requiresCompleteHistory("week"), false);
+  assert.equal(api.requiresCompleteHistory("month"), false);
+});
+
+test("virtual journal groups streams by workspace and sorts them by included usage", async () => {
+  const api = await journalViewApi();
+  const bucket = (overrides) => ({
+    date: "06.09.2026",
+    dayMs: Date.UTC(2026, 8, 6),
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    workspaceKind: "catalog",
+    streamId: "stream-low",
+    streamDisplayName: "Low",
+    streamOrdinal: 1,
+    provider: "codex",
+    turnCount: 1,
+    credits: 10,
+    knownCredits: 1,
+    unknownCredits: 0,
+    durationSeconds: 20,
+    knownDurations: 1,
+    unknownDurations: 0,
+    latestAt: Date.UTC(2026, 8, 6, 10),
+    fileTouches: 2,
+    knownFileTouches: 1,
+    changedLines: 5,
+    knownChangedLines: 1,
+    subagentTurns: 0,
+    knownSubagentTurns: 1,
+    skillNames: ["journal"],
+    mcpCallCount: 1,
+    mcpTools: ["agent_hub/hub_task_get"],
+    mcpFailures: 0,
+    knownToolMetricTurns: 1,
+    ...overrides,
+  });
+  const summary = { version: 1, buckets: [
+    bucket({}),
+    bucket({
+      streamId: "stream-high",
+      streamDisplayName: "High",
+      credits: 30,
+      latestAt: Date.UTC(2026, 8, 6, 9),
+    }),
+    bucket({
+      streamId: "stream-claude",
+      streamDisplayName: "Claude",
+      provider: "claude",
+      credits: 100,
+      durationSeconds: 50,
+      latestAt: Date.UTC(2026, 8, 6, 11),
+    }),
+  ] };
+
+  const [workspaceScope] = api.virtualJournalScopes(summary, "workspace", {
+    includeClaudeUsage: false,
+  });
+  assert.equal(workspaceScope.label, "Agent HUB");
+  assert.equal(workspaceScope.turnCount, 3);
+  assert.equal(workspaceScope.durationSeconds, 90);
+  assert.equal(workspaceScope.credits, 40);
+  assert.equal(workspaceScope.fileTouches, 6);
+  assert.equal(workspaceScope.changedLines, 15);
+  assert.equal(workspaceScope.skillCount, 1);
+  assert.equal(workspaceScope.mcpCallCount, 3);
+  assert.deepEqual(
+    Array.from(workspaceScope.workspaces[0].streams, (stream) => stream.id),
+    ["stream-high", "stream-low", "stream-claude"],
+  );
+
+  const [dayScope] = api.virtualJournalScopes(summary, "date", {
+    includeClaudeUsage: false,
+  });
+  assert.equal(dayScope.label, "06.09.2026");
+  assert.equal(dayScope.workspaces[0].streams.length, 3);
+  assert.equal(dayScope.fromMs, Date.UTC(2026, 8, 6));
+  assert.equal(dayScope.toMs, Date.UTC(2026, 8, 7));
+});
+
+test("Claude Work virtual grouping keeps a provider-bounded lazy query", async () => {
+  const api = await journalViewApi();
+  const [scope] = api.virtualJournalScopes({ version: 1, buckets: [{
+    date: "06.09.2026",
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    workspaceKind: "catalog",
+    streamId: "stream-1",
+    streamDisplayName: "Architect",
+    provider: "claude",
+    turnCount: 1,
+    credits: 12,
+    knownCredits: 1,
+    unknownCredits: 0,
+    durationSeconds: 15,
+    knownDurations: 1,
+    unknownDurations: 0,
+    latestAt: Date.UTC(2026, 8, 6, 10),
+  }] }, "workspace", { groupClaude: true });
+  const workspace = scope.workspaces[0];
+  assert.equal(workspace.id, "claude-work");
+  assert.equal(workspace.queryWorkspaceId, "");
+  assert.deepEqual(Array.from(workspace.providers), ["claude"]);
+  assert.equal(workspace.streams[0].queryStreamId, "");
+  assert.deepEqual(Array.from(workspace.streams[0].providers), ["claude"]);
+  assert.deepEqual({ ...api.virtualTurnQuery(scope, workspace, workspace.streams[0]) }, {
+    workspaceId: "",
+    streamId: "",
+    provider: "claude",
+    fromMs: 0,
+    toMs: 0,
+  });
 });
 
 test("aggregate journal hydration bounds fetch and DOM work and can be superseded", async () => {

@@ -115,6 +115,7 @@ export class DesktopDeferredInputService {
       item.paused = true;
       delete item.dispatchingAt;
       delete item.lastError;
+      delete item.lastErrorCode;
       delete item.recheckRequested;
       try {
         await d.saveState();
@@ -129,6 +130,7 @@ export class DesktopDeferredInputService {
       if (!d.queuedInputs.has(id)) throw new Error("Сообщение не находится в очереди");
       delete item.paused;
       delete item.lastError;
+      delete item.lastErrorCode;
       if (item.waitReason === "provider-thread-active") item.recheckRequested = true;
       await d.saveState();
       d.scheduleQueued(item, 0);
@@ -174,6 +176,9 @@ export class DesktopDeferredInputService {
       }
     }
     if (action === "cancel") {
+      if (item.dispatchingAt || d.isProcessing(id)) {
+        throw new Error("Сообщение уже отправляется; отмена не подтверждена");
+      }
       const destination = d.pendingInputs.has(id) ? "pending" : "queued";
       const wasScheduled = destination === "queued" ? d.cancelSchedule(id) : false;
       d.pendingInputs.delete(id);
@@ -197,6 +202,7 @@ export class DesktopDeferredInputService {
       d.pendingInputs.delete(id);
       delete item.paused;
       delete item.lastError;
+      delete item.lastErrorCode;
       delete item.waitReason;
       d.queuedInputs.set(id, item);
       d.updateReceipt(item, "queued");
@@ -299,14 +305,16 @@ export class DesktopDeferredInputService {
   #composerDraft(item) {
     const rawText = deferredInputText(item.input);
     const interstreamAt = rawText.indexOf("<agent-hub-stream-message>");
-    const embeddedOrigin = interstreamAt >= 0
-      ? interstreamMessageDetails(rawText.slice(interstreamAt))?.origin
+    const interstream = interstreamAt >= 0
+      ? interstreamMessageDetails(rawText.slice(interstreamAt))
       : null;
-    const annotated = responseAnnotationDetails(rawText);
-    const referenced = userTaskReferencePromptDetails(rawText);
+    const prompt = interstream?.text ?? rawText;
+    const embeddedOrigin = interstream?.origin ?? null;
+    const annotated = responseAnnotationDetails(prompt);
+    const referenced = userTaskReferencePromptDetails(prompt);
     const text = annotated?.request
       ?? referenced?.displayText
-      ?? displayUserPrompt(rawText);
+      ?? displayUserPrompt(prompt);
     return {
       text: String(text ?? ""),
       attachments: item.persistentFiles

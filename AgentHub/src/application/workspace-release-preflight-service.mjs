@@ -19,7 +19,7 @@ function canonicalRoot(value) {
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
-function readyRepositories(ready = []) {
+function readyRepositories(ready = [], fallbackProjectRoots = []) {
   const repositories = new Map();
   for (const entry of ready) {
     const projectRoot = path.resolve(String(entry?.projectRoot ?? "").trim());
@@ -28,16 +28,35 @@ function readyRepositories(ready = []) {
     const key = canonicalRoot(projectRoot);
     const repository = repositories.get(key) ?? { projectRoot, frozenTasks: new Map() };
     const taskId = String(entry.taskId);
+    const taskRevision = Number(entry.taskRevision);
+    if (!Number.isInteger(taskRevision) || taskRevision < 1) {
+      throw new Error(`release Task ${taskId} has no exact revision`);
+    }
     const existing = repository.frozenTasks.get(taskId);
-    if (existing && existing !== resultCommit) throw new Error(`release Task ${taskId} has multiple result commits`);
-    repository.frozenTasks.set(taskId, resultCommit);
+    if (existing && (existing.resultCommit !== resultCommit || existing.taskRevision !== taskRevision)) {
+      throw new Error(`release Task ${taskId} has multiple revisions or result commits`);
+    }
+    repository.frozenTasks.set(taskId, {
+      taskId,
+      taskRevision,
+      taskNumber: entry.taskNumber ?? null,
+      projectRoot,
+      branch: entry.branch,
+      resultCommit,
+    });
     repositories.set(key, repository);
+  }
+  for (const value of fallbackProjectRoots) {
+    const source = String(value ?? "").trim();
+    if (!source) continue;
+    const projectRoot = path.resolve(source);
+    const key = canonicalRoot(projectRoot);
+    if (!repositories.has(key)) repositories.set(key, { projectRoot, frozenTasks: new Map() });
   }
   return [...repositories.values()].map((repository) => ({
     projectRoot: repository.projectRoot,
-    frozenTasks: [...repository.frozenTasks].map(([taskId, resultCommit]) => ({ taskId, resultCommit }))
-      .sort((left, right) => left.taskId.localeCompare(right.taskId)),
-    resultCommits: [...new Set(repository.frozenTasks.values())].sort(),
+    frozenTasks: [...repository.frozenTasks.values()].sort((left, right) => left.taskId.localeCompare(right.taskId)),
+    resultCommits: [...new Set([...repository.frozenTasks.values()].map((task) => task.resultCommit))].sort(),
     taskIds: [...repository.frozenTasks.keys()].sort(),
   }));
 }
@@ -84,25 +103,94 @@ function exactReadyContourReadback({ refreshed, contour, expectedHeadCommit }) {
 export class WorkspaceReleasePreflightService {
   constructor({
     releasePlanner, taskGitWorkspaces, releaseGitWorkspaces,
-    resolveTestContourSource, refreshTestContour, readTestContourStatus,
+    resolveTestContourSource, refreshTestContour, readTestContourStatus, readPublicationState,
   } = {}) {
     requiredMethod(releasePlanner, "plan");
     requiredMethod(taskGitWorkspaces, "prepareDev");
     requiredMethod(taskGitWorkspaces, "verifyReleaseResultsInDev");
+    requiredMethod(taskGitWorkspaces, "releaseIntegrationEvidence");
     requiredMethod(releaseGitWorkspaces, "assertPrimaryInvariant");
+    requiredMethod(releaseGitWorkspaces, "inspectMainChanges");
     requiredMethod(releaseGitWorkspaces, "prepareCandidate");
+    requiredMethod(releaseGitWorkspaces, "withAwaitTransition");
     requiredFunction(resolveTestContourSource, "resolveTestContourSource");
     requiredFunction(refreshTestContour, "refreshTestContour");
     requiredFunction(readTestContourStatus, "readTestContourStatus");
+    requiredFunction(readPublicationState, "readPublicationState");
     this.releasePlanner = releasePlanner;
     this.taskGitWorkspaces = taskGitWorkspaces;
     this.releaseGitWorkspaces = releaseGitWorkspaces;
     this.resolveTestContourSource = resolveTestContourSource;
     this.refreshTestContour = refreshTestContour;
     this.readTestContourStatus = readTestContourStatus;
+    this.readPublicationState = readPublicationState;
   }
 
-  async preflight({ workspaceId, expectedPlanRevision, conflictsResolved = false } = {}) {
+  withAwaitTransition(workspaceId, operation) {
+    return this.releaseGitWorkspaces.withAwaitTransition(workspaceId, operation);
+  }
+
+  async prepareAwaitSet({ workspaceId, expectedPlanRevision = null, fallbackProjectRoots = [] } = {}) {
+    const plan = await this.releasePlanner.plan(workspaceId);
+    if (expectedPlanRevision != null && plan.revision !== requiredPlanRevision(expectedPlanRevision)) {
+      throw new Error("release plan revision changed; rebuild the current Await set again");
+    }
+    if (plan.blocked.length) throw new Error("Await set has blocked Task results");
+    const selectedRepositories = readyRepositories(plan.ready, fallbackProjectRoots);
+    if (!selectedRepositories.length) {
+      return { workspaceId: String(workspaceId), planRevision: plan.revision, taskIds: [], releaseCandidates: [] };
+    }
+    const releaseCandidates = [];
+    for (const repository of selectedRepositories) {
+      await this.releaseGitWorkspaces.assertPrimaryInvariant(repository.projectRoot, {
+        phase: "Await PreRelease rebuild",
+      });
+      const evidence = await this.taskGitWorkspaces.releaseIntegrationEvidence({
+        projectRoot: repository.projectRoot,
+        tasks: repository.frozenTasks,
+      });
+      releaseCandidates.push(await this.releaseGitWorkspaces.prepareCandidate({
+        planRevision: plan.revision,
+        projectRoot: repository.projectRoot,
+        frozenTasks: evidence.tasks,
+        validateBeforeCommit: async () => {
+          const current = await this.releasePlanner.plan(workspaceId);
+          if (current.revision !== plan.revision) {
+            throw new Error("release plan revision changed during PreRelease rebuild");
+          }
+        },
+      }));
+    }
+    const current = await this.releasePlanner.plan(workspaceId);
+    if (current.revision !== plan.revision) {
+      throw new Error("release plan revision changed during PreRelease rebuild");
+    }
+    return {
+      workspaceId: String(workspaceId),
+      planRevision: plan.revision,
+      taskIds: [...new Set(plan.ready.map((entry) => String(entry.taskId)))].sort(),
+      overlaps: plan.conflicts,
+      releaseCandidates,
+    };
+  }
+
+  async preflight({
+    workspaceId, expectedPlanRevision, conflictsResolved = false,
+    approvedLocalMainCommit = null, approvedOriginMainCommit = null,
+  } = {}) {
+    return this.withAwaitTransition(workspaceId, () => this.#preflightLocked({
+      workspaceId,
+      expectedPlanRevision,
+      conflictsResolved,
+      approvedLocalMainCommit,
+      approvedOriginMainCommit,
+    }));
+  }
+
+  async #preflightLocked({
+    workspaceId, expectedPlanRevision, conflictsResolved,
+    approvedLocalMainCommit, approvedOriginMainCommit,
+  }) {
     const plan = await this.releasePlanner.plan(workspaceId);
     const requestedPlanRevision = requiredPlanRevision(expectedPlanRevision);
     if (plan.revision !== requestedPlanRevision) {
@@ -110,9 +198,29 @@ export class WorkspaceReleasePreflightService {
     }
     if (!plan.ready.length) throw new Error("release has no ready changes");
     if (plan.blocked.length) throw new Error("release has blocked changes");
-    if (plan.conflicts.length && conflictsResolved !== true) throw new Error("release has overlapping files");
 
     const selectedRepositories = readyRepositories(plan.ready);
+    const publication = await this.readPublicationState();
+    const publishedRevision = String(publication?.revision ?? "").trim();
+    if (!publishedRevision) throw new Error("release preflight has no last published revision");
+    const mainAudits = [];
+    for (const repository of selectedRepositories) {
+      mainAudits.push(await this.releaseGitWorkspaces.inspectMainChanges({
+        projectRoot: repository.projectRoot,
+        publishedRevision,
+        approvedLocalMainCommit,
+        approvedOriginMainCommit,
+      }));
+    }
+    if (mainAudits.some((audit) => audit.approvalRequired)) {
+      return {
+        workspaceId: String(workspaceId),
+        planRevision: plan.revision,
+        status: "main_review_required",
+        taskIds: [...new Set(plan.ready.map((entry) => String(entry.taskId)))].sort(),
+        mainAudits,
+      };
+    }
     const primaryRepositories = [];
     for (const repository of selectedRepositories) {
       primaryRepositories.push(await this.releaseGitWorkspaces.assertPrimaryInvariant(repository.projectRoot, {
@@ -174,11 +282,28 @@ export class WorkspaceReleasePreflightService {
 
     const releaseCandidates = [];
     for (const repository of selectedRepositories) {
+      const evidence = await this.taskGitWorkspaces.releaseIntegrationEvidence({
+        projectRoot: repository.projectRoot,
+        tasks: repository.frozenTasks,
+      });
       releaseCandidates.push(await this.releaseGitWorkspaces.prepareCandidate({
         planRevision: plan.revision,
         projectRoot: repository.projectRoot,
-        frozenTasks: repository.frozenTasks,
+        frozenTasks: evidence.tasks,
+        approvedBaseCommit: mainAudits.find((audit) => (
+          canonicalRoot(audit.projectRoot) === canonicalRoot(repository.projectRoot)
+        ))?.originMain ?? null,
+        validateBeforeCommit: async () => {
+          const current = await this.releasePlanner.plan(workspaceId);
+          if (current.revision !== plan.revision) {
+            throw new Error("release plan revision changed during release candidate preparation");
+          }
+        },
       }));
+    }
+    const current = await this.releasePlanner.plan(workspaceId);
+    if (current.revision !== plan.revision) {
+      throw new Error("release plan revision changed during release candidate preparation");
     }
 
     return {
@@ -186,6 +311,8 @@ export class WorkspaceReleasePreflightService {
       planRevision: plan.revision,
       taskIds: [...new Set(plan.ready.map((entry) => String(entry.taskId)))].sort(),
       conflictsResolved: conflictsResolved === true,
+      status: "ready",
+      mainAudits,
       primaryRepositories,
       repositories,
       releaseCandidates,

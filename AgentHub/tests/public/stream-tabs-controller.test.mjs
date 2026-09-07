@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { readdir, readFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import vm from "node:vm";
 
@@ -26,7 +30,32 @@ async function launchDomBrowser(chromium) {
   return chromium.launch({ headless: true });
 }
 
-async function openStreamTabsDomFixture(page) {
+async function openStreamTabsDomFixture(page, {
+  includeHubClient = false,
+  control = null,
+} = {}) {
+  const initialSnapshot = {
+    apiVersion: 3,
+    version: "hub157-browser-snapshot",
+    server: { status: "online" },
+    tasks: [],
+    workspaces: [],
+    archivedWorkspaces: [],
+    boardTasks: [],
+    boardLayout: { columnOrder: [] },
+    deferredInputs: [],
+    messageReceipts: [],
+    pendingApprovals: [],
+    settings: {
+      provider: "codex",
+      models: [],
+      modelOptionsByProvider: {},
+      reasoningOptions: [],
+      reasoningOptionsByProvider: {},
+      modeOptions: [],
+      quickMessages: { global: [], workspaces: {}, streams: {} },
+    },
+  };
   await page.route("**/*", async (route) => {
     const requestUrl = new URL(route.request().url());
     if (requestUrl.hostname !== "agent-hub.test") {
@@ -35,12 +64,28 @@ async function openStreamTabsDomFixture(page) {
     }
     if (requestUrl.pathname === "/") {
       const source = await readFile(new URL("index.html", WEB_APP_ROOT), "utf8");
-      const body = source
+      let body = source
         .replace(/\s*<script src="https:\/\/telegram\.org\/[^>]+><\/script>/u, "")
-        .replace(/\s*<script src="\/browser-device-auth\.js" defer><\/script>/u, "")
-        .replace(/\s*<script src="\/hub-client\.js" defer><\/script>/u, "")
-        .replace("</head>", `<script type="application/json" data-theme-catalog>${TEST_THEME_CATALOG}</script></head>`);
+        .replace(/\s*<script src="\/browser-device-auth\.js" defer><\/script>/u, "");
+      if (!includeHubClient) {
+        body = body.replace(/\s*<script src="\/hub-client\.js" defer><\/script>/u, "");
+      }
+      body = body.replace("</head>", `<script type="application/json" data-theme-catalog>${TEST_THEME_CATALOG}</script></head>`);
       await route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body });
+      return;
+    }
+    if (requestUrl.pathname === "/api/snapshot") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(initialSnapshot) });
+      return;
+    }
+    if (requestUrl.pathname === "/api/control" && route.request().method() === "POST") {
+      const request = route.request().postDataJSON();
+      const response = await control?.(request) ?? { status: 200, body: { ok: true, result: initialSnapshot } };
+      await route.fulfill({
+        status: response.status ?? 200,
+        contentType: "application/json",
+        body: JSON.stringify(response.body ?? response),
+      });
       return;
     }
     if (requestUrl.pathname === "/work-log.css") {
@@ -66,8 +111,92 @@ async function openStreamTabsDomFixture(page) {
       await route.fulfill({ status: 404, body: "Not found" });
     }
   });
-  await page.goto("http://agent-hub.test/", { waitUntil: "load" });
+  await page.goto("https://agent-hub.test/", { waitUntil: "load" });
   await page.waitForFunction(() => typeof window.AgentHub === "object");
+  if (includeHubClient) {
+    await page.waitForFunction(() => document.querySelector("[data-connection-label]")?.textContent !== "");
+  }
+}
+
+async function startPermanentDeleteConflictBackend() {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-delete-conflict-backend-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const imports = {
+    catalog: new URL("../../src/infrastructure/persistence/workspace-catalog-store.mjs", import.meta.url).href,
+    board: new URL("../../src/infrastructure/persistence/task-board-store.mjs", import.meta.url).href,
+    server: new URL("../../src/interfaces/web/mini-app-server.mjs", import.meta.url).href,
+  };
+  const script = `(async () => {
+    const [{ WorkspaceCatalogStore }, { TaskBoardStore }, { MiniAppServer }] = await Promise.all([
+      import(process.argv[2]), import(process.argv[3]), import(process.argv[4]),
+    ]);
+    const databaseFile = process.argv[1];
+    const catalog = new WorkspaceCatalogStore({
+      databaseFile, instanceId: "hub157-edge-backend", leaseDurationMs: 10000,
+    });
+    await catalog.load();
+    const board = new TaskBoardStore({ databaseFile });
+    const workspace = catalog.createWorkspace({ id: "archived-rejected", name: "Rejected Archive" });
+    catalog.createStream({ id: "archived-rejected-stream", workspaceId: workspace.id });
+    board.create({
+      text: "Durable attachment blocks deletion", bucket: "workspace", workspaceId: workspace.id,
+      taskPrefix: "HUB", triageStatus: "disabled",
+    });
+    catalog.archiveWorkspace(workspace.id);
+    const snapshot = {
+      apiVersion: 3, version: "hub157-backend", server: { status: "online" }, tasks: [],
+      workspaces: [], boardTasks: [], boardLayout: { columnOrder: [] }, deferredInputs: [],
+      messageReceipts: [], pendingApprovals: [], settings: { provider: "codex", models: [],
+        modelOptionsByProvider: {}, reasoningOptions: [], reasoningOptionsByProvider: {},
+        modeOptions: [], quickMessages: { global: [], workspaces: {}, streams: {} } },
+    };
+    const server = new MiniAppServer({
+      host: "127.0.0.1", port: 0,
+      journalDatabase: { html: () => "", version: "test", subscribe: () => () => {} },
+      controlHandler: async ({ action, params }) => {
+        if (action === "delete-archived-workspace") {
+          await catalog.deleteArchivedWorkspace(params.workspaceId, params.confirmationName);
+        }
+        return snapshot;
+      },
+    });
+    const address = await server.start();
+    process.stdout.write(JSON.stringify({ url: address.url }) + "\\n");
+  })().catch((error) => { console.error(error); process.exit(1); });`;
+  const child = spawn(process.execPath, [
+    "--eval", script, databaseFile, imports.catalog, imports.board, imports.server,
+  ], { stdio: ["ignore", "pipe", "pipe"] });
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  let stdout = "";
+  let stderr = "";
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  const ready = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`backend start timed out: ${stderr}`)), 5_000);
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+      const newline = stdout.indexOf("\n");
+      if (newline < 0) return;
+      clearTimeout(timer);
+      resolve(JSON.parse(stdout.slice(0, newline)));
+    });
+    child.once("exit", (code) => {
+      clearTimeout(timer);
+      if (code !== 0) reject(new Error(`backend exited ${code}: ${stderr}`));
+    });
+    child.once("error", reject);
+  });
+  return {
+    ...ready,
+    async close() {
+      if (child.exitCode == null) {
+        const closed = once(child, "close");
+        child.kill("SIGTERM");
+        await closed;
+      }
+      await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+    },
+  };
 }
 
 class FakeTarget {
@@ -305,7 +434,7 @@ test("desktop Stream settings are theme-independent and keep stable geometry", a
   assert.equal(resolveStableStreamCardWidth(widths, "new-stream"), 0);
 });
 
-test("quick messages merge Workspace and Stream scopes without duplicates", async () => {
+test("quick messages preserve structured mappings and scope order", async () => {
   const {
     quickMessagesCountLabel,
     quickMessagesForStream,
@@ -322,14 +451,16 @@ test("quick messages merge Workspace and Stream scopes without duplicates", asyn
   };
 
   assert.deepEqual(
-    JSON.parse(JSON.stringify(quickMessagesForStream(selection, "workspace-1", "stream-1").map(({ scope, label, text }) => ({
-      scope, label, text,
+    JSON.parse(JSON.stringify(quickMessagesForStream(selection, "workspace-1", "stream-1").map(({ scope, title, text }) => ({
+      scope, title, text,
     })))),
     [
-      { scope: "global", label: "пинг", text: "пинг" },
-      { scope: "workspace", label: "релизь", text: "релизь" },
-      { scope: "workspace", label: "Тесты", text: "запусти тесты" },
-      { scope: "stream", label: "продолжай", text: "продолжай" },
+      { scope: "global", title: "пинг", text: "пинг" },
+      { scope: "workspace", title: "релизь", text: "релизь" },
+      { scope: "workspace", title: "Тесты", text: "запусти тесты" },
+      { scope: "stream", title: "Release", text: "релизь" },
+      { scope: "stream", title: "продолжай", text: "продолжай" },
+      { scope: "stream", title: "пинг", text: "пинг" },
     ],
   );
   assert.equal(
@@ -345,12 +476,12 @@ test("quick messages merge Workspace and Stream scopes without duplicates", asyn
   assert.deepEqual(
     JSON.parse(JSON.stringify(setQuickMessagesForScope(selection, "stream", "stream-1", []))),
     {
-      global: [{ id: "пинг", label: "пинг", text: "пинг" }],
+      global: [{ title: "пинг", text: "пинг" }],
       streams: {},
       workspaces: {
         "workspace-1": [
-          { id: "релизь", label: "релизь", text: "релизь" },
-          { id: "Тесты", label: "Тесты", text: "запусти тесты" },
+          { title: "релизь", text: "релизь" },
+          { title: "Тесты", text: "запусти тесты" },
         ],
       },
     },
@@ -358,18 +489,18 @@ test("quick messages merge Workspace and Stream scopes without duplicates", asyn
   assert.deepEqual(
     JSON.parse(JSON.stringify(setQuickMessagesForScope(selection, "global", "", ["везде"]))),
     {
-      global: [{ id: "везде", label: "везде", text: "везде" }],
+      global: [{ title: "везде", text: "везде" }],
       streams: {
         "stream-1": [
-          { id: "Release", label: "Release", text: "релизь" },
-          { id: "продолжай", label: "продолжай", text: "продолжай" },
-          { id: "пинг", label: "пинг", text: "пинг" },
+          { title: "Release", text: "релизь" },
+          { title: "продолжай", text: "продолжай" },
+          { title: "пинг", text: "пинг" },
         ],
       },
       workspaces: {
         "workspace-1": [
-          { id: "релизь", label: "релизь", text: "релизь" },
-          { id: "Тесты", label: "Тесты", text: "запусти тесты" },
+          { title: "релизь", text: "релизь" },
+          { title: "Тесты", text: "запусти тесты" },
         ],
       },
     },
@@ -731,6 +862,76 @@ test("an active Stream preserves its answer-ready state", async () => {
   );
 });
 
+test("Astra uses its compact label only in Stream pills and the active Stream header", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  try {
+    const page = await browser.newPage();
+    await openStreamTabsDomFixture(page);
+    const result = await page.evaluate(() => {
+      window.AgentHub.setWorkspaces([{
+        id: "workspace-agent-hub",
+        name: "Agent HUB",
+        title: "Agent HUB",
+      }]);
+      const astraTask = {
+        id: "task-astra",
+        threadId: "thread-astra",
+        workspaceId: "workspace-agent-hub",
+        workspaceName: "Agent HUB",
+        streamId: "stream-astra",
+        streamName: "S4",
+        streamOrdinal: 4,
+        title: "Astra task",
+        provider: "codex",
+        agentLabel: "Codex",
+        modelLabel: "GPT-6 Astra",
+        status: "in_progress",
+        statusLabel: "В работе",
+        lastActivity: "2026-09-05T08:00:00.000Z",
+        unread: false,
+        running: true,
+        selected: true,
+      };
+      window.AgentHub.setTasks([astraTask, {
+        ...astraTask,
+        id: "task-custom-astra",
+        threadId: "thread-custom-astra",
+        streamId: "stream-custom-astra",
+        streamName: "S5",
+        streamOrdinal: 5,
+        modelLabel: "Custom Astra Preview",
+        selected: false,
+      }]);
+      return {
+        header: document.querySelector("[data-stream-header-model]")?.textContent,
+        headerTitle: document.querySelector("[data-stream-header-model]")?.title,
+        astraPill: document.querySelector(
+          '[data-activity-task-id="task-astra"] .task-model',
+        )?.textContent,
+        astraPillTitle: document.querySelector(
+          '[data-activity-task-id="task-astra"] .task-model',
+        )?.title,
+        customPill: document.querySelector(
+          '[data-activity-task-id="task-custom-astra"] .task-model',
+        )?.textContent,
+        customPillTitle: document.querySelector(
+          '[data-activity-task-id="task-custom-astra"] .task-model',
+        )?.title,
+      };
+    });
+
+    assert.equal(result.header, "Astra");
+    assert.equal(result.headerTitle, "GPT-6 Astra");
+    assert.equal(result.astraPill, "Astra");
+    assert.equal(result.astraPillTitle, "GPT-6 Astra");
+    assert.equal(result.customPill, "Custom Astra Preview");
+    assert.equal(result.customPillTitle, "Custom Astra Preview");
+  } finally {
+    await browser.close();
+  }
+});
+
 test("background status changes rerender visible top Stream tabs", async () => {
   const { chromium } = await import("playwright");
   const browser = await launchDomBrowser(chromium);
@@ -859,6 +1060,1187 @@ test("background status changes rerender visible top Stream tabs", async () => {
         architectCurrent: true,
       },
     });
+  } finally {
+    await browser.close();
+  }
+});
+
+test("Workspace and Stream cards expose behavioral editing and quick reply contracts", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  try {
+    const page = await browser.newPage();
+    await openStreamTabsDomFixture(page);
+    await page.evaluate(() => {
+      window.__hub157Intents = [];
+      document.addEventListener("agenthub:intent", (event) => {
+        window.__hub157Intents.push(structuredClone(event.detail));
+      });
+      const shared = {
+        workspaceId: "workspace-1",
+        workspaceName: "Agent HUB",
+        workspaceSettings: { catalogFolder: "Team" },
+        status: "ready",
+        statusLabel: "Готов",
+        lastActivity: "2026-09-04T08:00:00.000Z",
+        running: false,
+        unread: false,
+        streamSettings: {},
+      };
+      window.__hub157Tasks = [{
+        ...shared,
+        id: "task-codex",
+        selected: true,
+        streamId: "stream-codex",
+        streamName: "Codex Stream",
+        streamOrdinal: 1,
+        provider: "codex",
+        threadId: "thread-codex",
+        agentLabel: "Codex",
+      }, {
+        ...shared,
+        id: "task-claude",
+        selected: false,
+        streamId: "stream-claude",
+        streamName: "Claude Stream",
+        streamOrdinal: 2,
+        provider: "claude",
+        threadId: "thread-claude",
+        agentLabel: "Claude",
+      }];
+      window.AgentHub.setWorkspaces([{
+        id: "workspace-1", name: "Agent HUB", settings: { catalogFolder: "Team" },
+      }, {
+        id: "workspace-2", name: "Archive", settings: { catalogFolder: "Other" },
+      }], ["workspace:workspace-1", "workspace:workspace-2", "notes"]);
+      window.AgentHub.setSelection({
+        quickMessages: {
+          global: [],
+          workspaces: {
+            "workspace-1": [{ title: "Workspace reply", text: "WORKSPACE" }],
+          },
+          streams: {
+            "stream-codex": [{ title: "Stream reply", text: "STREAM" }],
+          },
+        },
+      });
+      window.AgentHub.setTasks(window.__hub157Tasks);
+      window.__hub157Message = {
+        id: "message-1",
+        itemId: "item-1",
+        turnId: "turn-1",
+        threadId: "thread-codex",
+        provider: "codex",
+        role: "agent",
+        author: "Codex",
+        text: "Quoted source text",
+        time: "08:00",
+      };
+      window.AgentHub.setMessages("task-codex", [window.__hub157Message]);
+    });
+
+    const workspace = page.locator('[data-workspace-select="workspace-1"]');
+    await workspace.click();
+    assert.equal(await page.locator("[data-workspace-card-modal]").evaluate((node) => node.open), false);
+    await workspace.dispatchEvent("contextmenu", { clientX: 80, clientY: 80 });
+    assert.deepEqual(await page.locator(".workspace-context-menu:not([hidden]) [role=menuitem]").allTextContents(), [
+      "Редактировать…",
+    ]);
+    await page.keyboard.press("Escape");
+
+    await workspace.focus();
+    await workspace.dblclick();
+    assert.equal(await page.locator("[data-workspace-card-modal]").evaluate((node) => node.open), true);
+    assert.equal(await page.locator("[data-workspace-card-archive]").evaluate((node) => (
+      Boolean(node.closest(".workspace-card-fields")) && !node.closest("footer")
+    )), true);
+    assert.equal(await page.locator("[data-workspace-card-form] input").first().getAttribute("data-workspace-card-name"), "");
+    assert.equal(await page.locator("[data-workspace-card-folder]").inputValue(), "Team");
+    await page.locator('[data-workspace-card-quick-messages] [data-quick-message-title]').fill("Workspace edited");
+    await page.locator("[data-workspace-card-comment]").focus();
+    await page.locator("[data-workspace-card-folder]").evaluate((node) => {
+      node.value = "Other";
+      node.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await page.locator("[data-workspace-card-submit]").click();
+    const workspaceUpdate = await page.evaluate(() => window.__hub157Intents.find((item) => item.type === "workspace:update"));
+    assert.equal(workspaceUpdate.folderName, "Other");
+    assert.equal(await page.evaluate(() => window.__hub157Intents.some((item) => (
+      item.type === "selection:set"
+      && item.key === "quickMessages"
+      && item.value.workspaces["workspace-1"][0].title === "Workspace edited"
+    ))), true);
+
+    const codexTab = page.locator('.stream-tabs-track .stream-tab[data-stream-tab-id="stream-codex"]');
+    await codexTab.dispatchEvent("contextmenu", { clientX: 100, clientY: 100 });
+    assert.deepEqual(await page.locator(".stream-context-menu:not(.workspace-context-menu):not([hidden]) [role=menuitem]").allTextContents(), [
+      "Редактировать…",
+      "Ротация",
+      "Продолжить в Claude",
+    ]);
+    await page.keyboard.press("Escape");
+    await codexTab.focus();
+    await codexTab.dblclick();
+    assert.equal(await page.locator("[data-dialog-settings]").evaluate((node) => node.open), true);
+    assert.equal(await page.locator("[data-dialog-settings]").getAttribute("aria-label"), "Карточка Stream");
+    assert.equal(await page.getByText("Карточка Stream", { exact: true }).count(), 0);
+    assert.equal(await page.locator("[data-dialog-settings] input").first().getAttribute("data-dialog-stream-name"), "");
+    assert.equal(await page.locator("[data-dialog-stream-name]").inputValue(), "Codex Stream");
+    await page.locator("[data-dialog-stream-name]").fill("Renamed Stream");
+    await page.locator("[data-dialog-working-directory]").focus();
+    assert.equal(await page.evaluate(() => window.__hub157Intents.some((item) => (
+      item.type === "stream:rename" && item.streamId === "stream-codex" && item.name === "Renamed Stream"
+    ))), true);
+    assert.equal(await page.locator("[data-stream-card-continue-provider]").textContent(), "Продолжить в Claude");
+    assert.equal(await page.locator("[data-stream-card-move-target]").count(), 0);
+    const moveButton = page.locator("[data-stream-card-move]");
+    assert.equal(await moveButton.textContent(), "Перенести в другой Workspace");
+    const cardSpacing = await page.evaluate(() => {
+      const save = document.querySelector("[data-dialog-stream-rules-save]").getBoundingClientRect();
+      const rules = document.querySelector(".stream-agent-rules").getBoundingClientRect();
+      const rulesCardNode = document.querySelector(".agent-rules-card");
+      const rulesCard = rulesCardNode.getBoundingClientRect();
+      const rulesCardStyle = getComputedStyle(rulesCardNode);
+      const section = document.querySelector(".stream-card-actions-section").getBoundingClientRect();
+      const title = document.querySelector(".stream-card-actions-section .settings-section-title").getBoundingClientRect();
+      const card = document.querySelector(".stream-card-actions").getBoundingClientRect();
+      const pin = document.querySelector("[data-stream-card-pin]").getBoundingClientRect();
+      const archive = document.querySelector("[data-stream-card-archive]").getBoundingClientRect();
+      return {
+        insideRulesCard: rulesCard.bottom - Number.parseFloat(rulesCardStyle.borderBottomWidth) - save.bottom,
+        afterRulesSave: rules.bottom - save.bottom,
+        beforeActions: title.top - section.top,
+        beforePin: pin.top - card.top,
+        afterArchive: card.bottom - archive.bottom,
+      };
+    });
+    for (const gap of Object.values(cardSpacing)) assert.ok(gap >= 6, JSON.stringify(cardSpacing));
+    await moveButton.click();
+    const moveMenu = page.locator("[data-stream-card-move-menu]");
+    assert.equal(await moveMenu.evaluate((node) => node.matches(":popover-open")), true);
+    assert.equal(await moveMenu.locator("[role=menuitem]").allTextContents().then((items) => items.join("|")), "Archive");
+    assert.equal(await moveMenu.locator("[role=menuitem]").evaluate((node) => document.activeElement === node), true);
+    await page.keyboard.press("Escape");
+    assert.equal(await moveMenu.evaluate((node) => node.matches(":popover-open")), false);
+    assert.equal(await moveButton.evaluate((node) => document.activeElement === node), true);
+    const movesBeforeStaleChoice = await page.evaluate(() => window.__hub157Intents.filter((item) => (
+      item.type === "stream:move"
+    )).length);
+    await moveButton.click();
+    const staleOption = moveMenu.locator("[role=menuitem]");
+    await staleOption.evaluate((node) => { node.dataset.streamCardMoveWorkspace = "workspace-missing"; });
+    await staleOption.click();
+    assert.equal(await page.evaluate(() => window.__hub157Intents.filter((item) => (
+      item.type === "stream:move"
+    )).length), movesBeforeStaleChoice);
+    assert.equal(await moveMenu.evaluate((node) => node.matches(":popover-open")), false);
+    await moveButton.click();
+    await moveMenu.locator("[data-stream-card-move-workspace='workspace-2']").click();
+    assert.equal(await page.evaluate(() => window.__hub157Intents.some((item) => (
+      item.type === "stream:move" && item.streamId === "stream-codex" && item.workspaceId === "workspace-2"
+    ))), true);
+    assert.equal(await page.locator("[data-dialog-settings]").evaluate((node) => node.open), false);
+    assert.equal(await page.evaluate(() => document.activeElement?.dataset?.streamTabId), "stream-codex");
+
+    await page.evaluate(() => {
+      window.AgentHub.setWorkspaces([{
+        id: "workspace-1", name: "Agent HUB", settings: { catalogFolder: "Team" },
+      }], ["workspace:workspace-1", "notes"]);
+      window.AgentHub.setTasks(window.__hub157Tasks);
+    });
+    const codexTabWithoutMoveTarget = page.locator('.stream-tabs-track .stream-tab[data-stream-tab-id="stream-codex"]');
+    await codexTabWithoutMoveTarget.dblclick();
+    assert.equal(await page.locator("[data-stream-card-move]").isDisabled(), true);
+    assert.equal(await page.locator("[data-stream-card-move-menu] [role=menuitem]").count(), 0);
+    await page.keyboard.press("Escape");
+
+    await page.evaluate(() => window.AgentHub.setTasks(window.__hub157Tasks.map((task) => ({
+      ...task, selected: task.id === "task-claude",
+    }))));
+    const claudeTab = page.locator('.stream-tabs-track .stream-tab[data-stream-tab-id="stream-claude"]');
+    await claudeTab.dispatchEvent("contextmenu", { clientX: 120, clientY: 100 });
+    assert.deepEqual(await page.locator(".stream-context-menu:not(.workspace-context-menu):not([hidden]) [role=menuitem]").allTextContents(), [
+      "Редактировать…",
+      "Ротация",
+      "Продолжить в Codex",
+    ]);
+
+    await page.evaluate(() => window.AgentHub.setTasks(window.__hub157Tasks));
+    const composer = page.locator("[data-composer-input]");
+    await composer.fill("AB");
+    await composer.evaluate((node) => node.setSelectionRange(1, 1));
+    const workspaceReply = page.locator("[data-composer-quick-messages] [data-quick-message-index]")
+      .filter({ hasText: "Workspace edited" });
+    await workspaceReply.click();
+    assert.equal(await composer.inputValue(), "AWORKSPACEB");
+    assert.deepEqual(await composer.evaluate((node) => [node.selectionStart, node.selectionEnd]), [10, 10]);
+    assert.equal(await page.evaluate(() => window.__hub157Intents.filter((item) => item.type === "message:send").length), 0);
+
+    const annotationAdded = await page.evaluate(async () => {
+      window.AgentHub.selectTask("task-codex");
+      window.AgentHub.setMessages("task-codex", [{
+        ...window.__hub157Message,
+        id: "message-quote",
+        itemId: "item-quote",
+      }]);
+      const source = [...document.querySelectorAll("[data-chat-log] > [data-message-key]")]
+        .find((node) => node.textContent.includes("Quoted source text"));
+      const body = source?.querySelector(".msg-body");
+      const range = document.createRange();
+      range.selectNodeContents(body);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return window.AgentHub.addSelectedAnnotation();
+    });
+    assert.equal(annotationAdded, true);
+    const comment = page.locator("[data-annotation-comment-index='0']");
+    await comment.fill("XY");
+    await comment.evaluate((node) => node.setSelectionRange(1, 1));
+    const streamReply = page.locator("[data-composer-quick-messages] [data-quick-message-index]")
+      .filter({ hasText: "Stream reply" });
+    await streamReply.click();
+    assert.equal(await comment.inputValue(), "XSTREAMY");
+
+    const composerBeforeQuickSend = await composer.inputValue();
+    const commentBeforeQuickSend = await comment.inputValue();
+    await streamReply.click({ modifiers: ["Control"] });
+    const quickSend = await page.evaluate(() => window.__hub157Intents.filter((item) => item.type === "message:send").at(-1));
+    assert.equal(quickSend.text, "STREAM");
+    assert.deepEqual(quickSend.annotations, []);
+    assert.deepEqual(quickSend.attachments, []);
+    assert.deepEqual(quickSend.taskReferences, []);
+    assert.equal(await composer.inputValue(), composerBeforeQuickSend);
+    assert.equal(await comment.inputValue(), commentBeforeQuickSend);
+    await page.evaluate((requestId) => window.AgentHub.completeSend(requestId, { accepted: true }), quickSend.requestId);
+
+    const sendsBeforeKeyboard = await page.evaluate(() => window.__hub157Intents.filter((item) => item.type === "message:send").length);
+    await comment.press("Control+Enter");
+    assert.equal((await comment.inputValue()).includes("\n"), true);
+    await comment.evaluate((node) => node.setSelectionRange(1, 1));
+    await comment.press("Shift+Enter");
+    assert.deepEqual(await comment.evaluate((node) => [node.selectionStart, node.selectionEnd]), [2, 2]);
+    assert.equal(await page.locator("[data-annotation-comment-index='0']").count(), 1);
+    await comment.dispatchEvent("keydown", { key: "Enter", isComposing: true });
+    await comment.dispatchEvent("keydown", { key: "Enter", repeat: true });
+    assert.equal(await page.evaluate(() => window.__hub157Intents.filter((item) => item.type === "message:send").length), sendsBeforeKeyboard);
+    await comment.press("Enter");
+    const quoteSend = await page.evaluate(() => window.__hub157Intents.filter((item) => item.type === "message:send").at(-1));
+    assert.equal(quoteSend.text, composerBeforeQuickSend);
+    assert.equal(quoteSend.annotations.length, 1);
+    assert.equal(await page.evaluate(() => window.__hub157Intents.filter((item) => item.type === "message:send").length), sendsBeforeKeyboard + 1);
+    await page.evaluate((requestId) => window.AgentHub.completeSend(requestId, { accepted: true }), quoteSend.requestId);
+
+    await composer.fill("Steer composition");
+    const metaAnnotationAdded = await page.evaluate(() => {
+      const source = [...document.querySelectorAll("[data-chat-log] > [data-message-key]")]
+        .find((node) => node.textContent.includes("Quoted source text"));
+      const body = source?.querySelector(".msg-body");
+      const range = document.createRange();
+      range.selectNodeContents(body);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return window.AgentHub.addSelectedAnnotation();
+    });
+    assert.equal(metaAnnotationAdded, true);
+    const metaComment = page.locator("[data-annotation-comment-index='0']");
+    await metaComment.fill("Steer quote");
+    await page.evaluate(() => window.AgentHub.setRunning("task-codex", true));
+    await metaComment.dispatchEvent("keydown", { key: "Enter", metaKey: true });
+    const metaSend = await page.evaluate(() => window.__hub157Intents.filter((item) => item.type === "message:send").at(-1));
+    assert.equal(metaSend.text, "Steer composition");
+    assert.equal(metaSend.annotations[0].annotation, "Steer quote");
+    assert.equal(metaSend.followUpMode, "steer");
+    assert.equal(metaSend.deferWhileRunning, false);
+    assert.equal(await page.locator("[data-annotation-comment-index='0']").count(), 0);
+
+    await page.evaluate(() => window.AgentHub.setArchivedWorkspaces([{
+      id: "archived-1", name: "Exact Archive", streamCount: 2, threadCount: 3, purgeAfterMs: 1,
+    }]));
+    await page.locator("[data-action='workspace-archive-open']").click();
+    await page.locator("[data-workspace-archive-delete='archived-1']").click();
+    assert.match(await page.locator("[data-text-dialog-title]").textContent(), /необратимо/u);
+    await page.locator("[data-text-dialog-input]").fill("wrong");
+    await page.locator("[data-text-dialog-ok]").click();
+    assert.equal(await page.evaluate(() => window.__hub157Intents.some((item) => item.type === "workspace:delete-permanently")), false);
+    await page.locator("[data-workspace-archive-delete='archived-1']").click();
+    await page.locator("[data-text-dialog-input]").fill("Exact Archive");
+    await page.locator("[data-text-dialog-ok]").click();
+    assert.deepEqual(await page.evaluate(() => window.__hub157Intents.filter((item) => (
+      item.type === "workspace:delete-permanently"
+    )).at(-1)), {
+      type: "workspace:delete-permanently",
+      workspaceId: "archived-1",
+      confirmationName: "Exact Archive",
+    });
+  } finally {
+    await browser.close();
+  }
+});
+
+test("composer quick replies render above attached Task references", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  try {
+    const page = await browser.newPage({ viewport: { width: 920, height: 640 } });
+    await openStreamTabsDomFixture(page);
+    await page.evaluate(() => {
+      window.AgentHub.setWorkspaces([{
+        id: "workspace-1", name: "Agent HUB", settings: {},
+      }], ["workspace:workspace-1", "notes"]);
+      window.AgentHub.setSelection({
+        quickMessages: {
+          global: [{ title: "Принято", text: "Принято" }],
+          workspaces: {},
+          streams: {},
+        },
+      });
+      window.AgentHub.setTasks([{
+        id: "task-1",
+        selected: true,
+        workspaceId: "workspace-1",
+        workspaceName: "Agent HUB",
+        streamId: "stream-1",
+        streamName: "Dashboard",
+        streamOrdinal: 1,
+        provider: "codex",
+        agentLabel: "Codex",
+        status: "ready",
+        statusLabel: "Готов",
+        lastActivity: "2026-09-08T08:00:00.000Z",
+        running: false,
+        unread: false,
+        streamSettings: {},
+      }]);
+      const transfer = new DataTransfer();
+      window.AgentHubTaskReferences.beginDrag(transfer, {
+        id: "linked-task",
+        taskNumber: "HUB-157",
+        title: "Переработать карточки Workspace/Stream",
+        workflowStatus: "awaiting_implementation",
+        workspaceId: "workspace-1",
+      }, { intent: "context" });
+      document.querySelector('[data-stream-tab-id="stream-1"]').dispatchEvent(new DragEvent("drop", {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer: transfer,
+      }));
+      window.AgentHubTaskReferences.endDrag();
+    });
+
+    const layout = await page.evaluate(() => {
+      const quickReplies = document.querySelector("[data-composer-quick-messages]");
+      const attachments = document.querySelector("[data-attachments]");
+      const quickRect = quickReplies.getBoundingClientRect();
+      const attachmentRect = attachments.getBoundingClientRect();
+      return {
+        quickRepliesVisible: !quickReplies.hidden && quickRect.height > 0,
+        attachmentsVisible: !attachments.hidden && attachmentRect.height > 0,
+        sourceOrder: Boolean(quickReplies.compareDocumentPosition(attachments)
+          & Node.DOCUMENT_POSITION_FOLLOWING),
+        visualOrder: quickRect.bottom <= attachmentRect.top,
+      };
+    });
+    assert.deepEqual(layout, {
+      quickRepliesVisible: true,
+      attachmentsVisible: true,
+      sourceOrder: true,
+      visualOrder: true,
+    });
+  } finally {
+    await browser.close();
+  }
+});
+
+test("Dashboard column headers keep one fixed height when task density differs", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  const screenshotDirectory = String(process.env.HUB157_QA_SCREENSHOT_DIR ?? "").trim();
+  try {
+    for (const [surface, viewport] of [
+      ["wide-short", { width: 1900, height: 376 }],
+      ["desktop", { width: 1440, height: 900 }],
+      ["mobile", { width: 390, height: 844 }],
+    ]) {
+      const problems = [];
+      const page = await browser.newPage({ viewport });
+      page.on("console", (message) => {
+        if (["warning", "error"].includes(message.type())) {
+          const location = message.location().url;
+          if (!["https://agent-hub.test/health", "https://agent-hub.test/events"].includes(location)) {
+            problems.push(`${message.type()}: ${message.text()} (${location})`);
+          }
+        }
+      });
+      page.on("pageerror", (error) => problems.push(`pageerror: ${error.message}`));
+      await openStreamTabsDomFixture(page);
+      await page.evaluate(() => {
+        const workspaces = [
+          { id: "empty", name: "Пустой Workspace", comment: "", streams: [] },
+          { id: "dense", name: "Плотный Workspace", comment: "", streams: new Array(17).fill({}) },
+          { id: "commented", name: "Workspace с комментарием", comment: "Описание колонки", streams: [{ id: "s" }] },
+        ];
+        const tasks = Array.from({ length: 28 }, (_, index) => ({
+          id: `task-${index}`,
+          taskNumber: `HUB-${index + 1}`,
+          title: `Плотная задача ${index + 1}`,
+          text: `Плотная задача ${index + 1}`,
+          rawText: `Плотная задача ${index + 1}`,
+          bucket: index < 26 ? "workspace" : "notes",
+          workspaceId: index < 26 ? "dense" : null,
+          status: "started",
+          workflowStatus: "in_progress",
+          revision: 1,
+          attachments: [],
+        }));
+        window.AgentHubTaskBoard.setSnapshot({
+          tasks,
+          workspaces,
+          columnOrder: ["workspace:empty", "workspace:dense", "workspace:commented", "notes"],
+        });
+        document.querySelector('[data-view-button="dashboard"]').click();
+      });
+      const geometry = await page.locator(".task-board-column-head").evaluateAll((headers) => headers.map((header) => {
+        const rect = header.getBoundingClientRect();
+        return {
+          column: header.closest("[data-board-destination]")?.dataset.boardDestination,
+          height: Number(rect.height.toFixed(2)),
+          bottom: Number(rect.bottom.toFixed(2)),
+          flex: getComputedStyle(header).flex,
+        };
+      }));
+      assert.ok(geometry.length >= 5, JSON.stringify({ surface, geometry }));
+      assert.equal(new Set(geometry.map(({ height }) => height)).size, 1, JSON.stringify({ surface, geometry }));
+      assert.equal(new Set(geometry.map(({ bottom }) => bottom)).size, 1, JSON.stringify({ surface, geometry }));
+      assert.equal(geometry[0].height, 104, JSON.stringify({ surface, geometry }));
+      assert.ok(geometry.every(({ flex }) => flex === "0 0 104px"), JSON.stringify({ surface, geometry }));
+      if (screenshotDirectory) {
+        console.log(`HUB157_BOARD_HEADER_GEOMETRY ${surface} ${JSON.stringify(geometry)}`);
+        await page.screenshot({
+          path: path.join(screenshotDirectory, `hub157-board-headers-${surface}.png`),
+          fullPage: false,
+        });
+      }
+      assert.deepEqual(problems, []);
+      await page.close();
+    }
+  } finally {
+    await browser.close();
+  }
+});
+
+test("backend permanent-delete rejection retains archive UI and restores exact action focus in installed Edge", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  const backend = await startPermanentDeleteConflictBackend();
+  const commands = [];
+  let page;
+  try {
+    page = await browser.newPage();
+    await openStreamTabsDomFixture(page, {
+      includeHubClient: true,
+      control: async (request) => {
+        commands.push(structuredClone(request));
+        const response = await fetch(`${backend.url}api/control`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(request),
+        });
+        return { status: response.status, body: await response.json() };
+      },
+    });
+    await page.evaluate(() => window.AgentHub.setArchivedWorkspaces([{
+      id: "archived-rejected",
+      name: "Rejected Archive",
+      streamCount: 2,
+      threadCount: 3,
+      purgeAfterMs: null,
+    }]));
+    await page.locator("[data-action='workspace-archive-open']").click();
+    await page.locator("[data-workspace-archive-delete='archived-rejected']").click();
+    await page.locator("[data-text-dialog-input]").fill("Rejected Archive");
+    await page.locator("[data-text-dialog-ok]").click();
+
+    await page.locator("[data-toast]").filter({
+      hasText: "Сначала переместите или удалите связанные Dashboard Task",
+    }).waitFor({ state: "visible" });
+    assert.deepEqual(commands.filter(({ action }) => action === "delete-archived-workspace")
+      .map(({ action, params }) => ({ action, params })), [{
+      action: "delete-archived-workspace",
+      params: {
+        workspaceId: "archived-rejected",
+        confirmationName: "Rejected Archive",
+      },
+    }]);
+    assert.equal(await page.locator("[data-workspace-archive-modal]").evaluate((node) => node.open), true);
+    const deleteAction = page.locator("[data-workspace-archive-delete='archived-rejected']");
+    assert.equal(await deleteAction.count(), 1);
+    assert.equal(await deleteAction.evaluate((node) => document.activeElement === node), true);
+  } finally {
+    await backend.close();
+    await page?.unrouteAll({ behavior: "ignoreErrors" });
+    await browser.close();
+  }
+});
+
+test("mobile Workspace click preserves its dblclick target while desktop click still opens chat", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  const installFixture = async (page) => page.evaluate(() => {
+    const shared = {
+      status: "ready",
+      statusLabel: "Готов",
+      lastActivity: "2026-09-04T08:00:00.000Z",
+      running: false,
+      unread: false,
+      streamSettings: {},
+    };
+    window.AgentHub.setWorkspaces([{
+      id: "workspace-1", name: "One", settings: {},
+    }, {
+      id: "workspace-2", name: "Two", settings: {},
+    }], ["workspace:workspace-1", "workspace:workspace-2", "notes"]);
+    window.AgentHub.setTasks([{
+      ...shared,
+      id: "task-one",
+      selected: false,
+      workspaceId: "workspace-1",
+      workspaceName: "One",
+      streamId: "stream-one",
+      streamName: "One stream",
+      streamOrdinal: 1,
+      provider: "codex",
+      agentLabel: "Codex",
+    }, {
+      ...shared,
+      id: "task-two",
+      selected: true,
+      workspaceId: "workspace-2",
+      workspaceName: "Two",
+      streamId: "stream-two",
+      streamName: "Two stream",
+      streamOrdinal: 1,
+      provider: "claude",
+      agentLabel: "Claude",
+    }]);
+  });
+  try {
+    const mobile = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    await openStreamTabsDomFixture(mobile);
+    await installFixture(mobile);
+    const mobileWorkspace = mobile.locator('[data-workspace-select="workspace-1"]');
+    await mobileWorkspace.click();
+    assert.deepEqual(await mobile.evaluate(() => ({
+      surface: document.documentElement.dataset.surface,
+      pane: document.documentElement.dataset.pane,
+      selected: document.querySelector('[data-workspace-select="workspace-1"]')?.getAttribute("aria-pressed"),
+      cardOpen: document.querySelector("[data-workspace-card-modal]")?.open,
+    })), {
+      surface: "mobile",
+      pane: "tasks",
+      selected: "true",
+      cardOpen: false,
+    });
+    await mobileWorkspace.focus();
+    await mobileWorkspace.dblclick();
+    assert.equal(await mobile.locator("[data-workspace-card-modal]").evaluate((node) => node.open), true);
+    await mobile.keyboard.press("Escape");
+    assert.equal(await mobileWorkspace.evaluate((node) => document.activeElement === node), true);
+    await mobile.close();
+
+    const desktop = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    await openStreamTabsDomFixture(desktop);
+    await installFixture(desktop);
+    const desktopWorkspace = desktop.locator('[data-workspace-select="workspace-1"]');
+    await desktopWorkspace.click();
+    assert.deepEqual(await desktop.evaluate(() => ({
+      surface: document.documentElement.dataset.surface,
+      pane: document.documentElement.dataset.pane,
+      selected: document.querySelector('[data-workspace-select="workspace-1"]')?.getAttribute("aria-pressed"),
+      cardOpen: document.querySelector("[data-workspace-card-modal]")?.open,
+    })), {
+      surface: "desktop",
+      pane: "chat",
+      selected: "true",
+      cardOpen: false,
+    });
+    await desktopWorkspace.focus();
+    await desktopWorkspace.dblclick();
+    assert.equal(await desktop.locator("[data-workspace-card-modal]").evaluate((node) => node.open), true);
+    await desktop.close();
+  } finally {
+    await browser.close();
+  }
+});
+
+test("current and other Workspace or Stream native dblclicks survive exact-identity rerenders in Edge", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  const screenshotDirectory = String(process.env.HUB157_QA_SCREENSHOT_DIR ?? "").trim();
+  const scenarios = [
+    {
+      name: "selected-workspace",
+      kind: "workspace",
+      id: "workspace-1",
+      expectedName: "One",
+      selected: true,
+      forceFirstClickRerender: true,
+    },
+    {
+      name: "unselected-workspace",
+      kind: "workspace",
+      id: "workspace-2",
+      expectedName: "Two",
+      selected: false,
+      forceFirstClickRerender: false,
+    },
+    {
+      name: "selected-stream",
+      kind: "stream",
+      id: "stream-one",
+      expectedName: "One stream",
+      selected: true,
+      forceFirstClickRerender: false,
+    },
+    {
+      name: "unselected-stream",
+      kind: "stream",
+      id: "stream-other",
+      expectedName: "Other stream",
+      selected: false,
+      forceFirstClickRerender: false,
+    },
+  ];
+  const targetFor = (page, scenario, region) => {
+    const row = scenario.kind === "workspace"
+      ? page.locator(`[data-workspace-select="${scenario.id}"]`)
+      : page.locator(`.stream-tabs-track [data-stream-tab-id="${scenario.id}"]`);
+    if (region === "text") {
+      return scenario.kind === "workspace"
+        ? row.locator(".task-workspace-name")
+        : row.locator(".stream-tab-title");
+    }
+    if (region === "status") {
+      return scenario.kind === "workspace"
+        ? row
+        : row.locator(".provider-dot");
+    }
+    return row;
+  };
+  try {
+    for (const [surface, viewport] of [
+      ["desktop", { width: 1440, height: 1000 }],
+      ["mobile", { width: 390, height: 844 }],
+    ]) {
+      const problems = [];
+      const page = await browser.newPage({ viewport });
+      page.on("console", (message) => {
+        if (["warning", "error"].includes(message.type())) {
+          const location = message.location().url;
+          if (!["https://agent-hub.test/health", "https://agent-hub.test/events"].includes(location)) {
+            problems.push(`${message.type()}: ${message.text()} (${location})`);
+          }
+        }
+      });
+      page.on("pageerror", (error) => problems.push(`pageerror: ${error.message}`));
+      await openStreamTabsDomFixture(page);
+      await page.evaluate(() => {
+        const shared = {
+          status: "ready",
+          statusLabel: "Готов",
+          lastActivity: "2026-09-04T08:00:00.000Z",
+          running: false,
+          unread: false,
+          streamSettings: {},
+        };
+        window.AgentHub.setWorkspaces([{
+          id: "workspace-1", name: "One", settings: {},
+        }, {
+          id: "workspace-2", name: "Two", settings: {},
+        }], ["workspace:workspace-1", "workspace:workspace-2", "notes"]);
+        window.AgentHub.setTasks([{
+          ...shared,
+          id: "task-one",
+          selected: true,
+          workspaceId: "workspace-1",
+          workspaceName: "One",
+          streamId: "stream-one",
+          streamName: "One stream",
+          streamOrdinal: 1,
+          provider: "codex",
+          agentLabel: "Codex",
+        }, {
+          ...shared,
+          id: "task-one-other",
+          selected: false,
+          workspaceId: "workspace-1",
+          workspaceName: "One",
+          streamId: "stream-other",
+          streamName: "Other stream",
+          streamOrdinal: 2,
+          provider: "claude",
+          agentLabel: "Claude",
+        }, {
+          ...shared,
+          id: "task-two",
+          selected: false,
+          workspaceId: "workspace-2",
+          workspaceName: "Two",
+          streamId: "stream-two",
+          streamName: "Two stream",
+          streamOrdinal: 1,
+          provider: "codex",
+          agentLabel: "Codex",
+        }]);
+
+        const nodeIds = new WeakMap();
+        let nextNodeId = 1;
+        const nodeId = (node) => {
+          if (!nodeIds.has(node)) nodeIds.set(node, nextNodeId++);
+          return nodeIds.get(node);
+        };
+        window.__hub157NativeTrace = [];
+        window.__hub157DialogOpenCounts = { workspace: 0, stream: 0 };
+        window.__hub157ForceSelectedWorkspaceRerender = false;
+        window.__hub157PatchOrdinal = 0;
+        for (const type of ["pointerdown", "pointerup", "click", "dblclick"]) {
+          document.addEventListener(type, (event) => {
+            const row = event.target.closest?.(
+              "[data-workspace-select], [data-stream-tab-id][data-workspace-id]",
+            );
+            if (!row) return;
+            const logicalId = row.dataset.workspaceSelect
+              ? `workspace:${row.dataset.workspaceSelect}`
+              : `stream:${row.dataset.workspaceId}:${row.dataset.streamTabId}:${row.dataset.streamTaskId}`;
+            window.__hub157NativeTrace.push({
+              type,
+              detail: event.detail,
+              logicalId,
+              rowNodeId: nodeId(row),
+              targetClass: String(event.target.className ?? ""),
+            });
+          }, true);
+        }
+        window.addEventListener("click", (event) => {
+          const workspace = event.target.closest?.('[data-workspace-select="workspace-1"]');
+          if (!window.__hub157ForceSelectedWorkspaceRerender || event.detail !== 1 || !workspace) return;
+          window.__hub157PatchOrdinal += 1;
+          window.AgentHub.patchTask("task-one", {
+            lastActivity: `2026-09-04T08:00:${String(window.__hub157PatchOrdinal).padStart(2, "0")}.000Z`,
+          });
+        });
+        const nativeShowModal = HTMLDialogElement.prototype.showModal;
+        HTMLDialogElement.prototype.showModal = function showModal(...args) {
+          if (this.matches("[data-workspace-card-modal]")) {
+            window.__hub157DialogOpenCounts.workspace += 1;
+          } else if (this.matches("[data-dialog-settings]")) {
+            window.__hub157DialogOpenCounts.stream += 1;
+          }
+          return nativeShowModal.apply(this, args);
+        };
+      });
+
+      for (const scenario of scenarios) {
+        if (surface === "mobile") {
+          await page.locator(`[data-mobile-button="${scenario.kind === "workspace" ? "tasks" : "chat"}"]`).click();
+        }
+        await page.evaluate(() => window.AgentHub.selectTask("task-one"));
+        const singleTarget = targetFor(page, scenario, "text");
+        const beforeSingle = await page.evaluate((kind) => window.__hub157DialogOpenCounts[kind], scenario.kind);
+        await singleTarget.click();
+        assert.equal(
+          await page.locator(scenario.kind === "workspace"
+            ? "[data-workspace-card-modal]"
+            : "[data-dialog-settings]").evaluate((node) => node.open),
+          false,
+          `${surface}/${scenario.name}: a single click must not open the card`,
+        );
+        assert.equal(
+          await page.evaluate((kind) => window.__hub157DialogOpenCounts[kind], scenario.kind),
+          beforeSingle,
+          `${surface}/${scenario.name}: a single click must not call showModal`,
+        );
+
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+          await page.evaluate(() => window.AgentHub.selectTask("task-one"));
+          await page.evaluate(({ forceFirstClickRerender }) => {
+            window.__hub157ForceSelectedWorkspaceRerender = forceFirstClickRerender;
+            window.__hub157NativeTrace = [];
+          }, scenario);
+          const region = ["text", "status", "padding"][attempt % 3];
+          const target = targetFor(page, scenario, region);
+          const beforeOpen = await page.evaluate((kind) => window.__hub157DialogOpenCounts[kind], scenario.kind);
+          if (region === "padding" || (region === "status" && scenario.kind === "workspace")) {
+            const box = await target.boundingBox();
+            assert.ok(box, `${surface}/${scenario.name}: target row is visible`);
+            await page.mouse.dblclick(
+              region === "status" ? box.x + box.width - 8 : box.x + (box.width / 2),
+              region === "status" ? box.y + (box.height / 2) : box.y + box.height - 3,
+              { delay: 35 },
+            );
+          } else {
+            await target.dblclick({ delay: 35 });
+          }
+          const dialog = page.locator(scenario.kind === "workspace"
+            ? "[data-workspace-card-modal]"
+            : "[data-dialog-settings]");
+          const trace = await page.evaluate(() => window.__hub157NativeTrace);
+          assert.equal(await dialog.evaluate((node) => node.open), true, JSON.stringify({
+            surface, scenario: scenario.name, attempt, region, trace,
+          }));
+          assert.equal(
+            await page.evaluate((kind) => window.__hub157DialogOpenCounts[kind], scenario.kind),
+            beforeOpen + 1,
+            `${surface}/${scenario.name}/${attempt}: native dblclick opens exactly once`,
+          );
+          const actualName = await page.locator(scenario.kind === "workspace"
+            ? "[data-workspace-card-name]"
+            : "[data-dialog-stream-name]").inputValue();
+          assert.equal(actualName, scenario.expectedName, `${surface}/${scenario.name}: exact card identity`);
+          assert.deepEqual(trace.map(({ type, detail }) => [type, detail]), [
+            ["pointerdown", 0],
+            ["pointerup", 0],
+            ["click", 1],
+            ["pointerdown", 0],
+            ["pointerup", 0],
+            ["click", 2],
+            ["dblclick", 2],
+          ], `${surface}/${scenario.name}/${region}: native event sequence`);
+          assert.equal(new Set(trace.map(({ logicalId }) => logicalId)).size, 1);
+          if (scenario.forceFirstClickRerender) {
+            assert.equal(new Set(trace.map(({ rowNodeId }) => rowNodeId)).size, 2,
+              `${surface}/${scenario.name}: the same logical Workspace is legitimately replaced`);
+          }
+          if (screenshotDirectory && scenario.name === "selected-workspace" && attempt === 0) {
+            console.log(`HUB157_DBLCLICK_TRACE ${surface} ${JSON.stringify(trace)}`);
+            await page.screenshot({
+              path: path.join(screenshotDirectory, `hub157-selected-workspace-dblclick-${surface}.png`),
+              fullPage: false,
+            });
+          }
+          await page.keyboard.press("Escape");
+          assert.equal(await dialog.evaluate((node) => node.open), false);
+        }
+        await page.evaluate(() => { window.__hub157ForceSelectedWorkspaceRerender = false; });
+      }
+      assert.deepEqual(problems, []);
+      await page.close();
+    }
+  } finally {
+    await browser.close();
+  }
+});
+
+test("Stream card opens on 20 repeated native dblclicks per viewport without console failures", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  const screenshotDirectory = String(process.env.HUB157_QA_SCREENSHOT_DIR ?? "").trim();
+  const installFixture = async (page) => page.evaluate(() => {
+    const shared = {
+      workspaceId: "workspace-1",
+      workspaceName: "One",
+      workspaceSettings: {},
+      status: "ready",
+      statusLabel: "Готов",
+      lastActivity: "2026-09-04T08:00:00.000Z",
+      running: false,
+      unread: false,
+      streamSettings: {},
+    };
+    window.AgentHub.setWorkspaces([{
+      id: "workspace-1", name: "One", settings: {},
+    }, {
+      id: "workspace-2", name: "Two", settings: {},
+    }], ["workspace:workspace-1", "workspace:workspace-2", "notes"]);
+    window.AgentHub.setTasks([{
+      ...shared,
+      id: "task-one",
+      selected: true,
+      streamId: "stream-one",
+      streamName: "One stream",
+      streamOrdinal: 1,
+      provider: "codex",
+      agentLabel: "Codex",
+    }, {
+      ...shared,
+      id: "task-two",
+      selected: false,
+      streamId: "stream-two",
+      streamName: "Two stream",
+      streamOrdinal: 2,
+      provider: "claude",
+      agentLabel: "Claude",
+    }]);
+  });
+  const measureCardGaps = (page) => page.evaluate(() => {
+    const saveNode = document.querySelector("[data-dialog-stream-rules-save]");
+    const save = saveNode.getBoundingClientRect();
+    const saveStyle = getComputedStyle(saveNode);
+    const rules = document.querySelector(".stream-agent-rules").getBoundingClientRect();
+    const rulesCardNode = document.querySelector(".agent-rules-card");
+    const rulesCard = rulesCardNode.getBoundingClientRect();
+    const rulesCardStyle = getComputedStyle(rulesCardNode);
+    const section = document.querySelector(".stream-card-actions-section").getBoundingClientRect();
+    const title = document.querySelector(".stream-card-actions-section .settings-section-title").getBoundingClientRect();
+    const card = document.querySelector(".stream-card-actions").getBoundingClientRect();
+    const pin = document.querySelector("[data-stream-card-pin]").getBoundingClientRect();
+    const archive = document.querySelector("[data-stream-card-archive]").getBoundingClientRect();
+    return {
+      insideRulesCard: Number((
+        rulesCard.bottom - Number.parseFloat(rulesCardStyle.borderBottomWidth) - save.bottom
+      ).toFixed(2)),
+      afterRulesSave: Number((rules.bottom - save.bottom).toFixed(2)),
+      beforeActions: Number((title.top - section.top).toFixed(2)),
+      beforePin: Number((pin.top - card.top).toFixed(2)),
+      afterArchive: Number((card.bottom - archive.bottom).toFixed(2)),
+      boxModel: {
+        cardPaddingBottom: rulesCardStyle.paddingBottom,
+        cardBorderBottom: rulesCardStyle.borderBottomWidth,
+        cardGap: rulesCardStyle.gap,
+        saveMarginBottom: saveStyle.marginBottom,
+        savePaddingBottom: saveStyle.paddingBottom,
+        saveBorderBottom: saveStyle.borderBottomWidth,
+      },
+    };
+  });
+  try {
+    for (const [surface, viewport] of [
+      ["desktop", { width: 1440, height: 1000 }],
+      ["mobile", { width: 390, height: 844 }],
+      ["mobile-short", { width: 390, height: 520 }],
+    ]) {
+      const problems = [];
+      const page = await browser.newPage({ viewport });
+      page.on("console", (message) => {
+        if (["warning", "error"].includes(message.type())) {
+          const location = message.location().url;
+          if (!["https://agent-hub.test/health", "https://agent-hub.test/events"].includes(location)) {
+            problems.push(`${message.type()}: ${message.text()} (${location})`);
+          }
+        }
+      });
+      page.on("pageerror", (error) => problems.push(`pageerror: ${error.message}`));
+      await openStreamTabsDomFixture(page);
+      await installFixture(page);
+      if (surface.startsWith("mobile")) await page.locator('[data-mobile-button="chat"]').click();
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const tab = page.locator('.stream-tabs-track .stream-tab[data-stream-tab-id="stream-one"]');
+        await tab.dblclick();
+        assert.equal(await page.locator("[data-dialog-settings]").evaluate((node) => node.open), true);
+        await page.keyboard.press("Escape");
+        assert.equal(await page.locator("[data-dialog-settings]").evaluate((node) => node.open), false);
+        assert.equal(await tab.evaluate((node) => document.activeElement === node), true);
+      }
+      const tab = page.locator('.stream-tabs-track .stream-tab[data-stream-tab-id="stream-one"]');
+      await tab.dblclick();
+      const baselineStyle = await page.addStyleTag({ content: `
+        .stream-agent-rules { padding-bottom: 0 !important; }
+        .stream-card-actions-section { padding-top: 0 !important; }
+        .settings-card.stream-card-actions { padding-block: 0 !important; }
+        .settings-card.agent-rules-card { padding-bottom: 0 !important; }
+      ` });
+      const baselineGaps = await measureCardGaps(page);
+      await baselineStyle.evaluate((node) => node.remove());
+      const correctedGaps = await measureCardGaps(page);
+      if (screenshotDirectory) {
+        console.log(`HUB157_QA_GEOMETRY ${surface} ${JSON.stringify({ baselineGaps, correctedGaps })}`);
+      }
+      for (const gap of [
+        correctedGaps.insideRulesCard,
+        correctedGaps.afterRulesSave,
+        correctedGaps.beforeActions,
+        correctedGaps.beforePin,
+        correctedGaps.afterArchive,
+      ]) assert.ok(gap >= 6, JSON.stringify(correctedGaps));
+      const bottomVisibility = await page.evaluate(() => {
+        const body = document.querySelector(".dialog-settings-body");
+        const card = document.querySelector(".agent-rules-card");
+        const save = document.querySelector("[data-dialog-stream-rules-save]");
+        card.scrollIntoView({ block: "end" });
+        const bodyRect = body.getBoundingClientRect();
+        const cardRect = card.getBoundingClientRect();
+        const saveRect = save.getBoundingClientRect();
+        return {
+          cardBottom: Number(cardRect.bottom.toFixed(2)),
+          bodyBottom: Number(bodyRect.bottom.toFixed(2)),
+          saveBottom: Number(saveRect.bottom.toFixed(2)),
+          clipped: cardRect.bottom > bodyRect.bottom + 1 || saveRect.bottom >= cardRect.bottom,
+        };
+      });
+      assert.equal(bottomVisibility.clipped, false, JSON.stringify(bottomVisibility));
+      if (screenshotDirectory) {
+        await page.screenshot({
+          path: path.join(screenshotDirectory, `hub157-rules-gap-${surface}.png`),
+          fullPage: false,
+        });
+        await page.locator(".dialog-settings-body").evaluate((node) => { node.scrollTop = node.scrollHeight; });
+        await page.locator("[data-stream-card-move]").click();
+        await page.screenshot({
+          path: path.join(screenshotDirectory, `hub157-stream-card-${surface}.png`),
+          fullPage: false,
+        });
+        await page.keyboard.press("Escape");
+        await page.keyboard.press("Escape");
+        if (surface.startsWith("mobile")) await page.locator('[data-mobile-button="tasks"]').click();
+        const workspace = page.locator('[data-workspace-select="workspace-1"]');
+        await workspace.dblclick();
+        await page.locator(".workspace-card-fields").evaluate((node) => { node.scrollTop = node.scrollHeight; });
+        await page.screenshot({
+          path: path.join(screenshotDirectory, `hub157-workspace-card-${surface}.png`),
+          fullPage: false,
+        });
+        await page.keyboard.press("Escape");
+      }
+      assert.deepEqual(problems, []);
+      await page.close();
+    }
+  } finally {
+    await browser.close();
+  }
+});
+
+test("Workspace and Stream cards survive logical-identity rerenders while stale dblclick identity fails closed in Edge", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  try {
+    const page = await browser.newPage();
+    await openStreamTabsDomFixture(page);
+    await page.evaluate(() => {
+      const shared = {
+        status: "ready",
+        statusLabel: "Готов",
+        lastActivity: "2026-09-04T08:00:00.000Z",
+        running: false,
+        unread: false,
+        streamSettings: {},
+      };
+      window.AgentHub.setWorkspaces([{
+        id: "workspace-1", name: "One", settings: {},
+      }, {
+        id: "workspace-2", name: "Two", settings: {},
+      }], ["workspace:workspace-1", "workspace:workspace-2", "notes"]);
+      window.__hub157IdentityTasks = [{
+        ...shared,
+        id: "task-known",
+        selected: true,
+        workspaceId: "workspace-1",
+        workspaceName: "One",
+        streamId: "stream-known",
+        streamName: "Known",
+        streamOrdinal: 1,
+        provider: "codex",
+        agentLabel: "Codex",
+      }, {
+        ...shared,
+        id: "task-other",
+        selected: false,
+        workspaceId: "workspace-1",
+        workspaceName: "One",
+        streamId: "stream-other",
+        streamName: "Other",
+        streamOrdinal: 2,
+        provider: "claude",
+        agentLabel: "Claude",
+      }, {
+        ...shared,
+        id: "task-second-workspace",
+        selected: false,
+        workspaceId: "workspace-2",
+        workspaceName: "Two",
+        streamId: "stream-second-workspace",
+        streamName: "Second workspace",
+        streamOrdinal: 1,
+        provider: "codex",
+        agentLabel: "Codex",
+      }];
+      window.AgentHub.setTasks(window.__hub157IdentityTasks);
+    });
+
+    const replacedWorkspaceResult = await page.evaluate(() => {
+      const original = document.querySelector('[data-workspace-select="workspace-1"]');
+      original.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+      const replacement = original.cloneNode(true);
+      original.replaceWith(replacement);
+      replacement.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 2 }));
+      replacement.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, detail: 2 }));
+      return {
+        open: document.querySelector("[data-workspace-card-modal]").open,
+        selected: document.querySelector('[data-workspace-select="workspace-1"]')
+          ?.getAttribute("aria-pressed"),
+      };
+    });
+    assert.deepEqual(replacedWorkspaceResult, { open: true, selected: "true" });
+    await page.keyboard.press("Escape");
+
+    const rerenderedStreamResult = await page.evaluate(() => {
+      const known = document.querySelector('[data-stream-tab-id="stream-known"]');
+      known.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+      window.AgentHub.selectTask("task-other");
+      window.AgentHub.selectTask("task-known");
+      const replacement = document.querySelector('[data-stream-tab-id="stream-known"]');
+      replacement.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 2 }));
+      replacement.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, detail: 2 }));
+      return {
+        open: document.querySelector("[data-dialog-settings]").open,
+        replaced: replacement !== known,
+      };
+    });
+    assert.deepEqual(rerenderedStreamResult, { open: true, replaced: true });
+    await page.keyboard.press("Escape");
+
+    const staleStreamResult = await page.evaluate(() => {
+      const known = document.querySelector('[data-stream-tab-id="stream-known"]');
+      const other = document.querySelector('[data-stream-tab-id="stream-other"]');
+      known.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+      other.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 2 }));
+      other.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, detail: 2 }));
+      return document.querySelector("[data-dialog-settings]").open;
+    });
+    assert.equal(staleStreamResult, false);
+
+    await page.evaluate(() => {
+      const shared = {
+        workspaceId: "workspace-1",
+        workspaceName: "One",
+        status: "ready",
+        statusLabel: "Готов",
+        lastActivity: "2026-09-04T08:00:00.000Z",
+        running: false,
+        unread: false,
+        streamSettings: {},
+      };
+      window.AgentHub.setTasks([{
+        ...shared,
+        id: "task-absent-provider",
+        selected: true,
+        streamId: "stream-absent-provider",
+        streamName: "Absent provider",
+        streamOrdinal: 1,
+      }, {
+        ...shared,
+        id: "task-unknown-provider",
+        selected: false,
+        streamId: "stream-unknown-provider",
+        streamName: "Unknown provider",
+        streamOrdinal: 2,
+        provider: "future-provider",
+      }]);
+    });
+    for (const streamId of ["stream-absent-provider", "stream-unknown-provider"]) {
+      const tab = page.locator(`.stream-tabs-track [data-stream-tab-id="${streamId}"]`);
+      await tab.dispatchEvent("contextmenu", { clientX: 120, clientY: 100 });
+      const actions = page.locator(".stream-context-menu:not(.workspace-context-menu):not([hidden]) [role=menuitem]");
+      assert.deepEqual(await actions.allTextContents(), [
+        "Редактировать…",
+        "Ротация",
+        "Продолжение недоступно",
+      ]);
+      assert.equal(await actions.nth(1).isDisabled(), true);
+      assert.equal(await actions.nth(2).isDisabled(), true);
+      assert.equal(await actions.nth(2).getAttribute("data-provider"), "");
+      await page.keyboard.press("Escape");
+    }
   } finally {
     await browser.close();
   }
@@ -1014,7 +2396,7 @@ test("Workspace order follows meaningful activity with deterministic ties", asyn
   );
 });
 
-test("Workspace sections separate active work and group stable project families", async () => {
+test("Workspace sections keep matching prefixes flat outside explicit folders", async () => {
   const { workspaceSections } = await streamTabsApi();
   const groups = [
     { id: "active", name: "Agent HUB", tasks: [{ running: true, lastActivity: "2026-08-10T10:00:00Z" }] },
@@ -1029,27 +2411,16 @@ test("Workspace sections separate active work and group stable project families"
   });
 
   assert.deepEqual(Array.from(sections.active, (group) => group.id), ["active"]);
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(sections.catalog.map((entry) => entry.type === "family"
-      ? {
-          type: entry.type,
-          name: entry.name,
-          items: entry.items.map((item) => ({ id: item.id, shortName: item.shortName })),
-        }
-      : { type: entry.type, id: entry.group.id }))),
-    [
-      { type: "workspace", id: "solo" },
-      {
-        type: "family",
-        name: "FB",
-        items: [
-          { id: "fb-alpha", shortName: "Альфа" },
-          { id: "fb-beta", shortName: "Бета" },
-          { id: "fb-gamma", shortName: "Гамма" },
-        ],
-      },
-    ],
-  );
+  assert.deepEqual(JSON.parse(JSON.stringify(sections.catalog.map((entry) => ({
+    type: entry.type,
+    id: entry.group.id,
+    name: entry.group.name,
+  })))), [
+    { type: "workspace", id: "solo", name: "Отдельный" },
+    { type: "workspace", id: "fb-alpha", name: "FB Альфа" },
+    { type: "workspace", id: "fb-beta", name: "FB Бета" },
+    { type: "workspace", id: "fb-gamma", name: "FB Гамма" },
+  ]);
 });
 
 test("explicit Workspace folders keep members together and empty folders visible", async () => {
@@ -1171,7 +2542,7 @@ test("Workspace folder mutations carry only identity and folder while creation c
   );
 });
 
-test("Workspace archive presentation keeps expiry and exact-name confirmation", async () => {
+test("Workspace archive presentation cancels expiry and keeps exact-name confirmation", async () => {
   const { workspaceArchiveNameMatches, workspaceArchivePresentation } = await streamTabsApi();
   assert.deepEqual(JSON.parse(JSON.stringify(workspaceArchivePresentation([{
     id: "archived",
@@ -1179,71 +2550,15 @@ test("Workspace archive presentation keeps expiry and exact-name confirmation", 
     streamCount: 2,
     threadCount: 5,
     purgeAfterMs: 1_700_000_000_000 + (26 * 60 * 60 * 1000),
-  }], 1_700_000_000_000))), [{
+  }]))), [{
     id: "archived",
     name: "Удалённый",
     streamCount: 2,
     threadCount: 5,
-    purgeAfterMs: 1_700_093_600_000,
-    remainingLabel: "Осталось 2 дн.",
+    purgeAfterMs: null,
   }]);
   assert.equal(workspaceArchiveNameMatches({ name: "Точный регистр" }, "Точный регистр"), true);
   assert.equal(workspaceArchiveNameMatches({ name: "Точный регистр" }, "точный регистр"), false);
-});
-
-test("Workspace context menu omits ungroup for an ungrouped Workspace without a null text node", async () => {
-  const { renderWorkspaceContextMenuChildren } = await streamTabsApi();
-  const menu = {
-    childNodes: [],
-    replaceChildren(...children) {
-      this.childNodes = children.map((child) => child?.nodeType
-        ? child
-        : { nodeType: 3, textContent: String(child) });
-    },
-  };
-  const newFolder = {
-    nodeType: 1,
-    textContent: "Новая папка…",
-    dataset: { workspaceMenuAction: "folder-new" },
-  };
-
-  renderWorkspaceContextMenuChildren(menu, [newFolder], null, () => ({
-    nodeType: 1,
-    textContent: "Убрать из папки",
-    dataset: { workspaceMenuAction: "folder-remove" },
-  }));
-
-  assert.deepEqual(menu.childNodes, [newFolder]);
-  assert.equal(menu.childNodes.some((node) => node.textContent === "null"), false);
-  assert.equal(menu.childNodes.some((node) => node.dataset?.workspaceMenuAction === "folder-remove"), false);
-});
-
-test("Workspace context menu renders the localized ungroup action for a grouped Workspace", async () => {
-  const { renderWorkspaceContextMenuChildren } = await streamTabsApi();
-  const menu = {
-    childNodes: [],
-    replaceChildren(...children) {
-      this.childNodes = children.map((child) => child?.nodeType
-        ? child
-        : { nodeType: 3, textContent: String(child) });
-    },
-  };
-  const newFolder = {
-    nodeType: 1,
-    textContent: "Новая папка…",
-    dataset: { workspaceMenuAction: "folder-new" },
-  };
-  const removeFolder = {
-    nodeType: 1,
-    textContent: "Убрать из папки",
-    dataset: { workspaceMenuAction: "folder-remove" },
-  };
-
-  renderWorkspaceContextMenuChildren(menu, [newFolder], "Клиенты", () => removeFolder);
-
-  assert.deepEqual(menu.childNodes, [newFolder, removeFolder]);
-  assert.equal(menu.childNodes.at(-1).textContent, "Убрать из папки");
-  assert.equal(menu.childNodes.at(-1).dataset.workspaceMenuAction, "folder-remove");
 });
 
 test("activity rail markup exposes separate active and recent sections", async () => {

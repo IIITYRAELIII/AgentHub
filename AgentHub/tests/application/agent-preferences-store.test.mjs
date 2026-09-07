@@ -17,7 +17,7 @@ function fixture() {
   const store = new AgentPreferencesStore({
     selectionStore,
     taskMetadata,
-    codexModels: ["sol", "terra"],
+    codexModels: ["sol", "gpt-6-astra", "terra"],
     claudeModels: ["sonnet", "opus"],
     reasoningEfforts: ["low", "high"],
     collaborationModes: ["default", "plan"],
@@ -27,7 +27,7 @@ function fixture() {
     defaultClaudeModel: "sonnet",
     defaultClaudeReasoningEffort: "high",
     defaultClaudeCollaborationMode: "default",
-    normalizeCodexModel: (value) => ["sol", "terra"].includes(value) ? value : "sol",
+    normalizeCodexModel: (value) => ["sol", "gpt-6-astra", "terra"].includes(value) ? value : "sol",
     resolveCodexThreadSettings: (payload, current) => ({
       model: payload?.model ?? current.model,
       reasoningEffort: payload?.reasoningEffort ?? current.reasoningEffort,
@@ -83,15 +83,19 @@ test("agent preferences restore and validate both providers in one state owner",
       "workspace-1": ["stream-1", "stream-2"],
     },
     quickMessages: {
-      global: [{ id: "пинг", label: "пинг", text: "пинг" }],
+      global: [
+        { title: "пинг", text: "пинг" },
+        { title: "пинг", text: "пинг" },
+      ],
       streams: {
         "stream-1": [
-          { id: "релизь", label: "релизь", text: "релизь" },
-          { id: "Тест", label: "Тест", text: "запусти тесты" },
+          { title: "релизь", text: "релизь" },
+          { title: "Тест", text: "запусти тесты" },
+          { title: "релизь", text: "релизь" },
         ],
       },
       workspaces: {
-        "workspace-1": [{ id: "Проверь", label: "Проверь", text: "проверь" }],
+        "workspace-1": [{ title: "Проверь", text: "проверь" }],
       },
     },
   });
@@ -113,7 +117,7 @@ test("agent preferences restore and validate both providers in one state owner",
   assert.deepEqual(store.quickMessages, {
     global: [],
     streams: {},
-    workspaces: { "workspace-2": [{ id: "релизь", label: "релизь", text: "релизь" }] },
+    workspaces: { "workspace-2": [{ title: "релизь", text: "релизь" }] },
   });
 });
 
@@ -135,4 +139,16 @@ test("task preferences follow the selected Codex thread without becoming task id
     model: "terra",
     reasoningEffort: "low",
   });
+});
+
+test("Astra survives the persisted Codex preference round-trip", () => {
+  const { store } = fixture();
+  assert.deepEqual(store.setCodexModel("gpt-6-astra"), { changed: true });
+
+  const persisted = JSON.parse(JSON.stringify(store.snapshot()));
+  const { store: restored } = fixture();
+  restored.restore(persisted);
+
+  assert.equal(restored.codexModel, "gpt-6-astra");
+  assert.equal(restored.current("codex").model, "gpt-6-astra");
 });

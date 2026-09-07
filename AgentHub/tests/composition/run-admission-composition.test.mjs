@@ -22,6 +22,8 @@ function admissionFixture({ handoff = "PACKAGE", consume = null } = {}) {
     taskRuns: { forTask: () => null },
     pendingInputs: new Map(),
     queuedInputs: new Map(),
+    stageLaunchAdmission: () => true,
+    abortLaunchAdmission: () => true,
     streamHandoff: {
       consume: async (target) => {
         consumed.push(target);

@@ -218,6 +218,36 @@ test("Desktop deferred cancel removes attachments only after durable commit", as
   assert.deepEqual(events, ["save", "receipt", "cleanup", "message"]);
 });
 
+test("Desktop deferred cancel never reports success after dispatch has started", async () => {
+  for (const overrides of [
+    { isProcessing: () => true },
+    { isProcessing: () => false, dispatchingAt: "2026-09-05T10:00:00.000Z" },
+  ]) {
+    const item = {
+      id: `message-${overrides.dispatchingAt ? "dispatching" : "processing"}`,
+      input: "later",
+      temporaryFiles: ["screen.png"],
+      ...(overrides.dispatchingAt ? { dispatchingAt: overrides.dispatchingAt } : {}),
+    };
+    const pendingInputs = new Map([[item.id, item]]);
+    const events = [];
+    const service = createService(item, {
+      pendingInputs,
+      isProcessing: overrides.isProcessing,
+      saveState: async () => events.push("save"),
+      cleanupFiles: async () => events.push("cleanup"),
+      updateReceipt: () => events.push("receipt"),
+    });
+
+    await assert.rejects(
+      service.handle({ id: item.id, action: "cancel" }),
+      /отмена не подтверждена/u,
+    );
+    assert.equal(pendingInputs.get(item.id), item);
+    assert.deepEqual(events, []);
+  }
+});
+
 test("Desktop deferred active-writer retry keeps its reason and requests one recheck", async () => {
   const item = {
     id: "message-1",

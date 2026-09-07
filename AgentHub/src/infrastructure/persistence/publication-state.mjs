@@ -26,7 +26,10 @@ export async function readPublicationState(file = publicationStateFile()) {
 export async function writePublicationState(value, file = publicationStateFile()) {
   await mkdir(path.dirname(file), { recursive: true });
   const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await writeFile(temporary, `${JSON.stringify({
+    ...value,
+    generation: String(value?.generation ?? "").trim() || randomUUID(),
+  }, null, 2)}\n`, "utf8");
   await rename(temporary, file);
 }
 

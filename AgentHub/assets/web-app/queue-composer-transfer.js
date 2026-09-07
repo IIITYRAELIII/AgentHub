@@ -23,12 +23,12 @@
       }
       return Object.freeze({
         taskId: String(taskId ?? ""),
-        revision: revision(),
+        revision: revision(taskId),
       });
     }
 
     function apply(guard, draft, composerTransfer) {
-      if (!guard || revision() !== guard.revision || filled(read(guard.taskId))) return null;
+      if (!guard || revision(guard.taskId) !== guard.revision || filled(read(guard.taskId))) return null;
       const previous = read(guard.taskId);
       write(guard.taskId, {
         text: String(draft?.text ?? ""),
@@ -41,12 +41,12 @@
       return Object.freeze({
         taskId: guard.taskId,
         previous,
-        appliedRevision: revision(),
+        appliedRevision: revision(guard.taskId),
       });
     }
 
     function rollback(applied) {
-      if (!applied || revision() !== applied.appliedRevision) return false;
+      if (!applied || revision(applied.taskId) !== applied.appliedRevision) return false;
       write(applied.taskId, applied.previous);
       return true;
     }

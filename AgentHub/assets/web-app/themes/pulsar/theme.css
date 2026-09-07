@@ -14,6 +14,54 @@ html[data-theme="pulsar"] {
   --radius-chip: 2px;
   --rail-width: 3px;
 
+  --pulsar-message-axis: rgba(74, 226, 214, 0.58);
+  --pulsar-message-rule: rgba(74, 226, 214, 0.34);
+  --pulsar-message-bracket-depth: 0.9rem;
+  --pulsar-message-marker-size: 0.48rem;
+  --pulsar-panel-corner-color: rgba(74, 226, 214, 0.62);
+  --pulsar-panel-corner-length: 1rem;
+  --pulsar-corner-frame-color: var(--pulsar-panel-corner-color);
+  --pulsar-corner-frame-length: 0.72rem;
+  --pulsar-corner-frame:
+    linear-gradient(var(--pulsar-corner-frame-color) 0 0) left top / var(--pulsar-corner-frame-length) 1px no-repeat,
+    linear-gradient(var(--pulsar-corner-frame-color) 0 0) left top / 1px var(--pulsar-corner-frame-length) no-repeat,
+    linear-gradient(var(--pulsar-corner-frame-color) 0 0) right top / var(--pulsar-corner-frame-length) 1px no-repeat,
+    linear-gradient(var(--pulsar-corner-frame-color) 0 0) right top / 1px var(--pulsar-corner-frame-length) no-repeat,
+    linear-gradient(var(--pulsar-corner-frame-color) 0 0) left bottom / var(--pulsar-corner-frame-length) 1px no-repeat,
+    linear-gradient(var(--pulsar-corner-frame-color) 0 0) left bottom / 1px var(--pulsar-corner-frame-length) no-repeat,
+    linear-gradient(var(--pulsar-corner-frame-color) 0 0) right bottom / var(--pulsar-corner-frame-length) 1px no-repeat,
+    linear-gradient(var(--pulsar-corner-frame-color) 0 0) right bottom / 1px var(--pulsar-corner-frame-length) no-repeat;
+  --pulsar-active-corner-frame:
+    linear-gradient(var(--accent) 0 0) left top / var(--pulsar-corner-frame-length) 1px no-repeat,
+    linear-gradient(var(--accent) 0 0) left top / 1px var(--pulsar-corner-frame-length) no-repeat,
+    linear-gradient(var(--accent) 0 0) right top / var(--pulsar-corner-frame-length) 1px no-repeat,
+    linear-gradient(var(--accent) 0 0) right top / 1px var(--pulsar-corner-frame-length) no-repeat,
+    linear-gradient(var(--accent) 0 0) left bottom / var(--pulsar-corner-frame-length) 1px no-repeat,
+    linear-gradient(var(--accent) 0 0) left bottom / 1px var(--pulsar-corner-frame-length) no-repeat,
+    linear-gradient(var(--accent) 0 0) right bottom / var(--pulsar-corner-frame-length) 1px no-repeat,
+    linear-gradient(var(--accent) 0 0) right bottom / 1px var(--pulsar-corner-frame-length) no-repeat;
+  --pulsar-dialog-composer-background:
+    linear-gradient(180deg, rgba(3, 19, 24, 0.86), rgba(2, 12, 16, 0.72));
+  --pulsar-dialog-composer-rule-strong: rgba(74, 226, 214, 0.42);
+  --pulsar-dialog-composer-rule: rgba(74, 226, 214, 0.2);
+  --pulsar-stream-tab-background: linear-gradient(90deg, rgba(10, 42, 48, 0.5), transparent 84%);
+  --pulsar-stream-tab-active-background: linear-gradient(90deg, rgba(60, 230, 212, 0.16), transparent 62%);
+  --shell-header-background: rgba(2, 12, 16, 0.78);
+  --shell-header-backdrop-filter: none;
+  --shell-panel-radius: 0;
+  --shell-chat-radius: 0;
+  --shell-view-switch-background: transparent;
+  --shell-view-switch-border: 0;
+  --shell-view-switch-radius: 0;
+  --shell-view-switch-shadow: none;
+  --shell-tab-background: transparent;
+  --shell-tab-border: 0;
+  --shell-tab-radius: 0;
+  --shell-tab-shadow: none;
+  --shell-tab-active-background: var(--pulsar-active-corner-frame);
+  --shell-tab-active-border: 0;
+  --shell-tab-active-shadow: none;
+
   --bg: #03151a;
   --surface-1: rgba(198, 255, 250, 0.028);
   --surface-2: rgba(198, 255, 250, 0.055);
@@ -75,14 +123,11 @@ html[data-theme="pulsar"] {
 /* ================================= «Пульсар»: сканлайны, скобки, импульс === */
 
 html[data-theme="pulsar"] {
-  --pulsar-image: url("./pulsar-dead-star.png");
-  --pulsar-effect:
-    radial-gradient(24% 38% at 82% 47%, transparent 58%, rgba(112, 255, 247, 0.2) 64%, transparent 72%),
-    radial-gradient(6% 9% at 82% 47%, rgba(205, 255, 252, 0.34), rgba(60, 230, 212, 0.08) 48%, transparent 76%);
+  --pulsar-image: url("./pulsar-aurora.png");
+  --pulsar-effect: none;
 }
 
-/* Фон — наблюдательная палуба у мёртвой звезды. Сетка остаётся только внутри
-   приборных панелей: в открытой сцене она спорила бы с кольцом и магнитосферой. */
+/* Открытая сцена остаётся спокойной: линии и данные читаются поверх фона. */
 html[data-theme="pulsar"] body::after {
   background-color: #03151a;
   background-image:
@@ -98,15 +143,7 @@ html[data-theme="pulsar"] body::after {
 }
 
 /* стеклянные панели, иначе джеты гаснут под сплошной заливкой */
-html[data-theme="pulsar"] .app-header {
-  backdrop-filter: blur(12px) saturate(120%);
-  -webkit-backdrop-filter: blur(12px) saturate(120%);
-  background: rgba(2, 12, 16, 0.6);
-}
-
 html[data-theme="pulsar"] .journal details[data-work-log-day-section] {
-  backdrop-filter: blur(5px) saturate(118%);
-  -webkit-backdrop-filter: blur(5px) saturate(118%);
   background-color: rgba(2, 12, 16, 0.46);
   background-image: var(--card-texture);
 }
@@ -116,8 +153,6 @@ html[data-theme="pulsar"] .journal details[data-work-log-day-section][open] {
 }
 
 html[data-theme="pulsar"] .journal details[data-work-log-turn-details] {
-  backdrop-filter: blur(3px);
-  -webkit-backdrop-filter: blur(3px);
   background-color: rgba(3, 16, 20, 0.34);
 }
 
@@ -206,9 +241,12 @@ html[data-theme="pulsar"] body::before {
   opacity: 0.08;
 }
 
-html[data-background-override="true"][data-background="pulsar"] { --pulsar-image: url("./pulsar-dead-star.png"); --hub-background-color: #02090c; --hub-background-image: linear-gradient(90deg, rgba(1, 9, 12, .22), rgba(1, 9, 12, 0) 52%), linear-gradient(180deg, transparent 52%, rgba(1, 7, 10, .32)), var(--pulsar-image); --hub-background-position: center; --hub-background-repeat: no-repeat; --hub-background-size: cover; --pulsar-effect: radial-gradient(24% 38% at 82% 47%, transparent 58%, rgba(112, 255, 247, .2) 64%, transparent 72%), radial-gradient(6% 9% at 82% 47%, rgba(205, 255, 252, .34), rgba(60, 230, 212, .08) 48%, transparent 76%); }
-html[data-background-override="true"][data-background="pulsar-twins"] { --hub-background-color: #03151a; --hub-background-image: linear-gradient(180deg, rgba(2, 12, 16, 0) 44%, rgba(2, 10, 14, .4)), url("./pulsar-beams.jpg"); --hub-background-position: center, 50% 46%; --hub-background-repeat: no-repeat; --hub-background-size: cover; --pulsar-effect: radial-gradient(8% 12% at 21.5% 69%, rgba(150, 255, 248, .3), transparent 72%), radial-gradient(7% 10% at 87% 84%, rgba(110, 248, 239, .24), transparent 72%); }
-html[data-background-override="true"][data-background="pulsar-beam"] { --hub-background-color: #02121a; --hub-background-image: linear-gradient(90deg, rgba(1, 8, 12, .3), rgba(1, 8, 12, 0) 42%), url("./pulsar-beam.jpg"); --hub-background-position: center, 56% 48%; --hub-background-repeat: no-repeat; --hub-background-size: cover; --pulsar-effect: radial-gradient(18% 24% at 60% 47%, rgba(126, 255, 247, .32), rgba(60, 230, 212, .08) 48%, transparent 74%); }
+html[data-background-override="true"][data-background="pulsar"] { --pulsar-image: url("./pulsar-aurora.png"); --hub-background-color: #02090c; --hub-background-image: linear-gradient(90deg, rgba(1, 9, 12, .22), rgba(1, 9, 12, 0) 52%), linear-gradient(180deg, transparent 52%, rgba(1, 7, 10, .32)), var(--pulsar-image); --hub-background-position: center; --hub-background-repeat: no-repeat; --hub-background-size: cover; --pulsar-effect: none; }
+html[data-background-override="true"][data-background="pulsar-abyss"] { --pulsar-image: url("./pulsar-abyss.png"); --hub-background-color: #020d10; --hub-background-image: linear-gradient(90deg, rgba(1, 9, 12, .28), rgba(1, 9, 12, 0) 52%), linear-gradient(180deg, transparent 48%, rgba(1, 7, 10, .36)), var(--pulsar-image); --hub-background-position: center; --hub-background-repeat: no-repeat; --hub-background-size: cover; --pulsar-effect: none; }
+html[data-background-override="true"][data-background="pulsar-field"] { --pulsar-image: url("./pulsar-field.png"); --hub-background-color: #020b11; --hub-background-image: linear-gradient(90deg, rgba(1, 9, 12, .28), rgba(1, 9, 12, 0) 52%), linear-gradient(180deg, transparent 50%, rgba(1, 7, 10, .4)), var(--pulsar-image); --hub-background-position: center; --hub-background-repeat: no-repeat; --hub-background-size: cover; --pulsar-effect: none; }
+html[data-background-override="true"][data-background="pulsar-ice"] { --pulsar-image: url("./pulsar-ice.png"); --hub-background-color: #02090c; --hub-background-image: linear-gradient(90deg, rgba(1, 9, 12, .3), rgba(1, 9, 12, 0) 52%), linear-gradient(180deg, transparent 52%, rgba(1, 7, 10, .42)), var(--pulsar-image); --hub-background-position: center; --hub-background-repeat: no-repeat; --hub-background-size: cover; --pulsar-effect: none; }
+html[data-background-override="true"][data-background="pulsar-ferrofluid"] { --pulsar-image: url("./pulsar-ferrofluid.png"); --hub-background-color: #020a0d; --hub-background-image: linear-gradient(90deg, rgba(1, 9, 12, .28), rgba(1, 9, 12, 0) 52%), linear-gradient(180deg, transparent 50%, rgba(1, 7, 10, .38)), var(--pulsar-image); --hub-background-position: center; --hub-background-repeat: no-repeat; --hub-background-size: cover; --pulsar-effect: none; }
+html[data-background-override="true"][data-background="pulsar-neutron-star"] { --pulsar-image: url("./pulsar-neutron-star.png"); --hub-background-color: #010709; --hub-background-image: linear-gradient(90deg, rgba(0, 5, 8, .38), rgba(0, 5, 8, .08) 54%, rgba(0, 5, 8, .22)), linear-gradient(180deg, transparent 52%, rgba(0, 4, 7, .42)), var(--pulsar-image); --hub-background-position: center; --hub-background-repeat: no-repeat; --hub-background-size: cover; --pulsar-effect: none; }
 
 html[data-background-override="true"][data-background="orbit-limb"] body::before,
 html[data-background-override="true"][data-background="nebula-core"] body::before,
@@ -223,9 +261,12 @@ html[data-background-override="true"][data-background="meadow-goldenhour"] body:
   opacity: 0.4 !important;
 }
 
-@media (max-width: 720px) {html[data-background-override="true"][data-background="pulsar"] { --hub-background-position: 72% 50%; }
-  html[data-background-override="true"][data-background="pulsar-twins"] { --hub-background-position: center, 24% 52%; }
-  html[data-background-override="true"][data-background="pulsar-beam"] { --hub-background-position: center, 62% 46%; }
+@media (max-width: 720px) {html[data-background-override="true"][data-background="pulsar"],
+  html[data-background-override="true"][data-background="pulsar-abyss"],
+  html[data-background-override="true"][data-background="pulsar-field"],
+  html[data-background-override="true"][data-background="pulsar-ice"],
+  html[data-background-override="true"][data-background="pulsar-ferrofluid"],
+  html[data-background-override="true"][data-background="pulsar-neutron-star"] { --hub-background-position: 68% 50%; }
 }
 
 /* ================================================= облик: осциллограф ===
@@ -345,4 +386,138 @@ html[data-theme="pulsar"] .chat {
   background-image:
     repeating-linear-gradient(90deg, rgba(74, 226, 214, .11) 0 1px, transparent 1px 28px),
     repeating-linear-gradient(0deg, rgba(74, 226, 214, .085) 0 1px, transparent 1px 28px);
+}
+
+html[data-theme="pulsar"][data-surface] .task-rail,
+html[data-theme="pulsar"][data-surface] .activity-rail,
+html[data-theme="pulsar"][data-surface] .chat {
+  border-color: rgba(74, 226, 214, 0.18);
+  border-radius: 0;
+}
+
+html[data-theme="pulsar"][data-surface] .task-rail,
+html[data-theme="pulsar"][data-surface] .activity-rail {
+  background-color: rgba(2, 16, 21, 0.58);
+}
+
+html[data-theme="pulsar"][data-surface] .task-rail {
+  background-image: none;
+  border-right-color: rgba(74, 226, 214, 0.34);
+}
+
+html[data-theme="pulsar"][data-surface] .activity-rail {
+  border-left-color: rgba(74, 226, 214, 0.34);
+}
+
+html[data-theme="pulsar"][data-surface] .task-item,
+html[data-theme="pulsar"][data-surface] .stream-tab-card {
+  border-radius: 0;
+  border-right-color: transparent;
+  border-top-color: transparent;
+  border-bottom-color: transparent;
+  box-shadow: none;
+}
+
+html[data-theme="pulsar"][data-surface] .task-item {
+  border-left-color: rgba(74, 226, 214, 0.18);
+}
+
+html[data-theme="pulsar"][data-surface] .task-item[data-selected],
+html[data-theme="pulsar"][data-surface] .stream-tab[aria-pressed="true"] .stream-tab-card {
+  background: var(--pulsar-stream-tab-active-background);
+}
+
+html[data-theme="pulsar"][data-surface] .stream-tab-card {
+  background: var(--pulsar-stream-tab-background);
+}
+
+html[data-theme="pulsar"][data-surface] .task-rail,
+html[data-theme="pulsar"][data-surface] .activity-rail,
+html[data-theme="pulsar"][data-surface] .chat {
+  position: relative;
+}
+
+html[data-theme="pulsar"][data-surface] .task-rail::before,
+html[data-theme="pulsar"][data-surface] .activity-rail::before,
+html[data-theme="pulsar"][data-surface] .chat::before {
+  --pulsar-corner-frame-length: var(--pulsar-panel-corner-length);
+  background: var(--pulsar-corner-frame);
+  content: "";
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  z-index: 1;
+}
+
+html[data-theme="pulsar"][data-surface] .task-workspace-item[data-selected] {
+  background: var(--pulsar-active-corner-frame);
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+html[data-theme="pulsar"][data-surface] .task-rail-actions .icon-button,
+html[data-theme="pulsar"][data-surface] .task-search {
+  background: transparent;
+  border: 1px solid rgba(74, 226, 214, 0.4);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+html[data-theme="pulsar"][data-surface] .task-workspace-item,
+html[data-theme="pulsar"][data-surface] .task-workspace-item:hover,
+html[data-theme="pulsar"][data-surface] .task-workspace-item:focus-visible {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+html[data-theme="pulsar"][data-surface] .task-item,
+html[data-theme="pulsar"][data-surface] .task-item[data-selected] {
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid rgba(74, 226, 214, 0.18);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+html[data-theme="pulsar"][data-surface] .task-item[data-selected]::before {
+  display: none;
+}
+
+html[data-theme="pulsar"][data-surface] .task-board-column,
+html[data-theme="pulsar"][data-surface] .task-board-column.is-backlog,
+html[data-theme="pulsar"][data-surface] .task-board-column.is-notes,
+html[data-theme="pulsar"][data-surface] .task-board-column.is-dragover {
+  --pulsar-corner-frame-length: var(--pulsar-panel-corner-length);
+  background: var(--pulsar-corner-frame);
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+html[data-theme="pulsar"][data-surface] .board-task-card,
+html[data-theme="pulsar"][data-surface] .board-task-card.is-started,
+html[data-theme="pulsar"][data-surface] .board-task-card.is-completed,
+html[data-theme="pulsar"][data-surface] .board-task-card.is-dragover {
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid rgba(74, 226, 214, 0.18);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+html[data-theme="pulsar"][data-surface] .task-board-create-button,
+html[data-theme="pulsar"][data-surface] .task-board-workspace-handle,
+html[data-theme="pulsar"][data-surface] .task-board-count {
+  border-radius: 0;
+}
+
+html[data-theme="pulsar"][data-surface] .task-status,
+html[data-theme="pulsar"][data-surface] .board-task-status {
+  background: transparent;
+  border: 1px solid color-mix(in srgb, currentColor 72%, transparent);
+  border-radius: 0;
+  box-shadow: none;
 }

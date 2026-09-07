@@ -316,6 +316,128 @@
     return Math.abs(mean) < 1e-9 ? 0 : mean;
   }
 
+  function smoothedRateLimitConsumption(points, {
+    currentHalfLifeMs = 3 * 60 * 60_000,
+    averageWindowMs = 24 * 60 * 60_000,
+    ratePeriodMs = 7 * 24 * 60 * 60_000,
+  } = {}) {
+    const halfLife = Math.max(1, Number(currentHalfLifeMs) || 1);
+    const averageWindow = Math.max(1, Number(averageWindowMs) || 1);
+    const ratePeriod = Math.max(1, Number(ratePeriodMs) || 1);
+    const source = (Array.isArray(points) ? points : [])
+      .filter((point) => Number.isFinite(point?.atMs) && Number.isFinite(point?.usedPercent))
+      .sort((left, right) => left.atMs - right.atMs);
+    const timeline = [];
+    let cumulativeUsed = 0;
+    let continuityIndex = 0;
+    let highWaterUsed = null;
+    let previous = null;
+
+    const append = (point, overrides = {}) => {
+      timeline.push({
+        ...point,
+        ...overrides,
+        cumulativeUsed,
+        continuityIndex,
+      });
+    };
+
+    for (const point of source) {
+      const previousAccount = String(previous?.raw?.accountKey ?? "");
+      const currentAccount = String(point?.raw?.accountKey ?? "");
+      const accountChanged = previous
+        && previousAccount
+        && currentAccount
+        && previousAccount !== currentAccount;
+      if (!previous || accountChanged) {
+        if (accountChanged) continuityIndex += 1;
+        cumulativeUsed = 0;
+        highWaterUsed = point.usedPercent;
+        append(point);
+        previous = point;
+        continue;
+      }
+
+      if (point.startsAfterReset) {
+        if (point.cycleStartMs > previous.atMs && point.cycleStartMs < point.atMs) {
+          append(point, {
+            raw: {
+              ...point.raw,
+              at: new Date(point.cycleStartMs).toISOString(),
+              usedPercent: 0,
+              remainingPercent: 100,
+              estimated: true,
+              estimateKind: "reset-boundary",
+            },
+            atMs: point.cycleStartMs,
+            usedPercent: 0,
+            remainingPercent: 100,
+            resetBoundary: true,
+          });
+        }
+        cumulativeUsed += Math.max(0, point.usedPercent);
+        highWaterUsed = point.usedPercent;
+      } else {
+        cumulativeUsed += Math.max(0, point.usedPercent - highWaterUsed);
+        highWaterUsed = Math.max(highWaterUsed, point.usedPercent);
+      }
+      append(point);
+      previous = point;
+    }
+
+    let currentRate = null;
+    let segmentStartIndex = 0;
+    return timeline.map((point, index) => {
+      const prior = timeline[index - 1];
+      if (!prior || prior.continuityIndex !== point.continuityIndex) {
+        currentRate = null;
+        segmentStartIndex = index;
+      } else {
+        const spanMs = point.atMs - prior.atMs;
+        const usedDelta = point.cumulativeUsed - prior.cumulativeUsed;
+        if (spanMs > 0 && usedDelta >= 0) {
+          const intervalRate = usedDelta / spanMs * ratePeriod;
+          const weight = 1 - Math.exp(-Math.LN2 * spanMs / halfLife);
+          currentRate = currentRate == null
+            ? intervalRate * weight
+            : currentRate + weight * (intervalRate - currentRate);
+        }
+      }
+
+      const windowStartMs = point.atMs - averageWindow;
+      const first = timeline[segmentStartIndex];
+      let baselineAtMs = first?.atMs;
+      let baselineUsed = first?.cumulativeUsed;
+      if (first && windowStartMs > first.atMs) {
+        for (let cursor = index; cursor > segmentStartIndex; cursor -= 1) {
+          const right = timeline[cursor];
+          const left = timeline[cursor - 1];
+          if (left.atMs > windowStartMs) continue;
+          const spanMs = right.atMs - left.atMs;
+          const ratio = spanMs > 0 ? (windowStartMs - left.atMs) / spanMs : 0;
+          baselineAtMs = windowStartMs;
+          baselineUsed = left.cumulativeUsed
+            + ((right.cumulativeUsed - left.cumulativeUsed) * ratio);
+          break;
+        }
+      }
+      const averageSpanMs = Number.isFinite(baselineAtMs) ? point.atMs - baselineAtMs : 0;
+      const averageDelta = Number.isFinite(baselineUsed) ? point.cumulativeUsed - baselineUsed : 0;
+      const averageRate = averageSpanMs > 0 && averageDelta >= 0
+        ? averageDelta / averageSpanMs * ratePeriod
+        : null;
+      const historySpanMs = first ? point.atMs - first.atMs : 0;
+      return {
+        ...point,
+        currentRate,
+        currentPreliminary: historySpanMs < halfLife,
+        averageRate,
+        averageSpanMs,
+        averagePreliminary: averageSpanMs < averageWindow,
+      };
+    });
+  }
+
   function currentLimitWindowLabel(series) {
     const durationMinutes = Number(series?.point?.windowDurationMins);
     if (Number.isFinite(durationMinutes) && durationMinutes > 0) {
@@ -392,5 +514,6 @@
     recoverRateLimitResetGaps,
     selectCurrentLimitSeries,
     signedComparisonDeviations,
+    smoothedRateLimitConsumption,
   });
 })();

@@ -42,10 +42,15 @@ release Git snapshot occurs when a Task explicitly moves to `Await`, outside
 provider admission and terminal-delivery latency.
 
 Codex rollout activity fallback runs outside the main Hub event loop. Concurrent
-reads of the same rollout and read options share one in-flight operation, and a
-cold fallback reads at most the latest 16 MiB. Exact App Server state and managed
-run identity remain preferred over JSONL fallback; reducing the scan window must
-not truncate the terminal answer retained by TURN-001.
+reads of the same rollout and read options share one in-flight operation. A cold
+fallback physically reads/projects at most the latest 16 MiB plus two bounded
+256 KiB provenance samples; it never streams the intervening prefix to EOF.
+Provenance requires exactly one valid canonical session record in those samples;
+otherwise unkeyed provider users fail closed. Append-only reads resume from the
+cached raw-byte cursor.
+Exact App Server state and managed run identity remain preferred over JSONL
+fallback; reducing the projection window must not truncate the terminal answer
+retained by TURN-001.
 
 Codex `thread/read` coalescing is single-flight only: a completed read retains no
 Thread payload in Hub memory. Rollout session discovery incrementally parses at
@@ -56,6 +61,13 @@ prunes them when files disappear, retries incomplete files only through the same
 strict bounds, and passes valid sessions to the existing durable historical
 byte-offset/checkpoint queue.
 
+Claude external-owner discovery enumerates Windows processes through one
+runtime-scoped snapshot owner, not one helper per session. Concurrent occupancy
+queries share a scan for five seconds. Launch-authority scans bypass a cached
+negative and serialize after any earlier inventory so each admission receives a
+scan requested at its own dequeue fence. Helper stdout plus stderr is capped at
+64 KiB and the child is terminated on timeout or overflow.
+
 Ordinary Codex terminal reconciliation is also resumable and bounded. One idle
 pass scans at most 8 rollout files, 512 KiB and 20 terminal turns, with a 75 ms
 event-loop time budget. It yields before further work whenever a managed run or
@@ -64,6 +76,10 @@ terminal index before journal projection, so restart/retry continues the same
 batch without replaying the completed prefix. Projection is flushed at most once
 per recovered batch; disabling terminal audit is not an acceptable steady-state
 mitigation.
+When the Codex transport is offline or reconnecting, versioned historical
+maintenance resolves subagent accounting roots only from retained rollout files.
+It must not attempt provider RPC before falling back locally; an unavailable or
+ambiguous local parent leaves the bounded durable checkpoint pending for retry.
 
 Periodic usage synchronization must not rebuild the complete journal projection
 on the Hub event loop. Import, merge and account-panel calculation execute in a
@@ -87,6 +103,22 @@ or its persisted ledger version is old; migrated SQLite performs only bounded
 status and point queries. Any compatibility normalization releases its in-memory
 ledger before returning, so `retainedRecords` remains zero after the read.
 
+Legacy terminal identity recovery lists persisted metadata for at most the
+newest 200 terminal rows in deterministic newest-first order from the covering
+`provider_turn_terminals_recovery_idx`, without selecting payload text,
+computing JSON length or building a temporary sort. The terminal-store owner
+persists exact UTF-8 `payload_bytes` on every new revision and migrates at most
+the newest 200 legacy rows from a capped 2 MiB-plus-one-character sample before
+publishing the index. Recovery fetches one exact row at a time, accepts only rows
+whose persisted byte length is at most 2 MiB, reads at most 8 MiB of candidate
+payloads, and admits at
+most 4 MiB of valid JSON objects. Invalid JSON consumes the inspection budget
+but not the admission budget, so a malformed newest row cannot by itself starve
+a valid older candidate. Rows that do not fit either hard aggregate bound are
+skipped fail-closed: they cannot rewrite message identities and remain available
+to their owning terminal store. No SQL window, payload-length expression or
+temporary result materializes/sorts the payloads for all 200 candidates.
+
 Runtime durability saves coalesce pending requests before snapshot capture while
 preserving each caller's persistence fence. After the durable command ledger has
 projected a snapshot, exact ledger-owned pending inputs, queued inputs and
@@ -101,16 +133,47 @@ publication reads one SQLite snapshot and performs JSON encoding plus gzip in an
 isolated worker; compression favors bounded CPU over the smallest possible
 artifact. Synchronous SQLite stores on the Hub loop reuse initialized handles,
 batch hierarchy metadata reads and use immediate `SQLITE_BUSY` failure with
-asynchronous retry rather than blocking busy waits.
+asynchronous retry rather than blocking busy waits. Mutation retries are
+deadline-bounded, yield through timers between attempts and retain the original
+idempotency identity. Exhaustion is a visible contention failure; it must not
+freeze HTTP, SSE or runtime timers or allocate a replacement request identity.
 
 Unchanged journal HTTP/WebView reads resolve their ETag from content-free SQLite
-metadata and do not load the multi-megabyte index HTML. Aggregate journal views
-fetch and materialize no more than two lazy days per animation-frame batch and
-cancel a superseded render. The compatibility day collection endpoint is capped
-at 20 fragments per page. Journal DOM insertion is excluded from body-wide
-themed-select and VS Code motion subtree scans. Periodic external history refresh
-runs only while chat is visible, and unchanged Dashboard collections retain
-their snapshot identity so they do not incur stringify comparison or card rebuild.
+metadata and do not load the multi-megabyte index HTML. The initial Journal
+payload contains only the account panel, day-total shells and a compact,
+materialized resource summary; it contains no turn shells, prompts or answers.
+Every grouping mode derives its collapsed totals from that summary and never
+hydrates day fragments merely to regroup them. Expanding a scope reads at most
+50 turn shells from the SQLite turn index by exact Workspace, Stream, provider
+and completion-range fields; expanding one turn then reads only its exact durable
+fragment. Summary and turn index replace atomically with the journal projection,
+while an index-only account-panel update preserves both. The compatibility day
+fragments perform one SQLite transaction covering schema DDL, column changes,
+data/index projection and schema-version publication; any failure leaves the
+reopened store wholly on the prior schema. A turn-page request validates its
+expected source version and reads the bounded index page in one SQLite snapshot,
+returning the version actually read rather than mixing revisions. The migration
+changes the ETag. The compatibility day collection endpoint remains capped at 20
+fragments per page. Journal DOM
+insertion is excluded from body-wide themed-select and VS Code motion subtree
+scans. Periodic external history refresh runs only while chat is visible, and
+unchanged Dashboard collections retain their snapshot identity so they do not
+incur stringify comparison or card rebuild.
+
+Public Worker publication materializes an immutable versioned Journal layout
+before atomically advancing its manifest. Compact index HTML, resource summary,
+aggregate profile cohorts, exact per-Stream and per-Workspace aggregates, exact
+fragments and Workspace/Stream/provider-scoped ordinal turn keys are stored
+separately. Flat Workspace and nested Stream reads use the same bounded index
+path. A lazy turn-page read resolves at most 50 scoped index keys and their exact
+shells; profile reads add only the bounded peer cohort and the requested
+Stream's or Workspace's exact aggregate, without hydrating peer turn details.
+They never decompress the publication snapshot, list a complete generation or
+filter all persisted turns. The immediately
+previous generation remains readable across manifest cutover, while older
+generation cleanup runs only on publication. A legacy snapshot without this
+layout may serve compact index and exact-fragment compatibility reads, but lazy
+turn paging fails closed until the next normal publication materializes it.
 
 
 The “Local Hub” health RTT is not message ACK latency and must not be presented

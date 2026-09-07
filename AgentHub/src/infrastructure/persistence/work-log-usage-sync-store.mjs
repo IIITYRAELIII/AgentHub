@@ -33,7 +33,7 @@ function configureUsageSyncDatabase(database) {
   database.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
-    PRAGMA busy_timeout = 5000;
+    PRAGMA busy_timeout = 0;
     CREATE TABLE IF NOT EXISTS usage_sync_events (
       event_id TEXT PRIMARY KEY,
       device_id TEXT NOT NULL,

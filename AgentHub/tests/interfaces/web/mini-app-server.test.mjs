@@ -20,6 +20,7 @@ import { createAttachmentStorageName } from "../../../src/domain/attachment-file
 import { createDesktopControlRouter } from "../../../src/interfaces/desktop/desktop-control-router.mjs";
 import { createRuntimeHealth } from "../../../src/application/runtime-health.mjs";
 import { createLocalWebviewSession } from "../../../src/interfaces/web/local-webview-session.mjs";
+import { JournalDatabase } from "../../../src/infrastructure/persistence/journal-database.mjs";
 
 const LIMITS_HTML = '<div data-work-log-rate-limits data-sampled-at="2026-07-30T02:55:14.512Z">'
   + '<span data-rate-limit-caption>Лимиты</span>'
@@ -127,7 +128,9 @@ test("local Web App accepts short-lived VS Code WebView CORS sessions", async ()
     });
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("access-control-allow-origin"), origin);
-    assert.match((await response.json()).html, /Пилот/u);
+    const journal = await response.json();
+    assert.match(journal.html, /data-lazy-day="27\.07\.2026"/u);
+    assert.doesNotMatch(journal.html, /Пилот/u);
 
     const expired = createLocalWebviewSession(secret, { now: Date.now() - 60_000, ttlSeconds: 30 });
     assert.equal((await fetch(`${address.url}api/journal`, {
@@ -160,7 +163,7 @@ test("large snapshot responses use gzip when the client accepts it", async () =>
   }
 });
 
-test("large journal responses use gzip when the client accepts it", async () => {
+test("large lazy journal fragments use gzip without bloating the initial response", async () => {
   const largeDay = DAY_HTML.replace("Пилот", "Журнал".repeat(8_192));
   const journalDatabase = memoryJournal(largeDay);
   journalDatabase.fragments = async () => ({
@@ -181,8 +184,8 @@ test("large journal responses use gzip when the client accepts it", async () => 
       headers: { "Accept-Encoding": "gzip" },
     });
     assert.equal(journalResponse.status, 200);
-    assert.equal(journalResponse.headers.get("content-encoding"), "gzip");
-    assert.match((await journalResponse.json()).html, /Журнал/u);
+    assert.equal(journalResponse.headers.get("content-encoding"), null);
+    assert.doesNotMatch((await journalResponse.json()).html, /Журнал/u);
 
     const daysResponse = await fetch(`${address.url}api/journal/days`, {
       headers: { "Accept-Encoding": "gzip" },
@@ -579,6 +582,7 @@ function memoryJournal(html = "") {
     }),
     payload: async () => ({
       html: current.html,
+      summary: current.summary,
       updatedAt: current.updatedAt,
       version: current.version,
       revision: current.revision,
@@ -591,6 +595,50 @@ function memoryJournal(html = "") {
       return {
         fragments: Object.fromEntries(entries.slice(offset, offset + limit)),
         nextOffset: offset + limit < entries.length ? offset + limit : null,
+      };
+    },
+    turnPage: async ({
+      expectedVersion = "",
+      profileMode = "",
+      workspaceId = "",
+      streamId = "",
+      provider = "",
+      threadId = "",
+      fromMs = 0,
+      toMs = 0,
+      offset = 0,
+      limit = 20,
+    } = {}) => {
+      if (expectedVersion && expectedVersion !== current.version) {
+        return {
+          conflict: true,
+          version: current.version,
+          turns: [],
+          nextOffset: null,
+        };
+      }
+      const filtered = (current.entries ?? []).filter((entry) => (
+        (!workspaceId || entry.workspaceId === workspaceId)
+        && (!streamId || entry.streamId === streamId)
+        && (!provider || entry.provider === provider)
+        && (!threadId || entry.threadId === threadId)
+        && (!Number(fromMs) || entry.completedAtMs >= Number(fromMs))
+        && (!Number(toMs) || entry.completedAtMs < Number(toMs))
+      )).sort((left, right) => right.completedAtMs - left.completedAtMs);
+      const boundedLimit = Math.max(1, Math.min(50, Number(limit) || 20));
+      const turns = filtered.slice(Number(offset) || 0, (Number(offset) || 0) + boundedLimit);
+      return {
+        conflict: false,
+        version: current.version,
+        turns: turns.map(({ turnRef, date, html: turnHtml }) => ({
+          turnRef,
+          date,
+          html: turnHtml,
+        })),
+        nextOffset: filtered.length > (Number(offset) || 0) + turns.length
+          ? (Number(offset) || 0) + turns.length
+          : null,
+        ...(profileMode === "stream" ? { profileSummary: current.summary } : {}),
       };
     },
     subscribe(listener) {
@@ -686,13 +734,15 @@ test("Mini App serves only safe persistent message attachment names", async () =
   });
   try {
     await mkdir(attachments, { recursive: true });
-    const body = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const body = Buffer.alloc(2_784_684);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(body);
     await writeFile(path.join(attachments, "message-1.png"), body);
     await writeFile(thumbnail, Buffer.from("small-preview"));
     const address = await server.start();
     const image = await fetch(`${address.url}api/message-attachment/message-1.png`);
     assert.equal(image.status, 200);
     assert.equal(image.headers.get("content-type"), "image/png");
+    assert.equal(image.headers.get("content-length"), "2784684");
     assert.deepEqual(Buffer.from(await image.arrayBuffer()), body);
     const preview = await fetch(`${address.url}api/message-attachment/message-1.png?preview=1`);
     assert.equal(preview.status, 200);
@@ -852,10 +902,12 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     });
     assert.equal(healthResponse.headers.get("cache-control"), "no-store");
     assert.match(healthResponse.headers.get("content-security-policy"), /default-src 'self'/);
+    assert.match(healthResponse.headers.get("content-security-policy"), /frame-src https:/);
 
     const journal = await fetch(`${address.url}api/journal`);
     const payload = await journal.json();
-    assert.equal(payload.html, DAY_HTML);
+    assert.match(payload.html, /data-lazy-day="27\.07\.2026"/u);
+    assert.doesNotMatch(payload.html, /Пилот/u);
     assert.match(payload.updatedAt, /^\d{4}-\d{2}-\d{2}T/u);
     assert.match(payload.version, /^sha256:[0-9a-f]{64}$/u);
     assert.equal(journal.headers.get("etag"), `"${payload.version}"`);
@@ -914,6 +966,8 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
       "",
       "background-motion-preference.js",
       "browser-device-auth.js",
+      "embedded-browser.js",
+      "host-message-trust.js",
       "message-view-controller.js",
       "chat-surface-preference.js",
       "navigation-tabs-controller.js",
@@ -1121,6 +1175,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(page, /data-usage-unit="pte"/u);
     assert.match(page, /data-toggle="includeClaudeUsage"/u);
     assert.match(page, /data-claude-group-toggle/u);
+    assert.match(page, /data-journal-stream-group-toggle/u);
     assert.doesNotMatch(page, /data-token-breakdown-toggle/u);
     assert.match(page, /data-trusted-device-list/u);
     assert.match(page, /data-device-create/u);
@@ -1573,6 +1628,37 @@ test("Mini App exposes control failures to the guarded diagnostics boundary", as
         action: "control",
       },
     }]);
+  } finally {
+    await server.close();
+  }
+});
+
+test("Mini App preserves an expected lifecycle conflict as HTTP 409", async () => {
+  const captured = [];
+  const conflict = Object.assign(new Error("Workspace has an unresolved run admission"), {
+    code: "WORKSPACE_LIFECYCLE_CONFLICT",
+    statusCode: 409,
+  });
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(),
+    controlHandler: async () => { throw conflict; },
+    reportUnexpectedError: (error, context) => captured.push({ error, context }),
+  });
+  try {
+    const address = await server.start();
+    const response = await fetch(`${address.url}api/control`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "delete-archived-workspace", params: {} }),
+    });
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), {
+      ok: false,
+      error: "Workspace has an unresolved run admission",
+    });
+    assert.deepEqual(captured, []);
   } finally {
     await server.close();
   }
@@ -2042,6 +2128,151 @@ test("Mini App serves old days and turn bodies through lazy endpoints", async ()
   }
 });
 
+test("Mini App serves compact totals first and bounded turn shells on demand", async () => {
+  const html = [
+    '<details data-work-log-day-section><summary data-work-log-day><strong>01.08.2026</strong></summary>',
+    '<details data-work-log-workspace data-work-log-workspace-id="workspace-1"',
+    ' data-work-log-workspace-kind="catalog"><summary><strong>Agent HUB</strong></summary>',
+    '<details data-work-log-stream data-work-log-stream-id="stream-1">',
+    '<summary><span data-work-log-stream-title>Architect</span></summary>',
+    '<div data-work-log-row data-work-log-provider="codex" data-work-log-thread-id="thread-1"',
+    ' data-work-log-workspace-id="workspace-1" data-work-log-stream-id="stream-1">',
+    '<div data-work-log-task-content>Задача</div><div data-work-log-turn-list>',
+    '<div data-work-log-turn-entry data-work-log-turn-provider="codex"',
+    ' data-work-log-turn-thread-id="thread-1" data-work-log-turn-id="turn-1"',
+    ' data-work-log-turn-depth="0" data-work-log-turn-credits="42"',
+    ' data-work-log-turn-file-count="3" data-work-log-turn-change-lines="12"',
+    ' data-work-log-turn-subagent="0" data-work-log-turn-skills="[&quot;journal&quot;]"',
+    ' data-work-log-turn-mcp-calls="1" data-work-log-turn-mcp-tools="[&quot;hub/read&quot;]"',
+    ' data-work-log-turn-mcp-failures="0"',
+    ' data-work-log-turn-duration-seconds="90"',
+    ' data-work-log-turn-completed-at="2026-08-01T12:00:00.000Z">',
+    '<details data-work-log-turn-details><summary>Ход 1</summary>',
+    '<div data-work-log-turn-expanded>Полная детализация</div></details>',
+    "</div></div></div></details>",
+    '<details data-work-log-stream data-work-log-stream-id="stream-2">',
+    '<summary><span data-work-log-stream-title>Review</span></summary>',
+    '<div data-work-log-row data-work-log-provider="codex" data-work-log-thread-id="thread-2"',
+    ' data-work-log-workspace-id="workspace-1" data-work-log-stream-id="stream-2">',
+    '<div data-work-log-task-content>Проверка</div><div data-work-log-turn-list>',
+    '<div data-work-log-turn-entry data-work-log-turn-provider="codex"',
+    ' data-work-log-turn-thread-id="thread-2" data-work-log-turn-id="turn-2"',
+    ' data-work-log-turn-depth="0" data-work-log-turn-credits="10"',
+    ' data-work-log-turn-file-count="9" data-work-log-turn-change-lines="3"',
+    ' data-work-log-turn-subagent="0" data-work-log-turn-skills="[]"',
+    ' data-work-log-turn-mcp-calls="0" data-work-log-turn-mcp-tools="[]"',
+    ' data-work-log-turn-mcp-failures="0" data-work-log-turn-duration-seconds="30"',
+    ' data-work-log-turn-completed-at="2026-08-01T11:00:00.000Z">',
+    '<details data-work-log-turn-details><summary>Ход 2</summary>',
+    '<div data-work-log-turn-expanded>Другая детализация</div></details>',
+    "</div></div></div></details></details></details>",
+  ].join("");
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(html),
+  });
+  try {
+    const address = await server.start();
+    const index = await (await fetch(`${address.url}api/journal`)).json();
+    assert.equal(index.summary.buckets.length, 2);
+    assert.equal(index.summary.buckets[0].credits, 42);
+    assert.equal(Object.hasOwn(index.summary.buckets[0], "fileTouches"), false);
+    assert.doesNotMatch(index.html, /Ход 1|Полная детализация/u);
+
+    const response = await fetch(
+      `${address.url}api/journal/turns?workspaceId=workspace-1&streamId=stream-1`
+      + `&profileMode=stream&limit=200&version=${encodeURIComponent(index.version)}`,
+    );
+    assert.equal(response.status, 200);
+    const page = await response.json();
+    assert.equal(page.turns.length, 1);
+    assert.equal(page.nextOffset, null);
+    assert.match(page.turns[0].html, /Ход 1/u);
+    assert.doesNotMatch(page.turns[0].html, /Полная детализация/u);
+    assert.equal(page.version, index.version);
+    assert.equal(page.profileSummary.buckets.length, 2);
+    assert.equal(page.profileSummary.buckets[0].fileTouches, 3);
+    assert.equal(page.profileSummary.buckets[1].fileTouches, 9);
+    assert.deepEqual(page.profileSummary.buckets[0].skillNames, ["journal"]);
+    assert.equal((await fetch(
+      `${address.url}api/journal/turns?workspaceId=workspace-1&version=old`,
+    )).status, 409);
+  } finally {
+    await server.close();
+  }
+});
+
+test("Mini App retains every provider profile for an old requested SQLite Stream", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-profile-cohort-"));
+  const database = new JournalDatabase(path.join(directory, "journal.sqlite"));
+  const peerBuckets = Array.from({ length: 2_048 }, (_, index) => ({
+    date: "07.09.2026",
+    dayMs: Date.UTC(2026, 8, 7),
+    workspaceId: `workspace-${index}`,
+    streamId: `stream-${index}`,
+    provider: "codex",
+    latestAt: 10_000 - index,
+    credits: 10_000 - index,
+    fileTouches: index + 1,
+  }));
+  const requestedBuckets = ["codex", "claude"].map((provider, index) => ({
+    date: "01.01.2020",
+    dayMs: Date.UTC(2020, 0, 1),
+    workspaceId: "workspace-required",
+    streamId: "stream-required",
+    provider,
+    latestAt: index + 1,
+    credits: index + 1,
+    fileTouches: 50 + index,
+  }));
+  await database.replaceProjection({
+    html: "<main></main>",
+    summary: { version: 1, buckets: [...peerBuckets, ...requestedBuckets] },
+    entries: [{
+      turnRef: "turn-required",
+      date: "01.01.2020",
+      dayMs: Date.UTC(2020, 0, 1),
+      workspaceId: "workspace-required",
+      streamId: "stream-required",
+      provider: "codex",
+      threadId: "thread-required",
+      turnId: "turn-required",
+      completedAtMs: Date.UTC(2020, 0, 1, 12),
+      html: '<div data-work-log-turn-entry data-work-log-turn-id="turn-required">Точный ход</div>',
+    }],
+  });
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: database,
+  });
+  try {
+    const address = await server.start();
+    const index = await (await fetch(`${address.url}api/journal`)).json();
+    const response = await fetch(
+      `${address.url}api/journal/turns?workspaceId=workspace-required&streamId=stream-required`
+      + `&profileMode=stream&version=${encodeURIComponent(index.version)}`,
+    );
+    assert.equal(response.status, 200);
+    const page = await response.json();
+    assert.deepEqual(page.turns.map((turn) => turn.turnRef), ["turn-required"]);
+    const requested = page.profileSummary.buckets.filter((bucket) => (
+      bucket.workspaceId === "workspace-required" && bucket.streamId === "stream-required"
+    ));
+    assert.deepEqual(requested.map((bucket) => bucket.provider).sort(), ["claude", "codex"]);
+    assert.equal(new Set(page.profileSummary.buckets.map((bucket) => (
+      `${bucket.workspaceId}\u001f${bucket.streamId}\u001f${bucket.provider}`
+    ))).size, page.profileSummary.buckets.length);
+    assert.equal(page.profileSummary.buckets.length, 2_050);
+    assert.equal(page.profileSummary.truncated, true);
+  } finally {
+    await server.close();
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Mini App can require Telegram authorization on a dedicated public listener", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-public-mini-app-"));
   const server = new MiniAppServer({
@@ -2287,13 +2518,16 @@ test("local Web is served without the third-party Telegram runtime", async () =>
     const local = await fetch(address.url);
     const localBody = await local.text();
     assert.doesNotMatch(localBody, /telegram\.org/u);
+    assert.doesNotMatch(localBody, /telegram-runtime-bootstrap/u);
     assert.match(local.headers.get("content-security-policy"), /script-src 'self';/u);
 
     // A request that arrived through the public edge may still be a Mini App.
     const publicPage = await fetch(address.url, {
       headers: { Host: "hub.example", "X-Forwarded-For": "203.0.113.9" },
     });
-    assert.match(await publicPage.text(), /telegram\.org/u);
+    const publicBody = await publicPage.text();
+    assert.doesNotMatch(publicBody, /telegram\.org/u);
+    assert.match(publicBody, /telegram-runtime-bootstrap\.js/u);
     assert.match(
       publicPage.headers.get("content-security-policy"),
       /script-src 'self' https:\/\/telegram\.org/u,
@@ -2315,7 +2549,9 @@ test("a deployment without Telegram never serves the Telegram runtime", async ()
     const response = await fetch(address.url, {
       headers: { Host: "hub.example", "X-Forwarded-For": "203.0.113.9" },
     });
-    assert.doesNotMatch(await response.text(), /telegram\.org/u);
+    const body = await response.text();
+    assert.doesNotMatch(body, /telegram\.org/u);
+    assert.doesNotMatch(body, /telegram-runtime-bootstrap/u);
     assert.match(response.headers.get("content-security-policy"), /script-src 'self';/u);
   } finally {
     await server.close();

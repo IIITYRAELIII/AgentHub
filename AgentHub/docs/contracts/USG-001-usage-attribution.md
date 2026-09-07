@@ -275,6 +275,22 @@ estimand.
 - `declared` epochs are excluded by default. Including them is an explicit
   choice and marks the affected intervals.
 
+## Local cost projection
+
+Raw usage facts retain their exact model and token counters. Journal,
+Statistics, turn summaries and currency views derive their local cost from the
+single `turnCreditBreakdown` owner. For `gpt-6-astra`, the default-tier rates per
+million input / cached-input / output tokens are `312.5 / 31.25 / 1875`: this is
+`5 ×` the GPT-5.6 Terra base and `2.5 ×` GPT-5.6 Sol. The projection must not
+introduce a second surface-specific Astra multiplier or rewrite synchronized
+usage facts.
+
+The unscoped accounting chart includes every local turn regardless of account.
+A synchronized turn is included only when its attributed account has an exact
+local Codex account-activity interval containing the configured turn timestamp.
+Missing local activity evidence excludes that synchronized turn. The account
+selector used by API-limit and comparison views must not narrow this chart.
+
 ## Legacy ingest
 
 - A schema `1` usage event is accepted so that an installation that never
