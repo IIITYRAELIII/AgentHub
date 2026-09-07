@@ -123,6 +123,8 @@ Journal setting without changing persisted usage facts. Streams are ordered by t
 currently included credit total descending, with stable recency and identity
 ties. Disabling Claude usage excludes Claude credits from headers, group totals
 and ordering while retaining Claude turns and their duration as journal facts.
+The account-usage panel always includes every provider and is not filtered by
+the Journal and statistics `includeClaudeUsage` presentation setting.
 Opening a group, Stream and turn are separate lazy actions; a collapsed group
 does not materialize turn DOM. In `stream` mode the first Stream retains the
 established default-open overview, profile and task-profile presentation; only

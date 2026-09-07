@@ -22,7 +22,6 @@ async function projectAccountUsage(payload = {}) {
   ]);
   const updatedHtml = projectWorkLogAccountUsage(payload.html, turns, {
     accountCatalog: payload.accountCatalog,
-    includeClaudeUsage: payload.includeClaudeUsage,
     syncedUsageEvents: syncedUsageFacts,
     localDeviceId: payload.localDeviceId,
     localDeviceLabel: payload.localDeviceLabel,

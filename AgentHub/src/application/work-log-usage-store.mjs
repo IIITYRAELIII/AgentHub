@@ -225,7 +225,6 @@ export class WorkLogUsageStore {
           html: String(current?.html ?? ""),
           projectRoots,
           accountCatalog,
-          includeClaudeUsage: this.#includeClaudeUsage,
           localDeviceId: this.#usageSyncDeviceId,
           localDeviceLabel: this.#usageSyncDeviceLabel,
           now: Date.now(),
