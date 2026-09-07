@@ -1074,6 +1074,61 @@ test("Worker alarm removes expired staging chunks without touching the published
   assert.equal(storage.alarmAt, before + 120_000);
 });
 
+test("Worker journal exposes compact totals and bounded turn pages separately", async () => {
+  const workerModule = await loadWorker();
+  const store = new workerModule.JournalStore({ storage: new MemoryStorage() }, {});
+  const turnEntries = Array.from({ length: 60 }, (_, index) => ({
+    turnRef: `ref-${String(index).padStart(2, "0")}`,
+    date: "01.08.2026",
+    dayMs: Date.UTC(2026, 7, 1),
+    workspaceId: "workspace-1",
+    streamId: "stream-1",
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: `turn-${index}`,
+    completedAtMs: Date.UTC(2026, 7, 1, 12) - index,
+    html: `<div data-work-log-turn-entry data-work-log-turn-id="turn-${index}">Ход</div>`,
+  }));
+  const summary = { version: 1, buckets: [{
+    date: "01.08.2026",
+    workspaceId: "workspace-1",
+    streamId: "stream-1",
+    provider: "codex",
+    turnCount: 60,
+  }] };
+  assert.equal((await store.fetch(new Request("https://journal.internal/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      html: '<details data-lazy-day="01.08.2026"></details>',
+      summary,
+      turnEntries,
+      days: {},
+      turns: {},
+      version: "journal-v1",
+      updatedAt: "2026-08-01T12:00:00.000Z",
+    }),
+  }))).status, 200);
+
+  const index = await (await store.fetch(new Request("https://journal.internal/journal"))).json();
+  assert.deepEqual(index.summary, summary);
+  assert.equal(Object.hasOwn(index, "turnEntries"), false);
+
+  const first = await (await store.fetch(new Request(
+    "https://journal.internal/journal/turns?workspaceId=workspace-1&streamId=stream-1&limit=200",
+  ))).json();
+  assert.equal(first.turns.length, 50);
+  assert.equal(first.nextOffset, 50);
+  const second = await (await store.fetch(new Request(
+    "https://journal.internal/journal/turns?workspaceId=workspace-1&streamId=stream-1&offset=50",
+  ))).json();
+  assert.equal(second.turns.length, 10);
+  assert.equal(second.nextOffset, null);
+  assert.equal((await store.fetch(new Request(
+    "https://journal.internal/journal/turns?workspaceId=workspace-1&version=old",
+  ))).status, 409);
+});
+
 test("Worker relay rejects unsupported actions, attachments, and unsigned service calls", async () => {
   const workerModule = await loadWorker();
   const storage = new MemoryStorage();

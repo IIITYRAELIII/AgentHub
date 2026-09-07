@@ -127,7 +127,9 @@ test("local Web App accepts short-lived VS Code WebView CORS sessions", async ()
     });
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("access-control-allow-origin"), origin);
-    assert.match((await response.json()).html, /Пилот/u);
+    const journal = await response.json();
+    assert.match(journal.html, /data-lazy-day="27\.07\.2026"/u);
+    assert.doesNotMatch(journal.html, /Пилот/u);
 
     const expired = createLocalWebviewSession(secret, { now: Date.now() - 60_000, ttlSeconds: 30 });
     assert.equal((await fetch(`${address.url}api/journal`, {
@@ -160,7 +162,7 @@ test("large snapshot responses use gzip when the client accepts it", async () =>
   }
 });
 
-test("large journal responses use gzip when the client accepts it", async () => {
+test("large lazy journal fragments use gzip without bloating the initial response", async () => {
   const largeDay = DAY_HTML.replace("Пилот", "Журнал".repeat(8_192));
   const journalDatabase = memoryJournal(largeDay);
   journalDatabase.fragments = async () => ({
@@ -181,8 +183,8 @@ test("large journal responses use gzip when the client accepts it", async () => 
       headers: { "Accept-Encoding": "gzip" },
     });
     assert.equal(journalResponse.status, 200);
-    assert.equal(journalResponse.headers.get("content-encoding"), "gzip");
-    assert.match((await journalResponse.json()).html, /Журнал/u);
+    assert.equal(journalResponse.headers.get("content-encoding"), null);
+    assert.doesNotMatch((await journalResponse.json()).html, /Журнал/u);
 
     const daysResponse = await fetch(`${address.url}api/journal/days`, {
       headers: { "Accept-Encoding": "gzip" },
@@ -522,6 +524,7 @@ function memoryJournal(html = "") {
     }),
     payload: async () => ({
       html: current.html,
+      summary: current.summary,
       updatedAt: current.updatedAt,
       version: current.version,
       revision: current.revision,
@@ -534,6 +537,37 @@ function memoryJournal(html = "") {
       return {
         fragments: Object.fromEntries(entries.slice(offset, offset + limit)),
         nextOffset: offset + limit < entries.length ? offset + limit : null,
+      };
+    },
+    turnPage: async ({
+      workspaceId = "",
+      streamId = "",
+      provider = "",
+      threadId = "",
+      fromMs = 0,
+      toMs = 0,
+      offset = 0,
+      limit = 20,
+    } = {}) => {
+      const filtered = (current.entries ?? []).filter((entry) => (
+        (!workspaceId || entry.workspaceId === workspaceId)
+        && (!streamId || entry.streamId === streamId)
+        && (!provider || entry.provider === provider)
+        && (!threadId || entry.threadId === threadId)
+        && (!Number(fromMs) || entry.completedAtMs >= Number(fromMs))
+        && (!Number(toMs) || entry.completedAtMs < Number(toMs))
+      )).sort((left, right) => right.completedAtMs - left.completedAtMs);
+      const boundedLimit = Math.max(1, Math.min(50, Number(limit) || 20));
+      const turns = filtered.slice(Number(offset) || 0, (Number(offset) || 0) + boundedLimit);
+      return {
+        turns: turns.map(({ turnRef, date, html: turnHtml }) => ({
+          turnRef,
+          date,
+          html: turnHtml,
+        })),
+        nextOffset: filtered.length > (Number(offset) || 0) + turns.length
+          ? (Number(offset) || 0) + turns.length
+          : null,
       };
     },
     subscribe(listener) {
@@ -798,7 +832,8 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
 
     const journal = await fetch(`${address.url}api/journal`);
     const payload = await journal.json();
-    assert.equal(payload.html, DAY_HTML);
+    assert.match(payload.html, /data-lazy-day="27\.07\.2026"/u);
+    assert.doesNotMatch(payload.html, /Пилот/u);
     assert.match(payload.updatedAt, /^\d{4}-\d{2}-\d{2}T/u);
     assert.match(payload.version, /^sha256:[0-9a-f]{64}$/u);
     assert.equal(journal.headers.get("etag"), `"${payload.version}"`);
@@ -1064,6 +1099,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(page, /data-usage-unit="pte"/u);
     assert.match(page, /data-toggle="includeClaudeUsage"/u);
     assert.match(page, /data-claude-group-toggle/u);
+    assert.match(page, /data-journal-stream-group-toggle/u);
     assert.doesNotMatch(page, /data-token-breakdown-toggle/u);
     assert.match(page, /data-trusted-device-list/u);
     assert.match(page, /data-device-create/u);
@@ -1982,6 +2018,55 @@ test("Mini App serves old days and turn bodies through lazy endpoints", async ()
   } finally {
     await server.close();
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Mini App serves compact totals first and bounded turn shells on demand", async () => {
+  const html = [
+    '<details data-work-log-day-section><summary data-work-log-day><strong>01.08.2026</strong></summary>',
+    '<details data-work-log-workspace data-work-log-workspace-id="workspace-1"',
+    ' data-work-log-workspace-kind="catalog"><summary><strong>Agent HUB</strong></summary>',
+    '<details data-work-log-stream data-work-log-stream-id="stream-1">',
+    '<summary><span data-work-log-stream-title>Architect</span></summary>',
+    '<div data-work-log-row data-work-log-provider="codex" data-work-log-thread-id="thread-1"',
+    ' data-work-log-workspace-id="workspace-1" data-work-log-stream-id="stream-1">',
+    '<div data-work-log-task-content>Задача</div><div data-work-log-turn-list>',
+    '<div data-work-log-turn-entry data-work-log-turn-provider="codex"',
+    ' data-work-log-turn-thread-id="thread-1" data-work-log-turn-id="turn-1"',
+    ' data-work-log-turn-depth="0" data-work-log-turn-credits="42"',
+    ' data-work-log-turn-duration-seconds="90"',
+    ' data-work-log-turn-completed-at="2026-08-01T12:00:00.000Z">',
+    '<details data-work-log-turn-details><summary>Ход 1</summary>',
+    '<div data-work-log-turn-expanded>Полная детализация</div></details>',
+    "</div></div></div></details></details></details>",
+  ].join("");
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(html),
+  });
+  try {
+    const address = await server.start();
+    const index = await (await fetch(`${address.url}api/journal`)).json();
+    assert.equal(index.summary.buckets.length, 1);
+    assert.equal(index.summary.buckets[0].credits, 42);
+    assert.doesNotMatch(index.html, /Ход 1|Полная детализация/u);
+
+    const response = await fetch(
+      `${address.url}api/journal/turns?workspaceId=workspace-1&streamId=stream-1`
+      + `&limit=200&version=${encodeURIComponent(index.version)}`,
+    );
+    assert.equal(response.status, 200);
+    const page = await response.json();
+    assert.equal(page.turns.length, 1);
+    assert.equal(page.nextOffset, null);
+    assert.match(page.turns[0].html, /Ход 1/u);
+    assert.doesNotMatch(page.turns[0].html, /Полная детализация/u);
+    assert.equal((await fetch(
+      `${address.url}api/journal/turns?workspaceId=workspace-1&version=old`,
+    )).status, 409);
+  } finally {
+    await server.close();
   }
 });
 

@@ -110,6 +110,19 @@ wrap inside the message column without horizontal page movement. Fences with an
 explicit language preserve code whitespace and may scroll horizontally. Both
 presentations copy the original unmodified block text.
 
+## Journal hierarchy
+
+Collapsed Journal groups show resource totals only. In every grouping except
+`stream`, expanding a group keeps the Workspace selector on the left and shows
+the selected Workspace's Streams on the right; turn shells remain inside their
+Stream. The user may disable Stream nesting for these modes through the Journal
+setting without changing persisted usage facts. Streams are ordered by the
+currently included credit total descending, with stable recency and identity
+ties. Disabling Claude usage excludes Claude credits from headers, group totals
+and ordering while retaining Claude turns and their duration as journal facts.
+Opening a group, Stream and turn are separate lazy actions; a collapsed group
+does not materialize turn DOM.
+
 ## Legacy chronology
 
 Legacy turns without a timestamp keep their durable provider position relative

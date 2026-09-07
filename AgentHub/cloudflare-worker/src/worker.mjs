@@ -3554,6 +3554,7 @@ export class JournalStore extends DurableObject {
       "/journal",
       "/journal/day",
       "/journal/turn",
+      "/journal/turns",
     ].includes(url.pathname)) {
       let payload;
       try {
@@ -3576,11 +3577,44 @@ export class JournalStore extends DurableObject {
           ? json({ html, version: payload.version })
           : json({ error: "Фрагмент журнала не найден." }, 404);
       }
+      if (url.pathname === "/journal/turns") {
+        const requestedVersion = String(url.searchParams.get("version") ?? "");
+        if (requestedVersion && requestedVersion !== payload.version) {
+          return json({ error: "Журнал обновился.", version: payload.version }, 409);
+        }
+        const match = (entry, name, limit = 256) => {
+          const requested = String(url.searchParams.get(name) ?? "").trim().slice(0, limit);
+          return !requested || String(entry?.[name] ?? "") === requested;
+        };
+        const boundedNumber = (name, maximum = Number.MAX_SAFE_INTEGER) => {
+          const number = Number(url.searchParams.get(name));
+          return Number.isSafeInteger(number) && number > 0 ? Math.min(number, maximum) : 0;
+        };
+        const fromMs = boundedNumber("fromMs");
+        const toMs = boundedNumber("toMs");
+        const offset = boundedNumber("offset", 1_000_000);
+        const limit = Math.max(1, Math.min(50, Math.floor(Number(url.searchParams.get("limit")) || 20)));
+        const matches = (Array.isArray(payload.turnEntries) ? payload.turnEntries : []).filter((entry) => (
+          match(entry, "workspaceId")
+          && match(entry, "streamId")
+          && match(entry, "provider", 32)
+          && match(entry, "threadId")
+          && (!fromMs || Number(entry?.completedAtMs) >= fromMs)
+          && (!toMs || Number(entry?.completedAtMs) < toMs)
+        ));
+        const page = matches.slice(offset, offset + limit);
+        return json({
+          turns: page.map((entry) => ({ turnRef: entry.turnRef, date: entry.date, html: entry.html })),
+          nextOffset: matches.length > offset + page.length ? offset + page.length : null,
+          version: payload.version,
+        });
+      }
       const knownVersion = String(request.headers.get("If-None-Match") ?? "");
       const etag = `"${payload.version}"`;
       if (knownVersion === etag) return new Response(null, { status: 304, headers: { ETag: etag } });
       const response = json({
         html: payload.html,
+        summary: payload.summary ?? { version: 1, buckets: [] },
         updatedAt: payload.updatedAt,
         version: payload.version,
       });
@@ -4605,6 +4639,7 @@ export default {
       "/api/journal",
       "/api/journal/day",
       "/api/journal/turn",
+      "/api/journal/turns",
       "/api/rate-limits",
     ].includes(url.pathname)) {
       if (request.method !== "GET" && request.method !== "HEAD") {

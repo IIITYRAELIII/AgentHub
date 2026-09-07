@@ -104,13 +104,23 @@ batch hierarchy metadata reads and use immediate `SQLITE_BUSY` failure with
 asynchronous retry rather than blocking busy waits.
 
 Unchanged journal HTTP/WebView reads resolve their ETag from content-free SQLite
-metadata and do not load the multi-megabyte index HTML. Aggregate journal views
-fetch and materialize no more than two lazy days per animation-frame batch and
-cancel a superseded render. The compatibility day collection endpoint is capped
-at 20 fragments per page. Journal DOM insertion is excluded from body-wide
-themed-select and VS Code motion subtree scans. Periodic external history refresh
-runs only while chat is visible, and unchanged Dashboard collections retain
-their snapshot identity so they do not incur stringify comparison or card rebuild.
+metadata and do not load the multi-megabyte index HTML. The initial Journal
+payload contains only the account panel, day-total shells and a compact,
+materialized resource summary; it contains no turn shells, prompts or answers.
+Every grouping mode derives its collapsed totals from that summary and never
+hydrates day fragments merely to regroup them. Expanding a scope reads at most
+50 turn shells from the SQLite turn index by exact Workspace, Stream, provider
+and completion-range fields; expanding one turn then reads only its exact durable
+fragment. Summary and turn index replace atomically with the journal projection,
+while an index-only account-panel update preserves both. The compatibility day
+fragments perform one atomic schema migration into the same index and compact
+initial HTML without loading the complete usage ledger; that migration changes
+the ETag. The compatibility day collection endpoint remains capped at 20
+fragments per page. Journal DOM
+insertion is excluded from body-wide themed-select and VS Code motion subtree
+scans. Periodic external history refresh runs only while chat is visible, and
+unchanged Dashboard collections retain their snapshot identity so they do not
+incur stringify comparison or card rebuild.
 
 
 The “Local Hub” health RTT is not message ACK latency and must not be presented

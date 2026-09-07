@@ -69,6 +69,9 @@ export function journalPayloadEtag(payload, usageSync = null) {
 export function publicJournalPayload(payload, { usageSync = null } = {}) {
   return {
     html: String(payload?.html ?? ""),
+    summary: payload?.summary && typeof payload.summary === "object"
+      ? payload.summary
+      : { version: 1, buckets: [] },
     updatedAt: String(payload?.updatedAt ?? ""),
     version: String(payload?.version ?? ""),
     usageSync: publicUsageSyncStatus(usageSync),

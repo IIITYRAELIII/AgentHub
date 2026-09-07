@@ -35,7 +35,7 @@
       "id": "PERF-001",
       "title": "Local command latency",
       "document": "PERF-001-local-latency.md",
-      "paths": ["assets/web-app/connection-quality.js", "assets/web-app/hub-client.js", "src/interfaces/desktop/**", "src/infrastructure/persistence/**", "src/application/run-coordinator.mjs", "src/composition/claude-transcript-audit-composition.mjs", "src/providers/provider-catalog-services.mjs", "src/providers/claude/claude-session-reader.mjs", "src/providers/codex/codex-rollout-activity*"]
+      "paths": ["assets/web-app/connection-quality.js", "assets/web-app/hub-client.js", "assets/web-app/journal-view-controller.js", "src/interfaces/desktop/**", "src/interfaces/web/mini-app-journal-data.mjs", "src/interfaces/web/mini-app-server.mjs", "src/infrastructure/persistence/**", "src/application/journal-projection-data.mjs", "src/application/run-coordinator.mjs", "src/composition/claude-transcript-audit-composition.mjs", "src/providers/provider-catalog-services.mjs", "src/providers/claude/claude-session-reader.mjs", "src/providers/codex/codex-rollout-activity*", "cloudflare-worker/src/worker.mjs"]
     },
     {
       "id": "REL-001",

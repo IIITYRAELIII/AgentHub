@@ -11201,6 +11201,28 @@ details:not([open]) > summary[data-journal-ledger-summary] [data-journal-ledger-
   padding: 0.25rem 1.35rem 1.35rem;
 }
 
+[data-journal-ledger-expanded] > :is(
+  [data-journal-virtual-turns],
+  [data-journal-virtual-flat-turns],
+  [data-work-log-workspace-streams],
+  [data-journal-day-expanded]
+) {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+[data-journal-virtual-turns][aria-busy="true"] [data-journal-turn-table]::before,
+[data-journal-virtual-flat-turns][aria-busy="true"] [data-journal-turn-table]::before {
+  color: var(--text-muted);
+  content: "Загрузка ходов…";
+  display: block;
+  padding: 0.8rem;
+}
+
+[data-journal-turn-show-more] {
+  margin: 0.75rem 0;
+}
+
 [data-journal-ledger-expanded] > [data-work-log-task-profile] {
   align-items: stretch;
   align-self: start;

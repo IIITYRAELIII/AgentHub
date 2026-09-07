@@ -99,7 +99,179 @@
   }
 
   function requiresCompleteHistory(value) {
-    return normalizeGrouping(value) !== "date";
+    normalizeGrouping(value);
+    return false;
+  }
+
+  function emptyMetrics() {
+    return {
+      turnCount: 0,
+      credits: 0,
+      knownCredits: 0,
+      unknownCredits: 0,
+      durationSeconds: 0,
+      knownDurations: 0,
+      unknownDurations: 0,
+      latestAt: 0,
+    };
+  }
+
+  function addBucketMetrics(target, bucket, includeClaudeUsage) {
+    target.turnCount += Math.max(0, Number(bucket?.turnCount) || 0);
+    target.durationSeconds += Math.max(0, Number(bucket?.durationSeconds) || 0);
+    target.knownDurations += Math.max(0, Number(bucket?.knownDurations) || 0);
+    target.unknownDurations += Math.max(0, Number(bucket?.unknownDurations) || 0);
+    target.latestAt = Math.max(target.latestAt, Math.max(0, Number(bucket?.latestAt) || 0));
+    if (includeClaudeUsage || String(bucket?.provider ?? "").toLowerCase() !== "claude") {
+      target.credits += Math.max(0, Number(bucket?.credits) || 0);
+      target.knownCredits += Math.max(0, Number(bucket?.knownCredits) || 0);
+      target.unknownCredits += Math.max(0, Number(bucket?.unknownCredits) || 0);
+    }
+    return target;
+  }
+
+  function finishMetrics(value) {
+    return {
+      ...value,
+      credits: value.knownCredits ? value.credits : null,
+      durationSeconds: value.knownDurations ? value.durationSeconds : null,
+    };
+  }
+
+  function virtualSummaryBuckets(value) {
+    if (!value || Number(value.version) !== 1 || !Array.isArray(value.buckets)) return [];
+    return value.buckets.filter((bucket) => (
+      bucket && typeof bucket === "object"
+      && String(bucket.date ?? "").trim()
+      && String(bucket.workspaceId ?? "").trim()
+      && String(bucket.streamId ?? "").trim()
+    ));
+  }
+
+  function periodBounds(date, mode) {
+    const parsed = parseJournalDate(date);
+    if (!parsed) return { fromMs: 0, toMs: 0 };
+    let start = parsed;
+    if (mode === "week") {
+      start = new Date(parsed);
+      start.setUTCDate(start.getUTCDate() - (start.getUTCDay() + 6) % 7);
+    } else if (mode === "month") {
+      start = new Date(Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), 1));
+    }
+    const end = new Date(start);
+    if (mode === "week") end.setUTCDate(end.getUTCDate() + 7);
+    else if (mode === "month") end.setUTCMonth(end.getUTCMonth() + 1);
+    else end.setUTCDate(end.getUTCDate() + 1);
+    return { fromMs: start.getTime(), toMs: end.getTime() };
+  }
+
+  function virtualJournalScopes(summary, mode, {
+    includeClaudeUsage = true,
+    groupClaude = false,
+  } = {}) {
+    const grouping = normalizeGrouping(mode);
+    const scopes = new Map();
+    for (const bucket of virtualSummaryBuckets(summary)) {
+      const date = String(bucket.date);
+      const groupedClaude = groupClaude && String(bucket.provider ?? "").toLowerCase() === "claude";
+      const workspaceId = groupedClaude ? "claude-work" : String(bucket.workspaceId);
+      const streamId = groupedClaude ? "claude-work" : String(bucket.streamId);
+      const period = ["week", "month"].includes(grouping) ? periodIdentity(date, grouping) : null;
+      const scopeKey = grouping === "stream"
+        ? `stream\u001f${workspaceId}\u001f${streamId}`
+        : grouping === "workspace"
+          ? `workspace\u001f${workspaceId}`
+          : grouping === "date"
+            ? `date\u001f${date}`
+            : `${grouping}\u001f${period?.key ?? date}`;
+      const scope = scopes.get(scopeKey) ?? {
+        key: scopeKey,
+        mode: grouping,
+        label: grouping === "stream"
+          ? String(bucket.streamDisplayName || "Поток")
+          : grouping === "workspace"
+            ? groupedClaude ? "Claude - Work" : String(bucket.workspaceName || "Workspace")
+            : grouping === "date"
+              ? date
+              : period?.label || date,
+        sort: grouping === "date"
+          ? Date.parse(`${date.slice(6)}-${date.slice(3, 5)}-${date.slice(0, 2)}T00:00:00Z`) || 0
+          : period?.sort ?? 0,
+        sourceDate: date,
+        ...emptyMetrics(),
+        workspaces: new Map(),
+      };
+      addBucketMetrics(scope, bucket, includeClaudeUsage);
+      const workspace = scope.workspaces.get(workspaceId) ?? {
+        id: workspaceId,
+        name: groupedClaude ? "Claude" : String(bucket.workspaceName || "Workspace"),
+        kind: String(bucket.workspaceKind || "legacy"),
+        queryWorkspaceId: groupedClaude ? "" : workspaceId,
+        providers: new Set(),
+        ...emptyMetrics(),
+        streams: new Map(),
+      };
+      workspace.providers.add(String(bucket.provider ?? "").trim());
+      addBucketMetrics(workspace, bucket, includeClaudeUsage);
+      const stream = workspace.streams.get(streamId) ?? {
+        id: streamId,
+        name: groupedClaude ? "Claude - Work" : String(bucket.streamDisplayName || "Поток"),
+        ordinal: Math.max(1, Number(bucket.streamOrdinal) || 1),
+        queryWorkspaceId: groupedClaude ? "" : workspaceId,
+        queryStreamId: groupedClaude ? "" : streamId,
+        providers: new Set(),
+        ...emptyMetrics(),
+      };
+      stream.providers.add(String(bucket.provider ?? "").trim());
+      addBucketMetrics(stream, bucket, includeClaudeUsage);
+      workspace.streams.set(streamId, stream);
+      scope.workspaces.set(workspaceId, workspace);
+      scopes.set(scopeKey, scope);
+    }
+    const compareByCredits = (left, right) => (
+      (Number(right.credits) || 0) - (Number(left.credits) || 0)
+      || right.latestAt - left.latestAt
+      || left.name.localeCompare(right.name, "ru")
+      || left.id.localeCompare(right.id)
+    );
+    const result = [...scopes.values()].map((scope) => {
+      const workspaces = [...scope.workspaces.values()].map((workspace) => ({
+        ...finishMetrics(workspace),
+        providers: [...workspace.providers].filter(Boolean).sort(),
+        streams: [...workspace.streams.values()].map((stream) => ({
+          ...finishMetrics(stream),
+          providers: [...stream.providers].filter(Boolean).sort(),
+        })).sort(compareByCredits),
+      })).sort(compareByCredits);
+      const bounds = grouping === "date"
+        ? periodBounds(scope.label, "date")
+        : ["week", "month"].includes(grouping)
+          ? periodBounds(scope.sourceDate, grouping)
+          : { fromMs: 0, toMs: 0 };
+      return { ...finishMetrics(scope), ...bounds, workspaces };
+    });
+    return result.sort((left, right) => {
+      if (["date", "week", "month"].includes(grouping)) return right.sort - left.sort;
+      return (Number(right.credits) || 0) - (Number(left.credits) || 0)
+        || right.latestAt - left.latestAt
+        || left.label.localeCompare(right.label, "ru");
+    });
+  }
+
+  function virtualTurnQuery(scope, workspace, stream = null) {
+    const providers = Array.isArray(stream?.providers)
+      ? stream.providers
+      : Array.isArray(workspace?.providers) ? workspace.providers : [];
+    return {
+      workspaceId: String(stream?.queryWorkspaceId
+        ?? workspace?.queryWorkspaceId
+        ?? workspace?.id
+        ?? ""),
+      streamId: String(stream?.queryStreamId ?? stream?.id ?? ""),
+      provider: providers.length === 1 ? String(providers[0]) : "",
+      fromMs: Math.max(0, Number(scope?.fromMs) || 0),
+      toMs: Math.max(0, Number(scope?.toMs) || 0),
+    };
   }
 
   function groupIdentity(value, mode, groupClaude = false) {
@@ -248,5 +420,8 @@
     turnDisplayCredits,
     createQueuedJournalRefresh,
     hydrateLazyDays,
+    virtualJournalScopes,
+    virtualSummaryBuckets,
+    virtualTurnQuery,
   });
 })();
