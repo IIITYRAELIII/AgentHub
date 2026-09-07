@@ -53,10 +53,12 @@ async function handle(message) {
     case "events": return store.events();
     case "facts": return store.facts();
     case "import-snapshot": return store.importSnapshot(message.payload.snapshot);
+    case "reconcile-snapshot": return store.reconcileSnapshot(message.payload.snapshot);
     case "replace-events": return store.replaceEvents(message.payload.events);
     case "adopt-device-ids": return store.adoptDeviceIds(message.payload.deviceIds);
     case "project-account-usage": return projectAccountUsage(message.payload);
     case "usage-sync-snapshot": return usageSyncSnapshot(message.payload);
+    case "usage-sync-state": return store.usageSyncState();
     case "close": return store.close();
     default: throw new Error(`unknown usage sync worker request: ${message.type}`);
   }
