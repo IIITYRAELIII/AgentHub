@@ -212,6 +212,31 @@ wrap inside the message column without horizontal page movement. Fences with an
 explicit language preserve code whitespace and may scroll horizontally. Both
 presentations copy the original unmodified block text.
 
+## Journal hierarchy
+
+Collapsed Journal groups show resource totals only. In date, week and month
+groupings, expanding a group keeps the Workspace selector on the left and shows
+the selected Workspace's Streams on the right. In `workspace` grouping the
+outer group already identifies the Workspace, so its expanded body does not
+repeat a Workspace selector: it shows that Workspace's Streams with the
+Workspace profile alongside them. Turn shells remain inside their Stream. The
+user may disable Stream nesting for date, week and month groupings through the
+Journal setting without changing persisted usage facts. Streams are ordered by the
+currently included credit total descending, with stable recency and identity
+ties. Disabling Claude usage excludes Claude credits from headers, group totals
+and ordering while retaining Claude turns and their duration as journal facts.
+The account-usage panel always includes every provider and is not filtered by
+the Journal and statistics `includeClaudeUsage` presentation setting.
+Opening a group, Stream and turn are separate lazy actions; a collapsed group
+does not materialize turn DOM. In `stream` mode the first Stream retains the
+established default-open overview, profile and task-profile presentation; only
+that Stream's first turn-shell page, its exact aggregate profile across every
+represented provider and a bounded aggregate-only cohort of comparable visible
+Streams are fetched. The requested Stream is retained even when it falls outside
+the bounded peer cohort. The cohort supplies a real cross-Stream profile baseline
+without fetching another Stream's turn shells or bodies. Every other Stream
+remains collapsed and resource-only until explicitly opened.
+
 ## Legacy chronology
 
 Legacy turns without a timestamp keep their durable provider position relative

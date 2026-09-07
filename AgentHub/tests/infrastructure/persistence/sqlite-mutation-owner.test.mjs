@@ -204,6 +204,56 @@ test("opposite Task to Workspace and Workspace to Task sequences cannot deadlock
   assert.equal(taskBoard.captureEnabled(777), true);
 });
 
+test("legacy Git adoption reaches immutable CAS audit through the production Task owner", async (context) => {
+  const { databaseFile, rawTasks, taskOwner, taskBoard, workspace } = await fixture(context);
+  assert.throws(() => taskOwner.databaseFile, /not classified for production access/u);
+  const task = await taskBoard.create({
+    text: "legacy adoption", source: "test", bucket: "workspace", workspaceId: workspace.id,
+  });
+  const awaiting = await taskBoard.setWorkflowStatus({ id: task.id, status: "awaiting_implementation" });
+  const identities = [];
+  const originalRunMutation = rawTasks.runMutation.bind(rawTasks);
+  rawTasks.runMutation = (operation, options) => {
+    identities.push(options?.requestId);
+    return originalRunMutation(operation, options);
+  };
+  const projectRoot = path.resolve("D:/repo");
+  const adopted = await taskBoard.adoptLegacyGitReference({
+    taskId: task.id,
+    expectedRevision: awaiting.revision,
+    projectRoot,
+    branch: "HUB-98",
+    reportedResultCommit: "a".repeat(40),
+    mainResultCommit: "b".repeat(40),
+    patchId: "c".repeat(40),
+    evidenceStreamId: "stream-evidence",
+    evidenceProvider: "codex",
+    evidenceThreadId: "thread-evidence",
+    evidenceTurnId: "turn-evidence",
+    actorStreamId: "stream-architect",
+    actorProvider: "codex",
+    actorThreadId: "thread-architect",
+    requestId: "adopt-production-owner",
+  });
+
+  assert.deepEqual(adopted.gitReferences, [{
+    projectRoot,
+    branch: "HUB-98",
+    resultCommit: "b".repeat(40),
+  }]);
+  assert.equal(adopted.gitAdoptions[0].evidenceTurnId, "turn-evidence");
+  assert.equal(identities.filter((value) => String(value).startsWith("task:adoptLegacyGitReference:")).length, 1);
+  const inspected = new DatabaseSync(databaseFile);
+  assert.equal(inspected.prepare(
+    "SELECT request_id FROM hub_task_legacy_git_adoptions WHERE task_id = ? AND project_root = ?",
+  ).get(task.id, projectRoot)?.request_id, "adopt-production-owner");
+  assert.throws(
+    () => inspected.prepare("DELETE FROM hub_task_legacy_git_adoptions WHERE task_id = ?").run(task.id),
+    /legacy Git adoption audit is immutable/u,
+  );
+  inspected.close();
+});
+
 test("composed release completion retries through the mandatory Task owner without duplicate effect", async (context) => {
   const { databaseFile, rawTasks, taskOwner, taskBoard, workspace } = await fixture(context);
   assert.equal(isTaskBoardMutationOwner(taskOwner), true);

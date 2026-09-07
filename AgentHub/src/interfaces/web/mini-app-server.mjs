@@ -1743,6 +1743,34 @@ export class MiniAppServer {
       }
       return;
     }
+    if (url.pathname === "/api/journal/turns") {
+      if (!await this.#authorize(request, response)) return;
+      try {
+        const requestedVersion = String(url.searchParams.get("version") ?? "");
+        const page = await this.#journalDatabase.turnPage({
+          expectedVersion: requestedVersion,
+          profileMode: url.searchParams.get("profileMode"),
+          workspaceId: url.searchParams.get("workspaceId"),
+          streamId: url.searchParams.get("streamId"),
+          provider: url.searchParams.get("provider"),
+          threadId: url.searchParams.get("threadId"),
+          fromMs: url.searchParams.get("fromMs"),
+          toMs: url.searchParams.get("toMs"),
+          offset: url.searchParams.get("offset"),
+          limit: url.searchParams.get("limit"),
+        });
+        if (page.conflict) {
+          json(response, 409, { error: "Журнал обновился.", version: page.version }, method);
+          return;
+        }
+        json(response, 200, page, method, {
+          acceptEncoding: request.headers["accept-encoding"],
+        });
+      } catch (error) {
+        json(response, 503, { error: `Журнал недоступен: ${error.message}` }, method);
+      }
+      return;
+    }
     if (url.pathname === "/events") {
       if (!await this.#authorize(request, response)) return;
       if (method === "HEAD") {

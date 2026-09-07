@@ -478,7 +478,10 @@ test("Claude backfill is additive, idempotent and keeps recoverable backups", as
   const snapshot = await database.snapshot();
   database.close();
   assert.equal(Object.keys(stored.turns).length, 3);
-  assert.match(snapshot.html, /Claude - Работа с журналом|Claude - Запрос/u);
+  assert.match(
+    Object.values(snapshot.days).join("\n"),
+    /Claude - Работа с журналом|Claude - Запрос/u,
+  );
 
   const second = await buildClaudeWorkLogBackfill(options);
   assert.equal(second.report.importedTurns, 0);

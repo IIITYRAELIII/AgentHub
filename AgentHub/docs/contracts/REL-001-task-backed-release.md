@@ -387,8 +387,9 @@ blocked when those changes fail its requirements, cause or worsen a real
 regression in existing behavior, or add unnecessary functionality that must be
 removed. Pre-existing unrelated defects, impractical edge cases without
 contract impact, unsupported findings and out-of-scope issues do not block the
-Task. A failed result returns to the same executor, and its corrected exact
-result receives another independent review.
+Task. Initial review may use any suitable independent Workspace Stream. After
+a `RETURN`, the corrected exact result goes back to the same reviewer, and that
+`RETURN` remains open until that reviewer confirms the correction.
 
 The built-in rules require a Task for every change to a repository,
 configuration, data, documentation or another deliverable. Read-only diagnosis,

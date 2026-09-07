@@ -640,9 +640,9 @@
 
         <form class="composer" data-composer>
           <div class="annotations" data-annotations hidden aria-label="Аннотации к выделенному тексту"></div>
-          <div class="attachments" data-attachments hidden aria-label="Вложения"></div>
           <div class="composer-quick-messages" data-composer-quick-messages hidden
             aria-label="Быстрые ответы"></div>
+          <div class="attachments" data-attachments hidden aria-label="Вложения"></div>
           <div class="composer-main">
             <button type="button" class="icon-button chat-back" data-action="pane-tasks" title="К списку задач">
               <svg data-phosphor-icon="caret-left" viewBox="0 0 256 256" aria-hidden="true">
@@ -1240,9 +1240,16 @@
             <span class="switch-track" aria-hidden="true"></span>
           </label>
           <label class="setting-switch">
+            <input type="checkbox" data-journal-stream-group-toggle checked>
+            <span class="switch-text">Группировать ходы по потокам
+              <span class="switch-note">Во всех режимах, кроме «Потоки».</span>
+            </span>
+            <span class="switch-track" aria-hidden="true"></span>
+          </label>
+          <label class="setting-switch">
             <input type="checkbox" data-toggle="includeClaudeUsage">
             <span class="switch-text">Учитывать расход Claude
-              <span class="switch-note">В итогах журнала и на графике расхода.</span>
+              <span class="switch-note">В итогах журнала и на графике расхода. На расход по аккаунтам не влияет.</span>
             </span>
             <span class="switch-track" aria-hidden="true"></span>
           </label>
@@ -1555,6 +1562,13 @@
                 Определяет, в какую точку графика попадёт расход завершённого хода.
               </span>
             </div>
+            <label class="setting-switch">
+              <input type="checkbox" data-toggle="includeClaudeUsage">
+              <span class="switch-text">Учитывать расход Claude
+                <span class="switch-note">В статистике и итогах журнала. На расход по аккаунтам не влияет.</span>
+              </span>
+              <span class="switch-track" aria-hidden="true"></span>
+            </label>
           </div>
         </section>
         <section class="statistics-card statistics-sync-card" data-statistics-sync-card

@@ -151,7 +151,7 @@ test("Team Lead rules are independent and compose after Architect rules", () => 
   );
   assert.match(
     TEAM_LEAD_DEVELOPER_RULES,
-    /return the same Task to its executor for correction.*corrected result to independent review again/iu,
+    /Initial review may use any suitable independent Stream.*After a RETURN.*corrected result must go back to the same reviewer.*RETURN remains open until that reviewer confirms/iu,
   );
   assert.match(TEAM_LEAD_DEVELOPER_RULES, /highest number.*S<number>.*add one.*name the new Stream S2/iu);
   assert.match(TEAM_LEAD_DEVELOPER_RULES, /provider, model, and reasoning/u);

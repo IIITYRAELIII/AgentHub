@@ -139,13 +139,41 @@ idempotency identity. Exhaustion is a visible contention failure; it must not
 freeze HTTP, SSE or runtime timers or allocate a replacement request identity.
 
 Unchanged journal HTTP/WebView reads resolve their ETag from content-free SQLite
-metadata and do not load the multi-megabyte index HTML. Aggregate journal views
-fetch and materialize no more than two lazy days per animation-frame batch and
-cancel a superseded render. The compatibility day collection endpoint is capped
-at 20 fragments per page. Journal DOM insertion is excluded from body-wide
-themed-select and VS Code motion subtree scans. Periodic external history refresh
-runs only while chat is visible, and unchanged Dashboard collections retain
-their snapshot identity so they do not incur stringify comparison or card rebuild.
+metadata and do not load the multi-megabyte index HTML. The initial Journal
+payload contains only the account panel, day-total shells and a compact,
+materialized resource summary; it contains no turn shells, prompts or answers.
+Every grouping mode derives its collapsed totals from that summary and never
+hydrates day fragments merely to regroup them. Expanding a scope reads at most
+50 turn shells from the SQLite turn index by exact Workspace, Stream, provider
+and completion-range fields; expanding one turn then reads only its exact durable
+fragment. Summary and turn index replace atomically with the journal projection,
+while an index-only account-panel update preserves both. The compatibility day
+fragments perform one SQLite transaction covering schema DDL, column changes,
+data/index projection and schema-version publication; any failure leaves the
+reopened store wholly on the prior schema. A turn-page request validates its
+expected source version and reads the bounded index page in one SQLite snapshot,
+returning the version actually read rather than mixing revisions. The migration
+changes the ETag. The compatibility day collection endpoint remains capped at 20
+fragments per page. Journal DOM
+insertion is excluded from body-wide themed-select and VS Code motion subtree
+scans. Periodic external history refresh runs only while chat is visible, and
+unchanged Dashboard collections retain their snapshot identity so they do not
+incur stringify comparison or card rebuild.
+
+Public Worker publication materializes an immutable versioned Journal layout
+before atomically advancing its manifest. Compact index HTML, resource summary,
+aggregate profile cohorts, exact per-Stream and per-Workspace aggregates, exact
+fragments and Workspace/Stream/provider-scoped ordinal turn keys are stored
+separately. Flat Workspace and nested Stream reads use the same bounded index
+path. A lazy turn-page read resolves at most 50 scoped index keys and their exact
+shells; profile reads add only the bounded peer cohort and the requested
+Stream's or Workspace's exact aggregate, without hydrating peer turn details.
+They never decompress the publication snapshot, list a complete generation or
+filter all persisted turns. The immediately
+previous generation remains readable across manifest cutover, while older
+generation cleanup runs only on publication. A legacy snapshot without this
+layout may serve compact index and exact-fragment compatibility reads, but lazy
+turn paging fails closed until the next normal publication materializes it.
 
 
 The “Local Hub” health RTT is not message ACK latency and must not be presented

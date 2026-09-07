@@ -285,15 +285,12 @@ html[data-view="chat"][data-surface][data-theme] {
   z-index: 1;
 }
 
-&[data-theme="pulsar"] .stream-tabs-track :is(.stream-tab-card) {
+&[data-theme="pulsar"] .stream-tabs-track .stream-tab {
   background: var(--pulsar-stream-tab-background) !important;
-  border: 0 !important;
-  border-left: 1px solid var(--pulsar-stream-tab-rail) !important;
 }
 
-&[data-theme="pulsar"] .stream-tabs-track .stream-tab[aria-pressed="true"] :is(.stream-tab-card) {
+&[data-theme="pulsar"] .stream-tabs-track .stream-tab[aria-pressed="true"] {
   background: var(--pulsar-stream-tab-active-background) !important;
-  border-left-color: var(--accent) !important;
 }
 
 .stream-tabs-track .stream-tab-card:has(> .stream-tab-pin-icon) {

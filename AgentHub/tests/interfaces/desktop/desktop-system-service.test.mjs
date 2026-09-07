@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
+import { buildWorkLogUsageHistory } from "../../../src/application/work-log-usage-projection.mjs";
+import { usageSyncThreadKey } from "../../../src/domain/work-log-usage-sync.mjs";
 import { DesktopSystemService } from "../../../src/interfaces/desktop/desktop-system-service.mjs";
 
 function fixture(overrides = {}) {
@@ -72,18 +75,84 @@ test("Desktop system status composes provider settings and live counters", async
 });
 
 test("Desktop usage history forwards provider and turn-time filters", async () => {
-  const { service } = fixture();
+  const rateLimitCalls = [];
+  const { service } = fixture({
+    readRateLimitHistory: async (params) => {
+      rateLimitCalls.push(params);
+      return { accountActivity: [{ accountKey: "chatgpt:active", intervals: [] }] };
+    },
+  });
   const result = await service.usageHistory({
     range: "30d", maxPoints: 600, provider: "codex", turnTimeMode: "middle",
   });
+  assert.deepEqual(rateLimitCalls, [{ range: "30d" }]);
   assert.deepEqual(result.params, {
     range: "30d",
     maxPoints: 600,
     provider: "codex",
     accountKey: undefined,
-    accountActivity: undefined,
+    accountActivity: [{ accountKey: "chatgpt:active", intervals: [] }],
     turnTimeMode: "middle",
   });
+});
+
+test("Desktop usage history rejects forged activity and preserves an explicit account filter", async () => {
+  const deviceId = "24ab5532-0bbe-4e9a-b5a4-b5f93cfbec53";
+  const runtimeHomeId = "1".repeat(64);
+  const threadId = "forged-activity-thread";
+  const turnId = "forged-activity-turn";
+  const accountKey = "chatgpt:target";
+  const forgedActivity = [{
+    accountKey,
+    intervals: [{ from: "2026-09-02T10:00:00.000Z", to: "2026-09-02T11:00:00.000Z" }],
+  }];
+  const { service } = fixture({
+    readRateLimitHistory: async () => ({ accountActivity: [] }),
+    readUsageHistory: async (params) => buildWorkLogUsageHistory({}, {
+      ...params,
+      now: Date.parse("2026-09-02T12:00:00.000Z"),
+      localDeviceId: "local-device",
+      syncedUsageEvents: [{
+        schemaVersion: 2,
+        type: "turn",
+        eventId: `usage:${createHash("sha256").update(`codex:${threadId}:${turnId}`).digest("hex")}`,
+        deviceId,
+        provider: "codex",
+        runtimeHomeId,
+        threadKey: usageSyncThreadKey({ provider: "codex", threadId }),
+        taskKey: usageSyncThreadKey({ provider: "codex", threadId }),
+        startedAt: "2026-09-02T10:05:00.000Z",
+        completedAt: "2026-09-02T10:10:00.000Z",
+        observedAt: "2026-09-02T10:10:01.000Z",
+        estimatedCredits: 23,
+        usage: {},
+        usageReported: true,
+      }, {
+        schemaVersion: 2,
+        type: "auth_observation",
+        deviceId,
+        installationInstanceId: "45de580f-ef40-4fac-8d2d-7a76febdc398",
+        provider: "codex",
+        runtimeHomeId,
+        accountKey,
+        accountLabel: "target@example.test",
+        accountType: "chatgpt",
+        accountPlan: "pro",
+        observedAt: "2026-09-02T10:00:00.000Z",
+        evidenceSource: "account-read",
+        authFingerprint: "fingerprint",
+      }],
+    }),
+  });
+  const result = await service.usageHistory({
+    range: "6h",
+    accountKey,
+    accountActivity: forgedActivity,
+  });
+
+  assert.equal(result.accountKey, accountKey);
+  assert.equal(result.otherDeviceCredits, 0);
+  assert.equal(result.totalCredits, 0);
 });
 
 test("Desktop search returns the stable Hub task identity", async () => {

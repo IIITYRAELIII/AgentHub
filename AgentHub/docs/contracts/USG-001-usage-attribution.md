@@ -243,6 +243,12 @@ million input / cached-input / output tokens are `312.5 / 31.25 / 1875`: this is
 introduce a second surface-specific Astra multiplier or rewrite synchronized
 usage facts.
 
+The unscoped accounting chart includes every local turn regardless of account.
+A synchronized turn is included only when its attributed account has an exact
+local Codex account-activity interval containing the configured turn timestamp.
+Missing local activity evidence excludes that synchronized turn. The account
+selector used by API-limit and comparison views must not narrow this chart.
+
 ## Legacy ingest
 
 - A schema `1` usage event is accepted so that an installation that never

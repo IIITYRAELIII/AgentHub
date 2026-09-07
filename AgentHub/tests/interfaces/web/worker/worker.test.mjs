@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { gzipSync } from "node:zlib";
 
 import { measureImmediateControlDrain } from "../../../../cloudflare-worker/verify-deployment.mjs";
 
@@ -144,8 +145,11 @@ class MemoryStorage {
   values = new Map();
   alarmAt = null;
   listCalls = [];
+  getTrace = [];
+  listTrace = [];
 
   async get(key) {
+    this.getTrace.push(Array.isArray(key) ? [...key] : [key]);
     if (Array.isArray(key)) {
       return new Map(key.filter((item) => this.values.has(item)).map((item) => [item, this.values.get(item)]));
     }
@@ -166,6 +170,7 @@ class MemoryStorage {
 
   async list({ prefix = "", start = "", startAfter = "", end = "", limit = Number.POSITIVE_INFINITY } = {}) {
     this.listCalls.push({ prefix, start, startAfter, end, limit });
+    this.listTrace.push({ prefix, start, startAfter, end, limit });
     return new Map([...this.values]
       .filter(([key]) => (
         key.startsWith(prefix)
@@ -178,7 +183,13 @@ class MemoryStorage {
   }
 
   async transaction(callback) {
-    return callback(this);
+    const values = new Map(this.values);
+    try {
+      return await callback(this);
+    } catch (error) {
+      this.values = values;
+      throw error;
+    }
   }
 
   async getAlarm() {
@@ -191,6 +202,11 @@ class MemoryStorage {
 
   async deleteAlarm() {
     this.alarmAt = null;
+  }
+
+  resetReadTrace() {
+    this.getTrace = [];
+    this.listTrace = [];
   }
 }
 
@@ -1099,6 +1115,364 @@ test("Worker alarm removes expired staging chunks without touching the published
   assert.ok(await storage.get("staging:fresh-sync"));
   assert.deepEqual(await storage.get("chunk:fresh-sync:0"), new Uint8Array([7]));
   assert.equal(storage.alarmAt, before + 120_000);
+});
+
+test("Worker journal exposes compact totals and bounded turn pages separately", async () => {
+  const workerModule = await loadWorker();
+  const store = new workerModule.JournalStore({ storage: new MemoryStorage() }, {});
+  const turnEntries = [
+    ...Array.from({ length: 60 }, (_, index) => ({
+      turnRef: `ref-${String(index).padStart(2, "0")}`,
+      date: "01.08.2026",
+      dayMs: Date.UTC(2026, 7, 1),
+      workspaceId: "workspace-1",
+      streamId: "stream-1",
+      provider: "codex",
+      threadId: "thread-1",
+      turnId: `turn-${index}`,
+      completedAtMs: Date.UTC(2026, 7, 1, 12) - index,
+      html: `<div data-work-log-turn-entry data-work-log-turn-id="turn-${index}">Ход</div>`,
+    })),
+    {
+      turnRef: "ref-week",
+      date: "03.08.2026",
+      dayMs: Date.UTC(2026, 7, 3),
+      workspaceId: "workspace-1",
+      streamId: "stream-2",
+      provider: "claude",
+      threadId: "thread-2",
+      turnId: "turn-week",
+      completedAtMs: Date.UTC(2026, 7, 3, 12),
+      html: '<div data-work-log-turn-entry data-work-log-turn-id="turn-week">Ход</div>',
+    },
+    {
+      turnRef: "ref-month",
+      date: "20.08.2026",
+      dayMs: Date.UTC(2026, 7, 20),
+      workspaceId: "workspace-1",
+      streamId: "stream-2",
+      provider: "codex",
+      threadId: "thread-3",
+      turnId: "turn-month",
+      completedAtMs: Date.UTC(2026, 7, 20, 12),
+      html: '<div data-work-log-turn-entry data-work-log-turn-id="turn-month">Ход</div>',
+    },
+  ];
+  const summary = { version: 1, buckets: [{
+    date: "01.08.2026",
+    workspaceId: "workspace-1",
+    streamId: "stream-1",
+    provider: "codex",
+    turnCount: 60,
+    fileTouches: 12,
+    knownFileTouches: 60,
+    skillNames: ["journal"],
+  }, {
+    date: "02.08.2026",
+    dayMs: Date.UTC(2026, 7, 2),
+    workspaceId: "workspace-2",
+    streamId: "stream-2",
+    provider: "codex",
+    turnCount: 1,
+    fileTouches: 99,
+  }] };
+  assert.equal((await store.fetch(new Request("https://journal.internal/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      html: '<details data-lazy-day="01.08.2026"></details>',
+      summary,
+      turnEntries,
+      days: {},
+      turns: {},
+      version: "journal-v1",
+      updatedAt: "2026-08-01T12:00:00.000Z",
+    }),
+  }))).status, 200);
+
+  const index = await (await store.fetch(new Request("https://journal.internal/journal"))).json();
+  assert.equal(index.summary.buckets[0].turnCount, 60);
+  assert.equal(Object.hasOwn(index.summary.buckets[0], "fileTouches"), false);
+  assert.equal(Object.hasOwn(index, "turnEntries"), false);
+
+  const firstResponse = await store.fetch(new Request(
+    "https://journal.internal/journal/turns?workspaceId=workspace-1&streamId=stream-1&profileMode=stream&limit=200",
+  ));
+  const firstBody = await firstResponse.text();
+  assert.equal(firstResponse.status, 200, firstBody);
+  const first = JSON.parse(firstBody);
+  assert.equal(first.turns.length, 50);
+  assert.equal(first.nextOffset, 50);
+  assert.equal(first.profileSummary.buckets.length, 2);
+  assert.equal(first.profileSummary.buckets[0].fileTouches, 12);
+  assert.equal(first.profileSummary.buckets[1].fileTouches, 99);
+  const second = await (await store.fetch(new Request(
+    "https://journal.internal/journal/turns?workspaceId=workspace-1&streamId=stream-1&offset=50",
+  ))).json();
+  assert.equal(second.turns.length, 10);
+  assert.equal(second.nextOffset, null);
+  const ranged = await (await store.fetch(new Request(
+    "https://journal.internal/journal/turns?workspaceId=workspace-1&streamId=stream-1"
+    + `&fromMs=${Date.UTC(2026, 7, 1)}&toMs=${Date.UTC(2026, 7, 2)}&limit=10`,
+  ))).json();
+  assert.equal(ranged.turns.length, 10);
+  assert.equal(ranged.nextOffset, 10);
+  for (const [mode, fromMs, toMs, expected] of [
+    ["date", Date.UTC(2026, 7, 1), Date.UTC(2026, 7, 2), 10],
+    ["week", Date.UTC(2026, 7, 1), Date.UTC(2026, 7, 8), 11],
+    ["month", Date.UTC(2026, 7, 1), Date.UTC(2026, 8, 1), 12],
+    ["workspace", 0, 0, 12],
+  ]) {
+    const page = await (await store.fetch(new Request(
+      "https://journal.internal/journal/turns?workspaceId=workspace-1&offset=50&limit=50"
+      + `${fromMs ? `&fromMs=${fromMs}&toMs=${toMs}` : ""}`,
+    ))).json();
+    assert.equal(page.turns.length, expected, mode);
+    assert.equal(page.nextOffset, null, mode);
+  }
+  const codexWorkspace = await (await store.fetch(new Request(
+    "https://journal.internal/journal/turns?workspaceId=workspace-1&provider=codex&offset=50&limit=50",
+  ))).json();
+  assert.equal(codexWorkspace.turns.length, 11);
+  assert.equal((await store.fetch(new Request(
+    "https://journal.internal/journal/turns?workspaceId=workspace-1&version=old",
+  ))).status, 409);
+});
+
+test("Worker chunk publication cuts over atomically and retries an orphan generation", async () => {
+  const worker = await loadWorker();
+  class FailingManifestStorage extends MemoryStorage {
+    failManifest = false;
+
+    async put(key, value) {
+      if (this.failManifest && key === "journal-projection-manifest") {
+        throw new Error("injected manifest failure");
+      }
+      return super.put(key, value);
+    }
+  }
+  const storage = new FailingManifestStorage();
+  const store = new worker.JournalStore({ storage }, {});
+  const payload = (version, label) => ({
+    html: `<main>${label}</main>`,
+    summary: { version: 1, buckets: [] },
+    turnEntries: [],
+    days: {},
+    turns: {},
+    version,
+    updatedAt: "2026-09-07T23:59:00.000Z",
+  });
+  assert.equal((await store.fetch(new Request("https://journal.internal/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload("journal-a", "A")),
+  }))).status, 200);
+
+  storage.failManifest = true;
+  await assert.rejects(store.fetch(new Request("https://journal.internal/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload("journal-b", "B")),
+  })), /injected manifest failure/u);
+  let current = await (await store.fetch(new Request("https://journal.internal/journal"))).json();
+  assert.equal(current.version, "journal-a");
+  assert.match(current.html, />A</u);
+
+  storage.failManifest = false;
+  const next = payload("journal-b", "B");
+  const serialized = JSON.stringify(next);
+  const body = gzipSync(Buffer.from(serialized, "utf8"));
+  const complete = await store.fetch(syncChunkRequest({
+    syncId: `sync-${createHash("sha256").update(serialized).digest("hex")}`,
+    index: 0,
+    count: 1,
+    version: next.version,
+    updatedAt: next.updatedAt,
+    body,
+  }));
+  assert.equal(complete.status, 200);
+  assert.deepEqual(await complete.json(), { ok: true, complete: true });
+  current = await (await store.fetch(new Request("https://journal.internal/journal"))).json();
+  assert.equal(current.version, "journal-b");
+  assert.match(current.html, />B</u);
+});
+
+test("Worker retires the unqualified v1 generation after two v2 cutovers", async () => {
+  const worker = await loadWorker();
+  const storage = new MemoryStorage();
+  const store = new worker.JournalStore({ storage }, {});
+  const legacySyncId = `sync-${"1".repeat(64)}`;
+  const legacyPrefix = `journal-projection:${legacySyncId}:`;
+  await storage.put({
+    "journal-projection-manifest": {
+      layoutVersion: 1,
+      syncId: legacySyncId,
+      version: "journal-v1",
+      updatedAt: "2026-09-07T23:58:00.000Z",
+      previousSyncId: "",
+    },
+    [`${legacyPrefix}meta`]: {
+      layoutVersion: 1,
+      syncId: legacySyncId,
+      version: "journal-v1",
+      updatedAt: "2026-09-07T23:58:00.000Z",
+    },
+    [`${legacyPrefix}index-html:000000`]: new TextEncoder().encode("<main>legacy</main>"),
+  });
+  const payload = (version, label) => ({
+    html: `<main>${label}</main>`,
+    summary: { version: 1, buckets: [] },
+    turnEntries: [],
+    days: {},
+    turns: {},
+    version,
+    updatedAt: "2026-09-07T23:59:00.000Z",
+  });
+
+  assert.equal((await store.fetch(new Request("https://journal.internal/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload("journal-v2-a", "A")),
+  }))).status, 200);
+  let current = await (await store.fetch(new Request("https://journal.internal/journal"))).json();
+  assert.equal(current.version, "journal-v2-a");
+  assert.match(current.html, />A</u);
+  let manifest = await storage.get("journal-projection-manifest");
+  assert.equal(manifest.previousSyncId, legacySyncId);
+  assert.equal(manifest.previousLayoutVersion, 1);
+  assert.equal((await storage.list({ prefix: legacyPrefix })).size, 2);
+
+  assert.equal((await store.fetch(new Request("https://journal.internal/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload("journal-v2-b", "B")),
+  }))).status, 200);
+  current = await (await store.fetch(new Request("https://journal.internal/journal"))).json();
+  assert.equal(current.version, "journal-v2-b");
+  assert.match(current.html, />B</u);
+  manifest = await storage.get("journal-projection-manifest");
+  assert.equal(manifest.layoutVersion, 2);
+  assert.equal(manifest.previousLayoutVersion, 2);
+  assert.equal((await storage.list({ prefix: legacyPrefix })).size, 0);
+  assert.ok((await storage.list({
+    prefix: `journal-projection:v2:${manifest.previousSyncId}:`,
+  })).size > 0);
+});
+
+test("Worker journal turn pages read only materialized bounded index keys", async () => {
+  const worker = await loadWorker();
+  const storage = new MemoryStorage();
+  const store = new worker.JournalStore({ storage }, {});
+  const turnEntries = Array.from({ length: 6_000 }, (_, index) => {
+    const primary = index < 3_000;
+    const ordinal = primary ? index : index - 3_000;
+    return {
+      turnRef: `turn-ref-${index}`,
+      date: "07.09.2026",
+      dayMs: Date.UTC(2026, 8, 7),
+      workspaceId: primary ? "workspace-1" : "workspace-2",
+      streamId: primary ? "stream-1" : "stream-2",
+      provider: "codex",
+      threadId: primary ? "thread-1" : "thread-2",
+      turnId: `turn-${index}`,
+      completedAtMs: Date.UTC(2026, 8, 7, 23, 59) - ordinal,
+      html: `<div data-work-log-turn-entry data-work-log-turn-id="turn-${index}">Ход ${index}</div>`,
+    };
+  });
+  const payload = {
+    html: '<details data-lazy-day="07.09.2026"></details>',
+    summary: { version: 1, buckets: [] },
+    turnEntries,
+    days: {},
+    turns: {},
+    version: "journal-large-v1",
+    updatedAt: "2026-09-07T23:59:00.000Z",
+  };
+  assert.equal((await store.fetch(new Request("https://journal.internal/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }))).status, 200);
+  storage.resetReadTrace();
+
+  const index = await (await store.fetch(new Request("https://journal.internal/journal"))).json();
+  assert.equal(index.version, "journal-large-v1");
+  assert.ok(storage.getTrace.flat().every((key) => !/turn-shell|:scope:/u.test(key)));
+  storage.resetReadTrace();
+
+  const response = await store.fetch(new Request(
+    "https://journal.internal/journal/turns?workspaceId=workspace-1&streamId=stream-1"
+    + "&offset=2900&limit=30&version=journal-large-v1",
+  ));
+  assert.equal(response.status, 200);
+  const page = await response.json();
+  assert.equal(page.turns.length, 30);
+  assert.equal(page.nextOffset, 2930);
+  assert.match(page.turns[0].html, /turn-2900/u);
+  assert.equal(storage.listTrace.length, 0);
+  assert.ok(storage.getTrace.length <= 5);
+  assert.ok(storage.getTrace.every((keys) => keys.length <= 30));
+  assert.ok(storage.getTrace.flat().every((key) => (
+    key === "journal-projection-manifest" || key.startsWith("journal-projection:")
+  )));
+});
+
+test("Worker profile cohort retains the exact requested mixed-provider Stream", async () => {
+  const worker = await loadWorker();
+  const storage = new MemoryStorage();
+  const store = new worker.JournalStore({ storage }, {});
+  const peerBuckets = Array.from({ length: 2_048 }, (_, index) => ({
+    date: "07.09.2026",
+    dayMs: Date.UTC(2026, 8, 7),
+    workspaceId: `workspace-${index}`,
+    streamId: `stream-${index}`,
+    provider: "codex",
+    latestAt: 10_000 - index,
+    credits: 10_000 - index,
+    fileTouches: index + 1,
+  }));
+  const requestedBuckets = ["codex", "claude"].map((provider, index) => ({
+    date: "01.01.2020",
+    dayMs: Date.UTC(2020, 0, 1),
+    workspaceId: "workspace-required",
+    streamId: "stream-required",
+    provider,
+    latestAt: index + 1,
+    credits: index + 1,
+    fileTouches: 50 + index,
+  }));
+  assert.equal((await store.fetch(new Request("https://journal.internal/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      html: "<main></main>",
+      summary: { version: 1, buckets: [...peerBuckets, ...requestedBuckets] },
+      turnEntries: [],
+      days: {},
+      turns: {},
+      version: "journal-profile-required-v1",
+      updatedAt: "2026-09-07T23:59:00.000Z",
+    }),
+  }))).status, 200);
+  storage.resetReadTrace();
+
+  const response = await store.fetch(new Request(
+    "https://journal.internal/journal/turns?workspaceId=workspace-required"
+    + "&streamId=stream-required&profileMode=stream",
+  ));
+  assert.equal(response.status, 200);
+  const page = await response.json();
+  const requested = page.profileSummary.buckets.filter((bucket) => (
+    bucket.workspaceId === "workspace-required" && bucket.streamId === "stream-required"
+  ));
+  assert.deepEqual(requested.map((bucket) => bucket.provider).sort(), ["claude", "codex"]);
+  assert.equal(new Set(page.profileSummary.buckets.map((bucket) => (
+    `${bucket.workspaceId}\u001f${bucket.streamId}\u001f${bucket.provider}`
+  ))).size, page.profileSummary.buckets.length);
+  assert.equal(page.profileSummary.buckets.length, 2_050);
+  assert.equal(page.profileSummary.truncated, true);
+  assert.equal(storage.listTrace.length, 0);
+  assert.ok(storage.getTrace.flat().every((key) => !key.includes("turn-shell")));
 });
 
 test("Worker relay rejects unsupported actions, attachments, and unsigned service calls", async () => {

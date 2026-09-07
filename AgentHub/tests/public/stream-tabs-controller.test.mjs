@@ -1379,6 +1379,80 @@ test("Workspace and Stream cards expose behavioral editing and quick reply contr
   }
 });
 
+test("composer quick replies render above attached Task references", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  try {
+    const page = await browser.newPage({ viewport: { width: 920, height: 640 } });
+    await openStreamTabsDomFixture(page);
+    await page.evaluate(() => {
+      window.AgentHub.setWorkspaces([{
+        id: "workspace-1", name: "Agent HUB", settings: {},
+      }], ["workspace:workspace-1", "notes"]);
+      window.AgentHub.setSelection({
+        quickMessages: {
+          global: [{ title: "Принято", text: "Принято" }],
+          workspaces: {},
+          streams: {},
+        },
+      });
+      window.AgentHub.setTasks([{
+        id: "task-1",
+        selected: true,
+        workspaceId: "workspace-1",
+        workspaceName: "Agent HUB",
+        streamId: "stream-1",
+        streamName: "Dashboard",
+        streamOrdinal: 1,
+        provider: "codex",
+        agentLabel: "Codex",
+        status: "ready",
+        statusLabel: "Готов",
+        lastActivity: "2026-09-08T08:00:00.000Z",
+        running: false,
+        unread: false,
+        streamSettings: {},
+      }]);
+      const transfer = new DataTransfer();
+      window.AgentHubTaskReferences.beginDrag(transfer, {
+        id: "linked-task",
+        taskNumber: "HUB-157",
+        title: "Переработать карточки Workspace/Stream",
+        workflowStatus: "awaiting_implementation",
+        workspaceId: "workspace-1",
+      }, { intent: "context" });
+      document.querySelector('[data-stream-tab-id="stream-1"]').dispatchEvent(new DragEvent("drop", {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer: transfer,
+      }));
+      window.AgentHubTaskReferences.endDrag();
+    });
+
+    const layout = await page.evaluate(() => {
+      const quickReplies = document.querySelector("[data-composer-quick-messages]");
+      const attachments = document.querySelector("[data-attachments]");
+      const quickRect = quickReplies.getBoundingClientRect();
+      const attachmentRect = attachments.getBoundingClientRect();
+      return {
+        quickRepliesVisible: !quickReplies.hidden && quickRect.height > 0,
+        attachmentsVisible: !attachments.hidden && attachmentRect.height > 0,
+        sourceOrder: Boolean(quickReplies.compareDocumentPosition(attachments)
+          & Node.DOCUMENT_POSITION_FOLLOWING),
+        visualOrder: quickRect.bottom <= attachmentRect.top,
+      };
+    });
+    assert.deepEqual(layout, {
+      quickRepliesVisible: true,
+      attachmentsVisible: true,
+      sourceOrder: true,
+      visualOrder: true,
+    });
+  } finally {
+    await browser.close();
+  }
+});
+
 test("Dashboard column headers keep one fixed height when task density differs", async () => {
   const { chromium } = await import("playwright");
   const browser = await launchDomBrowser(chromium);
