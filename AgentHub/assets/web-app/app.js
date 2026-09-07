@@ -288,8 +288,6 @@ const limitsTooltip = document.querySelector("[data-limits-tooltip]");
 const limitsLegend = document.querySelector("[data-limits-legend]");
 const limitsSpeedSummary = document.querySelector("[data-limits-speed-summary]");
 const limitsSpeedNote = document.querySelector("[data-limits-speed-note]");
-const limitsSpeedWindowSetting = document.querySelector("[data-limits-speed-window-setting]");
-const limitsSpeedFullWindow = document.querySelector("[data-limits-speed-full-window]");
 const limitsCredits = document.querySelector("[data-limits-credits]");
 const currentLimitsSlots = [...document.querySelectorAll("[data-current-limits]")];
 const usageRanges = document.querySelector("[data-usage-ranges]");
@@ -9985,7 +9983,6 @@ const SERIES_PALETTE = [
  * несовместимом изменении формата, чтобы восстановление пережило перезапуск. */
 const LIMITS_HIDDEN_KEY = "agent-hub-limits-hidden-v1";
 const LIMITS_MODE_KEY = "agent-hub-limits-mode-v1";
-const LIMITS_SPEED_FULL_WINDOW_KEY = "agent-hub-limits-speed-full-window-v1";
 
 function savedLimitsRange() {
   return storedLimitsRange(localStorage);
@@ -9996,14 +9993,6 @@ function loadLimitsMode() {
     return localStorage.getItem(LIMITS_MODE_KEY) === "speed" ? "speed" : "usage";
   } catch {
     return "usage";
-  }
-}
-
-function loadLimitsSpeedFullWindow() {
-  try {
-    return localStorage.getItem(LIMITS_SPEED_FULL_WINDOW_KEY) !== "false";
-  } catch {
-    return true;
   }
 }
 
@@ -10046,7 +10035,6 @@ const limitsState = {
   payload: null,
   error: "",
   hidden: loadHiddenSeries(),
-  speedFullWindow: loadLimitsSpeedFullWindow(),
 };
 
 function selectLimitsMode(mode) {
@@ -10068,17 +10056,9 @@ function renderLimitsModes() {
     button.setAttribute("aria-pressed", String(button.dataset.limitsMode === limitsState.mode));
   }
   if (limitsSpeedNote) {
-    const hourly = burnRatePolicyForRange(limitsState.range).unit === "hour";
     limitsSpeedNote.hidden = limitsState.mode !== "speed";
-    const calculation = limitsState.speedFullWindow
-      ? hourly
-        ? "Фактическая скорость появляется после накопления почти полного часа."
-        : "Фактическая скорость появляется после накопления почти полных суток."
-      : "Предварительная скорость считается по доступной истории сразу после второго замера и в начале цикла может резко меняться.";
-    limitsSpeedNote.textContent = `${calculation} Разрывы между замерами восстанавливаются: неизменившийся лимит даёт нулевой расход, а изменение равномерно распределяется по пропущенному времени. Пунктир показывает допустимый темп по остатку и времени до сброса. Горизонтальная линия — ровный расход 100% за неделю, или ${hourly ? "0,6% в час" : "14,3% в сутки"}.`;
+    limitsSpeedNote.textContent = "Основная линия показывает сглаженный текущий темп с чувствительностью около 3 часов, пунктир — средний темп за последние 24 часа. Простои снижают текущий темп, а сброс лимита не обрывает историю и не создаёт нулевую точку. Пока доступно меньше суток истории, среднее отмечается как предварительное. Горизонтальная линия — ровный расход 14,3% в сутки.";
   }
-  if (limitsSpeedWindowSetting) limitsSpeedWindowSetting.hidden = limitsState.mode !== "speed";
-  if (limitsSpeedFullWindow) limitsSpeedFullWindow.checked = limitsState.speedFullWindow;
 }
 
 function statisticsAccounts(payload = limitsState.payload) {
@@ -10336,14 +10316,9 @@ function parseClaudeResetAt(value, nowMs = Date.now()) {
 }
 
 const WEEK_MILLISECONDS = 7 * 24 * 60 * 60_000;
-const BURN_RATE_ROLLING_WINDOW_MS = 24 * 60 * 60_000;
-const BURN_RATE_HOURLY_WINDOW_MS = 60 * 60_000;
-// Процент лимита приходит целым числом. На коротком отрезке один новый процент
-// превращался в огромный ложный пик, поэтому 24-часовой темп показываем только
-// после накопления почти полного окна (с часовым допуском для редких снимков).
-const BURN_RATE_MINIMUM_SPAN_MS = 23 * 60 * 60_000;
-const BURN_RATE_HOURLY_MINIMUM_SPAN_MS = 45 * 60_000;
-const BURN_RATE_CHART_MAX = 400;
+const BURN_RATE_CURRENT_HALF_LIFE_MS = 3 * 60 * 60_000;
+const BURN_RATE_AVERAGE_WINDOW_MS = 24 * 60 * 60_000;
+const BURN_RATE_RESET_SHIFT_TOLERANCE_MS = 30 * 60_000;
 const {
   interpolateRateLimitGaps,
   limitPriceStatistics,
@@ -10351,28 +10326,8 @@ const {
   recoverRateLimitResetGaps,
   selectCurrentLimitSeries,
   signedComparisonDeviations,
+  smoothedRateLimitConsumption,
 } = globalThis.AgentHubRateLimitSeries;
-
-function burnRatePolicyForRange(range) {
-  return ["6h", "24h"].includes(String(range))
-    ? {
-      rollingWindowMs: BURN_RATE_HOURLY_WINDOW_MS,
-      minimumSpanMs: BURN_RATE_HOURLY_MINIMUM_SPAN_MS,
-      unit: "hour",
-    }
-    : {
-      rollingWindowMs: BURN_RATE_ROLLING_WINDOW_MS,
-      minimumSpanMs: BURN_RATE_MINIMUM_SPAN_MS,
-      unit: "day",
-    };
-}
-
-function selectedBurnRatePolicyForRange(range) {
-  const policy = burnRatePolicyForRange(range);
-  return limitsState.speedFullWindow
-    ? policy
-    : { ...policy, minimumSpanMs: 0, showResetStartAsZero: true };
-}
 
 function weeklyLimitDurationMs(series) {
   const explicitDurations = (Array.isArray(series?.points) ? series.points : [])
@@ -10401,19 +10356,13 @@ function limitPointResetMs(point) {
   return parseClaudeResetAt(point?.resetsText, Number.isFinite(atMs) ? atMs : Date.now());
 }
 
-function sameWeeklyLimitCycle(left, right) {
-  return Number.isInteger(left?.cycleIndex)
-    && Number.isInteger(right?.cycleIndex)
-    && left.cycleIndex === right.cycleIndex;
-}
-
 function sameLimitsSpeedSegment(left, right) {
   const hasPathSegments = Number.isInteger(left?.pathSegmentIndex)
     && Number.isInteger(right?.pathSegmentIndex);
-  const joinsResetAnchor = right?.resetAnchor === true
-    && Number.isInteger(left?.cycleIndex)
-    && right.cycleIndex === left.cycleIndex + 1;
-  return (sameWeeklyLimitCycle(left, right) || joinsResetAnchor)
+  const sameContinuity = Number.isInteger(left?.continuityIndex)
+    && Number.isInteger(right?.continuityIndex)
+    && left.continuityIndex === right.continuityIndex;
+  return sameContinuity
     && (!hasPathSegments || left.pathSegmentIndex === right.pathSegmentIndex);
 }
 
@@ -10426,11 +10375,11 @@ function limitsSpeedPath(points) {
     .join(" ");
 }
 
-function limitsFiniteSpeedPoints(points) {
+function limitsFiniteSpeedPoints(points, field = "actualRate") {
   let pathSegmentIndex = 0;
   let previousWasFinite = false;
   return (Array.isArray(points) ? points : []).flatMap((point) => {
-    if (!Number.isFinite(point?.actualRate)) {
+    if (!Number.isFinite(point?.[field])) {
       previousWasFinite = false;
       return [];
     }
@@ -10440,19 +10389,7 @@ function limitsFiniteSpeedPoints(points) {
   });
 }
 
-function shouldWaitForBurnRateData(speedFullWindow, latest, range) {
-  const fullWindow = burnRatePolicyForRange(range).minimumSpanMs;
-  return Boolean(speedFullWindow)
-    && Number.isFinite(latest?.cycleAgeMs)
-    && latest.cycleAgeMs < fullWindow;
-}
-
-function weeklyBurnRatePoints(series, {
-  rollingWindowMs = BURN_RATE_ROLLING_WINDOW_MS,
-  minimumSpanMs = BURN_RATE_MINIMUM_SPAN_MS,
-  maximumLookbackMs = rollingWindowMs * 1.5,
-  showResetStartAsZero = false,
-} = {}) {
+function weeklyBurnRatePoints(series, options = {}) {
   const durationMs = weeklyLimitDurationMs(series);
   if (!durationMs) return [];
   const points = interpolateRateLimitGaps(series?.points)
@@ -10476,10 +10413,17 @@ function weeklyBurnRatePoints(series, {
 
   let cycleIndex = 0;
   for (let index = 0; index < points.length; index += 1) {
+    const previous = points[index - 1];
+    const resetAdvanceMs = previous ? points[index].resetMs - previous.resetMs : 0;
+    const crossedPreviousReset = previous
+      && previous.resetMs > previous.atMs
+      && previous.resetMs <= points[index].atMs;
+    const advancedByFullWindow = previous
+      && Math.abs(resetAdvanceMs - durationMs) <= BURN_RATE_RESET_SHIFT_TOLERANCE_MS;
+    const startsAfterReset = Boolean(crossedPreviousReset && advancedByFullWindow);
+    const cycleStartMs = startsAfterReset ? previous.resetMs : points[index].resetMs - durationMs;
     const previousAccount = String(points[index - 1]?.raw?.accountKey ?? "");
     const currentAccount = String(points[index]?.raw?.accountKey ?? "");
-    const startsAfterReset = index > 0
-      && points[index].usedPercent < points[index - 1].usedPercent;
     const startsAfterAccountChange = index > 0
       && previousAccount
       && currentAccount
@@ -10487,72 +10431,28 @@ function weeklyBurnRatePoints(series, {
     if (startsAfterReset || startsAfterAccountChange) cycleIndex += 1;
     points[index].cycleIndex = cycleIndex;
     points[index].startsAfterReset = startsAfterReset;
+    points[index].cycleStartMs = cycleStartMs;
   }
 
-  const ratePoints = points.map((point, index) => {
+  return smoothedRateLimitConsumption(points, {
+    currentHalfLifeMs: BURN_RATE_CURRENT_HALF_LIFE_MS,
+    averageWindowMs: BURN_RATE_AVERAGE_WINDOW_MS,
+    ratePeriodMs: WEEK_MILLISECONDS,
+    ...options,
+  }).map((point) => {
     const remainingMs = point.resetMs - point.atMs;
     const targetRate = Math.max(0, point.remainingPercent) / remainingMs * WEEK_MILLISECONDS;
-    let baseline = null;
-    let baselineDistance = Number.POSITIVE_INFINITY;
-    for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
-      const candidate = points[cursor];
-      const candidateSpanMs = point.atMs - candidate.atMs;
-      if (candidateSpanMs > maximumLookbackMs) break;
-      if (!sameWeeklyLimitCycle(point, candidate)) continue;
-      if (candidateSpanMs < minimumSpanMs || point.usedPercent < candidate.usedPercent) continue;
-      const distance = Math.abs(candidateSpanMs - rollingWindowMs);
-      if (distance < baselineDistance) {
-        baseline = candidate;
-        baselineDistance = distance;
-      }
-    }
-    const spanMs = baseline ? point.atMs - baseline.atMs : 0;
-    const usedDelta = baseline ? point.usedPercent - baseline.usedPercent : Number.NaN;
-    const actualRate = spanMs > 0 && spanMs >= minimumSpanMs && usedDelta >= 0
-      ? usedDelta / spanMs * WEEK_MILLISECONDS
-      : showResetStartAsZero && point.startsAfterReset ? 0 : null;
+    const actualRate = point.currentRate;
     const deviationRate = Number.isFinite(actualRate) ? actualRate - targetRate : null;
     return {
       ...point,
       durationMs,
       cycleAgeMs: Math.max(0, point.atMs - (point.resetMs - durationMs)),
-      sampleSpanMs: spanMs,
       targetRate,
       actualRate,
       deviationRate,
       overTarget: Number.isFinite(deviationRate) ? deviationRate > 0 : false,
     };
-  });
-  if (!showResetStartAsZero) return ratePoints;
-  return ratePoints.flatMap((point, index) => {
-    if (!point.startsAfterReset) return [point];
-    const previousAtMs = ratePoints[index - 1]?.atMs;
-    const cycleStartMs = point.resetMs - durationMs;
-    if (!(cycleStartMs > previousAtMs && cycleStartMs < point.atMs)) return [point];
-    const remainingPercent = 100;
-    const targetRate = remainingPercent / durationMs * WEEK_MILLISECONDS;
-    return [{
-      ...point,
-      raw: {
-        ...point.raw,
-        at: new Date(cycleStartMs).toISOString(),
-        usedPercent: 0,
-        remainingPercent,
-        estimated: true,
-        estimateKind: "reset-start",
-      },
-      atMs: cycleStartMs,
-      usedPercent: 0,
-      remainingPercent,
-      cycleAgeMs: 0,
-      sampleSpanMs: 0,
-      targetRate,
-      actualRate: 0,
-      deviationRate: -targetRate,
-      overTarget: false,
-      startsAfterReset: false,
-      resetAnchor: true,
-    }, point];
   });
 }
 
@@ -10908,7 +10808,7 @@ function buildLimitsSpeedChart(payload) {
         id,
         color: seriesColor(item, index),
         hidden: limitsState.hidden.has(id),
-        ratePoints: weeklyBurnRatePoints(item, selectedBurnRatePolicyForRange(limitsState.range)),
+        ratePoints: weeklyBurnRatePoints(item),
       };
     })
     .filter((item) => item.ratePoints.length > 0);
@@ -10929,9 +10829,22 @@ function buildLimitsSpeedChart(payload) {
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
   const xOf = (time) => padL + ((time - tMin) / (tMax - tMin)) * plotW;
-  const yOf = (rate) => (
-    padT + (1 - clampNumber(Number(rate) || 0, 0, BURN_RATE_CHART_MAX) / BURN_RATE_CHART_MAX) * plotH
-  );
+  const normalDailyRate = 100 / 7;
+  const visibleDailyRates = series.flatMap((item) => item.ratePoints.flatMap((point) => [
+    Number.isFinite(point.actualRate) ? point.actualRate / 7 : null,
+    Number.isFinite(point.averageRate) ? point.averageRate / 7 : null,
+  ])).filter(Number.isFinite);
+  const maximumDailyRate = Math.max(normalDailyRate, ...visibleDailyRates);
+  const roughStep = maximumDailyRate / 4;
+  const magnitude = 10 ** Math.floor(Math.log10(Math.max(1, roughStep)));
+  const normalizedStep = roughStep / magnitude;
+  const tickStep = (normalizedStep <= 1 ? 1 : normalizedStep <= 2 ? 2 : normalizedStep <= 5 ? 5 : 10)
+    * magnitude;
+  const chartMaximum = Math.max(tickStep, Math.ceil(maximumDailyRate / tickStep) * tickStep);
+  const yOf = (weeklyRate) => {
+    const dailyRate = Math.max(0, Number(weeklyRate) || 0) / 7;
+    return padT + (1 - clampNumber(dailyRate, 0, chartMaximum) / chartMaximum) * plotH;
+  };
   const svg = svgEl("svg", {
     viewBox: `0 0 ${W} ${H}`,
     class: "limits-chart-svg limits-speed-chart-svg",
@@ -10939,21 +10852,21 @@ function buildLimitsSpeedChart(payload) {
     "aria-hidden": "true",
   });
 
-  for (const value of [0, 100, 200, 300, 400]) {
-    const y = yOf(value);
+  for (let value = 0; value <= chartMaximum + tickStep / 2; value += tickStep) {
+    const y = yOf(value * 7);
     svg.append(svgEl("line", { x1: padL, y1: y, x2: W - padR, y2: y, class: "limits-grid-line" }));
     svg.append(svgEl("text", {
       x: padL - 6,
       y: y + 3,
       class: "limits-axis-label limits-axis-y",
       "text-anchor": "end",
-    }, [value === BURN_RATE_CHART_MAX ? `${value}+` : String(value)]));
+    }, [new Intl.NumberFormat("ru-RU", { maximumFractionDigits: value < 10 ? 1 : 0 }).format(value)]));
   }
   svg.append(svgEl("text", {
     x: padL,
     y: padT + 9,
     class: "limits-axis-label limits-speed-unit",
-  }, ["% / нед."]));
+  }, ["% / сутки"]));
 
   const normalRateY = yOf(100);
   svg.append(svgEl("line", {
@@ -10968,9 +10881,7 @@ function buildLimitsSpeedChart(payload) {
     y: normalRateY - 6,
     class: "limits-burn-normal-label",
     "text-anchor": "end",
-  }, [burnRatePolicyForRange(limitsState.range).unit === "hour"
-    ? "Ровный темп · 0,6%/час"
-    : "Ровный темп · 14,3%/сутки"]));
+  }, ["Ровный темп · 14,3%/сутки"]));
 
   const span = tMax - tMin;
   const dayMs = 24 * 60 * 60_000;
@@ -11014,16 +10925,18 @@ function buildLimitsSpeedChart(payload) {
   }
 
   for (const item of series) {
-    const targetPoints = item.ratePoints.map((point) => ({
-      ...point,
-      x: xOf(point.atMs),
-      y: yOf(point.targetRate),
-    }));
-    if (targetPoints.length) {
-      svg.append(svgEl("path", {
-        d: limitsSpeedPath(targetPoints),
-        class: "limits-burn-target-line",
-        fill: "none",
+    const averagePoints = limitsFiniteSpeedPoints(item.ratePoints, "averageRate")
+      .map((point) => ({ ...point, x: xOf(point.atMs), y: yOf(point.averageRate) }));
+    for (let index = 1; index < averagePoints.length; index += 1) {
+      const left = averagePoints[index - 1];
+      const right = averagePoints[index];
+      if (!sameLimitsSpeedSegment(left, right)) continue;
+      svg.append(svgEl("line", {
+        x1: left.x,
+        y1: left.y,
+        x2: right.x,
+        y2: right.y,
+        class: `limits-burn-average-segment${right.averagePreliminary ? " is-preliminary" : ""}`,
         stroke: item.color,
       }));
     }
@@ -11045,10 +10958,12 @@ function buildLimitsSpeedChart(payload) {
         y1: left.y,
         x2: right.x,
         y2: right.y,
-        class: `limits-burn-rate-segment ${right.overTarget ? "is-over-target" : "is-safe"}`,
+        class: `limits-burn-rate-segment ${right.overTarget ? "is-over-target" : "is-safe"}${
+          right.currentPreliminary ? " is-preliminary" : ""
+        }`,
       }));
     }
-    const markerPoints = limitsMarkerPoints(actualPoints);
+    const markerPoints = limitsMarkerPoints(actualPoints.filter((point) => !point.resetBoundary));
     markerPoints.forEach((point) => {
       const isLast = point === actualPoints.at(-1);
       const circle = svgEl("circle", {
@@ -11067,6 +10982,9 @@ function buildLimitsSpeedChart(payload) {
         window: item.window || "",
         at: point.raw.at,
         actualRate: point.actualRate,
+        averageRate: point.averageRate,
+        averageSpanMs: point.averageSpanMs,
+        averagePreliminary: point.averagePreliminary,
         targetRate: point.targetRate,
         deviationRate: point.deviationRate,
         estimated: point.raw?.estimated === true,
@@ -11098,7 +11016,7 @@ function buildLimitsSpeedChart(payload) {
     ? series.map((item) => {
       const last = item.ratePoints.findLast((point) => Number.isFinite(point.actualRate));
       return last
-        ? `${item.name || item.id}: ${Math.round(last.actualRate)}% в неделю, допустимо ${Math.round(last.targetRate)}%`
+        ? `${item.name || item.id}: сейчас ${formatLimitRateForPeriod(last.actualRate)}% в сутки, за 24 часа ${formatLimitRateForPeriod(last.averageRate)}%`
         : `${item.name || item.id}: недостаточно истории для фактической скорости`;
     }).join("; ")
     : allSeries.length ? "все недельные серии скрыты" : "нет недельных лимитов";
@@ -11107,17 +11025,16 @@ function buildLimitsSpeedChart(payload) {
   return allSeries;
 }
 
-function formatLimitRateForPeriod(weeklyRate, range = limitsState.range) {
-  const hourly = burnRatePolicyForRange(range).unit === "hour";
-  const periodRate = Math.max(0, Number(weeklyRate) || 0) / (hourly ? 7 * 24 : 7);
+function formatLimitRateForPeriod(weeklyRate) {
+  const periodRate = Math.max(0, Number(weeklyRate) || 0) / 7;
   return new Intl.NumberFormat("ru-RU", {
     maximumFractionDigits: periodRate < 10 ? 1 : 0,
     minimumFractionDigits: periodRate > 0 && periodRate < 10 ? 1 : 0,
   }).format(periodRate);
 }
 
-function burnRatePeriodSuffix(range = limitsState.range) {
-  return burnRatePolicyForRange(range).unit === "hour" ? "%/час" : "%/сутки";
+function burnRatePeriodSuffix() {
+  return "%/сутки";
 }
 
 function formatBurnRateSampleSpan(spanMs) {
@@ -11139,33 +11056,18 @@ function renderLimitsSpeedSummary(series) {
     .filter((item) => !item.hidden)
     .map((item) => ({
       item,
-      latest: item.ratePoints?.at(-1),
       point: item.ratePoints?.findLast((point) => Number.isFinite(point.actualRate)),
     }))
-    .filter(({ latest, point }) => latest || point);
+    .filter(({ point }) => point);
   if (!items.length) {
     limitsSpeedSummary.hidden = true;
     limitsSpeedSummary.replaceChildren();
     return;
   }
-  const cards = items.map(({ item, latest, point }) => {
+  const cards = items.map(({ item, point }) => {
     const name = [item.name || item.baseId || item.id, item.window].filter(Boolean).join(" · ");
-    const waiting = shouldWaitForBurnRateData(
-      limitsState.speedFullWindow,
-      latest,
-      limitsState.range,
-    );
-    if (waiting) {
-      return el("section", { class: "limits-speed-summary-card is-waiting" }, [
-        el("span", { class: "limits-speed-summary-name", text: name }),
-        el("div", { class: "limits-speed-summary-rates" }, [
-          el("span", { text: "После сброса ещё не накоплен полный интервал скорости." }),
-        ]),
-        el("strong", { class: "limits-speed-summary-status", text: "Ожидание данных" }),
-      ]);
-    }
-    if (!point) return null;
     const actualPeriod = formatLimitRateForPeriod(point.actualRate);
+    const averagePeriod = formatLimitRateForPeriod(point.averageRate);
     const targetPeriod = formatLimitRateForPeriod(point.targetRate);
     const periodSuffix = burnRatePeriodSuffix();
     const ratio = point.targetRate > 0 ? point.actualRate / point.targetRate : Number.POSITIVE_INFINITY;
@@ -11181,10 +11083,15 @@ function renderLimitsSpeedSummary(series) {
       el("span", { class: "limits-speed-summary-name", text: name }),
       el("div", { class: "limits-speed-summary-rates" }, [
         el("span", {}, ["Сейчас ", el("strong", { text: `${actualPeriod}${periodSuffix}` })]),
+        Number.isFinite(point.averageRate)
+          ? el("span", {}, [
+            point.averagePreliminary
+              ? `Среднее за ${formatBurnRateSampleSpan(point.averageSpanMs)} (предв.) `
+              : "За 24 часа ",
+            el("strong", { text: `${averagePeriod}${periodSuffix}` }),
+          ])
+          : null,
         el("span", {}, ["Допустимо ", el("strong", { text: `${targetPeriod}${periodSuffix}` })]),
-        el("span", {}, ["Интервал расчёта ", el("strong", {
-          text: formatBurnRateSampleSpan(point.sampleSpanMs),
-        })]),
       ]),
       el("strong", { class: "limits-speed-summary-status", text: status }),
     ]);
@@ -11222,8 +11129,8 @@ function renderLimitsLegend(series) {
       rate
         ? el("span", {
           class: `limits-legend-value limits-speed-value${rate.overTarget ? " is-over-target" : " is-safe"}`,
-          text: `${Math.round(rate.actualRate)}% / ${Math.round(rate.targetRate)}% в неделю`,
-          title: "Фактическая / допустимая скорость в неделю",
+          text: `сейчас ${formatLimitRateForPeriod(rate.actualRate)}%/сутки · 24 ч ${formatLimitRateForPeriod(rate.averageRate)}%/сутки`,
+          title: "Сглаженный текущий темп и средний темп за 24 часа",
         })
         : limitsState.mode === "speed"
           ? el("span", { class: "limits-legend-value", text: "Недостаточно истории" })
@@ -11264,18 +11171,20 @@ function renderLimitsCredits(payload) {
 function limitsTooltipText(info) {
   const time = formatLimitsDateTime(info.at);
   if (info.mode === "speed") {
-    const actual = Math.round(Number(info.actualRate) || 0);
-    const target = Math.round(Number(info.targetRate) || 0);
     const actualPeriod = formatLimitRateForPeriod(info.actualRate);
+    const averagePeriod = formatLimitRateForPeriod(info.averageRate);
     const targetPeriod = formatLimitRateForPeriod(info.targetRate);
     const periodSuffix = burnRatePeriodSuffix();
-    const deviation = actual - target;
+    const deviation = (Number(info.actualRate) - Number(info.targetRate)) / 7;
     const status = deviation > 0
-      ? `выше допустимой на ${deviation}%`
-      : `запас ${Math.abs(deviation)}%`;
+      ? `выше допустимой на ${formatLimitRateForPeriod(deviation * 7)}${periodSuffix}`
+      : `запас ${formatLimitRateForPeriod(Math.abs(deviation) * 7)}${periodSuffix}`;
     const name = info.window ? `${info.name} · ${info.window}` : info.name;
     const estimate = info.estimated ? ". Оценка по соседним замерам" : "";
-    return `${name}. ${time}: ${actualPeriod}${periodSuffix} (${actual}% в неделю), допустимо ${targetPeriod}${periodSuffix} (${target}% в неделю), ${status}${estimate}`;
+    const average = Number.isFinite(info.averageRate)
+      ? `, среднее ${averagePeriod}${periodSuffix}${info.averagePreliminary ? ` за ${formatBurnRateSampleSpan(info.averageSpanMs)}` : " за 24 часа"}`
+      : "";
+    return `${name}. ${time}: сейчас ${actualPeriod}${periodSuffix}${average}, допустимо ${targetPeriod}${periodSuffix}, ${status}${estimate}`;
   }
   const used = Math.round(Number(info.used) || 0);
   const remaining = info.remaining == null
@@ -11302,22 +11211,25 @@ function positionChartTooltip(element, fx, fy, options) {
 function showLimitsTooltip(info, fx, fy) {
   if (!limitsTooltip) return;
   if (info.mode === "speed") {
-    const actual = Math.round(Number(info.actualRate) || 0);
-    const target = Math.round(Number(info.targetRate) || 0);
     const actualPeriod = formatLimitRateForPeriod(info.actualRate);
+    const averagePeriod = formatLimitRateForPeriod(info.averageRate);
     const targetPeriod = formatLimitRateForPeriod(info.targetRate);
     const periodSuffix = burnRatePeriodSuffix();
-    const deviation = actual - target;
+    const deviation = (Number(info.actualRate) - Number(info.targetRate)) / 7;
     limitsTooltip.replaceChildren(
       el("span", { class: "limits-tooltip-title", text: info.window ? `${info.name} · ${info.window}` : info.name }),
       el("span", { class: "limits-tooltip-time", text: formatLimitsDateTime(info.at) }),
       el("span", { class: "limits-tooltip-row", text: `Сейчас ${actualPeriod}${periodSuffix} · допустимо ${targetPeriod}${periodSuffix}` }),
-      el("span", { class: "limits-tooltip-row", text: `${actual}%/нед. · допустимо ${target}%/нед.` }),
+      Number.isFinite(info.averageRate)
+        ? el("span", { class: "limits-tooltip-row", text: info.averagePreliminary
+          ? `Среднее ${averagePeriod}${periodSuffix} за ${formatBurnRateSampleSpan(info.averageSpanMs)} · предварительно`
+          : `Среднее за 24 часа ${averagePeriod}${periodSuffix}` })
+        : null,
       el("span", {
         class: `limits-tooltip-row limits-speed-deviation${deviation > 0 ? " is-over-target" : " is-safe"}`,
         text: deviation > 0
-          ? `Перерасход скорости +${deviation}%`
-          : `Запас скорости ${Math.abs(deviation)}%`,
+          ? `Выше допустимой на ${formatLimitRateForPeriod(deviation * 7)}${periodSuffix}`
+          : `Запас ${formatLimitRateForPeriod(Math.abs(deviation) * 7)}${periodSuffix}`,
       }),
       ...(info.estimated ? [el("span", {
         class: "limits-tooltip-row",
@@ -11355,17 +11267,6 @@ limitsRanges?.addEventListener("click", (event) => {
 limitsModes?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-limits-mode]");
   if (button) selectLimitsMode(button.dataset.limitsMode);
-});
-
-limitsSpeedFullWindow?.addEventListener("change", () => {
-  limitsState.speedFullWindow = limitsSpeedFullWindow.checked;
-  try {
-    localStorage.setItem(LIMITS_SPEED_FULL_WINDOW_KEY, String(limitsState.speedFullWindow));
-  } catch {
-    // Настройка останется активной до закрытия WebView.
-  }
-  renderLimitsModes();
-  renderLimits();
 });
 
 document.querySelector("[data-limits-retry]")?.addEventListener("click", () => {

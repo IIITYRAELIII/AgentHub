@@ -14448,12 +14448,16 @@ html[data-surface="mobile"] .server-config-inline-label {
   fill: var(--usage-device-color);
 }
 
-.limits-burn-target-line {
-  opacity: 0.62;
-  stroke-dasharray: 5 5;
+.limits-burn-average-segment {
+  opacity: 0.72;
+  stroke-dasharray: 5 4;
   stroke-linecap: round;
-  stroke-linejoin: round;
   stroke-width: 1.5;
+}
+
+.limits-burn-average-segment.is-preliminary,
+.limits-burn-rate-segment.is-preliminary {
+  opacity: 0.42;
 }
 
 .limits-burn-normal-line {
@@ -14537,14 +14541,6 @@ html[data-surface="mobile"] .server-config-inline-label {
 
 .limits-speed-summary-card.is-over-target {
   border-left-color: var(--danger, #ff7f8d);
-}
-
-.limits-speed-summary-card.is-waiting {
-  border-left-color: var(--pending, #e8bd69);
-}
-
-.limits-speed-summary-card.is-waiting .limits-speed-summary-status {
-  color: var(--pending, #e8bd69);
 }
 
 .limits-speed-summary-name {
@@ -15475,18 +15471,6 @@ html[data-browser-auth] {
 .chart-rail-account-control .themed-select {
   min-width: 0;
   width: 100%;
-}
-
-.chart-rail-switch {
-  margin: 0.15rem 0 0;
-}
-
-.chart-rail-switch .switch-text {
-  font-size: 0.74rem;
-}
-
-.chart-rail-switch .switch-note {
-  font-size: 0.68rem;
 }
 
 .chart-main {
