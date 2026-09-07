@@ -134,6 +134,7 @@ const RESOURCE_BUCKET_FIELDS = [
   "knownDurations",
   "unknownDurations",
   "latestAt",
+  "workspaceUsageHtml",
 ];
 const PROFILE_COHORT_LIMIT = 2_048;
 const PROFILE_SUM_FIELDS = [
@@ -219,7 +220,11 @@ export function profileCohortVirtualJournalSummary(value, {
     }
     streams.set(key, aggregate);
   }
-  const requiredKeyPrefix = `${boundedText(requiredWorkspaceId, 256)}\u001f${boundedText(requiredStreamId, 256)}\u001f`;
+  const requiredWorkspace = boundedText(requiredWorkspaceId, 256);
+  const requiredStream = boundedText(requiredStreamId, 256);
+  const requiredKeyPrefix = requiredWorkspace
+    ? `${requiredWorkspace}\u001f${requiredStream ? `${requiredStream}\u001f` : ""}`
+    : "";
   const ordered = [...streams.entries()].sort(([, left], [, right]) => (
     right.latestAt - left.latestAt
     || right.credits - left.credits
@@ -227,7 +232,7 @@ export function profileCohortVirtualJournalSummary(value, {
     || left.streamId.localeCompare(right.streamId)
   ));
   const selected = ordered.slice(0, PROFILE_COHORT_LIMIT);
-  const required = requiredKeyPrefix !== "\u001f\u001f"
+  const required = requiredKeyPrefix
     ? ordered.filter(([key]) => key.startsWith(requiredKeyPrefix))
     : [];
   const requiredByKey = new Map(required);
@@ -294,6 +299,7 @@ export function buildVirtualJournalProjection(sections) {
     const streams = nestedElementRanges(shallow, "details", "data-work-log-stream");
     const rows = nestedElementRanges(shallow, "div", "data-work-log-row");
     const turnEntries = nestedElementRanges(shallow, "div", "data-work-log-turn-entry");
+    const assignedWorkspaceUsage = new Set();
     for (const row of rows) {
       const workspace = containingRange(workspaces, row);
       const stream = containingRange(streams, row);
@@ -359,6 +365,7 @@ export function buildVirtualJournalProjection(sections) {
           knownDurations: 0,
           unknownDurations: 0,
           latestAt: 0,
+          workspaceUsageHtml: "",
           fileTouches: 0,
           knownFileTouches: 0,
           unknownFileTouches: 0,
@@ -375,6 +382,18 @@ export function buildVirtualJournalProjection(sections) {
           knownToolMetricTurns: 0,
           unknownToolMetricTurns: 0,
         };
+        const workspaceUsageKey = `${section.date}\u001f${workspaceId}`;
+        if (!assignedWorkspaceUsage.has(workspaceUsageKey)) {
+          const usageHtml = nestedElementRanges(
+            workspace?.html,
+            "details",
+            "data-work-log-workspace-usage-details",
+          )[0]?.html ?? "";
+          if (usageHtml) {
+            bucket.workspaceUsageHtml = usageHtml.slice(0, 12_000);
+            assignedWorkspaceUsage.add(workspaceUsageKey);
+          }
+        }
         bucket.turnCount += 1;
         addMetric(
           bucket,

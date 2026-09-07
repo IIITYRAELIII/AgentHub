@@ -1085,15 +1085,13 @@ main {
   display: none !important;
 }
 
-/* Название Stream, его расход и время стоят в одну строку: имя слева, числа
-   прижаты вправо. Раньше итог уходил на вторую строку под названием. */
 .journal summary[data-work-log-stream-summary] {
   align-items: center;
   align-self: start;
   column-gap: 0.5rem;
   cursor: pointer;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: 17.5rem minmax(0, 1fr);
   list-style: none;
   min-width: 0;
   padding: 0.55rem;
@@ -1112,6 +1110,21 @@ main {
   border-radius: 0;
   box-shadow: none;
   padding: 0.55rem 0.68rem;
+}
+
+.journal span[data-work-log-stream-title] {
+  align-items: center;
+  display: flex;
+  gap: 0.7rem;
+  justify-content: space-between;
+}
+
+.journal span[data-work-log-stream-turn-count] {
+  color: var(--text-muted);
+  flex: 0 0 auto;
+  font-family: var(--font-numeric);
+  font-size: 0.72rem;
+  font-weight: 400;
 }
 
 .journal [data-work-log-workspace-streams] span[data-work-log-stream-usage] {
@@ -1167,8 +1180,8 @@ main {
   align-items: center;
   color: var(--text-muted);
   column-gap: 0.45rem;
-  display: inline-flex;
-  flex-wrap: nowrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   font-family: var(--font-numeric);
   font-size: 0.75rem;
   padding: 0;
@@ -1176,6 +1189,10 @@ main {
 }
 
 .journal span[data-work-log-stream-usage] > span {
+  text-align: left;
+}
+
+.journal span[data-work-log-stream-usage] > span:last-child {
   text-align: right;
 }
 
@@ -11481,7 +11498,7 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
 }
 
 [data-journal-day-picker-item] > button {
-  align-items: center;
+  align-items: baseline;
   background: transparent;
   border: 0;
   color: var(--text-soft);
@@ -11521,27 +11538,21 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
   font-size: 0.74rem;
 }
 
-[data-journal-day-picker-metrics] {
-  align-items: flex-end;
-  display: flex;
-  flex: 0 0 auto;
-  flex-direction: column;
-  font-family: var(--font-numeric);
-  font-size: 0.68rem;
-  gap: 0.18rem;
-  white-space: nowrap;
-}
-
-[data-journal-day-picker-duration] {
-  color: var(--text-muted);
-}
-
 [data-journal-day-picker-turns] {
   color: var(--text-muted);
+  display: none;
   flex: 0 0 auto;
   font-family: var(--font-numeric);
   font-size: 0.68rem;
   text-transform: uppercase;
+}
+
+[data-journal-day-picker-item][data-selected] [data-journal-day-picker-turns] {
+  display: inline;
+}
+
+[data-journal-day-picker-item][data-selected] [data-journal-day-picker-credits] {
+  display: none;
 }
 
 [data-journal-day-breakdown] {

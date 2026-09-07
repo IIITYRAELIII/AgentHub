@@ -14349,57 +14349,38 @@ function virtualStreamUsage(stream, workspace) {
   const usage = document.createElement("span");
   usage.dataset.workLogStreamUsage = "";
   usage.append(
-    el("span", {
-      text: `${Math.max(0, Number(stream.turnCount) || 0)} ход.${virtualUsageShare(
-        stream.turnCount,
-        workspace.turnCount,
-      )}`,
-    }),
-    stream.knownCredits
-      ? el("span", {}, [
-        usageBadge(formatUsageValue(stream.credits), stream.credits),
-        document.createTextNode(virtualUsageShare(stream.credits, workspace.credits, workspace.knownCredits)),
-      ])
-      : el("span", { text: "расход —" }),
     stream.knownDurations
       ? el("span", {
+        "data-work-log-stream-duration": "",
         text: `${formatTaskDuration(stream.durationSeconds)}${virtualUsageShare(
           stream.durationSeconds,
           workspace.durationSeconds,
           workspace.knownDurations,
         )}`,
       })
-      : el("span", { text: "время —" }),
+      : el("span", { "data-work-log-stream-duration": "", text: "время —" }),
+    stream.knownCredits
+      ? el("span", { "data-work-log-stream-credits": "" }, [
+        usageBadge(formatUsageValue(stream.credits), stream.credits),
+        document.createTextNode(virtualUsageShare(stream.credits, workspace.credits, workspace.knownCredits)),
+      ])
+      : el("span", { text: "расход —" }),
   );
   return usage;
 }
 
-function virtualWorkspaceUsage(scope, workspace) {
-  const metrics = document.createElement("span");
-  metrics.dataset.journalDayPickerMetrics = "";
-  metrics.append(
-    el("span", {
-      "data-journal-day-picker-turns": "",
-      text: `${workspace.turnCount} ходов${virtualUsageShare(workspace.turnCount, scope.turnCount)}`,
-    }),
-    workspace.knownCredits
-      ? el("span", { "data-journal-day-picker-credits": "" }, [
-        usageBadge(formatUsageValue(workspace.credits), workspace.credits),
-        document.createTextNode(virtualUsageShare(workspace.credits, scope.credits, scope.knownCredits)),
-      ])
-      : el("span", { "data-journal-day-picker-credits": "", text: "расход —" }),
-    el("span", {
-      "data-journal-day-picker-duration": "",
-      text: workspace.knownDurations
-        ? `${formatTaskDuration(workspace.durationSeconds)}${virtualUsageShare(
-          workspace.durationSeconds,
-          scope.durationSeconds,
-          scope.knownDurations,
-        )}`
-        : "время —",
-    }),
-  );
-  return metrics;
+function virtualWorkspaceBreakdown(workspace) {
+  const source = String(workspace.workspaceUsageHtml ?? "").trim();
+  if (!source) return null;
+  const template = document.createElement("template");
+  template.innerHTML = source;
+  const usage = template.content.querySelector("details[data-work-log-workspace-usage-details]");
+  if (!usage) return null;
+  usage.open = true;
+  const breakdown = document.createElement("div");
+  breakdown.dataset.journalDayBreakdown = "";
+  breakdown.append(usage);
+  return breakdown;
 }
 
 function applyVirtualTurnQuery(node, scope, workspace, stream = null) {
@@ -14427,9 +14408,18 @@ function virtualStreamDetails(scope, workspace, stream) {
   applyVirtualTurnQuery(details, scope, workspace, stream);
   const summary = document.createElement("summary");
   summary.dataset.workLogStreamSummary = "";
+  const title = document.createElement("span");
+  title.dataset.workLogStreamTitle = "";
+  title.append(
+    el("span", { "data-work-log-stream-name": "", text: stream.name }),
+    el("span", {
+      "data-work-log-stream-turn-count": "",
+      text: `${Math.max(0, Number(stream.turnCount) || 0)} ход.`,
+    }),
+  );
   summary.append(
-    el("span", { "data-work-log-stream-title": "", text: stream.name }),
     virtualStreamUsage(stream, workspace),
+    title,
   );
   const body = document.createElement("div");
   body.dataset.workLogStreamTurns = "";
@@ -14478,11 +14468,23 @@ function virtualTemporalContent(scope) {
     button.type = "button";
     button.dataset.journalDaySelect = workspace.id;
     button.setAttribute("aria-pressed", String(active));
+    const credits = el("span", { "data-journal-day-picker-credits": "" });
+    if (workspace.knownCredits) {
+      credits.append(usageBadge(formatUsageValue(workspace.credits), workspace.credits));
+    } else {
+      credits.textContent = "—";
+    }
     button.append(
       el("span", { "data-journal-day-picker-title": "", text: workspace.name }),
-      virtualWorkspaceUsage(scope, workspace),
+      el("span", {
+        "data-journal-day-picker-turns": "",
+        text: `${workspace.turnCount} ходов`,
+      }),
+      credits,
     );
     item.append(button);
+    const breakdown = virtualWorkspaceBreakdown(workspace);
+    if (breakdown) item.append(breakdown);
     picker.append(item);
     const panel = document.createElement("section");
     panel.dataset.journalDayPanel = workspace.id;
@@ -14538,7 +14540,24 @@ function virtualScopeSection(scope, index) {
       expanded.append(overview, profile);
     }
   } else if (scope.mode === "workspace") {
-    expanded.append(virtualTemporalContent(scope));
+    const workspace = scope.workspaces[0];
+    if (workspace) {
+      const overview = document.createElement("div");
+      overview.dataset.journalGroupOverview = "";
+      const metrics = document.createElement("div");
+      metrics.dataset.journalVirtualWorkspaceProfileMetrics = "";
+      metrics.append(el("span", { text: "Профиль загружается при раскрытии." }));
+      const body = document.createElement("div");
+      body.dataset.journalTurnList = "";
+      body.append(
+        el("span", { "data-journal-section-label": "", text: "Потоки" }),
+        virtualWorkspaceContent(scope, workspace),
+      );
+      overview.append(metrics, body);
+      const profile = document.createElement("div");
+      profile.dataset.journalVirtualWorkspaceProfile = "";
+      expanded.append(overview, profile);
+    }
   } else {
     details.dataset.journalDayDate = scope.key;
     expanded.append(virtualTemporalContent(scope));
@@ -14546,6 +14565,44 @@ function virtualScopeSection(scope, index) {
   details.append(expanded);
   if (scope.mode === "stream" && index === 0) details.open = true;
   return details;
+}
+
+function renderVirtualWorkspaceProfile(summary, scopeKey) {
+  const profiles = JournalView.virtualJournalScopes(summary, "workspace", {
+    includeClaudeUsage: state.selection.includeClaudeUsage !== false,
+    groupClaude: groupClaudeTasks,
+  });
+  const group = profiles.find((profile) => profile.key === scopeKey);
+  if (!group) return;
+  const details = [...journal.querySelectorAll(
+    'details[data-journal-virtual-scope][data-journal-virtual-mode="workspace"]',
+  )].find((item) => item.dataset.journalVirtualScope === scopeKey);
+  const metrics = details?.querySelector("[data-journal-virtual-workspace-profile-metrics]");
+  const profile = details?.querySelector("[data-journal-virtual-workspace-profile]");
+  if (metrics) metrics.replaceWith(journalProfileMetrics(group));
+  if (profile) profile.replaceChildren(taskProfile(group, profiles, {
+    title: "Профиль Workspace",
+    itemName: "Этот Workspace",
+    cohortName: "видимых Workspace",
+  }));
+}
+
+async function loadVirtualWorkspaceProfile(details) {
+  if (!details || details.dataset.virtualWorkspaceProfileLoaded === "true") return;
+  details.dataset.virtualWorkspaceProfileLoaded = "true";
+  try {
+    const payload = await fetchJournalFragment("/api/journal/turns", {
+      workspaceId: details.dataset.workLogWorkspaceId ?? "",
+      profileMode: "stream",
+      limit: "1",
+    });
+    if (payload.profileSummary) {
+      renderVirtualWorkspaceProfile(payload.profileSummary, details.dataset.journalVirtualScope ?? "");
+    }
+  } catch (error) {
+    delete details.dataset.virtualWorkspaceProfileLoaded;
+    showToast(`Не удалось загрузить профиль Workspace: ${error.message}`);
+  }
 }
 
 function renderVirtualStreamProfiles(summary, scopeKey) {
@@ -14619,6 +14676,9 @@ function renderVirtualJournal() {
     );
     if (turns) void appendVirtualTurnPage(turns);
   }
+  for (const opened of list.querySelectorAll(
+    'details[data-journal-virtual-scope][data-journal-virtual-mode="workspace"][open]',
+  )) void loadVirtualWorkspaceProfile(opened);
   journalRendered = true;
   journal.setAttribute("aria-busy", "false");
 }
@@ -15229,6 +15289,8 @@ journal.addEventListener("toggle", (event) => {
         ":scope > [data-journal-ledger-expanded][data-journal-virtual-turns]",
       );
       if (turns) void appendVirtualTurnPage(turns);
+    } else if (opened.matches('[data-journal-virtual-mode="workspace"]')) {
+      void loadVirtualWorkspaceProfile(opened);
     } else {
       const selectedPanel = opened.querySelector("[data-journal-day-panel]:not([hidden])");
       const flatTurns = selectedPanel?.querySelector("[data-journal-virtual-flat-turns]")

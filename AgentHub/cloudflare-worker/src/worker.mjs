@@ -1443,7 +1443,7 @@ const JOURNAL_RESOURCE_FIELDS = [
   "date", "dayMs", "workspaceId", "workspaceName", "workspaceKind", "streamId",
   "streamDisplayName", "streamOrdinal", "provider", "turnCount", "credits",
   "knownCredits", "unknownCredits", "durationSeconds", "knownDurations",
-  "unknownDurations", "latestAt",
+  "unknownDurations", "latestAt", "workspaceUsageHtml",
 ];
 const JOURNAL_PROFILE_SUM_FIELDS = [
   "turnCount", "credits", "knownCredits", "unknownCredits", "durationSeconds",
@@ -1670,11 +1670,15 @@ async function materializedJournalProjection(payload, syncId) {
     })
   )));
   const profileStreams = new Map();
+  const profileWorkspaces = new Map();
   for (const bucket of profileBuckets) {
     const identity = journalProfileStreamIdentity(bucket.workspaceId, bucket.streamId);
     const buckets = profileStreams.get(identity) ?? [];
     buckets.push(bucket);
     profileStreams.set(identity, buckets);
+    const workspaceBuckets = profileWorkspaces.get(bucket.workspaceId) ?? [];
+    workspaceBuckets.push(bucket);
+    profileWorkspaces.set(bucket.workspaceId, workspaceBuckets);
   }
   await Promise.all([...profileStreams].map(async ([identity, buckets]) => {
     const hash = await sha256(identity);
@@ -1684,6 +1688,15 @@ async function materializedJournalProjection(payload, syncId) {
       JSON.stringify({ version: 1, buckets, truncated: false }),
     );
     entries.push([`${prefix}profile-stream-meta:${hash}`, descriptor]);
+  }));
+  await Promise.all([...profileWorkspaces].map(async ([identity, buckets]) => {
+    const hash = await sha256(identity);
+    const descriptor = appendProjectionBytes(
+      entries,
+      `${prefix}profile-workspace:${hash}`,
+      JSON.stringify({ version: 1, buckets, truncated: false }),
+    );
+    entries.push([`${prefix}profile-workspace-meta:${hash}`, descriptor]);
   }));
   const turns = (Array.isArray(payload?.turnEntries) ? payload.turnEntries : [])
     .map(normalizedJournalTurn)
@@ -3199,11 +3212,15 @@ export class JournalStore extends DurableObject {
 
   async #projectionProfileSummary(projection, query) {
     const cohort = await this.#projectionJson(projection, "profileSummary");
-    if (!query.workspaceId || !query.streamId) return cohort;
+    if (!query.workspaceId) return cohort;
+    const kind = query.streamId ? "profile-stream" : "profile-workspace";
+    const identity = query.streamId
+      ? journalProfileStreamIdentity(query.workspaceId, query.streamId)
+      : query.workspaceId;
     const source = await this.#projectionFragment(
       projection,
-      "profile-stream",
-      journalProfileStreamIdentity(query.workspaceId, query.streamId),
+      kind,
+      identity,
     );
     if (source === null) return cohort;
     let required;
