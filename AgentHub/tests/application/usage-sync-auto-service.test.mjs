@@ -13,19 +13,33 @@ function fixture({
   lastUsagePushJournalRevision = 0,
   lastUsageHistoryResendVersion = 1,
   lastUsagePullRevision = 0,
+  lastUsagePullServerGeneration = "",
+  lastUsagePullLocalGeneration = "",
+  lastUsagePullFactSummary = null,
+  lastUsageAntiEntropyAt = "2026-08-20T03:30:00.000Z",
   localJournalRevision = 7,
   localEvents = [{ id: "turn-1", observedAt: "2026-08-20T04:00:00.000Z" }],
+  localUsageStates = [{ localStoreGeneration: "", factSummary: null }],
   remoteEvents = [{ id: "remote-1" }],
+  pullResults = null,
+  summaryResult = null,
   accountBackfillResult = { applied: true, updated: 2 },
   pushResult = null,
   delayPush = false,
   failPush = false,
   failBackfill = false,
+  now = () => new Date("2026-08-20T04:00:00.000Z"),
 } = {}) {
   const events = [];
   let scheduled = null;
   let releasePush;
   const delayedPush = new Promise((resolve) => { releasePush = resolve; });
+  const usageStates = [...localUsageStates];
+  const nextUsageState = () => {
+    if (usageStates.length > 1) return usageStates.shift();
+    return usageStates[0] ?? { localStoreGeneration: "", factSummary: null };
+  };
+  const queuedPullResults = Array.isArray(pullResults) ? [...pullResults] : null;
   const identityStore = {
     deviceId: "device-local",
     label: "DESKTOP-FNNC1JA",
@@ -54,6 +68,10 @@ function fixture({
           lastUsagePushJournalRevision,
           lastUsageHistoryResendVersion,
           lastUsagePullRevision,
+          lastUsagePullServerGeneration,
+          lastUsagePullLocalGeneration,
+          lastUsagePullFactSummary,
+          lastUsageAntiEntropyAt,
         };
       },
       rememberPush: async (result, options) => events.push(["remember-push", result, options]),
@@ -74,6 +92,11 @@ function fixture({
         events.push(["import-project", options]);
         return { imported: true, added: 1, updated: 0, projected: true };
       },
+      usageSyncState: async () => nextUsageState(),
+      ensureAccountUsageProjectionCurrent: async (options) => {
+        events.push(["ensure-projection", options]);
+        return { projected: true, projectionRequired: true, projectionVersion: "sha256:projection" };
+      },
       setUsageSyncDeviceLabel: (label) => events.push(["set-store-label", label]),
     },
     clientFactory: ({ serverUrl: url, identityStore }) => {
@@ -87,7 +110,12 @@ function fixture({
         },
         pull: async (options) => {
           events.push(["pull", options]);
+          if (queuedPullResults?.length) return queuedPullResults.shift();
           return { version: 1, serverRevision: 9, events: remoteEvents };
+        },
+        summary: async () => {
+          events.push(["summary"]);
+          return summaryResult ?? { version: 1, serverRevision: 9, events: [] };
         },
       };
     },
@@ -101,6 +129,7 @@ function fixture({
     projectionProjectRoots: ["D:/projects/Utilities"],
     initialDelayMs: 10,
     intervalMs: 20,
+    now,
     logger: {
       info: (...args) => events.push(["info", ...args]),
       warn: (...args) => events.push(["warn", ...args]),
@@ -165,6 +194,7 @@ test("UsageSyncAutoService pushes, pulls, imports and remembers remote results",
     deviceLabel: "DESKTOP-FNNC1JA",
     afterObservedAt: "",
     afterJournalRevision: 0,
+    ownFactsOnly: true,
   });
   assert.deepEqual(state.events.find(([name]) => name === "remember-push")?.[2], {
     usageWatermark: "2026-08-20T04:00:00.000Z",
@@ -215,6 +245,9 @@ test("UsageSyncAutoService sends only journal deltas after the saved revision", 
     lastUsagePushWatermark: "2026-08-20T04:00:00.000Z",
     lastUsagePushJournalRevision: 6,
     lastUsagePullRevision: 8,
+    lastUsagePullServerGeneration: "server-generation-1",
+    lastUsagePullLocalGeneration: "local-generation-1",
+    localUsageStates: [{ localStoreGeneration: "local-generation-1", factSummary: null }],
     localEvents: [],
     remoteEvents: [],
     accountBackfillResult: { applied: false },
@@ -230,12 +263,174 @@ test("UsageSyncAutoService sends only journal deltas after the saved revision", 
     deviceLabel: "DESKTOP-FNNC1JA",
     afterObservedAt: "2026-08-20T04:00:00.000Z",
     afterJournalRevision: 6,
+    ownFactsOnly: true,
   });
   assert.deepEqual(state.events.find(([name]) => name === "pull")?.[1], {
     sinceRevision: 8,
   });
   assert.equal(state.events.some(([name]) => name === "import-project"), false);
   assert.equal(state.events.some(([name]) => name === "info"), false);
+});
+
+test("UsageSyncAutoService keeps legacy pull cursors when the server has no generation proof", async () => {
+  const state = fixture({
+    lastUsagePushWatermark: "2026-08-20T04:00:00.000Z",
+    lastUsagePushJournalRevision: 6,
+    lastUsagePullRevision: 8,
+    localEvents: [],
+    remoteEvents: [],
+    accountBackfillResult: { applied: false },
+    pushResult: { ok: true, added: 0, updated: 0, rejected: 0, serverRevision: 8 },
+  });
+
+  await state.service.sync();
+
+  assert.deepEqual(state.events.find(([name]) => name === "pull")?.[1], {
+    sinceRevision: 8,
+  });
+  assert.deepEqual(state.events.find(([name]) => name === "remember-pull")?.[2], {
+    serverRevision: 9,
+  });
+  assert.equal(state.events.some(([name]) => name === "ensure-projection"), false);
+});
+
+test("UsageSyncAutoService full reconciles invalid cursors before replacing the pull cursor", async () => {
+  const summary = { version: 1, count: 1, byType: { turn: 1 }, digest: "sha256:abc" };
+  const state = fixture({
+    lastUsagePullRevision: 8,
+    lastUsagePullServerGeneration: "server-old",
+    lastUsagePullLocalGeneration: "local-generation-1",
+    localUsageStates: [
+      { localStoreGeneration: "local-generation-2", factSummary: { ...summary, digest: "sha256:old" } },
+      { localStoreGeneration: "local-generation-2", factSummary: summary },
+    ],
+    pushResult: {
+      ok: true,
+      added: 0,
+      updated: 0,
+      rejected: 0,
+      serverRevision: 12,
+      datasetGeneration: "server-new",
+    },
+    pullResults: [{
+      version: 1,
+      serverRevision: 12,
+      datasetGeneration: "server-new",
+      factSummary: summary,
+      events: [{ id: "remote-1" }],
+    }],
+  });
+
+  const result = await state.service.sync();
+
+  assert.equal(result.repair?.converged, true);
+  assert.deepEqual(result.repair?.reasons, ["cursor-generation-mismatch", "server-generation-changed"]);
+  assert.deepEqual(state.events.find(([name]) => name === "pull")?.[1], undefined);
+  assert.equal(state.events.find(([name]) => name === "import-project")?.[1].reconcile, true);
+  assert.deepEqual(state.events.find(([name]) => name === "ensure-projection")?.[1], {
+    required: true,
+    reason: "sync-repair",
+    projectRoot: "D:/projects/Utilities",
+    projectionProjectRoots: ["D:/projects/Utilities"],
+  });
+  assert.deepEqual(state.events.find(([name]) => name === "remember-pull")?.[2], {
+    serverRevision: 12,
+    serverGeneration: "server-new",
+    localGeneration: "local-generation-2",
+    factSummary: summary,
+    replaceCursor: true,
+  });
+});
+
+test("UsageSyncAutoService repairs bounded anti-entropy summary mismatches", async () => {
+  const summary = { version: 1, count: 1, byType: { turn: 1 }, digest: "sha256:remote" };
+  const state = fixture({
+    lastUsagePullRevision: 8,
+    lastUsagePullServerGeneration: "server-generation-1",
+    lastUsagePullLocalGeneration: "local-generation-1",
+    lastUsageAntiEntropyAt: "2026-08-20T02:30:00.000Z",
+    localUsageStates: [
+      { localStoreGeneration: "local-generation-1", factSummary: { ...summary, digest: "sha256:local" } },
+      { localStoreGeneration: "local-generation-1", factSummary: { ...summary, digest: "sha256:still-local" } },
+      { localStoreGeneration: "local-generation-1", factSummary: summary },
+    ],
+    pushResult: {
+      ok: true,
+      added: 0,
+      updated: 0,
+      rejected: 0,
+      serverRevision: 9,
+      datasetGeneration: "server-generation-1",
+    },
+    summaryResult: {
+      version: 1,
+      serverRevision: 9,
+      datasetGeneration: "server-generation-1",
+      factSummary: summary,
+      events: [],
+    },
+    pullResults: [{
+      version: 1,
+      serverRevision: 9,
+      datasetGeneration: "server-generation-1",
+      events: [],
+    }, {
+      version: 1,
+      serverRevision: 9,
+      datasetGeneration: "server-generation-1",
+      factSummary: summary,
+      events: [{ id: "remote-1" }],
+    }],
+  });
+
+  const result = await state.service.sync();
+
+  assert.equal(result.antiEntropy.checked, true);
+  assert.equal(result.antiEntropy.mismatch, true);
+  assert.equal(result.repair?.converged, true);
+  assert.equal(state.events.filter(([name]) => name === "summary").length, 1);
+  assert.deepEqual(state.events.filter(([name]) => name === "pull").map(([, options]) => options), [
+    { sinceRevision: 8 },
+    undefined,
+  ]);
+  assert.equal(state.events.find(([name]) => name === "import-project")?.[1].reconcile, true);
+});
+
+test("UsageSyncAutoService does not advance pull cursor after failed repair convergence", async () => {
+  const remoteSummary = { version: 1, count: 1, byType: { turn: 1 }, digest: "sha256:remote" };
+  const localSummary = { version: 1, count: 1, byType: { turn: 1 }, digest: "sha256:local" };
+  const state = fixture({
+    lastUsagePullRevision: 8,
+    lastUsagePullServerGeneration: "server-old",
+    lastUsagePullLocalGeneration: "local-generation-1",
+    localUsageStates: [
+      { localStoreGeneration: "local-generation-2", factSummary: localSummary },
+      { localStoreGeneration: "local-generation-2", factSummary: localSummary },
+    ],
+    pushResult: {
+      ok: true,
+      added: 0,
+      updated: 0,
+      rejected: 0,
+      serverRevision: 12,
+      datasetGeneration: "server-new",
+    },
+    pullResults: [{
+      version: 1,
+      serverRevision: 12,
+      datasetGeneration: "server-new",
+      factSummary: remoteSummary,
+      events: [{ id: "remote-1" }],
+    }],
+  });
+
+  const result = await state.service.sync();
+
+  assert.equal(result.repair?.failed, true);
+  assert.equal(result.repair?.reason, "fact-summary-mismatch-after-reconcile");
+  assert.deepEqual(state.events.find(([name]) => name === "remember-pull")?.[2], {
+    serverRevision: null,
+  });
 });
 
 test("UsageSyncAutoService resends full history once for USG-001 migration", async () => {
@@ -268,6 +463,7 @@ test("UsageSyncAutoService resends full history once for USG-001 migration", asy
     deviceLabel: "DESKTOP-FNNC1JA",
     afterObservedAt: "",
     afterJournalRevision: 0,
+    ownFactsOnly: true,
   });
   assert.deepEqual(state.events.find(([name]) => name === "remember-push")?.[2], {
     usageWatermark: "2026-08-20T04:05:00.000Z",
@@ -301,6 +497,7 @@ test("UsageSyncAutoService keeps USG-001 history resend pending against legacy s
     deviceLabel: "DESKTOP-FNNC1JA",
     afterObservedAt: "",
     afterJournalRevision: 0,
+    ownFactsOnly: true,
   });
   assert.deepEqual(state.events.find(([name]) => name === "remember-push")?.[2], {
     usageWatermark: "",
@@ -339,6 +536,7 @@ test("UsageSyncAutoService exposes and confirms the device nickname", async () =
     deviceLabel: "SidorukSV",
     afterObservedAt: "",
     afterJournalRevision: 0,
+    ownFactsOnly: true,
   });
 });
 

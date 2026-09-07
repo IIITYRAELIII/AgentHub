@@ -101,6 +101,23 @@ test("message fingerprint binds the immutable client projection intent", async (
   assert.notEqual(conversation, queue);
 });
 
+test("message fingerprint binds a returned draft to its exact interstream origin", async () => {
+  const first = await messageRequestFingerprint({
+    text: "Исправь",
+    messageOrigin: { workspaceId: "workspace-1", streamId: "stream-1" },
+  });
+  const reordered = await messageRequestFingerprint({
+    text: "Исправь",
+    messageOrigin: { streamId: "stream-1", workspaceId: "workspace-1" },
+  });
+  const other = await messageRequestFingerprint({
+    text: "Исправь",
+    messageOrigin: { workspaceId: "workspace-1", streamId: "stream-2" },
+  });
+  assert.equal(first, reordered);
+  assert.notEqual(first, other);
+});
+
 test("message receipts deduplicate the same client message after a thread rebind", async () => {
   const registry = new MessageReceiptRegistry();
   const fingerprint = await messageRequestFingerprint({ text: "Проверь" });

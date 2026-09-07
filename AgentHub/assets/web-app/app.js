@@ -7237,6 +7237,7 @@ function renderQueueForTask(taskId, container) {
   ].filter(Boolean).join(" · ");
   container.append(el("div", { class: "queue-head", text: counts }));
   const task = state.tasks.find((entry) => entry.id === taskId);
+  const movable = queued.filter((entry) => !entry.optimistic && ["queued", "paused"].includes(entry.state));
   for (const entry of queued) {
     const actions = [];
     if (entry.optimistic) {
@@ -7264,10 +7265,33 @@ function renderQueueForTask(taskId, container) {
         class: "queue-edit",
         "data-action": "queue-edit",
         "data-queue-id": entry.id,
-        title: "Изменить текст сообщения, не затрагивая изображения и аннотации",
+        title: "Вернуть весь исходный черновик в основной композер",
         text: "Изменить",
       }));
       if (["queued", "paused"].includes(entry.state)) {
+        const movableIndex = movable.findIndex((candidate) => candidate.id === entry.id);
+        actions.push(el("button", {
+          type: "button",
+          class: "queue-move",
+          "data-action": "queue-move",
+          "data-direction": "up",
+          "data-queue-id": entry.id,
+          title: "Поднять сообщение в очереди",
+          "aria-label": "Поднять сообщение в очереди",
+          disabled: movableIndex <= 0,
+          text: "↑",
+        }));
+        actions.push(el("button", {
+          type: "button",
+          class: "queue-move",
+          "data-action": "queue-move",
+          "data-direction": "down",
+          "data-queue-id": entry.id,
+          title: "Опустить сообщение в очереди",
+          "aria-label": "Опустить сообщение в очереди",
+          disabled: movableIndex < 0 || movableIndex >= movable.length - 1,
+          text: "↓",
+        }));
         if (entry.waitReason === "provider-thread-active") {
           actions.push(el("button", {
             type: "button",
@@ -7490,6 +7514,8 @@ function sendComposerRequest({
   attachments: requestAttachments = [],
   taskReferences: requestTaskReferences = [],
   annotations: requestAnnotations = [],
+  messageOrigin: requestMessageOrigin = null,
+  composerTransfer: requestComposerTransfer = null,
   steerWhileRunning = false,
   clearComposer = false,
   restoreOnReject = false,
@@ -7512,6 +7538,8 @@ function sendComposerRequest({
     attachments: payloadAttachments,
     taskReferences: payloadTaskReferences,
     annotations: payloadAnnotations,
+    messageOrigin: requestMessageOrigin,
+    composerTransfer: requestComposerTransfer,
   });
   const retry = retryComposerRequests.get(state.selectedId);
   const requestId = retry?.fingerprint === fingerprint
@@ -7526,6 +7554,8 @@ function sendComposerRequest({
     attachments: payloadAttachments,
     taskReferences: payloadTaskReferences,
     annotations: payloadAnnotations,
+    messageOrigin: requestMessageOrigin,
+    composerTransfer: requestComposerTransfer,
     restoreOnReject,
     editRevision: composerDraftReconciliation.revision(state.selectedId),
   };
@@ -7550,6 +7580,8 @@ function sendComposerRequest({
     annotations: payloadAnnotations,
     attachments: payloadAttachments,
     taskReferences: payloadTaskReferences,
+    messageOrigin: requestMessageOrigin,
+    composerTransfer: requestComposerTransfer,
     followUpMode: MessageView.composerFollowUpMode(task, { steerWhileRunning }),
     deferWhileRunning: task?.running === true && !steerWhileRunning,
     draftStream: task?.draftStream === true,
@@ -7567,6 +7599,8 @@ function submitComposer({ steerWhileRunning = false } = {}) {
     attachments: currentAttachments(),
     taskReferences: currentTaskReferences(),
     annotations: currentAnnotations(),
+    messageOrigin: drafts.get(state.selectedId)?.messageOrigin ?? null,
+    composerTransfer: drafts.get(state.selectedId)?.composerTransfer ?? null,
     steerWhileRunning,
     clearComposer: true,
     restoreOnReject: true,
@@ -8416,6 +8450,20 @@ function saveDraft({ userEdited = false } = {}) {
   );
 }
 
+function composerDraftState(taskId) {
+  return composerDraftSnapshot(taskId);
+}
+
+function writeComposerDraft(taskId, draft) {
+  const next = composerDraftReconciliation.save(
+    taskId,
+    draft,
+    { userEdited: true },
+  );
+  if (state.selectedId === taskId) restoreDraft();
+  return next;
+}
+
 function prepareForRuntimeReload() {
   saveDraft();
   const draftsPersisted = persistDrafts();
@@ -8449,6 +8497,13 @@ function restoreDraft() {
   autosizeComposer();
   updateSendState();
 }
+
+const queueComposerTransfer = window.AgentHubQueueComposerTransfer.create({
+  read: composerDraftState,
+  write: writeComposerDraft,
+  revision: (taskId) => composerDraftReconciliation.revision(taskId),
+  notify: showToast,
+});
 
 /* ============================================= панель настроек и селекторы */
 
@@ -9755,14 +9810,17 @@ async function handleAction(action, trigger) {
     case "queue-edit": {
       const entry = (state.queue.get(taskId) ?? []).find((item) => item.id === trigger.dataset.queueId);
       if (!entry) break;
-      const text = await askText({
-        title: "Изменить сообщение в очереди",
-        value: entry.text ?? entry.preview ?? "",
-        multiline: true,
-      });
-      if (text != null) emit("queue:edit", { taskId, id: entry.id, text });
+      const guard = queueComposerTransfer.begin(taskId);
+      if (guard) emit("queue:edit", { taskId, id: entry.id, guard });
       break;
     }
+    case "queue-move":
+      emit("queue:move", {
+        taskId,
+        id: trigger.dataset.queueId,
+        direction: trigger.dataset.direction,
+      });
+      break;
     case "queue-pause":
       emit("queue:pause", { taskId, id: trigger.dataset.queueId });
       break;
@@ -10103,6 +10161,12 @@ const AgentHub = {
   },
   completeSend(requestId, options = {}) {
     return completeComposerSend(requestId, options);
+  },
+  applyQueueComposerTransfer(guard, draft, identity) {
+    return queueComposerTransfer.apply(guard, draft, identity);
+  },
+  rollbackQueueComposerTransfer(applied) {
+    return queueComposerTransfer.rollback(applied);
   },
   completeBugReport(result = {}) {
     applyBugReportFlowState(bugReportFlow.complete(result));

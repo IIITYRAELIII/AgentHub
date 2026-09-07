@@ -1,9 +1,7 @@
 import path from "node:path";
 import { unlink } from "node:fs/promises";
 import {
-  deferredResponseAnnotations,
   pendingInputKeyboard,
-  replaceDeferredInputText,
 } from "../domain/deferred-input.mjs";
 import { runInputPreview } from "../application/managed-run-lifecycle-service.mjs";
 import { commandClientContext } from "../application/application-command-service.mjs";
@@ -169,8 +167,6 @@ export function createDesktopRunRouterWiring({
       findReceiptByResultId: services.findReceiptByResultId,
       isProcessing: services.isDeferredInputProcessing,
       cancelSchedule: services.cancelDeferredInputSchedule,
-      responseAnnotations: deferredResponseAnnotations,
-      replaceInputText: replaceDeferredInputText,
       saveState: services.saveState,
       updateReceipt: services.updateDeferredReceipt,
       cleanupFiles: services.cleanupDeferredFiles,

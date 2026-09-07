@@ -247,6 +247,8 @@
       attachments: Array.isArray(draft?.attachments) ? draft.attachments.slice() : [],
       taskReferences: Array.isArray(draft?.taskReferences) ? draft.taskReferences.slice() : [],
       annotations: Array.isArray(draft?.annotations) ? draft.annotations.slice() : [],
+      ...(draft?.messageOrigin ? { messageOrigin: draft.messageOrigin } : {}),
+      ...(draft?.composerTransfer ? { composerTransfer: draft.composerTransfer } : {}),
       ...(recoveryId && fingerprint ? {
         recoveryRequestId: recoveryId,
         recoveryFingerprint: fingerprint,

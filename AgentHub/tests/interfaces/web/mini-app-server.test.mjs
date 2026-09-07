@@ -226,6 +226,63 @@ test("unchanged journal answers from metadata without loading the full payload",
   }
 });
 
+test("journal read checks the shipped account projection before serving metadata", async () => {
+  const events = [];
+  const journalDatabase = memoryJournal(DAY_HTML);
+  const originalMetadata = journalDatabase.metadata;
+  journalDatabase.metadata = async () => {
+    events.push("metadata");
+    return originalMetadata();
+  };
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase,
+    journalProjectionService: {
+      ensureAccountUsageProjectionCurrent: async () => {
+        events.push("ensure-projection");
+        return { projected: false, projectionRequired: false, reason: "current" };
+      },
+    },
+  });
+  try {
+    const address = await server.start();
+    const response = await fetch(`${address.url}api/journal`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(events.slice(0, 2), ["ensure-projection", "metadata"]);
+  } finally {
+    await server.close();
+  }
+});
+
+test("journal read exposes mandatory projection failure instead of serving stale HTML", async () => {
+  let metadataCalls = 0;
+  const journalDatabase = memoryJournal("<main>Устаревшая проекция</main>");
+  journalDatabase.metadata = async () => {
+    metadataCalls += 1;
+    return { updatedAt: "", version: "stale", revision: 1 };
+  };
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase,
+    journalProjectionService: {
+      ensureAccountUsageProjectionCurrent: async () => {
+        throw new Error("projection worker unavailable");
+      },
+    },
+  });
+  try {
+    const address = await server.start();
+    const response = await fetch(`${address.url}api/journal`);
+    assert.equal(response.status, 503);
+    assert.match((await response.json()).error, /projection worker unavailable/u);
+    assert.equal(metadataCalls, 0);
+  } finally {
+    await server.close();
+  }
+});
+
 test("Mini App close terminates an incomplete HTTP connection and can restart", async () => {
   const server = new MiniAppServer({
     host: "127.0.0.1",

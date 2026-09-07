@@ -446,6 +446,15 @@ export async function createHubInfrastructure({
     attachmentThumbnails,
     assetBundleProvider: runtimeAssetBundleProvider(runtimeCommandRoot),
     journalDatabaseFile,
+    journalProjectionService: {
+      ensureAccountUsageProjectionCurrent: (options = {}) => (
+        workLogUsageStore.ensureAccountUsageProjectionCurrent({
+          projectRoot: config.projectRoot,
+          projectionProjectRoots: globalWorkLogProjectRoots,
+          ...options,
+        })
+      ),
+    },
     usageSyncRemoteConfigStore: workLogUsageRemoteConfigStore,
     workspaceFileRoots: [config.projectRoot, ...config.projects.map((project) => project.path)],
     recordCommandTrace: (span) => commandTrace?.service?.recordBestEffort?.(span) ?? false,

@@ -99,8 +99,53 @@ function controller(overrides = {}) {
     persistReceipts: overrides.persistReceipts ?? (async () => {}),
     runCoordinator,
     durableIntake: overrides.durableIntake ?? false,
+    composerTransfers: overrides.composerTransfers ?? null,
   });
 }
+
+test("desktop message consumes an exact deferred composer grant and preserves its origin", async () => {
+  const messageOrigin = {
+    kind: "interstream",
+    workspaceId: "workspace-1", workspaceName: "Agent HUB", streamId: "source-stream",
+    streamName: "Architect", provider: "codex", model: "GPT-5.6-Sol",
+    sourceThreadId: "source-thread", requestId: "source-request",
+  };
+  let launchedInput = null;
+  let launchCount = 0;
+  let consumed = null;
+  const composerTransfers = {
+    resolve: (value, target) => value.id === "deferred-1" && value.token === "transfer-1"
+      && target.threadId === "thread-1"
+      ? { ...value, messageOrigin }
+      : null,
+    consume: async (value) => { consumed = value; },
+  };
+  const messages = controller({
+    composerTransfers,
+    launchTurn: async (_run, input) => { launchedInput = input; launchCount += 1; },
+  });
+
+  const request = {
+    text: "Изменённый текст",
+    clientUserMessageId: "message-returned",
+    composerTransfer: { id: "deferred-1", token: "transfer-1" },
+  };
+  await messages.sendMessage(request);
+  await messages.sendMessage(request);
+
+  assert.equal(interstreamMessageDetails(launchedInput).text, "Изменённый текст");
+  assert.deepEqual(interstreamMessageDetails(launchedInput).origin, messageOrigin);
+  assert.deepEqual(consumed, {
+    id: "deferred-1", token: "transfer-1", messageOrigin,
+  });
+  assert.equal(launchCount, 1);
+
+  await assert.rejects(messages.sendMessage({
+    text: "Не должен уйти",
+    clientUserMessageId: "message-stale-return",
+    composerTransfer: { id: "deferred-1", token: "wrong" },
+  }), /устарел/u);
+});
 
 test("desktop message controller deduplicates an in-flight and persisted client message", async () => {
   const receipts = new MessageReceiptRegistry();
