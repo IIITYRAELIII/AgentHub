@@ -64,9 +64,23 @@
   justify-content: space-between;
 }
 
+/* Заголовок вложенного блока пишется как заголовок секции карточки, иначе
+   «Чек-лист» набирался вдвое крупнее соседних подписей той же карточки.
+   Значения берутся из тех же токенов, что и .settings-section-title, поэтому
+   тема адаптирует оба места одинаково. */
+.task-card-checklist > header strong,
+.task-card-checklist-parent > header strong {
+  color: var(--section-heading-color);
+  font-family: var(--section-heading-family);
+  font-size: var(--section-heading-size);
+  font-weight: var(--section-heading-weight);
+  letter-spacing: var(--section-heading-spacing);
+  text-transform: var(--section-heading-transform);
+}
+
 .task-card-checklist output {
-  color: var(--text-faint);
-  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-size: var(--card-label-size);
 }
 
 .task-card-checklist form input,
