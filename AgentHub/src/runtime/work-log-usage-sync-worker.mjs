@@ -29,13 +29,14 @@ async function projectAccountUsage(payload = {}) {
     now: payload.now,
   });
   const unchanged = updatedHtml === String(payload.html ?? "");
+  const projected = payload.force === true || !unchanged;
   return {
-    projected: !unchanged,
-    reason: unchanged ? "unchanged" : "updated",
-    ...(unchanged ? {} : {
+    projected,
+    reason: unchanged ? (payload.force === true ? "forced" : "unchanged") : "updated",
+    ...(projected ? {
       html: updatedHtml,
       version: `sha256:${crypto.createHash("sha256").update(updatedHtml, "utf8").digest("hex")}`,
-    }),
+    } : {}),
     workerThreadId: threadId,
     eventCount: syncedUsageFacts.length,
     durationMs: performance.now() - startedAt,

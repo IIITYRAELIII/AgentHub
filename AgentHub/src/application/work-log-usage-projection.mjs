@@ -32,6 +32,10 @@ const WORK_LOG_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-
 const ACCOUNT_ATTRIBUTIONS = new Set(["exact", "inferred"]);
 const UNKNOWN_ACCOUNT_UI_KEY = "__unknown_account__";
 
+/* Stable shipped identity of the account-usage projection algorithm. Bump this
+   only when the same durable facts must be materialized again after upgrade. */
+export const WORK_LOG_ACCOUNT_USAGE_PROJECTION_VERSION = "2026.9.7.1";
+
 export function normalizeWorkLogId(value) {
   const id = String(value ?? "").trim().toLowerCase();
   if (!WORK_LOG_ID_PATTERN.test(id)) {
