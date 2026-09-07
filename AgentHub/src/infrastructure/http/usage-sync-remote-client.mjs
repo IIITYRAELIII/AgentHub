@@ -190,10 +190,11 @@ export class UsageSyncRemoteClient {
     return chunks.length === 1 ? lastResult : aggregate;
   }
 
-  async pull({ sinceRevision = null } = {}) {
+  async pull({ sinceRevision = null, summaryOnly = false } = {}) {
     const body = jsonBody({
       deviceId: this.#identityStore.deviceId,
       requestedAt: this.#now().toISOString(),
+      ...(summaryOnly ? { summaryOnly: true } : {}),
       ...(sinceRevision == null
         ? {}
         : { sinceRevision: Math.max(0, Math.trunc(Number(sinceRevision) || 0)) }),
@@ -216,6 +217,7 @@ export class UsageSyncRemoteClient {
     const fallbackBody = jsonBody({
       deviceId: this.#identityStore.deviceId,
       requestedAt: this.#now().toISOString(),
+      ...(summaryOnly ? { summaryOnly: true } : {}),
     });
     const fallback = await this.#fetch(`${this.#serverUrl}/api/snapshot`, {
       method: "POST",
@@ -227,6 +229,10 @@ export class UsageSyncRemoteClient {
       body: fallbackBody,
     });
     return parseJsonResponse(fallback);
+  }
+
+  async summary() {
+    return this.pull({ summaryOnly: true });
   }
 }
 

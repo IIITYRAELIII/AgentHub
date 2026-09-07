@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -6,6 +7,8 @@ import {
   normalizeAuthObservation,
   normalizeLimitObservation,
   normalizeUsageFact,
+  usageFactIdentity,
+  usageFactSummary,
   USAGE_FACT_SCHEMA_VERSION,
   USAGE_FACT_TYPES,
 } from "../../domain/usage-facts.mjs";
@@ -120,6 +123,14 @@ function configureUsageSyncDatabase(database) {
     WHERE lower(trim(account_attribution)) <> 'exact'
        OR trim(account_key) = ''
   `);
+  const generation = database.prepare(`
+    SELECT value FROM usage_sync_meta WHERE key = 'local_store_generation'
+  `).get()?.value;
+  if (!generation) {
+    database.prepare(`
+      INSERT OR REPLACE INTO usage_sync_meta (key, value) VALUES ('local_store_generation', ?)
+    `).run(randomUUID());
+  }
 }
 
 function parseJson(value, fallback) {
@@ -633,6 +644,12 @@ export class WorkLogUsageSyncStore {
       + Number(database.prepare("SELECT COUNT(*) AS count FROM usage_limit_observations").get()?.count ?? 0);
   }
 
+  #localStoreGeneration(database) {
+    return String(database.prepare(`
+      SELECT value FROM usage_sync_meta WHERE key = 'local_store_generation'
+    `).get()?.value ?? "").trim();
+  }
+
   events() {
     return this.#enqueue((database) => this.#readAll(database));
   }
@@ -645,6 +662,20 @@ export class WorkLogUsageSyncStore {
     ]);
   }
 
+  usageSyncState() {
+    return this.#enqueue((database) => {
+      const facts = [
+        ...this.#readAll(database),
+        ...this.#readAuthObservations(database),
+        ...this.#readLimitObservations(database),
+      ];
+      return {
+        localStoreGeneration: this.#localStoreGeneration(database),
+        factSummary: usageFactSummary(facts),
+      };
+    });
+  }
+
   journalTurns(options = {}) {
     return this.#enqueue((database) => this.#journalDelta(database, options).turns);
   }
@@ -653,6 +684,7 @@ export class WorkLogUsageSyncStore {
     deviceLabel = "",
     afterObservedAt = "",
     afterJournalRevision = 0,
+    ownFactsOnly = false,
   } = {}) {
     return this.#enqueue((database) => {
       const delta = this.#journalDelta(database, { afterObservedAt, afterJournalRevision });
@@ -662,12 +694,18 @@ export class WorkLogUsageSyncStore {
         afterObservedAt: delta.revisionCursor ? "" : afterObservedAt,
         defaultRuntimeHomeIds: this.#defaultRuntimeHomeIds,
       });
+      const storeTurns = this.#readAll(database)
+        .filter((event) => !ownFactsOnly || event.deviceId === this.#deviceId);
+      const authObservations = this.#readAuthObservations(database)
+        .filter((fact) => !ownFactsOnly || fact.deviceId === this.#deviceId);
+      const limitObservations = this.#readLimitObservations(database)
+        .filter((fact) => !ownFactsOnly || fact.deviceId === this.#deviceId);
       return {
         ...snapshot,
         events: [
-          ...mergeUsageSyncEvents((afterObservedAt || afterJournalRevision) ? [] : this.#readAll(database), snapshot.events),
-          ...this.#readAuthObservations(database),
-          ...this.#readLimitObservations(database),
+          ...mergeUsageSyncEvents((afterObservedAt || afterJournalRevision) ? [] : storeTurns, snapshot.events),
+          ...authObservations,
+          ...limitObservations,
         ],
         journalRevision: delta.journalRevision,
       };
@@ -688,6 +726,56 @@ export class WorkLogUsageSyncStore {
         after: this.#countFacts(database),
         added: result.added,
         updated: result.updated,
+        file: this.#databaseFile,
+      };
+    });
+  }
+
+  reconcileSnapshot(remoteSnapshot) {
+    return this.#enqueue((database) => {
+      const before = this.#countFacts(database);
+      const events = Array.isArray(remoteSnapshot)
+        ? remoteSnapshot
+        : remoteSnapshot?.events ?? [];
+      const normalized = events.map(normalizeUsageFact).filter(Boolean);
+      const result = this.#upsertFacts(database, normalized);
+      const remoteIds = new Set(normalized.map(usageFactIdentity).filter(Boolean));
+      let pruned = 0;
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        for (const [table, idColumn] of [
+          ["usage_sync_events", "event_id"],
+          ["usage_auth_observations", "observation_id"],
+          ["usage_limit_observations", "observation_id"],
+        ]) {
+          const rows = database.prepare(`
+            SELECT ${idColumn} AS id
+            FROM ${table}
+            WHERE device_id <> ?
+          `).all(this.#deviceId);
+          const stale = rows.map((row) => row.id).filter((id) => !remoteIds.has(id));
+          for (let index = 0; index < stale.length; index += UPSERT_CHUNK) {
+            const slice = stale.slice(index, index + UPSERT_CHUNK);
+            if (!slice.length) continue;
+            const placeholders = slice.map(() => "?").join(",");
+            pruned += Number(database.prepare(`
+              DELETE FROM ${table} WHERE ${idColumn} IN (${placeholders})
+            `).run(...slice)?.changes ?? 0);
+          }
+        }
+        database.exec("COMMIT");
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+      return {
+        imported: true,
+        reconciled: true,
+        before,
+        after: this.#countFacts(database),
+        added: result.added,
+        updated: result.updated,
+        pruned,
         file: this.#databaseFile,
       };
     });
