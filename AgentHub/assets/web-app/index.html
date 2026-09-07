@@ -1249,7 +1249,7 @@
           <label class="setting-switch">
             <input type="checkbox" data-toggle="includeClaudeUsage">
             <span class="switch-text">Учитывать расход Claude
-              <span class="switch-note">В итогах журнала и на графике расхода.</span>
+              <span class="switch-note">В итогах журнала и на графике расхода. На расход по аккаунтам не влияет.</span>
             </span>
             <span class="switch-track" aria-hidden="true"></span>
           </label>
@@ -1562,6 +1562,13 @@
                 Определяет, в какую точку графика попадёт расход завершённого хода.
               </span>
             </div>
+            <label class="setting-switch">
+              <input type="checkbox" data-toggle="includeClaudeUsage">
+              <span class="switch-text">Учитывать расход Claude
+                <span class="switch-note">В статистике и итогах журнала. На расход по аккаунтам не влияет.</span>
+              </span>
+              <span class="switch-track" aria-hidden="true"></span>
+            </label>
           </div>
         </section>
         <section class="statistics-card statistics-sync-card" data-statistics-sync-card

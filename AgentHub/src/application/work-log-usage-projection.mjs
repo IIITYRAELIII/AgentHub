@@ -832,7 +832,6 @@ function syncedUsageRecords(values) {
 
 export function buildWorkLogAccountUsageSummary(turns = {}, {
   accountCatalog = [],
-  includeClaudeUsage = true,
   syncedUsageEvents = [],
   localDeviceId = "",
   localDeviceLabel = "",
@@ -854,10 +853,7 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
       source: "sync",
       deviceId: String(record?.syncDeviceId ?? "").trim(),
     })),
-  ]
-    .filter((entry) => includeClaudeUsage
-      || String(entry.record?.provider ?? "").toLowerCase() !== "claude")
-    .map((entry) => ({
+  ].map((entry) => ({
       ...entry,
       timestamp: Date.parse(entry.record?.completedAt || entry.record?.startedAt || ""),
       credits: recordCredits(entry.record),
@@ -2796,7 +2792,6 @@ export function projectWorkLogUsage(workLogText, turns = {}, {
   const normalizedTurns = normalizedLedger({ version: 8, turns }).ledger.turns;
   const accountPanel = formatAccountUsagePanel(buildWorkLogAccountUsageSummary(normalizedTurns, {
     accountCatalog,
-    includeClaudeUsage,
     syncedUsageEvents,
     localDeviceId,
     localDeviceLabel,
@@ -2846,7 +2841,6 @@ export function projectWorkLogUsage(workLogText, turns = {}, {
 
 export function projectWorkLogAccountUsage(workLogText, turns = {}, {
   accountCatalog = [],
-  includeClaudeUsage = true,
   syncedUsageEvents = [],
   localDeviceId = "",
   localDeviceLabel = "",
@@ -2857,7 +2851,6 @@ export function projectWorkLogAccountUsage(workLogText, turns = {}, {
     String(workLogText ?? ""),
     formatAccountUsagePanel(buildWorkLogAccountUsageSummary(normalizedTurns, {
       accountCatalog,
-      includeClaudeUsage,
       syncedUsageEvents,
       localDeviceId,
       localDeviceLabel,
