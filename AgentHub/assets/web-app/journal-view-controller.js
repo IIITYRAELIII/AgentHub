@@ -124,6 +124,7 @@
       mcpTools: new Set(),
       mcpFailures: 0,
       knownToolMetricTurns: 0,
+      workspaceUsageHtml: "",
     };
   }
 
@@ -152,6 +153,9 @@
     target.knownToolMetricTurns += Math.max(0, Number(bucket?.knownToolMetricTurns) || 0);
     for (const tool of Array.isArray(bucket?.mcpTools) ? bucket.mcpTools : []) {
       if (String(tool).trim()) target.mcpTools.add(String(tool).trim());
+    }
+    if (!target.workspaceUsageHtml && String(bucket?.workspaceUsageHtml ?? "")) {
+      target.workspaceUsageHtml = String(bucket.workspaceUsageHtml).slice(0, 12_000);
     }
     return target;
   }
