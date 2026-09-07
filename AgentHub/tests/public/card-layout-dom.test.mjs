@@ -3,14 +3,23 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const WEB_APP_ROOT = new URL("../../assets/web-app/", import.meta.url);
-const TEST_THEME_CATALOG = JSON.stringify([{
-  id: "orbit",
-  name: "Orbit",
-  color: "#080b11",
+// Классика адаптирует типографику заголовков, поэтому она нужна в фикстуре
+// наравне с темой по умолчанию.
+const TEST_THEMES = [
+  { id: "orbit", name: "Orbit", color: "#080b11" },
+  { id: "classic", name: "Классика", color: "#191a1b" },
+];
+const TEST_THEME_CATALOG = JSON.stringify(TEST_THEMES.map((theme) => ({
+  ...theme,
   aliases: [],
   assets: {},
   backgrounds: [{ id: "none", name: "Нет", assetUrl: "", preload: false }],
-}]);
+})));
+// Сервер подставляет ссылки на темы в этот маркер, до листов оболочки. Порядок
+// важен: правило, объявленное позже темы, обходит её адаптацию.
+const TEST_THEME_STYLES = TEST_THEMES
+  .map((theme) => `<link rel="stylesheet" href="/themes/${theme.id}/theme.css">`)
+  .join("");
 
 function contentType(pathname) {
   if (/\.css$/u.test(pathname)) return "text/css; charset=utf-8";
@@ -34,6 +43,7 @@ async function openFixture(page) {
         .replace(/\s*<script src="https:\/\/telegram\.org\/[^>]+><\/script>/u, "")
         .replace(/\s*<script src="\/browser-device-auth\.js" defer><\/script>/u, "")
         .replace(/\s*<script src="\/hub-client\.js" defer><\/script>/u, "")
+        .replace("<!-- agent-hub-theme-styles -->", TEST_THEME_STYLES)
         .replace("</head>", `<script type="application/json" data-theme-catalog>${TEST_THEME_CATALOG}</script></head>`);
       return route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body });
     }
@@ -225,6 +235,182 @@ test("действия карточки задачи одного размера
       "удаление не прижато к правому краю футера");
     assert.ok(layout.removeRight > layout.quietRight + 24,
       "удаление не отделено от обычных действий");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("подписи полей во всех трёх карточках одного размера", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchEdge(chromium);
+  try {
+    const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+    await openFixture(page);
+    await page.evaluate(openStreamCard);
+    const sizes = await page.evaluate(() => {
+      const size = (element) => getComputedStyle(element).fontSize;
+      const stream = document.querySelector("[data-dialog-settings] .setting-name");
+      const streamSwitch = document.querySelector("[data-dialog-settings] .switch-text");
+      const workspace = document.querySelector(".workspace-card-fields label > span");
+      const taskEditor = document.querySelector(".task-card-editor label > span");
+      const taskDetail = document.querySelector(".task-card-detail-row > span");
+      const taskStatus = document.querySelector(".task-card-status-field > span");
+      return {
+        stream: size(stream),
+        streamSwitch: size(streamSwitch),
+        workspace: size(workspace),
+        taskEditor: size(taskEditor),
+        taskDetail: size(taskDetail),
+        taskStatus: size(taskStatus),
+      };
+    });
+    const distinct = new Set(Object.values(sizes));
+    assert.equal(distinct.size, 1,
+      `подписи карточек набраны разными размерами: ${JSON.stringify(sizes)}`);
+  } finally {
+    await browser.close();
+  }
+});
+
+// Считает то же, что видит глаз: типографику заголовка чек-листа, заголовка
+// секции рядом с ним и контраст к реально закрашенному фону под элементом.
+function readHeadingTypography(theme) {
+  document.documentElement.dataset.theme = theme;
+  const dialog = document.querySelector("[data-task-card-modal]");
+  if (!dialog.open) dialog.showModal();
+  const channels = (color) => {
+    const match = /rgba?\(([^)]+)\)/u.exec(color);
+    if (!match) return null;
+    const parts = match[1].split(",").map((part) => Number.parseFloat(part));
+    return { rgb: parts.slice(0, 3), alpha: parts.length > 3 ? parts[3] : 1 };
+  };
+  const luminance = (rgb) => {
+    const linear = rgb.map((value) => {
+      const channel = value / 255;
+      return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+  };
+  const painted = (element) => {
+    for (let node = element; node; node = node.parentElement) {
+      const parsed = channels(getComputedStyle(node).backgroundColor);
+      if (parsed && parsed.alpha > 0.4) return parsed.rgb;
+    }
+    return [0, 0, 0];
+  };
+  const contrast = (element) => {
+    const text = luminance(channels(getComputedStyle(element).color).rgb);
+    const background = luminance(painted(element));
+    const [brighter, darker] = text > background ? [text, background] : [background, text];
+    return Math.round(((brighter + 0.05) / (darker + 0.05)) * 100) / 100;
+  };
+  const read = (element) => {
+    const style = getComputedStyle(element);
+    return {
+      size: Number.parseFloat(style.fontSize),
+      weight: style.fontWeight,
+      transform: style.textTransform,
+      spacing: style.letterSpacing,
+      family: style.fontFamily,
+      color: style.color,
+      contrast: contrast(element),
+    };
+  };
+  return {
+    heading: read(dialog.querySelector(".task-card-checklist > header strong")),
+    progress: read(dialog.querySelector(".task-card-checklist output")),
+    sectionTitle: read(document.querySelector(".settings-section-title")),
+  };
+}
+
+test("заголовок чек-листа следует типографике секций текущей темы", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchEdge(chromium);
+  try {
+    for (const viewport of [
+      { name: "desktop", width: 1600, height: 1000 },
+      { name: "mobile", width: 390, height: 844 },
+      { name: "short", width: 1280, height: 600 },
+    ]) {
+      const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+      await openFixture(page);
+
+      for (const theme of ["orbit", "classic"]) {
+        const seen = await page.evaluate(readHeadingTypography, theme);
+        const where = `${viewport.name}/${theme}`;
+        for (const property of ["size", "weight", "transform", "spacing", "family", "color"]) {
+          assert.deepEqual(seen.heading[property], seen.sectionTitle[property],
+            `${where}: заголовок чек-листа разошёлся с заголовком секции по ${property}: `
+            + `${seen.heading[property]} против ${seen.sectionTitle[property]}`);
+        }
+      }
+
+      const orbit = await page.evaluate(readHeadingTypography, "orbit");
+      assert.equal(orbit.heading.transform, "uppercase",
+        `${viewport.name}: Orbit потеряла капитель заголовка секции`);
+      assert.ok(Number.parseFloat(orbit.heading.spacing) > 0,
+        `${viewport.name}: Orbit потеряла разрядку заголовка секции`);
+      assert.ok(orbit.heading.size < orbit.progress.size,
+        `${viewport.name}: Orbit потеряла разницу масштабов заголовка и счётчика`);
+
+      const classic = await page.evaluate(readHeadingTypography, "classic");
+      assert.equal(classic.heading.transform, "none",
+        `${viewport.name}: Классика получила капитель, которой у неё нет`);
+      assert.equal(classic.heading.spacing, "normal",
+        `${viewport.name}: Классика получила разрядку, которой у неё нет`);
+      assert.ok(classic.heading.size >= 14,
+        `${viewport.name}: заголовок Классики набран ${classic.heading.size}px вместо секционных 14px`);
+      // Без капители мелкий заголовок читается как ошибка, а не как эйбрау.
+      assert.ok(classic.heading.size >= classic.progress.size,
+        `${viewport.name}: заголовок Классики мельче собственного счётчика — `
+        + `${classic.heading.size}px против ${classic.progress.size}px`);
+      // Абсолютный потолок задаёт палитра темы: --text-muted Классики даёт
+      // 4.47:1 на фоне вложенного блока, столько же у соседнего счётчика и у
+      // секционных заголовков. Проверяется, что заголовок не хуже этого уровня
+      // и далеко ушёл от прежних 2.1:1, которые давал мелкий text-faint.
+      assert.ok(classic.heading.contrast >= classic.progress.contrast,
+        `${viewport.name}: заголовок Классики контрастнее не стал — `
+        + `${classic.heading.contrast}:1 против ${classic.progress.contrast}:1 у счётчика`);
+      assert.ok(classic.heading.contrast >= 4,
+        `${viewport.name}: контраст заголовка Классики ${classic.heading.contrast}:1 ниже 4:1`);
+
+      await page.close();
+    }
+  } finally {
+    await browser.close();
+  }
+});
+
+test("записи лога работы не рисуют вторую рамку внутри блока исполнения", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchEdge(chromium);
+  try {
+    const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+    await openFixture(page);
+    await page.evaluate(() => {
+      const dialog = document.querySelector("[data-task-card-modal]");
+      dialog.showModal();
+      dialog.querySelector("[data-task-card-work-log-entries]").innerHTML = `
+        <article class="task-card-work-log-entry">
+          <div class="task-card-work-log-meta"><strong>claude</strong><span>Завершён</span></div>
+          <p>Итог хода.</p></article>`;
+    });
+    const borders = await page.evaluate(() => {
+      const outer = document.querySelector(".task-card-release-details");
+      const entry = outer.querySelector(".task-card-work-log-entry");
+      const alpha = (color) => {
+        const match = /rgba?\(([^)]+)\)/u.exec(color);
+        if (!match) return 1;
+        const parts = match[1].split(",").map((part) => Number.parseFloat(part));
+        return parts.length > 3 ? parts[3] : 1;
+      };
+      return {
+        outer: alpha(getComputedStyle(outer).borderTopColor),
+        entry: alpha(getComputedStyle(entry).borderTopColor),
+      };
+    });
+    assert.ok(borders.outer > 0, "блок исполнения потерял собственную рамку");
+    assert.equal(borders.entry, 0, "запись лога всё ещё рисует рамку внутри рамки");
   } finally {
     await browser.close();
   }
