@@ -96,6 +96,26 @@ function addMetric(target, value, knownKey, totalKey, unknownKey) {
   target[totalKey] += value;
 }
 
+function turnEntryWithDerivedTreeCredits(entry, turnEntries) {
+  if (attribute(entry?.opening, "data-work-log-turn-total-credits") !== "") {
+    return entry.html;
+  }
+  const credits = turnEntries
+    .filter((candidate) => candidate.start >= entry.start && candidate.end <= entry.end)
+    .map((candidate) => finiteMetric(attribute(
+      candidate.opening,
+      "data-work-log-turn-credits",
+    )))
+    .filter((value) => value !== null);
+  if (!credits.length) return entry.html;
+  const total = credits.reduce((sum, value) => sum + value, 0);
+  const opening = entry.opening.replace(
+    />$/u,
+    ` data-work-log-turn-total-credits="${total}">`,
+  );
+  return opening + entry.html.slice(entry.opening.length);
+}
+
 function decodedAttribute(value) {
   return String(value ?? "")
     .replaceAll("&quot;", '"')
@@ -479,7 +499,7 @@ export function buildVirtualJournalProjection(sections) {
           turnId,
           completedAtMs: Date.parse(attribute(entry.opening, "data-work-log-turn-completed-at"))
             || dayMs(section.date),
-          html: entry.html,
+          html: turnEntryWithDerivedTreeCredits(entry, rowTurns),
         });
       }
     }
