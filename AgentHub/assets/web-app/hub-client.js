@@ -3818,22 +3818,154 @@ function blobDataUrl(blob) {
   });
 }
 
-async function loadAttachmentImage(attachment, index) {
-  const directDataUrl = String(attachment?.dataUrl ?? "").trim();
-  const directResourceUrl = String(attachment?.url ?? "").trim();
-  const vscodeResource = vscode && !directDataUrl && !directResourceUrl && attachment?.id
-    ? await bridgeCall("resolve-attachment", { id: attachment.id })
-    : null;
-  const resolvedResourceUrl = String(vscodeResource?.url ?? directResourceUrl).trim();
-  const result = directDataUrl
-    ? { dataUrl: directDataUrl, name: attachment?.name }
-    : resolvedResourceUrl
-      ? { dataUrl: resolvedResourceUrl, name: attachment?.name }
-    : await attachmentBlob(attachment).then(async ({ blob, name }) => ({
-      dataUrl: await blobDataUrl(blob),
-      name,
-    }));
-  agentHub.showAttachmentViewer({ ...result, index });
+let attachmentViewerResource = null;
+
+function attachmentViewerAuthority(generation, index) {
+  const authority = agentHub.attachmentViewerLoadAuthority?.({ generation, index });
+  return authority?.owned ? authority : null;
+}
+
+function disposeAttachmentViewerResource({ generation = null, index = null, resource = null } = {}) {
+  const current = attachmentViewerResource;
+  if (!current
+    || (generation != null && current.generation !== generation)
+    || (index != null && current.index !== index)
+    || (resource && current !== resource)) return false;
+  attachmentViewerResource = null;
+  window.clearTimeout(current.timer);
+  current.disposed = true;
+  current.controller.abort();
+  if (current.objectUrl) URL.revokeObjectURL(current.objectUrl);
+  return true;
+}
+
+function beginAttachmentViewerLoad(generation, index) {
+  let authority = attachmentViewerAuthority(generation, index);
+  if (!authority) return null;
+  const existing = attachmentViewerResource;
+  if (existing) {
+    if (existing.generation !== generation || existing.index !== index) return null;
+    disposeAttachmentViewerResource({ generation, index, resource: existing });
+    authority = attachmentViewerAuthority(generation, index);
+    if (!authority) return null;
+  }
+  const controller = new AbortController();
+  const current = {
+    generation,
+    index,
+    controller,
+    timer: null,
+    timedOut: false,
+    disposed: false,
+    objectUrl: "",
+  };
+  current.timer = window.setTimeout(() => {
+    if (attachmentViewerResource !== current || current.disposed) return;
+    current.timedOut = true;
+    controller.abort();
+  }, Math.max(1, authority.remainingMs));
+  attachmentViewerResource = current;
+  return current;
+}
+
+function ownsAttachmentViewerResource(resource) {
+  return Boolean(
+    resource
+    && attachmentViewerResource === resource
+    && !resource.disposed
+    && attachmentViewerAuthority(resource.generation, resource.index),
+  );
+}
+
+document.addEventListener("agenthub:attachment-viewer-dispose", (event) => {
+  const generation = Number(event.detail?.generation);
+  const index = Number(event.detail?.index);
+  disposeAttachmentViewerResource({
+    generation: Number.isSafeInteger(generation) ? generation : null,
+    index: Number.isSafeInteger(index) ? index : null,
+  });
+});
+
+function sameOriginResource(value) {
+  try {
+    return new URL(String(value), window.location.href).origin === window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
+async function loadAttachmentImage(attachment, index, generation) {
+  const viewerResource = beginAttachmentViewerLoad(generation, index);
+  if (!viewerResource) return false;
+  try {
+    const directDataUrl = String(attachment?.dataUrl ?? "").trim();
+    const directResourceUrl = String(attachment?.url ?? "").trim();
+    const id = String(attachment?.id ?? "").trim();
+    const access = directDataUrl || directResourceUrl
+      ? attachment
+      : vscode && id
+        ? await bridgeCall("resolve-attachment", { id })
+        : id
+          ? await control("open-attachment", { id })
+          : null;
+    if (!ownsAttachmentViewerResource(viewerResource)) return false;
+    const resourceUrl = directDataUrl || String(access?.url ?? directResourceUrl).trim();
+    const authenticatedFetch = Boolean(telegramInitData)
+      && (!resourceUrl || sameOriginResource(resourceUrl));
+    if (!resourceUrl && !String(access?.id ?? "").trim()) {
+      throw new Error("Файл изображения недоступен");
+    }
+    await localSessionReady;
+    if (!ownsAttachmentViewerResource(viewerResource)) return false;
+    if (!authenticatedFetch) {
+      window.clearTimeout(viewerResource.timer);
+      viewerResource.timer = null;
+      const shown = agentHub.showAttachmentViewer({
+        dataUrl: resourceUrl,
+        name: access?.name ?? attachment?.name,
+        index,
+        generation,
+      });
+      if (!shown) disposeAttachmentViewerResource({ generation, index, resource: viewerResource });
+      return shown;
+    }
+    const response = await hubFetch(resourceUrl || attachmentAccessUrl(access), {
+      headers: authorizationHeaders(),
+      cache: "no-store",
+      signal: viewerResource.controller.signal,
+    });
+    if (!ownsAttachmentViewerResource(viewerResource)) return false;
+    if (!response.ok) throw new Error(`Файл изображения недоступен: HTTP ${response.status}`);
+    const blob = await response.blob();
+    if (!ownsAttachmentViewerResource(viewerResource)) return false;
+    if (!String(blob.type).toLowerCase().startsWith("image/")) {
+      throw new Error("Сервер вернул не изображение");
+    }
+    window.clearTimeout(viewerResource.timer);
+    viewerResource.timer = null;
+    viewerResource.objectUrl = URL.createObjectURL(blob);
+    const shown = agentHub.showAttachmentViewer({
+      dataUrl: viewerResource.objectUrl,
+      name: access?.name ?? attachment?.name,
+      index,
+      generation,
+      transient: true,
+    });
+    if (!shown) disposeAttachmentViewerResource({ generation, index, resource: viewerResource });
+    return shown;
+  } catch (error) {
+    if (!ownsAttachmentViewerResource(viewerResource)) return false;
+    const message = viewerResource?.timedOut
+      ? "Изображение не загрузилось вовремя"
+      : hubErrorMessage(error);
+    agentHub.failAttachmentViewer({
+      message,
+      index,
+      generation,
+    });
+    disposeAttachmentViewerResource({ generation, index, resource: viewerResource });
+    throw error;
+  }
 }
 
 agentHub.on("attachment:open", ({ attachment, gallery = [], index = 0 }) => runAction(async () => {
@@ -3841,21 +3973,16 @@ agentHub.on("attachment:open", ({ attachment, gallery = [], index = 0 }) => runA
   if (image) {
     const viewerGallery = window.AgentHubResourceInteractions.viewerGallery(
       gallery.length ? gallery : [attachment],
-      vscode,
+      true,
     );
     const viewerAttachment = viewerGallery[index] ?? viewerGallery[0] ?? attachment;
-    agentHub.openAttachmentViewer({
+    const generation = agentHub.openAttachmentViewer({
       gallery: viewerGallery,
       index,
       dataUrl: viewerAttachment?.dataUrl,
       name: viewerAttachment?.name,
     });
-    try {
-      if (!viewerAttachment?.dataUrl) await loadAttachmentImage(viewerAttachment, index);
-    } catch (error) {
-      agentHub.closeAttachmentViewer();
-      throw error;
-    }
+    if (!viewerAttachment?.dataUrl) await loadAttachmentImage(viewerAttachment, index, generation);
     return;
   }
   const id = String(attachment?.id ?? "").trim();
@@ -3880,8 +4007,8 @@ agentHub.on("attachment:thumbnail", ({ attachment, render, fail }) => void (asyn
   }
 })());
 
-agentHub.on("attachment:load", ({ attachment, index }) => runAction(
-  () => loadAttachmentImage(attachment, index),
+agentHub.on("attachment:load", ({ attachment, index, generation }) => runAction(
+  () => loadAttachmentImage(attachment, index, generation),
 ));
 
 function resourceReference(resource) {

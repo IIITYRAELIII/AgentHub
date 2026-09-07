@@ -22,6 +22,20 @@
   --title-weight: 545;
   --label-spacing: 0.15em;
   --label-transform: uppercase;
+  /* Подпись поля в модальных карточках. До этого карточка Stream писала
+     подписи 0.83rem, Workspace — 0.72rem, задача — 0.68rem, и одинаковые по
+     смыслу строки выглядели тремя разными уровнями. */
+  --card-label-size: 0.78rem;
+
+  /* Заголовок секции: один источник истины для «ПАРАМЕТРЫ», «ДЕЙСТВИЯ» и
+     заголовков вложенных блоков карточки. Тема переопределяет эти токены, а
+     не каждое место по отдельности. */
+  --section-heading-family: var(--font-title);
+  --section-heading-size: 0.63rem;
+  --section-heading-weight: 700;
+  --section-heading-spacing: 0.18em;
+  --section-heading-transform: uppercase;
+  --section-heading-color: var(--text-faint);
 
   /* ---- геометрия ---- */
   --radius-lg: 16px;
@@ -2620,6 +2634,17 @@ html[data-surface="mobile"] .eyebrow {
   display: none;
 }
 
+/* В модальных карточках надзаголовок не дублирует нижнюю навигацию, а у
+   карточки Stream он вообще единственное название окна, поэтому на телефоне
+   шапка карточки остаётся подписанной. */
+html[data-surface="mobile"] .dialog-settings-head .eyebrow,
+html[data-surface="mobile"] .workspace-card-modal .eyebrow,
+html[data-surface="mobile"] .workspace-archive-modal .eyebrow,
+html[data-surface="mobile"] .task-card-modal .eyebrow,
+html[data-surface="mobile"] .task-start-modal .eyebrow {
+  display: block;
+}
+
 /* Название раздела на телефоне дублирует подписанную вкладку нижней
    навигации, поэтому из шапки оно убирается визуально, но остаётся в
    структуре страницы для скринридера. */
@@ -4081,9 +4106,9 @@ html[data-view="dashboard"] .task-board-view {
 
 .task-card-attachment-toolbar {
   align-items: center;
-  color: var(--text-faint);
+  color: var(--text-muted);
   display: flex;
-  font-size: 0.68rem;
+  font-size: var(--card-label-size);
   justify-content: space-between;
 }
 
@@ -4284,7 +4309,29 @@ html[data-view="dashboard"] .task-board-view {
 
 .task-card-modal > footer {
   border-top: 1px solid var(--line);
+  gap: 0.5rem;
   margin-top: 0;
+}
+
+/* Действия футера одного размера; удаление отделено и уходит к правому краю,
+   а при переносе строки остаётся справа, а не повисает под кнопками. */
+.task-card-modal > footer .board-task-quiet,
+.task-card-modal > footer .board-task-remove {
+  border-radius: var(--radius-md);
+  font-size: 0.76rem;
+  padding: 0.48rem 0.6rem;
+}
+
+.task-card-modal > footer .board-task-remove {
+  margin-inline-start: auto;
+}
+
+.task-card-modal > footer > * {
+  min-height: 2.15rem;
+}
+
+.task-card-modal > footer .board-task-destination {
+  flex: 0 1 11rem;
 }
 
 .task-card-modal h2,
@@ -4309,11 +4356,18 @@ html[data-view="dashboard"] .task-board-view {
   gap: 0.75rem;
 }
 
+/* Сохранение относится к паре полей выше, а не ко всей карточке, поэтому
+   кнопка не растягивается на всю ширину и не спорит с действиями футера. */
+.task-card-editor > .board-task-primary {
+  justify-self: end;
+  min-height: 2.15rem;
+}
+
 .task-card-editor label {
-  color: var(--text-faint);
+  color: var(--text-muted);
   display: grid;
-  font-size: 0.68rem;
-  gap: 0.3rem;
+  font-size: var(--card-label-size);
+  gap: 0.35rem;
 }
 
 .task-card-title-control {
@@ -4342,10 +4396,10 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .task-card-status-field {
-  color: var(--text-faint);
+  color: var(--text-muted);
   display: grid;
-  font-size: 0.68rem;
-  gap: 0.3rem;
+  font-size: var(--card-label-size);
+  gap: 0.35rem;
 }
 
 .task-card-status-field select {
@@ -4384,8 +4438,8 @@ html[data-view="dashboard"] .task-board-view {
 .task-card-detail-row > span,
 .task-card-changed-files > span,
 .task-card-work-log > span {
-  color: var(--text-faint);
-  font-size: 0.68rem;
+  color: var(--text-muted);
+  font-size: var(--card-label-size);
 }
 
 .task-card-detail-row strong {
@@ -4443,9 +4497,12 @@ html[data-view="dashboard"] .task-board-view {
   margin: 0;
 }
 
+/* Записи лога лежат внутри блока «Исполнение и изменения», у которого уже есть
+   своя рамка. Вторая рамка внутри первой давала двойной контур, поэтому запись
+   отделяется заливкой. */
 .task-card-work-log-entry {
   background: color-mix(in srgb, var(--surface-2) 78%, transparent);
-  border: 1px solid var(--line);
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
   display: grid;
   gap: 0.35rem;
@@ -4516,6 +4573,10 @@ html[data-view="dashboard"] .task-board-view {
   color: var(--text);
   max-height: min(90dvh, 56rem);
   max-width: 42rem;
+  /* Форма берёт max-height диалога через inherit, поэтому рамка диалога
+     добавляла ровно свои 2px переполнения и рядом с полосой прокрутки полей
+     появлялась вторая, внешняя. Прокручиваются только поля. */
+  overflow: hidden;
   padding: 0;
   width: calc(100% - 2rem);
 }
@@ -4660,7 +4721,23 @@ html[data-view="dashboard"] .task-board-view {
 
 .workspace-card-modal footer {
   border-top: 1px solid var(--line);
+  gap: 0.5rem;
   justify-content: flex-end;
+}
+
+/* «Отмена» остаётся тише «Сохранить», но обе кнопки одного размера. */
+.workspace-card-modal footer button {
+  min-height: 2.15rem;
+}
+
+.workspace-card-modal footer .board-task-quiet {
+  border-radius: var(--radius-md);
+  font-size: 0.76rem;
+  padding: 0.48rem 0.72rem;
+}
+
+.workspace-card-modal footer .board-task-quiet:hover {
+  color: var(--text);
 }
 
 .workspace-card-modal h2,
@@ -4680,6 +4757,18 @@ html[data-view="dashboard"] .task-board-view {
   padding: 1rem;
 }
 
+.workspace-card-actions-section {
+  padding-top: 0.45rem;
+}
+
+/* Тот же размер, что у действий карточки Stream. */
+.workspace-card-actions .workspace-card-archive {
+  border-radius: var(--radius-chip);
+  font-size: 0.76rem;
+  min-height: 2.45rem;
+  width: 100%;
+}
+
 .workspace-card-fields [hidden] {
   display: none;
 }
@@ -4691,7 +4780,7 @@ html[data-view="dashboard"] .task-board-view {
 
 .workspace-card-fields label > span {
   color: var(--text-muted);
-  font-size: 0.72rem;
+  font-size: var(--card-label-size);
 }
 
 /* Поля брали оформление у браузера и оставались серыми в любой теме. Токены
@@ -4734,9 +4823,15 @@ html[data-view="dashboard"] .task-board-view {
   outline: none;
 }
 
+/* Необязательный комментарий занимал столько же, сколько правила агента, и
+   вытеснял нижние поля за край карточки. Растянуть его по-прежнему можно. */
 .workspace-card-fields textarea {
-  min-height: 6rem;
+  min-height: 4.5rem;
   resize: vertical;
+}
+
+.workspace-card-fields [data-workspace-card-comment] {
+  height: 4.5rem;
 }
 
 .workspace-card-fields [data-workspace-card-rules] {
@@ -4781,18 +4876,32 @@ html[data-view="dashboard"] .task-board-view {
   color: var(--danger);
 }
 
+/* Та же раскладка, что у переключателей ролей Stream: подпись слева,
+   пояснение следом, тумблер прижат к правому краю карточки. */
 .workspace-release-workflow-setting {
   align-items: center;
-  display: flex;
+  display: grid;
   gap: 0.55rem;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   position: relative;
 }
 
 .workspace-release-workflow-switch {
-  align-items: center;
   cursor: pointer;
-  display: flex !important;
-  gap: 0.6rem !important;
+  display: contents !important;
+}
+
+.workspace-release-workflow-switch .switch-text {
+  grid-area: 1 / 1;
+}
+
+.workspace-release-workflow-help-popover {
+  grid-area: 1 / 2;
+}
+
+.workspace-release-workflow-switch .switch-track {
+  grid-area: 1 / 3;
+  justify-self: end;
 }
 
 .workspace-release-workflow-help-popover {
@@ -4862,10 +4971,30 @@ html[data-view="dashboard"] .task-board-view {
   gap: 0.35rem;
 }
 
+/* Подпись, знак вопроса и тумблер — ячейки одной строки, поэтому тумблеры
+   ролей стоят на той же вертикали, что «Автоподтверждение» над ними. */
 .stream-role-setting-heading {
   align-items: center;
-  display: flex;
+  display: grid;
   gap: 0.45rem;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.stream-role-setting-heading .setting-switch {
+  display: contents;
+}
+
+.stream-role-setting-heading .switch-text {
+  grid-area: 1 / 1;
+}
+
+.stream-role-setting-heading .stream-role-help-popover {
+  grid-area: 1 / 2;
+}
+
+.stream-role-setting-heading .switch-track {
+  grid-area: 1 / 3;
+  justify-self: end;
 }
 
 .stream-role-help-popover {
@@ -4934,8 +5063,14 @@ html[data-view="dashboard"] .task-board-view {
   margin: 0;
 }
 
+/* Короткие значения не растягиваются на всю карточку: поле по длине данных
+   читается как короткое, а не как ещё одна строка полной ширины. */
 .workspace-card-fields input[type="number"] {
   max-width: 8rem;
+}
+
+.workspace-card-fields [data-workspace-card-task-prefix] {
+  max-width: 12rem;
 }
 
 .workspace-card-fields input:disabled {
@@ -7289,6 +7424,10 @@ html[data-surface="mobile"]
 }
 
 .dialog-settings {
+  /* Общая мера правой колонки карточки: чип агента, селекты и тумблеры
+     выстраиваются по одному левому и правому краю. */
+  --dialog-control-width: 13rem;
+  --dialog-control-height: 2.125rem;
   background:
     radial-gradient(120% 60% at 90% -20%, var(--space-glow-a), transparent 60%),
     color-mix(in srgb, var(--space-base) 96%, transparent);
@@ -7333,13 +7472,50 @@ html[data-surface="mobile"]
   padding: 0.85rem 0.8rem max(1rem, env(safe-area-inset-bottom));
 }
 
+/* Подписи полей карточки Stream — той же меры, что в карточках Workspace
+   и задачи; общая настроечная панель приложения свой размер сохраняет. */
+.dialog-settings .setting-name,
+.dialog-settings .switch-text,
+.dialog-settings .setting-value {
+  font-size: var(--card-label-size);
+}
+
+/* Подпись и счётчик — одна строка формата «название — значение», как у
+   соседних настроек; редактор и кнопка занимают полную ширину под ней. */
 .quick-messages-editor {
+  align-items: center;
+  column-gap: 0.7rem;
   display: grid;
-  gap: 0.55rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  row-gap: 0.55rem;
+}
+
+.quick-messages-editor > .setting-name {
+  grid-column: 1;
+}
+
+.quick-messages-editor > .setting-value {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  grid-column: 2;
+  justify-self: end;
 }
 
 .quick-messages-editor-controls {
   display: contents;
+}
+
+.quick-messages-editor .quick-message-editor-rows {
+  grid-column: 1 / -1;
+}
+
+.quick-messages-editor .quick-message-editor-rows:empty {
+  display: none;
+}
+
+.quick-messages-editor [data-quick-message-add] {
+  grid-column: 1 / -1;
+  justify-self: start;
 }
 
 .quick-message-editor-rows {
@@ -7391,8 +7567,72 @@ html[data-surface="mobile"]
   gap: 0.55rem;
 }
 
-.agent-rules-card {
+/* Все действия одной высоты, а необратимое отделено от обычных пропуском. */
+.stream-card-actions .chip-button {
+  justify-content: center;
+  min-height: 2.45rem;
+}
+
+.stream-card-actions .stream-card-archive {
+  border-radius: var(--radius-chip);
+  font-size: 0.76rem;
+  margin-top: 0.45rem;
+}
+
+.stream-agent-rules {
+  padding-bottom: 0.45rem;
+}
+
+.stream-card-actions-section {
+  padding-top: 0.45rem;
+}
+
+.settings-card.stream-card-actions {
+  padding-block: 0.5rem;
+}
+
+.stream-card-move-menu {
+  background-color: var(--bg);
+  background-image: var(--card-bg-open);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  box-shadow: 0 1rem 3rem rgb(0 0 0 / 72%), var(--card-shadow);
+  color: var(--text);
+  display: grid;
+  gap: 0.25rem;
+  inset: auto;
+  margin: 0;
+  max-height: min(18rem, calc(100dvh - 2rem));
+  min-width: min(22rem, calc(100vw - 2rem));
+  overflow-y: auto;
+  padding: 0.4rem;
+  position: fixed;
+}
+
+.stream-card-move-menu:not(:popover-open) {
+  display: none;
+}
+
+.stream-card-move-option {
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 0.55rem 0.65rem;
+  text-align: left;
+}
+
+.stream-card-move-option:hover,
+.stream-card-move-option:focus-visible {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  outline: none;
+}
+
+.settings-card.agent-rules-card {
   gap: 0;
+  padding-bottom: 0.5rem;
 }
 
 .stream-agent-rules textarea {
@@ -7413,10 +7653,21 @@ html[data-surface="mobile"]
   grid-template-columns: minmax(0, auto) minmax(0, 1fr);
 }
 
+/* Чипы агента занимают ту же колонку, что селекты соседних строк: ширина
+   и высота контролов карточки общие, иначе строка «Агент» выпадала из ряда. */
 .dialog-agent-options {
-  grid-template-columns: repeat(auto-fit, minmax(5.8rem, auto));
-  justify-content: end;
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+  justify-content: stretch;
   justify-self: end;
+  max-width: var(--dialog-control-width);
+  width: 100%;
+}
+
+.dialog-agent-options .option-chip {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+  min-height: var(--dialog-control-height);
 }
 
 .dialog-agent {
@@ -8502,6 +8753,12 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
 
 .attachment-viewer-loading {
   color: #f4f8fa;
+  max-width: min(80vw, 32rem);
+  text-align: center;
+}
+
+.attachment-viewer-loading.is-error {
+  color: #ffb5ad;
 }
 
 .attachment-viewer-close {
@@ -9609,7 +9866,7 @@ html[data-surface="mobile"] .chat-stop-bottom > span {
 }
 
 .dialog-settings .setting-row > .themed-select {
-  max-width: 13rem;
+  max-width: var(--dialog-control-width);
 }
 
 .theme-picker .themed-select,
@@ -14586,13 +14843,13 @@ html[data-surface="mobile"] .comparison-series-picker > .limits-legend-value {
 }
 
 .settings-section-title {
-  color: var(--text-faint);
-  font-family: var(--font-title);
-  font-size: 0.63rem;
-  font-weight: 700;
-  letter-spacing: 0.18em;
+  color: var(--section-heading-color);
+  font-family: var(--section-heading-family);
+  font-size: var(--section-heading-size);
+  font-weight: var(--section-heading-weight);
+  letter-spacing: var(--section-heading-spacing);
   margin: 0 0 0 0.15rem;
-  text-transform: uppercase;
+  text-transform: var(--section-heading-transform);
 }
 
 .compact-options {

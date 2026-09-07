@@ -178,8 +178,8 @@ const streamCardPin = document.querySelector("[data-stream-card-pin]");
 const streamCardWorkspace = document.querySelector("[data-stream-card-workspace]");
 const streamCardRotate = document.querySelector("[data-stream-card-rotate]");
 const streamCardContinueProvider = document.querySelector("[data-stream-card-continue-provider]");
-const streamCardMoveTarget = document.querySelector("[data-stream-card-move-target]");
 const streamCardMove = document.querySelector("[data-stream-card-move]");
+const streamCardMoveMenu = document.querySelector("[data-stream-card-move-menu]");
 const streamCardArchive = document.querySelector("[data-stream-card-archive]");
 const workspaceMessageSearch = document.querySelector("[data-workspace-message-search]");
 const workspaceMessageSearchToggle = document.querySelector("[data-workspace-message-search-toggle]");
@@ -3595,18 +3595,20 @@ taskList.addEventListener("click", (event) => {
   const workspace = event.target.closest("[data-workspace-select]");
   if (!workspace) return;
   const workspaceId = String(workspace.dataset.workspaceSelect ?? "");
-  if (event.detail === 1) workspaceDblclickCandidate = { node: workspace, workspaceId };
-  else if (workspaceDblclickCandidate?.node !== workspace
-    || workspaceDblclickCandidate?.workspaceId !== workspaceId) workspaceDblclickCandidate = null;
+  if (event.detail === 1) workspaceDblclickCandidate = { workspaceId };
+  else if (workspaceDblclickCandidate?.workspaceId !== workspaceId) workspaceDblclickCandidate = null;
   const target = representativeWorkspaceTask(state.tasks.filter((task) => workspaceKey(task) === workspaceId));
-  if (target) selectTaskFromUi(target.id, { preserveTaskList: true });
+  if (target) selectTaskFromUi(target.id, {
+    preserveTaskList: true,
+    preservePane: surface === "mobile",
+  });
 });
 taskList.addEventListener("dblclick", (event) => {
   const candidate = workspaceDblclickCandidate;
   workspaceDblclickCandidate = null;
   const workspace = event.target.closest?.("[data-workspace-select]");
   const workspaceId = String(workspace?.dataset.workspaceSelect ?? "");
-  if (!candidate || candidate.node !== workspace || candidate.workspaceId !== workspaceId
+  if (!candidate || candidate.workspaceId !== workspaceId
     || !workspace?.isConnected || !taskList.contains(workspace) || !workspaceCatalogItem(workspaceId)) return;
   openWorkspaceCard(workspaceId);
 });
@@ -3846,14 +3848,12 @@ streamTabs?.addEventListener("click", (event) => {
   const tab = event.target.closest("[data-stream-tab-id][data-workspace-id]");
   if (!tab) return;
   const candidate = {
-    node: tab,
     workspaceId: String(tab.dataset.workspaceId ?? ""),
     streamId: String(tab.dataset.streamTabId ?? ""),
     taskId: String(tab.dataset.streamTaskId ?? ""),
   };
   if (event.detail === 1) streamDblclickCandidate = candidate;
-  else if (streamDblclickCandidate?.node !== candidate.node
-    || streamDblclickCandidate?.workspaceId !== candidate.workspaceId
+  else if (streamDblclickCandidate?.workspaceId !== candidate.workspaceId
     || streamDblclickCandidate?.streamId !== candidate.streamId
     || streamDblclickCandidate?.taskId !== candidate.taskId) streamDblclickCandidate = null;
   const overflowMenu = streamTabs.querySelector("[data-stream-tabs-overflow-menu]");
@@ -3874,7 +3874,7 @@ streamTabs?.addEventListener("dblclick", (event) => {
   const streamId = String(tab?.dataset.streamTabId ?? "");
   const taskId = String(tab?.dataset.streamTaskId ?? "");
   const task = state.tasks.find((entry) => entry.id === taskId);
-  if (!candidate || candidate.node !== tab || candidate.workspaceId !== workspaceId
+  if (!candidate || candidate.workspaceId !== workspaceId
     || candidate.streamId !== streamId || candidate.taskId !== taskId
     || !tab?.isConnected || !streamTabs.contains(tab) || !task
     || workspaceKey(task) !== workspaceId || String(task.streamId ?? "") !== streamId) return;
@@ -4469,7 +4469,11 @@ function syncStreamTabsSelection() {
   }
 }
 
-function selectTaskFromUi(id, { preserveTaskList = false, preserveStreamTabs = false } = {}) {
+function selectTaskFromUi(id, {
+  preserveTaskList = false,
+  preserveStreamTabs = false,
+  preservePane = false,
+} = {}) {
   if (!id) return;
   saveDraft();
   state.selectedId = id;
@@ -4483,7 +4487,7 @@ function selectTaskFromUi(id, { preserveTaskList = false, preserveStreamTabs = f
   if (preserveTaskList) syncTaskListSelection();
   else renderTasks();
   renderChat({ preserveStreamTabs });
-  setPane("chat");
+  if (!preservePane) setPane("chat");
   emit("task:select", { id });
 }
 
@@ -4893,6 +4897,33 @@ let attachmentViewerOpen = false;
 let attachmentViewerGallery = [];
 let attachmentViewerIndex = 0;
 let attachmentViewerReturnFocus = null;
+let attachmentViewerGeneration = 0;
+let attachmentViewerLoadTimer = null;
+let attachmentViewerDeadlineAt = 0;
+const ATTACHMENT_VIEWER_LOAD_TIMEOUT_MS = Math.max(
+  1,
+  Number(window.__agentHubAttachmentViewerLoadTimeoutMs) || 30_000,
+);
+
+function attachmentViewerLoadAuthority({
+  generation = attachmentViewerGeneration,
+  index = attachmentViewerIndex,
+} = {}) {
+  const current = attachmentViewerOpen
+    && generation === attachmentViewerGeneration
+    && index === attachmentViewerIndex;
+  const remainingMs = current
+    ? Math.max(0, attachmentViewerDeadlineAt - performance.now())
+    : 0;
+  return Object.freeze({
+    current,
+    owned: current && remainingMs > 0,
+    generation: attachmentViewerGeneration,
+    index: attachmentViewerIndex,
+    deadlineAt: attachmentViewerDeadlineAt,
+    remainingMs,
+  });
+}
 
 function syncAttachmentViewerControls() {
   const length = attachmentViewerGallery.length;
@@ -4904,37 +4935,142 @@ function syncAttachmentViewerControls() {
   attachmentViewerCounter.textContent = length > 1 ? `${attachmentViewerIndex + 1} / ${length}` : "";
 }
 
+function clearAttachmentViewerLoad() {
+  if (attachmentViewerLoadTimer != null) window.clearTimeout(attachmentViewerLoadTimer);
+  attachmentViewerLoadTimer = null;
+  attachmentViewerImage.onload = null;
+  attachmentViewerImage.onerror = null;
+}
+
+function disposeAttachmentViewerResource(generation = attachmentViewerGeneration) {
+  document.dispatchEvent(new CustomEvent("agenthub:attachment-viewer-dispose", {
+    detail: { generation, index: attachmentViewerIndex },
+  }));
+}
+
+function setAttachmentViewerLoading(message = "Загрузка…", error = false) {
+  attachmentViewerLoading.textContent = String(message || "Не удалось загрузить изображение");
+  attachmentViewerLoading.classList.toggle("is-error", error);
+  attachmentViewerLoading.hidden = false;
+}
+
+function settleAttachmentViewerLoad({ generation, index, loaded, message = "" }) {
+  if (!attachmentViewerOpen
+    || generation !== attachmentViewerGeneration
+    || index !== attachmentViewerIndex) return false;
+  const loadedInTime = loaded && performance.now() <= attachmentViewerDeadlineAt;
+  if (!loadedInTime) disposeAttachmentViewerResource(generation);
+  clearAttachmentViewerLoad();
+  if (loadedInTime) {
+    attachmentViewerImage.hidden = false;
+    attachmentViewerLoading.hidden = true;
+    attachmentViewerLoading.classList.remove("is-error");
+    return true;
+  }
+  attachmentViewerImage.removeAttribute("src");
+  attachmentViewerImage.hidden = true;
+  setAttachmentViewerLoading(
+    message || (loaded ? "Изображение не загрузилось вовремя" : "Не удалось загрузить изображение"),
+    true,
+  );
+  return true;
+}
+
+function loadAttachmentViewerSource({ source = "", name = "Изображение", generation, index }) {
+  const authority = attachmentViewerLoadAuthority({ generation, index });
+  if (!authority.owned) return false;
+  clearAttachmentViewerLoad();
+  attachmentViewerImage.removeAttribute("src");
+  attachmentViewerImage.hidden = true;
+  attachmentViewerImage.alt = String(name || "Изображение");
+  setAttachmentViewerLoading();
+  attachmentViewerLoadTimer = window.setTimeout(() => {
+    settleAttachmentViewerLoad({
+      generation,
+      index,
+      loaded: false,
+      message: "Изображение не загрузилось вовремя",
+    });
+  }, Math.max(1, authority.remainingMs));
+  const resource = String(source ?? "").trim();
+  if (!resource) return true;
+  attachmentViewerImage.onload = () => {
+    settleAttachmentViewerLoad({ generation, index, loaded: true });
+  };
+  attachmentViewerImage.onerror = () => {
+    settleAttachmentViewerLoad({
+      generation,
+      index,
+      loaded: false,
+      message: "Не удалось загрузить изображение",
+    });
+  };
+  attachmentViewerImage.src = resource;
+  return true;
+}
+
 function openAttachmentViewer({ dataUrl = "", name = "Изображение", gallery = [], index = 0 } = {}) {
   if (!attachmentViewerOpen) attachmentViewerReturnFocus = document.activeElement;
+  disposeAttachmentViewerResource();
   attachmentViewerGallery = resourceInteractions.imageGallery(
     Array.isArray(gallery) && gallery.length ? gallery : [{ dataUrl, name, type: "image/*" }],
   );
   attachmentViewerIndex = resourceInteractions.galleryIndex(index, attachmentViewerGallery.length);
   const selected = attachmentViewerGallery[attachmentViewerIndex] ?? { dataUrl, name };
   const selectedDataUrl = String(selected.dataUrl ?? dataUrl ?? "");
+  attachmentViewerGeneration += 1;
+  const generation = attachmentViewerGeneration;
+  attachmentViewerDeadlineAt = performance.now() + ATTACHMENT_VIEWER_LOAD_TIMEOUT_MS;
   attachmentViewerOpen = true;
   attachmentViewer.hidden = false;
   if (!attachmentViewer.open) {
     if (typeof attachmentViewer.showModal === "function") attachmentViewer.showModal();
     else attachmentViewer.setAttribute("open", "");
   }
-  attachmentViewerImage.hidden = !selectedDataUrl;
-  attachmentViewerLoading.hidden = Boolean(selectedDataUrl);
-  attachmentViewerImage.alt = String(selected.name ?? name);
-  attachmentViewerImage.src = selectedDataUrl;
   syncAttachmentViewerControls();
   root.dataset.overlay = "attachment";
   attachmentViewer.focus({ preventScroll: true });
+  loadAttachmentViewerSource({
+    source: selectedDataUrl,
+    name: selected.name ?? name,
+    generation,
+    index: attachmentViewerIndex,
+  });
+  return generation;
 }
 
-function showAttachmentViewer({ dataUrl, name = "Изображение", index = attachmentViewerIndex } = {}) {
-  if (!attachmentViewerOpen) openAttachmentViewer();
-  if (resourceInteractions.galleryIndex(index, attachmentViewerGallery.length) !== attachmentViewerIndex) return;
-  attachmentViewerImage.alt = name;
-  attachmentViewerImage.src = String(dataUrl ?? "");
-  attachmentViewerImage.hidden = !dataUrl;
-  attachmentViewerLoading.hidden = Boolean(dataUrl);
+function showAttachmentViewer({
+  dataUrl,
+  name = "Изображение",
+  index = attachmentViewerIndex,
+  generation = attachmentViewerGeneration,
+  transient = false,
+} = {}) {
+  if (!attachmentViewerOpen) {
+    if (generation !== attachmentViewerGeneration) return false;
+    generation = openAttachmentViewer({ name, index });
+  }
+  if (!attachmentViewerLoadAuthority({ generation, index }).owned) return false;
+  if (resourceInteractions.galleryIndex(index, attachmentViewerGallery.length) !== attachmentViewerIndex) return false;
+  if (!transient) {
+    const selected = attachmentViewerGallery[attachmentViewerIndex] ?? {};
+    attachmentViewerGallery[attachmentViewerIndex] = { ...selected, dataUrl: String(dataUrl ?? "") };
+  }
   syncAttachmentViewerControls();
+  return loadAttachmentViewerSource({
+    source: dataUrl,
+    name,
+    generation,
+    index: attachmentViewerIndex,
+  });
+}
+
+function failAttachmentViewer({
+  message = "Не удалось загрузить изображение",
+  index = attachmentViewerIndex,
+  generation = attachmentViewerGeneration,
+} = {}) {
+  return settleAttachmentViewerLoad({ generation, index, loaded: false, message });
 }
 
 function moveAttachmentViewer(direction) {
@@ -4945,31 +5081,42 @@ function moveAttachmentViewer(direction) {
     attachmentViewerGallery.length,
   );
   if (nextIndex === attachmentViewerIndex) return false;
+  disposeAttachmentViewerResource();
   attachmentViewerIndex = nextIndex;
+  attachmentViewerGeneration += 1;
+  const generation = attachmentViewerGeneration;
+  attachmentViewerDeadlineAt = performance.now() + ATTACHMENT_VIEWER_LOAD_TIMEOUT_MS;
   const attachment = attachmentViewerGallery[attachmentViewerIndex];
   const dataUrl = String(attachment?.dataUrl ?? "");
-  attachmentViewerImage.alt = String(attachment?.name ?? "Изображение");
-  attachmentViewerImage.src = dataUrl;
-  attachmentViewerImage.hidden = !dataUrl;
-  attachmentViewerLoading.hidden = Boolean(dataUrl);
   syncAttachmentViewerControls();
+  loadAttachmentViewerSource({
+    source: dataUrl,
+    name: attachment?.name,
+    generation,
+    index: attachmentViewerIndex,
+  });
   if (!dataUrl) emit("attachment:load", {
     attachment,
     gallery: attachmentViewerGallery,
     index: attachmentViewerIndex,
+    generation,
   });
   return true;
 }
 
 function closeAttachmentViewer() {
   if (!attachmentViewerOpen) return false;
+  disposeAttachmentViewerResource();
   attachmentViewerOpen = false;
+  attachmentViewerGeneration += 1;
+  attachmentViewerDeadlineAt = 0;
+  clearAttachmentViewerLoad();
   if (attachmentViewer.open && typeof attachmentViewer.close === "function") attachmentViewer.close();
   else attachmentViewer.removeAttribute("open");
   attachmentViewer.hidden = true;
   attachmentViewerImage.removeAttribute("src");
   attachmentViewerImage.hidden = true;
-  attachmentViewerLoading.hidden = false;
+  setAttachmentViewerLoading();
   attachmentViewerGallery = [];
   attachmentViewerIndex = 0;
   delete root.dataset.overlay;
@@ -7941,6 +8088,7 @@ function setDialogSettingsOpen(open) {
     emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
   }
   const visible = Boolean(open && currentTask());
+  if (!visible && streamCardMoveMenu?.matches(":popover-open")) streamCardMoveMenu.hidePopover();
   chatPane.toggleAttribute("data-dialog-settings-open", visible);
   dialogSettingsToggle.setAttribute("aria-pressed", String(visible));
   if (visible) {
@@ -8496,17 +8644,23 @@ function renderDialogSettings() {
       ? "Сначала завершите текущий ход"
       : oppositeProvider ? "Продолжить Stream в противоположном провайдере" : "Провайдер Stream не определён";
   }
-  if (streamCardMoveTarget) {
-    const previous = streamCardMoveTarget.value;
-    const options = workspaceMenuOptions(workspaceId);
-    streamCardMoveTarget.replaceChildren(
-      el("option", { value: "", text: options.length ? "Выберите Workspace" : "Нет доступных Workspace" }),
-      ...options.map((workspace) => el("option", { value: workspace.id, text: workspace.name })),
-    );
-    streamCardMoveTarget.value = options.some((workspace) => workspace.id === previous) ? previous : "";
-    streamCardMoveTarget.disabled = !streamId || options.length === 0;
+  const moveOptions = workspaceMenuOptions(workspaceId);
+  if (streamCardMoveMenu) {
+    streamCardMoveMenu.replaceChildren(...moveOptions.map((workspace) => el("button", {
+      type: "button",
+      class: "stream-card-move-option",
+      role: "menuitem",
+      "data-stream-card-move-workspace": workspace.id,
+      text: workspace.name,
+    })));
   }
-  if (streamCardMove) streamCardMove.disabled = !streamId || !streamCardMoveTarget?.value;
+  if (streamCardMove) {
+    streamCardMove.disabled = !streamId || moveOptions.length === 0
+      || typeof streamCardMoveMenu?.showPopover !== "function";
+    streamCardMove.title = moveOptions.length
+      ? "Выбрать Workspace и сразу перенести Stream"
+      : "Нет доступных Workspace для переноса";
+  }
   if (streamCardArchive) {
     streamCardArchive.disabled = !streamId || running;
     streamCardArchive.title = running ? "Сначала завершите активный ход в этом Stream" : "Архивировать Stream";
@@ -8537,6 +8691,22 @@ function selectDialogSetting(group, value) {
     emit("selection:set", { key: group, value });
   }
   renderOptions();
+}
+
+function openStreamCardMoveMenu() {
+  if (!streamCardMoveMenu || !streamCardMove || streamCardMove.disabled
+    || typeof streamCardMoveMenu.showPopover !== "function") return;
+  streamCardMoveMenu.showPopover();
+  const anchor = streamCardMove.getBoundingClientRect();
+  const menu = streamCardMoveMenu.getBoundingClientRect();
+  const left = Math.max(8, Math.min(anchor.left, window.innerWidth - menu.width - 8));
+  const below = anchor.bottom + 6;
+  const top = below + menu.height <= window.innerHeight - 8
+    ? below
+    : Math.max(8, anchor.top - menu.height - 6);
+  streamCardMoveMenu.style.left = `${left}px`;
+  streamCardMoveMenu.style.top = `${top}px`;
+  streamCardMoveMenu.querySelector("[role='menuitem']")?.focus({ preventScroll: true });
 }
 
 settingsPanel?.addEventListener("click", async (event) => {
@@ -8579,11 +8749,21 @@ dialogSettings.addEventListener("click", (event) => {
     setDialogSettingsOpen(false);
     return;
   }
-  if (event.target.closest("[data-stream-card-move]")) {
-    const targetWorkspaceId = String(streamCardMoveTarget?.value ?? "");
-    if (!streamId || !targetWorkspaceId || streamCardMove?.disabled) return;
+  const moveOption = event.target.closest("[data-stream-card-move-workspace]");
+  if (moveOption) {
+    const targetWorkspaceId = String(moveOption.dataset.streamCardMoveWorkspace ?? "");
+    const allowed = workspaceMenuOptions(workspaceId).some((workspace) => workspace.id === targetWorkspaceId);
+    if (!streamId || !allowed) {
+      if (streamCardMoveMenu?.matches(":popover-open")) streamCardMoveMenu.hidePopover();
+      renderDialogSettings();
+      return;
+    }
     emit("stream:move", { streamId, workspaceId: targetWorkspaceId });
     setDialogSettingsOpen(false);
+    return;
+  }
+  if (event.target.closest("[data-stream-card-move]")) {
+    openStreamCardMoveMenu();
     return;
   }
   if (event.target.closest("[data-stream-card-archive]")) {
@@ -8614,10 +8794,6 @@ dialogSettings.addEventListener("change", (event) => {
     if (name !== String(task.streamName ?? task.streamDisplayName ?? "")) {
       emit("stream:rename", { streamId: task.streamId, name });
     }
-    return;
-  }
-  if (event.target.closest("[data-stream-card-move-target]")) {
-    if (streamCardMove) streamCardMove.disabled = !streamCardMoveTarget.value;
     return;
   }
   const setting = event.target.closest("select[data-dialog-options]");
@@ -8679,6 +8855,9 @@ dialogSettings.addEventListener("close", () => {
   chatPane.toggleAttribute("data-dialog-settings-open", false);
   dialogSettingsToggle.setAttribute("aria-pressed", "false");
   returnFocus?.focus?.({ preventScroll: true });
+});
+streamCardMoveMenu?.addEventListener("toggle", (event) => {
+  streamCardMove?.setAttribute("aria-expanded", String(event.newState === "open"));
 });
 
 dialogStreamRules?.addEventListener("input", () => {
@@ -9749,7 +9928,9 @@ const AgentHub = {
     emit("resource:open", { resource: { href: String(url ?? "") } });
   },
   openAttachmentViewer,
+  attachmentViewerLoadAuthority,
   showAttachmentViewer,
+  failAttachmentViewer,
   closeAttachmentViewer,
   openStream(workspaceId, streamId) {
     const normalizedWorkspaceId = String(workspaceId ?? "").trim();

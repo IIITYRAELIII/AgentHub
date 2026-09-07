@@ -7,11 +7,17 @@ import test from "node:test";
 
 import { TurnEndDeliveryService } from "../../../src/application/turn-end-delivery-service.mjs";
 import { TerminalTurnCommitService } from "../../../src/application/terminal-turn-commit-service.mjs";
+import {
+  createCodexTerminalAuditScheduler,
+} from "../../../src/composition/provider-runtime-wiring-composition.mjs";
 import { ProviderTurnTerminalStore } from "../../../src/infrastructure/persistence/provider-turn-terminal-store.mjs";
 import { MessageCommandLedgerStore } from "../../../src/infrastructure/persistence/message-command-ledger-store.mjs";
 import { CodexTerminalAudit } from "../../../src/providers/codex/codex-terminal-audit.mjs";
 import { CodexTerminalReconciliationService } from "../../../src/providers/codex/codex-terminal-reconciliation-service.mjs";
-import { scanCodexHistoricalRollout } from "../../../src/providers/codex/codex-turn-usage.mjs";
+import {
+  readCodexTurnUsage,
+  scanCodexHistoricalRollout,
+} from "../../../src/providers/codex/codex-turn-usage.mjs";
 
 function completion(overrides = {}) {
   return {
@@ -53,7 +59,7 @@ test("terminal store strips oversized client identity before serializing payload
   assert.equal(result.terminal.payload.completion.clientUserMessageId, undefined);
   assert.equal(result.terminal.payload.history.clientUserMessageId, undefined);
   assert.equal(result.terminal.payload.history.userMessages[0].clientUserMessageId, undefined);
-  assert.equal(result.outbox.command.clientUserMessageId, null);
+  assert.equal(result.outbox.channels.command.clientUserMessageId, null);
 });
 
 test("terminal store strips conflicting top-level and root identity", async (context) => {
@@ -96,7 +102,7 @@ test("terminal store strips conflicting top-level and root identity", async (con
   assert.equal(result.terminal.payload.completion.messageOrigin, undefined);
   assert.equal(result.terminal.payload.completion.userMessages[0].clientUserMessageId, undefined);
   assert.equal(result.terminal.payload.completion.userMessages[0].origin, undefined);
-  assert.equal(result.outbox.command.clientUserMessageId, null);
+  assert.equal(result.outbox.channels.command.clientUserMessageId, null);
 });
 
 test("terminal commit is idempotent and revisions supersede pending projections", async (context) => {
@@ -134,6 +140,34 @@ test("terminal commit is idempotent and revisions supersede pending projections"
   const revised = await terminal.commit(completion({ finalAnswer: "Corrected final answer" }));
   assert.equal(revised.terminal.terminalRevision, 2);
   assert.deepEqual((await terminal.pending()).map((item) => item.terminalRevision), [2]);
+});
+
+test("terminal owner waits asynchronously for a transient runtime database writer", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-terminal-contention-"));
+  const store = new ProviderTurnTerminalStore({ dataDir, mutationTimeoutMs: 1_000 });
+  await store.get({ provider: "codex", threadId: "thread-lock", turnId: "turn-lock" });
+  const blocker = new DatabaseSync(path.join(dataDir, "runtime.sqlite"));
+  context.after(async () => {
+    blocker.close();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  blocker.exec("BEGIN IMMEDIATE;");
+
+  const committed = store.commit({
+    provider: "codex",
+    threadId: "thread-lock",
+    turnId: "turn-lock",
+    status: "completed",
+    finalAnswer: "Done after contention",
+    usageIdentity: "usage-lock",
+    payload: { completion: {}, history: {} },
+  });
+  setTimeout(() => blocker.exec("COMMIT;"), 75);
+
+  const result = await committed;
+  assert.equal(result.created, true);
+  assert.equal(result.terminal.finalAnswer, "Done after contention");
+  assert.equal(result.outbox.state, "pending");
 });
 
 test("terminal owner migrates bounded payload metadata and provides indexed recovery order", async (context) => {
@@ -507,12 +541,160 @@ test("current-shape delayed output repairs one exact count-less terminal after r
   assert.deepEqual(untouched.payload.completion.responseAttachments ?? [], []);
 });
 
-test("v14 EOF audit migrates once and repairs delivered generated output after rebirth", async (context) => {
-  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-terminal-v14-image-migration-"));
+test("current exec ImageGen result repairs exact empty terminal and survives reopen", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-terminal-current-imagegen-"));
   context.after(() => rm(dataDir, { recursive: true, force: true }));
-  const rollout = path.join(dataDir, "rollout-v14.jsonl");
-  const origin = completion({ threadId: "thread-v14", turnId: "turn-v14" });
-  const generatedPath = "C:/generated/v14-output.png";
+  const rollout = path.join(dataDir, "rollout-current-imagegen.jsonl");
+  const identity = {
+    provider: "codex",
+    threadId: "thread-current-imagegen",
+    turnId: "turn-current-imagegen",
+  };
+  const generatedPath = "C:/generated/dragon.png";
+  const exact = (payload) => ({
+    ...payload,
+    internal_chat_message_metadata_passthrough: { turn_id: identity.turnId },
+  });
+  await writeFile(rollout, `${[
+    { type: "event_msg", payload: { type: "task_started", turn_id: identity.turnId } },
+    {
+      type: "response_item",
+      payload: exact({
+        type: "custom_tool_call",
+        name: "exec",
+        call_id: "call-current-imagegen",
+        input: "const output = await tools.image_gen__imagegen({prompt: 'dragon'}); generatedImage(output);",
+      }),
+    },
+    {
+      type: "response_item",
+      payload: exact({
+        type: "custom_tool_call_output",
+        call_id: "call-current-imagegen",
+        output: [
+          { type: "input_text", text: "Script completed" },
+          { type: "input_image", image_url: "data:image/png;base64,b3V0cHV0" },
+          {
+            type: "input_text",
+            text: `Generated images are saved to C:/generated as ${generatedPath} by default.`,
+          },
+        ],
+      }),
+    },
+    {
+      type: "response_item",
+      payload: exact({
+        type: "message",
+        role: "assistant",
+        phase: "final_answer",
+        content: [{ type: "output_text", text: "Вот дракон." }],
+      }),
+    },
+    {
+      type: "event_msg",
+      payload: {
+        type: "task_complete",
+        turn_id: identity.turnId,
+        last_agent_message: "Вот дракон.",
+      },
+    },
+  ].map((entry) => JSON.stringify(entry)).join("\n")}\n`, "utf8");
+
+  const emptyTerminal = new TerminalTurnCommitService({
+    store: new ProviderTurnTerminalStore({ dataDir }),
+  });
+  await emptyTerminal.commit(completion({
+    ...identity,
+    finalAnswer: "Вот дракон.",
+    imageGenerationCount: null,
+    responseAttachments: [],
+  }), {
+    run: { id: "run-current-imagegen", userMessages: [{ role: "user", text: "нарисуй дракона" }] },
+  });
+
+  const usageResult = await readCodexTurnUsage(rollout, identity.turnId, { attempts: 1 });
+  assert.equal(usageResult.imageGenerationCount, 0);
+  assert.deepEqual(usageResult.generatedImageSources, [
+    { type: "generated-path", value: generatedPath },
+  ]);
+
+  const repairOwner = new TerminalTurnCommitService({
+    store: new ProviderTurnTerminalStore({ dataDir }),
+  });
+  let imports = 0;
+  const reconciliation = new CodexTerminalReconciliationService({
+    notifications: {
+      hasDelivered: () => true,
+      get: () => null,
+      takePendingMessage: () => null,
+    },
+    turnStarts: new Map(),
+    workLogStore: { getTurn: async () => null },
+    accountingThread: async (thread) => ({
+      threadId: thread.id,
+      parentThreadId: "",
+      thread,
+      isSubagent: false,
+    }),
+    subagentParentTurnId: async () => "",
+    readTurnUsage: async () => usageResult,
+    taskGitDiff: async () => "",
+    dataDir,
+    changedFilesForRun: () => [],
+    projectTurn: async () => null,
+    taskTitle: async () => "",
+    defaultChatId: () => 0,
+    fallbackMessage: () => "",
+    rememberLastMessage() {},
+    rememberSeenTurn() {},
+    saveState: async () => {},
+    deliverNotification: async () => {},
+    repairTerminalAttachments: (target, options) => (
+      repairOwner.enrichResponseAttachments(target, options)
+    ),
+    resolveTerminalAttachments: async ({ generatedImageSources }) => {
+      imports += 1;
+      return generatedImageSources.map((source) => ({
+        id: `codex-generated-${path.basename(source.value)}`,
+        name: "Изображение",
+        type: "image/png",
+      }));
+    },
+  });
+  assert.equal(await reconciliation.reconcile(
+    { id: identity.threadId, path: rollout },
+    { path: "C:/workspace" },
+    {
+      turnId: identity.turnId,
+      status: "completed",
+      completedAt: "2026-08-25T12:00:00.000Z",
+      authoritative: true,
+      usageResult,
+    },
+  ), true);
+
+  const reopened = await new TerminalTurnCommitService({
+    store: new ProviderTurnTerminalStore({ dataDir }),
+  }).get(identity);
+  assert.equal(imports, 1);
+  assert.equal(reopened.terminalRevision, 2);
+  assert.deepEqual(reopened.payload.completion.responseAttachments, [{
+    id: "codex-generated-dragon.png",
+    name: "Изображение",
+    type: "image/png",
+  }]);
+  assert.deepEqual(
+    reopened.payload.history.responseAttachments,
+    reopened.payload.completion.responseAttachments,
+  );
+});
+
+test("v15 EOF audit migrates once and repairs delivered current ImageGen output", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-terminal-v15-image-migration-"));
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const rollout = path.join(dataDir, "rollout-v15.jsonl");
+  const origin = completion({ threadId: "thread-v15", turnId: "turn-v15" });
+  const generatedPath = "C:/generated/v15-output.png";
   const rolloutText = [
     {
       timestamp: "2026-08-25T12:00:00.000Z",
@@ -525,7 +707,7 @@ test("v14 EOF audit migrates once and repairs delivered generated output after r
       payload: {
         type: "custom_tool_call",
         name: "exec",
-        call_id: "call-image-v14",
+        call_id: "call-image-v15",
         input: "await tools.image_gen__imagegen({prompt: 'one output'})",
         internal_chat_message_metadata_passthrough: { turn_id: origin.turnId },
       },
@@ -534,12 +716,16 @@ test("v14 EOF audit migrates once and repairs delivered generated output after r
       timestamp: "2026-08-25T12:00:02.000Z",
       type: "response_item",
       payload: {
-        type: "function_call_output",
-        call_id: "call-image-v14",
-        output: [{
-          type: "input_text",
-          text: `Generated images are saved to C:/generated as ${generatedPath} by default.`,
-        }],
+        type: "custom_tool_call_output",
+        call_id: "call-image-v15",
+        output: [
+          { type: "input_image", image_url: "data:image/png;base64,aW5wdXQ=" },
+          {
+            type: "input_text",
+            text: `Generated images are saved to C:/generated as ${generatedPath} by default.`,
+          },
+        ],
+        internal_chat_message_metadata_passthrough: { turn_id: origin.turnId },
       },
     },
     {
@@ -555,10 +741,10 @@ test("v14 EOF audit migrates once and repairs delivered generated output after r
   });
   const initialCommit = await initialTerminal.commit(origin, {
     run: {
-      id: "run-v14",
-      streamId: "stream-v14",
-      clientUserMessageId: "message-v14",
-      responseItemId: "response-v14",
+      id: "run-v15",
+      streamId: "stream-v15",
+      clientUserMessageId: "message-v15",
+      responseItemId: "response-v15",
       userMessages: [{ role: "user", text: "Нарисуй изображение" }],
     },
   });
@@ -607,7 +793,7 @@ test("v14 EOF audit migrates once and repairs delivered generated output after r
     },
     accountingThread: async () => ({}),
     subagentParentTurnId: async () => "",
-    readTurnUsage: async () => { throw new Error("v14 migration must use scanned exact-turn usage"); },
+    readTurnUsage: async () => { throw new Error("v15 migration must use scanned exact-turn usage"); },
     taskGitDiff: async () => "",
     dataDir,
     projectTurn: async () => null,
@@ -627,7 +813,7 @@ test("v14 EOF audit migrates once and repairs delivered generated output after r
         { type: "generated-path", value: generatedPath },
       ]);
       return [{
-        id: "codex-generated-v14-output.png",
+        id: "codex-generated-v15-output.png",
         name: "Изображение",
         type: "image/png",
       }];
@@ -654,15 +840,15 @@ test("v14 EOF audit migrates once and repairs delivered generated output after r
     },
     shouldRunAudit: () => true,
     shouldRunHistoricalBackfill: () => true,
-    prepareHistoricalBackfill: async () => ({ backupFile: "v14-migration.sqlite" }),
+    prepareHistoricalBackfill: async () => ({ backupFile: "v15-migration.sqlite" }),
     flushHistoricalProjection: async () => {},
     liveScanBytes: 16 * 1024,
     auditBytesPerRun: 16 * 1024,
     auditTimeMs: 10_000,
   };
   const eofOffset = Buffer.byteLength(rolloutText, "utf8");
-  const preFixV14Snapshot = {
-    version: 14,
+  const preFixV15Snapshot = {
+    version: 15,
     completedThrough: "2026-08-25T12:04:00.000Z",
     positions: [[origin.threadId, {
       path: rollout,
@@ -674,7 +860,7 @@ test("v14 EOF audit migrates once and repairs delivered generated output after r
       pending: false,
       initialized: true,
       prepared: true,
-      backupFile: "pre-fix-v14.sqlite",
+      backupFile: "pre-fix-v15.sqlite",
       totalFiles: 1,
       completedFiles: 1,
       processedTurns: 1,
@@ -685,20 +871,31 @@ test("v14 EOF audit migrates once and repairs delivered generated output after r
   };
 
   const migratedAudit = new CodexTerminalAudit(auditOptions);
-  migratedAudit.restore(preFixV14Snapshot);
+  migratedAudit.restore(preFixV15Snapshot);
   assert.equal(migratedAudit.snapshot().historicalSubagentBackfill.pending, true);
-  await migratedAudit.run();
+  const persistedAuditSnapshots = [];
+  const scheduler = createCodexTerminalAuditScheduler({
+    codexTerminalAudit: migratedAudit,
+    codexTransport: { running: false },
+    saveState: async () => persistedAuditSnapshots.push(migratedAudit.snapshot()),
+    isStopping: () => false,
+    runtimeTimers: { schedule: () => true },
+  });
+  await scheduler.auditNow();
   const migratedSnapshot = migratedAudit.snapshot();
 
-  assert.equal(migratedSnapshot.version, 15);
+  assert.equal(migratedSnapshot.version, 16);
   assert.equal(migratedSnapshot.historicalSubagentBackfill.pending, false);
   assert.equal(migratedSnapshot.historicalSubagentBackfill.completedFiles, 1);
   assert.equal(historicalScans, 1);
   assert.equal(historicalUsage.imageGenerationCount, 0);
   assert.equal(imports, 1);
   assert.equal(historyProjections.length, 2);
+  assert.equal(persistedAuditSnapshots.length, 1);
+  assert.equal(persistedAuditSnapshots[0].version, 16);
+  assert.equal(persistedAuditSnapshots[0].historicalSubagentBackfill.pending, false);
   assert.deepEqual(historyProjections[1].responseAttachments.map((item) => item.id), [
-    "codex-generated-v14-output.png",
+    "codex-generated-v15-output.png",
   ]);
 
   const rebornAudit = new CodexTerminalAudit(auditOptions);
@@ -714,7 +911,7 @@ test("v14 EOF audit migrates once and repairs delivered generated output after r
   }).get(origin);
   assert.equal(hydrated.terminalRevision, 2);
   assert.deepEqual(hydrated.payload.completion.responseAttachments.map((item) => item.id), [
-    "codex-generated-v14-output.png",
+    "codex-generated-v15-output.png",
   ]);
   assert.deepEqual(
     hydrated.payload.history.responseAttachments,

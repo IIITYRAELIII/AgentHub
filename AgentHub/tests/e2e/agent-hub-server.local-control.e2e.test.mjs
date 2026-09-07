@@ -773,6 +773,91 @@ test("local control client survives App Server exit during delayed startup and s
       : null;
   }, "unchanged external rollout release", 8_000);
 
+  const pairedTask = await callDesktopControl("new-task", { provider: "codex" }, { runtimeRoot });
+  const pairedThreadId = pairedTask.selected.threadId;
+  const pairedClientIds = ["paired-rollout-client-one", "paired-rollout-client-two"];
+  const pairedPrompt = "[rollout-exact-pair] одинаковый последовательный ввод";
+  const readPairedHistory = () => callDesktopControl("task-history", {
+    provider: "codex",
+    threadId: pairedThreadId,
+    limit: 10,
+  }, { runtimeRoot });
+  for (const clientUserMessageId of pairedClientIds) {
+    const sent = await callDesktopControl("send-message", {
+      text: pairedPrompt,
+      provider: "codex",
+      threadId: pairedThreadId,
+      clientUserMessageId,
+    }, { runtimeRoot });
+    assert.equal(sent.accepted, true);
+    await waitFor(async () => {
+      const history = await readPairedHistory();
+      const exchange = history.items.find((item) => item.messages.some((message) => (
+        message.clientUserMessageId === clientUserMessageId
+      )));
+      return exchange?.completed === true ? history : null;
+    }, `paired rollout completion ${clientUserMessageId}`, 5_000);
+  }
+  const assertPairedProjection = async () => {
+    const history = await waitFor(async () => {
+      const candidate = await readPairedHistory();
+      const candidateExchanges = pairedClientIds.map((clientUserMessageId) => (
+        candidate.items.find((item) => item.messages.some((message) => (
+          message.clientUserMessageId === clientUserMessageId
+        )))
+      ));
+      return candidateExchanges.every((exchange) => (
+        exchange?.completed === true
+        && exchange.messages.filter((message) => message.role === "user").length === 1
+        && exchange.messages.filter((message) => (
+          message.role === "agent" && message.kind !== "subagent"
+        )).length === 1
+      )) ? candidate : null;
+    }, "stable paired rollout projection", 5_000);
+    const exchanges = pairedClientIds.map((clientUserMessageId) => history.items.find((item) => (
+      item.messages.some((message) => message.clientUserMessageId === clientUserMessageId)
+    )));
+    assert.equal(exchanges.every(Boolean), true, JSON.stringify(history.items));
+    for (const [index, exchange] of exchanges.entries()) {
+      const users = exchange.messages.filter((message) => message.role === "user");
+      const assistants = exchange.messages.filter((message) => (
+        message.role === "agent" && message.kind !== "subagent"
+      ));
+      assert.equal(users.length, 1, JSON.stringify(users));
+      assert.equal(users[0].clientUserMessageId, pairedClientIds[index]);
+      assert.equal(assistants.length, 1, JSON.stringify(assistants));
+    }
+    return history;
+  };
+  await assertPairedProjection();
+  const pairedProviderState = await readFile(codexStatePath, "utf8").then(JSON.parse);
+  const pairedProviderEffects = pairedProviderState.threads
+    .find((thread) => thread.id === pairedThreadId)
+    ?.turns.flatMap((turn) => turn.items)
+    .filter((item) => pairedClientIds.includes(item.clientId)) ?? [];
+  assert.deepEqual(
+    pairedProviderEffects.map((item) => item.clientId).sort(),
+    pairedClientIds.slice().sort(),
+  );
+  await assertPairedProjection();
+  await callDesktopControl("select-task", {
+    provider: "codex",
+    threadId: firstThreadId,
+  }, { runtimeRoot });
+  await callDesktopControl("select-task", {
+    provider: "codex",
+    threadId: pairedThreadId,
+  }, { runtimeRoot });
+  await assertPairedProjection();
+  await stopBot();
+  startBot();
+  await waitFor(
+    () => callDesktopControl("snapshot", {}, { runtimeRoot }).catch(() => null),
+    "paired rollout restart",
+    8_000,
+  );
+  await assertPairedProjection();
+
   const recoveryThreadId = "e2e-corrupted-terminal-thread";
   const recoveryTurnId = "e2e-corrupted-terminal-turn";
   const recoveryRunId = "e2e-corrupted-terminal-run";

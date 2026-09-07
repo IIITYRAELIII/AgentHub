@@ -286,6 +286,46 @@ function codexCompletedUserMessage(entry) {
   };
 }
 
+function codexRolloutOrdinal(entry) {
+  const value = Number(entry?.ordinal);
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function bindCompletedCodexUserProjection(metadata, entry, completedUserMessage) {
+  // Codex emits one submitted user occurrence as an adjacent response_item /
+  // item_completed pair. Turn + raw ordinal adjacency is the protocol evidence;
+  // text, timestamps and provider item ids are deliberately not identity.
+  const pending = metadata.pendingUserResponseProjection ?? null;
+  metadata.pendingUserResponseProjection = null;
+  const clientUserMessageId = String(completedUserMessage?.clientUserMessageId ?? "").trim();
+  const ordinal = codexRolloutOrdinal(entry);
+  const turnId = codexEntryTurnId(entry);
+  if (!pending || !clientUserMessageId || ordinal === null
+    || pending.role !== "user" || ordinal !== pending.ordinal + 1
+    || !turnId || turnId !== pending.turnId) return "";
+
+  const messages = metadata.userMessages.get(turnId) ?? [];
+  const index = messages.findLastIndex((message) => {
+    if (message?.role !== "user") return false;
+    const messageClientId = String(message?.clientUserMessageId ?? "").trim();
+    if (messageClientId && messageClientId !== clientUserMessageId) return false;
+    const occurrenceId = String(message?.sourceOccurrenceId ?? "").trim();
+    return pending.sourceOccurrenceId
+      ? occurrenceId === pending.sourceOccurrenceId
+      : !occurrenceId && String(message?.itemId ?? "").trim() === pending.itemId;
+  });
+  if (index < 0) return "";
+
+  const sourceOccurrenceId = String(messages[index]?.sourceOccurrenceId ?? "").trim();
+  messages[index] = {
+    ...messages[index],
+    itemId: clientUserMessageId,
+    clientUserMessageId,
+  };
+  metadata.userMessages.set(turnId, messages);
+  return sourceOccurrenceId;
+}
+
 function rememberCodexTurnMessage(metadata, turnId, message) {
   const projection = codexAssistantResponseProjection(message);
   const value = projection.text.trim();
@@ -319,7 +359,7 @@ function rememberCodexUserMessage(metadata, turnId, {
   const interstream = notification ? null : interstreamMessageDetails(text);
   const responseAnnotations = notification ? null : responseAnnotationDetails(text);
   const value = notification?.text ?? displayUserPrompt(text);
-  if (!turnId || !value) return;
+  if (!turnId || !value) return null;
   const clientId = String(clientUserMessageId ?? "").trim()
     || (interstream?.requestId ? `mcp:${interstream.requestId}` : "");
   const providerItemId = String(itemId ?? "").trim();
@@ -360,6 +400,8 @@ function rememberCodexUserMessage(metadata, turnId, {
       ...message,
       itemId: clientId ? message.itemId : duplicate.itemId,
     };
+    metadata.userMessages.set(turnId, messages);
+    return messages[duplicateIndex];
   } else {
     messages.push(message);
   }
@@ -369,6 +411,7 @@ function rememberCodexUserMessage(metadata, turnId, {
     metadata.userMessages.delete(metadata.userMessages.keys().next().value);
     metadata.userProjectionIncomplete = true;
   }
+  return message;
 }
 
 function codexUserMessageAttachmentSources(entry) {
@@ -833,6 +876,11 @@ function observeCodexEntry(
   }
   rememberCodexTraceEntry(metadata, turnId, entry);
   const completedUserMessage = codexCompletedUserMessage(entry);
+  const completedSourceOccurrenceId = bindCompletedCodexUserProjection(
+    metadata,
+    entry,
+    completedUserMessage,
+  );
   const isUserMessage = (entry?.type === "event_msg" && entry.payload?.type === "user_message")
     || completedUserMessage !== null;
   if (
@@ -888,17 +936,37 @@ function observeCodexEntry(
   const responseItemUserMessage = codexResponseItemMessage(entry, "user");
   const sourceProven = Boolean(sourceOccurrenceId) || metadata.requireSourceProvenance !== true;
   if (turnId && responseItemUserMessage && sourceProven) {
-    rememberCodexUserMessage(metadata, turnId, {
+    const projected = rememberCodexUserMessage(metadata, turnId, {
       itemId: entry.payload?.id,
       sourceOccurrenceId,
       text: responseItemUserMessage,
     });
+    const ordinal = codexRolloutOrdinal(entry);
+    if (projected?.role === "user" && ordinal !== null) {
+      metadata.pendingUserResponseProjection = {
+        turnId,
+        ordinal,
+        role: projected.role,
+        itemId: String(projected.itemId ?? "").trim(),
+        sourceOccurrenceId: String(projected.sourceOccurrenceId ?? "").trim(),
+      };
+    }
   } else if (turnId && responseItemHasImage && sourceProven) {
-    rememberCodexUserMessage(metadata, turnId, {
+    const projected = rememberCodexUserMessage(metadata, turnId, {
       itemId: entry.payload?.id,
       sourceOccurrenceId,
       text: "Изображение",
     });
+    const ordinal = codexRolloutOrdinal(entry);
+    if (projected?.role === "user" && ordinal !== null) {
+      metadata.pendingUserResponseProjection = {
+        turnId,
+        ordinal,
+        role: projected.role,
+        itemId: String(projected.itemId ?? "").trim(),
+        sourceOccurrenceId: String(projected.sourceOccurrenceId ?? "").trim(),
+      };
+    }
   }
   if (entry?.type === "event_msg" && entry.payload?.type === "agent_message") {
     const messageTurnId = turnId || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
@@ -934,7 +1002,7 @@ function observeCodexEntry(
       if (clientId || sourceProven) {
         rememberCodexUserMessage(metadata, messageTurnId, {
           clientUserMessageId: clientId,
-          sourceOccurrenceId,
+          sourceOccurrenceId: completedSourceOccurrenceId || sourceOccurrenceId,
           text: completedUserMessage?.text ?? entry.payload?.message,
           attachmentSources,
         });
@@ -1119,6 +1187,7 @@ export function parseCodexRolloutActivity(text, options = {}) {
     pendingViewImageCalls: new Map(),
     pendingGeneratedImageCalls: new Map(),
     pendingUserMessages: [],
+    pendingUserResponseProjection: null,
     unscopedLatestMessage: "",
     startedAtMsByTurnId: new Map(),
     incompleteUserTurnIds: new Set(),
@@ -1146,6 +1215,7 @@ export function parseCodexRolloutActivity(text, options = {}) {
           ),
         );
       } catch {
+        metadata.pendingUserResponseProjection = null;
         metadata.userProjectionIncomplete = true;
       }
     }
@@ -1364,6 +1434,9 @@ export async function readCodexRolloutActivityOnCurrentThread(
     pendingUserMessages: appendOnly
       ? (cached.pendingUserMessages ?? []).map((message) => ({ ...message }))
       : [],
+    pendingUserResponseProjection: appendOnly && cached.pendingUserResponseProjection
+      ? { ...cached.pendingUserResponseProjection }
+      : null,
     unscopedLatestMessage: appendOnly ? String(cached.unscopedLatestMessage ?? "") : "",
     startedAtMsByTurnId: new Map(appendOnly ? cached.startedAtMsByTurnId ?? [] : []),
     incompleteUserTurnIds: new Set(appendOnly ? cached.incompleteUserTurnIds ?? [] : []),
@@ -1469,7 +1542,10 @@ export async function readCodexRolloutActivityOnCurrentThread(
         );
       }
     } catch {
-      if (selected) metadata.userProjectionIncomplete = true;
+      if (selected) {
+        metadata.pendingUserResponseProjection = null;
+        metadata.userProjectionIncomplete = true;
+      }
     }
   };
   try {
@@ -1498,7 +1574,10 @@ export async function readCodexRolloutActivityOnCurrentThread(
       }
       if (pending.length > maximumLineBytes) {
         const selected = appendOnly || pendingStartOffset >= observationStart;
-        if (selected) metadata.userProjectionIncomplete = true;
+        if (selected) {
+          metadata.pendingUserResponseProjection = null;
+          metadata.userProjectionIncomplete = true;
+        }
         if (!oversizedLine) {
           oversizedLine = {
             head: pending.subarray(0, oversizedSampleLimit),
@@ -1581,6 +1660,9 @@ export async function readCodexRolloutActivityOnCurrentThread(
     pendingViewImageCalls: [...metadata.pendingViewImageCalls],
     pendingGeneratedImageCalls: [...metadata.pendingGeneratedImageCalls],
     pendingUserMessages: metadata.pendingUserMessages.map((message) => ({ ...message })),
+    pendingUserResponseProjection: metadata.pendingUserResponseProjection
+      ? { ...metadata.pendingUserResponseProjection }
+      : null,
     unscopedLatestMessage: metadata.unscopedLatestMessage,
     ...snapshotAuthority,
     sourceStartedAtZero,

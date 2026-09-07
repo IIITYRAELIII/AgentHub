@@ -303,6 +303,26 @@ test("subagent terminal turn is aggregated into its parent task without delivery
   assert.equal(projection[1].parentTurnId, "parent-turn");
 });
 
+test("historical reconciliation forwards the local-only accounting boundary", async () => {
+  const accountingOptions = [];
+  const { service } = harness({
+    accountingThread: async (value, options) => {
+      accountingOptions.push(options);
+      return { threadId: value.id, parentThreadId: "", thread: value, isSubagent: false };
+    },
+  });
+
+  await service.reconcile(thread, project, {
+    turnId: "historical-local-turn",
+    status: "completed",
+    completedAt: "2026-08-04T10:00:00.000Z",
+    historical: true,
+    usageResult: usage(),
+  }, { localOnlyAccounting: true });
+
+  assert.deepEqual(accountingOptions, [{ localOnly: true }]);
+});
+
 test("the same terminal turn cannot reconcile concurrently", async () => {
   let release;
   const blocked = new Promise((resolve) => { release = resolve; });

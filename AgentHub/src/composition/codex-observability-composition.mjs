@@ -39,6 +39,13 @@ function setBounded(map, key, value, limit) {
   while (map.size > limit) map.delete(map.keys().next().value);
 }
 
+export function createCodexAccountingResolutionPorts(accounting) {
+  return {
+    accountingThread: (...args) => accounting.accountingThread(...args),
+    subagentParentTurnId: (...args) => accounting.subagentParentTurnId(...args),
+  };
+}
+
 export function createCodexObservabilityComposition({
   config,
   sendRpc,
@@ -137,6 +144,7 @@ export function createCodexObservabilityComposition({
     readRolloutActivity: readCodexRolloutActivity,
     importAttachments: importCodexAssistantAttachments,
   });
+  const accountingPorts = createCodexAccountingResolutionPorts(accounting);
 
   async function rememberAuditedTurnStart(thread, project, turn) {
     const identity = {
@@ -169,10 +177,8 @@ export function createCodexObservabilityComposition({
     notifications: turnEndNotifications,
     turnStarts,
     workLogStore: workLogUsageStore,
-    accountingThread: (thread) => accounting.accountingThread(thread),
-    subagentParentTurnId: (thread, accountingThread) => (
-      accounting.subagentParentTurnId(thread, accountingThread)
-    ),
+    accountingThread: accountingPorts.accountingThread,
+    subagentParentTurnId: accountingPorts.subagentParentTurnId,
     readTurnUsage: readCodexTurnUsage,
     taskGitDiff,
     dataDir: config.dataDir,

@@ -23,12 +23,12 @@ test("runtime startup wakes durable lane recovery before fallback queue scheduli
     scheduleQueuedInput: () => events.push("fallback"),
     scheduleDeliveryOutboxFlush: () => {},
     selectedTaskWatch: { schedule: () => {} },
-    scheduleCodexTerminalAudit: () => {},
+    scheduleCodexTerminalAudit: (delayMs) => events.push(`terminal-audit:${delayMs}`),
     scheduleBugReportScan: () => {},
     rateLimitTelemetry: { schedule: () => {} },
   });
 
   timers.startRuntimeTimers();
 
-  assert.deepEqual(events, ["maintenance", "wake"]);
+  assert.deepEqual(events, ["maintenance", "wake", "terminal-audit:500"]);
 });

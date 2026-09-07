@@ -31,12 +31,15 @@ after navigation, but is not a host-message authenticator.
 - An opaque sandboxed document can still call `parent.postMessage`. Every
   Agent Hub receiver for runtime publication, control, session, HTTP, journal
   and theme host messages applies the shared receiver guard before inspecting
-  `event.data`: only the native host channel (`event.source === null`) and the
-  Agent Hub window itself are accepted. Every foreign browsing context is
-  rejected. Active and replaced embedded-frame `WindowProxy` values are also
-  retained in a weak deny registry, so replacement/unload cannot turn an old
-  frame into a trusted sender. Message shape and `origin === "null"` never
-  establish trust.
+  `event.data`. Ordinary web surfaces accept only the native host channel
+  (`event.source === null`) and the Agent Hub window itself. VS Code additionally
+  accepts its native relay's outer-frame `WindowProxy` only when the page owns
+  the acquired VS Code API capability and the event origin exactly equals the
+  current opaque `vscode-webview:` origin. Every registered embedded-frame
+  `WindowProxy` is rejected before that origin check, and active plus replaced
+  sources remain in a weak deny registry so unload cannot turn an old frame
+  into a trusted sender. Ordinary HTTPS pages, a foreign origin, message shape
+  and `origin === "null"` never establish VS Code host authority.
 - If the client does not implement credentialless iframes, embedded loading is
   disabled. The user may still open the validated address in an external
   browser through the existing `resource:open` surface bridge; ordinary web
