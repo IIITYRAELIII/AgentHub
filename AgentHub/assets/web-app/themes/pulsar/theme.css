@@ -46,7 +46,6 @@ html[data-theme="pulsar"] {
   --pulsar-dialog-composer-rule: rgba(74, 226, 214, 0.2);
   --pulsar-stream-tab-background: linear-gradient(90deg, rgba(10, 42, 48, 0.5), transparent 84%);
   --pulsar-stream-tab-active-background: linear-gradient(90deg, rgba(60, 230, 212, 0.16), transparent 62%);
-  --pulsar-stream-tab-rail: rgba(74, 226, 214, 0.28);
   --shell-header-background: rgba(2, 12, 16, 0.78);
   --shell-header-backdrop-filter: none;
   --shell-panel-radius: 0;
@@ -426,12 +425,10 @@ html[data-theme="pulsar"][data-surface] .task-item {
 html[data-theme="pulsar"][data-surface] .task-item[data-selected],
 html[data-theme="pulsar"][data-surface] .stream-tab[aria-pressed="true"] .stream-tab-card {
   background: var(--pulsar-stream-tab-active-background);
-  border-left-color: var(--accent);
 }
 
 html[data-theme="pulsar"][data-surface] .stream-tab-card {
   background: var(--pulsar-stream-tab-background);
-  border-left-color: rgba(74, 226, 214, 0.28);
 }
 
 html[data-theme="pulsar"][data-surface] .task-rail,
