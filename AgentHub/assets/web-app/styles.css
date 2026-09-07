@@ -1102,7 +1102,7 @@ main {
 .journal summary[data-work-log-stream-summary] {
   align-items: center;
   align-self: start;
-  column-gap: 0.5rem;
+  column-gap: 0;
   cursor: pointer;
   display: grid;
   grid-template-columns: 23rem minmax(0, 1fr);
