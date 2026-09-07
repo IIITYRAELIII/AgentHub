@@ -14455,6 +14455,18 @@ html[data-surface="mobile"] .server-config-inline-label {
   stroke-width: 1.5;
 }
 
+.limits-burn-target-line {
+  opacity: 0.68;
+  stroke-dasharray: 1 5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.limits-burn-target-line.is-off-scale {
+  opacity: 0.82;
+}
+
 .limits-burn-average-segment.is-preliminary,
 .limits-burn-rate-segment.is-preliminary {
   opacity: 0.42;
