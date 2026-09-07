@@ -10477,7 +10477,7 @@ function renderLimitsModes() {
   }
   if (limitsSpeedNote) {
     limitsSpeedNote.hidden = limitsState.mode !== "speed";
-    limitsSpeedNote.textContent = "Основная линия показывает сглаженный текущий темп с чувствительностью около 3 часов, пунктир — средний темп за последние 24 часа. Простои снижают текущий темп, а сброс лимита не обрывает историю и не создаёт нулевую точку. Пока доступно меньше суток истории, среднее отмечается как предварительное. Горизонтальная линия — ровный расход 14,3% в сутки.";
+    limitsSpeedNote.textContent = "Основная линия показывает сглаженный текущий темп с чувствительностью около 3 часов, длинный пунктир — средний темп за последние 24 часа, мелкий пунктир — допустимый темп по остатку и времени до сброса. Допустимый темп не меняет масштаб графика: значения выше шкалы прижимаются к верхней границе. Простои снижают текущий темп, а сброс лимита не обрывает историю и не создаёт нулевую точку. Пока доступно меньше суток истории, среднее отмечается как предварительное. Горизонтальная линия — ровный расход 14,3% в сутки.";
   }
 }
 
@@ -10876,6 +10876,38 @@ function weeklyBurnRatePoints(series, options = {}) {
   });
 }
 
+function limitsSpeedChartScale(series, normalWeeklyRate = 100) {
+  const normalDailyRate = Math.max(0, Number(normalWeeklyRate) || 0) / 7;
+  const visibleDailyRates = (Array.isArray(series) ? series : []).flatMap((item) => (
+    Array.isArray(item?.ratePoints) ? item.ratePoints : []
+  ).flatMap((point) => [
+    Number.isFinite(point.actualRate) ? point.actualRate / 7 : null,
+    Number.isFinite(point.averageRate) ? point.averageRate / 7 : null,
+  ])).filter(Number.isFinite);
+  const maximumDailyRate = Math.max(normalDailyRate, ...visibleDailyRates);
+  const roughStep = maximumDailyRate / 4;
+  const magnitude = 10 ** Math.floor(Math.log10(Math.max(1, roughStep)));
+  const normalizedStep = roughStep / magnitude;
+  const tickStep = (normalizedStep <= 1 ? 1 : normalizedStep <= 2 ? 2 : normalizedStep <= 5 ? 5 : 10)
+    * magnitude;
+  return {
+    chartMaximum: Math.max(tickStep, Math.ceil(maximumDailyRate / tickStep) * tickStep),
+    maximumDailyRate,
+    normalDailyRate,
+    tickStep,
+  };
+}
+
+function limitsSpeedChartRate(weeklyRate, chartMaximum) {
+  const dailyRate = Math.max(0, Number(weeklyRate) || 0) / 7;
+  const maximum = Math.max(0, Number(chartMaximum) || 0);
+  return {
+    dailyRate,
+    offScale: dailyRate > maximum,
+    plottedDailyRate: Math.min(dailyRate, maximum),
+  };
+}
+
 function formatResetCountdown(point) {
   const isoReset = Date.parse(point?.resetsAt ?? "");
   const resetMs = Number.isFinite(isoReset)
@@ -11249,21 +11281,10 @@ function buildLimitsSpeedChart(payload) {
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
   const xOf = (time) => padL + ((time - tMin) / (tMax - tMin)) * plotW;
-  const normalDailyRate = 100 / 7;
-  const visibleDailyRates = series.flatMap((item) => item.ratePoints.flatMap((point) => [
-    Number.isFinite(point.actualRate) ? point.actualRate / 7 : null,
-    Number.isFinite(point.averageRate) ? point.averageRate / 7 : null,
-  ])).filter(Number.isFinite);
-  const maximumDailyRate = Math.max(normalDailyRate, ...visibleDailyRates);
-  const roughStep = maximumDailyRate / 4;
-  const magnitude = 10 ** Math.floor(Math.log10(Math.max(1, roughStep)));
-  const normalizedStep = roughStep / magnitude;
-  const tickStep = (normalizedStep <= 1 ? 1 : normalizedStep <= 2 ? 2 : normalizedStep <= 5 ? 5 : 10)
-    * magnitude;
-  const chartMaximum = Math.max(tickStep, Math.ceil(maximumDailyRate / tickStep) * tickStep);
+  const { chartMaximum, tickStep } = limitsSpeedChartScale(series);
   const yOf = (weeklyRate) => {
-    const dailyRate = Math.max(0, Number(weeklyRate) || 0) / 7;
-    return padT + (1 - clampNumber(dailyRate, 0, chartMaximum) / chartMaximum) * plotH;
+    const { plottedDailyRate } = limitsSpeedChartRate(weeklyRate, chartMaximum);
+    return padT + (1 - plottedDailyRate / chartMaximum) * plotH;
   };
   const svg = svgEl("svg", {
     viewBox: `0 0 ${W} ${H}`,
@@ -11345,6 +11366,19 @@ function buildLimitsSpeedChart(payload) {
   }
 
   for (const item of series) {
+    const targetPoints = limitsFiniteSpeedPoints(item.ratePoints, "targetRate")
+      .map((point) => ({ ...point, x: xOf(point.atMs), y: yOf(point.targetRate) }));
+    if (targetPoints.length) {
+      const targetOffScale = targetPoints.some((point) => (
+        limitsSpeedChartRate(point.targetRate, chartMaximum).offScale
+      ));
+      svg.append(svgEl("path", {
+        d: limitsSpeedPath(targetPoints),
+        class: `limits-burn-target-line${targetOffScale ? " is-off-scale" : ""}`,
+        fill: "none",
+        stroke: item.color,
+      }));
+    }
     const averagePoints = limitsFiniteSpeedPoints(item.ratePoints, "averageRate")
       .map((point) => ({ ...point, x: xOf(point.atMs), y: yOf(point.averageRate) }));
     for (let index = 1; index < averagePoints.length; index += 1) {

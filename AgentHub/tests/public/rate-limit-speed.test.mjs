@@ -25,6 +25,15 @@ function calculate(series, options = {}) {
   return JSON.parse(JSON.stringify(context.result));
 }
 
+function chartScale(series, weeklyRate) {
+  const context = { series, weeklyRate };
+  vm.runInNewContext(
+    `${policy}\nconst scale = limitsSpeedChartScale(series);\nglobalThis.result = { scale, rate: limitsSpeedChartRate(weeklyRate, scale.chartMaximum) };`,
+    context,
+  );
+  return JSON.parse(JSON.stringify(context.result));
+}
+
 function pathFor(points) {
   const context = { points, AgentHubRateLimitSeries: rateLimitSeries };
   vm.runInNewContext(
@@ -197,6 +206,24 @@ test("the remaining safe pace still controls the status color", () => {
   const expectedTarget = 95 / (latest.resetMs - latest.atMs) * (7 * 24 * 60 * 60_000);
   assert.ok(Math.abs(latest.targetRate - expectedTarget) < 1e-9);
   assert.equal(latest.overTarget, false);
+});
+
+test("an off-scale target near reset does not flatten current and average rates", () => {
+  const targetWeeklyRate = 14_400 * 7;
+  const result = chartScale([{
+    ratePoints: [{
+      actualRate: 10 * 7,
+      averageRate: 12 * 7,
+      targetRate: targetWeeklyRate,
+    }],
+  }], targetWeeklyRate);
+
+  assert.equal(result.scale.chartMaximum, 15);
+  assert.equal(result.scale.normalDailyRate, 100 / 7);
+  assert.equal(result.scale.maximumDailyRate, 100 / 7);
+  assert.equal(result.rate.dailyRate, 14_400);
+  assert.equal(result.rate.plottedDailyRate, 15);
+  assert.equal(result.rate.offScale, true);
 });
 
 test("a moving reset forecast does not fragment a monotonic cycle", () => {
