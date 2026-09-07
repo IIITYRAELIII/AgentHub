@@ -2847,6 +2847,7 @@ agentHub.on("message:send", (request) => {
         clientUserMessageId: request.requestId,
         clientProjectionIntent,
         followUpMode: request.followUpMode,
+        ...(request.composerTransfer ? { composerTransfer: request.composerTransfer } : {}),
         clientTiming: {
           submittedAtMs: request.submittedAtMs,
           submittedMonotonicMs: request.submittedMonotonicMs,
@@ -3576,11 +3577,31 @@ agentHub.on("queue:new", ({ id, taskId: taskIdValue }) => runAction(() => runQue
     return result;
   },
 )));
-agentHub.on("queue:edit", ({ id, text }) => runAction(async () => {
-  const result = await control("deferred-input", { id, action: "edit", text });
-  applySnapshot(await control("snapshot"));
-  agentHub.toast(result?.message ?? "Сообщение в очереди изменено");
-}));
+async function composerAttachmentFromQueue(attachment) {
+  const { blob, name, type } = await attachmentBlob(attachment);
+  return {
+    name: String(name ?? attachment?.name ?? "attachment.bin"),
+    type: String(type ?? blob.type ?? attachment?.type ?? "application/octet-stream"),
+    size: blob.size,
+    dataUrl: await blobDataUrl(blob),
+  };
+}
+
+const queueComposerReturn = window.AgentHubQueueComposerReturn.create({
+  prepare: (id) => control("deferred-input", { id, action: "composer-prepare" }),
+  commit: (id, token) => control("deferred-input", { id, action: "composer-commit", token }),
+  release: (id, token) => control("deferred-input", { id, action: "composer-release", token }),
+  readSnapshot: () => control("snapshot"),
+  itemPresent: (snapshot, id) => (snapshot.deferredInputs ?? []).some((item) => item.id === id),
+  bindingTaskId: (binding) => taskId(binding?.provider, binding?.threadId, binding?.streamId),
+  materializeAttachment: composerAttachmentFromQueue,
+  applyDraft: (...args) => agentHub.applyQueueComposerTransfer(...args),
+  rollbackDraft: (...args) => agentHub.rollbackQueueComposerTransfer(...args),
+  applySnapshot,
+  notify: (message) => agentHub.toast(message),
+});
+
+agentHub.on("queue:edit", (request) => runAction(() => queueComposerReturn.run(request)));
 for (const [event, action, fallback] of [
   ["queue:pause", "pause", "Сообщение приостановлено"],
   ["queue:resume", "resume", "Очередь возобновлена"],

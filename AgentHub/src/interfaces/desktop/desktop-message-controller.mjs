@@ -26,6 +26,7 @@ export function createDesktopMessageController({
   runCoordinator,
   durableIntake = false,
   commandTrace = null,
+  composerTransfers = null,
 }) {
   if (!runCoordinator?.submitClientInput || !runCoordinator?.steer) {
     throw new TypeError("runCoordinator is required");
@@ -55,6 +56,15 @@ export function createDesktopMessageController({
       throw error;
     }
     if (!target.threadId) throw new Error("Сначала выберите или создайте поток");
+    const requestedComposerTransfer = params.composerTransfer && typeof params.composerTransfer === "object"
+      ? params.composerTransfer
+      : null;
+    const composerTransfer = requestedComposerTransfer
+      ? composerTransfers?.resolve?.(requestedComposerTransfer, target) ?? null
+      : null;
+    if (requestedComposerTransfer && !composerTransfer) {
+      throw new Error("Перенос черновика устарел; сообщение из очереди не было отправлено");
+    }
     const taskReferences = await resolveTaskReferences(params.taskReferences, target, context);
     if (!text && !attachments.length && !taskReferences.length) {
       throw new Error("Введите сообщение или добавьте вложение");
@@ -76,7 +86,8 @@ export function createDesktopMessageController({
       annotationLimit: 20_000,
     });
     const responseAnnotationRequest = String(params.responseAnnotationRequest ?? "").trim();
-    const messageOrigin = normalizeInterstreamOrigin(target.messageOrigin);
+    const messageOrigin = composerTransfer?.messageOrigin
+      ?? normalizeInterstreamOrigin(target.messageOrigin);
     const taskReferencedInput = messageWithTaskReferences(text, taskReferences);
     const referencedInput = messageOrigin && !interstreamMessageDetails(taskReferencedInput)
       ? createInterstreamMessage({ ...messageOrigin, text: taskReferencedInput })
@@ -92,6 +103,7 @@ export function createDesktopMessageController({
     };
     const fingerprint = await messageRequestFingerprint({
       text, attachmentIdentities: descriptors, taskReferences, followUpMode, clientProjectionIntent,
+      messageOrigin: composerTransfer ? messageOrigin : null,
     });
     preparation?.finish({
       outcome: "succeeded",
@@ -145,6 +157,7 @@ export function createDesktopMessageController({
         if (clientProjectionIntent) storedResult.clientProjectionIntent = clientProjectionIntent;
         if (messageAttachments.length) storedResult.attachments = messageAttachments;
         receipts.updateResult(receiptIdentity, storedResult);
+        if (composerTransfer) await composerTransfers.consume(composerTransfer);
         if (!usesDurableIntake) await persistReceipts();
         return storedResult;
       } catch (error) {

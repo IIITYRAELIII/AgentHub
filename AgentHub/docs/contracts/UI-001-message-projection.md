@@ -131,6 +131,18 @@ live-user projection even when the previous card was a valid `user-turn`.
 Queued inputs remain represented by the queue surface and cannot keep a drained
 run card alive while waiting for, or after completing, later turns.
 
+`Изменить` on a queued or paused input never opens a second editor. It returns
+the complete source draft to the main composer through the composer state
+owner, including editable user text, locally materialized files, exact Task
+references and their intents, response annotations and the opaque
+inter-Stream-origin transfer identity. Any existing composer text, file, Task
+reference or annotation blocks the operation with an explicit message and does
+not mutate queue state. A composer revision compare-and-swap prevents a user
+edit made during attachment loading from being overwritten. A failed durable
+queue removal rolls back only an unchanged transferred draft; an unknown
+removal outcome is reconciled from the authoritative snapshot and never causes
+an automatic second removal.
+
 ## Read protocol
 
 The snapshot exposes the latest final as

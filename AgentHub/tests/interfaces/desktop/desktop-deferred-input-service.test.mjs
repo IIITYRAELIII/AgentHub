@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DesktopDeferredInputService } from "../../../src/interfaces/desktop/desktop-deferred-input-service.mjs";
+import { DeferredComposerTransferRegistry } from "../../../src/application/deferred-composer-transfer-registry.mjs";
+import { messageWithTaskReferences } from "../../../src/domain/task-board-task.mjs";
+import { createInterstreamMessage } from "../../../src/domain/interstream-message.mjs";
 
 function createService(item, overrides = {}) {
   const pendingInputs = overrides.pendingInputs ?? new Map([[item.id, item]]);
   const queuedInputs = overrides.queuedInputs ?? new Map();
+  const composerTransfers = overrides.composerTransfers ?? new DeferredComposerTransferRegistry();
   const dependencies = {
     pendingInputs, queuedInputs, findReceiptByResultId: () => null, isProcessing: () => false,
     cancelSchedule: () => {}, steerActiveInput: async () => ({}), responseAnnotations: () => null,
@@ -14,17 +18,125 @@ function createService(item, overrides = {}) {
     startDeferred: async () => ({}),
     runForTask: () => null, describeAttachments: () => [], selectedTask: () => ({}),
     dispatchCommand: async () => {}, activeTitle: () => "New", snapshot: async () => ({}),
+    composerTransfers, createComposerTransferId: () => "transfer-1",
     ...overrides,
   };
   return new DesktopDeferredInputService(dependencies);
 }
 
-test("Desktop deferred input edit preserves its stable message id", async () => {
+test("Desktop deferred composer transfer preserves the whole structured draft before removal", async () => {
+  const origin = {
+    kind: "interstream",
+    workspaceId: "workspace-1", workspaceName: "Agent HUB", streamId: "architect-1",
+    streamName: "Architect", provider: "codex", model: "GPT-5.6-Sol",
+    sourceThreadId: "thread-source", requestId: "request-source",
+  };
+  const annotated = [
+    "# Response annotations:",
+    "<response-annotations>",
+    JSON.stringify([{ text: "selected", annotation: "comment" }]),
+    "</response-annotations>",
+    "",
+    "## My request for Codex:",
+    "Исправь всё",
+  ].join("\n");
+  const input = createInterstreamMessage({
+    ...origin,
+    text: messageWithTaskReferences(annotated, [{
+      kind: "task", taskId: "task-1", taskNumber: "HUB-1", title: "Task one",
+      workflowStatus: "testing", workspaceId: null, intent: "start",
+    }]),
+  });
+  const item = {
+    id: "message-1", input, temporaryFiles: ["stored.png"], persistentFiles: true,
+    provider: "codex", threadId: "thread-target", streamId: "stream-target",
+    messageOrigin: origin,
+  };
+  const queuedInputs = new Map([[item.id, item]]);
+  const events = [];
+  const transfers = new DeferredComposerTransferRegistry();
+  const service = createService(item, {
+    pendingInputs: new Map(), queuedInputs, composerTransfers: transfers,
+    cancelSchedule: () => events.push("cancel"),
+    saveState: async () => events.push("save"),
+    describeAttachments: () => [{ id: "stored.png", name: "screen.png", type: "image/png" }],
+  });
+
+  const prepared = await service.handle({ id: item.id, action: "composer-prepare" });
+
+  assert.equal(queuedInputs.has(item.id), true);
+  assert.equal(item.paused, true);
+  assert.equal(prepared.token, "transfer-1");
+  assert.equal(prepared.draft.text, "Исправь всё");
+  assert.deepEqual(prepared.draft.attachments, [{ id: "stored.png", name: "screen.png", type: "image/png" }]);
+  assert.deepEqual(prepared.draft.taskReferences.map(({ taskId, intent }) => ({ taskId, intent })), [
+    { taskId: "task-1", intent: "start" },
+  ]);
+  assert.deepEqual(prepared.draft.annotations.map(({ quote, annotation }) => ({ quote, annotation })), [
+    { quote: "selected", annotation: "comment" },
+  ]);
+  assert.deepEqual(prepared.draft.messageOrigin, origin);
+  assert.deepEqual(events, ["cancel", "save"]);
+
+  const committed = await service.handle({
+    id: item.id, action: "composer-commit", token: prepared.token,
+  });
+  assert.equal(committed.committed, true);
+  assert.equal(queuedInputs.has(item.id), false);
+  assert.equal(transfers.has({ id: item.id, token: prepared.token }), true);
+});
+
+test("Desktop deferred composer transfer rolls back durable prepare and commit failures", async () => {
+  const item = {
+    id: "message-1", input: "draft", temporaryFiles: [], persistentFiles: true,
+    provider: "codex", threadId: "thread-1", streamId: "stream-1",
+  };
+  const queuedInputs = new Map([[item.id, item]]);
+  let saves = 0;
+  const service = createService(item, {
+    pendingInputs: new Map(), queuedInputs,
+    saveState: async () => {
+      saves += 1;
+      if (saves === 2) throw new Error("disk full");
+    },
+  });
+  const prepared = await service.handle({ id: item.id, action: "composer-prepare" });
+
+  await assert.rejects(service.handle({
+    id: item.id, action: "composer-commit", token: prepared.token,
+  }), /disk full/u);
+
+  assert.equal(queuedInputs.get(item.id), item);
+  assert.equal(item.composerTransfer.token, prepared.token);
+});
+
+test("Desktop deferred composer transfer release restores the previous queue pause state", async () => {
+  const item = {
+    id: "message-1", input: "draft", temporaryFiles: [], persistentFiles: true,
+    provider: "codex", threadId: "thread-1", streamId: "stream-1",
+  };
+  const queuedInputs = new Map([[item.id, item]]);
+  const scheduled = [];
+  const service = createService(item, {
+    pendingInputs: new Map(), queuedInputs,
+    scheduleQueued: (_item, delay) => scheduled.push(delay),
+  });
+  const prepared = await service.handle({ id: item.id, action: "composer-prepare" });
+  await service.handle({ id: item.id, action: "composer-release", token: prepared.token });
+
+  assert.equal(item.composerTransfer, undefined);
+  assert.equal(item.paused, undefined);
+  assert.deepEqual(scheduled, [0]);
+});
+
+test("Desktop deferred input rejects the legacy text-only edit path", async () => {
   const item = { id: "message-1", input: "old", temporaryFiles: [] };
   const service = createService(item);
-  const result = await service.handle({ id: item.id, action: "edit", text: "new" });
-  assert.equal(result.id, "message-1");
-  assert.equal(item.input, "new");
+  await assert.rejects(
+    service.handle({ id: item.id, action: "edit", text: "new" }),
+    /основной композер/u,
+  );
+  assert.equal(item.input, "old");
 });
 
 test("Desktop deferred queue can pause and resume one message", async () => {
@@ -216,4 +328,21 @@ test("Desktop deferred queue reorders messages inside one Stream across Thread r
   assert.equal(second.queueOrder, 0);
   assert.equal(first.queueOrder, 1);
   assert.equal(unrelated.queueOrder, 0);
+});
+
+test("Desktop deferred queue restores the exact order when durable reorder fails", async () => {
+  const first = { id: "message-1", input: "first", streamId: "stream-1", queueOrder: 0 };
+  const second = { id: "message-2", input: "second", streamId: "stream-1", queueOrder: 1 };
+  const queuedInputs = new Map([[first.id, first], [second.id, second]]);
+  const service = createService(first, {
+    pendingInputs: new Map(), queuedInputs,
+    saveState: async () => { throw new Error("disk full"); },
+  });
+
+  await assert.rejects(
+    service.handle({ id: second.id, action: "move", direction: "up" }),
+    /disk full/u,
+  );
+  assert.equal(first.queueOrder, 0);
+  assert.equal(second.queueOrder, 1);
 });
