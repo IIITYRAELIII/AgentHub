@@ -2055,6 +2055,22 @@ test("Mini App serves compact totals first and bounded turn shells on demand", a
     ' data-work-log-turn-completed-at="2026-08-01T12:00:00.000Z">',
     '<details data-work-log-turn-details><summary>Ход 1</summary>',
     '<div data-work-log-turn-expanded>Полная детализация</div></details>',
+    "</div></div></div></details>",
+    '<details data-work-log-stream data-work-log-stream-id="stream-2">',
+    '<summary><span data-work-log-stream-title>Review</span></summary>',
+    '<div data-work-log-row data-work-log-provider="codex" data-work-log-thread-id="thread-2"',
+    ' data-work-log-workspace-id="workspace-1" data-work-log-stream-id="stream-2">',
+    '<div data-work-log-task-content>Проверка</div><div data-work-log-turn-list>',
+    '<div data-work-log-turn-entry data-work-log-turn-provider="codex"',
+    ' data-work-log-turn-thread-id="thread-2" data-work-log-turn-id="turn-2"',
+    ' data-work-log-turn-depth="0" data-work-log-turn-credits="10"',
+    ' data-work-log-turn-file-count="9" data-work-log-turn-change-lines="3"',
+    ' data-work-log-turn-subagent="0" data-work-log-turn-skills="[]"',
+    ' data-work-log-turn-mcp-calls="0" data-work-log-turn-mcp-tools="[]"',
+    ' data-work-log-turn-mcp-failures="0" data-work-log-turn-duration-seconds="30"',
+    ' data-work-log-turn-completed-at="2026-08-01T11:00:00.000Z">',
+    '<details data-work-log-turn-details><summary>Ход 2</summary>',
+    '<div data-work-log-turn-expanded>Другая детализация</div></details>',
     "</div></div></div></details></details></details>",
   ].join("");
   const server = new MiniAppServer({
@@ -2065,7 +2081,7 @@ test("Mini App serves compact totals first and bounded turn shells on demand", a
   try {
     const address = await server.start();
     const index = await (await fetch(`${address.url}api/journal`)).json();
-    assert.equal(index.summary.buckets.length, 1);
+    assert.equal(index.summary.buckets.length, 2);
     assert.equal(index.summary.buckets[0].credits, 42);
     assert.equal(Object.hasOwn(index.summary.buckets[0], "fileTouches"), false);
     assert.doesNotMatch(index.html, /Ход 1|Полная детализация/u);
@@ -2081,7 +2097,9 @@ test("Mini App serves compact totals first and bounded turn shells on demand", a
     assert.match(page.turns[0].html, /Ход 1/u);
     assert.doesNotMatch(page.turns[0].html, /Полная детализация/u);
     assert.equal(page.version, index.version);
+    assert.equal(page.profileSummary.buckets.length, 2);
     assert.equal(page.profileSummary.buckets[0].fileTouches, 3);
+    assert.equal(page.profileSummary.buckets[1].fileTouches, 9);
     assert.deepEqual(page.profileSummary.buckets[0].skillNames, ["journal"]);
     assert.equal((await fetch(
       `${address.url}api/journal/turns?workspaceId=workspace-1&version=old`,

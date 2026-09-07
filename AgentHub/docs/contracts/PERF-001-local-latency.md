@@ -125,6 +125,17 @@ scans. Periodic external history refresh runs only while chat is visible, and
 unchanged Dashboard collections retain their snapshot identity so they do not
 incur stringify comparison or card rebuild.
 
+Public Worker publication materializes an immutable versioned Journal layout
+before atomically advancing its manifest. Compact index HTML, resource summary,
+aggregate Stream-profile cohort, exact fragments and scoped ordinal turn keys
+are stored separately. A lazy turn-page read resolves at most 50 scoped index
+keys and their exact shells; it never decompresses the publication snapshot,
+lists a complete generation or filters all persisted turns. The immediately
+previous generation remains readable across manifest cutover, while older
+generation cleanup runs only on publication. A legacy snapshot without this
+layout may serve compact index and exact-fragment compatibility reads, but lazy
+turn paging fails closed until the next normal publication materializes it.
+
 
 The “Local Hub” health RTT is not message ACK latency and must not be presented
 as such. Provider latency and remote Worker latency are separate indicators.

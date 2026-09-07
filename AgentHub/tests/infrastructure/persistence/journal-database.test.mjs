@@ -307,6 +307,23 @@ test("materialized journal summary and turn pages survive SQLite reopen", async 
       knownDurations: 2,
       unknownDurations: 0,
       latestAt: Date.UTC(2026, 7, 1, 12),
+      fileTouches: 2,
+      knownFileTouches: 2,
+    }, {
+      date: "01.08.2026",
+      workspaceId: "workspace-2",
+      streamId: "stream-2",
+      provider: "codex",
+      turnCount: 1,
+      credits: 10,
+      knownCredits: 1,
+      unknownCredits: 0,
+      durationSeconds: 30,
+      knownDurations: 1,
+      unknownDurations: 0,
+      latestAt: Date.UTC(2026, 7, 1, 11),
+      fileTouches: 9,
+      knownFileTouches: 1,
     }],
   };
   const entries = [
@@ -354,6 +371,16 @@ test("materialized journal summary and turn pages survive SQLite reopen", async 
     const first = await database.turnPage({ workspaceId: "workspace-1", limit: 1 });
     assert.deepEqual(first.turns.map((entry) => entry.turnRef), ["turn-ref-new"]);
     assert.equal(first.nextOffset, 1);
+    const profiled = await database.turnPage({
+      workspaceId: "workspace-1",
+      streamId: "stream-1",
+      profileMode: "stream",
+      limit: 1,
+    });
+    assert.deepEqual(
+      profiled.profileSummary.buckets.map((bucket) => bucket.fileTouches),
+      [2, 9],
+    );
     const second = await database.turnPage({
       workspaceId: "workspace-1",
       fromMs: Date.UTC(2026, 6, 31),

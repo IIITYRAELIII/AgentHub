@@ -46,6 +46,14 @@ const DASHBOARD_BOT_PRECEDING_COMMENT_MAX_CHARS = 160;
 const DASHBOARD_BOT_PRECEDING_COMMENT_MAX_MESSAGE_GAP = 4;
 const SYNC_STAGING_EXPIRY_MS = 30 * 60 * 1_000;
 const STORAGE_DELETE_BATCH_SIZE = 128;
+const JOURNAL_PROJECTION_LAYOUT_VERSION = 1;
+const JOURNAL_PROJECTION_MANIFEST_KEY = "journal-projection-manifest";
+const JOURNAL_PROJECTION_PREFIX = "journal-projection:";
+const JOURNAL_PROJECTION_CHUNK_BYTES = 96 * 1_024;
+const JOURNAL_TURN_PAGE_LIMIT = 50;
+const JOURNAL_RANGE_DAY_LIMIT = 32;
+const JOURNAL_PROFILE_COHORT_LIMIT = 2_048;
+const DAY_MS = 24 * 60 * 60 * 1_000;
 const REMOTE_ATTACHMENT_PREFIX = "remote-attachment:";
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const ATTACHMENT_STORAGE_CHUNK_BYTES = 1024 * 1024;
@@ -1423,6 +1431,252 @@ async function putStorageEntries(storage, entries) {
   }
 }
 
+async function deleteStoragePrefix(storage, prefix) {
+  while (true) {
+    const batch = await storage.list({ prefix, limit: STORAGE_DELETE_BATCH_SIZE });
+    if (!batch.size) return;
+    await storage.delete([...batch.keys()]);
+  }
+}
+
+const JOURNAL_RESOURCE_FIELDS = [
+  "date", "dayMs", "workspaceId", "workspaceName", "workspaceKind", "streamId",
+  "streamDisplayName", "streamOrdinal", "provider", "turnCount", "credits",
+  "knownCredits", "unknownCredits", "durationSeconds", "knownDurations",
+  "unknownDurations", "latestAt",
+];
+const JOURNAL_PROFILE_SUM_FIELDS = [
+  "turnCount", "credits", "knownCredits", "unknownCredits", "durationSeconds",
+  "knownDurations", "unknownDurations", "fileTouches", "knownFileTouches",
+  "unknownFileTouches", "changedLines", "knownChangedLines", "unknownChangedLines",
+  "subagentTurns", "knownSubagentTurns", "unknownSubagentTurns", "mcpCallCount",
+  "mcpFailures", "knownToolMetricTurns", "unknownToolMetricTurns",
+];
+
+function publicVirtualSummary(value) {
+  return {
+    version: 1,
+    buckets: Number(value?.version) === 1 && Array.isArray(value?.buckets)
+      ? value.buckets.map((bucket) => Object.fromEntries(
+          JOURNAL_RESOURCE_FIELDS.map((field) => [field, bucket?.[field]]),
+        ))
+      : [],
+  };
+}
+
+function profileCohortSummary(value) {
+  const streams = new Map();
+  for (const bucket of Number(value?.version) === 1 && Array.isArray(value?.buckets)
+    ? value.buckets
+    : []) {
+    const workspaceId = String(bucket?.workspaceId ?? "").trim().slice(0, 256);
+    const streamId = String(bucket?.streamId ?? "").trim().slice(0, 256);
+    if (!workspaceId || !streamId) continue;
+    const provider = String(bucket?.provider ?? "").trim().slice(0, 32);
+    const key = `${workspaceId}\u001f${streamId}\u001f${provider}`;
+    const aggregate = streams.get(key) ?? {
+      date: String(bucket?.date ?? "").trim().slice(0, 32),
+      dayMs: Math.max(0, Number(bucket?.dayMs) || 0),
+      workspaceId,
+      workspaceName: String(bucket?.workspaceName ?? "").trim().slice(0, 256),
+      workspaceKind: String(bucket?.workspaceKind ?? "").trim().slice(0, 32),
+      streamId,
+      streamDisplayName: String(bucket?.streamDisplayName ?? "").trim().slice(0, 256),
+      streamOrdinal: Math.max(1, Number(bucket?.streamOrdinal) || 1),
+      provider,
+      latestAt: 0,
+      skillNames: new Set(),
+      mcpTools: new Set(),
+    };
+    for (const field of JOURNAL_PROFILE_SUM_FIELDS) {
+      aggregate[field] = Math.max(0, Number(aggregate[field]) || 0)
+        + Math.max(0, Number(bucket?.[field]) || 0);
+    }
+    for (const name of Array.isArray(bucket?.skillNames) ? bucket.skillNames : []) {
+      const normalized = String(name ?? "").trim().slice(0, 256);
+      if (normalized && aggregate.skillNames.size < 100) aggregate.skillNames.add(normalized);
+    }
+    for (const name of Array.isArray(bucket?.mcpTools) ? bucket.mcpTools : []) {
+      const normalized = String(name ?? "").trim().slice(0, 256);
+      if (normalized && aggregate.mcpTools.size < 100) aggregate.mcpTools.add(normalized);
+    }
+    const latestAt = Math.max(0, Number(bucket?.latestAt) || 0);
+    if (latestAt >= aggregate.latestAt) {
+      aggregate.latestAt = latestAt;
+      aggregate.date = String(bucket?.date ?? aggregate.date).trim().slice(0, 32);
+      aggregate.dayMs = Math.max(0, Number(bucket?.dayMs) || aggregate.dayMs);
+    }
+    streams.set(key, aggregate);
+  }
+  const ordered = [...streams.values()].sort((left, right) => (
+    right.latestAt - left.latestAt
+    || right.credits - left.credits
+    || left.workspaceId.localeCompare(right.workspaceId)
+    || left.streamId.localeCompare(right.streamId)
+  ));
+  return {
+    version: 1,
+    buckets: ordered.slice(0, JOURNAL_PROFILE_COHORT_LIMIT).map((bucket) => ({
+      ...bucket,
+      skillNames: [...bucket.skillNames].sort((left, right) => left.localeCompare(right)),
+      mcpTools: [...bucket.mcpTools].sort((left, right) => left.localeCompare(right)),
+    })),
+    truncated: ordered.length > JOURNAL_PROFILE_COHORT_LIMIT,
+  };
+}
+
+function journalProjectionPrefix(syncId) {
+  return `${JOURNAL_PROJECTION_PREFIX}${syncId}:`;
+}
+
+function appendProjectionBytes(entries, prefix, value) {
+  const bytes = encoder.encode(String(value ?? ""));
+  const count = Math.ceil(bytes.byteLength / JOURNAL_PROJECTION_CHUNK_BYTES);
+  for (let index = 0; index < count; index += 1) {
+    entries.push([
+      `${prefix}:${String(index).padStart(6, "0")}`,
+      bytes.slice(index * JOURNAL_PROJECTION_CHUNK_BYTES, (index + 1) * JOURNAL_PROJECTION_CHUNK_BYTES),
+    ]);
+  }
+  return { count, byteLength: bytes.byteLength };
+}
+
+async function readProjectionBytes(storage, prefix, descriptor) {
+  const count = Math.max(0, Number(descriptor?.count) || 0);
+  if (!count) return "";
+  const keys = Array.from({ length: count }, (_, index) => `${prefix}:${String(index).padStart(6, "0")}`);
+  const chunks = await storage.get(keys);
+  if (chunks.size !== count) throw new Error("Проекция журнала повреждена.");
+  const bytes = new Uint8Array(Math.max(0, Number(descriptor?.byteLength) || 0));
+  let offset = 0;
+  for (const key of keys) {
+    const chunk = new Uint8Array(chunks.get(key));
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  if (offset !== bytes.byteLength) throw new Error("Проекция журнала повреждена.");
+  return new TextDecoder().decode(bytes);
+}
+
+function normalizedJournalTurn(entry) {
+  const turnRef = String(entry?.turnRef ?? "").trim().slice(0, 768);
+  const date = String(entry?.date ?? "").trim().slice(0, 32);
+  const html = typeof entry?.html === "string" ? entry.html : "";
+  if (!turnRef || !date || !html) return null;
+  return {
+    turnRef,
+    date,
+    dayMs: Math.max(0, Number(entry?.dayMs) || 0),
+    workspaceId: String(entry?.workspaceId ?? "").trim().slice(0, 256),
+    streamId: String(entry?.streamId ?? "").trim().slice(0, 256),
+    provider: String(entry?.provider ?? "").trim().slice(0, 32),
+    threadId: String(entry?.threadId ?? "").trim().slice(0, 256),
+    completedAtMs: Math.max(0, Number(entry?.completedAtMs) || 0),
+    html,
+  };
+}
+
+function journalScopeQueries(entry) {
+  const queries = [];
+  if (entry.workspaceId && entry.streamId) {
+    queries.push({ workspaceId: entry.workspaceId, streamId: entry.streamId, provider: "", threadId: "" });
+    if (entry.provider) {
+      queries.push({
+        workspaceId: entry.workspaceId,
+        streamId: entry.streamId,
+        provider: entry.provider,
+        threadId: "",
+      });
+      if (entry.threadId) queries.push({
+        workspaceId: entry.workspaceId,
+        streamId: entry.streamId,
+        provider: entry.provider,
+        threadId: entry.threadId,
+      });
+    }
+  }
+  if (entry.provider) {
+    queries.push({ workspaceId: "", streamId: "", provider: entry.provider, threadId: "" });
+    if (entry.threadId) queries.push({
+      workspaceId: "",
+      streamId: "",
+      provider: entry.provider,
+      threadId: entry.threadId,
+    });
+  }
+  return [...new Map(queries.map((query) => [stableStringify(query), query])).values()];
+}
+
+async function materializedJournalProjection(payload, syncId) {
+  const prefix = journalProjectionPrefix(syncId);
+  const entries = [];
+  const summary = publicVirtualSummary(payload?.summary);
+  const profileSummary = profileCohortSummary(payload?.summary);
+  const html = appendProjectionBytes(entries, `${prefix}index-html`, payload?.html);
+  const summaryBytes = appendProjectionBytes(entries, `${prefix}summary`, JSON.stringify(summary));
+  const profileBytes = appendProjectionBytes(
+    entries,
+    `${prefix}profileSummary`,
+    JSON.stringify(profileSummary),
+  );
+  const rateLimitsHtml = String(payload?.html ?? "").match(
+    /<div\b[^>]*data-work-log-rate-limits\b[^>]*>[\s\S]*?<\/div>/iu,
+  )?.[0] ?? "";
+  const rateLimits = appendProjectionBytes(entries, `${prefix}rate-limits`, rateLimitsHtml);
+  const fragmentSources = [
+    ["day", payload?.days],
+    ["turn", payload?.turns],
+  ];
+  await Promise.all(fragmentSources.flatMap(([kind, fragments]) => (
+    Object.entries(fragments && typeof fragments === "object" ? fragments : {}).map(async ([identity, value]) => {
+      const hash = await sha256(String(identity));
+      const descriptor = appendProjectionBytes(entries, `${prefix}${kind}:${hash}`, value);
+      entries.push([`${prefix}${kind}-meta:${hash}`, descriptor]);
+    })
+  )));
+  const turns = (Array.isArray(payload?.turnEntries) ? payload.turnEntries : [])
+    .map(normalizedJournalTurn)
+    .filter(Boolean)
+    .sort((left, right) => right.completedAtMs - left.completedAtMs || left.turnRef.localeCompare(right.turnRef));
+  const scopes = new Map();
+  for (const [index, turn] of turns.entries()) {
+    const turnKey = `${prefix}turn-shell:${String(index).padStart(12, "0")}`;
+    entries.push([turnKey, { turnRef: turn.turnRef, date: turn.date, html: turn.html }]);
+    for (const query of journalScopeQueries(turn)) {
+      const identity = stableStringify(query);
+      const scope = scopes.get(identity) ?? { query, all: [], days: new Map() };
+      scope.all.push(turnKey);
+      const dayTurns = scope.days.get(turn.dayMs) ?? [];
+      dayTurns.push(turnKey);
+      scope.days.set(turn.dayMs, dayTurns);
+      scopes.set(identity, scope);
+    }
+  }
+  await Promise.all([...scopes.entries()].map(async ([identity, scope]) => {
+    const hash = await sha256(identity);
+    const appendBucket = (bucket, turnKeys) => {
+      const bucketPrefix = `${prefix}scope:${hash}:${bucket}`;
+      entries.push([`${bucketPrefix}:meta`, { total: turnKeys.length }]);
+      for (const [index, turnKey] of turnKeys.entries()) {
+        entries.push([`${bucketPrefix}:entry:${String(index).padStart(12, "0")}`, turnKey]);
+      }
+    };
+    appendBucket("all", scope.all);
+    for (const [day, turnKeys] of scope.days) appendBucket(`day:${day}`, turnKeys);
+  }));
+  entries.push([`${prefix}meta`, {
+    layoutVersion: JOURNAL_PROJECTION_LAYOUT_VERSION,
+    syncId,
+    version: String(payload?.version ?? ""),
+    updatedAt: String(payload?.updatedAt ?? ""),
+    html,
+    summary: summaryBytes,
+    profileSummary: profileBytes,
+    rateLimits,
+  }]);
+  return entries;
+}
+
 export class JournalStore extends DurableObject {
   #cachedPayload = null;
   #snapshotCache = new Map();
@@ -2785,6 +3039,26 @@ export class JournalStore extends DurableObject {
     return payload;
   }
 
+  async #payloadFromChunks(manifest, chunks) {
+    const chunkKeys = Array.from(
+      { length: manifest.count },
+      (_, chunkIndex) => `chunk:${manifest.syncId}:${chunkIndex}`,
+    );
+    if (chunks.size !== manifest.count) throw new Error("Снимок журнала повреждён.");
+    const ordered = chunkKeys.map((key) => new Uint8Array(chunks.get(key)));
+    const length = ordered.reduce((total, chunk) => total + chunk.byteLength, 0);
+    const compressed = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of ordered) {
+      compressed.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    const body = new Blob([compressed])
+      .stream()
+      .pipeThrough(new DecompressionStream(manifest.encoding));
+    return new Response(body).json();
+  }
+
   async #payload() {
     const manifest = await this.ctx.storage.get("journal-manifest");
     const expectedVersion = String(manifest?.version ?? "");
@@ -2799,24 +3073,148 @@ export class JournalStore extends DurableObject {
         (_, chunkIndex) => `chunk:${manifest.syncId}:${chunkIndex}`,
       );
       const chunks = await this.ctx.storage.get(chunkKeys);
-      if (chunks.size !== manifest.count) throw new Error("Снимок журнала повреждён.");
-      const ordered = chunkKeys.map((key) => new Uint8Array(chunks.get(key)));
-      const length = ordered.reduce((total, chunk) => total + chunk.byteLength, 0);
-      const compressed = new Uint8Array(length);
-      let offset = 0;
-      for (const chunk of ordered) {
-        compressed.set(chunk, offset);
-        offset += chunk.byteLength;
-      }
-      const body = new Blob([compressed])
-        .stream()
-        .pipeThrough(new DecompressionStream(manifest.encoding));
-      this.#cachedPayload = await new Response(body).json();
+      this.#cachedPayload = await this.#payloadFromChunks(manifest, chunks);
       return this.#cachedPayload;
     }
     this.#cachedPayload = await this.ctx.storage.get("journal");
     if (!this.#cachedPayload) throw new Error("Журнал ещё не опубликован.");
     return this.#cachedPayload;
+  }
+
+  async #publishJournalProjection(payload, syncId) {
+    const current = await this.ctx.storage.get(JOURNAL_PROJECTION_MANIFEST_KEY);
+    if (Number(current?.layoutVersion) === JOURNAL_PROJECTION_LAYOUT_VERSION
+      && String(current?.syncId ?? "") === syncId) return current;
+    const prefix = journalProjectionPrefix(syncId);
+    await deleteStoragePrefix(this.ctx.storage, prefix);
+    const entries = await materializedJournalProjection(payload, syncId);
+    await putStorageEntries(this.ctx.storage, entries);
+    const manifest = {
+      layoutVersion: JOURNAL_PROJECTION_LAYOUT_VERSION,
+      syncId,
+      version: String(payload?.version ?? ""),
+      updatedAt: String(payload?.updatedAt ?? ""),
+      previousSyncId: String(current?.syncId ?? ""),
+    };
+    await this.ctx.storage.transaction(async (storage) => {
+      await storage.put(JOURNAL_PROJECTION_MANIFEST_KEY, manifest);
+      await storage.delete(["journal", "journal-manifest"]);
+    });
+    const retiredSyncId = String(current?.previousSyncId ?? "");
+    if (retiredSyncId && retiredSyncId !== syncId) {
+      await deleteStoragePrefix(this.ctx.storage, journalProjectionPrefix(retiredSyncId));
+    }
+    this.#cachedPayload = null;
+    return manifest;
+  }
+
+  async #projectionMeta() {
+    const manifest = await this.ctx.storage.get(JOURNAL_PROJECTION_MANIFEST_KEY);
+    if (Number(manifest?.layoutVersion) !== JOURNAL_PROJECTION_LAYOUT_VERSION
+      || !SYNC_ID_PATTERN.test(String(manifest?.syncId ?? ""))) return null;
+    const meta = await this.ctx.storage.get(`${journalProjectionPrefix(manifest.syncId)}meta`);
+    if (Number(meta?.layoutVersion) !== JOURNAL_PROJECTION_LAYOUT_VERSION
+      || String(meta?.syncId ?? "") !== String(manifest.syncId)
+      || String(meta?.version ?? "") !== String(manifest.version ?? "")) {
+      throw new Error("Проекция журнала повреждена.");
+    }
+    return { manifest, meta, prefix: journalProjectionPrefix(manifest.syncId) };
+  }
+
+  async #projectionJson(projection, field) {
+    const source = await readProjectionBytes(
+      this.ctx.storage,
+      `${projection.prefix}${field}`,
+      projection.meta[field],
+    );
+    try {
+      return JSON.parse(source);
+    } catch {
+      throw new Error("Проекция журнала повреждена.");
+    }
+  }
+
+  async #projectionFragment(projection, kind, identity) {
+    const hash = await sha256(String(identity));
+    const descriptor = await this.ctx.storage.get(`${projection.prefix}${kind}-meta:${hash}`);
+    if (!descriptor) return null;
+    return readProjectionBytes(this.ctx.storage, `${projection.prefix}${kind}:${hash}`, descriptor);
+  }
+
+  async #projectionTurnPage(projection, {
+    workspaceId = "",
+    streamId = "",
+    provider = "",
+    threadId = "",
+    fromMs = 0,
+    toMs = 0,
+    offset = 0,
+    limit = 20,
+    includeProfile = false,
+  } = {}) {
+    const query = {
+      workspaceId: String(workspaceId ?? "").trim().slice(0, 256),
+      streamId: String(streamId ?? "").trim().slice(0, 256),
+      provider: String(provider ?? "").trim().slice(0, 32),
+      threadId: String(threadId ?? "").trim().slice(0, 256),
+    };
+    const supported = (query.workspaceId && query.streamId && (!query.threadId || query.provider))
+      || (!query.workspaceId && !query.streamId && query.provider);
+    if (!supported) throw new Error("Неподдерживаемая область журнала.");
+    const rangeStart = Math.max(0, Number(fromMs) || 0);
+    const rangeEnd = Math.max(0, Number(toMs) || 0);
+    if ((rangeStart || rangeEnd) && (
+      !Number.isSafeInteger(rangeStart)
+      || !Number.isSafeInteger(rangeEnd)
+      || rangeStart >= rangeEnd
+      || Math.ceil((rangeEnd - rangeStart) / DAY_MS) > JOURNAL_RANGE_DAY_LIMIT
+    )) throw new Error("Диапазон журнала слишком велик.");
+    const buckets = [];
+    if (rangeStart && rangeEnd) {
+      const firstDay = Math.floor(rangeStart / DAY_MS) * DAY_MS;
+      const lastDay = Math.floor((rangeEnd - 1) / DAY_MS) * DAY_MS;
+      for (let day = lastDay; day >= firstDay; day -= DAY_MS) buckets.push(`day:${day}`);
+    } else {
+      buckets.push("all");
+    }
+    const scopeHash = await sha256(stableStringify(query));
+    const bucketPrefixes = buckets.map((bucket) => `${projection.prefix}scope:${scopeHash}:${bucket}`);
+    const metaKeys = bucketPrefixes.map((prefix) => `${prefix}:meta`);
+    const metas = await this.ctx.storage.get(metaKeys);
+    const descriptors = bucketPrefixes.map((prefix, index) => ({
+      prefix,
+      total: Math.max(0, Number(metas.get(metaKeys[index])?.total) || 0),
+    }));
+    const total = descriptors.reduce((sum, descriptor) => sum + descriptor.total, 0);
+    let skipped = Math.max(0, Number(offset) || 0);
+    let remaining = Math.max(1, Math.min(JOURNAL_TURN_PAGE_LIMIT, Number(limit) || 20));
+    const entryKeys = [];
+    for (const descriptor of descriptors) {
+      if (skipped >= descriptor.total) {
+        skipped -= descriptor.total;
+        continue;
+      }
+      const count = Math.min(remaining, descriptor.total - skipped);
+      for (let index = skipped; index < skipped + count; index += 1) {
+        entryKeys.push(`${descriptor.prefix}:entry:${String(index).padStart(12, "0")}`);
+      }
+      remaining -= count;
+      skipped = 0;
+      if (!remaining) break;
+    }
+    const indexed = entryKeys.length ? await this.ctx.storage.get(entryKeys) : new Map();
+    const turnKeys = entryKeys.map((key) => indexed.get(key)).filter(Boolean);
+    const turnsByKey = turnKeys.length ? await this.ctx.storage.get(turnKeys) : new Map();
+    const turns = turnKeys.map((key) => turnsByKey.get(key)).filter(Boolean);
+    const boundedOffset = Math.max(0, Number(offset) || 0);
+    return {
+      turns,
+      nextOffset: total > boundedOffset + turns.length ? boundedOffset + turns.length : null,
+      version: projection.meta.version,
+      ...(includeProfile
+        ? { profileSummary: await this.#projectionJson(projection, "profileSummary") }
+        : {}),
+    };
   }
 
   async fetch(request) {
@@ -3465,14 +3863,13 @@ export class JournalStore extends DurableObject {
     if (request.method === "POST" && url.pathname === "/sync") {
       const payload = await request.json();
       const previous = await this.ctx.storage.get("journal-manifest");
-      await this.ctx.storage.put("journal", payload);
-      await this.ctx.storage.delete("journal-manifest");
+      const syncId = `sync-${await sha256(JSON.stringify(payload))}`;
+      await this.#publishJournalProjection(payload, syncId);
       if (previous?.syncId) {
         await this.ctx.storage.delete(
           Array.from({ length: previous.count }, (_, index) => `chunk:${previous.syncId}:${index}`),
         );
       }
-      this.#cachedPayload = payload;
       return json({ ok: true });
     }
     if (request.method === "POST" && url.pathname === "/sync-chunk") {
@@ -3516,15 +3913,13 @@ export class JournalStore extends DurableObject {
       if (chunks.size !== count) return json({ ok: true, complete: false }, 202);
 
       const previous = await this.ctx.storage.get("journal-manifest");
-      await this.ctx.storage.put("journal-manifest", {
-        syncId,
-        count,
-        encoding,
-        version,
-        updatedAt,
-      });
-      await this.ctx.storage.delete(["journal", metadataKey]);
-      this.#cachedPayload = null;
+      const payload = await this.#payloadFromChunks({ syncId, count, encoding }, chunks);
+      if (String(payload?.version ?? "") !== version || String(payload?.updatedAt ?? "") !== updatedAt) {
+        return json({ error: "sync payload identity conflict" }, 409);
+      }
+      await this.#publishJournalProjection(payload, syncId);
+      await this.ctx.storage.delete(metadataKey);
+      await deleteStorageKeys(this.ctx.storage, chunkKeys);
       if (previous?.syncId && previous.syncId !== syncId) {
         await this.ctx.storage.delete(
           Array.from({ length: previous.count }, (_, chunkIndex) => `chunk:${previous.syncId}:${chunkIndex}`),
@@ -3533,63 +3928,102 @@ export class JournalStore extends DurableObject {
       return json({ ok: true, complete: true });
     }
     if (request.method === "GET" && url.pathname === "/rate-limits") {
-      let payload;
+      let block = "";
       try {
-        payload = await this.#payload();
+        const projection = await this.#projectionMeta();
+        if (projection) {
+          block = await readProjectionBytes(
+            this.ctx.storage,
+            `${projection.prefix}rate-limits`,
+            projection.meta.rateLimits,
+          );
+        } else {
+          const payload = await this.#payload();
+          block = String(payload.html ?? "").match(
+            /<div\b[^>]*data-work-log-rate-limits\b[^>]*>[\s\S]*?<\/div>/iu,
+          )?.[0] ?? "";
+        }
       } catch (error) {
         return json({ error: error.message }, 503);
       }
-      /* Сводка лимитов — первый блок снимка. Шапка Mini App показывает её во
-         всех разделах, а журнал грузится лениво, поэтому блок отдаётся
-         отдельно, без мегабайтного payload. */
-      const block = String(payload.html ?? "").match(
-        /<div\b[^>]*data-work-log-rate-limits\b[^>]*>[\s\S]*?<\/div>/iu,
-      )?.[0] ?? "";
       return json({
         html: block,
         sampledAt: block.match(/data-sampled-at="([^"]*)"/iu)?.[1] ?? "",
       });
     }
-    const publicVirtualSummary = (value) => {
-      const fields = [
-        "date", "dayMs", "workspaceId", "workspaceName", "workspaceKind", "streamId",
-        "streamDisplayName", "streamOrdinal", "provider", "turnCount", "credits",
-        "knownCredits", "unknownCredits", "durationSeconds", "knownDurations",
-        "unknownDurations", "latestAt",
-      ];
-      return {
-        version: 1,
-        buckets: Number(value?.version) === 1 && Array.isArray(value?.buckets)
-          ? value.buckets.map((bucket) => Object.fromEntries(
-              fields.map((field) => [field, bucket?.[field]]),
-            ))
-          : [],
-      };
-    };
-    const scopedVirtualSummary = (value, {
-      workspaceId = "",
-      streamId = "",
-      provider = "",
-      fromMs = 0,
-      toMs = 0,
-    } = {}) => ({
-      version: 1,
-      buckets: Number(value?.version) === 1 && Array.isArray(value?.buckets)
-        ? value.buckets.filter((bucket) => (
-            (!workspaceId || String(bucket?.workspaceId ?? "") === workspaceId)
-            && (!streamId || String(bucket?.streamId ?? "") === streamId)
-            && (!provider || String(bucket?.provider ?? "") === provider)
-            && (!fromMs || Number(bucket?.dayMs) >= fromMs)
-            && (!toMs || Number(bucket?.dayMs) < toMs)
-          ))
-        : [],
-    });
     if (request.method === "GET" && [
       "/journal",
       "/journal/day",
       "/journal/turn",
       "/journal/turns",
     ].includes(url.pathname)) {
+      let projection;
+      try {
+        projection = await this.#projectionMeta();
+      } catch (error) {
+        return json({ error: error.message }, 503);
+      }
+      if (projection) {
+        const requestedVersion = String(url.searchParams.get("version") ?? "");
+        if (requestedVersion && requestedVersion !== projection.meta.version) {
+          return json({ error: "Журнал обновился.", version: projection.meta.version }, 409);
+        }
+        if (url.pathname === "/journal/day" || url.pathname === "/journal/turn") {
+          const kind = url.pathname.endsWith("/day") ? "day" : "turn";
+          const identity = kind === "day"
+            ? String(url.searchParams.get("date") ?? "")
+            : String(url.searchParams.get("id") ?? "");
+          const html = await this.#projectionFragment(projection, kind, identity);
+          return html !== null
+            ? json({ html, version: projection.meta.version })
+            : json({ error: "Фрагмент журнала не найден." }, 404);
+        }
+        if (url.pathname === "/journal/turns") {
+          const boundedNumber = (name, maximum = Number.MAX_SAFE_INTEGER) => {
+            const number = Number(url.searchParams.get(name));
+            return Number.isSafeInteger(number) && number > 0 ? Math.min(number, maximum) : 0;
+          };
+          try {
+            return json(await this.#projectionTurnPage(projection, {
+              workspaceId: url.searchParams.get("workspaceId"),
+              streamId: url.searchParams.get("streamId"),
+              provider: url.searchParams.get("provider"),
+              threadId: url.searchParams.get("threadId"),
+              fromMs: boundedNumber("fromMs"),
+              toMs: boundedNumber("toMs"),
+              offset: boundedNumber("offset", 1_000_000),
+              limit: Math.max(1, Math.min(
+                JOURNAL_TURN_PAGE_LIMIT,
+                Math.floor(Number(url.searchParams.get("limit")) || 20),
+              )),
+              includeProfile: url.searchParams.get("profileMode") === "stream",
+            }));
+          } catch (error) {
+            return json({ error: error.message, version: projection.meta.version }, 400);
+          }
+        }
+        const knownVersion = String(request.headers.get("If-None-Match") ?? "");
+        const etag = `"${projection.meta.version}"`;
+        if (knownVersion === etag) return new Response(null, { status: 304, headers: { ETag: etag } });
+        const [html, summary] = await Promise.all([
+          readProjectionBytes(this.ctx.storage, `${projection.prefix}index-html`, projection.meta.html),
+          this.#projectionJson(projection, "summary"),
+        ]);
+        const response = json({
+          html,
+          summary,
+          updatedAt: projection.meta.updatedAt,
+          version: projection.meta.version,
+        });
+        response.headers.set("ETag", etag);
+        return response;
+      }
+      if (url.pathname === "/journal/turns") {
+        return json({
+          error: "Индекс журнала ещё не опубликован.",
+          code: "journal_projection_required",
+        }, 503);
+      }
       let payload;
       try {
         payload = await this.#payload();
@@ -3610,47 +4044,6 @@ export class JournalStore extends DurableObject {
         return typeof html === "string"
           ? json({ html, version: payload.version })
           : json({ error: "Фрагмент журнала не найден." }, 404);
-      }
-      if (url.pathname === "/journal/turns") {
-        const requestedVersion = String(url.searchParams.get("version") ?? "");
-        if (requestedVersion && requestedVersion !== payload.version) {
-          return json({ error: "Журнал обновился.", version: payload.version }, 409);
-        }
-        const match = (entry, name, limit = 256) => {
-          const requested = String(url.searchParams.get(name) ?? "").trim().slice(0, limit);
-          return !requested || String(entry?.[name] ?? "") === requested;
-        };
-        const boundedNumber = (name, maximum = Number.MAX_SAFE_INTEGER) => {
-          const number = Number(url.searchParams.get(name));
-          return Number.isSafeInteger(number) && number > 0 ? Math.min(number, maximum) : 0;
-        };
-        const fromMs = boundedNumber("fromMs");
-        const toMs = boundedNumber("toMs");
-        const offset = boundedNumber("offset", 1_000_000);
-        const limit = Math.max(1, Math.min(50, Math.floor(Number(url.searchParams.get("limit")) || 20)));
-        const matches = (Array.isArray(payload.turnEntries) ? payload.turnEntries : []).filter((entry) => (
-          match(entry, "workspaceId")
-          && match(entry, "streamId")
-          && match(entry, "provider", 32)
-          && match(entry, "threadId")
-          && (!fromMs || Number(entry?.completedAtMs) >= fromMs)
-          && (!toMs || Number(entry?.completedAtMs) < toMs)
-        ));
-        const page = matches.slice(offset, offset + limit);
-        return json({
-          turns: page.map((entry) => ({ turnRef: entry.turnRef, date: entry.date, html: entry.html })),
-          nextOffset: matches.length > offset + page.length ? offset + page.length : null,
-          version: payload.version,
-          ...(url.searchParams.get("profileMode") === "stream"
-            ? { profileSummary: scopedVirtualSummary(payload.summary, {
-                workspaceId: String(url.searchParams.get("workspaceId") ?? "").trim().slice(0, 256),
-                streamId: String(url.searchParams.get("streamId") ?? "").trim().slice(0, 256),
-                provider: String(url.searchParams.get("provider") ?? "").trim().slice(0, 32),
-                fromMs,
-                toMs,
-              }) }
-            : {}),
-        });
       }
       const knownVersion = String(request.headers.get("If-None-Match") ?? "");
       const etag = `"${payload.version}"`;

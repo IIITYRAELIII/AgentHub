@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import {
   buildVirtualJournalProjection,
   compactVirtualJournalHtml,
-  scopedVirtualJournalSummary,
+  profileCohortVirtualJournalSummary,
   virtualJournalDaySections,
 } from "../../domain/journal-virtual-projection.mjs";
 import { applyLedgerDelta } from "./incremental-ledger.mjs";
@@ -1218,12 +1218,9 @@ export class JournalDatabase {
         try {
           const parsed = JSON.parse(String(meta?.summary_json ?? ""));
           if (parsed && Number(parsed.version) === 1 && Array.isArray(parsed.buckets)) {
-            profileSummary = scopedVirtualJournalSummary(parsed, {
-              workspaceId: workspace,
-              streamId: stream,
-              provider: providerName,
-              fromMs: rangeStart,
-              toMs: rangeEnd,
+            profileSummary = profileCohortVirtualJournalSummary(parsed, {
+              requiredWorkspaceId: workspace,
+              requiredStreamId: stream,
             });
           }
         } catch {

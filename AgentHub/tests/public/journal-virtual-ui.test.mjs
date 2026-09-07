@@ -175,6 +175,11 @@ test("virtual Stream mode preserves overview profile and default-open semantics"
     assert.match(await groups.nth(0).locator("[data-journal-ledger-title]").innerText(), /High/u);
     assert.equal(await groups.nth(0).locator("[data-journal-group-overview]").count(), 1);
     assert.equal(await groups.nth(0).locator("[data-work-log-task-profile]").count(), 1);
+    assert.equal(await groups.nth(1).locator("[data-work-log-task-profile]").count(), 0);
+    assert.notEqual(
+      await groups.nth(0).locator("[data-radar-current]").getAttribute("points"),
+      await groups.nth(0).locator("[data-radar-baseline]").getAttribute("points"),
+    );
     assert.match(
       await groups.nth(0).locator('[data-journal-profile-metric="fileTouches"]').innerText(),
       /4 кас\./u,

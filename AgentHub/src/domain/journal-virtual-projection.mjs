@@ -135,6 +135,29 @@ const RESOURCE_BUCKET_FIELDS = [
   "unknownDurations",
   "latestAt",
 ];
+const PROFILE_COHORT_LIMIT = 2_048;
+const PROFILE_SUM_FIELDS = [
+  "turnCount",
+  "credits",
+  "knownCredits",
+  "unknownCredits",
+  "durationSeconds",
+  "knownDurations",
+  "unknownDurations",
+  "fileTouches",
+  "knownFileTouches",
+  "unknownFileTouches",
+  "changedLines",
+  "knownChangedLines",
+  "unknownChangedLines",
+  "subagentTurns",
+  "knownSubagentTurns",
+  "unknownSubagentTurns",
+  "mcpCallCount",
+  "mcpFailures",
+  "knownToolMetricTurns",
+  "unknownToolMetricTurns",
+];
 
 export function resourceVirtualJournalSummary(value) {
   if (!value || Number(value.version) !== 1 || !Array.isArray(value.buckets)) {
@@ -148,34 +171,76 @@ export function resourceVirtualJournalSummary(value) {
   };
 }
 
-export function scopedVirtualJournalSummary(value, {
-  workspaceId = "",
-  streamId = "",
-  provider = "",
-  fromMs = 0,
-  toMs = 0,
+export function profileCohortVirtualJournalSummary(value, {
+  requiredWorkspaceId = "",
+  requiredStreamId = "",
 } = {}) {
   if (!value || Number(value.version) !== 1 || !Array.isArray(value.buckets)) {
     return { version: 1, buckets: [] };
   }
-  const workspace = boundedText(workspaceId, 256);
-  const stream = boundedText(streamId, 256);
-  const providerName = boundedText(provider, 32);
-  const rangeStart = Number.isSafeInteger(Number(fromMs)) && Number(fromMs) > 0
-    ? Number(fromMs)
-    : 0;
-  const rangeEnd = Number.isSafeInteger(Number(toMs)) && Number(toMs) > 0
-    ? Number(toMs)
-    : 0;
+  const streams = new Map();
+  for (const bucket of value.buckets) {
+    const workspaceId = boundedText(bucket?.workspaceId, 256);
+    const streamId = boundedText(bucket?.streamId, 256);
+    if (!workspaceId || !streamId) continue;
+    const provider = boundedText(bucket?.provider, 32);
+    const key = `${workspaceId}\u001f${streamId}\u001f${provider}`;
+    const aggregate = streams.get(key) ?? {
+      date: boundedText(bucket?.date, 32),
+      dayMs: Math.max(0, Number(bucket?.dayMs) || 0),
+      workspaceId,
+      workspaceName: boundedText(bucket?.workspaceName, 256),
+      workspaceKind: boundedText(bucket?.workspaceKind, 32),
+      streamId,
+      streamDisplayName: boundedText(bucket?.streamDisplayName, 256),
+      streamOrdinal: Math.max(1, Number(bucket?.streamOrdinal) || 1),
+      provider,
+      latestAt: 0,
+      skillNames: new Set(),
+      mcpTools: new Set(),
+    };
+    for (const field of PROFILE_SUM_FIELDS) {
+      aggregate[field] = Math.max(0, Number(aggregate[field]) || 0)
+        + Math.max(0, Number(bucket?.[field]) || 0);
+    }
+    for (const name of Array.isArray(bucket?.skillNames) ? bucket.skillNames : []) {
+      const normalized = boundedText(name, 256);
+      if (normalized && aggregate.skillNames.size < 100) aggregate.skillNames.add(normalized);
+    }
+    for (const name of Array.isArray(bucket?.mcpTools) ? bucket.mcpTools : []) {
+      const normalized = boundedText(name, 256);
+      if (normalized && aggregate.mcpTools.size < 100) aggregate.mcpTools.add(normalized);
+    }
+    const latestAt = Math.max(0, Number(bucket?.latestAt) || 0);
+    if (latestAt >= aggregate.latestAt) {
+      aggregate.latestAt = latestAt;
+      aggregate.date = boundedText(bucket?.date, 32) || aggregate.date;
+      aggregate.dayMs = Math.max(0, Number(bucket?.dayMs) || aggregate.dayMs);
+    }
+    streams.set(key, aggregate);
+  }
+  const requiredKeyPrefix = `${boundedText(requiredWorkspaceId, 256)}\u001f${boundedText(requiredStreamId, 256)}\u001f`;
+  const ordered = [...streams.entries()].sort(([, left], [, right]) => (
+    right.latestAt - left.latestAt
+    || right.credits - left.credits
+    || left.workspaceId.localeCompare(right.workspaceId)
+    || left.streamId.localeCompare(right.streamId)
+  ));
+  let selected = ordered.slice(0, PROFILE_COHORT_LIMIT);
+  const required = requiredKeyPrefix !== "\u001f\u001f"
+    ? ordered.find(([key]) => key.startsWith(requiredKeyPrefix))
+    : null;
+  if (required && !selected.some(([key]) => key === required[0])) {
+    selected = [...selected.slice(0, PROFILE_COHORT_LIMIT - 1), required];
+  }
   return {
     version: 1,
-    buckets: value.buckets.filter((bucket) => (
-      (!workspace || boundedText(bucket?.workspaceId, 256) === workspace)
-      && (!stream || boundedText(bucket?.streamId, 256) === stream)
-      && (!providerName || boundedText(bucket?.provider, 32) === providerName)
-      && (!rangeStart || Number(bucket?.dayMs) >= rangeStart)
-      && (!rangeEnd || Number(bucket?.dayMs) < rangeEnd)
-    )),
+    buckets: selected.map(([, bucket]) => ({
+      ...bucket,
+      skillNames: [...bucket.skillNames].sort((left, right) => left.localeCompare(right)),
+      mcpTools: [...bucket.mcpTools].sort((left, right) => left.localeCompare(right)),
+    })),
+    truncated: streams.size > PROFILE_COHORT_LIMIT,
   };
 }
 
