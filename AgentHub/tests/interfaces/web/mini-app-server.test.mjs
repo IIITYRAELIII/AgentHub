@@ -20,6 +20,7 @@ import { createAttachmentStorageName } from "../../../src/domain/attachment-file
 import { createDesktopControlRouter } from "../../../src/interfaces/desktop/desktop-control-router.mjs";
 import { createRuntimeHealth } from "../../../src/application/runtime-health.mjs";
 import { createLocalWebviewSession } from "../../../src/interfaces/web/local-webview-session.mjs";
+import { JournalDatabase } from "../../../src/infrastructure/persistence/journal-database.mjs";
 
 const LIMITS_HTML = '<div data-work-log-rate-limits data-sampled-at="2026-07-30T02:55:14.512Z">'
   + '<span data-rate-limit-caption>Лимиты</span>'
@@ -2106,6 +2107,76 @@ test("Mini App serves compact totals first and bounded turn shells on demand", a
     )).status, 409);
   } finally {
     await server.close();
+  }
+});
+
+test("Mini App retains every provider profile for an old requested SQLite Stream", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-profile-cohort-"));
+  const database = new JournalDatabase(path.join(directory, "journal.sqlite"));
+  const peerBuckets = Array.from({ length: 2_048 }, (_, index) => ({
+    date: "07.09.2026",
+    dayMs: Date.UTC(2026, 8, 7),
+    workspaceId: `workspace-${index}`,
+    streamId: `stream-${index}`,
+    provider: "codex",
+    latestAt: 10_000 - index,
+    credits: 10_000 - index,
+    fileTouches: index + 1,
+  }));
+  const requestedBuckets = ["codex", "claude"].map((provider, index) => ({
+    date: "01.01.2020",
+    dayMs: Date.UTC(2020, 0, 1),
+    workspaceId: "workspace-required",
+    streamId: "stream-required",
+    provider,
+    latestAt: index + 1,
+    credits: index + 1,
+    fileTouches: 50 + index,
+  }));
+  await database.replaceProjection({
+    html: "<main></main>",
+    summary: { version: 1, buckets: [...peerBuckets, ...requestedBuckets] },
+    entries: [{
+      turnRef: "turn-required",
+      date: "01.01.2020",
+      dayMs: Date.UTC(2020, 0, 1),
+      workspaceId: "workspace-required",
+      streamId: "stream-required",
+      provider: "codex",
+      threadId: "thread-required",
+      turnId: "turn-required",
+      completedAtMs: Date.UTC(2020, 0, 1, 12),
+      html: '<div data-work-log-turn-entry data-work-log-turn-id="turn-required">Точный ход</div>',
+    }],
+  });
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: database,
+  });
+  try {
+    const address = await server.start();
+    const index = await (await fetch(`${address.url}api/journal`)).json();
+    const response = await fetch(
+      `${address.url}api/journal/turns?workspaceId=workspace-required&streamId=stream-required`
+      + `&profileMode=stream&version=${encodeURIComponent(index.version)}`,
+    );
+    assert.equal(response.status, 200);
+    const page = await response.json();
+    assert.deepEqual(page.turns.map((turn) => turn.turnRef), ["turn-required"]);
+    const requested = page.profileSummary.buckets.filter((bucket) => (
+      bucket.workspaceId === "workspace-required" && bucket.streamId === "stream-required"
+    ));
+    assert.deepEqual(requested.map((bucket) => bucket.provider).sort(), ["claude", "codex"]);
+    assert.equal(new Set(page.profileSummary.buckets.map((bucket) => (
+      `${bucket.workspaceId}\u001f${bucket.streamId}\u001f${bucket.provider}`
+    ))).size, page.profileSummary.buckets.length);
+    assert.equal(page.profileSummary.buckets.length, 2_050);
+    assert.equal(page.profileSummary.truncated, true);
+  } finally {
+    await server.close();
+    database.close();
+    await rm(directory, { recursive: true, force: true });
   }
 });
 

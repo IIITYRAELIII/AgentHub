@@ -226,16 +226,23 @@ export function profileCohortVirtualJournalSummary(value, {
     || left.workspaceId.localeCompare(right.workspaceId)
     || left.streamId.localeCompare(right.streamId)
   ));
-  let selected = ordered.slice(0, PROFILE_COHORT_LIMIT);
+  const selected = ordered.slice(0, PROFILE_COHORT_LIMIT);
   const required = requiredKeyPrefix !== "\u001f\u001f"
-    ? ordered.find(([key]) => key.startsWith(requiredKeyPrefix))
-    : null;
-  if (required && !selected.some(([key]) => key === required[0])) {
-    selected = [...selected.slice(0, PROFILE_COHORT_LIMIT - 1), required];
+    ? ordered.filter(([key]) => key.startsWith(requiredKeyPrefix))
+    : [];
+  const requiredByKey = new Map(required);
+  const included = new Set();
+  const merged = selected.map(([key, bucket]) => {
+    const exact = requiredByKey.get(key);
+    if (exact) included.add(key);
+    return [key, exact ?? bucket];
+  });
+  for (const entry of required) {
+    if (!included.has(entry[0])) merged.push(entry);
   }
   return {
     version: 1,
-    buckets: selected.map(([, bucket]) => ({
+    buckets: merged.map(([, bucket]) => ({
       ...bucket,
       skillNames: [...bucket.skillNames].sort((left, right) => left.localeCompare(right)),
       mcpTools: [...bucket.mcpTools].sort((left, right) => left.localeCompare(right)),

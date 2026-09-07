@@ -1270,6 +1270,68 @@ test("Worker chunk publication cuts over atomically and retries an orphan genera
   assert.match(current.html, />B</u);
 });
 
+test("Worker retires the unqualified v1 generation after two v2 cutovers", async () => {
+  const worker = await loadWorker();
+  const storage = new MemoryStorage();
+  const store = new worker.JournalStore({ storage }, {});
+  const legacySyncId = `sync-${"1".repeat(64)}`;
+  const legacyPrefix = `journal-projection:${legacySyncId}:`;
+  await storage.put({
+    "journal-projection-manifest": {
+      layoutVersion: 1,
+      syncId: legacySyncId,
+      version: "journal-v1",
+      updatedAt: "2026-09-07T23:58:00.000Z",
+      previousSyncId: "",
+    },
+    [`${legacyPrefix}meta`]: {
+      layoutVersion: 1,
+      syncId: legacySyncId,
+      version: "journal-v1",
+      updatedAt: "2026-09-07T23:58:00.000Z",
+    },
+    [`${legacyPrefix}index-html:000000`]: new TextEncoder().encode("<main>legacy</main>"),
+  });
+  const payload = (version, label) => ({
+    html: `<main>${label}</main>`,
+    summary: { version: 1, buckets: [] },
+    turnEntries: [],
+    days: {},
+    turns: {},
+    version,
+    updatedAt: "2026-09-07T23:59:00.000Z",
+  });
+
+  assert.equal((await store.fetch(new Request("https://journal.internal/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload("journal-v2-a", "A")),
+  }))).status, 200);
+  let current = await (await store.fetch(new Request("https://journal.internal/journal"))).json();
+  assert.equal(current.version, "journal-v2-a");
+  assert.match(current.html, />A</u);
+  let manifest = await storage.get("journal-projection-manifest");
+  assert.equal(manifest.previousSyncId, legacySyncId);
+  assert.equal(manifest.previousLayoutVersion, 1);
+  assert.equal((await storage.list({ prefix: legacyPrefix })).size, 2);
+
+  assert.equal((await store.fetch(new Request("https://journal.internal/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload("journal-v2-b", "B")),
+  }))).status, 200);
+  current = await (await store.fetch(new Request("https://journal.internal/journal"))).json();
+  assert.equal(current.version, "journal-v2-b");
+  assert.match(current.html, />B</u);
+  manifest = await storage.get("journal-projection-manifest");
+  assert.equal(manifest.layoutVersion, 2);
+  assert.equal(manifest.previousLayoutVersion, 2);
+  assert.equal((await storage.list({ prefix: legacyPrefix })).size, 0);
+  assert.ok((await storage.list({
+    prefix: `journal-projection:v2:${manifest.previousSyncId}:`,
+  })).size > 0);
+});
+
 test("Worker journal turn pages read only materialized bounded index keys", async () => {
   const worker = await loadWorker();
   const storage = new MemoryStorage();

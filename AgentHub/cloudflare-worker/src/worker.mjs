@@ -1542,6 +1542,7 @@ function profileBucketIdentity(bucket) {
 }
 
 function journalProjectionPrefix(syncId, layoutVersion = JOURNAL_PROJECTION_LAYOUT_VERSION) {
+  if (Number(layoutVersion) === 1) return `${JOURNAL_PROJECTION_PREFIX}${syncId}:`;
   return `${JOURNAL_PROJECTION_PREFIX}v${layoutVersion}:${syncId}:`;
 }
 
