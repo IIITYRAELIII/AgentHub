@@ -35,6 +35,46 @@ test("remote config stores server enrollment state without secrets", async () =>
   }
 });
 
+test("remote config stores pull cursor generations and can replace a repaired cursor", async () => {
+  const root = await temporaryRoot();
+  const file = path.join(root, "usage-sync-remote.json");
+  try {
+    const store = new UsageSyncRemoteConfigStore({
+      file,
+      now: () => new Date("2026-09-07T15:30:00.000Z"),
+    });
+    await store.rememberPull(
+      { imported: true },
+      {
+        serverRevision: 90,
+        serverGeneration: "server-a",
+        localGeneration: "local-a",
+        factSummary: { version: 1, count: 3, digest: "sha256:" + "1".repeat(64) },
+        antiEntropyAt: "2026-09-07T15:29:00.000Z",
+      },
+    );
+    const repaired = await store.rememberPull(
+      { imported: true, reconciled: true },
+      {
+        serverRevision: 12,
+        serverGeneration: "server-b",
+        localGeneration: "local-a",
+        factSummary: { version: 1, count: 4, digest: "sha256:" + "2".repeat(64) },
+        replaceCursor: true,
+      },
+    );
+
+    assert.equal(repaired.version, 3);
+    assert.equal(repaired.lastUsagePullRevision, 12);
+    assert.equal(repaired.lastUsagePullServerGeneration, "server-b");
+    assert.equal(repaired.lastUsagePullLocalGeneration, "local-a");
+    assert.equal(repaired.lastUsagePullFactSummary.count, 4);
+    assert.equal(repaired.lastUsageAntiEntropyAt, "2026-09-07T15:29:00.000Z");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("remote config exposes default server URL without marking enrollment", async () => {
   const root = await temporaryRoot();
   const file = path.join(root, "usage-sync-remote.json");

@@ -645,13 +645,16 @@ export class WorkLogUsageStore {
     projectRoot = this.#defaultProjectRoot,
     projectionProjectRoots,
     workLogFile,
+    reconcile = false,
   } = {}) {
     if (!this.#usageSyncStore) {
       throw new Error("Usage sync store is not configured");
     }
     const operation = this.#repository.enqueue(async () => {
-      const imported = await this.#usageSyncStore.importSnapshot(snapshot);
-      if (!imported.added && !imported.updated) {
+      const imported = reconcile && typeof this.#usageSyncStore.reconcileSnapshot === "function"
+        ? await this.#usageSyncStore.reconcileSnapshot(snapshot)
+        : await this.#usageSyncStore.importSnapshot(snapshot);
+      if (!imported.added && !imported.updated && !imported.pruned) {
         return { ...imported, projected: false, reason: "unchanged" };
       }
       const roots = (Array.isArray(projectionProjectRoots) && projectionProjectRoots.length)
@@ -661,6 +664,16 @@ export class WorkLogUsageStore {
       return { ...imported, ...projection };
     }, { load: false });
     return operation;
+  }
+
+  usageSyncState() {
+    if (!this.#usageSyncStore || typeof this.#usageSyncStore.usageSyncState !== "function") {
+      return Promise.resolve({
+        localStoreGeneration: "",
+        factSummary: { version: 1, count: 0, byType: {}, digest: "" },
+      });
+    }
+    return this.#usageSyncStore.usageSyncState();
   }
 
   #workspaceResolver() {

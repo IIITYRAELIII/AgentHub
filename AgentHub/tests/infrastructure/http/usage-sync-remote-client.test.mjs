@@ -217,6 +217,37 @@ test("incremental pull falls back to a full snapshot against old servers", async
   });
 });
 
+test("summary pull requests only dataset metadata", async () => {
+  const identity = identityStore();
+  const calls = [];
+  const client = new UsageSyncRemoteClient({
+    serverUrl: "http://127.0.0.1:9198",
+    identityStore: identity,
+    now: () => new Date("2026-09-07T15:30:00.000Z"),
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return response({
+        version: 1,
+        usageFactSchemaVersion: 2,
+        datasetGeneration: "server-generation",
+        serverRevision: 8,
+        factSummary: { version: 1, count: 3, digest: "sha256:" + "1".repeat(64) },
+        events: [],
+      });
+    },
+  });
+
+  const result = await client.summary();
+
+  assert.equal(result.datasetGeneration, "server-generation");
+  assert.equal(calls[0].url, "http://127.0.0.1:9198/api/snapshot");
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    deviceId: identity.deviceId,
+    requestedAt: "2026-09-07T15:30:00.000Z",
+    summaryOnly: true,
+  });
+});
+
 test("createEnrollmentCode signs invite request for enrolled devices", async () => {
   const identity = identityStore();
   const calls = [];

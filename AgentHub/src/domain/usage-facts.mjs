@@ -52,6 +52,20 @@ function sha256(value) {
   return createHash("sha256").update(String(value), "utf8").digest("hex");
 }
 
+function sortedJsonValue(value) {
+  if (Array.isArray(value)) return value.map(sortedJsonValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((key) => [key, sortedJsonValue(value[key])]),
+  );
+}
+
+function canonicalJson(value) {
+  return JSON.stringify(sortedJsonValue(value));
+}
+
 function timestamp(value) {
   const candidate = text(value);
   return Number.isFinite(Date.parse(candidate)) ? candidate : "";
@@ -283,6 +297,50 @@ export function normalizeUsageFact(value = {}, options = {}) {
   if (type === USAGE_FACT_TYPES.AUTH_OBSERVATION) return normalizeAuthObservation(value);
   if (type === USAGE_FACT_TYPES.LIMIT_OBSERVATION) return normalizeLimitObservation(value);
   return null;
+}
+
+export function usageFactIdentity(value = {}) {
+  const fact = normalizeUsageFact(value);
+  if (!fact) return "";
+  if (fact.type === USAGE_FACT_TYPES.AUTH_OBSERVATION) return fact.observationId;
+  if (fact.type === USAGE_FACT_TYPES.LIMIT_OBSERVATION) return fact.observationId;
+  return fact.eventId;
+}
+
+function summaryFactPayload(fact) {
+  const {
+    deviceLabel,
+    legacy,
+    source,
+    version,
+    ...payload
+  } = fact ?? {};
+  return sortedJsonValue(payload);
+}
+
+export function usageFactSummary(facts = []) {
+  const byType = {
+    turn: 0,
+    auth_observation: 0,
+    limit_observation: 0,
+  };
+  const lines = [];
+  for (const value of Array.isArray(facts) ? facts : []) {
+    const fact = normalizeUsageFact(value);
+    if (!fact) continue;
+    const type = fact.type || USAGE_FACT_TYPES.TURN;
+    const identity = usageFactIdentity(fact);
+    if (!identity) continue;
+    byType[type] = (byType[type] ?? 0) + 1;
+    lines.push(canonicalJson([type, identity, summaryFactPayload(fact)]));
+  }
+  lines.sort((left, right) => Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8")));
+  return {
+    version: 1,
+    count: lines.length,
+    byType,
+    digest: `sha256:${sha256(lines.join("\n"))}`,
+  };
 }
 
 export function normalizeAuthObservation(value = {}) {
