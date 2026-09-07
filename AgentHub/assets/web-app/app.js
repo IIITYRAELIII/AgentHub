@@ -14405,6 +14405,9 @@ function virtualStreamDetails(scope, workspace, stream) {
   details.dataset.workLogStream = "";
   details.dataset.workLogStreamId = stream.id;
   details.dataset.workLogWorkspaceId = workspace.id;
+  if (stream.providers.length === 1) {
+    details.dataset.workLogProvider = stream.providers[0];
+  }
   applyVirtualTurnQuery(details, scope, workspace, stream);
   const summary = document.createElement("summary");
   summary.dataset.workLogStreamSummary = "";
