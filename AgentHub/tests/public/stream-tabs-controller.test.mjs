@@ -604,14 +604,17 @@ test("every production Phosphor icon creates a real namespaced SVG", async () =>
     "arrow-clockwise",
     "arrows-down-up",
     "caret-down",
+    "caret-left",
     "caret-right",
     "caret-up",
     "clock-counter-clockwise",
     "copy",
     "folder",
+    "list-bullets",
     "pencil-simple",
     "plus",
     "push-pin-simple",
+    "trash",
   ]) {
     const icon = createPhosphorIcon(document, name, "stream-order-icon");
     assert.equal(icon.namespaceURI, "http://www.w3.org/2000/svg");
@@ -1371,6 +1374,83 @@ test("Workspace and Stream cards expose behavioral editing and quick reply contr
       workspaceId: "archived-1",
       confirmationName: "Exact Archive",
     });
+  } finally {
+    await browser.close();
+  }
+});
+
+test("Dashboard column headers keep one fixed height when task density differs", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  const screenshotDirectory = String(process.env.HUB157_QA_SCREENSHOT_DIR ?? "").trim();
+  try {
+    for (const [surface, viewport] of [
+      ["wide-short", { width: 1900, height: 376 }],
+      ["desktop", { width: 1440, height: 900 }],
+      ["mobile", { width: 390, height: 844 }],
+    ]) {
+      const problems = [];
+      const page = await browser.newPage({ viewport });
+      page.on("console", (message) => {
+        if (["warning", "error"].includes(message.type())) {
+          const location = message.location().url;
+          if (!["https://agent-hub.test/health", "https://agent-hub.test/events"].includes(location)) {
+            problems.push(`${message.type()}: ${message.text()} (${location})`);
+          }
+        }
+      });
+      page.on("pageerror", (error) => problems.push(`pageerror: ${error.message}`));
+      await openStreamTabsDomFixture(page);
+      await page.evaluate(() => {
+        const workspaces = [
+          { id: "empty", name: "Пустой Workspace", comment: "", streams: [] },
+          { id: "dense", name: "Плотный Workspace", comment: "", streams: new Array(17).fill({}) },
+          { id: "commented", name: "Workspace с комментарием", comment: "Описание колонки", streams: [{ id: "s" }] },
+        ];
+        const tasks = Array.from({ length: 28 }, (_, index) => ({
+          id: `task-${index}`,
+          taskNumber: `HUB-${index + 1}`,
+          title: `Плотная задача ${index + 1}`,
+          text: `Плотная задача ${index + 1}`,
+          rawText: `Плотная задача ${index + 1}`,
+          bucket: index < 26 ? "workspace" : "notes",
+          workspaceId: index < 26 ? "dense" : null,
+          status: "started",
+          workflowStatus: "in_progress",
+          revision: 1,
+          attachments: [],
+        }));
+        window.AgentHubTaskBoard.setSnapshot({
+          tasks,
+          workspaces,
+          columnOrder: ["workspace:empty", "workspace:dense", "workspace:commented", "notes"],
+        });
+        document.querySelector('[data-view-button="dashboard"]').click();
+      });
+      const geometry = await page.locator(".task-board-column-head").evaluateAll((headers) => headers.map((header) => {
+        const rect = header.getBoundingClientRect();
+        return {
+          column: header.closest("[data-board-destination]")?.dataset.boardDestination,
+          height: Number(rect.height.toFixed(2)),
+          bottom: Number(rect.bottom.toFixed(2)),
+          flex: getComputedStyle(header).flex,
+        };
+      }));
+      assert.ok(geometry.length >= 5, JSON.stringify({ surface, geometry }));
+      assert.equal(new Set(geometry.map(({ height }) => height)).size, 1, JSON.stringify({ surface, geometry }));
+      assert.equal(new Set(geometry.map(({ bottom }) => bottom)).size, 1, JSON.stringify({ surface, geometry }));
+      assert.equal(geometry[0].height, 104, JSON.stringify({ surface, geometry }));
+      assert.ok(geometry.every(({ flex }) => flex === "0 0 104px"), JSON.stringify({ surface, geometry }));
+      if (screenshotDirectory) {
+        console.log(`HUB157_BOARD_HEADER_GEOMETRY ${surface} ${JSON.stringify(geometry)}`);
+        await page.screenshot({
+          path: path.join(screenshotDirectory, `hub157-board-headers-${surface}.png`),
+          fullPage: false,
+        });
+      }
+      assert.deepEqual(problems, []);
+      await page.close();
+    }
   } finally {
     await browser.close();
   }

@@ -74,6 +74,7 @@ export function createExecutionBootstrapPhase({
       rateLimitTelemetry: clients.rateLimitTelemetry,
       usageSyncAuto: provider.usageSyncAuto,
       taskSyncStore: provider.taskSyncStore,
+      messagePins: provider.messagePins,
       workspaceCatalogStore: provider.workspaceCatalogStore,
       dismissedExternalTasks: provider.dismissedExternalTasks,
       lastSeenTaskTurnIds: provider.lastSeenTaskTurnIds,

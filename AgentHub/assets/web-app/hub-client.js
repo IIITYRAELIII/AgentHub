@@ -1467,6 +1467,7 @@ function snapshotQuery(params = {}) {
     workspacesVersion: String(params?.workspacesVersion ?? ""),
     boardTasksVersion: String(params?.boardTasksVersion ?? ""),
     messageReceiptsVersion: String(params?.messageReceiptsVersion ?? ""),
+    messagePinsVersion: String(params?.messagePinsVersion ?? ""),
     waitMs: String(REMOTE_WAIT_MS),
   });
 }
@@ -2056,6 +2057,7 @@ function applySnapshot(snapshot, { materialized = false } = {}) {
     agentHub.setExchangeRates(snapshot.exchangeRates ?? null);
     agentHub.setServerStatus(snapshot.server ?? null);
     agentHub.setWorkspaces(snapshot.workspaces ?? [], snapshot.boardLayout?.columnOrder ?? []);
+    agentHub.setMessagePins(snapshot.messagePins ?? []);
     agentHub.setArchivedWorkspaces(snapshot.archivedWorkspaces ?? []);
     const maintenanceChanged = new Set([
       ...observeContextCompactions(snapshot.tasks),
@@ -2291,6 +2293,10 @@ function historyMessages(history, focusedTurn = null) {
       threadId: itemThreadId,
       turnId: item.id,
       itemId: String(message.itemId ?? ""),
+      messageKey: String(message.messageKey ?? ""),
+      sourceAlias: String(message.sourceAlias ?? ""),
+      semanticSlot: String(message.semanticSlot ?? ""),
+      pinEligible: message.pinEligible === true,
       clientUserMessageId: String(message.clientUserMessageId ?? ""),
       turnUserSlot: String(message.turnUserSlot ?? ""),
       role: message.role,
@@ -2371,6 +2377,10 @@ function historyMessages(history, focusedTurn = null) {
         threadId: focusedThreadId,
         turnId: focusedTurn.turnId,
         itemId,
+        messageKey: String(message.messageKey ?? ""),
+        sourceAlias: String(message.sourceAlias ?? ""),
+        semanticSlot: String(message.semanticSlot ?? ""),
+        pinEligible: message.pinEligible === true,
         role: message.role,
         ...(message.kind ? { kind: message.kind } : {}),
         ...(message.origin ? { origin: message.origin } : {}),
@@ -3104,6 +3114,36 @@ agentHub.on("task:new", ({ title, provider }) => runAction(async () => {
     const route = window.AgentHubNavigationTabs.resolvedChatRoute({ history: identity }, identity);
     if (route.hash) replaceRoute(route.hash);
   }
+}));
+
+agentHub.on("message-pin:set", ({ mutationId, ...params }) => runAction(async () => {
+  try {
+    const result = await control("message-pin-set", params);
+    agentHub.completeMessagePinMutation(mutationId, result);
+  } catch (error) {
+    agentHub.completeMessagePinMutation(mutationId, { error: error.message });
+  }
+}));
+agentHub.on("message-pins:clear", ({ mutationId, ...params }) => runAction(async () => {
+  try {
+    const result = await control("message-pins-clear", params);
+    agentHub.completeMessagePinMutation(mutationId, result);
+  } catch (error) {
+    agentHub.completeMessagePinMutation(mutationId, { error: error.message });
+  }
+}));
+agentHub.on("message-pin:open", ({ pin }) => runAction(async () => {
+  const result = await control("open-turn", {
+    streamId: pin.streamId,
+    provider: pin.provider,
+    threadId: pin.taskThreadId,
+    taskThreadId: pin.taskThreadId,
+    turnThreadId: pin.turnThreadId,
+    turnId: pin.turnId,
+    itemId: pin.itemId,
+    role: pin.role,
+  });
+  applyOpened(result);
 }));
 
 agentHub.on("task:rename", ({ id, title }) => runAction(async () => {

@@ -519,11 +519,11 @@ html[data-view="chat"][data-surface][data-theme] {
 
 /* Шапка выбранного потока. */
 .chat-pane {
-  grid-template-rows: 42px minmax(0, 1fr);
+  grid-template-rows: 42px auto minmax(0, 1fr);
 }
 
 .chat-pane[data-dialog-settings-open] {
-  grid-template-rows: 42px minmax(0, 1fr);
+  grid-template-rows: 42px auto minmax(0, 1fr);
 }
 
 .stream-chat-header {
@@ -617,6 +617,110 @@ html[data-view="chat"][data-surface][data-theme] {
   grid-row: 1 / -1;
 }
 
+.message-pin-shelf {
+  align-items: center;
+  background: color-mix(in srgb, var(--dialog-raised) 88%, var(--dialog-accent-soft));
+  border: 0;
+  border-bottom: 1px solid var(--dialog-hairline);
+  color: var(--dialog-text-2);
+  display: grid;
+  gap: 6px;
+  grid-column: 1;
+  grid-row: 2;
+  grid-template-columns: 20px minmax(0, 1fr) auto 30px 30px 30px;
+  min-height: 38px;
+  padding: 3px 10px 3px 18px;
+}
+
+.message-pin-shelf[hidden] {
+  display: none;
+}
+
+.sr-only {
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
+.message-pin-shelf-icon {
+  color: var(--dialog-accent);
+  height: 15px;
+  width: 15px;
+}
+
+.message-pin-shelf-icon svg,
+.message-pin-nav svg {
+  height: 100%;
+  width: 100%;
+}
+
+.message-pin-current {
+  align-items: baseline;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 3px 2px;
+  text-align: left;
+  width: 100%;
+}
+
+.message-pin-current:disabled {
+  cursor: default;
+}
+
+.message-pin-current-meta,
+.message-pin-row-meta,
+.message-pin-unavailable {
+  color: var(--dialog-text-3);
+  flex: 0 0 auto;
+  font-size: 11px;
+}
+
+.message-pin-current-preview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-pin-position {
+  color: var(--dialog-text-3);
+  font-family: var(--font-numeric);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.message-pin-nav {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  color: var(--dialog-text-3);
+  display: inline-flex;
+  height: 30px;
+  justify-content: center;
+  padding: 7px;
+  width: 30px;
+}
+
+.message-pin-nav:hover:not(:disabled),
+.message-pin-nav:focus-visible,
+.message-pin-current:hover:not(:disabled),
+.message-pin-current:focus-visible {
+  background: var(--dialog-control-hover);
+  color: var(--dialog-text);
+  outline: 0;
+}
+
 .dialog-settings-head {
   min-height: 42px;
   padding: 0 10px 0 24px;
@@ -652,7 +756,7 @@ html[data-view="chat"][data-surface][data-theme] {
 /* Сообщения одной колонкой. */
 .chat-scroll {
   grid-column: 1;
-  grid-row: 2;
+  grid-row: 3;
   overflow-x: hidden;
   padding: 26px 0 40px;
 }
@@ -890,6 +994,142 @@ html[data-view="chat"][data-surface][data-theme] {
 .msg-action-icon {
   height: 12px;
   width: 12px;
+}
+
+.msg-action[aria-pressed="true"] {
+  color: var(--dialog-accent);
+}
+
+.msg-action:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.msg[data-pin-highlight] {
+  animation: message-pin-highlight 1.2s ease-out 2;
+  outline: 2px solid var(--dialog-accent);
+  outline-offset: 5px;
+  scroll-margin-top: 96px;
+}
+
+@keyframes message-pin-highlight {
+  0%, 100% { background-color: transparent; }
+  45% { background-color: var(--dialog-accent-soft); }
+}
+
+.message-pins-modal,
+.message-pins-clear-modal {
+  background: color-mix(in srgb, var(--dialog-canvas) 96%, var(--dialog-text) 4%);
+  border: 1px solid var(--dialog-hairline);
+  border-radius: 14px;
+  box-shadow: var(--card-shadow);
+  color: var(--dialog-text);
+  max-height: min(72dvh, 680px);
+  padding: 0;
+  width: min(620px, calc(100vw - 32px));
+}
+
+.message-pins-modal {
+  inset: auto;
+  margin: 0;
+  position: fixed;
+}
+
+.message-pins-clear-modal {
+  margin: auto;
+}
+
+.message-pins-modal::backdrop,
+.message-pins-clear-modal::backdrop {
+  background: color-mix(in srgb, black 36%, transparent);
+}
+
+.message-pins-modal > header,
+.message-pins-modal > footer,
+.message-pins-clear-modal > section,
+.message-pins-clear-modal > footer {
+  padding: 14px 18px;
+}
+
+.message-pins-modal > header {
+  align-items: center;
+  border-bottom: 1px solid var(--dialog-hairline);
+  display: flex;
+  justify-content: space-between;
+}
+
+.message-pins-modal h2,
+.message-pins-clear-modal h2,
+.message-pins-modal p,
+.message-pins-clear-modal p {
+  margin: 0;
+}
+
+.message-pins-modal > header .icon-button {
+  align-items: center;
+  display: inline-flex;
+  height: 36px;
+  justify-content: center;
+  width: 36px;
+}
+
+.message-pins-modal > header .icon-button svg {
+  height: 16px;
+  width: 16px;
+}
+
+.message-pins-list {
+  display: grid;
+  max-height: min(54dvh, 500px);
+  overflow: auto;
+}
+
+.message-pin-row {
+  align-items: center;
+  border-bottom: 1px solid var(--dialog-hairline);
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 12px 18px;
+}
+
+.message-pin-row-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.message-pin-row-copy p {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.message-pin-row[data-unavailable] .message-pin-row-copy p {
+  color: var(--dialog-text-3);
+}
+
+.message-pin-row-actions,
+.message-pins-modal > footer,
+.message-pins-clear-modal > footer {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.message-pin-row-actions button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.stream-chat-preview > .stream-chat-preview-pins {
+  cursor: pointer;
+  display: flex;
+  flex: 0 0 38px;
+  gap: 8px;
+  grid-template-columns: none;
+  padding-inline: 12px;
 }
 
 .msg-body p,
@@ -2028,6 +2268,59 @@ html[data-view="chat"][data-surface][data-theme] {
 @media (max-width: 760px) {
   .stream-chat-header {
     padding-inline: 16px;
+  }
+
+  .message-pin-shelf {
+    grid-template-columns: 20px minmax(0, 1fr) auto 44px 44px 44px;
+    min-height: 48px;
+    padding-left: 14px;
+  }
+
+  .message-pin-current {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .message-pin-current-meta {
+    display: none;
+  }
+
+  .message-pin-current-preview {
+    display: block;
+    max-width: 100%;
+    width: 100%;
+  }
+
+  .message-pin-nav {
+    height: 44px;
+    padding: 13px;
+    width: 44px;
+  }
+
+  .message-pins-modal[open] {
+    border-radius: 18px 18px 0 0;
+    bottom: calc(58px + env(safe-area-inset-bottom));
+    left: 0;
+    margin: 0;
+    max-height: calc(82dvh - 58px);
+    max-width: none;
+    right: 0;
+    top: auto;
+    width: 100%;
+  }
+
+  .message-pin-row {
+    align-items: stretch;
+    grid-template-columns: 1fr;
+  }
+
+  .message-pin-row-actions > button {
+    min-height: 44px;
+  }
+
+  .message-pins-clear-modal {
+    width: calc(100vw - 24px);
   }
 
   .stream-chat-branch,

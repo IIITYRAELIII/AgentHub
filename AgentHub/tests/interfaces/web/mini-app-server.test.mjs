@@ -1412,7 +1412,7 @@ test("Mini App forwards authenticated control commands to Agent Hub", async () =
       result: { generatedAt: "now" },
       receiptId: "local-command-1",
     });
-    const snapshot = await fetch(`${address.url}api/snapshot?knownVersion=version-1&compactSnapshot=1&snapshotProtocol=4&conversationsVersion=conversations-1&workspacesVersion=workspaces-1&boardTasksVersion=board-1&messageReceiptsVersion=receipts-1`);
+    const snapshot = await fetch(`${address.url}api/snapshot?knownVersion=version-1&compactSnapshot=1&snapshotProtocol=4&conversationsVersion=conversations-1&workspacesVersion=workspaces-1&boardTasksVersion=board-1&messageReceiptsVersion=receipts-1&messagePinsVersion=pins-1`);
     assert.equal(snapshot.status, 200);
     assert.deepEqual(await snapshot.json(), { generatedAt: "now" });
     const [{ context: localContext, ...localCall }, snapshotCall] = calls;
@@ -1438,6 +1438,7 @@ test("Mini App forwards authenticated control commands to Agent Hub", async () =
           workspacesVersion: "workspaces-1",
           boardTasksVersion: "board-1",
           messageReceiptsVersion: "receipts-1",
+          messagePinsVersion: "pins-1",
         },
         context: { source: "local-mini-app" },
       },

@@ -8,13 +8,22 @@ function fixture(plan = {
   revision: "plan-1", ready: [{ id: "change-1" }],
   candidates: [{ gitReferences: [{ projectRoot: "D:/repo", resultCommit: "task-result" }] }],
   draft: [], blocked: [], conflicts: [],
-}, { primarySync = null, devSync = null } = {}) {
+}, { primarySync = null, devSync = null, rebuildFailures = 0 } = {}) {
   const calls = [];
+  let pending = null;
+  let remainingRebuildFailures = rebuildFailures;
   const service = new WorkspaceReleaseService({
     store: createTaskBoardMutationOwner({
       runMutation: (operation) => Promise.resolve().then(operation),
+      awaitRebuildPending: () => pending,
+      clearAwaitRebuildPending: () => {
+        calls.push(["clear-pending"]);
+        pending = null;
+        return true;
+      },
       completeRelease: (workspaceId, options) => {
         calls.push(["complete", workspaceId, options]);
+        pending = options.awaitRebuild;
         return { workspaceId, released: plan.ready };
       },
     }),
@@ -35,6 +44,20 @@ function fixture(plan = {
         return devSync ?? { status: "merged", integrated: true, mainCommit: value.publishedRevision };
       },
     },
+    releasePreflight: {
+      withAwaitTransition: async (workspaceId, operation) => {
+        calls.push(["lock-await", workspaceId]);
+        return operation();
+      },
+      prepareAwaitSet: async (options) => {
+        calls.push(["rebuild-await", options]);
+        if (remainingRebuildFailures > 0) {
+          remainingRebuildFailures -= 1;
+          throw new Error("injected rebuild failure");
+        }
+        return { rebuilt: true, ...options };
+      },
+    },
     verifyPublication: async (value) => {
       calls.push(["verify", value]);
       return {
@@ -46,14 +69,16 @@ function fixture(plan = {
       };
     },
   });
-  return { calls, service };
+  return { calls, service, state: { get pending() { return pending; } } };
 }
 
 test("release completion rejects a raw Task store dependency", () => {
   assert.throws(() => new WorkspaceReleaseService({
-    store: { completeRelease() {} },
+    store: { completeRelease() {}, awaitRebuildPending() {}, clearAwaitRebuildPending() {} },
     releasePlanner: { plan() {} },
     releaseGitWorkspaces: { frozenCandidate() {}, synchronizePublishedPrimary() {} },
+    taskGitWorkspaces: { synchronizeMainIntoDev() {} },
+    releasePreflight: { prepareAwaitSet() {}, withAwaitTransition() {} },
     verifyPublication() {},
   }), /Task mutation owner facade/u);
 });
@@ -80,18 +105,18 @@ test("release completion verifies repositories before atomically closing ready c
   assert.equal(result.publication.planRevision, "plan-1");
   assert.deepEqual(
     calls.map(([name]) => name),
-    ["verify", "verify", "complete", "sync-primary", "sync-dev"],
+    ["lock-await", "verify", "verify", "complete", "sync-primary", "sync-dev", "rebuild-await", "clear-pending"],
   );
-  assert.deepEqual(calls[3][1], {
+  assert.deepEqual(calls[4][1], {
     projectRoot: "D:/repo",
     publishedRevision: "abc",
     planRevision: "plan-1",
   });
-  assert.deepEqual(calls[4][1], {
+  assert.deepEqual(calls[5][1], {
     projectRoot: "D:/repo",
     publishedRevision: "abc",
   });
-  const { plan: completedPlan, ...completionOptions } = calls[2][2];
+  const { plan: completedPlan, ...completionOptions } = calls[3][2];
   assert.equal(completedPlan.revision, "plan-1");
   assert.deepEqual(completionOptions, {
     expectedPlanRevision: "plan-1",
@@ -117,10 +142,47 @@ test("release completion verifies repositories before atomically closing ready c
         summary: "Published and smoke-tested",
       },
     },
+    awaitRebuild: {
+      planRevision: "plan-1",
+      fallbackProjectRoots: ["D:/repo"],
+    },
   });
+  assert.deepEqual(calls[6][1], {
+    workspaceId: "workspace-1",
+    fallbackProjectRoots: ["D:/repo"],
+  });
+  assert.equal(result.preReleaseIntegration.rebuilt, true);
 });
 
-test("release completion requires and records explicit resolution of overlapping ready changes", async () => {
+test("failed post-publication Await rebuild is durable and retryable without completing twice", async () => {
+  const { calls, service, state } = fixture(undefined, { rebuildFailures: 1 });
+  const request = {
+    workspaceId: "workspace-1",
+    expectedRepositories: [{ projectRoot: "D:/repo", revision: "abc" }],
+    expectedPlanRevision: "plan-1",
+    deploymentVerified: true,
+    verificationSummary: "Published and verified",
+  };
+
+  const first = await service.completeRelease(request);
+  assert.equal(first.preReleaseIntegration.status, "retry_required");
+  assert.match(first.preReleaseIntegration.reason, /injected rebuild failure/u);
+  assert.deepEqual(state.pending, {
+    planRevision: "plan-1",
+    fallbackProjectRoots: ["D:/repo"],
+  });
+
+  const second = await service.completeRelease(request);
+  assert.equal(second.releaseAlreadyCompleted, true);
+  assert.equal(second.recoveredPlanRevision, "plan-1");
+  assert.equal(second.preReleaseIntegration.rebuilt, true);
+  assert.equal(state.pending, null);
+  assert.equal(calls.filter(([name]) => name === "complete").length, 1);
+  assert.equal(calls.filter(([name]) => name === "verify").length, 2);
+  assert.equal(calls.filter(([name]) => name === "rebuild-await").length, 2);
+});
+
+test("release completion treats overlapping ready paths as diagnostic evidence", async () => {
   const plan = {
     revision: "plan-conflict", ready: [{ id: "change-1" }, { id: "change-2" }],
     candidates: [{ gitReferences: [{ projectRoot: "D:/repo", resultCommit: "task-result" }] }], draft: [], blocked: [],
@@ -134,11 +196,10 @@ test("release completion requires and records explicit resolution of overlapping
     verificationSummary: "Integrated overlap verified",
     expectedRepositories: [{ projectRoot: "D:/repo", revision: "abc" }],
   };
-  await assert.rejects(() => service.completeRelease(request), /overlapping files/u);
-  await service.completeRelease({ ...request, conflictsResolved: true });
-  assert.equal(calls[0][1].conflictsResolved, true);
-  assert.equal(calls[2][2].conflictsResolved, true);
-  assert.equal(calls[2][2].verificationEvidence.conflictsResolved, true);
+  await service.completeRelease(request);
+  assert.equal(calls[1][1].conflictsResolved, false);
+  assert.equal(calls[3][2].conflictsResolved, false);
+  assert.equal(calls[3][2].verificationEvidence.conflictsResolved, false);
 });
 
 test("release completion binds publication evidence to the exact observed plan revision", async () => {
@@ -152,7 +213,7 @@ test("release completion binds publication evidence to the exact observed plan r
     }),
     /revision changed/u,
   );
-  assert.deepEqual(calls, []);
+  assert.deepEqual(calls, [["lock-await", "workspace-1"]]);
 });
 
 test("manual primary synchronization does not undo verified release completion", async () => {
@@ -169,7 +230,7 @@ test("manual primary synchronization does not undo verified release completion",
   assert.equal(result.publication.primarySynchronization[0].status, "manual_required");
   assert.deepEqual(
     calls.map(([name]) => name),
-    ["verify", "verify", "complete", "sync-primary", "sync-dev"],
+    ["lock-await", "verify", "verify", "complete", "sync-primary", "sync-dev", "rebuild-await", "clear-pending"],
   );
 });
 
@@ -187,7 +248,7 @@ test("release completion records a dev conflict without hiding publication succe
   });
   const result = await service.completeRelease({
     workspaceId: "workspace-1",
-    expectedRevision: "abc",
+    expectedRepositories: [{ projectRoot: "D:/repo", revision: "abc" }],
     expectedPlanRevision: "plan-1",
     deploymentVerified: true,
     verificationSummary: "Published and verified",
@@ -197,7 +258,7 @@ test("release completion records a dev conflict without hiding publication succe
   assert.deepEqual(result.publication.devSynchronization[0].conflicts, ["AgentHub/app.js"]);
   assert.deepEqual(
     calls.map(([name]) => name),
-    ["verify", "verify", "complete", "sync-primary", "sync-dev"],
+    ["lock-await", "verify", "verify", "complete", "sync-primary", "sync-dev", "rebuild-await", "clear-pending"],
   );
 });
 

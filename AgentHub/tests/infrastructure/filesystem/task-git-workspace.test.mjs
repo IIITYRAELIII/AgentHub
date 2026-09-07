@@ -107,6 +107,28 @@ test("Task Git workspace commits one Task branch and merges it into dev", async 
   });
   assert.equal(evidence.resultCommit, result.snapshot.headCommit);
   assert.deepEqual(evidence.changedFiles.map((file) => file.path), ["app.txt"]);
+  const integrationEvidence = await service.releaseIntegrationEvidence({
+    projectRoot: root,
+    tasks: [{
+      taskId,
+      taskRevision: 1,
+      projectRoot: root,
+      branch: result.snapshot.branch,
+      resultCommit: result.snapshot.headCommit,
+    }],
+  });
+  assert.deepEqual(integrationEvidence.tasks, [{
+    taskId,
+    taskRevision: 1,
+    resultCommit: result.snapshot.headCommit,
+    integrations: [{
+      commit: result.integration.dev.headCommit,
+      parent: result.integration.dev.headCommit === result.snapshot.headCommit
+        ? result.snapshot.baseCommit
+        : await git(result.integration.dev.projectRoot, "rev-parse", `${result.integration.dev.headCommit}^1`),
+      order: 2,
+    }],
+  }]);
   const devEvidence = await service.verifyReleaseResultsInDev({
     projectRoot: root,
     resultCommits: [result.snapshot.headCommit],

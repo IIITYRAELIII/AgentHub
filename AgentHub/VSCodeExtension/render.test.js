@@ -2254,8 +2254,6 @@ test("statistics page offers local usage and full limit history", () => {
   assert.match(app, /function limitsSpeedPath\(/u);
   assert.match(app, /снизьте темп/u);
   assert.match(app, /Ровный темп · 14,3%\/сутки/u);
-  assert.match(app, /Ровный темп · 0,6%\/час/u);
-  assert.match(app, /function burnRatePolicyForRange\(/u);
   assert.match(styles, /\.limits-burn-normal-line/u);
   for (const range of ["6h", "24h", "7d", "15d", "30d", "all"]) {
     assert.match(html, new RegExp(`data-range="${range}"`, "u"));

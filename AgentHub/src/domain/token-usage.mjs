@@ -7,6 +7,7 @@ const TOKEN_USAGE_FIELDS = [
 ];
 
 const MODEL_CREDIT_RATES = new Map([
+  ["gpt-6-astra", { input: 312.5, cachedInput: 31.25, output: 1_875 }],
   ["gpt-5.6-sol", { input: 125, cachedInput: 12.5, output: 750 }],
   ["gpt-5.6-terra", { input: 62.5, cachedInput: 6.25, output: 375 }],
   // Subagent review rollouts report this product alias instead of the

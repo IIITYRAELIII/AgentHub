@@ -2123,13 +2123,39 @@ export class TaskBoardStore {
     });
   }
 
-  requestWorkflowStatus(id, { status, provider, threadId, turnId, operationId } = {}) {
+  requestWorkflowStatus(id, {
+    status, provider, threadId, turnId, operationId, expectedRevision = null, expectedStatus = null,
+  } = {}) {
     const workflowStatus = normalizedTaskWorkflowStatus(status);
-    if (workflowStatus === "awaiting_implementation") {
-      const identity = [provider, threadId, turnId, operationId].map((value) => String(value ?? "").trim());
-      this.#withDatabase((database) => {
-        this.#taskRow(database, id);
-        database.prepare("DELETE FROM hub_task_git_references WHERE task_id = ?").run(String(id));
+    const identity = [provider, threadId, turnId, operationId].map((value) => String(value ?? "").trim());
+    const timestamp = this.now();
+    return this.#withDatabase((database) => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const taskId = String(id);
+        const current = this.#taskRow(database, taskId);
+        if (expectedRevision != null && Number(current.row_revision) !== Number(expectedRevision)) {
+          throw new Error("Task revision changed during workflow transition");
+        }
+        if (expectedStatus != null && current.workflow_status !== normalizedTaskWorkflowStatus(expectedStatus)) {
+          throw new Error("Task workflow status changed during workflow transition");
+        }
+        const lifecycleStatus = current.status === "done"
+          ? (current.stream_id ? "started" : "open")
+          : current.status;
+        if (workflowStatus !== "awaiting_implementation") {
+          database.prepare(`
+            UPDATE hub_task_turn_bindings SET requested_workflow_status = NULL
+            WHERE task_id = ? AND requested_workflow_status IS NOT NULL
+          `).run(taskId);
+        }
+        database.prepare(`
+          UPDATE hub_board_tasks
+          SET status = ?, workflow_status = ?, completed_at_ms = NULL, updated_at_ms = ?,
+            row_revision = row_revision + 1
+          WHERE id = ?
+        `).run(lifecycleStatus, workflowStatus, timestamp, taskId);
+        if (workflowStatus === "awaiting_implementation") {
         if (!identity.some((value) => !value)) {
           const binding = database.prepare(`
             SELECT task_id FROM hub_task_turn_bindings
@@ -2142,9 +2168,15 @@ export class TaskBoardStore {
             `).run(...identity);
           }
         }
-      });
-    }
-    return this.setWorkflowStatus(id, workflowStatus);
+        }
+        const task = this.#taskWithRelease(database, this.#taskRow(database, taskId));
+        database.exec("COMMIT");
+        return task;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    });
   }
 
   beginLifecycleTransition(id, {
@@ -2187,7 +2219,13 @@ export class TaskBoardStore {
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           operation, taskId, normalizedKind, normalizedKind === "workflow" ? "pending_git" : "cleanup",
-          target, revision, JSON.stringify(taskFromRow(current)), timestamp, timestamp,
+          target, revision, JSON.stringify({
+            task: this.#taskWithRelease(database, current),
+            bindingRequests: database.prepare(`
+              SELECT provider, provider_thread_id, turn_id, operation_id, requested_workflow_status
+              FROM hub_task_turn_bindings WHERE task_id = ?
+            `).all(taskId),
+          }), timestamp, timestamp,
         );
         database.exec("COMMIT");
         return { task: this.#taskWithRelease(database, current), replayed: false, phase: normalizedKind === "workflow" ? "pending_git" : "cleanup" };
@@ -2283,7 +2321,8 @@ export class TaskBoardStore {
           : current.status;
         const changed = database.prepare(`
           UPDATE hub_board_tasks
-          SET status = ?, workflow_status = ?, completed_at_ms = NULL, updated_at_ms = ?
+          SET status = ?, workflow_status = ?, completed_at_ms = NULL, updated_at_ms = ?,
+            row_revision = row_revision + 1
           WHERE id = ? AND row_revision = ?
         `).run(
           lifecycleStatus, transition.target_workflow_status, this.now(), transition.task_id,
@@ -2306,17 +2345,98 @@ export class TaskBoardStore {
           WHERE operation_id = ?
         `).run(JSON.stringify(evidence ?? {}), this.now(), operation);
         const task = this.#taskWithRelease(database, this.#taskRow(database, transition.task_id));
+        const priorState = JSON.parse(transition.prior_state_json);
+        const priorTask = priorState?.task ?? priorState;
         database.prepare(`
           INSERT OR REPLACE INTO hub_task_lifecycle_outcomes (
             operation_id, task_id, kind, result_json, completed_at_ms
           ) VALUES (?, ?, 'workflow', ?, ?)
-        `).run(operation, transition.task_id, JSON.stringify({ task, evidence: evidence ?? {} }), this.now());
+        `).run(operation, transition.task_id, JSON.stringify({
+          task,
+          priorTask,
+          priorBindingRequests: priorState?.bindingRequests ?? [],
+          evidence: evidence ?? {},
+        }), this.now());
         database.prepare("DELETE FROM hub_task_lifecycle_transitions WHERE operation_id = ?").run(operation);
         database.exec("COMMIT");
         return task;
       } catch (error) {
         database.exec("ROLLBACK");
         throw error;
+      }
+    });
+  }
+
+  rollbackWorkflowOutcome(operationId, error) {
+    const operation = String(operationId ?? "").trim();
+    return this.#withDatabase((database) => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const outcome = database.prepare(`
+          SELECT * FROM hub_task_lifecycle_outcomes
+          WHERE operation_id = ? AND kind = 'workflow'
+        `).get(operation);
+        if (!outcome) throw new Error("Task workflow outcome is unavailable for rollback");
+        const result = JSON.parse(outcome.result_json);
+        if (result.rollback?.completed === true) {
+          database.exec("COMMIT");
+          return this.#taskWithRelease(database, this.#taskRow(database, outcome.task_id));
+        }
+        const committed = result.task;
+        const prior = result.priorTask;
+        if (!committed || !prior) throw new Error("Task workflow outcome has no rollback state");
+        const current = this.#taskRow(database, outcome.task_id);
+        if (Number(current.row_revision) !== Number(committed.revision)
+          || current.workflow_status !== committed.workflowStatus) {
+          throw new Error("Task changed after workflow commit; rollback was not applied");
+        }
+        database.prepare("DELETE FROM hub_task_git_references WHERE task_id = ?").run(outcome.task_id);
+        for (const reference of prior.gitReferences ?? []) {
+          this.#recordGitReference(database, outcome.task_id, reference.projectRoot, reference.branch, {
+            repoRoot: reference.projectRoot,
+            tree: reference.resultCommit,
+          });
+        }
+        const restored = database.prepare(`
+          UPDATE hub_board_tasks SET status = ?, workflow_status = ?, completed_at_ms = ?,
+            updated_at_ms = ?, row_revision = row_revision + 1
+          WHERE id = ? AND row_revision = ? AND workflow_status = ?
+        `).run(
+          prior.status,
+          prior.workflowStatus,
+          prior.completedAt ? Date.parse(prior.completedAt) : null,
+          this.now(), outcome.task_id, committed.revision, committed.workflowStatus,
+        );
+        if (!Number(restored.changes)) throw new Error("Task workflow rollback CAS failed");
+        database.prepare(`
+          UPDATE hub_task_turn_bindings SET requested_workflow_status = NULL WHERE task_id = ?
+        `).run(outcome.task_id);
+        for (const binding of result.priorBindingRequests ?? []) {
+          if (!binding.requested_workflow_status) continue;
+          database.prepare(`
+            UPDATE hub_task_turn_bindings SET requested_workflow_status = ?
+            WHERE task_id = ? AND provider = ? AND provider_thread_id = ?
+              AND turn_id = ? AND operation_id = ?
+          `).run(
+            binding.requested_workflow_status, outcome.task_id, binding.provider,
+            binding.provider_thread_id, binding.turn_id, binding.operation_id,
+          );
+        }
+        const task = this.#taskWithRelease(database, this.#taskRow(database, outcome.task_id));
+        const rollback = {
+          completed: true,
+          reason: String(error?.message ?? error ?? "Await rebuild failed").slice(0, 4000),
+          completedAtMs: this.now(),
+        };
+        database.prepare(`
+          UPDATE hub_task_lifecycle_outcomes SET result_json = ?, completed_at_ms = ?
+          WHERE operation_id = ?
+        `).run(JSON.stringify({ ...result, rollback, restoredTask: task }), rollback.completedAtMs, operation);
+        database.exec("COMMIT");
+        return task;
+      } catch (rollbackError) {
+        database.exec("ROLLBACK");
+        throw rollbackError;
       }
     });
   }
@@ -2572,7 +2692,35 @@ export class TaskBoardStore {
     return this.list({ includeDone: true }).filter((task) => task.workspaceId === String(workspaceId));
   }
 
-  completeRelease(workspaceId, { expectedPlanRevision = null, plan = null, verificationEvidence = null } = {}) {
+  awaitRebuildPending(workspaceId) {
+    const key = `release_await_rebuild_pending:${String(workspaceId)}`;
+    return this.#withDatabase((database) => {
+      const value = database.prepare("SELECT value FROM hub_board_settings WHERE key = ?").get(key)?.value;
+      if (!value) return null;
+      try {
+        const parsed = JSON.parse(value);
+        return {
+          planRevision: String(parsed.planRevision ?? ""),
+          fallbackProjectRoots: Array.isArray(parsed.fallbackProjectRoots)
+            ? parsed.fallbackProjectRoots.map((root) => String(root)).filter(Boolean)
+            : [],
+        };
+      } catch {
+        throw new Error(`invalid pending Await rebuild evidence for Workspace ${workspaceId}`);
+      }
+    });
+  }
+
+  clearAwaitRebuildPending(workspaceId) {
+    const key = `release_await_rebuild_pending:${String(workspaceId)}`;
+    return this.#withDatabase((database) => (
+      Number(database.prepare("DELETE FROM hub_board_settings WHERE key = ?").run(key).changes) > 0
+    ));
+  }
+
+  completeRelease(workspaceId, {
+    expectedPlanRevision = null, plan = null, verificationEvidence = null, awaitRebuild = null,
+  } = {}) {
     const expected = String(expectedPlanRevision ?? "").trim();
     return this.#withDatabase((database) => {
       database.exec("BEGIN IMMEDIATE");
@@ -2588,6 +2736,13 @@ export class TaskBoardStore {
       if (!plan.candidates.length) throw new Error("release has no awaiting Task candidates");
       if (!verificationEvidence || typeof verificationEvidence !== "object") {
         throw new Error("release completion requires durable publication evidence");
+      }
+      const rebuildPlanRevision = String(awaitRebuild?.planRevision ?? "").trim();
+      const fallbackProjectRoots = Array.isArray(awaitRebuild?.fallbackProjectRoots)
+        ? awaitRebuild.fallbackProjectRoots.map((root) => String(root).trim()).filter(Boolean)
+        : [];
+      if (rebuildPlanRevision !== expected || !fallbackProjectRoots.length) {
+        throw new Error("release completion requires durable Await rebuild evidence");
       }
       const timestamp = this.now();
       for (const task of plan.candidates) {
@@ -2615,6 +2770,15 @@ export class TaskBoardStore {
         })),
         verificationEvidence,
       };
+      database.prepare(`
+        INSERT INTO hub_board_settings (key, value, updated_at_ms)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at_ms = excluded.updated_at_ms
+      `).run(
+        `release_await_rebuild_pending:${String(workspaceId)}`,
+        JSON.stringify({ planRevision: rebuildPlanRevision, fallbackProjectRoots }),
+        timestamp,
+      );
       database.exec("COMMIT");
       return result;
       } catch (error) {

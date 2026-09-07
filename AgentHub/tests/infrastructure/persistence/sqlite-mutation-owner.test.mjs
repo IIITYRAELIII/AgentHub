@@ -238,6 +238,13 @@ test("composed release completion retries through the mandatory Task owner witho
       }),
       synchronizePublishedPrimary: async () => ({ status: "already_current" }),
     },
+    taskGitWorkspaces: {
+      synchronizeMainIntoDev: async () => ({ status: "already_current", integrated: true }),
+    },
+    releasePreflight: {
+      withAwaitTransition: async (_workspaceId, operation) => operation(),
+      prepareAwaitSet: async (options) => ({ ...options, releaseCandidates: [] }),
+    },
     verifyPublication: async () => ({
       repositories: [{
         root: "D:/repo", revision: "published", planRevision: plan.revision,

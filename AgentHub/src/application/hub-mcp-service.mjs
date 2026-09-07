@@ -464,7 +464,7 @@ export class HubMcpService {
     this.releasePlanner = releasePlanner;
     this.taskGitWorkspaces = taskGitWorkspaces;
     this.taskLifecycle = taskLifecycle ?? new TaskLifecycleService({
-      taskBoard, workspaceCatalog: this.workspaceCatalog, taskGitWorkspaces,
+      taskBoard, workspaceCatalog: this.workspaceCatalog, taskGitWorkspaces, releasePreflight,
     });
     this.#startupReconciliation = this.reconcilePendingMcpOperations();
   }
@@ -484,6 +484,14 @@ export class HubMcpService {
       const outcome = expectedKind ? this.taskBoard.lifecycleOutcome?.(receipt.requestId) : null;
       const exactOutcome = outcome?.operationId === receipt.requestId && outcome?.kind === expectedKind;
       if (exactOutcome) {
+        if (expectedKind === "workflow" && outcome.result?.rollback?.completed === true) {
+          await this.workspaceCatalog.failMcpOperation(
+            receipt.requestId,
+            new Error(outcome.result.rollback.reason || "Task workflow transition was rolled back"),
+          );
+          reconciled += 1;
+          continue;
+        }
         let result;
         if (expectedKind === "workflow") {
           result = {

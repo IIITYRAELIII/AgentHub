@@ -3825,6 +3825,7 @@ html[data-view="dashboard"] .task-board-view {
   border-bottom: 1px solid var(--line);
   box-sizing: border-box;
   display: flex;
+  flex: 0 0 6.5rem;
   gap: 0.6rem;
   height: 6.5rem;
   justify-content: space-between;
@@ -10683,6 +10684,19 @@ html[data-surface="mobile"] .limits-chart-svg {
   transform: translate(-50%, 0.6rem);
   transition: opacity 0.2s ease, transform 0.2s ease;
   z-index: 80;
+  align-items: center;
+  display: flex;
+  gap: 0.75rem;
+}
+
+.toast button {
+  background: transparent;
+  border: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  padding: 0;
 }
 
 .toast.visible {
@@ -14448,12 +14462,28 @@ html[data-surface="mobile"] .server-config-inline-label {
   fill: var(--usage-device-color);
 }
 
+.limits-burn-average-segment {
+  opacity: 0.72;
+  stroke-dasharray: 5 4;
+  stroke-linecap: round;
+  stroke-width: 1.5;
+}
+
 .limits-burn-target-line {
-  opacity: 0.62;
-  stroke-dasharray: 5 5;
+  opacity: 0.68;
+  stroke-dasharray: 1 5;
   stroke-linecap: round;
   stroke-linejoin: round;
-  stroke-width: 1.5;
+  stroke-width: 1.7;
+}
+
+.limits-burn-target-line.is-off-scale {
+  opacity: 0.82;
+}
+
+.limits-burn-average-segment.is-preliminary,
+.limits-burn-rate-segment.is-preliminary {
+  opacity: 0.42;
 }
 
 .limits-burn-normal-line {
@@ -14537,14 +14567,6 @@ html[data-surface="mobile"] .server-config-inline-label {
 
 .limits-speed-summary-card.is-over-target {
   border-left-color: var(--danger, #ff7f8d);
-}
-
-.limits-speed-summary-card.is-waiting {
-  border-left-color: var(--pending, #e8bd69);
-}
-
-.limits-speed-summary-card.is-waiting .limits-speed-summary-status {
-  color: var(--pending, #e8bd69);
 }
 
 .limits-speed-summary-name {
@@ -15475,18 +15497,6 @@ html[data-browser-auth] {
 .chart-rail-account-control .themed-select {
   min-width: 0;
   width: 100%;
-}
-
-.chart-rail-switch {
-  margin: 0.15rem 0 0;
-}
-
-.chart-rail-switch .switch-text {
-  font-size: 0.74rem;
-}
-
-.chart-rail-switch .switch-note {
-  font-size: 0.68rem;
 }
 
 .chart-main {

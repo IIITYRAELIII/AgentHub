@@ -9,7 +9,7 @@ function lifecycleFixture({ synchronousFence = false } = {}) {
     workspaceId: "workspace-1", streamId: "stream-1", workflowStatus: "done",
     gitReferences: [],
   };
-  const calls = { assertions: 0, begin: 0, fail: 0, commit: 0, cleanup: 0, complete: 0, delete: 0 };
+  const calls = { assertions: 0, begin: 0, fail: 0, commit: 0, rollback: 0, cleanup: 0, complete: 0, delete: 0 };
   const asyncAssertOwned = async () => {
     calls.assertions += 1;
     await Promise.resolve();
@@ -24,6 +24,7 @@ function lifecycleFixture({ synchronousFence = false } = {}) {
     lifecycleTransition: () => null,
     beginLifecycleTransition: () => { calls.begin += 1; return { phase: "pending_git" }; },
     commitWorkflowTransition: () => { calls.commit += 1; return task; },
+    rollbackWorkflowOutcome: () => { calls.rollback += 1; return task; },
     failLifecycleTransition: () => { calls.fail += 1; return true; },
     finalizeCleanupTransition: (operationId, options = {}) => {
       if (options.deleteTask) calls.delete += 1;
@@ -112,6 +113,95 @@ test("Task lifecycle rejects a synchronous assertOwned contract before mutation"
     operationId: "sync-fence",
   }), /assertOwned must be asynchronous/u);
   assert.deepEqual(state.calls, {
-    assertions: 1, begin: 0, fail: 0, commit: 0, cleanup: 0, complete: 0, delete: 0,
+    assertions: 1, begin: 0, fail: 0, commit: 0, rollback: 0, cleanup: 0, complete: 0, delete: 0,
   });
+});
+
+test("failed Await rebuild rolls back the committed Task status and exact Git references", async () => {
+  const previousReference = {
+    projectRoot: "D:/project", branch: "HUB-159", resultCommit: "a".repeat(40),
+  };
+  const task = {
+    id: "task-await", title: "Await rollback", taskNumber: "HUB-174", revision: 4,
+    workspaceId: "workspace-1", streamId: "stream-1", workflowStatus: "testing",
+    gitReferences: [previousReference],
+  };
+  const calls = [];
+  const taskBoard = {
+    task: () => task,
+    lifecycleTransition: () => null,
+    beginLifecycleTransition: () => { calls.push("begin"); return { phase: "pending_git" }; },
+    commitWorkflowTransition: () => {
+      calls.push("commit");
+      Object.assign(task, {
+        revision: 5,
+        workflowStatus: "awaiting_implementation",
+        gitReferences: [{
+          projectRoot: "D:/project", branch: "HUB-174", resultCommit: "b".repeat(40),
+        }],
+      });
+      return structuredClone(task);
+    },
+    rollbackWorkflowOutcome: () => {
+      calls.push("rollback");
+      Object.assign(task, {
+        revision: 6,
+        workflowStatus: "testing",
+        gitReferences: [previousReference],
+      });
+      return structuredClone(task);
+    },
+    failLifecycleTransition: () => { calls.push("fail"); return true; },
+    finalizeCleanupTransition: () => ({ task }),
+  };
+  const lease = { signal: null, async assertOwned() {} };
+  const service = new TaskLifecycleService({
+    taskBoard,
+    workspaceCatalog: {
+      workspace: () => ({
+        id: "workspace-1",
+        settings: { workingDirectory: "D:/project", releaseWorkflowEnabled: true },
+      }),
+      stream: () => ({ id: "stream-1", workspaceId: "workspace-1", settings: {} }),
+    },
+    taskGitWorkspaces: {
+      withTaskLock: (_taskId, operation) => operation(lease),
+      prepareOwned: async () => ({ projectRoot: "D:/managed/task", branch: "HUB-174" }),
+      snapshotAndMergeOwned: async () => ({
+        snapshot: {
+          branch: "HUB-174", projectRoot: "D:/managed/task", repositoryRoot: "D:/project",
+          baseCommit: "0".repeat(40), headCommit: "b".repeat(40),
+        },
+        integration: {
+          outcome: "merged", integrated: true, resultProved: true,
+          dev: { branch: "dev", headCommit: "c".repeat(40) },
+        },
+      }),
+      cleanupOwned: async () => ({ removed: 0 }),
+      cleanupPreview: async () => ({
+        workspaces: [], gitReferences: [], dirty: false, unpublished: [], deleting: [],
+      }),
+    },
+    releasePreflight: {
+      withAwaitTransition: async (workspaceId, operation) => {
+        calls.push(`lock:${workspaceId}`);
+        return operation();
+      },
+      prepareAwaitSet: async () => {
+        calls.push("rebuild");
+        throw new Error("injected Await rebuild failure");
+      },
+    },
+  });
+
+  await assert.rejects(() => service.updateWorkflowStatus({
+    taskId: task.id,
+    status: "awaiting_implementation",
+    operationId: "await-transition",
+    projectRoot: "D:/project",
+  }), /injected Await rebuild failure/u);
+
+  assert.deepEqual(calls, ["lock:workspace-1", "begin", "commit", "rebuild", "rollback"]);
+  assert.equal(task.workflowStatus, "testing");
+  assert.deepEqual(task.gitReferences, [previousReference]);
 });

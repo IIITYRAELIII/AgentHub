@@ -5,10 +5,8 @@ import process from "node:process";
 import { canonicalizeProjectRoots, AGENT_HUB_ROOT, loadConfig } from "../infrastructure/filesystem/config.mjs";
 import { stopProcessTree } from "../providers/claude/claude-run-io.mjs";
 import {
-  CODEX_COLLABORATION_MODE_LABELS,
-  CODEX_COLLABORATION_MODES,
-  CODEX_REASONING_EFFORTS,
-  CODEX_REASONING_LABELS,
+  CODEX_COLLABORATION_MODE_LABELS, CODEX_COLLABORATION_MODES,
+  CODEX_REASONING_EFFORTS, CODEX_REASONING_LABELS,
 } from "../providers/codex/codex-settings.mjs";
 import { resolveChatId as resolveNotificationChatId } from "../../send-message.mjs";
 import * as approvalProtocol from "../providers/codex/codex-approvals.mjs";
@@ -23,13 +21,11 @@ import { createAgentHubDeferredPorts } from "./agent-hub-deferred-ports.mjs";
 import { createProviderApplicationComposition } from "./provider-application-composition.mjs";
 import { createClientRuntimeComposition } from "./client-runtime-composition.mjs";
 import {
-  configureMcpTaskLauncher,
-  createInteractionShellPhase,
+  configureMcpTaskLauncher, createInteractionShellPhase,
 } from "./interaction-shell-phase-composition.mjs";
 import { createExecutionBootstrapPhase } from "./execution-bootstrap-phase-composition.mjs";
 import { HubSessionState } from "../runtime/hub-session-state.mjs";
 if (process.platform === "win32") dns.setDefaultResultOrder("ipv4first");
-
 const agentHubDeferred = createAgentHubDeferredPorts();
 const config = await loadConfig();
 const serverStartedAt = new Date().toISOString();

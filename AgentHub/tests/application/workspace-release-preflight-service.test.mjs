@@ -6,10 +6,11 @@ import { WorkspaceReleasePreflightService } from "../../src/application/workspac
 
 function fixture({ planRevision = "plan-1", contourHead = "dev-head", rejectDev = null, rejectPrimary = null } = {}) {
   const calls = [];
+  const locks = [];
   const projectRoot = path.resolve("D:/repo");
   const plan = {
     revision: planRevision,
-    ready: [{ taskId: "task-1", projectRoot, resultCommit: "task-result" }],
+    ready: [{ taskId: "task-1", taskRevision: 7, projectRoot, resultCommit: "task-result" }],
     blocked: [],
     conflicts: [],
   };
@@ -41,12 +42,45 @@ function fixture({ planRevision = "plan-1", contourHead = "dev-head", rejectDev 
           resultCommits: ["task-result"],
         };
       },
+      releaseIntegrationEvidence: async (request) => {
+        calls.push(["release-integrations", request]);
+        return {
+          repositoryRoot: projectRoot,
+          projectRoot: path.resolve("D:/dev-worktree"),
+          branch: "dev",
+          headCommit: "dev-head",
+          tasks: [{
+            taskId: "task-1",
+            taskRevision: 7,
+            resultCommit: "task-result",
+            integrations: [{ commit: "integration-1", parent: "integration-parent", order: 1 }],
+          }],
+        };
+      },
     },
     releaseGitWorkspaces: {
+      withAwaitTransition: async (workspaceId, operation) => {
+        locks.push(workspaceId);
+        return operation();
+      },
       assertPrimaryInvariant: async (requestedProjectRoot, options) => {
         calls.push(["guard-primary", requestedProjectRoot, options]);
         if (rejectPrimary) throw rejectPrimary;
         return { projectRoot: requestedProjectRoot, branch: "refs/heads/main", headCommit: "main-head" };
+      },
+      inspectMainChanges: async (request) => {
+        calls.push(["inspect-main", request]);
+        return {
+          projectRoot,
+          publishedRevision: "published-head",
+          localMain: "main-head",
+          originMain: "main-head",
+          commits: [],
+          changed: false,
+          diverged: false,
+          approved: false,
+          approvalRequired: false,
+        };
       },
       prepareCandidate: async (request) => {
         calls.push(["prepare-candidate", request]);
@@ -59,6 +93,7 @@ function fixture({ planRevision = "plan-1", contourHead = "dev-head", rejectDev 
         };
       },
     },
+    readPublicationState: async () => ({ revision: "published-head" }),
     resolveTestContourSource: async (repositories) => {
       calls.push(["resolve-contour", repositories]);
       return { ...repositories[0], sourceRoot: path.resolve("D:/dev-worktree/AgentHub") };
@@ -123,26 +158,58 @@ function fixture({ planRevision = "plan-1", contourHead = "dev-head", rejectDev 
       readback: { outcome: "exact", operation: contourOperation, current: contourOperation },
     };
   };
-  return { calls, projectRoot, service };
+  return { calls, locks, projectRoot, service };
 }
 
 test("release preflight verifies selected results in dev and always refreshes Test Contour", async () => {
-  const { calls, projectRoot, service } = fixture();
+  const { calls, locks, projectRoot, service } = fixture();
   const result = await service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-1" });
   assert.deepEqual(calls.map(([name]) => name), [
-    "plan", "guard-primary", "prepare-dev", "resolve-contour", "refresh-contour", "read-contour",
-    "verify-dev", "prepare-candidate",
+    "plan", "inspect-main", "guard-primary", "prepare-dev", "resolve-contour", "refresh-contour", "read-contour",
+    "verify-dev", "release-integrations", "prepare-candidate", "plan",
   ]);
-  assert.deepEqual(calls[6][1], {
+  assert.deepEqual(locks, ["workspace-1"]);
+  assert.deepEqual(calls[7][1], {
     projectRoot,
     resultCommits: ["task-result"],
     taskIds: ["task-1"],
   });
-  assert.deepEqual(calls[4][1], { sourceRoot: path.resolve("D:/dev-worktree/AgentHub") });
-  assert.deepEqual(calls[7][1].frozenTasks, [{ taskId: "task-1", resultCommit: "task-result" }]);
+  assert.deepEqual(calls[5][1], { sourceRoot: path.resolve("D:/dev-worktree/AgentHub") });
+  assert.deepEqual(calls[9][1].frozenTasks, [{
+    taskId: "task-1",
+    taskRevision: 7,
+    resultCommit: "task-result",
+    integrations: [{ commit: "integration-1", parent: "integration-parent", order: 1 }],
+  }]);
+  assert.equal(calls[9][1].approvedBaseCommit, "main-head");
   assert.equal(result.planRevision, "plan-1");
   assert.equal(result.testContour.headCommit, "dev-head");
   assert.equal(result.releaseCandidates[0].manifestHash, "manifest-hash");
+  assert.equal(result.status, "ready");
+});
+
+test("release preflight returns every post-publication main commit before side effects", async () => {
+  const { calls, service } = fixture();
+  service.releaseGitWorkspaces.inspectMainChanges = async (request) => {
+    calls.push(["inspect-main", request]);
+    return {
+      projectRoot: request.projectRoot,
+      publishedRevision: request.publishedRevision,
+      localMain: "local-main",
+      originMain: "origin-main",
+      commits: [{ commit: "external-commit", subject: "external" }],
+      changed: true,
+      diverged: true,
+      approved: false,
+      approvalRequired: true,
+    };
+  };
+
+  const result = await service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-1" });
+
+  assert.equal(result.status, "main_review_required");
+  assert.equal(result.mainAudits[0].commits[0].commit, "external-commit");
+  assert.deepEqual(calls.map(([name]) => name), ["plan", "inspect-main"]);
 });
 
 test("release preflight rejects a refreshed contour that does not display dev HEAD", async () => {
@@ -160,7 +227,7 @@ test("release preflight refreshes the contour before rejecting Task results abse
     /not integrated into dev/u,
   );
   assert.deepEqual(calls.map(([name]) => name), [
-    "plan", "guard-primary", "prepare-dev", "resolve-contour", "refresh-contour", "read-contour", "verify-dev",
+    "plan", "inspect-main", "guard-primary", "prepare-dev", "resolve-contour", "refresh-contour", "read-contour", "verify-dev",
   ]);
 });
 
@@ -179,5 +246,46 @@ test("release preflight stops before side effects when the registered primary is
     () => service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-1" }),
     /attached to main/u,
   );
-  assert.deepEqual(calls.map(([name]) => name), ["plan", "guard-primary"]);
+  assert.deepEqual(calls.map(([name]) => name), ["plan", "inspect-main", "guard-primary"]);
+});
+
+test("Await rebuild rejects a stale plan before publishing its candidate", async () => {
+  const { projectRoot, service } = fixture();
+  let reads = 0;
+  service.releasePlanner.plan = async () => ({
+    revision: reads++ === 0 ? "plan-1" : "plan-2",
+    ready: [{ taskId: "task-1", taskRevision: 7, projectRoot, resultCommit: "task-result" }],
+    blocked: [],
+    conflicts: [],
+  });
+  service.releaseGitWorkspaces.prepareCandidate = async (request) => {
+    await request.validateBeforeCommit();
+    return { preReleaseHead: "must-not-publish" };
+  };
+
+  await assert.rejects(
+    () => service.prepareAwaitSet({ workspaceId: "workspace-1", expectedPlanRevision: "plan-1" }),
+    /revision changed during PreRelease rebuild/u,
+  );
+});
+
+test("release preflight holds the Await lock and rejects a stale plan before publishing its candidate", async () => {
+  const { locks, projectRoot, service } = fixture();
+  let reads = 0;
+  service.releasePlanner.plan = async () => ({
+    revision: reads++ === 0 ? "plan-1" : "plan-2",
+    ready: [{ taskId: "task-1", taskRevision: 7, projectRoot, resultCommit: "task-result" }],
+    blocked: [],
+    conflicts: [],
+  });
+  service.releaseGitWorkspaces.prepareCandidate = async (request) => {
+    await request.validateBeforeCommit();
+    return { preReleaseHead: "must-not-publish" };
+  };
+
+  await assert.rejects(
+    () => service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-1" }),
+    /revision changed during release candidate preparation/u,
+  );
+  assert.deepEqual(locks, ["workspace-1"]);
 });

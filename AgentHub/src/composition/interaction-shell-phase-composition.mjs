@@ -170,6 +170,7 @@ export function createInteractionShellPhase({
     runtime: {
       taskRuns: provider.taskRuns,
       taskSyncStore,
+      messagePins: provider.messagePins,
       taskRunIsActive,
       backgroundJobs: provider.backgroundJobs,
       rateLimitTelemetry: clients.rateLimitTelemetry,

@@ -435,6 +435,19 @@
           </button>
         </div>
         </header>
+        <section class="message-pin-shelf" data-message-pin-shelf hidden aria-label="Закреплённые сообщения">
+          <span class="message-pin-shelf-icon" aria-hidden="true">
+            <svg data-phosphor-icon="push-pin-simple" viewBox="0 0 256 256">
+              <path fill="currentColor" d="M235.32,73.37,182.63,20.69a16,16,0,0,0-22.63,0L132.69,48,92.69,36.69a16,16,0,0,0-15.38,4.1L52.69,65.37a16,16,0,0,0,0,22.63L92.69,128,40,180.69A16,16,0,0,0,40,203.31L52.69,216a16,16,0,0,0,22.62,0L128,163.31l40,40a16,16,0,0,0,22.63,0l24.68-24.68a16,16,0,0,0,4.1-15.38L208,123.31,235.32,96A16,16,0,0,0,235.32,73.37Z"></path>
+            </svg>
+          </span>
+          <button type="button" class="message-pin-current" data-message-pin-current></button>
+          <span class="message-pin-position" data-message-pin-position></span>
+          <button type="button" class="message-pin-nav" data-message-pin-previous aria-label="Предыдущее закреплённое сообщение"></button>
+          <button type="button" class="message-pin-nav" data-message-pin-next aria-label="Следующее закреплённое сообщение"></button>
+          <button type="button" class="message-pin-nav" data-message-pins-open aria-label="Все закреплённые сообщения"></button>
+          <span class="sr-only" data-message-pin-status aria-live="polite"></span>
+        </section>
         <div class="chat-scroll" data-chat-scroll>
           <div class="chat-history-loader" data-history-loader hidden>
             <button type="button" class="chat-history-load" data-history-load>
@@ -962,6 +975,36 @@
     </footer>
   </dialog>
 
+  <dialog class="message-pins-modal" data-message-pins-modal aria-labelledby="message-pins-title">
+    <header>
+      <div>
+        <p class="eyebrow">Stream</p>
+        <h2 id="message-pins-title">Закреплённые сообщения</h2>
+      </div>
+      <button type="button" class="icon-button" data-message-pins-close aria-label="Закрыть">
+        <svg data-phosphor-icon="x" viewBox="0 0 256 256" aria-hidden="true">
+          <line x1="200" y1="56" x2="56" y2="200" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="16"></line>
+          <line x1="200" y1="200" x2="56" y2="56" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="16"></line>
+        </svg>
+      </button>
+    </header>
+    <section class="message-pins-list" data-message-pins-list></section>
+    <footer>
+      <button type="button" class="chip-button danger" data-message-pins-clear>Открепить все</button>
+    </footer>
+  </dialog>
+
+  <dialog class="message-pins-clear-modal" data-message-pins-clear-modal aria-labelledby="message-pins-clear-title">
+    <section>
+      <h2 id="message-pins-clear-title">Открепить все сообщения?</h2>
+      <p data-message-pins-clear-copy></p>
+    </section>
+    <footer>
+      <button type="button" class="chip-button" data-message-pins-clear-cancel>Отмена</button>
+      <button type="button" class="chip-button danger" data-message-pins-clear-confirm>Открепить все</button>
+    </footer>
+  </dialog>
+
   <dialog class="task-start-modal" data-task-start-modal>
     <header>
       <div>
@@ -1172,6 +1215,7 @@
                 <ul class="setting-note-list">
                   <li>GPT-5.4 и GPT-5.6-Terra — База;</li>
                   <li>GPT-5.5 и GPT-5.6-Sol — База ×2;</li>
+                  <li>GPT-6 Astra — База ×5;</li>
                   <li>GPT-5.4-mini — База ×0,3;</li>
                   <li>GPT-5.6-Luna — База ×0,4;</li>
                   <li>
@@ -1324,14 +1368,6 @@
                 <button type="button" class="limits-range" data-limits-mode="usage" aria-pressed="true">Расход</button>
                 <button type="button" class="limits-range" data-limits-mode="speed" aria-pressed="false">Скорость</button>
               </div>
-              <label class="setting-switch chart-rail-switch limits-speed-window-setting"
-                data-limits-speed-window-setting hidden>
-                <input type="checkbox" data-limits-speed-full-window checked>
-                <span class="switch-text">Ждать полный интервал
-                  <span class="switch-note">Отключите, чтобы показывать предварительный темп сразу после сброса лимита.</span>
-                </span>
-                <span class="switch-track" aria-hidden="true"></span>
-              </label>
             </div>
             <div class="chart-rail-group">
               <span class="chart-rail-label">Период</span>
@@ -1368,9 +1404,10 @@
                     aria-live="polite"></div>
                   <ul class="limits-legend" data-limits-legend></ul>
                   <p class="statistics-note limits-speed-note" data-limits-speed-note hidden>
-                    На диапазонах 6 и 24 часа скорость считается по последнему часу, на длинных —
-                    по последним суткам. Пунктир показывает допустимый темп, горизонтальная линия —
-                    ровный расход 100% за неделю. Реальный сброс начинает новый участок графика.
+                    Основная линия показывает текущий темп, длинный пунктир — средний за 24 часа,
+                    мелкий пунктир — допустимый темп по остатку и времени до сброса. Он не меняет
+                    масштаб: значения выше шкалы прижимаются к верхней границе. Горизонтальная линия
+                    показывает ровный расход 100% за неделю.
                   </p>
                   <div class="limits-credits" data-limits-credits hidden></div>
                 </div>

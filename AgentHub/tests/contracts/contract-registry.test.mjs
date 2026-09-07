@@ -31,3 +31,7 @@ test("message projection owners map to their exact affected contracts", () => {
     true,
   );
 });
+
+test("the canonical token-cost owner maps to usage attribution", () => {
+  assert.ok(affected("src/domain/token-usage.mjs").includes("USG-001"));
+});

@@ -80,6 +80,7 @@ test("hub_task_start carries the audited source Stream into message intake", asy
     requestWorkflowStatus: methodStub(task),
     beginLifecycleTransition: methodStub(task),
     commitWorkflowTransition: methodStub(task),
+    rollbackWorkflowOutcome: methodStub(task),
     failLifecycleTransition: methodStub(task),
     finalizeCleanupTransition: methodStub(task),
     releaseTasks: methodStub([]),
@@ -92,7 +93,11 @@ test("hub_task_start carries the audited source Stream into message intake", asy
     attachmentDirectory: "D:/attachments",
     secret: "test-secret",
     releasePlanner: { plan: async () => ({}) },
-    releasePreflight: { preflight: async () => ({}) },
+    releasePreflight: {
+      preflight: async () => ({}),
+      prepareAwaitSet: async () => ({}),
+      withAwaitTransition: async (_workspaceId, operation) => operation(),
+    },
     releaseCompleter: { completeRelease: async () => ({}) },
   });
   service.setActiveRuns(() => [{

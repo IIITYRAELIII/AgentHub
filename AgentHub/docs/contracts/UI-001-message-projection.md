@@ -42,7 +42,13 @@
   Worker attachment manifests and binary chunks occupy disjoint key prefixes;
   publication and expiry accounting enumerate only the bounded manifest set and
   never materialize previously stored image chunks. Exact legacy manifest keys
-  remain readable until their bounded capability expires.
+  remain readable until their bounded capability expires. Every exact mutation
+  resolves both namespaces inside the existing Durable Object transaction:
+  expired legacy state and its exact chunks are deleted before reuse, live legacy
+  state is promoted to the manifest-only namespace before it is changed, and a
+  mixed old/new identity fails closed. Promotion, command linkage and result
+  cleanup commit atomically, so retries observe either the legacy authority or
+  the promoted authority, never a partial handoff.
   Neither path base64-copies the full attachment. Loading is fenced by the exact
   viewer generation, gallery index and resource token. Navigation, close or a
   newer open aborts only the matching pending fetch and revokes only its transient

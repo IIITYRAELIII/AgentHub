@@ -706,6 +706,11 @@ test("production persistence composition exposes only branded fail-closed capabi
       frozenCandidate: async () => ({}),
       synchronizePublishedPrimary: async () => ({}),
     },
+    taskGitWorkspaces: { synchronizeMainIntoDev: async () => ({}) },
+    releasePreflight: {
+      prepareAwaitSet: async () => ({}),
+      withAwaitTransition: async (_workspaceId, operation) => operation(),
+    },
     verifyPublication: async () => ({}),
   };
   assert.throws(
