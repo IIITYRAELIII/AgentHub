@@ -216,6 +216,10 @@ html[data-theme="pulsar"] .journal span[data-day-usage-part]::before {
   width: 0.3rem;
 }
 
+html[data-theme="pulsar"] .dialog-settings {
+  background: linear-gradient(180deg, #05242c, #03151a);
+}
+
 html[data-theme="pulsar"] .journal div[data-work-log-header] > strong,
 html[data-theme="pulsar"] .eyebrow {
   color: var(--accent);
