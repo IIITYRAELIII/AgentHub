@@ -1,6 +1,7 @@
 const TIMER_NAME = "work-log-usage-sync";
 const USG001_HISTORY_RESEND_VERSION = 1;
 const USAGE_FACT_SCHEMA_VERSION = 2;
+const DEFAULT_ANTI_ENTROPY_INTERVAL_MS = 60 * 60_000;
 
 function numberField(value) {
   return Math.max(0, Number(value) || 0);
@@ -13,6 +14,7 @@ function syncHasChanges({ push = {}, pull = {}, exportedEvents = 0, remoteEvents
     || numberField(push.rejected)
     || numberField(pull.added)
     || numberField(pull.updated)
+    || numberField(pull.pruned)
     || numberField(pull.projected)
     || numberField(exportedEvents)
     || numberField(remoteEvents),
@@ -44,6 +46,29 @@ function usageFactSchemaVersion(value) {
   return Math.max(0, Math.trunc(Number(value?.usageFactSchemaVersion) || 0));
 }
 
+function text(value) {
+  return String(value ?? "").trim();
+}
+
+function digest(value) {
+  return text(value?.digest);
+}
+
+function sameFactSummary(left, right) {
+  return Boolean(
+    left
+    && right
+    && Number(left.count) === Number(right.count)
+    && digest(left) !== ""
+    && digest(left) === digest(right)
+  );
+}
+
+function shouldRunAntiEntropy(remoteConfig, now, intervalMs) {
+  const last = Date.parse(remoteConfig?.lastUsageAntiEntropyAt) || 0;
+  return !last || (now.getTime() - last) >= intervalMs;
+}
+
 export class UsageSyncAutoService {
   constructor({
     timers,
@@ -56,9 +81,11 @@ export class UsageSyncAutoService {
     workLogFile = null,
     initialDelayMs = 30_000,
     intervalMs = 5 * 60_000,
+    antiEntropyIntervalMs = DEFAULT_ANTI_ENTROPY_INTERVAL_MS,
     accountBackfill = null,
     suggestedDeviceLabel = null,
     isStopping = () => false,
+    now = () => new Date(),
     logger = console,
   } = {}) {
     if (!timers || typeof timers.schedule !== "function") {
@@ -86,9 +113,11 @@ export class UsageSyncAutoService {
     this.workLogFile = workLogFile;
     this.initialDelayMs = initialDelayMs;
     this.intervalMs = intervalMs;
+    this.antiEntropyIntervalMs = antiEntropyIntervalMs;
     this.accountBackfill = typeof accountBackfill === "function" ? accountBackfill : null;
     this.suggestedDeviceLabel = typeof suggestedDeviceLabel === "function" ? suggestedDeviceLabel : null;
     this.isStopping = isStopping;
+    this.now = typeof now === "function" ? now : () => new Date();
     this.logger = logger;
     this.syncInFlight = null;
   }
@@ -187,6 +216,17 @@ export class UsageSyncAutoService {
     if (!serverUrl) return { skipped: true, reason: "not-configured" };
     if (!remoteConfig?.enrolledAt) return { skipped: true, reason: "not-enrolled", serverUrl };
     const client = this.clientFactory({ serverUrl, identityStore: this.identityStore });
+    const localStateBefore = typeof this.workLogUsageStore.usageSyncState === "function"
+      ? await this.workLogUsageStore.usageSyncState()
+      : { localStoreGeneration: "", factSummary: null };
+    const cursorServerGeneration = text(remoteConfig.lastUsagePullServerGeneration);
+    const cursorLocalGeneration = text(remoteConfig.lastUsagePullLocalGeneration);
+    const currentLocalGeneration = text(localStateBefore.localStoreGeneration);
+    const cursorLocalGenerationChanged = Boolean(
+      cursorLocalGeneration
+      && currentLocalGeneration
+      && cursorLocalGeneration !== currentLocalGeneration
+    );
     const accountBackfill = await this.#backfillAccounts();
     const historyResendDoneVersion = Math.max(
       0,
@@ -198,6 +238,7 @@ export class UsageSyncAutoService {
       deviceLabel: this.identityStore.label,
       afterObservedAt: forceHistoryResend ? "" : remoteConfig.lastUsagePushWatermark,
       afterJournalRevision: forceHistoryResend ? 0 : remoteConfig.lastUsagePushJournalRevision,
+      ownFactsOnly: true,
     });
     const push = await client.push(snapshot);
     const pushAccepted = push?.ok !== false && !numberField(push.rejected);
@@ -218,25 +259,133 @@ export class UsageSyncAutoService {
       rememberPushOptions.usageHistoryResendVersion = usageHistoryResendVersion;
     }
     await this.remoteConfigStore.rememberPush(push, rememberPushOptions);
-    const remoteSnapshot = await client.pull({
-      sinceRevision: Math.max(0, Math.trunc(Number(remoteConfig.lastUsagePullRevision) || 0)),
-    });
-    const remoteEvents = Array.isArray(remoteSnapshot.events) ? remoteSnapshot.events.length : 0;
-    const pull = remoteEvents
-      ? await this.workLogUsageStore.importUsageSyncSnapshotAndProject({
-        snapshot: remoteSnapshot,
+    const serverGenerationAfterPush = text(push.datasetGeneration);
+    const serverRevisionAfterPush = Number(push.serverRevision ?? 0) || 0;
+    const cursorRevision = Math.max(0, Math.trunc(Number(remoteConfig.lastUsagePullRevision) || 0));
+    const cursorInvalidReasons = [];
+    if (cursorLocalGenerationChanged && cursorRevision) cursorInvalidReasons.push("cursor-generation-mismatch");
+    if (
+      cursorRevision
+      && serverGenerationAfterPush
+      && (!cursorServerGeneration || !cursorLocalGeneration || !currentLocalGeneration)
+    ) {
+      cursorInvalidReasons.push("cursor-generation-mismatch");
+    }
+    if (cursorServerGeneration && serverGenerationAfterPush && cursorServerGeneration !== serverGenerationAfterPush) {
+      cursorInvalidReasons.push("server-generation-changed");
+    }
+    if (cursorRevision && serverRevisionAfterPush && serverRevisionAfterPush < cursorRevision) {
+      cursorInvalidReasons.push("server-revision-regressed");
+    }
+    const runAntiEntropy = shouldRunAntiEntropy(remoteConfig, this.#now(), this.antiEntropyIntervalMs);
+    let remoteSnapshot = null;
+    let remoteEvents = 0;
+    let pull = { imported: true, before: null, after: null, added: 0, updated: 0, projected: false };
+    let localStateAfterPull = localStateBefore;
+    let repair = null;
+    let antiEntropyMismatch = false;
+
+    const runFullReconcile = async (reasons) => {
+      const fullSnapshot = await client.pull();
+      const fullRemoteEvents = Array.isArray(fullSnapshot.events) ? fullSnapshot.events.length : 0;
+      const reconcile = await this.workLogUsageStore.importUsageSyncSnapshotAndProject({
+        snapshot: fullSnapshot,
         projectRoot: this.projectRoot,
         projectionProjectRoots: this.projectionProjectRoots,
         workLogFile: this.workLogFile,
-      })
-      : { imported: true, before: null, after: null, added: 0, updated: 0, projected: false };
+        reconcile: true,
+      });
+      localStateAfterPull = typeof this.workLogUsageStore.usageSyncState === "function"
+        ? await this.workLogUsageStore.usageSyncState()
+        : localStateAfterPull;
+      const fullSummary = fullSnapshot.factSummary || null;
+      const summaryRequired = Boolean(digest(fullSummary) || text(fullSnapshot.datasetGeneration));
+      const converged = summaryRequired
+        ? sameFactSummary(localStateAfterPull.factSummary, fullSummary)
+        : true;
+      repair = {
+        attempted: true,
+        reasons,
+        remoteEvents: fullRemoteEvents,
+        pull: reconcile,
+        converged,
+      };
+      if (!converged) {
+        repair.failed = true;
+        repair.reason = "fact-summary-mismatch-after-reconcile";
+      } else {
+        repair.projection = await this.#ensureRepairProjection();
+      }
+      remoteSnapshot = fullSnapshot;
+      remoteEvents = fullRemoteEvents;
+      pull = reconcile;
+    };
+
+    if (cursorInvalidReasons.length) {
+      await runFullReconcile([...new Set(cursorInvalidReasons)]);
+    } else {
+      remoteSnapshot = await client.pull({ sinceRevision: cursorRevision });
+      remoteEvents = Array.isArray(remoteSnapshot.events) ? remoteSnapshot.events.length : 0;
+      pull = remoteEvents
+        ? await this.workLogUsageStore.importUsageSyncSnapshotAndProject({
+          snapshot: remoteSnapshot,
+          projectRoot: this.projectRoot,
+          projectionProjectRoots: this.projectionProjectRoots,
+          workLogFile: this.workLogFile,
+        })
+        : { imported: true, before: null, after: null, added: 0, updated: 0, projected: false };
+      localStateAfterPull = typeof this.workLogUsageStore.usageSyncState === "function"
+        ? await this.workLogUsageStore.usageSyncState()
+        : { localStoreGeneration: "", factSummary: null };
+      const postPullInvalidReasons = [];
+      const remoteGeneration = text(remoteSnapshot.datasetGeneration || serverGenerationAfterPush);
+      if (
+        cursorRevision
+        && remoteGeneration
+        && (!cursorServerGeneration || !cursorLocalGeneration || !currentLocalGeneration)
+      ) {
+        postPullInvalidReasons.push("cursor-generation-mismatch");
+      }
+      if (cursorServerGeneration && remoteGeneration && cursorServerGeneration !== remoteGeneration) {
+        postPullInvalidReasons.push("server-generation-changed");
+      }
+      if (cursorRevision && Number(remoteSnapshot.serverRevision ?? 0) < cursorRevision) {
+        postPullInvalidReasons.push("server-revision-regressed");
+      }
+      const remoteSummary = remoteSnapshot.factSummary || push.factSummary || null;
+      const summaryMismatch = Boolean(remoteSummary && !sameFactSummary(localStateAfterPull.factSummary, remoteSummary));
+      antiEntropyMismatch = runAntiEntropy && summaryMismatch;
+      if (postPullInvalidReasons.length || antiEntropyMismatch) {
+        cursorInvalidReasons.push(...postPullInvalidReasons);
+        await runFullReconcile(postPullInvalidReasons.length
+          ? [...new Set(postPullInvalidReasons)]
+          : ["fact-summary-mismatch"]);
+      }
+    }
     const serverRevision = Number(remoteSnapshot.serverRevision ?? push.serverRevision ?? 0) || null;
-    await this.remoteConfigStore.rememberPull(pull, { serverRevision });
+    const serverGeneration = text(remoteSnapshot.datasetGeneration || push.datasetGeneration);
+    const canAdvancePullCursor = !repair?.attempted || repair.converged === true;
+    const antiEntropyAt = runAntiEntropy && canAdvancePullCursor ? this.#now().toISOString() : "";
+    const rememberPullOptions = { serverRevision: canAdvancePullCursor ? serverRevision : null };
+    if (canAdvancePullCursor && serverGeneration) rememberPullOptions.serverGeneration = serverGeneration;
+    if (canAdvancePullCursor && text(localStateAfterPull.localStoreGeneration)) {
+      rememberPullOptions.localGeneration = text(localStateAfterPull.localStoreGeneration);
+    }
+    if (canAdvancePullCursor && localStateAfterPull.factSummary) {
+      rememberPullOptions.factSummary = localStateAfterPull.factSummary;
+    }
+    if (antiEntropyAt) rememberPullOptions.antiEntropyAt = antiEntropyAt;
+    if (repair?.converged) rememberPullOptions.replaceCursor = true;
+    await this.remoteConfigStore.rememberPull(pull, rememberPullOptions);
     const result = {
       synced: true,
       exportedEvents: Array.isArray(snapshot.events) ? snapshot.events.length : 0,
       remoteEvents,
       serverRevision,
+      serverGeneration,
+      factSummary: localStateAfterPull.factSummary,
+      antiEntropy: { checked: runAntiEntropy, mismatch: antiEntropyMismatch },
+      repair,
       usageWatermark,
       usageJournalRevision,
       usageHistoryResendVersion,
@@ -279,6 +428,36 @@ export class UsageSyncAutoService {
     } catch (error) {
       this.logger.warn?.(`Usage sync device label suggestion failed: ${error.message}`);
       return "";
+    }
+  }
+
+  #now() {
+    return this.now();
+  }
+
+  async #ensureRepairProjection() {
+    if (typeof this.workLogUsageStore.ensureAccountUsageProjectionCurrent !== "function") {
+      return {
+        projected: false,
+        projectionRequired: true,
+        failed: true,
+        reason: "projection-hook-unavailable",
+      };
+    }
+    try {
+      return await this.workLogUsageStore.ensureAccountUsageProjectionCurrent({
+        required: true,
+        reason: "sync-repair",
+        projectRoot: this.projectRoot,
+        projectionProjectRoots: this.projectionProjectRoots,
+      });
+    } catch (error) {
+      return {
+        projected: false,
+        projectionRequired: true,
+        failed: true,
+        reason: String(error?.message ?? error),
+      };
     }
   }
 }
