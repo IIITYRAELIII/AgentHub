@@ -29,11 +29,22 @@ an accessed expired legacy record and its exact chunks are removed together.
 Deletion removes both possible manifest keys, so a legacy record cannot outlive
 successful exact cleanup.
 
+Exact mutation paths resolve both possible keys before acting. An expired legacy
+record is deleted before an upload can create a replacement and cannot be linked
+to or revived by a command. A live legacy record is promoted by writing the same
+manifest to the new namespace and deleting the old key before upload replay,
+command linkage or result cleanup continues. The promotion and the surrounding
+mutation share one Durable Object storage transaction; a failed write or delete
+rolls the whole operation back, so there is no interval with lost or competing
+authority. If both keys already exist for one ID, the operation fails closed
+instead of guessing which record owns the shared chunks.
+
 ## Consequences
 
 Publishing a user-uploaded or generated image no longer scales with unrelated
 stored image bytes. The returned opaque descriptor remains bound to the same
 Telegram user and expiry; the browser still performs one authenticated fetch
 and renders one transient Blob URL. Existing unexpired capabilities continue
-to resolve by exact ID, while inaccessible legacy garbage is never pulled into
-an active request merely for migration.
+to resolve by exact ID. A live legacy capability is migrated only when its exact
+identity is mutated; expired or inaccessible legacy garbage is never revived or
+pulled into an active request merely for migration.
