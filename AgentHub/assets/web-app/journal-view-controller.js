@@ -188,19 +188,20 @@
   }
 
   function periodBounds(date, mode) {
-    const parsed = parseJournalDate(date);
-    if (!parsed) return { fromMs: 0, toMs: 0 };
-    let start = parsed;
+    const match = String(date ?? "").trim().match(/^(\d{2})\.(\d{2})\.(\d{4})/u);
+    if (!match) return { fromMs: 0, toMs: 0 };
+    let start = new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1]));
+    if (Number.isNaN(start.getTime())) return { fromMs: 0, toMs: 0 };
     if (mode === "week") {
-      start = new Date(parsed);
-      start.setUTCDate(start.getUTCDate() - (start.getUTCDay() + 6) % 7);
+      start = new Date(start);
+      start.setDate(start.getDate() - (start.getDay() + 6) % 7);
     } else if (mode === "month") {
-      start = new Date(Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), 1));
+      start = new Date(start.getFullYear(), start.getMonth(), 1);
     }
     const end = new Date(start);
-    if (mode === "week") end.setUTCDate(end.getUTCDate() + 7);
-    else if (mode === "month") end.setUTCMonth(end.getUTCMonth() + 1);
-    else end.setUTCDate(end.getUTCDate() + 1);
+    if (mode === "week") end.setDate(end.getDate() + 7);
+    else if (mode === "month") end.setMonth(end.getMonth() + 1);
+    else end.setDate(end.getDate() + 1);
     return { fromMs: start.getTime(), toMs: end.getTime() };
   }
 
