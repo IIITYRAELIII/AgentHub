@@ -13926,9 +13926,56 @@ function formatTaskCredits(value) {
   })} cr`;
 }
 
+function ensureSubagentToggle(entry) {
+  const children = entry.querySelector(
+    ":scope > details[data-work-log-turn-children-details]",
+  );
+  const summary = entry.querySelector(
+    ":scope > details[data-work-log-turn-details] > summary",
+  );
+  if (!children || !summary || summary.querySelector("[data-toggle-subagents]")) return;
+  const count = children.querySelectorAll("[data-work-log-turn-entry]").length;
+  if (!count) return;
+  const icon = svgEl("svg", {
+    "data-phosphor-icon": "tree-structure",
+    viewBox: "0 0 256 256",
+    "aria-hidden": "true",
+  }, [
+    svgEl("rect", {
+      x: 32, y: 40, width: 56, height: 48, rx: 8,
+      fill: "none", stroke: "currentColor", "stroke-linecap": "round",
+      "stroke-linejoin": "round", "stroke-width": 18,
+    }),
+    svgEl("rect", {
+      x: 168, y: 24, width: 56, height: 48, rx: 8,
+      fill: "none", stroke: "currentColor", "stroke-linecap": "round",
+      "stroke-linejoin": "round", "stroke-width": 18,
+    }),
+    svgEl("rect", {
+      x: 168, y: 168, width: 56, height: 48, rx: 8,
+      fill: "none", stroke: "currentColor", "stroke-linecap": "round",
+      "stroke-linejoin": "round", "stroke-width": 18,
+    }),
+    svgEl("path", {
+      d: "M88 64h32a16 16 0 0 1 16 16v96a16 16 0 0 0 16 16h16M136 96V64a16 16 0 0 1 16-16h16",
+      fill: "none", stroke: "currentColor", "stroke-linecap": "round",
+      "stroke-linejoin": "round", "stroke-width": 18,
+    }),
+  ]);
+  const button = el("button", {
+    type: "button",
+    "data-toggle-subagents": "",
+    "aria-pressed": "false",
+    "aria-label": `Субагенты (${count})`,
+    title: `Субагенты (${count})`,
+  }, [icon, el("span", { "data-subagent-count": "", text: String(count) })]);
+  summary.insertBefore(button, summary.querySelector("[data-open-turn]"));
+}
+
 function groupedTurn(entry, date) {
   const copy = entry.cloneNode(true);
   copy.dataset.workLogSourceDate = date;
+  ensureSubagentToggle(copy);
   const meta = copy.querySelector("[data-work-log-turn-meta]");
   if (meta) {
     const completedAt = new Date(copy.dataset.workLogTurnCompletedAt ?? "");
