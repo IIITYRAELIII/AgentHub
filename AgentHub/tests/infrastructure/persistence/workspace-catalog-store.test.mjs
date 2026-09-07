@@ -36,6 +36,35 @@ async function fixture(t) {
   return store;
 }
 
+test("Workspace mutation queue retries real SQLite contention and keeps timers responsive", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspace-contention-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const store = new WorkspaceCatalogStore({ databaseFile });
+  await store.load();
+  const workspace = store.createWorkspace({ name: "Before contention" });
+  const blocker = new DatabaseSync(databaseFile);
+  blocker.exec("PRAGMA busy_timeout = 0; BEGIN IMMEDIATE");
+  let timerFired = false;
+  const timer = setTimeout(() => {
+    timerFired = true;
+    blocker.exec("COMMIT");
+  }, 60);
+  t.after(async () => {
+    clearTimeout(timer);
+    try { blocker.exec("ROLLBACK"); } catch {}
+    blocker.close();
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const updated = await store.runMutation(
+    () => store.renameWorkspace(workspace.id, "After contention"),
+    { requestId: "workspace-contention", timeoutMs: 1_000 },
+  );
+  assert.equal(timerFired, true);
+  assert.equal(updated.name, "After contention");
+  assert.ok(store.mutationDiagnostics().retries > 0);
+});
+
 test("Workspace archive hides hierarchy, restores intact, and purges after three days", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspace-archive-"));
   const databaseFile = path.join(directory, "journal.sqlite");
@@ -518,6 +547,38 @@ test("MCP mutation audit is idempotent and scoped to its Workspace", async (t) =
     () => store.beginMcpOperation({ ...operation, argumentsHash: "hash-2" }),
     /already used/u,
   );
+});
+
+test("MCP receipt stays successful when the returned payload exceeds one MiB", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const stream = store.createStream({ workspaceId: workspace.id, name: "MCP" });
+  const operation = {
+    requestId: "large-result", workspaceId: workspace.id, streamId: stream.id,
+    provider: "codex", threadId: "thread-1", toolName: "hub_task_update", argumentsHash: "hash-large",
+  };
+  store.beginMcpOperation(operation);
+  store.completeMcpOperation(operation.requestId, { payload: "x".repeat(1024 * 1024 + 1) });
+  const receipt = store.beginMcpOperation(operation);
+  assert.equal(receipt.status, "succeeded");
+  assert.equal(receipt.result.receiptCompacted, true);
+  assert.equal(receipt.result.outcome, "succeeded");
+});
+
+test("crash-after-begin receipt becomes explicit unknown instead of blind replay", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const stream = store.createStream({ workspaceId: workspace.id, name: "MCP" });
+  const operation = {
+    requestId: "crash-after-begin", workspaceId: workspace.id, streamId: stream.id,
+    provider: "codex", threadId: "thread-1", toolName: "hub_task_update", argumentsHash: "hash-crash",
+  };
+  assert.equal(store.beginMcpOperation(operation).replayed, false);
+  assert.equal(store.beginMcpOperation(operation).replayed, true);
+  store.markMcpOperationUnknown(operation.requestId, new Error("authoritative readback unavailable"));
+  const receipt = store.beginMcpOperation(operation);
+  assert.equal(receipt.status, "unknown");
+  assert.match(receipt.error, /readback unavailable/u);
 });
 
 test("MCP audit resolves only exact successful interstream message provenance", async (t) => {

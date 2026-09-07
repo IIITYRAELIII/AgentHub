@@ -10,7 +10,7 @@ import {
   overlayMessageCommandLedgerSync,
 } from "./message-command-ledger-store.mjs";
 
-const BUSY_TIMEOUT_MS = 5_000;
+const BUSY_TIMEOUT_MS = 0;
 
 function recoverableDatabaseError(error) {
   return /(?:file is not a database|database disk image is malformed|malformed database schema)/iu

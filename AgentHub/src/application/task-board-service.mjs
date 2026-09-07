@@ -2,6 +2,7 @@ import { attachmentDescriptor } from "../domain/attachment-files.mjs";
 import { normalizedTaskBucket, normalizedTaskText, taskDisplayText } from "../domain/task-board-task.mjs";
 import { EXPERIMENTS_SYSTEM_KEY } from "../domain/workspace-stream-identity.mjs";
 import { workspaceTaskPrefix } from "../domain/task-number.mjs";
+import { createTaskBoardMutationOwner } from "./sqlite-mutation-owner.mjs";
 
 function requiredMethod(value, name) {
   if (typeof value?.[name] !== "function") throw new TypeError(`task board ${name} is required`);
@@ -33,7 +34,7 @@ export class TaskBoardService {
       "recordTaskTurn", "releaseTasks", "completeRelease",
     ]) requiredMethod(store, name);
     if (typeof workspaceCatalog?.hierarchy !== "function") throw new TypeError("workspaceCatalog is required");
-    this.store = store;
+    this.store = typeof store.runMutation === "function" ? createTaskBoardMutationOwner(store) : store;
     this.workspaceCatalog = workspaceCatalog;
     this.classify = typeof classify === "function" ? classify : null;
     const confidence = Number(autoPlaceConfidence);
@@ -51,16 +52,30 @@ export class TaskBoardService {
   #event(type, task, payload = {}) {
     if (!task?.workspaceId || !this.recordEvent) return;
     try {
-      this.recordEvent({
+      const pending = this.recordEvent({
         workspaceId: task.workspaceId,
         streamId: task.streamId ?? null,
         type,
         subjectId: task.id,
         payload: { taskId: task.id, status: task.status, bucket: task.bucket, ...payload },
       });
+      pending?.catch?.((error) => this.logger.warn(`Cannot record Task event: ${error.message}`));
+      return pending;
     } catch (error) {
       this.logger.error(`Cannot record Workspace event for Task ${task.id}:`, error.message);
+      return undefined;
     }
+  }
+
+  #resolved(value, apply) {
+    return value && typeof value.then === "function" ? Promise.resolve(value).then(apply) : apply(value);
+  }
+
+  #withEvent(value, type, payload = {}) {
+    return this.#resolved(value, (task) => {
+      const event = this.#event(type, task, payload);
+      return event && typeof event.then === "function" ? event.then(() => task) : task;
+    });
   }
 
   task(id) {
@@ -112,7 +127,7 @@ export class TaskBoardService {
     const normalizedBucket = normalizedTaskBucket(payload.bucket ?? (payload.workspaceId ? "workspace" : "backlog"));
     const workspace = normalizedBucket === "workspace" ? this.workspaceCatalog.workspace(payload.workspaceId) : null;
     if (normalizedBucket === "workspace" && !workspace) throw new Error("Workspace не найден");
-    const task = this.store.create({
+    const created = this.store.create({
       ...payload,
       text: normalizedTaskText(payload.text),
       triageStatus: this.classify && payload.source === "telegram" ? "pending" : "disabled",
@@ -120,8 +135,10 @@ export class TaskBoardService {
       workspaceId: workspace?.id ?? null,
       taskPrefix: workspaceTaskPrefix(workspace?.settings),
     });
-    if (task.triageStatus === "pending") this.scheduleTriage(task.id);
-    return task;
+    return this.#resolved(created, (task) => {
+      if (task.triageStatus === "pending") this.scheduleTriage(task.id);
+      return task;
+    });
   }
 
   attachToSourceMessage(payload = {}) {
@@ -130,29 +147,31 @@ export class TaskBoardService {
 
   addAttachment({ id, attachment } = {}) {
     requiredMethod(this.store, "addAttachment");
-    const task = this.store.addAttachment(id, attachment);
-    this.#event("task.attachment_added", task);
-    return task;
+    return this.#withEvent(this.store.addAttachment(id, attachment), "task.attachment_added");
   }
 
   appendSourceMessage(payload = {}) {
-    const task = this.store.appendSourceMessage({
+    const result = this.store.appendSourceMessage({
       ...payload,
       text: normalizedTaskText(payload.text),
       triageStatus: this.classify && payload.source === "telegram" ? "pending" : "disabled",
     });
-    if (task.triageStatus === "pending") this.scheduleTriage(task.id);
-    return task;
+    return this.#resolved(result, (task) => {
+      if (task.triageStatus === "pending") this.scheduleTriage(task.id);
+      return task;
+    });
   }
 
   mergeSourceMessage(payload = {}) {
-    const task = this.store.mergeSourceMessage({
+    const result = this.store.mergeSourceMessage({
       ...payload,
       text: normalizedTaskText(payload.text),
       triageStatus: this.classify && payload.source === "telegram" ? "pending" : "disabled",
     });
-    if (task.triageStatus === "pending") this.scheduleTriage(task.id);
-    return task;
+    return this.#resolved(result, (task) => {
+      if (task.triageStatus === "pending") this.scheduleTriage(task.id);
+      return task;
+    });
   }
 
   move({ id, bucket, workspaceId = null, beforeId = null } = {}) {
@@ -162,17 +181,21 @@ export class TaskBoardService {
     }
     const previous = this.task(id);
     const workspace = normalizedBucket === "workspace" ? this.workspaceCatalog.workspace(workspaceId) : null;
-    const task = this.store.move(id, {
+    const result = this.store.move(id, {
       bucket: normalizedBucket, workspaceId, beforeId, taskPrefix: workspaceTaskPrefix(workspace?.settings),
     });
-    this.#event("task.moved", task.workspaceId ? task : { ...task, workspaceId: previous.workspaceId });
-    return task;
+    return this.#resolved(result, (task) => {
+      const eventTask = task.workspaceId ? task : { ...task, workspaceId: previous.workspaceId };
+      const event = this.#event("task.moved", eventTask);
+      return event && typeof event.then === "function" ? event.then(() => task) : task;
+    });
   }
 
   update({ id, title, description = "", taskNumber = undefined } = {}) {
-    const task = this.store.updatePresentation(id, { title, description, taskNumber });
-    this.#event("task.updated", task);
-    return task;
+    return this.#withEvent(
+      this.store.updatePresentation(id, { title, description, taskNumber }),
+      "task.updated",
+    );
   }
 
   reassignWorkspace(sourceWorkspaceId, targetWorkspaceId) {
@@ -212,40 +235,44 @@ export class TaskBoardService {
   }
 
   complete({ id } = {}) {
-    const task = this.store.complete(id);
-    this.#event("task.completed", task);
-    return task;
+    return this.#withEvent(this.store.complete(id), "task.completed");
   }
 
   remove({ id } = {}) {
-    if (!this.store.remove(id)) throw new Error("Задача не найдена");
-    return true;
+    return this.#resolved(this.store.remove(id), (removed) => {
+      if (!removed) throw new Error("Задача не найдена");
+      return true;
+    });
   }
 
-  markStarted({ id, workspaceId, streamId, requestId = null } = {}) {
+  markStarted({ id, workspaceId, streamId, requestId = null, expectedRevision = null } = {}) {
     const stream = this.workspaceCatalog.stream(streamId);
     if (!stream || stream.workspaceId !== workspaceId) throw new Error("Stream не найден в выбранном Workspace");
-    const task = this.store.markStarted(id, { workspaceId, streamId, requestId });
-    this.#event("task.started", task);
-    return task;
+    return this.#withEvent(
+      this.store.markStarted(id, { workspaceId, streamId, requestId, expectedRevision }),
+      "task.started",
+    );
   }
 
   setWorkflowStatus({ id, status } = {}) {
     requiredMethod(this.store, "setWorkflowStatus");
-    const task = this.store.setWorkflowStatus(id, status);
-    this.#event("task.workflow-status.updated", task, { workflowStatus: task.workflowStatus });
-    return task;
+    return this.#resolved(this.store.setWorkflowStatus(id, status), (task) => {
+      const event = this.#event("task.workflow-status.updated", task, { workflowStatus: task.workflowStatus });
+      return event && typeof event.then === "function" ? event.then(() => task) : task;
+    });
   }
 
   claim({
     id, workspaceId, streamId, provider, threadId, turnId, operationId,
     operationKind = "claim", gitBaseline = null,
   } = {}) {
-    const task = this.store.claim(id, {
+    const result = this.store.claim(id, {
       workspaceId, streamId, provider, threadId, turnId, operationId, operationKind, gitBaseline,
     });
-    this.#event("task.claimed", task, { provider, threadId, turnId, operationId, operationKind });
-    return task;
+    return this.#resolved(result, (task) => {
+      const event = this.#event("task.claimed", task, { provider, threadId, turnId, operationId, operationKind });
+      return event && typeof event.then === "function" ? event.then(() => task) : task;
+    });
   }
 
   claimedTaskForTurn(identity = {}) {
@@ -254,25 +281,67 @@ export class TaskBoardService {
 
   requestWorkflowStatus({ id, ...payload } = {}) {
     requiredMethod(this.store, "requestWorkflowStatus");
-    const task = this.store.requestWorkflowStatus(id, payload);
-    this.#event("task.workflow-status.requested", task, {
-      workflowStatus: payload.status,
-      turnId: payload.turnId ?? null,
+    return this.#resolved(this.store.requestWorkflowStatus(id, payload), (task) => {
+      const event = this.#event("task.workflow-status.requested", task, {
+        workflowStatus: payload.status,
+        turnId: payload.turnId ?? null,
+      });
+      return event && typeof event.then === "function" ? event.then(() => task) : task;
     });
-    return task;
+  }
+
+  beginLifecycleTransition({ id, ...payload } = {}) {
+    requiredMethod(this.store, "beginLifecycleTransition");
+    return this.store.beginLifecycleTransition(id, payload);
+  }
+
+  lifecycleTransition(operationId) {
+    requiredMethod(this.store, "lifecycleTransition");
+    return this.store.lifecycleTransition(operationId);
+  }
+
+  lifecycleOutcome(operationId) {
+    requiredMethod(this.store, "lifecycleOutcome");
+    return this.store.lifecycleOutcome(operationId);
+  }
+
+  failLifecycleTransition(operationId, error) {
+    requiredMethod(this.store, "failLifecycleTransition");
+    return this.store.failLifecycleTransition(operationId, error);
+  }
+
+  commitWorkflowTransition(payload = {}) {
+    requiredMethod(this.store, "commitWorkflowTransition");
+    return this.#resolved(this.store.commitWorkflowTransition(payload), (task) => {
+      const event = this.#event("task.workflow-status.updated", task, { workflowStatus: task.workflowStatus });
+      return event && typeof event.then === "function" ? event.then(() => task) : task;
+    });
+  }
+
+  finalizeCleanupTransition(operationId, payload = {}) {
+    requiredMethod(this.store, "finalizeCleanupTransition");
+    return this.store.finalizeCleanupTransition(operationId, payload);
+  }
+
+  mutationDiagnostics() {
+    return this.store.mutationDiagnostics?.() ?? {};
   }
 
   recordTaskTurn(payload = {}) {
-    const task = this.store.recordTaskTurn(payload);
-    if (task) this.#event("task.turn-recorded", task, { turnId: payload.turnId });
-    return task;
+    return this.#resolved(this.store.recordTaskTurn(payload), (task) => {
+      if (!task) return task;
+      const event = this.#event("task.turn-recorded", task, { turnId: payload.turnId });
+      return event && typeof event.then === "function" ? event.then(() => task) : task;
+    });
   }
 
   recordTaskGitReference(payload = {}) {
     requiredMethod(this.store, "recordTaskGitReference");
-    const task = this.store.recordTaskGitReference(payload);
-    this.#event("task.git-reference.recorded", task, { projectRoot: payload.projectRoot });
-    return task;
+    return this.#withEvent(
+      this.store.recordTaskGitReference(payload),
+      "task.git-reference.recorded",
+      { projectRoot: payload.projectRoot },
+    );
   }
 
   adoptLegacyGitReference(payload = {}) {
@@ -297,18 +366,20 @@ export class TaskBoardService {
     return `${Number(this.store.revision) || 0}:${Number(this.workspaceCatalog.revision) || 0}`;
   }
 
-  prepareStart({ id, workspaceId, streamId, requestId, streamName = null, reassign = false } = {}) {
+  prepareStart({ id, workspaceId, streamId, requestId, streamName = null, reassign = false, expectedRevision = null } = {}) {
     const workspace = this.workspaceCatalog.workspace(workspaceId);
     if (!workspace) throw new Error("Workspace не найден");
-    const task = this.store.prepareStart(id, { workspaceId, streamId, requestId, streamName, reassign });
-    this.#event("task.starting", task);
-    return task;
+    const result = this.store.prepareStart(id, {
+      workspaceId, streamId, requestId, streamName, reassign, expectedRevision,
+    });
+    return this.#withEvent(result, "task.starting");
   }
 
   cancelPreparedStart({ id, requestId, reassign = false } = {}) {
-    const task = this.store.cancelPreparedStart(id, { requestId, reassign });
-    this.#event("task.start-cancelled", task);
-    return task;
+    return this.#withEvent(
+      this.store.cancelPreparedStart(id, { requestId, reassign }),
+      "task.start-cancelled",
+    );
   }
 
   captureEnabled(chatId) {
@@ -322,17 +393,21 @@ export class TaskBoardService {
   retryTriage({ id } = {}) {
     if (!this.classify) throw new Error("Авторазбор задач выключен");
     this.task(id);
-    this.store.retryTriage(id);
-    this.scheduleTriage(id);
-    return this.task(id);
+    return this.#resolved(this.store.retryTriage(id), () => {
+      this.scheduleTriage(id);
+      return this.task(id);
+    });
   }
 
-  recoverPendingTriage() {
+  async recoverPendingTriage() {
     if (!this.classify) {
-      this.store.disablePendingTriage?.();
-      return;
+      requiredMethod(this.store, "disablePendingTriage");
+      const disabled = await this.store.disablePendingTriage();
+      return { mode: "disabled", disabled: Number(disabled) || 0, scheduled: 0 };
     }
-    for (const task of this.store.pendingTriage()) this.scheduleTriage(task.id);
+    const pending = this.store.pendingTriage();
+    for (const task of pending) this.scheduleTriage(task.id);
+    return { mode: "scheduled", disabled: 0, scheduled: pending.length };
   }
 
   scheduleTriage(id) {
@@ -350,7 +425,7 @@ export class TaskBoardService {
   }
 
   async #triage(id) {
-    const task = this.store.markTriageRunning(id);
+    const task = await this.store.markTriageRunning(id);
     if (!task || task.status === "done") return;
     const workspaces = this.workspaceCatalog.hierarchy().map((workspace) => ({
       id: workspace.id,
@@ -366,7 +441,7 @@ export class TaskBoardService {
       const suggestedWorkspace = workspaces.find((workspace) => workspace.id === result?.workspaceId) ?? null;
       const wantsNotes = result?.category === "note";
       const autoPlace = confidence >= this.autoPlaceConfidence && (wantsNotes || suggestedWorkspace);
-      this.store.applyTriage(id, {
+      await this.store.applyTriage(id, {
         title: result?.title,
         description: result?.description,
         correctedText: result?.correctedText || task.rawText,
@@ -379,7 +454,7 @@ export class TaskBoardService {
         autoPlace,
       });
     } catch (error) {
-      this.store.markTriageFailed(id, error);
+      await this.store.markTriageFailed(id, error);
       throw error;
     }
   }

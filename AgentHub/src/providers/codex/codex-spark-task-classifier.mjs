@@ -185,7 +185,7 @@ export class CodexSparkTaskClassifier {
       }
       const completedThreadId = parseTaskClassifierThreadId(result.stdout) ?? threadId;
       if (!completedThreadId) throw new Error("Codex Spark не вернул идентификатор Thread");
-      this.#bindThread(completedThreadId);
+      await this.#bindThread(completedThreadId);
       return parseTaskClassifierResult(await readFile(outputFile, "utf8"));
     } finally {
       await rm(directory, { recursive: true, force: true }).catch(() => {});
@@ -203,9 +203,9 @@ export class CodexSparkTaskClassifier {
     return active?.provider === "codex" ? active.threadId : null;
   }
 
-  #bindThread(threadId) {
+  async #bindThread(threadId) {
     if (!this.workspaceCatalog || !this.streamId) return;
-    this.workspaceCatalog.rebindThread(
+    await this.workspaceCatalog.rebindThread(
       { provider: "codex", threadId },
       {
         streamId: this.streamId,
@@ -213,6 +213,6 @@ export class CodexSparkTaskClassifier {
         source: "created",
       },
     );
-    this.workspaceCatalog.setMeta(DASHBOT_THREAD_META_KEY, threadId);
+    await this.workspaceCatalog.setMeta(DASHBOT_THREAD_META_KEY, threadId);
   }
 }

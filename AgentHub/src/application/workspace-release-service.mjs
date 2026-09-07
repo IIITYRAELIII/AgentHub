@@ -1,3 +1,5 @@
+import { isTaskBoardMutationOwner } from "./sqlite-mutation-owner.mjs";
+
 function requiredMethod(value, name) {
   if (typeof value?.[name] !== "function") throw new TypeError(`${name} is required`);
 }
@@ -11,8 +13,12 @@ function requiredPlanRevision(value) {
 export class WorkspaceReleaseService {
   constructor({ store, releasePlanner, releaseGitWorkspaces, verifyPublication } = {}) {
     requiredMethod(store, "completeRelease");
+    if (!isTaskBoardMutationOwner(store)) {
+      throw new TypeError("WorkspaceReleaseService requires the Task mutation owner facade");
+    }
     requiredMethod(releasePlanner, "plan");
     requiredMethod(releaseGitWorkspaces, "synchronizePublishedPrimary");
+    requiredMethod(releaseGitWorkspaces, "frozenCandidate");
     if (typeof verifyPublication !== "function") throw new TypeError("verifyPublication is required");
     this.store = store;
     this.releasePlanner = releasePlanner;
@@ -21,7 +27,7 @@ export class WorkspaceReleaseService {
   }
 
   async completeRelease({
-    workspaceId, expectedRevision = null, expectedPlanRevision, deploymentVerified = false, verificationSummary = "",
+    workspaceId, expectedRepositories = [], expectedPlanRevision, deploymentVerified = false, verificationSummary = "",
     conflictsResolved = false,
   } = {}) {
     const plan = await this.releasePlanner.plan(workspaceId);
@@ -36,10 +42,48 @@ export class WorkspaceReleaseService {
       throw new Error("release completion requires verified deployment evidence");
     }
     const normalizedSummary = String(verificationSummary).trim().slice(0, 2_000);
-    const publication = await this.verifyPublication({ expectedRevision, plan, conflictsResolved });
+    if (!Array.isArray(expectedRepositories) || !expectedRepositories.length) {
+      throw new Error("release completion requires expected_revision for every repository");
+    }
+    const roots = [...new Set(plan.candidates.flatMap((candidate) => (
+      candidate.gitReferences ?? []
+    )).map((reference) => String(reference.projectRoot ?? "").trim()).filter(Boolean))];
+    const frozenCandidates = [];
+    for (const root of roots) frozenCandidates.push(await this.releaseGitWorkspaces.frozenCandidate(root));
+    const verificationRequest = { expectedRepositories, frozenCandidates, plan, conflictsResolved };
+    const publication = await this.verifyPublication(verificationRequest);
     if (!Array.isArray(publication?.repositories) || !publication.repositories.length) {
       throw new Error("publication verifier returned no released repository revisions");
     }
+    const readback = await this.verifyPublication(verificationRequest);
+    const publicationIdentity = (value) => JSON.stringify({
+      repositories: value.repositories?.map((item) => ({
+        root: item.root, revision: item.revision, planRevision: item.planRevision,
+        manifestHash: item.manifestHash, baseCommit: item.baseCommit, preReleaseHead: item.preReleaseHead,
+      })),
+      generation: value.agentHubPublication?.generation ?? null,
+    });
+    if (publicationIdentity(publication) !== publicationIdentity(readback)) {
+      throw new Error("publication generation or exact repository revision changed before Task closure");
+    }
+    publication.verificationSummary = normalizedSummary;
+    publication.planRevision = plan.revision;
+    const completed = await this.store.completeRelease(workspaceId, {
+        expectedPlanRevision: plan.revision,
+        plan,
+        conflictsResolved,
+        verificationEvidence: {
+          planRevision: plan.revision,
+          expectedRepositories,
+          verificationSummary: normalizedSummary,
+          conflictsResolved: conflictsResolved === true,
+          publication,
+          deployment: {
+            verified: true,
+            summary: normalizedSummary,
+          },
+        },
+      });
     publication.primarySynchronization = [];
     for (const repository of publication.repositories) {
       try {
@@ -50,32 +94,10 @@ export class WorkspaceReleaseService {
         }));
       } catch (error) {
         publication.primarySynchronization.push({
-          status: "manual_required",
-          projectRoot: repository.root,
-          reason: error.message,
+          status: "manual_required", projectRoot: repository.root, reason: error.message,
         });
       }
     }
-    publication.verificationSummary = normalizedSummary;
-    publication.planRevision = plan.revision;
-    return {
-      ...this.store.completeRelease(workspaceId, {
-        expectedPlanRevision: plan.revision,
-        plan,
-        conflictsResolved,
-        verificationEvidence: {
-          planRevision: plan.revision,
-          expectedRevision,
-          verificationSummary: normalizedSummary,
-          conflictsResolved: conflictsResolved === true,
-          publication,
-          deployment: {
-            verified: true,
-            summary: normalizedSummary,
-          },
-        },
-      }),
-      publication,
-    };
+    return { ...completed, publication };
   }
 }

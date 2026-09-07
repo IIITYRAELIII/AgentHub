@@ -280,7 +280,7 @@ export function createDesktopShellComposition({
     releaseCompleter: workspaceReleaseService,
   });
   const workspaceMutation = async (run, { resultKey = "" } = {}) => {
-    const result = run();
+    const result = await run();
     invalidateTaskCatalog();
     await saveState();
     const snapshot = await desktopReadSystem.desktopSnapshot({ refresh: true });

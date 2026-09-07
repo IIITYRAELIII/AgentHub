@@ -212,7 +212,7 @@ export function createProviderCatalogComposition({
     },
   });
   const providerTaskCatalogBuilder = new ProviderTaskCatalogBuilder({
-    durableEntries: () => currentStreamEntries(workspaceCatalogStore.assignCatalogEntries(
+    durableEntries: async () => currentStreamEntries(await workspaceCatalogStore.assignCatalogEntries(
       [
         ...catalogEntriesWithoutLiveActivity(taskSyncStore.catalog()),
         ...currentWorkspaceThreadEntries(workspaceCatalogStore),
@@ -224,8 +224,8 @@ export function createProviderCatalogComposition({
       projectName: runProject(run).name,
     })),
     merge: mergeTaskCatalog,
-    finalize: (entries, context) => finalizeTaskCatalog(
-      currentStreamEntries(workspaceCatalogStore.assignCatalogEntries(entries)),
+    finalize: async (entries, context) => finalizeTaskCatalog(
+      currentStreamEntries(await workspaceCatalogStore.assignCatalogEntries(entries)),
       context,
     ),
     onSourceError: ({ name, reason }) => {
@@ -233,12 +233,10 @@ export function createProviderCatalogComposition({
     },
   });
   const taskCatalogService = new TaskCatalogService({
-    initialEntries: currentStreamEntries(workspaceCatalogStore.assignCatalogEntries(
-      [
-        ...catalogEntriesWithoutLiveActivity(taskSyncStore.catalog()),
-        ...currentWorkspaceThreadEntries(workspaceCatalogStore),
-      ],
-    )),
+    initialEntries: currentStreamEntries([
+      ...catalogEntriesWithoutLiveActivity(taskSyncStore.catalog()),
+      ...currentWorkspaceThreadEntries(workspaceCatalogStore),
+    ]),
     cacheMs: taskCatalogCacheMs,
     build: () => providerTaskCatalogBuilder.build(),
   });

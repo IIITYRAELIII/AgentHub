@@ -3154,7 +3154,17 @@ document.addEventListener("agenthub:board-action", (event) => {
     const action = actions[detail.type];
     if (!action) return;
     const { type: _type, ...params } = detail;
-    const result = await control(action, params);
+    let result = await control(action, params);
+    if (["complete", "remove"].includes(detail.type) && result.lifecycleResult?.confirmationRequired) {
+      const decision = await window.AgentHubTaskCleanupConfirmation.confirm({
+        confirmation: result.lifecycleResult,
+        action,
+        params,
+        request: control,
+      });
+      if (!decision.confirmed) return;
+      result = decision.result;
+    }
     succeeded = true;
     applySnapshot(result);
     if (detail.type === "start") agentHub.showSelectedTask();
