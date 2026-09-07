@@ -467,12 +467,12 @@ test("quick messages preserve structured mappings and scope order", async () => 
     quickMessagesToText(quickMessagesFromText("Релиз | релизь\nпроверь")),
     "Релиз | релизь\nпроверь",
   );
-  assert.equal(quickMessagesCountLabel(0), "0 ответов");
-  assert.equal(quickMessagesCountLabel(1), "1 ответ");
-  assert.equal(quickMessagesCountLabel(2), "2 ответа");
-  assert.equal(quickMessagesCountLabel(5), "5 ответов");
-  assert.equal(quickMessagesCountLabel(11), "11 ответов");
-  assert.equal(quickMessagesCountLabel(21), "21 ответ");
+  assert.equal(quickMessagesCountLabel(0), "0 шаблонов");
+  assert.equal(quickMessagesCountLabel(1), "1 шаблон");
+  assert.equal(quickMessagesCountLabel(2), "2 шаблона");
+  assert.equal(quickMessagesCountLabel(5), "5 шаблонов");
+  assert.equal(quickMessagesCountLabel(11), "11 шаблонов");
+  assert.equal(quickMessagesCountLabel(21), "21 шаблон");
   assert.deepEqual(
     JSON.parse(JSON.stringify(setQuickMessagesForScope(selection, "stream", "stream-1", []))),
     {
@@ -1392,8 +1392,12 @@ test("composer quick replies render above attached Task references", async () =>
       window.AgentHub.setSelection({
         quickMessages: {
           global: [{ title: "Принято", text: "Принято" }],
-          workspaces: {},
-          streams: {},
+          workspaces: {
+            "workspace-1": [{ title: "Workspace", text: "Workspace prompt" }],
+          },
+          streams: {
+            "stream-1": [{ title: "Stream", text: "Stream prompt" }],
+          },
         },
       });
       window.AgentHub.setTasks([{
@@ -1448,6 +1452,28 @@ test("composer quick replies render above attached Task references", async () =>
       sourceOrder: true,
       visualOrder: true,
     });
+    assert.equal(await page.locator("[data-composer-quick-messages]").getAttribute("aria-label"), "Prompt-шаблоны");
+    assert.equal(await page.locator("[data-settings-global-quick-messages]").evaluate((node) => (
+      node.closest(".quick-messages-settings-row")?.querySelector(".setting-name")?.textContent
+    )), "Глобальные prompt-шаблоны");
+    assert.equal(await page.locator("[data-settings-global-quick-messages-count]").textContent(), "1 шаблон");
+
+    const workspace = page.locator('[data-workspace-select="workspace-1"]');
+    await workspace.dblclick();
+    assert.equal(await page.getByText("Prompt-шаблоны Workspace", { exact: true }).isVisible(), true);
+    assert.equal(await page.locator("[data-workspace-card-quick-messages-count]").textContent(), "1 шаблон");
+    assert.equal(await page.locator(
+      "[data-workspace-card-quick-messages] [data-quick-message-title]",
+    ).getAttribute("aria-label"), "Заголовок Prompt-шаблона 1");
+    await page.keyboard.press("Escape");
+
+    const stream = page.locator('.stream-tabs-track [data-stream-tab-id="stream-1"]');
+    await stream.dblclick();
+    assert.equal(await page.getByText("Prompt-шаблоны потока", { exact: true }).isVisible(), true);
+    assert.equal(await page.locator("[data-dialog-stream-quick-messages-count]").textContent(), "1 шаблон");
+    assert.equal(await page.locator(
+      "[data-dialog-stream-quick-messages] [data-quick-message-title]",
+    ).getAttribute("aria-label"), "Заголовок Prompt-шаблона 1");
   } finally {
     await browser.close();
   }

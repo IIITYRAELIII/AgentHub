@@ -2502,7 +2502,7 @@ function quickMessageEditorRow(entry, index, count, disabled) {
       maxlength: "64",
       value: entry?.title ?? entry?.label ?? entry?.text ?? "",
       placeholder: "Заголовок",
-      "aria-label": `Заголовок быстрого ответа ${index + 1}`,
+      "aria-label": `Заголовок Prompt-шаблона ${index + 1}`,
       "data-quick-message-title": "",
       disabled,
     }),
@@ -2511,24 +2511,24 @@ function quickMessageEditorRow(entry, index, count, disabled) {
       maxlength: "4000",
       text: entry?.text ?? "",
       placeholder: "Текст",
-      "aria-label": `Текст быстрого ответа ${index + 1}`,
+      "aria-label": `Текст Prompt-шаблона ${index + 1}`,
       "data-quick-message-text": "",
       disabled,
     }),
     el("span", { class: "quick-message-editor-actions" }, [
       el("button", {
         type: "button", class: "chip-button compact", text: "↑", title: "Поднять",
-        "aria-label": `Поднять быстрый ответ ${index + 1}`,
+        "aria-label": `Поднять Prompt-шаблон ${index + 1}`,
         "data-quick-message-action": "up", disabled: disabled || index === 0,
       }),
       el("button", {
         type: "button", class: "chip-button compact", text: "↓", title: "Опустить",
-        "aria-label": `Опустить быстрый ответ ${index + 1}`,
+        "aria-label": `Опустить Prompt-шаблон ${index + 1}`,
         "data-quick-message-action": "down", disabled: disabled || index === count - 1,
       }),
       el("button", {
         type: "button", class: "chip-button compact danger", text: "×", title: "Удалить",
-        "aria-label": `Удалить быстрый ответ ${index + 1}`,
+        "aria-label": `Удалить Prompt-шаблон ${index + 1}`,
         "data-quick-message-action": "delete", disabled,
       }),
     ]),
@@ -2646,7 +2646,7 @@ async function editQuickMessagesForScope(scope, scopeId, title) {
   const current = scope === "global" ? quickMessages.global : quickMessages[key][id] ?? [];
   const value = window.AgentHubStreamTabs.quickMessagesToText(current);
   const text = await askText({
-    title: `Быстрые ответы: ${title}`,
+    title: `Prompt-шаблоны: ${title}`,
     value,
     multiline: true,
   });

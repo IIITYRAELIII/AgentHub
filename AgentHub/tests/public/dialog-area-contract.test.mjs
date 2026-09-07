@@ -52,9 +52,9 @@ test("dialog geometry references semantic tokens without literal colors", async 
 test("quick replies settings keep scope entry points and a two-row action pattern", async () => {
   const index = await readFile(new URL("index.html", assets), "utf8");
   const styles = await readFile(new URL("styles.css", assets), "utf8");
-  assert.match(index, /Глобальные ответы[\s\S]*data-settings-global-quick-messages-count[\s\S]*data-settings-global-quick-messages/u);
-  assert.match(index, /Быстрые ответы Workspace[\s\S]*data-workspace-card-quick-messages-count[\s\S]*data-workspace-card-quick-messages/u);
-  assert.match(index, /Быстрые ответы потока[\s\S]*data-dialog-stream-quick-messages-count[\s\S]*data-dialog-stream-quick-messages/u);
+  assert.match(index, /Глобальные prompt-шаблоны[\s\S]*data-settings-global-quick-messages-count[\s\S]*data-settings-global-quick-messages/u);
+  assert.match(index, /Prompt-шаблоны Workspace[\s\S]*data-workspace-card-quick-messages-count[\s\S]*data-workspace-card-quick-messages/u);
+  assert.match(index, /Prompt-шаблоны потока[\s\S]*data-dialog-stream-quick-messages-count[\s\S]*data-dialog-stream-quick-messages/u);
   assert.doesNotMatch(index, /data-dialog-global-quick-messages/u);
   assert.match(styles, /\.quick-messages-settings-row \{[\s\S]*display: grid;[\s\S]*gap: 0\.35rem;/u);
   assert.match(styles, /\.quick-messages-settings-control \{[\s\S]*display: flex;[\s\S]*justify-content: space-between;/u);
