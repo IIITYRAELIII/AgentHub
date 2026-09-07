@@ -91,13 +91,16 @@ export class DesktopSystemService {
     });
   }
 
-  usageHistory(params = {}) {
+  async usageHistory(params = {}) {
+    const accountActivity = (await this.readRateLimitHistory({
+      range: params.range,
+    }))?.accountActivity;
     return this.readUsageHistory({
       range: params.range,
       maxPoints: params.maxPoints,
       provider: params.provider,
       accountKey: params.accountKey,
-      accountActivity: params.accountActivity,
+      accountActivity: Array.isArray(accountActivity) ? accountActivity : [],
       turnTimeMode: params.turnTimeMode,
       ...(Array.isArray(params.activeIntervals) ? { activeIntervals: params.activeIntervals } : {}),
     });

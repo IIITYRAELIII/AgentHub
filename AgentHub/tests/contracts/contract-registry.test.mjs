@@ -35,3 +35,11 @@ test("message projection owners map to their exact affected contracts", () => {
 test("the canonical token-cost owner maps to usage attribution", () => {
   assert.ok(affected("src/domain/token-usage.mjs").includes("USG-001"));
 });
+
+test("the accounting history boundaries map to usage attribution", () => {
+  for (const boundary of [
+    "src/interfaces/desktop/desktop-system-service.mjs",
+    "assets/web-app/app.js",
+    "assets/web-app/hub-client.js",
+  ]) assert.ok(affected(boundary).includes("USG-001"), `USG-001 does not own ${boundary}`);
+});

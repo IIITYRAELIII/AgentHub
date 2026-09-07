@@ -3511,17 +3511,16 @@ async function refreshRateLimitHistory(range = rateLimitRefreshRange, { reportEr
 agentHub.on("limits:open", ({ range }) => runAction(
   () => refreshRateLimitHistory(range, { reportError: true }),
 ));
-agentHub.on("usage:open", ({ range, accountKey, turnTimeMode }) => runAction(async () => {
+agentHub.on("usage:open", ({ range, turnTimeMode }) => runAction(async () => {
   try {
     agentHub.setUsageHistory(await readHistoryWithRangeCompatibility("usage-history", range, {
       maxPoints: 600,
-      accountKey: String(accountKey || ""),
       turnTimeMode,
     }));
   } catch (error) {
     agentHub.setUsageHistory({
       range,
-      accountKey: String(accountKey || ""),
+      accountKey: "",
       turnTimeMode,
       error: error?.message || "Не удалось загрузить учётный расход.",
     });
