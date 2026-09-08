@@ -11524,9 +11524,9 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
   border: 0;
   color: var(--text-soft);
   cursor: pointer;
-  display: flex;
-  gap: 0.6rem;
-  justify-content: space-between;
+  display: grid;
+  gap: 0.38rem 0.6rem;
+  grid-template-columns: minmax(0, 1fr) auto;
   padding: 0.62rem 0.7rem;
   text-align: left;
   width: 100%;
@@ -11537,6 +11537,8 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
 }
 
 [data-journal-day-picker-title] {
+  grid-column: 1;
+  grid-row: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -11554,26 +11556,37 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
 }
 
 [data-journal-day-picker-credits] {
+  align-items: baseline;
+  display: inline-flex;
   flex: 0 0 auto;
+  grid-column: 2;
+  grid-row: 2;
   font-family: var(--font-numeric);
   font-size: 0.74rem;
 }
 
 [data-journal-day-picker-turns] {
   color: var(--text-muted);
-  display: none;
+  display: inline;
   flex: 0 0 auto;
+  grid-column: 2;
+  grid-row: 1;
   font-family: var(--font-numeric);
   font-size: 0.68rem;
   text-transform: uppercase;
 }
 
-[data-journal-day-picker-item][data-selected] [data-journal-day-picker-turns] {
-  display: inline;
+[data-journal-day-picker-duration] {
+  color: var(--text-muted);
+  font-family: var(--font-numeric);
+  font-size: 0.72rem;
+  grid-column: 1;
+  grid-row: 2;
+  white-space: nowrap;
 }
 
-[data-journal-day-picker-item][data-selected] [data-journal-day-picker-credits] {
-  display: none;
+[data-journal-day-picker-share] {
+  color: var(--text-muted);
 }
 
 [data-journal-day-breakdown] {

@@ -53,7 +53,11 @@ function bucket(overrides = {}) {
   };
 }
 
-async function openProductionJournal(page) {
+async function openProductionJournal(page, {
+  grouping = "stream",
+  groupStreams = true,
+  summaryBuckets = null,
+} = {}) {
   const requests = [];
   const profileSummary = { version: 1, buckets: [
     bucket(),
@@ -72,16 +76,17 @@ async function openProductionJournal(page) {
   ] };
   const summary = {
     version: 1,
-    buckets: profileSummary.buckets.map((entry) => Object.fromEntries(Object.entries(entry)
+    buckets: (summaryBuckets ?? profileSummary.buckets).map((entry) => Object.fromEntries(Object.entries(entry)
       .filter(([key]) => ![
         "fileTouches", "knownFileTouches", "changedLines", "knownChangedLines",
         "subagentTurns", "knownSubagentTurns", "skillNames", "mcpCallCount",
         "mcpTools", "mcpFailures", "knownToolMetricTurns",
       ].includes(key)))),
   };
-  await page.addInitScript(() => {
-    localStorage.setItem("agent-hub-grouping", "stream");
-  });
+  await page.addInitScript(({ initialGrouping, nested }) => {
+    localStorage.setItem("agent-hub-grouping", initialGrouping);
+    localStorage.setItem("agent-hub-journal-stream-groups", nested ? "on" : "off");
+  }, { initialGrouping: grouping, nested: groupStreams });
   await page.route("**/*", async (route) => {
     const url = new URL(route.request().url());
     if (url.hostname !== "agent-hub.test") return route.abort();
@@ -155,8 +160,8 @@ async function openProductionJournal(page) {
   });
   await page.goto("http://agent-hub.test/", { waitUntil: "load" });
   await page.locator('[data-view-button="journal"]').click();
-  await page.locator('[data-journal-virtual-mode="stream"]').first().waitFor();
-  await page.locator("[data-journal-profile-metrics]").first().waitFor();
+  await page.locator(`[data-journal-virtual-mode="${grouping}"]`).first().waitFor();
+  if (grouping === "stream") await page.locator("[data-journal-profile-metrics]").first().waitFor();
   return requests;
 }
 
@@ -191,6 +196,73 @@ test("virtual Stream mode preserves overview profile and default-open semantics"
     assert.equal(request.searchParams.get("workspaceId"), "workspace-1");
     assert.equal(request.searchParams.get("streamId"), "stream-high");
     assert.equal(request.searchParams.get("version"), VERSION);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("date week month and Workspace modes keep complete percentage metrics with either nesting", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch(process.platform === "win32"
+    ? { channel: "msedge", headless: true }
+    : { headless: true });
+  const summaryBuckets = [
+    bucket({ turnCount: 3, credits: 30, durationSeconds: 90 }),
+    bucket({
+      streamId: "stream-low",
+      streamDisplayName: "Low",
+      turnCount: 1,
+      credits: 10,
+      durationSeconds: 30,
+    }),
+    bucket({
+      workspaceId: "workspace-2",
+      workspaceName: "Other",
+      streamId: "stream-other",
+      streamDisplayName: "Other stream",
+      turnCount: 1,
+      credits: 20,
+      durationSeconds: 60,
+    }),
+  ];
+  try {
+    for (const grouping of ["date", "week", "month", "workspace"]) {
+      for (const groupStreams of [true, false]) {
+        const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+        await openProductionJournal(page, { grouping, groupStreams, summaryBuckets });
+        const firstScope = page.locator(`[data-journal-virtual-mode="${grouping}"]`).first();
+        if (await firstScope.getAttribute("open") === null) {
+          await firstScope.locator(":scope > summary").click();
+        }
+        if (grouping !== "workspace") {
+          const workspace = firstScope.locator('[data-journal-day-picker-item][data-selected]');
+          const unselected = firstScope.locator('[data-journal-day-picker-item]:not([data-selected])');
+          assert.match(await workspace.locator("[data-journal-day-picker-turns]").innerText(), /4 ходов\s*\(80%\)/iu);
+          assert.match(await workspace.locator("[data-journal-day-picker-duration]").innerText(), /2 мин\s*\(67%\)/u);
+          assert.match(await workspace.locator("[data-journal-day-picker-credits]").innerText(), /40[\s\S]*\(67%\)/u);
+          assert.equal(await unselected.locator("[data-journal-day-picker-turns]").isVisible(), true);
+          assert.equal(await unselected.locator("[data-journal-day-picker-duration]").isVisible(), true);
+          assert.equal(await unselected.locator("[data-journal-day-picker-credits]").isVisible(), true);
+          assert.match(await unselected.locator("[data-journal-day-picker-turns]").innerText(), /1 ходов\s*\(20%\)/iu);
+          assert.match(await unselected.locator("[data-journal-day-picker-duration]").innerText(), /1 мин\s*\(33%\)/u);
+          assert.match(await unselected.locator("[data-journal-day-picker-credits]").innerText(), /20[\s\S]*\(33%\)/u);
+        }
+        if (groupStreams) {
+          const stream = firstScope.locator("[data-work-log-stream-summary]").first();
+          assert.match(await stream.locator("[data-work-log-stream-turn-count]").innerText(), /3 ход\.\s*\(75%\)/u);
+          assert.match(await stream.locator("[data-work-log-stream-duration]").innerText(), /1 мин 30 с\s*\(75%\)/u);
+          assert.match(await stream.locator("[data-work-log-stream-credits]").innerText(), /30/u);
+          assert.match(await stream.locator("[data-work-log-stream-credit-share]").innerText(), /\(75%\)/u);
+        } else {
+          assert.equal(await firstScope.locator("[data-work-log-stream-summary]").count(), 0);
+          const flatTurns = grouping === "workspace"
+            ? firstScope.locator("[data-journal-virtual-flat-turns]")
+            : firstScope.locator("[data-journal-day-panel]:not([hidden]) [data-journal-virtual-flat-turns]");
+          assert.equal(await flatTurns.count(), 1);
+        }
+        await page.close();
+      }
+    }
   } finally {
     await browser.close();
   }

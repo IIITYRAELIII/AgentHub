@@ -118,6 +118,10 @@ the selected Workspace's Streams on the right. In `workspace` grouping the
 outer group already identifies the Workspace, so its expanded body does not
 repeat a Workspace selector: it shows that Workspace's Streams with the
 Workspace profile alongside them. Turn shells remain inside their Stream. The
+Workspace selector always shows turn count, included spend and duration with
+each metric's share of the current temporal scope. Every nested Stream shows
+the same three metrics with their shares of the selected Workspace. These
+resource shares remain visible for selected and unselected Workspace cards. The
 user may disable Stream nesting for date, week and month groupings through the
 Journal setting without changing persisted usage facts. Streams are ordered by the
 currently included credit total descending, with stable recency and identity

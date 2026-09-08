@@ -1708,11 +1708,11 @@ async function materializedJournalProjection(payload, syncId) {
     entries.push([turnKey, { turnRef: turn.turnRef, date: turn.date, html: turn.html }]);
     for (const query of journalScopeQueries(turn)) {
       const identity = stableStringify(query);
-      const scope = scopes.get(identity) ?? { query, all: [], days: new Map() };
+      const scope = scopes.get(identity) ?? { query, all: [], dates: new Map() };
       scope.all.push(turnKey);
-      const dayTurns = scope.days.get(turn.dayMs) ?? [];
-      dayTurns.push(turnKey);
-      scope.days.set(turn.dayMs, dayTurns);
+      const dateTurns = scope.dates.get(turn.date) ?? [];
+      dateTurns.push(turnKey);
+      scope.dates.set(turn.date, dateTurns);
       scopes.set(identity, scope);
     }
   }
@@ -1726,7 +1726,7 @@ async function materializedJournalProjection(payload, syncId) {
       }
     };
     appendBucket("all", scope.all);
-    for (const [day, turnKeys] of scope.days) appendBucket(`day:${day}`, turnKeys);
+    for (const [date, turnKeys] of scope.dates) appendBucket(`date:${date}`, turnKeys);
   }));
   entries.push([`${prefix}meta`, {
     layoutVersion: JOURNAL_PROJECTION_LAYOUT_VERSION,
@@ -3255,6 +3255,7 @@ export class JournalStore extends DurableObject {
     threadId = "",
     fromMs = 0,
     toMs = 0,
+    dates = "",
     offset = 0,
     limit = 20,
     includeProfile = false,
@@ -3276,14 +3277,18 @@ export class JournalStore extends DurableObject {
       || rangeStart >= rangeEnd
       || Math.ceil((rangeEnd - rangeStart) / DAY_MS) > JOURNAL_RANGE_DAY_LIMIT
     )) throw new Error("Диапазон журнала слишком велик.");
-    const buckets = [];
-    if (rangeStart && rangeEnd) {
-      const firstDay = Math.floor(rangeStart / DAY_MS) * DAY_MS;
-      const lastDay = Math.floor((rangeEnd - 1) / DAY_MS) * DAY_MS;
-      for (let day = lastDay; day >= firstDay; day -= DAY_MS) buckets.push(`day:${day}`);
-    } else {
-      buckets.push("all");
+    const dateValues = String(dates ?? "").split(",").map((value) => value.trim()).filter(Boolean);
+    if (dateValues.length > JOURNAL_RANGE_DAY_LIMIT
+      || dateValues.some((value) => !/^\d{2}\.\d{2}\.\d{4}$/u.test(value))) {
+      throw new Error("Некорректные календарные дни журнала.");
     }
+    const visibleDates = [...new Set(dateValues)];
+    if ((rangeStart || rangeEnd) && !visibleDates.length) {
+      throw new Error("Календарные дни диапазона не заданы.");
+    }
+    const buckets = visibleDates.length
+      ? visibleDates.slice().reverse().map((date) => `date:${date}`)
+      : ["all"];
     const scopeHash = await sha256(stableStringify(query));
     const bucketPrefixes = buckets.map((bucket) => `${projection.prefix}scope:${scopeHash}:${bucket}`);
     const metaKeys = bucketPrefixes.map((prefix) => `${prefix}:meta`);
@@ -4098,6 +4103,7 @@ export class JournalStore extends DurableObject {
               threadId: url.searchParams.get("threadId"),
               fromMs: boundedNumber("fromMs"),
               toMs: boundedNumber("toMs"),
+              dates: url.searchParams.get("dates"),
               offset: boundedNumber("offset", 1_000_000),
               limit: Math.max(1, Math.min(
                 JOURNAL_TURN_PAGE_LIMIT,

@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import vm from "node:vm";
 import { gzipSync } from "node:zlib";
 
 import { measureImmediateControlDrain } from "../../../../cloudflare-worker/verify-deployment.mjs";
@@ -205,6 +206,39 @@ class MemoryStorage {
   resetReadTrace() {
     this.getTrace = [];
     this.listTrace = [];
+  }
+}
+
+async function journalQueryForTimeZone(timeZone, mode, date) {
+  const previous = process.env.TZ;
+  try {
+    process.env.TZ = timeZone;
+    const source = await readFile(path.join(ROOT, "assets", "web-app", "journal-view-controller.js"), "utf8");
+    const window = {};
+    vm.runInNewContext(source, { Date, Intl, Set, String, window });
+    const [scope] = window.AgentHubJournalView.virtualJournalScopes({ version: 1, buckets: [{
+      date,
+      workspaceId: "workspace-1",
+      workspaceName: "Agent HUB",
+      workspaceKind: "catalog",
+      streamId: "stream-1",
+      streamDisplayName: "Log",
+      provider: "codex",
+      turnCount: 1,
+      credits: 1,
+      knownCredits: 1,
+      durationSeconds: 1,
+      knownDurations: 1,
+    }] }, mode);
+    const query = window.AgentHubJournalView.virtualTurnQuery(
+      scope,
+      scope.workspaces[0],
+      scope.workspaces[0].streams[0],
+    );
+    return { ...query, dateKeys: Array.from(query.dateKeys) };
+  } finally {
+    if (previous === undefined) delete process.env.TZ;
+    else process.env.TZ = previous;
   }
 }
 
@@ -1186,19 +1220,28 @@ test("Worker journal exposes compact totals and bounded turn pages separately", 
   assert.equal(second.nextOffset, null);
   const ranged = await (await store.fetch(new Request(
     "https://journal.internal/journal/turns?workspaceId=workspace-1&streamId=stream-1"
-    + `&fromMs=${Date.UTC(2026, 7, 1)}&toMs=${Date.UTC(2026, 7, 2)}&limit=10`,
+    + `&fromMs=${Date.UTC(2026, 7, 1)}&toMs=${Date.UTC(2026, 7, 2)}`
+    + "&dates=01.08.2026&limit=10",
   ))).json();
   assert.equal(ranged.turns.length, 10);
   assert.equal(ranged.nextOffset, 10);
+  assert.equal((await store.fetch(new Request(
+    "https://journal.internal/journal/turns?workspaceId=workspace-1"
+    + `&fromMs=${Date.UTC(2026, 7, 1)}&toMs=${Date.UTC(2026, 7, 2)}`,
+  ))).status, 400);
   for (const [mode, fromMs, toMs, expected] of [
     ["date", Date.UTC(2026, 7, 1), Date.UTC(2026, 7, 2), 10],
     ["week", Date.UTC(2026, 7, 1), Date.UTC(2026, 7, 8), 11],
     ["month", Date.UTC(2026, 7, 1), Date.UTC(2026, 8, 1), 12],
     ["workspace", 0, 0, 12],
   ]) {
+    const dayCount = mode === "date" ? 1 : mode === "week" ? 7 : mode === "month" ? 31 : 0;
+    const dates = Array.from({ length: dayCount }, (_, index) => (
+      `${String(index + 1).padStart(2, "0")}.08.2026`
+    )).join(",");
     const page = await (await store.fetch(new Request(
       "https://journal.internal/journal/turns?workspaceId=workspace-1&offset=50&limit=50"
-      + `${fromMs ? `&fromMs=${fromMs}&toMs=${toMs}` : ""}`,
+      + `${fromMs ? `&fromMs=${fromMs}&toMs=${toMs}&dates=${dates}` : ""}`,
     ))).json();
     assert.equal(page.turns.length, expected, mode);
     assert.equal(page.nextOffset, null, mode);
@@ -1210,6 +1253,84 @@ test("Worker journal exposes compact totals and bounded turn pages separately", 
   assert.equal((await store.fetch(new Request(
     "https://journal.internal/journal/turns?workspaceId=workspace-1&version=old",
   ))).status, 409);
+});
+
+test("Worker temporal pages follow controller visible dates across UTC offsets", {
+  concurrency: false,
+}, async () => {
+  const workerModule = await loadWorker();
+  for (const [timeZone, boundaryEntries] of [
+    ["Asia/Yekaterinburg", [
+      ["before", "05.09.2026", "2026-09-05T18:59:59.999Z"],
+      ["day", "06.09.2026", "2026-09-05T19:00:00.000Z"],
+      ["after", "07.09.2026", "2026-09-06T19:00:00.000Z"],
+    ]],
+    ["America/New_York", [
+      ["before", "05.09.2026", "2026-09-06T03:59:59.999Z"],
+      ["day", "06.09.2026", "2026-09-06T04:00:00.000Z"],
+      ["after", "07.09.2026", "2026-09-07T04:00:00.000Z"],
+    ]],
+  ]) {
+    const storage = new MemoryStorage();
+    const store = new workerModule.JournalStore({ storage }, {});
+    const entries = [
+      ...boundaryEntries,
+      ["month-start", "01.09.2026", "2026-09-01T12:00:00.000Z"],
+      ["week-start", "07.09.2026", "2026-09-07T12:00:00.000Z"],
+      ["week-end", "13.09.2026", "2026-09-13T12:00:00.000Z"],
+      ["week-after", "14.09.2026", "2026-09-14T12:00:00.000Z"],
+      ["month-end", "30.09.2026", "2026-09-30T12:00:00.000Z"],
+      ["month-after", "01.10.2026", "2026-10-01T12:00:00.000Z"],
+    ];
+    const turnEntries = entries.map(([id, date, completedAt]) => ({
+      turnRef: `ref-${id}`,
+      date,
+      workspaceId: "workspace-1",
+      streamId: "stream-1",
+      provider: "codex",
+      threadId: "thread-1",
+      completedAtMs: Date.parse(completedAt),
+      html: `<div data-work-log-turn-entry data-work-log-turn-id="${id}">${id}</div>`,
+    }));
+    assert.equal((await store.fetch(new Request("https://journal.internal/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        html: "<main></main>",
+        summary: { version: 1, buckets: [] },
+        turnEntries,
+        days: {},
+        turns: {},
+        version: `journal-${timeZone}`,
+        updatedAt: "2026-09-30T12:00:00.000Z",
+      }),
+    }))).status, 200);
+    for (const [mode, date, expected] of [
+      ["date", "06.09.2026", ["day"]],
+      ["week", "09.09.2026", ["week-end", "week-start", "after"]],
+      ["month", "15.09.2026", [
+        "month-end", "week-after", "week-end", "week-start", "after", "day", "before", "month-start",
+      ]],
+    ]) {
+      const query = await journalQueryForTimeZone(timeZone, mode, date);
+      const params = new URLSearchParams({
+        workspaceId: query.workspaceId,
+        streamId: query.streamId,
+        fromMs: String(query.fromMs),
+        toMs: String(query.toMs),
+        dates: query.dateKeys.join(","),
+        limit: "50",
+      });
+      const response = await store.fetch(new Request(`https://journal.internal/journal/turns?${params}`));
+      assert.equal(response.status, 200, `${timeZone} ${mode}`);
+      const page = await response.json();
+      assert.deepEqual(
+        page.turns.map((turn) => turn.turnRef),
+        expected.map((id) => `ref-${id}`),
+        `${timeZone} ${mode}`,
+      );
+    }
+  }
 });
 
 test("Worker chunk publication cuts over atomically and retries an orphan generation", async () => {

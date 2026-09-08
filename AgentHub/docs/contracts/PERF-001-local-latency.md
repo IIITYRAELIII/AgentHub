@@ -130,8 +130,10 @@ before atomically advancing its manifest. Compact index HTML, resource summary,
 aggregate profile cohorts, exact per-Stream and per-Workspace aggregates, exact
 fragments and Workspace/Stream/provider-scoped ordinal turn keys are stored
 separately. Flat Workspace and nested Stream reads use the same bounded index
-path. A lazy turn-page read resolves at most 50 scoped index keys and their exact
-shells; profile reads add only the bounded peer cohort and the requested
+path. Temporal Worker reads select exact canonical visible-date keys supplied by
+the grouping projection; local UTC offsets never widen a request to adjacent
+whole UTC-day buckets. A lazy turn-page read resolves at most 50 scoped index
+keys and their exact shells; profile reads add only the bounded peer cohort and the requested
 Stream's or Workspace's exact aggregate, without hydrating peer turn details.
 They never decompress the publication snapshot, list a complete generation or
 filter all persisted turns. The immediately

@@ -14340,7 +14340,8 @@ function replaceJournalGroupedContent(content) {
 }
 
 function virtualUsageShare(value, total, known = true) {
-  if (!known || !(Number(total) > 0)) return "";
+  if (!known) return "";
+  if (!(Number(total) > 0)) return " (0%)";
   const share = Math.max(0, Math.min(100, Number(value) / Number(total) * 100));
   return ` (${Math.round(share)}%)`;
 }
@@ -14394,6 +14395,7 @@ function applyVirtualTurnQuery(node, scope, workspace, stream = null) {
   node.dataset.virtualProvider = query.provider;
   node.dataset.virtualFromMs = String(query.fromMs);
   node.dataset.virtualToMs = String(query.toMs);
+  node.dataset.virtualDateKeys = query.dateKeys.join(",");
   if (scope.mode === "stream") node.dataset.virtualProfileMode = "stream";
 }
 
@@ -14420,7 +14422,10 @@ function virtualStreamDetails(scope, workspace, stream) {
     el("span", { "data-work-log-stream-name": "", text: stream.name }),
     el("span", {
       "data-work-log-stream-turn-count": "",
-      text: `${Math.max(0, Number(stream.turnCount) || 0)} ход.`,
+      text: `${Math.max(0, Number(stream.turnCount) || 0)} ход.${virtualUsageShare(
+        stream.turnCount,
+        workspace.turnCount,
+      )}`,
     }),
   );
   summary.append(
@@ -14476,7 +14481,13 @@ function virtualTemporalContent(scope) {
     button.setAttribute("aria-pressed", String(active));
     const credits = el("span", { "data-journal-day-picker-credits": "" });
     if (workspace.knownCredits) {
-      credits.append(usageBadge(formatUsageValue(workspace.credits), workspace.credits));
+      credits.append(
+        usageBadge(formatUsageValue(workspace.credits), workspace.credits),
+        el("span", {
+          "data-journal-day-picker-share": "",
+          text: virtualUsageShare(workspace.credits, scope.credits, scope.knownCredits),
+        }),
+      );
     } else {
       credits.textContent = "—";
     }
@@ -14484,7 +14495,17 @@ function virtualTemporalContent(scope) {
       el("span", { "data-journal-day-picker-title": "", text: workspace.name }),
       el("span", {
         "data-journal-day-picker-turns": "",
-        text: `${workspace.turnCount} ходов`,
+        text: `${workspace.turnCount} ходов${virtualUsageShare(workspace.turnCount, scope.turnCount)}`,
+      }),
+      el("span", {
+        "data-journal-day-picker-duration": "",
+        text: workspace.knownDurations
+          ? `${formatTaskDuration(workspace.durationSeconds)}${virtualUsageShare(
+            workspace.durationSeconds,
+            scope.durationSeconds,
+            scope.knownDurations,
+          )}`
+          : "—",
       }),
       credits,
     );
@@ -14705,6 +14726,7 @@ async function appendVirtualTurnPage(container, { nextPage = false } = {}) {
       provider: container.dataset.virtualProvider ?? "",
       fromMs: container.dataset.virtualFromMs ?? "0",
       toMs: container.dataset.virtualToMs ?? "0",
+      dates: container.dataset.virtualDateKeys ?? "",
       profileMode: container.dataset.virtualProfileMode ?? "",
       offset: String(offset),
       limit: "30",

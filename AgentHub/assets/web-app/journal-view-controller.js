@@ -189,9 +189,9 @@
 
   function periodBounds(date, mode) {
     const match = String(date ?? "").trim().match(/^(\d{2})\.(\d{2})\.(\d{4})/u);
-    if (!match) return { fromMs: 0, toMs: 0 };
+    if (!match) return { fromMs: 0, toMs: 0, dateKeys: [] };
     let start = new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1]));
-    if (Number.isNaN(start.getTime())) return { fromMs: 0, toMs: 0 };
+    if (Number.isNaN(start.getTime())) return { fromMs: 0, toMs: 0, dateKeys: [] };
     if (mode === "week") {
       start = new Date(start);
       start.setDate(start.getDate() - (start.getDay() + 6) % 7);
@@ -202,7 +202,15 @@
     if (mode === "week") end.setDate(end.getDate() + 7);
     else if (mode === "month") end.setMonth(end.getMonth() + 1);
     else end.setDate(end.getDate() + 1);
-    return { fromMs: start.getTime(), toMs: end.getTime() };
+    const dateKeys = [];
+    for (const current = new Date(start); current < end; current.setDate(current.getDate() + 1)) {
+      dateKeys.push([
+        String(current.getDate()).padStart(2, "0"),
+        String(current.getMonth() + 1).padStart(2, "0"),
+        String(current.getFullYear()),
+      ].join("."));
+    }
+    return { fromMs: start.getTime(), toMs: end.getTime(), dateKeys };
   }
 
   function virtualJournalScopes(summary, mode, {
@@ -288,7 +296,7 @@
         ? periodBounds(scope.label, "date")
         : ["week", "month"].includes(grouping)
           ? periodBounds(scope.sourceDate, grouping)
-          : { fromMs: 0, toMs: 0 };
+          : { fromMs: 0, toMs: 0, dateKeys: [] };
       return { ...finishMetrics(scope), ...bounds, workspaces };
     });
     return result.sort((left, right) => {
@@ -314,6 +322,7 @@
       provider: !workspaceId && !streamId && providers.length === 1 ? String(providers[0]) : "",
       fromMs: Math.max(0, Number(scope?.fromMs) || 0),
       toMs: Math.max(0, Number(scope?.toMs) || 0),
+      dateKeys: Array.isArray(scope?.dateKeys) ? scope.dateKeys.map(String) : [],
     };
   }
 

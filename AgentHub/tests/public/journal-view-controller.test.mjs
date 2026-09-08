@@ -141,8 +141,9 @@ test("virtual journal groups streams by workspace and sorts them by included usa
   });
   assert.equal(dayScope.label, "06.09.2026");
   assert.equal(dayScope.workspaces[0].streams.length, 3);
-  assert.equal(dayScope.fromMs, Date.UTC(2026, 8, 6));
-  assert.equal(dayScope.toMs, Date.UTC(2026, 8, 7));
+  assert.equal(dayScope.fromMs, new Date(2026, 8, 6).getTime());
+  assert.equal(dayScope.toMs, new Date(2026, 8, 7).getTime());
+  assert.deepEqual(Array.from(dayScope.dateKeys), ["06.09.2026"]);
 });
 
 test("Claude Work virtual grouping keeps a provider-bounded lazy query", async () => {
@@ -170,13 +171,62 @@ test("Claude Work virtual grouping keeps a provider-bounded lazy query", async (
   assert.deepEqual(Array.from(workspace.providers), ["claude"]);
   assert.equal(workspace.streams[0].queryStreamId, "");
   assert.deepEqual(Array.from(workspace.streams[0].providers), ["claude"]);
-  assert.deepEqual({ ...api.virtualTurnQuery(scope, workspace, workspace.streams[0]) }, {
+  const query = api.virtualTurnQuery(scope, workspace, workspace.streams[0]);
+  assert.deepEqual({ ...query, dateKeys: Array.from(query.dateKeys) }, {
     workspaceId: "",
     streamId: "",
     provider: "claude",
     fromMs: 0,
     toMs: 0,
+    dateKeys: [],
   });
+});
+
+test("temporal queries keep exact visible dates in positive and negative UTC offsets", {
+  concurrency: false,
+}, async () => {
+  const previous = process.env.TZ;
+  try {
+    for (const [timeZone, expectedStart] of [
+      ["Asia/Yekaterinburg", "2026-09-05T19:00:00.000Z"],
+      ["America/New_York", "2026-09-06T04:00:00.000Z"],
+    ]) {
+      process.env.TZ = timeZone;
+      const api = await journalViewApi();
+      const summary = { version: 1, buckets: [{
+        date: "09.09.2026",
+        workspaceId: "workspace-1",
+        workspaceName: "Agent HUB",
+        workspaceKind: "catalog",
+        streamId: "stream-1",
+        streamDisplayName: "Log",
+        provider: "codex",
+        turnCount: 1,
+        credits: 1,
+        knownCredits: 1,
+        durationSeconds: 1,
+        knownDurations: 1,
+      }] };
+      const [day] = api.virtualJournalScopes({
+        ...summary,
+        buckets: [{ ...summary.buckets[0], date: "06.09.2026" }],
+      }, "date");
+      const [week] = api.virtualJournalScopes(summary, "week");
+      const [month] = api.virtualJournalScopes(summary, "month");
+      assert.equal(new Date(day.fromMs).toISOString(), expectedStart, timeZone);
+      assert.deepEqual(Array.from(day.dateKeys), ["06.09.2026"], timeZone);
+      assert.deepEqual(Array.from(week.dateKeys), [
+        "07.09.2026", "08.09.2026", "09.09.2026", "10.09.2026",
+        "11.09.2026", "12.09.2026", "13.09.2026",
+      ], timeZone);
+      assert.equal(month.dateKeys.length, 30, timeZone);
+      assert.equal(month.dateKeys[0], "01.09.2026", timeZone);
+      assert.equal(month.dateKeys.at(-1), "30.09.2026", timeZone);
+    }
+  } finally {
+    if (previous === undefined) delete process.env.TZ;
+    else process.env.TZ = previous;
+  }
 });
 
 test("aggregate journal hydration bounds fetch and DOM work and can be superseded", async () => {
