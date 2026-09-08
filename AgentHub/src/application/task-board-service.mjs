@@ -370,6 +370,14 @@ export class TaskBoardService {
     });
   }
 
+  rollbackWorkflowOutcome(operationId, error) {
+    requiredMethod(this.store, "rollbackWorkflowOutcome");
+    return this.#resolved(this.store.rollbackWorkflowOutcome(operationId, error), (task) => {
+      const event = this.#event("task.workflow-status.rolled-back", task, { workflowStatus: task.workflowStatus });
+      return event && typeof event.then === "function" ? event.then(() => task) : task;
+    });
+  }
+
   finalizeCleanupTransition(operationId, payload = {}) {
     requiredMethod(this.store, "finalizeCleanupTransition");
     return this.store.finalizeCleanupTransition(operationId, payload);

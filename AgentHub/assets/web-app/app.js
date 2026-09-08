@@ -73,6 +73,7 @@ const backgroundSelect = document.querySelector("[data-background-select]");
 const backgroundMotionToggle = document.querySelector("[data-background-motion-toggle]");
 const chatBackgroundToggle = document.querySelector("[data-chat-background-toggle]");
 const journalGroupingButtons = [...document.querySelectorAll("[data-journal-grouping]")];
+const journalStreamGroupToggle = document.querySelector("[data-journal-stream-group-toggle]");
 const journalPrimaryColumn = document.querySelector("[data-journal-primary-column]");
 const journalWorkspaceCount = document.querySelector("[data-journal-workspace-count]");
 const journalTotalCredits = document.querySelector("[data-journal-total-credits]");
@@ -151,6 +152,18 @@ const streamHeaderModelSeparator = document.querySelector("[data-stream-header-m
 const streamHeaderBranch = document.querySelector("[data-stream-header-branch]");
 const streamHeaderBranchSeparator = document.querySelector("[data-stream-header-branch-separator]");
 const streamHeaderMessageCount = document.querySelector("[data-stream-header-message-count]");
+const messagePinShelf = document.querySelector("[data-message-pin-shelf]");
+const messagePinCurrent = document.querySelector("[data-message-pin-current]");
+const messagePinPosition = document.querySelector("[data-message-pin-position]");
+const messagePinPrevious = document.querySelector("[data-message-pin-previous]");
+const messagePinNext = document.querySelector("[data-message-pin-next]");
+const messagePinsOpen = document.querySelector("[data-message-pins-open]");
+const messagePinStatus = document.querySelector("[data-message-pin-status]");
+const messagePinsModal = document.querySelector("[data-message-pins-modal]");
+const messagePinsList = document.querySelector("[data-message-pins-list]");
+const messagePinsClear = document.querySelector("[data-message-pins-clear]");
+const messagePinsClearModal = document.querySelector("[data-message-pins-clear-modal]");
+const messagePinsClearCopy = document.querySelector("[data-message-pins-clear-copy]");
 const chatEmpty = document.querySelector("[data-chat-empty]");
 const chatEmptyText = document.querySelector("[data-chat-empty-text]");
 const chatScroll = document.querySelector("[data-chat-scroll]");
@@ -288,8 +301,6 @@ const limitsTooltip = document.querySelector("[data-limits-tooltip]");
 const limitsLegend = document.querySelector("[data-limits-legend]");
 const limitsSpeedSummary = document.querySelector("[data-limits-speed-summary]");
 const limitsSpeedNote = document.querySelector("[data-limits-speed-note]");
-const limitsSpeedWindowSetting = document.querySelector("[data-limits-speed-window-setting]");
-const limitsSpeedFullWindow = document.querySelector("[data-limits-speed-full-window]");
 const limitsCredits = document.querySelector("[data-limits-credits]");
 const currentLimitsSlots = [...document.querySelectorAll("[data-current-limits]")];
 const usageRanges = document.querySelector("[data-usage-ranges]");
@@ -331,12 +342,14 @@ const comparisonViewModeButtons = [...document.querySelectorAll("[data-compariso
 /* --------------------------------------------------------- Telegram / темы */
 
 let journalHtml = "";
+let journalSummary = null;
 let grouping = "workspace";
 let usageUnit = "cr";
 let usdRubRate = null;
 let usdRubEffectiveDate = "";
 let exchangeRatesInitialized = false;
 let groupClaudeTasks = false;
+let groupJournalTurnsByStream = true;
 let streamOrderMode = "activity";
 const groupingStates = { date: null, week: null, month: null, stream: null, workspace: null };
 const journalDaySelections = new Map();
@@ -904,6 +917,29 @@ function selectClaudeGrouping(value, { persist = false } = {}) {
   }
 }
 
+function savedJournalStreamGrouping() {
+  try {
+    return localStorage.getItem("agent-hub-journal-stream-groups") !== "off";
+  } catch {
+    return true;
+  }
+}
+
+function selectJournalStreamGrouping(value, { persist = false } = {}) {
+  groupJournalTurnsByStream = value !== false;
+  if (journalStreamGroupToggle) journalStreamGroupToggle.checked = groupJournalTurnsByStream;
+  if (persist) {
+    try {
+      localStorage.setItem(
+        "agent-hub-journal-stream-groups",
+        groupJournalTurnsByStream ? "on" : "off",
+      );
+    } catch {
+      // Настройка останется активной до закрытия WebView.
+    }
+  }
+}
+
 telegram?.ready();
 telegram?.expand();
 telegram?.disableVerticalSwipes?.();
@@ -922,8 +958,13 @@ applyStreamOrderMode("activity");
 applyActivityRecentPeriod(DEFAULT_ACTIVITY_RECENT_MINUTES);
 selectUsageUnit(savedUsageUnit());
 selectClaudeGrouping(savedClaudeGrouping());
+selectJournalStreamGrouping(savedJournalStreamGrouping());
 claudeGroupToggle?.addEventListener("change", () => {
   selectClaudeGrouping(claudeGroupToggle.checked, { persist: true });
+  if (journalHtml) void renderJournal();
+});
+journalStreamGroupToggle?.addEventListener("change", () => {
+  selectJournalStreamGrouping(journalStreamGroupToggle.checked, { persist: true });
   if (journalHtml) void renderJournal();
 });
 for (const button of usageUnitButtons) {
@@ -1281,9 +1322,19 @@ function refreshTaskDurations() {
 }
 
 let toastTimer = 0;
-function showToast(message) {
+function showToast(message, action = null) {
   if (!message) return;
-  toast.textContent = message;
+  toast.replaceChildren(el("span", { text: message }));
+  if (action?.label && typeof action.onClick === "function") {
+    const button = el("button", { type: "button", text: action.label });
+    button.addEventListener("click", () => {
+      clearTimeout(toastTimer);
+      toast.hidden = true;
+      toast.classList.remove("visible");
+      action.onClick();
+    }, { once: true });
+    toast.append(button);
+  }
   toast.hidden = false;
   toast.classList.add("visible");
   clearTimeout(toastTimer);
@@ -1370,6 +1421,10 @@ const state = {
   collapsedWorkspaceFolders: new Set(),
   workspaceFolderNames: new Set(),
   visibleStreamTaskIds: [],
+  messagePins: [],
+  activeMessagePinByStream: new Map(),
+  pendingMessagePinKeys: new Set(),
+  messagePinMutationBackups: new Map(),
 };
 let transientAnswerArrivalTaskIds = new Set();
 const observedAnswerFinalIdentityByTaskId = new Map();
@@ -1869,6 +1924,287 @@ function currentTask() {
   return state.tasks.find((task) => task.id === state.selectedId) ?? null;
 }
 
+function pinsForTask(task = currentTask()) {
+  const streamId = String(task?.streamId ?? "").trim();
+  return streamId ? state.messagePins.filter((pin) => pin.streamId === streamId) : [];
+}
+
+function activePinForTask(task = currentTask()) {
+  const pins = pinsForTask(task);
+  if (!pins.length) return null;
+  const streamId = String(task.streamId);
+  const selectedPinId = state.activeMessagePinByStream.get(streamId);
+  const index = Math.max(0, pins.findIndex((pin) => pin.id === selectedPinId));
+  const pin = pins[index] ?? pins[0];
+  state.activeMessagePinByStream.set(streamId, pin.id);
+  return { pin, pins, index };
+}
+
+function setActiveMessagePinId(streamId, pinId = "") {
+  const normalizedStreamId = String(streamId ?? "").trim();
+  if (!normalizedStreamId) return;
+  if (pinId) state.activeMessagePinByStream.set(normalizedStreamId, pinId);
+  else state.activeMessagePinByStream.delete(normalizedStreamId);
+}
+
+function selectedMessagePinId(streamId, pins = state.messagePins) {
+  const streamPins = pins.filter((pin) => pin.streamId === streamId);
+  const selectedPinId = state.activeMessagePinByStream.get(streamId);
+  return streamPins.some((pin) => pin.id === selectedPinId)
+    ? selectedPinId
+    : streamPins[0]?.id ?? "";
+}
+
+function selectMessagePinAfterRemoval({ streamId, removedIndex, pins = state.messagePins }) {
+  const streamPins = pins.filter((pin) => pin.streamId === streamId);
+  if (!streamPins.length) {
+    setActiveMessagePinId(streamId);
+    return;
+  }
+  const index = Math.min(Math.max(0, removedIndex), streamPins.length - 1);
+  setActiveMessagePinId(streamId, streamPins[index].id);
+}
+
+function reconcilePendingMessagePins(pins) {
+  let reconciled = pins.slice();
+  for (const backup of state.messagePinMutationBackups.values()) {
+    if (backup.pinned) {
+      const committed = reconciled.find((pin) => (
+        pin.streamId === backup.streamId && pin.messageKey === backup.messageKey
+      ));
+      if (committed) {
+        if (state.activeMessagePinByStream.get(backup.streamId) === backup.optimisticPinId) {
+          setActiveMessagePinId(backup.streamId, committed.id);
+        }
+        continue;
+      }
+      const optimistic = state.messagePins.find((pin) => pin.id === backup.optimisticPinId);
+      if (optimistic) reconciled.unshift(optimistic);
+      continue;
+    }
+    reconciled = reconciled.filter((pin) => !(
+      pin.streamId === backup.streamId
+      && (pin.id === backup.targetPinId || pin.messageKey === backup.messageKey)
+    ));
+  }
+  return reconciled;
+}
+
+function pinMetaLabel(pin) {
+  const role = pin?.role === "user" ? "Вы" : String(pin?.author ?? "Агент").trim() || "Агент";
+  const timestamp = MessageView.messageTimestampLabel(pin?.time);
+  return [role, timestamp].filter(Boolean).join(" · ");
+}
+
+function messagePinIcon(name, className = "") {
+  return window.AgentHubStreamTabs.createPhosphorIcon(document, name, className);
+}
+
+function jumpToMessagePin(pin) {
+  if (!pin?.available) return;
+  emit("message-pin:open", { pin });
+}
+
+function setActiveMessagePin(indexDelta) {
+  const current = activePinForTask();
+  if (!current || current.pins.length < 2) return;
+  const index = (current.index + indexDelta + current.pins.length) % current.pins.length;
+  state.activeMessagePinByStream.set(current.pin.streamId, current.pins[index].id);
+  renderMessagePinShelf();
+}
+
+function renderMessagePinShelf() {
+  if (!messagePinShelf) return;
+  const current = activePinForTask();
+  messagePinShelf.hidden = !current;
+  if (!current) return;
+  const { pin, pins, index } = current;
+  messagePinCurrent.replaceChildren(
+    el("span", { class: "message-pin-current-meta", text: pinMetaLabel(pin) }),
+    el("span", {
+      class: "message-pin-current-preview",
+      text: pin.available ? pin.preview : `Недоступно · ${pin.preview}`,
+    }),
+  );
+  messagePinCurrent.disabled = !pin.available;
+  messagePinCurrent.title = pin.available ? "Перейти к сообщению" : "Исходное сообщение недоступно";
+  messagePinPosition.textContent = `${index + 1} из ${pins.length}`;
+  messagePinPrevious.disabled = pins.length < 2;
+  messagePinNext.disabled = pins.length < 2;
+  messagePinStatus.textContent = pin.available
+    ? `Закреплённое сообщение ${index + 1} из ${pins.length}`
+    : `Закреплённое сообщение ${index + 1} из ${pins.length} недоступно`;
+}
+
+function closeMessagePins() {
+  messagePinsModal?.close();
+  messagePinsOpen?.focus({ preventScroll: true });
+}
+
+function renderMessagePinsList() {
+  if (!messagePinsList) return;
+  const pins = pinsForTask();
+  messagePinsList.replaceChildren(...pins.map((pin) => {
+    const pending = state.pendingMessagePinKeys.has(pin.messageKey);
+    const row = el("article", {
+      class: "message-pin-row",
+      "data-message-pin-id": pin.id,
+      ...(pin.available ? {} : { "data-unavailable": "" }),
+    });
+    row.append(
+      el("div", { class: "message-pin-row-copy" }, [
+        el("span", { class: "message-pin-row-meta", text: pinMetaLabel(pin) }),
+        el("p", { text: pin.preview }),
+        pin.available ? null : el("span", { class: "message-pin-unavailable", text: "Исходное сообщение недоступно" }),
+      ]),
+      el("div", { class: "message-pin-row-actions" }, [
+        el("button", {
+          type: "button",
+          class: "chip-button",
+          text: "Перейти",
+          disabled: !pin.available,
+          "data-message-pin-jump": pin.id,
+        }),
+        el("button", {
+          type: "button",
+          class: "chip-button ghost",
+          text: "Открепить",
+          disabled: pending,
+          "data-message-pin-remove": pin.id,
+        }),
+      ]),
+    );
+    return row;
+  }));
+  messagePinsClear.disabled = pins.length === 0;
+}
+
+function openMessagePins() {
+  renderMessagePinsList();
+  const mobileSheet = surface === "mobile" || window.innerWidth <= 760;
+  if (messagePinsModal && !mobileSheet && messagePinShelf) {
+    const rect = messagePinShelf.getBoundingClientRect();
+    const width = Math.min(620, window.innerWidth - 32);
+    messagePinsModal.style.left = `${Math.max(16, Math.min(window.innerWidth - width - 16, rect.right - width))}px`;
+    messagePinsModal.style.top = `${Math.min(window.innerHeight - 160, rect.bottom + 6)}px`;
+  } else {
+    messagePinsModal?.style.removeProperty("left");
+    messagePinsModal?.style.removeProperty("top");
+  }
+  messagePinsModal?.showModal();
+}
+
+function requestMessagePinChange({ message = null, pin = null, pinned, undoToken = "" }) {
+  const task = currentTask();
+  const streamId = String(task?.streamId ?? pin?.streamId ?? "").trim();
+  const messageKey = String(message?.messageKey ?? pin?.messageKey ?? "").trim();
+  if (!streamId || (!messageKey && !undoToken)) return;
+  const mutationId = crypto.randomUUID();
+  const previous = state.messagePins.slice();
+  const streamPins = previous.filter((candidate) => candidate.streamId === streamId);
+  const selectedPinId = selectedMessagePinId(streamId, previous);
+  const removedIndex = Math.max(0, streamPins.findIndex((candidate) => candidate.id === pin?.id));
+  const backup = {
+    pins: previous,
+    messageKey,
+    streamId,
+    selectedPinId,
+    targetPinId: pin?.id ?? "",
+    removedIndex,
+    pinned: Boolean(pinned),
+    optimisticPinId: "",
+  };
+  if (pinned && !undoToken) {
+    backup.optimisticPinId = `optimistic:${mutationId}`;
+    state.messagePins = [{
+      id: backup.optimisticPinId,
+      streamId,
+      messageKey,
+      provider: message.provider ?? task.provider,
+      taskThreadId: message.threadId ?? task.threadId,
+      turnThreadId: message.threadId ?? task.threadId,
+      turnId: message.turnId,
+      itemId: message.itemId,
+      role: message.role,
+      preview: String(message.text ?? "").replace(/\s+/gu, " ").trim().slice(0, 320),
+      author: message.author ?? "",
+      time: message.time ?? null,
+      pinnedAt: new Date().toISOString(),
+      available: true,
+    }, ...state.messagePins];
+    setActiveMessagePinId(streamId, backup.optimisticPinId);
+  } else if (!undoToken) {
+    state.messagePins = state.messagePins.filter((candidate) => candidate.id !== pin?.id);
+    if (selectedPinId === pin?.id) {
+      selectMessagePinAfterRemoval({ streamId, removedIndex });
+    }
+  }
+  state.messagePinMutationBackups.set(mutationId, backup);
+  if (messageKey) state.pendingMessagePinKeys.add(messageKey);
+  renderMessagePinShelf();
+  renderMessagePinsList();
+  renderMessages({ preserveTop: true });
+  emit("message-pin:set", {
+    mutationId,
+    pinned,
+    streamId,
+    pinId: pin?.id,
+    messageKey,
+    undoToken,
+    provider: message?.provider,
+    taskThreadId: message?.threadId,
+    turnId: message?.turnId,
+    itemId: message?.itemId,
+    role: message?.role,
+  });
+}
+
+messagePinPrevious?.replaceChildren(messagePinIcon("caret-left"));
+messagePinNext?.replaceChildren(messagePinIcon("caret-right"));
+messagePinsOpen?.replaceChildren(messagePinIcon("list-bullets"));
+messagePinCurrent?.addEventListener("click", () => jumpToMessagePin(activePinForTask()?.pin));
+messagePinPrevious?.addEventListener("click", () => setActiveMessagePin(-1));
+messagePinNext?.addEventListener("click", () => setActiveMessagePin(1));
+messagePinsOpen?.addEventListener("click", openMessagePins);
+document.querySelector("[data-message-pins-close]")?.addEventListener("click", closeMessagePins);
+modalOverlays?.installDismissibleOverlay({ dialog: messagePinsModal, close: closeMessagePins });
+messagePinsList?.addEventListener("click", (event) => {
+  const jump = event.target.closest("[data-message-pin-jump]");
+  const remove = event.target.closest("[data-message-pin-remove]");
+  const pinId = String(jump?.dataset.messagePinJump ?? remove?.dataset.messagePinRemove ?? "");
+  const pin = state.messagePins.find((candidate) => candidate.id === pinId);
+  if (!pin) return;
+  if (jump) {
+    closeMessagePins();
+    jumpToMessagePin(pin);
+  } else requestMessagePinChange({ pin, pinned: false });
+});
+messagePinsClear?.addEventListener("click", () => {
+  const count = pinsForTask().length;
+  if (!count) return;
+  messagePinsClearCopy.textContent = `${count} закреплённых сообщений будут откреплены.`;
+  messagePinsClearModal?.showModal();
+});
+function closeMessagePinsClear() {
+  messagePinsClearModal?.close();
+  messagePinsClear?.focus({ preventScroll: true });
+}
+document.querySelector("[data-message-pins-clear-cancel]")?.addEventListener("click", closeMessagePinsClear);
+modalOverlays?.installDismissibleOverlay({ dialog: messagePinsClearModal, close: closeMessagePinsClear });
+document.querySelector("[data-message-pins-clear-confirm]")?.addEventListener("click", () => {
+  const task = currentTask();
+  const streamId = String(task?.streamId ?? "").trim();
+  if (!streamId) return;
+  const mutationId = crypto.randomUUID();
+  state.messagePinMutationBackups.set(mutationId, { pins: state.messagePins.slice(), messageKey: "" });
+  state.messagePins = state.messagePins.filter((pin) => pin.streamId !== streamId);
+  closeMessagePinsClear();
+  closeMessagePins();
+  renderMessagePinShelf();
+  renderMessages({ preserveTop: true });
+  emit("message-pins:clear", { mutationId, streamId });
+});
+
 function streamKey(task) {
   return String(task?.streamId ?? "").trim()
     || `legacy:${String(task?.provider ?? "").trim()}:${String(task?.threadId ?? "").trim()}`;
@@ -2140,14 +2476,6 @@ function quickMessagesCountText(entries) {
   return count ? window.AgentHubStreamTabs.quickMessagesCountLabel(count) : "Не заданы";
 }
 
-function renderQuickMessagesControl(countElement, button, entries, disabled = false) {
-  if (countElement) countElement.textContent = quickMessagesCountText(entries);
-  if (button) {
-    button.disabled = Boolean(disabled);
-    button.setAttribute("aria-busy", String(disabled));
-  }
-}
-
 function quickMessageEditorEntries(container) {
   return [...(container?.querySelectorAll("[data-quick-message-row]") ?? [])].map((row) => ({
     title: String(row.querySelector("[data-quick-message-title]")?.value ?? "").trim(),
@@ -2166,7 +2494,7 @@ function quickMessageEditorRow(entry, index, count, disabled) {
       maxlength: "64",
       value: entry?.title ?? entry?.label ?? entry?.text ?? "",
       placeholder: "Заголовок",
-      "aria-label": `Заголовок быстрого ответа ${index + 1}`,
+      "aria-label": `Заголовок Prompt-шаблона ${index + 1}`,
       "data-quick-message-title": "",
       disabled,
     }),
@@ -2175,24 +2503,24 @@ function quickMessageEditorRow(entry, index, count, disabled) {
       maxlength: "4000",
       text: entry?.text ?? "",
       placeholder: "Текст",
-      "aria-label": `Текст быстрого ответа ${index + 1}`,
+      "aria-label": `Текст Prompt-шаблона ${index + 1}`,
       "data-quick-message-text": "",
       disabled,
     }),
     el("span", { class: "quick-message-editor-actions" }, [
       el("button", {
         type: "button", class: "chip-button compact", text: "↑", title: "Поднять",
-        "aria-label": `Поднять быстрый ответ ${index + 1}`,
+        "aria-label": `Поднять Prompt-шаблон ${index + 1}`,
         "data-quick-message-action": "up", disabled: disabled || index === 0,
       }),
       el("button", {
         type: "button", class: "chip-button compact", text: "↓", title: "Опустить",
-        "aria-label": `Опустить быстрый ответ ${index + 1}`,
+        "aria-label": `Опустить Prompt-шаблон ${index + 1}`,
         "data-quick-message-action": "down", disabled: disabled || index === count - 1,
       }),
       el("button", {
         type: "button", class: "chip-button compact danger", text: "×", title: "Удалить",
-        "aria-label": `Удалить быстрый ответ ${index + 1}`,
+        "aria-label": `Удалить Prompt-шаблон ${index + 1}`,
         "data-quick-message-action": "delete", disabled,
       }),
     ]),
@@ -2256,12 +2584,17 @@ function handleQuickMessageEditorChange(container, scope, scopeId) {
 }
 
 function renderGlobalQuickMessagesSettings() {
-  renderQuickMessagesControl(
-    settingsGlobalQuickMessagesCount,
+  const entries = quickMessagesForScope("global");
+  const pending = state.pendingSelections.has("quickMessages");
+  if (settingsGlobalQuickMessagesCount) {
+    settingsGlobalQuickMessagesCount.textContent = quickMessagesCountText(entries);
+  }
+  renderQuickMessagesEditor(
     settingsGlobalQuickMessages,
-    quickMessagesForScope("global"),
-    state.pendingSelections.has("quickMessages"),
+    entries,
+    pending,
   );
+  settingsGlobalQuickMessages?.setAttribute("aria-busy", String(pending));
 }
 
 function renderWorkspaceCardQuickMessages(workspaceId = workspaceCardId) {
@@ -2300,22 +2633,6 @@ function renderQuickMessageSettingsControls() {
   renderGlobalQuickMessagesSettings();
   renderWorkspaceCardQuickMessages();
   renderStreamQuickMessagesSettings();
-}
-
-async function editQuickMessagesForScope(scope, scopeId, title) {
-  const id = String(scopeId ?? "").trim();
-  if (scope !== "global" && !id) return;
-  const quickMessages = window.AgentHubStreamTabs.normalizeQuickMessages(state.selection.quickMessages);
-  const key = scope === "global" ? "global" : scope === "workspace" ? "workspaces" : "streams";
-  const current = scope === "global" ? quickMessages.global : quickMessages[key][id] ?? [];
-  const value = window.AgentHubStreamTabs.quickMessagesToText(current);
-  const text = await askText({
-    title: `Быстрые ответы: ${title}`,
-    value,
-    multiline: true,
-  });
-  if (text === null) return;
-  saveQuickMessagesForScope(scope, id, window.AgentHubStreamTabs.quickMessagesFromText(text));
 }
 
 function quickMessageScopeLabel(scope) {
@@ -3456,7 +3773,24 @@ function renderStreamChatPreview(task) {
   if (!queue.hidden) log.append(queue);
   scroll.append(log);
   const scrollDown = createChatScrollDownButton(scroll, task);
-  preview.append(head, scroll, scrollDown);
+  const previewPins = pinsForTask(task);
+  const pin = previewPins[0];
+  const shelf = pin ? el("button", {
+    type: "button",
+    class: "message-pin-shelf stream-chat-preview-pins",
+    title: pin.available ? "Перейти к закреплённому сообщению" : "Исходное сообщение недоступно",
+    disabled: !pin.available,
+  }, [
+    messagePinIcon("push-pin-simple", "message-pin-shelf-icon"),
+    el("span", { class: "message-pin-current-preview", text: pin.preview }),
+    el("span", { class: "message-pin-position", text: `1 из ${previewPins.length}` }),
+  ]) : null;
+  shelf?.addEventListener("click", () => {
+    selectTaskFromUi(task.id);
+    state.activeMessagePinByStream.set(String(task.streamId), pin.id);
+    jumpToMessagePin(pin);
+  });
+  preview.append(head, ...(shelf ? [shelf] : []), scroll, scrollDown);
   window.requestAnimationFrame(() => {
     chatScrollControllers.get(scroll)?.pinNow();
   });
@@ -4737,6 +5071,7 @@ function renderChat({ preserveStreamTabs = false } = {}) {
     streamChatColumns?.removeAttribute("data-multi-stream");
     publishVisibleStreamTasks([]);
     renderStreamChatHeader(null);
+    renderMessagePinShelf();
     renderComposerQuickMessages();
     setDialogSettingsOpen(false);
     return;
@@ -4750,6 +5085,7 @@ function renderChat({ preserveStreamTabs = false } = {}) {
 
   renderDialogSettings();
   renderStreamChatHeader(task);
+  renderMessagePinShelf();
   for (const stop of chatStops) stop.hidden = !task.running;
   renderContextUsage(task);
   if (preserveStreamTabs) syncStreamTabsSelection();
@@ -5567,6 +5903,7 @@ function renderMessages({
     });
   }
   scheduleUserMessageDisclosureSync(prependedNodes);
+  syncMessagePinActions();
   if (anchor) {
     restoreChatAnchor(anchor);
     scrollController?.addUnread(newTailMessages);
@@ -6194,13 +6531,15 @@ function turnTraceNode(groups) {
   });
 }
 
-function messageActionButton({ icon, label, action, onClick }) {
+function messageActionButton({ icon, label, action, onClick, pressed = null, disabled = false }) {
   const button = el("button", {
     type: "button",
     class: "msg-action",
     title: label,
     "aria-label": `${label} сообщение`,
     [`data-message-${action}`]: "",
+    ...(pressed === null ? {} : { "aria-pressed": String(pressed) }),
+    disabled,
   }, [
     window.AgentHubStreamTabs.createPhosphorIcon(document, icon, "msg-action-icon"),
     el("span", { text: label }),
@@ -6246,6 +6585,21 @@ function renderMessageActions(message, role) {
     action: "copy",
     onClick: () => emit("clipboard:write", request),
   }));
+  if (message.pinEligible === true && message.messageKey) {
+    const pin = pinsForTask().find((candidate) => candidate.messageKey === message.messageKey);
+    const pinned = Boolean(pin);
+    actions.push(messageActionButton({
+      icon: "push-pin-simple",
+      label: pinned ? "Открепить" : "Закрепить",
+      action: "pin",
+      pressed: pinned,
+      disabled: state.pendingMessagePinKeys.has(message.messageKey),
+      onClick: () => {
+        const currentPin = pinsForTask().find((candidate) => candidate.messageKey === message.messageKey);
+        requestMessagePinChange({ message, pin: currentPin, pinned: !currentPin });
+      },
+    }));
+  }
   if (role === "user") actions.push(messageActionButton({
     icon: "pencil-simple",
     label: "Редактировать",
@@ -6261,6 +6615,21 @@ function renderMessageActions(message, role) {
   return actions.length ? el("div", { class: "msg-actions" }, actions) : null;
 }
 
+function syncMessagePinActions() {
+  for (const button of chatLog.querySelectorAll("[data-message-pin]")) {
+    const article = button.closest(".msg-stack")?.querySelector("[data-message-key]");
+    const messageKey = String(article?.dataset.messageKey ?? "");
+    const pinned = pinsForTask().some((pin) => pin.messageKey === messageKey);
+    const label = pinned ? "Открепить" : "Закрепить";
+    button.setAttribute("aria-pressed", String(pinned));
+    button.setAttribute("aria-label", `${label} сообщение`);
+    button.title = label;
+    button.disabled = state.pendingMessagePinKeys.has(messageKey);
+    const caption = button.querySelector("span");
+    if (caption) caption.textContent = label;
+  }
+}
+
 function renderMessage(message, { readOnly = false, task = currentTask() } = {}) {
   const role = message.role === "user" ? "user" : message.role === "system" ? "system" : "agent";
   const maintenance = role === "system" && message.kind === "maintenance";
@@ -6272,6 +6641,7 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
     "data-message-id": message.id ?? "",
     "data-turn-id": message.turnId ?? "",
     "data-item-id": message.itemId ?? "",
+    "data-message-key": message.messageKey ?? "",
     "data-delivery-state": message.deliveryState ?? "",
     "data-provider": String(task?.provider ?? "none"),
     ...(subagent ? { "data-subagent-response": true } : {}),
@@ -6867,6 +7237,7 @@ function renderQueueForTask(taskId, container) {
   ].filter(Boolean).join(" · ");
   container.append(el("div", { class: "queue-head", text: counts }));
   const task = state.tasks.find((entry) => entry.id === taskId);
+  const movable = queued.filter((entry) => !entry.optimistic && ["queued", "paused"].includes(entry.state));
   for (const entry of queued) {
     const actions = [];
     if (entry.optimistic) {
@@ -6894,10 +7265,33 @@ function renderQueueForTask(taskId, container) {
         class: "queue-edit",
         "data-action": "queue-edit",
         "data-queue-id": entry.id,
-        title: "Изменить текст сообщения, не затрагивая изображения и аннотации",
+        title: "Вернуть весь исходный черновик в основной композер",
         text: "Изменить",
       }));
       if (["queued", "paused"].includes(entry.state)) {
+        const movableIndex = movable.findIndex((candidate) => candidate.id === entry.id);
+        actions.push(el("button", {
+          type: "button",
+          class: "queue-move",
+          "data-action": "queue-move",
+          "data-direction": "up",
+          "data-queue-id": entry.id,
+          title: "Поднять сообщение в очереди",
+          "aria-label": "Поднять сообщение в очереди",
+          disabled: movableIndex <= 0,
+          text: "↑",
+        }));
+        actions.push(el("button", {
+          type: "button",
+          class: "queue-move",
+          "data-action": "queue-move",
+          "data-direction": "down",
+          "data-queue-id": entry.id,
+          title: "Опустить сообщение в очереди",
+          "aria-label": "Опустить сообщение в очереди",
+          disabled: movableIndex < 0 || movableIndex >= movable.length - 1,
+          text: "↓",
+        }));
         if (entry.waitReason === "provider-thread-active") {
           actions.push(el("button", {
             type: "button",
@@ -7120,6 +7514,8 @@ function sendComposerRequest({
   attachments: requestAttachments = [],
   taskReferences: requestTaskReferences = [],
   annotations: requestAnnotations = [],
+  messageOrigin: requestMessageOrigin = null,
+  composerTransfer: requestComposerTransfer = null,
   steerWhileRunning = false,
   clearComposer = false,
   restoreOnReject = false,
@@ -7142,6 +7538,8 @@ function sendComposerRequest({
     attachments: payloadAttachments,
     taskReferences: payloadTaskReferences,
     annotations: payloadAnnotations,
+    messageOrigin: requestMessageOrigin,
+    composerTransfer: requestComposerTransfer,
   });
   const retry = retryComposerRequests.get(state.selectedId);
   const requestId = retry?.fingerprint === fingerprint
@@ -7156,6 +7554,8 @@ function sendComposerRequest({
     attachments: payloadAttachments,
     taskReferences: payloadTaskReferences,
     annotations: payloadAnnotations,
+    messageOrigin: requestMessageOrigin,
+    composerTransfer: requestComposerTransfer,
     restoreOnReject,
     editRevision: composerDraftReconciliation.revision(state.selectedId),
   };
@@ -7180,6 +7580,8 @@ function sendComposerRequest({
     annotations: payloadAnnotations,
     attachments: payloadAttachments,
     taskReferences: payloadTaskReferences,
+    messageOrigin: requestMessageOrigin,
+    composerTransfer: requestComposerTransfer,
     followUpMode: MessageView.composerFollowUpMode(task, { steerWhileRunning }),
     deferWhileRunning: task?.running === true && !steerWhileRunning,
     draftStream: task?.draftStream === true,
@@ -7197,6 +7599,8 @@ function submitComposer({ steerWhileRunning = false } = {}) {
     attachments: currentAttachments(),
     taskReferences: currentTaskReferences(),
     annotations: currentAnnotations(),
+    messageOrigin: drafts.get(state.selectedId)?.messageOrigin ?? null,
+    composerTransfer: drafts.get(state.selectedId)?.composerTransfer ?? null,
     steerWhileRunning,
     clearComposer: true,
     restoreOnReject: true,
@@ -8046,6 +8450,20 @@ function saveDraft({ userEdited = false } = {}) {
   );
 }
 
+function composerDraftState(taskId) {
+  return composerDraftSnapshot(taskId);
+}
+
+function writeComposerDraft(taskId, draft) {
+  const next = composerDraftReconciliation.save(
+    taskId,
+    draft,
+    { userEdited: true },
+  );
+  if (state.selectedId === taskId) restoreDraft();
+  return next;
+}
+
 function prepareForRuntimeReload() {
   saveDraft();
   const draftsPersisted = persistDrafts();
@@ -8079,6 +8497,13 @@ function restoreDraft() {
   autosizeComposer();
   updateSendState();
 }
+
+const queueComposerTransfer = window.AgentHubQueueComposerTransfer.create({
+  read: composerDraftState,
+  write: writeComposerDraft,
+  revision: (taskId) => composerDraftReconciliation.revision(taskId),
+  notify: showToast,
+});
 
 /* ============================================= панель настроек и селекторы */
 
@@ -8709,11 +9134,14 @@ function openStreamCardMoveMenu() {
   streamCardMoveMenu.querySelector("[role='menuitem']")?.focus({ preventScroll: true });
 }
 
-settingsPanel?.addEventListener("click", async (event) => {
-  const globalQuickMessages = event.target.closest("[data-settings-global-quick-messages]");
-  if (!globalQuickMessages) return;
-  await editQuickMessagesForScope("global", "", "Глобальные");
-  renderGlobalQuickMessagesSettings();
+settingsPanel?.addEventListener("click", (event) => {
+  if (!event.target.closest("[data-quick-message-add], [data-quick-message-action]")) return;
+  handleQuickMessageEditorClick(event, settingsGlobalQuickMessages, "global", "");
+});
+
+settingsPanel?.addEventListener("change", (event) => {
+  if (!event.target.closest("[data-quick-message-title], [data-quick-message-text]")) return;
+  handleQuickMessageEditorChange(settingsGlobalQuickMessages, "global", "");
 });
 
 dialogSettings.addEventListener("click", (event) => {
@@ -9382,14 +9810,17 @@ async function handleAction(action, trigger) {
     case "queue-edit": {
       const entry = (state.queue.get(taskId) ?? []).find((item) => item.id === trigger.dataset.queueId);
       if (!entry) break;
-      const text = await askText({
-        title: "Изменить сообщение в очереди",
-        value: entry.text ?? entry.preview ?? "",
-        multiline: true,
-      });
-      if (text != null) emit("queue:edit", { taskId, id: entry.id, text });
+      const guard = queueComposerTransfer.begin(taskId);
+      if (guard) emit("queue:edit", { taskId, id: entry.id, guard });
       break;
     }
+    case "queue-move":
+      emit("queue:move", {
+        taskId,
+        id: trigger.dataset.queueId,
+        direction: trigger.dataset.direction,
+      });
+      break;
     case "queue-pause":
       emit("queue:pause", { taskId, id: trigger.dataset.queueId });
       break;
@@ -9731,6 +10162,12 @@ const AgentHub = {
   completeSend(requestId, options = {}) {
     return completeComposerSend(requestId, options);
   },
+  applyQueueComposerTransfer(guard, draft, identity) {
+    return queueComposerTransfer.apply(guard, draft, identity);
+  },
+  rollbackQueueComposerTransfer(applied) {
+    return queueComposerTransfer.rollback(applied);
+  },
   completeBugReport(result = {}) {
     applyBugReportFlowState(bugReportFlow.complete(result));
     if (result.error) {
@@ -9790,6 +10227,61 @@ const AgentHub = {
     state.workspaceMessageSearch.error = String(message ?? "Не удалось выполнить поиск");
     renderWorkspaceMessageSearch();
   },
+  setMessagePins(pins) {
+    const next = reconcilePendingMessagePins(Array.isArray(pins) ? pins : []);
+    if (sameData(state.messagePins, next)) return;
+    state.messagePins = next;
+    for (const [streamId, pinId] of state.activeMessagePinByStream) {
+      if (!next.some((pin) => pin.streamId === streamId && pin.id === pinId)) {
+        state.activeMessagePinByStream.delete(streamId);
+      }
+    }
+    renderMessagePinShelf();
+    renderMessagePinsList();
+    renderMessages({ preserveTop: true });
+    renderStreamChatDeck({ force: true });
+  },
+  completeMessagePinMutation(mutationId, result = {}) {
+    const backup = state.messagePinMutationBackups.get(mutationId);
+    if (!backup) return;
+    state.messagePinMutationBackups.delete(mutationId);
+    if (backup.messageKey) state.pendingMessagePinKeys.delete(backup.messageKey);
+    if (result.error) {
+      state.messagePins = backup.pins;
+      setActiveMessagePinId(backup.streamId, backup.selectedPinId);
+      showToast(String(result.error));
+    } else if (Array.isArray(result.messagePins)) {
+      state.messagePins = result.messagePins;
+      if (backup.pinned) {
+        const committed = result.messagePins.find((pin) => (
+          pin.streamId === backup.streamId && pin.messageKey === backup.messageKey
+        ));
+        setActiveMessagePinId(backup.streamId, committed?.id);
+      } else if (backup.selectedPinId === backup.targetPinId) {
+        selectMessagePinAfterRemoval({
+          streamId: backup.streamId,
+          removedIndex: backup.removedIndex,
+          pins: result.messagePins,
+        });
+      } else if (!result.messagePins.some((pin) => pin.id === backup.selectedPinId)) {
+        setActiveMessagePinId(backup.streamId);
+      }
+      if (result.undoToken && result.removedPin) {
+        showToast("Сообщение откреплено", {
+          label: "Отменить",
+          onClick: () => requestMessagePinChange({
+            pin: result.removedPin,
+            pinned: true,
+            undoToken: result.undoToken,
+          }),
+        });
+      }
+    }
+    renderMessagePinShelf();
+    renderMessagePinsList();
+    renderMessages({ preserveTop: true });
+    renderStreamChatDeck({ force: true });
+  },
   openWorkspaceMessageSearch,
   closeWorkspaceMessageSearch,
   focusMessage({ turnId, itemId } = {}) {
@@ -9798,12 +10290,17 @@ const AgentHub = {
       && String(node.dataset.itemId ?? "") === String(itemId ?? "")
     ));
     if (!target) return false;
-    chatLog.querySelectorAll("[data-search-match]").forEach((node) => {
+    chatLog.querySelectorAll("[data-search-match], [data-pin-highlight]").forEach((node) => {
       node.removeAttribute("data-search-match");
+      node.removeAttribute("data-pin-highlight");
     });
-    target.setAttribute("data-search-match", "");
-    target.scrollIntoView({ block: "center", behavior: "smooth" });
-    window.setTimeout(() => target.removeAttribute("data-search-match"), 4_000);
+    target.setAttribute("data-pin-highlight", "");
+    target.tabIndex = -1;
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    target.scrollIntoView({ block: "center", behavior: reducedMotion ? "auto" : "smooth" });
+    target.focus({ preventScroll: true });
+    if (messagePinStatus) messagePinStatus.textContent = "Закреплённое сообщение показано";
+    window.setTimeout(() => target.removeAttribute("data-pin-highlight"), 4_000);
     return true;
   },
   /** running=true подсвечивает индикатор и показывает «Стоп». */
@@ -9985,7 +10482,6 @@ const SERIES_PALETTE = [
  * несовместимом изменении формата, чтобы восстановление пережило перезапуск. */
 const LIMITS_HIDDEN_KEY = "agent-hub-limits-hidden-v1";
 const LIMITS_MODE_KEY = "agent-hub-limits-mode-v1";
-const LIMITS_SPEED_FULL_WINDOW_KEY = "agent-hub-limits-speed-full-window-v1";
 
 function savedLimitsRange() {
   return storedLimitsRange(localStorage);
@@ -9996,14 +10492,6 @@ function loadLimitsMode() {
     return localStorage.getItem(LIMITS_MODE_KEY) === "speed" ? "speed" : "usage";
   } catch {
     return "usage";
-  }
-}
-
-function loadLimitsSpeedFullWindow() {
-  try {
-    return localStorage.getItem(LIMITS_SPEED_FULL_WINDOW_KEY) !== "false";
-  } catch {
-    return true;
   }
 }
 
@@ -10046,7 +10534,6 @@ const limitsState = {
   payload: null,
   error: "",
   hidden: loadHiddenSeries(),
-  speedFullWindow: loadLimitsSpeedFullWindow(),
 };
 
 function selectLimitsMode(mode) {
@@ -10068,17 +10555,9 @@ function renderLimitsModes() {
     button.setAttribute("aria-pressed", String(button.dataset.limitsMode === limitsState.mode));
   }
   if (limitsSpeedNote) {
-    const hourly = burnRatePolicyForRange(limitsState.range).unit === "hour";
     limitsSpeedNote.hidden = limitsState.mode !== "speed";
-    const calculation = limitsState.speedFullWindow
-      ? hourly
-        ? "Фактическая скорость появляется после накопления почти полного часа."
-        : "Фактическая скорость появляется после накопления почти полных суток."
-      : "Предварительная скорость считается по доступной истории сразу после второго замера и в начале цикла может резко меняться.";
-    limitsSpeedNote.textContent = `${calculation} Разрывы между замерами восстанавливаются: неизменившийся лимит даёт нулевой расход, а изменение равномерно распределяется по пропущенному времени. Пунктир показывает допустимый темп по остатку и времени до сброса. Горизонтальная линия — ровный расход 100% за неделю, или ${hourly ? "0,6% в час" : "14,3% в сутки"}.`;
+    limitsSpeedNote.textContent = "Основная линия показывает сглаженный текущий темп с чувствительностью около 3 часов, длинный пунктир — средний темп за последние 24 часа, мелкий пунктир — допустимый темп по остатку и времени до сброса. Допустимый темп не меняет масштаб графика: значения выше шкалы прижимаются к верхней границе. Простои снижают текущий темп, а сброс лимита не обрывает историю и не создаёт нулевую точку. Пока доступно меньше суток истории, среднее отмечается как предварительное. Горизонтальная линия — ровный расход 14,3% в сутки.";
   }
-  if (limitsSpeedWindowSetting) limitsSpeedWindowSetting.hidden = limitsState.mode !== "speed";
-  if (limitsSpeedFullWindow) limitsSpeedFullWindow.checked = limitsState.speedFullWindow;
 }
 
 function statisticsAccounts(payload = limitsState.payload) {
@@ -10336,14 +10815,9 @@ function parseClaudeResetAt(value, nowMs = Date.now()) {
 }
 
 const WEEK_MILLISECONDS = 7 * 24 * 60 * 60_000;
-const BURN_RATE_ROLLING_WINDOW_MS = 24 * 60 * 60_000;
-const BURN_RATE_HOURLY_WINDOW_MS = 60 * 60_000;
-// Процент лимита приходит целым числом. На коротком отрезке один новый процент
-// превращался в огромный ложный пик, поэтому 24-часовой темп показываем только
-// после накопления почти полного окна (с часовым допуском для редких снимков).
-const BURN_RATE_MINIMUM_SPAN_MS = 23 * 60 * 60_000;
-const BURN_RATE_HOURLY_MINIMUM_SPAN_MS = 45 * 60_000;
-const BURN_RATE_CHART_MAX = 400;
+const BURN_RATE_CURRENT_HALF_LIFE_MS = 3 * 60 * 60_000;
+const BURN_RATE_AVERAGE_WINDOW_MS = 24 * 60 * 60_000;
+const BURN_RATE_RESET_SHIFT_TOLERANCE_MS = 30 * 60_000;
 const {
   interpolateRateLimitGaps,
   limitPriceStatistics,
@@ -10351,28 +10825,8 @@ const {
   recoverRateLimitResetGaps,
   selectCurrentLimitSeries,
   signedComparisonDeviations,
+  smoothedRateLimitConsumption,
 } = globalThis.AgentHubRateLimitSeries;
-
-function burnRatePolicyForRange(range) {
-  return ["6h", "24h"].includes(String(range))
-    ? {
-      rollingWindowMs: BURN_RATE_HOURLY_WINDOW_MS,
-      minimumSpanMs: BURN_RATE_HOURLY_MINIMUM_SPAN_MS,
-      unit: "hour",
-    }
-    : {
-      rollingWindowMs: BURN_RATE_ROLLING_WINDOW_MS,
-      minimumSpanMs: BURN_RATE_MINIMUM_SPAN_MS,
-      unit: "day",
-    };
-}
-
-function selectedBurnRatePolicyForRange(range) {
-  const policy = burnRatePolicyForRange(range);
-  return limitsState.speedFullWindow
-    ? policy
-    : { ...policy, minimumSpanMs: 0, showResetStartAsZero: true };
-}
 
 function weeklyLimitDurationMs(series) {
   const explicitDurations = (Array.isArray(series?.points) ? series.points : [])
@@ -10401,19 +10855,13 @@ function limitPointResetMs(point) {
   return parseClaudeResetAt(point?.resetsText, Number.isFinite(atMs) ? atMs : Date.now());
 }
 
-function sameWeeklyLimitCycle(left, right) {
-  return Number.isInteger(left?.cycleIndex)
-    && Number.isInteger(right?.cycleIndex)
-    && left.cycleIndex === right.cycleIndex;
-}
-
 function sameLimitsSpeedSegment(left, right) {
   const hasPathSegments = Number.isInteger(left?.pathSegmentIndex)
     && Number.isInteger(right?.pathSegmentIndex);
-  const joinsResetAnchor = right?.resetAnchor === true
-    && Number.isInteger(left?.cycleIndex)
-    && right.cycleIndex === left.cycleIndex + 1;
-  return (sameWeeklyLimitCycle(left, right) || joinsResetAnchor)
+  const sameContinuity = Number.isInteger(left?.continuityIndex)
+    && Number.isInteger(right?.continuityIndex)
+    && left.continuityIndex === right.continuityIndex;
+  return sameContinuity
     && (!hasPathSegments || left.pathSegmentIndex === right.pathSegmentIndex);
 }
 
@@ -10426,11 +10874,11 @@ function limitsSpeedPath(points) {
     .join(" ");
 }
 
-function limitsFiniteSpeedPoints(points) {
+function limitsFiniteSpeedPoints(points, field = "actualRate") {
   let pathSegmentIndex = 0;
   let previousWasFinite = false;
   return (Array.isArray(points) ? points : []).flatMap((point) => {
-    if (!Number.isFinite(point?.actualRate)) {
+    if (!Number.isFinite(point?.[field])) {
       previousWasFinite = false;
       return [];
     }
@@ -10440,19 +10888,7 @@ function limitsFiniteSpeedPoints(points) {
   });
 }
 
-function shouldWaitForBurnRateData(speedFullWindow, latest, range) {
-  const fullWindow = burnRatePolicyForRange(range).minimumSpanMs;
-  return Boolean(speedFullWindow)
-    && Number.isFinite(latest?.cycleAgeMs)
-    && latest.cycleAgeMs < fullWindow;
-}
-
-function weeklyBurnRatePoints(series, {
-  rollingWindowMs = BURN_RATE_ROLLING_WINDOW_MS,
-  minimumSpanMs = BURN_RATE_MINIMUM_SPAN_MS,
-  maximumLookbackMs = rollingWindowMs * 1.5,
-  showResetStartAsZero = false,
-} = {}) {
+function weeklyBurnRatePoints(series, options = {}) {
   const durationMs = weeklyLimitDurationMs(series);
   if (!durationMs) return [];
   const points = interpolateRateLimitGaps(series?.points)
@@ -10476,10 +10912,17 @@ function weeklyBurnRatePoints(series, {
 
   let cycleIndex = 0;
   for (let index = 0; index < points.length; index += 1) {
+    const previous = points[index - 1];
+    const resetAdvanceMs = previous ? points[index].resetMs - previous.resetMs : 0;
+    const crossedPreviousReset = previous
+      && previous.resetMs > previous.atMs
+      && previous.resetMs <= points[index].atMs;
+    const advancedByFullWindow = previous
+      && Math.abs(resetAdvanceMs - durationMs) <= BURN_RATE_RESET_SHIFT_TOLERANCE_MS;
+    const startsAfterReset = Boolean(crossedPreviousReset && advancedByFullWindow);
+    const cycleStartMs = startsAfterReset ? previous.resetMs : points[index].resetMs - durationMs;
     const previousAccount = String(points[index - 1]?.raw?.accountKey ?? "");
     const currentAccount = String(points[index]?.raw?.accountKey ?? "");
-    const startsAfterReset = index > 0
-      && points[index].usedPercent < points[index - 1].usedPercent;
     const startsAfterAccountChange = index > 0
       && previousAccount
       && currentAccount
@@ -10487,73 +10930,61 @@ function weeklyBurnRatePoints(series, {
     if (startsAfterReset || startsAfterAccountChange) cycleIndex += 1;
     points[index].cycleIndex = cycleIndex;
     points[index].startsAfterReset = startsAfterReset;
+    points[index].cycleStartMs = cycleStartMs;
   }
 
-  const ratePoints = points.map((point, index) => {
+  return smoothedRateLimitConsumption(points, {
+    currentHalfLifeMs: BURN_RATE_CURRENT_HALF_LIFE_MS,
+    averageWindowMs: BURN_RATE_AVERAGE_WINDOW_MS,
+    ratePeriodMs: WEEK_MILLISECONDS,
+    ...options,
+  }).map((point) => {
     const remainingMs = point.resetMs - point.atMs;
     const targetRate = Math.max(0, point.remainingPercent) / remainingMs * WEEK_MILLISECONDS;
-    let baseline = null;
-    let baselineDistance = Number.POSITIVE_INFINITY;
-    for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
-      const candidate = points[cursor];
-      const candidateSpanMs = point.atMs - candidate.atMs;
-      if (candidateSpanMs > maximumLookbackMs) break;
-      if (!sameWeeklyLimitCycle(point, candidate)) continue;
-      if (candidateSpanMs < minimumSpanMs || point.usedPercent < candidate.usedPercent) continue;
-      const distance = Math.abs(candidateSpanMs - rollingWindowMs);
-      if (distance < baselineDistance) {
-        baseline = candidate;
-        baselineDistance = distance;
-      }
-    }
-    const spanMs = baseline ? point.atMs - baseline.atMs : 0;
-    const usedDelta = baseline ? point.usedPercent - baseline.usedPercent : Number.NaN;
-    const actualRate = spanMs > 0 && spanMs >= minimumSpanMs && usedDelta >= 0
-      ? usedDelta / spanMs * WEEK_MILLISECONDS
-      : showResetStartAsZero && point.startsAfterReset ? 0 : null;
+    const actualRate = point.currentRate;
     const deviationRate = Number.isFinite(actualRate) ? actualRate - targetRate : null;
     return {
       ...point,
       durationMs,
       cycleAgeMs: Math.max(0, point.atMs - (point.resetMs - durationMs)),
-      sampleSpanMs: spanMs,
       targetRate,
       actualRate,
       deviationRate,
       overTarget: Number.isFinite(deviationRate) ? deviationRate > 0 : false,
     };
   });
-  if (!showResetStartAsZero) return ratePoints;
-  return ratePoints.flatMap((point, index) => {
-    if (!point.startsAfterReset) return [point];
-    const previousAtMs = ratePoints[index - 1]?.atMs;
-    const cycleStartMs = point.resetMs - durationMs;
-    if (!(cycleStartMs > previousAtMs && cycleStartMs < point.atMs)) return [point];
-    const remainingPercent = 100;
-    const targetRate = remainingPercent / durationMs * WEEK_MILLISECONDS;
-    return [{
-      ...point,
-      raw: {
-        ...point.raw,
-        at: new Date(cycleStartMs).toISOString(),
-        usedPercent: 0,
-        remainingPercent,
-        estimated: true,
-        estimateKind: "reset-start",
-      },
-      atMs: cycleStartMs,
-      usedPercent: 0,
-      remainingPercent,
-      cycleAgeMs: 0,
-      sampleSpanMs: 0,
-      targetRate,
-      actualRate: 0,
-      deviationRate: -targetRate,
-      overTarget: false,
-      startsAfterReset: false,
-      resetAnchor: true,
-    }, point];
-  });
+}
+
+function limitsSpeedChartScale(series, normalWeeklyRate = 100) {
+  const normalDailyRate = Math.max(0, Number(normalWeeklyRate) || 0) / 7;
+  const visibleDailyRates = (Array.isArray(series) ? series : []).flatMap((item) => (
+    Array.isArray(item?.ratePoints) ? item.ratePoints : []
+  ).flatMap((point) => [
+    Number.isFinite(point.actualRate) ? point.actualRate / 7 : null,
+    Number.isFinite(point.averageRate) ? point.averageRate / 7 : null,
+  ])).filter(Number.isFinite);
+  const maximumDailyRate = Math.max(normalDailyRate, ...visibleDailyRates);
+  const roughStep = maximumDailyRate / 4;
+  const magnitude = 10 ** Math.floor(Math.log10(Math.max(1, roughStep)));
+  const normalizedStep = roughStep / magnitude;
+  const tickStep = (normalizedStep <= 1 ? 1 : normalizedStep <= 2 ? 2 : normalizedStep <= 5 ? 5 : 10)
+    * magnitude;
+  return {
+    chartMaximum: Math.max(tickStep, Math.ceil(maximumDailyRate / tickStep) * tickStep),
+    maximumDailyRate,
+    normalDailyRate,
+    tickStep,
+  };
+}
+
+function limitsSpeedChartRate(weeklyRate, chartMaximum) {
+  const dailyRate = Math.max(0, Number(weeklyRate) || 0) / 7;
+  const maximum = Math.max(0, Number(chartMaximum) || 0);
+  return {
+    dailyRate,
+    offScale: dailyRate > maximum,
+    plottedDailyRate: Math.min(dailyRate, maximum),
+  };
 }
 
 function formatResetCountdown(point) {
@@ -10908,7 +11339,7 @@ function buildLimitsSpeedChart(payload) {
         id,
         color: seriesColor(item, index),
         hidden: limitsState.hidden.has(id),
-        ratePoints: weeklyBurnRatePoints(item, selectedBurnRatePolicyForRange(limitsState.range)),
+        ratePoints: weeklyBurnRatePoints(item),
       };
     })
     .filter((item) => item.ratePoints.length > 0);
@@ -10929,9 +11360,11 @@ function buildLimitsSpeedChart(payload) {
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
   const xOf = (time) => padL + ((time - tMin) / (tMax - tMin)) * plotW;
-  const yOf = (rate) => (
-    padT + (1 - clampNumber(Number(rate) || 0, 0, BURN_RATE_CHART_MAX) / BURN_RATE_CHART_MAX) * plotH
-  );
+  const { chartMaximum, tickStep } = limitsSpeedChartScale(series);
+  const yOf = (weeklyRate) => {
+    const { plottedDailyRate } = limitsSpeedChartRate(weeklyRate, chartMaximum);
+    return padT + (1 - plottedDailyRate / chartMaximum) * plotH;
+  };
   const svg = svgEl("svg", {
     viewBox: `0 0 ${W} ${H}`,
     class: "limits-chart-svg limits-speed-chart-svg",
@@ -10939,21 +11372,21 @@ function buildLimitsSpeedChart(payload) {
     "aria-hidden": "true",
   });
 
-  for (const value of [0, 100, 200, 300, 400]) {
-    const y = yOf(value);
+  for (let value = 0; value <= chartMaximum + tickStep / 2; value += tickStep) {
+    const y = yOf(value * 7);
     svg.append(svgEl("line", { x1: padL, y1: y, x2: W - padR, y2: y, class: "limits-grid-line" }));
     svg.append(svgEl("text", {
       x: padL - 6,
       y: y + 3,
       class: "limits-axis-label limits-axis-y",
       "text-anchor": "end",
-    }, [value === BURN_RATE_CHART_MAX ? `${value}+` : String(value)]));
+    }, [new Intl.NumberFormat("ru-RU", { maximumFractionDigits: value < 10 ? 1 : 0 }).format(value)]));
   }
   svg.append(svgEl("text", {
     x: padL,
     y: padT + 9,
     class: "limits-axis-label limits-speed-unit",
-  }, ["% / нед."]));
+  }, ["% / сутки"]));
 
   const normalRateY = yOf(100);
   svg.append(svgEl("line", {
@@ -10968,9 +11401,7 @@ function buildLimitsSpeedChart(payload) {
     y: normalRateY - 6,
     class: "limits-burn-normal-label",
     "text-anchor": "end",
-  }, [burnRatePolicyForRange(limitsState.range).unit === "hour"
-    ? "Ровный темп · 0,6%/час"
-    : "Ровный темп · 14,3%/сутки"]));
+  }, ["Ровный темп · 14,3%/сутки"]));
 
   const span = tMax - tMin;
   const dayMs = 24 * 60 * 60_000;
@@ -11014,16 +11445,31 @@ function buildLimitsSpeedChart(payload) {
   }
 
   for (const item of series) {
-    const targetPoints = item.ratePoints.map((point) => ({
-      ...point,
-      x: xOf(point.atMs),
-      y: yOf(point.targetRate),
-    }));
+    const targetPoints = limitsFiniteSpeedPoints(item.ratePoints, "targetRate")
+      .map((point) => ({ ...point, x: xOf(point.atMs), y: yOf(point.targetRate) }));
     if (targetPoints.length) {
+      const targetOffScale = targetPoints.some((point) => (
+        limitsSpeedChartRate(point.targetRate, chartMaximum).offScale
+      ));
       svg.append(svgEl("path", {
         d: limitsSpeedPath(targetPoints),
-        class: "limits-burn-target-line",
+        class: `limits-burn-target-line${targetOffScale ? " is-off-scale" : ""}`,
         fill: "none",
+        stroke: item.color,
+      }));
+    }
+    const averagePoints = limitsFiniteSpeedPoints(item.ratePoints, "averageRate")
+      .map((point) => ({ ...point, x: xOf(point.atMs), y: yOf(point.averageRate) }));
+    for (let index = 1; index < averagePoints.length; index += 1) {
+      const left = averagePoints[index - 1];
+      const right = averagePoints[index];
+      if (!sameLimitsSpeedSegment(left, right)) continue;
+      svg.append(svgEl("line", {
+        x1: left.x,
+        y1: left.y,
+        x2: right.x,
+        y2: right.y,
+        class: `limits-burn-average-segment${right.averagePreliminary ? " is-preliminary" : ""}`,
         stroke: item.color,
       }));
     }
@@ -11045,10 +11491,12 @@ function buildLimitsSpeedChart(payload) {
         y1: left.y,
         x2: right.x,
         y2: right.y,
-        class: `limits-burn-rate-segment ${right.overTarget ? "is-over-target" : "is-safe"}`,
+        class: `limits-burn-rate-segment ${right.overTarget ? "is-over-target" : "is-safe"}${
+          right.currentPreliminary ? " is-preliminary" : ""
+        }`,
       }));
     }
-    const markerPoints = limitsMarkerPoints(actualPoints);
+    const markerPoints = limitsMarkerPoints(actualPoints.filter((point) => !point.resetBoundary));
     markerPoints.forEach((point) => {
       const isLast = point === actualPoints.at(-1);
       const circle = svgEl("circle", {
@@ -11067,6 +11515,9 @@ function buildLimitsSpeedChart(payload) {
         window: item.window || "",
         at: point.raw.at,
         actualRate: point.actualRate,
+        averageRate: point.averageRate,
+        averageSpanMs: point.averageSpanMs,
+        averagePreliminary: point.averagePreliminary,
         targetRate: point.targetRate,
         deviationRate: point.deviationRate,
         estimated: point.raw?.estimated === true,
@@ -11098,7 +11549,7 @@ function buildLimitsSpeedChart(payload) {
     ? series.map((item) => {
       const last = item.ratePoints.findLast((point) => Number.isFinite(point.actualRate));
       return last
-        ? `${item.name || item.id}: ${Math.round(last.actualRate)}% в неделю, допустимо ${Math.round(last.targetRate)}%`
+        ? `${item.name || item.id}: сейчас ${formatLimitRateForPeriod(last.actualRate)}% в сутки, за 24 часа ${formatLimitRateForPeriod(last.averageRate)}%`
         : `${item.name || item.id}: недостаточно истории для фактической скорости`;
     }).join("; ")
     : allSeries.length ? "все недельные серии скрыты" : "нет недельных лимитов";
@@ -11107,17 +11558,16 @@ function buildLimitsSpeedChart(payload) {
   return allSeries;
 }
 
-function formatLimitRateForPeriod(weeklyRate, range = limitsState.range) {
-  const hourly = burnRatePolicyForRange(range).unit === "hour";
-  const periodRate = Math.max(0, Number(weeklyRate) || 0) / (hourly ? 7 * 24 : 7);
+function formatLimitRateForPeriod(weeklyRate) {
+  const periodRate = Math.max(0, Number(weeklyRate) || 0) / 7;
   return new Intl.NumberFormat("ru-RU", {
     maximumFractionDigits: periodRate < 10 ? 1 : 0,
     minimumFractionDigits: periodRate > 0 && periodRate < 10 ? 1 : 0,
   }).format(periodRate);
 }
 
-function burnRatePeriodSuffix(range = limitsState.range) {
-  return burnRatePolicyForRange(range).unit === "hour" ? "%/час" : "%/сутки";
+function burnRatePeriodSuffix() {
+  return "%/сутки";
 }
 
 function formatBurnRateSampleSpan(spanMs) {
@@ -11139,33 +11589,18 @@ function renderLimitsSpeedSummary(series) {
     .filter((item) => !item.hidden)
     .map((item) => ({
       item,
-      latest: item.ratePoints?.at(-1),
       point: item.ratePoints?.findLast((point) => Number.isFinite(point.actualRate)),
     }))
-    .filter(({ latest, point }) => latest || point);
+    .filter(({ point }) => point);
   if (!items.length) {
     limitsSpeedSummary.hidden = true;
     limitsSpeedSummary.replaceChildren();
     return;
   }
-  const cards = items.map(({ item, latest, point }) => {
+  const cards = items.map(({ item, point }) => {
     const name = [item.name || item.baseId || item.id, item.window].filter(Boolean).join(" · ");
-    const waiting = shouldWaitForBurnRateData(
-      limitsState.speedFullWindow,
-      latest,
-      limitsState.range,
-    );
-    if (waiting) {
-      return el("section", { class: "limits-speed-summary-card is-waiting" }, [
-        el("span", { class: "limits-speed-summary-name", text: name }),
-        el("div", { class: "limits-speed-summary-rates" }, [
-          el("span", { text: "После сброса ещё не накоплен полный интервал скорости." }),
-        ]),
-        el("strong", { class: "limits-speed-summary-status", text: "Ожидание данных" }),
-      ]);
-    }
-    if (!point) return null;
     const actualPeriod = formatLimitRateForPeriod(point.actualRate);
+    const averagePeriod = formatLimitRateForPeriod(point.averageRate);
     const targetPeriod = formatLimitRateForPeriod(point.targetRate);
     const periodSuffix = burnRatePeriodSuffix();
     const ratio = point.targetRate > 0 ? point.actualRate / point.targetRate : Number.POSITIVE_INFINITY;
@@ -11181,10 +11616,15 @@ function renderLimitsSpeedSummary(series) {
       el("span", { class: "limits-speed-summary-name", text: name }),
       el("div", { class: "limits-speed-summary-rates" }, [
         el("span", {}, ["Сейчас ", el("strong", { text: `${actualPeriod}${periodSuffix}` })]),
+        Number.isFinite(point.averageRate)
+          ? el("span", {}, [
+            point.averagePreliminary
+              ? `Среднее за ${formatBurnRateSampleSpan(point.averageSpanMs)} (предв.) `
+              : "За 24 часа ",
+            el("strong", { text: `${averagePeriod}${periodSuffix}` }),
+          ])
+          : null,
         el("span", {}, ["Допустимо ", el("strong", { text: `${targetPeriod}${periodSuffix}` })]),
-        el("span", {}, ["Интервал расчёта ", el("strong", {
-          text: formatBurnRateSampleSpan(point.sampleSpanMs),
-        })]),
       ]),
       el("strong", { class: "limits-speed-summary-status", text: status }),
     ]);
@@ -11222,8 +11662,8 @@ function renderLimitsLegend(series) {
       rate
         ? el("span", {
           class: `limits-legend-value limits-speed-value${rate.overTarget ? " is-over-target" : " is-safe"}`,
-          text: `${Math.round(rate.actualRate)}% / ${Math.round(rate.targetRate)}% в неделю`,
-          title: "Фактическая / допустимая скорость в неделю",
+          text: `сейчас ${formatLimitRateForPeriod(rate.actualRate)}%/сутки · 24 ч ${formatLimitRateForPeriod(rate.averageRate)}%/сутки`,
+          title: "Сглаженный текущий темп и средний темп за 24 часа",
         })
         : limitsState.mode === "speed"
           ? el("span", { class: "limits-legend-value", text: "Недостаточно истории" })
@@ -11264,18 +11704,20 @@ function renderLimitsCredits(payload) {
 function limitsTooltipText(info) {
   const time = formatLimitsDateTime(info.at);
   if (info.mode === "speed") {
-    const actual = Math.round(Number(info.actualRate) || 0);
-    const target = Math.round(Number(info.targetRate) || 0);
     const actualPeriod = formatLimitRateForPeriod(info.actualRate);
+    const averagePeriod = formatLimitRateForPeriod(info.averageRate);
     const targetPeriod = formatLimitRateForPeriod(info.targetRate);
     const periodSuffix = burnRatePeriodSuffix();
-    const deviation = actual - target;
+    const deviation = (Number(info.actualRate) - Number(info.targetRate)) / 7;
     const status = deviation > 0
-      ? `выше допустимой на ${deviation}%`
-      : `запас ${Math.abs(deviation)}%`;
+      ? `выше допустимой на ${formatLimitRateForPeriod(deviation * 7)}${periodSuffix}`
+      : `запас ${formatLimitRateForPeriod(Math.abs(deviation) * 7)}${periodSuffix}`;
     const name = info.window ? `${info.name} · ${info.window}` : info.name;
     const estimate = info.estimated ? ". Оценка по соседним замерам" : "";
-    return `${name}. ${time}: ${actualPeriod}${periodSuffix} (${actual}% в неделю), допустимо ${targetPeriod}${periodSuffix} (${target}% в неделю), ${status}${estimate}`;
+    const average = Number.isFinite(info.averageRate)
+      ? `, среднее ${averagePeriod}${periodSuffix}${info.averagePreliminary ? ` за ${formatBurnRateSampleSpan(info.averageSpanMs)}` : " за 24 часа"}`
+      : "";
+    return `${name}. ${time}: сейчас ${actualPeriod}${periodSuffix}${average}, допустимо ${targetPeriod}${periodSuffix}, ${status}${estimate}`;
   }
   const used = Math.round(Number(info.used) || 0);
   const remaining = info.remaining == null
@@ -11302,22 +11744,25 @@ function positionChartTooltip(element, fx, fy, options) {
 function showLimitsTooltip(info, fx, fy) {
   if (!limitsTooltip) return;
   if (info.mode === "speed") {
-    const actual = Math.round(Number(info.actualRate) || 0);
-    const target = Math.round(Number(info.targetRate) || 0);
     const actualPeriod = formatLimitRateForPeriod(info.actualRate);
+    const averagePeriod = formatLimitRateForPeriod(info.averageRate);
     const targetPeriod = formatLimitRateForPeriod(info.targetRate);
     const periodSuffix = burnRatePeriodSuffix();
-    const deviation = actual - target;
+    const deviation = (Number(info.actualRate) - Number(info.targetRate)) / 7;
     limitsTooltip.replaceChildren(
       el("span", { class: "limits-tooltip-title", text: info.window ? `${info.name} · ${info.window}` : info.name }),
       el("span", { class: "limits-tooltip-time", text: formatLimitsDateTime(info.at) }),
       el("span", { class: "limits-tooltip-row", text: `Сейчас ${actualPeriod}${periodSuffix} · допустимо ${targetPeriod}${periodSuffix}` }),
-      el("span", { class: "limits-tooltip-row", text: `${actual}%/нед. · допустимо ${target}%/нед.` }),
+      Number.isFinite(info.averageRate)
+        ? el("span", { class: "limits-tooltip-row", text: info.averagePreliminary
+          ? `Среднее ${averagePeriod}${periodSuffix} за ${formatBurnRateSampleSpan(info.averageSpanMs)} · предварительно`
+          : `Среднее за 24 часа ${averagePeriod}${periodSuffix}` })
+        : null,
       el("span", {
         class: `limits-tooltip-row limits-speed-deviation${deviation > 0 ? " is-over-target" : " is-safe"}`,
         text: deviation > 0
-          ? `Перерасход скорости +${deviation}%`
-          : `Запас скорости ${Math.abs(deviation)}%`,
+          ? `Выше допустимой на ${formatLimitRateForPeriod(deviation * 7)}${periodSuffix}`
+          : `Запас ${formatLimitRateForPeriod(Math.abs(deviation) * 7)}${periodSuffix}`,
       }),
       ...(info.estimated ? [el("span", {
         class: "limits-tooltip-row",
@@ -11355,17 +11800,6 @@ limitsRanges?.addEventListener("click", (event) => {
 limitsModes?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-limits-mode]");
   if (button) selectLimitsMode(button.dataset.limitsMode);
-});
-
-limitsSpeedFullWindow?.addEventListener("change", () => {
-  limitsState.speedFullWindow = limitsSpeedFullWindow.checked;
-  try {
-    localStorage.setItem(LIMITS_SPEED_FULL_WINDOW_KEY, String(limitsState.speedFullWindow));
-  } catch {
-    // Настройка останется активной до закрытия WebView.
-  }
-  renderLimitsModes();
-  renderLimits();
 });
 
 document.querySelector("[data-limits-retry]")?.addEventListener("click", () => {
@@ -11461,9 +11895,7 @@ function statusFromUsagePayload(payload) {
 function applyUsageHistory(payload) {
   const data = payload && typeof payload === "object" ? payload : null;
   if (data?.turnTimeMode && normalizeTurnTimeMode(data.turnTimeMode) !== turnTimeMode) return;
-  const selectedAccount = resolvedStatisticsAccountKey();
-  const requestedAccount = selectedAccount === ALL_STATISTICS_ACCOUNTS ? "" : selectedAccount;
-  if (String(data?.accountKey ?? "") !== requestedAccount) return;
+  if (String(data?.accountKey ?? "")) return;
   usageState.payload = data;
   usageState.error = data?.error ? String(data.error) : "";
   if (data?.range) usageState.range = normalizeRange(data.range);
@@ -11474,18 +11906,16 @@ function applyUsageHistory(payload) {
 
 function requestUsageHistory(range, { force = false } = {}) {
   usageState.range = persistRange(localStorage, USAGE_RANGE_KEY, range);
-  const selectedAccount = resolvedStatisticsAccountKey();
-  const accountKey = selectedAccount === ALL_STATISTICS_ACCOUNTS ? "" : selectedAccount;
   const cached = usageState.payload
     && !usageState.payload.error
     && normalizeRange(usageState.payload.range) === usageState.range
-    && String(usageState.payload.accountKey ?? "") === accountKey
+    && !String(usageState.payload.accountKey ?? "")
     && normalizeTurnTimeMode(usageState.payload.turnTimeMode) === turnTimeMode;
   usageState.status = cached && !force ? statusFromUsagePayload(usageState.payload) : "loading";
   usageState.error = "";
   renderUsageRanges();
   renderUsageHistory();
-  emit("usage:open", { range: usageState.range, accountKey, turnTimeMode });
+  emit("usage:open", { range: usageState.range, turnTimeMode });
 }
 
 function renderUsageRanges() {
@@ -12060,10 +12490,11 @@ function renderUsageHistory() {
   if (status === "ready") {
     buildUsageChart(payload);
     renderUsageBurnSummary(payload, burnAnalysis);
+    const scopeNote = "Учтён весь локальный расход; расход других устройств — только в интервалы активности того же аккаунта на этом компьютере.";
     if (intensity) {
       usageNote.textContent = burnAnalysis?.forecastAvailable
-        ? "EMA считает календарный темп расхода cr/мин; прогноз суток не использует неизвестные лимиты Codex или Claude."
-        : "EMA считает календарный темп cr/мин. Суточный прогноз показывается только на диапазоне 24 ч, где известен расход с полуночи.";
+        ? `${scopeNote} EMA считает календарный темп расхода cr/мин; прогноз суток не использует неизвестные лимиты Codex или Claude.`
+        : `${scopeNote} EMA считает календарный темп cr/мин. Суточный прогноз показывается только на диапазоне 24 ч, где известен расход с полуночи.`;
     } else {
       renderUsageBurnSummary(null, null);
       const unpriced = Math.max(0, Number(payload.unpricedCount) || 0);
@@ -12080,7 +12511,7 @@ function renderUsageHistory() {
       if (rate && usageState.rateBasis === "task" && untimed) {
         notes.push(`Без длительности и вне скорости по времени задач: ${untimed}.`);
       }
-      usageNote.textContent = notes.join(" ") || "Все показанные ходы тарифицированы и имеют длительность.";
+      usageNote.textContent = `${scopeNote} ${notes.join(" ") || "Все показанные ходы тарифицированы и имеют длительность."}`;
     }
   }
 }
@@ -13218,6 +13649,9 @@ function captureOpenState() {
         threadId: item.dataset.workLogThreadId,
       }))
       .filter((item) => item.provider && item.threadId),
+    virtualScopes: [...journal.querySelectorAll("details[data-journal-virtual-scope][open]")]
+      .map((item) => item.dataset.journalVirtualScope)
+      .filter(Boolean),
   };
 }
 
@@ -13369,6 +13803,11 @@ function restoreOpenState(openState) {
       `details[data-work-log-task-group]`
       + `[data-work-log-provider="${selectorValue(task.provider)}"]`
       + `[data-work-log-thread-id="${selectorValue(task.threadId)}"]`,
+    )?.setAttribute("open", "");
+  }
+  for (const key of openState.virtualScopes ?? []) {
+    journal.querySelector(
+      `details[data-journal-virtual-scope="${selectorValue(key)}"]`,
     )?.setAttribute("open", "");
   }
 }
@@ -14210,13 +14649,18 @@ function taskGroupsFrom(source, { workspace = null, hierarchy = "" } = {}) {
         } else {
           group.unknownDurations += 1;
         }
-        const creditValue = entry.dataset.workLogTurnCredits;
-        const credits = creditValue === undefined ? Number.NaN : Number(creditValue);
-        if (Number.isFinite(credits) && credits >= 0) {
-          group.credits += credits;
-          group.knownCredits += 1;
-        } else {
-          group.unknownCredits += 1;
+        const entryProvider = String(
+          entry.dataset.workLogTurnProvider ?? provider,
+        ).trim().toLowerCase();
+        if (state.selection.includeClaudeUsage !== false || entryProvider !== "claude") {
+          const creditValue = entry.dataset.workLogTurnCredits;
+          const credits = creditValue === undefined ? Number.NaN : Number(creditValue);
+          if (Number.isFinite(credits) && credits >= 0) {
+            group.credits += credits;
+            group.knownCredits += 1;
+          } else {
+            group.unknownCredits += 1;
+          }
         }
         const completedAt = Date.parse(entry.dataset.workLogTurnCompletedAt ?? "");
         if (Number.isFinite(completedAt)) group.latestAt = Math.max(group.latestAt, completedAt);
@@ -14877,6 +15321,448 @@ function replaceJournalGroupedContent(content) {
   mountStatisticsAccountPanel();
 }
 
+function virtualUsageShare(value, total, known = true) {
+  if (!known) return "";
+  if (!(Number(total) > 0)) return " (0%)";
+  const share = Math.max(0, Math.min(100, Number(value) / Number(total) * 100));
+  return ` (${Math.round(share)}%)`;
+}
+
+function virtualStreamUsage(stream, workspace) {
+  const usage = document.createElement("span");
+  usage.dataset.workLogStreamUsage = "";
+  const creditShare = stream.knownCredits
+    ? virtualUsageShare(stream.credits, workspace.credits, workspace.knownCredits)
+    : "";
+  usage.append(
+    stream.knownDurations
+      ? el("span", {
+        "data-work-log-stream-duration": "",
+        text: `${formatTaskDuration(stream.durationSeconds)}${virtualUsageShare(
+          stream.durationSeconds,
+          workspace.durationSeconds,
+          workspace.knownDurations,
+        )}`,
+      })
+      : el("span", { "data-work-log-stream-duration": "", text: "время —" }),
+    stream.knownCredits
+      ? el("span", { "data-work-log-stream-credits": "" }, [
+        usageBadge(formatUsageValue(stream.credits), stream.credits),
+      ])
+      : el("span", { text: "расход —" }),
+    el("span", { "data-work-log-stream-credit-share": "", text: creditShare }),
+  );
+  return usage;
+}
+
+function virtualWorkspaceBreakdown(workspace) {
+  const source = String(workspace.workspaceUsageHtml ?? "").trim();
+  if (!source) return null;
+  const template = document.createElement("template");
+  template.innerHTML = source;
+  const usage = template.content.querySelector("details[data-work-log-workspace-usage-details]");
+  if (!usage) return null;
+  usage.open = true;
+  const breakdown = document.createElement("div");
+  breakdown.dataset.journalDayBreakdown = "";
+  breakdown.append(usage);
+  return breakdown;
+}
+
+function applyVirtualTurnQuery(node, scope, workspace, stream = null) {
+  const query = JournalView.virtualTurnQuery(scope, workspace, stream);
+  node.dataset.journalVirtualTurns = "";
+  node.dataset.virtualWorkspaceId = query.workspaceId;
+  node.dataset.virtualStreamId = query.streamId;
+  node.dataset.virtualProvider = query.provider;
+  node.dataset.virtualFromMs = String(query.fromMs);
+  node.dataset.virtualToMs = String(query.toMs);
+  node.dataset.virtualDateKeys = query.dateKeys.join(",");
+  if (scope.mode === "stream") node.dataset.virtualProfileMode = "stream";
+}
+
+function virtualTurnTable() {
+  const table = document.createElement("div");
+  table.dataset.journalTurnTable = "";
+  return table;
+}
+
+function virtualStreamDetails(scope, workspace, stream) {
+  const details = document.createElement("details");
+  details.dataset.workLogStream = "";
+  details.dataset.workLogStreamId = stream.id;
+  details.dataset.workLogWorkspaceId = workspace.id;
+  if (stream.providers.length === 1) {
+    details.dataset.workLogProvider = stream.providers[0];
+  }
+  applyVirtualTurnQuery(details, scope, workspace, stream);
+  const summary = document.createElement("summary");
+  summary.dataset.workLogStreamSummary = "";
+  const title = document.createElement("span");
+  title.dataset.workLogStreamTitle = "";
+  title.append(
+    el("span", { "data-work-log-stream-name": "", text: stream.name }),
+    el("span", {
+      "data-work-log-stream-turn-count": "",
+      text: `${Math.max(0, Number(stream.turnCount) || 0)} ход.${virtualUsageShare(
+        stream.turnCount,
+        workspace.turnCount,
+      )}`,
+    }),
+  );
+  summary.append(
+    virtualStreamUsage(stream, workspace),
+    title,
+  );
+  const body = document.createElement("div");
+  body.dataset.workLogStreamTurns = "";
+  body.append(virtualTurnTable());
+  details.append(summary, body);
+  return details;
+}
+
+function virtualWorkspaceTurns(scope, workspace) {
+  const body = document.createElement("div");
+  body.dataset.journalVirtualFlatTurns = "";
+  applyVirtualTurnQuery(body, scope, workspace);
+  body.append(virtualTurnTable());
+  return body;
+}
+
+function virtualWorkspaceContent(scope, workspace) {
+  if (!groupJournalTurnsByStream) return virtualWorkspaceTurns(scope, workspace);
+  const streams = document.createElement("div");
+  streams.dataset.workLogWorkspaceStreams = "";
+  for (const stream of workspace.streams) {
+    streams.append(virtualStreamDetails(scope, workspace, stream));
+  }
+  return streams;
+}
+
+function virtualTemporalContent(scope) {
+  const expanded = document.createElement("div");
+  expanded.dataset.journalDayExpanded = "";
+  const picker = document.createElement("div");
+  picker.dataset.journalDayPicker = "";
+  picker.append(el("span", { "data-journal-section-label": "", text: "Workspace" }));
+  const panels = document.createElement("div");
+  panels.dataset.journalDayPanels = "";
+  const remembered = journalDaySelections.get(scope.key);
+  const selected = scope.workspaces.some((workspace) => workspace.id === remembered)
+    ? remembered
+    : scope.workspaces[0]?.id ?? "";
+  if (selected) journalDaySelections.set(scope.key, selected);
+  for (const workspace of scope.workspaces) {
+    const active = workspace.id === selected;
+    const item = document.createElement("div");
+    item.dataset.journalDayPickerItem = "";
+    item.toggleAttribute("data-selected", active);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.journalDaySelect = workspace.id;
+    button.setAttribute("aria-pressed", String(active));
+    const credits = el("span", { "data-journal-day-picker-credits": "" });
+    if (workspace.knownCredits) {
+      credits.append(
+        usageBadge(formatUsageValue(workspace.credits), workspace.credits),
+        el("span", {
+          "data-journal-day-picker-share": "",
+          text: virtualUsageShare(workspace.credits, scope.credits, scope.knownCredits),
+        }),
+      );
+    } else {
+      credits.textContent = "—";
+    }
+    button.append(
+      el("span", { "data-journal-day-picker-title": "", text: workspace.name }),
+      el("span", {
+        "data-journal-day-picker-turns": "",
+        text: `${workspace.turnCount} ходов${virtualUsageShare(workspace.turnCount, scope.turnCount)}`,
+      }),
+      el("span", {
+        "data-journal-day-picker-duration": "",
+        text: workspace.knownDurations
+          ? `${formatTaskDuration(workspace.durationSeconds)}${virtualUsageShare(
+            workspace.durationSeconds,
+            scope.durationSeconds,
+            scope.knownDurations,
+          )}`
+          : "—",
+      }),
+      credits,
+    );
+    item.append(button);
+    const breakdown = virtualWorkspaceBreakdown(workspace);
+    if (breakdown) item.append(breakdown);
+    picker.append(item);
+    const panel = document.createElement("section");
+    panel.dataset.journalDayPanel = workspace.id;
+    panel.dataset.workLogWorkspace = "";
+    panel.dataset.workLogWorkspaceId = workspace.id;
+    panel.hidden = !active;
+    panel.append(virtualWorkspaceContent(scope, workspace));
+    panels.append(panel);
+  }
+  expanded.append(picker, panels);
+  return expanded;
+}
+
+function virtualScopeSection(scope, index) {
+  const details = document.createElement("details");
+  details.dataset.workLogTaskGroup = "";
+  details.dataset.journalLedgerRow = "";
+  details.dataset.journalVirtualScope = scope.key;
+  details.dataset.journalVirtualMode = scope.mode;
+  if (scope.mode === "date") {
+    details.dataset.workLogDaySection = "";
+    details.dataset.journalDayDate = scope.key;
+  }
+  if (scope.mode === "workspace" && scope.workspaces[0]) {
+    details.dataset.workLogWorkspace = "";
+    details.dataset.workLogWorkspaceId = scope.workspaces[0].id;
+  }
+  const label = scope.mode === "stream"
+    ? `${scope.workspaces[0]?.name ?? "Workspace"} — ${scope.label}`
+    : scope.label;
+  details.append(journalLedgerSummary(scope, { label, showStreams: false }));
+  const expanded = document.createElement("div");
+  expanded.dataset.journalLedgerExpanded = "";
+  if (scope.mode === "stream") {
+    const workspace = scope.workspaces[0];
+    const stream = workspace?.streams[0];
+    if (workspace && stream) {
+      applyVirtualTurnQuery(expanded, scope, workspace, stream);
+      const overview = document.createElement("div");
+      overview.dataset.journalGroupOverview = "";
+      const metrics = document.createElement("div");
+      metrics.dataset.journalVirtualProfileMetrics = "";
+      metrics.append(el("span", { text: "Профиль загружается при раскрытии." }));
+      const body = document.createElement("div");
+      body.dataset.journalTurnList = "";
+      body.append(
+        el("span", { "data-journal-section-label": "", text: "Ходы" }),
+        virtualTurnTable(),
+      );
+      overview.append(metrics, body);
+      const profile = document.createElement("div");
+      profile.dataset.journalVirtualTaskProfile = "";
+      expanded.append(overview, profile);
+    }
+  } else if (scope.mode === "workspace") {
+    const workspace = scope.workspaces[0];
+    if (workspace) {
+      const overview = document.createElement("div");
+      overview.dataset.journalGroupOverview = "";
+      const metrics = document.createElement("div");
+      metrics.dataset.journalVirtualWorkspaceProfileMetrics = "";
+      metrics.append(el("span", { text: "Профиль загружается при раскрытии." }));
+      const body = document.createElement("div");
+      body.dataset.journalTurnList = "";
+      body.append(
+        el("span", { "data-journal-section-label": "", text: "Потоки" }),
+        virtualWorkspaceContent(scope, workspace),
+      );
+      overview.append(metrics, body);
+      const profile = document.createElement("div");
+      profile.dataset.journalVirtualWorkspaceProfile = "";
+      expanded.append(overview, profile);
+    }
+  } else {
+    details.dataset.journalDayDate = scope.key;
+    expanded.append(virtualTemporalContent(scope));
+  }
+  details.append(expanded);
+  if (scope.mode === "stream" && index === 0) details.open = true;
+  return details;
+}
+
+function renderVirtualWorkspaceProfile(summary, scopeKey) {
+  const profiles = JournalView.virtualJournalScopes(summary, "workspace", {
+    includeClaudeUsage: state.selection.includeClaudeUsage !== false,
+    groupClaude: groupClaudeTasks,
+  });
+  const group = profiles.find((profile) => profile.key === scopeKey);
+  if (!group) return;
+  const details = [...journal.querySelectorAll(
+    'details[data-journal-virtual-scope][data-journal-virtual-mode="workspace"]',
+  )].find((item) => item.dataset.journalVirtualScope === scopeKey);
+  const metrics = details?.querySelector("[data-journal-virtual-workspace-profile-metrics]");
+  const profile = details?.querySelector("[data-journal-virtual-workspace-profile]");
+  if (metrics) metrics.replaceWith(journalProfileMetrics(group));
+  if (profile) profile.replaceChildren(taskProfile(group, profiles, {
+    title: "Профиль Workspace",
+    itemName: "Этот Workspace",
+    cohortName: "видимых Workspace",
+  }));
+}
+
+async function loadVirtualWorkspaceProfile(details) {
+  if (!details || details.dataset.virtualWorkspaceProfileLoaded === "true") return;
+  details.dataset.virtualWorkspaceProfileLoaded = "true";
+  try {
+    const payload = await fetchJournalFragment("/api/journal/turns", {
+      workspaceId: details.dataset.workLogWorkspaceId ?? "",
+      profileMode: "stream",
+      limit: "1",
+    });
+    if (payload.profileSummary) {
+      renderVirtualWorkspaceProfile(payload.profileSummary, details.dataset.journalVirtualScope ?? "");
+    }
+  } catch (error) {
+    delete details.dataset.virtualWorkspaceProfileLoaded;
+    showToast(`Не удалось загрузить профиль Workspace: ${error.message}`);
+  }
+}
+
+function renderVirtualStreamProfiles(summary, scopeKey) {
+  const profiles = JournalView.virtualJournalScopes(summary, "stream", {
+    includeClaudeUsage: state.selection.includeClaudeUsage !== false,
+    groupClaude: groupClaudeTasks,
+  });
+  const byKey = new Map(profiles.map((profile) => [profile.key, profile]));
+  for (const details of journal.querySelectorAll(
+    'details[data-journal-virtual-scope][data-journal-virtual-mode="stream"]',
+  )) {
+    if (details.dataset.journalVirtualScope !== scopeKey) continue;
+    const group = byKey.get(details.dataset.journalVirtualScope);
+    if (!group) continue;
+    const metrics = details.querySelector("[data-journal-virtual-profile-metrics]");
+    const profile = details.querySelector("[data-journal-virtual-task-profile]");
+    if (metrics) metrics.replaceWith(journalProfileMetrics(group));
+    if (profile) profile.replaceChildren(taskProfile(group, profiles));
+  }
+}
+
+function virtualJournalTotals() {
+  const scopes = JournalView.virtualJournalScopes(journalSummary, "stream", {
+    includeClaudeUsage: state.selection.includeClaudeUsage !== false,
+    groupClaude: groupClaudeTasks,
+  });
+  return {
+    scopes,
+    totals: JournalView.summarizeGroups(scopes),
+  };
+}
+
+function updateVirtualJournalSummary() {
+  const { scopes, totals } = virtualJournalTotals();
+  if (journalWorkspaceCount) {
+    journalWorkspaceCount.textContent = scopes.length.toLocaleString("ru-RU");
+  }
+  if (journalTotalCredits) {
+    journalTotalCredits.replaceChildren(
+      totals.knownCredits
+        ? usageBadge(formatUsageValue(totals.credits), totals.credits)
+        : document.createTextNode("—"),
+    );
+  }
+  if (journalTotalDuration) {
+    journalTotalDuration.textContent = totals.knownDurations
+      ? formatTaskDuration(totals.durationSeconds)
+      : "—";
+  }
+}
+
+function renderVirtualJournal() {
+  const scopes = JournalView.virtualJournalScopes(journalSummary, grouping, {
+    includeClaudeUsage: state.selection.includeClaudeUsage !== false,
+    groupClaude: groupClaudeTasks,
+  });
+  const list = document.createElement("div");
+  list.dataset.workLogTaskGroups = "";
+  scopes.forEach((scope, index) => list.append(virtualScopeSection(scope, index)));
+  updateVirtualJournalSummary();
+  replaceJournalGroupedContent(list);
+  refreshUsageUnits(journal);
+  disableLocalLinks();
+  const saved = groupingStates[grouping];
+  if (saved) restoreOpenState(saved);
+  for (const opened of list.querySelectorAll(
+    'details[data-journal-virtual-scope][data-journal-virtual-mode="stream"][open]',
+  )) {
+    const turns = opened.querySelector(
+      ":scope > [data-journal-ledger-expanded][data-journal-virtual-turns]",
+    );
+    if (turns) void appendVirtualTurnPage(turns);
+  }
+  for (const opened of list.querySelectorAll(
+    'details[data-journal-virtual-scope][data-journal-virtual-mode="workspace"][open]',
+  )) void loadVirtualWorkspaceProfile(opened);
+  journalRendered = true;
+  journal.setAttribute("aria-busy", "false");
+}
+
+async function appendVirtualTurnPage(container, { nextPage = false } = {}) {
+  if (!container?.isConnected || container.dataset.virtualLoading === "true") return;
+  if (container.dataset.virtualLoaded === "true" && !nextPage) return;
+  const table = container.querySelector(":scope [data-journal-turn-table]")
+    ?? container.querySelector("[data-journal-turn-table]");
+  if (!table) return;
+  const offset = nextPage ? Math.max(0, Number(container.dataset.virtualNextOffset) || 0) : 0;
+  container.dataset.virtualLoading = "true";
+  container.setAttribute("aria-busy", "true");
+  try {
+    const payload = await fetchJournalFragment("/api/journal/turns", {
+      workspaceId: container.dataset.virtualWorkspaceId ?? "",
+      streamId: container.dataset.virtualStreamId ?? "",
+      provider: container.dataset.virtualProvider ?? "",
+      fromMs: container.dataset.virtualFromMs ?? "0",
+      toMs: container.dataset.virtualToMs ?? "0",
+      dates: container.dataset.virtualDateKeys ?? "",
+      profileMode: container.dataset.virtualProfileMode ?? "",
+      offset: String(offset),
+      limit: "30",
+    });
+    if (payload.profileSummary) {
+      renderVirtualStreamProfiles(
+        payload.profileSummary,
+        container.closest("[data-journal-virtual-scope]")?.dataset.journalVirtualScope ?? "",
+      );
+      delete container.dataset.virtualProfileMode;
+    }
+    table.querySelector("[data-journal-turn-show-more]")?.remove();
+    const known = new Set([...table.querySelectorAll("[data-work-log-turn-entry]")]
+      .map((entry) => JournalView.turnIdentity(entry.dataset)).filter(Boolean));
+    for (const item of Array.isArray(payload.turns) ? payload.turns : []) {
+      const template = document.createElement("template");
+      template.innerHTML = String(item?.html ?? "").trim();
+      const entry = template.content.firstElementChild;
+      if (!entry?.matches("[data-work-log-turn-entry]")) continue;
+      const identity = JournalView.turnIdentity(entry.dataset);
+      if (identity && known.has(identity)) continue;
+      if (identity) known.add(identity);
+      table.append(groupedTurn(entry, String(item?.date ?? "")));
+    }
+    if (!table.children.length) {
+      table.append(el("span", { "data-journal-turn-empty": "", text: "Ходов нет." }));
+    }
+    if (payload.nextOffset !== null && payload.nextOffset !== undefined) {
+      container.dataset.virtualNextOffset = String(payload.nextOffset);
+      const more = document.createElement("button");
+      more.type = "button";
+      more.dataset.journalTurnShowMore = "";
+      more.textContent = "Показать ещё";
+      more.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void appendVirtualTurnPage(container, { nextPage: true });
+      });
+      table.append(more);
+    } else {
+      delete container.dataset.virtualNextOffset;
+    }
+    container.dataset.virtualLoaded = "true";
+    refreshUsageUnits(table);
+    disableLocalLinks(table);
+  } catch (error) {
+    container.title = error.message;
+    showToast(`Не удалось загрузить ходы: ${error.message}`);
+  } finally {
+    delete container.dataset.virtualLoading;
+    container.removeAttribute("aria-busy");
+  }
+}
+
 function applyJournalGrouping() {
   decorateDayHeadings(journal);
   upgradeLegacyWorkspaceGroups(journal);
@@ -14916,6 +15802,11 @@ async function renderJournal() {
   journal.replaceChildren(template.content.cloneNode(true));
   removeJournalRateLimits();
   try {
+    if (JournalView.virtualSummaryBuckets(journalSummary).length) {
+      if (sequence !== journalRenderSequence) return;
+      renderVirtualJournal();
+      return;
+    }
     if (JournalView.requiresCompleteHistory(grouping)) {
       await hydrateAllLazyDays({ isCurrent: () => sequence === journalRenderSequence });
     }
@@ -15245,6 +16136,7 @@ async function requestJournal({ force = false, announce = false } = {}) {
       if (versionChanged) journalDayHtmlCache.clear();
       currentVersion = payload.version;
       journalHtml = payload.html;
+      journalSummary = payload.summary ?? null;
       await renderJournal();
       persistOpenState();
     }
@@ -15342,6 +16234,11 @@ journal.addEventListener("click", (event) => {
     for (const panel of day.querySelectorAll("[data-journal-day-panel]")) {
       panel.hidden = panel.dataset.journalDayPanel !== key;
     }
+    const selectedPanel = day.querySelector(
+      `[data-journal-day-panel="${selectorValue(key)}"]`,
+    );
+    const flatTurns = selectedPanel?.querySelector("[data-journal-virtual-flat-turns]");
+    if (flatTurns && day.open) void appendVirtualTurnPage(flatTurns);
     return;
   }
   const collapse = event.target.closest("[data-work-log-collapse-turns]");
@@ -15392,6 +16289,24 @@ journal.addEventListener("toggle", (event) => {
   }
   if (opened.matches?.("details[data-work-log-turn-details][data-lazy-turn-id][open]")) {
     void loadLazyTurn(opened);
+  }
+  if (opened.matches?.("details[data-work-log-stream][data-journal-virtual-turns][open]")) {
+    void appendVirtualTurnPage(opened);
+  }
+  if (opened.matches?.("details[data-journal-virtual-scope][open]")) {
+    if (opened.matches('[data-journal-virtual-mode="stream"]')) {
+      const turns = opened.querySelector(
+        ":scope > [data-journal-ledger-expanded][data-journal-virtual-turns]",
+      );
+      if (turns) void appendVirtualTurnPage(turns);
+    } else if (opened.matches('[data-journal-virtual-mode="workspace"]')) {
+      void loadVirtualWorkspaceProfile(opened);
+    } else {
+      const selectedPanel = opened.querySelector("[data-journal-day-panel]:not([hidden])");
+      const flatTurns = selectedPanel?.querySelector("[data-journal-virtual-flat-turns]")
+        ?? opened.querySelector(":scope > [data-journal-ledger-expanded] > [data-journal-virtual-flat-turns]");
+      if (flatTurns) void appendVirtualTurnPage(flatTurns);
+    }
   }
   if (opened.matches?.("details[data-work-log-task-group][open]")) {
     appendTaskGroupTurnPage(opened);

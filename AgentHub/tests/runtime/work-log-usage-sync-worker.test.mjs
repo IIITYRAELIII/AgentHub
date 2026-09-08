@@ -81,6 +81,17 @@ test("usage sync account projection executes in a worker thread", async () => {
     assert.match(result.html, /data-account-turns="1"/u);
     assert.match(result.html, /data-account-sync-turns="2"/u);
     assert.equal(result.eventCount, 2);
+    const forced = await store.projectAccountUsage({
+      html: result.html,
+      projectRoots: [root],
+      accountCatalog: [{ key: "chatgpt:owner", label: "owner@example.com" }],
+      localDeviceId: "device-local",
+      now: Date.parse("2026-08-20T12:00:00.000Z"),
+      force: true,
+    });
+    assert.equal(forced.projected, true);
+    assert.ok(["forced", "updated"].includes(forced.reason));
+    assert.ok(forced.html);
     const snapshot = await store.usageSyncSnapshot({
       deviceLabel: "local",
       afterObservedAt: "2026-08-20T10:00:30.000Z",

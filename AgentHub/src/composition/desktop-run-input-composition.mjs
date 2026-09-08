@@ -5,12 +5,23 @@ import { DesktopDeferredInputService } from "../interfaces/desktop/desktop-defer
 import { createDesktopMessageController } from "../interfaces/desktop/desktop-message-controller.mjs";
 
 export function createDesktopRunInputComposition({
+  composerTransfers,
   deferredInput,
   conflictPolicy,
   coordinator,
   messageController,
   desktopDeferredInput,
 }) {
+  const transferMethods = [
+    "configure", "ready", "remember", "forget", "resolve", "claim", "consume", "has", "snapshot",
+  ];
+  if (!composerTransfers || transferMethods.some((name) => typeof composerTransfers[name] !== "function")) {
+    throw new TypeError("composerTransfers is required");
+  }
+  composerTransfers.configure({
+    cleanup: desktopDeferredInput.cleanupFiles,
+    persist: desktopDeferredInput.saveState,
+  });
   const deferredInputService = new DeferredInputService(deferredInput);
   const runConflictPolicy = new RunConflictPolicy(conflictPolicy);
   const runCoordinator = new RunCoordinator({
@@ -21,9 +32,12 @@ export function createDesktopRunInputComposition({
   const desktopMessageController = createDesktopMessageController({
     ...messageController,
     runCoordinator,
+    composerTransfers,
+    discardPreparedAttachments: (files) => desktopDeferredInput.cleanupFiles({ temporaryFiles: files }),
   });
   const desktopDeferredInputService = new DesktopDeferredInputService({
     ...desktopDeferredInput,
+    composerTransfers,
     steerActiveInput: (payload) => desktopMessageController.steerActiveInput(payload),
   });
 

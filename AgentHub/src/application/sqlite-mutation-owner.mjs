@@ -29,15 +29,15 @@ const TASK_MUTATIONS = new Set([
   "assignWorkspaceTaskNumbers", "moveColumn", "setNotesComment", "prepareStart",
   "cancelPreparedStart", "markStarted", "complete", "setWorkflowStatus", "claim",
   "requestWorkflowStatus", "beginLifecycleTransition", "failLifecycleTransition",
-  "commitWorkflowTransition", "finalizeCleanupTransition", "recordTaskTurn",
+  "commitWorkflowTransition", "rollbackWorkflowOutcome", "finalizeCleanupTransition", "recordTaskTurn",
   "recordTaskGitReference", "adoptLegacyGitReference", "completeRelease", "remove", "setCaptureEnabled",
-  "updateChecklist", "applyChecklistLinkedTaskAction", "deliverChecklistEvents",
+  "updateChecklist", "applyChecklistLinkedTaskAction", "deliverChecklistEvents", "clearAwaitRebuildPending",
 ]);
 
 const TASK_READS = new Set([
   "task", "list", "pendingTriage", "orderedColumnIds", "notesComment", "claimedTaskForTurn",
   "lifecycleTransition", "lifecycleOutcome", "releaseTasks", "captureEnabled", "mutationDiagnostics", "close",
-  "checklistRequestResult",
+  "checklistRequestResult", "awaitRebuildPending",
 ]);
 
 const READ_PROPERTIES = new Set(["revision"]);

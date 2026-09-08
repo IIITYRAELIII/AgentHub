@@ -1,9 +1,7 @@
 import path from "node:path";
 import { unlink } from "node:fs/promises";
 import {
-  deferredResponseAnnotations,
   pendingInputKeyboard,
-  replaceDeferredInputText,
 } from "../domain/deferred-input.mjs";
 import { runInputPreview } from "../application/managed-run-lifecycle-service.mjs";
 import { commandClientContext } from "../application/application-command-service.mjs";
@@ -64,6 +62,7 @@ export function createDesktopRunRouterWiring({
   }
 
   const runInputs = createDesktopRunInputComposition({
+    composerTransfers: services.composerTransfers,
     deferredInput: {
       store: services.deferredInputs,
       maxItems: constants.maxDeferredInputs,
@@ -169,8 +168,6 @@ export function createDesktopRunRouterWiring({
       findReceiptByResultId: services.findReceiptByResultId,
       isProcessing: services.isDeferredInputProcessing,
       cancelSchedule: services.cancelDeferredInputSchedule,
-      responseAnnotations: deferredResponseAnnotations,
-      replaceInputText: replaceDeferredInputText,
       saveState: services.saveState,
       updateReceipt: services.updateDeferredReceipt,
       cleanupFiles: services.cleanupDeferredFiles,
@@ -274,6 +271,8 @@ export function createDesktopRunRouterWiring({
       trustedDevices: desktop.trustedDevices,
       createDevicePairing: desktop.createDevicePairing,
       revokeDevice: desktop.revokeDevice,
+      messagePinSet: (params) => services.streamMessagePins.set(params),
+      messagePinsClear: (params) => services.streamMessagePins.clear(params),
       boardTaskCreate: (params) => taskBoardController.create(params),
       boardTaskIngest: (params) => taskBoardController.ingest(params),
       boardTaskUpdate: (params) => taskBoardController.update(params),

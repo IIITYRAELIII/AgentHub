@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { chromium } from "playwright";
 
-test("usage help exposes the Astra base multiplier", async (context) => {
+test("usage help exposes versioned exact Astra prices", async (context) => {
   const browser = await chromium.launch(
     process.platform === "win32" ? { channel: "msedge", headless: true } : { headless: true },
   );
@@ -23,9 +23,10 @@ test("usage help exposes the Astra base multiplier", async (context) => {
     element.hidden = false;
   });
   await help.locator("summary").click();
-  const astra = help.locator("li").filter({ hasText: "GPT-6 Astra" });
+  const currentPrices = help.locator("li").filter({ hasText: "с 08.09.2026" });
 
   assert.equal(await help.getAttribute("open"), "");
-  assert.equal(await astra.isVisible(), true);
-  assert.equal((await astra.innerText()).trim(), "GPT-6 Astra — База ×5;");
+  assert.equal(await currentPrices.isVisible(), true);
+  assert.match(await currentPrices.innerText(), /GPT-6 Astra — \$10 \/ \$1 \/ \$50/u);
+  assert.doesNotMatch(await help.innerText(), /×2,5 к Sol|База ×5/u);
 });

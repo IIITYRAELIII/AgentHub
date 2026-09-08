@@ -1,3 +1,15 @@
+import { randomUUID } from "node:crypto";
+import {
+  displayUserPrompt,
+  responseAnnotationDetails,
+  userTaskReferencePromptDetails,
+} from "../../application/task-history.mjs";
+import { deferredInputText } from "../../domain/deferred-input.mjs";
+import {
+  normalizeInterstreamOrigin,
+  trustedInterstreamMessageDetails,
+} from "../../domain/interstream-message.mjs";
+
 // Maps deferred-input UI actions to application commands for one exact task.
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
@@ -10,19 +22,26 @@ export class DesktopDeferredInputService {
 
   constructor(dependencies = {}) {
     for (const name of [
-      "responseAnnotations", "replaceInputText", "saveState", "updateReceipt", "cleanupFiles",
+      "saveState", "updateReceipt", "cleanupFiles",
       "updateMessage", "scheduleNext", "scheduleQueued", "selectTask", "clientContext",
       "startTurn", "startDeferred", "runForTask", "describeAttachments", "selectedTask", "dispatchCommand",
       "activeTitle", "snapshot",
     ]) requiredFunction(dependencies[name], name);
+    if (!dependencies.composerTransfers?.remember || !dependencies.composerTransfers?.has
+      || !dependencies.composerTransfers?.forget || !dependencies.composerTransfers?.ready) {
+      throw new TypeError("composerTransfers is required");
+    }
     this.#d = dependencies;
+    this.#d.createComposerTransferId ??= randomUUID;
   }
 
   handle(params, context = null) {
     const id = String(params.id ?? "");
     const action = String(params.action ?? "");
     if (!id) throw new Error("Не указан идентификатор сообщения");
-    const actionKey = action === "edit"
+    const actionKey = action.startsWith("composer-")
+      ? `${action}\0${String(params.token ?? "").trim()}`
+      : action === "edit"
       ? `${action}\0${String(params.text ?? "").trim()}`
       : action === "move" ? `${action}\0${String(params.direction ?? "")}` : action;
     return this.#withAction(id, actionKey, () => this.#execute(id, action, params, context));
@@ -44,25 +63,24 @@ export class DesktopDeferredInputService {
 
   async #execute(id, action, params, context) {
     const d = this.#d;
+    await d.composerTransfers.ready?.();
     const item = d.pendingInputs.get(id) ?? d.queuedInputs.get(id);
     if (!item) {
+      if (action === "composer-commit" && d.composerTransfers.has({ id, token: params.token })) {
+        return { accepted: true, id, committed: true, message: "Сообщение возвращено в композер" };
+      }
       const completed = action === "steer" ? d.findReceiptByResultId(id)?.result : null;
       if (completed?.steered === true) return completed;
       throw new Error("Сохранённое сообщение уже обработано");
     }
+    if (action === "composer-prepare") return this.#prepareComposerTransfer(item);
+    if (action === "composer-commit") return this.#commitComposerTransfer(item, params.token);
+    if (action === "composer-release") return this.#releaseComposerTransfer(item, params.token);
+    if (item.composerTransfer) {
+      throw new Error("Сообщение уже возвращается в композер");
+    }
     if (action === "edit") {
-      if (item.dispatchingAt || d.isProcessing(id)) {
-        throw new Error("Сообщение уже отправляется и больше не может быть изменено");
-      }
-      const text = String(params.text ?? "").trim();
-      const annotations = d.responseAnnotations(item.input)?.annotations ?? [];
-      if (!text && !(item.temporaryFiles ?? []).length && !annotations.length) {
-        throw new Error("Введите сообщение или оставьте изображение либо аннотацию");
-      }
-      if (text.length > 100_000) throw new Error("Сообщение слишком длинное");
-      item.input = d.replaceInputText(item.input, text);
-      await d.saveState();
-      return { accepted: true, id, message: "Сообщение в очереди изменено" };
+      throw new Error("Изменение сообщения выполняется только через возврат в основной композер");
     }
     if (action === "move") {
       if (!d.queuedInputs.has(id) || item.dispatchingAt || d.isProcessing(id)) {
@@ -80,9 +98,15 @@ export class DesktopDeferredInputService {
       const index = siblings.findIndex((candidate) => candidate.id === id);
       const nextIndex = direction === "up" ? index - 1 : index + 1;
       if (index >= 0 && nextIndex >= 0 && nextIndex < siblings.length) {
+        const previous = siblings.map((candidate) => [candidate, this.#itemState(candidate)]);
         [siblings[index], siblings[nextIndex]] = [siblings[nextIndex], siblings[index]];
         siblings.forEach((candidate, order) => { candidate.queueOrder = order; });
-        await d.saveState();
+        try {
+          await d.saveState();
+        } catch (error) {
+          for (const [candidate, descriptors] of previous) this.#restoreItemState(candidate, descriptors);
+          throw error;
+        }
       }
       return { accepted: true, id, message: "Порядок очереди изменён" };
     }
@@ -278,6 +302,123 @@ export class DesktopDeferredInputService {
       return { accepted: true, message: "Сообщение принудительно запущено" };
     }
     throw new Error("Неизвестное действие с сохранённым сообщением");
+  }
+
+  #composerDraft(item) {
+    const rawText = deferredInputText(item.input);
+    const durableOrigin = normalizeInterstreamOrigin(item.messageOrigin);
+    const interstreamAt = rawText.indexOf("<agent-hub-stream-message>");
+    const interstream = durableOrigin && interstreamAt >= 0
+      ? trustedInterstreamMessageDetails(rawText.slice(interstreamAt), { origin: durableOrigin })
+      : null;
+    const prompt = interstream?.text ?? rawText;
+    const annotated = responseAnnotationDetails(prompt);
+    const referenced = userTaskReferencePromptDetails(prompt);
+    const text = annotated?.request
+      ?? referenced?.displayText
+      ?? displayUserPrompt(prompt);
+    return {
+      text: String(text ?? ""),
+      attachments: item.persistentFiles
+        ? this.#d.describeAttachments(item.temporaryFiles ?? [])
+        : [],
+      taskReferences: (referenced?.references ?? []).map((reference) => ({ ...reference })),
+      annotations: (annotated?.items ?? []).map((annotation) => ({
+        quote: annotation.text,
+        annotation: annotation.annotation,
+        ...(annotation.source ? { source: annotation.source } : {}),
+      })),
+      messageOrigin: durableOrigin,
+    };
+  }
+
+  async #prepareComposerTransfer(item) {
+    const d = this.#d;
+    if (item.dispatchingAt || d.isProcessing(item.id)) {
+      throw new Error("Сообщение уже отправляется и не может быть возвращено в композер");
+    }
+    if (item.persistentFiles !== true && (item.temporaryFiles ?? []).length) {
+      throw new Error("Вложения этого сообщения нельзя безопасно вернуть в композер");
+    }
+    if (item.composerTransfer?.token) {
+      return {
+        accepted: true,
+        id: item.id,
+        token: item.composerTransfer.token,
+        binding: this.#binding(item),
+        draft: this.#composerDraft(item),
+      };
+    }
+    const previous = this.#itemState(item);
+    const wasScheduled = d.cancelSchedule(item.id);
+    item.composerTransfer = {
+      token: String(d.createComposerTransferId()).trim(),
+      paused: item.paused === true,
+    };
+    item.paused = true;
+    delete item.dispatchingAt;
+    try {
+      await d.saveState();
+    } catch (error) {
+      this.#restoreItemState(item, previous);
+      if (wasScheduled) d.scheduleQueued(item, 0);
+      throw error;
+    }
+    return {
+      accepted: true,
+      id: item.id,
+      token: item.composerTransfer.token,
+      binding: this.#binding(item),
+      draft: this.#composerDraft(item),
+    };
+  }
+
+  async #commitComposerTransfer(item, token) {
+    const d = this.#d;
+    const normalizedToken = String(token ?? "").trim();
+    if (!normalizedToken || item.composerTransfer?.token !== normalizedToken) {
+      throw new Error("Перенос черновика устарел; очередь не изменена");
+    }
+    const destination = d.pendingInputs.has(item.id) ? "pending" : "queued";
+    d.cancelSchedule(item.id);
+    await d.composerTransfers.remember(item, normalizedToken);
+    d.pendingInputs.delete(item.id);
+    d.queuedInputs.delete(item.id);
+    try {
+      await d.saveState();
+    } catch (error) {
+      d.composerTransfers.forget({ id: item.id, token: normalizedToken });
+      (destination === "queued" ? d.queuedInputs : d.pendingInputs).set(item.id, item);
+      throw error;
+    }
+    d.updateReceipt(item, "cancelled");
+    await d.updateMessage(item, "✏️ Сообщение возвращено в основной композер.");
+    d.scheduleNext(item);
+    return { accepted: true, id: item.id, committed: true, message: "Сообщение возвращено в композер" };
+  }
+
+  async #releaseComposerTransfer(item, token) {
+    const d = this.#d;
+    const normalizedToken = String(token ?? "").trim();
+    if (!item.composerTransfer) {
+      return { accepted: true, id: item.id, released: true };
+    }
+    if (!normalizedToken || item.composerTransfer.token !== normalizedToken) {
+      throw new Error("Перенос черновика устарел; очередь не изменена");
+    }
+    const previous = this.#itemState(item);
+    const wasPaused = item.composerTransfer.paused === true;
+    delete item.composerTransfer;
+    if (wasPaused) item.paused = true;
+    else delete item.paused;
+    try {
+      await d.saveState();
+    } catch (error) {
+      this.#restoreItemState(item, previous);
+      throw error;
+    }
+    if (d.queuedInputs.has(item.id) && !wasPaused) d.scheduleQueued(item, 0);
+    return { accepted: true, id: item.id, released: true };
   }
 
   #binding(item) {

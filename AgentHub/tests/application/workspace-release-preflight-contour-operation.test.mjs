@@ -40,7 +40,7 @@ function fixture({ outcome = "exact", mutateStatus = (value) => value } = {}) {
     releasePlanner: {
       plan: async () => ({
         revision: "plan-1",
-        ready: [{ taskId: "task-1", projectRoot, resultCommit: "task-result" }],
+        ready: [{ taskId: "task-1", taskRevision: 2, projectRoot, resultCommit: "task-result" }],
         blocked: [],
         conflicts: [],
       }),
@@ -62,12 +62,33 @@ function fixture({ outcome = "exact", mutateStatus = (value) => value } = {}) {
           resultCommits: ["task-result"],
         };
       },
+      releaseIntegrationEvidence: async () => ({
+        repositoryRoot: projectRoot,
+        projectRoot: devRoot,
+        branch: "dev",
+        headCommit: "dev-head",
+        tasks: [{
+          taskId: "task-1",
+          taskRevision: 2,
+          resultCommit: "task-result",
+          integrations: [{ commit: "integration", parent: "parent", order: 1 }],
+        }],
+      }),
     },
     releaseGitWorkspaces: {
+      withAwaitTransition: async (_workspaceId, callback) => callback(),
       assertPrimaryInvariant: async () => ({
         projectRoot,
         branch: "refs/heads/main",
         headCommit: "main-head",
+      }),
+      inspectMainChanges: async () => ({
+        projectRoot,
+        publishedRevision: "published-head",
+        localMain: "main-head",
+        originMain: "main-head",
+        commits: [],
+        approvalRequired: false,
       }),
       prepareCandidate: async () => ({
         repositoryRoot: projectRoot,
@@ -77,6 +98,7 @@ function fixture({ outcome = "exact", mutateStatus = (value) => value } = {}) {
         primaryPreserved: true,
       }),
     },
+    readPublicationState: async () => ({ revision: "published-head" }),
     resolveTestContourSource: async () => ({
       projectRoot,
       sourceRoot: path.join(devRoot, "AgentHub"),

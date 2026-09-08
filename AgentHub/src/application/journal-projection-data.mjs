@@ -1,4 +1,9 @@
-const DEFAULT_EAGER_DAY_COUNT = 5;
+import {
+  buildVirtualJournalProjection,
+  virtualJournalDaySections,
+} from "../domain/journal-virtual-projection.mjs";
+
+const DEFAULT_EAGER_DAY_COUNT = 0;
 
 function escapeHtmlText(value) {
   return String(value ?? "")
@@ -46,24 +51,6 @@ function balancedElementEnd(source, tagName, openingStart) {
     }
   }
   return -1;
-}
-
-function daySections(html) {
-  const source = String(html ?? "");
-  const opening = /<details\b[^>]*data-work-log-day-section[^>]*>/giu;
-  const sections = [];
-  for (let match = opening.exec(source); match; match = opening.exec(source)) {
-    const end = balancedElementEnd(source, "details", match.index);
-    if (end < 0) continue;
-    const section = source.slice(match.index, end);
-    const summary = section.match(
-      /<summary\b[^>]*data-work-log-day\b[^>]*>[\s\S]*?<\/summary>/iu,
-    )?.[0] ?? "";
-    const date = summary.match(/<strong>(\d{2}\.\d{2}\.\d{4})<\/strong>/iu)?.[1] ?? "";
-    if (date) sections.push({ date, html: section, summary });
-    opening.lastIndex = end;
-  }
-  return sections;
 }
 
 function dateValue(value) {
@@ -154,8 +141,18 @@ export function buildLazyJournalPayload(markdown, {
   eagerDayCount = DEFAULT_EAGER_DAY_COUNT,
 } = {}) {
   const fullHtml = extractWorkLogHtml(markdown);
-  const sections = daySections(fullHtml);
-  if (!sections.length) return { html: fullHtml, days: {}, turns: {} };
+  const sections = virtualJournalDaySections(fullHtml);
+  if (!sections.length) {
+    return {
+      html: fullHtml,
+      days: {},
+      turns: {},
+      summary: { version: 1, buckets: [] },
+      entries: [],
+      virtualDates: [],
+      virtualComplete: true,
+    };
+  }
 
   const eagerDates = new Set(
     [...sections]
@@ -170,6 +167,13 @@ export function buildLazyJournalPayload(markdown, {
   const initialSections = [];
   const days = {};
   const turns = {};
+  const virtualDates = sections
+    .filter((section) => !/^<details\b[^>]*\bdata-lazy-day=/iu.test(section.html))
+    .map((section) => section.date);
+  const virtual = buildVirtualJournalProjection(sections.map((section) => ({
+    ...section,
+    html: shallowDaySection(section.html).html,
+  })));
   for (const section of sections) {
     /* Раздел уже свёрнут до оболочки: его содержимое лежит в базе, и повторная
        проекция обязана оставить оболочку как есть. Иначе фрагмент дня будет
@@ -197,5 +201,9 @@ export function buildLazyJournalPayload(markdown, {
     html: [rateLimits, accountPanel, ...initialSections].filter(Boolean).join("\n"),
     days,
     turns,
+    summary: virtual.summary,
+    entries: virtual.entries,
+    virtualDates,
+    virtualComplete: virtualDates.length === sections.length,
   };
 }

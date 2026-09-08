@@ -10,7 +10,9 @@ import {
   formatCredits,
   formatTaskTokenUsage,
   formatTurnTokenUsage,
+  MODEL_PRICE_CHANGE_EFFECTIVE_FROM,
   modelCreditRates,
+  modelPriceRates,
   normalizeServiceTier,
   normalizeTokenUsage,
   tokenUsageDelta,
@@ -20,6 +22,8 @@ import {
 
 const SOL = "gpt-5.6-sol";
 const ASTRA = "gpt-6-astra";
+const BEFORE_PRICE_CHANGE = "2026-09-07T23:59:59.999Z";
+const AFTER_PRICE_CHANGE = "2026-09-08T00:00:00.001Z";
 
 test("model rates and Fast multipliers are explicit", () => {
   assert.deepEqual(modelCreditRates(SOL), {
@@ -28,9 +32,9 @@ test("model rates and Fast multipliers are explicit", () => {
     output: 750,
   });
   assert.deepEqual(modelCreditRates(ASTRA), {
-    input: 312.5,
-    cachedInput: 31.25,
-    output: 1_875,
+    input: 250,
+    cachedInput: 25,
+    output: 1_250,
   });
   assert.deepEqual(modelCreditRates("gpt-5.6-terra"), {
     input: 62.5,
@@ -62,19 +66,76 @@ test("model rates and Fast multipliers are explicit", () => {
   assert.equal(fastModeCreditMultiplier(SOL, "default"), 1);
 });
 
-test("Astra costs five base units and two and a half Sol units", () => {
-  const usage = {
-    inputTokens: 1_000_000,
-    cachedInputTokens: 100_000,
-    outputTokens: 50_000,
-    reasoningOutputTokens: 10_000,
-  };
-  const astra = turnCredits(usage, { model: ASTRA });
-  const sol = turnCredits(usage, { model: SOL });
-  const base = turnCredits(usage, { model: "gpt-5.6-terra" });
+test("versioned model prices switch exactly at the verified boundary", () => {
+  const current = { completedAt: MODEL_PRICE_CHANGE_EFFECTIVE_FROM };
+  assert.deepEqual(modelPriceRates(ASTRA, current), {
+    input: 10,
+    cachedInput: 1,
+    output: 50,
+  });
+  assert.deepEqual(modelPriceRates(SOL, current), {
+    input: 4,
+    cachedInput: 0.4,
+    output: 20,
+  });
+  assert.deepEqual(modelCreditRates(SOL, { completedAt: BEFORE_PRICE_CHANGE }), {
+    input: 125,
+    cachedInput: 12.5,
+    output: 750,
+  });
+  assert.deepEqual(modelCreditRates(SOL, current), {
+    input: 100,
+    cachedInput: 10,
+    output: 500,
+  });
+  assert.deepEqual(modelCreditRates(SOL, { completedAt: AFTER_PRICE_CHANGE }), {
+    input: 100,
+    cachedInput: 10,
+    output: 500,
+  });
+  assert.deepEqual(modelCreditRates("gpt-5.6-terra", current), {
+    input: 50,
+    cachedInput: 5,
+    output: 300,
+  });
+  assert.deepEqual(modelCreditRates("codex-auto-review", current), {
+    input: 50,
+    cachedInput: 5,
+    output: 300,
+  });
+  assert.deepEqual(modelCreditRates("gpt-5.6-luna", current), {
+    input: 5,
+    cachedInput: 0.5,
+    output: 30,
+  });
+});
 
-  assert.equal(astra, sol * 2.5);
-  assert.equal(astra, base * 5);
+test("missing or malformed completion time keeps the oldest retained tariff", () => {
+  const oldest = { input: 125, cachedInput: 12.5, output: 750 };
+  assert.deepEqual(modelCreditRates(SOL), oldest);
+  assert.deepEqual(modelCreditRates(SOL, { completedAt: "not-a-date" }), oldest);
+
+  const returned = modelCreditRates(SOL);
+  returned.input = 0;
+  assert.deepEqual(modelCreditRates(SOL), oldest);
+});
+
+test("current Astra usage is calculated from its exact category prices", () => {
+  const usage = {
+    inputTokens: 2_000_000,
+    cachedInputTokens: 1_000_000,
+    outputTokens: 1_000_000,
+  };
+  const completedAt = MODEL_PRICE_CHANGE_EFFECTIVE_FROM;
+  assert.deepEqual(turnCreditBreakdown(usage, { model: ASTRA, completedAt }), {
+    input: 250,
+    cache: 25,
+    output: 1_250,
+    reasoning: 0,
+    estimate: 0,
+    total: 1_525,
+    priced: true,
+  });
 });
 
 test("credit calculation separates uncached input, cache, output and reasoning", () => {

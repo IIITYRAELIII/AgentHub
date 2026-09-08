@@ -20,6 +20,7 @@ import {
   sameProjectRoot,
   searchWorkLogRecords,
   taskThreadId,
+  WORK_LOG_ACCOUNT_USAGE_PROJECTION_VERSION,
   workLogTurnKey,
 } from "./work-log-usage-projection.mjs";
 import { usageSyncSnapshotFromLedger } from "../domain/work-log-usage-sync.mjs";
@@ -211,11 +212,17 @@ export class WorkLogUsageStore {
       updated,
       attempt: 0,
     });
-    await replaceJournalProjectionFromMarkdown(this.#repository, updated, { version });
+    await replaceJournalProjectionFromMarkdown(this.#repository, updated, {
+      version,
+      accountUsageProjectionVersion: WORK_LOG_ACCOUNT_USAGE_PROJECTION_VERSION,
+    });
     return { projected: true };
   }
 
-  async #projectAccountUsage(projectRoots = []) {
+  async #projectAccountUsage(projectRoots = [], {
+    force = false,
+    strict = false,
+  } = {}) {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const current = await this.#repository.payload();
       const accountCatalog = typeof this.#repository.accountCatalog === "function"
@@ -226,15 +233,18 @@ export class WorkLogUsageStore {
           html: String(current?.html ?? ""),
           projectRoots,
           accountCatalog,
-          includeClaudeUsage: this.#includeClaudeUsage,
           localDeviceId: this.#usageSyncDeviceId,
           localDeviceLabel: this.#usageSyncDeviceLabel,
           now: Date.now(),
+          force,
         })
         : (() => {
           throw new Error("Usage sync projection worker is not configured");
         })();
-      if (!projected.projected) return projected;
+      if (!projected.projected) {
+        if (!force) return projected;
+        throw new Error("Usage sync projection worker skipped a required projection");
+      }
       await this.#beforeProjectionWrite?.({
         databaseFile: this.#repository.databaseFile,
         current: current?.html ?? "",
@@ -244,17 +254,24 @@ export class WorkLogUsageStore {
       const written = await this.#repository.replaceIndexProjection(projected.html, {
         expectedRevision: current?.revision,
         version: projected.version,
+        accountUsageProjectionVersion: WORK_LOG_ACCOUNT_USAGE_PROJECTION_VERSION,
       });
       if (!written.conflict) {
         return {
           projected: true,
+          version: written.version ?? projected.version,
           usageProjectionDurationMs: projected.durationMs,
           usageProjectionEventCount: projected.eventCount,
           workerThreadId: projected.workerThreadId,
         };
       }
     }
-    return { projected: false, reason: "stale-journal-revision", projectionDeferred: true };
+    const deferred = { projected: false, reason: "stale-journal-revision", projectionDeferred: true };
+    if (!strict) return deferred;
+    const error = new Error("Required account usage projection could not commit after a journal revision conflict");
+    error.code = "JOURNAL_ACCOUNT_USAGE_PROJECTION_CONFLICT";
+    error.projection = deferred;
+    throw error;
   }
 
   mergeTurnTexts(messages = []) {
@@ -646,13 +663,16 @@ export class WorkLogUsageStore {
     projectRoot = this.#defaultProjectRoot,
     projectionProjectRoots,
     workLogFile,
+    reconcile = false,
   } = {}) {
     if (!this.#usageSyncStore) {
       throw new Error("Usage sync store is not configured");
     }
     const operation = this.#repository.enqueue(async () => {
-      const imported = await this.#usageSyncStore.importSnapshot(snapshot);
-      if (!imported.added && !imported.updated) {
+      const imported = reconcile && typeof this.#usageSyncStore.reconcileSnapshot === "function"
+        ? await this.#usageSyncStore.reconcileSnapshot(snapshot)
+        : await this.#usageSyncStore.importSnapshot(snapshot);
+      if (!imported.added && !imported.updated && !imported.pruned) {
         return { ...imported, projected: false, reason: "unchanged" };
       }
       const roots = (Array.isArray(projectionProjectRoots) && projectionProjectRoots.length)
@@ -662,6 +682,54 @@ export class WorkLogUsageStore {
       return { ...imported, ...projection };
     }, { load: false });
     return operation;
+  }
+
+  usageSyncState() {
+    if (!this.#usageSyncStore || typeof this.#usageSyncStore.usageSyncState !== "function") {
+      return Promise.resolve({
+        localStoreGeneration: "",
+        factSummary: { version: 1, count: 0, byType: {}, digest: "" },
+      });
+    }
+    return this.#usageSyncStore.usageSyncState();
+  }
+
+  ensureAccountUsageProjectionCurrent({
+    required = false,
+    reason = "shipped-version-check",
+    projectRoot = this.#defaultProjectRoot,
+    projectionProjectRoots,
+  } = {}) {
+    if (!this.#usageSyncStore) {
+      throw new Error("Usage sync store is not configured");
+    }
+    if (typeof this.#repository.accountUsageProjectionVersion !== "function") {
+      throw new Error("Journal projection version metadata is not configured");
+    }
+    return this.#repository.enqueue(async () => {
+      const persistedVersion = await this.#repository.accountUsageProjectionVersion();
+      if (!required && persistedVersion === WORK_LOG_ACCOUNT_USAGE_PROJECTION_VERSION) {
+        return {
+          projected: false,
+          projectionRequired: false,
+          projectionVersion: WORK_LOG_ACCOUNT_USAGE_PROJECTION_VERSION,
+          reason: "current",
+        };
+      }
+      const roots = (Array.isArray(projectionProjectRoots) && projectionProjectRoots.length)
+        ? projectionProjectRoots
+        : [projectRoot];
+      const projection = await this.#projectAccountUsage(roots, {
+        force: true,
+        strict: true,
+      });
+      return {
+        ...projection,
+        projectionRequired: true,
+        projectionVersion: WORK_LOG_ACCOUNT_USAGE_PROJECTION_VERSION,
+        triggerReason: String(reason ?? "shipped-version-check"),
+      };
+    }, { load: false });
   }
 
   #workspaceResolver() {

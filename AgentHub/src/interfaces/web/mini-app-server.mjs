@@ -548,6 +548,7 @@ export class MiniAppServer {
   #handlerCloseTimeoutMs;
   #journalCache = null;
   #journalDatabase;
+  #journalProjectionService;
   #usageSyncRemoteConfigStore;
   #usageSyncService;
   #ownsJournalDatabase;
@@ -590,6 +591,7 @@ export class MiniAppServer {
     workLogCssFile = path.join(AGENT_HUB_ROOT, "work-log.css"),
     journalDatabase = null,
     journalDatabaseFile = null,
+    journalProjectionService = null,
     usageSyncRemoteConfigStore = null,
     usageSyncService = null,
     workspaceFileRoots = [],
@@ -640,6 +642,10 @@ export class MiniAppServer {
       throw new Error("Mini App journalDatabase or journalDatabaseFile is required");
     }
     this.#journalDatabase = journalDatabase ?? new JournalDatabase(journalDatabaseFile);
+    this.#journalProjectionService = journalProjectionService
+      && typeof journalProjectionService.ensureAccountUsageProjectionCurrent === "function"
+      ? journalProjectionService
+      : null;
     this.#usageSyncRemoteConfigStore = usageSyncRemoteConfigStore;
     this.#usageSyncService = validUsageSyncService(usageSyncService) ? usageSyncService : null;
     this.#ownsJournalDatabase = !journalDatabase;
@@ -676,6 +682,9 @@ export class MiniAppServer {
   }
 
   async #journalMetadata() {
+    const projection = await this.#journalProjectionService
+      ?.ensureAccountUsageProjectionCurrent();
+    if (projection?.projected) this.#journalCache = null;
     const metadata = typeof this.#journalDatabase.metadata === "function"
       ? await this.#journalDatabase.metadata()
       : null;
@@ -1055,6 +1064,7 @@ export class MiniAppServer {
             workspacesVersion: boundedVersion("workspacesVersion"),
             boardTasksVersion: boundedVersion("boardTasksVersion"),
             messageReceiptsVersion: boundedVersion("messageReceiptsVersion"),
+            messagePinsVersion: boundedVersion("messagePinsVersion"),
           },
           context: authorization,
         });
@@ -1735,6 +1745,34 @@ export class MiniAppServer {
           return;
         }
         json(response, 200, { html, version: journal.version }, method, {
+          acceptEncoding: request.headers["accept-encoding"],
+        });
+      } catch (error) {
+        json(response, 503, { error: `Журнал недоступен: ${error.message}` }, method);
+      }
+      return;
+    }
+    if (url.pathname === "/api/journal/turns") {
+      if (!await this.#authorize(request, response)) return;
+      try {
+        const requestedVersion = String(url.searchParams.get("version") ?? "");
+        const page = await this.#journalDatabase.turnPage({
+          expectedVersion: requestedVersion,
+          profileMode: url.searchParams.get("profileMode"),
+          workspaceId: url.searchParams.get("workspaceId"),
+          streamId: url.searchParams.get("streamId"),
+          provider: url.searchParams.get("provider"),
+          threadId: url.searchParams.get("threadId"),
+          fromMs: url.searchParams.get("fromMs"),
+          toMs: url.searchParams.get("toMs"),
+          offset: url.searchParams.get("offset"),
+          limit: url.searchParams.get("limit"),
+        });
+        if (page.conflict) {
+          json(response, 409, { error: "Журнал обновился.", version: page.version }, method);
+          return;
+        }
+        json(response, 200, page, method, {
           acceptEncoding: request.headers["accept-encoding"],
         });
       } catch (error) {

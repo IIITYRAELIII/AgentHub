@@ -171,14 +171,22 @@ restoration throws instead of reporting an ordinary conflict. An empty diff is
 explicit `no_result`, even when the Task HEAD is already ancestral to `dev`, and
 cannot enter Test or Await. Snapshot, merge, ancestry verification and recovery
 complete before one row-revision CAS atomically replaces Git references, updates
-the exact operation binding and changes workflow status. Any Git, recovery or
-CAS failure preserves the prior status and references.
+the exact operation binding and changes workflow status. In a release-enabled
+Workspace, every workflow transition is serialized with the Workspace release
+lock. A transition into or out of Await rebuilds the complete Await-only
+`PreRelease` while that lock remains held. If the rebuild fails after the status
+CAS, a second exact CAS restores the prior status, Git references and requested
+workflow bindings before the error is returned. Any Git, recovery, CAS or Await
+rebuild failure therefore preserves the prior release membership.
 
 Moving a Task to `awaiting_implementation` records that its exact immutable
-result is accepted for a future release. The status transition does not build,
-rebuild or mutate `PreRelease`. A ready Await Task requires a valid exact result
-and successful `dev` integration; invalid or missing evidence is explicitly
-blocked from release without rejecting the selected Task status.
+result is accepted for a future release and atomically rematerializes mutable
+`PreRelease`. A ready Await Task requires a valid exact result and successful
+`dev` integration. Missing or ambiguous integration ownership, an effective
+delta that cannot be applied to the approved main base, or a dependency on work
+owned only by Test/In Progress/New blocks the transition. Such a dependency is
+never silently included; the user resolves it individually, normally by
+combining the dependent work into one accepted Task.
 
 ## Task Git reference and CAS
 
@@ -210,16 +218,33 @@ invalid references are returned as `blocked` and are never silently omitted.
 Open `done` Tasks remain an Architect audit set. Plan revision hashes current
 Task IDs, row revisions and Git references. Conflict detection reads the
 Git-derived plan projection, never work-log files or a shared mutable tree.
+Shared paths are diagnostic: the blocking evidence is an ambiguous integration
+owner or a failed effective-delta application, not path overlap by itself.
+
+For each accepted Task, Agent Hub finds the Task branch first-parent lineage and
+the exact owning merge commits in the `dev` first-parent history. Mutable
+`PreRelease` is rebuilt from the approved `main` by applying only those effective
+merge deltas in their original `dev` order, excluding Task-owned changelog
+edits, and writing one aggregate commit. `dev` is never merged into
+`PreRelease`; Test-only work cannot enter a release through a broad Task
+snapshot.
 
 At explicit release start, Architect reads and selects the exact ready Await
-set, updates from `origin/main`, builds `PreRelease` from current `main` plus the
-selected exact Task results, and then freezes the exact release-plan revision,
-included Await Task IDs and resulting `PreRelease` head. `dev` is never merged
-into `PreRelease`; Test-only work cannot enter a release. Architect writes one
-consolidated `CHANGELOG.md` entry in `PreRelease` when that file exists,
-validates the exact frozen revision, integrates it into `main`, and publishes
-`main`. Later Await Tasks are not silently added. Only a Stream with
-`settings.architect=true` may record verified release completion.
+set. Before choosing the base, Agent Hub fetches without pull/merge/rebase and
+reports every local unpublished or remote main change since the last published
+revision, including commit identities, authorship and affected paths. Local and
+remote main are not advanced or accepted automatically. The user explicitly
+chooses the exact local and origin main commits, and the preflight rechecks both
+values before candidate publication. A second fetch immediately before push is
+a compare-and-set guard; movement of `origin/main` stops publication for another
+user decision.
+
+The Architect adds one consolidated `CHANGELOG.md` entry when it exists, then
+freezes the exact main base, release-plan revision, included Task IDs and row
+revisions, Task results, owning dev integrations, aggregate `PreRelease` head,
+manifest hash and standalone candidate head. Later Await Tasks are not silently
+added. Only a Stream with `settings.architect=true` may record verified release
+completion.
 
 The frozen candidate remains immutable. If an included Task changes, is
 withdrawn or is excluded before completion, its Task revision or Git reference
@@ -228,7 +253,8 @@ refreeze the release before it can complete; acceptance changes never mutate an
 already frozen candidate.
 
 Completion performs one transaction that CAS-checks every exact Task revision
-and the plan hash, then changes only those Tasks to `done` and closes them.
+and the plan hash, then changes only those Tasks to `done` and persists a
+remaining-Await rebuild marker in the same commit.
 Generic `done` and
 `hub_task_complete` do not create production evidence.
 
@@ -240,8 +266,11 @@ publication revision/generation readback immediately before the Task closure
 transaction. Once verified, only included Tasks are completed
 and their managed branches and worktrees may be removed. Published `main` is
 incorporated into `dev` without discarding later Test work. Remaining Await
-Tasks stay accepted for the next explicit release; Agent Hub does not prebuild a
-mutable next candidate.
+Tasks stay accepted and mutable `PreRelease` is immediately rebuilt for the next
+explicit release. If that rematerialization fails, the caller receives
+`retry_required`; a repeated completion request retries only the pending
+rebuild, never publication verification or Task completion, and clears the
+marker only after successful installation.
 
 Verified release completion invokes the same Task Git owner with each exact
 published repository revision. The returned `devSynchronization` evidence
@@ -358,8 +387,9 @@ blocked when those changes fail its requirements, cause or worsen a real
 regression in existing behavior, or add unnecessary functionality that must be
 removed. Pre-existing unrelated defects, impractical edge cases without
 contract impact, unsupported findings and out-of-scope issues do not block the
-Task. A failed result returns to the same executor, and its corrected exact
-result receives another independent review.
+Task. Initial review may use any suitable independent Workspace Stream. After
+a `RETURN`, the corrected exact result goes back to the same reviewer, and that
+`RETURN` remains open until that reviewer confirms the correction.
 
 The built-in rules require a Task for every change to a repository,
 configuration, data, documentation or another deliverable. Read-only diagnosis,
@@ -409,9 +439,13 @@ ownership; a linked worktree is never a release holder. Publication entrypoints
 require the independent-clone marker and reject the primary Workspace.
 
 The clone writes a content-addressed execution manifest and retry checkpoint
-containing the exact plan revision, `origin/main` base, Task IDs, result commits
-and `PreRelease` head. This is audit evidence, not a second readiness authority.
-Retry may reuse it only when the complete frozen identity and head match.
+containing the exact plan revision, approved local and origin main base, Task
+IDs and row revisions, result commits, owning dev integration lineage and
+`PreRelease` head. Candidate construction uses detached temporary state and
+CAS-swaps the branch plus checkpoint only after complete success. A failed exact
+or three-way application therefore leaves the last good `PreRelease` and its
+checkpoint intact. This is audit evidence, not a second readiness authority;
+retry may reuse it only when the complete frozen identity and head match.
 
 The registered primary must own and remain attached to `refs/heads/main` before
 preflight, after candidate preparation, during retry, after publication and at

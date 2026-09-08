@@ -179,6 +179,23 @@ lane head. Later accepted commands in that exact lane may dispatch in their
 relative FIFO order. Provider-occupancy pauses remain transient lane heads and
 are rechecked until the exact writer clears.
 
+The queue action `Изменить` is an ownership transfer, not an in-place text
+rewrite. The server first durably reserves the exact non-dispatching item and
+returns its editable text, persistent attachment descriptors, exact Dashboard
+Task references with intent, response annotations and inter-Stream origin. The
+client composer owner applies that complete draft only under an unchanged empty
+composer revision. Only then may the server remove the queue item. A failed
+prepare, materialization or durable removal releases or reconciles the
+reservation without deleting its files; duplicate prepare/commit requests use
+the same opaque transfer identity. The original attachment files remain owned
+by the transfer grant until an accepted resend consumes it. A process restart
+returns an interrupted, uncommitted reservation to its previous paused/runnable
+queue state.
+
+Manual up/down controls change FIFO order only among queued or paused items in
+the same exact Stream lane. Boundary controls are disabled, and the durable
+server order remains authoritative.
+
 For a nonterminal Hub-owned managed run, its exact registered `run.turnId` is
 the primary steer identity. A lagging or temporarily incomplete Thread
 projection must not suppress the `turn/steer` attempt. Thread projection is

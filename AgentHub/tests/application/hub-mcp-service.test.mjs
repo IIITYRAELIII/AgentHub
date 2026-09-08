@@ -205,6 +205,9 @@ async function fixture(context, { releaseWorkflowEnabled = false, taskGitWorkspa
       delete task.lifecycleOperation;
       return task;
     },
+    rollbackWorkflowOutcome: () => {
+      throw new Error("unexpected workflow rollback");
+    },
     finalizeCleanupTransition: (operationId, { deleteTask = false } = {}) => {
       const task = [...tasks.values()].find((item) => item.lifecycleOperation?.operationId === operationId);
       delete task.lifecycleOperation;
@@ -343,6 +346,8 @@ async function fixture(context, { releaseWorkflowEnabled = false, taskGitWorkspa
       },
     },
     releasePreflight: {
+      withAwaitTransition: async (_workspaceId, operation) => operation(),
+      prepareAwaitSet: async (options) => ({ ...options, releaseCandidates: [] }),
       preflight: async (options) => {
         preflightCalls.push(options);
         return { ...options, testContour: { running: true, headCommit: "dev-head" } };
@@ -1525,6 +1530,26 @@ test("startup receipt reconciliation terminalizes incomplete durable lifecycle r
 
   assert.equal(operations.get("orphan-pending").status, "unknown");
   assert.equal(operations.get("workflow-pending").status, "unknown");
+});
+
+test("startup receipt reconciliation preserves a durable workflow rollback as failure", async (context) => {
+  const { service, workspaceCatalog, taskBoard, operations } = await fixture(context);
+  operations.set("workflow-rolled-back", {
+    requestId: "workflow-rolled-back", toolName: "hub_task_status_update", status: "pending",
+  });
+  taskBoard.lifecycleOutcome = () => ({
+    operationId: "workflow-rolled-back",
+    kind: "workflow",
+    result: {
+      rollback: { completed: true, reason: "Await rebuild failed" },
+    },
+  });
+  workspaceCatalog.pendingMcpOperations = () => [...operations.values()].filter((item) => item.status === "pending");
+
+  await service.reconcilePendingMcpOperations();
+
+  assert.equal(operations.get("workflow-rolled-back").status, "failed");
+  assert.match(operations.get("workflow-rolled-back").error, /Await rebuild failed/u);
 });
 
 test("HubMcpService copies project files into task attachments", async (context) => {

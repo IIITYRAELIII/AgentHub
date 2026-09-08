@@ -57,6 +57,41 @@ test("workflow transition atomically CAS-commits status and exact Git references
   assert.deepEqual(committed.gitReferences, [{
     projectRoot: path.resolve("D:/repo"), branch: "HUB-159", resultCommit: "a".repeat(40),
   }]);
+  assert.equal(committed.revision, current.revision + 1);
+});
+
+test("workflow outcome rollback restores the exact prior status and Git references", async (t) => {
+  const store = await fixture(t);
+  const created = store.create({ text: "Await rollback" });
+  const previous = store.recordTaskGitReference({
+    taskId: created.id,
+    projectRoot: "D:/repo",
+    branch: "HUB-173",
+    resultSnapshot: { repoRoot: "D:/repo", tree: "a".repeat(40) },
+  });
+  store.beginLifecycleTransition(created.id, {
+    operationId: "workflow-rollback",
+    kind: "workflow",
+    targetWorkflowStatus: "awaiting_implementation",
+    expectedRevision: previous.revision,
+  });
+  const committed = store.commitWorkflowTransition({
+    operationId: "workflow-rollback",
+    gitReferences: [{
+      projectRoot: "D:/repo", branch: "HUB-174", resultCommit: "b".repeat(40),
+    }],
+    evidence: { outcome: "integrated" },
+  });
+
+  const restored = store.rollbackWorkflowOutcome(
+    "workflow-rollback",
+    new Error("injected Await rebuild failure"),
+  );
+
+  assert.equal(restored.workflowStatus, previous.workflowStatus);
+  assert.equal(restored.revision, committed.revision + 1);
+  assert.deepEqual(restored.gitReferences, previous.gitReferences);
+  assert.equal(store.lifecycleOutcome("workflow-rollback").result.rollback.completed, true);
 });
 
 test("workflow CAS failure preserves the previous status and Git references", async (t) => {
@@ -192,7 +227,13 @@ test("legacy Git adoption is CAS-guarded and keeps an immutable audit", async (t
   const store = await fixture(t);
   const created = store.create({ text: "Legacy Await" });
   store.move(created.id, { bucket: "workspace", workspaceId: "workspace-1" });
-  store.markStarted(created.id, { workspaceId: "workspace-1", streamId: "stream-1" });
+  const prepared = store.prepareStart(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", requestId: "legacy-start",
+  });
+  store.markStarted(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", requestId: "legacy-start",
+    expectedRevision: prepared.revision,
+  });
   const awaiting = store.setWorkflowStatus(created.id, "awaiting_implementation");
   const projectRoot = path.resolve("D:/repo");
   const adopted = store.adoptLegacyGitReference({
@@ -776,7 +817,7 @@ test("Await Tasks expose only their immutable Git references to the release plan
   assert.deepEqual(releaseTasks.find((task) => task.id === blocked.id).gitReferences, []);
 });
 
-test("a new Await request clears stale evidence until the Task branch is integrated again", async (t) => {
+test("a new Await request preserves accepted evidence until replacement integration succeeds", async (t) => {
   const store = await fixture(t);
   const projectRoot = path.resolve("D:/repo");
   const task = store.create({ text: "Retry integration" });
@@ -797,7 +838,8 @@ test("a new Await request clears stale evidence until the Task branch is integra
     resultSnapshot: { repoRoot: projectRoot, tree: "b".repeat(40) },
   });
   store.setWorkflowStatus(task.id, "awaiting_implementation");
-  assert.equal(store.task(task.id).gitReferences.length, 1);
+  const accepted = store.task(task.id).gitReferences;
+  assert.equal(accepted.length, 1);
 
   store.requestWorkflowStatus(task.id, {
     status: "awaiting_implementation",
@@ -807,7 +849,7 @@ test("a new Await request clears stale evidence until the Task branch is integra
     operationId: identity.operationId,
   });
 
-  assert.deepEqual(store.task(task.id).gitReferences, []);
+  assert.deepEqual(store.task(task.id).gitReferences, accepted);
 });
 
 test("rolling a Task back clears its pending awaiting intent", async (t) => {
@@ -1035,9 +1077,19 @@ test("release completion CAS-checks the exact Task Git reference", async (t) => 
     expectedPlanRevision: plan.revision,
     plan,
     verificationEvidence: { publishedRevision: "c".repeat(40) },
+    awaitRebuild: {
+      planRevision: plan.revision,
+      fallbackProjectRoots: [projectRoot],
+    },
   });
   assert.deepEqual(result.released[0].gitReferences, candidate.gitReferences);
   assert.equal(store.task(task.id).workflowStatus, "done");
+  assert.deepEqual(store.awaitRebuildPending(identity.workspaceId), {
+    planRevision: plan.revision,
+    fallbackProjectRoots: [projectRoot],
+  });
+  assert.equal(store.clearAwaitRebuildPending(identity.workspaceId), true);
+  assert.equal(store.awaitRebuildPending(identity.workspaceId), null);
 });
 
 function createLegacyReleaseSchema(database) {

@@ -99,7 +99,231 @@
   }
 
   function requiresCompleteHistory(value) {
-    return normalizeGrouping(value) !== "date";
+    normalizeGrouping(value);
+    return false;
+  }
+
+  function emptyMetrics() {
+    return {
+      turnCount: 0,
+      credits: 0,
+      knownCredits: 0,
+      unknownCredits: 0,
+      durationSeconds: 0,
+      knownDurations: 0,
+      unknownDurations: 0,
+      latestAt: 0,
+      fileTouches: 0,
+      knownFileTouches: 0,
+      changedLines: 0,
+      knownChangedLines: 0,
+      subagentTurns: 0,
+      knownSubagentTurns: 0,
+      skillNames: new Set(),
+      mcpCallCount: 0,
+      mcpTools: new Set(),
+      mcpFailures: 0,
+      knownToolMetricTurns: 0,
+      workspaceUsageHtml: "",
+    };
+  }
+
+  function addBucketMetrics(target, bucket, includeClaudeUsage) {
+    target.turnCount += Math.max(0, Number(bucket?.turnCount) || 0);
+    target.durationSeconds += Math.max(0, Number(bucket?.durationSeconds) || 0);
+    target.knownDurations += Math.max(0, Number(bucket?.knownDurations) || 0);
+    target.unknownDurations += Math.max(0, Number(bucket?.unknownDurations) || 0);
+    target.latestAt = Math.max(target.latestAt, Math.max(0, Number(bucket?.latestAt) || 0));
+    if (includeClaudeUsage || String(bucket?.provider ?? "").toLowerCase() !== "claude") {
+      target.credits += Math.max(0, Number(bucket?.credits) || 0);
+      target.knownCredits += Math.max(0, Number(bucket?.knownCredits) || 0);
+      target.unknownCredits += Math.max(0, Number(bucket?.unknownCredits) || 0);
+    }
+    target.fileTouches += Math.max(0, Number(bucket?.fileTouches) || 0);
+    target.knownFileTouches += Math.max(0, Number(bucket?.knownFileTouches) || 0);
+    target.changedLines += Math.max(0, Number(bucket?.changedLines) || 0);
+    target.knownChangedLines += Math.max(0, Number(bucket?.knownChangedLines) || 0);
+    target.subagentTurns += Math.max(0, Number(bucket?.subagentTurns) || 0);
+    target.knownSubagentTurns += Math.max(0, Number(bucket?.knownSubagentTurns) || 0);
+    for (const name of Array.isArray(bucket?.skillNames) ? bucket.skillNames : []) {
+      if (String(name).trim()) target.skillNames.add(String(name).trim());
+    }
+    target.mcpCallCount += Math.max(0, Number(bucket?.mcpCallCount) || 0);
+    target.mcpFailures += Math.max(0, Number(bucket?.mcpFailures) || 0);
+    target.knownToolMetricTurns += Math.max(0, Number(bucket?.knownToolMetricTurns) || 0);
+    for (const tool of Array.isArray(bucket?.mcpTools) ? bucket.mcpTools : []) {
+      if (String(tool).trim()) target.mcpTools.add(String(tool).trim());
+    }
+    if (!target.workspaceUsageHtml && String(bucket?.workspaceUsageHtml ?? "")) {
+      target.workspaceUsageHtml = String(bucket.workspaceUsageHtml).slice(0, 12_000);
+    }
+    return target;
+  }
+
+  function finishMetrics(value) {
+    return {
+      ...value,
+      credits: value.knownCredits ? value.credits : null,
+      durationSeconds: value.knownDurations ? value.durationSeconds : null,
+      fileTouches: value.knownFileTouches ? value.fileTouches : null,
+      changedLines: value.knownChangedLines ? value.changedLines : null,
+      subagentShare: value.knownSubagentTurns
+        ? value.subagentTurns / value.knownSubagentTurns * 100
+        : null,
+      skillNames: [...value.skillNames].sort((left, right) => left.localeCompare(right)),
+      skillCount: value.knownToolMetricTurns ? value.skillNames.size : null,
+      mcpCallCount: value.knownToolMetricTurns ? value.mcpCallCount : null,
+      mcpTools: [...value.mcpTools].sort((left, right) => left.localeCompare(right)),
+    };
+  }
+
+  function virtualSummaryBuckets(value) {
+    if (!value || Number(value.version) !== 1 || !Array.isArray(value.buckets)) return [];
+    return value.buckets.filter((bucket) => (
+      bucket && typeof bucket === "object"
+      && String(bucket.date ?? "").trim()
+      && String(bucket.workspaceId ?? "").trim()
+      && String(bucket.streamId ?? "").trim()
+    ));
+  }
+
+  function periodBounds(date, mode) {
+    const match = String(date ?? "").trim().match(/^(\d{2})\.(\d{2})\.(\d{4})/u);
+    if (!match) return { fromMs: 0, toMs: 0, dateKeys: [] };
+    let start = new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1]));
+    if (Number.isNaN(start.getTime())) return { fromMs: 0, toMs: 0, dateKeys: [] };
+    if (mode === "week") {
+      start = new Date(start);
+      start.setDate(start.getDate() - (start.getDay() + 6) % 7);
+    } else if (mode === "month") {
+      start = new Date(start.getFullYear(), start.getMonth(), 1);
+    }
+    const end = new Date(start);
+    if (mode === "week") end.setDate(end.getDate() + 7);
+    else if (mode === "month") end.setMonth(end.getMonth() + 1);
+    else end.setDate(end.getDate() + 1);
+    const dateKeys = [];
+    for (const current = new Date(start); current < end; current.setDate(current.getDate() + 1)) {
+      dateKeys.push([
+        String(current.getDate()).padStart(2, "0"),
+        String(current.getMonth() + 1).padStart(2, "0"),
+        String(current.getFullYear()),
+      ].join("."));
+    }
+    return { fromMs: start.getTime(), toMs: end.getTime(), dateKeys };
+  }
+
+  function virtualJournalScopes(summary, mode, {
+    includeClaudeUsage = true,
+    groupClaude = false,
+  } = {}) {
+    const grouping = normalizeGrouping(mode);
+    const scopes = new Map();
+    for (const bucket of virtualSummaryBuckets(summary)) {
+      const date = String(bucket.date);
+      const groupedClaude = groupClaude && String(bucket.provider ?? "").toLowerCase() === "claude";
+      const workspaceId = groupedClaude ? "claude-work" : String(bucket.workspaceId);
+      const streamId = groupedClaude ? "claude-work" : String(bucket.streamId);
+      const period = ["week", "month"].includes(grouping) ? periodIdentity(date, grouping) : null;
+      const scopeKey = grouping === "stream"
+        ? `stream\u001f${workspaceId}\u001f${streamId}`
+        : grouping === "workspace"
+          ? `workspace\u001f${workspaceId}`
+          : grouping === "date"
+            ? `date\u001f${date}`
+            : `${grouping}\u001f${period?.key ?? date}`;
+      const scope = scopes.get(scopeKey) ?? {
+        key: scopeKey,
+        mode: grouping,
+        label: grouping === "stream"
+          ? String(bucket.streamDisplayName || "Поток")
+          : grouping === "workspace"
+            ? groupedClaude ? "Claude - Work" : String(bucket.workspaceName || "Workspace")
+            : grouping === "date"
+              ? date
+              : period?.label || date,
+        sort: grouping === "date"
+          ? Date.parse(`${date.slice(6)}-${date.slice(3, 5)}-${date.slice(0, 2)}T00:00:00Z`) || 0
+          : period?.sort ?? 0,
+        sourceDate: date,
+        provider: grouping === "stream" ? "stream" : grouping,
+        ...emptyMetrics(),
+        workspaces: new Map(),
+      };
+      addBucketMetrics(scope, bucket, includeClaudeUsage);
+      const workspace = scope.workspaces.get(workspaceId) ?? {
+        id: workspaceId,
+        name: groupedClaude ? "Claude" : String(bucket.workspaceName || "Workspace"),
+        kind: String(bucket.workspaceKind || "legacy"),
+        queryWorkspaceId: groupedClaude ? "" : workspaceId,
+        providers: new Set(),
+        ...emptyMetrics(),
+        streams: new Map(),
+      };
+      workspace.providers.add(String(bucket.provider ?? "").trim());
+      addBucketMetrics(workspace, bucket, includeClaudeUsage);
+      const stream = workspace.streams.get(streamId) ?? {
+        id: streamId,
+        name: groupedClaude ? "Claude - Work" : String(bucket.streamDisplayName || "Поток"),
+        ordinal: Math.max(1, Number(bucket.streamOrdinal) || 1),
+        queryWorkspaceId: groupedClaude ? "" : workspaceId,
+        queryStreamId: groupedClaude ? "" : streamId,
+        providers: new Set(),
+        ...emptyMetrics(),
+      };
+      stream.providers.add(String(bucket.provider ?? "").trim());
+      addBucketMetrics(stream, bucket, includeClaudeUsage);
+      workspace.streams.set(streamId, stream);
+      scope.workspaces.set(workspaceId, workspace);
+      scopes.set(scopeKey, scope);
+    }
+    const compareByCredits = (left, right) => (
+      (Number(right.credits) || 0) - (Number(left.credits) || 0)
+      || right.latestAt - left.latestAt
+      || left.name.localeCompare(right.name, "ru")
+      || left.id.localeCompare(right.id)
+    );
+    const result = [...scopes.values()].map((scope) => {
+      const workspaces = [...scope.workspaces.values()].map((workspace) => ({
+        ...finishMetrics(workspace),
+        providers: [...workspace.providers].filter(Boolean).sort(),
+        streams: [...workspace.streams.values()].map((stream) => ({
+          ...finishMetrics(stream),
+          providers: [...stream.providers].filter(Boolean).sort(),
+        })).sort(compareByCredits),
+      })).sort(compareByCredits);
+      const bounds = grouping === "date"
+        ? periodBounds(scope.label, "date")
+        : ["week", "month"].includes(grouping)
+          ? periodBounds(scope.sourceDate, grouping)
+          : { fromMs: 0, toMs: 0, dateKeys: [] };
+      return { ...finishMetrics(scope), ...bounds, workspaces };
+    });
+    return result.sort((left, right) => {
+      if (["date", "week", "month"].includes(grouping)) return right.sort - left.sort;
+      return (Number(right.credits) || 0) - (Number(left.credits) || 0)
+        || right.latestAt - left.latestAt
+        || left.label.localeCompare(right.label, "ru");
+    });
+  }
+
+  function virtualTurnQuery(scope, workspace, stream = null) {
+    const providers = Array.isArray(stream?.providers)
+      ? stream.providers
+      : Array.isArray(workspace?.providers) ? workspace.providers : [];
+    const workspaceId = String(stream?.queryWorkspaceId
+      ?? workspace?.queryWorkspaceId
+      ?? workspace?.id
+      ?? "");
+    const streamId = String(stream?.queryStreamId ?? stream?.id ?? "");
+    return {
+      workspaceId,
+      streamId,
+      provider: !workspaceId && !streamId && providers.length === 1 ? String(providers[0]) : "",
+      fromMs: Math.max(0, Number(scope?.fromMs) || 0),
+      toMs: Math.max(0, Number(scope?.toMs) || 0),
+      dateKeys: Array.isArray(scope?.dateKeys) ? scope.dateKeys.map(String) : [],
+    };
   }
 
   function groupIdentity(value, mode, groupClaude = false) {
@@ -248,5 +472,8 @@
     turnDisplayCredits,
     createQueuedJournalRefresh,
     hydrateLazyDays,
+    virtualJournalScopes,
+    virtualSummaryBuckets,
+    virtualTurnQuery,
   });
 })();

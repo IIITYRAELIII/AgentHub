@@ -463,8 +463,8 @@ test("Mini App publisher polls signed controls and posts their result", async ()
             id,
             userId: "42",
             source: "trusted-device",
-            action: "open-turn",
-            params: { provider: "codex", taskThreadId: "thread", turnId: "turn" },
+            action: "message-pin-set",
+            params: { streamId: "stream-1", messageKey: "message:v1:answer", pinned: false },
           }],
         });
       }
@@ -481,6 +481,7 @@ test("Mini App publisher polls signed controls and posts their result", async ()
     assert.equal(handled[0].context.source, "trusted-device");
     assert.equal(handled[0].context.transport, "worker");
     assert.equal(handled[0].context.userId, "42");
+    assert.equal(handled[0].action, "message-pin-set");
     assert.equal(requests.length, 2);
     assert.deepEqual(JSON.parse(requests[0].options.body), {
       limit: 10,

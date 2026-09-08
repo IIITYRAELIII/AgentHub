@@ -477,7 +477,7 @@ test("на телефоне карточки остаются подписанн
   }
 });
 
-test("быстрые ответы показывают значение в одной строке с подписью", async () => {
+test("Prompt-шаблоны показывают значение в одной строке с подписью", async () => {
   const { chromium } = await import("playwright");
   const browser = await launchEdge(chromium);
   try {
@@ -497,7 +497,7 @@ test("быстрые ответы показывают значение в од�
         editorWidth: Math.round(editor.getBoundingClientRect().width),
       };
     });
-    assert.equal(rows.sameRow, true, "подпись и значение быстрых ответов оказались в разных строках");
+    assert.equal(rows.sameRow, true, "подпись и значение Prompt-шаблонов оказались в разных строках");
     assert.ok(rows.valueRight > rows.nameRight, "значение не прижато к правому краю строки");
     assert.ok(rows.addWidth < rows.editorWidth * 0.6,
       `кнопка добавления растянулась на ${rows.addWidth} из ${rows.editorWidth}`);

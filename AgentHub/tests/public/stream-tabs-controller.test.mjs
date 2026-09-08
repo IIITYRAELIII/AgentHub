@@ -467,12 +467,12 @@ test("quick messages preserve structured mappings and scope order", async () => 
     quickMessagesToText(quickMessagesFromText("Релиз | релизь\nпроверь")),
     "Релиз | релизь\nпроверь",
   );
-  assert.equal(quickMessagesCountLabel(0), "0 ответов");
-  assert.equal(quickMessagesCountLabel(1), "1 ответ");
-  assert.equal(quickMessagesCountLabel(2), "2 ответа");
-  assert.equal(quickMessagesCountLabel(5), "5 ответов");
-  assert.equal(quickMessagesCountLabel(11), "11 ответов");
-  assert.equal(quickMessagesCountLabel(21), "21 ответ");
+  assert.equal(quickMessagesCountLabel(0), "0 шаблонов");
+  assert.equal(quickMessagesCountLabel(1), "1 шаблон");
+  assert.equal(quickMessagesCountLabel(2), "2 шаблона");
+  assert.equal(quickMessagesCountLabel(5), "5 шаблонов");
+  assert.equal(quickMessagesCountLabel(11), "11 шаблонов");
+  assert.equal(quickMessagesCountLabel(21), "21 шаблон");
   assert.deepEqual(
     JSON.parse(JSON.stringify(setQuickMessagesForScope(selection, "stream", "stream-1", []))),
     {
@@ -604,14 +604,17 @@ test("every production Phosphor icon creates a real namespaced SVG", async () =>
     "arrow-clockwise",
     "arrows-down-up",
     "caret-down",
+    "caret-left",
     "caret-right",
     "caret-up",
     "clock-counter-clockwise",
     "copy",
     "folder",
+    "list-bullets",
     "pencil-simple",
     "plus",
     "push-pin-simple",
+    "trash",
   ]) {
     const icon = createPhosphorIcon(document, name, "stream-order-icon");
     assert.equal(icon.namespaceURI, "http://www.w3.org/2000/svg");
@@ -1371,6 +1374,209 @@ test("Workspace and Stream cards expose behavioral editing and quick reply contr
       workspaceId: "archived-1",
       confirmationName: "Exact Archive",
     });
+  } finally {
+    await browser.close();
+  }
+});
+
+test("composer quick replies render above attached Task references", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  try {
+    const page = await browser.newPage({ viewport: { width: 920, height: 640 } });
+    await openStreamTabsDomFixture(page);
+    await page.evaluate(() => {
+      window.__hub157Intents = [];
+      document.addEventListener("agenthub:intent", (event) => {
+        window.__hub157Intents.push(structuredClone(event.detail));
+      });
+      window.AgentHub.setWorkspaces([{
+        id: "workspace-1", name: "Agent HUB", settings: {},
+      }], ["workspace:workspace-1", "notes"]);
+      window.AgentHub.setSelection({
+        quickMessages: {
+          global: [{ title: "Принято", text: "Принято" }],
+          workspaces: {
+            "workspace-1": [{ title: "Workspace", text: "Workspace prompt" }],
+          },
+          streams: {
+            "stream-1": [{ title: "Stream", text: "Stream prompt" }],
+          },
+        },
+      });
+      window.AgentHub.setTasks([{
+        id: "task-1",
+        selected: true,
+        workspaceId: "workspace-1",
+        workspaceName: "Agent HUB",
+        streamId: "stream-1",
+        streamName: "Dashboard",
+        streamOrdinal: 1,
+        provider: "codex",
+        agentLabel: "Codex",
+        status: "ready",
+        statusLabel: "Готов",
+        lastActivity: "2026-09-08T08:00:00.000Z",
+        running: false,
+        unread: false,
+        streamSettings: {},
+      }]);
+      const transfer = new DataTransfer();
+      window.AgentHubTaskReferences.beginDrag(transfer, {
+        id: "linked-task",
+        taskNumber: "HUB-157",
+        title: "Переработать карточки Workspace/Stream",
+        workflowStatus: "awaiting_implementation",
+        workspaceId: "workspace-1",
+      }, { intent: "context" });
+      document.querySelector('[data-stream-tab-id="stream-1"]').dispatchEvent(new DragEvent("drop", {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer: transfer,
+      }));
+      window.AgentHubTaskReferences.endDrag();
+    });
+
+    const layout = await page.evaluate(() => {
+      const quickReplies = document.querySelector("[data-composer-quick-messages]");
+      const attachments = document.querySelector("[data-attachments]");
+      const quickRect = quickReplies.getBoundingClientRect();
+      const attachmentRect = attachments.getBoundingClientRect();
+      return {
+        quickRepliesVisible: !quickReplies.hidden && quickRect.height > 0,
+        attachmentsVisible: !attachments.hidden && attachmentRect.height > 0,
+        sourceOrder: Boolean(quickReplies.compareDocumentPosition(attachments)
+          & Node.DOCUMENT_POSITION_FOLLOWING),
+        visualOrder: quickRect.bottom <= attachmentRect.top,
+      };
+    });
+    assert.deepEqual(layout, {
+      quickRepliesVisible: true,
+      attachmentsVisible: true,
+      sourceOrder: true,
+      visualOrder: true,
+    });
+    assert.equal(await page.locator("[data-composer-quick-messages]").getAttribute("aria-label"), "Prompt-шаблоны");
+    assert.equal(await page.locator("[data-settings-global-quick-messages]").evaluate((node) => (
+      node.closest(".quick-messages-settings-row")?.querySelector(".setting-name")?.textContent
+    )), "Глобальные prompt-шаблоны");
+    assert.equal(await page.locator("[data-settings-global-quick-messages-count]").textContent(), "1 шаблон");
+    await page.locator('[data-panel-open="settings"]').click();
+    const globalEditor = page.locator("[data-settings-global-quick-messages]");
+    assert.equal(await globalEditor.isVisible(), true);
+    assert.equal(await globalEditor.locator("[data-quick-message-row]").count(), 1);
+    assert.equal(await globalEditor.locator("[data-quick-message-title]").inputValue(), "Принято");
+    assert.equal(await globalEditor.locator("[data-quick-message-text]").inputValue(), "Принято");
+    assert.equal(await globalEditor.locator("[data-quick-message-add]").textContent(), "+ Добавить шаблон");
+    await globalEditor.locator("[data-quick-message-add]").click();
+    assert.equal(await globalEditor.locator("[data-quick-message-row]").count(), 2);
+    await globalEditor.locator("[data-quick-message-title]").nth(1).fill("Продолжай");
+    await globalEditor.locator("[data-quick-message-text]").nth(1).fill("Продолжай работу");
+    await globalEditor.locator("[data-quick-message-text]").nth(1).dispatchEvent("change");
+    assert.equal(await page.evaluate(() => window.__hub157Intents.some((item) => (
+      item.type === "selection:set"
+      && item.key === "quickMessages"
+      && item.value.global[1]?.title === "Продолжай"
+      && item.value.global[1]?.text === "Продолжай работу"
+    ))), true);
+    assert.equal(await page.locator("[data-text-dialog]").isHidden(), true);
+    await page.locator("[data-panel-close]").click();
+
+    const workspace = page.locator('[data-workspace-select="workspace-1"]');
+    await workspace.dblclick();
+    assert.equal(await page.getByText("Prompt-шаблоны Workspace", { exact: true }).isVisible(), true);
+    assert.equal(await page.locator("[data-workspace-card-quick-messages] [data-quick-message-add]").textContent(), "+ Добавить шаблон");
+    assert.equal(await page.locator("[data-workspace-card-quick-messages-count]").textContent(), "1 шаблон");
+    assert.equal(await page.locator(
+      "[data-workspace-card-quick-messages] [data-quick-message-title]",
+    ).getAttribute("aria-label"), "Заголовок Prompt-шаблона 1");
+    await page.keyboard.press("Escape");
+
+    const stream = page.locator('.stream-tabs-track [data-stream-tab-id="stream-1"]');
+    await stream.dblclick();
+    assert.equal(await page.getByText("Prompt-шаблоны потока", { exact: true }).isVisible(), true);
+    assert.equal(await page.locator("[data-dialog-stream-quick-messages] [data-quick-message-add]").textContent(), "+ Добавить шаблон");
+    assert.equal(await page.locator("[data-dialog-stream-quick-messages-count]").textContent(), "1 шаблон");
+    assert.equal(await page.locator(
+      "[data-dialog-stream-quick-messages] [data-quick-message-title]",
+    ).getAttribute("aria-label"), "Заголовок Prompt-шаблона 1");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("Dashboard column headers keep one fixed height when task density differs", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  const screenshotDirectory = String(process.env.HUB157_QA_SCREENSHOT_DIR ?? "").trim();
+  try {
+    for (const [surface, viewport] of [
+      ["wide-short", { width: 1900, height: 376 }],
+      ["desktop", { width: 1440, height: 900 }],
+      ["mobile", { width: 390, height: 844 }],
+    ]) {
+      const problems = [];
+      const page = await browser.newPage({ viewport });
+      page.on("console", (message) => {
+        if (["warning", "error"].includes(message.type())) {
+          const location = message.location().url;
+          if (!["https://agent-hub.test/health", "https://agent-hub.test/events"].includes(location)) {
+            problems.push(`${message.type()}: ${message.text()} (${location})`);
+          }
+        }
+      });
+      page.on("pageerror", (error) => problems.push(`pageerror: ${error.message}`));
+      await openStreamTabsDomFixture(page);
+      await page.evaluate(() => {
+        const workspaces = [
+          { id: "empty", name: "Пустой Workspace", comment: "", streams: [] },
+          { id: "dense", name: "Плотный Workspace", comment: "", streams: new Array(17).fill({}) },
+          { id: "commented", name: "Workspace с комментарием", comment: "Описание колонки", streams: [{ id: "s" }] },
+        ];
+        const tasks = Array.from({ length: 28 }, (_, index) => ({
+          id: `task-${index}`,
+          taskNumber: `HUB-${index + 1}`,
+          title: `Плотная задача ${index + 1}`,
+          text: `Плотная задача ${index + 1}`,
+          rawText: `Плотная задача ${index + 1}`,
+          bucket: index < 26 ? "workspace" : "notes",
+          workspaceId: index < 26 ? "dense" : null,
+          status: "started",
+          workflowStatus: "in_progress",
+          revision: 1,
+          attachments: [],
+        }));
+        window.AgentHubTaskBoard.setSnapshot({
+          tasks,
+          workspaces,
+          columnOrder: ["workspace:empty", "workspace:dense", "workspace:commented", "notes"],
+        });
+        document.querySelector('[data-view-button="dashboard"]').click();
+      });
+      const geometry = await page.locator(".task-board-column-head").evaluateAll((headers) => headers.map((header) => {
+        const rect = header.getBoundingClientRect();
+        return {
+          column: header.closest("[data-board-destination]")?.dataset.boardDestination,
+          height: Number(rect.height.toFixed(2)),
+          bottom: Number(rect.bottom.toFixed(2)),
+          flex: getComputedStyle(header).flex,
+        };
+      }));
+      assert.ok(geometry.length >= 5, JSON.stringify({ surface, geometry }));
+      assert.equal(new Set(geometry.map(({ height }) => height)).size, 1, JSON.stringify({ surface, geometry }));
+      assert.equal(new Set(geometry.map(({ bottom }) => bottom)).size, 1, JSON.stringify({ surface, geometry }));
+      assert.equal(geometry[0].height, 104, JSON.stringify({ surface, geometry }));
+      assert.ok(geometry.every(({ flex }) => flex === "0 0 104px"), JSON.stringify({ surface, geometry }));
+      if (screenshotDirectory) {
+        console.log(`HUB157_BOARD_HEADER_GEOMETRY ${surface} ${JSON.stringify(geometry)}`);
+        await page.screenshot({
+          path: path.join(screenshotDirectory, `hub157-board-headers-${surface}.png`),
+          fullPage: false,
+        });
+      }
+      assert.deepEqual(problems, []);
+      await page.close();
+    }
   } finally {
     await browser.close();
   }

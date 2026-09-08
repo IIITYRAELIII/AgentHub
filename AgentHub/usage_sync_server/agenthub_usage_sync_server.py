@@ -17,6 +17,7 @@ import re
 import secrets
 import sqlite3
 import time
+import uuid
 from dataclasses import dataclass, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -193,8 +194,16 @@ def canonical_json_bytes(value: Any) -> bytes:
     )
 
 
+def canonical_json_text(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def code_hash(code: str) -> str:
     return hashlib.sha256(text(code, 256).encode("utf-8")).hexdigest()
+
+
+def sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def auth_observation_id(
@@ -355,8 +364,25 @@ def init_db(db: sqlite3.Connection) -> None:
     db.execute(
         "CREATE INDEX IF NOT EXISTS usage_events_server_revision ON usage_events(server_revision)"
     )
+    ensure_dataset_generation(db)
     backfill_server_revisions(db)
     db.commit()
+
+
+def ensure_dataset_generation(db: sqlite3.Connection) -> str:
+    row = db.execute("SELECT value FROM usage_sync_meta WHERE key='dataset_generation'").fetchone()
+    value = text(row["value"], 120) if row else ""
+    if value:
+        return value
+    value = str(uuid.uuid4())
+    db.execute(
+        """
+        INSERT INTO usage_sync_meta(key, value) VALUES('dataset_generation', ?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value
+        """,
+        (value,),
+    )
+    return value
 
 
 def current_server_revision(db: sqlite3.Connection) -> int:
@@ -367,6 +393,10 @@ def current_server_revision(db: sqlite3.Connection) -> int:
         row = db.execute(f"SELECT COALESCE(MAX(server_revision), 0) AS revision FROM {table}").fetchone()
         revisions.append(integer(row["revision"]) if row else 0)
     return max(revisions)
+
+
+def current_dataset_generation(db: sqlite3.Connection) -> str:
+    return ensure_dataset_generation(db)
 
 
 def set_server_revision(db: sqlite3.Connection, revision: int) -> None:
@@ -1045,6 +1075,40 @@ def observation_row_to_api(row: sqlite3.Row) -> dict[str, Any]:
     return json.loads(row["fact_json"])
 
 
+def fact_identity(fact: dict[str, Any]) -> str:
+    kind = text(fact.get("type"), 40) or "turn"
+    if kind in {"auth_observation", "limit_observation"}:
+        return text(fact.get("observationId"), 120)
+    return text(fact.get("eventId"), 120)
+
+
+def fact_summary_payload(fact: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in fact.items()
+        if key not in {"deviceLabel", "legacy", "source", "version"}
+    }
+
+
+def usage_fact_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
+    by_type = {"turn": 0, "auth_observation": 0, "limit_observation": 0}
+    lines = []
+    for fact in events:
+        kind = text(fact.get("type"), 40) or "turn"
+        identity = fact_identity(fact)
+        if not identity:
+            continue
+        by_type[kind] = by_type.get(kind, 0) + 1
+        lines.append(canonical_json_text([kind, identity, fact_summary_payload(fact)]))
+    lines.sort(key=lambda value: value.encode("utf-8"))
+    return {
+        "version": 1,
+        "count": len(lines),
+        "byType": by_type,
+        "digest": "sha256:" + sha256_text("\n".join(lines)),
+    }
+
+
 def snapshot_events(db: sqlite3.Connection, where_sql: str = "", params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
     usage_rows = db.execute(
         f"""
@@ -1080,6 +1144,38 @@ def snapshot_events(db: sqlite3.Connection, where_sql: str = "", params: tuple[A
     ]
     records.sort(key=lambda item: (item[0], item[1], item[2]))
     return [item[3] for item in records]
+
+
+def snapshot_envelope(
+    db: sqlite3.Connection,
+    *,
+    device_id: str = "",
+    since_revision: int | None = None,
+    events: list[dict[str, Any]] | None = None,
+    summary_only: bool = False,
+) -> dict[str, Any]:
+    current_revision = current_server_revision(db)
+    envelope = {
+        "version": 1,
+        "usageFactSchemaVersion": USAGE_FACT_SCHEMA_VERSION,
+        "datasetGeneration": current_dataset_generation(db),
+        "exportedAt": utc_now_iso(),
+        "serverRevision": current_revision,
+    }
+    if device_id:
+        envelope["deviceId"] = device_id
+    if since_revision is not None:
+        envelope["sinceRevision"] = since_revision
+    if summary_only:
+        all_events = snapshot_events(db)
+        envelope["factSummary"] = usage_fact_summary(all_events)
+        envelope["events"] = []
+    else:
+        response_events = snapshot_events(db) if events is None else events
+        if events is None:
+            envelope["factSummary"] = usage_fact_summary(response_events)
+        envelope["events"] = response_events
+    return envelope
 
 
 def ingest_snapshot(
@@ -1134,6 +1230,7 @@ def ingest_snapshot(
         "ok": True,
         "deviceId": device_id,
         "usageFactSchemaVersion": USAGE_FACT_SCHEMA_VERSION,
+        "datasetGeneration": current_dataset_generation(db),
         "serverRevision": revision,
         "added": added,
         "updated": updated + label_updates,
@@ -1145,20 +1242,14 @@ def ingest_snapshot(
 def export_snapshot(
     db: sqlite3.Connection, *, device_id: str, signature: str, body: bytes
 ) -> dict[str, Any]:
-    device_id, _payload = verified_device_payload(
+    device_id, payload = verified_device_payload(
         db,
         device_id=device_id,
         signature=signature,
         body=body,
         kind="snapshot",
     )
-    return {
-        "version": 1,
-        "usageFactSchemaVersion": USAGE_FACT_SCHEMA_VERSION,
-        "exportedAt": utc_now_iso(),
-        "serverRevision": current_server_revision(db),
-        "events": snapshot_events(db),
-    }
+    return snapshot_envelope(db, device_id=device_id, summary_only=bool(payload.get("summaryOnly")))
 
 
 def export_changes(
@@ -1172,15 +1263,14 @@ def export_changes(
         kind="changes",
     )
     since_revision = max(0, integer(payload.get("sinceRevision")))
-    return {
-        "version": 1,
-        "usageFactSchemaVersion": USAGE_FACT_SCHEMA_VERSION,
-        "exportedAt": utc_now_iso(),
-        "deviceId": device_id,
-        "sinceRevision": since_revision,
-        "serverRevision": current_server_revision(db),
-        "events": snapshot_events(db, "WHERE server_revision > ?", (since_revision,)),
-    }
+    summary_only = bool(payload.get("summaryOnly"))
+    return snapshot_envelope(
+        db,
+        device_id=device_id,
+        since_revision=since_revision,
+        events=None if summary_only else snapshot_events(db, "WHERE server_revision > ?", (since_revision,)),
+        summary_only=summary_only,
+    )
 
 
 class UsageSyncHandler(BaseHTTPRequestHandler):

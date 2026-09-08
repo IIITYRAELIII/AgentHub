@@ -13,6 +13,7 @@ import {
   LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V2,
   LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V3,
   LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V4,
+  LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V5,
   RELEASE_WORKFLOW_DEVELOPER_RULES,
   TEAM_LEAD_DEVELOPER_RULES,
 } from "../../src/domain/workspace-release-workflow.mjs";
@@ -31,8 +32,9 @@ test("legacy v1 policy is stripped once and replaced by Task workflow rules", ()
   assert.match(rules, /merge that result into dev/u);
   assert.match(rules, /Do not create a Task for diagnosis/u);
   assert.match(rules, /preserve the user's original request in its description/iu);
-  assert.match(rules, /Moving a Task to Await.*does not rebuild or mutate PreRelease/iu);
-  assert.match(rules, /explicit release start.*selected ready Await Tasks.*freezes the exact plan revision/iu);
+  assert.match(rules, /Await Task MUST be reproducible.*Test, In Progress or New/iu);
+  assert.match(rules, /effective first-parent dev integration deltas.*one aggregate PreRelease commit/iu);
+  assert.match(rules, /Never merge dev into PreRelease.*never replay broad Task result snapshot commits/iu);
   assert.match(rules, /fit it within 36 characters.*only when.*cannot be preserved/iu);
   assert.doesNotMatch(rules, /[А-Яа-яЁё]/u);
 });
@@ -41,6 +43,7 @@ test("previous release policies are stripped after title and freeze guidance cha
   for (const legacyRules of [
     LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V3,
     LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V4,
+    LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V5,
   ]) {
     const rules = effectiveWorkspaceDeveloperRules(
       `${legacyRules}\n\nCustom rule`,
@@ -101,8 +104,10 @@ test("Architect rules use only explicit settings.architect and allow multiple St
   );
   assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /Workspace release architect/u);
   assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /frozen release set/u);
-  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /build PreRelease.*freeze the exact plan revision/iu);
-  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /next explicit release.*do not prebuild/iu);
+  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /fetch origin without changing local main/iu);
+  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /authors and committers.*GitHub logins.*signatures.*changed files/iu);
+  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /Immediately before push.*frozen approved main commit/iu);
+  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /rebuild the mutable PreRelease.*remaining Await Tasks/iu);
   assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /Workspace-prescribed preflight/u);
   assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /immutable candidate/u);
   assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /production deployment is healthy/u);
@@ -146,7 +151,7 @@ test("Team Lead rules are independent and compose after Architect rules", () => 
   );
   assert.match(
     TEAM_LEAD_DEVELOPER_RULES,
-    /return the same Task to its executor for correction.*corrected result to independent review again/iu,
+    /Initial review may use any suitable independent Stream.*After a RETURN.*corrected result must go back to the same reviewer.*RETURN remains open until that reviewer confirms/iu,
   );
   assert.match(TEAM_LEAD_DEVELOPER_RULES, /highest number.*S<number>.*add one.*name the new Stream S2/iu);
   assert.match(TEAM_LEAD_DEVELOPER_RULES, /provider, model, and reasoning/u);

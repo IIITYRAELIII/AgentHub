@@ -26,7 +26,11 @@ function hub({ workspaceCatalog, taskBoard, attachmentDirectory }) {
     attachmentDirectory,
     secret: "startup-reconciliation-secret",
     releasePlanner: { plan: async () => ({ ready: [] }) },
-    releasePreflight: { preflight: async () => ({}) },
+    releasePreflight: {
+      preflight: async () => ({}),
+      prepareAwaitSet: async () => ({}),
+      withAwaitTransition: async (_workspaceId, operation) => operation(),
+    },
     releaseCompleter: { completeRelease: async () => ({}) },
   });
 }

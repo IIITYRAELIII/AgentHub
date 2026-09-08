@@ -1467,6 +1467,7 @@ function snapshotQuery(params = {}) {
     workspacesVersion: String(params?.workspacesVersion ?? ""),
     boardTasksVersion: String(params?.boardTasksVersion ?? ""),
     messageReceiptsVersion: String(params?.messageReceiptsVersion ?? ""),
+    messagePinsVersion: String(params?.messagePinsVersion ?? ""),
     waitMs: String(REMOTE_WAIT_MS),
   });
 }
@@ -2056,6 +2057,7 @@ function applySnapshot(snapshot, { materialized = false } = {}) {
     agentHub.setExchangeRates(snapshot.exchangeRates ?? null);
     agentHub.setServerStatus(snapshot.server ?? null);
     agentHub.setWorkspaces(snapshot.workspaces ?? [], snapshot.boardLayout?.columnOrder ?? []);
+    agentHub.setMessagePins(snapshot.messagePins ?? []);
     agentHub.setArchivedWorkspaces(snapshot.archivedWorkspaces ?? []);
     const maintenanceChanged = new Set([
       ...observeContextCompactions(snapshot.tasks),
@@ -2291,6 +2293,10 @@ function historyMessages(history, focusedTurn = null) {
       threadId: itemThreadId,
       turnId: item.id,
       itemId: String(message.itemId ?? ""),
+      messageKey: String(message.messageKey ?? ""),
+      sourceAlias: String(message.sourceAlias ?? ""),
+      semanticSlot: String(message.semanticSlot ?? ""),
+      pinEligible: message.pinEligible === true,
       clientUserMessageId: String(message.clientUserMessageId ?? ""),
       turnUserSlot: String(message.turnUserSlot ?? ""),
       role: message.role,
@@ -2371,6 +2377,10 @@ function historyMessages(history, focusedTurn = null) {
         threadId: focusedThreadId,
         turnId: focusedTurn.turnId,
         itemId,
+        messageKey: String(message.messageKey ?? ""),
+        sourceAlias: String(message.sourceAlias ?? ""),
+        semanticSlot: String(message.semanticSlot ?? ""),
+        pinEligible: message.pinEligible === true,
         role: message.role,
         ...(message.kind ? { kind: message.kind } : {}),
         ...(message.origin ? { origin: message.origin } : {}),
@@ -2952,6 +2962,7 @@ agentHub.on("message:send", (request) => {
         clientUserMessageId: request.requestId,
         clientProjectionIntent,
         followUpMode: request.followUpMode,
+        ...(request.composerTransfer ? { composerTransfer: request.composerTransfer } : {}),
         clientTiming: {
           submittedAtMs: request.submittedAtMs,
           submittedMonotonicMs: request.submittedMonotonicMs,
@@ -3104,6 +3115,36 @@ agentHub.on("task:new", ({ title, provider }) => runAction(async () => {
     const route = window.AgentHubNavigationTabs.resolvedChatRoute({ history: identity }, identity);
     if (route.hash) replaceRoute(route.hash);
   }
+}));
+
+agentHub.on("message-pin:set", ({ mutationId, ...params }) => runAction(async () => {
+  try {
+    const result = await control("message-pin-set", params);
+    agentHub.completeMessagePinMutation(mutationId, result);
+  } catch (error) {
+    agentHub.completeMessagePinMutation(mutationId, { error: error.message });
+  }
+}));
+agentHub.on("message-pins:clear", ({ mutationId, ...params }) => runAction(async () => {
+  try {
+    const result = await control("message-pins-clear", params);
+    agentHub.completeMessagePinMutation(mutationId, result);
+  } catch (error) {
+    agentHub.completeMessagePinMutation(mutationId, { error: error.message });
+  }
+}));
+agentHub.on("message-pin:open", ({ pin }) => runAction(async () => {
+  const result = await control("open-turn", {
+    streamId: pin.streamId,
+    provider: pin.provider,
+    threadId: pin.taskThreadId,
+    taskThreadId: pin.taskThreadId,
+    turnThreadId: pin.turnThreadId,
+    turnId: pin.turnId,
+    itemId: pin.itemId,
+    role: pin.role,
+  });
+  applyOpened(result);
 }));
 
 agentHub.on("task:rename", ({ id, title }) => runAction(async () => {
@@ -3511,17 +3552,16 @@ async function refreshRateLimitHistory(range = rateLimitRefreshRange, { reportEr
 agentHub.on("limits:open", ({ range }) => runAction(
   () => refreshRateLimitHistory(range, { reportError: true }),
 ));
-agentHub.on("usage:open", ({ range, accountKey, turnTimeMode }) => runAction(async () => {
+agentHub.on("usage:open", ({ range, turnTimeMode }) => runAction(async () => {
   try {
     agentHub.setUsageHistory(await readHistoryWithRangeCompatibility("usage-history", range, {
       maxPoints: 600,
-      accountKey: String(accountKey || ""),
       turnTimeMode,
     }));
   } catch (error) {
     agentHub.setUsageHistory({
       range,
-      accountKey: String(accountKey || ""),
+      accountKey: "",
       turnTimeMode,
       error: error?.message || "Не удалось загрузить учётный расход.",
     });
@@ -3698,11 +3738,31 @@ agentHub.on("queue:new", ({ id, taskId: taskIdValue }) => runAction(() => runQue
     return result;
   },
 )));
-agentHub.on("queue:edit", ({ id, text }) => runAction(async () => {
-  const result = await control("deferred-input", { id, action: "edit", text });
-  applySnapshot(await control("snapshot"));
-  agentHub.toast(result?.message ?? "Сообщение в очереди изменено");
-}));
+async function composerAttachmentFromQueue(attachment) {
+  const { blob, name, type } = await attachmentBlob(attachment);
+  return {
+    name: String(name ?? attachment?.name ?? "attachment.bin"),
+    type: String(type ?? blob.type ?? attachment?.type ?? "application/octet-stream"),
+    size: blob.size,
+    dataUrl: await blobDataUrl(blob),
+  };
+}
+
+const queueComposerReturn = window.AgentHubQueueComposerReturn.create({
+  prepare: (id) => control("deferred-input", { id, action: "composer-prepare" }),
+  commit: (id, token) => control("deferred-input", { id, action: "composer-commit", token }),
+  release: (id, token) => control("deferred-input", { id, action: "composer-release", token }),
+  readSnapshot: () => control("snapshot"),
+  itemPresent: (snapshot, id) => (snapshot.deferredInputs ?? []).some((item) => item.id === id),
+  bindingTaskId: (binding) => taskId(binding?.provider, binding?.threadId, binding?.streamId),
+  materializeAttachment: composerAttachmentFromQueue,
+  applyDraft: (...args) => agentHub.applyQueueComposerTransfer(...args),
+  rollbackDraft: (...args) => agentHub.rollbackQueueComposerTransfer(...args),
+  applySnapshot,
+  notify: (message) => agentHub.toast(message),
+});
+
+agentHub.on("queue:edit", (request) => runAction(() => queueComposerReturn.run(request)));
 for (const [event, action, fallback] of [
   ["queue:pause", "pause", "Сообщение приостановлено"],
   ["queue:resume", "resume", "Очередь возобновлена"],

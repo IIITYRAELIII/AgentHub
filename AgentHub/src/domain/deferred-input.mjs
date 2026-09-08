@@ -134,7 +134,14 @@ export function restoreDeferredInput(item, {
   // An interrupted manual steer has an unknown external outcome. Keep the
   // durable input for an explicit retry, but never restore a transient UI
   // "sending" state after the process that owned it has gone away.
-  const { manualAction: _manualAction, ...restoredItem } = candidate;
+  const {
+    manualAction: _manualAction,
+    composerTransfer: interruptedComposerTransfer,
+    ...restoredItem
+  } = candidate;
+  if (interruptedComposerTransfer && interruptedComposerTransfer.paused !== true) {
+    delete restoredItem.paused;
+  }
   if (
     restoredItem.waitReason === "provider-start-unconfirmed"
     && restoredItem.dispatchingAt

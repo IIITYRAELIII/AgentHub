@@ -212,6 +212,35 @@ wrap inside the message column without horizontal page movement. Fences with an
 explicit language preserve code whitespace and may scroll horizontally. Both
 presentations copy the original unmodified block text.
 
+## Journal hierarchy
+
+Collapsed Journal groups show resource totals only. In date, week and month
+groupings, expanding a group keeps the Workspace selector on the left and shows
+the selected Workspace's Streams on the right. In `workspace` grouping the
+outer group already identifies the Workspace, so its expanded body does not
+repeat a Workspace selector: it shows that Workspace's Streams with the
+Workspace profile alongside them. Turn shells remain inside their Stream. The
+Workspace selector always shows turn count, included spend and duration with
+each metric's share of the current temporal scope. Every nested Stream shows
+the same three metrics with their shares of the selected Workspace. These
+resource shares remain visible for selected and unselected Workspace cards. The
+user may disable Stream nesting for date, week and month groupings through the
+Journal setting without changing persisted usage facts. Streams are ordered by the
+currently included credit total descending, with stable recency and identity
+ties. Disabling Claude usage excludes Claude credits from headers, group totals
+and ordering while retaining Claude turns and their duration as journal facts.
+The account-usage panel always includes every provider and is not filtered by
+the Journal and statistics `includeClaudeUsage` presentation setting.
+Opening a group, Stream and turn are separate lazy actions; a collapsed group
+does not materialize turn DOM. In `stream` mode the first Stream retains the
+established default-open overview, profile and task-profile presentation; only
+that Stream's first turn-shell page, its exact aggregate profile across every
+represented provider and a bounded aggregate-only cohort of comparable visible
+Streams are fetched. The requested Stream is retained even when it falls outside
+the bounded peer cohort. The cohort supplies a real cross-Stream profile baseline
+without fetching another Stream's turn shells or bodies. Every other Stream
+remains collapsed and resource-only until explicitly opened.
+
 ## Legacy chronology
 
 Legacy turns without a timestamp keep their durable provider position relative
@@ -239,6 +268,34 @@ completion has been promoted: it removes the cached live card, probe and
 live-user projection even when the previous card was a valid `user-turn`.
 Queued inputs remain represented by the queue surface and cannot keep a drained
 run card alive while waiting for, or after completing, later turns.
+
+`Изменить` on a queued or paused input never opens a second editor. It returns
+the complete source draft to the main composer through the composer state
+owner, including editable user text, locally materialized files, exact Task
+references and their intents, response annotations and the opaque
+inter-Stream-origin transfer identity. Any existing composer text, file, Task
+reference or annotation blocks the operation with an explicit message and does
+not mutate queue state. A composer revision compare-and-swap prevents a user
+edit made during attachment loading from being overwritten. A failed durable
+queue removal rolls back only an unchanged transferred draft; an unknown
+removal outcome is reconciled from the authoritative snapshot and never causes
+an automatic second removal. Queue removal and its committed transfer grant are
+persisted in one runtime snapshot. The grant is bound to the exact provider,
+Thread and Stream, expires with the deferred-input retention window, and keeps
+the original attachment-cleanup obligation. Before receipt admission or a
+provider effect, one exact client message identity claims the grant through a
+durable serialized write; persistence failure prevents the effect and a
+different identity fails closed. After a restart, only that same identity may
+reconcile the grant with its durable receipt. An authoritative missing receipt
+means the durable claim stopped before admission and lets only that same
+identity resume without deleting its source attachments. Provider acceptance
+is a separate durable state; only that state makes source-file cleanup
+eligible, and an interrupted cleanup is retried after restart. Foreign client
+identities and expired grants fail closed without a second provider effect.
+Inter-Stream authority is restored only from the deferred
+item's durable `messageOrigin`. Envelope-shaped user text without matching
+durable origin remains visible user text and cannot supply Workspace, Stream,
+provider, Thread or request identity.
 
 ## Read protocol
 

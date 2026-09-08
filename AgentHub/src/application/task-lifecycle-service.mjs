@@ -35,10 +35,10 @@ function confirmation(task, action, preview) {
 }
 
 export class TaskLifecycleService {
-  constructor({ taskBoard, workspaceCatalog, taskGitWorkspaces = null } = {}) {
+  constructor({ taskBoard, workspaceCatalog, taskGitWorkspaces = null, releasePreflight = null } = {}) {
     for (const name of [
       "task", "beginLifecycleTransition", "commitWorkflowTransition", "failLifecycleTransition",
-      "finalizeCleanupTransition",
+      "rollbackWorkflowOutcome", "finalizeCleanupTransition",
     ]) requiredMethod(taskBoard, name);
     requiredMethod(workspaceCatalog, "workspace");
     requiredMethod(workspaceCatalog, "stream");
@@ -47,9 +47,14 @@ export class TaskLifecycleService {
         requiredMethod(taskGitWorkspaces, name);
       }
     }
+    if (releasePreflight) {
+      requiredMethod(releasePreflight, "prepareAwaitSet");
+      requiredMethod(releasePreflight, "withAwaitTransition");
+    }
     this.taskBoard = taskBoard;
     this.workspaceCatalog = workspaceCatalog;
     this.taskGitWorkspaces = taskGitWorkspaces;
+    this.releasePreflight = releasePreflight;
   }
 
   #task(taskId) {
@@ -94,11 +99,33 @@ export class TaskLifecycleService {
     }
   }
 
-  async updateWorkflowStatus({ taskId, status, operationId, binding = {}, projectRoot = null } = {}) {
+  async updateWorkflowStatus(options = {}) {
+    const task = this.#task(options.taskId);
+    const workspace = task.workspaceId ? this.workspaceCatalog.workspace(task.workspaceId) : null;
+    if (workspace?.settings?.releaseWorkflowEnabled !== true) {
+      return this.#updateWorkflowStatusLocked(options);
+    }
+    if (!this.releasePreflight) {
+      throw new Error("Release preflight is unavailable; workflow status was not changed");
+    }
+    return this.releasePreflight.withAwaitTransition(
+      workspace.id,
+      () => this.#updateWorkflowStatusLocked(options),
+    );
+  }
+
+  async #updateWorkflowStatusLocked({ taskId, status, operationId, binding = {}, projectRoot = null } = {}) {
     return this.#withLock(taskId, async (lease = {}) => {
       const task = this.#task(taskId);
       const workflowStatus = String(status ?? "").trim();
       const snapshotsResult = ["testing", "awaiting_implementation", "done"].includes(workflowStatus);
+      const workspace = task.workspaceId ? this.workspaceCatalog.workspace(task.workspaceId) : null;
+      const affectsAwait = workspace?.settings?.releaseWorkflowEnabled === true
+        && (task.workflowStatus === "awaiting_implementation" || workflowStatus === "awaiting_implementation");
+      const selectedProjectRoot = projectRoot || this.#projectRoot(task);
+      if (affectsAwait && !selectedProjectRoot) {
+        throw new Error("Task project root is unavailable; Await set was not changed");
+      }
       await this.#assertOwned(lease);
       await this.#mutation(() => this.taskBoard.beginLifecycleTransition({
         id: task.id,
@@ -107,17 +134,24 @@ export class TaskLifecycleService {
         targetWorkflowStatus: workflowStatus,
         expectedRevision: task.revision,
       }), operationId);
+      let committed = false;
       try {
         if (!snapshotsResult) {
           await this.#assertOwned(lease);
-          return await this.#mutation(() => this.taskBoard.commitWorkflowTransition({
+          const current = await this.#mutation(() => this.taskBoard.commitWorkflowTransition({
             operationId,
             gitReferences: [],
             replaceGitReferences: false,
             evidence: { outcome: "not_required" },
           }), operationId);
+          committed = true;
+          if (!affectsAwait) return current;
+          const preReleaseIntegration = await this.releasePreflight.prepareAwaitSet({
+            workspaceId: workspace.id,
+            fallbackProjectRoots: [selectedProjectRoot],
+          });
+          return { task: current, preReleaseIntegration };
         }
-        const selectedProjectRoot = projectRoot || this.#projectRoot(task);
         if (!selectedProjectRoot || !this.taskGitWorkspaces) {
           throw new Error("Task Git workspace is unavailable; workflow status was not changed");
         }
@@ -169,13 +203,26 @@ export class TaskLifecycleService {
             response: { gitWorkspace: gitWorkspaceResult, gitIntegration: gitIntegrationResult },
           },
         }), operationId);
+        committed = true;
+        const preReleaseIntegration = affectsAwait
+          ? await this.releasePreflight.prepareAwaitSet({
+            workspaceId: workspace.id,
+            fallbackProjectRoots: [selectedProjectRoot],
+          })
+          : null;
         return {
           task: current,
           gitWorkspace: gitWorkspaceResult,
           gitIntegration: gitIntegrationResult,
+          ...(preReleaseIntegration ? { preReleaseIntegration } : {}),
         };
       } catch (error) {
-        await this.#failWhileOwned(lease, operationId, error);
+        if (committed && affectsAwait) {
+          await this.#assertOwned(lease);
+          await this.#mutation(() => this.taskBoard.rollbackWorkflowOutcome(operationId, error), operationId);
+        } else {
+          await this.#failWhileOwned(lease, operationId, error);
+        }
         throw error;
       }
     });

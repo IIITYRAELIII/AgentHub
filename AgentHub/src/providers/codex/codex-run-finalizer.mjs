@@ -157,6 +157,7 @@ export class CodexRunFinalizer {
       estimatedCredits: completion.estimatedCredits,
       model: completion.model,
       serviceTier: completion.serviceTier,
+      completedAt: completion.completedAt,
     };
     const shouldDeliver = deliver ?? (run.telegramDeliveryRequested !== false);
     const message = [visibleAnswer, this.formatUsage(resolvedTracker)].filter(Boolean).join("\n\n");

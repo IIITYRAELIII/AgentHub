@@ -64,6 +64,7 @@ import {
 import { RuntimeNotificationController } from "../runtime/runtime-notification-controller.mjs";
 import { readTestContourStatus, startTestContour } from "../runtime/test-contour-manager.mjs";
 import { sentryDiagnostics } from "../infrastructure/diagnostics/sentry-diagnostics.mjs";
+import { readPublicationState } from "../infrastructure/persistence/publication-state.mjs";
 import { createCommandTraceComposition } from "./command-trace-composition.mjs";
 import { createPersistenceMutationCapabilities } from "./persistence-mutation-composition.mjs";
 
@@ -383,7 +384,6 @@ export async function createHubInfrastructure({
     console.warn(`Task Git repository requires manual reconciliation: ${repository.reason}`);
   }
   const taskReleasePlanner = new TaskReleasePlanService({ taskBoard, taskGitWorkspaces });
-  const taskLifecycle = new TaskLifecycleService({ taskBoard, workspaceCatalog: workspaceCatalogStore, taskGitWorkspaces });
   const workspaceReleasePreflight = new WorkspaceReleasePreflightService({
     releasePlanner: taskReleasePlanner,
     taskGitWorkspaces,
@@ -396,12 +396,20 @@ export async function createHubInfrastructure({
       ...options,
     }),
     readTestContourStatus,
+    readPublicationState,
+  });
+  const taskLifecycle = new TaskLifecycleService({
+    taskBoard,
+    workspaceCatalog: workspaceCatalogStore,
+    taskGitWorkspaces,
+    releasePreflight: workspaceReleasePreflight,
   });
   const workspaceReleaseService = new WorkspaceReleaseService({
     store: taskBoardStore,
     releasePlanner: taskReleasePlanner,
     releaseGitWorkspaces,
     taskGitWorkspaces,
+    releasePreflight: workspaceReleasePreflight,
     verifyPublication: verifyWorkspaceReleasePublication,
   });
   const hubMcpService = new HubMcpService({
@@ -438,6 +446,15 @@ export async function createHubInfrastructure({
     attachmentThumbnails,
     assetBundleProvider: runtimeAssetBundleProvider(runtimeCommandRoot),
     journalDatabaseFile,
+    journalProjectionService: {
+      ensureAccountUsageProjectionCurrent: (options = {}) => (
+        workLogUsageStore.ensureAccountUsageProjectionCurrent({
+          projectRoot: config.projectRoot,
+          projectionProjectRoots: globalWorkLogProjectRoots,
+          ...options,
+        })
+      ),
+    },
     usageSyncRemoteConfigStore: workLogUsageRemoteConfigStore,
     workspaceFileRoots: [config.projectRoot, ...config.projects.map((project) => project.path)],
     recordCommandTrace: (span) => commandTrace?.service?.recordBestEffort?.(span) ?? false,
