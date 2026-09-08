@@ -17,7 +17,10 @@
     return draftsPersisted !== true
       || Boolean(modalOpen)
       || Boolean(requestPending)
-      || [...drafts].some((draft) => (draft?.attachments ?? []).length > 0)
+      || [...drafts].some((draft) => (
+        draft?.recoveryNonDurable === true
+        || ((draft?.attachments ?? []).length > 0 && draft?.recoveryDurable !== true)
+      ))
       || bugReportAttachments.length > 0
       || Boolean(bugReportSending);
   }

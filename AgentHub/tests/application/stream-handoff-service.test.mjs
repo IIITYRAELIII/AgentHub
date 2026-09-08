@@ -43,9 +43,9 @@ const turn = {
   status: "completed",
 };
 
-test("a requested handoff survives as a durable per-Stream record", () => {
+test("a requested handoff survives as a durable per-Stream record", async () => {
   const { service, meta } = fixture();
-  const pending = service.request({
+  const pending = await service.request({
     streamId: "stream-1",
     targetProvider: "Claude",
     sourceProvider: "Codex",
@@ -62,7 +62,7 @@ test("a requested handoff survives as a durable per-Stream record", () => {
 
 test("the first turn of the receiving Thread consumes the package exactly once", async () => {
   const { service, requestedThreads } = fixture({ turns: [turn] });
-  service.request({
+  await service.request({
     streamId: "stream-1",
     targetProvider: "claude",
     sourceProvider: "codex",
@@ -89,7 +89,7 @@ test("the first turn of the receiving Thread consumes the package exactly once",
 
 test("a turn of the source Thread does not consume the pending handoff", async () => {
   const { service } = fixture({ turns: [turn] });
-  service.request({
+  await service.request({
     streamId: "stream-1",
     targetProvider: "claude",
     sourceProvider: "codex",
@@ -106,7 +106,7 @@ test("a turn of the source Thread does not consume the pending handoff", async (
 
 test("a handoff for another provider is dropped instead of being delivered", async () => {
   const { service } = fixture({ turns: [turn] });
-  service.request({
+  await service.request({
     streamId: "stream-1",
     targetProvider: "claude",
     sourceProvider: "codex",

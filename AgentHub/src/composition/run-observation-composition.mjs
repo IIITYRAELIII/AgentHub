@@ -91,6 +91,9 @@ export function createRunObservationComposition({
     discardContextCompactionRun,
     savedLastTaskMessage,
     savedLastTaskMessageRecord,
+    interstreamOriginForClientMessage: (clientUserMessageId) => (
+      workspaceCatalogStore.interstreamOriginForClientMessage(clientUserMessageId)
+    ),
     externalPollIntervalMs,
     managedPollIntervalMs,
   });

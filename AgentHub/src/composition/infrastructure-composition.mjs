@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 
 import { RunJournalService } from "../application/run-journal-service.mjs";
 import { HubMcpService } from "../application/hub-mcp-service.mjs";
+import { TaskLifecycleService } from "../application/task-lifecycle-service.mjs";
 import { McpAdmissionCoordinator } from "../application/mcp-admission-coordinator.mjs";
 import { TurnEndNotificationRegistry } from "../application/turn-end-notifications.mjs";
 import { createWorkLogUsageStore } from "../application/work-log-usage-store.mjs";
@@ -63,7 +64,9 @@ import {
 import { RuntimeNotificationController } from "../runtime/runtime-notification-controller.mjs";
 import { readTestContourStatus, startTestContour } from "../runtime/test-contour-manager.mjs";
 import { sentryDiagnostics } from "../infrastructure/diagnostics/sentry-diagnostics.mjs";
+import { readPublicationState } from "../infrastructure/persistence/publication-state.mjs";
 import { createCommandTraceComposition } from "./command-trace-composition.mjs";
+import { createPersistenceMutationCapabilities } from "./persistence-mutation-composition.mjs";
 
 const execFileAsync = promisify(execFile);
 const GITHUB_LOGIN_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u;
@@ -98,6 +101,14 @@ function testContourRuntimeIdentity(environment = process.env) {
     throw new Error("Test Contour runtime identity environment is incomplete");
   }
   return identity;
+}
+
+export async function recoverTaskBoardStartup(taskBoard) {
+  try {
+    return await taskBoard.recoverPendingTriage();
+  } catch (error) {
+    throw new Error("Task triage startup recovery failed", { cause: error });
+  }
 }
 
 function gitConfigValue(text, sectionName, keyName) {
@@ -243,28 +254,32 @@ export async function createHubInfrastructure({
   const codexRolloutContextSanitizer = new CodexRolloutContextSanitizer({
     ...config.codexRolloutContext,
   });
-  const workspaceCatalogStore = new WorkspaceCatalogStore({
+  const rawWorkspaceCatalogStore = new WorkspaceCatalogStore({
     databaseFile: journalDatabaseFile,
   });
-  const taskBoardStore = new TaskBoardStore({ databaseFile: journalDatabaseFile });
-  await workspaceCatalogStore.load();
+  const rawTaskBoardStore = new TaskBoardStore({ databaseFile: journalDatabaseFile });
+  await rawWorkspaceCatalogStore.load();
   const preTurnInstructions = new PreTurnInstructionStore({
     guideFile: path.join(agentHubRoot, "AGENT_HUB_GUIDE.md"),
     globalFile: path.join(config.dataDir, "global-pre-turn-instructions.md"),
   });
   await preTurnInstructions.loadGuide();
   const dashBotStream = config.taskBoard.triageEnabled
-    ? ensureDashBotStream(workspaceCatalogStore, {
+    ? await rawWorkspaceCatalogStore.runMutation(() => ensureDashBotStream(rawWorkspaceCatalogStore, {
       model: config.taskBoard.triageModel,
       projectRoot: config.projectRoot,
-    })
+    }))
     : null;
-  const existingDashBotStream = dashBotStream ?? workspaceCatalogStore.hierarchy()
+  const existingDashBotStream = dashBotStream ?? rawWorkspaceCatalogStore.hierarchy()
     .find((workspace) => workspace.name === "Other")?.streams
     .find((stream) => stream.name === "DashBot") ?? null;
-  const dashBotTerraStream = ensureDashBotTerraStream(workspaceCatalogStore, {
+  const dashBotTerraStream = await rawWorkspaceCatalogStore.runMutation(() => ensureDashBotTerraStream(rawWorkspaceCatalogStore, {
     firstStreamId: existingDashBotStream?.id ?? null,
     projectRoot: config.projectRoot,
+  }));
+  const { workspaceCatalogStore, taskBoardStore } = createPersistenceMutationCapabilities({
+    rawWorkspaceCatalogStore,
+    rawTaskBoardStore,
   });
   const taskVoiceTranscriber = new CodexTerraVoiceTranscriber({
     requestedExecutable: config.codexExecutable,
@@ -297,7 +312,7 @@ export async function createHubInfrastructure({
     autoPlaceConfidence: config.taskBoard.autoPlaceConfidence,
     recordEvent: (event) => workspaceCatalogStore.recordWorkspaceEvent(event),
   });
-  taskBoard.recoverPendingTriage();
+  await recoverTaskBoardStartup(taskBoard);
   const workLogUsageIdentityStore = await usageSyncIdentity(config, agentHubRoot);
   const workLogUsageRemoteConfigStore = new UsageSyncRemoteConfigStore({
     file: path.join(config.dataDir, "usage-sync-remote.json"),
@@ -357,9 +372,16 @@ export async function createHubInfrastructure({
   const releaseReconciliation = await releaseGitWorkspaces.reconcile({
     projectRoots: registeredReleaseProjectRoots,
   });
+  const taskGitReconciliation = await taskGitWorkspaces.reconcile({
+    projectRoots: registeredReleaseProjectRoots,
+  });
+  agentHubRuntimeHealth.setDiagnosticSource("taskGit", () => taskGitReconciliation);
   agentHubRuntimeHealth.setDiagnosticSource("releaseGit", () => releaseGitWorkspaces.diagnostics());
   for (const repository of releaseReconciliation.repositories.filter((item) => item.status !== "ready")) {
     console.warn(`Release repository requires manual reconciliation: ${repository.reason}`);
+  }
+  for (const repository of taskGitReconciliation.repositories.filter((item) => item.status === "blocked")) {
+    console.warn(`Task Git repository requires manual reconciliation: ${repository.reason}`);
   }
   const taskReleasePlanner = new TaskReleasePlanService({ taskBoard, taskGitWorkspaces });
   const workspaceReleasePreflight = new WorkspaceReleasePreflightService({
@@ -374,16 +396,26 @@ export async function createHubInfrastructure({
       ...options,
     }),
     readTestContourStatus,
+    readPublicationState,
+  });
+  const taskLifecycle = new TaskLifecycleService({
+    taskBoard,
+    workspaceCatalog: workspaceCatalogStore,
+    taskGitWorkspaces,
+    releasePreflight: workspaceReleasePreflight,
   });
   const workspaceReleaseService = new WorkspaceReleaseService({
     store: taskBoardStore,
     releasePlanner: taskReleasePlanner,
     releaseGitWorkspaces,
+    taskGitWorkspaces,
+    releasePreflight: workspaceReleasePreflight,
     verifyPublication: verifyWorkspaceReleasePublication,
   });
   const hubMcpService = new HubMcpService({
     workspaceCatalog: workspaceCatalogStore,
     taskBoard,
+    taskLifecycle,
     workLog: workLogUsageStore,
     attachmentDirectory,
     secret: hubMcpSecret,
@@ -393,6 +425,9 @@ export async function createHubInfrastructure({
     taskGitWorkspaces,
     releaseGitWorkspaces,
   });
+  agentHubRuntimeHealth.setDiagnosticSource("sqliteContention", () => (
+    hubMcpService.databaseContentionDiagnostics()
+  ));
   const mcpAdmissionCoordinator = new McpAdmissionCoordinator();
   const hubMcpServer = new HubMcpServer({
     service: hubMcpService,
@@ -411,6 +446,15 @@ export async function createHubInfrastructure({
     attachmentThumbnails,
     assetBundleProvider: runtimeAssetBundleProvider(runtimeCommandRoot),
     journalDatabaseFile,
+    journalProjectionService: {
+      ensureAccountUsageProjectionCurrent: (options = {}) => (
+        workLogUsageStore.ensureAccountUsageProjectionCurrent({
+          projectRoot: config.projectRoot,
+          projectionProjectRoots: globalWorkLogProjectRoots,
+          ...options,
+        })
+      ),
+    },
     usageSyncRemoteConfigStore: workLogUsageRemoteConfigStore,
     workspaceFileRoots: [config.projectRoot, ...config.projects.map((project) => project.path)],
     recordCommandTrace: (span) => commandTrace?.service?.recordBestEffort?.(span) ?? false,
@@ -527,6 +571,7 @@ export async function createHubInfrastructure({
     streamHandoff,
     preTurnInstructions,
     taskBoard,
+    taskLifecycle,
     taskGitWorkspaces,
     releaseGitWorkspaces,
     taskVoiceTranscriber,

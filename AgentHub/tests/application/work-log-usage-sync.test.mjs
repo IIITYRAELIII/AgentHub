@@ -18,6 +18,7 @@ import {
   detectIdentityCollisions,
   limitObservationId,
   normalizeLimitObservation,
+  usageFactSummary,
 } from "../../src/domain/usage-facts.mjs";
 
 const RUNTIME_HOME_ID = "1".repeat(64);
@@ -132,6 +133,47 @@ test("limit observation identity is derived from canonical lane fields", () => {
   assert.equal(secondary.observationId, limitObservationId({ ...base, window: "secondary" }));
   assert.notEqual(primary.observationId, staleId);
   assert.notEqual(primary.observationId, secondary.observationId);
+});
+
+test("usage fact summary is deterministic and ignores presentation fields", () => {
+  const first = usageFactSummary([
+    turn({ source: "local", deviceLabel: "local name" }),
+    {
+      schemaVersion: 2,
+      type: "limit_observation",
+      observationId: `limit:${"0".repeat(64)}`,
+      deviceId: "device-a",
+      provider: "codex",
+      accountKey: "chatgpt:owner",
+      limitId: "codex",
+      window: "primary",
+      usedPercent: 10,
+      observedAt: "2026-08-20T01:00:00.000Z",
+    },
+  ]);
+  const second = usageFactSummary([
+    {
+      schemaVersion: 2,
+      type: "limit_observation",
+      observationId: `limit:${"9".repeat(64)}`,
+      deviceId: "device-a",
+      provider: "codex",
+      accountKey: "chatgpt:owner",
+      limitId: "codex",
+      window: "primary",
+      usedPercent: 10,
+      observedAt: "2026-08-20T01:00:00.000Z",
+    },
+    turn({ source: "sync", deviceLabel: "remote name" }),
+  ]);
+
+  assert.equal(first.count, 2);
+  assert.deepEqual(first.byType, {
+    turn: 1,
+    auth_observation: 0,
+    limit_observation: 1,
+  });
+  assert.equal(first.digest, second.digest);
 });
 
 test("merge adds richer limit samples without moving the original observation time", () => {

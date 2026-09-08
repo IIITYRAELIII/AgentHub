@@ -22,6 +22,20 @@
   --title-weight: 545;
   --label-spacing: 0.15em;
   --label-transform: uppercase;
+  /* Подпись поля в модальных карточках. До этого карточка Stream писала
+     подписи 0.83rem, Workspace — 0.72rem, задача — 0.68rem, и одинаковые по
+     смыслу строки выглядели тремя разными уровнями. */
+  --card-label-size: 0.78rem;
+
+  /* Заголовок секции: один источник истины для «ПАРАМЕТРЫ», «ДЕЙСТВИЯ» и
+     заголовков вложенных блоков карточки. Тема переопределяет эти токены, а
+     не каждое место по отдельности. */
+  --section-heading-family: var(--font-title);
+  --section-heading-size: 0.63rem;
+  --section-heading-weight: 700;
+  --section-heading-spacing: 0.18em;
+  --section-heading-transform: uppercase;
+  --section-heading-color: var(--text-faint);
 
   /* ---- геометрия ---- */
   --radius-lg: 16px;
@@ -243,9 +257,9 @@ a:hover {
 /* ================================================================ шапка === */
 
 .app-header {
-  backdrop-filter: blur(18px) saturate(150%);
-  -webkit-backdrop-filter: blur(18px) saturate(150%);
-  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter: var(--shell-header-backdrop-filter, blur(18px) saturate(150%));
+  -webkit-backdrop-filter: var(--shell-header-backdrop-filter, blur(18px) saturate(150%));
+  background: var(--shell-header-background, color-mix(in srgb, var(--bg) 82%, transparent));
   border-bottom: 1px solid var(--line);
   /* Положение верхней оболочки принадлежит Hub, а не теме: декоративный CSS
      может менять материал панели, но не её высоту или привязку к краю. */
@@ -2668,6 +2682,17 @@ html[data-surface="mobile"] .eyebrow {
   display: none;
 }
 
+/* В модальных карточках надзаголовок не дублирует нижнюю навигацию, а у
+   карточки Stream он вообще единственное название окна, поэтому на телефоне
+   шапка карточки остаётся подписанной. */
+html[data-surface="mobile"] .dialog-settings-head .eyebrow,
+html[data-surface="mobile"] .workspace-card-modal .eyebrow,
+html[data-surface="mobile"] .workspace-archive-modal .eyebrow,
+html[data-surface="mobile"] .task-card-modal .eyebrow,
+html[data-surface="mobile"] .task-start-modal .eyebrow {
+  display: block;
+}
+
 /* Название раздела на телефоне дублирует подписанную вкладку нижней
    навигации, поэтому из шапки оно убирается визуально, но остаётся в
    структуре страницы для скринридера. */
@@ -3848,6 +3873,7 @@ html[data-view="dashboard"] .task-board-view {
   border-bottom: 1px solid var(--line);
   box-sizing: border-box;
   display: flex;
+  flex: 0 0 6.5rem;
   gap: 0.6rem;
   height: 6.5rem;
   justify-content: space-between;
@@ -4129,9 +4155,9 @@ html[data-view="dashboard"] .task-board-view {
 
 .task-card-attachment-toolbar {
   align-items: center;
-  color: var(--text-faint);
+  color: var(--text-muted);
   display: flex;
-  font-size: 0.68rem;
+  font-size: var(--card-label-size);
   justify-content: space-between;
 }
 
@@ -4332,7 +4358,29 @@ html[data-view="dashboard"] .task-board-view {
 
 .task-card-modal > footer {
   border-top: 1px solid var(--line);
+  gap: 0.5rem;
   margin-top: 0;
+}
+
+/* Действия футера одного размера; удаление отделено и уходит к правому краю,
+   а при переносе строки остаётся справа, а не повисает под кнопками. */
+.task-card-modal > footer .board-task-quiet,
+.task-card-modal > footer .board-task-remove {
+  border-radius: var(--radius-md);
+  font-size: 0.76rem;
+  padding: 0.48rem 0.6rem;
+}
+
+.task-card-modal > footer .board-task-remove {
+  margin-inline-start: auto;
+}
+
+.task-card-modal > footer > * {
+  min-height: 2.15rem;
+}
+
+.task-card-modal > footer .board-task-destination {
+  flex: 0 1 11rem;
 }
 
 .task-card-modal h2,
@@ -4357,11 +4405,18 @@ html[data-view="dashboard"] .task-board-view {
   gap: 0.75rem;
 }
 
+/* Сохранение относится к паре полей выше, а не ко всей карточке, поэтому
+   кнопка не растягивается на всю ширину и не спорит с действиями футера. */
+.task-card-editor > .board-task-primary {
+  justify-self: end;
+  min-height: 2.15rem;
+}
+
 .task-card-editor label {
-  color: var(--text-faint);
+  color: var(--text-muted);
   display: grid;
-  font-size: 0.68rem;
-  gap: 0.3rem;
+  font-size: var(--card-label-size);
+  gap: 0.35rem;
 }
 
 .task-card-title-control {
@@ -4390,10 +4445,10 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .task-card-status-field {
-  color: var(--text-faint);
+  color: var(--text-muted);
   display: grid;
-  font-size: 0.68rem;
-  gap: 0.3rem;
+  font-size: var(--card-label-size);
+  gap: 0.35rem;
 }
 
 .task-card-status-field select {
@@ -4432,8 +4487,8 @@ html[data-view="dashboard"] .task-board-view {
 .task-card-detail-row > span,
 .task-card-changed-files > span,
 .task-card-work-log > span {
-  color: var(--text-faint);
-  font-size: 0.68rem;
+  color: var(--text-muted);
+  font-size: var(--card-label-size);
 }
 
 .task-card-detail-row strong {
@@ -4491,9 +4546,12 @@ html[data-view="dashboard"] .task-board-view {
   margin: 0;
 }
 
+/* Записи лога лежат внутри блока «Исполнение и изменения», у которого уже есть
+   своя рамка. Вторая рамка внутри первой давала двойной контур, поэтому запись
+   отделяется заливкой. */
 .task-card-work-log-entry {
   background: color-mix(in srgb, var(--surface-2) 78%, transparent);
-  border: 1px solid var(--line);
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
   display: grid;
   gap: 0.35rem;
@@ -4564,6 +4622,10 @@ html[data-view="dashboard"] .task-board-view {
   color: var(--text);
   max-height: min(90dvh, 56rem);
   max-width: 42rem;
+  /* Форма берёт max-height диалога через inherit, поэтому рамка диалога
+     добавляла ровно свои 2px переполнения и рядом с полосой прокрутки полей
+     появлялась вторая, внешняя. Прокручиваются только поля. */
+  overflow: hidden;
   padding: 0;
   width: calc(100% - 2rem);
 }
@@ -4644,9 +4706,36 @@ html[data-view="dashboard"] .task-board-view {
   font-size: 0.7rem;
 }
 
-.workspace-archive-restore {
+.workspace-archive-actions {
+  align-items: center;
+  display: flex;
+  gap: 0.4rem;
   grid-column: 2;
   grid-row: 1 / span 2;
+}
+
+.workspace-archive-delete,
+.workspace-card-archive,
+.stream-card-archive {
+  background: color-mix(in srgb, var(--danger, #ff7b7b) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger, #ff7b7b) 55%, var(--line));
+  border-radius: var(--radius-sm);
+  color: var(--danger, #ff7b7b);
+  cursor: pointer;
+  font: inherit;
+  padding: 0.42rem 0.62rem;
+}
+
+.workspace-archive-delete:hover,
+.workspace-card-archive:hover,
+.stream-card-archive:hover {
+  background: color-mix(in srgb, var(--danger, #ff7b7b) 20%, transparent);
+}
+
+.workspace-card-archive:disabled,
+.stream-card-archive:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 
 .workspace-archive-empty {
@@ -4681,7 +4770,23 @@ html[data-view="dashboard"] .task-board-view {
 
 .workspace-card-modal footer {
   border-top: 1px solid var(--line);
+  gap: 0.5rem;
   justify-content: flex-end;
+}
+
+/* «Отмена» остаётся тише «Сохранить», но обе кнопки одного размера. */
+.workspace-card-modal footer button {
+  min-height: 2.15rem;
+}
+
+.workspace-card-modal footer .board-task-quiet {
+  border-radius: var(--radius-md);
+  font-size: 0.76rem;
+  padding: 0.48rem 0.72rem;
+}
+
+.workspace-card-modal footer .board-task-quiet:hover {
+  color: var(--text);
 }
 
 .workspace-card-modal h2,
@@ -4701,6 +4806,18 @@ html[data-view="dashboard"] .task-board-view {
   padding: 1rem;
 }
 
+.workspace-card-actions-section {
+  padding-top: 0.45rem;
+}
+
+/* Тот же размер, что у действий карточки Stream. */
+.workspace-card-actions .workspace-card-archive {
+  border-radius: var(--radius-chip);
+  font-size: 0.76rem;
+  min-height: 2.45rem;
+  width: 100%;
+}
+
 .workspace-card-fields [hidden] {
   display: none;
 }
@@ -4712,7 +4829,7 @@ html[data-view="dashboard"] .task-board-view {
 
 .workspace-card-fields label > span {
   color: var(--text-muted);
-  font-size: 0.72rem;
+  font-size: var(--card-label-size);
 }
 
 /* Поля брали оформление у браузера и оставались серыми в любой теме. Токены
@@ -4755,9 +4872,15 @@ html[data-view="dashboard"] .task-board-view {
   outline: none;
 }
 
+/* Необязательный комментарий занимал столько же, сколько правила агента, и
+   вытеснял нижние поля за край карточки. Растянуть его по-прежнему можно. */
 .workspace-card-fields textarea {
-  min-height: 6rem;
+  min-height: 4.5rem;
   resize: vertical;
+}
+
+.workspace-card-fields [data-workspace-card-comment] {
+  height: 4.5rem;
 }
 
 .workspace-card-fields [data-workspace-card-rules] {
@@ -4802,18 +4925,32 @@ html[data-view="dashboard"] .task-board-view {
   color: var(--danger);
 }
 
+/* Та же раскладка, что у переключателей ролей Stream: подпись слева,
+   пояснение следом, тумблер прижат к правому краю карточки. */
 .workspace-release-workflow-setting {
   align-items: center;
-  display: flex;
+  display: grid;
   gap: 0.55rem;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   position: relative;
 }
 
 .workspace-release-workflow-switch {
-  align-items: center;
   cursor: pointer;
-  display: flex !important;
-  gap: 0.6rem !important;
+  display: contents !important;
+}
+
+.workspace-release-workflow-switch .switch-text {
+  grid-area: 1 / 1;
+}
+
+.workspace-release-workflow-help-popover {
+  grid-area: 1 / 2;
+}
+
+.workspace-release-workflow-switch .switch-track {
+  grid-area: 1 / 3;
+  justify-self: end;
 }
 
 .workspace-release-workflow-help-popover {
@@ -4883,10 +5020,30 @@ html[data-view="dashboard"] .task-board-view {
   gap: 0.35rem;
 }
 
+/* Подпись, знак вопроса и тумблер — ячейки одной строки, поэтому тумблеры
+   ролей стоят на той же вертикали, что «Автоподтверждение» над ними. */
 .stream-role-setting-heading {
   align-items: center;
-  display: flex;
+  display: grid;
   gap: 0.45rem;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.stream-role-setting-heading .setting-switch {
+  display: contents;
+}
+
+.stream-role-setting-heading .switch-text {
+  grid-area: 1 / 1;
+}
+
+.stream-role-setting-heading .stream-role-help-popover {
+  grid-area: 1 / 2;
+}
+
+.stream-role-setting-heading .switch-track {
+  grid-area: 1 / 3;
+  justify-self: end;
 }
 
 .stream-role-help-popover {
@@ -4955,8 +5112,14 @@ html[data-view="dashboard"] .task-board-view {
   margin: 0;
 }
 
+/* Короткие значения не растягиваются на всю карточку: поле по длине данных
+   читается как короткое, а не как ещё одна строка полной ширины. */
 .workspace-card-fields input[type="number"] {
   max-width: 8rem;
+}
+
+.workspace-card-fields [data-workspace-card-task-prefix] {
+  max-width: 12rem;
 }
 
 .workspace-card-fields input:disabled {
@@ -5124,32 +5287,6 @@ html[data-surface="mobile"]
   transition: background 0.14s ease, border-color 0.14s ease;
 }
 
-/* Заголовок семейства — не строка списка, а надпись на полке: он ничего не
-   открывает, поэтому набран тише самих пространств и не претендует на клик. */
-.task-workspace-divider {
-  align-items: center;
-  display: flex;
-  gap: 0.5rem;
-  list-style: none;
-  margin: 0.62rem 0 0.3rem;
-  padding: 0 0.62rem;
-}
-
-.task-workspace-divider::after {
-  background: var(--line);
-  content: "";
-  flex: 1 1 auto;
-  height: 1px;
-}
-
-.task-workspace-divider-label {
-  color: var(--text-faint);
-  flex: 0 0 auto;
-  font-size: 0.66rem;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-}
-
 .task-rail-actions {
   align-items: center;
   display: inline-flex;
@@ -5305,7 +5442,7 @@ html[data-surface="mobile"]
 }
 
 /* Внутри папки строки сдвинуты — видно, что они принадлежат заголовку. */
-.task-workspace-item[data-family-member] {
+.task-workspace-item[data-folder-member] {
   margin: 0;
 }
 
@@ -6004,11 +6141,7 @@ html[data-surface="mobile"]
 :root[data-stream-status-effect]:not([data-stream-status-effect="off"])
   .task-workspace-item[data-running],
 :root[data-stream-status-effect]:not([data-stream-status-effect="off"])
-  .task-workspace-item[data-unread]:not([data-running]),
-:root[data-stream-status-effect]:not([data-stream-status-effect="off"])
-  .stream-tab[data-running] .stream-tab-card,
-:root[data-stream-status-effect]:not([data-stream-status-effect="off"])
-  .stream-tab[data-answer-ready] .stream-tab-card {
+  .task-workspace-item[data-unread]:not([data-running]) {
   border-color: var(--accent-line);
 }
 
@@ -6023,7 +6156,7 @@ html[data-surface="mobile"]
 /* Спокойный: неподвижная сигнальная точка во время хода и зафиксированная
    верхняя риска после ответа. */
 :root[data-stream-status-effect="calm"] .task-workspace-item[data-running]::before,
-:root[data-stream-status-effect="calm"] .stream-tab[data-running] .stream-tab-card::before {
+:root[data-stream-status-effect="calm"] .stream-tab[data-running] .stream-tab-status-layer::before {
   background: var(--accent);
   border-radius: 50%;
   box-shadow: 0 0 0.48rem color-mix(in srgb, var(--accent) 58%, transparent);
@@ -6038,7 +6171,7 @@ html[data-surface="mobile"]
 }
 
 :root[data-stream-status-effect="calm"] .task-workspace-item[data-unread]:not([data-running])::before,
-:root[data-stream-status-effect="calm"] .stream-tab[data-answer-ready] .stream-tab-card::before {
+:root[data-stream-status-effect="calm"] .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
   background: linear-gradient(90deg, transparent, var(--accent) 20%, var(--accent) 80%, transparent);
   content: "";
   height: 1.5px;
@@ -6053,9 +6186,9 @@ html[data-surface="mobile"]
 :root[data-stream-status-style="fill"][data-stream-status-effect="calm"]
   .task-workspace-item[data-unread]:not([data-running])::before,
 :root[data-stream-status-style="fill"][data-stream-status-effect="calm"]
-  .stream-tab[data-running] .stream-tab-card::before,
+  .stream-tab[data-running] .stream-tab-status-layer::before,
 :root[data-stream-status-style="fill"][data-stream-status-effect="calm"]
-  .stream-tab[data-answer-ready] .stream-tab-card::before {
+  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
   background: var(--accent);
   border-radius: inherit;
   box-shadow: none;
@@ -6068,14 +6201,14 @@ html[data-surface="mobile"]
 :root[data-stream-status-style="fill"][data-stream-status-effect="calm"]
   .task-workspace-item[data-unread]:not([data-running])::before,
 :root[data-stream-status-style="fill"][data-stream-status-effect="calm"]
-  .stream-tab[data-answer-ready] .stream-tab-card::before {
+  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
   opacity: 0.13;
 }
 
 /* Импульс: сигнал проходит по контуру, а готовый ответ дважды отвечает
    коротким маяком и остаётся со спокойной световой отметкой. */
 :root[data-stream-status-effect="impulse"] .task-workspace-item[data-running]::after,
-:root[data-stream-status-effect="impulse"] .stream-tab[data-running] .stream-tab-card::after {
+:root[data-stream-status-effect="impulse"] .stream-tab[data-running] .stream-tab-status-layer::after {
   animation: stream-running-wave 2.2s linear infinite;
   background: linear-gradient(90deg, transparent 0%, var(--accent) 44%, var(--accent) 56%, transparent 100%);
   border-radius: inherit;
@@ -6095,7 +6228,7 @@ html[data-surface="mobile"]
 :root[data-stream-status-effect="impulse"]
   .task-workspace-item[data-unread]:not([data-running])::before,
 :root[data-stream-status-effect="impulse"]
-  .stream-tab[data-answer-ready] .stream-tab-card::before {
+  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
   --stream-status-peak: 1;
   border: 2px solid var(--accent);
   border-radius: inherit;
@@ -6110,14 +6243,14 @@ html[data-surface="mobile"]
 :root[data-stream-status-effect="impulse"]
   .task-workspace-item[data-unread][data-answer-arrived]:not([data-running])::before,
 :root[data-stream-status-effect="impulse"]
-  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-card::before {
+  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-status-layer::before {
   animation: stream-answer-ready 1.45s ease-out 2;
 }
 
 :root[data-stream-status-style="fill"][data-stream-status-effect="impulse"]
   .task-workspace-item[data-running]::after,
 :root[data-stream-status-style="fill"][data-stream-status-effect="impulse"]
-  .stream-tab[data-running] .stream-tab-card::after {
+  .stream-tab[data-running] .stream-tab-status-layer::after {
   filter: none;
   inset: 0;
   opacity: 0.34;
@@ -6131,7 +6264,7 @@ html[data-surface="mobile"]
 :root[data-stream-status-style="fill"][data-stream-status-effect="impulse"]
   .task-workspace-item[data-unread]:not([data-running])::before,
 :root[data-stream-status-style="fill"][data-stream-status-effect="impulse"]
-  .stream-tab[data-answer-ready] .stream-tab-card::before {
+  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
   --stream-status-peak: 0.42;
   background: var(--accent);
   border: 0;
@@ -6143,7 +6276,7 @@ html[data-surface="mobile"]
 /* Сканер: узкий луч проверяет канал; готовность фиксируется быстрой
    центральной развёрткой, которая не продолжает мигать. */
 :root[data-stream-status-effect="scanner"] .task-workspace-item[data-running]::after,
-:root[data-stream-status-effect="scanner"] .stream-tab[data-running] .stream-tab-card::after {
+:root[data-stream-status-effect="scanner"] .stream-tab[data-running] .stream-tab-status-layer::after {
   animation: stream-scanner-pass 1.85s linear infinite;
   background: linear-gradient(90deg, transparent 0%, var(--accent) 40%, var(--accent) 60%, transparent 100%);
   border-radius: inherit;
@@ -6164,11 +6297,11 @@ html[data-surface="mobile"]
 :root[data-stream-status-style="edge"][data-stream-status-effect="impulse"]
   .task-workspace-item[data-running]::after,
 :root[data-stream-status-style="edge"][data-stream-status-effect="impulse"]
-  .stream-tab[data-running] .stream-tab-card::after,
+  .stream-tab[data-running] .stream-tab-status-layer::after,
 :root[data-stream-status-style="edge"][data-stream-status-effect="scanner"]
   .task-workspace-item[data-running]::after,
 :root[data-stream-status-style="edge"][data-stream-status-effect="scanner"]
-  .stream-tab[data-running] .stream-tab-card::after {
+  .stream-tab[data-running] .stream-tab-status-layer::after {
   padding: 0;
   -webkit-mask:
     linear-gradient(#000 0 0) top / 100% 2px no-repeat,
@@ -6183,7 +6316,7 @@ html[data-surface="mobile"]
 :root[data-stream-status-effect="scanner"]
   .task-workspace-item[data-unread]:not([data-running])::after,
 :root[data-stream-status-effect="scanner"]
-  .stream-tab[data-answer-ready] .stream-tab-card::after {
+  .stream-tab[data-answer-ready] .stream-tab-status-layer::after {
   background: linear-gradient(90deg, transparent, var(--accent) 14%, var(--accent) 86%, transparent);
   border-radius: 2px;
   box-shadow: 0 0 9px color-mix(in srgb, var(--accent) 55%, transparent);
@@ -6199,14 +6332,14 @@ html[data-surface="mobile"]
 :root[data-stream-status-effect="scanner"]
   .task-workspace-item[data-unread][data-answer-arrived]:not([data-running])::after,
 :root[data-stream-status-effect="scanner"]
-  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-card::after {
+  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-status-layer::after {
   animation: stream-scanner-lock 0.72s ease-out 2;
 }
 
 :root[data-stream-status-style="fill"][data-stream-status-effect="scanner"]
   .task-workspace-item[data-running]::after,
 :root[data-stream-status-style="fill"][data-stream-status-effect="scanner"]
-  .stream-tab[data-running] .stream-tab-card::after {
+  .stream-tab[data-running] .stream-tab-status-layer::after {
   filter: none;
   inset: 0;
   opacity: 0.28;
@@ -6220,7 +6353,7 @@ html[data-surface="mobile"]
 :root[data-stream-status-style="fill"][data-stream-status-effect="scanner"]
   .task-workspace-item[data-unread]:not([data-running])::before,
 :root[data-stream-status-style="fill"][data-stream-status-effect="scanner"]
-  .stream-tab[data-answer-ready] .stream-tab-card::before {
+  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
   background: var(--accent);
   border-radius: inherit;
   content: "";
@@ -6233,11 +6366,11 @@ html[data-surface="mobile"]
 /* Энергия: ход циклически набирает заряд слева направо; после ответа заряд
    дважды расширяется и остаётся заполненным до открытия Stream. */
 :root[data-stream-status-effect="energy"] .task-workspace-item[data-running]::before,
-:root[data-stream-status-effect="energy"] .stream-tab[data-running] .stream-tab-card::before,
+:root[data-stream-status-effect="energy"] .stream-tab[data-running] .stream-tab-status-layer::before,
 :root[data-stream-status-effect="energy"]
   .task-workspace-item[data-unread]:not([data-running])::before,
 :root[data-stream-status-effect="energy"]
-  .stream-tab[data-answer-ready] .stream-tab-card::before {
+  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
   background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 46%, transparent), var(--accent));
   border-radius: 3px;
   box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 50%, transparent);
@@ -6252,25 +6385,25 @@ html[data-surface="mobile"]
 }
 
 :root[data-stream-status-effect="energy"] .task-workspace-item[data-running]::before,
-:root[data-stream-status-effect="energy"] .stream-tab[data-running] .stream-tab-card::before {
+:root[data-stream-status-effect="energy"] .stream-tab[data-running] .stream-tab-status-layer::before {
   animation: stream-energy-charge 2.65s cubic-bezier(0.22, 0.65, 0.3, 1) infinite;
 }
 
 :root[data-stream-status-effect="energy"]
   .task-workspace-item[data-unread][data-answer-arrived]:not([data-running])::before,
 :root[data-stream-status-effect="energy"]
-  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-card::before {
+  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-status-layer::before {
   animation: stream-energy-ready 0.92s ease-out 2;
 }
 
 :root[data-stream-status-style="fill"][data-stream-status-effect="energy"]
   .task-workspace-item[data-running]::before,
 :root[data-stream-status-style="fill"][data-stream-status-effect="energy"]
-  .stream-tab[data-running] .stream-tab-card::before,
+  .stream-tab[data-running] .stream-tab-status-layer::before,
 :root[data-stream-status-style="fill"][data-stream-status-effect="energy"]
   .task-workspace-item[data-unread]:not([data-running])::before,
 :root[data-stream-status-style="fill"][data-stream-status-effect="energy"]
-  .stream-tab[data-answer-ready] .stream-tab-card::before {
+  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
   border-radius: inherit;
   box-shadow: none;
   height: auto;
@@ -6281,7 +6414,7 @@ html[data-surface="mobile"]
 :root[data-stream-status-style="fill"][data-stream-status-effect="energy"]
   .task-workspace-item[data-unread]:not([data-running])::before,
 :root[data-stream-status-style="fill"][data-stream-status-effect="energy"]
-  .stream-tab[data-answer-ready] .stream-tab-card::before {
+  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
   opacity: 0.4;
 }
 
@@ -6289,8 +6422,8 @@ html[data-surface="mobile"]
    разрешает темам выбирать только объявленные ниже радиусы и зазоры токенами. */
 @media (min-width: 860px) {
   html:not([data-surface="mobile"]) .app-header {
-    backdrop-filter: blur(18px) saturate(150%) !important;
-    -webkit-backdrop-filter: blur(18px) saturate(150%) !important;
+    backdrop-filter: var(--shell-header-backdrop-filter, blur(18px) saturate(150%)) !important;
+    -webkit-backdrop-filter: var(--shell-header-backdrop-filter, blur(18px) saturate(150%)) !important;
     background: var(--shell-header-background, color-mix(in srgb, var(--bg) 82%, transparent)) !important;
     border: 0 !important;
     border-bottom: var(--shell-header-border, 1px solid var(--line)) !important;
@@ -6812,19 +6945,19 @@ html[data-surface="mobile"]
 
 @media (prefers-reduced-motion: reduce) {
   :root[data-stream-status-effect="impulse"] .task-workspace-item[data-running]::after,
-  :root[data-stream-status-effect="impulse"] .stream-tab[data-running] .stream-tab-card::after {
+  :root[data-stream-status-effect="impulse"] .stream-tab[data-running] .stream-tab-status-layer::after {
     animation: none;
     transform: translateX(70%);
   }
 
   :root[data-stream-status-effect="scanner"] .task-workspace-item[data-running]::after,
-  :root[data-stream-status-effect="scanner"] .stream-tab[data-running] .stream-tab-card::after {
+  :root[data-stream-status-effect="scanner"] .stream-tab[data-running] .stream-tab-status-layer::after {
     animation: none;
     transform: translateX(96%);
   }
 
   :root[data-stream-status-effect="energy"] .task-workspace-item[data-running]::before,
-  :root[data-stream-status-effect="energy"] .stream-tab[data-running] .stream-tab-card::before {
+  :root[data-stream-status-effect="energy"] .stream-tab[data-running] .stream-tab-status-layer::before {
     animation: none;
     opacity: 0.72;
     transform: scaleX(0.72);
@@ -6835,9 +6968,9 @@ html[data-surface="mobile"]
   :root[data-stream-status-effect]:not([data-stream-status-effect="off"])
     .task-workspace-item[data-unread]:not([data-running])::after,
   :root[data-stream-status-effect]:not([data-stream-status-effect="off"])
-    .stream-tab[data-answer-ready] .stream-tab-card::before,
+    .stream-tab[data-answer-ready] .stream-tab-status-layer::before,
   :root[data-stream-status-effect]:not([data-stream-status-effect="off"])
-    .stream-tab[data-answer-ready] .stream-tab-card::after {
+    .stream-tab[data-answer-ready] .stream-tab-status-layer::after {
     animation: none;
   }
 }
@@ -7078,7 +7211,7 @@ html[data-surface="mobile"]
 }
 
 .chat-pane[data-dialog-settings-open] {
-  grid-template-columns: minmax(0, 1fr) clamp(17rem, 28vw, 22rem);
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .chat-back {
@@ -7340,14 +7473,17 @@ html[data-surface="mobile"]
 }
 
 .dialog-settings {
+  /* Общая мера правой колонки карточки: чип агента, селекты и тумблеры
+     выстраиваются по одному левому и правому краю. */
+  --dialog-control-width: 13rem;
+  --dialog-control-height: 2.125rem;
   background:
     radial-gradient(120% 60% at 90% -20%, var(--space-glow-a), transparent 60%),
     color-mix(in srgb, var(--space-base) 96%, transparent);
-  border-left: 1px solid var(--line-strong);
+  border: 1px solid var(--line-strong);
   display: flex;
   flex-direction: column;
-  grid-column: 2;
-  grid-row: 1;
+  height: min(90dvh, 56rem);
   min-height: 0;
   min-width: 0;
   overflow: hidden;
@@ -7357,11 +7493,16 @@ html[data-surface="mobile"]
   display: none;
 }
 
+.dialog-settings:not([open]) {
+  display: none;
+}
+
 .dialog-settings-head {
   align-items: center;
   border-bottom: 1px solid var(--line);
   display: flex;
   flex: 0 0 auto;
+  justify-content: space-between;
   min-height: 3rem;
   padding: 0.7rem 0.9rem;
 }
@@ -7380,8 +7521,167 @@ html[data-surface="mobile"]
   padding: 0.85rem 0.8rem max(1rem, env(safe-area-inset-bottom));
 }
 
-.agent-rules-card {
+/* Подписи полей карточки Stream — той же меры, что в карточках Workspace
+   и задачи; общая настроечная панель приложения свой размер сохраняет. */
+.dialog-settings .setting-name,
+.dialog-settings .switch-text,
+.dialog-settings .setting-value {
+  font-size: var(--card-label-size);
+}
+
+/* Подпись и счётчик — одна строка формата «название — значение», как у
+   соседних настроек; редактор и кнопка занимают полную ширину под ней. */
+.quick-messages-editor {
+  align-items: center;
+  column-gap: 0.7rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  row-gap: 0.55rem;
+}
+
+.quick-messages-editor > .setting-name {
+  grid-column: 1;
+}
+
+.quick-messages-editor > .setting-value {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  grid-column: 2;
+  justify-self: end;
+}
+
+.quick-messages-editor-controls {
+  display: contents;
+}
+
+.quick-messages-editor .quick-message-editor-rows {
+  grid-column: 1 / -1;
+}
+
+.quick-messages-editor .quick-message-editor-rows:empty {
+  display: none;
+}
+
+.quick-messages-editor [data-quick-message-add] {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
+.quick-message-editor-rows {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.quick-message-editor-row {
+  align-items: start;
+  display: grid;
+  gap: 0.45rem;
+  grid-template-columns: minmax(7rem, 0.7fr) minmax(10rem, 1.3fr) auto;
+}
+
+.quick-message-editor-row input,
+.quick-message-editor-row textarea,
+.stream-card-name-field input {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font: inherit;
+  padding: 0.45rem 0.55rem;
+  width: 100%;
+}
+
+.quick-message-editor-row textarea {
+  min-height: 3.2rem;
+  resize: vertical;
+}
+
+.quick-message-editor-actions {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.quick-message-editor-actions .compact {
+  min-width: 2rem;
+  padding-inline: 0.42rem;
+}
+
+.quick-message-editor-actions .danger {
+  color: var(--danger, #ff7b7b);
+}
+
+.stream-card-actions {
+  align-items: stretch;
+  display: grid;
+  gap: 0.55rem;
+}
+
+/* Все действия одной высоты, а необратимое отделено от обычных пропуском. */
+.stream-card-actions .chip-button {
+  justify-content: center;
+  min-height: 2.45rem;
+}
+
+.stream-card-actions .stream-card-archive {
+  border-radius: var(--radius-chip);
+  font-size: 0.76rem;
+  margin-top: 0.45rem;
+}
+
+.stream-agent-rules {
+  padding-bottom: 0.45rem;
+}
+
+.stream-card-actions-section {
+  padding-top: 0.45rem;
+}
+
+.settings-card.stream-card-actions {
+  padding-block: 0.5rem;
+}
+
+.stream-card-move-menu {
+  background-color: var(--bg);
+  background-image: var(--card-bg-open);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  box-shadow: 0 1rem 3rem rgb(0 0 0 / 72%), var(--card-shadow);
+  color: var(--text);
+  display: grid;
+  gap: 0.25rem;
+  inset: auto;
+  margin: 0;
+  max-height: min(18rem, calc(100dvh - 2rem));
+  min-width: min(22rem, calc(100vw - 2rem));
+  overflow-y: auto;
+  padding: 0.4rem;
+  position: fixed;
+}
+
+.stream-card-move-menu:not(:popover-open) {
+  display: none;
+}
+
+.stream-card-move-option {
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 0.55rem 0.65rem;
+  text-align: left;
+}
+
+.stream-card-move-option:hover,
+.stream-card-move-option:focus-visible {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  outline: none;
+}
+
+.settings-card.agent-rules-card {
   gap: 0;
+  padding-bottom: 0.5rem;
 }
 
 .stream-agent-rules textarea {
@@ -7402,10 +7702,21 @@ html[data-surface="mobile"]
   grid-template-columns: minmax(0, auto) minmax(0, 1fr);
 }
 
+/* Чипы агента занимают ту же колонку, что селекты соседних строк: ширина
+   и высота контролов карточки общие, иначе строка «Агент» выпадала из ряда. */
 .dialog-agent-options {
-  grid-template-columns: repeat(auto-fit, minmax(5.8rem, auto));
-  justify-content: end;
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+  justify-content: stretch;
   justify-self: end;
+  max-width: var(--dialog-control-width);
+  width: 100%;
+}
+
+.dialog-agent-options .option-chip {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+  min-height: var(--dialog-control-height);
 }
 
 .dialog-agent {
@@ -8074,6 +8385,7 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
 .queue-accept,
 .queue-steer,
 .queue-edit,
+.queue-move,
 .queue-pause {
   background: color-mix(in srgb, var(--accent) 10%, transparent);
   border: 1px solid var(--accent-line);
@@ -8088,11 +8400,18 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
 .queue-accept:hover,
 .queue-steer:hover,
 .queue-edit:hover,
+.queue-move:hover:not(:disabled),
 .queue-pause:hover {
   color: var(--text);
 }
 
-.queue-steer:disabled {
+.queue-move {
+  min-width: 1.7rem;
+  padding-inline: 0.35rem;
+}
+
+.queue-steer:disabled,
+.queue-move:disabled {
   cursor: not-allowed;
   opacity: 0.52;
 }
@@ -8114,6 +8433,14 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
 .attachment-remove:hover,
 .annotation-remove:hover {
   color: #ff9d9d;
+}
+
+.queue-remove {
+  border: 1px solid color-mix(in srgb, #ff9d9d 38%, transparent);
+  border-radius: var(--radius-chip);
+  font-size: 0.7rem;
+  line-height: normal;
+  padding: 0.2rem 0.55rem;
 }
 
 /* ======================================================= композер === */
@@ -8483,6 +8810,12 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
 
 .attachment-viewer-loading {
   color: #f4f8fa;
+  max-width: min(80vw, 32rem);
+  text-align: center;
+}
+
+.attachment-viewer-loading.is-error {
+  color: #ffb5ad;
 }
 
 .attachment-viewer-close {
@@ -9418,29 +9751,6 @@ html[data-surface="mobile"] .chat-stop-bottom > span {
   overflow-wrap: anywhere;
 }
 
-.quick-messages-settings-control {
-  align-items: center;
-  display: flex;
-  gap: 0.75rem;
-  justify-content: space-between;
-  min-width: 0;
-}
-
-.quick-messages-settings-control .setting-value {
-  color: var(--text-muted);
-  flex: 1 1 auto;
-  font-size: 0.78rem;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.quick-messages-settings-control > .chip-button {
-  flex: 0 0 auto;
-  justify-content: center;
-}
-
 .setting-field select option {
   background: var(--bg);
   color: var(--text);
@@ -9590,7 +9900,7 @@ html[data-surface="mobile"] .chat-stop-bottom > span {
 }
 
 .dialog-settings .setting-row > .themed-select {
-  max-width: 13rem;
+  max-width: var(--dialog-control-width);
 }
 
 .theme-picker .themed-select,
@@ -10552,13 +10862,14 @@ html[data-surface="mobile"][data-theme] .dialog-settings {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
   background: var(--bg);
-  border-left: 0;
-  grid-column: 1;
-  grid-row: 1;
-  justify-self: end;
+  border: 1px solid var(--line-strong);
   max-width: 24rem;
   width: 100%;
   z-index: 20;
+}
+
+html[data-surface="mobile"] .quick-message-editor-row {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 html[data-surface="mobile"][data-pane="tasks"] .chat {
@@ -10703,6 +11014,127 @@ html[data-view="background"] .server-view {
 
 html[data-view="background"] .background-view {
   display: block;
+}
+
+/* ============================================ Изолированный веб-просмотр === */
+
+.embedded-browser-view {
+  box-sizing: border-box;
+  display: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+}
+
+html[data-view="browser"] body {
+  height: 100dvh;
+  overflow: hidden;
+}
+
+html[data-view="browser"] :is(
+  .workspace,
+  .task-board-view,
+  .journal-view,
+  .statistics-view,
+  .background-view,
+  .server-view
+) {
+  display: none;
+}
+
+html[data-view="browser"] .embedded-browser-view {
+  display: flex;
+  flex-direction: column;
+}
+
+.embedded-browser-toolbar {
+  background: color-mix(in srgb, var(--surface-1) 94%, transparent);
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.85rem clamp(0.75rem, 2vw, 1.5rem);
+}
+
+.embedded-browser-address-form {
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: minmax(12rem, 1fr) auto;
+}
+
+.embedded-browser-address-form input {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font: inherit;
+  min-width: 0;
+  padding: 0.55rem 0.7rem;
+}
+
+.embedded-browser-address-form input[aria-invalid="true"] {
+  border-color: var(--danger, #ff7b7b);
+}
+
+.embedded-browser-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.embedded-browser-actions a {
+  text-decoration: none;
+}
+
+.embedded-browser-status {
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin: 0;
+}
+
+.embedded-browser-status[data-kind="error"] {
+  color: var(--danger, #ff7b7b);
+}
+
+.embedded-browser-stage {
+  background: var(--surface-2);
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+}
+
+.embedded-browser-stage iframe {
+  background: #fff;
+  border: 0;
+  height: 100%;
+  width: 100%;
+}
+
+.embedded-browser-placeholder {
+  left: 50%;
+  max-width: 34rem;
+  padding: 1.5rem;
+  position: absolute;
+  text-align: center;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: calc(100% - 2rem);
+}
+
+.embedded-browser-placeholder p {
+  color: var(--muted);
+  margin: 0.5rem 0 0;
+}
+
+html[data-surface="mobile"][data-view="browser"] .embedded-browser-view {
+  padding-bottom: calc(var(--mobile-nav-h) + env(safe-area-inset-bottom));
+}
+
+html[data-surface="mobile"] .embedded-browser-toolbar {
+  padding: 0.65rem;
+}
+
+html[data-surface="mobile"] .embedded-browser-address-form {
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .msg-annotations {
@@ -14119,12 +14551,28 @@ html[data-surface="mobile"] .server-config-inline-label {
   fill: var(--usage-device-color);
 }
 
+.limits-burn-average-segment {
+  opacity: 0.72;
+  stroke-dasharray: 5 4;
+  stroke-linecap: round;
+  stroke-width: 1.5;
+}
+
 .limits-burn-target-line {
-  opacity: 0.62;
-  stroke-dasharray: 5 5;
+  opacity: 0.68;
+  stroke-dasharray: 1 5;
   stroke-linecap: round;
   stroke-linejoin: round;
-  stroke-width: 1.5;
+  stroke-width: 1.7;
+}
+
+.limits-burn-target-line.is-off-scale {
+  opacity: 0.82;
+}
+
+.limits-burn-average-segment.is-preliminary,
+.limits-burn-rate-segment.is-preliminary {
+  opacity: 0.42;
 }
 
 .limits-burn-normal-line {
@@ -14208,14 +14656,6 @@ html[data-surface="mobile"] .server-config-inline-label {
 
 .limits-speed-summary-card.is-over-target {
   border-left-color: var(--danger, #ff7f8d);
-}
-
-.limits-speed-summary-card.is-waiting {
-  border-left-color: var(--pending, #e8bd69);
-}
-
-.limits-speed-summary-card.is-waiting .limits-speed-summary-status {
-  color: var(--pending, #e8bd69);
 }
 
 .limits-speed-summary-name {
@@ -14514,13 +14954,13 @@ html[data-surface="mobile"] .comparison-series-picker > .limits-legend-value {
 }
 
 .settings-section-title {
-  color: var(--text-faint);
-  font-family: var(--font-title);
-  font-size: 0.63rem;
-  font-weight: 700;
-  letter-spacing: 0.18em;
+  color: var(--section-heading-color);
+  font-family: var(--section-heading-family);
+  font-size: var(--section-heading-size);
+  font-weight: var(--section-heading-weight);
+  letter-spacing: var(--section-heading-spacing);
   margin: 0 0 0 0.15rem;
-  text-transform: uppercase;
+  text-transform: var(--section-heading-transform);
 }
 
 .compact-options {
@@ -15146,18 +15586,6 @@ html[data-browser-auth] {
 .chart-rail-account-control .themed-select {
   min-width: 0;
   width: 100%;
-}
-
-.chart-rail-switch {
-  margin: 0.15rem 0 0;
-}
-
-.chart-rail-switch .switch-text {
-  font-size: 0.74rem;
-}
-
-.chart-rail-switch .switch-note {
-  font-size: 0.68rem;
 }
 
 .chart-main {

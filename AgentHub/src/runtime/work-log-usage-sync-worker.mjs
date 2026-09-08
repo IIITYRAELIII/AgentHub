@@ -28,13 +28,14 @@ async function projectAccountUsage(payload = {}) {
     now: payload.now,
   });
   const unchanged = updatedHtml === String(payload.html ?? "");
+  const projected = payload.force === true || !unchanged;
   return {
-    projected: !unchanged,
-    reason: unchanged ? "unchanged" : "updated",
-    ...(unchanged ? {} : {
+    projected,
+    reason: unchanged ? (payload.force === true ? "forced" : "unchanged") : "updated",
+    ...(projected ? {
       html: updatedHtml,
       version: `sha256:${crypto.createHash("sha256").update(updatedHtml, "utf8").digest("hex")}`,
-    }),
+    } : {}),
     workerThreadId: threadId,
     eventCount: syncedUsageFacts.length,
     durationMs: performance.now() - startedAt,
@@ -52,10 +53,12 @@ async function handle(message) {
     case "events": return store.events();
     case "facts": return store.facts();
     case "import-snapshot": return store.importSnapshot(message.payload.snapshot);
+    case "reconcile-snapshot": return store.reconcileSnapshot(message.payload.snapshot);
     case "replace-events": return store.replaceEvents(message.payload.events);
     case "adopt-device-ids": return store.adoptDeviceIds(message.payload.deviceIds);
     case "project-account-usage": return projectAccountUsage(message.payload);
     case "usage-sync-snapshot": return usageSyncSnapshot(message.payload);
+    case "usage-sync-state": return store.usageSyncState();
     case "close": return store.close();
     default: throw new Error(`unknown usage sync worker request: ${message.type}`);
   }

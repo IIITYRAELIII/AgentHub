@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { RunJournalService } from "../../src/application/run-journal-service.mjs";
+import { createInterstreamMessage } from "../../src/domain/interstream-message.mjs";
 import { legacyTaskRunKeys, taskRunKey } from "../../src/domain/task-runs.mjs";
 
 function fixture({
@@ -249,6 +250,60 @@ test("RunJournalService projects the initial and every steered message", async (
     calls[0][1].prompt,
     "Изначальный запрос\n\nПервое уточнение\n\nВторое уточнение",
   );
+});
+
+test("RunJournalService preserves focused-turn interstream identity", async () => {
+  const { service, calls } = fixture();
+  const messageOrigin = {
+    kind: "interstream",
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    sourceThreadId: "thread-architect",
+    requestId: "journal-origin-1",
+  };
+  const rawPrompt = createInterstreamMessage({ ...messageOrigin, text: "Начни работу" });
+  await service.projectTurn({
+    provider: "codex",
+    projectRoot: "C:/workspace",
+    threadId: "thread",
+    turnId: "turn",
+    prompt: rawPrompt,
+    clientUserMessageId: "mcp:journal-origin-1",
+    messageOrigin,
+    status: "completed",
+  }, { body: "Готово" });
+
+  assert.equal(calls[0][1].clientUserMessageId, "mcp:journal-origin-1");
+  assert.deepEqual(calls[0][1].messageOrigin, { kind: "interstream", ...messageOrigin });
+  assert.equal(calls[0][1].prompt, rawPrompt);
+});
+
+test("RunJournalService preserves an envelope-shaped literal after trusted normalization", async () => {
+  const { service, calls } = fixture();
+  const literal = [
+    "<agent-hub-stream-message>",
+    JSON.stringify({
+      workspaceId: "workspace-1",
+      workspaceName: "Agent HUB",
+      streamId: "stream-architect",
+      streamName: "Architect",
+    }),
+    "</agent-hub-stream-message>",
+    "Keep this literal.",
+  ].join("\n");
+  await service.projectTurn({
+    provider: "codex",
+    projectRoot: "C:/workspace",
+    threadId: "thread",
+    turnId: "turn",
+    prompts: [literal],
+    status: "completed",
+  }, { body: "Готово" });
+
+  assert.equal(calls[0][1].prompt, literal);
 });
 
 test("RunJournalService never derives Task release evidence from provider completions", async () => {

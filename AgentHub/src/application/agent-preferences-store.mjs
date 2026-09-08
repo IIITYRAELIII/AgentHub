@@ -17,7 +17,7 @@ const STREAM_CARD_MIN_WIDTH = 90;
 const STREAM_CARD_MAX_WIDTH = 450;
 const QUICK_MESSAGE_MAX_SCOPES = 200;
 const QUICK_MESSAGE_MAX_ITEMS = 20;
-const QUICK_MESSAGE_MAX_LABEL = 64;
+const QUICK_MESSAGE_MAX_TITLE = 64;
 const QUICK_MESSAGE_MAX_TEXT = 4_000;
 
 function activityRecentMinutes(value, fallback = DEFAULT_ACTIVITY_RECENT_MINUTES) {
@@ -71,10 +71,10 @@ function quickMessageEntry(value) {
     : { text: value };
   const text = String(source.text ?? "").trim().slice(0, QUICK_MESSAGE_MAX_TEXT);
   if (!text) return null;
-  const label = String(source.label ?? text).trim().slice(0, QUICK_MESSAGE_MAX_LABEL) || text.slice(0, QUICK_MESSAGE_MAX_LABEL);
+  const title = String(source.title ?? source.label ?? text).trim().slice(0, QUICK_MESSAGE_MAX_TITLE)
+    || text.slice(0, QUICK_MESSAGE_MAX_TITLE);
   return {
-    id: String(source.id ?? label).trim().slice(0, QUICK_MESSAGE_MAX_LABEL) || label,
-    label,
+    title,
     text,
   };
 }
@@ -82,12 +82,10 @@ function quickMessageEntry(value) {
 function quickMessageEntries(value) {
   if (!Array.isArray(value)) return [];
   const entries = [];
-  const seen = new Set();
   for (const item of value) {
     const entry = quickMessageEntry(item);
-    if (!entry || seen.has(entry.text)) continue;
+    if (!entry) continue;
     entries.push(entry);
-    seen.add(entry.text);
     if (entries.length >= QUICK_MESSAGE_MAX_ITEMS) break;
   }
   return entries;

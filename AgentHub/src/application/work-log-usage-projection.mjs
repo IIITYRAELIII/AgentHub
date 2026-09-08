@@ -10,6 +10,11 @@ import { isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
 import { isCodexAutoCompactionTurnId } from "../domain/codex-internal-turn.mjs";
 import { isInheritedSubagentTurn } from "../domain/subagent-turn-identity.mjs";
 import { taskDisplayTitle } from "../domain/task-display-title.mjs";
+import {
+  normalizeInterstreamClientUserMessageId,
+  normalizeInterstreamOrigin,
+  sameInterstreamOrigin,
+} from "../domain/interstream-message.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
 import {
   addCreditBreakdown,
@@ -31,6 +36,10 @@ import { mergeUsageLimitSamples, normalizeAuthObservation } from "../domain/usag
 const WORK_LOG_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ACCOUNT_ATTRIBUTIONS = new Set(["exact", "inferred"]);
 const UNKNOWN_ACCOUNT_UI_KEY = "__unknown_account__";
+
+/* Stable shipped identity of the account-usage projection algorithm. Bump this
+   only when the same durable facts must be materialized again after upgrade. */
+export const WORK_LOG_ACCOUNT_USAGE_PROJECTION_VERSION = "2026.9.7.1";
 
 export function normalizeWorkLogId(value) {
   const id = String(value ?? "").trim().toLowerCase();
@@ -2959,6 +2968,8 @@ export function incomingLedgerRecord({
   body,
   text,
   prompt,
+  clientUserMessageId,
+  messageOrigin,
   changedFiles,
   diff,
   skillsUsed,
@@ -2976,6 +2987,12 @@ export function incomingLedgerRecord({
   const accountFields = normalizedAccountFields({ account, accountKey, accountAttribution });
   const normalizedEstimatedCredits = normalizeEstimatedCredits(estimatedCredits);
   const normalizedEstimateKind = String(estimateKind ?? "").trim();
+  const normalizedClientUserMessageId = normalizeInterstreamClientUserMessageId(clientUserMessageId);
+  const suppliedMessageOrigin = normalizeInterstreamOrigin(messageOrigin);
+  const normalizedMessageOrigin = suppliedMessageOrigin?.requestId
+    && normalizedClientUserMessageId !== `mcp:${suppliedMessageOrigin.requestId}`
+    ? null
+    : suppliedMessageOrigin;
   return {
     workLogId,
     projectRoot: normalizeProjectRoot(projectRoot),
@@ -3004,6 +3021,8 @@ export function incomingLedgerRecord({
     title: String(title ?? "").trim(),
     body: String(body ?? text ?? "").trim(),
     prompt: displayUserPrompt(prompt),
+    clientUserMessageId: normalizedClientUserMessageId,
+    ...(normalizedMessageOrigin ? { messageOrigin: normalizedMessageOrigin } : {}),
     changedFiles: Array.isArray(changedFiles)
       ? changedFiles.map((file) => String(file).trim()).filter(Boolean)
       : [],
@@ -3059,6 +3078,22 @@ export function mergeLedgerRecord(existing, incoming) {
     if (incoming.accountPlan) existing.accountPlan = incoming.accountPlan;
     existing.accountAttribution = incoming.accountAttribution;
   }
+  const existingClientUserMessageId = normalizeInterstreamClientUserMessageId(existing.clientUserMessageId);
+  const incomingClientUserMessageId = normalizeInterstreamClientUserMessageId(incoming.clientUserMessageId);
+  if (existing.clientUserMessageId && !existingClientUserMessageId) {
+    existing.clientUserMessageId = null;
+    delete existing.messageOrigin;
+  }
+  if (!existingClientUserMessageId && incomingClientUserMessageId) {
+    existing.clientUserMessageId = incomingClientUserMessageId;
+  }
+  const effectiveClientUserMessageId = normalizeInterstreamClientUserMessageId(existing.clientUserMessageId);
+  if (
+    incoming.messageOrigin
+    && incomingClientUserMessageId
+    && incomingClientUserMessageId === effectiveClientUserMessageId
+    && (!existing.messageOrigin || sameInterstreamOrigin(existing.messageOrigin, incoming.messageOrigin))
+  ) existing.messageOrigin = incoming.messageOrigin;
   for (const field of [
     "projectRoot",
     "provider",
@@ -3213,7 +3248,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
   localDeviceId = "",
   localDeviceLabel = "",
   accountKey = "",
-  accountActivity = [],
+  accountActivity = null,
 } = {}) {
   const normalizedRange = range === "all" || Object.hasOwn(USAGE_HISTORY_RANGES, range)
     ? range
@@ -3224,6 +3259,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
   const requestedProvider = String(provider ?? "").trim().toLowerCase();
   const requestedAccountKey = String(accountKey ?? "").trim();
   const normalizedTimeMode = normalizedTurnTimeMode(turnTimeMode);
+  const filterSyncedByAccountActivity = Array.isArray(accountActivity);
   const accountActivityIntervals = new Map((Array.isArray(accountActivity) ? accountActivity : [])
     .map((entry) => [
       String(entry?.accountKey ?? "").trim(),
@@ -3262,8 +3298,9 @@ export function buildWorkLogUsageHistory(turns = {}, {
       const recordAccountKey = String(record.accountKey ?? "").trim();
       if (!recordAccountKey) return false;
       if (requestedAccountKey && recordAccountKey !== requestedAccountKey) return false;
+      if (!filterSyncedByAccountActivity) return true;
       const activity = accountActivityIntervals.get(recordAccountKey);
-      if (!activity) return true;
+      if (!activity) return false;
       const pointMs = turnUsageTimeMs(record, normalizedTimeMode);
       return activity.some((interval) => pointMs >= interval.from && pointMs < interval.to);
     });

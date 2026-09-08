@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, appendFile, copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { codexAssistantResponseProjection } from "../../src/domain/codex-response-annotation.mjs";
+import { mergeCanonicalUserMessages } from "../../src/domain/canonical-user-messages.mjs";
 import { TASK_EXECUTION_OWNERS } from "../../src/domain/task-execution-owner.mjs";
 import { LocalTaskSyncStore } from "../../src/infrastructure/persistence/task-sync-store.mjs";
 import { mergeDurableTaskHistory } from "../../src/interfaces/desktop/desktop-task-history.mjs";
+import { readCodexRolloutActivity } from "../../src/providers/codex/codex-rollout-activity.mjs";
 
 const task = {
   provider: "codex",
@@ -123,6 +125,7 @@ test("local task sync persists catalog, runtime owner, status and history", asyn
   }], 1_000);
   store.recordHistory(task, [{
     id: "turn-vsc",
+    userMessageSnapshotAuthority: "complete",
     prompt: "Продолжай",
     answer: "Выполняю",
     status: "inProgress",
@@ -150,6 +153,7 @@ test("local task sync persists catalog, runtime owner, status and history", asyn
     lastActivityAtMs: 1_000,
   }]);
   assert.equal(restored.history(task)[0].answer, "Выполняю");
+  assert.equal(restored.history(task)[0].userMessageSnapshotAuthority, "complete");
   assert.equal(restored.snapshot(task).stage, "Изменяются файлы");
 });
 
@@ -1105,7 +1109,7 @@ test("startup backfills run once per version and commit their marker atomically"
     WHERE key LIKE 'backfill_%_version'
     ORDER BY key
   `).all().map((row) => ({ key: row.key, value: row.value })), [
-    { key: "backfill_task_message_search_version", value: "3" },
+    { key: "backfill_task_message_search_version", value: "4" },
   ]);
   database.exec(`
     CREATE TABLE backfill_write_audit (operation TEXT NOT NULL);
@@ -1611,7 +1615,7 @@ test("a stale live snapshot cannot reactivate a recovered terminal task", async 
   store.close();
 });
 
-test("startup repairs already corrupted terminal rows and synthetic root duplicates", async () => {
+test("startup terminal backfill never erases a provider item based on its id shape", async () => {
   const filePath = await storeFile();
   const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
   let store = new LocalTaskSyncStore({ filePath, databaseFile });
@@ -1738,11 +1742,12 @@ test("startup repairs already corrupted terminal rows and synthetic root duplica
     { id: "turn-completed", prompt: "Фактический вопрос", status: "completed", active: false, completed: true },
     { id: "turn-current", prompt: "Текущий вопрос", status: "inProgress", active: true, completed: false },
   ]);
-  assert.equal(history[0].messages.length, 1);
+  assert.equal(history[0].messages.length, 2);
   assert.equal(history[0].messages[0].clientUserMessageId, "client-root");
   assert.deepEqual(history[0].messages[0].attachments, [
     { id: "screen.png", name: "screen.png", type: "image/png" },
   ]);
+  assert.equal(history[0].messages[1].itemId, "turn-aborted:rollout-user:0");
   assert.deepEqual(history[1].messages.map((message) => message.itemId), [
     "turn-completed:rollout-user:1",
   ]);
@@ -1756,6 +1761,456 @@ test("startup repairs already corrupted terminal rows and synthetic root duplica
     answer: "",
   });
   store.close();
+});
+
+test("startup reprojects a corrupted terminal read model from exact terminal and ledger identities", async () => {
+  const filePath = await storeFile();
+  const directory = path.dirname(filePath);
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const terminalDatabaseFile = path.join(directory, "runtime.sqlite");
+  const messageCommandDatabaseFile = path.join(directory, "message-command-ledger.sqlite");
+  const recoveryTask = { ...task, threadId: "production-corrupted-thread" };
+  const conflictTask = { ...task, threadId: "conflicting-terminal-thread" };
+  const duplicateTask = { ...task, threadId: "duplicate-terminal-thread" };
+  const oversizedTask = { ...task, threadId: "oversized-terminal-thread" };
+  const turnId = "production-corrupted-turn";
+  const runId = "production-run";
+  const conflictTurnId = "conflicting-terminal-turn";
+  const conflictRunId = "conflicting-run";
+  const duplicateTurnId = "duplicate-terminal-turn";
+  const duplicateRunId = "duplicate-run";
+  const oversizedTurnId = "oversized-terminal-turn";
+  const oversizedRunId = "oversized-run";
+  const oversizedClientUserMessageId = "oversized-client";
+  const exactOrigin = {
+    kind: "interstream",
+    workspaceId: "source-workspace",
+    workspaceName: "Source",
+    streamId: "source-stream",
+    streamName: "Review",
+    provider: "codex",
+    requestId: "source-request",
+  };
+  const canonicalUsers = Array.from({ length: 6 }, (_, index) => ({
+    itemId: `owned-${index}`,
+    clientUserMessageId: `accepted-${index}`,
+    role: "user",
+    text: index < 2 ? "Одинаковый текст" : `Сообщение ${index}`,
+    submittedAt: `2026-09-03T20:0${index}:00.000Z`,
+    ...(index === 2 ? { origin: exactOrigin } : {}),
+  }));
+  const authoritativeUsers = [
+    ...canonicalUsers,
+    { itemId: "provider-collision", role: "user", text: "External occurrence one" },
+    { itemId: "provider-collision", role: "user", text: "External occurrence two" },
+    { itemId: `${turnId}:rollout-user:0`, role: "user", text: "External without identity" },
+  ];
+  const invalidEvidence = ["runId", "provider", "threadId", "turnId"].map((field) => ({
+    field,
+    task: { ...task, threadId: `missing-${field}-thread` },
+    turnId: `missing-${field}-turn`,
+    runId: `missing-${field}-run`,
+    clientUserMessageId: `missing-${field}-client`,
+  }));
+  let store = new LocalTaskSyncStore({
+    filePath,
+    databaseFile,
+    terminalDatabaseFile,
+    messageCommandDatabaseFile,
+  });
+  await store.load();
+  store.recordHistory(recoveryTask, [{
+    id: turnId,
+    prompt: "Повреждённый tail",
+    answer: "Финал",
+    status: "completed",
+    active: false,
+    completed: true,
+    messages: [
+      { itemId: `${turnId}:rollout-user:0`, role: "user", text: "Сообщение 5" },
+      { itemId: "provider-final", role: "agent", text: "Финал" },
+    ],
+  }]);
+  store.recordHistory(conflictTask, [{
+    id: conflictTurnId,
+    prompt: "Нельзя угадывать",
+    answer: "Финал",
+    status: "completed",
+    active: false,
+    completed: true,
+    messages: [{ itemId: "conflict-tail", role: "user", text: "Tail" }],
+  }]);
+  store.recordHistory(duplicateTask, [{
+    id: duplicateTurnId,
+    prompt: "Нельзя принимать duplicate identity",
+    answer: "Финал",
+    status: "completed",
+    active: false,
+    completed: true,
+    messages: [{ itemId: "duplicate-tail", role: "user", text: "Tail" }],
+  }]);
+  store.recordHistory(oversizedTask, [{
+    id: oversizedTurnId,
+    prompt: "Oversized terminal must not repair",
+    answer: "Финал",
+    status: "completed",
+    active: false,
+    completed: true,
+    messages: [{ itemId: "oversized-tail", role: "user", text: "Tail" }],
+  }]);
+  for (const invalid of invalidEvidence) {
+    store.recordHistory(invalid.task, [{
+      id: invalid.turnId,
+      prompt: `Не применять без ${invalid.field}`,
+      answer: "Финал",
+      status: "completed",
+      active: false,
+      completed: true,
+      messages: [{ itemId: `${invalid.field}-tail`, role: "user", text: "Tail" }],
+    }]);
+  }
+  store.close();
+
+  const searchDatabase = new DatabaseSync(databaseFile);
+  searchDatabase.prepare(`
+    INSERT INTO task_message_search_documents (
+      document_key, provider, thread_id, turn_thread_id, turn_id, item_id,
+      role, message_text, author, annotation_text, attachment_names,
+      occurred_at, occurred_at_ms, source
+    ) VALUES (?, ?, ?, ?, ?, ?, 'agent', 'Journal evidence', '', '', '', NULL, 0, 'journal')
+  `).run(
+    JSON.stringify(["codex", recoveryTask.threadId, turnId, `${turnId}:journal`, "agent", "journal", ""]),
+    "codex",
+    recoveryTask.threadId,
+    recoveryTask.threadId,
+    turnId,
+    `${turnId}:journal`,
+  );
+  searchDatabase.close();
+
+  const terminalDatabase = new DatabaseSync(terminalDatabaseFile);
+  terminalDatabase.exec(`
+    CREATE TABLE provider_turn_terminals (
+      provider TEXT NOT NULL,
+      thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      payload_bytes INTEGER NOT NULL,
+      committed_at TEXT NOT NULL,
+      PRIMARY KEY (provider, thread_id, turn_id)
+    ) WITHOUT ROWID;
+    CREATE INDEX provider_turn_terminals_recovery_idx
+      ON provider_turn_terminals(committed_at DESC, provider, thread_id, turn_id, payload_bytes)
+  `);
+  const insertTerminalRow = terminalDatabase.prepare(`
+    INSERT INTO provider_turn_terminals (
+      provider, thread_id, turn_id, payload_json, payload_bytes, committed_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  const addTerminalRow = (threadId, exactTurnId, payload, committedAt) => {
+    const payloadJson = JSON.stringify(payload);
+    insertTerminalRow.run(
+      "codex",
+      threadId,
+      exactTurnId,
+      payloadJson,
+      Buffer.byteLength(payloadJson, "utf8"),
+      committedAt,
+    );
+  };
+  addTerminalRow(recoveryTask.threadId, turnId, {
+    history: {
+      id: runId,
+      provider: "codex",
+      threadId: recoveryTask.threadId,
+      turnId,
+      promptPreview: "Канонический root",
+      userMessages: authoritativeUsers,
+    },
+  }, "2026-09-03T21:35:11.402Z");
+  addTerminalRow(conflictTask.threadId, conflictTurnId, {
+    history: {
+      id: conflictRunId,
+      provider: "codex",
+      threadId: conflictTask.threadId,
+      turnId: conflictTurnId,
+      promptPreview: "Не применять",
+      userMessages: [
+        { itemId: "conflict-0", clientUserMessageId: "conflict-0", role: "user", text: "Первое" },
+        { itemId: "conflict-1", clientUserMessageId: "conflict-1", role: "user", text: "Второе" },
+      ],
+    },
+  }, "2026-09-03T21:35:12.402Z");
+  addTerminalRow(duplicateTask.threadId, duplicateTurnId, {
+    history: {
+      id: duplicateRunId,
+      provider: "codex",
+      threadId: duplicateTask.threadId,
+      turnId: duplicateTurnId,
+      promptPreview: "Не применять duplicate",
+      userMessages: [
+        { itemId: "duplicate-a", clientUserMessageId: "duplicate-client", role: "user", text: "Первое" },
+        { itemId: "duplicate-b", clientUserMessageId: "duplicate-client", role: "user", text: "Второе" },
+      ],
+    },
+  }, "2026-09-03T21:35:12.902Z");
+  for (const invalid of invalidEvidence) {
+    addTerminalRow(invalid.task.threadId, invalid.turnId, {
+      history: {
+        id: invalid.runId,
+        provider: "codex",
+        threadId: invalid.task.threadId,
+        turnId: invalid.turnId,
+        promptPreview: "Не применять",
+        userMessages: [{
+          itemId: invalid.clientUserMessageId,
+          clientUserMessageId: invalid.clientUserMessageId,
+          role: "user",
+          text: "Недоказанное сообщение",
+        }],
+      },
+    }, "2026-09-03T21:35:13.402Z");
+  }
+  addTerminalRow(oversizedTask.threadId, oversizedTurnId, {
+    history: {
+      id: oversizedRunId,
+      provider: "codex",
+      threadId: oversizedTask.threadId,
+      turnId: oversizedTurnId,
+      promptPreview: "Must be skipped before parse",
+      userMessages: [{
+        itemId: oversizedClientUserMessageId,
+        clientUserMessageId: oversizedClientUserMessageId,
+        role: "user",
+        text: "Oversized authoritative candidate",
+      }],
+    },
+    hostilePadding: "x".repeat(2 * 1024 * 1024),
+  }, "2026-09-03T21:35:13.402Z");
+  terminalDatabase.close();
+
+  const ledgerDatabase = new DatabaseSync(messageCommandDatabaseFile);
+  ledgerDatabase.exec(`
+    CREATE TABLE message_commands (
+      client_user_message_id TEXT PRIMARY KEY,
+      state TEXT NOT NULL,
+      item_json TEXT,
+      receipt_json TEXT,
+      result_json TEXT
+    ) WITHOUT ROWID
+  `);
+  const insertLedger = ledgerDatabase.prepare(`
+    INSERT INTO message_commands (
+      client_user_message_id, state, item_json, receipt_json, result_json
+    ) VALUES (?, 'completed', ?, ?, ?)
+  `);
+  for (const user of canonicalUsers) {
+    const exact = {
+      provider: "codex",
+      threadId: recoveryTask.threadId,
+      turnId,
+      runId,
+      clientUserMessageId: user.clientUserMessageId,
+    };
+    insertLedger.run(
+      user.clientUserMessageId,
+      JSON.stringify(exact),
+      JSON.stringify({ ...exact, result: exact }),
+      JSON.stringify(exact),
+    );
+  }
+  for (const clientUserMessageId of ["conflict-0", "conflict-1"]) {
+    const exact = {
+      provider: "codex",
+      threadId: conflictTask.threadId,
+      turnId: conflictTurnId,
+      runId: conflictRunId,
+      clientUserMessageId,
+    };
+    const result = clientUserMessageId === "conflict-1"
+      ? { ...exact, turnId: "wrong-turn" }
+      : exact;
+    insertLedger.run(
+      clientUserMessageId,
+      JSON.stringify(exact),
+      JSON.stringify({ ...exact, result }),
+      JSON.stringify(result),
+    );
+  }
+  for (const invalid of invalidEvidence) {
+    const exact = {
+      provider: "codex",
+      threadId: invalid.task.threadId,
+      turnId: invalid.turnId,
+      runId: invalid.runId,
+      clientUserMessageId: invalid.clientUserMessageId,
+    };
+    const incomplete = { ...exact };
+    delete incomplete[invalid.field];
+    insertLedger.run(
+      invalid.clientUserMessageId,
+      JSON.stringify(incomplete),
+      JSON.stringify({ ...incomplete, result: incomplete }),
+      JSON.stringify(incomplete),
+    );
+  }
+  const duplicateExact = {
+    provider: "codex",
+    threadId: duplicateTask.threadId,
+    turnId: duplicateTurnId,
+    runId: duplicateRunId,
+    clientUserMessageId: "duplicate-client",
+  };
+  insertLedger.run(
+    "duplicate-client",
+    JSON.stringify(duplicateExact),
+    JSON.stringify({ ...duplicateExact, result: duplicateExact }),
+    JSON.stringify(duplicateExact),
+  );
+  const oversizedExact = {
+    provider: "codex",
+    threadId: oversizedTask.threadId,
+    turnId: oversizedTurnId,
+    runId: oversizedRunId,
+    clientUserMessageId: oversizedClientUserMessageId,
+  };
+  insertLedger.run(
+    oversizedClientUserMessageId,
+    JSON.stringify(oversizedExact),
+    JSON.stringify({ ...oversizedExact, result: oversizedExact }),
+    JSON.stringify(oversizedExact),
+  );
+  ledgerDatabase.close();
+
+  const assertRecovered = (recoveredStore) => {
+    const history = recoveredStore.history(recoveryTask);
+    assert.equal(history.length, 1);
+    assert.equal(history[0].prompt, "Канонический root");
+    assert.equal(history[0].status, "completed");
+    assert.equal(history[0].active, false);
+    assert.equal(history[0].completed, true);
+    assert.equal(history[0].userMessageAuthority, "terminal-ledger");
+    assert.deepEqual(
+      history[0].messages.filter((message) => message.role === "user")
+        .map((message) => message.clientUserMessageId)
+        .filter(Boolean),
+      canonicalUsers.map((message) => message.clientUserMessageId),
+    );
+    assert.deepEqual(
+      history[0].messages.filter((message) => message.role === "user")
+        .map((message) => message.text),
+      authoritativeUsers.map((message) => message.text),
+    );
+    assert.deepEqual(history[0].messages[2].origin, exactOrigin);
+    assert.equal(history[0].messages.filter((message) => message.role === "agent").length, 1);
+    const page = recoveredStore.historyPage([recoveryTask], { limit: 10 });
+    assert.equal(page.items.length, 1);
+    assert.equal(page.items[0].turn.messages.length, 10);
+    const conflict = recoveredStore.history(conflictTask)[0];
+    assert.equal("userMessageAuthority" in conflict, false);
+    assert.equal(conflict.prompt, "Нельзя угадывать");
+    assert.deepEqual(conflict.messages, [{
+      itemId: "conflict-tail",
+      role: "user",
+      text: "Tail",
+      responseAnnotations: [],
+      attachments: [],
+    }]);
+    assert.deepEqual(recoveredStore.history(duplicateTask)[0].messages, [{
+      itemId: "duplicate-tail",
+      role: "user",
+      text: "Tail",
+      responseAnnotations: [],
+      attachments: [],
+    }]);
+    assert.equal(
+      "userMessageAuthority" in recoveredStore.history(duplicateTask)[0],
+      false,
+    );
+    const oversized = recoveredStore.history(oversizedTask)[0];
+    assert.equal("userMessageAuthority" in oversized, false);
+    assert.equal(oversized.prompt, "Oversized terminal must not repair");
+    assert.deepEqual(oversized.messages, [{
+      itemId: "oversized-tail",
+      role: "user",
+      text: "Tail",
+      responseAnnotations: [],
+      attachments: [],
+    }]);
+    for (const invalid of invalidEvidence) {
+      const retained = recoveredStore.history(invalid.task)[0];
+      assert.equal("userMessageAuthority" in retained, false);
+      assert.equal(retained.prompt, `Не применять без ${invalid.field}`);
+      assert.deepEqual(retained.messages, [{
+        itemId: `${invalid.field}-tail`,
+        role: "user",
+        text: "Tail",
+        responseAnnotations: [],
+        attachments: [],
+      }]);
+    }
+    const searchVerification = new DatabaseSync(databaseFile, { readOnly: true });
+    assert.deepEqual(searchVerification.prepare(`
+      SELECT source, COUNT(*) AS count
+      FROM task_message_search_documents
+      WHERE provider = ? AND thread_id = ? AND turn_id = ?
+      GROUP BY source ORDER BY source
+    `).all("codex", recoveryTask.threadId, turnId).map((row) => ({
+      source: row.source,
+      count: Number(row.count),
+    })), [
+      { source: "history", count: 10 },
+      { source: "journal", count: 1 },
+    ]);
+    searchVerification.close();
+  };
+
+  store = new LocalTaskSyncStore({
+    filePath,
+    databaseFile,
+    terminalDatabaseFile,
+    messageCommandDatabaseFile,
+  });
+  await store.load();
+  assertRecovered(store);
+  store.recordHistory(recoveryTask, [{
+    id: turnId,
+    prompt: "Устаревший terminal provider tail",
+    answer: "Финал после hydration",
+    status: "completed",
+    active: false,
+    completed: true,
+    messages: [
+      { itemId: `${turnId}:rollout-user:0`, role: "user", text: "Сообщение 5" },
+      { itemId: "provider-final", role: "agent", text: "Финал после hydration" },
+    ],
+  }]);
+  assertRecovered(store);
+  store.close();
+
+  store = new LocalTaskSyncStore({
+    filePath,
+    databaseFile,
+    terminalDatabaseFile,
+    messageCommandDatabaseFile,
+  });
+  await store.load();
+  assertRecovered(store);
+  store.close();
+
+  store = new LocalTaskSyncStore({
+    filePath,
+    databaseFile,
+    terminalDatabaseFile,
+    messageCommandDatabaseFile,
+  });
+  await store.load();
+  assertRecovered(store);
+  store.close();
+
+  const verification = new DatabaseSync(messageCommandDatabaseFile, { readOnly: true });
+  assert.equal(verification.prepare("SELECT COUNT(*) AS count FROM message_commands").get().count, 14);
+  verification.close();
 });
 
 test("task sync evicts oldest completed cache entries but never active ones", async () => {
@@ -1867,4 +2322,321 @@ test("task sync pages multiple Thread histories directly in SQLite", async () =>
     { provider: "claude", threadId: "thread-current", id: "thread-current-turn-1" },
     { provider: "claude", threadId: "thread-current", id: "thread-current-turn-2" },
   ]);
+});
+
+test("task sync store preserves source occurrence identity across restart", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-source-occurrence-"));
+  const filePath = path.join(root, "task-sync.json");
+  const databaseFile = path.join(root, "journal.sqlite");
+  const task = {
+    provider: "codex",
+    threadId: "source-occurrence-thread",
+    projectRoot: root,
+    projectName: "repo",
+    title: "Source occurrence",
+    updatedAtMs: 1,
+  };
+  const sourceOccurrenceId = `codex-rollout:${"9".repeat(64)}`;
+  const origin = {
+    kind: "interstream",
+    workspaceId: "workspace-1",
+    workspaceName: "Workspace",
+    streamId: "persisted-owner",
+    streamName: "Owner",
+  };
+  let store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  store.recordCatalog([task], 1);
+  store.recordHistory(task, [{
+    id: "source-occurrence-turn",
+    userMessageSnapshotAuthority: "incremental",
+    messages: [{ role: "user", text: "External", sourceOccurrenceId }],
+  }]);
+  store.recordHistory(task, [{
+    id: "source-occurrence-turn",
+    userMessageSnapshotAuthority: "incremental",
+    messages: [{
+      role: "user",
+      text: "Accepted external",
+      sourceOccurrenceId,
+      clientUserMessageId: "accepted-source-occurrence",
+      origin,
+    }],
+  }]);
+  store.close();
+
+  store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  assert.equal(store.history(task)[0].messages.length, 1);
+  assert.equal(store.history(task)[0].messages[0].sourceOccurrenceId, sourceOccurrenceId);
+  assert.equal(
+    store.history(task)[0].messages[0].clientUserMessageId,
+    "accepted-source-occurrence",
+  );
+  assert.deepEqual(store.history(task)[0].messages[0].origin, origin);
+  assert.equal(store.history(task)[0].userMessageSnapshotAuthority, undefined);
+  store.close();
+});
+
+test("task sync store preserves a third identical occurrence after the rollout tail moves", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-moving-tail-persistence-"));
+  const filePath = path.join(root, "task-sync.json");
+  const databaseFile = path.join(root, "journal.sqlite");
+  const rollout = path.join(root, "rollout.jsonl");
+  const task = {
+    provider: "codex",
+    threadId: "moving-tail-thread",
+    projectRoot: root,
+    projectName: "repo",
+    title: "Moving tail",
+    updatedAtMs: 1,
+  };
+  const session = JSON.stringify({
+    type: "session_meta",
+    payload: { id: "persisted-moving-tail", originator: "codex_vscode" },
+  });
+  const prefix = JSON.stringify({
+    type: "event_msg",
+    payload: { type: "agent_message", message: "p".repeat(2_048) },
+  });
+  const identical = JSON.stringify({
+    type: "response_item",
+    payload: {
+      id: "colliding-provider-id",
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "Тот же prompt" }],
+      internal_chat_message_metadata_passthrough: { turn_id: "moving-tail-turn" },
+    },
+  });
+  const between = JSON.stringify({
+    type: "event_msg",
+    payload: { type: "agent_message", message: "b".repeat(80) },
+  });
+  const appendedGap = JSON.stringify({
+    type: "event_msg",
+    payload: { type: "agent_message", message: "n".repeat(40) },
+  });
+  const tailBytes = Buffer.byteLength(`${identical}\n${between}\n${identical}\n`, "utf8") + 32;
+  await writeFile(
+    rollout,
+    `${session}\n${prefix}\n${identical}\n${between}\n${identical}\n`,
+    "utf8",
+  );
+  const readMessages = async () => (
+    (await readCodexRolloutActivity(rollout, { tailBytes, reparseTail: true }))
+      .userMessages["moving-tail-turn"]
+  );
+
+  let store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  store.recordCatalog([task], 1);
+  let projection = mergeCanonicalUserMessages([], await readMessages());
+  store.recordHistory(task, [{
+    id: "moving-tail-turn",
+    userMessageSnapshotAuthority: "incremental",
+    messages: projection,
+  }]);
+  assert.equal(store.history(task)[0].messages.length, 2);
+
+  await appendFile(rollout, `${appendedGap}\n${identical}\n`, "utf8");
+  const shiftedMessages = await readMessages();
+  projection = mergeCanonicalUserMessages(projection, shiftedMessages);
+  store.recordHistory(task, [{
+    id: "moving-tail-turn",
+    userMessageSnapshotAuthority: "incremental",
+    messages: projection,
+  }]);
+  projection = mergeCanonicalUserMessages(projection, await readMessages());
+  store.recordHistory(task, [{
+    id: "moving-tail-turn",
+    userMessageSnapshotAuthority: "incremental",
+    messages: projection,
+  }]);
+  assert.equal(store.history(task)[0].messages.length, 3);
+  assert.equal(new Set(
+    store.history(task)[0].messages.map((message) => message.sourceOccurrenceId),
+  ).size, 3);
+  store.close();
+
+  const coldRollout = path.join(root, "cold-rollout.jsonl");
+  await copyFile(rollout, coldRollout);
+  const coldMessages = (
+    await readCodexRolloutActivity(coldRollout, { tailBytes, reparseTail: true })
+  ).userMessages["moving-tail-turn"];
+  assert.deepEqual(
+    coldMessages.map((message) => message.sourceOccurrenceId),
+    shiftedMessages.map((message) => message.sourceOccurrenceId),
+    "a cold reader derives the same surviving raw occurrence identities",
+  );
+  store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  projection = mergeCanonicalUserMessages(store.history(task)[0].messages, coldMessages);
+  store.recordHistory(task, [{
+    id: "moving-tail-turn",
+    userMessageSnapshotAuthority: "incremental",
+    messages: projection,
+  }]);
+  assert.equal(store.history(task)[0].messages.length, 3);
+  assert.equal(new Set(
+    store.history(task)[0].messages.map((message) => message.sourceOccurrenceId),
+  ).size, 3);
+  store.close();
+});
+
+test("terminal identity recovery skips malformed newest rows within hard aggregate bounds", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-recovery-total-bound-"));
+  const filePath = path.join(root, "task-sync.json");
+  const databaseFile = path.join(root, "journal.sqlite");
+  const terminalDatabaseFile = path.join(root, "runtime.sqlite");
+  const messageCommandDatabaseFile = path.join(root, "message-command-ledger.sqlite");
+  const tasks = Array.from({ length: 5 }, (_, index) => ({
+    provider: "codex",
+    threadId: `aggregate-thread-${index}`,
+    projectRoot: root,
+    projectName: "repo",
+    title: `Aggregate ${index}`,
+    updatedAtMs: index + 1,
+    turnId: `aggregate-turn-${index}`,
+    runId: `aggregate-run-${index}`,
+    clientUserMessageId: `aggregate-client-${index}`,
+  }));
+
+  let store = new LocalTaskSyncStore({
+    filePath,
+    databaseFile,
+    terminalDatabaseFile,
+    messageCommandDatabaseFile,
+  });
+  await store.load();
+  store.recordCatalog(tasks, 1);
+  for (const task of tasks) {
+    store.recordHistory(task, [{
+      id: task.turnId,
+      prompt: "Corrupted",
+      status: "completed",
+      completed: true,
+      messages: [{ role: "user", text: "Unkeyed tail" }],
+    }]);
+  }
+  store.close();
+
+  const terminalDatabase = new DatabaseSync(terminalDatabaseFile);
+  terminalDatabase.exec(`
+    CREATE TABLE provider_turn_terminals (
+      provider TEXT NOT NULL,
+      thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      payload_bytes INTEGER NOT NULL,
+      committed_at INTEGER NOT NULL
+    );
+    CREATE INDEX provider_turn_terminals_recovery_idx
+      ON provider_turn_terminals(committed_at DESC, provider, thread_id, turn_id, payload_bytes)
+  `);
+  const insertTerminal = terminalDatabase.prepare(`
+    INSERT INTO provider_turn_terminals (
+      provider, thread_id, turn_id, payload_json, payload_bytes, committed_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  for (const [index, task] of tasks.entries()) {
+    const validPayload = JSON.stringify({
+      history: {
+        id: task.runId,
+        provider: "codex",
+        threadId: task.threadId,
+        turnId: task.turnId,
+        userMessages: [{
+          role: "user",
+          text: "Canonical",
+          clientUserMessageId: task.clientUserMessageId,
+        }],
+      },
+      padding: "x".repeat(index < 3 ? 900_000 : 1_450_000),
+    });
+    insertTerminal.run(
+      "codex",
+      task.threadId,
+      task.turnId,
+      index >= 3 ? `{${"x".repeat(1_449_998)}` : validPayload,
+      Buffer.byteLength(index >= 3 ? `{${"x".repeat(1_449_998)}` : validPayload, "utf8"),
+      index + 1,
+    );
+  }
+  terminalDatabase.close();
+
+  const ledgerDatabase = new DatabaseSync(messageCommandDatabaseFile);
+  ledgerDatabase.exec(`
+    CREATE TABLE message_commands (
+      client_user_message_id TEXT PRIMARY KEY,
+      state TEXT NOT NULL,
+      item_json TEXT,
+      receipt_json TEXT,
+      result_json TEXT
+    ) WITHOUT ROWID
+  `);
+  const insertLedger = ledgerDatabase.prepare(`
+    INSERT INTO message_commands (
+      client_user_message_id, state, item_json, receipt_json, result_json
+    ) VALUES (?, 'completed', ?, ?, ?)
+  `);
+  for (const task of tasks) {
+    const exact = {
+      provider: "codex",
+      threadId: task.threadId,
+      turnId: task.turnId,
+      runId: task.runId,
+      clientUserMessageId: task.clientUserMessageId,
+    };
+    insertLedger.run(
+      task.clientUserMessageId,
+      JSON.stringify(exact),
+      JSON.stringify({ ...exact, result: exact }),
+      JSON.stringify(exact),
+    );
+  }
+  ledgerDatabase.close();
+
+  const heartbeatGaps = [];
+  let previousBeat = performance.now();
+  const heartbeat = setInterval(() => {
+    const now = performance.now();
+    heartbeatGaps.push(now - previousBeat);
+    previousBeat = now;
+  }, 5);
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  const startedAt = performance.now();
+  store = new LocalTaskSyncStore({
+    filePath,
+    databaseFile,
+    terminalDatabaseFile,
+    messageCommandDatabaseFile,
+  });
+  await store.load();
+  const elapsedMs = performance.now() - startedAt;
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  clearInterval(heartbeat);
+
+  assert.equal(store.history(tasks[4])[0].userMessageAuthority, undefined);
+  assert.equal(store.history(tasks[3])[0].userMessageAuthority, undefined);
+  assert.equal(store.history(tasks[2])[0].userMessageAuthority, "terminal-ledger");
+  assert.equal(store.history(tasks[1])[0].userMessageAuthority, "terminal-ledger");
+  assert.equal(store.history(tasks[0])[0].userMessageAuthority, "terminal-ledger");
+  assert.ok(elapsedMs < 1_000, `bounded recovery took ${elapsedMs.toFixed(1)}ms`);
+  assert.ok(Math.max(...heartbeatGaps) < 1_000, "bounded recovery must not starve heartbeat for 1s");
+  store.close();
+
+  store = new LocalTaskSyncStore({
+    filePath,
+    databaseFile,
+    terminalDatabaseFile,
+    messageCommandDatabaseFile,
+  });
+  await store.load();
+  assert.deepEqual(
+    tasks.map((item) => store.history(item)[0].userMessageAuthority ?? null),
+    ["terminal-ledger", "terminal-ledger", "terminal-ledger", null, null],
+    "reopen must stay idempotent while malformed newest rows remain present",
+  );
+  store.close();
 });

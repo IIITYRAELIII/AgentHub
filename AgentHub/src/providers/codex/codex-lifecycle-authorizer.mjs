@@ -46,6 +46,7 @@ export async function authorizeCodexLifecycle(request, {
       skillsUsed: usage.skillsUsed ?? [], mcpCalls: usage.mcpCalls ?? [],
       toolMetricsKnown: usage.toolMetricsKnown === true, usage: usage.usage ?? null,
       usageReported: usage.reported === true, imageGenerationCount: usage.imageGenerationCount ?? 0,
+      generatedImageSources: usage.generatedImageSources ?? [],
       estimatedCredits: usage.estimatedCredits ?? 0, estimateKind: usage.estimateKind ?? "",
       model: usage.model ?? "", serviceTier: usage.serviceTier ?? "default",
       finalAnswer: usage.finalAnswer ?? "", source: "verified-codex-rollout",

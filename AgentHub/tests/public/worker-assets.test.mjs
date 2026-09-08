@@ -121,6 +121,7 @@ test("Worker build packages the same shell and theme resources used by local cli
 
     const headers = await readFile(path.join(output, "_headers"), "utf8");
     assert.match(headers, /Content-Security-Policy:/u);
+    assert.match(headers, /frame-src https:/u);
     assert.match(headers, /script-src 'self' https:\/\/home\./u);
     assert.match(headers, /style-src 'self' https:\/\/home\./u);
     assert.match(headers, /Cache-Control: no-store/u);

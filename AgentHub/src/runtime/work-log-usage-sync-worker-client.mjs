@@ -58,6 +58,10 @@ export class WorkLogUsageSyncWorkerStore {
     return this.#request("import-snapshot", { snapshot });
   }
 
+  reconcileSnapshot(snapshot) {
+    return this.#request("reconcile-snapshot", { snapshot });
+  }
+
   replaceEvents(events) {
     return this.#request("replace-events", { events });
   }
@@ -86,6 +90,10 @@ export class WorkLogUsageSyncWorkerStore {
       };
       return result;
     });
+  }
+
+  usageSyncState() {
+    return this.#request("usage-sync-state");
   }
 
   diagnostics() {

@@ -226,6 +226,63 @@ test("unchanged journal answers from metadata without loading the full payload",
   }
 });
 
+test("journal read checks the shipped account projection before serving metadata", async () => {
+  const events = [];
+  const journalDatabase = memoryJournal(DAY_HTML);
+  const originalMetadata = journalDatabase.metadata;
+  journalDatabase.metadata = async () => {
+    events.push("metadata");
+    return originalMetadata();
+  };
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase,
+    journalProjectionService: {
+      ensureAccountUsageProjectionCurrent: async () => {
+        events.push("ensure-projection");
+        return { projected: false, projectionRequired: false, reason: "current" };
+      },
+    },
+  });
+  try {
+    const address = await server.start();
+    const response = await fetch(`${address.url}api/journal`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(events.slice(0, 2), ["ensure-projection", "metadata"]);
+  } finally {
+    await server.close();
+  }
+});
+
+test("journal read exposes mandatory projection failure instead of serving stale HTML", async () => {
+  let metadataCalls = 0;
+  const journalDatabase = memoryJournal("<main>Устаревшая проекция</main>");
+  journalDatabase.metadata = async () => {
+    metadataCalls += 1;
+    return { updatedAt: "", version: "stale", revision: 1 };
+  };
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase,
+    journalProjectionService: {
+      ensureAccountUsageProjectionCurrent: async () => {
+        throw new Error("projection worker unavailable");
+      },
+    },
+  });
+  try {
+    const address = await server.start();
+    const response = await fetch(`${address.url}api/journal`);
+    assert.equal(response.status, 503);
+    assert.match((await response.json()).error, /projection worker unavailable/u);
+    assert.equal(metadataCalls, 0);
+  } finally {
+    await server.close();
+  }
+});
+
 test("Mini App close terminates an incomplete HTTP connection and can restart", async () => {
   const server = new MiniAppServer({
     host: "127.0.0.1",
@@ -677,13 +734,15 @@ test("Mini App serves only safe persistent message attachment names", async () =
   });
   try {
     await mkdir(attachments, { recursive: true });
-    const body = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const body = Buffer.alloc(2_784_684);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(body);
     await writeFile(path.join(attachments, "message-1.png"), body);
     await writeFile(thumbnail, Buffer.from("small-preview"));
     const address = await server.start();
     const image = await fetch(`${address.url}api/message-attachment/message-1.png`);
     assert.equal(image.status, 200);
     assert.equal(image.headers.get("content-type"), "image/png");
+    assert.equal(image.headers.get("content-length"), "2784684");
     assert.deepEqual(Buffer.from(await image.arrayBuffer()), body);
     const preview = await fetch(`${address.url}api/message-attachment/message-1.png?preview=1`);
     assert.equal(preview.status, 200);
@@ -843,6 +902,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     });
     assert.equal(healthResponse.headers.get("cache-control"), "no-store");
     assert.match(healthResponse.headers.get("content-security-policy"), /default-src 'self'/);
+    assert.match(healthResponse.headers.get("content-security-policy"), /frame-src https:/);
 
     const journal = await fetch(`${address.url}api/journal`);
     const payload = await journal.json();
@@ -906,6 +966,8 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
       "",
       "background-motion-preference.js",
       "browser-device-auth.js",
+      "embedded-browser.js",
+      "host-message-trust.js",
       "message-view-controller.js",
       "chat-surface-preference.js",
       "navigation-tabs-controller.js",
@@ -1566,6 +1628,37 @@ test("Mini App exposes control failures to the guarded diagnostics boundary", as
         action: "control",
       },
     }]);
+  } finally {
+    await server.close();
+  }
+});
+
+test("Mini App preserves an expected lifecycle conflict as HTTP 409", async () => {
+  const captured = [];
+  const conflict = Object.assign(new Error("Workspace has an unresolved run admission"), {
+    code: "WORKSPACE_LIFECYCLE_CONFLICT",
+    statusCode: 409,
+  });
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(),
+    controlHandler: async () => { throw conflict; },
+    reportUnexpectedError: (error, context) => captured.push({ error, context }),
+  });
+  try {
+    const address = await server.start();
+    const response = await fetch(`${address.url}api/control`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "delete-archived-workspace", params: {} }),
+    });
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), {
+      ok: false,
+      error: "Workspace has an unresolved run admission",
+    });
+    assert.deepEqual(captured, []);
   } finally {
     await server.close();
   }
@@ -2425,13 +2518,16 @@ test("local Web is served without the third-party Telegram runtime", async () =>
     const local = await fetch(address.url);
     const localBody = await local.text();
     assert.doesNotMatch(localBody, /telegram\.org/u);
+    assert.doesNotMatch(localBody, /telegram-runtime-bootstrap/u);
     assert.match(local.headers.get("content-security-policy"), /script-src 'self';/u);
 
     // A request that arrived through the public edge may still be a Mini App.
     const publicPage = await fetch(address.url, {
       headers: { Host: "hub.example", "X-Forwarded-For": "203.0.113.9" },
     });
-    assert.match(await publicPage.text(), /telegram\.org/u);
+    const publicBody = await publicPage.text();
+    assert.doesNotMatch(publicBody, /telegram\.org/u);
+    assert.match(publicBody, /telegram-runtime-bootstrap\.js/u);
     assert.match(
       publicPage.headers.get("content-security-policy"),
       /script-src 'self' https:\/\/telegram\.org/u,
@@ -2453,7 +2549,9 @@ test("a deployment without Telegram never serves the Telegram runtime", async ()
     const response = await fetch(address.url, {
       headers: { Host: "hub.example", "X-Forwarded-For": "203.0.113.9" },
     });
-    assert.doesNotMatch(await response.text(), /telegram\.org/u);
+    const body = await response.text();
+    assert.doesNotMatch(body, /telegram\.org/u);
+    assert.doesNotMatch(body, /telegram-runtime-bootstrap/u);
     assert.match(response.headers.get("content-security-policy"), /script-src 'self';/u);
   } finally {
     await server.close();

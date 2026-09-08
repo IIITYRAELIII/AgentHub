@@ -193,6 +193,10 @@ export class WorkLogUsageRepository {
     return this.#database.payload();
   }
 
+  accountUsageProjectionVersion() {
+    return this.#database.accountUsageProjectionVersion();
+  }
+
   snapshot() {
     return this.#database.snapshot();
   }
