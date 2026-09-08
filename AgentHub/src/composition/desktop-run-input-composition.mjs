@@ -3,17 +3,24 @@ import { RunConflictPolicy } from "../application/run-conflict-policy.mjs";
 import { RunCoordinator } from "../application/run-coordinator.mjs";
 import { DesktopDeferredInputService } from "../interfaces/desktop/desktop-deferred-input-service.mjs";
 import { createDesktopMessageController } from "../interfaces/desktop/desktop-message-controller.mjs";
-import { DeferredComposerTransferRegistry } from "../application/deferred-composer-transfer-registry.mjs";
 
 export function createDesktopRunInputComposition({
+  composerTransfers,
   deferredInput,
   conflictPolicy,
   coordinator,
   messageController,
   desktopDeferredInput,
 }) {
-  const composerTransfers = new DeferredComposerTransferRegistry({
+  const transferMethods = [
+    "configure", "ready", "remember", "forget", "resolve", "claim", "consume", "has", "snapshot",
+  ];
+  if (!composerTransfers || transferMethods.some((name) => typeof composerTransfers[name] !== "function")) {
+    throw new TypeError("composerTransfers is required");
+  }
+  composerTransfers.configure({
     cleanup: desktopDeferredInput.cleanupFiles,
+    persist: desktopDeferredInput.saveState,
   });
   const deferredInputService = new DeferredInputService(deferredInput);
   const runConflictPolicy = new RunConflictPolicy(conflictPolicy);
@@ -26,6 +33,7 @@ export function createDesktopRunInputComposition({
     ...messageController,
     runCoordinator,
     composerTransfers,
+    discardPreparedAttachments: (files) => desktopDeferredInput.cleanupFiles({ temporaryFiles: files }),
   });
   const desktopDeferredInputService = new DesktopDeferredInputService({
     ...desktopDeferredInput,

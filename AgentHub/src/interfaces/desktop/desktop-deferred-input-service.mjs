@@ -6,8 +6,8 @@ import {
 } from "../../application/task-history.mjs";
 import { deferredInputText } from "../../domain/deferred-input.mjs";
 import {
-  interstreamMessageDetails,
   normalizeInterstreamOrigin,
+  trustedInterstreamMessageDetails,
 } from "../../domain/interstream-message.mjs";
 
 // Maps deferred-input UI actions to application commands for one exact task.
@@ -27,7 +27,8 @@ export class DesktopDeferredInputService {
       "startTurn", "startDeferred", "runForTask", "describeAttachments", "selectedTask", "dispatchCommand",
       "activeTitle", "snapshot",
     ]) requiredFunction(dependencies[name], name);
-    if (!dependencies.composerTransfers?.remember || !dependencies.composerTransfers?.has) {
+    if (!dependencies.composerTransfers?.remember || !dependencies.composerTransfers?.has
+      || !dependencies.composerTransfers?.forget || !dependencies.composerTransfers?.ready) {
       throw new TypeError("composerTransfers is required");
     }
     this.#d = dependencies;
@@ -62,6 +63,7 @@ export class DesktopDeferredInputService {
 
   async #execute(id, action, params, context) {
     const d = this.#d;
+    await d.composerTransfers.ready?.();
     const item = d.pendingInputs.get(id) ?? d.queuedInputs.get(id);
     if (!item) {
       if (action === "composer-commit" && d.composerTransfers.has({ id, token: params.token })) {
@@ -304,12 +306,12 @@ export class DesktopDeferredInputService {
 
   #composerDraft(item) {
     const rawText = deferredInputText(item.input);
+    const durableOrigin = normalizeInterstreamOrigin(item.messageOrigin);
     const interstreamAt = rawText.indexOf("<agent-hub-stream-message>");
-    const interstream = interstreamAt >= 0
-      ? interstreamMessageDetails(rawText.slice(interstreamAt))
+    const interstream = durableOrigin && interstreamAt >= 0
+      ? trustedInterstreamMessageDetails(rawText.slice(interstreamAt), { origin: durableOrigin })
       : null;
     const prompt = interstream?.text ?? rawText;
-    const embeddedOrigin = interstream?.origin ?? null;
     const annotated = responseAnnotationDetails(prompt);
     const referenced = userTaskReferencePromptDetails(prompt);
     const text = annotated?.request
@@ -326,7 +328,7 @@ export class DesktopDeferredInputService {
         annotation: annotation.annotation,
         ...(annotation.source ? { source: annotation.source } : {}),
       })),
-      messageOrigin: normalizeInterstreamOrigin(item.messageOrigin) ?? embeddedOrigin ?? null,
+      messageOrigin: durableOrigin,
     };
   }
 
@@ -379,15 +381,16 @@ export class DesktopDeferredInputService {
     }
     const destination = d.pendingInputs.has(item.id) ? "pending" : "queued";
     d.cancelSchedule(item.id);
+    await d.composerTransfers.remember(item, normalizedToken);
     d.pendingInputs.delete(item.id);
     d.queuedInputs.delete(item.id);
     try {
       await d.saveState();
     } catch (error) {
+      d.composerTransfers.forget({ id: item.id, token: normalizedToken });
       (destination === "queued" ? d.queuedInputs : d.pendingInputs).set(item.id, item);
       throw error;
     }
-    d.composerTransfers.remember(item, normalizedToken);
     d.updateReceipt(item, "cancelled");
     await d.updateMessage(item, "✏️ Сообщение возвращено в основной композер.");
     d.scheduleNext(item);

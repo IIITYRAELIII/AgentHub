@@ -3,9 +3,9 @@ import { messageInputWithAttachments } from "../../domain/attachment-files.mjs";
 import { messageWithTaskReferences } from "../../domain/task-board-task.mjs";
 import {
   createInterstreamMessage,
-  interstreamMessageDetails,
   interstreamOriginAuthor,
   normalizeInterstreamOrigin,
+  trustedInterstreamMessageDetails,
 } from "../../domain/interstream-message.mjs";
 import {
   messageReceiptKey,
@@ -27,9 +27,15 @@ export function createDesktopMessageController({
   durableIntake = false,
   commandTrace = null,
   composerTransfers = null,
+  discardPreparedAttachments = async () => {},
 }) {
   if (!runCoordinator?.submitClientInput || !runCoordinator?.steer) {
     throw new TypeError("runCoordinator is required");
+  }
+  if (composerTransfers && (typeof composerTransfers.resolve !== "function"
+    || typeof composerTransfers.claim !== "function"
+    || typeof composerTransfers.consume !== "function")) {
+    throw new TypeError("composerTransfers must provide resolve, claim and consume");
   }
   const inflightReceipts = new Map();
 
@@ -46,11 +52,10 @@ export function createDesktopMessageController({
       stage: "attachment-preparation",
       transport,
     });
-    let attachments;
     let target;
     try {
-      attachments = await attachmentPaths(params.attachments);
       target = await resolveTarget(params, context);
+      await composerTransfers?.ready?.();
     } catch (error) {
       preparation?.finish({ outcome: "failed", metadata: { errorCode: error?.code ?? null } });
       throw error;
@@ -59,11 +64,18 @@ export function createDesktopMessageController({
     const requestedComposerTransfer = params.composerTransfer && typeof params.composerTransfer === "object"
       ? params.composerTransfer
       : null;
-    const composerTransfer = requestedComposerTransfer
-      ? composerTransfers?.resolve?.(requestedComposerTransfer, target) ?? null
+    let composerTransfer = requestedComposerTransfer
+      ? composerTransfers?.resolve?.(requestedComposerTransfer, target, { clientUserMessageId }) ?? null
       : null;
     if (requestedComposerTransfer && !composerTransfer) {
-      throw new Error("Перенос черновика устарел; сообщение из очереди не было отправлено");
+      throw new Error("Перенос черновика устарел или закреплён за другой отправкой; сообщение не отправлено");
+    }
+    let attachments;
+    try {
+      attachments = await attachmentPaths(params.attachments);
+    } catch (error) {
+      preparation?.finish({ outcome: "failed", metadata: { errorCode: error?.code ?? null } });
+      throw error;
     }
     const taskReferences = await resolveTaskReferences(params.taskReferences, target, context);
     if (!text && !attachments.length && !taskReferences.length) {
@@ -97,7 +109,9 @@ export function createDesktopMessageController({
       throw new Error("Идентификатор mcp: зарезервирован для подтверждённых межпоточных сообщений");
     }
     const taskReferencedInput = messageWithTaskReferences(text, taskReferences);
-    const referencedInput = messageOrigin && !interstreamMessageDetails(taskReferencedInput)
+    const referencedInput = messageOrigin && !trustedInterstreamMessageDetails(taskReferencedInput, {
+      origin: messageOrigin,
+    })
       ? createInterstreamMessage({ ...messageOrigin, text: taskReferencedInput })
       : taskReferencedInput;
     if (transport === "mcp") {
@@ -119,6 +133,22 @@ export function createDesktopMessageController({
       text, attachmentIdentities: descriptors, taskReferences, followUpMode, clientProjectionIntent,
       messageOrigin: composerTransfer ? messageOrigin : null,
     });
+    if (composerTransfer) {
+      try {
+        composerTransfer = await composerTransfers.claim(requestedComposerTransfer, target, {
+          clientUserMessageId,
+        });
+      } catch (error) {
+        await discardPreparedAttachments(attachments);
+        preparation?.finish({ outcome: "failed", metadata: { errorCode: error?.code ?? null } });
+        throw error;
+      }
+      if (!composerTransfer) {
+        await discardPreparedAttachments(attachments);
+        preparation?.finish({ outcome: "failed" });
+        throw new Error("Перенос черновика уже закреплён за другой отправкой");
+      }
+    }
     preparation?.finish({
       outcome: "succeeded",
       metadata: { attachmentCount: attachments.length, taskReferenceCount: taskReferences.length },
@@ -127,16 +157,35 @@ export function createDesktopMessageController({
     const inflight = inflightReceipts.get(receiptKey);
     if (inflight) {
       if (inflight.fingerprint !== fingerprint) {
+        if (composerTransfer) await discardPreparedAttachments(attachments);
         const error = new Error("Идентификатор сообщения уже используется для другого содержимого");
         error.code = "MESSAGE_RECEIPT_FINGERPRINT_MISMATCH";
         throw error;
       }
-      const result = await inflight.promise;
-      return result;
+      try {
+        return await inflight.promise;
+      } finally {
+        if (composerTransfer) {
+          const duplicateFiles = attachments.filter((file) => !inflight.attachments.includes(file));
+          await discardPreparedAttachments(duplicateFiles);
+        }
+      }
     }
-    const previous = receipts.find(receiptIdentity, fingerprint);
-    if (previous) return previous;
-
+    let previous;
+    try {
+      previous = receipts.find(receiptIdentity, fingerprint);
+    } catch (error) {
+      if (composerTransfer) await discardPreparedAttachments(attachments);
+      throw error;
+    }
+    if (previous) {
+      await discardPreparedAttachments(attachments);
+      if (composerTransfer) {
+        const consumed = await composerTransfers.consume(composerTransfer, { clientUserMessageId });
+        if (!consumed) throw new Error("Не удалось подтвердить владение переносом черновика");
+      }
+      return previous;
+    }
     const promise = (async () => {
       receipts.reserve(receiptIdentity, fingerprint, {
         accepted: false,
@@ -157,8 +206,9 @@ export function createDesktopMessageController({
       const submit = usesDurableIntake
         ? runCoordinator.acceptClientInput.bind(runCoordinator)
         : runCoordinator.submitClientInput.bind(runCoordinator);
+      let result;
       try {
-        const result = await submit({
+        result = await submit({
           input,
           attachments,
           target,
@@ -166,14 +216,6 @@ export function createDesktopMessageController({
           clientProjectionIntent,
           followUpMode,
         });
-        const { snapshot: _snapshot, ...storedResult } = result;
-        storedResult.pending = false;
-        if (clientProjectionIntent) storedResult.clientProjectionIntent = clientProjectionIntent;
-        if (messageAttachments.length) storedResult.attachments = messageAttachments;
-        receipts.updateResult(receiptIdentity, storedResult);
-        if (composerTransfer) await composerTransfers.consume(composerTransfer);
-        if (!usesDurableIntake) await persistReceipts();
-        return storedResult;
       } catch (error) {
         receipts.updateResult(receiptIdentity, {
           accepted: false,
@@ -184,8 +226,29 @@ export function createDesktopMessageController({
         await persistReceipts();
         throw error;
       }
+      const { snapshot: _snapshot, ...storedResult } = result;
+      storedResult.pending = false;
+      if (clientProjectionIntent) storedResult.clientProjectionIntent = clientProjectionIntent;
+      if (messageAttachments.length) storedResult.attachments = messageAttachments;
+      receipts.updateResult(receiptIdentity, storedResult);
+      if (composerTransfer) {
+        const consumed = await composerTransfers.consume(composerTransfer, { clientUserMessageId });
+        if (!consumed) {
+          receipts.updateResult(receiptIdentity, {
+            attentionRequired: true,
+            reconciliationRequired: true,
+            error: "Не подтверждено владение переносом после принятой отправки",
+          });
+          await persistReceipts();
+          const error = new Error("Не удалось подтвердить владение переносом после отправки");
+          error.code = "COMPOSER_TRANSFER_OWNERSHIP_LOST";
+          throw error;
+        }
+      }
+      if (!usesDurableIntake) await persistReceipts();
+      return storedResult;
     })();
-    inflightReceipts.set(receiptKey, { fingerprint, promise });
+    inflightReceipts.set(receiptKey, { fingerprint, promise, attachments: [...attachments] });
     try {
       const result = await promise;
       return result;
