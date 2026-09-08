@@ -299,6 +299,35 @@ test("an empty Stream persists the settings for its future Thread", async (t) =>
   );
 });
 
+test("Astra Stream settings survive a SQLite store restart", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-astra-stream-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  let store;
+  try {
+    store = new WorkspaceCatalogStore({ databaseFile });
+    await store.load();
+    const workspace = store.createWorkspace({ name: "Astra" });
+    const stream = store.createStream({ workspaceId: workspace.id });
+    store.updateStreamSettings(stream.id, {
+      provider: "codex",
+      model: "gpt-6-astra",
+      reasoning: "high",
+    });
+    store.close();
+
+    store = new WorkspaceCatalogStore({ databaseFile });
+    await store.load();
+    assert.deepEqual(store.stream(stream.id).settings, {
+      provider: "codex",
+      model: "gpt-6-astra",
+      reasoning: "high",
+    });
+  } finally {
+    store?.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("archiving a Stream hides it without losing its Thread history", async (t) => {
   const store = await fixture(t);
   const workspace = store.createWorkspace({ name: "Agent HUB" });

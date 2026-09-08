@@ -17,7 +17,7 @@ function fixture() {
   const store = new AgentPreferencesStore({
     selectionStore,
     taskMetadata,
-    codexModels: ["sol", "terra"],
+    codexModels: ["sol", "terra", "gpt-6-astra"],
     claudeModels: ["sonnet", "opus"],
     reasoningEfforts: ["low", "high"],
     collaborationModes: ["default", "plan"],
@@ -27,7 +27,7 @@ function fixture() {
     defaultClaudeModel: "sonnet",
     defaultClaudeReasoningEffort: "high",
     defaultClaudeCollaborationMode: "default",
-    normalizeCodexModel: (value) => ["sol", "terra"].includes(value) ? value : "sol",
+    normalizeCodexModel: (value) => ["sol", "terra", "gpt-6-astra"].includes(value) ? value : "sol",
     resolveCodexThreadSettings: (payload, current) => ({
       model: payload?.model ?? current.model,
       reasoningEffort: payload?.reasoningEffort ?? current.reasoningEffort,
@@ -95,6 +95,8 @@ test("agent preferences restore and validate both providers in one state owner",
       },
     },
   });
+  store.setCodexModel("gpt-6-astra");
+  assert.equal(store.codexModel, "gpt-6-astra");
   assert.throws(() => store.setCodexModel("unknown"), /unknown Codex model/u);
   assert.throws(() => store.setClaudeReasoning("ultra"), /unknown Claude reasoning effort/u);
   assert.deepEqual(store.setActivityRecentMinutes(240), { changed: true });

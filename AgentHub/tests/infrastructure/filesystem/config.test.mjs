@@ -21,6 +21,40 @@ test("Agent Hub root remains independent from the config module location", () =>
   assert.equal(AGENT_HUB_ROOT, path.resolve(import.meta.dirname, "..", "..", ".."));
 });
 
+test("default Codex catalog includes Astra while explicit legacy catalogs remain exact", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-codex-models-"));
+  const configFile = path.join(root, "config.json");
+  const previous = process.env.AGENT_HUB_CONFIG;
+  try {
+    process.env.AGENT_HUB_CONFIG = configFile;
+    await writeFile(configFile, JSON.stringify({
+      components: { telegram: false, miniApp: false, androidApp: false },
+      projectRoot: root,
+    }), "utf8");
+    const defaults = await loadConfig();
+    assert.deepEqual(defaults.codexModels[0], {
+      value: "gpt-5.5",
+      label: "GPT-5.5",
+    });
+    assert.deepEqual(defaults.codexModels.find(({ value }) => value === "gpt-6-astra"), {
+      value: "gpt-6-astra",
+      label: "GPT-6-Astra",
+    });
+
+    await writeFile(configFile, JSON.stringify({
+      components: { telegram: false, miniApp: false, androidApp: false },
+      projectRoot: root,
+      codexModels: [{ value: "legacy-codex", label: "Legacy Codex" }],
+    }), "utf8");
+    const explicit = await loadConfig();
+    assert.deepEqual(explicit.codexModels, [{ value: "legacy-codex", label: "Legacy Codex" }]);
+  } finally {
+    if (previous == null) delete process.env.AGENT_HUB_CONFIG;
+    else process.env.AGENT_HUB_CONFIG = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("Codex executable update policy validates disable and exact version pin", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-codex-update-config-"));
   const configFile = path.join(root, "config.json");

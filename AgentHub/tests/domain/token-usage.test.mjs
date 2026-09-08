@@ -132,6 +132,10 @@ test("Spark is accounted as zero credits and unknown models stay unpriced", () =
     formatTaskTokenUsage(usage, { model: "future-model" }),
     /нет тарифа для future-model/,
   );
+  assert.match(
+    formatTaskTokenUsage(usage, { model: "gpt-6-astra" }),
+    /нет тарифа для gpt-6-astra/,
+  );
   assert.deepEqual(turnCreditBreakdown(emptyTokenUsage(), {
     model: "<synthetic>",
   }), {
