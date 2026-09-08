@@ -42,7 +42,7 @@ function fixture(overrides = {}) {
     observer: true,
     executionOwner: "hub",
     appServer: "Agent Hub Server",
-    model: "gpt-test",
+    model: "gpt-6-astra",
     reasoning: "high",
     progressStage: "Проверяю",
     promptPreview: "Вопрос",
@@ -197,7 +197,7 @@ function fixture(overrides = {}) {
       current: () => ({
         activeProvider: "codex",
         activeProjectRoot: "D:/work",
-        codexModel: "gpt-test",
+        codexModel: "gpt-6-astra",
         claudeModel: "opus",
         codexReasoningEffort: "high",
         claudeReasoningEffort: "medium",
@@ -214,8 +214,8 @@ function fixture(overrides = {}) {
           streams: { "stream-1": [{ label: "релизь", text: "релизь" }] },
           workspaces: {},
         },
-        codexModels: [{ value: "gpt-test", label: "GPT Test" }],
-        codexModelLabel: () => "GPT Test",
+        codexModels: [{ value: "gpt-6-astra", label: "GPT-6-Astra" }],
+        codexModelLabel: () => "GPT-6-Astra",
         claudeModels: ["opus"],
         claudeModelLabels: { opus: "Opus" },
         reasoningEfforts: ["medium", "high"],
@@ -598,7 +598,7 @@ test("desktopRunSnapshot preserves run fields and nested context", () => {
     observer: true,
     executionOwner: "hub",
     runtime: "Agent Hub Server",
-    model: "gpt-test",
+    model: "gpt-6-astra",
     reasoning: "high",
     stage: "Проверяю",
     prompt: "Вопрос",
@@ -736,7 +736,7 @@ test("desktopTaskSnapshot preserves task fields and run precedence", () => {
   assert.equal(snapshot.workspaceName, "Agent HUB");
   assert.equal(snapshot.title, "Agent HUB - Stream 1");
   assert.equal(snapshot.threadTitle, "Задача");
-  assert.equal(snapshot.model, "gpt-test");
+  assert.equal(snapshot.model, "gpt-6-astra");
   assert.equal(snapshot.selected, true);
   assert.equal(snapshot.running, true);
   assert.equal(snapshot.executionOwner, "hub");
@@ -1082,13 +1082,13 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
     streamOrdinal: 1,
     title: "Agent HUB - Stream 1",
     projectName: "Проект",
-    model: "GPT Test",
+    model: "GPT-6-Astra",
     reasoning: "High",
     mode: "Default",
   });
   assert.deepEqual(snapshot.settings, {
     provider: "codex",
-    model: "gpt-test",
+    model: "gpt-6-astra",
     reasoning: "high",
     mode: "default",
     approvalMode: "auto",
@@ -1104,9 +1104,9 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
       streams: { "stream-1": [{ label: "релизь", text: "релизь" }] },
       workspaces: {},
     },
-    models: [{ value: "gpt-test", label: "GPT Test" }],
+    models: [{ value: "gpt-6-astra", label: "GPT-6-Astra" }],
     modelOptionsByProvider: {
-      codex: [{ value: "gpt-test", label: "GPT Test" }],
+      codex: [{ value: "gpt-6-astra", label: "GPT-6-Astra" }],
       claude: [{ value: "opus", label: "Opus (latest)" }],
     },
     reasoningOptions: [
