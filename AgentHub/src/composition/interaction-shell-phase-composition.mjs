@@ -196,6 +196,7 @@ export function createInteractionShellPhase({
       taskDiffs: provider.taskDiffs,
       managedRunLifecycle: provider.managedRunLifecycle,
       deferredInputs: provider.deferredInputs,
+      composerTransfers: provider.composerTransfers,
       taskProgress: {
         setStage: (...args) => runShell.taskProgress.setStage(...args),
         finish: (...args) => runShell.taskProgress.finish(...args),

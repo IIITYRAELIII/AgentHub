@@ -62,6 +62,7 @@ export function createDesktopRunRouterWiring({
   }
 
   const runInputs = createDesktopRunInputComposition({
+    composerTransfers: services.composerTransfers,
     deferredInput: {
       store: services.deferredInputs,
       maxItems: constants.maxDeferredInputs,

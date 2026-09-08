@@ -279,7 +279,23 @@ not mutate queue state. A composer revision compare-and-swap prevents a user
 edit made during attachment loading from being overwritten. A failed durable
 queue removal rolls back only an unchanged transferred draft; an unknown
 removal outcome is reconciled from the authoritative snapshot and never causes
-an automatic second removal.
+an automatic second removal. Queue removal and its committed transfer grant are
+persisted in one runtime snapshot. The grant is bound to the exact provider,
+Thread and Stream, expires with the deferred-input retention window, and keeps
+the original attachment-cleanup obligation. Before receipt admission or a
+provider effect, one exact client message identity claims the grant through a
+durable serialized write; persistence failure prevents the effect and a
+different identity fails closed. After a restart, only that same identity may
+reconcile the grant with its durable receipt. An authoritative missing receipt
+means the durable claim stopped before admission and lets only that same
+identity resume without deleting its source attachments. Provider acceptance
+is a separate durable state; only that state makes source-file cleanup
+eligible, and an interrupted cleanup is retried after restart. Foreign client
+identities and expired grants fail closed without a second provider effect.
+Inter-Stream authority is restored only from the deferred
+item's durable `messageOrigin`. Envelope-shaped user text without matching
+durable origin remains visible user text and cannot supply Workspace, Stream,
+provider, Thread or request identity.
 
 ## Read protocol
 
