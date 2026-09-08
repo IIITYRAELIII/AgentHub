@@ -6,10 +6,11 @@ import { createHubStaticSettings } from "../../src/composition/hub-static-settin
 test("Codex model normalization accepts canonical IDs and display labels", () => {
   const settings = createHubStaticSettings({
     codexModels: [
+      { value: "gpt-6-astra", label: "GPT-6-Astra" },
       { value: "gpt-5.6-sol", label: "GPT-5.6-Sol" },
       { value: "gpt-5.5", label: "GPT-5.5" },
     ],
-    codexModel: "GPT-5.6-Sol",
+    codexModel: "GPT-6-Astra",
     codexReasoningEffort: "high",
     projects: [{ path: "D:/Work" }],
     dataDir: "D:/Data",
@@ -19,9 +20,10 @@ test("Codex model normalization accepts canonical IDs and display labels", () =>
     showProjectButton: false,
   }, "D:/AgentHub");
 
-  assert.equal(settings.normalizeCodexModel("gpt-5.6-sol"), "gpt-5.6-sol");
-  assert.equal(settings.normalizeCodexModel("GPT-5.6-Sol"), "gpt-5.6-sol");
-  assert.equal(settings.defaultCodexModel, "gpt-5.6-sol");
+  assert.equal(settings.normalizeCodexModel("gpt-6-astra"), "gpt-6-astra");
+  assert.equal(settings.normalizeCodexModel("GPT-6-Astra"), "gpt-6-astra");
+  assert.equal(settings.codexModelLabel("gpt-6-astra"), "GPT-6-Astra");
+  assert.equal(settings.defaultCodexModel, "gpt-6-astra");
 });
 
 test("Telegram keyboard omits task capture while keeping the legacy command", () => {

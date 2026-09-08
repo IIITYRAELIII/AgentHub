@@ -422,6 +422,34 @@ test("Codex turn service persists the exact receipt before background materializ
   );
 });
 
+test("Codex turn start sends the exact Astra model ID", async () => {
+  const starts = [];
+  const service = codexTurnService({
+    sendRpc: async (method, params) => {
+      if (method === "turn/start") starts.push(params);
+      return { turn: { id: "turn-astra" } };
+    },
+    readThread: async () => ({
+      thread: {
+        turns: [{ id: "turn-astra", status: "inProgress", items: [{ type: "userMessage" }] }],
+      },
+    }),
+  });
+  const run = {
+    threadId: "thread-astra",
+    projectRoot: "D:\\Work",
+    modelId: "gpt-6-astra",
+    reasoningId: "high",
+    collaborationMode: "default",
+  };
+
+  await service.launch(run, "Use Astra");
+
+  assert.equal(starts.length, 1);
+  assert.equal(starts[0].model, "gpt-6-astra");
+  assert.equal(starts[0].collaborationMode.settings.model, "gpt-6-astra");
+});
+
 test("Codex turn service does not wait for Thread projection before returning the accepted run", async () => {
   let finishRead;
   const readPending = new Promise((resolve) => { finishRead = resolve; });
