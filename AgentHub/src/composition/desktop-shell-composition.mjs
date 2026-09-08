@@ -67,8 +67,7 @@ export function createDesktopShellComposition({
     approvalController,
     taskDiffs,
     managedRunLifecycle,
-    deferredInputs,
-    composerTransfers,
+    deferredInputs, composerTransfers,
     taskProgress,
     taskExternalActivity,
     scheduleQueuedInput,
@@ -492,8 +491,7 @@ export function createDesktopShellComposition({
     },
     services: {
       startManualCompaction: (target) => streamContextMaintenance.compact(target),
-      deferredInputs,
-      composerTransfers,
+      deferredInputs, composerTransfers,
       saveState,
       persistDeferredIntake: (item, destination, fallbackReceipt = null) => runtimeStateStore.saveDeferredIntake({
         item,
