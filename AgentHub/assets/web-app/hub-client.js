@@ -943,26 +943,35 @@ function exactTaskParams(id) {
   return identity;
 }
 
-function queueBatchedMessageRender(taskIdValue, { preserveScroll = false } = {}) {
+function queueBatchedMessageRender(taskIdValue, {
+  preserveScroll = false,
+  exactNavigation = null,
+} = {}) {
   const id = String(taskIdValue ?? "").trim();
   if (!id || messageRenderBatchDepth <= 0) return false;
   const previous = batchedMessageRenders.get(id);
   batchedMessageRenders.set(id, {
     preserveScroll: Boolean(previous?.preserveScroll || preserveScroll),
+    exactNavigation: exactNavigation ?? previous?.exactNavigation ?? null,
   });
   return true;
 }
 
-function renderTaskMessagesNow(taskIdValue, { preserveScroll = false } = {}) {
+function renderTaskMessagesNow(taskIdValue, {
+  preserveScroll = false,
+  exactNavigation = null,
+} = {}) {
   const messages = reconciledMessages(taskIdValue);
-  if (preserveScroll) agentHub.setMessagesPreservingScroll(taskIdValue, messages);
+  if (exactNavigation) {
+    agentHub.setMessagesForExactNavigation(taskIdValue, messages, exactNavigation);
+  } else if (preserveScroll) agentHub.setMessagesPreservingScroll(taskIdValue, messages);
   else agentHub.setMessages(taskIdValue, messages);
   return messages;
 }
 
-function renderTaskMessages(taskIdValue, { preserveScroll = false } = {}) {
-  if (queueBatchedMessageRender(taskIdValue, { preserveScroll })) return null;
-  return renderTaskMessagesNow(taskIdValue, { preserveScroll });
+function renderTaskMessages(taskIdValue, options = {}) {
+  if (queueBatchedMessageRender(taskIdValue, options)) return null;
+  return renderTaskMessagesNow(taskIdValue, options);
 }
 
 function flushBatchedMessageRenders() {
@@ -2377,6 +2386,7 @@ function applyOpened(result, {
   preserveScroll = false,
   skipSnapshot = false,
   selectTask = true,
+  exactNavigation = null,
 } = {}) {
   const history = result?.history;
   if (!history) {
@@ -2414,7 +2424,7 @@ function applyOpened(result, {
   if (!skipSnapshot) applySnapshot(result?.snapshot);
   if (selectTask) agentHub.selectTask(id);
   syncHistoryPagination(id);
-  const renderedMessages = renderTaskMessages(id, { preserveScroll });
+  const renderedMessages = renderTaskMessages(id, { preserveScroll, exactNavigation });
   renderTaskQueue(id, result?.snapshot ?? lastSnapshot);
   const acknowledgementSnapshot = result?.snapshot ?? lastSnapshot;
   const acknowledgementTask = (acknowledgementSnapshot?.tasks ?? []).find((item) => taskId(
@@ -2430,7 +2440,7 @@ function applyOpened(result, {
     selectedTaskId,
     taskId: id,
   })) acknowledgeDisplayedFinal(id, acknowledgementSnapshot);
-  if (result.focusedMessage) {
+  if (result.focusedMessage && !exactNavigation) {
     window.requestAnimationFrame(() => agentHub.focusMessage?.({
       turnId: result.focusedMessage.turnId,
       itemId: result.focusedMessage.itemId,
@@ -3012,7 +3022,12 @@ agentHub.on("message-pin:open", ({ pin }) => runAction(async () => {
     itemId: pin.itemId,
     role: pin.role,
   });
-  applyOpened(result);
+  applyOpened(result, {
+    exactNavigation: {
+      turnId: result?.focusedMessage?.turnId ?? pin.turnId,
+      itemId: result?.focusedMessage?.itemId ?? pin.itemId,
+    },
+  });
 }));
 
 agentHub.on("task:rename", ({ id, title }) => runAction(async () => {

@@ -5033,6 +5033,32 @@ function restoreChatAnchor(anchor) {
   window.requestAnimationFrame(apply);
 }
 
+function renderedMessageTarget({ turnId, itemId } = {}) {
+  return [...chatLog.querySelectorAll("[data-item-id]")].find((node) => (
+    String(node.dataset.turnId ?? "") === String(turnId ?? "")
+    && String(node.dataset.itemId ?? "") === String(itemId ?? "")
+  )) ?? null;
+}
+
+function focusRenderedMessage(identity, { behavior = "smooth" } = {}) {
+  const target = renderedMessageTarget(identity);
+  if (!target) return false;
+  chatLog.querySelectorAll("[data-search-match], [data-pin-highlight]").forEach((node) => {
+    node.removeAttribute("data-search-match");
+    node.removeAttribute("data-pin-highlight");
+  });
+  const scrollController = chatScrollControllers.get(chatScroll);
+  const navigationGeneration = scrollController?.beginExactNavigation();
+  target.setAttribute("data-pin-highlight", "");
+  target.tabIndex = -1;
+  target.scrollIntoView({ block: "center", behavior });
+  target.focus({ preventScroll: true });
+  scrollController?.completeExactNavigation(navigationGeneration);
+  if (messagePinStatus) messagePinStatus.textContent = "Закреплённое сообщение показано";
+  window.setTimeout(() => target.removeAttribute("data-pin-highlight"), 4_000);
+  return true;
+}
+
 function currentHistoryPagination() {
   return state.historyPagination.get(state.selectedId) ?? { hasOlder: false, loading: false };
 }
@@ -5234,18 +5260,22 @@ function renderMessages({
   preserveTop = false,
   prependedCount = 0,
   tailLimit = 0,
+  exactNavigation = null,
 } = {}) {
   const task = currentTask();
   const taskId = String(task?.id ?? "");
   renderStreamChatHeader(task);
   const scrollController = chatScrollControllers.get(chatScroll);
-  const scrollSnapshot = scrollController?.capture();
-  const stickToBottom = forceBottom || scrollSnapshot?.pinned || chatIsNearBottom();
+  const scrollSnapshot = exactNavigation ? null : scrollController?.capture();
+  const stickToBottom = !exactNavigation
+    && (forceBottom || scrollSnapshot?.pinned || chatIsNearBottom());
   // Обновление истории после финального ответа использует preserveTop. У низа
   // якорь первого видимого сообщения оставлял зазор после новой карточки.
   // Якорь нужен только читателю, который уже ушёл выше по истории.
   const incrementalPrepend = Number(prependedCount) > 0 && !tailLimit;
-  const anchor = preserveTop && !stickToBottom && !incrementalPrepend ? captureChatAnchor() : null;
+  const anchor = !exactNavigation && preserveTop && !stickToBottom && !incrementalPrepend
+    ? captureChatAnchor()
+    : null;
   // chatLog is a single physical DOM surface shared by every Stream. Claim it
   // before reading the new history so keyed reconciliation can never reuse a
   // message node (or its event handlers) owned by the previously selected
@@ -5271,7 +5301,8 @@ function renderMessages({
     } else {
       existingEmpty.textContent = emptyText;
     }
-    if (anchor) restoreChatAnchor(anchor);
+    if (exactNavigation) focusRenderedMessage(exactNavigation, { behavior: "auto" });
+    else if (anchor) restoreChatAnchor(anchor);
     else if (stickToBottom) pinChatToBottom();
     else window.requestAnimationFrame(() => scrollController?.afterMutation(scrollSnapshot, { preserveDistance: true }));
     scheduleUnderfilledHistoryLoad();
@@ -5321,7 +5352,9 @@ function renderMessages({
   }
   scheduleUserMessageDisclosureSync(prependedNodes);
   syncMessagePinActions();
-  if (anchor) {
+  if (exactNavigation) {
+    focusRenderedMessage(exactNavigation, { behavior: "auto" });
+  } else if (anchor) {
     restoreChatAnchor(anchor);
     scrollController?.addUnread(newTailMessages);
   }
@@ -9035,6 +9068,23 @@ const AgentHub = {
       renderStreamChatHeader(currentTask());
     } else refreshSupplementaryStreamChat(taskId);
   },
+  setMessagesForExactNavigation(taskId, messages, exactNavigation) {
+    const next = Array.isArray(messages) ? messages.slice() : [];
+    const sameMessages = state.messages.has(taskId) && sameData(state.messages.get(taskId), next);
+    const selectedSurfaceOwned = taskId === state.selectedId
+      && String(chatLog.dataset.messageOwnerKey ?? "") === String(taskId ?? "");
+    if (!sameMessages) state.messages.set(taskId, next);
+    if (taskId === state.selectedId) {
+      if (sameMessages && selectedSurfaceOwned) {
+        const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        focusRenderedMessage(exactNavigation, { behavior: reducedMotion ? "auto" : "smooth" });
+      } else {
+        renderMessages({ exactNavigation });
+      }
+      renderLive();
+      renderStreamChatHeader(currentTask());
+    } else refreshSupplementaryStreamChat(taskId);
+  },
   /** Раскрываемый diff выбранной задачи под её последним ответом. */
   setTaskDiff(taskId, text) {
     if (!taskId) return;
@@ -9228,23 +9278,10 @@ const AgentHub = {
   openWorkspaceMessageSearch,
   closeWorkspaceMessageSearch,
   focusMessage({ turnId, itemId } = {}) {
-    const target = [...chatLog.querySelectorAll("[data-item-id]")].find((node) => (
-      String(node.dataset.turnId ?? "") === String(turnId ?? "")
-      && String(node.dataset.itemId ?? "") === String(itemId ?? "")
-    ));
-    if (!target) return false;
-    chatLog.querySelectorAll("[data-search-match], [data-pin-highlight]").forEach((node) => {
-      node.removeAttribute("data-search-match");
-      node.removeAttribute("data-pin-highlight");
-    });
-    target.setAttribute("data-pin-highlight", "");
-    target.tabIndex = -1;
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    target.scrollIntoView({ block: "center", behavior: reducedMotion ? "auto" : "smooth" });
-    target.focus({ preventScroll: true });
-    if (messagePinStatus) messagePinStatus.textContent = "Закреплённое сообщение показано";
-    window.setTimeout(() => target.removeAttribute("data-pin-highlight"), 4_000);
-    return true;
+    return focusRenderedMessage({ turnId, itemId }, {
+      behavior: reducedMotion ? "auto" : "smooth",
+    });
   },
   /** running=true подсвечивает индикатор и показывает «Стоп». */
   setRunning(taskId, running) {

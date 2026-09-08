@@ -53,6 +53,221 @@ async function openProductionUi(page) {
   await page.waitForFunction(() => typeof window.AgentHub === "object");
 }
 
+function navigationTask() {
+  return {
+    provider: "codex",
+    threadId: "thread-current",
+    streamId: "stream-1",
+    workspaceId: "workspace-1",
+    workspaceName: "Agent Hub",
+    streamName: "Диалоги",
+    title: "Диалоги",
+    displayTitle: "Диалоги",
+    selected: true,
+    lastAnswerAt: "2026-09-08T07:00:00.000Z",
+  };
+}
+
+function navigationSnapshot() {
+  return {
+    version: "snapshot-1",
+    tasks: [navigationTask()],
+    workspaces: [{
+      id: "workspace-1",
+      name: "Agent Hub",
+      streams: [{
+        id: "stream-1",
+        name: "Диалоги",
+        threads: [{ provider: "codex", threadId: "thread-current" }],
+      }],
+    }],
+    messagePins: [{
+      id: "pin-target",
+      streamId: "stream-1",
+      messageKey: "message:v1:target",
+      provider: "codex",
+      taskThreadId: "thread-current",
+      turnThreadId: "thread-current",
+      turnId: "turn-target",
+      itemId: "answer-target",
+      role: "agent",
+      preview: "Точное сообщение из другой страницы истории",
+      author: "Codex",
+      time: "2026-09-08T06:30:00.000Z",
+      available: true,
+    }],
+    settings: {},
+    selected: {
+      provider: "codex",
+      threadId: "thread-current",
+      streamId: "stream-1",
+    },
+  };
+}
+
+function navigationHistory({ focused = false } = {}) {
+  const start = focused ? 30 : 80;
+  const items = Array.from({ length: 20 }, (_, offset) => {
+    const index = start + offset;
+    const target = focused && offset === 9;
+    return {
+      id: target ? "turn-target" : `turn-${index}`,
+      provider: "codex",
+      threadId: "thread-current",
+      completed: true,
+      status: "completed",
+      terminalRevision: 1,
+      startedAt: `2026-09-08T06:${String(index % 60).padStart(2, "0")}:00.000Z`,
+      completedAt: `2026-09-08T06:${String(index % 60).padStart(2, "0")}:30.000Z`,
+      messages: [{
+        itemId: target ? "answer-target" : `answer-${index}`,
+        messageKey: target ? "message:v1:target" : `message:v1:${index}`,
+        pinEligible: true,
+        role: "agent",
+        text: `${target ? "Точное закреплённое сообщение" : `Ответ ${index}`}\n\n${"Контекст строки. ".repeat(18)}`,
+      }],
+    };
+  });
+  return {
+    provider: "codex",
+    threadId: "thread-current",
+    streamId: "stream-1",
+    start,
+    end: start + items.length,
+    total: 100,
+    messageTotal: 100,
+    nextBefore: String(start),
+    version: focused ? "history-focused" : "history-current",
+    items,
+  };
+}
+
+async function openProductionNavigationUi(page, { surface = "web" } = {}) {
+  const snapshot = navigationSnapshot();
+  const actions = [];
+  const pageErrors = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await page.addInitScript(() => {
+    let uuidSequence = 0;
+    if (typeof crypto.randomUUID !== "function") Object.defineProperty(crypto, "randomUUID", {
+      value: () => `00000000-0000-4000-8000-${String(++uuidSequence).padStart(12, "0")}`,
+    });
+    const nativeScrollIntoView = Element.prototype.scrollIntoView;
+    window.__hub105ScrollIntoView = [];
+    Element.prototype.scrollIntoView = function scrollIntoView(options) {
+      window.__hub105ScrollIntoView.push({
+        itemId: this.getAttribute?.("data-item-id") ?? "",
+        behavior: options?.behavior ?? "auto",
+      });
+      return nativeScrollIntoView.call(this, options);
+    };
+  });
+  await page.route("**/*", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.hostname !== "agent-hub.test") return route.abort();
+    if (url.pathname === "/api/snapshot") {
+      if (request.method() === "HEAD") return route.fulfill({ status: 204 });
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(snapshot) });
+    }
+    if (url.pathname === "/api/control") {
+      const body = request.postDataJSON();
+      actions.push(body.action);
+      let result = {};
+      if (body.action === "open-task") {
+        result = { snapshot, history: navigationHistory() };
+      } else if (body.action === "open-turn") {
+        result = {
+          snapshot,
+          history: navigationHistory({ focused: true }),
+          focusedMessage: { turnId: "turn-target", itemId: "answer-target" },
+        };
+      } else if (body.action === "task-history") {
+        result = {
+          provider: "codex",
+          threadId: "thread-current",
+          streamId: "stream-1",
+          notModified: true,
+          version: "history-current",
+        };
+      } else if (body.action === "rate-limit-history") {
+        result = { points: [] };
+      } else {
+        result = snapshot;
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, result }),
+      });
+    }
+    if (url.pathname === "/api/control/ack") {
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
+    }
+    if (url.pathname === "/") {
+      const source = await readFile(new URL("index.html", WEB_APP_ROOT), "utf8");
+      const body = source
+        .replace(/\s*<script src="https:\/\/telegram\.org\/[^>]+><\/script>/u, "")
+        .replace(/\s*<script src="\/browser-device-auth\.js" defer><\/script>/u, "")
+        .replace("</head>", `<script type="application/json" data-theme-catalog>${TEST_THEME_CATALOG}</script></head>`);
+      return route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body });
+    }
+    if (url.pathname === "/work-log.css") {
+      return route.fulfill({
+        status: 200,
+        contentType: "text/css; charset=utf-8",
+        body: await readFile(new URL("../../work-log.css", import.meta.url)),
+      });
+    }
+    const relative = decodeURIComponent(url.pathname).replace(/^\/+/, "");
+    try {
+      return route.fulfill({
+        status: 200,
+        contentType: contentType(relative),
+        body: await readFile(new URL(relative, WEB_APP_ROOT)),
+      });
+    } catch {
+      return route.fulfill({ status: 404, body: "Not found" });
+    }
+  });
+  await page.goto("http://agent-hub.test/#/chat/stream/stream-1", { waitUntil: "load" });
+  try {
+    await page.waitForFunction(() => (
+      typeof window.AgentHub === "object"
+      && document.querySelectorAll("[data-chat-log] [data-item-id]").length === 20
+    ));
+  } catch (error) {
+    const state = await page.evaluate(() => ({
+      messageCount: document.querySelectorAll("[data-chat-log] [data-item-id]").length,
+      toast: document.querySelector("[data-toast]")?.textContent ?? "",
+    }));
+    throw new Error(`${error.message}; ${JSON.stringify({ actions, pageErrors, state })}`);
+  }
+  await page.evaluate((nextSurface) => {
+    document.documentElement.dataset.surface = nextSurface;
+    window.AgentHub.showSelectedTask();
+    const scroll = document.querySelector("[data-chat-scroll]");
+    const log = document.querySelector("[data-chat-log]");
+    const sample = (kind) => {
+      const target = log.querySelector("[data-item-id='answer-target']");
+      window.__hub105Trace.push({
+        kind,
+        scrollTop: scroll.scrollTop,
+        targetPresent: Boolean(target),
+      });
+    };
+    window.__hub105Trace = [];
+    window.__hub105StartTrace = () => {
+      window.__hub105Trace = [];
+      sample("start");
+    };
+    scroll.addEventListener("scroll", () => sample("scroll"));
+    new MutationObserver(() => requestAnimationFrame(() => sample("mutation-frame")))
+      .observe(log, { childList: true });
+  }, surface);
+  return actions;
+}
+
 async function seed(page, { mobile = false } = {}) {
   await page.evaluate(({ mobile }) => {
     if (mobile) document.documentElement.dataset.surface = "mobile";
@@ -139,6 +354,97 @@ function messagePin(id, messageKey, preview) {
     available: true,
   };
 }
+
+test("production pin navigation replaces a history window without a second scroll excursion", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch(process.platform === "win32"
+    ? { channel: "msedge", headless: true }
+    : { headless: true });
+  const surfaces = [
+    { name: "web", surface: "web", viewport: { width: 1280, height: 800 } },
+    { name: "vscode-webview-narrow", surface: "vscode", viewport: { width: 720, height: 900 } },
+    { name: "mobile-web", surface: "mobile", viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 },
+  ];
+  try {
+    for (const surface of surfaces) {
+      const page = await browser.newPage({
+        viewport: surface.viewport,
+        deviceScaleFactor: surface.deviceScaleFactor ?? 1,
+      });
+      const actions = await openProductionNavigationUi(page, { surface: surface.surface });
+      const scroll = page.locator("[data-chat-scroll]");
+      await scroll.evaluate((node) => {
+        node.scrollTop = Math.round((node.scrollHeight - node.clientHeight) * 0.35);
+      });
+      await page.waitForTimeout(50);
+      await page.evaluate(() => window.__hub105StartTrace());
+      await page.locator("[data-message-pin-current]").evaluate((button) => button.click());
+      const target = page.locator("[data-item-id='answer-target']");
+      await target.waitFor({ state: "visible" });
+      await page.waitForFunction(() => document.activeElement?.dataset?.itemId === "answer-target");
+      assert.equal(await target.getAttribute("data-pin-highlight"), "");
+      assert.equal(await page.locator("[data-message-pin-status]").textContent(), "Закреплённое сообщение показано");
+      await page.waitForTimeout(40);
+      await capture(page, `hub105-${surface.name}-first-frame`);
+      await page.waitForTimeout(260);
+      await capture(page, `hub105-${surface.name}-settled`);
+
+      assert.equal(actions.filter((action) => action === "open-turn").length, 1);
+      const firstNavigation = await page.evaluate(() => ({
+        calls: window.__hub105ScrollIntoView.filter((call) => call.itemId === "answer-target"),
+        trace: window.__hub105Trace.slice(),
+      }));
+      assert.deepEqual(firstNavigation.calls.map((call) => call.behavior), ["auto"]);
+      const targetScrolls = firstNavigation.trace.filter((sample) => (
+        sample.kind === "scroll" && sample.targetPresent
+      ));
+      if (targetScrolls.length > 1) {
+        const positions = targetScrolls.map((sample) => sample.scrollTop);
+        assert.ok(Math.max(...positions) - Math.min(...positions) <= 2, JSON.stringify(firstNavigation.trace));
+      }
+
+      await page.evaluate(() => {
+        window.__hub105ScrollIntoView = [];
+        window.__hub105StartTrace();
+      });
+      await page.locator("[data-message-pin-current]").evaluate((button) => button.click());
+      await page.waitForTimeout(300);
+      assert.equal(actions.filter((action) => action === "open-turn").length, 2);
+      const repeatedNavigation = await page.evaluate(() => ({
+        calls: window.__hub105ScrollIntoView.filter((call) => call.itemId === "answer-target"),
+        trace: window.__hub105Trace.slice(),
+      }));
+      assert.equal(repeatedNavigation.calls.length, 1);
+      const repeatedScrolls = repeatedNavigation.trace.filter((sample) => sample.kind === "scroll");
+      if (repeatedScrolls.length > 1) {
+        const positions = repeatedScrolls.map((sample) => sample.scrollTop);
+        assert.ok(Math.max(...positions) - Math.min(...positions) <= 2, JSON.stringify(repeatedNavigation.trace));
+      }
+      await page.close();
+    }
+
+    const reducedPage = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    await reducedPage.emulateMedia({ reducedMotion: "reduce" });
+    await openProductionNavigationUi(reducedPage);
+    await reducedPage.locator("[data-message-pin-current]").evaluate((button) => button.click());
+    await reducedPage.locator("[data-item-id='answer-target'][data-pin-highlight]").waitFor();
+    await reducedPage.evaluate(() => {
+      window.__hub105ScrollIntoView = [];
+      window.__hub105StartTrace();
+    });
+    await reducedPage.locator("[data-message-pin-current]").evaluate((button) => button.click());
+    await reducedPage.waitForTimeout(50);
+    assert.deepEqual(
+      await reducedPage.evaluate(() => window.__hub105ScrollIntoView
+        .filter((call) => call.itemId === "answer-target")
+        .map((call) => call.behavior)),
+      ["auto"],
+    );
+    await reducedPage.close();
+  } finally {
+    await browser.close();
+  }
+});
 
 test("production message pin UI exposes carousel, list, unavailable state, pin action and exact highlight", async () => {
   const { chromium } = await import("playwright");
