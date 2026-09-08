@@ -266,7 +266,9 @@ function currentSendTaskOperation(operation) {
 
 function assertCurrentSendTaskOperation(operation) {
   if (currentSendTaskOperation(operation)) return;
-  throw new Error("Диалог изменился во время подготовки вложений. Отправка отменена.");
+  const error = new Error("Диалог изменился во время подготовки сообщения. Отправка отменена.");
+  error.agentHubMessagePreparationCancelled = true;
+  throw error;
 }
 
 function readStoredServerIdentity() {
@@ -535,7 +537,7 @@ function deliveryPatch(stateName) {
     queued: { deliveryState: "queued", delivery: "В очереди", failed: false },
     relaying: { deliveryState: "relaying", delivery: "Доставляется в Hub…", failed: false },
     delivered: { deliveryState: "delivered", delivery: "", failed: false },
-    unconfirmed: { deliveryState: "unconfirmed", delivery: "Статус приёма уточняется…", failed: false },
+    unconfirmed: { deliveryState: "unconfirmed", delivery: "Приём не подтверждён", failed: false },
     rejected: { deliveryState: "rejected", delivery: "Не принято", failed: true },
   };
   return states[stateName] ?? states.unconfirmed;
@@ -738,7 +740,7 @@ function optimisticDeferredEntries(taskIdValue, serverEntries = []) {
     ))
     .map((message) => ({
       id: `local:${message.clientUserMessageId}`,
-      state: message.deliveryState === "steering"
+      state: message.deliveryState === "unconfirmed" ? "pending" : message.deliveryState === "steering"
         ? "steering"
         : message.deliveryState === "sending" ? "dispatching" : "queued",
       clientUserMessageId: message.clientUserMessageId,
@@ -749,6 +751,7 @@ function optimisticDeferredEntries(taskIdValue, serverEntries = []) {
       createdAt: message.submittedAt ?? message.time,
       delivery: message.delivery,
       deliveryState: message.deliveryState,
+      admissionRetryAvailable: message.deliveryState === "unconfirmed" && Boolean(message.retryRequest),
       remoteCommandId: message.remoteCommandId,
       optimistic: !serverClientIds.has(message.clientUserMessageId),
     }));
@@ -859,10 +862,13 @@ function applyMessageReceipts(snapshot) {
     const clientUserMessageId = String(receipt?.clientUserMessageId ?? "").trim();
     const provider = String(receipt?.provider ?? "").trim();
     const threadId = String(receipt?.threadId ?? "").trim();
-    const streamId = String(receipt?.streamId ?? "").trim();
-    const stableTaskId = taskId(provider, threadId, streamId);
-    if (!clientUserMessageId
-      || stableTaskId !== exactSnapshotTaskId(receipt, snapshot?.tasks)) continue;
+    const stableTaskId = exactSnapshotTaskId(receipt, snapshot?.tasks);
+    if (!clientUserMessageId || !stableTaskId) continue;
+    const matchedTask = snapshot.tasks.find((task) => (
+      conversationTaskId(task, snapshot.tasks) === stableTaskId
+      && task.provider === provider && task.threadId === threadId
+    ));
+    const streamId = String(matchedTask?.streamId ?? "").trim();
     const projection = queueHistoryReceiptProjection(receipt);
     if (!projection.ownsDeferredQueue) {
       optimisticDeferredClientUserMessageIds.delete(clientUserMessageId);
@@ -2858,13 +2864,13 @@ agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
   }
 }));
 
-agentHub.on("message:send", (request) => {
-  if (request.draftStream) beginNavigation();
+function sendUserMessage(request, frozenParams = null) {
   const sendTransaction = window.AgentHubMessageSendTransaction;
   const optimisticId = `local:${request.requestId}`;
   let identity = taskIdentity(request.taskId);
   let sendTaskOperation = captureSendTaskOperation(request.taskId, identity);
   const previousAttempt = outgoingMessages(request.taskId).get(request.requestId);
+  let submittedParams = frozenParams;
   const requestAttachments = request.attachments ?? [];
   const requestTaskReferences = (request.taskReferences ?? [])
     .map((reference) => window.AgentHubTaskReferences.normalize(reference))
@@ -2879,7 +2885,7 @@ agentHub.on("message:send", (request) => {
     || ((request.annotations ?? []).length
       ? `Аннотации к ответу: ${(request.annotations ?? []).length}`
       : window.AgentHubMessageLifecycle.attachmentOnlyText(visibleAttachments));
-  const submittedAt = new Date().toISOString();
+  const submittedAt = previousAttempt?.submittedAt ?? new Date().toISOString();
   const optimistic = {
     id: optimisticId,
     provider: identity?.provider ?? request.settings?.provider ?? "",
@@ -2912,6 +2918,10 @@ agentHub.on("message:send", (request) => {
   renderOutgoingWithoutBlockingSend(request.taskId, { queue: usesQueueOptimistically });
   return runAction(() => sendTransaction.run({
     send: async () => {
+      if (frozenParams) {
+        assertCurrentSendTaskOperation(sendTaskOperation);
+        return control("send-message", structuredClone(frozenParams));
+      }
       if (request.draftStream) {
         const createdSnapshot = await control("new-task", {
           streamId: request.streamId,
@@ -2990,6 +3000,7 @@ agentHub.on("message:send", (request) => {
       }
       assertCurrentSendTaskOperation(sendTaskOperation);
       try {
+        submittedParams = structuredClone(params);
         const result = await control("send-message", params);
         reportClientCommandAck(request.requestId, params.clientTiming, "succeeded");
         return result;
@@ -3060,10 +3071,12 @@ agentHub.on("message:send", (request) => {
       agentHub.toast(result?.message ?? (result?.accepted ? "Сообщение принято" : "Сообщение сохранено"));
     },
     reject: (error) => {
+      if (outgoingMessages(request.taskId).get(request.requestId)?.projectionAuthority === "canonical") return;
       // A remote command may finish after its HTTP result is lost. Preserve
       // its request id for an idempotent retry instead of creating a second
       // optimistic card for the same user action.
-      const rejected = messageSendDefinitelyRejected(error);
+      const rejected = messageSendDefinitelyRejected(error)
+        || (!submittedParams && error?.agentHubMessagePreparationCancelled === true);
       const completion = agentHub.completeSend(request.requestId, {
         outcome: rejected ? "rejected" : "unknown",
         taskId: request.taskId,
@@ -3085,12 +3098,14 @@ agentHub.on("message:send", (request) => {
         optimisticDeferredClientUserMessageIds.delete(request.requestId);
         deferredClientUserMessageIds.delete(request.requestId);
       } else {
-        optimisticDeferredClientUserMessageIds.add(request.requestId);
-        deferredClientUserMessageIds.add(request.requestId);
+        optimisticDeferredClientUserMessageIds.delete(request.requestId);
+        deferredClientUserMessageIds.delete(request.requestId);
         updateOutgoing(request.taskId, request.requestId, {
           ...deliveryPatch("unconfirmed"),
           projectionState: "unknown",
           providerAccepted: false,
+          admissionUnconfirmed: true,
+          retryRequest: submittedParams ? { request, identity, params: submittedParams } : null,
         });
       }
       renderOutgoingWithoutBlockingSend(request.taskId, { queue: true });
@@ -3101,6 +3116,23 @@ agentHub.on("message:send", (request) => {
       agentHub.toast("Сообщение принято. Отображение обновится по квитанции.");
     },
   }));
+}
+
+agentHub.on("message:send", (request) => {
+  if (request.draftStream) beginNavigation();
+  return sendUserMessage(request);
+});
+agentHub.on("message:retry-unconfirmed", ({ taskId: requestTaskId, clientUserMessageId }) => {
+  const message = outgoingMessages(requestTaskId).get(clientUserMessageId);
+  const retained = message?.retryRequest;
+  const current = taskIdentity(requestTaskId);
+  if (!retained || message.deliveryState !== "unconfirmed"
+    || message.projectionAuthority !== "optimistic" || message.projectionState !== "unknown"
+    || retained.request.requestId !== clientUserMessageId
+    || !current || !retained.identity
+    || current.provider !== retained.identity.provider || current.threadId !== retained.identity.threadId
+    || current.streamId !== retained.identity.streamId) return;
+  return sendUserMessage(retained.request, retained.params);
 });
 
 agentHub.on("task:new", ({ title, provider }) => runAction(async () => {
@@ -4259,6 +4291,20 @@ agentHub.on("hub:restart", () => runAction(async () => {
   else applySnapshot(await control("snapshot"));
   agentHub.toast(result?.message ?? "Перезапуск Agent Hub запрошен");
 }));
+document.addEventListener("agenthub:startup-recovery", (event) => {
+  const { action, startedAtMs } = event.detail ?? {};
+  if (!["retry-startup", "restart-server"].includes(action)) return;
+  void (async () => {
+    let message;
+    try {
+      const result = await control(action, action === "retry-startup" ? { startedAtMs } : {});
+      message = result?.message ?? "Запрос принят";
+    } catch (error) {
+      message = `Не удалось подтвердить выполнение: ${error.message}. Проверьте состояние Хаба перед повтором.`;
+    }
+    document.dispatchEvent(new CustomEvent("agenthub:startup-recovery-result", { detail: { message } }));
+  })();
+});
 agentHub.on("server:autostart", ({ enabled }) => runAction(async () => {
   const result = await control("set-autostart", { enabled: enabled === true });
   if (result?.snapshot) applySnapshot(result.snapshot);

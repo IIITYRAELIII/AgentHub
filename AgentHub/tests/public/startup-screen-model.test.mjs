@@ -43,14 +43,31 @@ test("startup screen keeps failures visible and formats long elapsed time", () =
       startedAtMs: 0,
       completedAtMs: 3_661_000,
       operations: [
-        { id: "provider", label: "Provider", state: "failed" },
+        { id: "provider", label: "Provider", state: "failed", error: "Signature verification timed out" },
       ],
     },
   }, 3_661_000);
   assert.equal(model.failed, true);
   assert.equal(model.title, "Запуск завершён с ошибкой");
+  assert.equal(model.failedOperations[0].error, "Signature verification timed out");
   assert.deepEqual(model.completedOperations.map(({ state }) => state), ["failed"]);
   assert.equal(formatStartupElapsed(0, 3_661_000), "01:01:01");
+});
+
+test("a retried stage does not put completed later stages back in the queue", () => {
+  const model = createStartupScreenModel({
+    ready: false,
+    startup: {
+      startedAtMs: 1000,
+      operations: [
+        { id: "web", label: "Web", state: "completed" },
+        { id: "provider", label: "Provider", state: "running" },
+        { id: "runs", label: "Runs", state: "completed" },
+      ],
+    },
+  });
+  assert.deepEqual(model.queueOperations.map((operation) => operation.id), ["provider"]);
+  assert.deepEqual(model.completedOperations.map((operation) => operation.id), ["web", "runs"]);
 });
 
 test("startup screen renders each completed startup once", () => {

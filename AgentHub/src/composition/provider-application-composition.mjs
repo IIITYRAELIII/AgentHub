@@ -200,6 +200,7 @@ export async function createProviderApplicationComposition({
     saveState: api.saveState,
     deliverTurnEndNotification: api.deliverTurnEndNotification,
     repairTurnEndAttachments: api.repairTurnEndAttachments,
+    reclassifyTurnEndContextProbe: api.reclassifyTurnEndContextProbe,
     defaultNotificationChatId,
     findProject,
     resolveTaskByProviderRef: ({ provider, providerTaskId }) => providerCatalog.taskCatalog.find((entry) => (
@@ -304,6 +305,7 @@ export async function createProviderApplicationComposition({
     restartTransportAfterCrash: api.restartCodexAfterCrash,
     runForTask: (target) => runtimeData.taskRuns.forTask(target),
     sendRpc: api.sendRpc,
+    normalizeCodexModel,
   });
   const claudeContextMaintenance = new ClaudeContextMaintenanceService({
     compactions: codexObservability.compactions,

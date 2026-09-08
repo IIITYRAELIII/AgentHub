@@ -671,6 +671,20 @@ test("desktop task history resolves selection and merges the active run", async 
   assert.match(result.version, /^[A-Za-z0-9_-]{22}$/u);
 });
 
+test("durable probe repair supersedes a warm ordinary cache and accepts late user identity", async () => {
+  const turn = { id: "probe-repair", prompt: CODEX_CONTEXT_PROBE_PROMPT, answer: "Ход завершён.", completed: true, contextProbe: false, messages: [] };
+  const { desktopTaskHistory, state } = fixture({ run: null, history: [turn] });
+  const initial = await desktopTaskHistory({ includeActive: false, limit: 10 });
+  assert.deepEqual(initial.items.map((item) => item.id), [turn.id]);
+  await new Promise((resolve) => setImmediate(resolve));
+  state.history = [{ ...turn, operationKind: "probe", contextProbe: true }];
+  const repaired = await desktopTaskHistory({ includeActive: false, limit: 10 });
+  assert.deepEqual(repaired.items, []);
+  state.history = [{ ...turn, operationKind: "user-turn", clientUserMessageId: "ordinary-command" }];
+  const ordinary = await desktopTaskHistory({ includeActive: false, limit: 10 });
+  assert.deepEqual(ordinary.items.map((item) => item.id), [turn.id]);
+});
+
 test("desktop task history removes an already persisted context probe turn", async () => {
   const { desktopTaskHistory } = fixture({
     run: null,
@@ -729,34 +743,36 @@ test("desktop task history hides the reserved probe text without metadata", asyn
   assert.deepEqual(result.items, []);
 });
 
-test("desktop task history keeps reserved probe text with a normal client identity", async () => {
-  const { desktopTaskHistory } = fixture({
-    run: null,
-    history: [{
-      id: "manual-probe-text",
-      prompt: CODEX_CONTEXT_PROBE_PROMPT,
-      answer: CODEX_CONTEXT_PROBE_RESPONSE,
-      completed: true,
-      clientUserMessageId: "client-manual-probe",
-      messages: [{
-        itemId: "manual-user",
-        role: "user",
-        clientUserMessageId: "client-manual-probe",
-        text: CODEX_CONTEXT_PROBE_PROMPT,
-      }, {
-        itemId: "manual-answer",
-        role: "agent",
-        text: CODEX_CONTEXT_PROBE_RESPONSE,
+for (const topLevelIdentity of [true, false]) {
+  test(`desktop task history keeps reserved probe text with user identity (top-level: ${topLevelIdentity})`, async () => {
+    const { desktopTaskHistory } = fixture({
+      run: null,
+      history: [{
+        id: "manual-probe-text",
+        prompt: CODEX_CONTEXT_PROBE_PROMPT,
+        answer: CODEX_CONTEXT_PROBE_RESPONSE,
+        completed: true,
+        ...(topLevelIdentity ? { clientUserMessageId: "client-manual-probe" } : {}),
+        messages: [{
+          itemId: "manual-user",
+          role: "user",
+          clientUserMessageId: "client-manual-probe",
+          text: CODEX_CONTEXT_PROBE_PROMPT,
+        }, {
+          itemId: "manual-answer",
+          role: "agent",
+          text: CODEX_CONTEXT_PROBE_RESPONSE,
+        }],
       }],
-    }],
+    });
+
+    const result = await desktopTaskHistory({ includeActive: false, limit: 10 });
+
+    assert.equal(result.items.length, 1);
+    assert.equal(result.items[0].prompt, CODEX_CONTEXT_PROBE_PROMPT);
+    assert.equal(result.items[0].answer, CODEX_CONTEXT_PROBE_RESPONSE);
   });
-
-  const result = await desktopTaskHistory({ includeActive: false, limit: 10 });
-
-  assert.equal(result.items.length, 1);
-  assert.equal(result.items[0].prompt, CODEX_CONTEXT_PROBE_PROMPT);
-  assert.equal(result.items[0].answer, CODEX_CONTEXT_PROBE_RESPONSE);
-});
+}
 
 test("desktop task history restores a reserved final from explicit journal identity before hydration", async () => {
   const blockedRefresh = new Promise(() => {});

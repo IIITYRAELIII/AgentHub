@@ -6985,7 +6985,7 @@ async function focusResponseCitationSource(button) {
   const range = domRangeFromOffsets(surface, source.start, source.end);
   if (!range) return false;
   const [contentHash, surfaceHash, selectionHash] = await Promise.all([
-    responseAnnotationSha256(responseAnnotationSourceContent(projection.message)),
+    responseAnnotationSha256(responseAnnotationSourceContent(projection.message, source)),
     responseAnnotationSha256(surface.textContent),
     responseAnnotationSha256(range.toString().trim()),
   ]);
@@ -7274,6 +7274,17 @@ function renderQueueForTask(taskId, container) {
         class: "queue-optimistic",
         text: String(entry.delivery ?? "").trim() || "Ожидает подтверждения Hub…",
       }));
+      if (entry.admissionRetryAvailable) {
+        const retry = el("button", {
+          type: "button", class: "queue-accept", "data-message-retry-unconfirmed": "",
+          text: "Повторить отправку",
+          title: "Повторить исходный запрос с тем же идентификатором; приём Hub пока не подтверждён",
+        });
+        retry.addEventListener("click", () => emit("message:retry-unconfirmed", {
+          taskId, clientUserMessageId: entry.clientUserMessageId,
+        }));
+        actions.push(retry);
+      }
     } else {
       const steerAvailable = Boolean(task?.running && ["codex", "claude"].includes(String(task?.provider ?? "")));
       actions.push(el("button", {
@@ -8237,7 +8248,7 @@ document.addEventListener("selectionchange", () => {
 
 function sourceMessageForSelection(selection) {
   let renderedRoot = selection?.message ?? null;
-  while (renderedRoot && !String(renderedRoot.dataset?.messageKey ?? "")) {
+  while (renderedRoot && renderedRoot !== chatLive && renderedRoot.parentElement !== chatLog) {
     renderedRoot = renderedRoot.parentElement;
   }
   const renderedKey = String(renderedRoot?.dataset?.messageKey ?? "");
@@ -10952,8 +10963,12 @@ function weeklyBurnRatePoints(series, options = {}) {
       && previous.resetMs <= points[index].atMs;
     const advancedByFullWindow = previous
       && Math.abs(resetAdvanceMs - durationMs) <= BURN_RATE_RESET_SHIFT_TOLERANCE_MS;
-    const startsAfterReset = Boolean(crossedPreviousReset && advancedByFullWindow);
-    const cycleStartMs = startsAfterReset ? previous.resetMs : points[index].resetMs - durationMs;
+    const scheduledReset = Boolean(crossedPreviousReset && advancedByFullWindow);
+    const earlyReset = previous
+      && points[index].usedPercent < previous.usedPercent
+      && resetAdvanceMs > BURN_RATE_RESET_SHIFT_TOLERANCE_MS;
+    const startsAfterReset = Boolean(scheduledReset || earlyReset);
+    const cycleStartMs = scheduledReset ? previous.resetMs : points[index].resetMs - durationMs;
     const previousAccount = String(points[index - 1]?.raw?.accountKey ?? "");
     const currentAccount = String(points[index]?.raw?.accountKey ?? "");
     const startsAfterAccountChange = index > 0

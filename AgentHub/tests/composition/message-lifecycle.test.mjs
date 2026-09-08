@@ -2277,6 +2277,91 @@ test("dispatching, rejected and ambiguous starts remain queue-only", () => {
   }
 });
 
+test("failed pending intake remains queue-owned without a receipt or with an earlier intake ACK", () => {
+  for (const clientProjectionIntent of [undefined, "conversation"]) {
+    const entry = {
+      id: "failed-intake",
+      clientUserMessageId: "client-failed-intake",
+      state: "pending",
+      conflictKind: "message-intake",
+      clientProjectionIntent,
+      lastError: "Provider start was not confirmed",
+      attempts: 15,
+    };
+    for (const receipts of [[], [{
+      clientUserMessageId: entry.clientUserMessageId,
+      accepted: true,
+      deferred: true,
+      queued: true,
+      reason: "message-intake",
+      clientProjectionIntent,
+    }]]) {
+      assert.equal(lifecycle.queuedCommandUsesQueue(entry, receipts), true);
+      assert.equal(lifecycle.queuedCommandDeliveryState(entry, receipts), "deferred");
+      assert.equal(lifecycle.deferredInputConversationProjection(entry, receipts), null);
+      assert.deepEqual(lifecycle.queuedCommandClientUserMessageIds([entry], receipts), [entry.clientUserMessageId]);
+    }
+    const normal = { ...entry, lastError: null };
+    assert.equal(lifecycle.queuedCommandUsesQueue(normal, []), false);
+    assert.equal(lifecycle.deferredInputConversationProjection(normal, []).projectionState, "optimistic");
+    assert.equal(lifecycle.queuedCommandUsesQueue({ ...normal, attentionRequired: true }, []), true);
+  }
+});
+
+test("failed pending intake exposes decision, retry and cancel only in its exact Stream", async () => {
+  const entry = {
+    id: "failed-intake",
+    clientUserMessageId: "client-failed-intake",
+    provider: "codex",
+    threadId: "thread-shared",
+    streamId: "stream-2",
+    state: "pending",
+    attentionRequired: true,
+    conflictKind: "message-intake",
+    lastError: "Provider start was not confirmed",
+  };
+  const projectionContext = vm.createContext({
+    historyByTask: new Map(),
+    optimisticQueueSteerIds: new Set(),
+    providerAcceptedHistoryClientUserMessageIds: lifecycle.providerAcceptedHistoryClientUserMessageIds,
+    queuedCommandUsesQueue: lifecycle.queuedCommandUsesQueue,
+    taskId: (provider, threadId, streamId) => lifecycle.conversationTaskId({ provider, threadId, streamId }),
+  });
+  vm.runInContext(clientFunctionSource("deferredEntriesForTask", "function optimisticDeferredEntries"), projectionContext);
+  const snapshot = { deferredInputs: [entry], messageReceipts: [] };
+  assert.deepEqual(Array.from(projectionContext.deferredEntriesForTask(snapshot, "stream-1")), []);
+  const entries = projectionContext.deferredEntriesForTask(snapshot, "stream-2");
+  assert.deepEqual(Array.from(entries), [entry]);
+
+  const nodes = [];
+  const renderContext = vm.createContext({
+    state: { queue: new Map([["stream-2", entries]]), tasks: [] },
+    el: (tag, attributes, children = []) => {
+      const node = { tag, ...attributes, children };
+      nodes.push(node);
+      return node;
+    },
+  });
+  vm.runInContext(await readFile(
+    new URL("../../assets/web-app/message-view-controller.js", import.meta.url),
+    "utf8",
+  ), renderContext);
+  renderContext.MessageView = renderContext.AgentHubMessageView;
+  const start = miniAppSource.indexOf("function renderQueueForTask(");
+  const end = miniAppSource.indexOf("function renderQueue()", start);
+  vm.runInContext(miniAppSource.slice(start, end), renderContext);
+  const container = { hidden: true, replaceChildren() {}, append() {} };
+  renderContext.renderQueueForTask("stream-2", container);
+  assert.equal(container.hidden, false);
+  assert.equal(nodes.some((node) => node.class === "queue-head" && node.text === "Требуют решения: 1"), true);
+  assert.equal(nodes.some((node) => node.class === "queue-error" && node.text === entry.lastError), true);
+  for (const action of ["queue-retry", "queue-remove"]) {
+    const button = nodes.find((node) => node["data-action"] === action);
+    assert.equal(button?.["data-queue-id"], entry.id);
+    assert.notEqual(button?.disabled, true);
+  }
+});
+
 test("idle intake survives receipt-window loss and reload without moving to the queue", () => {
   const clientUserMessageId = "client-idle-outside-receipt-window";
   const deferredInput = {

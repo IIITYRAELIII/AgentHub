@@ -6,7 +6,7 @@ import {
   IMAGE_GENERATION_ESTIMATE_CREDITS,
   looksLikeImageGenerationPrompt,
 } from "../domain/codex-usage-estimate.mjs";
-import { isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
+import { isCodexContextProbeClientId, isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
 import { isCodexAutoCompactionTurnId } from "../domain/codex-internal-turn.mjs";
 import { isInheritedSubagentTurn } from "../domain/subagent-turn-identity.mjs";
 import { taskDisplayTitle } from "../domain/task-display-title.mjs";
@@ -3089,6 +3089,9 @@ export function mergeLedgerRecord(existing, incoming) {
     existing.clientUserMessageId = incomingClientUserMessageId;
   }
   const effectiveClientUserMessageId = normalizeInterstreamClientUserMessageId(existing.clientUserMessageId);
+  if (effectiveClientUserMessageId && !isCodexContextProbeClientId(effectiveClientUserMessageId)) {
+    existing.contextProbe = false;
+  }
   if (
     incoming.messageOrigin
     && incomingClientUserMessageId

@@ -68,6 +68,7 @@ const CONTROL_ACTIONS = new Set([
   "status-details",
   "speak-last-answer",
   "restart-server",
+  "retry-startup",
   "compact-context",
   "open-attachment",
   "trusted-devices",

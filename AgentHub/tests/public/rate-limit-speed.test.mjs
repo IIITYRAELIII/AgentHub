@@ -161,6 +161,49 @@ for (const [name, beforeUsed, afterUsed] of [
   });
 }
 
+test("early resets release the old high-water mark without erasing speed history", () => {
+  const points = calculate({
+    id: "codex:primary",
+    window: "primary",
+    points: [
+      { at: "2026-09-04T10:00:00.000Z", usedPercent: 95, resetsAt: "2026-09-07T05:07:49.000Z", windowDurationMins: 10080 },
+      { at: "2026-09-04T11:38:17.574Z", usedPercent: 100, resetsAt: "2026-09-07T05:07:49.000Z" },
+      { at: "2026-09-04T11:53:17.313Z", usedPercent: 0, resetsAt: "2026-09-11T11:53:05.000Z" },
+      { at: "2026-09-07T22:25:03.463Z", usedPercent: 53, resetsAt: "2026-09-11T11:53:05.000Z" },
+      { at: "2026-09-08T07:57:19.848Z", usedPercent: 0, resetsAt: "2026-09-15T07:42:56.000Z" },
+      { at: "2026-09-08T18:04:21.509Z", usedPercent: 8, resetsAt: "2026-09-15T07:42:55.000Z" },
+    ],
+  });
+
+  const boundaries = points.filter((point) => point.resetBoundary);
+  assert.equal(boundaries.length, 2);
+  assert.deepEqual(boundaries.map((point) => point.raw.at), [
+    "2026-09-04T11:53:05.000Z",
+    "2026-09-08T07:42:56.000Z",
+  ]);
+  assert.equal(points.at(-1).cycleIndex, 2);
+  assert.ok(Math.abs(points.at(-1).cumulativeUsed - 66) < 1e-9);
+  assert.equal(points.every((point) => point.continuityIndex === 0), true);
+  assert.ok(points.at(-1).actualRate > 0);
+  assert.ok(points.at(-1).averageRate > 0);
+});
+
+test("an early reset below ten percent still counts subsequent consumption", () => {
+  const points = calculate({
+    id: "codex:secondary",
+    window: "secondary",
+    points: [
+      { at: "2026-08-02T00:00:00.000Z", usedPercent: 8, resetsAt: "2026-08-08T00:00:00.000Z" },
+      { at: "2026-08-02T01:00:00.000Z", usedPercent: 1, resetsAt: "2026-08-09T00:30:00.000Z" },
+      { at: "2026-08-02T02:00:00.000Z", usedPercent: 3, resetsAt: "2026-08-09T00:30:01.000Z" },
+    ],
+  });
+
+  assert.equal(points.at(-1).cycleIndex, 1);
+  assert.equal(points.at(-1).cumulativeUsed, 3);
+  assert.ok(points.at(-1).actualRate > 0);
+});
+
 test("a reset forecast jitter does not create a rollover", () => {
   const points = calculate({
     id: "codex:secondary",

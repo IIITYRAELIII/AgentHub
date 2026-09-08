@@ -742,7 +742,23 @@ export class JournalDatabase {
     return result;
   }
 
-  async upsertRecords(records) {
+  async taskTitleMetadata({ provider, threadId }) {
+    return (await this.#open()).prepare(`
+      SELECT provider, thread_id AS threadId, turn_id AS turnId,
+        project_root AS projectRoot, changed_revision AS changedRevision,
+        CASE WHEN json_valid(record_json) THEN json_extract(record_json, '$.taskTitle') END AS taskTitle
+      FROM journal_records WHERE provider = ? AND task_thread_id = ?
+    `).all(provider, threadId);
+  }
+
+  async projectionSource() {
+    const value = (await this.#open()).prepare(
+      "SELECT value FROM journal_store_meta WHERE key = 'journal_projection_source'",
+    ).get()?.value;
+    return value ? JSON.parse(value) : null;
+  }
+
+  async upsertRecords(records, { expectedRevision = null } = {}) {
     const values = Array.isArray(records)
       ? records.map((record) => ["", record])
       : Object.entries(records ?? {});
@@ -752,7 +768,13 @@ export class JournalDatabase {
     database.exec("BEGIN IMMEDIATE");
     let revision;
     try {
-      const nextRevision = revisionOf(database) + 1;
+      const currentRevision = revisionOf(database);
+      if (expectedRevision !== null && currentRevision !== Number(expectedRevision)) {
+        const error = new Error("Journal records changed before the metadata update");
+        error.code = "JOURNAL_REVISION_CONFLICT";
+        throw error;
+      }
+      const nextRevision = currentRevision + 1;
       const insert = insertRecordStatement(database);
       for (const row of rows) insertRow(insert, row, nextRevision);
       revision = advanceRevision(database);
@@ -991,7 +1013,20 @@ export class JournalDatabase {
     let revision;
     let version;
     try {
+      const currentRevision = revisionOf(database);
+      if (options.expectedRevision != null
+        && currentRevision !== Number(options.expectedRevision)) {
+        database.exec("ROLLBACK");
+        return {
+          projected: false,
+          conflict: true,
+          expectedRevision: Number(options.expectedRevision),
+          revision: currentRevision,
+        };
+      }
       version = writeProjection(database, normalized, options);
+      writeStoreMetadataValue(database, "journal_projection_source", options.projectionSource
+        ? JSON.stringify(options.projectionSource) : "");
       revision = advanceRevision(database);
       database.exec("COMMIT");
     } catch (error) {

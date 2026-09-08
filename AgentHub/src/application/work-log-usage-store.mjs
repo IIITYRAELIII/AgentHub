@@ -25,6 +25,7 @@ import {
 } from "./work-log-usage-projection.mjs";
 import { usageSyncSnapshotFromLedger } from "../domain/work-log-usage-sync.mjs";
 import { normalizeAuthObservation } from "../domain/usage-facts.mjs";
+import { ledgerRecordFingerprint } from "../infrastructure/persistence/incremental-ledger.mjs";
 
 export function createWorkLogUsageStore({
   repositoryFactory,
@@ -424,11 +425,13 @@ export class WorkLogUsageStore {
       }
       if (!updated) return { updated: 0, projected: false, reason: "unchanged" };
       await this.#save();
-      const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
-      const projection = await this.#projectDatabase(selectedTurns);
-      return { updated, projected: projection.projected };
+      return { updated };
     });
-    return operation;
+    return operation.then(async (result) => {
+      if (!result.updated) return result;
+      const projection = await this.project(workLogFile, { projectRoot, projectionProjectRoots });
+      return { ...result, projected: projection.projected };
+    });
   }
 
   synchronizePricingMetadataAndProject({
@@ -460,11 +463,13 @@ export class WorkLogUsageStore {
       }
       if (!updated) return { updated: 0, projected: false, reason: "unchanged" };
       await this.#save();
-      const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
-      const projection = await this.#projectDatabase(selectedTurns);
-      return { updated, projected: projection.projected };
+      return { updated };
     });
-    return operation;
+    return operation.then(async (result) => {
+      if (!result.updated) return result;
+      const projection = await this.project(workLogFile, { projectRoot, projectionProjectRoots });
+      return { ...result, projected: projection.projected };
+    });
   }
 
   synchronizeTaskTitlesAndProject({
@@ -473,6 +478,20 @@ export class WorkLogUsageStore {
     projectionProjectRoots,
     workLogFile,
   }) {
+    if (typeof this.#usageSyncStore?.synchronizeTaskTitles === "function"
+      && typeof this.#usageSyncStore?.projectJournal === "function" && !this.#beforeProjectionWrite) {
+      return this.#usageSyncStore.synchronizeTaskTitles({
+        titles, projectRoot, defaultProjectRoot: this.#defaultProjectRoot,
+      }, {
+        mutationLock: (mutate) => this.#repository.enqueue(
+          () => this.#repository.applyExternalMutation(mutate), { load: false, pointRead: true },
+        ),
+      }).then(async (result) => {
+        if (!result.projectionRequired) return { updated: 0, projected: false, reason: "unchanged" };
+        const projection = await this.project(workLogFile, { projectRoot, projectionProjectRoots });
+        return { updated: result.updated, projected: projection.projected };
+      });
+    }
     const operation = this.#enqueueMutation(workLogFile, async () => {
       const byTask = new Map(
         titles
@@ -773,6 +792,26 @@ export class WorkLogUsageStore {
     projectRoot = this.#defaultProjectRoot,
     projectionProjectRoots,
   } = {}) {
+    if (typeof this.#usageSyncStore?.projectJournal === "function" && !this.#beforeProjectionWrite) {
+      return this.#repository.enqueue(() => undefined, { load: false, pointRead: true }).then(async () => {
+        let projection;
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          projection = await this.#usageSyncStore.projectJournal({
+            defaultProjectRoot: this.#defaultProjectRoot,
+            projectRoots: Array.isArray(projectionProjectRoots) && projectionProjectRoots.length
+              ? projectionProjectRoots : [projectRoot],
+            includeClaudeUsage,
+            localDeviceId: this.#usageSyncDeviceId,
+            localDeviceLabel: this.#usageSyncDeviceLabel,
+          }, { workspaceResolver: this.#workspaceResolver() });
+          if (!projection.conflict && !projection.projectionDeferred) return projection;
+        }
+        const error = new Error("Journal projection could not commit after a journal revision conflict");
+        error.code = "JOURNAL_PROJECTION_CONFLICT";
+        error.projection = projection;
+        throw error;
+      });
+    }
     const operation = this.#enqueueMutation(workLogFile, async () => {
       const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
       return this.#projectDatabase(selectedTurns, { includeClaudeUsage });
@@ -957,10 +996,12 @@ export class WorkLogUsageStore {
     projectionProjectRoots,
     deferProjection = false,
   }) {
-    if (deferProjection) {
-      return this.#repository.enqueue(async () => {
+    if (deferProjection || (typeof this.#usageSyncStore?.projectJournal === "function"
+      && !this.#beforeProjectionWrite)) {
+      const operation = this.#repository.enqueue(async () => {
         const key = workLogTurnKey({ provider, threadId, turnId });
         const existing = await this.#repository.getRecord({ provider, threadId, turnId });
+        const previousFingerprint = existing ? ledgerRecordFingerprint(existing) : null;
         const incoming = incomingLedgerRecord({
           provider,
           threadId,
@@ -1000,16 +1041,26 @@ export class WorkLogUsageStore {
           status,
         });
         const record = mergeLedgerRecord(existing, incoming);
-        await this.#repository.saveRecord(key, record);
+        const changed = !existing || ledgerRecordFingerprint(record) !== previousFingerprint;
+        if (changed) await this.#repository.saveRecord(key, record);
         return {
           recorded: !existing,
           usage: record.usage,
           workLogId: null,
           target: "thread-day-row",
           projected: false,
-          projectionDeferred: true,
+          projectionDeferred: changed,
         };
-      }, { load: false });
+      }, { load: false, pointRead: true });
+      if (deferProjection) return operation;
+      return operation.then(async (recorded) => {
+        try {
+          const projection = await this.project(workLogFile, { projectRoot, projectionProjectRoots });
+          return { ...recorded, ...projection, projectionDeferred: projection.projectionDeferred === true };
+        } catch (error) {
+          return { ...recorded, projectionError: String(error?.message ?? error) };
+        }
+      });
     }
     return this.#enqueueMutation(workLogFile, async () => {
       const key = workLogTurnKey({ provider, threadId, turnId });
@@ -1109,15 +1160,13 @@ export class WorkLogUsageStore {
         return { recorded: 0, updated: 0, projected: false, reason: "unchanged" };
       }
       await this.#save();
-      const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
-      const projection = await this.#projectDatabase(selectedTurns);
-      return {
-        recorded,
-        updated,
-        projected: projection.projected,
-      };
+      return { recorded, updated };
     });
-    return operation;
+    return operation.then(async (result) => {
+      if (!result.recorded && !result.updated) return result;
+      const projection = await this.project(workLogFile, { projectRoot, projectionProjectRoots });
+      return { ...result, projected: projection.projected };
+    });
   }
 
   retractProvisionalAndProject({
@@ -1128,15 +1177,17 @@ export class WorkLogUsageStore {
     workLogFile,
     projectionProjectRoots,
   }) {
-    const operation = this.#enqueueMutation(workLogFile, async () => {
-      const key = workLogTurnKey({ provider, threadId, turnId });
-      const existing = this.#ledger.turns[key];
-      if (!existing?.provisional) return { retracted: false, projected: false };
-      delete this.#ledger.turns[key];
-      await this.#save();
+    const operation = this.#repository.enqueue(async () => {
+      const identity = { provider, threadId, turnId };
+      const existing = await this.#repository.getRecord(identity);
+      if (!existing?.provisional) return false;
+      const result = await this.#repository.deleteRecord(identity);
+      return result.deleted > 0;
+    }, { load: false, pointRead: true });
+    return operation.then(async (retracted) => {
+      if (!retracted) return { retracted: false, projected: false };
       try {
-        const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
-        const projection = await this.#projectDatabase(selectedTurns);
+        const projection = await this.project(workLogFile, { projectRoot, projectionProjectRoots });
         return { retracted: true, projected: projection.projected };
       } catch (error) {
         return {
@@ -1146,7 +1197,6 @@ export class WorkLogUsageStore {
         };
       }
     });
-    return operation;
   }
 
   retireLegacyStorage(options = {}) {

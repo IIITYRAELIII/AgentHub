@@ -140,6 +140,21 @@ export class RuntimeHealth {
     return this;
   }
 
+  retryOperation(id) {
+    const operation = this.#operation(id);
+    if (!["failed", "skipped"].includes(operation.state)) {
+      throw new Error(`runtime health operation cannot retry from ${operation.state}: ${operation.id}`);
+    }
+    if ([...this.#startup.operations.values()].some((entry) => entry.state === "running")) {
+      throw new Error("runtime health operation is already running");
+    }
+    operation.state = "pending";
+    operation.startedAtMs = 0;
+    this.#phase = "starting";
+    this.#startup.completedAtMs = 0;
+    return this.startOperation(id);
+  }
+
   failOperation(id, error = "") {
     const operation = this.#operation(id);
     if (!["pending", "running"].includes(operation.state)) {

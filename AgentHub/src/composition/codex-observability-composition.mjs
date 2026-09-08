@@ -8,7 +8,10 @@ import {
   backupCodexHistoricalReconciliation,
 } from "../infrastructure/persistence/codex-historical-reconciliation-backup.mjs";
 import { CodexAccountingResolver } from "../providers/codex/codex-accounting-resolver.mjs";
-import { scanCodexHistoricalRolloutInWorker } from "../providers/codex/codex-historical-backfill.mjs";
+import {
+  scanCodexHistoricalRolloutInWorker,
+  scanCodexLiveRolloutInWorker,
+} from "../providers/codex/codex-historical-backfill.mjs";
 import { resolveCodexJournalProject } from "../providers/codex/codex-journal-project.mjs";
 import { CODEX_AUDIT_SOURCE_KINDS } from "../providers/codex/codex-subagent-accounting.mjs";
 import { CodexTerminalAudit } from "../providers/codex/codex-terminal-audit.mjs";
@@ -61,6 +64,7 @@ export function createCodexObservabilityComposition({
   saveState,
   deliverTurnEndNotification,
   repairTurnEndAttachments,
+  reclassifyTurnEndContextProbe,
   defaultNotificationChatId,
   findProject,
   resolveTaskByProviderRef,
@@ -194,6 +198,7 @@ export function createCodexObservabilityComposition({
     saveState,
     deliverNotification: deliverTurnEndNotification,
     repairTerminalAttachments: repairTurnEndAttachments,
+    reclassifyTerminalContextProbe: reclassifyTurnEndContextProbe,
     resolveTerminalAttachments,
   });
   const terminalAudit = new CodexTerminalAudit({
@@ -241,7 +246,10 @@ export function createCodexObservabilityComposition({
     discoverHistoricalThreads: () => discoverCodexRollouts(),
     discoverSupplementalThreads: () => discoverCodexSubagentRollouts(),
     scanHistoricalFile: scanCodexHistoricalRolloutInWorker,
-    shouldRunAudit: isHistoricalBackfillIdle,
+    scanFile: scanCodexLiveRolloutInWorker,
+    incrementalUsageScan: true,
+    liveScanBytes: 4 * 1024 * 1024,
+    auditBytesPerRun: 8 * 1024 * 1024,
     shouldRunHistoricalBackfill: isHistoricalBackfillIdle,
     persistProgress: saveState,
     prepareHistoricalBackfill: async () => {

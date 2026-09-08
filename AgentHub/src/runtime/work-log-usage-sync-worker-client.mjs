@@ -17,6 +17,7 @@ export class WorkLogUsageSyncWorkerStore {
   #closed = false;
   #lastProjection = null;
   #lastSnapshot = null;
+  #lastJournalProjection = null;
 
   constructor({
     databaseFile,
@@ -38,9 +39,13 @@ export class WorkLogUsageSyncWorkerStore {
     });
     this.#worker.unref?.();
     this.#worker.on("message", (message) => this.#settle(message));
-    this.#worker.on("error", (error) => this.#fail(error));
+    this.#worker.on("error", (error) => {
+      this.#closed = true;
+      this.#fail(error);
+    });
     this.#worker.once("exit", (code) => {
       if (!this.#closed && !this.#closing) {
+        this.#closed = true;
         this.#fail(new Error(`usage sync worker exited with code ${code}`));
       }
     });
@@ -81,6 +86,22 @@ export class WorkLogUsageSyncWorkerStore {
     });
   }
 
+  projectJournal(payload = {}, { workspaceResolver = null } = {}) {
+    return this.#request("project-journal", {
+      ...payload,
+      resolveWorkspaces: typeof workspaceResolver === "function",
+    }, { workspaceResolver }).then((result) => {
+      this.#lastJournalProjection = result;
+      return result;
+    });
+  }
+
+  synchronizeTaskTitles(payload, { mutationLock = null } = {}) {
+    return this.#request("synchronize-task-titles", {
+      ...payload, serializeMutation: typeof mutationLock === "function",
+    }, { mutationLock });
+  }
+
   usageSyncSnapshot(payload) {
     return this.#request("usage-sync-snapshot", payload).then((result) => {
       this.#lastSnapshot = {
@@ -102,6 +123,7 @@ export class WorkLogUsageSyncWorkerStore {
       closed: this.#closed,
       lastProjection: this.#lastProjection,
       lastSnapshot: this.#lastSnapshot,
+      lastJournalProjection: this.#lastJournalProjection,
     };
   }
 
@@ -134,7 +156,7 @@ export class WorkLogUsageSyncWorkerStore {
     }
   }
 
-  #request(type, payload = {}, { allowClosing = false } = {}) {
+  #request(type, payload = {}, { allowClosing = false, workspaceResolver = null, mutationLock = null } = {}) {
     if (this.#closed || (this.#closing && !allowClosing) || !this.#worker) {
       return Promise.reject(new Error("usage sync worker is unavailable"));
     }
@@ -144,7 +166,7 @@ export class WorkLogUsageSyncWorkerStore {
     const id = ++this.#sequence;
     this.#worker.ref?.();
     return new Promise((resolve, reject) => {
-      this.#pending.set(id, { resolve, reject });
+      this.#pending.set(id, { resolve, reject, workspaceResolver, mutationLock });
       try {
         this.#worker.postMessage({ id, type, payload });
       } catch (error) {
@@ -157,6 +179,40 @@ export class WorkLogUsageSyncWorkerStore {
   #settle(message) {
     const request = this.#pending.get(message?.id);
     if (!request) return;
+    if (message.type === "journal-mutation") {
+      let granted = false;
+      void Promise.resolve().then(() => request.mutationLock(() => new Promise((resolve, reject) => {
+        request.mutationResult = { resolve, reject };
+        granted = true;
+        this.#worker.postMessage({ id: message.id, type: "journal-mutation-granted" });
+      }))).then((value) => this.#settle({ id: message.id, value }), (error) => {
+        if (!granted) this.#worker?.postMessage({
+          id: message.id, type: "journal-mutation-granted", error: { message: String(error?.message ?? error) },
+        });
+        this.#settle({ id: message.id, error });
+      });
+      return;
+    }
+    if (message.type === "journal-workspaces") {
+      void Promise.resolve().then(() => Promise.all(
+        message.references.map((reference) => request.workspaceResolver(reference)),
+      ))
+        .then((bindings) => this.#worker?.postMessage({
+          id: message.id, type: "journal-workspaces-result", bindings,
+        }))
+        .catch((error) => this.#worker?.postMessage({
+          id: message.id, type: "journal-workspaces-result",
+          error: { message: String(error?.message ?? error) },
+        }));
+      return;
+    }
+    if (request.mutationResult) {
+      const result = request.mutationResult;
+      request.mutationResult = null;
+      if (message.error) result.reject(workerError(message.error));
+      else result.resolve(message.value);
+      return;
+    }
     this.#pending.delete(message.id);
     if (message.error) request.reject(workerError(message.error));
     else request.resolve(message.value);
@@ -164,7 +220,10 @@ export class WorkLogUsageSyncWorkerStore {
   }
 
   #fail(error) {
-    for (const request of this.#pending.values()) request.reject(error);
+    for (const request of this.#pending.values()) {
+      request.mutationResult?.reject(error);
+      request.reject(error);
+    }
     this.#pending.clear();
   }
 }

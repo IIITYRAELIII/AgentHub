@@ -100,6 +100,53 @@ test("Codex rollout usage sums every model response and sees the final token eve
   });
 });
 
+test("exact turn counters replace legacy sums and survive a resumed scan without double counting", async () => {
+  const turnId = "astra-turn";
+  const exact = (input) => ({ type: "token_usage_record", payload: {
+    turn_id: turnId,
+    turn_token_usage: { input_tokens: input, cached_input_tokens: 80, output_tokens: 10, total_tokens: input + 10 },
+  } });
+  const initial = [
+    { type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
+    { type: "turn_context", payload: { turn_id: turnId, model: "gpt-6-astra" } },
+    token(999, 80, 10, 0),
+    exact(100),
+    token(100, 80, 10, 0),
+  ].map(line).join("\n") + "\n";
+  const final = [exact(150), exact(150), token(50, 0, 0, 0),
+    { type: "event_msg", payload: { type: "task_complete", turn_id: turnId, last_agent_message: "Done" } },
+  ].map(line).join("\n") + "\n";
+  const expected = { inputTokens: 150, cachedInputTokens: 80, outputTokens: 10, reasoningOutputTokens: 0, totalTokens: 160 };
+  const direct = codexTurnUsageFromJsonl(initial + final, turnId);
+  assert.deepEqual(direct.usage, expected);
+  assert.equal(direct.model, "gpt-6-astra");
+  assert.equal(direct.finalTokenSeen, true);
+  const first = await scanCodexHistoricalRollout("fixture.jsonl", {
+    createReadStreamImpl: () => Readable.from([initial]),
+  });
+  const second = await scanCodexHistoricalRollout("fixture.jsonl", {
+    resumeState: JSON.parse(JSON.stringify(first.resumeState)),
+    startOffset: first.nextOffset,
+    createReadStreamImpl: () => Readable.from([final]),
+  });
+  assert.deepEqual(second.turns.find((turn) => turn.turnId === turnId).usage, expected);
+});
+
+test("exact usage is attributed by turn id while legacy-only turns remain supported", () => {
+  const records = [
+    { type: "event_msg", payload: { type: "task_started", turn_id: "legacy" } },
+    { type: "event_msg", payload: { type: "task_started", turn_id: "astra" } },
+    { type: "token_usage_record", payload: { turn_id: "astra", turn_token_usage: {
+      input_tokens: 100, cached_input_tokens: 90, output_tokens: 5, total_tokens: 105,
+    } } },
+    token(100, 90, 5, 0),
+    response("legacy"), token(20, 0, 2, 0),
+    { type: "token_usage_record", payload: { turn_id: "legacy", turn_token_usage: { input_tokens: -1 } } },
+  ].map(line).join("\n");
+  assert.equal(codexTurnUsageFromJsonl(records, "astra").usage.inputTokens, 100);
+  assert.equal(codexTurnUsageFromJsonl(records, "legacy").usage.inputTokens, 20);
+});
+
 test("Codex rollout usage accepts the terminal last agent message", () => {
   const text = [
     line({ timestamp: "2026-08-08T10:00:00Z", type: "event_msg", payload: {
@@ -1446,7 +1493,7 @@ test("terminal event scanner marks the real rollout shape of a context probe", a
   }]);
 });
 
-test("terminal event scanner preserves a user turn equal to probe text without probe id", async () => {
+test("terminal event scanner keeps an identity-less probe internal", async () => {
   const turnId = "user-turn";
   const source = [
     line({
@@ -1475,7 +1522,38 @@ test("terminal event scanner preserves a user turn equal to probe text without p
     createReadStreamImpl: () => Readable.from([source]),
   });
 
-  assert.equal(result.terminals[0].contextProbe, undefined);
+  assert.equal(result.terminals[0].contextProbe, true);
+});
+
+test("failed identity-less probe is classified consistently by exact, tail and historical readers", async () => {
+  const turnId = "failed-probe";
+  const source = [
+    { timestamp: "2026-09-08T21:11:39.852Z", type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
+    response(turnId, "message", { role: "user", content: [{ type: "input_text", text: CODEX_CONTEXT_PROBE_PROMPT }] }),
+    { timestamp: "2026-09-08T21:11:41.010Z", type: "event_msg", payload: { type: "task_complete", turn_id: turnId, last_agent_message: null, error: { message: "Unsupported model", codex_error_info: "other" } } },
+  ].map(line).join("\n");
+  const exact = codexTurnUsageFromJsonl(source, turnId);
+  const terminal = await scanCodexTerminalEventsFromOffset("rollout.jsonl", { createReadStreamImpl: () => Readable.from([source]) });
+  const historical = await scanCodexHistoricalRollout("rollout.jsonl", { createReadStreamImpl: () => Readable.from([source]) });
+  for (const result of [exact, terminal.terminals[0], historical.turns[0]]) {
+    assert.equal(result.status, "failed");
+    assert.equal(result.contextProbe, true);
+  }
+  assert.equal(codexRecentTerminalTurnsFromJsonl(source)[0].status, "failed");
+});
+
+test("ordinary exact client identity overrides a previously identity-less probe prompt", async () => {
+  const turnId = "user-reserved-prompt";
+  const source = [
+    { type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
+    response(turnId, "message", { role: "user", content: [{ type: "input_text", text: CODEX_CONTEXT_PROBE_PROMPT }] }),
+    { type: "event_msg", payload: { type: "user_message", turn_id: turnId, client_id: "ordinary-user-id", message: CODEX_CONTEXT_PROBE_PROMPT } },
+    { type: "event_msg", payload: { type: "task_complete", turn_id: turnId } },
+  ].map(line).join("\n");
+  const exact = codexTurnUsageFromJsonl(source, turnId);
+  const terminal = await scanCodexTerminalEventsFromOffset("rollout.jsonl", { createReadStreamImpl: () => Readable.from([source]) });
+  const historical = await scanCodexHistoricalRollout("rollout.jsonl", { createReadStreamImpl: () => Readable.from([source]) });
+  for (const result of [exact, terminal.terminals[0], historical.turns[0]]) assert.notEqual(result.contextProbe, true);
 });
 
 test("terminal event scanner preserves turns that started without a lifecycle terminal", async () => {

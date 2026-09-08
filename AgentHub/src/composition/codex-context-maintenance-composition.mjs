@@ -27,6 +27,7 @@ export function createCodexContextMaintenanceComposition({
   restartTransportAfterCrash,
   runForTask,
   sendRpc,
+  normalizeCodexModel,
 }) {
   return new CodexContextMaintenanceService({
     timers: runtimeTimers,
@@ -73,7 +74,10 @@ export function createCodexContextMaintenanceComposition({
       threadId,
       turnId,
     }),
-    startThread: (params) => sendRpc("thread/start", params),
+    startThread: (params) => sendRpc("thread/start", {
+      ...params,
+      ...(params.model ? { model: normalizeCodexModel(params.model) } : {}),
+    }),
     injectItems: (threadId, items) => sendRpc("thread/inject_items", { threadId, items }),
     deleteThread: (threadId) => sendRpc("thread/delete", { threadId }),
     sandboxSettings: () => codexThreadSandboxSettings(config.codexSandboxMode),

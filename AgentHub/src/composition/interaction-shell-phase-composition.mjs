@@ -183,6 +183,7 @@ export function createInteractionShellPhase({
       streamHandoff: infrastructure.streamHandoff,
       runtimeStateStore,
       taskBoard: infrastructure.taskBoard,
+      taskLifecycle: infrastructure.taskLifecycle,
       taskGitWorkspaces: infrastructure.taskGitWorkspaces,
       taskVoiceTranscriber: infrastructure.taskVoiceTranscriber,
       attachmentDirectory: infrastructure.attachmentDirectory,

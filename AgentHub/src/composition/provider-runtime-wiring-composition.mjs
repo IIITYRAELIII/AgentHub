@@ -8,6 +8,7 @@ export function createCodexTerminalAuditScheduler({
   isStopping,
   runtimeTimers,
   terminalAuditIntervalMs = 30_000,
+  terminalAuditCatchUpIntervalMs = 1_000,
   terminalAuditEnabled = true,
   logger = console,
 }) {
@@ -35,8 +36,12 @@ export function createCodexTerminalAuditScheduler({
   function schedule(delayMs = terminalAuditIntervalMs) {
     if (!terminalAuditEnabled || isStopping()) return false;
     return runtimeTimers.schedule("codex-terminal-audit", async () => {
-      await auditNow();
-      schedule();
+      const progressed = await auditNow();
+      const catchingUp = progressed && codexTransport.running
+        && codexTerminalAudit.lastRun?.backlog === true;
+      schedule(catchingUp
+        ? Math.max(250, Number(terminalAuditCatchUpIntervalMs) || 1_000)
+        : terminalAuditIntervalMs);
     }, Math.max(0, Number(delayMs) || 0));
   }
 

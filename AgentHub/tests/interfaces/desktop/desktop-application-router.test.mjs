@@ -5,7 +5,7 @@ import { createDesktopApplicationRouter } from "../../../src/interfaces/desktop/
 function router(calls, { omit = [] } = {}) {
   const handler = async (params) => ({ params });
   const handlers = Object.fromEntries([
-    "snapshot", "runtimeHealth", "taskHistory", "rateLimitHistory", "usageHistory", "search", "workspaceMessageSearch", "markTaskRead",
+    "snapshot", "runtimeHealth", "retryStartup", "taskHistory", "rateLimitHistory", "usageHistory", "search", "workspaceMessageSearch", "markTaskRead",
     "openTask", "openTurn", "workspaceMessageOpen", "sendMessage", "taskDiff", "deferredInput",
     "statusDetails", "speakLastAnswer", "restartServer", "setAutostart",
     "updateServerConfiguration", "readPreTurnInstructions", "updateGlobalPreTurnInstructions",
@@ -36,6 +36,15 @@ test("Desktop application router requires the Task workflow status handler", () 
     () => router([], { omit: ["boardTaskStatus"] }),
     /boardTaskStatus is required/u,
   );
+});
+
+test("Desktop application router forwards the exact startup generation for recovery", async () => {
+  const control = router([]);
+  const result = await control.handleDesktopControl({
+    action: "retry-startup", params: { startedAtMs: 1234 },
+    context: { source: "desktop-control", userId: "7" },
+  });
+  assert.equal(result.params.startedAtMs, 1234);
 });
 
 test("Desktop application router addresses mutations explicitly", async () => {

@@ -1,5 +1,10 @@
 # TURN-001 — Terminal turn commit and delivery
 
+Audit checkpoints before version 17 retain their live byte cursors but rebuild
+the existing bounded historical queue once to repair failed identity-less context
+probes. Version 17 historical completion is durable across restart; it does not
+authorize periodic full-history scans or resubmission of provider operations.
+
 ## Identity and owner
 
 A provider run is identified by `provider + threadId + turnId`. A terminal
@@ -10,6 +15,11 @@ final status and final content.
 
 - Terminal status, final content, usage identity and last-message identity are
   committed before admission or queue ownership is released.
+- A Codex `task_complete` event carrying an error is a failed terminal, not a
+  successful empty answer. Exact-turn, tail and historical readers retain the
+  same outcome. An identity-less context probe stays internal under UI-001;
+  discovering it during reconciliation may update accounting but must not emit
+  an ordinary completion notification.
 - Optional rollout usage, pricing and tool-metadata reconstruction never delays
   terminal commit or admission release. The terminal audit resumes from its
   durable append-only byte checkpoint and reconciles that metadata afterward.

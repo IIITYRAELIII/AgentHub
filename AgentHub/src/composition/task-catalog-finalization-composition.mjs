@@ -3,7 +3,6 @@ import {
   taskCatalogTitleSignature,
 } from "../domain/task-catalog-titles.mjs";
 import {
-  preserveUnknownActivityOnSourceFailure,
   taskOrderingActivityAtMs,
 } from "../application/task-catalog-projection.mjs";
 import { catalogEntryIsSelected } from "../domain/task-catalog-identity.mjs";
@@ -29,8 +28,8 @@ export function createTaskCatalogFinalizationComposition({
   let synchronizedTitleSignature = "";
   let titlesSynchronizedAt = 0;
 
-  async function finalize(mergedEntries, { sourceResults = [] } = {}) {
-    let nextCatalog = preserveUnknownActivityOnSourceFailure(mergedEntries, sourceResults);
+  async function finalize(mergedEntries) {
+    let nextCatalog = mergedEntries;
     for (const entry of nextCatalog) {
       entry.displayTitle = taskDisplayTitle(entry);
       taskRuns.bindStream?.(entry);

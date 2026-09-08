@@ -185,6 +185,23 @@ export class WorkLogUsageRepository {
     return this.#database.getRecord(identity);
   }
 
+  async deleteRecord(identity) {
+    const result = await this.#database.deleteRecords([identity]);
+    this.#releaseLoadedLedger();
+    this.#loadedRevision = result.revision;
+    return result;
+  }
+
+  async applyExternalMutation(operation) {
+    try {
+      const result = await operation();
+      this.#loadedRevision = result.revision;
+      return result;
+    } finally {
+      this.#releaseLoadedLedger();
+    }
+  }
+
   threadRecords(identities, options) {
     return this.#database.threadRecords(identities, options);
   }

@@ -18,7 +18,12 @@ export function responseAnnotationSourceMessageKey({
   turnId,
   itemId,
   role = "agent",
+  clientUserMessageId = "",
 } = {}) {
+  if (clientUserMessageId) {
+    const values = [provider, threadId, clientUserMessageId].map((value) => String(value ?? "").trim());
+    return role === "user" && values.every(Boolean) ? `client\u001f${values.join("\u001f")}\u001fuser` : "";
+  }
   const values = [provider, threadId, turnId, itemId, role].map((value) => String(value ?? "").trim());
   return values.every(Boolean) ? `provider\u001f${values.join("\u001f")}` : "";
 }
@@ -30,6 +35,8 @@ export function normalizedResponseAnnotationSource(value) {
   const turnId = cleanIdentity(value.turnId);
   const itemId = cleanIdentity(value.itemId);
   const role = String(value.role ?? "").trim().toLowerCase();
+  const clientUserMessageId = cleanIdentity(value.clientUserMessageId);
+  if (value.clientUserMessageId && (!clientUserMessageId || role !== "user" || turnId || itemId)) return null;
   const surfaceKind = String(value.surfaceKind ?? "").trim();
   const surfaceIndex = Number(value.surfaceIndex);
   const start = Number(value.start);
@@ -37,8 +44,8 @@ export function normalizedResponseAnnotationSource(value) {
   const contentHash = String(value.contentHash ?? "").trim().toLowerCase();
   const surfaceHash = String(value.surfaceHash ?? "").trim().toLowerCase();
   const selectionHash = String(value.selectionHash ?? "").trim().toLowerCase();
-  const messageKey = responseAnnotationSourceMessageKey({ provider, threadId, turnId, itemId, role });
-  if (!provider || !threadId || !turnId || !itemId || !SOURCE_ROLES.has(role)
+  const messageKey = responseAnnotationSourceMessageKey({ provider, threadId, turnId, itemId, role, clientUserMessageId });
+  if (!provider || !threadId || (!clientUserMessageId && (!turnId || !itemId)) || !SOURCE_ROLES.has(role)
     || String(value.messageKey ?? "") !== messageKey
     || !SOURCE_SURFACES.has(surfaceKind)
     || !Number.isSafeInteger(surfaceIndex) || surfaceIndex < 0 || surfaceIndex > MAX_SURFACE_INDEX
@@ -53,6 +60,7 @@ export function normalizedResponseAnnotationSource(value) {
     itemId,
     role,
     messageKey,
+    ...(clientUserMessageId ? { clientUserMessageId } : {}),
     surfaceKind,
     surfaceIndex,
     start,

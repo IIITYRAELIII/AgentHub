@@ -5,6 +5,7 @@ import { createDesktopTaskCreationPreparation } from "./desktop-task-creation-co
 import { WorkspaceCatalogService } from "../application/workspace-catalog-service.mjs";
 import { ClientTaskSelectionService } from "../application/client-task-selection-service.mjs";
 import { agentHubRuntimeHealth } from "../application/runtime-health.mjs";
+import { retryAgentHubStartup } from "../application/agent-hub-startup-coordinator.mjs";
 import { StreamMessagePinService } from "../application/stream-message-pin-service.mjs";
 
 export function createDesktopShellComposition({
@@ -83,6 +84,7 @@ export function createDesktopShellComposition({
     streamContextMaintenance,
     streamMaintenance,
     taskBoard,
+    taskLifecycle,
     taskGitWorkspaces,
     taskVoiceTranscriber,
     attachmentDirectory,
@@ -560,6 +562,7 @@ export function createDesktopShellComposition({
       updateRootAgents: (params) => serverControlController.updateRootAgents(params),
       taskBoard,
       taskVoiceTranscriber,
+      taskLifecycle,
       attachmentDirectory,
       workspaceCatalog: workspaceCatalogStore,
       streamMessagePins,
@@ -567,6 +570,7 @@ export function createDesktopShellComposition({
     desktop: {
       snapshot: desktopReadSystem.desktopSnapshot,
       runtimeHealth: () => agentHubRuntimeHealth.snapshot(),
+      retryStartup: retryAgentHubStartup,
       taskHistory: desktopReadSystem.desktopTaskHistory,
       rateLimitHistory: desktopReadSystem.desktopRateLimitHistory,
       usageHistory: desktopReadSystem.desktopUsageHistory,

@@ -6,9 +6,10 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
-import { callDesktopControl } from "../../desktop-control.mjs";
+import { callDesktopControl as sendDesktopControl } from "../../desktop-control.mjs";
 import { JournalDatabase } from "../../src/infrastructure/persistence/journal-database.mjs";
 import { LocalTaskSyncStore } from "../../src/infrastructure/persistence/task-sync-store.mjs";
+import { WorkspaceCatalogStore } from "../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import { readRuntimeState } from "../../src/infrastructure/persistence/runtime-state-store.mjs";
 import {
   CHAT_ID,
@@ -22,6 +23,15 @@ import {
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
 const BOT_FILE = path.join(ROOT, "agent-hub-main.mjs");
 const FAKE_CODEX_FILE = path.join(ROOT, "e2e", "fake-codex-app-server.mjs");
+
+async function callDesktopControl(action, params, options) {
+  const caller = new Error().stack;
+  try {
+    return await sendDesktopControl(action, params, options);
+  } catch (error) {
+    throw new Error(`${action}: ${error.message}\n${caller}`, { cause: error });
+  }
+}
 
 test("local control client survives App Server exit during delayed startup and shares tasks", { timeout: 120_000 }, async (t) => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "telegram-local-control-e2e-"));
@@ -935,6 +945,13 @@ test("local control client survives App Server exit during delayed startup and s
     running: false,
     updatedAtMs: Date.now(),
   };
+  const recoveryWorkspaceCatalog = new WorkspaceCatalogStore({ databaseFile: journalFile });
+  await recoveryWorkspaceCatalog.load();
+  try {
+    recoveryWorkspaceCatalog.assignCatalogEntries([recoveryTask]);
+  } finally {
+    recoveryWorkspaceCatalog.close();
+  }
   const recoveryStore = new LocalTaskSyncStore({
     filePath: path.join(dataDir, "task-sync.json"),
     databaseFile: journalFile,

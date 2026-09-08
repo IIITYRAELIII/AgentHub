@@ -1,5 +1,12 @@
 import { agentHubRuntimeHealth } from "./runtime-health.mjs";
 
+let activeStartupCoordinator = null;
+
+export function retryAgentHubStartup(params) {
+  if (!activeStartupCoordinator) throw new Error("Координатор запуска ещё недоступен");
+  return activeStartupCoordinator.requestRetry(params);
+}
+
 export const AGENT_HUB_STARTUP_OPERATIONS = Object.freeze([
   { id: "release", label: "Проверка установленного релиза", state: "completed" },
   { id: "configuration", label: "Загрузка конфигурации и хранилищ", state: "completed" },
@@ -21,6 +28,9 @@ export const AGENT_HUB_STARTUP_OPERATIONS = Object.freeze([
 ]);
 
 export class AgentHubStartupCoordinator {
+  #initialStartupFinished = false;
+  #retryPromise = null;
+
   constructor({
     telegramEnabled,
     startDesktopControl,
@@ -106,6 +116,7 @@ export class AgentHubStartupCoordinator {
   }
 
   async start() {
+    activeStartupCoordinator = this;
     this.health.begin({ operations: AGENT_HUB_STARTUP_OPERATIONS });
     if (this.sqliteRecovery?.degraded) {
       this.health.setCapability("sqlite_recovery", {
@@ -295,6 +306,7 @@ export class AgentHubStartupCoordinator {
     }
 
     this.health.complete();
+    this.#initialStartupFinished = true;
     const status = this.health.snapshot();
     if (status.status === "ready") this.log(this.readyMessage());
     else this.log(`Agent Hub started ${status.status}; unavailable capabilities: ${status.capabilities
@@ -303,5 +315,69 @@ export class AgentHubStartupCoordinator {
       .join(", ") || "unknown"}`);
     if (this.telegramEnabled) return this.pollTelegram();
     return this.waitForever();
+  }
+
+  requestRetry({ startedAtMs } = {}) {
+    const snapshot = this.health.snapshot();
+    if (Number(startedAtMs) !== snapshot.startup?.startedAtMs) {
+      throw new Error("Процесс Хаба уже сменился. Обновите состояние запуска.");
+    }
+    if (!this.#initialStartupFinished) throw new Error("Первичный запуск ещё выполняется. Можно перезапустить Хаб.");
+    const retryableIds = new Set(["provider", "provider-metadata", "runs", "notifications", "background-jobs", "telegram", "recovery"]);
+    const failed = snapshot.startup.operations.filter((operation) => operation.state === "failed");
+    if (!this.#retryPromise && failed.length && !failed.some((operation) => retryableIds.has(operation.id))) {
+      throw new Error("Оставшиеся инфраструктурные этапы требуют перезапуска Хаба.");
+    }
+    if (!this.#retryPromise) {
+      this.#retryPromise = this.#retryFailed().finally(() => { this.#retryPromise = null; });
+      void this.#retryPromise.catch((error) => this.logError("Cannot retry startup:", error.message));
+    }
+    return { accepted: true, message: "Повтор неудачных этапов запущен" };
+  }
+
+  async waitForRetry() {
+    await this.#retryPromise;
+  }
+
+  async #retryFailed() {
+    const operations = this.health.snapshot().startup.operations;
+    const providerRetry = operations.some((operation) => operation.id === "provider" && operation.state === "failed");
+    const retryable = [
+      ["provider", this.initializeProvider, "provider"],
+      ["provider-metadata", this.backfillProviderMetadata],
+      ["runs", this.recoverRuns, "provider"],
+      ["notifications", this.retryNotifications, "telegram"],
+      ["background-jobs", this.restoreBackgroundJobs, "telegram"],
+      ["telegram", this.registerTelegramCommands, "telegram"],
+      ["recovery", this.acknowledgeSqliteRecovery, "sqlite_recovery"],
+    ];
+    try {
+      for (const [id, run, capability] of retryable) {
+        const operation = operations.find((entry) => entry.id === id);
+        if (operation?.state !== "failed"
+          && !(id === "provider-metadata" && providerRetry && operation?.state === "skipped")) continue;
+        if (["provider-metadata", "runs"].includes(id) && !this.providerIsRunning()) continue;
+        this.health.retryOperation(id);
+        if (capability) this.health.setCapability(capability, { critical: capability === "provider" });
+        try {
+          await run();
+          if (id === "provider" && !this.providerIsRunning()) throw new Error("Процесс Codex не запущен");
+          this.health.completeOperation(id);
+          if (capability) {
+            const related = retryable.filter((entry) => entry[2] === capability).map((entry) => entry[0]);
+            const failure = this.health.snapshot().startup.operations.find((entry) => related.includes(entry.id) && entry.state === "failed");
+            this.health.setCapability(capability, {
+              critical: capability === "provider", state: failure ? "failed" : "ready", error: failure?.error,
+            });
+          }
+        } catch (error) {
+          this.health.failOperation(id, error);
+          this.#capture(error, `retry-${id}`);
+          if (capability) this.health.setCapability(capability, { critical: capability === "provider", state: "failed", error: error.message });
+        }
+      }
+    } finally {
+      this.health.complete();
+    }
   }
 }

@@ -4,21 +4,27 @@ import { scanCodexHistoricalRollout } from "./codex-turn-usage.mjs";
 import { uuidV7TimestampMs } from "./codex-subagent-accounting.mjs";
 
 try {
-  const rolloutCreatedAt = uuidV7TimestampMs(workerData.rolloutId);
-  const result = await scanCodexHistoricalRollout(workerData.transcriptPath);
-  const turns = result.turns.flatMap((turn) => {
-    if (turn.compactionOnly === true) return [];
-    const createdAt = uuidV7TimestampMs(turn.turnId);
-    if (rolloutCreatedAt > 0 && createdAt > 0 && createdAt < rolloutCreatedAt) return [];
-    const {
-      patches: _patches,
-      imageGenerationCalls: _imageGenerationCalls,
-      started: _started,
-      ...portable
-    } = turn;
-    return [portable];
-  });
-  parentPort.postMessage({ ok: true, turns });
+  if (workerData.mode === "live") {
+    const { startOffset, maxBytes, resumeState } = workerData;
+    const result = await scanCodexHistoricalRollout(workerData.transcriptPath, { startOffset, maxBytes, resumeState });
+    parentPort.postMessage({ ok: true, result });
+  } else {
+    const rolloutCreatedAt = uuidV7TimestampMs(workerData.rolloutId);
+    const result = await scanCodexHistoricalRollout(workerData.transcriptPath);
+    const turns = result.turns.flatMap((turn) => {
+      if (turn.compactionOnly === true) return [];
+      const createdAt = uuidV7TimestampMs(turn.turnId);
+      if (rolloutCreatedAt > 0 && createdAt > 0 && createdAt < rolloutCreatedAt) return [];
+      const {
+        patches: _patches,
+        imageGenerationCalls: _imageGenerationCalls,
+        started: _started,
+        ...portable
+      } = turn;
+      return [portable];
+    });
+    parentPort.postMessage({ ok: true, turns });
+  }
 } catch (error) {
   parentPort.postMessage({
     ok: false,

@@ -25,10 +25,14 @@ async function fixture(context) {
 function service(stateFile, {
   candidates,
   discover = async () => ({ candidates, rejected: [] }),
+  verifyRecorded = async (recorded) => ({ ...recorded }),
   runCanary = async () => ({ ok: true, evidence: { scenario: "passed" } }),
   activeRuns = () => [],
   autoUpdateEnabled = true,
   versionPin = "",
+  readFileImpl = readFile,
+  writeFileImpl = writeFile,
+  mkdirImpl,
 } = {}) {
   return new CodexExecutableUpdateService({
     stateFile,
@@ -37,7 +41,11 @@ function service(stateFile, {
     activeRuns,
     platform: "win32",
     discover,
+    verifyRecorded,
     runCanary,
+    readFileImpl,
+    writeFileImpl,
+    mkdirImpl,
   });
 }
 
@@ -53,10 +61,11 @@ test("newest trusted identity is canaried once and reused idempotently", async (
   assert.equal(first.diagnostics().status, "candidate-starting");
   await first.markStartupSuccess();
   const second = service(stateFile, {
-    candidates: [newest],
-    runCanary: async () => { canaries += 1; return { ok: true }; },
+    discover: async () => { assert.fail("persisted startup must not discover"); },
+    runCanary: async () => { assert.fail("persisted startup must not canary"); },
   });
   assert.equal(await second.selectForStart(), newest.path);
+  assert.equal(await second.verifySelectedForLaunch(newest.path), newest.path);
   assert.equal(canaries, 1);
   assert.equal(second.diagnostics().status, "current");
   assert.equal(second.diagnostics().lastKnownGood.version, "0.152.1");
@@ -177,7 +186,7 @@ test("manual path is an explicit recovery boundary when automatic state is corru
   await assert.rejects(automatic.selectForStart(), /Cannot read Codex executable state/u);
 });
 
-test("failed canary keeps last-known-good and blocks identical bytes from replay", async (context) => {
+test("failed background canary keeps last-known-good and blocks identical bytes across reload", async (context) => {
   const stateFile = await fixture(context);
   const legacy = candidate("0.151.0-alpha.7.2", "vscode");
   const newest = candidate("0.152.1");
@@ -190,14 +199,32 @@ test("failed canary keeps last-known-good and blocks identical bytes from replay
     runCanary: async () => { canaries += 1; throw new Error("protocol mismatch"); },
   });
   assert.equal(await failed.selectForStart(), legacy.path);
-  assert.equal(failed.diagnostics().status, "canary-failed-using-last-known-good");
+  await failed.markStartupSuccess();
+  await failed.refreshInBackground();
+  assert.equal(failed.diagnostics().status, "ready");
+  assert.equal(failed.diagnostics().background.status, "failed");
+  assert.deepEqual(failed.diagnostics().failedIdentity, newest);
+  assert.deepEqual(failed.diagnostics().active, legacy);
   const retried = service(stateFile, {
     candidates: [newest, legacy],
     runCanary: async () => { canaries += 1; return { ok: true }; },
   });
   assert.equal(await retried.selectForStart(), legacy.path);
-  assert.equal(retried.diagnostics().status, "candidate-blocked");
+  await retried.refreshInBackground();
+  await retried.refreshInBackground();
+  assert.equal(retried.diagnostics().status, "current");
+  assert.equal(retried.diagnostics().background.status, "candidate-blocked");
+  assert.equal(retried.diagnostics().prepared, null);
   assert.equal(canaries, 1);
+  const changed = { ...newest, sha256: "D".repeat(64) };
+  const replacement = service(stateFile, {
+    candidates: [changed, legacy],
+    runCanary: async () => { canaries += 1; return { ok: true }; },
+  });
+  await replacement.refreshInBackground();
+  assert.equal(canaries, 2);
+  assert.deepEqual(replacement.diagnostics().prepared, changed);
+  assert.deepEqual(replacement.diagnostics().active, legacy);
 });
 
 test("candidate startup failure permits exactly one last-known-good rollback", async (context) => {
@@ -209,6 +236,7 @@ test("candidate startup failure permits exactly one last-known-good rollback", a
   await baseline.markStartupSuccess();
 
   const update = service(stateFile, { candidates: [newest, legacy] });
+  await update.refreshInBackground();
   assert.equal(await update.selectForStart(), newest.path);
   assert.equal(await update.markStartupFailure(new Error("startup protocol failure")), true);
   assert.equal(await update.selectForStart(), legacy.path);
@@ -229,14 +257,14 @@ test("launch verification rejects post-canary replacement and permits only verif
   await baseline.selectForStart();
   await baseline.markStartupSuccess();
 
-  let discoveries = 0;
+  let installed = newest;
   const update = service(stateFile, {
-    discover: async () => ({
-      candidates: discoveries++ < 2 ? [newest, legacy] : [replaced, legacy],
-      rejected: [],
-    }),
+    candidates: [newest, legacy],
+    verifyRecorded: async (recorded) => recorded.path === newest.path ? installed : legacy,
   });
+  await update.refreshInBackground();
   assert.equal(await update.selectForStart(), newest.path);
+  installed = replaced;
   await assert.rejects(
     update.verifySelectedForLaunch(newest.path),
     /identity changed before process spawn/u,
@@ -255,9 +283,9 @@ test("changed last-known-good identity fails closed at launch without another ro
   await baseline.selectForStart();
   await baseline.markStartupSuccess();
 
-  let discoveries = 0;
   const update = service(stateFile, {
-    discover: async () => ({ candidates: [discoveries++ === 0 ? legacy : replaced], rejected: [] }),
+    discover: async () => { assert.fail("persisted startup must not discover"); },
+    verifyRecorded: async () => replaced,
   });
   assert.equal(await update.selectForStart(), legacy.path);
   await assert.rejects(
@@ -283,4 +311,453 @@ test("launch verification fails closed when durable selected identity is altered
     update.verifySelectedForLaunch(selected.path),
     /Durable selected Codex executable identity changed before process spawn/u,
   );
+});
+
+test("launch verifies only the recorded identity and preserves bounded rollback eligibility", async (context) => {
+  const stateFile = await fixture(context);
+  const legacy = candidate("0.151.0-alpha.7.2", "vscode");
+  const newest = candidate("0.152.1");
+  const baseline = service(stateFile, { candidates: [legacy] });
+  await baseline.selectForStart();
+  await baseline.markStartupSuccess();
+  const discoveries = [];
+  const verifications = [];
+  const update = service(stateFile, {
+    discover: async (options) => {
+      discoveries.push(options);
+      return {
+        candidates: [newest, legacy],
+        rejected: [],
+      };
+    },
+    verifyRecorded: async (recorded) => {
+      verifications.push({ ...recorded });
+      return { ...recorded };
+    },
+  });
+  await update.refreshInBackground();
+  assert.equal(await update.selectForStart(), newest.path);
+  assert.equal(await update.verifySelectedForLaunch(newest.path), newest.path);
+  assert.deepEqual(discoveries, [{ trustedCandidates: [legacy] }]);
+  assert.deepEqual(verifications, [newest, newest]);
+  assert.equal(await update.markStartupFailure(new Error("startup failed")), true);
+  assert.equal(await update.selectForStart(), legacy.path);
+  assert.equal(await update.verifySelectedForLaunch(legacy.path), legacy.path);
+  assert.equal(discoveries.length, 1);
+  assert.deepEqual(verifications, [newest, newest, legacy]);
+  assert.equal(await update.markStartupFailure(new Error("rollback failed")), false);
+});
+
+test("no-candidate failure persists bounded exact rejection diagnostics without arbitrary content", async (context) => {
+  const stateFile = await fixture(context);
+  const rejected = [
+    { source: "desktop", error: "Process timed out after 5000 ms" },
+    { source: "vscode", error: "Codex executable signature is not trusted (NotSigned)" },
+    { source: "vscode-insiders", error: "Authenticode inspection returned invalid JSON" },
+    { source: "synthetic-secret", error: "synthetic-secret".repeat(1000) },
+    { source: "desktop", error: "Process timed out after 5000 ms" },
+  ];
+  const update = service(stateFile, { discover: async () => ({ candidates: [], rejected }) });
+  const expected = "No trusted installed official Codex executable was found; rejected: "
+    + "desktop: Process timed out after 5000 ms; vscode: Codex executable signature is not trusted (NotSigned); "
+    + "vscode-insiders: Authenticode inspection returned invalid JSON; candidate: Codex executable inspection failed; 1 more rejected";
+  await assert.rejects(update.selectForStart(), { message: expected });
+  assert.equal(update.diagnostics().lastError, expected);
+  const durable = JSON.parse(await readFile(stateFile, "utf8"));
+  assert.equal(durable.lastError, expected);
+  assert.equal(durable.rejected[3].error, "Codex executable inspection failed");
+});
+
+test("selected launch rejection includes its timeout and still fails closed", async (context) => {
+  const stateFile = await fixture(context);
+  const selected = candidate("0.152.1");
+  const update = service(stateFile, {
+    candidates: [selected],
+    verifyRecorded: async () => { throw new Error("Process timed out after 5000 ms"); },
+  });
+  await update.selectForStart();
+  await assert.rejects(update.verifySelectedForLaunch(selected.path), {
+    message: "Process timed out after 5000 ms",
+  });
+});
+
+test("background preparation survives a fresh service and activates only at the next safe start", async (context) => {
+  const stateFile = await fixture(context);
+  const legacy = candidate("0.151.0-alpha.7.2", "vscode");
+  const newest = candidate("0.152.1");
+  const baseline = service(stateFile, { candidates: [legacy] });
+  await baseline.selectForStart();
+  await baseline.markStartupSuccess();
+  let canaries = 0;
+  const update = service(stateFile, {
+    candidates: [newest, legacy],
+    runCanary: async (selected) => {
+      assert.deepEqual(selected, newest);
+      canaries += 1;
+      return { ok: true };
+    },
+  });
+  await update.selectForStart();
+  await update.markStartupSuccess();
+  await update.refreshInBackground();
+  await update.refreshInBackground();
+  const prepared = JSON.parse(await readFile(stateFile, "utf8"));
+  assert.deepEqual(prepared.prepared, newest);
+  assert.deepEqual(prepared.active, legacy);
+  assert.deepEqual(prepared.selected, legacy);
+  assert.deepEqual(prepared.lastKnownGood, legacy);
+  assert.equal(prepared.status, "ready");
+  assert.equal(canaries, 1);
+
+  const next = service(stateFile, {
+    discover: async () => { assert.fail("prepared startup must not discover"); },
+    runCanary: async () => { assert.fail("prepared startup must not repeat canary"); },
+  });
+  assert.equal(await next.selectForStart(), newest.path);
+  assert.equal(await next.verifySelectedForLaunch(newest.path), newest.path);
+  assert.deepEqual(next.diagnostics().active, legacy);
+  assert.deepEqual(next.diagnostics().lastKnownGood, legacy);
+  await next.markStartupSuccess();
+  const activated = JSON.parse(await readFile(stateFile, "utf8"));
+  assert.deepEqual(activated.active, newest);
+  assert.deepEqual(activated.lastKnownGood, newest);
+  assert.equal(activated.prepared, null);
+});
+
+test("active run recovery defers background canary and activation of an already prepared candidate", async (context) => {
+  const stateFile = await fixture(context);
+  const legacy = candidate("0.151.0-alpha.7.2", "vscode");
+  const newest = candidate("0.152.1");
+  const baseline = service(stateFile, { candidates: [legacy] });
+  await baseline.selectForStart();
+  await baseline.markStartupSuccess();
+  let runs = [{ provider: "codex", status: "recovering" }];
+  let canaries = 0;
+  const update = service(stateFile, {
+    candidates: [newest, legacy],
+    activeRuns: () => runs,
+    runCanary: async () => { canaries += 1; return { ok: true }; },
+  });
+  await update.selectForStart();
+  await update.refreshInBackground();
+  assert.equal(update.diagnostics().background.status, "deferred-active-runs");
+  assert.equal(update.diagnostics().prepared, null);
+  assert.equal(canaries, 0);
+  runs = [{ provider: "codex", status: "completed" }, { provider: "claude", status: "running" }];
+  await update.refreshInBackground();
+  assert.deepEqual(update.diagnostics().prepared, newest);
+  assert.equal(canaries, 1);
+  runs = [{ provider: "codex", status: "running" }];
+  assert.equal(await update.selectForStart(), legacy.path);
+  assert.equal(update.diagnostics().status, "deferred-active-runs");
+  assert.deepEqual(update.diagnostics().prepared, newest);
+  runs = [];
+  assert.equal(await update.selectForStart(), newest.path);
+  assert.equal(canaries, 1);
+});
+
+test("disabled and pinned policy cannot activate a prepared candidate from a previous policy", async (context) => {
+  for (const policy of [{ autoUpdateEnabled: false }, { versionPin: "0.151.0-alpha.7.2" }]) {
+    const stateFile = await fixture(context);
+    const legacy = candidate("0.151.0-alpha.7.2", "vscode");
+    const newest = candidate("0.152.1");
+    const baseline = service(stateFile, { candidates: [legacy] });
+    await baseline.selectForStart();
+    await baseline.markStartupSuccess();
+    const prepare = service(stateFile, { candidates: [newest, legacy] });
+    await prepare.refreshInBackground();
+    const restricted = service(stateFile, {
+      ...policy,
+      candidates: [newest, legacy],
+      runCanary: async () => { assert.fail("restricted policy must not canary the newer version"); },
+    });
+    assert.equal(await restricted.selectForStart(), legacy.path);
+    await restricted.refreshInBackground();
+    assert.equal(await restricted.selectForStart(), legacy.path);
+    assert.deepEqual(restricted.diagnostics().active, legacy);
+    assert.deepEqual(restricted.diagnostics().lastKnownGood, legacy);
+  }
+});
+
+test("background discovery and verification failures preserve active startup state and bound diagnostics", async (context) => {
+  for (const failure of ["discovery", "canary", "verification"]) {
+    const stateFile = await fixture(context);
+    const legacy = candidate("0.151.0-alpha.7.2", "vscode");
+    const newest = candidate("0.152.1");
+    const baseline = service(stateFile, { candidates: [legacy] });
+    await baseline.selectForStart();
+    await baseline.markStartupSuccess();
+    const fail = async () => { throw new Error("synthetic-private-content".repeat(1000)); };
+    const update = service(stateFile, {
+      candidates: [newest, legacy],
+      ...(failure === "discovery" ? { discover: fail } : {}),
+      ...(failure === "canary" ? { runCanary: fail } : {}),
+      ...(failure === "verification" ? { verifyRecorded: fail } : {}),
+    });
+    await update.selectForStart();
+    await update.markStartupSuccess();
+    await update.refreshInBackground();
+    const saved = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.deepEqual(saved.active, legacy, failure);
+    assert.deepEqual(saved.selected, legacy, failure);
+    assert.deepEqual(saved.lastKnownGood, legacy, failure);
+    assert.equal(saved.prepared, null, failure);
+    assert.equal(saved.status, "ready", failure);
+    assert.equal(saved.lastError, null, failure);
+    assert.equal(saved.background.status, "failed", failure);
+    assert.equal(JSON.stringify(saved).includes("synthetic-private-content"), false, failure);
+  }
+});
+
+test("concurrent background refresh shares discovery and canary without clobbering a concurrent startup", async (context) => {
+  const stateFile = await fixture(context);
+  const legacy = candidate("0.151.0-alpha.7.2", "vscode");
+  const newest = candidate("0.152.1");
+  const baseline = service(stateFile, { candidates: [legacy] });
+  await baseline.selectForStart();
+  await baseline.markStartupSuccess();
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  context.after(() => release.resolve());
+  let discoveries = 0;
+  let canaries = 0;
+  const update = service(stateFile, {
+    discover: async ({ trustedCandidates }) => {
+      discoveries += 1;
+      assert.deepEqual(trustedCandidates, [legacy]);
+      return { candidates: [newest, legacy], rejected: [] };
+    },
+    runCanary: async () => {
+      canaries += 1;
+      entered.resolve();
+      await release.promise;
+      return { ok: true };
+    },
+  });
+  await update.selectForStart();
+  const first = update.refreshInBackground();
+  await entered.promise;
+  const concurrent = update.refreshInBackground();
+  assert.equal(first, concurrent);
+  assert.equal(await update.selectForStart(), legacy.path);
+  await update.markStartupSuccess();
+  release.resolve();
+  await Promise.all([first, concurrent]);
+  const saved = JSON.parse(await readFile(stateFile, "utf8"));
+  assert.equal(discoveries, 1);
+  assert.equal(canaries, 1);
+  assert.deepEqual(saved.selected, legacy);
+  assert.deepEqual(saved.active, legacy);
+  assert.deepEqual(saved.prepared, newest);
+  assert.equal(saved.status, "ready");
+});
+
+test("stopping background checks fences a late canary result without changing selected identity", async (context) => {
+  const stateFile = await fixture(context);
+  const legacy = candidate("0.151.0-alpha.7.2", "vscode");
+  const newest = candidate("0.152.1");
+  const baseline = service(stateFile, { candidates: [legacy] });
+  await baseline.selectForStart();
+  await baseline.markStartupSuccess();
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  context.after(() => release.resolve());
+  const update = service(stateFile, {
+    candidates: [newest, legacy],
+    runCanary: async () => { entered.resolve(); await release.promise; return { ok: true }; },
+  });
+  await update.selectForStart();
+  const refresh = update.refreshInBackground();
+  await entered.promise;
+  update.stopBackgroundChecks();
+  await update.markStartupSuccess();
+  release.resolve();
+  await refresh;
+  const saved = JSON.parse(await readFile(stateFile, "utf8"));
+  assert.equal(saved.prepared, null);
+  assert.deepEqual(saved.active, legacy);
+  assert.deepEqual(saved.selected, legacy);
+  assert.equal(saved.status, "ready");
+});
+
+test("background preparation rejects a same-path identity replacement returned by verification", async (context) => {
+  const stateFile = await fixture(context);
+  const legacy = candidate("0.151.0-alpha.7.2", "vscode");
+  const newest = candidate("0.152.1");
+  const baseline = service(stateFile, { candidates: [legacy] });
+  await baseline.selectForStart();
+  await baseline.markStartupSuccess();
+  const update = service(stateFile, {
+    candidates: [newest, legacy],
+    verifyRecorded: async (recorded) => ({ ...recorded, sha256: "C".repeat(64) }),
+  });
+  await update.selectForStart();
+  await update.refreshInBackground();
+  assert.equal(update.diagnostics().prepared, null);
+  assert.equal(update.diagnostics().background.status, "failed");
+  assert.deepEqual(update.diagnostics().failedIdentity, newest);
+  assert.deepEqual(update.diagnostics().selected, legacy);
+  assert.deepEqual(update.diagnostics().active, legacy);
+});
+
+test("stop during pending discovery prevents preparation and every late state write", async (context) => {
+  for (const rejectDiscovery of [false, true]) {
+    const stateFile = await fixture(context);
+    const legacy = candidate("0.151.0-alpha.7.2", "vscode");
+    const newest = candidate("0.152.1");
+    const baseline = service(stateFile, { candidates: [legacy] });
+    await baseline.selectForStart();
+    await baseline.markStartupSuccess();
+    const entered = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    context.after(() => release.resolve());
+    let writes = 0;
+    const update = service(stateFile, {
+      discover: async () => {
+        entered.resolve();
+        await release.promise;
+        if (rejectDiscovery) throw new Error("late discovery failure");
+        return { candidates: [newest, legacy], rejected: [] };
+      },
+      runCanary: async () => { assert.fail("stopped refresh must not start a canary"); },
+      verifyRecorded: async () => { assert.fail("stopped refresh must not verify candidates"); },
+      writeFileImpl: async (...args) => { writes += 1; return writeFile(...args); },
+    });
+    await update.selectForStart();
+    const before = await readFile(stateFile, "utf8");
+    const writesBefore = writes;
+    const refresh = update.refreshInBackground();
+    await entered.promise;
+    update.stopBackgroundChecks();
+    release.resolve();
+    await refresh;
+    assert.equal(writes, writesBefore);
+    assert.equal(await readFile(stateFile, "utf8"), before);
+    assert.equal(update.diagnostics().prepared, null);
+    assert.deepEqual(update.diagnostics().selected, legacy);
+    assert.deepEqual(update.diagnostics().active, legacy);
+  }
+});
+
+test("schema-1 identities seed the trusted cache without discovery or canary on cold startup", async (context) => {
+  const legacy = candidate("0.151.0-alpha.7.2", "vscode");
+  const newest = candidate("0.152.1");
+  for (const prepared of [null, newest]) {
+    const stateFile = await fixture(context);
+    await writeFile(stateFile, JSON.stringify({
+      schemaVersion: 1,
+      active: legacy,
+      selected: legacy,
+      lastKnownGood: legacy,
+      ...(prepared ? { prepared } : {}),
+    }), "utf8");
+    const verifications = [];
+    const update = service(stateFile, {
+      discover: async () => { assert.fail("schema migration must not discover"); },
+      runCanary: async () => { assert.fail("schema migration must not canary"); },
+      verifyRecorded: async (recorded) => { verifications.push(recorded); return { ...recorded }; },
+    });
+    const expected = prepared ?? legacy;
+    assert.equal(await update.selectForStart(), expected.path);
+    assert.equal(await update.verifySelectedForLaunch(expected.path), expected.path);
+    assert.deepEqual(verifications, [expected]);
+    const saved = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.equal(saved.schemaVersion, 1);
+    assert.deepEqual(saved.trustedCandidates, prepared ? [legacy, newest] : [legacy]);
+    assert.deepEqual(saved.active, legacy);
+    assert.deepEqual(saved.lastKnownGood, legacy);
+    const restarted = service(stateFile, {
+      discover: async () => { assert.fail("migrated restart must not discover"); },
+      runCanary: async () => { assert.fail("migrated restart must not canary"); },
+    });
+    assert.equal(await restarted.selectForStart(), expected.path);
+    assert.equal(await restarted.verifySelectedForLaunch(expected.path), expected.path);
+  }
+});
+
+test("cold startup and background refresh share one pending persisted-state load", async (context) => {
+  const stateFile = await fixture(context);
+  const legacy = candidate("0.151.0-alpha.7.2", "vscode");
+  await writeFile(stateFile, JSON.stringify({
+    schemaVersion: 1, active: legacy, selected: legacy, lastKnownGood: legacy,
+  }), "utf8");
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  context.after(() => release.resolve());
+  let reads = 0;
+  const discoveries = [];
+  const update = service(stateFile, {
+    readFileImpl: async (...args) => {
+      reads += 1;
+      entered.resolve();
+      await release.promise;
+      return readFile(...args);
+    },
+    discover: async (options) => {
+      discoveries.push(options);
+      return { candidates: [legacy], rejected: [] };
+    },
+    runCanary: async () => { assert.fail("cold concurrent load must not lose persisted LKG"); },
+  });
+  const selection = update.selectForStart();
+  await entered.promise;
+  const refresh = update.refreshInBackground();
+  release.resolve();
+  const [selected] = await Promise.all([selection, refresh]);
+  assert.equal(selected, legacy.path);
+  assert.equal(reads, 1);
+  assert.deepEqual(discoveries, [{ trustedCandidates: [legacy] }]);
+  const saved = JSON.parse(await readFile(stateFile, "utf8"));
+  assert.deepEqual(saved.selected, legacy);
+  assert.deepEqual(saved.active, legacy);
+  assert.deepEqual(saved.trustedCandidates, [legacy]);
+});
+
+test("ordered state writes keep a concurrent successful startup newer than background preparation", async (context) => {
+  const stateFile = await fixture(context);
+  const legacy = candidate("0.151.0-alpha.7.2", "vscode");
+  const newest = candidate("0.152.1");
+  const baseline = service(stateFile, { candidates: [legacy] });
+  await baseline.selectForStart();
+  await baseline.markStartupSuccess();
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  context.after(() => release.resolve());
+  let blockNextWrite = false;
+  let writesInFlight = 0;
+  let maximumWrites = 0;
+  const update = service(stateFile, {
+    candidates: [newest, legacy],
+    mkdirImpl: async () => {},
+    writeFileImpl: async (...args) => {
+      writesInFlight += 1;
+      maximumWrites = Math.max(maximumWrites, writesInFlight);
+      try {
+        if (blockNextWrite) {
+          blockNextWrite = false;
+          entered.resolve();
+          await release.promise;
+        }
+        return await writeFile(...args);
+      } finally {
+        writesInFlight -= 1;
+      }
+    },
+  });
+  await update.selectForStart();
+  blockNextWrite = true;
+  const refresh = update.refreshInBackground();
+  await entered.promise;
+  const selection = update.selectForStart();
+  await new Promise(setImmediate);
+  release.resolve();
+  await Promise.all([refresh, selection]);
+  await update.markStartupSuccess();
+  const saved = JSON.parse(await readFile(stateFile, "utf8"));
+  assert.equal(maximumWrites, 1);
+  assert.deepEqual(saved.selected, newest);
+  assert.deepEqual(saved.active, newest);
+  assert.deepEqual(saved.lastKnownGood, newest);
+  assert.equal(saved.prepared, null);
+  assert.equal(saved.status, "ready");
 });

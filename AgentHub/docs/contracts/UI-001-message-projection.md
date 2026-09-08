@@ -72,8 +72,13 @@
   Missing mappings render non-interactive
   `Цитата N`. User-authored marker-like literals and code remain ordinary user
   content.
-- A new user-created annotation records its exact source user or agent provider
-  item, including an active non-final agent item, one
+- A new user-created annotation records its exact source user command or agent
+  provider item, including an active non-final agent item. A user with a durable
+  `clientUserMessageId` uses the client namespace scoped by provider and Thread,
+  with empty provider turn/item fields; later item hydration does not change its
+  locator or canonical content hash. Existing provider-item locators retain
+  their original namespace and hash semantics. Missing, mixed or ambiguous
+  identity fails closed; no provider ID is synthesized. The locator records one
   versioned rendered surface, a bounded UTF-16 range and SHA-256 boundaries for
   canonical message content, surface content and selected content. Equal text
   is not source identity. Clicking the user-created annotation card validates
@@ -146,6 +151,20 @@ observation, but it never adopts a Hub command identity.
 History and Journal search documents are independent projections. Rebuilding a
 turn's History-owned documents cannot delete or overwrite Journal-owned
 documents, and repeated reopen/recovery preserves the same source groups.
+
+A receipt without `streamId` reconciles only when its exact provider and Thread
+identify one current snapshot Task. Missing or ambiguous bindings do not change
+any outgoing message. A later canonical receipt removes the local unknown-send
+retry action and cannot be downgraded by a late failure of the original request.
+An unconfirmed local submission remains on the queue-management surface, clearly
+labelled as not acknowledged by Hub. While its original request is retained in
+the current page, explicit retry reuses its command identity and frozen wire
+parameters; changes in model selection or Stream occupancy do not rewrite that
+request. Refresh never triggers that retry automatically. This retained request
+does not introduce a second durable command store or promise reload recovery.
+An exact local preparation cancellation before transport begins is a known
+non-submission, not a transport timeout, and may restore the unchanged draft
+through the existing composer recovery owner.
 
 Composer recovery uses the same exact `clientUserMessageId`. A transport timeout
 or connection loss leaves the cleared composer unchanged and shows the command

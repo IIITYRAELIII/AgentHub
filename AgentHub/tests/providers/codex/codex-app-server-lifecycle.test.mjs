@@ -27,8 +27,8 @@ function fixture(overrides = {}) {
     onMessage: () => {},
     rpcTimeoutMs: 1_000,
     isStopping: () => false,
-    providerSelected: () => true,
-    activeRuns: () => [],
+    providerSelected: overrides.providerSelected ?? (() => true),
+    activeRuns: overrides.activeRuns ?? (() => []),
     setStage: (...args) => events.push(["stage", ...args]),
     recoverRuns: async () => events.push(["recover"]),
     startTyping: () => events.push(["typing"]),
@@ -280,7 +280,44 @@ test("Codex App Server lifecycle restarts only after its follow-up health check 
 
   await timeout({ id: 51, method: "thread/turns/list", timeoutMs: 1_000, generation: 1 });
 
-  assert.deepEqual(events.map(([name]) => name), ["error", "request", "error", "stop"]);
+  assert.deepEqual(events.map(([name]) => name), [
+    "error", "request", "error", "stop", "start", "initialize", "notify", "attach", "recover",
+  ]);
+});
+
+test("Codex health recycling restores an unselected backend exactly once", async () => {
+  const { lifecycle, events, timeout, exit } = fixture({ providerSelected: () => false });
+  lifecycle.transport.request = async () => { throw new Error("health check timed out"); };
+  lifecycle.transport.stop = async () => {
+    events.push(["stop"]);
+    await exit({ detail: "stopped by Hub owner" });
+  };
+  await timeout({ method: "thread/turns/list", timeoutMs: 1_000, generation: 1 });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(events.filter(([name]) => name === "start").length, 1);
+  assert.equal(events.filter(([name]) => name === "initialize").length, 1);
+  assert.equal(events.some(([name]) => name === "attach"), false);
+  assert.equal(events.filter(([name]) => name === "recover").length, 1);
+});
+
+test("Codex health recovery retries a failed restart even when another provider is selected", async () => {
+  const { lifecycle, events, timeout } = fixture({ providerSelected: () => false });
+  lifecycle.transport.request = async () => { throw new Error("health check timed out"); };
+  lifecycle.transport.start = async () => { throw new Error("temporary spawn failure"); };
+  await timeout({ method: "thread/read", timeoutMs: 1_000, generation: 1 });
+  const retry = events.find(([name]) => name === "retry");
+  assert.ok(retry);
+  lifecycle.transport.start = async () => events.push(["start"]);
+  await retry[1]();
+  assert.equal(events.filter(([name]) => name === "recover").length, 1);
+});
+
+test("Codex health recycling does not interrupt a managed turn", async () => {
+  const { events, timeout } = fixture({
+    activeRuns: () => [{ provider: "codex", observer: false, status: "running" }],
+  });
+  await timeout({ method: "thread/read", timeoutMs: 1_000, generation: 1 });
+  assert.deepEqual(events, []);
 });
 
 test("Codex App Server lifecycle ignores a timeout before the request reaches transport", async () => {

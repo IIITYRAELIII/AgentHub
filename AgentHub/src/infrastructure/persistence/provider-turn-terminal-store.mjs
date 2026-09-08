@@ -274,7 +274,6 @@ function selectOutbox(database, key) {
 
 export class ProviderTurnTerminalStore {
   #dataDir;
-  #tail = Promise.resolve();
   #mutations = new AsyncSqliteMutationQueue();
   #mutationTimeoutMs;
   #configured = false;
@@ -286,24 +285,24 @@ export class ProviderTurnTerminalStore {
   }
 
   #enqueue(operation, requestId = null) {
-    const execute = requestId
-      ? () => this.#mutations.run(operation, {
-          timeoutMs: this.#mutationTimeoutMs,
-          requestId,
-        })
-      : operation;
-    const next = this.#tail.then(execute, execute);
-    this.#tail = next.catch(() => {});
-    return next;
+    return this.#mutations.run(operation, {
+      timeoutMs: this.#mutationTimeoutMs,
+      requestId,
+    });
   }
 
   #database() {
     const database = openRuntimeDatabase(this.#dataDir);
-    if (!this.#configured) {
-      configure(database);
-      this.#configured = true;
+    try {
+      if (!this.#configured) {
+        configure(database);
+        this.#configured = true;
+      }
+      return database;
+    } catch (error) {
+      database.close();
+      throw error;
     }
-    return database;
   }
 
   commit(value) {
@@ -330,6 +329,15 @@ export class ProviderTurnTerminalStore {
       lastMessageText: String(lastMessage?.text ?? "").trim(),
       responseAttachments: basePayload?.completion?.responseAttachments ?? [],
       telegramIntent,
+      ...([basePayload?.completion, basePayload?.history].some((part) => (
+        part?.contextProbe === true
+        || (text(part?.operationKind) && text(part.operationKind) !== "user-turn")
+      )) ? {
+          classification: [basePayload?.completion, basePayload?.history].map((part) => ({
+            operationKind: text(part?.operationKind) || "user-turn",
+            contextProbe: part?.contextProbe === true,
+          })),
+        } : {}),
     });
     return this.#enqueue(() => {
       const database = this.#database();

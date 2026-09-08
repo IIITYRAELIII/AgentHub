@@ -25,7 +25,6 @@ import { mergeCanonicalUserMessages } from "../../../src/domain/canonical-user-m
 import { createInterstreamMessage } from "../../../src/domain/interstream-message.mjs";
 import {
   mergeTaskCatalog,
-  preserveUnknownActivityOnSourceFailure,
   taskOrderingActivityAtMs,
 } from "../../../src/application/task-catalog-projection.mjs";
 import {
@@ -309,7 +308,7 @@ test("durable catalog activity is unknown until a live provider scan confirms it
   }]);
 });
 
-test("failed provider discovery preserves recent unknown activity", () => {
+test("failed provider discovery preserves unknown activity without inventing a running turn", async () => {
   const cached = [{
     provider: "codex",
     threadId: "cached-active",
@@ -324,19 +323,33 @@ test("failed provider discovery preserves recent unknown activity", () => {
     activityUnknown: false,
   }];
 
-  const projected = preserveUnknownActivityOnSourceFailure(cached, [{
+  const { createTaskCatalogFinalizationComposition } = await import(
+    "../../../src/composition/task-catalog-finalization-composition.mjs"
+  );
+  let persisted;
+  const { finalize } = createTaskCatalogFinalizationComposition({
+    projects: [],
+    taskRuns: { bindStream: () => {}, forTask: () => null, values: () => [] },
+    savedLastTaskMessageRecord: () => null,
+    deferredTaskMessageAtMs: () => 0,
+    selectedTask: () => ({}),
+    taskSyncStore: { recordCatalog: (entries) => { persisted = entries; }, save: async () => {} },
+  });
+  const projected = await finalize(cached.map((entry) => ({ ...entry, title: entry.threadId })), { sourceResults: [{
     provider: "codex",
     status: "rejected",
   }, {
     provider: "claude",
     status: "fulfilled",
-  }]);
+  }] });
 
-  assert.equal(projected[0].running, true);
-  assert.equal(projected[0].activityUnknown, true);
-  assert.equal(projected[0].executionOwner, TASK_EXECUTION_OWNERS.DESKTOP);
-  assert.equal(projected[0].turnId, "cached-turn");
-  assert.equal(projected[1].running, false);
+  const unknown = projected.find((entry) => entry.threadId === "cached-active");
+  assert.equal(unknown.running, false);
+  assert.equal(unknown.activityUnknown, true);
+  assert.equal(unknown.executionOwner, TASK_EXECUTION_OWNERS.DESKTOP);
+  assert.equal(unknown.turnId, "cached-turn");
+  assert.equal(projected.find((entry) => entry.threadId === "claude-idle").running, false);
+  assert.equal(persisted, projected);
 });
 
 test("Codex runtime labels distinguish supported app servers", () => {

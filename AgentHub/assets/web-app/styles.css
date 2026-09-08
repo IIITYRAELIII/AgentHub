@@ -4294,6 +4294,14 @@ html[data-view="dashboard"] .task-board-view {
   max-width: 26rem;
 }
 
+.task-cleanup-preview {
+  margin: 0;
+  max-height: 45dvh;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .task-delete-modal > section,
 .task-delete-modal > footer {
   padding: 1rem;

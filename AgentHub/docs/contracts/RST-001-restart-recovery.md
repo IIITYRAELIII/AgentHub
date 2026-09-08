@@ -39,6 +39,11 @@ a user turn and does not alter the restart/compaction operation schema.
   completion or wake cancels that delay and rechecks the lane head immediately.
 - Process death does not preserve local `running` as fact. Recovery reconciles
   provider state or records an honest terminal timeout/unknown result.
+- Before provider discovery finishes, the initial catalog resolves retained
+  Threads against existing visible Workspace/Stream bindings read-only. It does
+  not expose an unbound historical Thread as a synthetic Stream. Discovery
+  failure preserves unknown activity without promoting it to running; exact
+  managed runs remain independently authoritative for activity and admission.
 - Startup performs one bounded read-model reprojection for recent terminal
   turns whose retained payload identities are all confirmed by exact terminal
   command-ledger bindings. The reprojection is idempotent, preserves terminal
@@ -48,3 +53,10 @@ a user turn and does not alter the restart/compaction operation schema.
   sorts terminal JSON to discover candidates.
 - Restart UI appears only for a real persisted restart phase and cannot hide a
   final response.
+- The startup screen retains failed-stage details and exposes authenticated
+  retry and restart actions. Retry is fenced by the exact runtime startup
+  generation, coalesces concurrent requests, and runs only failed recoverable
+  stages plus their skipped dependencies after initial startup settles.
+  Completed stages and command dispatch are never replayed by a retry.
+  An unavailable control plane requires the installed local launcher; a browser
+  cannot start a process on an offline host.

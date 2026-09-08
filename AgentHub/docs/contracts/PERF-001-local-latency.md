@@ -68,14 +68,36 @@ negative and serialize after any earlier inventory so each admission receives a
 scan requested at its own dequeue fence. Helper stdout plus stderr is capped at
 64 KiB and the child is terminated on timeout or overflow.
 
-Ordinary Codex terminal reconciliation is also resumable and bounded. One idle
-pass scans at most 8 rollout files, 512 KiB and 20 terminal turns, with a 75 ms
-event-loop time budget. It yields before further work whenever a managed run or
-deferred input exists. A partial scan persists its exact file position and
+Ordinary Codex terminal reconciliation is also resumable and bounded. One
+pass considers at most 8 scanned rollout files and 20 terminal turns. Production
+scans run in a worker, in 4 MiB chunks with an 8 MiB pass budget (a JSONL record
+is completed before yielding). The 75 ms cooperative processing budget cannot
+be consumed by discovery or worker scanning before reconciliation, or prevent
+the first bounded unit from advancing. Live accounting remains scheduled during managed runs
+and while deferred inputs exist; only historical backfill requires interactive
+idle. A paused queue must not starve completed-turn accounting. A partial scan persists its exact file position and
 terminal index before journal projection, so restart/retry continues the same
 batch without replaying the completed prefix. Projection is flushed at most once
 per recovered batch; disabling terminal audit is not an acceptable steady-state
 mitigation.
+Incomplete passes that make progress continue after one second; idle or failed
+passes retain the 30-second interval. Durable fair continuation prevents a slow
+thread or a long discovery prefix from permanently starving later threads.
+Automatic terminal writes use point reads/upserts, not a reload of the complete
+ledger. Production full journal projection reads, normalizes, renders and writes
+the retained ledger in the existing usage worker. Only bounded workspace identity
+batches cross back to the runtime; full journal bodies do not. Projection commits
+are revision-fenced, and a failed or stale batch cannot clear pending audit work.
+Unchanged canonical merged records do not request a new projection; an existing
+pending projection still survives an unchanged replay. Provisional retraction
+checks only the exact turn before mutation. Missing or non-provisional turns
+must neither load the retained ledger nor project it. An actual retraction is
+serialized and durable before its worker projection.
+Task-title reconciliation performs metadata selection and exact changed-record
+updates in the usage worker. A revision conflict cannot overwrite newer usage
+or answers. The durable projection-source revision and project scope distinguish
+an unchanged, already-visible title from an update whose projection must retry.
+The runtime releases its repository lock before requesting full projection.
 When the Codex transport is offline or reconnecting, versioned historical
 maintenance resolves subagent accounting roots only from retained rollout files.
 It must not attempt provider RPC before falling back locally; an unavailable or

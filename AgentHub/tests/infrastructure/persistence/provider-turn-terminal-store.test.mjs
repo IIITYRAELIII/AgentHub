@@ -170,6 +170,50 @@ test("terminal owner waits asynchronously for a transient runtime database write
   assert.equal(result.outbox.state, "pending");
 });
 
+test("terminal outbox mutations survive contention without duplicating effects", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-outbox-contention-"));
+  const store = new ProviderTurnTerminalStore({ dataDir, mutationTimeoutMs: 1_000 });
+  const committed = await store.commit({
+    ...completion(),
+    payload: { completion: { clientUserMessageId: "command-1" } },
+    channels: { telegram: { requested: true } },
+  });
+  const blocker = new DatabaseSync(path.join(dataDir, "runtime.sqlite"));
+  context.after(async () => {
+    blocker.close();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  const contended = async (operation) => {
+    blocker.exec("BEGIN IMMEDIATE;");
+    const release = setTimeout(() => blocker.exec("COMMIT;"), 50);
+    try {
+      return await operation();
+    } finally {
+      clearTimeout(release);
+      if (blocker.isTransaction) blocker.exec("ROLLBACK;");
+    }
+  };
+
+  const claimed = await contended(() => store.claim(committed.outbox));
+  assert.equal(claimed.state, "projecting");
+  assert.equal(claimed.attempts, 1);
+  assert.equal(await store.claim(committed.outbox), null);
+  assert.equal((await contended(() => store.retry(claimed, new Error("projection failed")))).state, "pending");
+  await store.claim(committed.outbox);
+  assert.equal(await contended(() => store.recoverProjecting()), 1);
+  const recovered = await store.claim(committed.outbox);
+  assert.equal(recovered.attempts, 3);
+  assert.equal((await contended(() => store.acknowledge(recovered))).state, "delivered");
+  assert.equal((await contended(() => store.acknowledgeCommand(recovered))).channels.command.state, "acked");
+  const delivered = await contended(() => store.updateChannel(recovered, "telegram", "acked", {
+    deliveryId: "delivery-1",
+  }));
+  assert.equal(delivered.channels.telegram.state, "acked");
+  assert.equal(delivered.channels.telegram.deliveryId, "delivery-1");
+  assert.equal((await store.get(committed.terminal)).terminalRevision, 1);
+  assert.deepEqual(await store.pending(), []);
+});
+
 test("terminal owner migrates bounded payload metadata and provides indexed recovery order", async (context) => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-terminal-metadata-"));
   context.after(() => rm(dataDir, { recursive: true, force: true }));
@@ -884,7 +928,7 @@ test("v15 EOF audit migrates once and repairs delivered current ImageGen output"
   await scheduler.auditNow();
   const migratedSnapshot = migratedAudit.snapshot();
 
-  assert.equal(migratedSnapshot.version, 16);
+  assert.equal(migratedSnapshot.version, 17);
   assert.equal(migratedSnapshot.historicalSubagentBackfill.pending, false);
   assert.equal(migratedSnapshot.historicalSubagentBackfill.completedFiles, 1);
   assert.equal(historicalScans, 1);
@@ -892,7 +936,7 @@ test("v15 EOF audit migrates once and repairs delivered current ImageGen output"
   assert.equal(imports, 1);
   assert.equal(historyProjections.length, 2);
   assert.equal(persistedAuditSnapshots.length, 1);
-  assert.equal(persistedAuditSnapshots[0].version, 16);
+  assert.equal(persistedAuditSnapshots[0].version, 17);
   assert.equal(persistedAuditSnapshots[0].historicalSubagentBackfill.pending, false);
   assert.deepEqual(historyProjections[1].responseAttachments.map((item) => item.id), [
     "codex-generated-v15-output.png",

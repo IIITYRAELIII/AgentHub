@@ -1136,6 +1136,7 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
       state: "pending",
       provider: "codex",
       threadId: "thread-1",
+      streamId: null,
       taskTitle: "Agent HUB - Stream 1",
       clientUserMessageId: "client-2",
       text: "Ожидает",
@@ -1153,6 +1154,7 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
       state: "queued",
       provider: "codex",
       threadId: "thread-1",
+      streamId: null,
       taskTitle: "Agent HUB - Stream 1",
       clientUserMessageId: null,
       text: "В очереди",
@@ -1171,6 +1173,7 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
       state: "dispatching",
       provider: "codex",
       threadId: "thread-1",
+      streamId: null,
       taskTitle: "Agent HUB - Stream 1",
       clientUserMessageId: null,
       text: "Уже отправляется",
@@ -1214,6 +1217,54 @@ test("desktopSnapshot derives restart waiting from the persisted operation", asy
   assert.equal(snapshot.restartWaiting, true);
   assert.equal(snapshot.restartBlockingCount, 6);
   assert.equal(snapshot.server.restart.waiting, true);
+});
+
+test("desktopSnapshot exposes failed pending intake for explicit recovery in its exact Stream", async () => {
+  const failed = Object.freeze({
+    id: "failed-intake",
+    clientUserMessageId: "client-failed-intake",
+    provider: "codex",
+    threadId: "thread-shared",
+    streamId: "stream-2",
+    conflictKind: "message-intake",
+    input: "Retained input",
+    lastError: "Provider start was not confirmed",
+    attempts: 15,
+  });
+  const { desktopSnapshot, state } = fixture({
+    pending: [failed],
+    queued: [{ ...failed, id: "queued-sibling", streamId: "stream-1", lastError: null }],
+  });
+
+  const snapshot = await desktopSnapshot();
+  const entry = snapshot.deferredInputs.find((item) => item.id === failed.id);
+  assert.deepEqual(snapshot.messageReceipts, []);
+  assert.equal(entry.state, "pending");
+  assert.equal(entry.attentionRequired, true);
+  assert.equal(entry.streamId, "stream-2");
+  assert.equal(entry.threadId, failed.threadId);
+  assert.equal(entry.clientUserMessageId, failed.clientUserMessageId);
+  assert.equal(entry.lastError, failed.lastError);
+  assert.equal(entry.attempts, 15);
+  assert.equal(entry.text, failed.input);
+  assert.equal(snapshot.deferredInputs.find((item) => item.id === "queued-sibling").streamId, "stream-1");
+  assert.equal(state.pending[0], failed);
+  assert.equal(failed.attentionRequired, undefined);
+});
+
+test("desktopSnapshot keeps normal intake and transient waits out of attention-required projection", async () => {
+  const { desktopSnapshot } = fixture({
+    pending: [
+      { id: "normal", conflictKind: "message-intake", clientProjectionIntent: "conversation" },
+      { id: "waiting", lastError: { code: "ERR_CLAUDE_EXTERNAL_OWNER_ACTIVE" } },
+      { id: "steering", manualAction: "steer", lastError: "Prior failure" },
+    ],
+  });
+  const snapshot = await desktopSnapshot();
+  assert.equal(snapshot.deferredInputs.every((item) => item.attentionRequired !== true), true);
+  assert.equal(snapshot.deferredInputs.find((item) => item.id === "normal").state, "pending");
+  assert.equal(snapshot.deferredInputs.find((item) => item.id === "waiting").lastError, null);
+  assert.equal(snapshot.deferredInputs.find((item) => item.id === "steering").state, "steering");
 });
 
 test("desktopSnapshot exposes an in-flight steer as sending rather than a new decision", async () => {

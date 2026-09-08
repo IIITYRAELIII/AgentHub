@@ -3,7 +3,12 @@ import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
-import { discoverOfficialCodexExecutables } from "./codex-executable.mjs";
+import {
+  codexExecutableRejectionMessage,
+  discoverOfficialCodexExecutables,
+  summarizeCodexExecutableRejections,
+  verifyRecordedCodexExecutable,
+} from "./codex-executable.mjs";
 
 const SCHEMA_VERSION = 1;
 
@@ -41,6 +46,9 @@ function initialState() {
     selected: null,
     lastKnownGood: null,
     candidate: null,
+    prepared: null,
+    trustedCandidates: [],
+    background: null,
     failedIdentity: null,
     canary: null,
     status: "uninitialized",
@@ -52,10 +60,15 @@ function initialState() {
 
 export class CodexExecutableUpdateService {
   #loaded = false;
+  #loadPromise = null;
   #state = initialState();
   #selection = null;
   #verifiedCandidates = [];
   #rollbackIdentity = null;
+  #savePromise = Promise.resolve();
+  #refreshPromise = null;
+  #backgroundTimer = null;
+  #backgroundGeneration = 0;
 
   constructor({
     stateFile,
@@ -63,6 +76,7 @@ export class CodexExecutableUpdateService {
     autoUpdateEnabled = true,
     versionPin = "",
     discover = discoverOfficialCodexExecutables,
+    verifyRecorded = verifyRecordedCodexExecutable,
     runCanary,
     activeRuns = () => [],
     now = () => new Date(),
@@ -82,6 +96,7 @@ export class CodexExecutableUpdateService {
       autoUpdateEnabled: autoUpdateEnabled !== false,
       versionPin: String(versionPin ?? "").trim(),
       discover,
+      verifyRecorded,
       runCanary,
       activeRuns,
       now,
@@ -97,18 +112,29 @@ export class CodexExecutableUpdateService {
 
   async #load() {
     if (this.#loaded) return;
-    this.#loaded = true;
-    this.#state = await this.#readPersistedState({ allowMissing: true });
+    if (!this.#loadPromise) this.#loadPromise = this.#readPersistedState({ allowMissing: true }).then((state) => {
+      this.#state = state;
+      this.#loaded = true;
+    }).finally(() => { this.#loadPromise = null; });
+    await this.#loadPromise;
   }
 
   async #readPersistedState({ allowMissing }) {
     try {
       const parsed = JSON.parse(await this.readFileImpl(this.stateFile, "utf8"));
       if (parsed?.schemaVersion !== SCHEMA_VERSION) throw new Error("unsupported schema version");
-      for (const key of ["active", "selected", "lastKnownGood", "candidate", "failedIdentity"]) {
+      for (const key of ["active", "selected", "lastKnownGood", "candidate", "prepared", "failedIdentity"]) {
         if (parsed[key] != null && !validIdentity(parsed[key])) throw new Error(`invalid ${key} identity`);
       }
-      return { ...initialState(), ...parsed };
+      if (parsed.trustedCandidates != null && (!Array.isArray(parsed.trustedCandidates)
+        || parsed.trustedCandidates.some((entry) => !validIdentity(entry)))) throw new Error("invalid trusted identities");
+      const state = { ...initialState(), ...parsed };
+      for (const candidate of [state.lastKnownGood, state.prepared]) {
+        if (candidate && !state.trustedCandidates.some((entry) => sameIdentity(entry, candidate))) {
+          state.trustedCandidates.push(identity(candidate));
+        }
+      }
+      return state;
     } catch (error) {
       if (allowMissing && error?.code === "ENOENT") return initialState();
       throw new Error(`Cannot read Codex executable state: ${error.message}`);
@@ -117,11 +143,18 @@ export class CodexExecutableUpdateService {
 
   async #save() {
     this.#state.updatedAt = this.now().toISOString();
+    const serialized = `${JSON.stringify(this.#state, null, 2)}\n`;
+    const save = this.#savePromise.then(() => this.#writeState(serialized));
+    this.#savePromise = save.catch(() => {});
+    return save;
+  }
+
+  async #writeState(serialized) {
     const directory = path.dirname(this.stateFile);
     const temporary = path.join(directory, `.${path.basename(this.stateFile)}.${randomUUID()}.tmp`);
     await this.mkdirImpl(directory, { recursive: true });
     try {
-      await this.writeFileImpl(temporary, `${JSON.stringify(this.#state, null, 2)}\n`, "utf8");
+      await this.writeFileImpl(temporary, serialized, "utf8");
       await this.renameImpl(temporary, this.stateFile);
     } finally {
       await this.unlinkImpl(temporary).catch(() => null);
@@ -167,8 +200,30 @@ export class CodexExecutableUpdateService {
       return "codex";
     }
 
-    const discovery = await this.discover();
+    if (this.#rollbackIdentity) {
+      const rollback = this.#rollbackIdentity;
+      this.#rollbackIdentity = null;
+      return this.#select(rollback, "rollback-starting", "candidate-startup-failed");
+    }
+    const prepared = this.#state.prepared;
+    if (this.autoUpdateEnabled && validIdentity(prepared)
+      && (!this.versionPin || prepared.version === this.versionPin)
+      && !sameIdentity(prepared, this.#state.failedIdentity) && !this.#hasActiveCodexRuns()) {
+      return this.#select(prepared, "candidate-starting", "background-verified");
+    }
+    const lastKnownGood = this.#state.lastKnownGood;
+    if (validIdentity(lastKnownGood) && (!this.versionPin || lastKnownGood.version === this.versionPin)) {
+      return this.#select(lastKnownGood, !this.autoUpdateEnabled ? "disabled"
+        : this.#hasActiveCodexRuns() && prepared ? "deferred-active-runs"
+          : this.versionPin ? "pinned" : "current");
+    }
+    return this.#bootstrapSelection();
+  }
+
+  async #bootstrapSelection() {
+    const discovery = await this.discover({ trustedCandidates: this.#state.trustedCandidates });
     this.#verifiedCandidates = discovery.candidates ?? [];
+    this.#state.trustedCandidates = this.#verifiedCandidates.map(identity);
     let candidates = this.#verifiedCandidates;
     if (this.versionPin) candidates = candidates.filter((candidate) => candidate.version === this.versionPin);
     const candidate = candidates[0] ?? null;
@@ -178,22 +233,18 @@ export class CodexExecutableUpdateService {
     this.#state.rejected = (discovery.rejected ?? []).map((entry) => ({
       path: entry.path,
       source: entry.source,
-      error: entry.error,
+      error: codexExecutableRejectionMessage(entry.error),
     }));
 
-    if (this.#rollbackIdentity) {
-      const rollback = this.#findVerified(this.#rollbackIdentity);
-      this.#rollbackIdentity = null;
-      if (!rollback) throw new Error("Last-known-good Codex executable is no longer trusted or installed");
-      return this.#select(rollback, "rollback-starting", "candidate-startup-failed");
-    }
     if (!candidate) {
       this.#state.status = this.versionPin ? "pin-unavailable" : "no-trusted-candidate";
       this.#state.reason = this.versionPin || null;
-      await this.#save();
-      throw new Error(this.versionPin
+      this.#state.lastError = (this.versionPin
         ? `No trusted installed Codex executable matches pin ${this.versionPin}`
-        : "No trusted installed official Codex executable was found");
+        : "No trusted installed official Codex executable was found")
+        + summarizeCodexExecutableRejections(this.#state.rejected);
+      await this.#save();
+      throw new Error(this.#state.lastError);
     }
     if (!this.autoUpdateEnabled) {
       const fallback = verifiedLkg ?? legacy;
@@ -230,15 +281,16 @@ export class CodexExecutableUpdateService {
     try {
       const result = await this.runCanary(candidate);
       if (result?.ok !== true) throw new Error(result?.error || "compatibility canary did not pass");
-      const confirmedDiscovery = await this.discover();
+      const confirmedDiscovery = await this.discover({ trustedCandidates: this.#state.trustedCandidates });
       const confirmedCandidates = confirmedDiscovery.candidates ?? [];
       const confirmed = confirmedCandidates.find((entry) => sameIdentity(entry, candidate));
       if (!confirmed) throw new Error("Codex executable identity changed after compatibility canary");
       this.#verifiedCandidates = confirmedCandidates;
+      this.#state.trustedCandidates = confirmedCandidates.map(identity);
       this.#state.rejected = (confirmedDiscovery.rejected ?? []).map((entry) => ({
         path: entry.path,
         source: entry.source,
-        error: entry.error,
+        error: codexExecutableRejectionMessage(entry.error),
       }));
       this.#state.canary = {
         identity: identity(confirmed),
@@ -290,13 +342,81 @@ export class CodexExecutableUpdateService {
       throw new Error("Durable selected Codex executable identity changed before process spawn");
     }
 
-    const discovery = await this.discover();
-    this.#verifiedCandidates = discovery.candidates ?? [];
-    const verified = this.#findVerified(selected);
-    if (!verified) {
-      throw new Error("Selected Codex executable identity changed before process spawn");
-    }
+    const verified = await this.verifyRecorded(selected);
+    if (!sameIdentity(verified, selected)) throw new Error("Selected Codex executable identity changed before process spawn");
     return verified.path;
+  }
+
+  startBackgroundChecks({ canCheck = () => true, intervalMs = 60_000 } = {}) {
+    if (this.#backgroundTimer || this.requestedExecutable || this.platform !== "win32") return;
+    this.#backgroundTimer = setInterval(() => {
+      if (canCheck()) void this.refreshInBackground().catch(() => {});
+    }, intervalMs);
+    this.#backgroundTimer.unref?.();
+  }
+
+  stopBackgroundChecks() {
+    clearInterval(this.#backgroundTimer);
+    this.#backgroundTimer = null;
+    this.#backgroundGeneration += 1;
+  }
+
+  refreshInBackground() {
+    if (this.#refreshPromise) return this.#refreshPromise;
+    this.#refreshPromise = this.#refresh(this.#backgroundGeneration).finally(() => { this.#refreshPromise = null; });
+    return this.#refreshPromise;
+  }
+
+  async #refresh(generation) {
+    if (this.requestedExecutable || this.platform !== "win32") return;
+    await this.#load();
+    this.#state.background = { status: "checking", startedAt: this.now().toISOString(), error: null };
+    try {
+      const discovery = await this.discover({ trustedCandidates: this.#state.trustedCandidates });
+      if (generation !== this.#backgroundGeneration) return;
+      this.#state.trustedCandidates = (discovery.candidates ?? []).map(identity);
+      this.#state.rejected = (discovery.rejected ?? []).map((entry) => ({
+        path: entry.path, source: entry.source, error: codexExecutableRejectionMessage(entry.error),
+      }));
+      const candidate = this.#state.trustedCandidates.find((entry) => !this.versionPin || entry.version === this.versionPin);
+      this.#state.candidate = candidate ?? null;
+      if (!candidate) throw new Error("No trusted installed official Codex executable was found");
+      if (!this.autoUpdateEnabled || sameIdentity(candidate, this.#state.lastKnownGood)
+        || sameIdentity(candidate, this.#state.prepared)) {
+        this.#state.background.status = "current";
+      } else if (sameIdentity(candidate, this.#state.failedIdentity)) {
+        this.#state.background.status = "candidate-blocked";
+      } else if (this.#hasActiveCodexRuns()) {
+        this.#state.background.status = "deferred-active-runs";
+      } else {
+        const startedAt = this.now().toISOString();
+        this.#state.background.status = "canary";
+        try {
+          const result = await this.runCanary(candidate);
+          if (result?.ok !== true) throw new Error("Codex compatibility canary did not pass");
+          const verified = await this.verifyRecorded(candidate);
+          if (!sameIdentity(verified, candidate)) throw new Error("Codex executable identity changed after compatibility canary");
+          if (generation !== this.#backgroundGeneration) return;
+          this.#state.canary = { identity: identity(candidate), status: "passed", startedAt,
+            completedAt: this.now().toISOString(), evidence: result.evidence ?? null };
+          this.#state.prepared = identity(candidate);
+          this.#state.background.status = "prepared-for-next-start";
+        } catch (error) {
+          if (generation !== this.#backgroundGeneration) return;
+          this.#state.failedIdentity = identity(candidate);
+          this.#state.canary = { identity: identity(candidate), status: "failed", startedAt,
+            completedAt: this.now().toISOString(), error: "Background Codex compatibility check failed" };
+          throw new Error("Background Codex compatibility check failed");
+        }
+      }
+    } catch (error) {
+      if (generation !== this.#backgroundGeneration) return;
+      this.#state.background.status = "failed";
+      this.#state.background.error = "Background Codex executable check failed";
+    }
+    if (generation !== this.#backgroundGeneration) return;
+    this.#state.background.completedAt = this.now().toISOString();
+    await this.#save();
   }
 
   async markStartupSuccess() {
@@ -305,6 +425,7 @@ export class CodexExecutableUpdateService {
     this.#state.active = identity(this.#selection);
     this.#state.selected = identity(this.#selection);
     this.#state.lastKnownGood = identity(this.#selection);
+    if (sameIdentity(this.#state.prepared, this.#selection)) this.#state.prepared = null;
     this.#state.status = this.#state.status === "rollback-starting" ? "rolled-back" : "ready";
     this.#state.reason = null;
     this.#state.lastError = null;
@@ -316,7 +437,7 @@ export class CodexExecutableUpdateService {
     await this.#load();
     this.#state.failedIdentity = identity(this.#selection);
     this.#state.lastError = String(error?.message ?? error);
-    const verifiedLkg = this.#findVerified(this.#state.lastKnownGood);
+    const verifiedLkg = this.#state.lastKnownGood;
     if (!verifiedLkg || sameIdentity(verifiedLkg, this.#selection)) {
       this.#state.status = "startup-failed";
       this.#state.reason = "rollback-unavailable";
@@ -341,6 +462,8 @@ export class CodexExecutableUpdateService {
       active: this.#state.active,
       selected: this.#selection ?? this.#state.selected,
       candidate: this.#state.candidate,
+      prepared: this.#state.prepared,
+      background: this.#state.background,
       lastKnownGood: this.#state.lastKnownGood,
       failedIdentity: this.#state.failedIdentity,
       canary: this.#state.canary,

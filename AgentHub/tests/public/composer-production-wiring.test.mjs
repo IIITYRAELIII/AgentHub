@@ -257,7 +257,9 @@ async function openFixture(page, {
         if (message.action === "snapshot") result = fixture.snapshot;
         else if (message.action === "open-task" || message.action === "task-history") {
           const streamId = message.params.streamId
-            || (String(message.params.threadId ?? "").endsWith("-b") ? "stream-b" : "stream-a");
+            || fixture.snapshot.tasks.find((entry) => entry.provider === message.params.provider
+              && entry.threadId === message.params.threadId)?.streamId
+            || null;
           const history = {
             provider: message.params.provider,
             threadId: message.params.threadId,
@@ -288,6 +290,9 @@ async function openFixture(page, {
           } else if (fixture.mode === "reject") {
             ok = false;
             error = "Введите сообщение";
+          } else if (fixture.mode === "disconnect") {
+            ok = false;
+            error = "Agent Hub в VS Code не ответил вовремя";
           } else {
             result = {
               accepted: true,
@@ -362,7 +367,8 @@ async function openFixture(page, {
       ));
     } catch {
       const log = await page.evaluate(() => localStorage.getItem("fixture:bridge-log"));
-      throw new Error(`production fixture did not start: ${diagnostics.join(" | ")} | log=${log}`);
+      const taskIds = await page.locator("[data-stream-task-id]").evaluateAll((entries) => entries.map((entry) => entry.dataset.streamTaskId));
+      throw new Error(`production fixture did not start: ${diagnostics.join(" | ")} | tasks=${JSON.stringify(taskIds)} | log=${log}`);
     }
   }
   return diagnostics;
@@ -498,6 +504,152 @@ async function attachTaskReference(page, {
     document.querySelectorAll("[data-attachments] .attachment-task-reference").length > 0
   ));
 }
+
+test("cold unbound snapshot cancels before transport and restores the exact submitted draft", {
+  timeout: 30_000,
+}, async () => {
+  const browser = await launchBrowser();
+  const page = await browser.newPage();
+  try {
+    const cold = snapshot();
+    cold.tasks = [{ ...cold.tasks[0], streamId: null, workspaceId: null }];
+    cold.workspaces = [];
+    cold.selected = { ...cold.selected, streamId: null };
+    await openFixture(page, { fixtureSnapshot: cold, expectedTaskId: null });
+    await page.waitForFunction(() => window.AgentHub?.composerRecoveryDiagnostics?.().restored === true);
+    await setSelectedTask(page, "codex:thread-a");
+    await submit(page, { text: "123" });
+    await page.waitForFunction(() => (
+      document.querySelector("[data-composer-input]").value === "123"
+    ), null, { timeout: 5_000 });
+    assert.equal((await bridgeCalls(page, "send-message")).length, 0);
+    assert.equal(await page.locator("[data-message-retry-unconfirmed]").count(), 0);
+    assert.doesNotMatch(await page.locator("[data-chat-pane]").textContent(), /Статус приёма уточняется|Приём не подтверждён/u);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("unconfirmed admission offers explicit same-ID retry without claiming a server queue", {
+  timeout: 60_000,
+}, async () => {
+  const browser = await launchBrowser();
+  const page = await browser.newPage();
+  try {
+    await openFixture(page);
+    await page.evaluate(() => localStorage.setItem("fixture:send-mode", "disconnect"));
+    await submit(page, { text: "123" });
+    const retry = page.locator("[data-message-retry-unconfirmed]");
+    await retry.waitFor({ state: "visible", timeout: 5_000 });
+    assert.equal(await page.locator("[data-composer-input]").inputValue(), "");
+    assert.equal(await page.locator(".chat-log [data-message-retry-unconfirmed]").count(), 0);
+    assert.match(await retry.locator("..").textContent(), /Приём не подтверждён/u);
+    const attempts = await bridgeCalls(page, "send-message");
+    assert.equal(attempts.length, 3);
+    assert.equal(typeof attempts[0].params.clientUserMessageId, "string");
+    assert.ok(attempts[0].params.clientUserMessageId.length > 0);
+    assert.equal(attempts[0].params.text, "123");
+    assert.equal(new Set(attempts.map((entry) => entry.params.clientUserMessageId)).size, 1);
+    const busy = snapshot();
+    busy.version = "still-no-receipt-busy";
+    busy.tasks[0].running = true;
+    busy.tasks[0].model = "different-model";
+    busy.selected.model = "different-model";
+    busy.tasks[0].run = { operationKind: "user-turn", turnId: "other-turn", status: "running" };
+    await applyFixtureSnapshot(page, busy);
+    assert.equal((await bridgeCalls(page, "send-message")).length, attempts.length);
+    await page.evaluate(() => localStorage.setItem("fixture:send-mode", "accept"));
+    await retry.click();
+    await page.waitForFunction(() => {
+      const log = JSON.parse(localStorage.getItem("fixture:bridge-log") ?? "[]");
+      return log.filter((entry) => entry.action === "send-message").length === 4;
+    });
+    const retried = await bridgeCalls(page, "send-message");
+    assert.equal(retried.at(-1).params.clientUserMessageId, attempts[0].params.clientUserMessageId);
+    assert.equal(retried.at(-1).params.text, attempts[0].params.text);
+    const wire = (entry) => {
+      const { clientTiming, ...params } = entry.params;
+      return params;
+    };
+    assert.deepEqual(wire(retried.at(-1)), wire(attempts[0]));
+    await retry.waitFor({ state: "detached", timeout: 5_000 });
+  } finally {
+    await browser.close();
+  }
+});
+
+test("late exact admission receipt removes the explicit retry without another send", {
+  timeout: 60_000,
+}, async () => {
+  const browser = await launchBrowser();
+  const page = await browser.newPage();
+  try {
+    await openFixture(page);
+    await page.evaluate(() => localStorage.setItem("fixture:send-mode", "disconnect"));
+    await submit(page, { text: "late acknowledgement" });
+    const retry = page.locator("[data-message-retry-unconfirmed]");
+    await retry.waitFor({ state: "visible", timeout: 5_000 });
+    const attempts = await bridgeCalls(page, "send-message");
+    assert.ok(attempts[0].params.clientUserMessageId);
+    await page.evaluate(() => { window.__staleRetryButton = document.querySelector("[data-message-retry-unconfirmed]"); });
+    const receipt = {
+      provider: "codex", threadId: "thread-a",
+      clientUserMessageId: attempts[0].params.clientUserMessageId,
+      accepted: true, conflictKind: "message-intake", clientProjectionIntent: "conversation",
+    };
+    const ambiguous = snapshot([receipt]);
+    ambiguous.version = "ambiguous-unknown-send-receipt";
+    ambiguous.tasks[1] = { ...ambiguous.tasks[1], threadId: "thread-a" };
+    await applyFixtureSnapshot(page, ambiguous);
+    assert.equal(await retry.count(), 1);
+    assert.equal((await bridgeCalls(page, "send-message")).length, attempts.length);
+    await refreshWithReceipt(page, receipt);
+    await retry.waitFor({ state: "detached", timeout: 5_000 }).catch(async (error) => {
+      throw new Error(`${error.message} | state=${JSON.stringify(await page.evaluate(() => ({
+        log: window.__agentHubFixture.log.map((entry) => entry.action),
+        receipts: window.__agentHubFixture.snapshot.messageReceipts,
+        queue: document.querySelector("[data-message-retry-unconfirmed]")?.parentElement?.textContent,
+      })))}`);
+    });
+    await page.evaluate(() => window.__staleRetryButton.click());
+    assert.equal((await bridgeCalls(page, "send-message")).length, attempts.length);
+    assert.equal(await page.locator("[data-composer-input]").inputValue(), "");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("late rejection cannot downgrade an exact canonical admission", { timeout: 30_000 }, async () => {
+  const browser = await launchBrowser();
+  const page = await browser.newPage();
+  try {
+    await openFixture(page);
+    await page.evaluate(() => localStorage.setItem("fixture:send-mode", "hold-reject"));
+    await submit(page, { text: "accepted before transport failure" });
+    await page.waitForFunction(() => Boolean(window.__agentHubFixture.heldSend));
+    const attempts = await bridgeCalls(page, "send-message");
+    const requestId = attempts[0].params.clientUserMessageId;
+    await refreshWithReceipt(page, {
+      provider: "codex", threadId: "thread-a", clientUserMessageId: requestId,
+      accepted: true, conflictKind: "message-intake", clientProjectionIntent: "conversation",
+      displayText: "accepted before transport failure",
+    });
+    await page.waitForFunction(() => document.querySelector(".chat-log")?.textContent.includes("Принято"));
+    await page.evaluate(() => window.__rejectHeldSend());
+    await page.waitForFunction(() => window.__toastHistory.includes("Введите сообщение"));
+    assert.equal(await page.locator("[data-composer-input]").inputValue(), "");
+    assert.equal(await page.locator("[data-message-retry-unconfirmed]").count(), 0);
+    assert.equal((await bridgeCalls(page, "send-message")).length, attempts.length);
+    await page.evaluate(() => localStorage.setItem("fixture:send-mode", "accept"));
+    await submit(page, { text: "next submission after late rejection" });
+    await page.waitForFunction(() => window.__agentHubFixture.log.some((entry) => (
+      entry.action === "send-message" && entry.params.text === "next submission after late rejection"
+    )));
+    assert.notEqual((await bridgeCalls(page, "send-message")).at(-1).params.clientUserMessageId, requestId);
+  } finally {
+    await browser.close();
+  }
+});
 
 test("production startup restores recovery before applying accepted snapshot evidence", {
   timeout: 90_000,
@@ -1389,6 +1541,112 @@ test("production recovery fails closed when its independent durable authority is
       return log.some((entry) => entry.action === "send-message");
     });
     assert.notEqual((await bridgeCalls(page, "send-message")).at(-1).params.clientUserMessageId, staleRequestId);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("production quote selection resolves the rendered item despite its durable message key", {
+  timeout: 60_000,
+}, async () => {
+  const browser = await launchBrowser();
+  try {
+    const page = await browser.newPage();
+    await openFixture(page);
+    const quote = "Astra получила 62,7% в стандартной среде и 99,9% — при сохранении внутреннего состояния рассуждений между ходами.";
+    const messageKey = ["provider", "codex", "previous-thread", "source-turn", "source-item", "agent"].join("\u001f");
+    const selectionResult = await page.evaluate(async ({ quote, messageKey }) => {
+      const source = {
+        id: "source-message",
+        messageKey,
+        itemId: "source-item",
+        turnId: "source-turn",
+        role: "assistant",
+        provider: "codex",
+        threadId: "previous-thread",
+        text: `Результат: **${quote}** Что это значит?`,
+        time: "2026-09-04T08:00:00.000Z",
+      };
+      window.AgentHub.setMessages("stream-a", [
+        { ...source, id: "other-message", itemId: "other-item", messageKey: messageKey.replace("source-item", "other-item") },
+        source,
+      ]);
+      const article = document.querySelector('[data-message-id="source-message"]');
+      const range = document.createRange();
+      range.selectNodeContents(article.querySelector(".msg-body strong"));
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.dispatchEvent(new Event("selectionchange"));
+      return window.AgentHub.addSelectedAnnotation();
+    }, { quote, messageKey });
+    assert.equal(selectionResult, true);
+    assert.equal(await page.locator("[data-annotations] .annotation").count(), 1);
+    await page.evaluate(() => localStorage.setItem("fixture:send-mode", "accept"));
+    await submit(page, { text: "Что это значит?" });
+    const annotation = (await bridgeCalls(page, "send-message")).at(-1).params.responseAnnotations[0];
+    assert.equal(annotation.text, quote);
+    assert.equal(annotation.source.messageKey, messageKey);
+    assert.equal(annotation.source.threadId, "previous-thread");
+    assert.equal(annotation.source.itemId, "source-item");
+    assert.equal(annotation.source.start, "Результат: ".length);
+    assert.equal(annotation.source.end, "Результат: ".length + quote.length);
+    for (const field of ["contentHash", "surfaceHash", "selectionHash"]) {
+      assert.match(annotation.source[field], /^sha256:[a-f0-9]{64}$/u);
+    }
+  } finally {
+    await browser.close();
+  }
+});
+
+test("production user quote uses the exact client identity without a provider item", {
+  timeout: 60_000,
+}, async () => {
+  const browser = await launchBrowser();
+  try {
+    const page = await browser.newPage();
+    const diagnostics = await openFixture(page);
+    const added = await page.evaluate(async () => {
+      const source = {
+        id: "source-user", messageKey: "user-command\u001fordinary-client",
+        provider: "codex", threadId: "thread-a", turnId: "source-turn", itemId: "",
+        clientUserMessageId: "ordinary-client", role: "user",
+        text: "а что за проценты вообще?\nПроценты чего от чего?",
+      };
+      window.AgentHub.setMessages("stream-a", [
+        { ...source, id: "other-user", clientUserMessageId: "other-client", messageKey: "user-command\u001fother-client" },
+        source,
+      ]);
+      const body = document.querySelector('[data-message-id="source-user"] .msg-body');
+      const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+      const range = document.createRange();
+      let node;
+      while ((node = walker.nextNode())) {
+        const start = node.data.indexOf("проценты");
+        if (start < 0) continue;
+        range.setStart(node, start);
+        range.setEnd(node, start + "проценты".length);
+        break;
+      }
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.dispatchEvent(new Event("selectionchange"));
+      return window.AgentHub.addSelectedAnnotation();
+    });
+    assert.equal(added, true);
+    await page.evaluate(() => localStorage.setItem("fixture:send-mode", "accept"));
+    await submit(page, { text: "Уточнить" });
+    const annotation = (await bridgeCalls(page, "send-message")).at(-1).params.responseAnnotations[0];
+    assert.equal(annotation.text, "проценты");
+    assert.equal(annotation.source.clientUserMessageId, "ordinary-client");
+    assert.equal(annotation.source.messageKey, "client\u001fcodex\u001fthread-a\u001fordinary-client\u001fuser");
+    assert.equal(annotation.source.role, "user");
+    assert.equal(annotation.source.turnId, "");
+    assert.equal(annotation.source.itemId, "");
+    assert.equal(annotation.source.start, 9);
+    assert.equal(annotation.source.end, 17);
+    assert.deepEqual(diagnostics, []);
   } finally {
     await browser.close();
   }

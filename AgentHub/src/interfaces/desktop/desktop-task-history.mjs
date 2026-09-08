@@ -547,6 +547,7 @@ export function createDesktopTaskHistoryFactory({
           cached.hydrated.filter((turn) => String(turn?.id ?? "").trim() === id),
           [item],
         )[0];
+        if (!visibleProviderHistory(source.provider, [item]).length) continue;
         history.push(item);
         historySources.set(item, { key, provider: source.provider, threadId: source.threadId });
       }
@@ -559,15 +560,15 @@ export function createDesktopTaskHistoryFactory({
       // merged. Limiting the durable source here makes its page look like the
       // complete history and loses the cursor for older turns.
       const cached = await historyReader.read(threadBinding);
-      const durableHistory = visibleProviderHistory(threadBinding.provider, cached.history);
       let threadHistory = mergeCachedTaskHistory(
         readCachedHistory(providerHistories, key),
-        durableHistory,
+        cached.history,
       );
       threadHistory = mergeCachedTaskHistory(
         readCachedHistory(hydratedHistories, key),
         threadHistory,
       );
+      threadHistory = visibleProviderHistory(threadBinding.provider, threadHistory);
       if (currentThread) scheduleRefresh(threadBinding);
       for (const item of threadHistory) {
         history.push(item);

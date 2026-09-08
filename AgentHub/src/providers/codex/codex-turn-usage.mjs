@@ -8,6 +8,7 @@ import { uuidV7TimestampMs } from "./codex-subagent-accounting.mjs";
 import { IMAGE_GENERATION_ESTIMATE_CREDITS } from "../../domain/codex-usage-estimate.mjs";
 import {
   isCodexContextProbeClientId,
+  isCodexContextProbeTurn,
 } from "../../domain/codex-context-probe.mjs";
 import {
   codexAssistantResponseProjection,
@@ -314,6 +315,14 @@ function normalizedRolloutUsage(value) {
   });
 }
 
+function exactTurnTokenUsage(entry) {
+  if (entry?.type !== "token_usage_record" || !entryTurnId(entry)) return null;
+  const usage = entry.payload?.turn_token_usage;
+  if (!usage || !["input_tokens", "cached_input_tokens", "output_tokens", "total_tokens"]
+    .every((key) => Number.isSafeInteger(usage[key]) && usage[key] >= 0)) return null;
+  return normalizedRolloutUsage(usage);
+}
+
 function isoFromEpochSeconds(value) {
   const milliseconds = Number(value) * 1000;
   if (!Number.isFinite(milliseconds) || milliseconds <= 0) return "";
@@ -375,12 +384,26 @@ function messageText(payload) {
     .trim();
 }
 
-function lifecycleTerminalStatus(value) {
-  if (value === "task_complete") return "completed";
+function lifecycleTerminalStatus(value, payload) {
+  if (value === "task_complete") return payload?.error ? "failed" : "completed";
   if (value === "turn_aborted") return "aborted";
   if (["turn_cancelled", "task_cancelled"].includes(value)) return "cancelled";
   if (["turn_failed", "task_failed"].includes(value)) return "failed";
   return "";
+}
+
+function acceptUserOperationIdentity(turn, entry) {
+  if (!turn) return;
+  const payload = entry?.payload;
+  const clientId = String(payload?.client_id ?? payload?.clientUserMessageId ?? "").trim();
+  if (clientId) turn.clientUserMessageId = clientId;
+  if (entry?.type === "response_item" && payload?.type === "message" && payload?.role === "user") {
+    turn.prompt ||= displayUserPrompt(messageText(payload));
+  }
+  turn.contextProbe = isCodexContextProbeTurn({
+    clientUserMessageId: turn.clientUserMessageId,
+    prompt: turn.prompt,
+  });
 }
 
 function patchInputFiles(value, workspaceRoot = "") {
@@ -507,6 +530,7 @@ function createTurnAccumulator(turnId) {
   const activeTurnIds = new Set();
   let latestResponseTurnId = "";
   let usage = emptyTokenUsage();
+  let exactUsageReported = false;
   let reported = false;
   let started = false;
   let terminal = false;
@@ -536,6 +560,7 @@ function createTurnAccumulator(turnId) {
   const completedImageGenerationCalls = new Set();
   const generatedImageSources = new Set();
   const spawnedSubagents = new Map();
+  const userOperation = {};
 
   const accept = (entry) => {
     index += 1;
@@ -561,12 +586,12 @@ function createTurnAccumulator(turnId) {
         started = true;
         startedAt ||= String(entry?.timestamp ?? "");
       }
-    } else if (lifecycleTerminalStatus(lifecycle) && lifecycleTurnId) {
+    } else if (lifecycleTerminalStatus(lifecycle, entry.payload) && lifecycleTurnId) {
       activeTurnIds.delete(lifecycleTurnId);
       if (lifecycleTurnId === requestedTurnId) {
         terminal = true;
         completedAt ||= String(entry?.timestamp ?? "");
-        status = lifecycleTerminalStatus(lifecycle);
+        status = lifecycleTerminalStatus(lifecycle, entry.payload);
         const terminalProjection = codexAssistantResponseProjection(entry.payload?.last_agent_message);
         const terminalAnswer = terminalProjection.text.trim();
         if (terminalAnswer && !finalAnswer) {
@@ -583,6 +608,15 @@ function createTurnAccumulator(turnId) {
     }
 
     const exactTurnId = entryTurnId(entry);
+    if (exactTurnId === requestedTurnId) acceptUserOperationIdentity(userOperation, entry);
+    const exactUsage = exactTurnTokenUsage(entry);
+    if (exactUsage && exactTurnId === requestedTurnId) {
+      usage = exactUsage;
+      exactUsageReported = true;
+      reported = true;
+      finalTokenIndex = index;
+      latestResponseTurnId = exactTurnId;
+    }
     if (exactTurnId && ["response_item", "turn_context"].includes(String(entry?.type ?? ""))) {
       latestResponseTurnId = exactTurnId;
       if (exactTurnId === requestedTurnId) started = true;
@@ -662,7 +696,9 @@ function createTurnAccumulator(turnId) {
     const attributedTurnId = latestResponseTurnId
       || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
     if (attributedTurnId === requestedTurnId) {
-      usage = addTokenUsage(usage, normalizedRolloutUsage(entry.payload?.info?.last_token_usage));
+      if (!exactUsageReported) {
+        usage = addTokenUsage(usage, normalizedRolloutUsage(entry.payload?.info?.last_token_usage));
+      }
       limitSamples = mergeUsageLimitSamples(limitSamples, codexLimitSamplesFromTokenEvent(entry));
       reported = true;
       finalTokenIndex = index;
@@ -674,6 +710,8 @@ function createTurnAccumulator(turnId) {
     const imageGenerationCount = completedImageGenerationCalls.size;
     return {
       turnId: requestedTurnId,
+      ...(userOperation.clientUserMessageId ? { clientUserMessageId: userOperation.clientUserMessageId } : {}),
+      ...(userOperation.contextProbe ? { contextProbe: true } : {}),
       usage,
       reported,
       started,
@@ -814,7 +852,7 @@ export function codexRecentTerminalTurnsFromJsonl(text) {
   const values = new Map();
   for (const { value: entry } of parsedEntries(text)) {
     const lifecycle = entry?.type === "event_msg" ? String(entry.payload?.type ?? "") : "";
-    const status = lifecycleTerminalStatus(lifecycle);
+    const status = lifecycleTerminalStatus(lifecycle, entry.payload);
     const turnId = String(entry?.payload?.turn_id ?? "").trim();
     if (!status || !turnId) continue;
     values.set(turnId, {
@@ -901,6 +939,8 @@ export async function scanCodexTerminalEventsFromOffset(transcriptPath, {
       turnId,
       startedAt: String(turn?.startedAt ?? ""),
       lastActivityAt: String(turn?.lastActivityAt ?? turn?.startedAt ?? ""),
+      ...(turn?.prompt ? { prompt: turn.prompt } : {}),
+      ...(turn?.clientUserMessageId ? { clientUserMessageId: turn.clientUserMessageId } : {}),
       ...(turn?.contextProbe === true ? { contextProbe: true } : {}),
     }]] : [];
   }));
@@ -938,11 +978,9 @@ export async function scanCodexTerminalEventsFromOffset(transcriptPath, {
     const active = activeTurns.get(turnId);
     if (active) {
       active.lastActivityAt = timestamp;
-      if (isCodexContextProbeClientId(entry?.payload?.client_id)) {
-        active.contextProbe = true;
-      }
+      acceptUserOperationIdentity(active, entry);
     }
-    const status = lifecycleTerminalStatus(lifecycle);
+    const status = lifecycleTerminalStatus(lifecycle, entry.payload);
     if (!status) return;
     activeTurns.delete(turnId);
     terminals.set(turnId, {
@@ -1023,7 +1061,6 @@ function createHistoricalTurn(turnId) {
     serviceTier: "default",
     status: "",
     contextCompacted: false,
-    contextProbe: false,
     hasOwnTurnContent: false,
     limitSamples: [],
   };
@@ -1171,12 +1208,12 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
       turn.started = true;
       turn.startedAt ||= timestamp;
       touch(turn, timestamp);
-    } else if (lifecycleTerminalStatus(lifecycle) && lifecycleTurnId) {
+    } else if (lifecycleTerminalStatus(lifecycle, entry.payload) && lifecycleTurnId) {
       const turn = ensureTurn(lifecycleTurnId);
       activeTurnIds.delete(lifecycleTurnId);
       turn.terminal = true;
       turn.completedAt = timestamp || turn.completedAt;
-      turn.status = lifecycleTerminalStatus(lifecycle);
+      turn.status = lifecycleTerminalStatus(lifecycle, entry.payload);
       touch(turn, timestamp);
     }
     if (lifecycleTurnId && isCodexContextProbeClientId(entry?.payload?.client_id)) {
@@ -1205,6 +1242,15 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
 
     const exactTurnId = entryTurnId(entry);
     const exactTurn = ensureTurn(exactTurnId);
+    acceptUserOperationIdentity(exactTurn, entry);
+    const exactUsage = exactTurnTokenUsage(entry);
+    if (exactUsage && exactTurn) {
+      exactTurn.usage = exactUsage;
+      exactTurn.exactUsageReported = true;
+      exactTurn.reported = true;
+      latestResponseTurnId = exactTurnId;
+      touch(exactTurn, timestamp);
+    }
     if (exactTurnId && ["response_item", "turn_context"].includes(String(entry?.type ?? ""))) {
       latestResponseTurnId = exactTurnId;
       exactTurn.started = true;
@@ -1303,10 +1349,12 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
       || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
     const attributedTurn = ensureTurn(attributedTurnId);
     if (attributedTurn) {
-      attributedTurn.usage = addTokenUsage(
-        attributedTurn.usage,
-        normalizedRolloutUsage(entry.payload?.info?.last_token_usage),
-      );
+      if (!attributedTurn.exactUsageReported) {
+        attributedTurn.usage = addTokenUsage(
+          attributedTurn.usage,
+          normalizedRolloutUsage(entry.payload?.info?.last_token_usage),
+        );
+      }
       attributedTurn.limitSamples = mergeUsageLimitSamples(
         attributedTurn.limitSamples,
         codexLimitSamplesFromTokenEvent(entry),
@@ -1377,7 +1425,7 @@ export function codexSubagentSpawnFromJsonl(text, childThreadId) {
     const lifecycle = entry?.type === "event_msg" ? String(entry.payload?.type ?? "") : "";
     const lifecycleTurnId = lifecycle ? String(entry.payload?.turn_id ?? "").trim() : "";
     if (lifecycle === "task_started" && lifecycleTurnId) activeTurnIds.add(lifecycleTurnId);
-    else if (lifecycleTerminalStatus(lifecycle) && lifecycleTurnId) activeTurnIds.delete(lifecycleTurnId);
+    else if (lifecycleTerminalStatus(lifecycle, entry.payload) && lifecycleTurnId) activeTurnIds.delete(lifecycleTurnId);
     const exactTurnId = entryTurnId(entry);
     if (exactTurnId && ["response_item", "turn_context"].includes(String(entry?.type ?? ""))) {
       latestResponseTurnId = exactTurnId;

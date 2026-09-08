@@ -47,6 +47,65 @@ function accountPanel() {
   ].join("");
 }
 
+test("metadata upsert CAS preserves a concurrent exact record correction", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "journal-title-cas-"));
+  const journal = new JournalDatabase(path.join(root, "journal.sqlite"));
+  try {
+    const record = {
+      provider: "codex", threadId: "thread", turnId: "turn", projectRoot: root,
+      taskTitle: "Original", body: "Original body",
+    };
+    const first = await journal.upsertRecords([record]);
+    await journal.upsertRecords([{ ...record, body: "Concurrent correction" }]);
+    const revision = await journal.currentRevision();
+    await assert.rejects(journal.upsertRecords([{ ...record, taskTitle: "Updated" }], {
+      expectedRevision: first.revision,
+    }), { code: "JOURNAL_REVISION_CONFLICT" });
+    assert.equal(await journal.currentRevision(), revision);
+    const current = await journal.getRecord(record);
+    assert.equal(current.body, "Concurrent correction");
+    assert.equal(current.taskTitle, "Original");
+    await journal.upsertRecords([{ ...current, taskTitle: "Updated" }], { expectedRevision: revision });
+    assert.equal((await journal.getRecord(record)).body, "Concurrent correction");
+    assert.equal((await journal.getRecord(record)).taskTitle, "Updated");
+  } finally {
+    journal.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("full projection CAS preserves fragments and concurrent ledger writes on revision conflict", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "journal-projection-cas-"));
+  const databaseFile = path.join(root, "journal.sqlite");
+  const database = new JournalDatabase(databaseFile);
+  const concurrent = new JournalDatabase(databaseFile);
+  try {
+    await replaceJournalProjectionFromHtml(database, day("08.09.2026", turn("first", "First")));
+    const before = await database.snapshot();
+    await concurrent.upsertRecords([{
+      provider: "codex", threadId: "thread-1", turnId: "concurrent", body: "Durable fact",
+    }]);
+    const result = await database.replaceProjection({ html: "Stale replacement" }, {
+      expectedRevision: before.revision,
+    });
+    assert.equal(result.projected, false);
+    assert.equal(result.conflict, true);
+    const after = await database.snapshot();
+    assert.equal(after.html, before.html);
+    assert.deepEqual(after.days, before.days);
+    assert.deepEqual(after.turns, before.turns);
+    assert.ok(await concurrent.getRecord({ provider: "codex", threadId: "thread-1", turnId: "concurrent" }));
+    const committed = await database.replaceProjection({ html: "Current replacement" }, {
+      expectedRevision: after.revision,
+    });
+    assert.equal(committed.projected, true);
+  } finally {
+    database.close();
+    concurrent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 function indexedDay(date, {
   turnRef,
   turnId,

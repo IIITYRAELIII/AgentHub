@@ -35,6 +35,56 @@ function coordinator(overrides = {}) {
   return { service, calls, health };
 }
 
+test("failed provider retries once without repeating completed startup work", async () => {
+  let available = false;
+  let starts = 0;
+  let finish;
+  const { service, calls, health } = coordinator({
+    initializeProvider: async () => {
+      starts += 1;
+      if (starts === 1) throw new Error("signature check timed out");
+      await new Promise((resolve) => { finish = resolve; });
+      available = true;
+    },
+    providerIsRunning: () => available,
+  });
+  await service.start();
+  const before = [...calls];
+  const startedAtMs = health.snapshot().startup.startedAtMs;
+  service.requestRetry({ startedAtMs });
+  service.requestRetry({ startedAtMs });
+  assert.equal(starts, 2);
+  assert.equal(health.snapshot().ready, false);
+  finish();
+  await service.waitForRetry();
+  assert.equal(health.snapshot().ready, true);
+  assert.equal(health.snapshot().startup.startedAtMs, startedAtMs);
+  assert.deepEqual(calls.slice(before.length), ["backfill"]);
+  assert.equal(health.snapshot().startup.operations.find((entry) => entry.id === "provider").state, "completed");
+  service.requestRetry({ startedAtMs });
+  await service.waitForRetry();
+  assert.equal(starts, 2);
+  assert.throws(() => service.requestRetry({ startedAtMs: startedAtMs - 1 }), /Процесс Хаба уже сменился/u);
+});
+
+test("retry preserves a repeated provider failure and does not run its dependencies", async () => {
+  const { service, calls, health } = coordinator({
+    initializeProvider: async () => { throw new Error("still unavailable"); },
+    providerIsRunning: () => false,
+  });
+  await service.start();
+  service.requestRetry({ startedAtMs: health.snapshot().startup.startedAtMs });
+  await service.waitForRetry();
+  assert.equal(health.snapshot().ready, false);
+  assert.equal(calls.includes("backfill"), false);
+  assert.equal(health.snapshot().startup.operations.find((entry) => entry.id === "provider").error, "still unavailable");
+});
+
+test("recovery rejects requests before the initial startup settles", () => {
+  const { service } = coordinator();
+  assert.throws(() => service.requestRetry({ startedAtMs: 1 }), /Процесс Хаба уже сменился/u);
+});
+
 test("startup preserves control, recovery and readiness order", async () => {
   const { service, calls, health } = coordinator();
   await service.start();

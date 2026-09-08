@@ -81,16 +81,79 @@
     return lines.join("\n");
   }
 
-  async function confirmTaskCleanup({ confirmation, action, params = {}, request, confirm = window.confirm } = {}) {
+  let dismissCleanupConfirmation = null;
+
+  function showTaskCleanupConfirmation(text, { action, task } = {}) {
+    dismissCleanupConfirmation?.();
+    return new Promise((resolve, reject) => {
+      const dialog = document.createElement("dialog");
+      dialog.className = "task-delete-modal";
+      dialog.setAttribute("data-task-cleanup-modal", "");
+      dialog.setAttribute("aria-labelledby", "task-cleanup-title");
+      const section = document.createElement("section");
+      const title = document.createElement("h2");
+      title.id = "task-cleanup-title";
+      const label = action === "board-task-remove" ? "Удалить задачу" : "Закрыть задачу";
+      title.textContent = `${label}${task?.taskNumber ? ` ${task.taskNumber}` : ""}?`;
+      const preview = document.createElement("pre");
+      preview.className = "task-cleanup-preview";
+      preview.textContent = text;
+      section.append(title, preview);
+      const footer = document.createElement("footer");
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.className = "board-task-quiet";
+      cancel.textContent = "Отмена";
+      cancel.setAttribute("data-task-cleanup-cancel", "");
+      const accept = document.createElement("button");
+      accept.type = "button";
+      accept.className = "task-delete-confirm";
+      accept.textContent = label;
+      accept.setAttribute("data-task-cleanup-confirm", "");
+      footer.append(cancel, accept);
+      dialog.append(section, footer);
+      let settled = false;
+      let uninstall = () => {};
+      const settle = (confirmed) => {
+        if (settled) return;
+        settled = true;
+        uninstall();
+        if (dismissCleanupConfirmation === dismiss) dismissCleanupConfirmation = null;
+        if (dialog.open) dialog.close();
+        dialog.remove();
+        resolve(confirmed);
+      };
+      const dismiss = () => settle(false);
+      dismissCleanupConfirmation = dismiss;
+      cancel.addEventListener("click", dismiss);
+      accept.addEventListener("click", () => settle(true));
+      dialog.addEventListener("close", dismiss);
+      uninstall = modalOverlays.installDismissibleOverlay({ dialog, close: dismiss });
+      document.body.append(dialog);
+      try {
+        dialog.showModal();
+        cancel.focus();
+      } catch (error) {
+        settled = true;
+        uninstall();
+        if (dismissCleanupConfirmation === dismiss) dismissCleanupConfirmation = null;
+        dialog.remove();
+        reject(error);
+      }
+    });
+  }
+
+  async function confirmTaskCleanup({ confirmation, action, params = {}, request, confirm = showTaskCleanupConfirmation } = {}) {
     if (typeof request !== "function") throw new TypeError("Task cleanup request is required");
     if (typeof confirm !== "function") throw new TypeError("Task cleanup confirmation UI is required");
     const text = taskCleanupConfirmationText(confirmation);
-    if (!confirm(text)) return { confirmed: false, text, result: null };
-    const result = await request(action, {
+    const confirmedParams = structuredClone({
       ...params,
       confirmCleanup: true,
       expectedCleanupToken: confirmation?.cleanupToken,
     });
+    if (!await confirm(text, { action, task: confirmation?.task })) return { confirmed: false, text, result: null };
+    const result = await request(action, confirmedParams);
     return { confirmed: true, text, result };
   }
 

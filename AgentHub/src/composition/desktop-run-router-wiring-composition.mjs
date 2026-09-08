@@ -243,6 +243,7 @@ export function createDesktopRunRouterWiring({
     handlers: {
       snapshot: desktop.snapshot,
       runtimeHealth: desktop.runtimeHealth,
+      retryStartup: desktop.retryStartup,
       taskHistory: desktop.taskHistory,
       rateLimitHistory: desktop.rateLimitHistory,
       usageHistory: desktop.usageHistory,

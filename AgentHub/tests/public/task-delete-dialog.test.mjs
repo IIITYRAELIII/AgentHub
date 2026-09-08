@@ -51,6 +51,7 @@ async function loadFactory() {
   const context = {
     document: { querySelector: () => null },
     window,
+    structuredClone,
   };
   vm.runInNewContext(overlaySource, context);
   vm.runInNewContext(source, context);
@@ -163,4 +164,32 @@ test("Complete and Delete confirmations render exact server evidence and cancell
   assert.equal(calls[0][1].id, "task-159");
   assert.equal(calls[0][1].confirmCleanup, true);
   assert.equal(calls[0][1].expectedCleanupToken, "cleanup-token");
+});
+
+test("cleanup waits for an asynchronous decision and preserves the preview identity", async () => {
+  const { cleanupConfirmation } = await loadFactory();
+  const calls = [];
+  const params = { id: "task-original", operationId: "operation-original" };
+  const confirmation = { cleanupToken: "token-original" };
+  let decide;
+  const pending = cleanupConfirmation.confirm({
+    confirmation, action: "board-task-complete", params,
+    confirm: () => new Promise((resolve) => { decide = resolve; }),
+    request: async (...args) => { calls.push(args); return { completed: true }; },
+  });
+  assert.equal(calls.length, 0);
+  params.id = "task-changed";
+  confirmation.cleanupToken = "token-changed";
+  decide(true);
+  assert.equal((await pending).confirmed, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [["board-task-complete", {
+    id: "task-original", operationId: "operation-original",
+    confirmCleanup: true, expectedCleanupToken: "token-original",
+  }]]);
+  const cancelled = await cleanupConfirmation.confirm({
+    confirmation, action: "board-task-remove", params,
+    confirm: async () => false,
+    request: async () => { throw new Error("cancelled action must not dispatch"); },
+  });
+  assert.equal(cancelled.confirmed, false);
 });

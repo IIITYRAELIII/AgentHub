@@ -7,6 +7,7 @@ function normalizedOperation(operation, index) {
     id: String(operation?.id ?? `operation-${index + 1}`),
     label: String(operation?.label ?? "").trim() || `Этап ${index + 1}`,
     state: OPERATION_STATES.has(state) ? state : "pending",
+    error: state === "failed" ? String(operation?.error ?? "") : "",
   };
 }
 
@@ -31,10 +32,8 @@ export function createStartupScreenModel(snapshot, nowMs = Date.now()) {
   const ready = Boolean(snapshot?.ready);
   const finished = currentIndex < 0;
   const activeOperation = currentIndex >= 0 ? operations[currentIndex] : null;
-  const completedOperations = finished
-    ? operations
-    : operations.slice(0, currentIndex).filter((operation) => SETTLED_STATES.has(operation.state));
-  const queueOperations = finished ? [] : operations.slice(currentIndex);
+  const completedOperations = operations.filter((operation) => SETTLED_STATES.has(operation.state));
+  const queueOperations = operations.filter((operation) => !SETTLED_STATES.has(operation.state));
 
   return {
     available: true,
@@ -48,12 +47,13 @@ export function createStartupScreenModel(snapshot, nowMs = Date.now()) {
       : "Agent Hub запускается",
     title: activeOperation?.label
       ?? (failed ? "Запуск завершён с ошибкой" : "Agent Hub готов"),
-    elapsed: formatStartupElapsed(snapshot.startup.startedAtMs, nowMs),
+    elapsed: formatStartupElapsed(snapshot.startup.startedAtMs, snapshot.startup.completedAtMs || nowMs),
     startedAtMs: Number(snapshot.startup.startedAtMs) || Number(nowMs),
     stageNumber: currentIndex >= 0 ? currentIndex + 1 : operations.length,
     stageTotal: operations.length,
     operations,
     completedOperations,
+    failedOperations: operations.filter((operation) => operation.state === "failed"),
     queueOperations,
   };
 }

@@ -56,6 +56,43 @@ test("invalid source metadata fails closed without discarding readable legacy an
   }]), [{ text: "Читаемая цитата", annotation: "Проверить" }]);
 });
 
+test("client user locators remain exact across item hydration and preserve provider locators", async () => {
+  const script = await readFile(new URL("../../assets/web-app/messages/disclosure.js", import.meta.url), "utf8");
+  const context = vm.createContext({ crypto: webcrypto, TextEncoder });
+  context.window = context;
+  vm.runInContext(script, context);
+  const api = context.AgentHubMessageDisclosure;
+  const user = {
+    provider: "codex", threadId: "thread-source", turnId: "turn-source", itemId: "",
+    clientUserMessageId: "ordinary-client", role: "user", text: "проценты",
+  };
+  const locator = source({ role: "user", turnId: "", itemId: "", clientUserMessageId: "ordinary-client" });
+  assert.deepEqual(normalizedResponseAnnotationSource(locator), locator);
+  assert.deepEqual(JSON.parse(JSON.stringify(api.normalizedResponseAnnotationSource(locator))), locator);
+  const hydrated = { ...user, itemId: "item-source" };
+  assert.equal(api.responseAnnotationSourceProjection([hydrated], locator).message, hydrated);
+  assert.equal(api.responseAnnotationSourceContent(user), api.responseAnnotationSourceContent(hydrated, locator));
+  const providerLocator = source({ role: "user" });
+  assert.equal(api.responseAnnotationSourceProjection([hydrated], providerLocator).message, hydrated);
+  assert.equal(api.responseAnnotationSourceContent(hydrated, providerLocator),
+    api.responseAnnotationSourceContent({ ...hydrated, clientUserMessageId: "" }));
+  assert.equal(api.responseAnnotationSourceProjection([{ ...user, clientUserMessageId: "different" }], locator), null);
+  assert.equal(api.responseAnnotationSourceProjection([{ ...user, threadId: "different" }], locator), null);
+  assert.equal(api.responseAnnotationSourceProjection([user, hydrated], locator), null);
+  for (const invalid of [
+    { ...locator, role: "agent" },
+    { ...locator, clientUserMessageId: "bad\u001fid" },
+    { ...locator, turnId: "mixed-provider-turn" },
+    { ...locator, itemId: "mixed-provider-item" },
+    { ...locator, messageKey: providerLocator.messageKey },
+    { ...locator, selectionHash: "missing" },
+    { ...locator, end: 409 },
+  ]) {
+    assert.equal(normalizedResponseAnnotationSource(invalid), null);
+    assert.equal(api.normalizedResponseAnnotationSource(invalid), null);
+  }
+});
+
 test("browser and backend source normalizers keep the same canonical schema", async () => {
   const script = await readFile(
     new URL("../../assets/web-app/messages/disclosure.js", import.meta.url),

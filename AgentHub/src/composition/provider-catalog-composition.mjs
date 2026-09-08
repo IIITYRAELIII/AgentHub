@@ -224,6 +224,12 @@ export function createProviderCatalogComposition({
       recoverClaudeRun: (...args) => claudeRecoveryService.recover(...args),
     },
   });
+  const currentWorkspaceEntries = currentWorkspaceThreadEntries(workspaceCatalogStore);
+  const visibleStreamIds = new Set(currentWorkspaceEntries.map((entry) => entry.streamId));
+  const initialEntries = catalogEntriesWithoutLiveActivity(taskSyncStore.catalog()).flatMap((entry) => {
+    const binding = workspaceCatalogStore.resolveThread(entry);
+    return binding && visibleStreamIds.has(binding.streamId) ? [{ ...entry, ...binding }] : [];
+  });
   const providerTaskCatalogBuilder = new ProviderTaskCatalogBuilder({
     durableEntries: async () => currentStreamEntries(await workspaceCatalogStore.assignCatalogEntries(
       [
@@ -246,10 +252,7 @@ export function createProviderCatalogComposition({
     },
   });
   const taskCatalogService = new TaskCatalogService({
-    initialEntries: currentStreamEntries([
-      ...catalogEntriesWithoutLiveActivity(taskSyncStore.catalog()),
-      ...currentWorkspaceThreadEntries(workspaceCatalogStore),
-    ]),
+    initialEntries: currentStreamEntries([...initialEntries, ...currentWorkspaceEntries]),
     cacheMs: taskCatalogCacheMs,
     build: () => providerTaskCatalogBuilder.build(),
   });

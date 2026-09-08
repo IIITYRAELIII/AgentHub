@@ -71,7 +71,11 @@ in-memory receipts and runtime snapshots are projections.
 A new response annotation may carry one bounded source locator owned by the
 original client capture from a canonical user, final agent or active non-final
 agent item: exact `provider + threadId + turnId + itemId + role`,
-the derived provider-message key, a versioned rendered-surface kind and index,
+the derived provider-message key, or for a user command the exact
+`provider + threadId + clientUserMessageId + user` client-namespace key with
+empty turn/item fields. Version 1 accepts this additive identity variant;
+provider-item locators keep their existing meaning. Neither variant permits
+text matching or synthesized provider identity. Both carry a versioned rendered-surface kind and index,
 a UTF-16 range, and SHA-256 boundaries for canonical source content, rendered
 surface content and the selected range. Intake validates that schema before the
 locator enters a receipt. The same validated object crosses queue, provider

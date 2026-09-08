@@ -70,6 +70,8 @@ export class TurnEndDeliveryService {
 
   rememberCompletion(completion, body = "") {
     if (!completion || completion.aggregateOnly) return false;
+    if (completion.provider === "codex"
+      && completion.operationKind === "probe" && completion.contextProbe === true) return false;
     const notificationBody = String(body || completion.finalAnswer
       || completion.message?.text || fallbackTurnEndMessage(completion.status)).trim();
     if (!notificationBody) return false;
@@ -129,6 +131,13 @@ export class TurnEndDeliveryService {
     } finally {
       this.delivering.delete(key);
     }
+  }
+
+  async reclassifyContextProbe(identity, evidence) {
+    if (!this.terminalCommits?.reclassifyContextProbe) return { reclassified: false };
+    const result = await this.terminalCommits.reclassifyContextProbe(identity, evidence);
+    if (result?.outbox) await this.deliverOutbox(result.outbox);
+    return result;
   }
 
   async reconcileResponseAttachments(identity, options = {}) {

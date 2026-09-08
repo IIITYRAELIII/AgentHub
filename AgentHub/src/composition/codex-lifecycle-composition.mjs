@@ -54,15 +54,21 @@ export function createCodexLifecycleComposition({
   const transport = runtime.transport;
   agentHubRuntimeHealth.setDiagnosticSource("codexAppServer", () => ({
     ...transport.diagnostics(),
+    startupTimings: runtime.startupTimings(),
     hubOwnedProcessTrees: transport.running ? 1 : 0,
   }));
   agentHubRuntimeHealth.setDiagnosticSource("codexExecutableUpdate", () => executableUpdates.diagnostics());
 
   async function start() {
+    executableUpdates.startBackgroundChecks({
+      canCheck: () => Boolean(agentHubRuntimeHealth.snapshot().startup?.completedAtMs)
+        && !runtimeDependencies.isStopping(),
+    });
     await runtime.start();
   }
 
   async function stop() {
+    executableUpdates.stopBackgroundChecks();
     await runtime.stop();
   }
 

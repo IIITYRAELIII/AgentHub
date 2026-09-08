@@ -1270,9 +1270,16 @@ function deferredInputDeliveryState(deferredInput, messageReceipts = []) {
   return state === "queued" ? "queued" : "deferred";
 }
 
+function queuedCommandRequiresAttention(deferredInput) {
+  const state = String(deferredInput?.state ?? "").trim();
+  return state === "attention-required"
+    || deferredInput?.attentionRequired === true
+    || (state === "pending" && Boolean(deferredInput?.lastError));
+}
+
 function queuedCommandUsesQueue(deferredInput, messageReceipts = []) {
   const state = String(deferredInput?.state ?? "").trim();
-  if (["paused", "attention-required", "unknown"].includes(state)) return true;
+  if (queuedCommandRequiresAttention(deferredInput) || ["paused", "unknown"].includes(state)) return true;
   if (String(deferredInput?.waitReason ?? "").trim() === "provider-start-unconfirmed") return true;
   const receipt = deferredInputReceipt(deferredInput, messageReceipts);
   if (receipt) return queueHistoryReceiptProjection(receipt).ownsDeferredQueue;
@@ -1293,6 +1300,7 @@ function queuedCommandUsesQueue(deferredInput, messageReceipts = []) {
 
 function queuedCommandDeliveryState(deferredInput, messageReceipts = []) {
   if (!queuedCommandUsesQueue(deferredInput, messageReceipts)) return null;
+  if (queuedCommandRequiresAttention(deferredInput)) return "deferred";
   const state = String(deferredInput?.state ?? "").trim();
   if (state === "dispatching") return "sending";
   if (state === "steering") return "steering";

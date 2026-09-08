@@ -138,6 +138,7 @@ function withoutRepeatedClientMessages(history) {
 function withoutInternalContextTurns(history) {
   return history.filter((turn) => (
     !String(turn?.prompt ?? "").trim().startsWith("<codex_internal_context")
+    && turn?.operationKind !== "probe" && turn?.contextProbe !== true
   ));
 }
 
@@ -154,6 +155,8 @@ function cleanHistory(history, limit, { provider = "" } = {}) {
       const messagesTruncated = sourceMessages.length > 100;
       return {
         id: cleanText(item?.id, 100),
+        ...(item?.operationKind ? { operationKind: cleanText(item.operationKind, 40) } : {}),
+        ...(item?.contextProbe === true ? { contextProbe: true } : {}),
         prompt: cleanText(item?.prompt, 12_000),
         ...(promptAuthor ? { promptAuthor } : {}),
         ...(promptOrigin ? { promptOrigin } : {}),
@@ -1071,7 +1074,7 @@ function historyPageQuery(references, {
   const cte = `WITH selected_threads(provider, thread_id, source_order) AS (
     VALUES ${referenceSql}
   ), base_turns AS (
-    SELECT turns.*, selected_threads.source_order,
+    SELECT turns.provider, turns.thread_id, turns.position, selected_threads.source_order,
       COALESCE(
         julianday(turns.started_at),
         (
@@ -1741,6 +1744,7 @@ export class LocalTaskSyncStore {
     for (const turn of turns) {
       if (!turn.id) continue;
       removeTurn.run(provider, threadId, turn.id);
+      if (turn.operationKind === "probe" || turn.contextProbe === true) continue;
       const messages = (Array.isArray(turn?.messages) ? turn.messages : []).flatMap((message) => {
         const role = String(message?.role ?? "").trim() === "assistant"
           ? "agent"
@@ -2302,7 +2306,7 @@ export class LocalTaskSyncStore {
     const query = historyPageQuery(normalizedReferences, visibility);
     const aggregate = this.#database.prepare(`${query.cte}
       SELECT COUNT(*) AS total, COALESCE(SUM(message_count), 0) AS message_total
-      FROM visible_turns
+      FROM base_turns
     `).get(...query.params);
     const total = Number(aggregate?.total) || 0;
     const requestedEnd = Number(before);
@@ -2319,10 +2323,17 @@ export class LocalTaskSyncStore {
         items: [],
       };
     }
-    const rows = this.#database.prepare(`${query.cte}
-      SELECT * FROM visible_turns
+    const rows = this.#database.prepare(`${query.cte}, selected_page AS (
+      SELECT provider, thread_id, position, chronology_anchor, source_order
+      FROM visible_turns
       ORDER BY chronology_anchor, source_order, position
       LIMIT ? OFFSET ?
+    )
+      SELECT turns.* FROM selected_page
+      JOIN task_read_model_turns turns
+        ON turns.provider = selected_page.provider AND turns.thread_id = selected_page.thread_id
+        AND turns.position = selected_page.position
+      ORDER BY selected_page.chronology_anchor, selected_page.source_order, selected_page.position
     `).all(...query.params, end - start, start);
     const history = this.#hydrateHistoryRows(rows);
     return {

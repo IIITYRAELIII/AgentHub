@@ -3,6 +3,10 @@ import test from "node:test";
 
 import { CodexTerminalReconciliationService } from "../../../src/providers/codex/codex-terminal-reconciliation-service.mjs";
 import { CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX } from "../../../src/domain/codex-context-probe.mjs";
+import { createRunAccountingComposition } from "../../../src/composition/run-accounting-composition.mjs";
+import { RunJournalService } from "../../../src/application/run-journal-service.mjs";
+import { createWorkLogUsageStore } from "../../../src/application/work-log-usage-store.mjs";
+import { CodexTerminalAudit } from "../../../src/providers/codex/codex-terminal-audit.mjs";
 
 function usage(overrides = {}) {
   return {
@@ -73,6 +77,146 @@ function harness(overrides = {}) {
 const thread = { id: "thread-1", path: "rollout.jsonl" };
 const project = { path: process.cwd() };
 
+test("audit persists eight corrected turns through accounting without loading the ledger and flushes once", async () => {
+  const records = new Map();
+  const writes = [];
+  const events = [];
+  const identities = Array.from({ length: 8 }, (_, index) => ({
+    provider: "codex", threadId: thread.id, turnId: `repair-${index}`,
+  }));
+  const keyFor = (identity) => [identity.provider, identity.threadId, identity.turnId].join("\0");
+  for (const identity of identities.slice(0, 3)) {
+    records.set(keyFor(identity), { ...identity, projectRoot: project.path, usageReported: false });
+  }
+  const usageStore = createWorkLogUsageStore({
+    defaultProjectRoot: project.path,
+    repositoryFactory: () => ({
+      get ledger() { assert.fail("Reconciliation must not materialize the full ledger"); },
+      enqueue: async (operation, options) => {
+        assert.equal(options?.load, false);
+        return operation();
+      },
+      getRecord: async (identity) => records.get(keyFor(identity)) ?? null,
+      saveRecord: async (key, record) => {
+        records.set(key, record);
+        writes.push(key);
+        events.push("write");
+      },
+      save: async () => assert.fail("Reconciliation must not save the full ledger"),
+      payload: async () => assert.fail("Reconciliation must not load projection HTML"),
+      replaceProjection: async () => assert.fail("Reconciliation must not eagerly project"),
+    }),
+  });
+  const runJournal = new RunJournalService({ usageStore, findProject: () => project });
+  const accounting = createRunAccountingComposition({ runJournal });
+  const { service, delivered, calls, completions } = harness({
+    projectTurn: accounting.projectTurnUsageToWorkLog,
+    workLogStore: { getTurn: async (identity) => records.get(keyFor(identity)) ?? null },
+  });
+  for (const identity of identities) delivered.add(identity.turnId);
+  const terminals = identities.map((identity, index) => ({
+    turnId: identity.turnId,
+    status: "completed",
+    completedAt: "2026-08-04T10:00:00.000Z",
+    ...(index >= 6 ? { historical: true } : {}),
+    usageResult: usage({ usage: { inputTokens: index + 1 }, finalAnswer: `Corrected ${index}` }),
+  }));
+  let flushes = 0;
+  const audit = new CodexTerminalAudit({
+    now: () => Date.parse("2026-08-04T10:20:00.000Z"),
+    discoverHistoricalThreads: async () => [thread],
+    resolveProject: () => project,
+    statFile: async () => ({ size: 100 }),
+    scanFile: async () => ({ terminals, activeTurns: [], nextOffset: 100 }),
+    reconcile: (...args) => service.reconcile(...args),
+    persistProgress: async () => events.push("checkpoint"),
+    flushHistoricalProjection: async () => {
+      assert.equal(records.size, 8);
+      flushes += 1;
+      events.push("flush");
+    },
+  });
+  await audit.run();
+  assert.equal(writes.length, 8);
+  assert.equal(flushes, 1);
+  assert.equal(events.indexOf("checkpoint"), 8);
+  assert.equal(events.indexOf("flush"), 9);
+  for (const [index, identity] of identities.entries()) {
+    const record = records.get(keyFor(identity));
+    assert.equal(record.usageReported, true);
+    assert.equal(record.usage.inputTokens, index + 1);
+    assert.equal(record.completedAt, "2026-08-04T10:00:00.000Z");
+    assert.equal(record.body, `Corrected ${index}`);
+  }
+  assert.deepEqual(completions, []);
+  assert.equal(calls.some(([name]) => name === "deliver"), false);
+  assert.equal(calls.filter(([name]) => name === "remember").length, 6);
+  assert.equal(audit.snapshot().liveProjectionPending, false);
+  await audit.run();
+  assert.equal(writes.length, 8);
+  assert.equal(flushes, 1);
+});
+
+test("historical and subagent audit flushes follow actual deferred mutations rather than handled terminals", async () => {
+  for (const kind of ["historical", "subagent", "already-equal", "maintenance"]) {
+    for (const changed of [false, true]) {
+      let projections = 0;
+      let flushes = 0;
+      const candidate = { ...thread, ...(kind === "subagent" ? { parentThreadId: "parent" } : {}) };
+      const { service, calls } = harness({
+        accountingThread: async (value) => ({ threadId: value.id, thread: value, isSubagent: kind === "subagent" }),
+        workLogStore: { getTurn: async () => kind === "already-equal" ? { usageReported: true, usage: { totalTokens: 10 } } : null },
+        projectTurn: async () => { projections += 1; return { projected: false, projectionDeferred: changed }; },
+      });
+      const terminal = { turnId: "checked", status: "completed", completedAt: "2026-08-04T10:00:00.000Z", usageResult: usage(), ...(kind === "subagent" ? {} : { historical: true }) };
+      const audit = new CodexTerminalAudit({
+        now: () => Date.parse("2026-08-04T10:20:00.000Z"),
+        discoverHistoricalThreads: async () => [candidate],
+        resolveProject: () => project,
+        statFile: async () => ({ size: 100 }),
+        scanFile: async () => ({ terminals: [terminal], activeTurns: [], nextOffset: 100 }),
+        scanHistoricalFile: async () => ({ turns: [{ ...terminal.usageResult, turnId: terminal.turnId }] }),
+        reconcile: (...args) => service.reconcile(...args),
+        flushHistoricalProjection: async () => { flushes += 1; },
+      });
+      if (kind === "maintenance") {
+        audit.restore({
+          ...audit.snapshot(),
+          historicalSubagentBackfill: { pending: true, initialized: true, prepared: true, queue: [{ thread: candidate, offset: 0, size: 100 }] },
+        });
+        await audit.runHistoricalMaintenance();
+      } else {
+        await audit.run();
+      }
+      assert.equal(projections, kind === "already-equal" ? 0 : 1, kind);
+      assert.equal(flushes, changed && kind !== "already-equal" ? 1 : 0, kind);
+      assert.equal(calls.some(([name]) => name === "deliver"), false, kind);
+    }
+  }
+});
+
+test("fresh audit terminal still saves and delivers its notification when projection deferral is requested", async () => {
+  let deferred = 0;
+  const { service, calls, completions } = harness();
+  await service.reconcile(thread, project, {
+    turnId: "fresh", status: "completed", completedAt: "2026-08-04T10:00:00.000Z", usageResult: usage(),
+  }, { deferProjection: true, onProjectionDeferred: () => { deferred += 1; } });
+  assert.equal(completions.length, 1);
+  assert.equal(completions[0].turnId, "fresh");
+  assert.ok(calls.findIndex(([name]) => name === "save") < calls.findIndex(([name]) => name === "deliver"));
+  assert.deepEqual(calls.filter(([name]) => name === "deliver"), [["deliver", "fresh"]]);
+  assert.equal(deferred, 0);
+});
+
+test("delivered correction outside an audit retains immediate projection", async () => {
+  const { service, delivered, calls } = harness();
+  delivered.add("turn-1");
+  await service.reconcile(thread, project, {
+    turnId: "turn-1", status: "completed", completedAt: "2026-08-04T10:00:00.000Z", usageResult: usage(),
+  });
+  assert.equal(calls.find(([name]) => name === "project")[2].deferProjection, false);
+});
+
 test("recent completed Codex turns keep their grace period before reconciliation", async () => {
   const { service, completions } = harness({
     now: () => Date.parse("2026-08-04T10:00:05.000Z"),
@@ -98,6 +242,20 @@ test("terminal reconciliation ignores a context probe before any recovery", asyn
   assert.equal(result, true);
   assert.deepEqual(calls, []);
   assert.deepEqual(completions, []);
+});
+
+test("an unclassified live terminal resolved to a probe only produces accounting", async () => {
+  const { service, calls, completions } = harness();
+  const result = await service.reconcile(thread, project, {
+    turnId: "probe-turn",
+    status: "failed",
+    completedAt: "2026-08-04T10:00:00.000Z",
+    usageResult: usage({ contextProbe: true, status: "failed" }),
+  });
+  assert.equal(result, true);
+  assert.deepEqual(completions, []);
+  assert.equal(calls.find(([name]) => name === "project")[1].contextProbe, true);
+  assert.equal(calls.some(([name]) => name === "deliver"), false);
 });
 
 test("historical context probe is projected for accounting without notification", async () => {

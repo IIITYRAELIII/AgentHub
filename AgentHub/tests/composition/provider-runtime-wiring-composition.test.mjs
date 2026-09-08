@@ -78,6 +78,46 @@ test("terminal audit scheduler owns one timer across maintenance, reconnect and 
   assert.equal(schedules, 3);
 });
 
+test("terminal audit catches up only while making progress and backs off on failure or idle", async () => {
+  let callback;
+  let delay;
+  let progressed = true;
+  let failure = false;
+  let stopping = false;
+  const audit = {
+    persistsProgress: true,
+    lastRun: { cycleComplete: false, backlog: true },
+    async run() {
+      if (failure) throw new Error("unreadable rollout");
+      return progressed;
+    },
+  };
+  const scheduler = createCodexTerminalAuditScheduler({
+    codexTerminalAudit: audit,
+    codexTransport: { running: true },
+    saveState: async () => {},
+    isStopping: () => stopping,
+    runtimeTimers: { schedule(_name, next, milliseconds) { callback = next; delay = milliseconds; return true; } },
+    logger: { error() {} },
+  });
+  scheduler.schedule();
+  await callback();
+  assert.equal(delay, 1_000);
+  progressed = false;
+  await callback();
+  assert.equal(delay, 30_000);
+  progressed = true;
+  audit.lastRun.backlog = false;
+  await callback();
+  assert.equal(delay, 30_000);
+  audit.lastRun.backlog = true;
+  failure = true;
+  await callback();
+  assert.equal(delay, 30_000);
+  stopping = true;
+  assert.equal(scheduler.schedule(), false);
+});
+
 test("offline production audit repairs a subagent migration without provider RPC", async () => {
   let providerRpc = 0;
   let repairs = 0;
@@ -191,6 +231,6 @@ test("offline production audit repairs a subagent migration without provider RPC
   assert.equal(repairs, 1);
   assert.equal(projections, 1);
   assert.ok(checkpoints >= 1);
-  assert.equal(audit.snapshot().version, 16);
+  assert.equal(audit.snapshot().version, 17);
   assert.equal(audit.snapshot().historicalSubagentBackfill.pending, false);
 });

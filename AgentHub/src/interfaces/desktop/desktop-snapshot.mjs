@@ -824,25 +824,30 @@ export function createDesktopSnapshotFactory({
       messageReceipts,
       messagePins,
       deferredInputs: [
-        ...deferred.pendingValues().map((item) => ({
-          id: item.id,
-          state: item.manualAction === "steer" ? "steering" : "pending",
-          provider: item.provider,
-          threadId: item.threadId,
-          taskTitle: deferredTaskTitle(item),
-          clientUserMessageId: item.clientUserMessageId ?? null,
-          ...(item.clientProjectionIntent ? { clientProjectionIntent: item.clientProjectionIntent } : {}),
-          ...deferredMessageProjection(item, deferred),
-          annotations: deferred.responseAnnotations?.(item.input) ?? [],
-          allowForce: item.allowForce === true,
-          conflictKind: item.conflictKind ?? null,
-          ...deferredWaitProjection(item),
-          attempts: Number(item.attempts) || 0,
-          createdAt: item.createdAt ?? null,
-          attachments: item.persistentFiles
-            ? (deferred.describeAttachments?.(item.temporaryFiles) ?? [])
-            : [],
-        })),
+        ...deferred.pendingValues().map((item) => {
+          const waitProjection = deferredWaitProjection(item);
+          return {
+            id: item.id,
+            state: item.manualAction === "steer" ? "steering" : "pending",
+            ...(item.manualAction !== "steer" && waitProjection.lastError ? { attentionRequired: true } : {}),
+            provider: item.provider,
+            threadId: item.threadId,
+            streamId: item.streamId ?? null,
+            taskTitle: deferredTaskTitle(item),
+            clientUserMessageId: item.clientUserMessageId ?? null,
+            ...(item.clientProjectionIntent ? { clientProjectionIntent: item.clientProjectionIntent } : {}),
+            ...deferredMessageProjection(item, deferred),
+            annotations: deferred.responseAnnotations?.(item.input) ?? [],
+            allowForce: item.allowForce === true,
+            conflictKind: item.conflictKind ?? null,
+            ...waitProjection,
+            attempts: Number(item.attempts) || 0,
+            createdAt: item.createdAt ?? null,
+            attachments: item.persistentFiles
+              ? (deferred.describeAttachments?.(item.temporaryFiles) ?? [])
+              : [],
+          };
+        }),
         ...deferred.queuedValues().map((item) => ({
           id: item.id,
           state: item.dispatchingAt
@@ -852,6 +857,7 @@ export function createDesktopSnapshotFactory({
               : item.paused === true ? "paused" : "queued",
           provider: item.provider,
           threadId: item.threadId,
+          streamId: item.streamId ?? null,
           taskTitle: deferredTaskTitle(item),
           clientUserMessageId: item.clientUserMessageId ?? null,
           ...(item.clientProjectionIntent ? { clientProjectionIntent: item.clientProjectionIntent } : {}),
