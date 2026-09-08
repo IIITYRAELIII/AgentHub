@@ -594,7 +594,9 @@ function handleRequest(message) {
   }
   if (method === "thread/settings/update") {
     const thread = threadById(params.threadId);
-    if (!thread) return send({ id, error: { message: `thread not found: ${params.threadId}` } });
+    if (!thread || !loadedThreadIds.has(params.threadId)) {
+      return send({ id, error: { message: `thread not found: ${params.threadId}` } });
+    }
     thread.model = params.model;
     thread.reasoningEffort = params.effort;
     save();

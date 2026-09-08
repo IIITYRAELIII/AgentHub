@@ -153,6 +153,24 @@ test("local control client survives App Server exit during delayed startup and s
   assert.equal(statusDetails.model, "GPT-5.6-Sol");
   assert.equal(typeof statusDetails.limits, "string");
 
+  const configuredModel = await callDesktopControl("update-setting", {
+    name: "model",
+    value: "gpt-6-astra",
+    ...initial.selected,
+  }, { runtimeRoot });
+  assert.equal(configuredModel.settings.model, "gpt-6-astra");
+  const codexStateAfterModelUpdate = await readFile(codexStatePath, "utf8").then(JSON.parse);
+  assert.equal(codexStateAfterModelUpdate.requestCounts["thread/settings/update"], 2);
+  assert.equal(codexStateAfterModelUpdate.requestCounts["thread/resume"], 1);
+  assert.equal(
+    codexStateAfterModelUpdate.threads.find((thread) => thread.id === firstThreadId)?.model,
+    "gpt-6-astra",
+  );
+  const persistedStateAfterModelUpdate = await readRuntimeState(dataDir);
+  assert.deepEqual(persistedStateAfterModelUpdate.codexTaskSettings[firstThreadId], {
+    model: "gpt-6-astra",
+    reasoningEffort: "high",
+  });
   const configured = await callDesktopControl("update-setting", {
     name: "reasoning",
     value: "medium",
