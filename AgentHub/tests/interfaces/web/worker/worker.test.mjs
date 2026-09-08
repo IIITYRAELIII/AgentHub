@@ -1418,7 +1418,7 @@ test("Worker chunk publication cuts over atomically and retries an orphan genera
   assert.match(current.html, />B</u);
 });
 
-test("Worker retires the unqualified v1 generation after two v2 cutovers", async () => {
+test("Worker retires the unqualified v1 generation after two current-layout cutovers", async () => {
   const worker = await loadWorker();
   const storage = new MemoryStorage();
   const store = new worker.JournalStore({ storage }, {});
@@ -1453,10 +1453,10 @@ test("Worker retires the unqualified v1 generation after two v2 cutovers", async
   assert.equal((await store.fetch(new Request("https://journal.internal/sync", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload("journal-v2-a", "A")),
+    body: JSON.stringify(payload("journal-v3-a", "A")),
   }))).status, 200);
   let current = await (await store.fetch(new Request("https://journal.internal/journal"))).json();
-  assert.equal(current.version, "journal-v2-a");
+  assert.equal(current.version, "journal-v3-a");
   assert.match(current.html, />A</u);
   let manifest = await storage.get("journal-projection-manifest");
   assert.equal(manifest.previousSyncId, legacySyncId);
@@ -1466,18 +1466,154 @@ test("Worker retires the unqualified v1 generation after two v2 cutovers", async
   assert.equal((await store.fetch(new Request("https://journal.internal/sync", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload("journal-v2-b", "B")),
+    body: JSON.stringify(payload("journal-v3-b", "B")),
   }))).status, 200);
   current = await (await store.fetch(new Request("https://journal.internal/journal"))).json();
-  assert.equal(current.version, "journal-v2-b");
+  assert.equal(current.version, "journal-v3-b");
   assert.match(current.html, />B</u);
   manifest = await storage.get("journal-projection-manifest");
-  assert.equal(manifest.layoutVersion, 2);
-  assert.equal(manifest.previousLayoutVersion, 2);
+  assert.equal(manifest.layoutVersion, 3);
+  assert.equal(manifest.previousLayoutVersion, 3);
   assert.equal((await storage.list({ prefix: legacyPrefix })).size, 0);
   assert.ok((await storage.list({
-    prefix: `journal-projection:v2:${manifest.previousSyncId}:`,
+    prefix: `journal-projection:v3:${manifest.previousSyncId}:`,
   })).size > 0);
+});
+
+test("Worker atomically migrates same-content v2 day indexes to v3 date indexes", async () => {
+  const worker = await loadWorker();
+  class FailingMigrationStorage extends MemoryStorage {
+    failManifest = false;
+
+    async put(key, value) {
+      if (this.failManifest && key === "journal-projection-manifest") {
+        throw new Error("injected v3 manifest failure");
+      }
+      return super.put(key, value);
+    }
+  }
+  const storage = new FailingMigrationStorage();
+  const payload = {
+    html: "<main>v3 dates</main>",
+    summary: { version: 1, buckets: [] },
+    turnEntries: [
+      ["day", "06.09.2026", "2026-09-06T12:00:00.000Z"],
+      ["week", "08.09.2026", "2026-09-08T12:00:00.000Z"],
+      ["month", "30.09.2026", "2026-09-30T12:00:00.000Z"],
+      ["outside", "01.10.2026", "2026-10-01T12:00:00.000Z"],
+    ].map(([id, date, completedAt]) => ({
+      turnRef: `ref-${id}`,
+      date,
+      workspaceId: "workspace-1",
+      streamId: "stream-1",
+      provider: "codex",
+      threadId: "thread-1",
+      completedAtMs: Date.parse(completedAt),
+      html: `<div data-work-log-turn-entry data-work-log-turn-id="${id}">${id}</div>`,
+    })),
+    days: {},
+    turns: {},
+    version: "journal-same-content",
+    updatedAt: "2026-10-01T12:00:00.000Z",
+  };
+  const serialized = JSON.stringify(payload);
+  const syncId = `sync-${createHash("sha256").update(serialized).digest("hex")}`;
+  const v2Prefix = `journal-projection:v2:${syncId}:`;
+  const scopeIdentity = JSON.stringify({
+    provider: "",
+    streamId: "stream-1",
+    threadId: "",
+    workspaceId: "workspace-1",
+  });
+  const scopeHash = createHash("sha256").update(scopeIdentity).digest("hex");
+  const oldTurnKey = `${v2Prefix}turn-shell:000000000000`;
+  await storage.put({
+    "journal-projection-manifest": {
+      layoutVersion: 2,
+      syncId,
+      version: payload.version,
+      updatedAt: payload.updatedAt,
+      previousSyncId: "",
+      previousLayoutVersion: 0,
+    },
+    [`${v2Prefix}meta`]: {
+      layoutVersion: 2,
+      syncId,
+      version: payload.version,
+      updatedAt: payload.updatedAt,
+    },
+    [oldTurnKey]: { turnRef: "ref-day", date: "06.09.2026", html: "<div>day</div>" },
+    [`${v2Prefix}scope:${scopeHash}:day:${Date.UTC(2026, 8, 6)}:meta`]: { total: 1 },
+    [`${v2Prefix}scope:${scopeHash}:day:${Date.UTC(2026, 8, 6)}:entry:000000000000`]: oldTurnKey,
+  });
+  const dateQuery = await journalQueryForTimeZone("Asia/Yekaterinburg", "date", "06.09.2026");
+  const requestFor = (query) => new Request(`https://journal.internal/journal/turns?${new URLSearchParams({
+    workspaceId: query.workspaceId,
+    streamId: query.streamId,
+    fromMs: String(query.fromMs),
+    toMs: String(query.toMs),
+    dates: query.dateKeys.join(","),
+    limit: "50",
+  })}`);
+
+  let store = new worker.JournalStore({ storage }, {});
+  let response = await store.fetch(requestFor(dateQuery));
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).code, "journal_projection_required");
+
+  storage.failManifest = true;
+  await assert.rejects(store.fetch(new Request("https://journal.internal/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: serialized,
+  })), /injected v3 manifest failure/u);
+  assert.equal((await storage.get("journal-projection-manifest")).layoutVersion, 2);
+  assert.ok((await storage.list({ prefix: v2Prefix })).size > 0);
+  store = new worker.JournalStore({ storage }, {});
+  assert.equal((await store.fetch(requestFor(dateQuery))).status, 503);
+
+  storage.failManifest = false;
+  response = await store.fetch(new Request("https://journal.internal/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: serialized,
+  }));
+  assert.equal(response.status, 200);
+  let manifest = await storage.get("journal-projection-manifest");
+  assert.equal(manifest.layoutVersion, 3);
+  assert.equal(manifest.syncId, syncId);
+  assert.equal(manifest.previousSyncId, syncId);
+  assert.equal(manifest.previousLayoutVersion, 2);
+  assert.ok((await storage.list({ prefix: v2Prefix })).size > 0);
+
+  store = new worker.JournalStore({ storage }, {});
+  for (const [mode, date, expected] of [
+    ["date", "06.09.2026", ["ref-day"]],
+    ["week", "09.09.2026", ["ref-week"]],
+    ["month", "15.09.2026", ["ref-month", "ref-week", "ref-day"]],
+  ]) {
+    const pageResponse = await store.fetch(requestFor(await journalQueryForTimeZone(
+      "Asia/Yekaterinburg",
+      mode,
+      date,
+    )));
+    assert.equal(pageResponse.status, 200, mode);
+    assert.deepEqual((await pageResponse.json()).turns.map(({ turnRef }) => turnRef), expected, mode);
+  }
+
+  const nextPayload = { ...payload, version: "journal-next-generation" };
+  response = await store.fetch(new Request("https://journal.internal/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(nextPayload),
+  }));
+  assert.equal(response.status, 200);
+  manifest = await storage.get("journal-projection-manifest");
+  assert.equal(manifest.layoutVersion, 3);
+  assert.equal(manifest.previousSyncId, syncId);
+  assert.equal(manifest.previousLayoutVersion, 3);
+  assert.equal((await storage.list({ prefix: v2Prefix })).size, 0);
+  assert.ok((await storage.list({ prefix: `journal-projection:v3:${syncId}:` })).size > 0);
 });
 
 test("Worker journal turn pages read only materialized bounded index keys", async () => {
