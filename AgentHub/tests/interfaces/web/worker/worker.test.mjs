@@ -4,6 +4,8 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import vm from "node:vm";
+import { gzipSync } from "node:zlib";
 
 import { measureImmediateControlDrain } from "../../../../cloudflare-worker/verify-deployment.mjs";
 
@@ -143,8 +145,12 @@ test("Dashboard transport probe exposes a bounded ordered attachment manifest", 
 class MemoryStorage {
   values = new Map();
   alarmAt = null;
+  listCalls = [];
+  getTrace = [];
+  listTrace = [];
 
   async get(key) {
+    this.getTrace.push(Array.isArray(key) ? [...key] : [key]);
     if (Array.isArray(key)) {
       return new Map(key.filter((item) => this.values.has(item)).map((item) => [item, this.values.get(item)]));
     }
@@ -164,6 +170,8 @@ class MemoryStorage {
   }
 
   async list({ prefix = "", start = "", startAfter = "", end = "", limit = Number.POSITIVE_INFINITY } = {}) {
+    this.listCalls.push({ prefix, start, startAfter, end, limit });
+    this.listTrace.push({ prefix, start, startAfter, end, limit });
     return new Map([...this.values]
       .filter(([key]) => (
         key.startsWith(prefix)
@@ -176,7 +184,13 @@ class MemoryStorage {
   }
 
   async transaction(callback) {
-    return callback(this);
+    const values = new Map(this.values);
+    try {
+      return await callback(this);
+    } catch (error) {
+      this.values = values;
+      throw error;
+    }
   }
 
   async getAlarm() {
@@ -189,6 +203,69 @@ class MemoryStorage {
 
   async deleteAlarm() {
     this.alarmAt = null;
+  }
+
+  resetReadTrace() {
+    this.getTrace = [];
+    this.listTrace = [];
+  }
+}
+
+async function journalQueryForTimeZone(timeZone, mode, date) {
+  const previous = process.env.TZ;
+  try {
+    process.env.TZ = timeZone;
+    const source = await readFile(path.join(ROOT, "assets", "web-app", "journal-view-controller.js"), "utf8");
+    const window = {};
+    vm.runInNewContext(source, { Date, Intl, Set, String, window });
+    const [scope] = window.AgentHubJournalView.virtualJournalScopes({ version: 1, buckets: [{
+      date,
+      workspaceId: "workspace-1",
+      workspaceName: "Agent HUB",
+      workspaceKind: "catalog",
+      streamId: "stream-1",
+      streamDisplayName: "Log",
+      provider: "codex",
+      turnCount: 1,
+      credits: 1,
+      knownCredits: 1,
+      durationSeconds: 1,
+      knownDurations: 1,
+    }] }, mode);
+    const query = window.AgentHubJournalView.virtualTurnQuery(
+      scope,
+      scope.workspaces[0],
+      scope.workspaces[0].streams[0],
+    );
+    return { ...query, dateKeys: Array.from(query.dateKeys) };
+  } finally {
+    if (previous === undefined) delete process.env.TZ;
+    else process.env.TZ = previous;
+  }
+}
+
+class RollbackFaultStorage extends MemoryStorage {
+  failDeleteKey = null;
+
+  async delete(key) {
+    const keys = Array.isArray(key) ? key : [key];
+    if (this.failDeleteKey && keys.includes(this.failDeleteKey)) {
+      this.failDeleteKey = null;
+      throw new Error("injected attachment manifest promotion failure");
+    }
+    return super.delete(key);
+  }
+
+  async transaction(callback) {
+    const values = new Map(this.values);
+    const alarmAt = this.alarmAt;
+    try {
+      return await callback(this);
+    } catch (error) {
+      this.values = values;
+      this.alarmAt = alarmAt;
+      throw error;
+    }
   }
 }
 
@@ -1072,6 +1149,587 @@ test("Worker alarm removes expired staging chunks without touching the published
   assert.ok(await storage.get("staging:fresh-sync"));
   assert.deepEqual(await storage.get("chunk:fresh-sync:0"), new Uint8Array([7]));
   assert.equal(storage.alarmAt, before + 120_000);
+});
+
+test("Worker journal exposes compact totals and bounded turn pages separately", async () => {
+  const workerModule = await loadWorker();
+  const store = new workerModule.JournalStore({ storage: new MemoryStorage() }, {});
+  const turnEntries = [
+    ...Array.from({ length: 60 }, (_, index) => ({
+      turnRef: `ref-${String(index).padStart(2, "0")}`,
+      date: "01.08.2026",
+      dayMs: Date.UTC(2026, 7, 1),
+      workspaceId: "workspace-1",
+      streamId: "stream-1",
+      provider: "codex",
+      threadId: "thread-1",
+      turnId: `turn-${index}`,
+      completedAtMs: Date.UTC(2026, 7, 1, 12) - index,
+      html: `<div data-work-log-turn-entry data-work-log-turn-id="turn-${index}">Ход</div>`,
+    })),
+    {
+      turnRef: "ref-week",
+      date: "03.08.2026",
+      dayMs: Date.UTC(2026, 7, 3),
+      workspaceId: "workspace-1",
+      streamId: "stream-2",
+      provider: "claude",
+      threadId: "thread-2",
+      turnId: "turn-week",
+      completedAtMs: Date.UTC(2026, 7, 3, 12),
+      html: '<div data-work-log-turn-entry data-work-log-turn-id="turn-week">Ход</div>',
+    },
+    {
+      turnRef: "ref-month",
+      date: "20.08.2026",
+      dayMs: Date.UTC(2026, 7, 20),
+      workspaceId: "workspace-1",
+      streamId: "stream-2",
+      provider: "codex",
+      threadId: "thread-3",
+      turnId: "turn-month",
+      completedAtMs: Date.UTC(2026, 7, 20, 12),
+      html: '<div data-work-log-turn-entry data-work-log-turn-id="turn-month">Ход</div>',
+    },
+  ];
+  const summary = { version: 1, buckets: [{
+    date: "01.08.2026",
+    workspaceId: "workspace-1",
+    streamId: "stream-1",
+    provider: "codex",
+    turnCount: 60,
+    fileTouches: 12,
+    knownFileTouches: 60,
+    skillNames: ["journal"],
+  }, {
+    date: "02.08.2026",
+    dayMs: Date.UTC(2026, 7, 2),
+    workspaceId: "workspace-2",
+    streamId: "stream-2",
+    provider: "codex",
+    turnCount: 1,
+    fileTouches: 99,
+  }] };
+  assert.equal((await store.fetch(new Request("https://journal.internal/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      html: '<details data-lazy-day="01.08.2026"></details>',
+      summary,
+      turnEntries,
+      days: {},
+      turns: {},
+      version: "journal-v1",
+      updatedAt: "2026-08-01T12:00:00.000Z",
+    }),
+  }))).status, 200);
+
+  const index = await (await store.fetch(new Request("https://journal.internal/journal"))).json();
+  assert.equal(index.summary.buckets[0].turnCount, 60);
+  assert.equal(Object.hasOwn(index.summary.buckets[0], "fileTouches"), false);
+  assert.equal(Object.hasOwn(index, "turnEntries"), false);
+
+  const firstResponse = await store.fetch(new Request(
+    "https://journal.internal/journal/turns?workspaceId=workspace-1&streamId=stream-1&profileMode=stream&limit=200",
+  ));
+  const firstBody = await firstResponse.text();
+  assert.equal(firstResponse.status, 200, firstBody);
+  const first = JSON.parse(firstBody);
+  assert.equal(first.turns.length, 50);
+  assert.equal(first.nextOffset, 50);
+  assert.equal(first.profileSummary.buckets.length, 2);
+  assert.equal(first.profileSummary.buckets[0].fileTouches, 12);
+  assert.equal(first.profileSummary.buckets[1].fileTouches, 99);
+  const second = await (await store.fetch(new Request(
+    "https://journal.internal/journal/turns?workspaceId=workspace-1&streamId=stream-1&offset=50",
+  ))).json();
+  assert.equal(second.turns.length, 10);
+  assert.equal(second.nextOffset, null);
+  const ranged = await (await store.fetch(new Request(
+    "https://journal.internal/journal/turns?workspaceId=workspace-1&streamId=stream-1"
+    + `&fromMs=${Date.UTC(2026, 7, 1)}&toMs=${Date.UTC(2026, 7, 2)}`
+    + "&dates=01.08.2026&limit=10",
+  ))).json();
+  assert.equal(ranged.turns.length, 10);
+  assert.equal(ranged.nextOffset, 10);
+  assert.equal((await store.fetch(new Request(
+    "https://journal.internal/journal/turns?workspaceId=workspace-1"
+    + `&fromMs=${Date.UTC(2026, 7, 1)}&toMs=${Date.UTC(2026, 7, 2)}`,
+  ))).status, 400);
+  for (const [mode, fromMs, toMs, expected] of [
+    ["date", Date.UTC(2026, 7, 1), Date.UTC(2026, 7, 2), 10],
+    ["week", Date.UTC(2026, 7, 1), Date.UTC(2026, 7, 8), 11],
+    ["month", Date.UTC(2026, 7, 1), Date.UTC(2026, 8, 1), 12],
+    ["workspace", 0, 0, 12],
+  ]) {
+    const dayCount = mode === "date" ? 1 : mode === "week" ? 7 : mode === "month" ? 31 : 0;
+    const dates = Array.from({ length: dayCount }, (_, index) => (
+      `${String(index + 1).padStart(2, "0")}.08.2026`
+    )).join(",");
+    const page = await (await store.fetch(new Request(
+      "https://journal.internal/journal/turns?workspaceId=workspace-1&offset=50&limit=50"
+      + `${fromMs ? `&fromMs=${fromMs}&toMs=${toMs}&dates=${dates}` : ""}`,
+    ))).json();
+    assert.equal(page.turns.length, expected, mode);
+    assert.equal(page.nextOffset, null, mode);
+  }
+  const codexWorkspace = await (await store.fetch(new Request(
+    "https://journal.internal/journal/turns?workspaceId=workspace-1&provider=codex&offset=50&limit=50",
+  ))).json();
+  assert.equal(codexWorkspace.turns.length, 11);
+  assert.equal((await store.fetch(new Request(
+    "https://journal.internal/journal/turns?workspaceId=workspace-1&version=old",
+  ))).status, 409);
+});
+
+test("Worker temporal pages follow controller visible dates across UTC offsets", {
+  concurrency: false,
+}, async () => {
+  const workerModule = await loadWorker();
+  for (const [timeZone, boundaryEntries] of [
+    ["Asia/Yekaterinburg", [
+      ["before", "05.09.2026", "2026-09-05T18:59:59.999Z"],
+      ["day", "06.09.2026", "2026-09-05T19:00:00.000Z"],
+      ["after", "07.09.2026", "2026-09-06T19:00:00.000Z"],
+    ]],
+    ["America/New_York", [
+      ["before", "05.09.2026", "2026-09-06T03:59:59.999Z"],
+      ["day", "06.09.2026", "2026-09-06T04:00:00.000Z"],
+      ["after", "07.09.2026", "2026-09-07T04:00:00.000Z"],
+    ]],
+  ]) {
+    const storage = new MemoryStorage();
+    const store = new workerModule.JournalStore({ storage }, {});
+    const entries = [
+      ...boundaryEntries,
+      ["month-start", "01.09.2026", "2026-09-01T12:00:00.000Z"],
+      ["week-start", "07.09.2026", "2026-09-07T12:00:00.000Z"],
+      ["week-end", "13.09.2026", "2026-09-13T12:00:00.000Z"],
+      ["week-after", "14.09.2026", "2026-09-14T12:00:00.000Z"],
+      ["month-end", "30.09.2026", "2026-09-30T12:00:00.000Z"],
+      ["month-after", "01.10.2026", "2026-10-01T12:00:00.000Z"],
+    ];
+    const turnEntries = entries.map(([id, date, completedAt]) => ({
+      turnRef: `ref-${id}`,
+      date,
+      workspaceId: "workspace-1",
+      streamId: "stream-1",
+      provider: "codex",
+      threadId: "thread-1",
+      completedAtMs: Date.parse(completedAt),
+      html: `<div data-work-log-turn-entry data-work-log-turn-id="${id}">${id}</div>`,
+    }));
+    assert.equal((await store.fetch(new Request("https://journal.internal/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        html: "<main></main>",
+        summary: { version: 1, buckets: [] },
+        turnEntries,
+        days: {},
+        turns: {},
+        version: `journal-${timeZone}`,
+        updatedAt: "2026-09-30T12:00:00.000Z",
+      }),
+    }))).status, 200);
+    for (const [mode, date, expected] of [
+      ["date", "06.09.2026", ["day"]],
+      ["week", "09.09.2026", ["week-end", "week-start", "after"]],
+      ["month", "15.09.2026", [
+        "month-end", "week-after", "week-end", "week-start", "after", "day", "before", "month-start",
+      ]],
+    ]) {
+      const query = await journalQueryForTimeZone(timeZone, mode, date);
+      const params = new URLSearchParams({
+        workspaceId: query.workspaceId,
+        streamId: query.streamId,
+        fromMs: String(query.fromMs),
+        toMs: String(query.toMs),
+        dates: query.dateKeys.join(","),
+        limit: "50",
+      });
+      const response = await store.fetch(new Request(`https://journal.internal/journal/turns?${params}`));
+      assert.equal(response.status, 200, `${timeZone} ${mode}`);
+      const page = await response.json();
+      assert.deepEqual(
+        page.turns.map((turn) => turn.turnRef),
+        expected.map((id) => `ref-${id}`),
+        `${timeZone} ${mode}`,
+      );
+    }
+  }
+});
+
+test("Worker chunk publication cuts over atomically and retries an orphan generation", async () => {
+  const worker = await loadWorker();
+  class FailingManifestStorage extends MemoryStorage {
+    failManifest = false;
+
+    async put(key, value) {
+      if (this.failManifest && key === "journal-projection-manifest") {
+        throw new Error("injected manifest failure");
+      }
+      return super.put(key, value);
+    }
+  }
+  const storage = new FailingManifestStorage();
+  const store = new worker.JournalStore({ storage }, {});
+  const payload = (version, label) => ({
+    html: `<main>${label}</main>`,
+    summary: { version: 1, buckets: [] },
+    turnEntries: [],
+    days: {},
+    turns: {},
+    version,
+    updatedAt: "2026-09-07T23:59:00.000Z",
+  });
+  assert.equal((await store.fetch(new Request("https://journal.internal/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload("journal-a", "A")),
+  }))).status, 200);
+
+  storage.failManifest = true;
+  await assert.rejects(store.fetch(new Request("https://journal.internal/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload("journal-b", "B")),
+  })), /injected manifest failure/u);
+  let current = await (await store.fetch(new Request("https://journal.internal/journal"))).json();
+  assert.equal(current.version, "journal-a");
+  assert.match(current.html, />A</u);
+
+  storage.failManifest = false;
+  const next = payload("journal-b", "B");
+  const serialized = JSON.stringify(next);
+  const body = gzipSync(Buffer.from(serialized, "utf8"));
+  const complete = await store.fetch(syncChunkRequest({
+    syncId: `sync-${createHash("sha256").update(serialized).digest("hex")}`,
+    index: 0,
+    count: 1,
+    version: next.version,
+    updatedAt: next.updatedAt,
+    body,
+  }));
+  assert.equal(complete.status, 200);
+  assert.deepEqual(await complete.json(), { ok: true, complete: true });
+  current = await (await store.fetch(new Request("https://journal.internal/journal"))).json();
+  assert.equal(current.version, "journal-b");
+  assert.match(current.html, />B</u);
+});
+
+test("Worker retires the unqualified v1 generation after two current-layout cutovers", async () => {
+  const worker = await loadWorker();
+  const storage = new MemoryStorage();
+  const store = new worker.JournalStore({ storage }, {});
+  const legacySyncId = `sync-${"1".repeat(64)}`;
+  const legacyPrefix = `journal-projection:${legacySyncId}:`;
+  await storage.put({
+    "journal-projection-manifest": {
+      layoutVersion: 1,
+      syncId: legacySyncId,
+      version: "journal-v1",
+      updatedAt: "2026-09-07T23:58:00.000Z",
+      previousSyncId: "",
+    },
+    [`${legacyPrefix}meta`]: {
+      layoutVersion: 1,
+      syncId: legacySyncId,
+      version: "journal-v1",
+      updatedAt: "2026-09-07T23:58:00.000Z",
+    },
+    [`${legacyPrefix}index-html:000000`]: new TextEncoder().encode("<main>legacy</main>"),
+  });
+  const payload = (version, label) => ({
+    html: `<main>${label}</main>`,
+    summary: { version: 1, buckets: [] },
+    turnEntries: [],
+    days: {},
+    turns: {},
+    version,
+    updatedAt: "2026-09-07T23:59:00.000Z",
+  });
+
+  assert.equal((await store.fetch(new Request("https://journal.internal/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload("journal-v3-a", "A")),
+  }))).status, 200);
+  let current = await (await store.fetch(new Request("https://journal.internal/journal"))).json();
+  assert.equal(current.version, "journal-v3-a");
+  assert.match(current.html, />A</u);
+  let manifest = await storage.get("journal-projection-manifest");
+  assert.equal(manifest.previousSyncId, legacySyncId);
+  assert.equal(manifest.previousLayoutVersion, 1);
+  assert.equal((await storage.list({ prefix: legacyPrefix })).size, 2);
+
+  assert.equal((await store.fetch(new Request("https://journal.internal/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload("journal-v3-b", "B")),
+  }))).status, 200);
+  current = await (await store.fetch(new Request("https://journal.internal/journal"))).json();
+  assert.equal(current.version, "journal-v3-b");
+  assert.match(current.html, />B</u);
+  manifest = await storage.get("journal-projection-manifest");
+  assert.equal(manifest.layoutVersion, 3);
+  assert.equal(manifest.previousLayoutVersion, 3);
+  assert.equal((await storage.list({ prefix: legacyPrefix })).size, 0);
+  assert.ok((await storage.list({
+    prefix: `journal-projection:v3:${manifest.previousSyncId}:`,
+  })).size > 0);
+});
+
+test("Worker atomically migrates same-content v2 day indexes to v3 date indexes", async () => {
+  const worker = await loadWorker();
+  class FailingMigrationStorage extends MemoryStorage {
+    failManifest = false;
+
+    async put(key, value) {
+      if (this.failManifest && key === "journal-projection-manifest") {
+        throw new Error("injected v3 manifest failure");
+      }
+      return super.put(key, value);
+    }
+  }
+  const storage = new FailingMigrationStorage();
+  const payload = {
+    html: "<main>v3 dates</main>",
+    summary: { version: 1, buckets: [] },
+    turnEntries: [
+      ["day", "06.09.2026", "2026-09-06T12:00:00.000Z"],
+      ["week", "08.09.2026", "2026-09-08T12:00:00.000Z"],
+      ["month", "30.09.2026", "2026-09-30T12:00:00.000Z"],
+      ["outside", "01.10.2026", "2026-10-01T12:00:00.000Z"],
+    ].map(([id, date, completedAt]) => ({
+      turnRef: `ref-${id}`,
+      date,
+      workspaceId: "workspace-1",
+      streamId: "stream-1",
+      provider: "codex",
+      threadId: "thread-1",
+      completedAtMs: Date.parse(completedAt),
+      html: `<div data-work-log-turn-entry data-work-log-turn-id="${id}">${id}</div>`,
+    })),
+    days: {},
+    turns: {},
+    version: "journal-same-content",
+    updatedAt: "2026-10-01T12:00:00.000Z",
+  };
+  const serialized = JSON.stringify(payload);
+  const syncId = `sync-${createHash("sha256").update(serialized).digest("hex")}`;
+  const v2Prefix = `journal-projection:v2:${syncId}:`;
+  const scopeIdentity = JSON.stringify({
+    provider: "",
+    streamId: "stream-1",
+    threadId: "",
+    workspaceId: "workspace-1",
+  });
+  const scopeHash = createHash("sha256").update(scopeIdentity).digest("hex");
+  const oldTurnKey = `${v2Prefix}turn-shell:000000000000`;
+  await storage.put({
+    "journal-projection-manifest": {
+      layoutVersion: 2,
+      syncId,
+      version: payload.version,
+      updatedAt: payload.updatedAt,
+      previousSyncId: "",
+      previousLayoutVersion: 0,
+    },
+    [`${v2Prefix}meta`]: {
+      layoutVersion: 2,
+      syncId,
+      version: payload.version,
+      updatedAt: payload.updatedAt,
+    },
+    [oldTurnKey]: { turnRef: "ref-day", date: "06.09.2026", html: "<div>day</div>" },
+    [`${v2Prefix}scope:${scopeHash}:day:${Date.UTC(2026, 8, 6)}:meta`]: { total: 1 },
+    [`${v2Prefix}scope:${scopeHash}:day:${Date.UTC(2026, 8, 6)}:entry:000000000000`]: oldTurnKey,
+  });
+  const dateQuery = await journalQueryForTimeZone("Asia/Yekaterinburg", "date", "06.09.2026");
+  const requestFor = (query) => new Request(`https://journal.internal/journal/turns?${new URLSearchParams({
+    workspaceId: query.workspaceId,
+    streamId: query.streamId,
+    fromMs: String(query.fromMs),
+    toMs: String(query.toMs),
+    dates: query.dateKeys.join(","),
+    limit: "50",
+  })}`);
+
+  let store = new worker.JournalStore({ storage }, {});
+  let response = await store.fetch(requestFor(dateQuery));
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).code, "journal_projection_required");
+
+  storage.failManifest = true;
+  await assert.rejects(store.fetch(new Request("https://journal.internal/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: serialized,
+  })), /injected v3 manifest failure/u);
+  assert.equal((await storage.get("journal-projection-manifest")).layoutVersion, 2);
+  assert.ok((await storage.list({ prefix: v2Prefix })).size > 0);
+  store = new worker.JournalStore({ storage }, {});
+  assert.equal((await store.fetch(requestFor(dateQuery))).status, 503);
+
+  storage.failManifest = false;
+  response = await store.fetch(new Request("https://journal.internal/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: serialized,
+  }));
+  assert.equal(response.status, 200);
+  let manifest = await storage.get("journal-projection-manifest");
+  assert.equal(manifest.layoutVersion, 3);
+  assert.equal(manifest.syncId, syncId);
+  assert.equal(manifest.previousSyncId, syncId);
+  assert.equal(manifest.previousLayoutVersion, 2);
+  assert.ok((await storage.list({ prefix: v2Prefix })).size > 0);
+
+  store = new worker.JournalStore({ storage }, {});
+  for (const [mode, date, expected] of [
+    ["date", "06.09.2026", ["ref-day"]],
+    ["week", "09.09.2026", ["ref-week"]],
+    ["month", "15.09.2026", ["ref-month", "ref-week", "ref-day"]],
+  ]) {
+    const pageResponse = await store.fetch(requestFor(await journalQueryForTimeZone(
+      "Asia/Yekaterinburg",
+      mode,
+      date,
+    )));
+    assert.equal(pageResponse.status, 200, mode);
+    assert.deepEqual((await pageResponse.json()).turns.map(({ turnRef }) => turnRef), expected, mode);
+  }
+
+  const nextPayload = { ...payload, version: "journal-next-generation" };
+  response = await store.fetch(new Request("https://journal.internal/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(nextPayload),
+  }));
+  assert.equal(response.status, 200);
+  manifest = await storage.get("journal-projection-manifest");
+  assert.equal(manifest.layoutVersion, 3);
+  assert.equal(manifest.previousSyncId, syncId);
+  assert.equal(manifest.previousLayoutVersion, 3);
+  assert.equal((await storage.list({ prefix: v2Prefix })).size, 0);
+  assert.ok((await storage.list({ prefix: `journal-projection:v3:${syncId}:` })).size > 0);
+});
+
+test("Worker journal turn pages read only materialized bounded index keys", async () => {
+  const worker = await loadWorker();
+  const storage = new MemoryStorage();
+  const store = new worker.JournalStore({ storage }, {});
+  const turnEntries = Array.from({ length: 6_000 }, (_, index) => {
+    const primary = index < 3_000;
+    const ordinal = primary ? index : index - 3_000;
+    return {
+      turnRef: `turn-ref-${index}`,
+      date: "07.09.2026",
+      dayMs: Date.UTC(2026, 8, 7),
+      workspaceId: primary ? "workspace-1" : "workspace-2",
+      streamId: primary ? "stream-1" : "stream-2",
+      provider: "codex",
+      threadId: primary ? "thread-1" : "thread-2",
+      turnId: `turn-${index}`,
+      completedAtMs: Date.UTC(2026, 8, 7, 23, 59) - ordinal,
+      html: `<div data-work-log-turn-entry data-work-log-turn-id="turn-${index}">Ход ${index}</div>`,
+    };
+  });
+  const payload = {
+    html: '<details data-lazy-day="07.09.2026"></details>',
+    summary: { version: 1, buckets: [] },
+    turnEntries,
+    days: {},
+    turns: {},
+    version: "journal-large-v1",
+    updatedAt: "2026-09-07T23:59:00.000Z",
+  };
+  assert.equal((await store.fetch(new Request("https://journal.internal/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }))).status, 200);
+  storage.resetReadTrace();
+
+  const index = await (await store.fetch(new Request("https://journal.internal/journal"))).json();
+  assert.equal(index.version, "journal-large-v1");
+  assert.ok(storage.getTrace.flat().every((key) => !/turn-shell|:scope:/u.test(key)));
+  storage.resetReadTrace();
+
+  const response = await store.fetch(new Request(
+    "https://journal.internal/journal/turns?workspaceId=workspace-1&streamId=stream-1"
+    + "&offset=2900&limit=30&version=journal-large-v1",
+  ));
+  assert.equal(response.status, 200);
+  const page = await response.json();
+  assert.equal(page.turns.length, 30);
+  assert.equal(page.nextOffset, 2930);
+  assert.match(page.turns[0].html, /turn-2900/u);
+  assert.equal(storage.listTrace.length, 0);
+  assert.ok(storage.getTrace.length <= 5);
+  assert.ok(storage.getTrace.every((keys) => keys.length <= 30));
+  assert.ok(storage.getTrace.flat().every((key) => (
+    key === "journal-projection-manifest" || key.startsWith("journal-projection:")
+  )));
+});
+
+test("Worker profile cohort retains the exact requested mixed-provider Stream", async () => {
+  const worker = await loadWorker();
+  const storage = new MemoryStorage();
+  const store = new worker.JournalStore({ storage }, {});
+  const peerBuckets = Array.from({ length: 2_048 }, (_, index) => ({
+    date: "07.09.2026",
+    dayMs: Date.UTC(2026, 8, 7),
+    workspaceId: `workspace-${index}`,
+    streamId: `stream-${index}`,
+    provider: "codex",
+    latestAt: 10_000 - index,
+    credits: 10_000 - index,
+    fileTouches: index + 1,
+  }));
+  const requestedBuckets = ["codex", "claude"].map((provider, index) => ({
+    date: "01.01.2020",
+    dayMs: Date.UTC(2020, 0, 1),
+    workspaceId: "workspace-required",
+    streamId: "stream-required",
+    provider,
+    latestAt: index + 1,
+    credits: index + 1,
+    fileTouches: 50 + index,
+  }));
+  assert.equal((await store.fetch(new Request("https://journal.internal/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      html: "<main></main>",
+      summary: { version: 1, buckets: [...peerBuckets, ...requestedBuckets] },
+      turnEntries: [],
+      days: {},
+      turns: {},
+      version: "journal-profile-required-v1",
+      updatedAt: "2026-09-07T23:59:00.000Z",
+    }),
+  }))).status, 200);
+  storage.resetReadTrace();
+
+  const response = await store.fetch(new Request(
+    "https://journal.internal/journal/turns?workspaceId=workspace-required"
+    + "&streamId=stream-required&profileMode=stream",
+  ));
+  assert.equal(response.status, 200);
+  const page = await response.json();
+  const requested = page.profileSummary.buckets.filter((bucket) => (
+    bucket.workspaceId === "workspace-required" && bucket.streamId === "stream-required"
+  ));
+  assert.deepEqual(requested.map((bucket) => bucket.provider).sort(), ["claude", "codex"]);
+  assert.equal(new Set(page.profileSummary.buckets.map((bucket) => (
+    `${bucket.workspaceId}\u001f${bucket.streamId}\u001f${bucket.provider}`
+  ))).size, page.profileSummary.buckets.length);
+  assert.equal(page.profileSummary.buckets.length, 2_050);
+  assert.equal(page.profileSummary.truncated, true);
+  assert.equal(storage.listTrace.length, 0);
+  assert.ok(storage.getTrace.flat().every((key) => !key.includes("turn-shell")));
 });
 
 test("Worker relay rejects unsupported actions, attachments, and unsigned service calls", async () => {
@@ -2528,6 +3186,210 @@ test("Worker relay stores user-bound file uploads and serves them only to their 
   assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
 });
 
+test("Worker expires or atomically promotes exact legacy attachment manifests before mutation", async () => {
+  const workerModule = await loadWorker();
+  const storage = new RollbackFaultStorage();
+  const store = new workerModule.JournalStore({ storage }, {});
+  const botToken = "123456:test-token";
+  const syncSecret = "l".repeat(64);
+  const env = {
+    TELEGRAM_BOT_TOKEN: botToken,
+    ALLOWED_USER_IDS: "42,84",
+    SYNC_SECRET: syncSecret,
+    JOURNAL: { getByName: () => store },
+    ASSETS: { fetch: async () => new Response("asset") },
+  };
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64",
+  );
+  const bodyHash = createHash("sha256").update(png).digest("hex");
+  const authorization = `tma ${telegramInitData(botToken, 42)}`;
+  const currentKey = (id) => `control:attachment-manifest:${id}`;
+  const legacyKey = (id) => `control:attachment:${id}`;
+  const chunkKey = (id) => `control:attachment-chunk:${id}:0`;
+  const seedLegacy = async ({
+    id,
+    expiresAt,
+    userId = "42",
+    viewOnly = false,
+    commandIds = [],
+  }) => {
+    const manifest = {
+      id,
+      userId,
+      contentType: "image/png",
+      name: "image.png",
+      bodyHash,
+      size: png.length,
+      chunkCount: 1,
+      commandIds,
+      ...(viewOnly ? { viewOnly: true } : {}),
+      createdAt: Date.now() - 60_000,
+      expiresAt,
+    };
+    await storage.put({
+      [legacyKey(id)]: manifest,
+      [chunkKey(id)]: png,
+    });
+    return manifest;
+  };
+  const upload = (id) => workerModule.default.fetch(new Request("https://hub.test/api/attachment", {
+    method: "POST",
+    headers: {
+      Authorization: authorization,
+      "Content-Type": "image/png",
+      "X-Agent-Hub-File-Name": encodeURIComponent("image.png"),
+      "X-Agent-Hub-Attachment-Id": id,
+    },
+    body: png,
+  }), env);
+  const viewUpload = (id) => workerModule.default.fetch(signedBinaryServiceRequest(
+    "https://hub.test/api/control/attachment/view/push",
+    png,
+    syncSecret,
+    {
+      "Content-Type": "image/png",
+      "X-Agent-Hub-User-Id": "42",
+      "X-Agent-Hub-Attachment-Id": id,
+      "X-Agent-Hub-Attachment-Hash": bodyHash,
+      "X-Agent-Hub-File-Name": encodeURIComponent("image.png"),
+    },
+  ), env);
+  const enqueue = (id, commandId) => workerModule.default.fetch(new Request("https://hub.test/api/control", {
+    method: "POST",
+    headers: { Authorization: authorization, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      id: commandId,
+      action: "send-message",
+      params: { text: "Legacy", attachments: [`remote-attachment:${id}`] },
+    }),
+  }), env);
+
+  const expiredUploadId = "018f6c86-3f34-7a31-8f27-16f5b96cce51";
+  await seedLegacy({ id: expiredUploadId, expiresAt: Date.now() - 1 });
+  let response = await upload(expiredUploadId);
+  assert.equal(response.status, 201);
+  const uploaded = await response.json();
+  assert.ok(uploaded.expiresAt > Date.now());
+  assert.equal(await storage.get(legacyKey(expiredUploadId)), undefined);
+  assert.ok(await storage.get(currentKey(expiredUploadId)));
+
+  const expiredViewId = "018f6c86-3f34-7a31-8f27-16f5b96cce52";
+  await seedLegacy({ id: expiredViewId, expiresAt: Date.now() - 1, viewOnly: true });
+  response = await viewUpload(expiredViewId);
+  assert.equal(response.status, 201);
+  const uploadedView = await response.json();
+  assert.ok(uploadedView.expiresAt > Date.now());
+  assert.equal(await storage.get(legacyKey(expiredViewId)), undefined);
+  assert.ok(await storage.get(currentKey(expiredViewId)));
+
+  const liveUploadId = "018f6c86-3f34-7a31-8f27-16f5b96cce58";
+  await seedLegacy({ id: liveUploadId, expiresAt: Date.now() + 60_000 });
+  response = await upload(liveUploadId);
+  assert.equal(response.status, 200);
+  assert.equal(await storage.get(legacyKey(liveUploadId)), undefined);
+  assert.ok(await storage.get(currentKey(liveUploadId)));
+
+  const liveViewId = "018f6c86-3f34-7a31-8f27-16f5b96cce59";
+  await seedLegacy({ id: liveViewId, expiresAt: Date.now() + 60_000, viewOnly: true });
+  response = await workerModule.default.fetch(new Request(
+    `https://hub.test/api/attachment/view?id=${liveViewId}`,
+    { headers: { Authorization: authorization } },
+  ), env);
+  assert.equal(response.status, 200);
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
+  assert.ok(await storage.get(legacyKey(liveViewId)));
+  assert.equal(await storage.get(currentKey(liveViewId)), undefined);
+  response = await workerModule.default.fetch(new Request(
+    `https://hub.test/api/attachment/view?id=${liveViewId}`,
+    { headers: { Authorization: `tma ${telegramInitData(botToken, 84)}` } },
+  ), env);
+  assert.equal(response.status, 404);
+  assert.ok(await storage.get(legacyKey(liveViewId)));
+  response = await viewUpload(liveViewId);
+  assert.equal(response.status, 200);
+  assert.equal(await storage.get(legacyKey(liveViewId)), undefined);
+  assert.ok(await storage.get(currentKey(liveViewId)));
+
+  const expiredEnqueueId = "018f6c86-3f34-7a31-8f27-16f5b96cce53";
+  const expiredCommandId = "018f6c86-3f34-7a31-8f27-16f5b96cce63";
+  await seedLegacy({ id: expiredEnqueueId, expiresAt: Date.now() - 1 });
+  response = await enqueue(expiredEnqueueId, expiredCommandId);
+  assert.equal(response.status, 404);
+  assert.equal(await storage.get(legacyKey(expiredEnqueueId)), undefined);
+  assert.equal(await storage.get(currentKey(expiredEnqueueId)), undefined);
+  assert.equal(await storage.get(chunkKey(expiredEnqueueId)), undefined);
+  assert.equal(await storage.get(`control:command:${expiredCommandId}`), undefined);
+
+  const liveId = "018f6c86-3f34-7a31-8f27-16f5b96cce54";
+  const liveCommandId = "018f6c86-3f34-7a31-8f27-16f5b96cce64";
+  await seedLegacy({ id: liveId, expiresAt: Date.now() + 60_000 });
+  response = await enqueue(liveId, liveCommandId);
+  assert.equal(response.status, 202);
+  assert.equal(await storage.get(legacyKey(liveId)), undefined);
+  let promoted = await storage.get(currentKey(liveId));
+  assert.deepEqual(promoted.commandIds, [liveCommandId]);
+  response = await enqueue(liveId, liveCommandId);
+  assert.equal(response.status, 200);
+  promoted = await storage.get(currentKey(liveId));
+  assert.deepEqual(promoted.commandIds, [liveCommandId]);
+
+  response = await workerModule.default.fetch(
+    signedServiceRequest("https://hub.test/api/control/pull", { limit: 10 }, syncSecret),
+    env,
+  );
+  assert.ok((await response.json()).commands.some(({ id }) => id === liveCommandId));
+  const retainedCommandId = "018f6c86-3f34-7a31-8f27-16f5b96cce65";
+  promoted = { ...await storage.get(currentKey(liveId)), commandIds: [liveCommandId, retainedCommandId] };
+  await storage.put(legacyKey(liveId), promoted);
+  await storage.delete(currentKey(liveId));
+  response = await workerModule.default.fetch(
+    signedServiceRequest("https://hub.test/api/control/result", {
+      id: liveCommandId,
+      userId: "42",
+      ok: true,
+      result: { accepted: true },
+    }, syncSecret),
+    env,
+  );
+  assert.equal(response.status, 200);
+  assert.equal(await storage.get(legacyKey(liveId)), undefined);
+  assert.deepEqual((await storage.get(currentKey(liveId))).commandIds, [retainedCommandId]);
+
+  const otherOwnerId = "018f6c86-3f34-7a31-8f27-16f5b96cce55";
+  await seedLegacy({ id: otherOwnerId, expiresAt: Date.now() + 60_000, userId: "84" });
+  response = await enqueue(otherOwnerId, "018f6c86-3f34-7a31-8f27-16f5b96cce66");
+  assert.equal(response.status, 404);
+  assert.ok(await storage.get(legacyKey(otherOwnerId)));
+  assert.equal(await storage.get(currentKey(otherOwnerId)), undefined);
+
+  const mixedId = "018f6c86-3f34-7a31-8f27-16f5b96cce56";
+  const mixedLegacy = await seedLegacy({ id: mixedId, expiresAt: Date.now() + 60_000 });
+  await storage.put(currentKey(mixedId), { ...mixedLegacy });
+  response = await upload(mixedId);
+  assert.equal(response.status, 409);
+  response = await enqueue(mixedId, "018f6c86-3f34-7a31-8f27-16f5b96cce67");
+  assert.equal(response.status, 409);
+  assert.ok(await storage.get(legacyKey(mixedId)));
+  assert.ok(await storage.get(currentKey(mixedId)));
+
+  const rollbackId = "018f6c86-3f34-7a31-8f27-16f5b96cce57";
+  const rollbackCommandId = "018f6c86-3f34-7a31-8f27-16f5b96cce68";
+  await seedLegacy({ id: rollbackId, expiresAt: Date.now() + 60_000 });
+  storage.failDeleteKey = legacyKey(rollbackId);
+  response = await enqueue(rollbackId, rollbackCommandId);
+  assert.equal(response.status, 400);
+  assert.match((await response.json()).error, /promotion failure/u);
+  assert.ok(await storage.get(legacyKey(rollbackId)));
+  assert.equal(await storage.get(currentKey(rollbackId)), undefined);
+  assert.equal(await storage.get(`control:command:${rollbackCommandId}`), undefined);
+  response = await enqueue(rollbackId, rollbackCommandId);
+  assert.equal(response.status, 202);
+  assert.equal(await storage.get(legacyKey(rollbackId)), undefined);
+  assert.ok(await storage.get(currentKey(rollbackId)));
+});
+
 test("Worker serves temporary historical attachment views only to their owner", async () => {
   const workerModule = await loadWorker();
   const storage = new MemoryStorage();
@@ -2547,6 +3409,10 @@ test("Worker serves temporary historical attachment views only to their owner", 
     "base64",
   );
   const bodyHash = createHash("sha256").update(png).digest("hex");
+  for (let index = 0; index < 512; index += 1) {
+    await storage.put(`control:attachment-chunk:legacy-${index}:0`, new Uint8Array(1_024));
+  }
+  storage.listCalls = [];
   let response = await workerModule.default.fetch(signedBinaryServiceRequest(
     "https://hub.test/api/control/attachment/view/push",
     png,
@@ -2559,6 +3425,8 @@ test("Worker serves temporary historical attachment views only to their owner", 
     },
   ), env);
   assert.equal(response.status, 201);
+  assert.ok(storage.listCalls.some(({ prefix }) => prefix === "control:attachment-manifest:"));
+  assert.equal(storage.listCalls.some(({ prefix }) => prefix === "control:attachment:"), false);
 
   response = await workerModule.default.fetch(new Request(
     `https://hub.test/api/attachment/view?id=${id}`,
@@ -2566,13 +3434,51 @@ test("Worker serves temporary historical attachment views only to their owner", 
   ), env);
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("Content-Type"), "image/png");
+  assert.equal(response.headers.get("Content-Length"), String(png.length));
+  assert.equal(response.headers.get("Cache-Control"), "private, no-store");
+  assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff");
   assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
+
+  response = await workerModule.default.fetch(new Request(
+    `https://hub.test/api/attachment/view?id=${id}`,
+    { headers: { Authorization: `tma ${telegramInitData(botToken, 42)}` } },
+  ), env);
+  assert.equal(response.status, 200);
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
+
+  response = await workerModule.default.fetch(new Request(
+    `https://hub.test/api/attachment/view?id=${id}`,
+  ), env);
+  assert.equal(response.status, 401);
+
+  response = await workerModule.default.fetch(new Request(
+    `https://hub.test/api/attachment/view?id=${id}`,
+    { headers: { Authorization: `tma ${telegramInitData(botToken, 42)}forged` } },
+  ), env);
+  assert.equal(response.status, 401);
+
+  response = await workerModule.default.fetch(new Request(
+    "https://hub.test/api/attachment/view?id=018f6c86-3f34-7a31-8f27-16f5b96cce42",
+    { headers: { Authorization: `tma ${telegramInitData(botToken, 42)}` } },
+  ), env);
+  assert.equal(response.status, 404);
 
   response = await workerModule.default.fetch(new Request(
     `https://hub.test/api/attachment/view?id=${id}`,
     { headers: { Authorization: `tma ${telegramInitData(botToken, 84)}` } },
   ), env);
   assert.equal(response.status, 404);
+
+  const manifestKey = `control:attachment-manifest:${id}`;
+  const expired = await storage.get(manifestKey);
+  expired.expiresAt = Date.now() - 1;
+  await storage.put(manifestKey, expired);
+  response = await workerModule.default.fetch(new Request(
+    `https://hub.test/api/attachment/view?id=${id}`,
+    { headers: { Authorization: `tma ${telegramInitData(botToken, 42)}` } },
+  ), env);
+  assert.equal(response.status, 404);
+  assert.equal(await storage.get(manifestKey), undefined);
 
   response = await workerModule.default.fetch(new Request(
     "https://hub.test/api/control/attachment/view/push",

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
 
 import {
@@ -7,6 +8,11 @@ import {
   selectTestContourCodexStream,
   selectTestContourModel,
 } from "../../../src/infrastructure/browser/test-contour-ui-smoke.mjs";
+
+const smokeSource = fs.readFileSync(
+  new URL("../../../src/infrastructure/browser/test-contour-ui-smoke.mjs", import.meta.url),
+  "utf8",
+);
 
 function smokePage({ availableModels = ["gpt-5.3-codex-spark"], selectedModel = "" } = {}) {
   const events = [];
@@ -151,6 +157,16 @@ test("Test Contour smoke skips empty Workspaces and selects a named Codex Stream
     ["stream.waitFor", 1, { state: "visible", timeout: 2_000 }],
     ["stream.click", 1],
   ]);
+});
+
+test("Test Contour smoke probes the selected Codex Stream without rotating its Thread", () => {
+  assert.match(smokeSource, /await selectTestContourCodexStream\(page, timeoutMs\)/u);
+  assert.match(smokeSource, /await selectTestContourModel\(page, model, timeoutMs\)/u);
+  assert.doesNotMatch(smokeSource, /\[data-stream-menu-action="replace-thread"\]/u);
+  assert.doesNotMatch(
+    smokeSource,
+    /\[data-stream-menu-action="continue-provider"\]\[data-provider="codex"\]/u,
+  );
 });
 
 test("Test Contour smoke recognizes only the exact model-setting ACK", () => {

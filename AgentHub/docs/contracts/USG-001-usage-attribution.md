@@ -275,6 +275,34 @@ estimand.
 - `declared` epochs are excluded by default. Including them is an explicit
   choice and marks the affected intervals.
 
+## Local cost projection
+
+Raw usage facts retain their exact model and token counters. Journal,
+Statistics, turn summaries and currency views derive their local cost from the
+single `turnCreditBreakdown` owner and its immutable model-price history. A
+version is selected by canonical model id and the turn's exact `completedAt`.
+The boundary `2026-09-08T00:00:00Z` is the first verified date because the
+official source does not publish a more precise effective timestamp. Turns
+strictly before it retain the previous default-tier USD rates per million input
+/ cached-input / output tokens: Sol `5 / 0.50 / 30`, Terra `2.50 / 0.25 / 15`,
+and Luna `1 / 0.10 / 6`. At and after the boundary the rates are Astra
+`10 / 1 / 50`, Sol `4 / 0.40 / 20`, Terra `2 / 0.20 / 12`, and Luna
+`0.20 / 0.02 / 1.20`. Astra has one verified tariff and no invented historical
+version. A missing or malformed completion timestamp selects the oldest retained
+version for that model so opening legacy history cannot apply a newer price.
+
+One USD equals `25 cr`; PTE and currency views convert the resulting canonical
+credit breakdown rather than pricing tokens again. Reprojection, rollout
+backfill, restart and sync import must preserve the durable completion timestamp
+and therefore reproduce the same total. The projection must not introduce a
+second surface-specific multiplier or rewrite synchronized usage facts.
+
+The unscoped accounting chart includes every local turn regardless of account.
+A synchronized turn is included only when its attributed account has an exact
+local Codex account-activity interval containing the configured turn timestamp.
+Missing local activity evidence excludes that synchronized turn. The account
+selector used by API-limit and comparison views must not narrow this chart.
+
 ## Legacy ingest
 
 - A schema `1` usage event is accepted so that an installation that never

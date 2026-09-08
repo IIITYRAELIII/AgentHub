@@ -322,10 +322,13 @@ function deviceSessionCookie(token, expiresAt, { secure = false } = {}) {
     + `${secure ? "; Secure" : ""}`;
 }
 
-const TELEGRAM_RUNTIME_SCRIPT = /\s*<script src="https:\/\/telegram\.org\/[^"]*"><\/script>/u;
+const TELEGRAM_RUNTIME_SCRIPTS = [
+  /\s*<script src="https:\/\/telegram\.org\/[^"]*"><\/script>/gu,
+  /\s*<script src="\/telegram-runtime-bootstrap(?:\.[a-f0-9]{12})?\.js(?:\?[^"]*)?"><\/script>/gu,
+];
 
 export function withoutTelegramRuntime(html) {
-  return String(html).replace(TELEGRAM_RUNTIME_SCRIPT, "");
+  return TELEGRAM_RUNTIME_SCRIPTS.reduce((body, pattern) => body.replace(pattern, ""), String(html));
 }
 
 function loopbackAddress(value) {
@@ -1194,8 +1197,9 @@ export class MiniAppServer {
           acceptEncoding: request.headers["accept-encoding"],
         });
       } catch (error) {
-        this.#reportUnexpected(error, "control");
-        json(response, 400, { ok: false, error: String(error?.message ?? error) }, method);
+        const statusCode = Number(error?.statusCode) === 409 ? 409 : 400;
+        if (statusCode !== 409) this.#reportUnexpected(error, "control");
+        json(response, statusCode, { ok: false, error: String(error?.message ?? error) }, method);
       }
       return;
     }
@@ -1462,6 +1466,7 @@ export class MiniAppServer {
         send(response, 200, metadata.type, await readFile(target), method, {
           headers: {
             "Cache-Control": "private, max-age=300",
+            "Content-Length": String(info.size),
             "X-Content-Type-Options": "nosniff",
             ...(metadata.isImage ? {} : { "Content-Disposition": downloadDisposition(metadata.name) }),
           },
@@ -1739,6 +1744,34 @@ export class MiniAppServer {
           return;
         }
         json(response, 200, { html, version: journal.version }, method, {
+          acceptEncoding: request.headers["accept-encoding"],
+        });
+      } catch (error) {
+        json(response, 503, { error: `Журнал недоступен: ${error.message}` }, method);
+      }
+      return;
+    }
+    if (url.pathname === "/api/journal/turns") {
+      if (!await this.#authorize(request, response)) return;
+      try {
+        const requestedVersion = String(url.searchParams.get("version") ?? "");
+        const page = await this.#journalDatabase.turnPage({
+          expectedVersion: requestedVersion,
+          profileMode: url.searchParams.get("profileMode"),
+          workspaceId: url.searchParams.get("workspaceId"),
+          streamId: url.searchParams.get("streamId"),
+          provider: url.searchParams.get("provider"),
+          threadId: url.searchParams.get("threadId"),
+          fromMs: url.searchParams.get("fromMs"),
+          toMs: url.searchParams.get("toMs"),
+          offset: url.searchParams.get("offset"),
+          limit: url.searchParams.get("limit"),
+        });
+        if (page.conflict) {
+          json(response, 409, { error: "Журнал обновился.", version: page.version }, method);
+          return;
+        }
+        json(response, 200, page, method, {
           acceptEncoding: request.headers["accept-encoding"],
         });
       } catch (error) {

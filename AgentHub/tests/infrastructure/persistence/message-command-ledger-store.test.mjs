@@ -20,6 +20,28 @@ function accept(store, sequence) {
   return { ...command, accepted: store.accept({ ...command, destination: "queued" }) };
 }
 
+test("A10 crash boundary restores durable queue over an older runtime snapshot", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-message-ledger-a10-"));
+  let store = new MessageCommandLedgerStore({ dataDir });
+  context.after(async () => {
+    store.close();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  const command = messageCommandFixture({
+    clientUserMessageId: "a10-after-ledger-before-snapshot",
+    itemId: "a10-queued-item",
+    fingerprint: "a10-fingerprint",
+  });
+  store.accept({ ...command, destination: "queued" });
+  store.close();
+
+  store = new MessageCommandLedgerStore({ dataDir });
+  const restored = store.overlay({ queuedInputs: [], desktopMessageReceipts: [] });
+  assert.deepEqual(restored.queuedInputs.map((item) => item.id), ["a10-queued-item"]);
+  assert.equal(restored.desktopMessageReceipts.length, 1);
+  assert.equal(store.get(command.item.clientUserMessageId).state, "queued");
+});
+
 test("message command projection scans only bounded active rows", async (context) => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-message-ledger-active-"));
   const store = new MessageCommandLedgerStore({ dataDir, maxActiveCommands: 2 });

@@ -1,7 +1,7 @@
 import { displayUserPrompt } from "../../application/task-history.mjs";
 import {
-  interstreamMessageDetails,
   normalizeInterstreamOrigin,
+  trustedInterstreamMessageDetails,
 } from "../../domain/interstream-message.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 
@@ -270,14 +270,21 @@ export class DesktopTaskService {
       },
     );
     const rawPrompt = String(record?.prompt ?? "");
-    const interstream = interstreamMessageDetails(rawPrompt);
+    const rootUserMessage = (Array.isArray(record?.userMessages) ? record.userMessages : [])
+      .find((message) => String(message?.role ?? "") === "user") ?? null;
+    const interstream = trustedInterstreamMessageDetails(rawPrompt, {
+      origin: record?.messageOrigin ?? record?.origin
+        ?? rootUserMessage?.origin ?? rootUserMessage?.messageOrigin,
+      clientUserMessageId: record?.clientUserMessageId
+        ?? rootUserMessage?.clientUserMessageId ?? rootUserMessage?.clientId,
+    });
     const focusedTurn = {
       provider: targetProvider,
       taskThreadId: taskThread,
       turnThreadId: turnThread,
       turnId,
       title: String(record?.title ?? ""),
-      prompt: displayUserPrompt(rawPrompt),
+      prompt: displayUserPrompt(interstream?.text ?? rawPrompt),
       ...(interstream ? { promptAuthor: interstream.author } : {}),
       answer: String(record?.body ?? record?.text ?? "").slice(
         0,

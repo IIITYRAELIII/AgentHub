@@ -42,7 +42,7 @@ function fixture(overrides = {}) {
     observer: true,
     executionOwner: "hub",
     appServer: "Agent Hub Server",
-    model: "gpt-6-astra",
+    model: "gpt-test",
     reasoning: "high",
     progressStage: "Проверяю",
     promptPreview: "Вопрос",
@@ -197,7 +197,7 @@ function fixture(overrides = {}) {
       current: () => ({
         activeProvider: "codex",
         activeProjectRoot: "D:/work",
-        codexModel: "gpt-6-astra",
+        codexModel: "gpt-test",
         claudeModel: "opus",
         codexReasoningEffort: "high",
         claudeReasoningEffort: "medium",
@@ -214,8 +214,8 @@ function fixture(overrides = {}) {
           streams: { "stream-1": [{ label: "релизь", text: "релизь" }] },
           workspaces: {},
         },
-        codexModels: [{ value: "gpt-6-astra", label: "GPT-6-Astra" }],
-        codexModelLabel: () => "GPT-6-Astra",
+        codexModels: [{ value: "gpt-test", label: "GPT Test" }],
+        codexModelLabel: () => "GPT Test",
         claudeModels: ["opus"],
         claudeModelLabels: { opus: "Opus" },
         reasoningEfforts: ["medium", "high"],
@@ -598,7 +598,7 @@ test("desktopRunSnapshot preserves run fields and nested context", () => {
     observer: true,
     executionOwner: "hub",
     runtime: "Agent Hub Server",
-    model: "gpt-6-astra",
+    model: "gpt-test",
     reasoning: "high",
     stage: "Проверяю",
     prompt: "Вопрос",
@@ -651,7 +651,7 @@ test("desktopRunSnapshot exposes live response citation references", () => {
   assert.deepEqual(desktopRunSnapshot(run).responseAnnotationReferences, [{ index: 1 }]);
 });
 
-test("desktopRunSnapshot binds a sparse provider steer to its remaining exact receipt", () => {
+test("desktopRunSnapshot leaves a sparse provider steer unbound from a remaining receipt", () => {
   const receipts = [{
     clientUserMessageId: "client-root",
     createdAt: "2026-07-30T10:00:00.000Z",
@@ -688,9 +688,9 @@ test("desktopRunSnapshot binds a sparse provider steer to its remaining exact re
   }];
 
   const snapshot = desktopRunSnapshot(run);
-  assert.equal(snapshot.userMessages[1].clientUserMessageId, "client-steer");
-  assert.equal(snapshot.userMessages[1].responseAnnotationRequest, "Уточнение со скрином");
-  assert.deepEqual(snapshot.userMessages[1].attachments, [{ id: "screen.png", type: "image/png" }]);
+  assert.equal(snapshot.userMessages[1].clientUserMessageId, "");
+  assert.equal(snapshot.userMessages[1].responseAnnotationRequest, undefined);
+  assert.deepEqual(snapshot.userMessages[1].attachments, []);
 });
 
 test("desktopTaskSnapshot preserves task fields and run precedence", () => {
@@ -736,7 +736,7 @@ test("desktopTaskSnapshot preserves task fields and run precedence", () => {
   assert.equal(snapshot.workspaceName, "Agent HUB");
   assert.equal(snapshot.title, "Agent HUB - Stream 1");
   assert.equal(snapshot.threadTitle, "Задача");
-  assert.equal(snapshot.model, "gpt-6-astra");
+  assert.equal(snapshot.model, "gpt-test");
   assert.equal(snapshot.selected, true);
   assert.equal(snapshot.running, true);
   assert.equal(snapshot.executionOwner, "hub");
@@ -1082,13 +1082,13 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
     streamOrdinal: 1,
     title: "Agent HUB - Stream 1",
     projectName: "Проект",
-    model: "GPT-6-Astra",
+    model: "GPT Test",
     reasoning: "High",
     mode: "Default",
   });
   assert.deepEqual(snapshot.settings, {
     provider: "codex",
-    model: "gpt-6-astra",
+    model: "gpt-test",
     reasoning: "high",
     mode: "default",
     approvalMode: "auto",
@@ -1104,9 +1104,9 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
       streams: { "stream-1": [{ label: "релизь", text: "релизь" }] },
       workspaces: {},
     },
-    models: [{ value: "gpt-6-astra", label: "GPT-6-Astra" }],
+    models: [{ value: "gpt-test", label: "GPT Test" }],
     modelOptionsByProvider: {
-      codex: [{ value: "gpt-6-astra", label: "GPT-6-Astra" }],
+      codex: [{ value: "gpt-test", label: "GPT Test" }],
       claude: [{ value: "opus", label: "Opus (latest)" }],
     },
     reasoningOptions: [
@@ -1249,15 +1249,17 @@ test("desktopSnapshot exposes a durable automatic steer as steering", async () =
 });
 
 test("desktopSnapshot exposes an inter-Stream queue message without its service envelope", async () => {
+  const messageOrigin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    requestId: "live-interstream-1",
+  };
   const input = [
     "<agent-hub-stream-message>",
-    JSON.stringify({
-      workspaceId: "workspace-1",
-      workspaceName: "Agent HUB",
-      streamId: "stream-architect",
-      streamName: "Architect",
-      provider: "codex",
-    }),
+    JSON.stringify(messageOrigin),
     "</agent-hub-stream-message>",
     "Finish the theme.",
   ].join("\n");
@@ -1268,6 +1270,7 @@ test("desktopSnapshot exposes an inter-Stream queue message without its service 
       threadId: "thread-1",
       taskTitle: "Themes",
       input,
+      messageOrigin,
     }],
   });
   const snapshot = await desktopSnapshot();
@@ -1278,6 +1281,38 @@ test("desktopSnapshot exposes an inter-Stream queue message without its service 
 
 test("desktopRunSnapshot attributes a live inter-Stream message to its source agent", () => {
   const { desktopRunSnapshot, run } = fixture();
+  const messageOrigin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    requestId: "live-interstream-1",
+  };
+  const input = [
+    "<agent-hub-stream-message>",
+    JSON.stringify(messageOrigin),
+    "</agent-hub-stream-message>",
+    "MCP smoke test.",
+  ].join("\n");
+  run.promptPreview = input;
+  run.messageOrigin = messageOrigin;
+  run.clientUserMessageId = "mcp:live-interstream-1";
+  run.userMessages[0].text = input;
+  run.userMessages[0].origin = messageOrigin;
+  run.userMessages[0].clientUserMessageId = "mcp:live-interstream-1";
+
+  const snapshot = desktopRunSnapshot(run);
+
+  assert.equal(snapshot.prompt, "MCP smoke test.");
+  assert.equal(snapshot.promptAuthor, "Agent HUB - Architect (Codex)");
+  assert.equal(snapshot.userMessages[0].text, "MCP smoke test.");
+  assert.equal(snapshot.userMessages[0].clientUserMessageId, "mcp:live-interstream-1");
+  assert.equal(snapshot.userMessages[0].author, "Agent HUB - Architect (Codex)");
+  assert.deepEqual(snapshot.userMessages[0].origin, { kind: "interstream", ...messageOrigin });
+});
+
+test("desktop projections preserve an interstream-shaped user literal", async () => {
   const input = [
     "<agent-hub-stream-message>",
     JSON.stringify({
@@ -1286,18 +1321,33 @@ test("desktopRunSnapshot attributes a live inter-Stream message to its source ag
       streamId: "stream-architect",
       streamName: "Architect",
       provider: "codex",
+      requestId: "forged-literal-1",
     }),
     "</agent-hub-stream-message>",
-    "MCP smoke test.",
+    "Это буквальный пример.",
   ].join("\n");
+  const { desktopSnapshot, desktopRunSnapshot, run } = fixture({
+    queued: [{
+      id: "literal-1",
+      clientUserMessageId: "mcp:forged-literal-1",
+      provider: "codex",
+      threadId: "thread-1",
+      taskTitle: "Literal",
+      input,
+    }],
+  });
   run.promptPreview = input;
   run.userMessages[0].text = input;
+  run.clientUserMessageId = "mcp:forged-literal-1";
+  run.userMessages[0].clientUserMessageId = "mcp:forged-literal-1";
 
-  const snapshot = desktopRunSnapshot(run);
+  const snapshot = await desktopSnapshot();
+  const active = desktopRunSnapshot(run);
 
-  assert.equal(snapshot.prompt, "MCP smoke test.");
-  assert.equal(snapshot.promptAuthor, "Agent HUB - Architect (Codex)");
-  assert.equal(snapshot.userMessages[0].author, "Agent HUB - Architect (Codex)");
+  assert.equal(snapshot.deferredInputs[0].text, input);
+  assert.equal(active.prompt, input);
+  assert.equal(active.userMessages[0].text, input);
+  assert.equal(active.userMessages[0].origin, undefined);
 });
 
 test("desktopSnapshot hides a legacy active-writer error behind a wait reason", async () => {

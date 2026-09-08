@@ -4,13 +4,24 @@ import test from "node:test";
 import { CodexRunFinalizer } from "../../../src/providers/codex/codex-run-finalizer.mjs";
 import { turnEndKey } from "../../../src/application/turn-end-notifications.mjs";
 
-function fixture({ existingCompletion = null, discard = false, rejectCompletion = false } = {}) {
+function fixture({
+  existingCompletion = null,
+  discard = false,
+  rejectCompletion = false,
+  completionPatch = null,
+  formatUsage = () => "Usage",
+} = {}) {
   const events = [];
   const turnStarts = new Map();
   const notifications = {
     get: () => existingCompletion,
     recordCompletion: (value) => {
-      const completion = { ...value, usage: value.usage ?? {}, usageReported: value.usageReported };
+      const completion = {
+        ...value,
+        ...completionPatch,
+        usage: value.usage ?? {},
+        usageReported: value.usageReported,
+      };
       events.push(["record", completion]);
       return rejectCompletion ? null : completion;
     },
@@ -43,7 +54,7 @@ function fixture({ existingCompletion = null, discard = false, rejectCompletion 
     }]),
     completeRun: async (run) => events.push(["complete", run]),
     resolveTerminalAttachments: async () => [],
-    formatUsage: () => "Usage",
+    formatUsage,
     titleForAnswer: () => "Title",
     logger: { error: (...args) => events.push(["error", ...args]) },
   });
@@ -105,6 +116,49 @@ test("CodexRunFinalizer adopts audited start data and completes one durable deli
   const terminalIntent = state.events.find(([name]) => name === "commit")[2].channelIntents.telegram;
   assert.equal(terminalIntent.requested, true);
   assert.equal(terminalIntent.message, "Final\n\nUsage");
+});
+
+test("CodexRunFinalizer prices the live summary at the durable completion time", async () => {
+  let formattedTracker = null;
+  const state = fixture({
+    completionPatch: { completedAt: "2026-09-08T00:00:00.000Z" },
+    formatUsage: (tracker) => {
+      formattedTracker = tracker;
+      return "Usage";
+    },
+  });
+
+  await state.finalizer.finalize(run(), {
+    answer: "Final",
+    tracker: { usage: { inputTokens: 1 }, reported: true, model: "gpt-5.6-sol" },
+  });
+
+  assert.equal(formattedTracker.completedAt, "2026-09-08T00:00:00.000Z");
+});
+
+test("CodexRunFinalizer preserves canonical message origin independently of provider users", async () => {
+  const state = fixture();
+  const value = run();
+  value.clientUserMessageId = "mcp:finalizer-origin-1";
+  value.messageOrigin = {
+    kind: "interstream",
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    sourceThreadId: "thread-architect",
+    requestId: "finalizer-origin-1",
+  };
+  value.rawPrompt = "<agent-hub-stream-message>\nraw transport\n</agent-hub-stream-message>\nBody";
+  value.userMessages = [{ role: "user", text: "Provider projection without origin" }];
+
+  await state.finalizer.finalize(value, { answer: "Final" });
+
+  const recorded = state.events.find(([name]) => name === "record")[1];
+  assert.equal(recorded.clientUserMessageId, "mcp:finalizer-origin-1");
+  assert.deepEqual(recorded.messageOrigin, value.messageOrigin);
+  assert.equal(recorded.rawPrompt, value.rawPrompt);
 });
 
 test("CodexRunFinalizer publishes the exact terminal answer before the completed snapshot", async () => {
@@ -191,6 +245,31 @@ test("CodexRunFinalizer releases admission when durable channel materialization 
       < state.events.findIndex(([name]) => name === "terminal"),
   );
   assert.equal(state.events.at(-1)[0], "complete");
+});
+
+test("CodexRunFinalizer keeps a failed terminal commit replayable and releases once after retry", async () => {
+  const state = fixture();
+  const value = { ...run(), status: "finishing" };
+  let attempts = 0;
+  state.finalizer.commitTerminal = async (completion) => {
+    attempts += 1;
+    state.events.push(["commit-attempt", attempts]);
+    if (attempts === 1) throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
+    return {
+      terminal: { ...completion, terminalRevision: 1 },
+      outbox: { ...completion, terminalRevision: 1 },
+    };
+  };
+
+  await assert.rejects(state.finalizer.finalize(value, { answer: "Final" }), /database is locked/u);
+  assert.equal(value.status, "running");
+  assert.equal(state.events.some(([name]) => name === "complete"), false);
+  assert.equal(state.events.filter(([name]) => name === "save").length, 1);
+
+  value.status = "finishing";
+  await state.finalizer.finalize(value, { answer: "Final" });
+  assert.equal(attempts, 2);
+  assert.equal(state.events.filter(([name]) => name === "complete").length, 1);
 });
 
 test("CodexRunFinalizer does not treat an audited completion as a Telegram request", async () => {

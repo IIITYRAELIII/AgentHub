@@ -178,14 +178,18 @@ test("rollout backfill replaces old ledger history, preserves newer records and 
     const storedLedger = await database.loadLedger();
     const snapshot = await database.snapshot();
     database.close();
+    const projected = [
+      snapshot.html,
+      ...Object.values(snapshot.days),
+    ].join("\n");
     assert.deepEqual(storedLedger, normalizePersistedWorkLog(
       migration.ledger,
       { defaultProjectRoot: root },
     ).ledger);
-    assert.doesNotMatch(snapshot.html, /Старый длинный итог|Старый текст/u);
-    assert.match(snapshot.html, /Историческая задача/u);
-    assert.match(snapshot.html, /Новая задача/u);
-    assert.match(snapshot.html, /Claude задача/u);
+    assert.doesNotMatch(projected, /Старый длинный итог|Старый текст/u);
+    assert.match(projected, /Историческая задача/u);
+    assert.match(projected, /Новая задача/u);
+    assert.match(projected, /Claude задача/u);
     assert.equal(
       await readFile(workLogFile, "utf8"),
       "# Глобальный журнал работ\n\nСтарый длинный итог\n",

@@ -88,6 +88,8 @@ test("run shell owns diff persistence and binds presentation/admission ports", a
       },
       sendMessageTo: async () => {},
       saveState: async () => {},
+      stageLaunchAdmission: () => ({}),
+      abortLaunchAdmission: () => {},
     },
     diff: {
       capture: async () => "new diff",

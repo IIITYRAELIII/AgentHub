@@ -22,7 +22,7 @@
   const STREAM_VIEW_SETTINGS_CHANGE_EVENT = "agenthub:stream-view-settings-change";
   const QUICK_MESSAGE_MAX_SCOPES = 200;
   const QUICK_MESSAGE_MAX_ITEMS = 20;
-  const QUICK_MESSAGE_MAX_LABEL = 64;
+  const QUICK_MESSAGE_MAX_TITLE = 64;
   const QUICK_MESSAGE_MAX_TEXT = 4_000;
 
   function normalizePinnedWorkspaceStreams(value) {
@@ -46,11 +46,10 @@
       : { text: value };
     const text = String(source.text ?? "").trim().slice(0, QUICK_MESSAGE_MAX_TEXT);
     if (!text) return null;
-    const label = String(source.label ?? text).trim().slice(0, QUICK_MESSAGE_MAX_LABEL)
-      || text.slice(0, QUICK_MESSAGE_MAX_LABEL);
+    const title = String(source.title ?? source.label ?? text).trim().slice(0, QUICK_MESSAGE_MAX_TITLE)
+      || text.slice(0, QUICK_MESSAGE_MAX_TITLE);
     return {
-      id: String(source.id ?? label).trim().slice(0, QUICK_MESSAGE_MAX_LABEL) || label,
-      label,
+      title,
       text,
     };
   }
@@ -58,12 +57,10 @@
   function normalizeQuickMessageEntries(value) {
     if (!Array.isArray(value)) return [];
     const entries = [];
-    const seen = new Set();
     for (const item of value) {
       const entry = normalizeQuickMessageEntry(item);
-      if (!entry || seen.has(entry.text)) continue;
+      if (!entry) continue;
       entries.push(entry);
-      seen.add(entry.text);
       if (entries.length >= QUICK_MESSAGE_MAX_ITEMS) break;
     }
     return entries;
@@ -95,16 +92,13 @@
     const workspaceEntries = messages.workspaces[String(workspaceId ?? "").trim()] ?? [];
     const streamEntries = messages.streams[String(streamId ?? "").trim()] ?? [];
     const entries = [];
-    const seen = new Set();
     for (const [scope, source] of [
       ["global", globalEntries],
       ["workspace", workspaceEntries],
       ["stream", streamEntries],
     ]) {
       for (const entry of source) {
-        if (seen.has(entry.text)) continue;
         entries.push({ ...entry, scope });
-        seen.add(entry.text);
       }
     }
     return entries;
@@ -119,9 +113,9 @@
         .map((line) => {
           const separator = line.indexOf("|");
           return separator < 0
-            ? { label: line, text: line }
+            ? { title: line, text: line }
             : {
-                label: line.slice(0, separator).trim(),
+                title: line.slice(0, separator).trim(),
                 text: line.slice(separator + 1).trim(),
               };
         }),
@@ -130,7 +124,7 @@
 
   function quickMessagesToText(entries) {
     return normalizeQuickMessageEntries(entries)
-      .map((entry) => (entry.label === entry.text ? entry.text : `${entry.label} | ${entry.text}`))
+      .map((entry) => (entry.title === entry.text ? entry.text : `${entry.title} | ${entry.text}`))
       .join("\n");
   }
 
@@ -139,10 +133,10 @@
     const mod10 = count % 10;
     const mod100 = count % 100;
     const noun = mod10 === 1 && mod100 !== 11
-      ? "ответ"
+      ? "шаблон"
       : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)
-        ? "ответа"
-        : "ответов";
+        ? "шаблона"
+        : "шаблонов";
     return `${count} ${noun}`;
   }
 
@@ -618,23 +612,11 @@
     ));
   }
 
-  /* Список рабочих пространств отвечает сразу на два разных вопроса: «где
-     сейчас идёт работа» и «где вообще живёт проект». Пока это один список,
-     они мешают друг другу: сортировка по активности поднимает наверх целое
-     семейство однотипных пространств, а группировка по семействам, наоборот,
-     прячет то, что горит прямо сейчас.
-
-     Поэтому вопросы разведены. Сверху — короткая лента активных, плоская и
-     без группировки: семейство попадает в неё ровно теми пространствами, где
-     действительно идёт работа. Ниже — каталог, который от активности не
-     зависит: порядок в нём стабильный, и место проекта не прыгает от того,
-     что кто-то в соседнем потоке написал сообщение.
-
-     Семейство определяется по первому слову имени и собирается только когда
-     его носят minGroupSize и больше пространств: две «FB» группой не станут. */
+  /* Активные Workspace остаются наверху, а остальной каталог — в стабильном
+     алфавитном порядке. Только явно выбранные пользователем папки группируют
+     Workspace; совпадающие префиксы имён не меняют структуру каталога. */
   const WORKSPACE_ACTIVE_LIMIT = 6;
   const WORKSPACE_ACTIVE_WINDOW_MS = 3 * 60 * 60 * 1000;
-  const WORKSPACE_GROUP_MIN_SIZE = 3;
   const WORKSPACE_FOLDER_MAX_LENGTH = 80;
 
   function normalizeWorkspaceFolderName(value) {
@@ -661,19 +643,6 @@
     if (!workspaceId) return null;
     const normalized = normalizeWorkspaceFolderName(folderName);
     return { workspaceId, folderName: normalized };
-  }
-
-  function renderWorkspaceContextMenuChildren(menu, children, currentFolder, createRemoveAction) {
-    const rendered = [...(children ?? [])];
-    if (normalizeWorkspaceFolderName(currentFolder)) {
-      if (typeof createRemoveAction !== "function") {
-        throw new TypeError("Workspace folder remove action factory is required");
-      }
-      const removeAction = createRemoveAction();
-      if (removeAction == null) throw new TypeError("Workspace folder remove action is required");
-      rendered.push(removeAction);
-    }
-    menu.replaceChildren(...rendered);
   }
 
   function workspaceCreationSettings({
@@ -711,36 +680,24 @@
     };
   }
 
-  function workspaceArchivePresentation(workspaces, nowMs = Date.now()) {
-    return [...(workspaces ?? [])].map((workspace) => {
-      const remainingMs = Math.max(0, Number(workspace?.purgeAfterMs) - nowMs);
-      const hours = Math.max(1, Math.ceil(remainingMs / (60 * 60 * 1000)));
-      return {
-        id: String(workspace?.id ?? ""),
-        name: String(workspace?.name ?? "").trim() || "Без названия",
-        streamCount: Math.max(0, Number(workspace?.streamCount) || 0),
-        threadCount: Math.max(0, Number(workspace?.threadCount) || 0),
-        purgeAfterMs: Number(workspace?.purgeAfterMs) || 0,
-        remainingLabel: hours < 24 ? `Осталось около ${hours} ч.` : `Осталось ${Math.ceil(hours / 24)} дн.`,
-      };
-    }).filter((workspace) => workspace.id);
+  function workspaceArchivePresentation(workspaces) {
+    return [...(workspaces ?? [])].map((workspace) => ({
+      id: String(workspace?.id ?? ""),
+      name: String(workspace?.name ?? "").trim() || "Без названия",
+      streamCount: Math.max(0, Number(workspace?.streamCount) || 0),
+      threadCount: Math.max(0, Number(workspace?.threadCount) || 0),
+      purgeAfterMs: null,
+    })).filter((workspace) => workspace.id);
   }
 
   function workspaceArchiveNameMatches(workspace, confirmation) {
     return String(confirmation ?? "") === String(workspace?.name ?? "");
   }
 
-  function workspaceFamilyKey(group) {
-    const name = String(group?.name ?? "").trim();
-    const [head] = name.split(/\s+/u);
-    return head && head.length <= 24 && name.length > head.length ? head : "";
-  }
-
   function workspaceSections(groups, {
     nowMs = Date.now(),
     activeLimit = WORKSPACE_ACTIVE_LIMIT,
     activeWindowMs = WORKSPACE_ACTIVE_WINDOW_MS,
-    minGroupSize = WORKSPACE_GROUP_MIN_SIZE,
     folderNames = [],
   } = {}) {
     const ordered = orderWorkspaceGroups(groups);
@@ -764,18 +721,11 @@
       const folderName = workspaceFolderName(group);
       if (folderName) {
         const items = manualFolders.get(folderName) ?? [];
-        items.push({ ...group, shortName: group.name });
+        items.push(group);
         manualFolders.set(folderName, items);
       } else {
         unassigned.push(group);
       }
-    }
-
-    const families = new Map();
-    for (const group of unassigned) {
-      const key = workspaceFamilyKey(group);
-      if (!key) continue;
-      families.set(key, (families.get(key) ?? 0) + 1);
     }
 
     const catalog = [...manualFolders.entries()]
@@ -788,25 +738,10 @@
           String(left?.name ?? "").localeCompare(String(right?.name ?? ""), "ru")
         )),
       }));
-    const opened = new Map();
     for (const group of [...unassigned].sort((left, right) => (
       String(left?.name ?? "").localeCompare(String(right?.name ?? ""), "ru")
     ))) {
-      const key = workspaceFamilyKey(group);
-      if (!key || (families.get(key) ?? 0) < minGroupSize) {
-        catalog.push({ type: "workspace", group });
-        continue;
-      }
-      let family = opened.get(key);
-      if (!family) {
-        family = { type: "family", key: `family:${key}`, name: key, items: [] };
-        opened.set(key, family);
-        catalog.push(family);
-      }
-      family.items.push({
-        ...group,
-        shortName: String(group.name ?? "").slice(key.length).trim() || group.name,
-      });
+      catalog.push({ type: "workspace", group });
     }
     return { active, catalog };
   }
@@ -1636,7 +1571,6 @@
     workspaceFolderOpen,
     workspaceFolderNames,
     workspaceFolderMutation,
-    renderWorkspaceContextMenuChildren,
     workspaceFolderRenamePlan,
     workspaceCreationSettings,
     workspaceArchiveNameMatches,

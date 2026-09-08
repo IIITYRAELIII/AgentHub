@@ -6,21 +6,54 @@ const TOKEN_USAGE_FIELDS = [
   "totalTokens",
 ];
 
-const MODEL_CREDIT_RATES = new Map([
-  ["gpt-5.6-sol", { input: 125, cachedInput: 12.5, output: 750 }],
-  ["gpt-5.6-terra", { input: 62.5, cachedInput: 6.25, output: 375 }],
-  // Subagent review rollouts report this product alias instead of the
-  // underlying balanced Codex model identifier.
-  ["codex-auto-review", { input: 62.5, cachedInput: 6.25, output: 375 }],
-  ["gpt-5.6-luna", { input: 25, cachedInput: 2.5, output: 150 }],
-  ["gpt-5.5", { input: 125, cachedInput: 12.5, output: 750 }],
-  ["gpt-5.4", { input: 62.5, cachedInput: 6.25, output: 375 }],
-  ["gpt-5.4-mini", { input: 18.75, cachedInput: 1.875, output: 113 }],
-  ["gpt-5.3-codex-spark", { input: 0, cachedInput: 0, output: 0 }],
+export const MODEL_PRICE_CHANGE_EFFECTIVE_FROM = "2026-09-08T00:00:00.000Z";
+export const CREDITS_PER_USD = 25;
+
+function priceVersion(effectiveFrom, usdPerMillion) {
+  return Object.freeze({
+    effectiveFrom,
+    usdPerMillion: Object.freeze({ ...usdPerMillion }),
+  });
+}
+
+function priceHistory(...versions) {
+  return Object.freeze(versions);
+}
+
+// USD per 1M tokens. Historical versions remain immutable so rebuilding an old
+// turn never applies today's price. Astra has one verified price; no earlier
+// official tariff is known.
+const MODEL_PRICE_REGISTRY = new Map([
+  ["gpt-6-astra", priceHistory(
+    priceVersion(null, { input: 10, cachedInput: 1, output: 50 }),
+  )],
+  ["gpt-5.6-sol", priceHistory(
+    priceVersion(null, { input: 5, cachedInput: 0.5, output: 30 }),
+    priceVersion(MODEL_PRICE_CHANGE_EFFECTIVE_FROM, { input: 4, cachedInput: 0.4, output: 20 }),
+  )],
+  ["gpt-5.6-terra", priceHistory(
+    priceVersion(null, { input: 2.5, cachedInput: 0.25, output: 15 }),
+    priceVersion(MODEL_PRICE_CHANGE_EFFECTIVE_FROM, { input: 2, cachedInput: 0.2, output: 12 }),
+  )],
+  ["gpt-5.6-luna", priceHistory(
+    priceVersion(null, { input: 1, cachedInput: 0.1, output: 6 }),
+    priceVersion(MODEL_PRICE_CHANGE_EFFECTIVE_FROM, { input: 0.2, cachedInput: 0.02, output: 1.2 }),
+  )],
+  ["gpt-5.5", priceHistory(
+    priceVersion(null, { input: 5, cachedInput: 0.5, output: 30 }),
+  )],
+  ["gpt-5.4", priceHistory(
+    priceVersion(null, { input: 2.5, cachedInput: 0.25, output: 15 }),
+  )],
+  ["gpt-5.4-mini", priceHistory(
+    priceVersion(null, { input: 0.75, cachedInput: 0.075, output: 4.52 }),
+  )],
+  ["gpt-5.3-codex-spark", priceHistory(
+    priceVersion(null, { input: 0, cachedInput: 0, output: 0 }),
+  )],
 ]);
 
 const CREDIT_FIELDS = ["input", "cache", "output", "reasoning", "estimate", "total"];
-export const CREDITS_PER_USD = 25;
 const SCALED_CREDIT_FORMATTER = new Intl.NumberFormat("ru-RU", {
   minimumFractionDigits: 1,
   maximumFractionDigits: 1,
@@ -43,23 +76,59 @@ export function normalizeServiceTier(value) {
   return ["fast", "priority"].includes(tier) ? "fast" : "default";
 }
 
-export function modelCreditRates(model) {
+function canonicalPricedModel(model) {
   const id = normalizedModel(model);
-  const canonical = MODEL_CREDIT_RATES.has(id)
+  return MODEL_PRICE_REGISTRY.has(id)
     ? id
-    : id.includes("spark")
-      ? "gpt-5.3-codex-spark"
-      : id.startsWith("gpt-5.6")
-        ? "gpt-5.6-sol"
-        : id.startsWith("gpt-5.5")
-          ? "gpt-5.5"
-          : id.startsWith("gpt-5.4-mini")
-            ? "gpt-5.4-mini"
-            : id.startsWith("gpt-5.4")
-              ? "gpt-5.4"
-              : id;
-  const rates = MODEL_CREDIT_RATES.get(canonical);
-  return rates ? { ...rates } : null;
+    : id === "codex-auto-review"
+      ? "gpt-5.6-terra"
+      : id.includes("spark")
+        ? "gpt-5.3-codex-spark"
+        : id.startsWith("gpt-5.6")
+          ? "gpt-5.6-sol"
+          : id.startsWith("gpt-5.5")
+            ? "gpt-5.5"
+            : id.startsWith("gpt-5.4-mini")
+              ? "gpt-5.4-mini"
+              : id.startsWith("gpt-5.4")
+                ? "gpt-5.4"
+                : id;
+}
+
+function completedAtMilliseconds(value) {
+  if (value instanceof Date) {
+    const time = value.getTime();
+    return Number.isFinite(time) ? time : null;
+  }
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  const time = Date.parse(text);
+  return Number.isFinite(time) ? time : null;
+}
+
+export function modelPriceRates(model, { completedAt } = {}) {
+  const versions = MODEL_PRICE_REGISTRY.get(canonicalPricedModel(model));
+  if (!versions?.length) return null;
+  const completedAtMs = completedAtMilliseconds(completedAt);
+  // Missing or malformed legacy timestamps deliberately select the oldest
+  // retained version. That is the only fail-safe choice that cannot reprice
+  // historical data merely because it was reopened by newer software.
+  const selected = completedAtMs == null
+    ? versions[0]
+    : versions.reduce((match, version) => {
+      if (version.effectiveFrom == null) return version;
+      return Date.parse(version.effectiveFrom) <= completedAtMs ? version : match;
+    }, versions[0]);
+  return { ...selected.usdPerMillion };
+}
+
+export function modelCreditRates(model, options = {}) {
+  const prices = modelPriceRates(model, options);
+  if (!prices) return null;
+  return Object.fromEntries(Object.entries(prices).map(([category, usd]) => [
+    category,
+    Number((usd * CREDITS_PER_USD).toFixed(12)),
+  ]));
 }
 
 export function fastModeCreditMultiplier(model, serviceTier) {
@@ -134,9 +203,10 @@ export function turnCreditBreakdown(usage, {
   model,
   serviceTier = "default",
   estimatedCredits = 0,
+  completedAt,
 } = {}) {
   const normalized = normalizeTokenUsage(usage);
-  const rates = modelCreditRates(model);
+  const rates = modelCreditRates(model, { completedAt });
   const estimate = Math.max(0, Number(estimatedCredits) || 0);
   if (!rates) {
     const hasTokenUsage = TOKEN_USAGE_FIELDS.some((field) => normalized[field] > 0);
@@ -247,5 +317,6 @@ export function formatTurnTokenUsage(tracker) {
     model: tracker?.model,
     serviceTier: tracker?.serviceTier,
     estimatedCredits,
+    completedAt: tracker?.completedAt,
   });
 }

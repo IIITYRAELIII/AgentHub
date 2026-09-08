@@ -55,7 +55,6 @@ test("message pins persist, deduplicate, order newest first, cap at 50, and casc
 
   catalog.archiveWorkspace(workspace.id);
   assert.equal(pins.list(stream.id).length, 50);
-  nowMs += 3 * 24 * 60 * 60 * 1_000;
-  catalog.purgeExpiredWorkspaces();
+  catalog.deleteArchivedWorkspace(workspace.id, workspace.name);
   assert.deepEqual(pins.list(stream.id), []);
 });

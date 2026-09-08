@@ -31,6 +31,7 @@ function restorationFixture() {
     cancelledManagedClaudeTasks: new Map(),
     pendingInputs: new Map(),
     queuedInputs: new Map(),
+    composerTransfers: { restore: (value) => { restored.composerTransfers = value; } },
     restoreDeferredInput: (item) => ({ destination: item.destination, item }),
     deferredInputOptions: {},
     isRetryableDeferredLaunchError: () => false,
@@ -68,6 +69,10 @@ test("runtime state restoration applies one canonical snapshot to all owners", a
     codexModel: "sol",
     pendingInputs: [{ id: "pending-1", destination: "pending", createdAt: new Date().toISOString() }],
     queuedInputs: [{ id: "queued-1", destination: "queued", createdAt: new Date().toISOString() }],
+    deferredComposerTransfers: [{
+      id: "queued-returned", token: "transfer-1",
+      identity: { provider: "codex", threadId: "thread-1", streamId: "stream-1" },
+    }],
     activeRuns: [{ id: "run-1", status: "running" }],
     codexHookReceipts: { start: { id: 1 } },
     turnEndNotifications: {},
@@ -77,6 +82,10 @@ test("runtime state restoration applies one canonical snapshot to all owners", a
   assert.equal(context.selectionStore.threadId, "thread-1");
   assert.equal(context.pendingInputs.has("pending-1"), true);
   assert.equal(context.queuedInputs.has("queued-1"), true);
+  assert.deepEqual(restored.composerTransfers, [{
+    id: "queued-returned", token: "transfer-1",
+    identity: { provider: "codex", threadId: "thread-1", streamId: "stream-1" },
+  }]);
   assert.equal(context.taskRuns.values.length, 1);
   assert.deepEqual(restored.compactions, [[
     "thread-1",
@@ -258,6 +267,7 @@ test("runtime snapshot keeps task identity and provider preferences separate", (
     cancelledManagedClaudeTasks: new Map(),
     pendingInputs: new Map(),
     queuedInputs: new Map(),
+    composerTransfers: { snapshot: () => [{ id: "returned-1", token: "transfer-1" }] },
     desktopMessageReceipts: { snapshot: () => [] },
     forwardBundles: new Map(),
     runJournal: { lastMessageSnapshot: () => [] },
@@ -275,6 +285,7 @@ test("runtime snapshot keeps task identity and provider preferences separate", (
   assert.equal(snapshot.threadIds.codex, "thread-1");
   assert.equal(snapshot.codexModel, "sol");
   assert.deepEqual(snapshot.contextCompactions, [["thread-1", { id: "compaction-1" }]]);
+  assert.deepEqual(snapshot.deferredComposerTransfers, [{ id: "returned-1", token: "transfer-1" }]);
   assert.deepEqual(snapshot.clientTaskSelections, [[
     "telegram:42",
     { provider: "codex", threadId: "thread-telegram" },

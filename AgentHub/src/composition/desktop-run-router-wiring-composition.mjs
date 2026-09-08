@@ -1,9 +1,7 @@
 import path from "node:path";
 import { unlink } from "node:fs/promises";
 import {
-  deferredResponseAnnotations,
   pendingInputKeyboard,
-  replaceDeferredInputText,
 } from "../domain/deferred-input.mjs";
 import { runInputPreview } from "../application/managed-run-lifecycle-service.mjs";
 import { commandClientContext } from "../application/application-command-service.mjs";
@@ -64,6 +62,7 @@ export function createDesktopRunRouterWiring({
   }
 
   const runInputs = createDesktopRunInputComposition({
+    composerTransfers: services.composerTransfers,
     deferredInput: {
       store: services.deferredInputs,
       maxItems: constants.maxDeferredInputs,
@@ -169,8 +168,6 @@ export function createDesktopRunRouterWiring({
       findReceiptByResultId: services.findReceiptByResultId,
       isProcessing: services.isDeferredInputProcessing,
       cancelSchedule: services.cancelDeferredInputSchedule,
-      responseAnnotations: deferredResponseAnnotations,
-      replaceInputText: replaceDeferredInputText,
       saveState: services.saveState,
       updateReceipt: services.updateDeferredReceipt,
       cleanupFiles: services.cleanupDeferredFiles,
@@ -237,6 +234,7 @@ export function createDesktopRunRouterWiring({
     voiceTranscriber: services.taskVoiceTranscriber,
     workspaceCatalog: services.workspaceCatalog,
     taskLauncher: taskBoardLauncher,
+    taskLifecycle: services.taskLifecycle,
     attachmentDirectory: services.attachmentDirectory,
     snapshot: desktop.snapshot,
   });
@@ -278,11 +276,13 @@ export function createDesktopRunRouterWiring({
       boardTaskCreate: (params) => taskBoardController.create(params),
       boardTaskIngest: (params) => taskBoardController.ingest(params),
       boardTaskUpdate: (params) => taskBoardController.update(params),
+      boardTaskChecklist: (params) => taskBoardController.checklist(params),
+      boardTaskChecklistLinkedAction: (params) => taskBoardController.checklistLinkedTaskAction(params),
       boardTaskAttachmentAdd: (params) => taskBoardController.addAttachments(params),
-      boardTaskStatus: (params) => taskBoardController.status(params),
+      boardTaskStatus: (params, context) => taskBoardController.status(params, context),
       boardTaskMove: (params) => taskBoardController.move(params),
-      boardTaskComplete: (params) => taskBoardController.complete(params),
-      boardTaskRemove: (params) => taskBoardController.remove(params),
+      boardTaskComplete: (params, context) => taskBoardController.complete(params, context),
+      boardTaskRemove: (params, context) => taskBoardController.remove(params, context),
       boardTaskRetryTriage: (params) => taskBoardController.retryTriage(params),
       boardTaskStart: (params, context) => taskBoardController.start(params, context),
       boardColumnMove: (params) => taskBoardController.moveColumn(params),
