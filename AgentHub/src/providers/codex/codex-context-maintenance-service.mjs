@@ -118,14 +118,15 @@ export class CodexContextMaintenanceService {
       return { accepted: false, message: "Свёртка контекста уже выполняется" };
     }
     await this.ensureTransport();
-    const compaction = this.compactions.begin(threadId, {
+    const compaction = await this.mutateCompaction(threadId, () => this.compactions.begin(threadId, {
       origin: origin === "automatic" ? "automatic" : "manual",
+      dedicatedProviderTurn: true,
       ...(captureRawItem ? { captureRawItem: true } : {}),
       ...(beforePercent !== null && beforePercent !== undefined && beforePercent !== ""
         && Number.isFinite(Number(beforePercent))
         ? { beforePercent: Number(beforePercent) }
         : {}),
-    });
+    }));
     try {
       await this.resumeThread(threadId, this.sandboxSettings());
       await this.startCompaction(threadId);
@@ -153,9 +154,13 @@ export class CodexContextMaintenanceService {
           message: "Свёртка контекста запущена",
         };
       }
-      this.compactions.fail(threadId, compaction.id);
+      await this.mutateCompaction(threadId, () => this.compactions.fail(threadId, compaction.id));
       throw error;
     }
+  }
+
+  mutateCompaction(threadId, operation) {
+    return this.compactions.mutate ? this.compactions.mutate(threadId, operation) : operation();
   }
 
   async #reconcileUncertainCompactionStart(threadId, compaction, error) {

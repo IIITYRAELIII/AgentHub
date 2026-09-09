@@ -1839,7 +1839,7 @@ function activeMaintenanceMessage(task) {
     };
   }
   const compaction = task.context?.compaction;
-  const compactionId = String(compaction?.id ?? "");
+  const compactionId = String(compaction?.operationId ?? compaction?.id ?? "");
   if (!compactionId) return null;
   const status = String(compaction.status ?? "");
   const measurementStatus = String(compaction.measurementStatus ?? "");
@@ -1897,7 +1897,7 @@ function observeContextCompactions(tasks) {
   for (const task of tasks ?? []) {
     const context = task.context;
     const compaction = context?.compaction;
-    const compactionId = String(compaction?.id ?? "");
+    const compactionId = String(compaction?.operationId ?? compaction?.id ?? "");
     if (!compactionId) continue;
     const stableTaskId = taskId(task.provider, task.threadId, task.streamId);
     const eventId = `maintenance:compaction:${compactionId}`;
@@ -1937,8 +1937,9 @@ function observeContextCompactions(tasks) {
       }
       requestedContextCompactions.delete(compactionId);
     }
-    if (["failed", "timeout"].includes(status)) {
+    if (["failed", "timeout", "unknown"].includes(status)) {
       const automatic = compaction.origin === "automatic";
+      const unknown = status !== "failed";
       if (rememberMaintenanceEvent(stableTaskId, {
         id: eventId,
         provider: task.provider,
@@ -1948,10 +1949,12 @@ function observeContextCompactions(tasks) {
         beforePercent,
         afterPercent: null,
         maintenanceType: "compaction",
-        maintenanceStatus: status,
-        text: automatic
-          ? "Автосвёртка контекста не завершилась"
-          : "Свёртка контекста не завершилась",
+        maintenanceStatus: unknown ? "unknown" : "failed",
+        text: unknown
+          ? "Статус свёртки неизвестен"
+          : automatic
+            ? "Автосвёртка контекста не завершилась"
+            : "Свёртка контекста не завершилась",
         time: existingEvent?.time ?? compaction.completedAt ?? new Date().toISOString(),
       })) changed.add(stableTaskId);
     }

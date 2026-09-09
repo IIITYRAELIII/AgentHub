@@ -3117,6 +3117,64 @@ test("context compaction start identifies the task and completion stays in chat"
   );
 });
 
+test("compaction markers keep exact operation identity before provider turn acceptance", () => {
+  const sandbox = vm.createContext({ taskId: () => "task-1" });
+  vm.runInContext(clientFunctionSource("rotationMaintenanceActive", "function syncActiveMaintenanceMessages"), sandbox);
+  const marker = sandbox.activeMaintenanceMessage({
+    provider: "codex", threadId: "thread-1",
+    context: { compaction: {
+      operationId: "operation-1", status: "running", turnId: null,
+      startedAt: "2026-09-09T20:10:00.000Z", origin: "automatic",
+    } },
+  });
+  assert.equal(marker.turnId, null);
+  assert.equal(marker.id, "maintenance:compaction:operation-1:active");
+  assert.equal(marker.text, "Автосвёртка контекста…");
+  const visible = projection.projectCanonicalMessages(lifecycle.visibleConversationMessages([marker]));
+  assert.equal(visible.length, 1);
+  assert.equal(visible[0].role, "system");
+});
+
+test("unknown and legacy timeout compaction replace false failure and settle by exact operation", () => {
+  const events = new Map();
+  const sandbox = vm.createContext({
+    taskId: () => "task-1", maintenanceEventsByTask: events,
+    observedContextCompactions: new Map(), requestedContextCompactions: new Set(),
+    contextPercent: (value) => value == null ? null : Number(value),
+    storedMaintenancePercent: () => null,
+    latestMaintenanceMessages: (values) => values,
+    persistMaintenanceEvents: () => {},
+    agentHub: { toast: () => {} },
+  });
+  vm.runInContext(clientFunctionSource("rememberMaintenanceEvent", "function taskIdentity"), sandbox);
+  vm.runInContext(clientFunctionSource("observeContextCompactions", "function observeStreamRotations"), sandbox);
+  const compaction = {
+    operationId: "operation-1", origin: "automatic", turnId: null,
+    startedAt: "2026-09-09T20:10:00.000Z", beforePercent: 77,
+  };
+  const observe = (details) => sandbox.observeContextCompactions([{
+    provider: "codex", threadId: "thread-1", context: { compaction: { ...compaction, ...details } },
+  }]);
+  observe({ status: "failed" });
+  for (const status of ["unknown", "timeout"]) {
+    observe({ status });
+    const markers = events.get("task-1");
+    assert.equal(markers.length, 1);
+    assert.equal(markers[0].id, "maintenance:compaction:operation-1");
+    assert.equal(markers[0].maintenanceStatus, "unknown");
+    assert.equal(markers[0].text, "Статус свёртки неизвестен");
+  }
+  observe({ status: "completed", measurementStatus: "completed", afterPercent: 14 });
+  const markers = events.get("task-1");
+  assert.equal(markers.length, 1);
+  assert.equal(markers[0].maintenanceStatus, "completed");
+  assert.equal(markers[0].afterPercent, 14);
+  observe({ status: "failed" });
+  observe({ status: "completed", measurementStatus: "completed", afterPercent: 14 });
+  assert.equal(events.get("task-1").length, 1);
+  assert.equal(events.get("task-1")[0].maintenanceStatus, "completed");
+});
+
 test("workspace task panel follows the effective local Stream selection", () => {
   assert.doesNotMatch(
     hubClientSource,
@@ -3202,12 +3260,6 @@ test("Hub compaction delegates targeted completion to its context maintenance ow
     serverSource,
     /isMaintenanceActive: \(target\) => streamContextMaintenance\.isActive\(target\)/u,
   );
-});
-
-test("failed context compaction remains as a centered maintenance message", () => {
-  assert.match(hubClientSource, /\["failed", "timeout"\]\.includes\(status\)/u);
-  assert.match(hubClientSource, /"Автосвёртка контекста не завершилась"/u);
-  assert.match(hubClientSource, /"Свёртка контекста не завершилась"/u);
 });
 
 test("completed live card uses a newly recorded final even before durable history catches up", () => {

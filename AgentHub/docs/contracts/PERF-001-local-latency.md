@@ -222,6 +222,11 @@ turn paging fails closed until the next normal publication materializes it.
 The “Local Hub” health RTT is not message ACK latency and must not be presented
 as such. Provider latency and remote Worker latency are separate indicators.
 
+Maintenance-operation point reads initialize their schema once per store;
+subsequent reads are SELECT-only and remain available while another WAL writer
+holds its transaction. Compaction persistence queues are scoped to their Thread,
+so a busy transition does not serialize unrelated Thread processing.
+
 ## Navigation responsiveness
 
 Message reconciliation identifies legacy turn-root candidates in one pass over

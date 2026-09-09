@@ -84,7 +84,7 @@ test("manual compaction resumes a discovered thread before starting", async () =
   assert.equal(result.accepted, true);
   assert.deepEqual(calls, [
     ["transport"],
-    ["begin-manual", "thread-1", { origin: "manual", beforePercent: 80 }],
+    ["begin-manual", "thread-1", { origin: "manual", dedicatedProviderTurn: true, beforePercent: 80 }],
     ["resume", "thread-1", { sandbox: "workspace-write" }],
     ["compact", "thread-1"],
   ]);
@@ -380,7 +380,7 @@ test("rotation compacts into a clean Thread and injects only the raw compaction 
     ["transport"],
     ["read", "thread-1", { fresh: true, includeTurns: false }],
     ["transport"],
-    ["begin-manual", "thread-1", { origin: "manual", captureRawItem: true }],
+    ["begin-manual", "thread-1", { origin: "manual", dedicatedProviderTurn: true, captureRawItem: true }],
     ["resume", "thread-1", { sandbox: "danger-full-access" }],
     ["compact", "thread-1"],
     ["wait", "thread-1", "compact-thread-1"],

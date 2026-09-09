@@ -102,6 +102,70 @@ test.after(async () => {
   await browser?.close();
 });
 
+test("compaction without provider turn renders a system marker and unknown completion stays explicit", async () => {
+  const page = await browser.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  try {
+    await openWebApp(page);
+    const source = await readFile(new URL("hub-client.js", WEB_APP_ROOT), "utf8");
+    const clientFunction = (name, next) => {
+      const start = source.indexOf(`function ${name}(`);
+      return source.slice(start, source.indexOf(`function ${next}`, start));
+    };
+    await page.addScriptTag({ content: `(() => {
+      const taskId = () => "task-1";
+      const maintenanceEventsByTask = new Map();
+      const observedContextCompactions = new Map();
+      const requestedContextCompactions = new Set();
+      const latestMaintenanceMessages = (values) => values;
+      const persistMaintenanceEvents = () => {};
+      const contextPercent = (value) => value == null ? null : Number(value);
+      const storedMaintenancePercent = () => null;
+      const agentHub = { toast: () => {} };
+      ${clientFunction("rotationMaintenanceActive", "syncActiveMaintenanceMessages")}
+      ${clientFunction("rememberMaintenanceEvent", "taskIdentity")}
+      ${clientFunction("observeContextCompactions", "observeStreamRotations")}
+      window.compactionProjection = {
+        active: activeMaintenanceMessage,
+        observe: (task) => {
+          observeContextCompactions([task]);
+          return maintenanceEventsByTask.get("task-1");
+        },
+      };
+    })();` });
+    const marker = await page.evaluate(() => window.compactionProjection.active({
+      provider: "codex", threadId: "thread-1",
+      context: { compaction: { operationId: "operation-1", status: "running", turnId: null, origin: "automatic" } },
+    }));
+    await seedMessages(page, [marker]);
+    assert.equal(await page.locator(".msg-maintenance").count(), 1);
+    assert.match(await page.locator(".msg-maintenance").textContent(), /Автосвёртка контекста/u);
+    assert.equal(await page.locator(".msg-agent").count(), 0);
+    for (const [status, expectedText] of [
+      ["failed", "Автосвёртка контекста не завершилась"],
+      ["unknown", "Статус свёртки неизвестен"],
+      ["completed", "Свёртка контекста"],
+    ]) {
+      const messages = await page.evaluate((status) => window.compactionProjection.observe({
+        provider: "codex", threadId: "thread-1",
+        context: { compaction: {
+          operationId: "operation-1", status, turnId: null, origin: "automatic",
+          beforePercent: 77, afterPercent: status === "completed" ? 14 : null,
+          measurementStatus: status === "completed" ? "completed" : null,
+        } },
+      }), status);
+      await seedMessages(page, messages);
+      assert.equal(await page.locator(".msg-maintenance").count(), 1);
+      assert.ok((await page.locator(".msg-maintenance").textContent()).includes(expectedText));
+      assert.equal(await page.locator(".msg-agent").count(), 0);
+    }
+    assert.deepEqual(errors, []);
+  } finally {
+    await page.close();
+  }
+});
+
 test("long annotated message mounts full Markdown only while expanded and actions keep original text", async () => {
   const page = await browser.newPage();
   try {

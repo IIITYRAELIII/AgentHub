@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { CodexEventService } from "../../../src/providers/codex/codex-event-service.mjs";
+import { ContextCompactionTracker, isContextCompactionItem } from "../../../src/providers/codex/context-compaction-tracker.mjs";
 import {
   CODEX_CONTEXT_PROBE_PROMPT,
   CODEX_CONTEXT_PROBE_RESPONSE,
@@ -31,6 +32,32 @@ function createService(run, overrides = {}) {
     taskDiffs: { remember: noop }, ...overrides,
   });
 }
+
+test("terminal turn recovers its exact compaction item when the separate completion event was lost", async () => {
+  const tracker = new ContextCompactionTracker();
+  tracker.begin("thread-recover", { turnId: "turn-recover", itemId: "compaction-recover" });
+  const service = createService(null, {
+    isCompactionItem: isContextCompactionItem,
+    getCompaction: (id) => tracker.get(id),
+    beginCompactionCleanup: (id, details) => tracker.mutate(id, () => tracker.complete(id, details)),
+    settleCompactionTurn: (id, details) => tracker.mutate(id, () => tracker.settleProviderTurn(id, details)),
+  });
+  try {
+    await service.handle({ method: "turn/completed", params: {
+      threadId: "thread-recover", turn: { id: "turn-recover", status: "completed",
+        items: [{ id: "compaction-recover", type: "contextCompaction" }] },
+    } });
+    assert.equal(tracker.get("thread-recover").status, "completed");
+    assert.equal(tracker.get("thread-recover").itemId, "compaction-recover");
+    tracker.begin("thread-recover", { turnId: "new-turn", itemId: "new-item" });
+    await service.handle({ method: "turn/completed", params: {
+      threadId: "thread-recover", turn: { id: "turn-recover", status: "completed",
+        items: [{ id: "compaction-recover", type: "contextCompaction" }] },
+    } });
+    assert.equal(tracker.get("thread-recover").status, "running");
+    assert.equal(tracker.get("thread-recover").turnId, "new-turn");
+  } finally { tracker.dispose(); }
+});
 
 test("Codex event service reduces answer deltas into the exact item", async () => {
   const run = { responseText: "", status: "running" };
