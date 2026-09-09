@@ -866,6 +866,7 @@
   const workspacePanelList = document.querySelector("[data-workspace-task-list]");
   const activityTaskHeading = document.querySelector("[data-activity-task-heading]");
   const taskCardModal = document.querySelector("[data-task-card-modal]");
+  const taskCardHome = taskCardModal?.parentElement;
   const taskCardSource = document.querySelector("[data-task-card-source]");
   const taskCardEditor = document.querySelector("[data-task-card-editor]");
   const taskCardNumber = document.querySelector("[data-task-card-number]");
@@ -1048,6 +1049,27 @@
       && window.matchMedia?.("(min-width: 960px)")?.matches === true;
   }
 
+  function syncTaskCardPlacement() {
+    if (!taskCardModal?.open && !state.openTaskId) return;
+    const docked = taskCardIsDocked();
+    const target = docked ? board : taskCardHome;
+    const changed = taskCardModal.parentElement !== target
+      || (taskCardModal.matches?.(":modal") === true) === docked;
+    if (changed && taskCardModal.open) taskCardModal.close();
+    if (target && taskCardModal.parentElement !== target) target.append(taskCardModal);
+    board.classList.toggle("has-open-task", docked);
+    if (!taskCardModal.open) {
+      if (docked) taskCardModal.show?.();
+      else taskCardModal.showModal?.();
+    }
+    if (!taskCardModal.open) taskCardModal.setAttribute("open", "");
+    for (const card of columns.querySelectorAll("[data-board-task-id]")) {
+      const selected = card.dataset.boardTaskId === state.openTaskId;
+      card.classList.toggle("is-selected", selected);
+      card.setAttribute("aria-current", selected ? "true" : "false");
+    }
+  }
+
   function emit(type, detail = {}) {
     document.dispatchEvent(new CustomEvent("agenthub:board-action", {
       detail: { type, ...detail },
@@ -1096,6 +1118,20 @@
   }
 
   function moveTask(task, destination, beforeId = null) {
+    if (destination.startsWith("status:")) {
+      const status = destination.slice(destination.lastIndexOf(":") + 1);
+      if (task.bucket === "backlog" || !selectedScopeTasks([task]).length) return;
+      if (taskWorkflowStatus(task) !== status) {
+        if (state.savingStatusTaskId != null) return;
+        state.savingStatusTaskId = task.id;
+        renderTaskCardSaving(task.id);
+        emit("status", { id: task.id, status });
+      } else if (beforeId) {
+        const beforeTask = state.tasks.find((item) => item.id === beforeId);
+        moveTask(task, beforeTask ? destinationValue(beforeTask) : destinationValue(task), beforeId);
+      }
+      return;
+    }
     if (destination === "backlog" || destination === "notes") {
       emit("move", { id: task.id, bucket: destination, beforeId });
       return;
@@ -1249,6 +1285,7 @@
   }
 
   function closeTaskCard() {
+    const openedTaskId = state.openTaskId;
     taskDeleteDialog.close();
     state.openTaskId = null;
     state.editingTaskId = null;
@@ -1258,6 +1295,12 @@
     board.classList.remove("has-open-task");
     taskCardModal?.close?.();
     taskCardModal?.removeAttribute("open");
+    if (taskCardHome && taskCardModal?.parentElement !== taskCardHome) taskCardHome.append(taskCardModal);
+    for (const card of columns.querySelectorAll(".is-selected")) {
+      card.classList.remove("is-selected");
+      card.removeAttribute("aria-current");
+      if (card.dataset.boardTaskId === openedTaskId) card.focus();
+    }
   }
 
   function openTaskExecutor(task, event = null) {
@@ -1560,6 +1603,12 @@
       return;
     }
     taskCardSource.textContent = task.source === "telegram" ? "Telegram" : "Hub";
+    const previewNumber = document.querySelector("[data-task-preview-number]");
+    const previewTitle = document.querySelector("[data-task-preview-title]");
+    const previewDescription = document.querySelector("[data-task-preview-description]");
+    if (previewNumber) previewNumber.textContent = task.taskNumber || "";
+    if (previewTitle) previewTitle.textContent = task.title || task.text;
+    if (previewDescription) previewDescription.textContent = task.description || "Описание пока не добавлено.";
     syncTaskStatusControl(taskCardStatus, task, state.statusLanguage, {
       pending: state.savingStatusTaskId === task.id,
     });
@@ -1670,13 +1719,10 @@
     state.openTaskId = task.id;
     state.editingTaskId = null;
     state.editDirty = false;
+    taskCardModal?.classList.remove("is-editing");
     setTaskCardOriginalExpanded(false);
     renderOpenTaskCard();
-    const docked = taskCardIsDocked();
-    board.classList.toggle("has-open-task", docked);
-    if (!taskCardModal.open && docked) taskCardModal.show?.();
-    else if (!taskCardModal.open) taskCardModal.showModal?.();
-    if (!taskCardModal.open) taskCardModal.setAttribute("open", "");
+    syncTaskCardPlacement();
     if (taskCardContent) taskCardContent.scrollTop = 0;
     scheduleTaskCardEditorSizing();
   }
@@ -1725,7 +1771,8 @@
         event.preventDefault();
         event.stopPropagation();
         card.classList.remove("is-dragover");
-        moveTask(draggedTask, destinationValue(task), task.id);
+        const columnDestination = card.closest("[data-board-destination]")?.dataset.boardDestination;
+        moveTask(draggedTask, columnDestination || destinationValue(task), task.id);
       });
     }
     const [numberSummary, executorSummary, statusSummary] = taskSummaryItems(
@@ -1828,6 +1875,7 @@
       column.classList.remove("is-dragover");
       const movedColumnId = draggedColumnId(event.dataTransfer);
       if (movedColumnId) {
+        if (!movable) return;
         if (movedColumnId !== id) {
           emit("move-column", { columnId: movedColumnId, beforeColumnId: id });
         }
@@ -1873,12 +1921,15 @@
       heading,
       controls,
     ]));
+    column.append(node("div", { class: "task-board-row-head", "aria-hidden": "true" }, [
+      node("span", { text: "ID" }), node("span", { text: "Задача" }), node("span", { text: "Поток" }),
+    ]));
     const list = node("div", { class: "task-board-column-list" });
     if (workspace && state.creatingWorkspaceId === workspace.id) list.append(renderCreateForm(workspace));
     if (!tasks.length && state.creatingWorkspaceId !== workspace?.id) {
       list.append(node("p", { class: "task-board-empty", text: emptyText }));
     } else {
-      for (const task of tasks) list.append(taskCard(task, { movable }));
+      for (const task of tasks) list.append(taskCard(task));
     }
     column.append(list);
     return column;
@@ -1895,9 +1946,9 @@
 
   function renderScopeStrip() {
     if (!scopeStrip) return;
-    const openTasks = (predicate) => state.tasks.filter((task) => task.status !== "done" && predicate(task)).length;
+    const openTasks = (predicate) => tasksForMode(state.tasks, { completedOnly: state.completedOnly }).filter(predicate).length;
     const scopes = [
-      { id: "all", label: "Все Workspace", count: openTasks((task) => task.bucket !== "backlog") },
+      { id: "all", label: "Все задачи", count: openTasks((task) => task.bucket !== "backlog") },
       ...state.workspaces.map((workspace) => ({
         id: `workspace:${workspace.id}`,
         label: workspace.name,
@@ -1905,10 +1956,40 @@
       })),
       { id: "notes", label: "Заметки", count: openTasks((task) => task.bucket === "notes") },
     ];
-    scopeStrip.replaceChildren(...scopes.map((scope) => node("button", {
+    const scopeById = new Map(scopes.map((scope) => [scope.id, scope]));
+    const orderedScopes = [...new Set(["all", ...state.columnOrder, ...scopes.map((scope) => scope.id)])]
+      .map((id) => scopeById.get(id)).filter(Boolean);
+    scopeStrip.replaceChildren(...orderedScopes.map((scope) => node("button", {
       type: "button",
       class: `task-board-scope${state.boardScope === scope.id ? " is-selected" : ""}`,
       "aria-pressed": String(state.boardScope === scope.id),
+      "data-board-destination": scope.id === "all" ? null : scope.id,
+      draggable: scope.id === "all" ? null : "true",
+      ondragstart: scope.id === "all" ? null : (event) => {
+        state.draggingColumnId = scope.id;
+        event.dataTransfer.setData(COLUMN_MIME, scope.id);
+        event.dataTransfer.effectAllowed = "move";
+      },
+      ondragend: () => { state.draggingColumnId = null; },
+      ondragover: (event) => {
+        if (scope.id === "all") return;
+        event.preventDefault();
+        event.currentTarget.classList.add("is-dragover");
+      },
+      ondragleave: (event) => event.currentTarget.classList.remove("is-dragover"),
+      ondrop: (event) => {
+        if (scope.id === "all") return;
+        event.preventDefault();
+        event.currentTarget.classList.remove("is-dragover");
+        const columnId = draggedColumnId(event.dataTransfer);
+        if (columnId) {
+          if (columnId !== scope.id) emit("move-column", { columnId, beforeColumnId: scope.id });
+          return;
+        }
+        const taskId = TaskReferences.fromTransfer(event.dataTransfer)?.taskId;
+        const task = state.tasks.find((item) => item.id === taskId);
+        if (task && task.status !== "done") moveTask(task, scope.id);
+      },
       text: `${scope.label} · ${scope.count}`,
       onclick: () => {
         state.boardScope = scope.id;
@@ -1946,9 +2027,12 @@
     const rendered = [renderColumn({
       id: "backlog", title: "Бэклог", subtitle: "Неразобранные входящие",
       tasks: visibleTasks.filter((task) => task.bucket === "backlog"), accent: "is-backlog", emptyText,
+      acceptsTaskDrops: !state.completedOnly,
     })];
     const scopedTasks = selectedScopeTasks(visibleTasks);
-    const statuses = state.completedOnly ? ["done"] : TASK_WORKFLOW_STATUSES.filter((status) => status !== "done");
+    const statuses = state.completedOnly ? ["done"] : TASK_WORKFLOW_STATUSES.filter((status) => (
+      status !== "done" || scopedTasks.some((task) => taskWorkflowStatus(task) === "done")
+    ));
     for (const status of statuses) {
       const presentation = taskWorkflowPresentation({ workflowStatus: status }, state.statusLanguage);
       rendered.push(renderColumn({
@@ -1957,11 +2041,15 @@
         subtitle: state.boardScope === "notes" ? state.notesComment : "",
         tasks: scopedTasks.filter((task) => taskWorkflowStatus(task) === status),
         accent: `is-status-${status}`,
+        acceptsTaskDrops: !state.completedOnly,
+        workspace: status === "new" && state.boardScope.startsWith("workspace:")
+          ? workspaceById(state.boardScope.slice(10)) : null,
         emptyText,
       }));
     }
     replaceBoardColumnsPreservingScroll(boardColumnRegions.columns, rendered);
     restoreTaskBoardScroll({ workspaces: boardColumnRegions.columns }, scrollSnapshot);
+    if (state.openTaskId) syncTaskCardPlacement();
   }
 
   function renderWorkspacePanel() {
@@ -2016,8 +2104,28 @@
       renderOpenTaskCard();
     });
   }
-  window.addEventListener("resize", scheduleTaskCardEditorSizing, { passive: true });
+  window.addEventListener("resize", () => {
+    syncTaskCardPlacement();
+    scheduleTaskCardEditorSizing();
+  }, { passive: true });
+  if (typeof MutationObserver === "function") {
+    new MutationObserver(() => {
+      syncTaskCardPlacement();
+      scheduleTaskCardEditorSizing();
+    }).observe(document.documentElement, { attributes: true, attributeFilter: ["data-view"] });
+  }
+  taskCardModal?.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && taskCardIsDocked()) {
+      event.preventDefault();
+      closeTaskCard();
+    }
+  });
   document.querySelector("[data-task-card-close]")?.addEventListener("click", closeTaskCard);
+  document.querySelector("[data-task-card-edit-toggle]")?.addEventListener("click", () => {
+    taskCardModal.classList.add("is-editing");
+    scheduleTaskCardEditorSizing();
+    taskCardTitle.focus();
+  });
   taskCardOriginalToggle?.addEventListener("click", () => {
     setTaskCardOriginalExpanded(taskCardOriginalToggle.getAttribute("aria-expanded") !== "true");
     scheduleTaskCardEditorSizing();

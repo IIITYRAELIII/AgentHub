@@ -3690,15 +3690,18 @@ html[data-view="dashboard"] .server-view {
 
 html[data-view="dashboard"] .task-board-view {
   box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   height: calc(100dvh - var(--app-header-h, 4.2rem));
   margin-inline: 0;
   max-width: none;
   overflow: hidden;
+  padding: 0;
 }
 
 .task-board-toolbar {
+  grid-column: 1 / -1;
   align-items: center;
   border-bottom: 1px solid var(--line);
   display: flex;
@@ -3706,7 +3709,7 @@ html[data-view="dashboard"] .task-board-view {
   gap: 0.55rem;
   justify-content: space-between;
   min-width: 0;
-  padding: 0.65rem var(--task-board-content-end) 0.65rem 1.2rem;
+  padding: 0.85rem 1rem;
 }
 
 .task-board-scope-strip,
@@ -3727,20 +3730,21 @@ html[data-view="dashboard"] .task-board-view {
 .task-board-scope,
 .task-board-filter-toggle {
   background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
   color: var(--text-muted);
   cursor: pointer;
   flex: 0 0 auto;
   font: inherit;
   font-size: 0.72rem;
   font-weight: 650;
-  padding: 0.42rem 0.58rem;
+  padding: 0.65rem 0.8rem;
 }
 
 .task-board-scope:hover,
 .task-board-scope:focus-visible,
 .task-board-scope.is-selected,
+.task-board-scope.is-dragover,
 .task-board-filter-toggle:hover,
 .task-board-filter-toggle:focus-visible,
 .task-board-filter-toggle[aria-expanded="true"] {
@@ -3841,35 +3845,34 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .task-board-columns {
-  --task-board-column-base-width: clamp(
-    12rem,
-    17.5vw,
-    16.5rem
-  );
+  --task-board-column-base-width: 12rem;
+  box-sizing: border-box;
   display: flex;
   flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
-  padding: 1rem var(--task-board-content-end) 1.1rem 1.2rem;
+  padding: 0;
 }
 
 .task-board-status-columns {
   align-items: stretch;
   display: flex;
   flex: 1 1 auto;
-  gap: 0.75rem;
-  inline-size: max-content;
+  gap: 0;
+  inline-size: 100%;
   min-height: 0;
   min-inline-size: 100%;
 }
 
 .task-board-column {
-  background: color-mix(in srgb, var(--surface-1) 86%, transparent);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
+  background: transparent;
+  border: 0;
+  border-inline-end: 1px solid var(--line);
+  border-radius: 0;
   display: flex;
-  flex: 0 0 var(--task-board-column-base-width);
+  flex: 1 0 var(--task-board-column-base-width);
   flex-direction: column;
   min-height: 0;
   transition: border-color 0.14s ease, background 0.14s ease;
@@ -3881,9 +3884,7 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .task-board-column.is-backlog {
-  background: color-mix(in srgb, var(--surface-1) 96%, var(--surface-2));
-  border-top-color: color-mix(in srgb, var(--pending) 70%, var(--line));
-  box-shadow: 0.65rem 0 0.9rem -0.75rem color-mix(in srgb, var(--text) 24%, transparent);
+  background: color-mix(in srgb, var(--surface-1) 65%, transparent);
 }
 
 .task-board-column.is-notes {
@@ -3910,21 +3911,32 @@ html[data-view="dashboard"] .task-board-view {
 
 @media (min-width: 960px) {
   html[data-view="dashboard"] .task-board-view.has-open-task {
-    --task-board-detail-width: clamp(20rem, 28vw, 27rem);
-    --task-board-content-end: calc(var(--task-board-detail-width) + 1.5rem);
+    --task-board-detail-width: clamp(19rem, 24vw, 25rem);
+    grid-template-columns: minmax(0, 1fr) var(--task-board-detail-width);
   }
 
   html[data-view="dashboard"] .task-board-view.has-open-task .task-board-columns {
-    --task-board-column-base-width: clamp(11rem, 15vw, 13.5rem);
+    --task-board-column-base-width: 11rem;
   }
 
-  html[data-view="dashboard"] .task-card-modal[open] {
-    block-size: auto;
-    inline-size: var(--task-board-detail-width);
-    inset: calc(var(--app-header-h, 4.2rem) + 0.75rem) 0.75rem 0.75rem auto;
+  html[data-view="dashboard"] .task-board-view > .task-card-modal[open] {
+    position: static;
+    grid-column: 2;
+    grid-row: 2;
+    align-self: stretch;
+    block-size: 100%;
+    inline-size: 100%;
+    width: 100%;
+    min-width: 0;
+    min-height: 0;
     margin: 0;
     max-height: none;
     max-width: none;
+    border: 0;
+    border-inline-start: 1px solid var(--line);
+    border-radius: 0;
+    box-shadow: none;
+    background: var(--surface-1);
   }
 }
 
@@ -3933,9 +3945,9 @@ html[data-view="dashboard"] .task-board-view {
   border-bottom: 1px solid var(--line);
   box-sizing: border-box;
   display: flex;
-  flex: 0 0 4.25rem;
+  flex: 0 0 3.75rem;
   gap: 0.6rem;
-  height: 4.25rem;
+  height: 3.75rem;
   justify-content: space-between;
   overflow: hidden;
   padding: 0.6rem 0.7rem;
@@ -4008,11 +4020,12 @@ html[data-view="dashboard"] .task-board-view {
 
 .task-board-column-list {
   box-sizing: border-box;
-  display: grid;
-  gap: 0.55rem;
-  min-height: 4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-height: 0;
   overflow-y: auto;
-  padding: 0.65rem;
+  padding: 0 0.65rem;
 }
 
 .task-board-empty {
@@ -4149,6 +4162,157 @@ html[data-view="dashboard"] .task-board-view {
     --task-status-awaiting-color,
     color-mix(in srgb, var(--pending) 84%, var(--accent))
   );
+}
+
+/* Dashboard rows share the column grid; embedded cards keep their own layout. */
+html[data-view="dashboard"] .task-board-columns .board-task-card {
+  display: grid;
+  grid-template-columns: 2.9rem minmax(0, 1fr) minmax(2rem, 18%);
+  align-items: start;
+  gap: 0.4rem;
+  flex: 0 0 auto;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0.9rem 0.4rem;
+}
+
+html[data-view="dashboard"] .task-board-columns .board-task-card:hover {
+  background: var(--accent-soft);
+}
+
+html[data-view="dashboard"] .task-board-columns .board-task-card:is(.is-selected, :focus-visible) {
+  background: var(--accent-soft);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+  box-shadow: inset 3px 0 var(--accent);
+}
+
+html[data-view="dashboard"] .task-board-columns .board-task-title {
+  grid-column: 2;
+  grid-row: 1;
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 450;
+  line-height: 1.5;
+  overflow-wrap: break-word;
+}
+
+html[data-view="dashboard"] .task-board-columns .board-task-number {
+  grid-column: 1;
+  grid-row: 1;
+  font-size: 0.6rem;
+  line-height: 1.7;
+  color: var(--text-muted);
+  border: 0;
+}
+
+html[data-view="dashboard"] .task-board-columns .board-task-summary {
+  display: contents;
+}
+
+html[data-view="dashboard"] .task-board-columns .board-task-executor {
+  grid-column: 3;
+  grid-row: 1;
+  line-height: 1.7;
+}
+
+html[data-view="dashboard"] .task-board-columns .board-task-status {
+  grid-column: 2 / -1;
+  justify-self: start;
+}
+
+html[data-view="dashboard"] .task-board-columns [class*="is-status-"] .board-task-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  clip-path: inset(50%);
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+}
+
+html[data-view="dashboard"] .task-board-columns .board-task-attachments {
+  grid-column: 2 / -1;
+}
+
+.task-card-preview {
+  display: none;
+}
+
+.task-board-row-head {
+  display: grid;
+  grid-template-columns: 2.9rem minmax(0, 1fr) minmax(2rem, 18%);
+  gap: 0.4rem;
+  padding: 0.65rem 1.05rem;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-faint);
+  font-size: 0.62rem;
+}
+
+@media (min-width: 960px) {
+  html[data-view="dashboard"] .task-board-view > .task-card-modal:not(.is-editing) .task-card-editor {
+    display: none;
+  }
+  html[data-view="dashboard"] .task-board-view > .task-card-modal:not(.is-editing) .task-card-preview {
+    display: grid;
+    gap: 1rem;
+  }
+  .task-card-preview-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+  .task-card-preview-meta strong {
+    font: 0.75rem var(--font-mono);
+  }
+  .task-card-preview h3 {
+    margin: 0;
+    font-size: 1rem;
+    line-height: 1.45;
+  }
+  .task-card-preview-description {
+    border-top: 1px solid var(--line);
+    padding-top: 1rem;
+    font-size: 0.8rem;
+  }
+  .task-card-preview-description p {
+    color: var(--text-muted);
+    line-height: 1.6;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    margin-top: 0.5rem;
+  }
+  html[data-view="dashboard"] .task-board-view > .task-card-modal .task-card-checklist,
+  html[data-view="dashboard"] .task-board-view > .task-card-modal .task-card-release-details {
+    border: 0;
+    border-top: 1px solid var(--line);
+    border-radius: 0;
+    padding: 1rem 0;
+    background: transparent;
+  }
+}
+
+.task-board-filter-controls[hidden] {
+  display: none;
+}
+
+@media (max-width: 959px) {
+  .task-board-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 0.6rem;
+    padding: 0.6rem;
+  }
+  .task-board-toolbar-actions {
+    flex-wrap: wrap;
+  }
+  .task-board-scope-strip {
+    padding-bottom: 0.25rem;
+  }
 }
 
 .board-task-status[data-workflow-status="done"] {
