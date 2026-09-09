@@ -868,7 +868,7 @@ export class WorkLogUsageStore {
   }
 
   projectRateLimits(workLogFile, summary, sampledAt = "") {
-    const operation = this.#enqueueMutation(workLogFile, async () => {
+    const operation = this.#repository.enqueue(async () => {
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const expectedRevision = await this.#repository.currentRevision();
         const current = await this.#repository.payload();
@@ -888,7 +888,7 @@ export class WorkLogUsageStore {
       const error = new Error("Rate-limit projection could not commit after a journal revision conflict");
       error.code = "JOURNAL_PROJECTION_CONFLICT";
       throw error;
-    });
+    }, { load: false });
     return operation;
   }
 
@@ -1208,16 +1208,17 @@ export class WorkLogUsageStore {
     workLogFile,
     projectionProjectRoots,
   } = {}) {
-    const operation = this.#enqueueMutation(workLogFile, async () => {
+    const operation = this.#repository.enqueue(async () => {
       let recorded = 0;
       let updated = 0;
+      const changes = new Map();
       for (const value of Array.isArray(records) ? records : []) {
         const provider = String(value?.provider ?? "codex").trim().toLowerCase();
         const threadId = String(value?.threadId ?? "").trim();
         const turnId = String(value?.turnId ?? "").trim();
         if (!provider || !threadId || !turnId) continue;
         const key = workLogTurnKey({ provider, threadId, turnId });
-        const existing = this.#ledger.turns[key];
+        const existing = changes.get(key) ?? await this.#repository.getRecord({ provider, threadId, turnId });
         const before = existing ? JSON.stringify(existing) : "";
         const incoming = incomingLedgerRecord({
           ...value,
@@ -1226,16 +1227,18 @@ export class WorkLogUsageStore {
           turnId,
           projectRoot: value.projectRoot ?? projectRoot,
         });
-        this.#ledger.turns[key] = mergeLedgerRecord(existing, incoming);
+        const merged = mergeLedgerRecord(existing, incoming);
+        const changed = !existing || JSON.stringify(merged) !== before;
         if (!existing) recorded += 1;
-        else if (JSON.stringify(this.#ledger.turns[key]) !== before) updated += 1;
+        else if (changed) updated += 1;
+        if (changed) changes.set(key, merged);
       }
       if (!recorded && !updated) {
         return { recorded: 0, updated: 0, projected: false, reason: "unchanged" };
       }
-      await this.#save();
+      await this.#repository.upsertRecords([...changes.values()]);
       return { recorded, updated };
-    });
+    }, { load: false, pointRead: true });
     return operation.then(async (result) => {
       if (!result.recorded && !result.updated) return result;
       const projection = await this.project(workLogFile, { projectRoot, projectionProjectRoots });

@@ -54,6 +54,31 @@ test("rate-limit projection rereads after a worker commits a newer journal", asy
   assert.match(html, /data-work-log-rate-limits/u);
   assert.match(html, /25%/u);
   assert.equal(f.reads(), 2);
+  assert.equal(f.store.diagnostics().retainedRecords, 0);
+});
+
+test("rate-limit updates do not load or normalize unrelated journal records", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub-rate-limit-read-"));
+  const databaseFile = path.join(root, "journal.sqlite");
+  const journal = new JournalDatabase(databaseFile);
+  await journal.upsertRecords([incomingLedgerRecord({
+    provider: "codex", threadId: "thread", turnId: "retained", projectRoot: root,
+    prompt: "Preserved prompt", body: "Preserved answer", diff: "x".repeat(1_000_000),
+    completedAt: "2026-09-10T10:00:00.000Z",
+  })]);
+  const original = await journal.getRecord({ provider: "codex", threadId: "thread", turnId: "retained" });
+  const store = createWorkLogUsageStore({
+    ledgerFile: path.join(root, "usage.json"), databaseFile, defaultProjectRoot: root,
+    repositoryFactory: (options) => new WorkLogUsageRepository({
+      ...options, journalDatabase: journal,
+      normalizePersisted: () => { throw new Error("Rate limits must not read the ledger"); },
+    }),
+  });
+  t.after(async () => { await store.close(); await rm(root, { recursive: true, force: true }); });
+  assert.equal((await store.projectRateLimits(null, "Codex: 25%")).projected, true);
+  assert.equal((await store.projectRateLimits(null, "Codex: 26%")).projected, true);
+  assert.deepEqual(await journal.getRecord(original), original);
+  assert.equal(store.diagnostics().retainedRecords, 0);
 });
 
 test("rate-limit projection reports bounded CAS exhaustion without replacing the newer journal", async (t) => {

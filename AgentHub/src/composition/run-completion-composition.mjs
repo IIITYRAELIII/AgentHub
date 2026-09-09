@@ -112,6 +112,7 @@ export function createRunCompletionComposition({
       setBoundedMapValue(lastSeenTaskTurnIds, taskRunKey(task), turnId, 500);
     },
     saveState,
+    commandTrace,
   });
 
   const codexRunFinalizer = new CodexRunFinalizer({

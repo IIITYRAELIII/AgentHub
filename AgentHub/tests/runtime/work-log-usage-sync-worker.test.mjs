@@ -151,7 +151,7 @@ for (const scenario of [
       async applyExternalMutation(operation) {
         assert.equal(locked, true);
         const result = await super.applyExternalMutation(operation);
-        if (result.updated) saves += 1;
+        if (result.updated || result.upserted) saves += 1;
         return result;
       }
       replaceProjection() { throw new Error("Main projection must not run"); }

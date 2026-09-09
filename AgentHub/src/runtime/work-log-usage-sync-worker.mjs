@@ -25,6 +25,12 @@ const mutationRequests = new Map();
 
 async function synchronizeTaskTitles(payload) {
   const startedAt = performance.now();
+  const phases = { metadataReadMs: 0, recordReadMs: 0, normalizeMs: 0, commitMs: 0 };
+  const measure = async (name, operation) => {
+    const start = performance.now();
+    try { return await operation(); }
+    finally { phases[name] += performance.now() - start; }
+  };
   const titles = new Map((payload.titles ?? []).map((item) => {
     const provider = String(item?.provider ?? "").trim().toLowerCase();
     const threadId = String(item?.threadId ?? "").trim();
@@ -40,27 +46,29 @@ async function synchronizeTaskTitles(payload) {
     let projectionRequired = false;
     const records = [];
     for (const title of titles.values()) {
-      for (const metadata of await journal.taskTitleMetadata(title)) {
+      const metadataRows = await measure("metadataReadMs", () => journal.taskTitleMetadata(title));
+      for (const metadata of metadataRows) {
         if (!sameProjectRoot(metadata.projectRoot, payload.projectRoot)) continue;
         projectionRequired ||= !covered || metadata.changedRevision > source.revision;
         if (metadata.taskTitle === title.taskTitle) continue;
-        const record = await journal.getRecord(metadata);
+        const record = await measure("recordReadMs", () => journal.getRecord(metadata));
         if (!record) continue;
         const key = `${record.provider}\0${record.threadId}\0${record.turnId}`;
-        const normalized = normalizePersistedWorkLog({ version: 9, turns: { [key]: record } }, {
+        const normalized = await measure("normalizeMs", () => normalizePersistedWorkLog({ version: 9, turns: { [key]: record } }, {
           defaultProjectRoot: payload.defaultProjectRoot,
-        });
+        }));
         if (!normalized.ledger.turns[key]) continue;
         records.push({ ...record, taskTitle: title.taskTitle });
       }
     }
     try {
       const result = records.length
-        ? await journalOperations.run(() => journal.upsertRecords(records, { expectedRevision }))
+        ? await measure("commitMs", () => journalOperations.run(() => journal.upsertRecords(records, { expectedRevision })))
         : { revision: expectedRevision };
       return {
         updated: records.length, revision: result.revision,
         projectionRequired: records.length > 0 || projectionRequired,
+        ...phases,
         workerThreadId: threadId, durationMs: performance.now() - startedAt,
       };
     } catch (error) {
@@ -239,7 +247,7 @@ async function handle(message) {
         const result = await synchronizeTurnMetadata(journal, journalOperations, message.payload);
         return { ...result, workerThreadId: threadId, queueWaitMs: message.queueWaitMs };
       }
-      return synchronizeTaskTitles(message.payload);
+      return { ...await synchronizeTaskTitles(message.payload), queueWaitMs: message.queueWaitMs };
     }
     case "usage-sync-snapshot": return usageSyncSnapshot(message.payload);
     case "usage-sync-state": return store.usageSyncState();

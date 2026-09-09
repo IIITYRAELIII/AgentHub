@@ -1308,7 +1308,7 @@ async function hubFetch(input, init, retrySession = true, traceId) {
   if (pathname.startsWith("/api/command-trace/")) return hubFetchResponse(input, init, retrySession);
   const route = ["journal", "attachment", "control", "snapshot", "startup", "workspace", "usage", "rate-limit"]
     .find((name) => pathname.startsWith(`/api/${name}`)) || "other";
-  return commandTrace.measure("ui-control", `http-${route}`, () => hubFetchResponse(input, init, retrySession), traceId);
+  return commandTrace.http(`http-${route}`, () => hubFetchResponse(input, init, retrySession), traceId);
 }
 
 async function hubFetchResponse(input, init, retrySession = true) {
@@ -2693,7 +2693,7 @@ async function uploadAttachment(attachment) {
 
 async function runAction(operation) {
   try {
-    return await operation();
+    return await commandTrace.measure("ui-interaction", "intent-handler", operation);
   } catch (error) {
     agentHub.toast(error?.agentHubComposerRecoveryFailed === true
       ? "Сообщение отклонено. Браузер не сохранил вложения; повтори отправку до перезагрузки страницы."

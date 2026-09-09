@@ -30,6 +30,12 @@ telemetry loss may remove either end. Instance/release identity accompanies
 server records. UTC timestamps correlate processes; only monotonic same-process
 durations measure latency. Existing runtime-health event-loop percentiles remain
 cumulative for that process and are labelled separately from request durations.
+Client operation pairs retain that same identity through authenticated batch
+ingestion. HTTP measurements end when response headers arrive and classify HTTP
+errors without changing the response; complete action-handler spans include
+the subsequent awaited processing. Aborted requests and paint measurements
+cancelled by a hidden surface have explicit diagnostic outcomes. They never
+claim that a Hub command was cancelled or that hidden content became visible.
 Configuration and infrastructure construction precede the trace worker. Their
 monotonic durations and original UTC endpoints are captured before the work and
 submitted to that same worker once it exists, marked `bufferedUntilTraceReady`.
@@ -143,6 +149,14 @@ updates in the usage worker. A revision conflict cannot overwrite newer usage
 or answers. The durable projection-source revision and project scope distinguish
 an unchanged, already-visible title from an update whose projection must retry.
 The runtime releases its repository lock before requesting full projection.
+Task-title metadata reads seek the existing provider/task-thread index; selecting
+one task must not scan all retained rows of that provider. Their measurements
+separate metadata selection, exact-record reads, normalization and commit.
+Rate-limit panel updates do not load or normalize the retained ledger. Automatic
+historical batches read only their exact turn identities, merge repeated
+identities within the batch and commit changed records in one transaction before
+requesting the existing worker projection. Unrelated retained answers and diffs
+do not enter the Hub event loop for these operations.
 Usage-history aggregation and pricing/image-estimate metadata scans also execute
 in that existing worker. After legacy-read readiness is established, statistics
 reads do not wait on the runtime mutation FIFO or materialize its ledger. They

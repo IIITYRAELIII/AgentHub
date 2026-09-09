@@ -775,11 +775,14 @@ export class JournalDatabase {
   }
 
   async taskTitleMetadata({ provider, threadId }) {
+    // Without an explicit task seek SQLite may choose the WITHOUT ROWID
+    // provider prefix, rereading every provider record for each catalog title.
     return (await this.#open()).prepare(`
       SELECT provider, thread_id AS threadId, turn_id AS turnId,
         project_root AS projectRoot, changed_revision AS changedRevision,
         CASE WHEN json_valid(record_json) THEN json_extract(record_json, '$.taskTitle') END AS taskTitle
-      FROM journal_records WHERE provider = ? AND task_thread_id = ?
+      FROM journal_records INDEXED BY journal_records_task_idx
+      WHERE provider = ? AND task_thread_id = ?
     `).all(provider, threadId);
   }
 

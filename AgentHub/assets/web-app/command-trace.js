@@ -13,8 +13,8 @@
   const targets = [
     ["[data-composer]", "composer"], ["[data-view-button]", "navigation"],
     ["[data-mobile-button]", "navigation"], ["[data-stream-task-id]", "stream"],
-    ["[data-task-card]", "task-card"], ["[data-queue]", "queue"],
-    ["[data-journal]", "journal"], ["[data-server-view]", "server"],
+    ["[data-task-card-modal]", "task-card"], ["[data-task-board]", "task-board"],
+    ["[data-queue]", "queue"], ["[data-journal-view]", "journal"], ["[data-server-view]", "server"],
     ["[data-statistics-view]", "statistics"],
   ];
   let reporter = null;
@@ -24,7 +24,7 @@
   let reportedCount = 0;
   let failedBatches = 0;
   let activeId = "";
-  let paintPending = 0;
+  const pendingPaints = new Set();
   const now = () => global.performance.now();
   const newId = () => typeof global.crypto.randomUUID === "function" ? global.crypto.randomUUID()
     : `ui-${Array.from(global.crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
@@ -63,36 +63,67 @@
     });
   }
 
-  function measure(stage, action, operation, commandId = activeId || newId()) {
-    const started = now();
+  function begin(stage, action, commandId, started = now(), metadata = {}) {
+    const operationSpanId = newId();
+    const startedAtMs = Date.now() - Math.max(0, Math.round(now() - started));
+    const common = { action, surface: surface(), view: view(), ...metadata, operationSpanId, startedAtMs };
+    enqueue({ commandId, stage, outcome: "started", observedAtMs: startedAtMs,
+      monotonicDurationMs: 0, metadata: { ...common, queueDepth: pending.length } });
+    let finished = false;
+    return (outcome, details = {}) => {
+      if (finished) return;
+      finished = true;
+      enqueue({
+        commandId, stage, outcome, observedAtMs: Date.now(),
+        monotonicDurationMs: Math.max(0, now() - started),
+        metadata: { ...common, ...details },
+      });
+    };
+  }
+
+  function measure(stage, action, operation, commandId = activeId || newId(), describeResult) {
     const previous = activeId;
     activeId = commandId;
-    const finish = (outcome) => enqueue({
-      commandId, stage, outcome, observedAtMs: Date.now(),
-      monotonicDurationMs: Math.max(0, now() - started),
-      metadata: { action, surface: surface(), view: view() },
-    });
+    const finish = begin(stage, action, commandId);
+    const succeeded = (value) => {
+      // Classification is diagnostic only; it cannot replace the result or
+      // turn a successful application operation into an exception.
+      let details;
+      try { details = describeResult?.(value); } catch { /* Preserve application outcome. */ }
+      finish(details?.outcome ?? "succeeded", details?.metadata);
+      return value;
+    };
+    const failed = (error) => {
+      const aborted = error?.name === "AbortError";
+      finish(aborted ? "cancelled" : "failed", { failureKind: aborted ? "aborted"
+        : error?.name === "TimeoutError" ? "timeout" : "error" });
+      throw error;
+    };
     try {
       const result = operation();
       if (result && typeof result.then === "function") return result.then(
-        (value) => { finish("succeeded"); return value; },
-        (error) => { finish("failed"); throw error; },
+        succeeded, failed,
       );
-      finish("succeeded");
-      return result;
-    } catch (error) { finish("failed"); throw error; }
+      return succeeded(result);
+    } catch (error) { return failed(error); }
     finally { activeId = previous; }
   }
 
   function afterPaint(stage, action, started, commandId, metadata = {}) {
     // A hidden WebView cannot paint. Never leave per-event frame callbacks
     // accumulating while it is suspended; the immediate stage remains recorded.
-    if (global.document?.hidden || paintPending >= BATCH_SIZE) return;
-    paintPending += 1;
-    global.requestAnimationFrame(() => global.requestAnimationFrame(() => {
-      paintPending -= 1;
-      record(stage, action, now() - started, commandId, metadata);
-    }));
+    if (pendingPaints.size >= BATCH_SIZE) { droppedCount += 1; return; }
+    const finish = begin(stage, action, commandId, started, metadata);
+    if (global.document?.hidden) { finish("cancelled", { failureKind: "hidden" }); return; }
+    const entry = { frame: null, finish };
+    pendingPaints.add(entry);
+    entry.frame = global.requestAnimationFrame(() => {
+      if (!pendingPaints.has(entry)) return;
+      entry.frame = global.requestAnimationFrame(() => {
+        if (!pendingPaints.delete(entry)) return;
+        finish("succeeded");
+      });
+    });
   }
 
   function interaction(event) {
@@ -128,12 +159,25 @@
     } catch { /* Unsupported WebViews retain interaction and render timings. */ }
   }
   global.document?.addEventListener("visibilitychange", () => {
-    if (global.document.hidden) void flush();
+    if (global.document.hidden) {
+      for (const entry of pendingPaints.values()) {
+        global.cancelAnimationFrame?.(entry.frame);
+        entry.finish("cancelled", { failureKind: "hidden" });
+      }
+      pendingPaints.clear();
+      void flush();
+    }
   });
   global.addEventListener?.("pagehide", () => { void flush(); });
 
   global.AgentHubCommandTrace = Object.freeze({
     record, measure, afterPaint, now, newId, surface,
+    http(action, operation, commandId) {
+      return measure("ui-control", action, operation, commandId, (response) => ({
+        outcome: response.status >= 400 ? "failed" : "succeeded",
+        metadata: { statusCode: response.status },
+      }));
+    },
     currentId: () => activeId,
     intent(type, detail, operation) {
       const group = String(type).split(":")[0];
@@ -153,6 +197,7 @@
     },
     bindReporter(value) { reporter = value; schedule(); },
     flush,
-    diagnostics: () => ({ pending: pending.length, flushing, droppedCount, reportedCount, failedBatches }),
+    diagnostics: () => ({ pending: pending.length, paintPending: pendingPaints.size,
+      flushing, droppedCount, reportedCount, failedBatches }),
   });
 })(window);

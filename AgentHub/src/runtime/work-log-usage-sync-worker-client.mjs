@@ -6,6 +6,7 @@ const DEFAULT_CLOSE_TIMEOUT_MS = 2_000;
 const TRACE_MEASUREMENTS = [
   "queueWaitMs", "durationMs", "recordCount", "invalidRecordCount", "eventCount", "factCount",
   "workerThreadId", "inspected", "candidateCount", "updated", "revisionReadMs", "projectionReadMs", "ledgerReadMs", "normalizeMs",
+  "metadataReadMs", "recordReadMs",
   "workspaceResolveMs", "workspaceReadMs", "factsReadMs", "accountCatalogReadMs", "renderMs",
   "lazyBuildMs", "commitMs", "aggregateMs",
 ];

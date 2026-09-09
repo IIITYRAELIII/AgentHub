@@ -24,6 +24,22 @@ test("client ACK shares existing monotonic measurement conversion", () => {
   assert.equal(span.stage, "client-ack"); assert.equal(span.monotonicDurationMs, 300);
 });
 
+test("client pairing and cancellation accept only bounded diagnostic identity, time and failure class", () => {
+  const event = { commandId: "command-1", stage: "ui-control", outcome: "cancelled",
+    observedAtMs: 2000, monotonicDurationMs: 1000, metadata: {
+      operationSpanId: "operation-1", startedAtMs: 1000, failureKind: "aborted", statusCode: 503,
+    } };
+  assert.deepEqual(clientPerformanceTraceSpans({ events: [event] }, { now: 2000 })[0].metadata, event.metadata);
+  event.metadata = { operationSpanId: "private invalid identity", startedAtMs: 2001,
+    failureKind: "private failure", statusCode: 999, body: "private" };
+  assert.deepEqual(clientPerformanceTraceSpans({ events: [event] }, { now: 2000 })[0].metadata, {});
+  event.observedAtMs = 62_000;
+  event.metadata = { startedAtMs: 61_000 };
+  assert.equal(clientPerformanceTraceSpans({ events: [event] }, { now: 2000 })[0].metadata.startedAtMs, 61_000);
+  event.observedAtMs = 62_001;
+  assert.throws(() => clientPerformanceTraceSpans({ events: [event] }, { now: 2000 }), /timing/u);
+});
+
 test("runtime sampler reuses bounded numeric health counters and stops its timer", () => {
   const events = []; let callback; let cleared = false;
   const sampler = createRuntimePerformanceSampler({ instanceId: "instance-1",

@@ -191,6 +191,10 @@ export class WorkLogUsageRepository {
     return this.#database.getRecord(identity);
   }
 
+  upsertRecords(records) {
+    return this.applyExternalMutation(() => this.#database.upsertRecords(records));
+  }
+
   async deleteRecord(identity) {
     const result = await this.#database.deleteRecords([identity]);
     this.#releaseLoadedLedger();
