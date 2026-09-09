@@ -335,9 +335,10 @@ test("Dashboard detail is a theme-safe grid panel and becomes a modal on narrow 
       assert.equal(boxes.modal, false, theme);
       assert.ok(boxes.board.right <= boxes.detail.x + 1, `${theme}: board does not overlap detail`);
       assert.ok(Math.abs(boxes.board.y - boxes.detail.y) < 1, `${theme}: aligned top boundaries`);
-      assert.ok(boxes.toolbar.bottom <= boxes.detail.y + 1, `${theme}: full-width toolbar above panel`);
+      assert.ok(Math.abs(boxes.toolbar.y - boxes.board.y) < 1, `${theme}: no empty toolbar row above board`);
+      assert.ok(boxes.toolbar.right <= boxes.board.x, `${theme}: controls stay beside board`);
       assert.ok(boxes.filter.right <= boxes.toolbar.right, `${theme}: filters stay inside toolbar with many Workspaces`);
-      assert.ok(boxes.scopes.right <= boxes.filter.x, `${theme}: scopes scroll without covering filters`);
+      assert.ok(boxes.toolbar.bottom <= boxes.scopes.y, `${theme}: scopes scroll below controls`);
       assert.ok(boxes.board.x >= 8 && boxes.detail.right < 1487, `${theme}: small outer gutters`);
       assert.equal(await page.locator('.task-board-row-head').first().evaluate((el) => {
         const cells = [...el.children].map((child) => child.getBoundingClientRect());
