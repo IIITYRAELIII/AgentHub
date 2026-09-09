@@ -3882,7 +3882,7 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .task-board-columns {
-  --task-board-column-base-width: 12rem;
+  --task-board-column-base-width: 16rem;
   box-sizing: border-box;
   display: flex;
   flex: 1 1 auto;
@@ -3950,10 +3950,6 @@ html[data-view="dashboard"] .task-board-view {
   html[data-view="dashboard"] .task-board-view.has-open-task {
     --task-board-detail-width: clamp(19rem, 24vw, 25rem);
     grid-template-columns: var(--task-rail-width, 17.5rem) minmax(0, 1fr) var(--task-board-detail-width);
-  }
-
-  html[data-view="dashboard"] .task-board-view.has-open-task .task-board-columns {
-    --task-board-column-base-width: 11rem;
   }
 
   html[data-view="dashboard"] .task-board-view > .task-card-modal[open] {

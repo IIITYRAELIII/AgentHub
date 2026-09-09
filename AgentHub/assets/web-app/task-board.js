@@ -1094,6 +1094,11 @@
     const changed = taskCardModal.parentElement !== target
       || (taskCardModal.matches?.(":modal") === true) === docked;
     if (changed && taskCardModal.open) taskCardModal.close();
+    if (docked) {
+      taskCardModal.style.removeProperty("inline-size");
+      taskCardModal.style.removeProperty("block-size");
+      taskCardModal.removeAttribute("data-width-expanded");
+    }
     if (target && taskCardModal.parentElement !== target) target.append(taskCardModal);
     board.classList.toggle("has-open-task", dashboardHasDetailPanel());
     if (!taskCardModal.open) {
