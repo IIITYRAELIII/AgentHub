@@ -1046,8 +1046,45 @@
   }
 
   function taskCardIsDocked() {
-    return !state.taskCardModalRequested && document.documentElement.dataset.view === "dashboard"
+    return !state.taskCardModalRequested && dashboardHasDetailPanel();
+  }
+
+  function dashboardHasDetailPanel() {
+    return document.documentElement.dataset.view === "dashboard"
       && window.matchMedia?.("(min-width: 960px)")?.matches === true;
+  }
+
+  let taskCardBackdrop = null;
+  let dockedScrollTop = 0;
+  function syncTaskCardBackdrop() {
+    taskCardBackdrop?.remove();
+    taskCardBackdrop = null;
+    if (!state.openTaskId || !state.taskCardModalRequested || !dashboardHasDetailPanel()) return;
+    // The native modal makes the background inert. Keep its docked projection
+    // visible without creating another editor or duplicate document identities.
+    taskCardBackdrop = node("aside", { class: taskCardModal.className });
+    for (const child of taskCardModal.childNodes) taskCardBackdrop.append(child.cloneNode(true));
+    for (const control of taskCardBackdrop.querySelectorAll("input, textarea, select")) {
+      const presentation = node("span", { class: control.className, text: control.value });
+      if (control.tagName === "SELECT") presentation.textContent = control.selectedOptions[0]?.textContent ?? "";
+      if (control.type === "checkbox") presentation.textContent = control.checked ? "☑" : "☐";
+      if (control.type === "hidden") presentation.hidden = true;
+      control.replaceWith(presentation);
+    }
+    for (const element of [taskCardBackdrop, ...taskCardBackdrop.querySelectorAll("*")]) {
+      for (const attribute of [...element.attributes]) {
+        if (attribute.name === "id" || attribute.name.startsWith("data-")
+          || attribute.name.startsWith("aria-") || attribute.name === "for") element.removeAttribute(attribute.name);
+      }
+    }
+    taskCardBackdrop.classList.add("task-card-backdrop");
+    taskCardBackdrop.classList.remove("is-editing");
+    taskCardBackdrop.removeAttribute("style");
+    taskCardBackdrop.setAttribute("inert", "");
+    taskCardBackdrop.setAttribute("aria-hidden", "true");
+    taskCardBackdrop.setAttribute("open", "");
+    board.append(taskCardBackdrop);
+    taskCardBackdrop.querySelector(".task-card-content").scrollTop = dockedScrollTop;
   }
 
   function syncTaskCardPlacement() {
@@ -1058,12 +1095,13 @@
       || (taskCardModal.matches?.(":modal") === true) === docked;
     if (changed && taskCardModal.open) taskCardModal.close();
     if (target && taskCardModal.parentElement !== target) target.append(taskCardModal);
-    board.classList.toggle("has-open-task", docked);
+    board.classList.toggle("has-open-task", dashboardHasDetailPanel());
     if (!taskCardModal.open) {
       if (docked) taskCardModal.show?.();
       else taskCardModal.showModal?.();
     }
     if (!taskCardModal.open) taskCardModal.setAttribute("open", "");
+    syncTaskCardBackdrop();
     for (const card of columns.querySelectorAll("[data-board-task-id]")) {
       const selected = card.dataset.boardTaskId === state.openTaskId;
       card.classList.toggle("is-selected", selected);
@@ -1286,6 +1324,8 @@
   }
 
   function closeTaskCard() {
+    taskCardBackdrop?.remove();
+    taskCardBackdrop = null;
     const openedTaskId = state.openTaskId;
     taskDeleteDialog.close();
     state.openTaskId = null;
@@ -1715,9 +1755,11 @@
       onclick: () => taskDeleteDialog.request(task.id),
     }));
     taskCardActions.replaceChildren(...actions);
+    syncTaskCardBackdrop();
   }
 
   function openTaskCard(task, { modal = false } = {}) {
+    if (modal && taskCardIsDocked()) dockedScrollTop = taskCardContent?.scrollTop ?? 0;
     state.taskCardModalRequested = modal;
     state.openTaskId = task.id;
     state.editingTaskId = null;
@@ -1848,16 +1890,14 @@
       }),
     ]));
     card.append(node("h3", { class: "board-task-title", text: task.title || task.text }));
-    if (boardRow && showsWorkspaceContext()) {
-      const executor = card.querySelector(".board-task-executor");
+    if (boardRow) {
       const workspaceName = task.bucket === "notes" ? "Заметки"
         : task.bucket === "backlog" ? "Бэклог"
           : workspaceById(task.workspaceId)?.name || "Workspace недоступен";
-      const assignment = node("div", { class: "board-task-assignment" }, [
-        node("span", { class: "board-task-workspace", text: workspaceName, title: workspaceName }),
-      ]);
-      assignment.append(executor);
-      card.append(assignment);
+      card.querySelector(".board-task-summary").append(node("span", {
+        class: "board-task-workspace", text: showsWorkspaceContext() ? workspaceName : "",
+        title: showsWorkspaceContext() ? workspaceName : null,
+      }));
     }
     const attachmentCountLabel = taskAttachmentCountLabel(task.attachments);
     if (attachmentCountLabel) {
@@ -1970,10 +2010,9 @@
       controls,
     ]));
     column.append(node("div", { class: "task-board-row-head", "aria-hidden": "true" }, [
-      node("span", { text: "ID" }), node("span", { text: "Задача" }),
-      showsWorkspaceContext() ? node("span", { class: "board-task-assignment" }, [
-        node("span", { text: "Workspace" }), node("span", { text: "Поток" }),
-      ]) : node("span", { text: "Поток" }),
+      node("span", { text: "ID" }),
+      node("span", { text: showsWorkspaceContext() ? "Workspace" : "" }),
+      node("span", { text: "Поток" }),
     ]));
     const list = node("div", { class: "task-board-column-list" });
     if (workspace && state.creatingWorkspaceId === workspace.id) list.append(renderCreateForm(workspace));
@@ -2008,45 +2047,7 @@
     return window.AgentHubStreamTabs?.normalizeWorkspaceFolderName(workspace?.settings?.catalogFolder) || "";
   }
 
-  let folderPicker = null;
-  let folderPickerButton = null;
-  function closeFolderPicker() {
-    folderPicker?.hidePopover?.();
-    folderPicker?.remove();
-    folderPickerButton?.setAttribute("aria-expanded", "false");
-    folderPicker = null;
-    folderPickerButton = null;
-  }
-
-  function openFolderPicker(button, folder, members) {
-    if (folderPickerButton === button && folderPicker?.matches(":popover-open")) { closeFolderPicker(); return; }
-    closeFolderPicker();
-    folderPickerButton = button;
-    folderPicker = node("div", {
-      class: "task-board-folder-picker", id: "task-board-folder-picker", popover: "auto",
-      "aria-label": `Workspace папки ${folder}`,
-      onkeydown: (event) => {
-        if (event.key === "Escape") { event.preventDefault(); closeFolderPicker(); button.focus(); }
-      },
-    }, members.map(scopeButton));
-    document.body.append(folderPicker);
-    folderPicker.addEventListener("toggle", (event) => {
-      button.setAttribute("aria-expanded", String(event.newState === "open"));
-    });
-    folderPicker.showPopover();
-    positionFolderPicker();
-    folderPicker.querySelector("button[aria-pressed='true']")?.focus();
-    if (!folderPicker.contains(document.activeElement)) folderPicker.querySelector("button")?.focus();
-  }
-
-  function positionFolderPicker() {
-    if (!folderPicker?.matches(":popover-open")) return;
-    const rect = folderPickerButton.getBoundingClientRect();
-    const width = folderPicker.getBoundingClientRect().width;
-    folderPicker.style.left = `${Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8))}px`;
-    folderPicker.style.top = `${rect.bottom + 6}px`;
-    folderPicker.style.maxHeight = `${Math.max(80, window.innerHeight - rect.bottom - 22)}px`;
-  }
+  const expandedBoardFolders = new Map();
 
   function scopeButton(scope) {
     const destination = scope.id === "notes" || scope.id.startsWith("workspace:");
@@ -2084,7 +2085,6 @@
       },
       text: `${scope.label} · ${scope.count}`,
       onclick: () => {
-        closeFolderPicker();
         state.boardScope = scope.id;
         state.creatingWorkspaceId = null;
         renderBoard();
@@ -2094,7 +2094,6 @@
 
   function renderScopeStrip() {
     if (!scopeStrip) return;
-    closeFolderPicker();
     const openTasks = (predicate) => tasksForMode(state.tasks, { completedOnly: state.completedOnly }).filter(predicate).length;
     const scopes = [
       { id: "all", label: "Все задачи", count: openTasks((task) => task.bucket !== "backlog") },
@@ -2121,14 +2120,25 @@
         count: members.reduce((sum, member) => sum + member.count, 0) };
       const main = scopeButton(folderScope);
       main.title = `Все Workspace папки ${scope.folder}`;
-      if (selectedMember) main.textContent = `${scope.folder} / ${selectedMember.label} · ${selectedMember.count}`;
+      const expanded = expandedBoardFolders.get(scope.folder) ?? true;
+      const memberList = node("div", {
+        class: "task-workspace-folder-list", hidden: expanded ? null : "",
+      }, members.map(scopeButton));
       const toggle = node("button", {
-        type: "button", class: "task-board-folder-toggle", text: "⌄",
+        type: "button", class: "task-board-folder-toggle", text: expanded ? "⌄" : "›",
         "aria-label": `Выбрать Workspace в папке ${scope.folder}`,
-        "aria-expanded": "false", "aria-controls": "task-board-folder-picker",
-        onclick: (event) => openFolderPicker(event.currentTarget, scope.folder, members),
+        "aria-expanded": String(expanded),
+        onclick: () => {
+          const open = memberList.hidden;
+          memberList.hidden = !open;
+          expandedBoardFolders.set(scope.folder, open);
+          toggle.setAttribute("aria-expanded", String(open));
+          toggle.textContent = open ? "⌄" : "›";
+        },
       });
-      groups.push(node("div", { class: `task-board-folder${selectedMember || state.boardScope === folderScope.id ? " is-selected" : ""}` }, [main, toggle]));
+      groups.push(node("div", {
+        class: `task-board-folder task-workspace-folder-details${selectedMember || state.boardScope === folderScope.id ? " is-selected" : ""}`,
+      }, [node("div", { class: "task-board-folder-heading" }, [main, toggle]), memberList]));
     }
     scopeStrip.replaceChildren(...groups);
   }
@@ -2244,7 +2254,6 @@
     });
   }
   window.addEventListener("resize", () => {
-    positionFolderPicker();
     syncTaskCardPlacement();
     scheduleTaskCardEditorSizing();
   }, { passive: true });
@@ -2255,17 +2264,21 @@
     }).observe(document.documentElement, { attributes: true, attributeFilter: ["data-view"] });
   }
   taskCardModal?.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && taskCardIsDocked()) {
+    if (event.key === "Escape" && !event.defaultPrevented && taskCardIsDocked()) {
       event.preventDefault();
-      closeTaskCard();
+      dismissTaskCard();
     }
   });
-  document.querySelector("[data-task-card-close]")?.addEventListener("click", closeTaskCard);
-  taskCardModal?.addEventListener("cancel", (event) => {
-    event.preventDefault();
-    closeTaskCard();
-  });
-  scopeStrip?.addEventListener("scroll", positionFolderPicker, { passive: true });
+  function dismissTaskCard() {
+    if (state.taskCardModalRequested && dashboardHasDetailPanel()) {
+      state.taskCardModalRequested = false;
+      syncTaskCardPlacement();
+      if (taskCardContent) taskCardContent.scrollTop = dockedScrollTop;
+      scheduleTaskCardEditorSizing();
+      taskCardModal.querySelector("[data-task-card-close]")?.focus();
+    } else closeTaskCard();
+  }
+  document.querySelector("[data-task-card-close]")?.addEventListener("click", dismissTaskCard);
   document.querySelector("[data-task-card-edit-toggle]")?.addEventListener("click", () => {
     taskCardModal.classList.add("is-editing");
     scheduleTaskCardEditorSizing();
@@ -2334,7 +2347,7 @@
   });
   modalOverlays?.installDismissibleOverlay({
     dialog: taskCardModal,
-    close: closeTaskCard,
+    close: dismissTaskCard,
   });
   modalOverlays?.installDismissibleOverlay({
     dialog: startModal,
@@ -2395,7 +2408,8 @@
         state.savingTaskId = null;
         if (succeeded) {
           state.editDirty = false;
-          closeTaskCard();
+          renderOpenTaskCard();
+          dismissTaskCard();
           return;
         }
         renderOpenTaskCard();
