@@ -859,6 +859,10 @@
   const scopeStrip = document.querySelector("[data-task-board-scopes]");
   const filterToggle = document.querySelector("[data-task-board-filter-toggle]");
   const filterControls = document.querySelector("[data-task-board-filter-controls]");
+  const settingsToggle = document.querySelector("[data-task-board-settings-toggle]");
+  const settingsPanel = document.querySelector("#task-board-settings");
+  const viewButtons = Array.from(document.querySelectorAll?.("[data-task-board-view]") ?? []);
+  const openModeButtons = Array.from(document.querySelectorAll?.("[data-task-open-mode]") ?? []);
   const completedToggle = document.querySelector("[data-task-board-completed-toggle]");
   const statusLanguageButtons = Array.from(document.querySelectorAll?.("[data-task-status-language]") ?? []);
   const workspacePanel = document.querySelector("[data-workspace-task-panel]");
@@ -928,6 +932,18 @@
   const TASK_CARD_MODAL_VIEWPORT_GAP_PX = 32;
   let taskCardEditorSizingFrame = null;
 
+  function storedBoardPreference(name, values, fallback) {
+    try {
+      const value = window.localStorage?.getItem(`agent-hub.dashboard.${name}`);
+      return values.includes(value) ? value : fallback;
+    } catch { return fallback; }
+  }
+
+  function saveBoardPreference(name, value) {
+    try { window.localStorage?.setItem(`agent-hub.dashboard.${name}`, value); }
+    catch { /* The choice still applies when browser storage is unavailable. */ }
+  }
+
   const state = {
     tasks: [],
     workspaces: [],
@@ -941,6 +957,8 @@
     statusLanguage: storedTaskStatusLanguage(),
     completedOnly: false,
     filtersOpen: false,
+    boardView: storedBoardPreference("view", ["statuses", "workspaces"], "statuses"),
+    taskOpenMode: storedBoardPreference("task-open", ["modal", "side", "both"], "both"),
     boardScope: "all",
     taskCardModalRequested: false,
     openTaskId: null,
@@ -1050,7 +1068,7 @@
   }
 
   function dashboardHasDetailPanel() {
-    return document.documentElement.dataset.view === "dashboard"
+    return state.taskOpenMode !== "modal" && document.documentElement.dataset.view === "dashboard"
       && window.matchMedia?.("(min-width: 960px)")?.matches === true;
   }
 
@@ -1765,6 +1783,7 @@
   }
 
   function openTaskCard(task, { modal = false } = {}) {
+    modal = state.taskOpenMode === "modal" || (modal && state.taskOpenMode === "both");
     if (modal && taskCardIsDocked()) dockedScrollTop = taskCardContent?.scrollTop ?? 0;
     state.taskCardModalRequested = modal;
     state.openTaskId = task.id;
@@ -1780,13 +1799,17 @@
 
   let firstBoardClick = null;
 
-  function continuesBoardDoubleClick(event) {
+  function continuesBoardClick(event) {
     return event.detail === 2 && event.button === 0 && firstBoardClick
       && firstBoardClick.card.isConnected
       && firstBoardClick.card.dataset.boardTaskId === firstBoardClick.id
-      && state.openTaskId === firstBoardClick.id && taskCardIsDocked()
+      && state.openTaskId === firstBoardClick.id
       && Math.abs(event.clientX - firstBoardClick.x) <= 4
       && Math.abs(event.clientY - firstBoardClick.y) <= 4;
+  }
+
+  function continuesBoardDoubleClick(event) {
+    return state.taskOpenMode === "both" && taskCardIsDocked() && continuesBoardClick(event);
   }
 
   // Docking shifts columns after the first click. Preserve the original connected
@@ -1795,7 +1818,8 @@
     if (event.detail === 1) firstBoardClick = null;
   }, true);
   document.addEventListener("click", (event) => {
-    if (!continuesBoardDoubleClick(event)) return;
+    if (!continuesBoardDoubleClick(event)
+      && !(state.taskOpenMode === "modal" && continuesBoardClick(event))) return;
     event.preventDefault();
     event.stopImmediatePropagation();
   }, true);
@@ -2018,7 +2042,7 @@
     ]));
     column.append(node("div", { class: "task-board-row-head", "aria-hidden": "true" }, [
       node("span", { text: "ID" }),
-      node("span", { text: showsWorkspaceContext() ? "Workspace" : "" }),
+      node("span", { text: showsWorkspaceContext() ? "Workspace" : state.boardView === "workspaces" && id !== "backlog" ? "Статус" : "" }),
       node("span", { text: "Поток" }),
     ]));
     const list = node("div", { class: "task-board-column-list" });
@@ -2047,7 +2071,8 @@
   }
 
   function showsWorkspaceContext() {
-    return state.boardScope === "all" || state.boardScope.startsWith("folder:");
+    return state.boardView === "statuses"
+      && (state.boardScope === "all" || state.boardScope.startsWith("folder:"));
   }
 
   function workspaceFolder(workspace) {
@@ -2160,6 +2185,9 @@
       state.boardScope = "all";
     }
     board.classList.toggle("has-workspace-context", showsWorkspaceContext());
+    board.classList.toggle("is-workspace-view", state.boardView === "workspaces");
+    for (const button of viewButtons) button.setAttribute("aria-pressed", String(button.dataset.taskBoardView === state.boardView));
+    for (const button of openModeButtons) button.setAttribute("aria-pressed", String(button.dataset.taskOpenMode === state.taskOpenMode));
     const completedCount = state.tasks.filter((task) => task.status === "done").length;
     const openCount = state.tasks.length - completedCount;
     for (const button of statusLanguageButtons) {
@@ -2189,7 +2217,7 @@
     const statuses = state.completedOnly ? ["done"] : TASK_WORKFLOW_STATUSES.filter((status) => (
       status !== "done" || scopedTasks.some((task) => taskWorkflowStatus(task) === "done")
     ));
-    for (const status of statuses) {
+    for (const status of state.boardView === "statuses" ? statuses : []) {
       const presentation = taskWorkflowPresentation({ workflowStatus: status }, state.statusLanguage);
       rendered.push(renderColumn({
         id: `status:${state.boardScope}:${status}`,
@@ -2202,6 +2230,26 @@
           ? workspaceById(state.boardScope.slice(10)) : null,
         emptyText,
       }));
+    }
+    if (state.boardView === "workspaces") {
+      const workspaceColumns = new Map([["backlog", rendered[0]]]);
+      for (const workspace of state.workspaces) {
+        const id = `workspace:${workspace.id}`;
+        if (state.boardScope !== "all" && state.boardScope !== id
+          && state.boardScope !== `folder:${workspaceFolder(workspace)}`) continue;
+        workspaceColumns.set(id, renderColumn({
+          id, title: workspace.name, subtitle: workspace.comment ?? "",
+          tasks: visibleTasks.filter((task) => task.bucket === "workspace" && task.workspaceId === workspace.id),
+          workspace, movable: !state.completedOnly, emptyText,
+        }));
+      }
+      if (state.boardScope === "all" || state.boardScope === "notes") workspaceColumns.set("notes", renderColumn({
+        id: "notes", title: "Заметки", subtitle: state.notesComment,
+        tasks: visibleTasks.filter((task) => task.bucket === "notes"),
+        accent: "is-notes", movable: !state.completedOnly, emptyText,
+      }));
+      rendered.splice(0, rendered.length, ...orderedDashboardColumnIds(state.columnOrder, workspaceColumns.keys())
+        .map((id) => workspaceColumns.get(id)));
     }
     replaceBoardColumnsPreservingScroll(boardColumnRegions.columns, rendered);
     restoreTaskBoardScroll({ workspaces: boardColumnRegions.columns }, scrollSnapshot);
@@ -2247,6 +2295,29 @@
     state.filtersOpen = !state.filtersOpen;
     renderBoard();
   });
+  function positionBoardSettings() {
+    if (!settingsPanel?.matches(":popover-open")) return;
+    const rect = settingsToggle.getBoundingClientRect();
+    const width = settingsPanel.getBoundingClientRect().width;
+    settingsPanel.style.left = `${Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8))}px`;
+    settingsPanel.style.top = `${rect.bottom + 6}px`;
+    settingsPanel.style.maxHeight = `${Math.max(80, window.innerHeight - rect.bottom - 22)}px`;
+  }
+  settingsPanel?.addEventListener("toggle", positionBoardSettings);
+  for (const button of viewButtons) button.addEventListener("click", () => {
+    state.boardView = button.dataset.taskBoardView;
+    state.creatingWorkspaceId = null;
+    saveBoardPreference("view", state.boardView);
+    renderBoard();
+  });
+  for (const button of openModeButtons) button.addEventListener("click", () => {
+    state.taskOpenMode = button.dataset.taskOpenMode;
+    saveBoardPreference("task-open", state.taskOpenMode);
+    state.taskCardModalRequested = state.taskOpenMode === "modal";
+    settingsPanel.hidePopover();
+    renderBoard();
+    scheduleTaskCardEditorSizing();
+  });
   for (const button of statusLanguageButtons) {
     button.addEventListener("click", () => {
       state.statusLanguage = normalizedTaskStatusLanguage(button.dataset.taskStatusLanguage);
@@ -2261,6 +2332,7 @@
     });
   }
   window.addEventListener("resize", () => {
+    positionBoardSettings();
     syncTaskCardPlacement();
     scheduleTaskCardEditorSizing();
   }, { passive: true });
