@@ -788,19 +788,26 @@
 
   <main class="task-board-view" data-task-board>
     <header class="task-board-toolbar">
-      <div class="task-board-status-language" role="group" aria-label="Язык статусов задач">
-        <span>Статусы</span>
-        <div class="task-board-status-language-options">
-          <button type="button" data-task-status-language="en" aria-pressed="true">en</button>
-          <button type="button" data-task-status-language="ru" aria-pressed="false">ru</button>
+      <div class="task-board-scope-strip" data-task-board-scopes aria-label="Workspace и заметки"></div>
+      <div class="task-board-toolbar-actions">
+        <button type="button" class="task-board-filter-toggle" data-task-board-filter-toggle
+          aria-expanded="false" aria-controls="task-board-filter-controls">Фильтры</button>
+        <div class="task-board-filter-controls" id="task-board-filter-controls" data-task-board-filter-controls hidden>
+          <div class="task-board-status-language" role="group" aria-label="Язык статусов задач">
+            <span>Статусы</span>
+            <div class="task-board-status-language-options">
+              <button type="button" data-task-status-language="en" aria-pressed="true">en</button>
+              <button type="button" data-task-status-language="ru" aria-pressed="false">ru</button>
+            </div>
+          </div>
+          <button
+            type="button"
+            class="task-board-completed-toggle"
+            data-task-board-completed-toggle
+            aria-pressed="false"
+          >Закрытые</button>
         </div>
       </div>
-      <button
-        type="button"
-        class="task-board-completed-toggle"
-        data-task-board-completed-toggle
-        aria-pressed="false"
-      >Закрытые</button>
     </header>
     <div class="task-board-columns" data-task-board-columns aria-live="polite"></div>
   </main>

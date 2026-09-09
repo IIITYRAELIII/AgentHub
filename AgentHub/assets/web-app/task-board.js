@@ -856,6 +856,9 @@
 
   const board = document.querySelector("[data-task-board]");
   const columns = document.querySelector("[data-task-board-columns]");
+  const scopeStrip = document.querySelector("[data-task-board-scopes]");
+  const filterToggle = document.querySelector("[data-task-board-filter-toggle]");
+  const filterControls = document.querySelector("[data-task-board-filter-controls]");
   const completedToggle = document.querySelector("[data-task-board-completed-toggle]");
   const statusLanguageButtons = Array.from(document.querySelectorAll?.("[data-task-status-language]") ?? []);
   const workspacePanel = document.querySelector("[data-workspace-task-panel]");
@@ -908,24 +911,12 @@
   if (!board || !columns) return;
 
   const boardColumnRegions = {
-    backlog: node("div", {
-      class: "task-board-edge is-backlog-edge",
-      "data-task-board-backlog": "",
-    }),
-    workspaces: node("div", {
-      class: "task-board-workspace-columns",
-      "data-task-board-workspace-columns": "",
-    }),
-    notes: node("div", {
-      class: "task-board-edge is-notes-edge",
-      "data-task-board-notes": "",
+    columns: node("div", {
+      class: "task-board-status-columns",
+      "data-task-board-status-columns": "",
     }),
   };
-  columns.replaceChildren(
-    boardColumnRegions.backlog,
-    boardColumnRegions.workspaces,
-    boardColumnRegions.notes,
-  );
+  columns.replaceChildren(boardColumnRegions.columns);
 
   const TaskReferences = window.AgentHubTaskReferences;
   const COLUMN_MIME = "application/x-agent-hub-board-column";
@@ -948,6 +939,8 @@
     deferredInputs: [],
     statusLanguage: storedTaskStatusLanguage(),
     completedOnly: false,
+    filtersOpen: false,
+    boardScope: "all",
     openTaskId: null,
     startingTaskId: null,
     creatingWorkspaceId: null,
@@ -1001,6 +994,7 @@
     taskCardModal.removeAttribute("data-width-expanded");
     taskCardTitleSizer.resize();
     taskCardDescriptionSizer.resize();
+    if (taskCardIsDocked()) return;
 
     const rootFontSize = numericCssValue(window.getComputedStyle(document.documentElement).fontSize) || 16;
     const viewportWidth = Math.max(1, document.documentElement.clientWidth || window.innerWidth);
@@ -1047,6 +1041,11 @@
   function scheduleTaskCardEditorSizing() {
     if (taskCardEditorSizingFrame != null) window.cancelAnimationFrame(taskCardEditorSizingFrame);
     taskCardEditorSizingFrame = window.requestAnimationFrame(resizeTaskCardEditor);
+  }
+
+  function taskCardIsDocked() {
+    return document.documentElement.dataset.view === "dashboard"
+      && window.matchMedia?.("(min-width: 960px)")?.matches === true;
   }
 
   function emit(type, detail = {}) {
@@ -1256,6 +1255,7 @@
     state.editDirty = false;
     state.editingChecklistItemId = null;
     setTaskCardOriginalExpanded(false);
+    board.classList.remove("has-open-task");
     taskCardModal?.close?.();
     taskCardModal?.removeAttribute("open");
   }
@@ -1672,16 +1672,19 @@
     state.editDirty = false;
     setTaskCardOriginalExpanded(false);
     renderOpenTaskCard();
-    taskCardModal.showModal?.();
+    const docked = taskCardIsDocked();
+    board.classList.toggle("has-open-task", docked);
+    if (!taskCardModal.open && docked) taskCardModal.show?.();
+    else if (!taskCardModal.open) taskCardModal.showModal?.();
     if (!taskCardModal.open) taskCardModal.setAttribute("open", "");
     if (taskCardContent) taskCardContent.scrollTop = 0;
     scheduleTaskCardEditorSizing();
   }
 
-  function taskCard(task, { compact = false, linked = false } = {}) {
+  function taskCard(task, { compact = false, linked = false, movable = !compact } = {}) {
     const completed = task.status === "done";
-    const movable = !compact && !completed;
-    const attachable = !linked;
+    const movableCard = movable && !completed;
+    const attachable = !linked && movableCard;
     const card = node("article", {
       class: `board-task-card${task.status === "started" ? " is-started" : ""}${completed ? " is-completed" : ""}${compact ? " is-compact" : ""}`,
       draggable: attachable ? "true" : null,
@@ -1689,7 +1692,7 @@
       tabindex: "0",
       "aria-label": `Открыть задачу ${task.title || task.text}`,
       "data-board-task-id": task.id,
-      "data-board-task-movable": movable ? "true" : null,
+      "data-board-task-movable": movableCard ? "true" : null,
       onclick: (event) => {
         event?.stopPropagation?.();
         openTaskCard(state.tasks.find((candidate) => candidate.id === task.id) ?? task);
@@ -1704,7 +1707,7 @@
       } : null,
       ondragend: attachable ? () => TaskReferences.endDrag() : null,
     });
-    if (movable) {
+    if (movableCard) {
       card.addEventListener("dragover", (event) => {
         if (hasColumnDrag(event.dataTransfer)) return;
         if (!TaskReferences.hasTransfer(event.dataTransfer)) return;
@@ -1873,14 +1876,48 @@
     if (!tasks.length && state.creatingWorkspaceId !== workspace?.id) {
       list.append(node("p", { class: "task-board-empty", text: emptyText }));
     } else {
-      for (const task of tasks) list.append(taskCard(task));
+      for (const task of tasks) list.append(taskCard(task, { movable }));
     }
     column.append(list);
     return column;
   }
 
+  function selectedScopeTasks(tasks) {
+    if (state.boardScope === "notes") return tasks.filter((task) => task.bucket === "notes");
+    if (state.boardScope.startsWith("workspace:")) {
+      const workspaceId = state.boardScope.slice(10);
+      return tasks.filter((task) => task.bucket === "workspace" && task.workspaceId === workspaceId);
+    }
+    return tasks.filter((task) => task.bucket === "workspace" || task.bucket === "notes");
+  }
+
+  function renderScopeStrip() {
+    if (!scopeStrip) return;
+    const openTasks = (predicate) => state.tasks.filter((task) => task.status !== "done" && predicate(task)).length;
+    const scopes = [
+      { id: "all", label: "Workspace", count: openTasks((task) => task.bucket !== "backlog") },
+      ...state.workspaces.map((workspace) => ({
+        id: `workspace:${workspace.id}`,
+        label: workspace.name,
+        count: openTasks((task) => task.bucket === "workspace" && task.workspaceId === workspace.id),
+      })),
+      { id: "notes", label: "Заметки", count: openTasks((task) => task.bucket === "notes") },
+    ];
+    scopeStrip.replaceChildren(...scopes.map((scope) => node("button", {
+      type: "button",
+      class: `task-board-scope${state.boardScope === scope.id ? " is-selected" : ""}`,
+      "aria-pressed": String(state.boardScope === scope.id),
+      text: `${scope.label} · ${scope.count}`,
+      onclick: () => {
+        state.boardScope = scope.id;
+        state.creatingWorkspaceId = null;
+        renderBoard();
+      },
+    })));
+  }
+
   function renderBoard() {
-    const scrollSnapshot = taskBoardScrollSnapshot(boardColumnRegions);
+    const scrollSnapshot = taskBoardScrollSnapshot({ workspaces: boardColumnRegions.columns });
     pointerTaskDrag.cancelForRerender();
     const visibleTasks = tasksForMode(state.tasks, { completedOnly: state.completedOnly });
     const emptyText = state.completedOnly ? "Нет закрытых задач" : "Перетащите задачу сюда";
@@ -1901,30 +1938,28 @@
       );
     }
     board.classList.toggle("is-completed-only", state.completedOnly);
-    columns.style.setProperty("--board-column-count", String(state.workspaces.length + 2));
-    const rendered = new Map();
-    rendered.set("backlog", renderColumn({
+    if (filterControls) filterControls.hidden = !state.filtersOpen;
+    filterToggle?.setAttribute("aria-expanded", String(state.filtersOpen));
+    renderScopeStrip();
+    const rendered = [renderColumn({
       id: "backlog", title: "Бэклог", subtitle: "Неразобранные входящие",
       tasks: visibleTasks.filter((task) => task.bucket === "backlog"), accent: "is-backlog", emptyText,
-    }));
-    for (const workspace of state.workspaces) {
-      const id = `workspace:${workspace.id}`;
-      rendered.set(id, renderColumn({
-        id,
-        title: workspace.name,
-        subtitle: workspace.comment ?? "",
-        tasks: visibleTasks.filter((task) => task.bucket === "workspace" && task.workspaceId === workspace.id),
-        workspace, movable: !state.completedOnly, emptyText,
+    })];
+    const scopedTasks = selectedScopeTasks(visibleTasks);
+    const statuses = state.completedOnly ? ["done"] : TASK_WORKFLOW_STATUSES.filter((status) => status !== "done");
+    for (const status of statuses) {
+      const presentation = taskWorkflowPresentation({ workflowStatus: status }, state.statusLanguage);
+      rendered.push(renderColumn({
+        id: `status:${state.boardScope}:${status}`,
+        title: presentation.full,
+        subtitle: state.boardScope === "notes" ? state.notesComment : "",
+        tasks: scopedTasks.filter((task) => taskWorkflowStatus(task) === status),
+        accent: `is-status-${status}`,
+        emptyText,
       }));
     }
-    rendered.set("notes", renderColumn({
-      id: "notes", title: "Заметки", subtitle: state.notesComment,
-      tasks: visibleTasks.filter((task) => task.bucket === "notes"),
-      accent: "is-notes", movable: !state.completedOnly, emptyText,
-    }));
-    const orderedIds = orderedDashboardColumnIds(state.columnOrder, rendered.keys());
-    replaceBoardColumnRegionsPreservingScroll(boardColumnRegions, orderedIds, rendered);
-    restoreTaskBoardScroll(boardColumnRegions, scrollSnapshot);
+    replaceBoardColumnsPreservingScroll(boardColumnRegions.columns, rendered);
+    restoreTaskBoardScroll({ workspaces: boardColumnRegions.columns }, scrollSnapshot);
   }
 
   function renderWorkspacePanel() {
@@ -1960,6 +1995,10 @@
   completedToggle?.addEventListener("click", () => {
     closeTaskCard();
     state.completedOnly = !state.completedOnly;
+    renderBoard();
+  });
+  filterToggle?.addEventListener("click", () => {
+    state.filtersOpen = !state.filtersOpen;
     renderBoard();
   });
   for (const button of statusLanguageButtons) {

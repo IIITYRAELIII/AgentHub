@@ -3701,8 +3701,50 @@ html[data-view="dashboard"] .task-board-view {
   display: flex;
   flex: 0 0 auto;
   gap: 0.55rem;
-  justify-content: flex-end;
-  padding: 0.65rem 1.2rem 0;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 0.65rem 1.2rem;
+}
+
+.task-board-scope-strip,
+.task-board-toolbar-actions,
+.task-board-filter-controls {
+  align-items: center;
+  display: flex;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.task-board-scope-strip {
+  flex: 1 1 auto;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.task-board-scope,
+.task-board-filter-toggle {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  cursor: pointer;
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 650;
+  padding: 0.42rem 0.58rem;
+}
+
+.task-board-scope:hover,
+.task-board-scope:focus-visible,
+.task-board-scope.is-selected,
+.task-board-filter-toggle:hover,
+.task-board-filter-toggle:focus-visible,
+.task-board-filter-toggle[aria-expanded="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+  outline: none;
 }
 
 .task-board-status-language {
@@ -3797,41 +3839,26 @@ html[data-view="dashboard"] .task-board-view {
 
 .task-board-columns {
   --task-board-column-base-width: clamp(
-    16rem,
-    calc((100vw - 4rem) / var(--board-column-count)),
-    22rem
+    15rem,
+    21vw,
+    20rem
   );
-  --board-column-count: 2;
-  align-items: stretch;
-  display: grid;
+  display: flex;
   flex: 1 1 auto;
-  gap: 0.75rem;
-  grid-template-columns:
-    var(--task-board-column-base-width)
-    minmax(0, 1fr)
-    var(--task-board-column-base-width);
   min-height: 0;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   padding: 1rem 1.2rem 1.1rem;
 }
 
-.task-board-edge,
-.task-board-workspace-columns {
-  min-height: 0;
-  min-width: 0;
-}
-
-.task-board-edge {
-  display: flex;
-}
-
-.task-board-workspace-columns {
+.task-board-status-columns {
   align-items: stretch;
   display: flex;
+  flex: 1 1 auto;
   gap: 0.75rem;
-  overflow-x: auto;
-  overflow-y: hidden;
-  overscroll-behavior-inline: contain;
+  inline-size: max-content;
+  min-height: 0;
+  min-inline-size: 100%;
 }
 
 .task-board-column {
@@ -3843,12 +3870,6 @@ html[data-view="dashboard"] .task-board-view {
   flex-direction: column;
   min-height: 0;
   transition: border-color 0.14s ease, background 0.14s ease;
-}
-
-.task-board-edge .task-board-column {
-  flex: 1 1 100%;
-  inline-size: 100%;
-  min-width: 0;
 }
 
 .task-board-column.is-dragover {
@@ -3866,6 +3887,33 @@ html[data-view="dashboard"] .task-board-view {
   background: color-mix(in srgb, var(--surface-1) 96%, var(--surface-2));
   border-top-color: color-mix(in srgb, var(--provider-claude) 70%, var(--line));
   box-shadow: -0.65rem 0 0.9rem -0.75rem color-mix(in srgb, var(--text) 24%, transparent);
+}
+
+.task-board-column.is-status-in_progress {
+  border-top-color: color-mix(in srgb, var(--accent) 70%, var(--line));
+}
+
+.task-board-column.is-status-testing {
+  border-top-color: color-mix(in srgb, var(--pending) 70%, var(--line));
+}
+
+.task-board-column.is-status-awaiting_implementation {
+  border-top-color: color-mix(in srgb, #e87823 70%, var(--line));
+}
+
+@media (min-width: 960px) {
+  html[data-view="dashboard"] .task-board-view.has-open-task .task-board-columns {
+    padding-inline-end: min(31rem, 34vw);
+  }
+
+  html[data-view="dashboard"] .task-card-modal[open] {
+    block-size: auto;
+    inline-size: min(30rem, 32vw);
+    inset: calc(var(--app-header-h, 4.2rem) + 0.75rem) 0.75rem 0.75rem auto;
+    margin: 0;
+    max-height: none;
+    max-width: none;
+  }
 }
 
 .task-board-column-head {
@@ -5222,30 +5270,22 @@ html[data-view="dashboard"] .task-board-view {
     padding: 0.8rem;
   }
 
-  .task-board-edge,
-  .task-board-workspace-columns {
-    display: contents;
+  .task-board-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 0.55rem;
   }
 
-  .task-board-column.is-backlog {
-    left: 0.8rem;
-    position: sticky;
-    z-index: 3;
+  .task-board-toolbar-actions {
+    justify-content: space-between;
   }
 
-  .task-board-column.is-notes {
-    position: sticky;
-    right: 0.8rem;
-    z-index: 3;
+  .task-board-filter-controls {
+    flex-wrap: wrap;
   }
 
   .task-board-column {
     flex-basis: min(82vw, 19rem);
-  }
-
-  .task-board-edge .task-board-column {
-    flex-basis: min(82vw, 19rem);
-    inline-size: auto;
   }
 
   .task-start-new {
