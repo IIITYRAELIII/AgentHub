@@ -1904,9 +1904,11 @@ export class LocalTaskSyncStore {
   #transaction(run) {
     this.#database.exec("BEGIN IMMEDIATE");
     try {
+      const changesBefore = this.#database.prepare("SELECT total_changes() AS count").get().count;
       const result = run();
+      const changed = this.#database.prepare("SELECT total_changes() AS count").get().count !== changesBefore;
       this.#database.exec("COMMIT");
-      this.#revision += 1;
+      if (changed) this.#revision += 1;
       return result;
     } catch (error) {
       this.#database.exec("ROLLBACK");

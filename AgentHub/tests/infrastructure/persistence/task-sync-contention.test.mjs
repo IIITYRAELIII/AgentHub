@@ -56,6 +56,16 @@ test("history contention exhaustion leaves projection unchanged and a later exac
   assert.equal(store.history(task).length, 1);
 });
 
+test("unchanged catalog polling preserves the snapshot cache revision", async (t) => {
+  const { store } = await fixture(t);
+  await store.recordCatalog([task], 100);
+  const revision = store.revision;
+  await store.recordCatalog([task], 200);
+  assert.equal(store.revision, revision);
+  await store.recordHistory(task, [{ id: "turn", prompt: "Question", answer: "Answer", completed: true }]);
+  assert.ok(store.revision > revision);
+});
+
 test("mutation queues expose waiting time separately and unrelated stores do not share a lane", async () => {
   const queue = new AsyncSqliteMutationQueue();
   const other = new AsyncSqliteMutationQueue();
