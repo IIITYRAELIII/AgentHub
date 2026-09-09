@@ -26,7 +26,12 @@ async function launchEdge(chromium) {
   return chromium.launch({ headless: true });
 }
 
-async function openFixture(page) {
+async function openFixture(page, { grouping = 'off' } = {}) {
+  if (grouping != null) await page.addInitScript((value) => {
+    if (localStorage.getItem('agent-hub.dashboard.group-workspaces') == null) {
+      localStorage.setItem('agent-hub.dashboard.group-workspaces', value);
+    }
+  }, grouping);
   await page.route("**/*", async (route) => {
     const requestUrl = new URL(route.request().url());
     if (requestUrl.hostname !== "agent-hub.test") return route.abort();
@@ -459,3 +464,90 @@ test("Dashboard groups existing folders, selects their Workspaces and opens the 
   } finally { await browser.close(); }
 });
 
+
+
+test("Status matrix groups by Workspace, preserves navigation and supports the optional flat view", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchEdge(chromium);
+  try {
+    const page = await browser.newPage({ viewport: { width: 1752, height: 1000 } });
+    const errors = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await openFixture(page, { grouping: null });
+    await setBoard(page);
+    const board = page.locator('[data-task-board-columns]');
+    const matrix = page.locator('[data-task-board-matrix]');
+    const one = page.locator('[data-task-board-group="workspace:one"]');
+    const two = page.locator('[data-task-board-group="workspace:two"]');
+    const settings = page.locator('[data-task-board-settings-toggle]');
+    const switchGrouping = async () => {
+      await settings.click();
+      await page.getByLabel('Группировать по воркспейсам', { exact: true }).click();
+    };
+    assert.equal(await matrix.isVisible(), true, 'grouped by default');
+    assert.deepEqual(await page.locator('.task-board-lane-heading > span:first-child').allTextContents(), ['DevOps', 'Agent HUB', 'Заметки']);
+    assert.equal(await board.locator('[data-board-task-id]').count(), 6);
+    assert.equal(await one.locator('[data-board-task-id]').count(), 3);
+    assert.equal(await two.locator('[data-board-task-id]').count(), 1);
+    assert.equal(await board.locator('.is-backlog [data-board-task-id="5"]').count(), 1);
+    assert.equal(await matrix.locator('[data-board-task-id="5"]').count(), 0);
+    assert.equal(await page.locator('.task-board-matrix-head .is-status-new .task-board-count').textContent(), '2');
+    const first = one.locator('[data-board-task-id="1"]');
+    for (const theme of THEMES) {
+      await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, theme);
+      const cells = await one.locator('.task-board-lane-cell').evaluateAll((els) => els.map(el => el.getBoundingClientRect().toJSON()));
+      const heads = await page.locator('.task-board-status-heading').evaluateAll((els) => els.map(el => el.getBoundingClientRect().toJSON()));
+      assert.ok(cells.every((cell, i) => Math.abs(cell.x - heads[i].x) < 1 && Math.abs(cell.width - heads[i].width) < 8), theme);
+      assert.ok(cells.every((cell) => Math.abs(cell.y - cells[0].y) < 1 && Math.abs(cell.bottom - cells[0].bottom) < 1), theme);
+      const meta = await first.evaluate(el => ['.board-task-number', '.board-task-workspace', '.board-task-executor'].map(s => el.querySelector(s).getBoundingClientRect().toJSON()));
+      assert.ok(meta[0].right <= meta[1].x && meta[1].right <= meta[2].x, theme);
+      assert.notEqual(await first.evaluate(el => getComputedStyle(el).backgroundColor), 'rgba(0, 0, 0, 0)', theme);
+    }
+    await first.dblclick();
+    const dialog = page.locator('[data-task-card-modal]');
+    assert.equal(await dialog.evaluate(el => el.matches(':modal')), true);
+    await page.keyboard.press('Escape');
+    assert.equal(await dialog.isVisible(), true);
+    await page.keyboard.press('Escape');
+    await one.locator('summary').click();
+    assert.equal(await first.isVisible(), false);
+    await setBoard(page);
+    assert.equal(await first.isVisible(), false, 'collapse survives snapshot');
+    await one.locator('summary').click();
+    assert.equal(await first.isVisible(), true);
+    assert.deepEqual(await dropTask(page, '1', one.locator('.is-status-testing')),
+      { type: 'status', id: '1', status: 'testing' });
+    await page.evaluate(() => window.AgentHubTaskBoard.finishAction({ type: 'status', id: '1', succeeded: true }));
+    const actionCount = await page.evaluate(() => window.__boardActions.length);
+    await dropTask(page, '1', two.locator('.is-status-testing'));
+    await dropTask(page, '5', one.locator('.is-status-testing'));
+    assert.equal(await page.evaluate(() => window.__boardActions.length), actionCount, 'cross-Workspace and backlog drops cannot change status');
+    await page.getByRole('button', { name: 'Создать задачу в Agent HUB', exact: true }).click();
+    assert.equal(await one.locator('textarea').isVisible(), true);
+    await page.locator('[data-board-scope="workspace:one"]').click();
+    assert.equal(await page.locator('.task-board-lane').count(), 1);
+    assert.equal(await first.locator('.board-task-workspace').textContent(), '');
+    await switchGrouping();
+    assert.equal(await matrix.count(), 0);
+    assert.equal(await board.locator('.is-status-testing').count(), 1);
+    await page.reload();
+    await setBoard(page);
+    assert.equal(await matrix.count(), 0, 'grouping preference survives reload');
+    await switchGrouping();
+    assert.equal(await matrix.isVisible(), true);
+    await settings.click();
+    await page.locator('[data-task-board-view="workspaces"]').click();
+    await settings.click();
+    assert.equal(await page.locator('[data-task-board-grouping-setting]').isVisible(), false);
+    await page.locator('[data-task-board-view="statuses"]').click();
+    assert.equal(await matrix.isVisible(), true);
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.ok((await board.boundingBox()).x + (await board.boundingBox()).width <= 391);
+    await matrix.evaluate(el => { el.scrollLeft = 300; el.scrollTop = 80; });
+    const scroll = await matrix.evaluate(el => ({ x: el.scrollLeft, y: el.scrollTop }));
+    assert.ok(scroll.x > 0 && scroll.y > 0);
+    await setBoard(page);
+    assert.deepEqual(await matrix.evaluate(el => ({ x: el.scrollLeft, y: el.scrollTop })), scroll);
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
