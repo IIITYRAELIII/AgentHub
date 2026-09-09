@@ -49,22 +49,21 @@ export class StreamMessagePinService {
       } catch {
         available = false;
       }
-      this.store.setAvailability(pin.id, available);
       return { ...pin, available };
     });
   }
 
-  set(params = {}) {
+  async set(params = {}) {
     const stream = this.#stream(params.streamId);
     if (params.pinned === true) {
       const undoToken = String(params.undoToken ?? "").trim();
       if (undoToken) {
         const saved = this.undo.get(undoToken);
-        this.undo.delete(undoToken);
         if (!saved || saved.expiresAtMs < Date.now() || saved.pin.streamId !== stream.id) {
           throw new Error("Срок отмены истёк");
         }
-        const result = this.store.pin(saved.pin);
+        const result = await this.store.pin(saved.pin);
+        this.undo.delete(undoToken);
         return { pin: result.pin, changed: result.changed, messagePins: this.snapshot() };
       }
       const provider = requiredText(params.provider, "provider").toLowerCase();
@@ -84,7 +83,7 @@ export class StreamMessagePinService {
       if (requestedKey && requestedKey !== candidate.messageKey) {
         throw new Error("Durable identity сообщения изменилась; обновите историю");
       }
-      const result = this.store.pin({
+      const result = await this.store.pin({
         streamId: stream.id,
         messageKey: candidate.messageKey,
         sourceAlias: candidate.sourceAlias,
@@ -102,7 +101,7 @@ export class StreamMessagePinService {
       });
       return { pin: result.pin, changed: result.changed, messagePins: this.snapshot() };
     }
-    const result = this.store.unpin({
+    const result = await this.store.unpin({
       pinId: params.pinId,
       streamId: stream.id,
       messageKey: params.messageKey,
@@ -119,9 +118,9 @@ export class StreamMessagePinService {
     };
   }
 
-  clear(params = {}) {
+  async clear(params = {}) {
     const stream = this.#stream(params.streamId);
-    const result = this.store.clear(stream.id);
+    const result = await this.store.clear(stream.id);
     return { removedPins: result.pins, changed: result.changed, messagePins: this.snapshot() };
   }
 }

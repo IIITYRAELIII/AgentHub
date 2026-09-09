@@ -31,8 +31,12 @@ const TASK_MUTATIONS = new Set([
   "requestWorkflowStatus", "beginLifecycleTransition", "failLifecycleTransition",
   "commitWorkflowTransition", "rollbackWorkflowOutcome", "finalizeCleanupTransition", "recordTaskTurn",
   "recordTaskGitReference", "adoptLegacyGitReference", "completeRelease", "remove", "setCaptureEnabled",
-  "updateChecklist", "applyChecklistLinkedTaskAction", "deliverChecklistEvents", "clearAwaitRebuildPending",
+  "updateChecklist", "applyChecklistLinkedTaskAction", "clearAwaitRebuildPending",
 ]);
+
+// These owners perform external effects outside SQL retry and queue their own
+// durable transitions. They are explicitly classified, never exposed as reads.
+const TASK_MANAGED_EFFECTS = new Set(["deliverChecklistEvents"]);
 
 const TASK_READS = new Set([
   "task", "list", "pendingTriage", "orderedColumnIds", "notesComment", "claimedTaskForTurn",
@@ -59,7 +63,7 @@ function mutationIdentity(scope, method, args) {
   return `${scope}:${method}:${digest}`;
 }
 
-function createMutationOwner(store, { scope, mutations, reads }) {
+function createMutationOwner(store, { scope, mutations, reads, managedEffects = new Set() }) {
   if (typeof store?.runMutation !== "function") throw new TypeError(`${scope} mutation queue is required`);
   const owner = new Proxy(Object.create(null), {
     get(_target, property) {
@@ -71,6 +75,10 @@ function createMutationOwner(store, { scope, mutations, reads }) {
           () => value.apply(store, args),
           { requestId: mutationIdentity(scope, property, args) },
         );
+      }
+      if (typeof property === "string" && managedEffects.has(property)) {
+        const value = Reflect.get(store, property, store);
+        return typeof value === "function" ? value.bind(store) : undefined;
       }
       if (typeof property === "string" && reads.has(property)) {
         const value = Reflect.get(store, property, store);
@@ -98,11 +106,14 @@ export function createWorkspaceCatalogMutationOwner(store) {
 }
 
 export function createTaskBoardMutationOwner(store) {
-  return createMutationOwner(store, { scope: "task", mutations: TASK_MUTATIONS, reads: TASK_READS });
+  return createMutationOwner(store, {
+    scope: "task", mutations: TASK_MUTATIONS, reads: TASK_READS, managedEffects: TASK_MANAGED_EFFECTS,
+  });
 }
 
 export const workspaceMutationMethods = Object.freeze([...WORKSPACE_MUTATIONS].sort());
 export const taskMutationMethods = Object.freeze([...TASK_MUTATIONS].sort());
+export const taskManagedEffectMethods = Object.freeze([...TASK_MANAGED_EFFECTS].sort());
 export const workspaceReadMethods = Object.freeze([...WORKSPACE_READS].sort());
 export const taskReadMethods = Object.freeze([...TASK_READS].sort());
 

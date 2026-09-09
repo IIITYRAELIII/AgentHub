@@ -25,7 +25,7 @@ import {
 } from "./work-log-usage-projection.mjs";
 import { usageSyncSnapshotFromLedger } from "../domain/work-log-usage-sync.mjs";
 import { normalizeAuthObservation } from "../domain/usage-facts.mjs";
-import { ledgerRecordFingerprint } from "../infrastructure/persistence/incremental-ledger.mjs";
+import { ledgerRecordFingerprint } from "../domain/ledger-record-fingerprint.mjs";
 
 export function createWorkLogUsageStore({
   repositoryFactory,

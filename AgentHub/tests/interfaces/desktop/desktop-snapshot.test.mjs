@@ -1514,6 +1514,30 @@ test("desktopSnapshot rebuilds when a source revision changes", async () => {
   assert.notEqual(next.version, snapshot.version);
 });
 
+test("a history revision publishes changed pin availability through the cached v4 snapshot", async () => {
+  const { desktopSnapshot, state } = fixture();
+  state.messagePins = [{ id: "pin-1", streamId: "stream-1", available: true }];
+  state.revision = "pins:7/history:1";
+  const first = await desktopSnapshot({ snapshotProtocol: 4 });
+  const request = {
+    snapshotProtocol: 4,
+    knownVersion: first.version,
+    ...Object.fromEntries(Object.entries(first.collectionDeltas).map(([name, delta]) => [
+      `${name}Version`, delta.version,
+    ])),
+  };
+  assert.equal((await desktopSnapshot(request)).notModified, true);
+
+  // The pin row is unchanged; the exact source message is no longer available.
+  state.messagePins = [{ ...state.messagePins[0], available: false }];
+  state.revision = "pins:7/history:2";
+  const next = await desktopSnapshot(request);
+  assert.notEqual(next.notModified, true);
+  assert.deepEqual(next.collectionDeltas.messagePins.upserts, state.messagePins);
+  assert.deepEqual(next.collectionDeltas.messagePins.removed, []);
+  assert.notEqual(next.collectionDeltas.messagePins.version, first.collectionDeltas.messagePins.version);
+});
+
 test("compact remote snapshot omits answer text when the turn id is sufficient", async () => {
   const { desktopSnapshot } = fixture();
   const snapshot = await desktopSnapshot({ compactSnapshot: true });

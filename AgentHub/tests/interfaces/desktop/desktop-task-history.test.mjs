@@ -22,6 +22,7 @@ import {
 } from "../../../src/domain/interstream-message.mjs";
 import { LocalTaskSyncStore } from "../../../src/infrastructure/persistence/task-sync-store.mjs";
 import { TaskViewController } from "../../../src/interfaces/telegram/task-view-controller.mjs";
+import { createTaskViewComposition } from "../../../src/composition/task-view-composition.mjs";
 import { readCodexRolloutActivity, readCodexRolloutActivityOnCurrentThread } from "../../../src/providers/codex/codex-rollout-activity.mjs";
 
 const ANNOTATION_SOURCE = {
@@ -2181,18 +2182,18 @@ test("explicit archival recovery persists a report outside the cold live tail wi
     await appendFile(rolloutPath, JSON.stringify({ type: "padding", text: "x".repeat(17 * 1024 * 1024) }) + "\n");
     await appendFile(rolloutPath, JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "latest-turn" } }) + "\n");
     await store.load();
-    store.recordHistory(task, [{ id: turnId, prompt: "Проверь", answer: "Итог", completed: true, status: "completed", messages: [
+    await store.recordHistory(task, [{ id: turnId, prompt: "Проверь", answer: "Итог", completed: true, status: "completed", messages: [
       { itemId: "root", role: "user", clientUserMessageId: "real-client", text: "Отчёт" },
       { itemId: "child-report", role: "user", text: "Отчёт", sourceOccurrenceId },
     ] }]);
     await store.save();
-    const view = new TaskViewController({ taskSyncStore: store, findCodexRolloutPath: async () => rolloutPath, readCodexRolloutActivity });
+    const view = createTaskViewComposition({ taskSyncStore: store, findCodexRolloutPath: async () => rolloutPath, readCodexRolloutActivity });
     await view.readHistory(task, { completedOnly: true });
     assert.equal(store.history(task)[0].messages.find((message) => message.itemId === "child-report").role, "user");
     const withoutReport = store.history(task).map((turn) => ({
       ...turn, messages: turn.messages.filter((message) => message.itemId !== "child-report"),
     }));
-    store.recordHistory(task, withoutReport);
+    await store.recordHistory(task, withoutReport);
     await store.save();
     await appendFile(rolloutPath, JSON.stringify({ type: "event_msg", payload: { type: "task_complete", turn_id: turnId, last_agent_message: "Итог" } }) + "\n");
     const harness = fixture({ history: store.history(task), run: null, refresh: async (binding, options) => {
@@ -2232,7 +2233,7 @@ test("fresh bounded history repairs only the exact preexisting misclassified sub
   let refreshCount = 0;
   try {
     await store.load();
-    store.recordHistory(task, [{
+    await store.recordHistory(task, [{
       id: turnId, prompt: "Проверь", answer: "Итог", completed: true, status: "completed",
       userMessageSnapshotAuthority: "incremental", messages: [root, genuineUser, ghost],
     }]);
@@ -2484,7 +2485,7 @@ test("legacy VSC chronology survives initial load hydration reconnect journal an
   }];
   let store = new LocalTaskSyncStore({ filePath, databaseFile });
   await store.load();
-  store.recordHistory(binding, providerHistory);
+  await store.recordHistory(binding, providerHistory);
   let savedCompletion = null;
   const createHistory = () => createDesktopTaskHistoryFactory({
     selection: {

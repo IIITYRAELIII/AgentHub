@@ -9,7 +9,6 @@ import {
   withoutMisclassifiedSubagentUsers,
 } from "../../application/task-history.mjs";
 import { taskViewCallbackData } from "./task-view-callback.mjs";
-import { recoverCodexRolloutSubagents } from "../../providers/codex/codex-rollout-activity-worker-client.mjs";
 import {
   hasCanonicalUserMessages,
   mergedUserMessageSnapshotAuthority,
@@ -602,7 +601,7 @@ export class TaskViewController {
             const turns = cached.filter((turn) => repairSubagentTurnIds.includes(turn.id)
               && turn.completed === true && turn.active !== true);
             const candidates = turns.map((turn) => ({ turnId: turn.id }));
-            const evidence = await (d.recoverCodexRolloutSubagents ?? recoverCodexRolloutSubagents)(directRolloutPath, candidates);
+            const evidence = await d.recoverCodexRolloutSubagents(directRolloutPath, candidates);
             for (const turn of turns) {
               const reports = evidence.filter((message) => message.turnId === turn.id);
               const current = turn.messages ?? [];
@@ -643,7 +642,7 @@ export class TaskViewController {
           }, { threadResult: { thread: { id: binding.threadId, path: directRolloutPath } } });
           mergeActiveTaskHistory(history, { ...snapshot, provider: "codex" });
           await materializeHistoryAttachments(history, d.attachmentImporter);
-          d.taskSyncStore.recordHistory(task, history, snapshot);
+          await d.taskSyncStore.recordHistory(task, history, snapshot);
           await d.taskSyncStore.save();
           return { history, snapshot };
         }
@@ -675,7 +674,7 @@ export class TaskViewController {
         }, { threadResult: result });
         mergeActiveTaskHistory(history, { ...snapshot, provider: "codex" });
         await materializeHistoryAttachments(history, d.attachmentImporter);
-        d.taskSyncStore.recordHistory(task, history, snapshot);
+        await d.taskSyncStore.recordHistory(task, history, snapshot);
         await d.taskSyncStore.save();
         return { history, snapshot };
       }
@@ -732,7 +731,7 @@ export class TaskViewController {
           stage: running.progressStage ?? "",
           answer: running.responseText ?? "",
         } : null);
-      d.taskSyncStore.recordHistory(task, history, persistenceSnapshot);
+      await d.taskSyncStore.recordHistory(task, history, persistenceSnapshot);
       await d.taskSyncStore.save();
       return { history, snapshot: completedOnly ? null : snapshot };
     } catch (error) {

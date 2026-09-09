@@ -6,6 +6,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { writeTextAtomic } from "./state-store.mjs";
+import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 import { codexUsageAccount } from "../../domain/usage-account-identity.mjs";
 
 const RANGE_MILLISECONDS = Object.freeze({
@@ -16,13 +17,7 @@ const RANGE_MILLISECONDS = Object.freeze({
   "30d": 30 * 24 * 60 * 60_000,
   all: null,
 });
-const SQLITE_BUSY_RETRY_DELAYS_MS = [10, 25, 50, 100, 250, 500, 1_000, 2_000];
-
-const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
-
-function sqliteBusy(error) {
-  return /SQLITE_BUSY|database is locked|database is busy/iu.test(String(error?.message ?? error));
-}
+const SQLITE_BUSY_TIMEOUT_MS = 3_935;
 
 function csvCell(value) {
   const text = String(value ?? "");
@@ -607,6 +602,7 @@ export class RateLimitHistoryStore {
   #csvFile;
   #afterRawExport;
   #tail = Promise.resolve();
+  #mutations = new AsyncSqliteMutationQueue();
   #closed = false;
   #closing = null;
 
@@ -636,15 +632,8 @@ export class RateLimitHistoryStore {
     }
   }
 
-  async #retryBusy(operation) {
-    for (let attempt = 0; ; attempt += 1) {
-      try {
-        return await operation();
-      } catch (error) {
-        if (!sqliteBusy(error) || attempt >= SQLITE_BUSY_RETRY_DELAYS_MS.length) throw error;
-        await delay(SQLITE_BUSY_RETRY_DELAYS_MS[attempt]);
-      }
-    }
+  #retryBusy(operation) {
+    return this.#mutations.run(operation, { timeoutMs: SQLITE_BUSY_TIMEOUT_MS });
   }
 
   async #importLegacy() {

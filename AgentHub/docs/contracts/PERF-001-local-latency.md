@@ -170,6 +170,29 @@ deadline-bounded, yield through timers between attempts and retain the original
 idempotency identity. Exhaustion is a visible contention failure; it must not
 freeze HTTP, SSE or runtime timers or allocate a replacement request identity.
 
+Runtime read markers, restart transitions, Telegram bindings, task history,
+message pins, provider telemetry and durable command receipts use the same
+asynchronous SQLite contention policy as runtime snapshots and usage/limit
+writers. The retry boundary contains only synchronous database work; provider
+calls, Telegram delivery, filesystem preparation and other queue owners stay
+outside it. Each owning operation retains its ordering scope. No global Hub
+business-operation FIFO or artificial pre-write delay is introduced.
+
+History mutations return a persistence promise and capture their submitted
+history before waiting. Their process-local committed revision invalidates
+snapshot caches, including derived pin availability; it is not a durable command
+or CAS identity. Initialized pin snapshots are read-only. Optional telemetry
+indexing starts after durable history without delaying its successful result;
+index failure is reported separately and telemetry remains in that history.
+
+Queue diagnostics distinguish time before dequeue, execution including SQLite
+retry, total duration, depth and oldest pending age using a monotonic clock.
+The contention budget starts at dequeue. A drain fence is not a success receipt:
+the caller must observe its individual write result. These queues live in memory;
+accepted-message and terminal recovery continue to rely on their existing
+durable ledgers/outboxes. A bounded SQL retry does not establish durability by
+itself and cannot justify replaying an unknown external effect.
+
 Unchanged journal HTTP/WebView reads resolve their ETag from content-free SQLite
 metadata and do not load the multi-megabyte index HTML. The initial Journal
 payload contains only the account panel, day-total shells and a compact,

@@ -4,6 +4,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { DurableCommandRetryableError } from "./durable-command-receipts.mjs";
+import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 
 const PENDING_PHASES = new Set(["prepared", "effect-started"]);
 const TERMINAL_PHASES = new Set(["completed", "reconciled", "failed"]);
@@ -81,6 +82,8 @@ export class SqliteDurableCommandReceipts {
   #effectMaxAgeMs;
   #projectResult;
   #onTrace;
+  #mutations = new AsyncSqliteMutationQueue();
+  #mutationTimeoutMs;
 
   constructor({
     file,
@@ -94,6 +97,7 @@ export class SqliteDurableCommandReceipts {
     effectMaxAgeMs = 5 * 60_000,
     projectResult = null,
     onTrace = null,
+    mutationTimeoutMs = 5_000,
   }) {
     this.#file = path.resolve(file);
     this.#legacyFile = legacyFile ? path.resolve(legacyFile) : null;
@@ -110,19 +114,21 @@ export class SqliteDurableCommandReceipts {
       : 5 * 60_000);
     this.#projectResult = typeof projectResult === "function" ? projectResult : null;
     this.#onTrace = typeof onTrace === "function" ? onTrace : null;
+    this.#mutationTimeoutMs = Math.max(1, Number(mutationTimeoutMs) || 5_000);
   }
 
   async #initialize() {
+    if (this.#initializing) return this.#initializing;
     if (this.#database) return;
     if (!this.#initializing) {
       this.#initializing = (async () => {
         await mkdir(path.dirname(this.#file), { recursive: true });
         const database = new DatabaseSync(this.#file);
         try {
-          database.exec(`
+          database.exec("PRAGMA busy_timeout = 0;");
+          await this.#mutations.run(() => database.exec(`
             PRAGMA journal_mode = WAL;
             PRAGMA synchronous = FULL;
-            PRAGMA busy_timeout = 1000;
             CREATE TABLE IF NOT EXISTS durable_command_receipts (
               id TEXT PRIMARY KEY,
               fingerprint TEXT NOT NULL,
@@ -142,7 +148,7 @@ export class SqliteDurableCommandReceipts {
               value TEXT NOT NULL,
               updated_at_ms INTEGER NOT NULL
             );
-          `);
+          `), { timeoutMs: this.#mutationTimeoutMs });
           this.#database = database;
           await this.#importLegacyJson();
         } catch (error) {
@@ -171,9 +177,7 @@ export class SqliteDurableCommandReceipts {
         if (error?.code !== "ENOENT") throw error;
       }
     }
-    const database = this.#database;
-    database.exec("BEGIN IMMEDIATE");
-    try {
+    await this.#writeTransaction((database) => {
       const alreadyImported = database.prepare(
         "SELECT 1 FROM durable_command_receipt_metadata WHERE key = ?",
       ).get(marker);
@@ -207,31 +211,33 @@ export class SqliteDurableCommandReceipts {
           VALUES (?, ?, ?)
         `).run(marker, JSON.stringify({ source: this.#legacyFile, count: records.length }), Date.now());
       }
-      database.exec("COMMIT");
-    } catch (error) {
-      database.exec("ROLLBACK");
-      throw error;
-    }
+    });
   }
 
   async #transaction(operation, traceContext = null) {
     await this.#initialize();
+    return this.#writeTransaction(operation, traceContext);
+  }
+
+  #writeTransaction(operation, traceContext = null) {
     const startedAt = performance.now();
-    this.#database.exec("BEGIN IMMEDIATE");
-    const waitMs = performance.now() - startedAt;
-    try {
+    return this.#mutations.run(() => {
+      this.#database.exec("BEGIN IMMEDIATE");
+      const waitMs = performance.now() - startedAt;
       try {
-        this.#onTrace?.({ ...traceContext, waitMs, lockCount: 1 });
-      } catch {
-        // Receipt timing cannot affect command durability.
+        const result = operation(this.#database);
+        this.#database.exec("COMMIT");
+        try {
+          this.#onTrace?.({ ...traceContext, waitMs, lockCount: 1 });
+        } catch {
+          // Receipt timing cannot affect command durability.
+        }
+        return result;
+      } catch (error) {
+        this.#database.exec("ROLLBACK");
+        throw error;
       }
-      const result = operation(this.#database);
-      this.#database.exec("COMMIT");
-      return result;
-    } catch (error) {
-      this.#database.exec("ROLLBACK");
-      throw error;
-    }
+    }, { timeoutMs: this.#mutationTimeoutMs, requestId: traceContext?.commandId });
   }
 
   #readRecord(database, commandId) {
@@ -428,6 +434,7 @@ export class SqliteDurableCommandReceipts {
 
   async close() {
     await this.#initialize();
+    await this.#mutations.idle();
     this.#database?.close();
     this.#database = null;
   }

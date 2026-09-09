@@ -511,6 +511,7 @@ export async function createHubInfrastructure({
     commandTrace: commandTrace.service,
   });
   const taskReadStateStore = new TaskReadStateStore({ dataDir: config.dataDir });
+  await taskReadStateStore.initialize();
   const bindingsMigration = await migrateMessageBindings(config.dataDir);
   if (bindingsMigration.imported || bindingsMigration.archived.length) {
     console.log(
