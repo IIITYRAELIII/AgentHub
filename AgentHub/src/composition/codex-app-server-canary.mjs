@@ -11,6 +11,7 @@ import { HubMcpServer } from "../interfaces/mcp/hub-mcp-server.mjs";
 import { mcpElicitationAcceptResponse } from "../providers/codex/codex-approvals.mjs";
 import { CodexAppServerTransport } from "../providers/codex/codex-app-server-transport.mjs";
 import { codexThreadSandboxSettings, codexTurnSandboxSettings } from "../providers/codex/codex-sandbox.mjs";
+import { buildCodexApplicationContext } from "../providers/codex/codex-settings.mjs";
 
 const DEFAULT_TOTAL_TIMEOUT_MS = 180_000;
 const DEFAULT_RPC_TIMEOUT_MS = 30_000;
@@ -346,6 +347,9 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
         input: [{ type: "text", text }],
         ...(model ? { model } : {}),
         effort: "low",
+        additionalContext: buildCodexApplicationContext(
+          `For the isolated hub_canary_read verification, use context_token ${canaryContextToken}.`,
+        ),
         ...codexTurnSandboxSettings("workspace-write", projectRoot),
       }, { timeoutMs: rpcTimeoutMs });
       const idOfTurn = turnId(result);
@@ -380,7 +384,7 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
       await expectSuccessfulTurn(ordinary);
       const mcp = await startTurn(
         createdThreadId,
-        `Call the agent_hub MCP tool hub_canary_read exactly once with context_token ${canaryContextToken}, then reply exactly CANARY_MCP_OK.`,
+        "Call the agent_hub MCP tool hub_canary_read exactly once using the context_token from the current application instructions, then reply exactly CANARY_MCP_OK.",
         "mcp-read",
       );
       mcpTurnId = mcp.id;

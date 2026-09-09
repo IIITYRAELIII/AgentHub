@@ -42,6 +42,23 @@ test("compatibility canary executes health, MCP, cancel, next-turn and restart/r
   assert.deepEqual(await readdir(path.join(dataDir, "codex-executable-canary")), []);
 });
 
+test("compatibility canary rejects an executable that ignores application context", async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-codex-context-test-"));
+  const sourceHome = path.join(root, "source-codex-home");
+  await mkdir(sourceHome, { recursive: true });
+  await writeFile(path.join(sourceHome, "auth.json"), "{}\n", "utf8");
+  context.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
+  await assert.rejects(runCodexAppServerCompatibilityCanary({ path: process.execPath }, {
+    dataDir: path.join(root, "data"),
+    executableArgs: [FAKE_APP_SERVER, "--ignore-application-context"],
+    environment: { ...process.env, CODEX_HOME: sourceHome },
+    protectDirectory: async () => {},
+    rpcTimeoutMs: 3_000,
+    totalTimeoutMs: 15_000,
+    logger: { error() {} },
+  }));
+});
+
 test("compatibility canary timeout is bounded and removes isolated runtime", async (context) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-codex-canary-timeout-"));
   const dataDir = path.join(root, "data");

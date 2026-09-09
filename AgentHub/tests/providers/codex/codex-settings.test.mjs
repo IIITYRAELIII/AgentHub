@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildCodexApplicationContext,
   buildCodexCollaborationMode,
   buildCodexDeveloperInstructions,
   CODEX_COLLABORATION_MODES,
@@ -63,13 +64,19 @@ test("developer instructions preserve Guide, Global, Workspace and Stream order"
   assert.throws(() => buildCodexDeveloperInstructions(), /Guide is required/u);
 });
 
-test("collaboration mode carries effective developer instructions", () => {
-  assert.equal(buildCodexCollaborationMode({
-    mode: "default",
-    model: "gpt-5.6-sol",
-    reasoningEffort: "high",
-    developerInstructions: "Inherited rules",
-  }).settings.developer_instructions, "Inherited rules");
+test("application context carries exact rules independently of model catalog modes", () => {
+  const rules = "<agent_hub_context>\nSynthetic context\n</agent_hub_context>";
+  assert.deepEqual(buildCodexApplicationContext(rules), {
+    "agent-hub": { kind: "application", value: rules },
+  });
+  assert.deepEqual(buildCodexApplicationContext(null), {
+    "agent-hub": { kind: "application", value: "" },
+  });
+  for (const mode of CODEX_COLLABORATION_MODES) {
+    assert.equal(buildCodexCollaborationMode({
+      mode, model: "gpt-6-astra", reasoningEffort: "high",
+    }).settings.developer_instructions, null);
+  }
 });
 
 test("Codex selectors expose supported values", () => {
