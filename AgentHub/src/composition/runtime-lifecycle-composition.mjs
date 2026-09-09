@@ -30,6 +30,7 @@ export function createRuntimeLifecycleComposition({
   warnUser,
   sqliteRecovery,
   acknowledgeSqliteRecovery,
+  commandTrace = null,
 }) {
   if (telegramEnabled) {
     runtimeResources.register("quiesce", {
@@ -74,6 +75,15 @@ export function createRuntimeLifecycleComposition({
     warnUser,
     sqliteRecovery,
     acknowledgeSqliteRecovery,
+    commandTrace,
+  });
+  runtimeResources.register("quiesce", {
+    name: "optional provider metadata backfill",
+    run: () => startupCoordinator.stopBackgroundWork(),
+  });
+  runtimeResources.register("drain", {
+    name: "optional provider metadata backfill",
+    run: () => startupCoordinator.waitForBackgroundWork(),
   });
   let startPromise = null;
   return {

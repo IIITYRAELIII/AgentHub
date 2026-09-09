@@ -1351,6 +1351,10 @@ const listeners = new Map();
  *   document.addEventListener("agenthub:intent", (e) => …e.detail…)
  *   AgentHub.on("message:send", (detail) => …)  */
 function emit(type, detail = {}) {
+  return window.AgentHubCommandTrace.intent(type, detail, () => emitIntent(type, detail));
+}
+
+function emitIntent(type, detail) {
   const payload = { type, ...detail };
   document.dispatchEvent(new CustomEvent("agenthub:intent", { detail: payload }));
   for (const handler of listeners.get(type) ?? []) {
@@ -2914,6 +2918,12 @@ function populateBackgroundOptions(theme = root.dataset.theme) {
 }
 
 function setView(view, { persist = true, activate = true } = {}) {
+  return window.AgentHubCommandTrace.measure("ui-navigation", "set-view", () => (
+    setViewContent(view, { persist, activate })
+  ));
+}
+
+function setViewContent(view, { persist = true, activate = true } = {}) {
   const next = navigationTabs.isStandaloneNavigationTab(view) ? view : "chat";
   root.dataset.view = next;
   for (const button of document.querySelectorAll("[data-view-button]")) {
@@ -3046,6 +3056,10 @@ function modelTier(value) {
 }
 
 function renderTasks() {
+  return window.AgentHubCommandTrace.measure("ui-render", "task-list", renderTasksContent);
+}
+
+function renderTasksContent() {
   const filter = (taskFilter.value ?? "").trim().toLowerCase();
   const visible = state.tasks.filter((task) => {
     if (!filter) return true;
@@ -5052,6 +5066,10 @@ function renderStreamChatHeader(task, now = Date.now()) {
 }
 
 function renderChat({ preserveStreamTabs = false } = {}) {
+  return window.AgentHubCommandTrace.measure("ui-render", "chat", () => renderChatContent({ preserveStreamTabs }));
+}
+
+function renderChatContent({ preserveStreamTabs = false } = {}) {
   const task = currentTask();
   const hasTask = Boolean(task);
   if (!hasTask) {
@@ -5834,7 +5852,11 @@ function createRenderedMessage(spec) {
   ]);
 }
 
-function renderMessages({
+function renderMessages(options = {}) {
+  return window.AgentHubCommandTrace.measure("ui-render", "messages", () => renderMessagesContent(options));
+}
+
+function renderMessagesContent({
   forceBottom = false,
   preserveTop = false,
   prependedCount = 0,
@@ -11168,6 +11190,10 @@ function renderLimitsSubtitle() {
 }
 
 function renderLimits() {
+  return window.AgentHubCommandTrace.measure("ui-render", "limits", renderLimitsContent);
+}
+
+function renderLimitsContent() {
   const status = limitsState.status;
   if (limitsLoading) limitsLoading.hidden = status !== "loading";
   if (limitsError) limitsError.hidden = status !== "error";
@@ -12493,6 +12519,10 @@ function buildUsageChart(payload) {
 }
 
 function renderUsageHistory() {
+  return window.AgentHubCommandTrace.measure("ui-render", "usage-history", renderUsageHistoryContent);
+}
+
+function renderUsageHistoryContent() {
   if (!usageLoading) return;
   const status = usageState.status;
   usageLoading.hidden = status !== "loading";
@@ -13555,6 +13585,10 @@ function renderComparisonSummary(model) {
 }
 
 function renderUsageComparison() {
+  return window.AgentHubCommandTrace.measure("ui-render", "usage-comparison", renderUsageComparisonContent);
+}
+
+function renderUsageComparisonContent() {
   if (!comparisonLoading) return;
   const status = comparisonState.status;
   comparisonLoading.hidden = status !== "loading";
@@ -15865,6 +15899,10 @@ function applyJournalGrouping() {
 }
 
 async function renderJournal() {
+  return window.AgentHubCommandTrace.measure("ui-render", "journal", renderJournalContent);
+}
+
+async function renderJournalContent() {
   const sequence = ++journalRenderSequence;
   const template = document.createElement("template");
   template.innerHTML = journalHtml;

@@ -1,9 +1,13 @@
 import path from "node:path";
 import { CommandTraceService } from "../application/command-trace-service.mjs";
 import { CommandTraceWorkerStore } from "../infrastructure/persistence/command-trace-worker-store.mjs";
+import { createRuntimePerformanceSampler } from "../application/runtime-performance-sampler.mjs";
 
 export function createCommandTraceComposition({
   dataDir,
+  instanceId,
+  releaseId,
+  readHealth,
   databaseFile = dataDir ? path.join(dataDir, "command-traces.sqlite") : null,
   retentionMs,
   maxSpans,
@@ -34,15 +38,19 @@ export function createCommandTraceComposition({
   });
   const service = new CommandTraceService({
     store,
+    metadata: { instanceId, releaseId },
     clock,
     ...(monotonicClock ? { monotonicClock } : {}),
     ...(createSpanId ? { createSpanId } : {}),
     logger,
   });
+  const sampler = readHealth && instanceId
+    ? createRuntimePerformanceSampler({ trace: service, readHealth, instanceId }) : null;
   return Object.freeze({
     store,
     service,
     initialize: async () => {
+      sampler?.start();
       try {
         return await store.initialize();
       } catch (error) {
@@ -52,6 +60,6 @@ export function createCommandTraceComposition({
         return { ready: false, deferred: true };
       }
     },
-    close: () => store.close(),
+    close: () => { sampler?.stop(); return store.close(); },
   });
 }

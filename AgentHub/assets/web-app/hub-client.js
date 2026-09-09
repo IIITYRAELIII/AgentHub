@@ -3,6 +3,7 @@
 (() => {
 
 const agentHub = window.AgentHub;
+const commandTrace = window.AgentHubCommandTrace;
 const telegramInitData = String(window.Telegram?.WebApp?.initData ?? "");
 const localSessionReady = window.AgentHubLocalSessionReady ?? Promise.resolve();
 const vscode = window.__agentHubVscode ?? (typeof window.acquireVsCodeApi === "function"
@@ -1072,6 +1073,12 @@ function renderTaskMessagesNow(taskIdValue, {
   preserveScroll = false,
   exactNavigation = null,
 } = {}) {
+  return commandTrace.measure("ui-render", "message-projection", () => renderTaskMessagesContent(taskIdValue, {
+    preserveScroll, exactNavigation,
+  }));
+}
+
+function renderTaskMessagesContent(taskIdValue, { preserveScroll, exactNavigation }) {
   const messages = reconciledMessages(taskIdValue);
   if (exactNavigation) {
     agentHub.setMessagesForExactNavigation(taskIdValue, messages, exactNavigation);
@@ -1260,7 +1267,7 @@ function historyAttachmentsNeedSettling(taskIdValue) {
 
 function bridgeCallOnce(action, params = {}) {
   const id = `bridge-${Date.now()}-${++bridgeSequence}`;
-  const bridgeParams = action === "send-message"
+  const bridgeParams = params.clientTiming
     ? {
         ...params,
         clientTiming: {
@@ -1296,7 +1303,15 @@ function bridgeCall(action, params = {}) {
   );
 }
 
-async function hubFetch(input, init, retrySession = true) {
+async function hubFetch(input, init, retrySession = true, traceId) {
+  const pathname = typeof input === "string" ? input.split("?")[0] : "";
+  if (pathname.startsWith("/api/command-trace/")) return hubFetchResponse(input, init, retrySession);
+  const route = ["journal", "attachment", "control", "snapshot", "startup", "workspace", "usage", "rate-limit"]
+    .find((name) => pathname.startsWith(`/api/${name}`)) || "other";
+  return commandTrace.measure("ui-control", `http-${route}`, () => hubFetchResponse(input, init, retrySession), traceId);
+}
+
+async function hubFetchResponse(input, init, retrySession = true) {
   try {
     // Refreshing the session re-issues the HttpOnly cookie that the request below
     // carries automatically as a same-origin request.
@@ -1306,13 +1321,13 @@ async function hubFetch(input, init, retrySession = true) {
       return response;
     }
     await window.AgentHubBrowserDevice.ensureSession(true);
-    return hubFetch(input, init, false);
+    return hubFetchResponse(input, init, false);
   } catch (error) {
     throw markConnectionFailure(error);
   }
 }
 
-async function hubFetchWithin(input, init, timeoutMs) {
+async function hubFetchWithin(input, init, timeoutMs, traceId) {
   const controller = new AbortController();
   const effectiveTimeoutMs = Math.max(1, Number(timeoutMs) || 1);
   let timedOut = false;
@@ -1321,7 +1336,7 @@ async function hubFetchWithin(input, init, timeoutMs) {
     controller.abort();
   }, effectiveTimeoutMs);
   try {
-    return await hubFetch(input, { ...init, signal: controller.signal });
+    return await hubFetch(input, { ...init, signal: controller.signal }, true, traceId);
   } catch (error) {
     if (!timedOut) throw error;
     const timeout = new Error(`Agent Hub не подтвердил команду за ${Math.ceil(effectiveTimeoutMs / 1_000)} с.`);
@@ -1466,7 +1481,7 @@ async function readSnapshot(params = {}) {
   const response = await hubFetch(`/api/snapshot?${query}`, {
     headers: authorizationHeaders(),
     cache: "no-store",
-  });
+  }, true, params.clientTraceId);
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw new Error(String(payload.error ?? `Agent Hub: HTTP ${response.status}`));
@@ -1523,7 +1538,7 @@ async function httpControl(action, params = {}) {
   await localSessionReady;
   const commandId = crypto.randomUUID();
   const payload = await retryConnectionFailure(async () => {
-    const requestParams = action === "send-message"
+    const requestParams = params.clientTiming
       ? {
           ...params,
           clientTiming: {
@@ -1541,7 +1556,7 @@ async function httpControl(action, params = {}) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ action, params: requestParams, commandId }),
-    }, LONG_CONTROL_ACTIONS.has(action) ? LONG_CONTROL_TIMEOUT_MS : DEFAULT_CONTROL_TIMEOUT_MS);
+    }, LONG_CONTROL_ACTIONS.has(action) ? LONG_CONTROL_TIMEOUT_MS : DEFAULT_CONTROL_TIMEOUT_MS, params.clientTraceId);
     const result = await response.json().catch(() => ({}));
     if (!response.ok || result.ok === false) throw httpControlError(response.status, result);
     return result;
@@ -1583,27 +1598,43 @@ function clientTraceSurface() {
 }
 
 function reportClientCommandAck(commandId, clientTiming, outcome) {
-  const timing = {
-    ...clientTiming,
-    clientAckAtMs: Date.now(),
-    clientAckMonotonicMs: performance.now(),
-  };
-  void hubFetch("/api/command-trace/client-ack", {
+  commandTrace.ack(commandId, clientTiming, outcome);
+}
+
+commandTrace.bindReporter(async (batch) => {
+  const response = await hubFetchWithin("/api/command-trace/client-events", {
     method: "POST",
     headers: {
       ...authorizationHeaders(),
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      commandId,
-      timing,
-      outcome,
-      surface: clientTraceSurface(),
-    }),
-  }).catch(() => {});
-}
+    body: JSON.stringify(batch),
+    keepalive: true,
+  }, 5_000);
+  if (!response.ok) throw new Error("Client trace batch rejected");
+});
 
 async function control(action, params = {}) {
+  const commandId = params.clientUserMessageId || params.clientTraceId || commandTrace.currentId() || commandTrace.newId();
+  const started = performance.now();
+  const tracedParams = { ...params, clientTraceId: commandId, clientTiming: params.clientTiming ?? {
+    submittedAtMs: Date.now(), submittedMonotonicMs: started,
+    controlStartedAtMs: Date.now(), controlStartedMonotonicMs: started,
+    surface: clientTraceSurface(),
+  } };
+  return commandTrace.measure("ui-control", action, async () => {
+    try {
+      const result = await controlTransport(action, tracedParams);
+      reportClientCommandAck(commandId, tracedParams.clientTiming, "succeeded");
+      return commandTrace.associate(result, commandId);
+    } catch (error) {
+      reportClientCommandAck(commandId, tracedParams.clientTiming, "failed");
+      throw error;
+    }
+  }, commandId);
+}
+
+async function controlTransport(action, params = {}) {
   const directTransport = window.__agentHubDirectTransport;
   let directAvailable = false;
   if (vscode && directTransport) {
@@ -2061,6 +2092,12 @@ function representativeSnapshotTasks(tasks) {
 }
 
 function applySnapshot(snapshot, { materialized = false } = {}) {
+  return commandTrace.measure("ui-snapshot", "apply-snapshot", () => (
+    applySnapshotContent(snapshot, { materialized })
+  ), commandTrace.objectId(snapshot));
+}
+
+function applySnapshotContent(snapshot, { materialized = false } = {}) {
   if (!snapshot) return;
   if (!materialized) snapshot = window.AgentHubSnapshotTransport.materialize(lastSnapshot, snapshot);
   if (observeServerIdentity(snapshot)) return;
@@ -3008,18 +3045,12 @@ function sendUserMessage(request, frozenParams = null) {
         }));
       }
       assertCurrentSendTaskOperation(sendTaskOperation);
-      try {
-        submittedParams = structuredClone(params);
-        const result = await control("send-message", params);
-        reportClientCommandAck(request.requestId, params.clientTiming, "succeeded");
-        return result;
-      } catch (error) {
-        reportClientCommandAck(request.requestId, params.clientTiming, "failed");
-        throw error;
-      }
+      submittedParams = structuredClone(params);
+      return control("send-message", params);
     },
     receive: (result) => {
       const projection = queueHistoryReceiptProjection(result);
+      const projectionStarted = commandTrace.now();
       if (projection.ownsDeferredQueue) {
         optimisticDeferredClientUserMessageIds.add(request.requestId);
         deferredClientUserMessageIds.add(request.requestId);
@@ -3051,6 +3082,7 @@ function sendUserMessage(request, frozenParams = null) {
           : deliveryPatch(projection.deliveryState ?? "rejected")),
       });
       renderOutgoingWithoutBlockingSend(request.taskId, { queue: true });
+      commandTrace.afterPaint("ui-render", "message-ack-projection", projectionStarted, request.requestId);
     },
     synchronize: async (result) => {
       if (result?.snapshot) applySnapshot(result.snapshot);

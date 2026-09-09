@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { setImmediate } from "node:timers/promises";
 import { agentHubRuntimeHealth } from "./runtime-health.mjs";
 
 let activeStartupCoordinator = null;
@@ -30,6 +32,8 @@ export const AGENT_HUB_STARTUP_OPERATIONS = Object.freeze([
 export class AgentHubStartupCoordinator {
   #initialStartupFinished = false;
   #retryPromise = null;
+  #metadataPromise = null;
+  #metadataAbort = null;
 
   constructor({
     telegramEnabled,
@@ -57,6 +61,8 @@ export class AgentHubStartupCoordinator {
     sqliteRecovery = null,
     acknowledgeSqliteRecovery = async () => false,
     captureException = () => false,
+    commandTrace = null,
+    startupTraceId = randomUUID(),
     log = (...args) => console.log(...args),
     logError = (...args) => console.error(...args),
   }) {
@@ -89,6 +95,26 @@ export class AgentHubStartupCoordinator {
       log,
       logError,
     });
+    // Wrap the existing awaited ports, keeping their order and failure handling.
+    // Recording the start separately makes a never-settled port observable.
+    for (const [name, stage] of [
+      ["startMiniApp", "web"], ["startDesktopControl", "desktop-control"],
+      ["startRuntimeCommand", "runtime-command"], ["startHubMcp", "hub-mcp"],
+      ["sanitizeRollouts", "history"], ["initializeProvider", "provider"],
+      ["backfillProviderMetadata", "provider-metadata"], ["recoverRuns", "runs"],
+      ["retryNotifications", "notifications"], ["restoreBackgroundJobs", "background-jobs"],
+      ["registerTelegramCommands", "telegram"], ["finalizeRestart", "restart"],
+      ["markReady", "readiness"], ["startTimers", "timers"],
+      ["acknowledgeSqliteRecovery", "recovery"],
+    ]) {
+      const operation = this[name];
+      if (commandTrace?.measureBestEffort && typeof operation === "function") {
+        this[name] = (...args) => commandTrace.measureBestEffort({
+          commandId: `startup:${startupTraceId}`, stage: `startup-${stage}`,
+          transport: "server-runtime", metadata: { startupTraceId, operationId: stage },
+        }, () => operation(...args));
+      }
+    }
   }
 
   #capture(error, action) {
@@ -185,18 +211,8 @@ export class AgentHubStartupCoordinator {
         throw error;
       }
     }
-    if (providerFailed || !providerRunning) {
-      this.health.skipOperation("provider-metadata");
-    } else {
-      this.health.startOperation("provider-metadata");
-      await this.backfillProviderMetadata().then(() => {
-        this.health.completeOperation("provider-metadata");
-      }).catch((error) => {
-        this.health.failOperation("provider-metadata", error);
-        this.#capture(error, "provider-metadata");
-        this.logError("Cannot backfill provider metadata:", error.message);
-      });
-    }
+    // Optional catalog/pricing repair runs after readiness, never in the restart barrier.
+    this.health.skipOperation("provider-metadata");
 
     this.health.startOperation("runs");
     await this.recoverRuns().then(() => {
@@ -307,6 +323,7 @@ export class AgentHubStartupCoordinator {
 
     this.health.complete();
     this.#initialStartupFinished = true;
+    if (!providerFailed && providerRunning) this.#startMetadataBackfill();
     const status = this.health.snapshot();
     if (status.status === "ready") this.log(this.readyMessage());
     else this.log(`Agent Hub started ${status.status}; unavailable capabilities: ${status.capabilities
@@ -315,6 +332,32 @@ export class AgentHubStartupCoordinator {
       .join(", ") || "unknown"}`);
     if (this.telegramEnabled) return this.pollTelegram();
     return this.waitForever();
+  }
+
+  #startMetadataBackfill() {
+    if (this.#metadataPromise) return this.#metadataPromise;
+    const operation = this.health.snapshot().startup.operations.find((entry) => entry.id === "provider-metadata");
+    if (!["failed", "skipped"].includes(operation?.state)) return Promise.resolve();
+    this.#metadataAbort = new AbortController();
+    this.health.retryOperation("provider-metadata", { background: true });
+    this.#metadataPromise = setImmediate(undefined, { signal: this.#metadataAbort.signal }).then(() => this.backfillProviderMetadata({
+      signal: this.#metadataAbort.signal,
+    })).then(() => {
+      this.health.completeOperation("provider-metadata");
+    }).catch((error) => {
+      this.health.failOperation("provider-metadata", error);
+      this.#capture(error, "provider-metadata");
+      this.logError("Cannot backfill provider metadata:", error.message);
+    }).finally(() => { this.#metadataPromise = null; });
+    return this.#metadataPromise;
+  }
+
+  stopBackgroundWork() {
+    this.#metadataAbort?.abort();
+  }
+
+  async waitForBackgroundWork() {
+    await this.#metadataPromise;
   }
 
   requestRetry({ startedAtMs } = {}) {
@@ -357,6 +400,10 @@ export class AgentHubStartupCoordinator {
         if (operation?.state !== "failed"
           && !(id === "provider-metadata" && providerRetry && operation?.state === "skipped")) continue;
         if (["provider-metadata", "runs"].includes(id) && !this.providerIsRunning()) continue;
+        if (id === "provider-metadata") {
+          this.#startMetadataBackfill();
+          continue;
+        }
         this.health.retryOperation(id);
         if (capability) this.health.setCapability(capability, { critical: capability === "provider" });
         try {

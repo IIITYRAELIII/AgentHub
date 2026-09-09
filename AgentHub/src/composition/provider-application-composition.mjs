@@ -370,6 +370,7 @@ export async function createProviderApplicationComposition({
     },
   });
   const journalBackfill = createJournalBackfillComposition({
+    commandTrace: commandTraceService,
     projects,
     workLogUsageStore,
     projectionProjectRoots: globalWorkLogProjectRoots,

@@ -348,8 +348,16 @@ export function createExecutionBootstrapPhase({
     sanitizeRollouts: () => provider.codexContextMaintenance.runPeriodic({ reschedule: false }),
     initializeProvider: api.initializeProvider,
     providerIsRunning: () => clients.codexTransport.running,
-    backfillProviderMetadata: () => provider.codexProviderTasks.discoverTasks()
-      .then((threads) => api.backfillWorkLogPricingMetadata(threads)),
+    backfillProviderMetadata: async ({ signal } = {}) => {
+      signal?.throwIfAborted();
+      const trace = infrastructure.commandTraceService;
+      const measure = (stage, operation) => trace?.measureBestEffort ? trace.measureBestEffort({
+        commandId: "startup-provider-metadata", stage, transport: "server-runtime",
+      }, operation) : operation();
+      const threads = await measure("startup-codex-catalog", () => provider.codexProviderTasks.discoverTasks());
+      signal?.throwIfAborted();
+      return measure("startup-pricing-backfill", () => api.backfillWorkLogPricingMetadata(threads, { signal, propagateErrors: true }));
+    },
     recoverRuns: (...args) => runtime.runRecovery.recoverAll(...args),
     retryNotifications: api.retryPendingTurnEndNotifications,
     restoreBackgroundJobs: () => provider.backgroundJobs.restore(),
@@ -368,6 +376,7 @@ export function createExecutionBootstrapPhase({
     beginStopping: () => selection.hostState.beginStopping(),
     sqliteRecovery: infrastructure.sqliteRecovery,
     acknowledgeSqliteRecovery: infrastructure.acknowledgeSqliteRecovery,
+    commandTrace: infrastructure.commandTraceService,
   });
   ports.bootstrap.bind(bootstrap);
 

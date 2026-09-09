@@ -80,3 +80,12 @@ a user turn and does not alter the restart/compaction operation schema.
   Completed stages and command dispatch are never replayed by a retry.
   An unavailable control plane requires the installed local launcher; a browser
   cannot start a process on an offline host.
+
+## Optional startup enrichment
+
+Full provider catalog/pricing enrichment is background work after the mandatory
+startup and readiness barrier. It is measured and retryable, but does not reopen
+the startup barrier or hide the ready interface. Recovery of active ownership,
+durable terminals and the persisted restart remains mandatory before dispatch.
+Background enrichment reuses one existing owner, yields between bounded units,
+and stops admitting more units during shutdown. See ADR-0030.

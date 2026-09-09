@@ -70,6 +70,25 @@ export class TurnEndDeliveryService {
     this.recoveredOutbox = false;
   }
 
+  #measure(stage, item, operation, metadata = {}) {
+    const completion = item?.payload?.completion ?? item ?? {};
+    const history = item?.payload?.history ?? {};
+    const commandId = String(history.clientUserMessageId ?? completion.clientUserMessageId ?? "").trim()
+      || `terminal:${completion.provider ?? "hub"}:${completion.threadId ?? "recovery"}:${completion.turnId ?? "outbox"}`;
+    return this.commandTrace?.measureBestEffort ? this.commandTrace.measureBestEffort({
+      commandId, stage, transport: "server-runtime",
+      metadata: {
+        provider: item?.provider ?? completion.provider,
+        threadId: item?.threadId ?? completion.threadId,
+        turnId: item?.turnId ?? completion.turnId,
+        streamId: completion.streamId,
+        terminalRevision: item?.terminalRevision,
+        outboxId: item?.id,
+        ...metadata,
+      },
+    }, operation) : operation();
+  }
+
   rememberCompletion(completion, body = "") {
     if (!completion || completion.aggregateOnly) return false;
     if (completion.provider === "codex"
@@ -117,10 +136,10 @@ export class TurnEndDeliveryService {
         || fallbackTurnEndMessage(completion.status);
       const notificationTitle = completion.message?.title
         || conciseTurnTitle(notificationBody, completion.status);
-      const journal = await this.projectTurn(completion, {
+      const journal = await this.#measure("terminal-journal-project", completion, () => this.projectTurn(completion, {
         title: notificationTitle,
         body: notificationBody,
-      });
+      }));
       this.rememberCompletion(completion, notificationBody);
       if (journal?.projectionError) {
         this.logger.error(
@@ -128,7 +147,7 @@ export class TurnEndDeliveryService {
         );
       }
       this.notifications.markDelivered(key);
-      await this.saveState();
+      await this.#measure("terminal-state-save", completion, () => this.saveState());
       return true;
     } finally {
       this.delivering.delete(key);
@@ -159,7 +178,7 @@ export class TurnEndDeliveryService {
     let claimed = null;
     try {
       if ((item.channels?.projection?.state ?? item.state) === "pending") {
-        claimed = await this.terminalCommits.claim(item);
+        claimed = await this.#measure("terminal-claim", item, () => this.terminalCommits.claim(item));
         if (claimed) {
           const terminalRevision = claimed.terminalRevision;
           const completion = {
@@ -175,33 +194,37 @@ export class TurnEndDeliveryService {
             || fallbackTurnEndMessage(completion.status);
           const notificationTitle = completion.message?.title
             || conciseTurnTitle(notificationBody, completion.status);
-          const historyProjection = await this.persistHistory(history, {
-            answer: notificationBody,
-            status: completion.status,
-            active: false,
-            turnId: completion.turnId,
-            terminalRevision,
+          await this.#measure("terminal-history-persist", claimed, async () => {
+            const historyProjection = await this.persistHistory(history, {
+              answer: notificationBody,
+              status: completion.status,
+              active: false,
+              turnId: completion.turnId,
+              terminalRevision,
+            });
+            if (historyProjection?.failed) {
+              throw new Error(`history projection failed: ${historyProjection.error || "unknown error"}`);
+            }
           });
-          if (historyProjection?.failed) {
-            throw new Error(`history projection failed: ${historyProjection.error || "unknown error"}`);
-          }
-          const journal = await this.projectTurn(completion, {
-            title: notificationTitle,
-            body: notificationBody,
-            ...(waitForProjection ? { deferProjection: true } : {}),
+          await this.#measure("terminal-journal-project", claimed, async () => {
+            const journal = await this.projectTurn(completion, {
+              title: notificationTitle,
+              body: notificationBody,
+              ...(waitForProjection ? { deferProjection: true } : {}),
+            });
+            if (journal?.projectionError) {
+              throw new Error(`journal projection failed: ${journal.projectionError}`);
+            }
           });
-          if (journal?.projectionError) {
-            throw new Error(`journal projection failed: ${journal.projectionError}`);
-          }
           if (waitForProjection) {
-            await waitForProjection(completion);
-            const latest = await this.terminalCommits.get(claimed);
+            await this.#measure("terminal-projection-batch-wait", claimed, () => waitForProjection(completion));
+            const latest = await this.#measure("terminal-revision-read", claimed, () => this.terminalCommits.get(claimed));
             if (latest?.terminalRevision !== terminalRevision) return false;
           }
           this.rememberCompletion(completion, notificationBody);
           this.legacy.markProjected(completion);
-          await this.saveState();
-          const acknowledged = await this.terminalCommits.acknowledge(claimed);
+          await this.#measure("terminal-state-save", completion, () => this.saveState());
+          const acknowledged = await this.#measure("terminal-outbox-ack", claimed, () => this.terminalCommits.acknowledge(claimed));
           if (waitForProjection && !acknowledged) return false;
           const commandId = String(history.clientUserMessageId ?? completion.clientUserMessageId ?? "").trim();
           this.commandTrace?.recordBestEffort?.({
@@ -219,11 +242,11 @@ export class TurnEndDeliveryService {
           });
         }
       }
-      const telegram = await this.#materializeTelegramIntent(claimed ?? item);
+      const telegram = await this.#measure("terminal-telegram-intent", claimed ?? item, () => this.#materializeTelegramIntent(claimed ?? item));
       return { projection: Boolean(claimed), telegram };
     } catch (error) {
       if (claimed) {
-        await this.terminalCommits.retry(claimed, error).catch((retryError) => {
+        await this.#measure("terminal-outbox-retry", claimed, () => this.terminalCommits.retry(claimed, error)).catch((retryError) => {
           this.logger.error(
             `Cannot return terminal revision ${claimed.terminalRevision} for ${claimed.turnId} to retry:`,
             retryError,
@@ -267,7 +290,7 @@ export class TurnEndDeliveryService {
 
   async retryPending() {
     if (this.terminalCommits && !this.recoveredOutbox) {
-      await this.terminalCommits.recoverProjecting();
+      await this.#measure("terminal-outbox-recover", null, () => this.terminalCommits.recoverProjecting());
       this.recoveredOutbox = true;
     }
     const migratedOutbox = [];
@@ -298,7 +321,7 @@ export class TurnEndDeliveryService {
     if (!this.terminalCommits) return;
     const pending = [...new Map([
       ...migratedOutbox,
-      ...await this.terminalCommits.pending(),
+      ...await this.#measure("terminal-outbox-list", null, () => this.terminalCommits.pending()),
     ].map((item) => [`${turnEndKey(item)}\0${item.terminalRevision}`, item])).values()];
     if (this.flushTurnProjections) {
       for (let offset = 0; offset < pending.length; offset += 16) {
@@ -341,7 +364,8 @@ export class TurnEndDeliveryService {
     let projectionError = null;
     if (prepared.length) {
       try {
-        const projection = await this.flushTurnProjections(prepared.map((entry) => entry.completion));
+        const projection = await this.#measure("terminal-projection-batch-flush", prepared[0].completion,
+          () => this.flushTurnProjections(prepared.map((entry) => entry.completion)), { batchSize: prepared.length });
         if (!projection || (projection.projected !== true && projection.reason !== "unchanged")
           || projection.conflict || projection.projectionDeferred || projection.projectionError) {
           throw new Error(`journal projection failed: ${projection?.projectionError || projection?.reason || "unconfirmed"}`);

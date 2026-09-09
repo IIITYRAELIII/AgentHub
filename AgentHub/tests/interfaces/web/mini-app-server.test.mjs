@@ -2554,3 +2554,28 @@ test("a deployment without Telegram never serves the Telegram runtime", async ()
     await server.close();
   }
 });
+
+
+test("client performance batch uses authenticated bounded common trace ingestion", async () => {
+  const spans = []; const secret = "t".repeat(43);
+  const server = new MiniAppServer({ host: "127.0.0.1", port: 0,
+    journalDatabase: memoryJournal(), localAccessSecret: secret,
+    recordCommandTrace: (span) => spans.push(span) });
+  try {
+    const { url } = await server.start();
+    const endpoint = `${url}api/command-trace/client-events`;
+    const body = { events: [{ commandId: "ui-test-1", stage: "ui-control", outcome: "succeeded",
+      observedAtMs: Date.now(), monotonicDurationMs: 15, metadata: { action: "snapshot", text: "private" } }] };
+    const request = (cookie, payload) => fetch(endpoint, { method: "POST",
+      headers: { "Content-Type": "application/json", ...(cookie ? { Cookie: cookie } : {}) }, body: JSON.stringify(payload) });
+    assert.equal((await request(null, body)).status, 401);
+    const auth = await fetch(`${url}api/local-session`, { method: "POST",
+      headers: { Authorization: `local ${secret}`, "Content-Type": "application/json" }, body: "{}" });
+    const cookie = auth.headers.get("set-cookie").split(";", 1)[0];
+    assert.equal((await request(cookie, body)).status, 200);
+    assert.equal(spans.length, 1); assert.deepEqual(spans[0].metadata, { action: "snapshot" });
+    assert.equal((await request(cookie, { events: Array(33).fill(body.events[0]) })).status, 400);
+    assert.equal((await request(cookie, { events: [], padding: "x".repeat(33000) })).status, 400);
+    assert.equal(spans.length, 1);
+  } finally { await server.close(); }
+});

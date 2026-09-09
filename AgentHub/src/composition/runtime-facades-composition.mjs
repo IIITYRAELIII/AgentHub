@@ -100,8 +100,8 @@ export function createRuntimeFacadesComposition({
     applyCodexThreadSettings(...args) {
       return agentPreferences.applyCodexThreadSettings(...args);
     },
-    backfillWorkLogPricingMetadata(codexThreads) {
-      return journalBackfill.backfill(codexThreads);
+    backfillWorkLogPricingMetadata(codexThreads, options) {
+      return journalBackfill.backfill(codexThreads, options);
     },
     auditClaudeTranscriptSnapshots(snapshots) {
       return claudeTranscriptAudit.audit(snapshots);

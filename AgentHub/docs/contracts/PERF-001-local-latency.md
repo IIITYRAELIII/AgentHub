@@ -12,6 +12,36 @@ Cross-process timestamps use UTC epoch; durations inside one process use a
 monotonic clock. Every blocking span reports outcome, queue depth and relevant
 lock or SQLite wait.
 
+## Unified performance evidence
+
+Client interactions, navigation, control ACKs, request and rendering durations,
+long main-thread tasks, startup, terminal-outbox phases and existing runtime
+health/SQLite counters use the same `command-traces.sqlite` worker owner.
+Client measurements never become admission or lifecycle authority. New client
+telemetry accepts bounded batches with allowlisted content-free fields through
+the existing authenticated transport; it cannot persist message bodies, DOM
+text, request URLs or arbitrary error text. Telemetry requests do not trace
+themselves. Backpressure drops diagnostics, never application commands.
+
+A blocking operation records a started marker before awaiting and a terminal
+measurement with the same `operationSpanId`. Missing terminal measurements are
+incomplete evidence, not proof of a running task: retention, process death or
+telemetry loss may remove either end. Instance/release identity accompanies
+server records. UTC timestamps correlate processes; only monotonic same-process
+durations measure latency. Existing runtime-health event-loop percentiles remain
+cumulative for that process and are labelled separately from request durations.
+
+Retention is at most seven days and 250,000 spans. The existing worker prunes at
+startup, on writes and at most once per minute while idle. Limit maintenance
+does not walk 250,000 rows for every inserted span. Reports disclose actual
+retained range and file sizes; the row limit may shorten the seven-day window.
+The WAL journal-size setting applies after checkpoint and is not a hard disk cap.
+
+Optional startup catalog/pricing enrichment starts after readiness and uses the
+existing bounded provider/usage owners. It must not block control readiness or
+change completed provider/admission states. Its progress and failure remain
+visible separately from mandatory recovery. See ADR-0030.
+
 ## Initial local SLO
 
 - Durable ACK without attachments: p50 <= 75 ms, p95 <= 250 ms, p99 <= 1 s.
