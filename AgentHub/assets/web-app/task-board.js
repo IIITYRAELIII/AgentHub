@@ -1850,6 +1850,53 @@
     openTaskCard(task, { modal: true });
   }, true);
 
+  function setTaskDragImage(event, card) {
+    // A bitmap cannot capture adjacent composited grid lanes like Chromium's
+    // automatic DOM drag image can. It has no duplicate interactive DOM nodes.
+    const canvas = document.createElement("canvas");
+    canvas.width = 360;
+    canvas.height = 110;
+    const context = canvas.getContext("2d");
+    const style = getComputedStyle(card);
+    const titleStyle = getComputedStyle(card.querySelector(".board-task-title"));
+    const metadata = [".board-task-number", ".board-task-workspace", ".board-task-executor"]
+      .map((selector) => card.querySelector(selector)?.textContent?.trim()).filter(Boolean).join(" · ");
+    const fit = (text, width) => {
+      const characters = Array.from(text);
+      if (context.measureText(text).width <= width) return text;
+      let low = 0;
+      let high = characters.length;
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        if (context.measureText(characters.slice(0, middle).join("") + "…").width <= width) low = middle;
+        else high = middle - 1;
+      }
+      return characters.slice(0, low).join("") + "…";
+    };
+    context.beginPath();
+    context.roundRect(0.5, 0.5, 359, 109, 6);
+    context.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
+    context.fill();
+    context.fillStyle = style.backgroundColor;
+    context.fill();
+    context.strokeStyle = style.borderColor;
+    context.stroke();
+    context.textBaseline = "top";
+    context.fillStyle = getComputedStyle(card.querySelector(".board-task-number")).color;
+    context.font = `11px ${titleStyle.fontFamily}`;
+    context.fillText(fit(metadata, 332), 14, 12);
+    context.fillStyle = titleStyle.color;
+    context.font = `500 15px ${titleStyle.fontFamily}`;
+    const words = card.querySelector(".board-task-title").textContent.trim().split(/\s+/u);
+    for (let line = 0; line < 3 && words.length; line += 1) {
+      let text = words.shift();
+      while (words.length && context.measureText(text + " " + words[0]).width <= 332) text += " " + words.shift();
+      if (line === 2 && words.length) text += " " + words.join(" ");
+      context.fillText(fit(text, 332), 14, 34 + line * 22);
+    }
+    event.dataTransfer.setDragImage(canvas, 18, 18);
+  }
+
   function taskCard(task, { compact = false, linked = false, movable = !compact, boardRow = false } = {}) {
     const completed = task.status === "done";
     const movableCard = movable && !completed;
@@ -1876,6 +1923,7 @@
       },
       ondragstart: attachable ? (event) => {
         TaskReferences.beginDrag(event.dataTransfer, task);
+        setTaskDragImage(event, card);
       } : null,
       ondragend: attachable ? () => TaskReferences.endDrag() : null,
     });

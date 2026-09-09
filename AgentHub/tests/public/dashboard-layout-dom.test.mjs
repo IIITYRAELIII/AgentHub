@@ -223,6 +223,62 @@ test("Dashboard saves each task opening mode and retains drafts when switching",
   } finally { await browser.close(); }
 });
 
+test("Native Task drag uses one bounded bitmap and delivers one Task in each board view", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchEdge(chromium);
+  try {
+    for (const view of ['grouped', 'flat', 'legacy']) {
+      const page = await browser.newPage({ viewport: { width: 1752, height: 1000 } });
+      const errors = [];
+      page.on('pageerror', (error) => errors.push(error.message));
+      await openFixture(page, { grouping: view === 'grouped' ? 'on' : 'off' });
+      await setBoard(page);
+      await page.evaluate(() => {
+        document.documentElement.dataset.theme = 'pulsar';
+        document.documentElement.dataset.surface = 'browser';
+        const textByCanvas = new WeakMap();
+        const fill = CanvasRenderingContext2D.prototype.fillText;
+        CanvasRenderingContext2D.prototype.fillText = function(text, ...args) {
+          const texts = textByCanvas.get(this.canvas) || [];
+          texts.push(text); textByCanvas.set(this.canvas, texts);
+          return fill.call(this, text, ...args);
+        };
+        const set = DataTransfer.prototype.setDragImage;
+        DataTransfer.prototype.setDragImage = function(image, ...args) {
+          window.__dragImage = { tag: image.tagName, width: image.width, height: image.height,
+            texts: textByCanvas.get(image), dataUrl: image.toDataURL(),
+            reference: window.AgentHubTaskReferences.fromTransfer(this) };
+          return set.call(this, image, ...args);
+        };
+      });
+      if (view === 'legacy') {
+        await page.locator('[data-task-board-settings-toggle]').click();
+        await page.locator('[data-task-board-view="workspaces"]').click();
+      }
+      const board = page.locator('[data-task-board-columns]');
+      const source = board.locator('[data-board-task-id="1"]');
+      const target = view === 'legacy' ? board.locator('[data-board-task-id="3"]')
+        : view === 'grouped' ? page.locator('.task-board-matrix-head .is-status-testing')
+          : board.locator('.is-status-testing .task-board-column-head');
+      await source.dragTo(target);
+      const image = await page.evaluate(() => window.__dragImage);
+      assert.equal(image.tag, 'CANVAS', view);
+      assert.equal(image.width, 360, view);
+      assert.equal(image.height, 110, view);
+      assert.equal(image.reference.taskId, '1', view);
+      assert.ok(image.texts.includes('Задача 1'), view);
+      assert.ok(!image.texts.some(text => /Задача [2-7]/u.test(text)), view);
+      const actions = await page.evaluate(() => window.__boardActions);
+      assert.equal(actions.length, 1, view);
+      assert.equal(actions[0].id, '1', view);
+      assert.equal(actions[0].type, view === 'legacy' ? 'move' : 'status', view);
+      if (view !== 'legacy') assert.equal(actions[0].status, 'testing', view);
+      assert.deepEqual(errors, [], view);
+      await page.close();
+    }
+  } finally { await browser.close(); }
+});
+
 test("Backlog stays separate in every scope and hides status in docked and modal cards", async () => {
   const { chromium } = await import("playwright");
   const browser = await launchEdge(chromium);
