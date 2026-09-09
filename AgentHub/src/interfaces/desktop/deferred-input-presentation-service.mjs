@@ -1,3 +1,12 @@
+import { userTaskReferencePromptDetails } from "../../application/task-history.mjs";
+import { deferredInputText } from "../../domain/deferred-input.mjs";
+
+export function deferredInputAttachments(item, describeAttachments) {
+  const files = item.persistentFiles ? describeAttachments?.(item.temporaryFiles ?? []) ?? [] : [];
+  const references = userTaskReferencePromptDetails(deferredInputText(item.input))?.references ?? [];
+  return [...files, ...references];
+}
+
 export class DeferredInputPresentationService {
   constructor({ telegram, receipts, describeAttachments }) {
     this.telegram = telegram;
@@ -36,7 +45,7 @@ export class DeferredInputPresentationService {
         turnId: started?.turnId ?? null,
         clientUserMessageId: item.clientUserMessageId,
         deliveredAt: started?.startedAt ?? item.dispatchingAt ?? null,
-        attachments: item.persistentFiles ? this.describeAttachments(item.temporaryFiles) : [],
+        attachments: deferredInputAttachments(item, this.describeAttachments),
       });
     }
     if (state === "steered") {
@@ -51,7 +60,7 @@ export class DeferredInputPresentationService {
         threadId: started?.threadId ?? item.threadId,
         turnId: started?.turnId ?? null,
         clientUserMessageId: item.clientUserMessageId,
-        attachments: item.persistentFiles ? this.describeAttachments(item.temporaryFiles) : [],
+        attachments: deferredInputAttachments(item, this.describeAttachments),
       });
     }
     if (state === "cancelled") {

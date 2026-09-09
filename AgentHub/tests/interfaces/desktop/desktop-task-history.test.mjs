@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -21,6 +21,8 @@ import {
   interstreamAuditContentHash,
 } from "../../../src/domain/interstream-message.mjs";
 import { LocalTaskSyncStore } from "../../../src/infrastructure/persistence/task-sync-store.mjs";
+import { TaskViewController } from "../../../src/interfaces/telegram/task-view-controller.mjs";
+import { readCodexRolloutActivity, readCodexRolloutActivityOnCurrentThread } from "../../../src/providers/codex/codex-rollout-activity.mjs";
 
 const ANNOTATION_SOURCE = {
   version: 1,
@@ -131,9 +133,9 @@ function fixture(overrides = {}) {
             : history,
         };
       },
-      refresh: async (binding) => {
+      refresh: async (binding, options) => {
         calls.refreshes += 1;
-        return state.refresh(binding);
+        return state.refresh(binding, options);
       },
     },
     runs: {
@@ -2058,6 +2060,205 @@ test("desktop task history keeps turn attachments on the root user only", async 
 
   assert.deepEqual(result.items[0].messages[0].attachments, [rootAttachment]);
   assert.deepEqual(result.items[0].messages[1].attachments, []);
+});
+
+test("rollout history preserves authors, trusted bodies and two images after a cold SQLite reload", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-history-projection-"));
+  const filePath = path.join(directory, "tasks.json");
+  const task = { provider: "codex", threadId: "thread-1", projectRoot: directory };
+  let store = new LocalTaskSyncStore({ filePath });
+  const images = ["first.png", "second.png"].map((id) => ({ id, name: "image.png", type: "image/png" }));
+  const origin = {
+    kind: "interstream", workspaceId: "hub", workspaceName: "Agent HUB",
+    streamId: "themes", streamName: "Themes", provider: "codex", model: "gpt-5.6-terra",
+    sourceThreadId: "themes-thread", requestId: "design-review",
+  };
+  const wrapped = createInterstreamMessage({ ...origin, text: "Проверь дизайн" });
+  try {
+    await store.load();
+    const view = new TaskViewController({
+      taskSyncStore: store,
+      findCodexRolloutPath: async () => "rollout.jsonl",
+      readCodexRolloutActivity: async () => ({
+        userMessages: { "turn-projection": [
+          { itemId: "image-user", clientUserMessageId: "image-client", role: "user", text: "Проверь скриншоты",
+            attachmentSources: images.map((image) => ({ type: "path", value: image.id })) },
+          { itemId: "msg-child", role: "agent", kind: "subagent", author: "Субагент (Terra)",
+            agentThreadId: "child-thread", model: "gpt-5.6-terra", text: "Отчёт" },
+          { itemId: "trusted-user", clientUserMessageId: "mcp:design-review", role: "user", origin, text: wrapped },
+          { itemId: "literal-user", clientUserMessageId: "literal-client", role: "user", text: wrapped },
+        ] },
+        finalMessages: { "turn-projection": "Итог" },
+      }),
+      attachmentImporter: async (sources) => {
+        assert.deepEqual(sources.map((source) => source.value), images.map((image) => image.id));
+        return structuredClone(images);
+      },
+    });
+    await view.readHistory(task, { completedOnly: true });
+    store.close();
+    store = new LocalTaskSyncStore({ filePath });
+    await store.load();
+    const { desktopTaskHistory } = fixture({
+      history: store.history(task), run: null,
+      receipts: { forMessage: () => null, forTurn: () => [] },
+    });
+    const result = await desktopTaskHistory({ limit: 1, includeActive: false });
+    const messages = result.items[0].messages;
+    assert.deepEqual(messages.find((message) => message.clientUserMessageId === "image-client").attachments, images);
+    const subagent = messages.find((message) => message.itemId === "msg-child");
+    assert.equal(subagent.role, "agent");
+    assert.equal(subagent.kind, "subagent");
+    assert.equal(subagent.author, "Субагент (Terra)");
+    assert.equal(subagent.agentThreadId, "child-thread");
+    const trusted = messages.find((message) => message.clientUserMessageId === "mcp:design-review");
+    assert.equal(trusted.text, "Проверь дизайн");
+    assert.deepEqual(trusted.origin, origin);
+    const literal = messages.find((message) => message.clientUserMessageId === "literal-client");
+    assert.equal(literal.role, "user");
+    assert.equal(literal.text, wrapped);
+    assert.equal(literal.author, undefined);
+  } finally {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("explicit archival recovery persists a report outside the cold live tail without changing real users", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub-archive-history-"));
+  const filePath = path.join(directory, "tasks.json");
+  const rolloutPath = path.join(directory, "rollout.jsonl");
+  const task = { provider: "codex", threadId: "thread-1", projectRoot: directory };
+  const turnId = "archived-turn";
+  let store = new LocalTaskSyncStore({ filePath });
+  try {
+    await writeFile(rolloutPath, [
+      { type: "session_meta", payload: { id: task.threadId } },
+      { type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
+      { type: "response_item", timestamp: "2026-09-09T11:48:29.467Z", payload: {
+        type: "message", role: "user", id: "child-report",
+        internal_chat_message_metadata_passthrough: { turn_id: turnId }, content: [{ type: "input_text",
+          text: `<subagent_notification>${JSON.stringify({ agent_path: "child", status: { completed: "Отчёт" } })}</subagent_notification>`,
+        }],
+      } },
+    ].map((row) => JSON.stringify(row)).join("\n") + "\n", "utf8");
+    const original = await readCodexRolloutActivityOnCurrentThread(rolloutPath);
+    const sourceOccurrenceId = original.userMessages[turnId][0].sourceOccurrenceId;
+    await appendFile(rolloutPath, JSON.stringify({ type: "padding", text: "x".repeat(17 * 1024 * 1024) }) + "\n");
+    await appendFile(rolloutPath, JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "latest-turn" } }) + "\n");
+    await store.load();
+    store.recordHistory(task, [{ id: turnId, prompt: "Проверь", answer: "Итог", completed: true, status: "completed", messages: [
+      { itemId: "root", role: "user", clientUserMessageId: "real-client", text: "Отчёт" },
+      { itemId: "child-report", role: "user", text: "Отчёт", sourceOccurrenceId },
+    ] }]);
+    await store.save();
+    const view = new TaskViewController({ taskSyncStore: store, findCodexRolloutPath: async () => rolloutPath, readCodexRolloutActivity });
+    await view.readHistory(task, { completedOnly: true });
+    assert.equal(store.history(task)[0].messages.find((message) => message.itemId === "child-report").role, "user");
+    const withoutReport = store.history(task).map((turn) => ({
+      ...turn, messages: turn.messages.filter((message) => message.itemId !== "child-report"),
+    }));
+    store.recordHistory(task, withoutReport);
+    await store.save();
+    await appendFile(rolloutPath, JSON.stringify({ type: "event_msg", payload: { type: "task_complete", turn_id: turnId, last_agent_message: "Итог" } }) + "\n");
+    const harness = fixture({ history: store.history(task), run: null, refresh: async (binding, options) => {
+      const result = await view.readHistory(binding, { ...options, completedOnly: true });
+      harness.state.history = store.history(task);
+      return result;
+    } });
+    const response = await harness.desktopTaskHistory({ provider: task.provider, threadId: task.threadId, repairSubagentTurnIds: [turnId], includeActive: false });
+    const report = response.items.find((turn) => turn.id === turnId).messages.find((message) => message.itemId === "child-report");
+    assert.equal(report.role, "agent");
+    assert.equal(report.kind, "subagent");
+    assert.equal(report.time, "2026-09-09T11:48:29.467Z");
+    await view.readHistory(task, { completedOnly: true });
+    store.close();
+    store = new LocalTaskSyncStore({ filePath });
+    await store.load();
+    const messages = store.history(task)[0].messages;
+    assert.equal(messages.find((message) => message.itemId === "child-report").role, "agent");
+    assert.equal(messages.find((message) => message.clientUserMessageId === "real-client").role, "user");
+    assert.equal(messages.filter((message) => message.kind === "subagent").length, 1);
+  } finally {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("fresh bounded history repairs only the exact preexisting misclassified subagent occurrence across SQLite reload", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-history-existing-subagent-"));
+  const filePath = path.join(directory, "tasks.json");
+  const task = { provider: "codex", threadId: "thread-1", projectRoot: directory };
+  const turnId = "turn-existing-subagent";
+  const sourceOccurrenceId = `codex-rollout:${"a".repeat(64)}`;
+  const root = { itemId: "root", clientUserMessageId: "root-client", role: "user", text: "Проверь" };
+  const genuineUser = { itemId: "literal", clientUserMessageId: "literal-client", role: "user", text: "Отчёт" };
+  const ghost = { itemId: "msg-child", sourceOccurrenceId, role: "user", text: "Отчёт" };
+  let store = new LocalTaskSyncStore({ filePath });
+  let refreshCount = 0;
+  try {
+    await store.load();
+    store.recordHistory(task, [{
+      id: turnId, prompt: "Проверь", answer: "Итог", completed: true, status: "completed",
+      userMessageSnapshotAuthority: "incremental", messages: [root, genuineUser, ghost],
+    }]);
+    await store.save();
+    store.close();
+    store = new LocalTaskSyncStore({ filePath });
+    await store.load();
+    assert.equal(store.history(task)[0].messages.find((message) => message.itemId === "msg-child").role, "user");
+    const view = new TaskViewController({
+      taskSyncStore: store,
+      findCodexRolloutPath: async () => "rollout.jsonl",
+      readCodexRolloutActivity: async (_path, options) => {
+        refreshCount += 1;
+        assert.equal(options.tailBytes, 16 * 1024 * 1024);
+        return {
+          userMessageSnapshotAuthorityByTurnId: { [turnId]: "incremental" },
+          userMessages: { [turnId]: [root, genuineUser, {
+            ...ghost, role: "agent", kind: "subagent", agentThreadId: "child-thread",
+            author: "Субагент (Terra)", model: "gpt-5.6-terra",
+          }] },
+          finalMessages: { [turnId]: "Итог" },
+        };
+      },
+    });
+    const harness = fixture({
+      history: store.history(task), run: null,
+      receipts: { forMessage: () => null, forTurn: () => [] },
+      refresh: async () => {
+        const result = await view.readHistory(task, { completedOnly: true });
+        harness.state.history = store.history(task);
+        return result;
+      },
+    });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const result = await harness.desktopTaskHistory({
+        provider: task.provider, threadId: task.threadId, limit: 1, includeActive: false, refreshSource: true,
+      });
+      const messages = result.items[0].messages;
+      assert.deepEqual(messages.filter((message) => message.itemId === "msg-child").map((message) => message.role), ["agent"]);
+      assert.equal(messages.find((message) => message.clientUserMessageId === "literal-client").text, "Отчёт");
+      assert.equal(messages.find((message) => message.role === "agent" && message.kind === "subagent").author, "Субагент (Terra)");
+    }
+    assert.equal(refreshCount, 2);
+    const staleHistory = [{
+      id: turnId, prompt: "Проверь", answer: "Итог", completed: true, status: "completed",
+      userMessageSnapshotAuthority: "incremental", messages: [root, genuineUser, ghost],
+    }];
+    const refreshedHistory = store.history(task);
+    for (const [cached, durable] of [[staleHistory, refreshedHistory], [refreshedHistory, staleHistory]]) {
+      const merged = mergeCachedTaskHistory(cached, durable);
+      assert.deepEqual(merged[0].messages.filter((message) => message.itemId === "msg-child").map((message) => message.role), ["agent"]);
+    }
+    store.close();
+    store = new LocalTaskSyncStore({ filePath });
+    await store.load();
+    assert.deepEqual(store.history(task)[0].messages.filter((message) => message.itemId === "msg-child").map((message) => message.role), ["agent"]);
+  } finally {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("desktop task history restores receipt attachments from an explicit empty message list", async () => {

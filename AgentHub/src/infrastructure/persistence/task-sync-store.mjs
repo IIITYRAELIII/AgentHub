@@ -196,6 +196,8 @@ function cleanHistory(history, limit, { provider = "" } = {}) {
             || /^Субагент(?:\s*·|\s*\()/iu.test(rawAuthor);
           const misattributedSubagent = role === "agent"
             && hasSubagentMetadata
+            && kind !== "subagent"
+            && !agentThreadId
             && !itemId.includes(":subagent:");
           const origin = !misattributedSubagent && role === "user"
             ? normalizeInterstreamOrigin(message?.origin)
@@ -831,6 +833,8 @@ function configure(database) {
     SET author = '', kind = '', agent_thread_id = '', model = ''
     WHERE provider = 'codex'
       AND instr(item_id, ':subagent:') = 0
+      AND kind <> 'subagent'
+      AND trim(agent_thread_id) = ''
       AND (
         kind = 'subagent'
         OR trim(agent_thread_id) <> ''

@@ -6,6 +6,7 @@ import {
   isEmptyTurnCompletionPlaceholder,
   userTaskReferencePromptDetails,
   withoutCodexInspectionAttachments,
+  withoutMisclassifiedSubagentUsers,
 } from "../../application/task-history.mjs";
 import { normalizedResponseAnnotations } from "../../domain/response-annotation-source.mjs";
 import {
@@ -179,8 +180,8 @@ function exactTerminalAgentCandidate(message, turnId, canonicalItemId) {
 
 // Builds the bounded Desktop/Mini App history read-model for one task.
 function mergeDurableMessages(hydratedMessages, durableMessages, turnId, hydratedTurn, durableTurn) {
-  const durableValues = Array.isArray(durableMessages) ? durableMessages : [];
-  const hydratedValues = Array.isArray(hydratedMessages) ? hydratedMessages : [];
+  const durableValues = withoutMisclassifiedSubagentUsers(durableMessages, hydratedMessages);
+  const hydratedValues = withoutMisclassifiedSubagentUsers(hydratedMessages, durableMessages);
   const hydratedUsers = canonicalizeUserMessages(
     hydratedValues.filter((message) => message?.role === "user"),
   );
@@ -429,15 +430,20 @@ export function createDesktopTaskHistoryFactory({
     }
   }
 
-  function scheduleRefresh(binding, { force = false } = {}) {
+  function scheduleRefresh(binding, { force = false, repairSubagentTurnIds = [] } = {}) {
     if (typeof historyReader.refresh !== "function") return null;
     const key = `${binding.provider}:${binding.threadId}`;
-    if (refreshes.has(key)) return refreshes.get(key);
+    if (refreshes.has(key)) {
+      const pending = refreshes.get(key);
+      return repairSubagentTurnIds.length
+        ? pending.then(() => scheduleRefresh(binding, { force: true, repairSubagentTurnIds }))
+        : pending;
+    }
     if (!force && Date.now() - (refreshedAt.get(key) ?? 0) < refreshIntervalMs) return null;
     refreshedAt.set(key, Date.now());
     const operation = Promise.resolve()
       .then(async () => {
-        const refreshed = await historyReader.refresh(binding);
+        const refreshed = await historyReader.refresh(binding, { repairSubagentTurnIds });
         if (Array.isArray(refreshed?.history)) {
           cacheHistory(
             providerHistories,
@@ -513,8 +519,13 @@ export function createDesktopTaskHistoryFactory({
     const currentThreadBinding = threadBindings.find((threadBinding) => (
       threadBinding.provider === binding.provider && threadBinding.threadId === binding.threadId
     )) ?? binding;
-    if (params.refreshSource === true) {
-      sourceRefreshFailed = await scheduleRefresh(currentThreadBinding, { force: true }) === false;
+    const repairSubagentTurnIds = params.repairSubagentTurnIds ?? [];
+    if (!Array.isArray(repairSubagentTurnIds) || repairSubagentTurnIds.length > 20
+      || repairSubagentTurnIds.some((id) => typeof id !== "string" || !id.trim() || id.length > 200)) {
+      throw new Error("Invalid subagent recovery turn IDs");
+    }
+    if (params.refreshSource === true || repairSubagentTurnIds.length) {
+      sourceRefreshFailed = await scheduleRefresh(currentThreadBinding, { force: true, repairSubagentTurnIds }) === false;
     }
     const pagedHistory = typeof historyReader.readPage === "function"
       ? await historyReader.readPage(threadBindings, {

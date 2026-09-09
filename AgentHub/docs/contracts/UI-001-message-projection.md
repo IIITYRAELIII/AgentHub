@@ -25,6 +25,26 @@
   occurrence when `clientUserMessageId` arrives later; this same-source evidence
   replaces the earlier unkeyed entity and preserves Hub payload/origin.
 - `unknown` is displayed as unknown and never inferred as running.
+- Legacy rollout projections that misclassified a subagent report as a user
+  may be corrected only by one matching internally generated source occurrence
+  in the same turn. A Hub client identity, origin, missing source identity or
+  ambiguous occurrence prevents replacement. This migration guard is removable
+  after retained histories from the pre-fix rollout adapter have expired or
+  been reprojected; it must never use text or provider item IDs as evidence.
+  Reports outside the live tail can be repaired explicitly through `task-history`
+  with `repairSubagentTurnIds` (at most 20 exact turns). The provider worker locates
+  their retained turn-start boundaries and reads bounded JSONL records from that
+  point, matching existing byte-coordinate source identities and recovering
+  missing reports from source-native notifications in the exact completed turn.
+  A terminal command-only payload is not evidence that subagent reports never
+  existed. Later partial final-answer refreshes retain recovered reports. The normal
+  history owner persists the correction. This maintenance is never part of startup,
+  polling or ordinary refresh, never dispatches a turn, and leaves unavailable,
+  rewritten, client-bound or ambiguous evidence unchanged. Remove this opt-in
+  migration together with the pre-fix subagent projection guard.
+- Distinct client command identities remain distinct when terminal recovery
+  supplies no provider item ID. A shared turn/role is not an alias joining those
+  commands; inter-Stream authorship must not leak into another user message.
 - Internal probes, measurements and maintenance operations have separate kinds
   and never create user-turn cards.
 - The ordinary browser shell never waits on the third-party Telegram runtime.
