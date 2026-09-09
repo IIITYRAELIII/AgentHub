@@ -3708,7 +3708,7 @@ html[data-view="dashboard"] .task-board-view {
   display: flex;
   flex: 0 0 auto;
   gap: 0.55rem;
-  justify-content: space-between;
+  justify-content: flex-end;
   flex-wrap: wrap;
   min-width: 0;
   padding: 0.45rem 0.7rem;
@@ -4311,9 +4311,25 @@ html[data-view="dashboard"] .task-board-columns .board-task-attachments {
 }
 
 html[data-view="dashboard"] .task-board-view.is-workspace-view .task-board-columns .board-task-status {
-  grid-column: 2;
+  grid-column: 3;
   grid-row: 1;
+  justify-self: end;
 }
+
+html[data-view="dashboard"] .task-board-view.is-workspace-view .board-task-executor {
+  grid-column: 2;
+}
+
+html[data-view="dashboard"] .task-board-view.is-workspace-view .board-task-workspace,
+html[data-view="dashboard"] .task-board-view.is-workspace-view .task-board-sidebar {
+  display: none;
+}
+
+html[data-view="dashboard"] .task-board-view.is-workspace-view {
+  --task-rail-width: 0px;
+}
+
+.is-workspace-view .task-board-row-head > :last-child { text-align: end; }
 
 .task-board-row-head {
   display: grid;
@@ -4381,6 +4397,11 @@ html[data-view="dashboard"] .task-board-view.is-workspace-view .task-board-colum
   .task-board-sidebar { grid-column: 1; grid-row: 1; max-height: 12rem; }
   .task-board-toolbar { grid-column: 1; grid-row: 2; }
   .task-board-columns { grid-column: 1; grid-row: 3; }
+  html[data-view="dashboard"] .task-board-view.is-workspace-view {
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .is-workspace-view .task-board-toolbar { grid-row: 1; }
+  .is-workspace-view .task-board-columns { grid-row: 2; }
   .task-card-backdrop { display: none; }
   .task-board-toolbar {
     align-items: stretch;

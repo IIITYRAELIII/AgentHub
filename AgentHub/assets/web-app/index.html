@@ -792,10 +792,6 @@
       <nav class="task-board-scope-strip" data-task-board-scopes aria-label="Workspace и заметки"></nav>
     </aside>
     <header class="task-board-toolbar">
-      <div class="task-board-status-language-options task-board-view-options" role="group" aria-label="Вид доски">
-        <button type="button" data-task-board-view="statuses" aria-pressed="true">По статусам</button>
-        <button type="button" data-task-board-view="workspaces" aria-pressed="false">По воркспейсам</button>
-      </div>
       <div class="task-board-toolbar-actions">
         <button type="button" class="task-board-filter-toggle" data-task-board-filter-toggle
           aria-expanded="false" aria-controls="task-board-filter-controls">Фильтры</button>
@@ -807,14 +803,29 @@
             aria-pressed="false"
           >Закрытые</button>
         </div>
-        <button type="button" class="task-board-filter-toggle" data-task-board-settings-toggle
-          popovertarget="task-board-settings">Настройки</button>
+        <button type="button" class="refresh view-settings" data-task-board-settings-toggle
+          popovertarget="task-board-settings" title="Настройки доски" aria-label="Настройки доски">
+          <svg data-phosphor-icon="sliders-horizontal" viewBox="0 0 256 256" aria-hidden="true">
+            <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16">
+              <circle cx="104" cy="80" r="24"></circle>
+              <circle cx="168" cy="176" r="24"></circle>
+              <path d="M128 80h88M40 80h40M192 176h24M40 176h104"></path>
+            </g>
+          </svg>
+        </button>
       </div>
     </header>
     <div class="task-board-columns" data-task-board-columns aria-live="polite"></div>
   </main>
 
   <div class="task-board-settings" id="task-board-settings" popover="auto" role="group" aria-label="Настройки доски">
+    <div class="task-board-setting">
+      <strong>Вид доски</strong>
+      <div class="task-board-status-language-options task-board-view-options" role="group" aria-label="Вид доски">
+        <button type="button" data-task-board-view="statuses" aria-pressed="true">По статусам</button>
+        <button type="button" data-task-board-view="workspaces" aria-pressed="false">По воркспейсам</button>
+      </div>
+    </div>
     <div class="task-board-setting">
       <strong>Открывать задачу</strong>
       <div class="task-board-status-language-options" role="group" aria-label="Открывать задачу">

@@ -2042,8 +2042,8 @@
     ]));
     column.append(node("div", { class: "task-board-row-head", "aria-hidden": "true" }, [
       node("span", { text: "ID" }),
-      node("span", { text: showsWorkspaceContext() ? "Workspace" : state.boardView === "workspaces" && id !== "backlog" ? "Статус" : "" }),
-      node("span", { text: "Поток" }),
+      node("span", { text: state.boardView === "workspaces" ? "Поток" : showsWorkspaceContext() ? "Workspace" : "" }),
+      node("span", { text: state.boardView === "workspaces" ? id !== "backlog" ? "Статус" : "" : "Поток" }),
     ]));
     const list = node("div", { class: "task-board-column-list" });
     if (workspace && state.creatingWorkspaceId === workspace.id) list.append(renderCreateForm(workspace));
@@ -2235,15 +2235,13 @@
       const workspaceColumns = new Map([["backlog", rendered[0]]]);
       for (const workspace of state.workspaces) {
         const id = `workspace:${workspace.id}`;
-        if (state.boardScope !== "all" && state.boardScope !== id
-          && state.boardScope !== `folder:${workspaceFolder(workspace)}`) continue;
         workspaceColumns.set(id, renderColumn({
           id, title: workspace.name, subtitle: workspace.comment ?? "",
           tasks: visibleTasks.filter((task) => task.bucket === "workspace" && task.workspaceId === workspace.id),
           workspace, movable: !state.completedOnly, emptyText,
         }));
       }
-      if (state.boardScope === "all" || state.boardScope === "notes") workspaceColumns.set("notes", renderColumn({
+      workspaceColumns.set("notes", renderColumn({
         id: "notes", title: "Заметки", subtitle: state.notesComment,
         tasks: visibleTasks.filter((task) => task.bucket === "notes"),
         accent: "is-notes", movable: !state.completedOnly, emptyText,
@@ -2308,6 +2306,7 @@
     state.boardView = button.dataset.taskBoardView;
     state.creatingWorkspaceId = null;
     saveBoardPreference("view", state.boardView);
+    settingsPanel.hidePopover();
     renderBoard();
   });
   for (const button of openModeButtons) button.addEventListener("click", () => {
