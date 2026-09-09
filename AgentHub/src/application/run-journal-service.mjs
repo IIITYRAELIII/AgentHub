@@ -77,6 +77,8 @@ export class RunJournalService {
     const authoritativeUpdatedAt = normalizedIsoTimestamp(updatedAt);
     const startedAt = normalizedIsoTimestamp(run.startedAt);
     const sameTurn = Boolean(turnId) && current?.turnId === turnId;
+    if (sameTurn && Number(terminalRevision) > 0
+      && Number(current.terminalRevision) > Number(terminalRevision)) return false;
     const currentStartedAt = normalizedIsoTimestamp(current?.startedAt);
     if (
       current
@@ -244,6 +246,20 @@ export class RunJournalService {
       this.logger.error(`Cannot record Workspace event for ${completion.turnId}:`, error.message);
     }
     return result;
+  }
+
+  async flushTurnProjections(completions) {
+    const projectRoots = this.projectionProjectRoots?.length
+      ? this.projectionProjectRoots
+      : [...new Set(completions.map((completion) => {
+        const project = this.findProject(completion.projectRoot);
+        if (!project) throw new Error(`Cannot find journal project for ${completion.projectRoot}`);
+        return project.path;
+      }))];
+    return this.usageStore.project(null, {
+      projectRoot: this.defaultProjectRoot,
+      projectionProjectRoots: projectRoots,
+    });
   }
 
   async initialize(restoredTurnEndSnapshot = {}) {

@@ -105,6 +105,7 @@ export function createRunCompletionComposition({
     taskRuns,
     persistHistory: persistManagedRunHistory,
     projectTurn: (...args) => runJournal.projectTurn(...args),
+    flushTurnProjections: (...args) => runJournal.flushTurnProjections(...args),
     finalizeRunDelivery,
     rememberLastMessage: (...args) => runJournal.rememberLastMessage(...args),
     rememberSeenTurn: (task, turnId) => {

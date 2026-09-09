@@ -166,6 +166,7 @@ export function createRuntimeRestartComposition({
       },
       recoverRuns: (...args) => runRecovery.recoverAll(...args),
       updateMessage: (message) => updateRestartMessage(message).catch(() => {}),
+      failRestartOperation,
       clearRestartRequest: () => setRestartRequest(null),
       saveState,
       startTimers: startRuntimeTimers,

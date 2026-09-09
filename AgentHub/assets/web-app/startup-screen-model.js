@@ -58,26 +58,27 @@ export function createStartupScreenModel(snapshot, nowMs = Date.now()) {
   };
 }
 
-export function createStartupDisconnectedModel(model) {
-  const base = model?.available ? model : {
+export function createStartupDisconnectedModel(model, { restarting = false } = {}) {
+  // A disconnected health sample cannot describe the replacement's progress.
+  // Keep only known error details and the generation used by recovery actions.
+  const failedOperations = restarting ? [] : (model?.failedOperations ?? []);
+  return {
     available: true,
     ready: false,
-    failed: false,
+    failed: failedOperations.length > 0,
     finished: false,
-    status: "restarting",
+    status: restarting ? "restarting" : "unknown",
     currentIndex: -1,
-    startedAtMs: Date.now(),
+    startedAtMs: model?.startedAtMs ?? Date.now(),
     stageNumber: 0,
     stageTotal: 0,
     operations: [],
     completedOperations: [],
+    failedOperations,
     queueOperations: [],
-  };
-  return {
-    ...base,
     connectionLost: true,
-    eyebrow: "Agent Hub перезапускается",
-    title: "Ожидание нового процесса",
+    eyebrow: restarting ? "Agent Hub перезапускается" : "Нет связи с Agent Hub",
+    title: restarting ? "Ожидание нового процесса" : "Ожидание соединения",
     elapsed: "—",
     stageLabel: "Соединение временно недоступно",
   };

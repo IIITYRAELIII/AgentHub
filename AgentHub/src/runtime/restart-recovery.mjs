@@ -6,6 +6,7 @@ export async function restorePreviousBotAfterFailedReplacement({
   restoreProvider,
   recoverRuns,
   updateMessage,
+  failRestartOperation,
   clearRestartRequest,
   saveState,
   startTimers,
@@ -19,10 +20,11 @@ export async function restorePreviousBotAfterFailedReplacement({
   await updateMessage(
     `⚠️ Новая копия бота не запустилась: ${replacementError.message}\n\nСтарая копия восстановлена и продолжает работу.`,
   );
+  await failRestartOperation(replacementError);
   clearRestartRequest();
   await saveState();
-  startTimers();
   await markReady();
+  startTimers();
 }
 
 export async function finalizeSuccessfulReplacement({

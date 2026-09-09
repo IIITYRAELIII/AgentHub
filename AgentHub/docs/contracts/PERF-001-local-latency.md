@@ -94,6 +94,10 @@ ledger. Production full journal projection reads, normalizes, renders and writes
 the retained ledger in the existing usage worker. Only bounded workspace identity
 batches cross back to the runtime; full journal bodies do not. Projection commits
 are revision-fenced, and a failed or stale batch cannot clear pending audit work.
+Terminal-outbox recovery likewise stages bounded batches before requesting a
+shared journal projection. It must not rebuild the entire retained journal for
+each recovered completion. Exact revisions are acknowledged only after the
+shared projection succeeds; live completion adds no batching delay.
 Unchanged canonical merged records do not request a new projection; an existing
 pending projection still survives an unchanged replay. Provisional retraction
 checks only the exact turn before mutation. Missing or non-provisional turns

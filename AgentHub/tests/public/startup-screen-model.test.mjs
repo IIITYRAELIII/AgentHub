@@ -101,19 +101,50 @@ test("startup screen stops attributing a lost connection to the last operation",
   const disconnected = createStartupDisconnectedModel(active);
 
   assert.equal(disconnected.connectionLost, true);
-  assert.equal(disconnected.title, "Ожидание нового процесса");
+  assert.equal(disconnected.title, "Ожидание соединения");
+  assert.equal(disconnected.status, "unknown");
   assert.equal(disconnected.elapsed, "—");
   assert.equal(disconnected.stageLabel, "Соединение временно недоступно");
-  assert.deepEqual(disconnected.queueOperations, active.queueOperations);
+  assert.deepEqual(disconnected.queueOperations, []);
+  assert.deepEqual(disconnected.operations, []);
 });
 
 test("startup screen can reopen for a runtime replacement after initial startup", () => {
-  const disconnected = createStartupDisconnectedModel(null);
+  const disconnected = createStartupDisconnectedModel(null, { restarting: true });
 
   assert.equal(disconnected.available, true);
   assert.equal(disconnected.title, "Ожидание нового процесса");
   assert.match(startupScreenSource, /agenthub:connection-state/u);
   assert.match(startupScreenSource, /showDisconnectedState\(\{ force: true \}\)/u);
+});
+
+test("restart waiting never inherits completed stages or readiness from the previous process", () => {
+  const ready = createStartupScreenModel({
+    ready: true, status: "ready",
+    startup: {
+      startedAtMs: 1000,
+      operations: Array.from({ length: 17 }, (_, index) => ({ id: `stage-${index}`, state: "completed" })),
+    },
+  });
+  const disconnected = createStartupDisconnectedModel(ready, { restarting: true });
+  assert.equal(disconnected.ready, false);
+  assert.equal(disconnected.finished, false);
+  assert.equal(disconnected.status, "restarting");
+  assert.equal(disconnected.stageTotal, 0);
+  assert.deepEqual(disconnected.completedOperations, []);
+  assert.deepEqual(disconnected.operations, []);
+  assert.equal(ready.completedOperations.length, 17);
+});
+
+test("connection loss retains known startup errors without inventing a restart", () => {
+  const failed = createStartupScreenModel({
+    ready: false, status: "unready",
+    startup: { startedAtMs: 1000, operations: [{ id: "provider", state: "failed", error: "Provider unavailable" }] },
+  });
+  const disconnected = createStartupDisconnectedModel(failed);
+  assert.equal(disconnected.title, "Ожидание соединения");
+  assert.deepEqual(disconnected.failedOperations, failed.failedOperations);
+  assert.equal(disconnected.startedAtMs, 1000);
 });
 
 test("startup screen uses factual health stages and a webview-safe mark URL", () => {

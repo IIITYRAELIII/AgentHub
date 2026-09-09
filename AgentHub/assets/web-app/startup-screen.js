@@ -303,7 +303,7 @@ function clearConnectionTimer() {
 }
 
 function showDisconnectedState({ force = false } = {}) {
-  const disconnectedModel = createStartupDisconnectedModel(currentModel);
+  const disconnectedModel = createStartupDisconnectedModel(currentModel, { restarting: restartExpected });
   if (disconnectedModel && (force || !screen.hidden)) showModel(disconnectedModel);
 }
 
