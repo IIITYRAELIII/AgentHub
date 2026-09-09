@@ -5,6 +5,8 @@ import {
   workspaceBindingForTask,
 } from "../../../src/interfaces/desktop/desktop-snapshot.mjs";
 import { mergeTaskCatalog } from "../../../src/application/task-catalog-projection.mjs";
+import { messageWithTaskReferences, taskReferenceDescriptor } from "../../../src/domain/task-board-task.mjs";
+import { restoreDeferredInput } from "../../../src/domain/deferred-input.mjs";
 import {
   createMaintenanceOperation,
   MAINTENANCE_OPERATION_KINDS,
@@ -651,6 +653,27 @@ test("desktopRunSnapshot exposes live response citation references", () => {
   assert.deepEqual(desktopRunSnapshot(run).responseAnnotationReferences, [{ index: 1 }]);
 });
 
+test("desktopRunSnapshot gives a steer its exact intake time without borrowing root time", () => {
+  let receipt = { createdAt: "2026-07-30T10:15:00.000Z", result: {} };
+  const { desktopRunSnapshot, run } = fixture({
+    receiptForMessage: ({ clientUserMessageId }) => clientUserMessageId === "client-steer" ? receipt : null,
+  });
+  run.userMessages.push({
+    role: "user", clientUserMessageId: "client-steer", text: "Later clarification",
+    time: "2026-07-30T10:15:02.000Z",
+  });
+  const check = (expected) => {
+    const steer = desktopRunSnapshot(run).userMessages[1];
+    assert.equal(steer.time, expected);
+    assert.equal(steer.submittedAt, expected);
+  };
+  check(receipt.createdAt);
+  delete run.userMessages[1].time;
+  check(receipt.createdAt);
+  receipt = null;
+  check(null);
+});
+
 test("desktopRunSnapshot leaves a sparse provider steer unbound from a remaining receipt", () => {
   const receipts = [{
     clientUserMessageId: "client-root",
@@ -1252,6 +1275,23 @@ test("desktopSnapshot exposes failed pending intake for explicit recovery in its
   assert.equal(failed.attentionRequired, undefined);
 });
 
+test("desktopSnapshot retains task attachments in restored pending and paused queues", async () => {
+  const reference = taskReferenceDescriptor({ id: "task-1", title: "Review", taskNumber: "HUB-176" });
+  const persisted = JSON.parse(JSON.stringify({
+    id: "retained", provider: "codex", threadId: "thread-1", paused: true,
+    input: [{ type: "text", text: messageWithTaskReferences("Review this", [reference]) }],
+  }));
+  const restored = restoreDeferredInput(persisted).item;
+  const { desktopSnapshot } = fixture({
+    pending: [restored], queued: [{ ...restored, id: "paused" }],
+  });
+  const snapshot = await desktopSnapshot();
+  for (const queued of snapshot.deferredInputs) {
+    assert.deepEqual(queued.attachments, [reference]);
+  }
+  assert.equal(snapshot.deferredInputs.find((queued) => queued.id === "paused").state, "paused");
+});
+
 test("desktopSnapshot keeps normal intake and transient waits out of attention-required projection", async () => {
   const { desktopSnapshot } = fixture({
     pending: [
@@ -1472,6 +1512,30 @@ test("desktopSnapshot rebuilds when a source revision changes", async () => {
   assert.notEqual(next.notModified, true);
   assert.equal(next.tasks[0].lastAnswer, "Новый ответ");
   assert.notEqual(next.version, snapshot.version);
+});
+
+test("a history revision publishes changed pin availability through the cached v4 snapshot", async () => {
+  const { desktopSnapshot, state } = fixture();
+  state.messagePins = [{ id: "pin-1", streamId: "stream-1", available: true }];
+  state.revision = "pins:7/history:1";
+  const first = await desktopSnapshot({ snapshotProtocol: 4 });
+  const request = {
+    snapshotProtocol: 4,
+    knownVersion: first.version,
+    ...Object.fromEntries(Object.entries(first.collectionDeltas).map(([name, delta]) => [
+      `${name}Version`, delta.version,
+    ])),
+  };
+  assert.equal((await desktopSnapshot(request)).notModified, true);
+
+  // The pin row is unchanged; the exact source message is no longer available.
+  state.messagePins = [{ ...state.messagePins[0], available: false }];
+  state.revision = "pins:7/history:2";
+  const next = await desktopSnapshot(request);
+  assert.notEqual(next.notModified, true);
+  assert.deepEqual(next.collectionDeltas.messagePins.upserts, state.messagePins);
+  assert.deepEqual(next.collectionDeltas.messagePins.removed, []);
+  assert.notEqual(next.collectionDeltas.messagePins.version, first.collectionDeltas.messagePins.version);
 });
 
 test("compact remote snapshot omits answer text when the turn id is sufficient", async () => {

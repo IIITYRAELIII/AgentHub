@@ -102,8 +102,10 @@ Hub acceptance and provider acceptance are distinct boundaries. A submission
 made from an exact idle client snapshot may have one optimistic conversation
 projection before provider acceptance. The client persists immutable
 `clientProjectionIntent=conversation` with the command, so a later
-`task-running` admission conflict keeps that same entity visible and never
-labels it queued. A submission made while the client knows the Stream is busy
+`task-running` admission conflict transfers that same entity to the queue
+surface, according to authoritative server state (ADR-0028). The immutable
+intent records the initial client decision; it cannot override an explicit
+negative admission with queued/deferred state. A submission made while the client knows the Stream is busy
 persists `clientProjectionIntent=queue` and remains on the queue-management
 surface even when admission later finds the Stream idle. Ambiguous and
 `attention-required` commands are queue-owned regardless of the optimistic

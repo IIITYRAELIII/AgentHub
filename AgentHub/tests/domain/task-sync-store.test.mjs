@@ -53,7 +53,7 @@ test("task read model resolves exact durable pin candidates", async (t) => {
     store.close();
     await rm(path.dirname(filePath), { recursive: true, force: true });
   });
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "turn-pinned",
     status: "completed",
     completed: true,
@@ -115,7 +115,7 @@ test("local task sync persists catalog, runtime owner, status and history", asyn
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath });
   await store.load();
-  store.recordCatalog([{
+  await store.recordCatalog([{
     ...task,
     running: true,
     executionOwner: TASK_EXECUTION_OWNERS.VSCODE,
@@ -123,7 +123,7 @@ test("local task sync persists catalog, runtime owner, status and history", asyn
     updatedAtMs: 100,
     lastActivityAtMs: 1_000,
   }], 1_000);
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "turn-vsc",
     userMessageSnapshotAuthority: "complete",
     prompt: "Продолжай",
@@ -165,7 +165,7 @@ test("history page keeps legacy undated turns in durable provider sequence", asy
   const legacyThread = { ...task, threadId: "legacy-vsc-thread" };
   const modernThread = { ...task, threadId: "modern-codex-thread" };
   try {
-    store.recordHistory(legacyThread, [{
+    await store.recordHistory(legacyThread, [{
       id: "legacy-vsc-1",
       prompt: "Старый VSC-запрос",
       answer: "Старый VSC-ответ",
@@ -184,7 +184,7 @@ test("history page keeps legacy undated turns in durable provider sequence", asy
         { itemId: "legacy-vsc-agent-2", role: "agent", text: "Ещё один старый VSC-ответ" },
       ],
     }]);
-    store.recordHistory(modernThread, [{
+    await store.recordHistory(modernThread, [{
       id: "modern-codex-1",
       prompt: "Современный запрос",
       answer: "Современный ответ",
@@ -227,7 +227,7 @@ test("history refresh preserves exact backfilled chronology without identity heu
   const store = new LocalTaskSyncStore({ filePath });
   await store.load();
   try {
-    store.recordHistory(task, [{
+    await store.recordHistory(task, [{
       id: "legacy-turn",
       prompt: "Старый запрос",
       answer: "Старый ответ",
@@ -240,7 +240,7 @@ test("history refresh preserves exact backfilled chronology without identity heu
       ],
     }]);
 
-    store.recordHistory(task, [{
+    await store.recordHistory(task, [{
       id: "legacy-turn",
       prompt: "Старый запрос",
       answer: "Старый ответ",
@@ -317,7 +317,7 @@ test("Claude transcript attachment turn cannot duplicate its managed terminal co
     ],
   };
 
-  store.recordHistory(claudeTask, [managed, transcript]);
+  await store.recordHistory(claudeTask, [managed, transcript]);
 
   const history = store.history(claudeTask);
   assert.equal(history.length, 1);
@@ -369,7 +369,7 @@ test("Claude transcript plain turn reuses its managed provider user identity", a
     ],
   };
 
-  store.recordHistory(claudeTask, [managed, transcript]);
+  await store.recordHistory(claudeTask, [managed, transcript]);
 
   const history = store.history(claudeTask);
   assert.equal(history.length, 1);
@@ -383,7 +383,7 @@ test("local task sync restores the latest model from the journal projection", as
   const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
   let store = new LocalTaskSyncStore({ filePath, databaseFile });
   await store.load();
-  store.recordCatalog([{ ...task, updatedAtMs: 100 }], 100);
+  await store.recordCatalog([{ ...task, updatedAtMs: 100 }], 100);
   store.close();
 
   const database = new DatabaseSync(databaseFile);
@@ -424,7 +424,7 @@ test("local task sync preserves durable message metadata and attachments", async
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath });
   await store.load();
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "turn-with-image",
     prompt: "Посмотри скриншот",
     answer: "Вижу",
@@ -521,7 +521,7 @@ test("local task sync preserves durable message metadata and attachments", async
   });
   assert.equal(search.results[0].author, "Agent Hub - Architect");
 
-  restored.recordHistory(task, [{
+  await restored.recordHistory(task, [{
     ...entry,
     attachments: [],
     messages: entry.messages.map((message) => ({ ...message, attachments: [] })),
@@ -566,7 +566,7 @@ test("terminal citation coalescing survives SQLite reopen", async () => {
   }]);
   const store = new LocalTaskSyncStore({ filePath });
   await store.load();
-  store.recordHistory(task, [turn]);
+  await store.recordHistory(task, [turn]);
   await store.save();
   store.close();
 
@@ -585,7 +585,7 @@ test("canonical terminal overlay preserves provider citation refs through SQLite
   const turnId = "turn-terminal-overlay";
   const store = new LocalTaskSyncStore({ filePath });
   await store.load();
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: turnId,
     status: "completed",
     completed: true,
@@ -596,7 +596,7 @@ test("canonical terminal overlay preserves provider citation refs through SQLite
       responseAnnotationReferences: [{ index: 1 }],
     }],
   }]);
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: turnId,
     status: "completed",
     completed: true,
@@ -624,7 +624,7 @@ test("terminal citation metadata is not transferred to a wrong or ambiguous iden
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath });
   await store.load();
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "turn-wrong-terminal-identity",
     status: "completed",
     completed: true,
@@ -650,7 +650,7 @@ test("terminal citation metadata is not transferred to a wrong or ambiguous iden
       responseAnnotationReferences: [{ index: 2 }],
     }],
   }]);
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "turn-wrong-terminal-identity",
     status: "completed",
     completed: true,
@@ -692,7 +692,7 @@ test("local task sync preserves interstream origin through SQLite", async () => 
   };
   let store = new LocalTaskSyncStore({ filePath });
   await store.load();
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "turn-interstream",
     prompt: "Проверь доставку",
     promptAuthor: "неверная временная подпись",
@@ -730,7 +730,7 @@ test("SQLite history preserves the provider projection of malformed citation mar
   );
   const store = new LocalTaskSyncStore({ filePath });
   await store.load();
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "turn-malformed-citation",
     prompt: "Проверь",
     answer: projection.text,
@@ -760,7 +760,7 @@ test("local task sync repairs parent finals misattributed as subagents", async (
   const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
   const store = new LocalTaskSyncStore({ filePath, databaseFile });
   await store.load();
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "turn-attribution",
     prompt: "Проверь",
     answer: "Общий итог",
@@ -809,7 +809,7 @@ test("local task sync restores subagent models from their exact journal threads"
   const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
   let store = new LocalTaskSyncStore({ filePath, databaseFile });
   await store.load();
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "turn-parent-model",
     prompt: "Проверь",
     answer: "Готово",
@@ -869,14 +869,14 @@ test("local task sync preserves subagent identity through SQLite", async () => {
   const filePath = await storeFile();
   let store = new LocalTaskSyncStore({ filePath });
   await store.load();
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "turn-parent",
     prompt: "Проверь двумя субагентами",
     answer: "Сверил результаты",
     status: "completed",
     completed: true,
     messages: [{
-      itemId: "turn-parent:subagent:child-terra",
+      itemId: "msg-provider-child-terra",
       role: "agent",
       kind: "subagent",
       agentThreadId: "child-terra",
@@ -890,7 +890,7 @@ test("local task sync preserves subagent identity through SQLite", async () => {
   store = new LocalTaskSyncStore({ filePath });
   await store.load();
   assert.deepEqual(store.history(task)[0].messages[0], {
-    itemId: "turn-parent:subagent:child-terra",
+    itemId: "msg-provider-child-terra",
     role: "agent",
     text: "Независимый отчёт",
     author: "Субагент (Terra)",
@@ -908,7 +908,7 @@ test("local task sync rejects a legacy writer that stores a subagent as user", a
   const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
   let store = new LocalTaskSyncStore({ filePath, databaseFile });
   await store.load();
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "turn-parent",
     prompt: "Проверь",
     answer: "Готово",
@@ -967,7 +967,7 @@ test("message search keeps every indexed reply beyond the bounded chat read mode
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath, historyLimit: 1 });
   await store.load();
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "turn-old",
     prompt: "Старый вопрос",
     answer: "Старый точный ответ",
@@ -1029,7 +1029,7 @@ test("recordHistory no-op leaves the existing search projection untouched", asyn
     completed: true,
   }];
   await store.load();
-  assert.equal(store.recordHistory(task, history, null, 1_000), true);
+  assert.equal(await store.recordHistory(task, history, null, 1_000), true);
 
   const database = new DatabaseSync(databaseFile);
   database.prepare(`
@@ -1056,7 +1056,7 @@ test("recordHistory no-op leaves the existing search projection untouched", asyn
   );
   database.close();
 
-  assert.equal(store.recordHistory(task, history, null, 1_000), false);
+  assert.equal(await store.recordHistory(task, history, null, 1_000), false);
   assert.equal(store.searchMessages({
     references: [task],
     query: "durable search sentinel",
@@ -1074,8 +1074,8 @@ test("search projection can grow beyond an unchanged bounded history", async () 
     completed: true,
   };
   await store.load();
-  assert.equal(store.recordHistory(task, [latest], null, 1_000), true);
-  assert.equal(store.recordHistory(task, [{
+  assert.equal(await store.recordHistory(task, [latest], null, 1_000), true);
+  assert.equal(await store.recordHistory(task, [{
     id: "older-turn",
     prompt: "Скрытый старый вопрос",
     answer: "Скрытый старый ответ",
@@ -1100,7 +1100,7 @@ test("startup backfills run once per version and commit their marker atomically"
   }];
   let store = new LocalTaskSyncStore({ filePath, databaseFile });
   await store.load();
-  store.recordHistory(task, history, null, 1_000);
+  await store.recordHistory(task, history, null, 1_000);
   store.close();
 
   let database = new DatabaseSync(databaseFile);
@@ -1201,7 +1201,7 @@ test("message search indexes more than one hundred intermediate messages in one 
     role: "agent",
     text: index === 0 ? "needle at the beginning" : `reply ${index}`,
   }));
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "long-turn",
     answer: "done",
     completed: true,
@@ -1353,7 +1353,7 @@ test("cached running status expires instead of creating a phantom task", async (
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath });
   await store.load();
-  store.recordCatalog([{
+  await store.recordCatalog([{
     ...task,
     running: true,
     executionOwner: TASK_EXECUTION_OWNERS.VSCODE,
@@ -1368,7 +1368,7 @@ test("managed Telegram snapshot records Agent Hub ownership", async () => {
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath });
   await store.load();
-  store.recordSnapshot(task, {
+  await store.recordSnapshot(task, {
     active: true,
     turnId: "turn-telegram",
     activityAtMs: 5_000,
@@ -1393,7 +1393,7 @@ test("Claude session cwd survives the local task catalog cache", async () => {
     threadId: "claude-session",
     sessionCwd: "C:\\Projects\\Main\\Utilities\\AgentHub",
   };
-  store.recordCatalog([claudeTask], 5_000);
+  await store.recordCatalog([claudeTask], 5_000);
   await store.save();
 
   const restored = new LocalTaskSyncStore({ filePath });
@@ -1412,16 +1412,16 @@ test("unchanged polling snapshots do not dirty the persistent store", async () =
     stage: "Ответ формируется",
     answer: "Без изменений",
   };
-  assert.equal(store.recordSnapshot(task, snapshot, {
+  assert.equal(await store.recordSnapshot(task, snapshot, {
     executionOwner: TASK_EXECUTION_OWNERS.HUB,
     nowMs: 5_000,
   }), true);
   await store.save();
-  assert.equal(store.recordSnapshot(task, snapshot, {
+  assert.equal(await store.recordSnapshot(task, snapshot, {
     executionOwner: TASK_EXECUTION_OWNERS.HUB,
     nowMs: 50_000,
   }), false);
-  assert.equal(store.recordCatalog([{
+  assert.equal(await store.recordCatalog([{
     ...task,
     running: true,
     executionOwner: TASK_EXECUTION_OWNERS.HUB,
@@ -1435,7 +1435,7 @@ test("completed-only history refresh preserves a live cached status", async () =
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath });
   await store.load();
-  store.recordSnapshot(task, {
+  await store.recordSnapshot(task, {
     active: true,
     turnId: "live",
     activityAtMs: 9_000,
@@ -1443,7 +1443,7 @@ test("completed-only history refresh preserves a live cached status", async () =
     executionOwner: TASK_EXECUTION_OWNERS.VSCODE,
     nowMs: 9_000,
   });
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "old",
     prompt: "Старый вопрос",
     answer: "Старый ответ",
@@ -1492,7 +1492,7 @@ test("terminal recovered turns remain terminal when a stale Codex live projectio
       completed: false,
     },
   ];
-  store.recordHistory(task, terminalHistory, {
+  await store.recordHistory(task, terminalHistory, {
     active: true,
     turnId: "turn-49",
     executionOwner: TASK_EXECUTION_OWNERS.VSCODE,
@@ -1510,7 +1510,7 @@ test("terminal recovered turns remain terminal when a stale Codex live projectio
       }
       : turn
   ));
-  store.recordHistory(task, staleProjection, {
+  await store.recordHistory(task, staleProjection, {
     active: true,
     turnId: "turn-47",
     executionOwner: TASK_EXECUTION_OWNERS.VSCODE,
@@ -1557,7 +1557,7 @@ test("cached history reads only the requested newest turns and their messages", 
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath });
   await store.load();
-  store.recordHistory(task, Array.from({ length: 6 }, (_, index) => ({
+  await store.recordHistory(task, Array.from({ length: 6 }, (_, index) => ({
     id: `turn-${index}`,
     prompt: `prompt ${index}`,
     answer: `answer ${index}`,
@@ -1588,8 +1588,8 @@ test("a stale live snapshot cannot reactivate a recovered terminal task", async 
     active: false,
     completed: true,
   };
-  store.recordHistory(task, [recovered], { active: false, turnId: "recovered-turn" }, 10_000);
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [recovered], { active: false, turnId: "recovered-turn" }, 10_000);
+  await store.recordHistory(task, [{
     ...recovered,
     answer: "Старый промежуточный ответ",
     status: "inProgress",
@@ -1620,7 +1620,7 @@ test("startup terminal backfill never erases a provider item based on its id sha
   const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
   let store = new LocalTaskSyncStore({ filePath, databaseFile });
   await store.load();
-  store.recordHistory(task, [
+  await store.recordHistory(task, [
     {
       id: "turn-aborted",
       prompt: "Старый общий prompt",
@@ -1819,7 +1819,7 @@ test("startup reprojects a corrupted terminal read model from exact terminal and
     messageCommandDatabaseFile,
   });
   await store.load();
-  store.recordHistory(recoveryTask, [{
+  await store.recordHistory(recoveryTask, [{
     id: turnId,
     prompt: "Повреждённый tail",
     answer: "Финал",
@@ -1831,7 +1831,7 @@ test("startup reprojects a corrupted terminal read model from exact terminal and
       { itemId: "provider-final", role: "agent", text: "Финал" },
     ],
   }]);
-  store.recordHistory(conflictTask, [{
+  await store.recordHistory(conflictTask, [{
     id: conflictTurnId,
     prompt: "Нельзя угадывать",
     answer: "Финал",
@@ -1840,7 +1840,7 @@ test("startup reprojects a corrupted terminal read model from exact terminal and
     completed: true,
     messages: [{ itemId: "conflict-tail", role: "user", text: "Tail" }],
   }]);
-  store.recordHistory(duplicateTask, [{
+  await store.recordHistory(duplicateTask, [{
     id: duplicateTurnId,
     prompt: "Нельзя принимать duplicate identity",
     answer: "Финал",
@@ -1849,7 +1849,7 @@ test("startup reprojects a corrupted terminal read model from exact terminal and
     completed: true,
     messages: [{ itemId: "duplicate-tail", role: "user", text: "Tail" }],
   }]);
-  store.recordHistory(oversizedTask, [{
+  await store.recordHistory(oversizedTask, [{
     id: oversizedTurnId,
     prompt: "Oversized terminal must not repair",
     answer: "Финал",
@@ -1859,7 +1859,7 @@ test("startup reprojects a corrupted terminal read model from exact terminal and
     messages: [{ itemId: "oversized-tail", role: "user", text: "Tail" }],
   }]);
   for (const invalid of invalidEvidence) {
-    store.recordHistory(invalid.task, [{
+    await store.recordHistory(invalid.task, [{
       id: invalid.turnId,
       prompt: `Не применять без ${invalid.field}`,
       answer: "Финал",
@@ -2173,7 +2173,7 @@ test("startup reprojects a corrupted terminal read model from exact terminal and
   });
   await store.load();
   assertRecovered(store);
-  store.recordHistory(recoveryTask, [{
+  await store.recordHistory(recoveryTask, [{
     id: turnId,
     prompt: "Устаревший terminal provider tail",
     answer: "Финал после hydration",
@@ -2217,14 +2217,14 @@ test("task sync evicts oldest completed cache entries but never active ones", as
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath, taskLimit: 3 });
   await store.load();
-  store.recordCatalog(Array.from({ length: 4 }, (_, index) => ({
+  await store.recordCatalog(Array.from({ length: 4 }, (_, index) => ({
     ...task,
     threadId: `completed-${index}`,
     title: `Completed ${index}`,
     running: false,
     updatedAtMs: index,
   })), 100);
-  store.recordCatalog([{
+  await store.recordCatalog([{
     ...task,
     threadId: "active",
     title: "Active",
@@ -2242,7 +2242,7 @@ test("task sync removes a promptless compaction echo of the previous answer", as
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath });
   await store.load();
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "user-turn",
     prompt: "Вопрос",
     answer: "Готовый ответ",
@@ -2274,8 +2274,8 @@ test("task sync pages multiple Thread histories directly in SQLite", async () =>
   ];
   for (const reference of references) {
     const currentTask = { ...task, ...reference };
-    store.recordCatalog([currentTask]);
-    store.recordHistory(currentTask, Array.from({ length: 4 }, (_, index) => ({
+    await store.recordCatalog([currentTask]);
+    await store.recordHistory(currentTask, Array.from({ length: 4 }, (_, index) => ({
       id: `${reference.threadId}-turn-${index}`,
       prompt: `Вопрос ${reference.threadId} ${index}`,
       answer: `Ответ ${reference.threadId} ${index}`,
@@ -2289,7 +2289,7 @@ test("task sync pages multiple Thread histories directly in SQLite", async () =>
     })));
   }
   const hiddenTask = { ...task, provider: "codex", threadId: "thread-old" };
-  store.recordHistory(hiddenTask, [
+  await store.recordHistory(hiddenTask, [
     ...store.history(hiddenTask),
     {
       id: "auto-compact-hidden",
@@ -2346,13 +2346,13 @@ test("task sync store preserves source occurrence identity across restart", asyn
   };
   let store = new LocalTaskSyncStore({ filePath, databaseFile });
   await store.load();
-  store.recordCatalog([task], 1);
-  store.recordHistory(task, [{
+  await store.recordCatalog([task], 1);
+  await store.recordHistory(task, [{
     id: "source-occurrence-turn",
     userMessageSnapshotAuthority: "incremental",
     messages: [{ role: "user", text: "External", sourceOccurrenceId }],
   }]);
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "source-occurrence-turn",
     userMessageSnapshotAuthority: "incremental",
     messages: [{
@@ -2430,9 +2430,9 @@ test("task sync store preserves a third identical occurrence after the rollout t
 
   let store = new LocalTaskSyncStore({ filePath, databaseFile });
   await store.load();
-  store.recordCatalog([task], 1);
+  await store.recordCatalog([task], 1);
   let projection = mergeCanonicalUserMessages([], await readMessages());
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "moving-tail-turn",
     userMessageSnapshotAuthority: "incremental",
     messages: projection,
@@ -2442,13 +2442,13 @@ test("task sync store preserves a third identical occurrence after the rollout t
   await appendFile(rollout, `${appendedGap}\n${identical}\n`, "utf8");
   const shiftedMessages = await readMessages();
   projection = mergeCanonicalUserMessages(projection, shiftedMessages);
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "moving-tail-turn",
     userMessageSnapshotAuthority: "incremental",
     messages: projection,
   }]);
   projection = mergeCanonicalUserMessages(projection, await readMessages());
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "moving-tail-turn",
     userMessageSnapshotAuthority: "incremental",
     messages: projection,
@@ -2472,7 +2472,7 @@ test("task sync store preserves a third identical occurrence after the rollout t
   store = new LocalTaskSyncStore({ filePath, databaseFile });
   await store.load();
   projection = mergeCanonicalUserMessages(store.history(task)[0].messages, coldMessages);
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "moving-tail-turn",
     userMessageSnapshotAuthority: "incremental",
     messages: projection,
@@ -2509,9 +2509,9 @@ test("terminal identity recovery skips malformed newest rows within hard aggrega
     messageCommandDatabaseFile,
   });
   await store.load();
-  store.recordCatalog(tasks, 1);
+  await store.recordCatalog(tasks, 1);
   for (const task of tasks) {
-    store.recordHistory(task, [{
+    await store.recordHistory(task, [{
       id: task.turnId,
       prompt: "Corrupted",
       status: "completed",

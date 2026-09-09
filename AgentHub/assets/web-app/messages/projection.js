@@ -57,7 +57,9 @@
     const turn = providerTurnIdentity(value);
     const role = text(value?.role);
     const providerEntity = providerEntityIdentity(value);
-    if (providerEntity) aliases.push(providerEntity);
+    if (providerEntity && !(role === "user" && aliases.length && !text(value?.itemId))) {
+      aliases.push(providerEntity);
+    }
     if (turn && ["agent", "assistant"].includes(role) && value?.kind !== "subagent") {
       aliases.push(`provider-turn\0${turn}\0agent-card`);
     }
@@ -123,6 +125,7 @@
 
   function normalizeSubmissionTiming(value, current = null, incoming = null) {
     if (text(value?.role) !== "user") return value;
+    value = projectTrustedInterstreamBody(value);
     const currentCanonicalSubmittedAt = authorityRank(current) >= 3 ? text(current?.submittedAt) : "";
     const incomingCanonicalSubmittedAt = authorityRank(incoming) >= 3 ? text(incoming?.submittedAt) : "";
     const submittedAt = currentCanonicalSubmittedAt
@@ -139,6 +142,22 @@
       ...(submittedAt ? { submittedAt, time: submittedAt } : {}),
       ...(startedAt ? { startedAt } : {}),
     };
+  }
+
+  function projectTrustedInterstreamBody(value) {
+    const origin = value?.origin;
+    if (value?.kind !== "interstream" || !origin
+      || !["workspaceId", "workspaceName", "streamId", "streamName"].every((field) => text(origin[field]))) return value;
+    const match = /^<agent-hub-stream-message>\s*([\s\S]*?)\s*<\/agent-hub-stream-message>\s*([\s\S]+)$/u.exec(text(value.text));
+    if (!match) return value;
+    let envelope;
+    try { envelope = JSON.parse(match[1]); } catch { return value; }
+    if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) return value;
+    const fields = ["workspaceId", "workspaceName", "streamId", "streamName", "provider", "model", "sourceThreadId", "requestId"];
+    if (!fields.every((field) => text(envelope[field]) === text(origin[field]))) return value;
+    const clientId = text(value.clientUserMessageId ?? value.submissionId);
+    if (clientId && (!text(origin.requestId) || clientId !== `mcp:${text(origin.requestId)}`)) return value;
+    return { ...value, text: text(match[2]) };
   }
 
   function reduceProjectionEntity(current, incoming) {

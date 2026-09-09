@@ -25,7 +25,7 @@ import {
 } from "./work-log-usage-projection.mjs";
 import { usageSyncSnapshotFromLedger } from "../domain/work-log-usage-sync.mjs";
 import { normalizeAuthObservation } from "../domain/usage-facts.mjs";
-import { ledgerRecordFingerprint } from "../infrastructure/persistence/incremental-ledger.mjs";
+import { ledgerRecordFingerprint } from "../domain/ledger-record-fingerprint.mjs";
 
 export function createWorkLogUsageStore({
   repositoryFactory,
@@ -877,6 +877,7 @@ export class WorkLogUsageStore {
     text,
     workLogFile,
     projectionProjectRoots,
+    deferProjection = false,
   }) {
     const operation = this.#enqueueMutation(workLogFile, async () => {
       const id = normalizeWorkLogId(workLogId);
@@ -932,6 +933,13 @@ export class WorkLogUsageStore {
       this.#ledger.turns[key] = mergeLedgerRecord(existing, incoming);
       await this.#save();
       const recordedUsage = this.#ledger.turns[key].usage;
+      if (deferProjection) return {
+        recorded: !existing,
+        usage: recordedUsage,
+        workLogId: id,
+        projected: false,
+        projectionDeferred: true,
+      };
       try {
         const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
         const projection = await this.#projectDatabase(selectedTurns);

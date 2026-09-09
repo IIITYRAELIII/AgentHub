@@ -129,13 +129,47 @@ export class ManagedRunLifecycleService {
       }];
     }
     d.taskRuns.add(run);
-    d.invalidateCatalog();
-    await d.persistTaskDiff(taskRunKey(run), "");
-    d.clearSelectedDiff(run);
-    run.gitBaseline = null;
-    d.syncRun(run);
-    if (target?.deferredInput) target.deferredInput.dispatchingRunId = run.id;
-    await d.saveState();
+    const deferredInput = target?.deferredInput;
+    const previousDispatchingRunId = deferredInput?.dispatchingRunId;
+    let admissionOperation = "invalidate-catalog";
+    try {
+      d.invalidateCatalog();
+      admissionOperation = "persist-task-diff";
+      await d.persistTaskDiff(taskRunKey(run), "");
+      admissionOperation = "sync-run";
+      d.clearSelectedDiff(run);
+      run.gitBaseline = null;
+      d.syncRun(run);
+      if (deferredInput) deferredInput.dispatchingRunId = run.id;
+      admissionOperation = "save-state";
+      await d.saveState();
+    } catch (error) {
+      admissionSpan?.finish({
+        outcome: "failed",
+        metadata: {
+          operation: admissionOperation,
+          errorCode: String(error?.code ?? "").slice(0, 96) || null,
+          sqliteErrorCode: Number.isInteger(error?.errcode) ? error.errcode : null,
+          runId: run.id,
+        },
+      });
+      if (run.turnId) throw error;
+      run.status = "failed";
+      d.revokeAdmission(run);
+      d.taskRuns.remove(run);
+      if (deferredInput?.dispatchingRunId === run.id) {
+        if (previousDispatchingRunId === undefined) delete deferredInput.dispatchingRunId;
+        else deferredInput.dispatchingRunId = previousDispatchingRunId;
+      }
+      d.syncRun(run, { active: false });
+      d.invalidateCatalog();
+      try {
+        await d.saveState();
+      } catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], "Cannot persist failed run admission rollback", { cause: error });
+      }
+      throw error;
+    }
     admissionSpan?.finish({
       outcome: "succeeded",
       metadata: { runId: run.id, provider: run.provider, threadId: run.threadId },

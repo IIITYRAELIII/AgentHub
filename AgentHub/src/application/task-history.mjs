@@ -24,6 +24,35 @@ import {
 
 export const EMPTY_TURN_COMPLETION_TEXT = "Ход завершён без текстового ответа.";
 
+export function withoutMisclassifiedSubagentUsers(currentMessages, observedMessages) {
+  const current = Array.isArray(currentMessages) ? currentMessages : [];
+  const observed = Array.isArray(observedMessages) ? observedMessages : [];
+  const occurrences = (messages) => {
+    const grouped = new Map();
+    for (const message of messages) {
+      const identity = String(message?.sourceOccurrenceId ?? "").trim();
+      if (!/^(?:codex-rollout|codex-app-server):[0-9a-f]{64}$/u.test(identity)) continue;
+      const values = grouped.get(identity) ?? [];
+      values.push(message);
+      grouped.set(identity, values);
+    }
+    return grouped;
+  };
+  const currentOccurrences = occurrences(current);
+  const observedOccurrences = occurrences(observed);
+  const unbound = (message) => ![message?.clientUserMessageId, message?.clientId, message?.submissionId]
+    .some((value) => String(value ?? "").trim());
+  return current.filter((message) => {
+    if (message?.role !== "user" || !unbound(message) || message.origin || message.messageOrigin) return true;
+    const identity = String(message.sourceOccurrenceId ?? "").trim();
+    const evidence = observedOccurrences.get(identity);
+    if (currentOccurrences.get(identity)?.length !== 1 || evidence?.length !== 1) return true;
+    const [subagent] = evidence;
+    return subagent.role !== "agent" || subagent.kind !== "subagent"
+      || !String(subagent.agentThreadId ?? "").trim() || !unbound(subagent);
+  });
+}
+
 function codexSubagentModelName(value) {
   const model = String(value ?? "").trim();
   if (!model) return "";

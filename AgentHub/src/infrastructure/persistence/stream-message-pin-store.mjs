@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 
 import { STREAM_MESSAGE_PIN_LIMIT } from "../../domain/stream-message-pin.mjs";
 
@@ -33,17 +34,26 @@ function rowValue(row) {
 export class StreamMessagePinStore {
   #database;
   #now;
+  #mutations = new AsyncSqliteMutationQueue();
+  #mutationTimeoutMs;
+  #initialized = false;
 
-  constructor({ databaseFile, now = () => Date.now() } = {}) {
+  constructor({ databaseFile, now = () => Date.now(), mutationTimeoutMs = 5_000 } = {}) {
     if (!String(databaseFile ?? "").trim()) throw new TypeError("databaseFile is required");
     const file = path.resolve(databaseFile);
     mkdirSync(path.dirname(file), { recursive: true });
     this.#database = new DatabaseSync(file);
     this.#now = now;
-    this.#database.exec(`
+    this.#mutationTimeoutMs = mutationTimeoutMs;
+  }
+
+  initialize() {
+    return this.#mutations.run(() => {
+      if (this.#initialized) return;
+      this.#database.exec(`
+      PRAGMA busy_timeout = 0;
       PRAGMA journal_mode = WAL;
       PRAGMA synchronous = NORMAL;
-      PRAGMA busy_timeout = 5000;
       PRAGMA foreign_keys = ON;
       CREATE TABLE IF NOT EXISTS stream_message_pin_meta (
         key TEXT PRIMARY KEY,
@@ -75,7 +85,9 @@ export class StreamMessagePinStore {
       CREATE INDEX IF NOT EXISTS stream_message_pins_stream_order
         ON stream_message_pins(stream_id, pinned_at_ms DESC, message_key);
       INSERT OR IGNORE INTO stream_message_pin_meta (key, value) VALUES ('revision', '0');
-    `);
+      `);
+      this.#initialized = true;
+    }, { timeoutMs: this.#mutationTimeoutMs });
   }
 
   get revision() {
@@ -91,6 +103,13 @@ export class StreamMessagePinStore {
   }
 
   #transaction(operation) {
+    return this.#mutations.run(() => this.#writeTransaction(operation), {
+      timeoutMs: this.#mutationTimeoutMs,
+    });
+  }
+
+  #writeTransaction(operation) {
+    if (!this.#initialized) throw new Error("Message pin store is not initialized");
     this.#database.exec("BEGIN IMMEDIATE");
     try {
       const result = operation();
@@ -124,14 +143,14 @@ export class StreamMessagePinStore {
     const streamId = String(value?.streamId ?? "").trim();
     const messageKey = String(value?.messageKey ?? "").trim();
     if (!streamId || !messageKey) throw new Error("Закрепление не содержит durable identity");
-    const existing = rowValue(this.#database.prepare(`
-      SELECT * FROM stream_message_pins WHERE stream_id = ? AND message_key = ?
-    `).get(streamId, messageKey));
-    if (existing) return { pin: existing, changed: false };
     const nowMs = Number(this.#now());
     const timestamp = Number.isSafeInteger(nowMs) && nowMs > 0 ? nowMs : Date.now();
     const pinId = randomUUID();
     return this.#transaction(() => {
+      const existing = rowValue(this.#database.prepare(`
+        SELECT * FROM stream_message_pins WHERE stream_id = ? AND message_key = ?
+      `).get(streamId, messageKey));
+      if (existing) return { pin: existing, changed: false };
       const count = Number(this.#database.prepare(`
         SELECT COUNT(*) AS count FROM stream_message_pins WHERE stream_id = ?
       `).get(streamId)?.count ?? 0);
@@ -172,40 +191,44 @@ export class StreamMessagePinStore {
     const id = String(pinId ?? "").trim();
     const owner = String(streamId ?? "").trim();
     const key = String(messageKey ?? "").trim();
-    const existing = id ? this.get(id) : rowValue(this.#database.prepare(`
-      SELECT * FROM stream_message_pins WHERE stream_id = ? AND message_key = ?
-    `).get(owner, key));
-    if (!existing || (owner && existing.streamId !== owner)) return { pin: null, changed: false };
-    this.#transaction(() => {
+    return this.#transaction(() => {
+      const existing = id ? this.get(id) : rowValue(this.#database.prepare(`
+        SELECT * FROM stream_message_pins WHERE stream_id = ? AND message_key = ?
+      `).get(owner, key));
+      if (!existing || (owner && existing.streamId !== owner)) return { pin: null, changed: false };
       this.#database.prepare("DELETE FROM stream_message_pins WHERE pin_id = ?").run(existing.id);
       this.#advanceRevision();
+      return { pin: existing, changed: true };
     });
-    return { pin: existing, changed: true };
   }
 
   clear(streamId) {
     const id = String(streamId ?? "").trim();
     if (!id) throw new Error("Укажите Stream");
-    const pins = this.list(id);
-    if (!pins.length) return { pins: [], changed: false };
-    this.#transaction(() => {
+    return this.#transaction(() => {
+      const pins = this.list(id);
+      if (!pins.length) return { pins: [], changed: false };
       this.#database.prepare("DELETE FROM stream_message_pins WHERE stream_id = ?").run(id);
       this.#advanceRevision();
+      return { pins, changed: true };
     });
-    return { pins, changed: true };
   }
 
   setAvailability(pinId, available) {
-    const result = this.#database.prepare(`
-      UPDATE stream_message_pins SET available = ?, updated_at_ms = ?
-      WHERE pin_id = ? AND available <> ?
-    `).run(available ? 1 : 0, Number(this.#now()) || Date.now(), String(pinId ?? ""), available ? 1 : 0);
-    if (result.changes > 0) this.#advanceRevision();
-    return result.changes > 0;
+    return this.#transaction(() => {
+      const result = this.#database.prepare(`
+        UPDATE stream_message_pins SET available = ?, updated_at_ms = ?
+        WHERE pin_id = ? AND available <> ?
+      `).run(available ? 1 : 0, Number(this.#now()) || Date.now(), String(pinId ?? ""), available ? 1 : 0);
+      if (result.changes > 0) this.#advanceRevision();
+      return result.changes > 0;
+    });
   }
 
   close() {
-    this.#database?.close();
-    this.#database = null;
+    return this.#mutations.run(() => {
+      this.#database?.close();
+      this.#database = null;
+    });
   }
 }

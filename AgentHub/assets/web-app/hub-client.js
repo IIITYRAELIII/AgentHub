@@ -649,6 +649,7 @@ function liveUserMessagesSignature(run) {
       String(message?.text ?? "").length,
       String(message?.author ?? ""),
       String(message?.time ?? ""),
+      String(message?.submittedAt ?? ""),
       JSON.stringify(message?.attachments ?? []),
       JSON.stringify(message?.responseAnnotations ?? []),
     ]),
@@ -1838,7 +1839,7 @@ function activeMaintenanceMessage(task) {
     };
   }
   const compaction = task.context?.compaction;
-  const compactionId = String(compaction?.id ?? "");
+  const compactionId = String(compaction?.operationId ?? compaction?.id ?? "");
   if (!compactionId) return null;
   const status = String(compaction.status ?? "");
   const measurementStatus = String(compaction.measurementStatus ?? "");
@@ -1896,7 +1897,7 @@ function observeContextCompactions(tasks) {
   for (const task of tasks ?? []) {
     const context = task.context;
     const compaction = context?.compaction;
-    const compactionId = String(compaction?.id ?? "");
+    const compactionId = String(compaction?.operationId ?? compaction?.id ?? "");
     if (!compactionId) continue;
     const stableTaskId = taskId(task.provider, task.threadId, task.streamId);
     const eventId = `maintenance:compaction:${compactionId}`;
@@ -1936,8 +1937,9 @@ function observeContextCompactions(tasks) {
       }
       requestedContextCompactions.delete(compactionId);
     }
-    if (["failed", "timeout"].includes(status)) {
+    if (["failed", "timeout", "unknown"].includes(status)) {
       const automatic = compaction.origin === "automatic";
+      const unknown = status !== "failed";
       if (rememberMaintenanceEvent(stableTaskId, {
         id: eventId,
         provider: task.provider,
@@ -1947,10 +1949,12 @@ function observeContextCompactions(tasks) {
         beforePercent,
         afterPercent: null,
         maintenanceType: "compaction",
-        maintenanceStatus: status,
-        text: automatic
-          ? "Автосвёртка контекста не завершилась"
-          : "Свёртка контекста не завершилась",
+        maintenanceStatus: unknown ? "unknown" : "failed",
+        text: unknown
+          ? "Статус свёртки неизвестен"
+          : automatic
+            ? "Автосвёртка контекста не завершилась"
+            : "Свёртка контекста не завершилась",
         time: existingEvent?.time ?? compaction.completedAt ?? new Date().toISOString(),
       })) changed.add(stableTaskId);
     }
@@ -2288,6 +2292,8 @@ function recordTransientConnectionFailure() {
 
 function historyMessages(history, focusedTurn = null) {
   const messages = [];
+  const userSubmittedAt = (message, turn, isRoot) => message.submittedAt ?? message.time
+    ?? (isRoot ? turn.submittedAt ?? turn.startedAt : null) ?? null;
   const normalizedResponseAnnotationReferences = (references) => {
     const normalize = globalThis.AgentHubMessageView?.normalizedResponseAnnotationReferences;
     return typeof normalize === "function" ? normalize(references) : [];
@@ -2299,6 +2305,7 @@ function historyMessages(history, focusedTurn = null) {
     const itemProvider = String(item?.provider ?? history.provider ?? "");
     const itemThreadId = String(item?.threadId ?? history.threadId ?? "");
     const visible = historicalMessagesForDisplay(item);
+    const rootUserIndex = visible.findIndex((message) => message.role === "user");
     const traceMessageIndex = visible.findLastIndex((message) => (
       message?.role === "agent" && message?.kind !== "subagent"
     ));
@@ -2350,11 +2357,13 @@ function historyMessages(history, focusedTurn = null) {
         ? item.activityGroups
         : [],
       ...(message.role === "user" ? {
-        submittedAt: message.submittedAt ?? message.time ?? item.submittedAt ?? item.startedAt ?? null,
+        submittedAt: userSubmittedAt(message, item, message.turnUserSlot === "root"
+          || (!message.turnUserSlot && messageIndex === rootUserIndex)),
         startedAt: message.startedAt ?? (message.turnUserSlot === "root" ? item.startedAt ?? null : null),
       } : {}),
       time: message.role === "user"
-        ? message.submittedAt ?? message.time ?? item.submittedAt ?? item.startedAt ?? null
+        ? userSubmittedAt(message, item, message.turnUserSlot === "root"
+          || (!message.turnUserSlot && messageIndex === rootUserIndex))
         : message.time ?? item.completedAt ?? null,
       ...(messageIndex === traceMessageIndex ? {
         turnStartedAt: item.startedAt ?? null,
@@ -2415,14 +2424,14 @@ function historyMessages(history, focusedTurn = null) {
           ? focusedTurn.activityGroups
           : [],
         ...(message.role === "user" ? {
-          submittedAt: message.submittedAt ?? message.time ?? focusedTurn.submittedAt ?? focusedTurn.startedAt ?? null,
+          submittedAt: userSubmittedAt(message, focusedTurn, message.turnUserSlot === "root"
+            || (!message.turnUserSlot && index === focusedTurn.messages.findIndex((entry) => entry.role === "user"))),
           startedAt: message.startedAt ?? (message.turnUserSlot === "root" ? focusedTurn.startedAt ?? null : null),
         } : {}),
-        time: message.submittedAt
-          ?? message.time
-          ?? (message.role === "user" ? focusedTurn.submittedAt ?? focusedTurn.startedAt : focusedTurn.completedAt)
-          ?? focusedTurn.startedAt
-          ?? null,
+        time: message.role === "user"
+          ? userSubmittedAt(message, focusedTurn, message.turnUserSlot === "root"
+            || (!message.turnUserSlot && index === focusedTurn.messages.findIndex((entry) => entry.role === "user")))
+          : message.time ?? focusedTurn.completedAt ?? focusedTurn.startedAt ?? null,
         ...(itemId === focusedTraceItemId ? {
           turnStartedAt: focusedTurn.startedAt ?? null,
           turnCompletedAt: focusedTurn.completedAt ?? null,

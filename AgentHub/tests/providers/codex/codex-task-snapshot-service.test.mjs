@@ -5,6 +5,50 @@ import {
   codexTurnSnapshot,
 } from "../../../src/providers/codex/codex-task-snapshot-service.mjs";
 import { CODEX_CONTEXT_PROBE_PROMPT } from "../../../src/domain/codex-context-probe.mjs";
+import { codexRolloutTurnState } from "../../../src/providers/codex/codex-rollout-activity.mjs";
+
+test("managed snapshot never adopts a dangling historical turn before provider acceptance", async () => {
+  let reads = 0;
+  const activity = {
+    activeTurnIds: ["old-turn"],
+    startedAtMsByTurnId: { "old-turn": Date.parse("2026-08-24T07:24:23.359Z") },
+    completedAtMsByTurnId: { "new-turn": Date.parse("2026-09-09T11:16:16.277Z") },
+    finalMessages: { "new-turn": "Current answer" },
+  };
+  const service = new CodexTaskSnapshotService({
+    knownRolloutPath: async () => "rollout.jsonl",
+    readRolloutActivity: async () => activity,
+    rolloutTurnState: codexRolloutTurnState,
+    capturedOwner: () => null,
+    runtimeActive: async () => true,
+    resolveOwner: async () => "agent-hub",
+    readThread: async () => {
+      reads += 1;
+      return { thread: { path: "rollout.jsonl", turns: [], status: { type: "idle" } } };
+    },
+    selectTurn: () => null,
+    turnSnapshot: codexTurnSnapshot,
+    turnStartedAt: () => null,
+    describeItem: () => "stage",
+    hubOwner: () => "agent-hub",
+    agentHubPid: () => 1,
+    modelLabel: (value) => value,
+    runtimeLabel: (value) => value,
+    delay: async () => {},
+    reindexRun: () => {},
+  });
+  const run = { observer: false, threadId: "thread-1", turnId: null, startedAt: "2026-09-09T11:18:00.000Z" };
+  assert.equal(await service.read(run), null);
+  assert.equal(reads, 0);
+  assert.equal(run.turnId, null);
+  assert.equal(run.startedAt, "2026-09-09T11:18:00.000Z");
+  run.turnId = "new-turn";
+  const snapshot = await service.read(run);
+  assert.equal(snapshot.turnId, "new-turn");
+  assert.equal(snapshot.active, false);
+  assert.equal(snapshot.completed, true);
+  assert.equal(snapshot.answer, "Current answer");
+});
 
 test("Codex turn snapshot preserves the actual completion time", () => {
   const snapshot = codexTurnSnapshot({

@@ -48,6 +48,12 @@ fallback physically reads/projects at most the latest 16 MiB plus two bounded
 Provenance requires exactly one valid canonical session record in those samples;
 otherwise unkeyed provider users fail closed. Append-only reads resume from the
 cached raw-byte cursor.
+An explicit operator repair of legacy subagent authors may locate the exact
+completed-turn start outside this tail and read from there in a worker, with
+64 KiB chunks and a 4 MiB record cap. It is not an activity fallback, automatic
+refresh or startup scan. Only requested completed turns (at most 20, 1,000 source
+occurrences) are eligible; no provider operation is issued. This temporary
+migration exception is removed with the legacy author repair (UI-001).
 Exact App Server state and managed run identity remain preferred over JSONL
 fallback; reducing the projection window must not truncate the terminal answer
 retained by TURN-001.
@@ -88,6 +94,10 @@ ledger. Production full journal projection reads, normalizes, renders and writes
 the retained ledger in the existing usage worker. Only bounded workspace identity
 batches cross back to the runtime; full journal bodies do not. Projection commits
 are revision-fenced, and a failed or stale batch cannot clear pending audit work.
+Terminal-outbox recovery likewise stages bounded batches before requesting a
+shared journal projection. It must not rebuild the entire retained journal for
+each recovered completion. Exact revisions are acknowledged only after the
+shared projection succeeds; live completion adds no batching delay.
 Unchanged canonical merged records do not request a new projection; an existing
 pending projection still survives an unchanged replay. Provisional retraction
 checks only the exact turn before mutation. Missing or non-provisional turns
@@ -160,6 +170,29 @@ deadline-bounded, yield through timers between attempts and retain the original
 idempotency identity. Exhaustion is a visible contention failure; it must not
 freeze HTTP, SSE or runtime timers or allocate a replacement request identity.
 
+Runtime read markers, restart transitions, Telegram bindings, task history,
+message pins, provider telemetry and durable command receipts use the same
+asynchronous SQLite contention policy as runtime snapshots and usage/limit
+writers. The retry boundary contains only synchronous database work; provider
+calls, Telegram delivery, filesystem preparation and other queue owners stay
+outside it. Each owning operation retains its ordering scope. No global Hub
+business-operation FIFO or artificial pre-write delay is introduced.
+
+History mutations return a persistence promise and capture their submitted
+history before waiting. Their process-local committed revision invalidates
+snapshot caches, including derived pin availability; it is not a durable command
+or CAS identity. Initialized pin snapshots are read-only. Optional telemetry
+indexing starts after durable history without delaying its successful result;
+index failure is reported separately and telemetry remains in that history.
+
+Queue diagnostics distinguish time before dequeue, execution including SQLite
+retry, total duration, depth and oldest pending age using a monotonic clock.
+The contention budget starts at dequeue. A drain fence is not a success receipt:
+the caller must observe its individual write result. These queues live in memory;
+accepted-message and terminal recovery continue to rely on their existing
+durable ledgers/outboxes. A bounded SQL retry does not establish durability by
+itself and cannot justify replaying an unknown external effect.
+
 Unchanged journal HTTP/WebView reads resolve their ETag from content-free SQLite
 metadata and do not load the multi-megabyte index HTML. The initial Journal
 payload contains only the account panel, day-total shells and a compact,
@@ -181,6 +214,13 @@ insertion is excluded from body-wide themed-select and VS Code motion subtree
 scans. Periodic external history refresh runs only while chat is visible, and
 unchanged Dashboard collections retain their snapshot identity so they do not
 incur stringify comparison or card rebuild.
+
+A lazy Journal version conflict supersedes that read. The client requests at
+most one refresh per displayed version through the existing refresh owner,
+restores open scopes, and restarts their paging from offset zero. Responses from
+a superseded version or render generation cannot mutate the current DOM or
+trigger another refresh. Expected version conflicts are not transport-error
+notifications; actual read failures remain visible.
 
 Public Worker publication materializes an immutable versioned Journal layout
 before atomically advancing its manifest. Compact index HTML, resource summary,
@@ -205,7 +245,18 @@ turn paging fails closed until the next normal publication materializes it.
 The “Local Hub” health RTT is not message ACK latency and must not be presented
 as such. Provider latency and remote Worker latency are separate indicators.
 
+Maintenance-operation point reads initialize their schema once per store;
+subsequent reads are SELECT-only and remain available while another WAL writer
+holds its transaction. Compaction persistence queues are scoped to their Thread,
+so a busy transition does not serialize unrelated Thread processing.
+
 ## Navigation responsiveness
+
+Message reconciliation identifies legacy turn-root candidates in one pass over
+the retained history. It does not copy and rescan every earlier message for each
+user item. The temporary identity fallback retains UI-001's exact provider,
+Thread, turn, first-user and explicit-steer semantics; optimizing the traversal
+must not broaden which outgoing command can own a historical occurrence.
 
 Switching between Chat, Dashboard and Journal exposes the target shell before
 optional data hydration completes. On production-shaped data the input-to-first-

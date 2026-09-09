@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 import { CodexTerminalReconciliationService } from "../../../src/providers/codex/codex-terminal-reconciliation-service.mjs";
 import { CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX } from "../../../src/domain/codex-context-probe.mjs";
@@ -7,6 +10,7 @@ import { createRunAccountingComposition } from "../../../src/composition/run-acc
 import { RunJournalService } from "../../../src/application/run-journal-service.mjs";
 import { createWorkLogUsageStore } from "../../../src/application/work-log-usage-store.mjs";
 import { CodexTerminalAudit } from "../../../src/providers/codex/codex-terminal-audit.mjs";
+import { MaintenanceOperationStore } from "../../../src/infrastructure/persistence/maintenance-operation-store.mjs";
 
 function usage(overrides = {}) {
   return {
@@ -76,6 +80,67 @@ function harness(overrides = {}) {
 
 const thread = { id: "thread-1", path: "rollout.jsonl" };
 const project = { path: process.cwd() };
+
+test("persisted dedicated compaction terminal is accounted without completion card or last-message mutation", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-compaction-terminal-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const store = new MaintenanceOperationStore({ dataDir: directory });
+  for (const status of ["succeeded", "failed", "reconciling"]) {
+    const turnId = `dedicated-${status}`;
+    store.create({
+      kind: "context-compaction", streamId: "stream-1", threadId: thread.id,
+      providerTurnId: turnId, status, metadata: { dedicatedProviderTurn: true },
+    });
+    for (const deliveryState of ["fresh", "historical", "delivered"]) {
+      // Re-open the authority as startup/recovery does; no in-memory tracker proof.
+      const { service, calls, completions, delivered } = harness({
+        operationStore: new MaintenanceOperationStore({ dataDir: directory }),
+      });
+      if (deliveryState === "delivered") delivered.add(turnId);
+      let deferred = 0;
+      service.projectTurn = async (...args) => { calls.push(["project", ...args]); return { projectionDeferred: true }; };
+      assert.equal(await service.reconcile(thread, project, {
+        turnId, status: "completed", completedAt: "2026-08-04T10:00:00.000Z",
+        historical: deliveryState === "historical",
+        usageResult: usage({ finalAnswer: "", usage: { totalTokens: 123 } }),
+      }, { onProjectionDeferred: () => { deferred += 1; } }), true);
+      assert.deepEqual(completions, []);
+      assert.equal(calls.some(([name]) => ["deliver", "remember", "seen"].includes(name)), false);
+      const projection = calls.find(([name]) => name === "project");
+      assert.equal(projection[1].operationKind, "context-compaction");
+      assert.equal(projection[1].usage.totalTokens, 123);
+      assert.equal(projection[1].usageReported, true);
+      assert.equal(projection[1].status, "completed", "provider terminal remains accounting authority");
+      assert.equal(projection[2].title, "Свёртка контекста");
+      assert.equal(projection[2].body, "");
+      assert.equal(deferred, 1);
+    }
+  }
+});
+
+test("inline, legacy markerless and foreign compactions cannot suppress an ordinary provider final", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-inline-compaction-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const operationStore = new MaintenanceOperationStore({ dataDir: directory });
+  for (const [turnId, metadata] of [["inline", { dedicatedProviderTurn: false }], ["legacy", {}]]) {
+    operationStore.create({ kind: "context-compaction", streamId: "stream-1", threadId: thread.id,
+      providerTurnId: turnId, metadata });
+  }
+  operationStore.create({ kind: "context-compaction", streamId: "stream-2", threadId: "foreign-thread",
+    providerTurnId: "foreign", metadata: { dedicatedProviderTurn: true } });
+  for (const turnId of ["inline", "legacy", "foreign", "empty-ordinary"]) {
+    const { service, calls, completions } = harness({ operationStore });
+    const answer = turnId === "empty-ordinary" ? "" : "Ordinary final after inline compaction";
+    assert.equal(await service.reconcile(thread, project, {
+      turnId, status: "completed", completedAt: "2026-08-04T10:00:00.000Z",
+      usageResult: usage({ finalAnswer: answer }),
+    }), true);
+    assert.equal(completions.length, 1);
+    assert.equal(completions[0].operationKind, "user-turn");
+    assert.equal(completions[0].finalAnswer, answer);
+    assert.equal(calls.some(([name]) => name === "deliver"), true);
+  }
+});
 
 test("audit persists eight corrected turns through accounting without loading the ledger and flushes once", async () => {
   const records = new Map();

@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createInterstreamMessage } from "../../src/domain/interstream-message.mjs";
 import { messageWithTaskReferences } from "../../src/domain/task-board-task.mjs";
+import { codexRolloutHistory } from "../../src/interfaces/telegram/task-view-controller.mjs";
+import { parseCodexRolloutActivity } from "../../src/providers/codex/codex-rollout-activity.mjs";
 import {
   codexExplicitFinalTurnAnswer,
   codexFinalTurnAnswer,
@@ -19,11 +21,93 @@ import {
   mergeActiveTaskHistory,
   mergeCompletedTaskHistory,
   visibleTaskHistory,
+  withoutMisclassifiedSubagentUsers,
 } from "../../src/application/task-history.mjs";
 import {
   CODEX_CONTEXT_PROBE_PROMPT,
   CODEX_CONTEXT_PROBE_RESPONSE,
 } from "../../src/domain/codex-context-probe.mjs";
+
+test("subagent occurrence repair fails closed without unique unbound source evidence", () => {
+  const sourceOccurrenceId = `codex-rollout:${"b".repeat(64)}`;
+  const oldUser = { role: "user", itemId: "old-id", text: "Old text", sourceOccurrenceId };
+  const subagent = {
+    role: "agent", kind: "subagent", agentThreadId: "child", itemId: "new-id", text: "New text", sourceOccurrenceId,
+  };
+  assert.deepEqual(withoutMisclassifiedSubagentUsers([oldUser], [subagent]), []);
+  for (const [current, observed] of [
+    [[{ ...oldUser, sourceOccurrenceId: "" }], [subagent]],
+    [[oldUser], [{ ...subagent, sourceOccurrenceId: `codex-rollout:${"c".repeat(64)}` }]],
+    [[{ ...oldUser, sourceOccurrenceId: "provider-controlled" }], [{ ...subagent, sourceOccurrenceId: "provider-controlled" }]],
+    [[{ ...oldUser, clientUserMessageId: "user-client" }], [subagent]],
+    [[{ ...oldUser, origin: { requestId: "retained-origin" } }], [subagent]],
+    [[oldUser], [{ ...subagent, clientUserMessageId: "other-client" }]],
+    [[oldUser], [{ ...subagent, agentThreadId: "" }]],
+    [[oldUser], [{ ...subagent, kind: "" }]],
+    [[oldUser, { ...oldUser }], [subagent]],
+    [[oldUser], [subagent, { ...subagent }]],
+  ]) {
+    assert.deepEqual(withoutMisclassifiedSubagentUsers(current, observed), current);
+  }
+});
+
+test("rollout history retains subagent authors and real users through the catalog adapter", () => {
+  const turnId = "turn-subagent-history";
+  const notification = `<subagent_notification>${JSON.stringify({
+    agent_path: "child-history", model: "gpt-5.6-terra", status: { completed: "Отчёт" },
+  })}</subagent_notification>`;
+  const activity = parseCodexRolloutActivity([
+    { type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
+    { type: "response_item", payload: {
+      type: "message", id: "msg-provider-child", role: "user",
+      content: [{ type: "input_text", text: notification }],
+      internal_chat_message_metadata_passthrough: { turn_id: turnId },
+    } },
+  ].map((entry) => JSON.stringify(entry)).join("\n"));
+  activity.userMessages[turnId].push({
+    itemId: "real-user", role: "user", clientUserMessageId: "real-client", text: "Отчёт",
+  });
+  const [history] = codexRolloutHistory(activity);
+  assert.deepEqual(history.messages.map(({ role, kind, author, text }) => ({ role, kind, author, text })), [
+    { role: "agent", kind: "subagent", author: "Субагент (Terra)", text: "Отчёт" },
+    { role: "user", kind: undefined, author: undefined, text: "Отчёт" },
+  ]);
+  assert.equal(history.messages[0].itemId, "msg-provider-child");
+  assert.equal(history.messages[0].agentThreadId, "child-history");
+  assert.equal(history.messages[1].clientUserMessageId, "real-client");
+  const [notificationOnly] = codexRolloutHistory({
+    userMessages: { [turnId]: [activity.userMessages[turnId][0]] },
+  });
+  assert.equal(notificationOnly.prompt, "");
+  assert.equal(notificationOnly.userMessagesObserved, false);
+  assert.equal(notificationOnly.messages.length, 1);
+});
+
+test("rollout history preserves image sources and strips only trusted interstream wrappers", () => {
+  const origin = {
+    kind: "interstream", workspaceId: "hub", workspaceName: "Agent HUB",
+    streamId: "themes", streamName: "Themes", provider: "codex", model: "gpt-5.6-terra",
+    sourceThreadId: "themes-thread", requestId: "design-review",
+  };
+  const wrapper = createInterstreamMessage({ ...origin, text: "Проверь дизайн" });
+  const images = ["first.png", "second.png"].map((name) => ({ type: "path", value: `attachments/${name}` }));
+  const [history] = codexRolloutHistory({ userMessages: { "turn-images": [
+    { role: "user", itemId: "image-user", clientUserMessageId: "client-image", text: "Проверь", attachmentSources: images },
+    { role: "user", itemId: "trusted", clientUserMessageId: "mcp:design-review", origin, text: wrapper },
+    { role: "user", itemId: "literal", clientUserMessageId: "literal-client", text: wrapper },
+    { role: "user", itemId: "image-only", text: "", attachmentSources: images },
+    { role: "user", itemId: "conflicting", clientUserMessageId: "mcp:design-review", origin,
+      text: createInterstreamMessage({ ...origin, sourceThreadId: "foreign-thread", text: "Keep literal" }) },
+  ] } });
+  assert.deepEqual(history.messages[0].attachmentSources, images);
+  assert.equal(history.messages[1].text, "Проверь дизайн");
+  assert.deepEqual(history.messages[1].origin, origin);
+  assert.equal(history.messages[1].author, "Agent HUB - Themes (Terra)");
+  assert.equal(history.messages[2].text, wrapper);
+  assert.equal(history.messages[2].author, undefined);
+  assert.deepEqual(history.messages[3].attachmentSources, images);
+  assert.ok(history.messages[4].text.startsWith("<agent-hub-stream-message>"));
+});
 
 test("completed history overlay replaces a stale live answer immediately", () => {
   const history = [{

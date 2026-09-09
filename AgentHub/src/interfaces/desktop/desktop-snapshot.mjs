@@ -18,6 +18,7 @@ import { presentContextUsageBreakdown } from "../../domain/context-usage-breakdo
 import { restartUiProjection } from "../../domain/maintenance-operation.mjs";
 import { deferredLaunchWaitReason } from "../../application/deferred-input-controller.mjs";
 import { createSnapshotCollectionDelta } from "./snapshot-collection-delta.mjs";
+import { deferredInputAttachments } from "./deferred-input-presentation-service.mjs";
 
 const MAX_COMPACT_ACTIVITY_DETAIL_CHARS = 1_200;
 
@@ -416,10 +417,14 @@ export function createDesktopSnapshotFactory({
           ...(rootUserMessage ? {
             submittedAt: message.submittedAt ?? run.submittedAt ?? receipt?.createdAt ?? message.time ?? run.startedAt ?? null,
             startedAt: message.startedAt ?? run.startedAt ?? null,
+          } : role === "user" ? {
+            submittedAt: message.submittedAt ?? receipt?.createdAt ?? message.time ?? null,
           } : {}),
           time: rootUserMessage
             ? message.submittedAt ?? run.submittedAt ?? receipt?.createdAt ?? message.time ?? run.startedAt ?? null
-            : message.time ?? run.startedAt ?? receipt?.createdAt ?? null,
+            : role === "user"
+              ? message.submittedAt ?? receipt?.createdAt ?? message.time ?? null
+              : message.time ?? run.startedAt ?? null,
           attachments,
         }];
       }),
@@ -843,9 +848,7 @@ export function createDesktopSnapshotFactory({
             ...waitProjection,
             attempts: Number(item.attempts) || 0,
             createdAt: item.createdAt ?? null,
-            attachments: item.persistentFiles
-              ? (deferred.describeAttachments?.(item.temporaryFiles) ?? [])
-              : [],
+            attachments: deferredInputAttachments(item, deferred.describeAttachments),
           };
         }),
         ...deferred.queuedValues().map((item) => ({
@@ -869,9 +872,7 @@ export function createDesktopSnapshotFactory({
           attempts: Number(item.attempts) || 0,
           queueOrder: Number.isFinite(Number(item.queueOrder)) ? Number(item.queueOrder) : null,
           createdAt: item.createdAt ?? null,
-          attachments: item.persistentFiles
-            ? (deferred.describeAttachments?.(item.temporaryFiles) ?? [])
-            : [],
+          attachments: deferredInputAttachments(item, deferred.describeAttachments),
         })),
       ].sort((left, right) => {
         const leftAt = Date.parse(String(left.createdAt ?? ""));

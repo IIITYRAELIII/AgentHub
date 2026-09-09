@@ -164,7 +164,7 @@ export class CodexEventService {
         && pendingCompaction?.status === "running"
         && !String(pendingCompaction.turnId ?? "").trim()
       ) {
-        d.beginCompaction(params.threadId, {
+        await d.beginCompaction(params.threadId, {
           origin: pendingCompaction.origin,
           turnId: eventTurnId,
           startedAt: params.startedAtMs,
@@ -274,7 +274,7 @@ export class CodexEventService {
           stage: "started",
           occurredAt: params.startedAtMs ?? Date.now(),
         });
-        d.beginCompaction(params.threadId, {
+        await d.beginCompaction(params.threadId, {
           origin: "automatic",
           turnId: eventTurnId,
           itemId: params.item?.id,
@@ -300,7 +300,7 @@ export class CodexEventService {
           stage: "completed",
           occurredAt: params.completedAtMs ?? Date.now(),
         });
-        d.beginCompactionCleanup(params.threadId, {
+        await d.beginCompactionCleanup(params.threadId, {
           turnId: eventTurnId, itemId: params.item?.id, compactedAt: params.completedAtMs,
         });
       }
@@ -331,7 +331,7 @@ export class CodexEventService {
     if (method === "thread/compacted") {
       const threadId = String(params.threadId ?? run?.threadId ?? "").trim();
       const modernItemAlreadyHandled = Boolean(d.getCompaction(threadId)?.itemId);
-      d.beginCompactionCleanup(threadId, { turnId: eventTurnId });
+      await d.beginCompactionCleanup(threadId, { turnId: eventTurnId });
       if (run && !modernItemAlreadyHandled) d.appendActivity(run, {
         id: `compaction:${eventTurnId ?? run.turnId ?? run.id}`,
         type: "compaction", label: "Контекст свёрнут", status: "completed",
@@ -372,7 +372,13 @@ export class CodexEventService {
           completedAt: params.completedAtMs ?? Date.now(),
         });
       }
-      d.settleCompactionTurn(params.threadId, {
+      const completedCompaction = params.turn?.items?.findLast?.((item) => d.isCompactionItem(item));
+      if (completedCompaction) {
+        await d.beginCompactionCleanup(params.threadId, {
+          turnId: eventTurnId, itemId: completedCompaction.id, compactedAt: params.completedAtMs,
+        });
+      }
+      await d.settleCompactionTurn(params.threadId, {
         turnId: eventTurnId,
         status: params.turn?.status,
       });

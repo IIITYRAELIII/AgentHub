@@ -56,16 +56,16 @@ function fixture() {
   };
 }
 
-test("pin service accepts historical Thread aliases in one Stream and rejects cross-Stream sources", () => {
+test("pin service accepts historical Thread aliases in one Stream and rejects cross-Stream sources", async () => {
   const { service, candidate } = fixture();
-  const result = service.set({
+  const result = await service.set({
     pinned: true,
     streamId: "stream-1",
     taskThreadId: "thread-old",
     ...candidate,
   });
   assert.equal(result.messagePins.length, 1);
-  assert.throws(() => service.set({
+  await assert.rejects(service.set({
     pinned: true,
     streamId: "stream-1",
     taskThreadId: "thread-foreign",
@@ -74,14 +74,27 @@ test("pin service accepts historical Thread aliases in one Stream and rejects cr
   }), /не относится/u);
 });
 
-test("missing source remains listed and removable, and one unpin can be undone", () => {
+test("missing source remains listed and removable, and one unpin can be undone", async () => {
   const { service, pins, candidate } = fixture();
-  service.set({ pinned: true, streamId: "stream-1", taskThreadId: "thread-old", ...candidate });
+  await service.set({ pinned: true, streamId: "stream-1", taskThreadId: "thread-old", ...candidate });
   pins[0].itemId = "missing";
   assert.equal(service.snapshot()[0].available, false);
-  const removed = service.set({ pinned: false, streamId: "stream-1", pinId: pins[0].id });
+  assert.equal(pins[0].available, true, "snapshot availability is derived without mutating storage");
+  const removed = await service.set({ pinned: false, streamId: "stream-1", pinId: pins[0].id });
   assert.equal(removed.messagePins.length, 0);
   assert.ok(removed.undoToken);
-  const restored = service.set({ pinned: true, streamId: "stream-1", undoToken: removed.undoToken });
+  const restored = await service.set({ pinned: true, streamId: "stream-1", undoToken: removed.undoToken });
   assert.equal(restored.messagePins.length, 1);
+});
+
+test("failed undo persistence preserves its token for the same user retry", async () => {
+  const { service, candidate } = fixture();
+  const pinned = await service.set({ pinned: true, streamId: "stream-1", taskThreadId: "thread-old", ...candidate });
+  const removed = await service.set({ pinned: false, streamId: "stream-1", pinId: pinned.pin.id });
+  const pin = service.store.pin;
+  service.store.pin = async () => { throw new Error("database is locked"); };
+  const request = { pinned: true, streamId: "stream-1", undoToken: removed.undoToken };
+  await assert.rejects(service.set(request), /database is locked/u);
+  service.store.pin = async (value) => pin(value);
+  assert.equal((await service.set(request)).changed, true);
 });

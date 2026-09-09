@@ -616,10 +616,8 @@ const executionBootstrap = createExecutionBootstrapPhase({
     providerTitle,
   },
   infrastructure: {
-    instanceGuard,
-    runtimeCommandServer,
-    runtimeStateStore,
-    taskReadStateStore,
+    instanceGuard, runtimeCommandServer,
+    runtimeStateStore, taskReadStateStore,
     workLogUsageStore, rateLimitHistoryStore, providerTurnTelemetryStore, taskBoard, hubMcpServer, hubMcpService, sqliteRecovery, acknowledgeSqliteRecovery,
     preTurnInstructions,
   },

@@ -118,14 +118,15 @@ export class CodexContextMaintenanceService {
       return { accepted: false, message: "Свёртка контекста уже выполняется" };
     }
     await this.ensureTransport();
-    const compaction = this.compactions.begin(threadId, {
+    const compaction = await this.mutateCompaction(threadId, () => this.compactions.begin(threadId, {
       origin: origin === "automatic" ? "automatic" : "manual",
+      dedicatedProviderTurn: true,
       ...(captureRawItem ? { captureRawItem: true } : {}),
       ...(beforePercent !== null && beforePercent !== undefined && beforePercent !== ""
         && Number.isFinite(Number(beforePercent))
         ? { beforePercent: Number(beforePercent) }
         : {}),
-    });
+    }));
     try {
       await this.resumeThread(threadId, this.sandboxSettings());
       await this.startCompaction(threadId);
@@ -153,9 +154,13 @@ export class CodexContextMaintenanceService {
           message: "Свёртка контекста запущена",
         };
       }
-      this.compactions.fail(threadId, compaction.id);
+      await this.mutateCompaction(threadId, () => this.compactions.fail(threadId, compaction.id));
       throw error;
     }
+  }
+
+  mutateCompaction(threadId, operation) {
+    return this.compactions.mutate ? this.compactions.mutate(threadId, operation) : operation();
   }
 
   async #reconcileUncertainCompactionStart(threadId, compaction, error) {
@@ -222,19 +227,46 @@ export class CodexContextMaintenanceService {
   } = {}) {
     const expectedTurnId = normalizedId(turnId);
     if (!expectedTurnId) return true;
-    const deadline = this.now() + Math.max(1, Number(timeoutMs) || 5_000);
+    const duration = Math.max(1, Number(timeoutMs) || 5_000);
+    const deadline = this.now() + duration;
     let idleSince = null;
-    while (true) {
-      const run = this.runForTask(target);
-      const rolloutPath = await this.knownRolloutPath(normalizedId(target?.threadId));
-      const activity = rolloutPath ? await this.readRolloutActivity(rolloutPath) : null;
-      const probeBusy = normalizedId(run?.turnId) === expectedTurnId || activity?.running === true;
-      const currentTime = this.now();
-      if (probeBusy) idleSince = null;
-      else if (idleSince === null) idleSince = currentTime;
-      else if (currentTime - idleSince >= Math.max(1, Number(quietMs) || 250)) return true;
-      if (currentTime >= deadline) return false;
-      await this.sleep(Math.max(1, Number(pollMs) || 25));
+    let stage = "rollout-path";
+    let timeout;
+    // Bound each awaited read with the same deadline. Racing the whole polling
+    // loop would leave that loop running after its caller releases admission.
+    const expired = new Promise((resolve, reject) => {
+      timeout = setTimeout(() => reject(Object.assign(
+        new Error(`Context idle check timed out after ${duration} ms (${stage})`),
+        { code: "CODEX_CONTEXT_IDLE_TIMEOUT", stage },
+      )), duration);
+    });
+    try {
+      while (true) {
+        if (this.now() >= deadline) return false;
+        stage = "rollout-path";
+        const rolloutPath = await Promise.race([
+          this.knownRolloutPath(normalizedId(target?.threadId)), expired,
+        ]);
+        stage = "rollout-activity";
+        const activity = rolloutPath
+          ? await Promise.race([this.readRolloutActivity(rolloutPath), expired])
+          : null;
+        // Recheck the managed run after the asynchronous observation.
+        const run = this.runForTask(target);
+        const probeBusy = normalizedId(run?.turnId) === expectedTurnId || activity?.running === true;
+        const currentTime = this.now();
+        if (currentTime >= deadline) return false;
+        if (probeBusy) idleSince = null;
+        else if (idleSince === null) idleSince = currentTime;
+        else if (currentTime - idleSince >= Math.max(1, Number(quietMs) || 250)) return true;
+        stage = "idle-poll";
+        await Promise.race([
+          this.sleep(Math.min(Math.max(1, Number(pollMs) || 25), deadline - currentTime)),
+          expired,
+        ]);
+      }
+    } finally {
+      clearTimeout(timeout);
     }
   }
 

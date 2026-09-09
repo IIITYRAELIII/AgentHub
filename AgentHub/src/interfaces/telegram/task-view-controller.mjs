@@ -1,10 +1,12 @@
 import {
   codexThreadHistory,
+  codexSubagentAuthor,
   displayUserPrompt,
   mergeActiveTaskHistory,
   responseAnnotationDetails,
   visibleTaskHistory,
   withoutCodexInspectionAttachments,
+  withoutMisclassifiedSubagentUsers,
 } from "../../application/task-history.mjs";
 import { taskViewCallbackData } from "./task-view-callback.mjs";
 import {
@@ -14,7 +16,7 @@ import {
   userMessageSnapshotAuthority,
 } from "../../domain/canonical-user-messages.mjs";
 import { isCodexAutoCompactionTurnId } from "../../domain/codex-internal-turn.mjs";
-import { interstreamDisplayText } from "../../domain/interstream-message.mjs";
+import { interstreamDisplayText, interstreamOriginAuthor, normalizeInterstreamOrigin } from "../../domain/interstream-message.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { taskRunIsActive, updateTaskRunTitle } from "../../domain/task-runs.mjs";
 
@@ -165,9 +167,21 @@ function mergeMessageAttachments(target, source) {
   return merged;
 }
 
+function retainSubagentReports(currentMessages, observedMessages) {
+  const result = observedMessages.map((message) => structuredClone(message));
+  for (const report of currentMessages.filter((message) => message.role === "agent" && message.kind === "subagent")) {
+    const sourceId = String(report.sourceOccurrenceId ?? "").trim();
+    const exists = result.some((message) => message.role === "agent" && message.kind === "subagent"
+      && (sourceId ? message.sourceOccurrenceId === sourceId
+        : report.itemId && message.itemId === report.itemId && message.agentThreadId === report.agentThreadId));
+    if (!exists) result.push(structuredClone(report));
+  }
+  return result;
+}
+
 function mergeObservedTurn(current, observed) {
-  const currentMessages = Array.isArray(current?.messages) ? current.messages : [];
   const observedMessages = Array.isArray(observed?.messages) ? observed.messages : [];
+  const currentMessages = withoutMisclassifiedSubagentUsers(current?.messages, observedMessages);
   const currentUsers = currentMessages.filter((message) => message?.role === "user");
   const observedUsers = observedMessages.filter((message) => message?.role === "user");
   const canonical = hasCanonicalUserMessages(currentUsers);
@@ -188,15 +202,14 @@ function mergeObservedTurn(current, observed) {
     ...(canonical && current?.prompt ? { prompt: current.prompt } : {}),
     messages: [
       ...users,
-      ...(observedNonUsers.length ? observedNonUsers : currentNonUsers)
-        .map((message) => structuredClone(message)),
+      ...retainSubagentReports(currentNonUsers, observedNonUsers.length ? observedNonUsers : currentNonUsers),
     ],
   };
 }
 
 function mergeAuthoritativeRolloutTurn(current, rollout) {
-  const currentMessages = Array.isArray(current?.messages) ? current.messages : [];
   const rolloutMessages = Array.isArray(rollout?.messages) ? rollout.messages : [];
+  const currentMessages = withoutMisclassifiedSubagentUsers(current?.messages, rolloutMessages);
   const rolloutUsers = rolloutMessages.filter((message) => message?.role === "user");
   const rolloutAgents = rolloutMessages.filter((message) => message?.role === "agent");
   const currentUsers = currentMessages.filter((message) => message?.role === "user");
@@ -228,7 +241,7 @@ function mergeAuthoritativeRolloutTurn(current, rollout) {
     status: rollout.status || current?.status,
     active: Boolean(rollout.active),
     completed: Boolean(rollout.completed),
-    messages: [...users, ...agents],
+    messages: [...users, ...retainSubagentReports(currentAgents, agents)],
     ...(rollout.activityGroups?.length
       ? {
         activityGroups: structuredClone(rollout.activityGroups),
@@ -294,10 +307,19 @@ export function codexRolloutHistory(activity = {}, { userAuthor = "" } = {}) {
   ])];
   return ids.flatMap((id) => {
     if (isCodexAutoCompactionTurnId(id)) return [];
-    const users = (Array.isArray(userMessages[id]) ? userMessages[id] : [])
-      .filter((message) => String(message?.text ?? "").trim())
+    const projectedMessages = (Array.isArray(userMessages[id]) ? userMessages[id] : [])
+      .filter((message) => String(message?.text ?? "").trim()
+        || message?.attachments?.length || message?.attachmentSources?.length)
       .map((message, index) => {
-        const rawText = String(message.text).trim();
+        const rawText = String(message.text ?? "").trim();
+        const role = message.role === "agent" && message.kind === "subagent" ? "agent" : "user";
+        if (role === "agent") return {
+          ...structuredClone(message),
+          role,
+          author: String(message.author ?? "").trim() || codexSubagentAuthor(message.model),
+          text: rawText,
+        };
+        const origin = normalizeInterstreamOrigin(message.origin ?? message.messageOrigin);
         const clientUserMessageId = String(message.clientUserMessageId ?? "").trim();
         const parsedAnnotations = responseAnnotationDetails(rawText);
         const responseAnnotations = Array.isArray(message.responseAnnotations)
@@ -320,7 +342,14 @@ export function codexRolloutHistory(activity = {}, { userAuthor = "" } = {}) {
             origin: message.origin ?? message.messageOrigin,
             clientUserMessageId,
           })),
-          ...(String(userAuthor).trim() ? { author: String(userAuthor).trim() } : {}),
+          ...(origin ? { origin, kind: "interstream" } : {}),
+          ...((interstreamOriginAuthor(origin) || String(message.author ?? userAuthor).trim())
+            ? { author: interstreamOriginAuthor(origin) || String(message.author ?? userAuthor).trim() }
+            : {}),
+          ...(message.time ? { time: message.time } : {}),
+          ...(Array.isArray(message.attachments) ? { attachments: structuredClone(message.attachments) } : {}),
+          ...(Array.isArray(message.attachmentSources)
+            ? { attachmentSources: structuredClone(message.attachmentSources) } : {}),
           ...(responseAnnotations?.items.length
             ? {
               responseAnnotations: responseAnnotations.items.map((annotation) => ({ ...annotation })),
@@ -329,7 +358,8 @@ export function codexRolloutHistory(activity = {}, { userAuthor = "" } = {}) {
             : {}),
         };
       })
-      .filter((message) => message.text);
+      .filter((message) => message.text || message.attachments?.length || message.attachmentSources?.length);
+    const users = projectedMessages.filter((message) => message.role === "user");
     const finalAnswer = String(finalMessages[id] ?? "").trim();
     const latestAnswer = String(latestMessages[id] ?? "").trim();
     const answer = finalAnswer || latestAnswer;
@@ -338,12 +368,12 @@ export function codexRolloutHistory(activity = {}, { userAuthor = "" } = {}) {
       : []).filter((item) => ["generated-path", "display-path"].includes(item?.type))
       .map((item) => ({ ...item }));
     const trace = Array.isArray(activityGroups[id]) ? structuredClone(activityGroups[id]) : [];
-    if (!users.length && !answer && !generatedImages.length && !trace.length) return [];
+    if (!projectedMessages.length && !answer && !generatedImages.length && !trace.length) return [];
     const completed = Boolean(finalAnswer);
     const active = !completed && activeTurnIds.has(id);
-    const prompt = users[0]?.text ?? "Сообщение с вложением";
-    const messages = users.length
-    ? [...users]
+    const prompt = users[0]?.text ?? (projectedMessages.length ? "" : "Сообщение с вложением");
+    const messages = projectedMessages.length
+    ? [...projectedMessages]
       : [{ itemId: `${id}:rollout-user:placeholder`, role: "user", text: prompt }];
     if (answer) {
       messages.push({
@@ -543,7 +573,7 @@ export class TaskViewController {
         === String(identity?.threadId ?? "").toLowerCase();
   }
 
-  async readHistory(binding, { completedOnly = false, cachedOnly = false, limit = null } = {}) {
+  async readHistory(binding, { completedOnly = false, cachedOnly = false, limit = null, repairSubagentTurnIds = [] } = {}) {
     const d = this.deps;
     const task = this.task(binding, binding.chatId);
     const detachedThread = d.workspaceCatalogStore?.thread?.({
@@ -567,6 +597,21 @@ export class TaskViewController {
         const directRolloutPath = await d.findCodexRolloutPath?.(binding.threadId, "");
         if (directRolloutPath) {
           const cached = d.taskSyncStore.history(task);
+          if (repairSubagentTurnIds.length) {
+            const turns = cached.filter((turn) => repairSubagentTurnIds.includes(turn.id)
+              && turn.completed === true && turn.active !== true);
+            const candidates = turns.map((turn) => ({ turnId: turn.id }));
+            const evidence = await d.recoverCodexRolloutSubagents(directRolloutPath, candidates);
+            for (const turn of turns) {
+              const reports = evidence.filter((message) => message.turnId === turn.id);
+              const current = turn.messages ?? [];
+              const retained = withoutMisclassifiedSubagentUsers(current, reports);
+              const recovered = reports.filter((report) => !retained.some((message) => (
+                message.sourceOccurrenceId === report.sourceOccurrenceId
+              )));
+              turn.messages = [...retained, ...recovered];
+            }
+          }
           const rolloutActivity = await d.readCodexRolloutActivity(
             directRolloutPath,
             {
@@ -597,7 +642,7 @@ export class TaskViewController {
           }, { threadResult: { thread: { id: binding.threadId, path: directRolloutPath } } });
           mergeActiveTaskHistory(history, { ...snapshot, provider: "codex" });
           await materializeHistoryAttachments(history, d.attachmentImporter);
-          d.taskSyncStore.recordHistory(task, history, snapshot);
+          await d.taskSyncStore.recordHistory(task, history, snapshot);
           await d.taskSyncStore.save();
           return { history, snapshot };
         }
@@ -629,7 +674,7 @@ export class TaskViewController {
         }, { threadResult: result });
         mergeActiveTaskHistory(history, { ...snapshot, provider: "codex" });
         await materializeHistoryAttachments(history, d.attachmentImporter);
-        d.taskSyncStore.recordHistory(task, history, snapshot);
+        await d.taskSyncStore.recordHistory(task, history, snapshot);
         await d.taskSyncStore.save();
         return { history, snapshot };
       }
@@ -686,7 +731,7 @@ export class TaskViewController {
           stage: running.progressStage ?? "",
           answer: running.responseText ?? "",
         } : null);
-      d.taskSyncStore.recordHistory(task, history, persistenceSnapshot);
+      await d.taskSyncStore.recordHistory(task, history, persistenceSnapshot);
       await d.taskSyncStore.save();
       return { history, snapshot: completedOnly ? null : snapshot };
     } catch (error) {

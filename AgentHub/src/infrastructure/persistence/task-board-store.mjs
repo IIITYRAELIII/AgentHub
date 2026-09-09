@@ -1493,17 +1493,17 @@ export class TaskBoardStore {
         const event = this.#withDatabase((database) => nextTaskChecklistEvent(database));
         if (!event) break;
         if (event.invalidReason) {
-          this.#withDatabase((database) => {
+          await this.#mutations.run(() => this.#withDatabase((database) => {
             quarantineTaskChecklistEvent(database, event.id, event.invalidReason, this.now());
-          });
+          }), { requestId: `task:checklist-event:${event.id}:quarantine` });
           quarantined += 1;
           diagnostics.push({ eventId: event.id, reason: event.invalidReason });
           continue;
         }
         await deliver(event);
-        this.#withDatabase((database) => {
+        await this.#mutations.run(() => this.#withDatabase((database) => {
           markTaskChecklistEventDelivered(database, event.id, this.now());
-        });
+        }), { requestId: `task:checklist-event:${event.id}:delivered` });
         delivered += 1;
       }
       return { delivered, quarantined, diagnostics };

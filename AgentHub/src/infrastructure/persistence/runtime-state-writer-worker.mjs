@@ -1,31 +1,12 @@
 import { parentPort, workerData } from "node:worker_threads";
 
 import { openRuntimeDatabase } from "./runtime-state-store.mjs";
+import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 
-const RETRY_INTERVAL_MS = 25;
 const RETRY_TIMEOUT_MS = 5_000;
+const mutations = new AsyncSqliteMutationQueue();
 const database = openRuntimeDatabase(workerData.dataDir);
 database.exec("PRAGMA busy_timeout = 0;");
-
-function busyError(error) {
-  return /(?:SQLITE_BUSY|database (?:table )?is locked)/iu.test(String(error?.message ?? error));
-}
-
-function delay(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-async function retryBusy(operation) {
-  const deadline = Date.now() + RETRY_TIMEOUT_MS;
-  while (true) {
-    try {
-      return operation();
-    } catch (error) {
-      if (!busyError(error) || Date.now() >= deadline) throw error;
-      await delay(RETRY_INTERVAL_MS);
-    }
-  }
-}
 
 function inTransaction(operation) {
   let active = false;
@@ -48,7 +29,7 @@ function inTransaction(operation) {
 
 async function saveState(content) {
   const now = new Date().toISOString();
-  await retryBusy(() => inTransaction(() => {
+  await mutations.run(() => inTransaction(() => {
     database.prepare(`
       INSERT INTO runtime_state (key, value_json, updated_at)
       VALUES ('main', ?, ?)
@@ -56,7 +37,7 @@ async function saveState(content) {
         value_json = excluded.value_json,
         updated_at = excluded.updated_at
     `).run(content, now);
-  }));
+  }), { timeoutMs: RETRY_TIMEOUT_MS });
 }
 
 async function handle(message) {

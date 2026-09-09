@@ -152,7 +152,7 @@ export class ManagedRunHistoryService {
           current.messages = messages;
         }
       }
-      this.taskSyncStore.recordHistory(run, history, {
+      await this.taskSyncStore.recordHistory(run, history, {
         active,
         turnId: active ? turnId : null,
         activityAtMs,
@@ -163,7 +163,11 @@ export class ManagedRunHistoryService {
       });
       await this.taskSyncStore.save();
       if (!active && telemetry && this.telemetryStore?.upsert) {
-        await this.telemetryStore.upsert(telemetry);
+        // The canonical history already retains telemetry. Its optional query
+        // index cannot hold terminal delivery or invalidate committed history.
+        void Promise.resolve().then(() => this.telemetryStore.upsert(telemetry)).catch((error) => {
+          this.logger.error(`Cannot index provider turn telemetry ${run.threadId}/${turnId}:`, error.message);
+        });
       }
       if (!active && run.clientUserMessageId) {
         const transport = String(run.clientSource ?? "server-runtime").trim().toLowerCase() || "server-runtime";

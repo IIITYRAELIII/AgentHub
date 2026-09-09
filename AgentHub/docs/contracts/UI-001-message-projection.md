@@ -25,6 +25,26 @@
   occurrence when `clientUserMessageId` arrives later; this same-source evidence
   replaces the earlier unkeyed entity and preserves Hub payload/origin.
 - `unknown` is displayed as unknown and never inferred as running.
+- Legacy rollout projections that misclassified a subagent report as a user
+  may be corrected only by one matching internally generated source occurrence
+  in the same turn. A Hub client identity, origin, missing source identity or
+  ambiguous occurrence prevents replacement. This migration guard is removable
+  after retained histories from the pre-fix rollout adapter have expired or
+  been reprojected; it must never use text or provider item IDs as evidence.
+  Reports outside the live tail can be repaired explicitly through `task-history`
+  with `repairSubagentTurnIds` (at most 20 exact turns). The provider worker locates
+  their retained turn-start boundaries and reads bounded JSONL records from that
+  point, matching existing byte-coordinate source identities and recovering
+  missing reports from source-native notifications in the exact completed turn.
+  A terminal command-only payload is not evidence that subagent reports never
+  existed. Later partial final-answer refreshes retain recovered reports. The normal
+  history owner persists the correction. This maintenance is never part of startup,
+  polling or ordinary refresh, never dispatches a turn, and leaves unavailable,
+  rewritten, client-bound or ambiguous evidence unchanged. Remove this opt-in
+  migration together with the pre-fix subagent projection guard.
+- Distinct client command identities remain distinct when terminal recovery
+  supplies no provider item ID. A shared turn/role is not an alias joining those
+  commands; inter-Stream authorship must not leak into another user message.
 - Internal probes, measurements and maintenance operations have separate kinds
   and never create user-turn cards.
 - The ordinary browser shell never waits on the third-party Telegram runtime.
@@ -104,9 +124,8 @@ When the client snapshot says the Stream is idle, the exact submission is
 rendered immediately as one optimistic conversation card. A durable
 `message-intake` ACK keeps that same card visible through dispatch and labels it
 `Принято`, never `В очереди`. The durable deferred row with
-`clientProjectionIntent=conversation` preserves that placement through an
-idle-to-busy admission race and when the bounded receipt is absent during
-reload or reconciliation.
+`clientProjectionIntent=conversation` preserves that placement for normal
+`message-intake`, including when its bounded receipt is absent during reload.
 
 When the client snapshot says the Stream is busy, queue and steer submissions
 are rendered only by the queue surface above the composer. Durable queued,
@@ -120,8 +139,10 @@ history projections reuse the same `clientUserMessageId` and cannot create a
 second card.
 
 If admission detects that an apparently idle Stream became busy, its canonical
-`task-running` result preserves the same optimistic conversation card according
-to its immutable `clientProjectionIntent=conversation`. A busy-origin command
+`task-running` result moves the same logical submission to the queue surface.
+An explicit `accepted=false` queued/deferred receipt overrides the original
+`clientProjectionIntent=conversation`, even when the receipt omits its reason.
+A busy-origin command
 with `clientProjectionIntent=queue` remains queue-only if admission later finds
 the Stream idle. Attention-required and ambiguous commands remain queue-owned.
 Reconciliation never renders both forms and never loses the logical entity.
@@ -130,8 +151,10 @@ removes a waiting or attention-required command only after durable commit; if
 dispatch already owns it, the UI reports that cancellation was not confirmed.
 
 Direct ACK, remote-result reconciliation and snapshot reconciliation use the
-same classifier. Receipt snapshots are bounded. The durable explicit projection
-intent restores the chosen surface after its receipt leaves the current window.
+same classifier. Receipt snapshots are bounded. A durable waiting command with
+an explicit non-`message-intake` conflict restores the queue after its receipt
+leaves the window, ahead of its original client projection intent. Otherwise
+the durable explicit projection intent restores the chosen surface.
 Legacy rows without that field use exact `conflictKind=message-intake` only as a
 temporary compatibility boundary; remove it after every retained active command
 has an explicit projection intent. Text, time and display order cannot choose
@@ -224,7 +247,10 @@ Canonical ordering follows durable provider sequence without rewriting user
 chronology. Durable intake owns immutable `submittedAt`, which remains the
 displayed `time` through queued, active and completed projections. Provider
 dispatch owns the separate `startedAt`. Legacy rows without `submittedAt` fall
-back to the existing user-message time and only then to provider start.
+back to the existing user-message time. Only the root user message may then
+fall back to provider start. A steer never inherits the parent turn's start or
+submission time: its exact receipt supplies intake time, or its own timestamp
+is used; if neither exists, its time remains unknown until enriched.
 
 Unlabelled fenced blocks are treated as prose-oriented preformatted text and
 wrap inside the message column without horizontal page movement. Fences with an
@@ -282,6 +308,11 @@ ordinary `clientUserMessageId` reclassifies that same provider turn as a visible
 user operation; a later service probe identity keeps it internal. Suppression
 does not discard the separately owned context-usage measurement or maintenance
 record.
+A current compaction with an unknown outcome has a dedicated system marker,
+`Статус свёртки неизвестен`, keyed by its exact maintenance operation identity.
+Legacy timeout state has the same unknown presentation, never a failed or
+running claim. A later confirmed completion replaces that exact marker. An
+active system marker does not require a provider turn ID before acceptance.
 A task snapshot with no active run is authoritative after any available
 completion has been promoted: it removes the cached live card, probe and
 live-user projection even when the previous card was a valid `user-turn`.

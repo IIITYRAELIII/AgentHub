@@ -156,7 +156,7 @@ export class DesktopReadModelService {
       && String(requested?.turnId ?? "").trim() === current.turnId
       && Number(requested?.revision) === current.revision;
     if (!exact) return { marked: false, reason: "stale-final", latestFinal: current };
-    const cursor = this.readStateStore.markRead({
+    const cursor = await this.readStateStore.markRead({
       accountId,
       provider: current.provider,
       threadId: current.threadId,

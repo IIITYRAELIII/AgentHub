@@ -136,10 +136,7 @@ export function createDesktopShellComposition({
     taskRunKey,
     samePath,
   } = presentation;
-  const {
-    resolveTaskGitRepoRoots,
-    findRepositoryWriteConflict,
-  } = repositories;
+  const { resolveTaskGitRepoRoots, findRepositoryWriteConflict } = repositories;
 
   const streamMessagePins = new StreamMessagePinService({
     store: messagePins,
@@ -218,7 +215,7 @@ export function createDesktopShellComposition({
           messages: runtime.lastTaskMessageRevision(),
           readState: taskReadStateStore.revision,
           receipts: desktopMessageReceipts.revision,
-          messagePins: messagePins.revision,
+          messagePins: messagePins.revision, taskHistory: taskSyncStore.revision,
           exchangeRates: usdRubRateStore.snapshot(),
           server: await serverControlController.snapshot({ activeCount: 0, restart: null }),
         });
@@ -607,8 +604,5 @@ export function createDesktopShellComposition({
     forgetDesktopControl: desktopRunRouter.forgetDesktopControl,
   });
 
-  return {
-    ...desktopCommands,
-    ...desktopRunRouter,
-  };
+  return { ...desktopCommands, ...desktopRunRouter };
 }

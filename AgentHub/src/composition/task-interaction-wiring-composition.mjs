@@ -32,7 +32,7 @@ export function createTaskInteractionWiring({
       cachedOnly: true,
       ...options,
     }),
-    refreshHistory: (binding) => taskViewController.readHistory(binding),
+    refreshHistory: (binding, options = {}) => taskViewController.readHistory(binding, options),
     requestApproval: (rpcId, kind, params, text, run = null) => (
       approvalController.request(rpcId, kind, params, text, run)
     ),

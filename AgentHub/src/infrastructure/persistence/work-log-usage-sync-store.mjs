@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 
 import {
   normalizeAuthObservation,
@@ -20,14 +21,8 @@ import {
   USAGE_SYNC_SNAPSHOT_VERSION,
 } from "../../domain/work-log-usage-sync.mjs";
 
-const SQLITE_BUSY_RETRY_DELAYS_MS = [10, 25, 50, 100, 250, 500, 1_000, 2_000];
+const SQLITE_BUSY_TIMEOUT_MS = 3_935;
 const UPSERT_CHUNK = 400;
-
-const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
-
-function sqliteBusy(error) {
-  return /SQLITE_BUSY|database is locked|database is busy/iu.test(String(error?.message ?? error));
-}
 
 function configureUsageSyncDatabase(database) {
   database.exec(`
@@ -255,6 +250,7 @@ export class WorkLogUsageSyncStore {
   #database = null;
   #closed = false;
   #tail = Promise.resolve();
+  #mutations = new AsyncSqliteMutationQueue();
 
   constructor({ databaseFile, legacyFile = "", deviceId = "", defaultRuntimeHomeIds = {} } = {}) {
     if (!databaseFile) throw new TypeError("WorkLogUsageSyncStore requires a databaseFile");
@@ -276,15 +272,8 @@ export class WorkLogUsageSyncStore {
     return this.#databaseFile;
   }
 
-  async #retryBusy(operation) {
-    for (let attempt = 0; ; attempt += 1) {
-      try {
-        return await operation();
-      } catch (error) {
-        if (!sqliteBusy(error) || attempt >= SQLITE_BUSY_RETRY_DELAYS_MS.length) throw error;
-        await delay(SQLITE_BUSY_RETRY_DELAYS_MS[attempt]);
-      }
-    }
+  #retryBusy(operation) {
+    return this.#mutations.run(operation, { timeoutMs: SQLITE_BUSY_TIMEOUT_MS });
   }
 
   async #open() {

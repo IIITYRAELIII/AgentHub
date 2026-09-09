@@ -3,6 +3,7 @@ import path from "node:path";
 import { turnEndKey } from "../../application/turn-end-notifications.mjs";
 import { conciseTurnTitle } from "../../application/turn-title.mjs";
 import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
+import { MAINTENANCE_OPERATION_KINDS } from "../../domain/maintenance-operation.mjs";
 import { normalizeServiceTier, normalizeTokenUsage } from "../../domain/token-usage.mjs";
 
 function sameHistoricalUsage(record, usageResult, contextProbe) {
@@ -37,6 +38,7 @@ export class CodexTerminalReconciliationService {
     notifications,
     turnStarts,
     workLogStore,
+    operationStore = null,
     accountingThread,
     subagentParentTurnId,
     readTurnUsage,
@@ -60,6 +62,7 @@ export class CodexTerminalReconciliationService {
     this.notifications = notifications;
     this.turnStarts = turnStarts;
     this.workLogStore = workLogStore;
+    this.operationStore = operationStore;
     this.accountingThread = accountingThread;
     this.subagentParentTurnId = subagentParentTurnId;
     this.readTurnUsage = readTurnUsage;
@@ -99,10 +102,21 @@ export class CodexTerminalReconciliationService {
       turnId: String(terminal.turnId),
     };
     const key = turnEndKey(identity);
+    const operation = await this.operationStore?.forProviderTurn({
+      kind: MAINTENANCE_OPERATION_KINDS.CONTEXT_COMPACTION,
+      threadId: identity.threadId,
+      providerTurnId: identity.turnId,
+    });
+    // Inline provider compaction shares an ordinary user turn. Only a persisted
+    // Hub request for a dedicated provider turn authorizes internal accounting.
+    const dedicatedCompaction = operation?.kind === MAINTENANCE_OPERATION_KINDS.CONTEXT_COMPACTION
+      && operation.threadId === identity.threadId
+      && operation.providerTurnId === identity.turnId
+      && operation.metadata?.dedicatedProviderTurn === true;
     const subagentThread = Boolean(String(thread?.parentThreadId ?? "").trim());
     const alreadyDelivered = this.notifications.hasDelivered(identity);
     const pendingCompletion = this.notifications.get(identity);
-    if (terminal?.historical !== true && terminal?.attachmentRepairOnly !== true && !alreadyDelivered && !subagentThread
+    if (!dedicatedCompaction && terminal?.historical !== true && terminal?.attachmentRepairOnly !== true && !alreadyDelivered && !subagentThread
       && pendingCompletion
       && pendingCompletion.status !== "unknown"
       && pendingCompletion.usageReported) return true;
@@ -194,7 +208,7 @@ export class CodexTerminalReconciliationService {
         if (!value || !relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return [];
         return [relative.replaceAll(path.sep, "/")];
       }))];
-      if (contextProbe || accountingThread.isSubagent || terminal?.historical === true) {
+      if (dedicatedCompaction || contextProbe || accountingThread.isSubagent || terminal?.historical === true) {
         await this.#projectHistorical({
           identity,
           thread,
@@ -202,6 +216,7 @@ export class CodexTerminalReconciliationService {
           terminal,
           usageResult,
           contextProbe,
+          dedicatedCompaction,
           accountingThread,
           parentTurnId,
           resolvedStatus,
@@ -292,6 +307,7 @@ export class CodexTerminalReconciliationService {
     terminal,
     usageResult,
     contextProbe,
+    dedicatedCompaction,
     accountingThread,
     parentTurnId,
     resolvedStatus,
@@ -322,7 +338,7 @@ export class CodexTerminalReconciliationService {
       imageGenerationCount: usageResult.imageGenerationCount,
       estimatedCredits: usageResult.estimatedCredits,
       estimateKind: usageResult.estimateKind,
-      operationKind: contextProbe ? "probe" : "user-turn",
+      operationKind: dedicatedCompaction ? "context-compaction" : contextProbe ? "probe" : "user-turn",
       contextProbe,
       limitSamples: usageResult.limitSamples,
       resolveAccount: terminal?.historical !== true || terminal?.resolveCurrentAccount === true,
@@ -339,7 +355,7 @@ export class CodexTerminalReconciliationService {
       toolMetricsKnown: usageResult.toolMetricsKnown,
       message: null,
     }, {
-      title: conciseTurnTitle(finalAnswer, resolvedStatus),
+      title: dedicatedCompaction ? "Свёртка контекста" : conciseTurnTitle(finalAnswer, resolvedStatus),
       body: finalAnswer,
       deferProjection: true,
     });
