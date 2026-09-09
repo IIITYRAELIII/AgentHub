@@ -181,6 +181,7 @@ export function createCodexObservabilityComposition({
     notifications: turnEndNotifications,
     turnStarts,
     workLogStore: workLogUsageStore,
+    operationStore,
     accountingThread: accountingPorts.accountingThread,
     subagentParentTurnId: accountingPorts.subagentParentTurnId,
     readTurnUsage: readCodexTurnUsage,

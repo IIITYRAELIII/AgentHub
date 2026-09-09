@@ -20,6 +20,16 @@ a user turn and does not alter the restart/compaction operation schema.
 
 - Timeout is ambiguous until reconciliation; it does not authorize duplicate
   non-idempotent starts.
+- Compaction lifecycle writes use a Thread-scoped asynchronous mutation queue.
+  SQLite contention retries only persistence under the same operation identity,
+  never the provider RPC. Completion/failure cancels its watchdog only after the
+  durable transition succeeds. A successful enclosing user turn cannot become
+  evidence of compaction failure: its exact compaction item confirms success,
+  while absent evidence remains unknown and accepts a later exact completion.
+- Hub-requested dedicated compaction turns retain an explicit persisted marker.
+  Terminal reconciliation accounts their usage without emitting a user response
+  or changing the last message. Inline compaction inside an ordinary turn and
+  legacy operations lacking that marker do not authorize suppressing its final.
 - Admission is blocked only by an exact active maintenance operation.
 - Restart is a barrier over durable finals, command receipts, delivery outbox and
   maintenance reconciliation.

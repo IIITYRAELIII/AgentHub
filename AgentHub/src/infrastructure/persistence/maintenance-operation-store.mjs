@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import {
   createMaintenanceOperation,
@@ -10,7 +11,7 @@ import {
   transitionMaintenanceOperation,
   unknownMaintenanceOutcome,
 } from "../../domain/maintenance-operation.mjs";
-import { openRuntimeDatabase } from "./runtime-state-store.mjs";
+import { openRuntimeDatabase, runtimeDatabasePath } from "./runtime-state-store.mjs";
 
 const LEGACY_RESTART_MIGRATION_KEY = "maintenance-operations:legacy-restart:v1";
 
@@ -41,6 +42,8 @@ function configure(database) {
       ON maintenance_operations(kind, stream_id, thread_id, updated_at DESC);
     CREATE INDEX IF NOT EXISTS maintenance_operations_status_idx
       ON maintenance_operations(status, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS maintenance_operations_provider_turn_idx
+      ON maintenance_operations(kind, thread_id, provider_turn_id, updated_at DESC);
   `);
 }
 
@@ -65,6 +68,8 @@ function writeOperation(database, operation) {
 }
 
 export class MaintenanceOperationStore {
+  #initialized = false;
+
   constructor({ dataDir, idFactory = randomUUID, now = () => new Date().toISOString() } = {}) {
     if (!String(dataDir ?? "").trim()) throw new TypeError("dataDir is required");
     this.dataDir = path.resolve(dataDir);
@@ -73,9 +78,18 @@ export class MaintenanceOperationStore {
   }
 
   #withDatabase(callback) {
-    const database = openRuntimeDatabase(this.dataDir);
+    const database = this.#initialized
+      ? new DatabaseSync(runtimeDatabasePath(this.dataDir))
+      : openRuntimeDatabase(this.dataDir);
     try {
-      configure(database);
+      if (!this.#initialized) {
+        configure(database);
+        this.#initialized = true;
+      } else {
+        // Schema migration belongs to initialization, never an exact lifecycle
+        // read while another runtime owner holds the WAL writer reservation.
+        database.exec("PRAGMA synchronous = FULL; PRAGMA busy_timeout = 0;");
+      }
       return callback(database);
     } finally {
       database.close();
@@ -119,6 +133,18 @@ export class MaintenanceOperationStore {
         AND status NOT IN ('succeeded', 'failed')
       ORDER BY updated_at DESC, revision DESC LIMIT 1
     `).get(String(kind ?? ""), String(streamId ?? ""), String(threadId ?? ""))));
+  }
+
+  forProviderTurn({ kind, threadId, providerTurnId } = {}) {
+    const exactKind = String(kind ?? "").trim();
+    const exactThreadId = String(threadId ?? "").trim();
+    const exactTurnId = String(providerTurnId ?? "").trim();
+    if (!exactKind || !exactThreadId || !exactTurnId) return null;
+    return this.#withDatabase((database) => operationFromRow(database.prepare(`
+      SELECT operation_json FROM maintenance_operations
+      WHERE kind = ? AND thread_id = ? AND provider_turn_id = ?
+      ORDER BY updated_at DESC LIMIT 1
+    `).get(exactKind, exactThreadId, exactTurnId)));
   }
 
   transition(operationId, patch = {}, options = {}) {
