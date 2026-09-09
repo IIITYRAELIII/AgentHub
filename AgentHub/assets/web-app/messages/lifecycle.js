@@ -338,15 +338,6 @@ function turnRootUserKey(message) {
   return `${provider}\0${threadId}\0${turnId}\0root-user`;
 }
 
-function isTurnRootUser(messages, index) {
-  const message = messages[index];
-  const explicitSlot = String(message?.turnUserSlot ?? "").trim();
-  if (explicitSlot === "steer") return false;
-  const key = turnRootUserKey(message);
-  if (!key) return false;
-  return !messages.slice(0, index).some((candidate) => turnRootUserKey(candidate) === key);
-}
-
 function liveTurnUserSlot(message, index, {
   prompt = "",
   clientUserMessageId = "",
@@ -798,16 +789,21 @@ function reconcile(serverMessages, outgoingMessages) {
   }
   const matchedIds = new Set();
   const server = Array.isArray(serverMessages) ? serverMessages : [];
-  const matches = server.map((message, index) => {
+  const seenTurnUsers = new Set();
+  const matches = server.map((message) => {
     const serverClientIdentity = clientIdentityKey(message);
     const serverItemIdentity = identityKey(message);
     const client = clientOutgoing.get(serverClientIdentity);
     const exact = exactOutgoing.get(serverItemIdentity);
-    const rootMessage = isTurnRootUser(server, index);
+    const rootKey = turnRootUserKey(message);
+    const rootMessage = rootKey && !seenTurnUsers.has(rootKey)
+      && String(message?.turnUserSlot ?? "").trim() !== "steer";
+    // Every earlier user, including a steer, excludes another root fallback.
+    if (rootKey) seenTurnUsers.add(rootKey);
     // UI-001 migration guard for root items whose legacy App Server revision
     // omitted/replaced client_id. Remove with the rootOutgoing guard above.
     const root = rootMessage
-      ? rootOutgoing.get(turnRootUserKey(message))
+      ? rootOutgoing.get(rootKey)
       : null;
     // Reconciliation confirms only authoritative identities. Display content,
     // timestamps and turn-role proximity can coincide across real submissions.

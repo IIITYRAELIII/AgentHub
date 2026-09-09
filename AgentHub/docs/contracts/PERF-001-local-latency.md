@@ -220,6 +220,12 @@ as such. Provider latency and remote Worker latency are separate indicators.
 
 ## Navigation responsiveness
 
+Message reconciliation identifies legacy turn-root candidates in one pass over
+the retained history. It does not copy and rescan every earlier message for each
+user item. The temporary identity fallback retains UI-001's exact provider,
+Thread, turn, first-user and explicit-steer semantics; optimizing the traversal
+must not broaden which outgoing command can own a historical occurrence.
+
 Switching between Chat, Dashboard and Journal exposes the target shell before
 optional data hydration completes. On production-shaped data the input-to-first-
 paint p95 is at most 200 ms and no navigation-owned main-thread task exceeds
