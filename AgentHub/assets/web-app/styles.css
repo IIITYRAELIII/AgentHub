@@ -3697,7 +3697,7 @@ html[data-view="dashboard"] .task-board-view {
   margin-inline: 0;
   max-width: none;
   overflow: hidden;
-  padding: 0;
+  padding: 0.6rem clamp(0.5rem, 1vw, 1rem);
 }
 
 .task-board-toolbar {
@@ -3729,6 +3729,66 @@ html[data-view="dashboard"] .task-board-view {
 
 .task-board-toolbar-actions {
   flex: 0 0 auto;
+}
+
+.task-board-folder {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: stretch;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.task-board-folder > .task-board-scope {
+  border: 0;
+  border-radius: 0;
+}
+
+.task-board-folder.is-selected {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.task-board-folder-toggle {
+  cursor: pointer;
+  border: 0;
+  border-inline-start: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  padding: 0.4rem 0.65rem;
+}
+
+.task-board-folder-toggle:is(:hover, :focus-visible, [aria-expanded="true"]) {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.task-board-folder-picker {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  box-sizing: border-box;
+  width: max-content;
+  min-width: min(15rem, calc(100vw - 16px));
+  max-width: min(26rem, calc(100vw - 16px));
+  overflow: auto;
+  padding: 0.35rem;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(var(--surface-1), var(--surface-1)), var(--bg);
+  color: var(--text);
+  box-shadow: 0 0.5rem 1.5rem #0006;
+}
+
+.task-board-folder-picker:popover-open {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.task-board-folder-picker .task-board-scope {
+  text-align: start;
+  white-space: normal;
 }
 
 .task-board-scope,
@@ -4221,6 +4281,32 @@ html[data-view="dashboard"] .task-board-columns .board-task-executor {
   grid-column: 3;
   grid-row: 1;
   line-height: 1.7;
+}
+
+.board-task-assignment {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+html[data-view="dashboard"] .task-board-columns .board-task-assignment {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+.board-task-workspace {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: 0.62rem;
+  line-height: 1.7;
+}
+
+html[data-view="dashboard"] .has-workspace-context .task-board-columns .board-task-card,
+html[data-view="dashboard"] .has-workspace-context .task-board-columns .task-board-row-head {
+  grid-template-columns: 2.9rem minmax(0, 1fr) minmax(3.4rem, 27%);
 }
 
 html[data-view="dashboard"] .task-board-columns .board-task-status {
