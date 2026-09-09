@@ -1656,6 +1656,7 @@
     if (previewNumber) previewNumber.textContent = task.taskNumber || "";
     if (previewTitle) previewTitle.textContent = task.title || task.text;
     if (previewDescription) previewDescription.textContent = task.description || "Описание пока не добавлено.";
+    taskCardStatus.closest(".task-card-status-field").hidden = task.bucket === "backlog";
     syncTaskStatusControl(taskCardStatus, task, state.statusLanguage, {
       pending: state.savingStatusTaskId === task.id,
     });
@@ -1888,6 +1889,7 @@
         }),
       node("span", {
         class: "board-task-status",
+        hidden: task.bucket === "backlog" ? "" : null,
         "data-workflow-status": statusSummary.status,
         text: statusSummary.short,
         title: statusSummary.full,
@@ -2101,7 +2103,7 @@
     if (!scopeStrip) return;
     const openTasks = (predicate) => tasksForMode(state.tasks, { completedOnly: state.completedOnly }).filter(predicate).length;
     const scopes = [
-      { id: "all", label: "Все задачи", count: openTasks((task) => task.bucket !== "backlog") },
+      { id: "all", label: "Все задачи", count: openTasks(() => true) },
       ...state.workspaces.map((workspace) => ({
         id: `workspace:${workspace.id}`,
         label: workspace.name,
@@ -2178,7 +2180,7 @@
     if (filterControls) filterControls.hidden = !state.filtersOpen;
     filterToggle?.setAttribute("aria-expanded", String(state.filtersOpen));
     renderScopeStrip();
-    const rendered = state.boardScope === "all" ? [] : [renderColumn({
+    const rendered = [renderColumn({
       id: "backlog", title: "Бэклог", subtitle: "Неразобранные входящие",
       tasks: visibleTasks.filter((task) => task.bucket === "backlog"), accent: "is-backlog", emptyText,
       acceptsTaskDrops: !state.completedOnly,

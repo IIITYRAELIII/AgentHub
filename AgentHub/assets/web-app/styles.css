@@ -4731,6 +4731,11 @@ html[data-view="dashboard"] .task-board-columns .board-task-attachments {
   display: none;
 }
 
+.task-card-status-field[hidden],
+.board-task-status[hidden] {
+  display: none;
+}
+
 .task-card-status-field {
   color: var(--text-muted);
   display: grid;

@@ -109,6 +109,44 @@ async function dropTask(page, taskId, target) {
   return page.evaluate(() => window.__boardActions.at(-1));
 }
 
+test("Backlog stays separate in every scope and hides status in docked and modal cards", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchEdge(chromium);
+  try {
+    const page = await browser.newPage({ viewport: { width: 1487, height: 1058 } });
+    await openFixture(page);
+    await setBoard(page, workspaces.map((workspace) => ({ ...workspace, settings: { catalogFolder: "Team" } })));
+    const board = page.locator('[data-task-board-columns]');
+    assert.equal(await page.locator('[data-board-scope="all"]').textContent(), 'Все задачи · 6');
+    for (const scope of ['all', 'workspace:one', 'folder:Team', 'notes']) {
+      await page.locator(`[data-board-scope="${scope}"]`).click();
+      assert.equal(await board.locator('[data-board-task-id="5"]').count(), 1);
+      assert.equal(await board.locator('.is-backlog [data-board-task-id="5"]').count(), 1);
+      assert.equal(await board.locator('[class*="is-status-"] [data-board-task-id="5"]').count(), 0);
+    }
+    const backlog = board.locator('[data-board-task-id="5"]');
+    await backlog.click();
+    const field = page.locator('[data-task-card-modal] .task-card-status-field');
+    for (const theme of THEMES) {
+      await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, theme);
+      assert.equal(await backlog.locator('.board-task-status').isVisible(), false, theme);
+      assert.equal(await field.isVisible(), false, theme);
+    }
+    await backlog.dblclick();
+    assert.equal(await page.locator('[data-task-card-modal]').evaluate((el) => el.matches(':modal')), true);
+    assert.equal(await field.isVisible(), false);
+    await page.keyboard.press('Escape');
+    const actionCount = await page.evaluate(() => window.__boardActions.length);
+    await dropTask(page, '5', board.locator('.is-status-testing'));
+    assert.equal(await page.evaluate(() => window.__boardActions.length), actionCount);
+    await page.keyboard.press('Escape');
+    await page.locator('[data-board-scope="all"]').click();
+    await board.locator('[data-board-task-id="1"]').click();
+    assert.equal(await field.isVisible(), true, 'status returns for a Workspace task');
+    assert.equal(await page.evaluate(() => window.__boardActions.length), 0, 'hiding status never changes task data');
+  } finally { await browser.close(); }
+});
+
 test("Dashboard preserves scope, create, filter and native drop commands", async () => {
   const { chromium } = await import("playwright");
   const browser = await launchEdge(chromium);
@@ -117,8 +155,8 @@ test("Dashboard preserves scope, create, filter and native drop commands", async
     await openFixture(page);
     await setBoard(page);
     const board = page.locator("[data-task-board-columns]");
-    assert.equal(await board.locator(".task-board-column").count(), 5);
-    assert.equal(await board.locator(".is-backlog").count(), 0);
+    assert.equal(await board.locator(".task-board-column").count(), 6);
+    assert.equal(await board.locator(".is-backlog").count(), 1);
     assert.equal(await board.locator('[data-board-task-id="6"]').count(), 1, "workflow Done remains visible until closed");
     assert.equal(await board.locator('[data-board-task-id="1"]').getAttribute("draggable"), "true");
     const scopes = await page.locator("[data-task-board-scopes] button").allTextContents();
