@@ -417,10 +417,14 @@ export function createDesktopSnapshotFactory({
           ...(rootUserMessage ? {
             submittedAt: message.submittedAt ?? run.submittedAt ?? receipt?.createdAt ?? message.time ?? run.startedAt ?? null,
             startedAt: message.startedAt ?? run.startedAt ?? null,
+          } : role === "user" ? {
+            submittedAt: message.submittedAt ?? receipt?.createdAt ?? message.time ?? null,
           } : {}),
           time: rootUserMessage
             ? message.submittedAt ?? run.submittedAt ?? receipt?.createdAt ?? message.time ?? run.startedAt ?? null
-            : message.time ?? run.startedAt ?? receipt?.createdAt ?? null,
+            : role === "user"
+              ? message.submittedAt ?? receipt?.createdAt ?? message.time ?? null
+              : message.time ?? run.startedAt ?? null,
           attachments,
         }];
       }),

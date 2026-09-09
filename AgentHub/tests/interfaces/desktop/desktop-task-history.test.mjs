@@ -591,6 +591,40 @@ test("desktop history replays source-owned incremental occurrences exactly once"
   );
 });
 
+test("desktop history uses exact steer intake and leaves an untimed steer unknown", async () => {
+  let receipt = { createdAt: "2026-09-09T16:05:45.479Z", result: {} };
+  const { desktopTaskHistory, state } = fixture({
+    run: null,
+    receipts: {
+      forMessage: ({ clientUserMessageId }) => clientUserMessageId === "steer" ? receipt : null,
+      forTurn: () => null,
+    },
+  });
+  state.history = [{
+    id: "turn-timing", status: "completed", completed: true,
+    startedAt: "2026-09-09T15:51:11.165Z", completedAt: "2026-09-09T16:10:00.000Z",
+    messages: [
+      { role: "user", clientUserMessageId: "root", itemId: "root", text: "Root" },
+      { role: "user", clientUserMessageId: "steer", itemId: "steer", text: "Later",
+        time: "2026-09-09T16:05:47.070Z" },
+    ],
+  }];
+  const read = async () => (await desktopTaskHistory({ limit: 1, includeActive: false })).items[0].messages[1];
+  assert.equal((await read()).time, receipt.createdAt);
+  assert.equal((await read()).submittedAt, receipt.createdAt);
+  delete state.history[0].messages[1].time;
+  assert.equal((await read()).time, receipt.createdAt);
+  receipt = null;
+  // Previously observed message time remains valid in the history cache.
+  assert.equal((await read()).time, "2026-09-09T16:05:47.070Z");
+  const cold = fixture({
+    run: null, history: state.history,
+    receipts: { forMessage: () => null, forTurn: () => null },
+  });
+  const coldResult = await cold.desktopTaskHistory({ limit: 1, includeActive: false });
+  assert.equal(coldResult.items[0].messages[1].time, null);
+});
+
 test("desktop history replaces an enriched App Server source occurrence", () => {
   const sourceOccurrenceId = `codex-app-server:${"b".repeat(64)}`;
   const initial = {

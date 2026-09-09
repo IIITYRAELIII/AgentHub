@@ -124,9 +124,8 @@ When the client snapshot says the Stream is idle, the exact submission is
 rendered immediately as one optimistic conversation card. A durable
 `message-intake` ACK keeps that same card visible through dispatch and labels it
 `Принято`, never `В очереди`. The durable deferred row with
-`clientProjectionIntent=conversation` preserves that placement through an
-idle-to-busy admission race and when the bounded receipt is absent during
-reload or reconciliation.
+`clientProjectionIntent=conversation` preserves that placement for normal
+`message-intake`, including when its bounded receipt is absent during reload.
 
 When the client snapshot says the Stream is busy, queue and steer submissions
 are rendered only by the queue surface above the composer. Durable queued,
@@ -140,8 +139,10 @@ history projections reuse the same `clientUserMessageId` and cannot create a
 second card.
 
 If admission detects that an apparently idle Stream became busy, its canonical
-`task-running` result preserves the same optimistic conversation card according
-to its immutable `clientProjectionIntent=conversation`. A busy-origin command
+`task-running` result moves the same logical submission to the queue surface.
+An explicit `accepted=false` queued/deferred receipt overrides the original
+`clientProjectionIntent=conversation`, even when the receipt omits its reason.
+A busy-origin command
 with `clientProjectionIntent=queue` remains queue-only if admission later finds
 the Stream idle. Attention-required and ambiguous commands remain queue-owned.
 Reconciliation never renders both forms and never loses the logical entity.
@@ -150,8 +151,10 @@ removes a waiting or attention-required command only after durable commit; if
 dispatch already owns it, the UI reports that cancellation was not confirmed.
 
 Direct ACK, remote-result reconciliation and snapshot reconciliation use the
-same classifier. Receipt snapshots are bounded. The durable explicit projection
-intent restores the chosen surface after its receipt leaves the current window.
+same classifier. Receipt snapshots are bounded. A durable waiting command with
+an explicit non-`message-intake` conflict restores the queue after its receipt
+leaves the window, ahead of its original client projection intent. Otherwise
+the durable explicit projection intent restores the chosen surface.
 Legacy rows without that field use exact `conflictKind=message-intake` only as a
 temporary compatibility boundary; remove it after every retained active command
 has an explicit projection intent. Text, time and display order cannot choose
@@ -244,7 +247,10 @@ Canonical ordering follows durable provider sequence without rewriting user
 chronology. Durable intake owns immutable `submittedAt`, which remains the
 displayed `time` through queued, active and completed projections. Provider
 dispatch owns the separate `startedAt`. Legacy rows without `submittedAt` fall
-back to the existing user-message time and only then to provider start.
+back to the existing user-message time. Only the root user message may then
+fall back to provider start. A steer never inherits the parent turn's start or
+submission time: its exact receipt supplies intake time, or its own timestamp
+is used; if neither exists, its time remains unknown until enriched.
 
 Unlabelled fenced blocks are treated as prose-oriented preformatted text and
 wrap inside the message column without horizontal page movement. Fences with an

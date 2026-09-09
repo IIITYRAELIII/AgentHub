@@ -653,6 +653,27 @@ test("desktopRunSnapshot exposes live response citation references", () => {
   assert.deepEqual(desktopRunSnapshot(run).responseAnnotationReferences, [{ index: 1 }]);
 });
 
+test("desktopRunSnapshot gives a steer its exact intake time without borrowing root time", () => {
+  let receipt = { createdAt: "2026-07-30T10:15:00.000Z", result: {} };
+  const { desktopRunSnapshot, run } = fixture({
+    receiptForMessage: ({ clientUserMessageId }) => clientUserMessageId === "client-steer" ? receipt : null,
+  });
+  run.userMessages.push({
+    role: "user", clientUserMessageId: "client-steer", text: "Later clarification",
+    time: "2026-07-30T10:15:02.000Z",
+  });
+  const check = (expected) => {
+    const steer = desktopRunSnapshot(run).userMessages[1];
+    assert.equal(steer.time, expected);
+    assert.equal(steer.submittedAt, expected);
+  };
+  check(receipt.createdAt);
+  delete run.userMessages[1].time;
+  check(receipt.createdAt);
+  receipt = null;
+  check(null);
+});
+
 test("desktopRunSnapshot leaves a sparse provider steer unbound from a remaining receipt", () => {
   const receipts = [{
     clientUserMessageId: "client-root",

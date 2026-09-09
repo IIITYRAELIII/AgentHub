@@ -1053,13 +1053,14 @@ function mergeLiveUserMessages(messages, {
         responseAnnotations: message.responseAnnotations.map((item) => ({ ...item })),
         responseAnnotationRequest: String(message.responseAnnotationRequest ?? ""),
       } : {}),
-      ...(role === "user" && turnUserSlot === "root" ? {
-        submittedAt: message.submittedAt ?? submittedAt ?? message.time ?? time ?? null,
-        startedAt: message.startedAt ?? startedAt ?? null,
+      ...(role === "user" ? {
+        submittedAt: message.submittedAt
+          ?? (turnUserSlot === "root" ? submittedAt ?? message.time ?? time : message.time) ?? null,
+        ...(turnUserSlot === "root" ? { startedAt: message.startedAt ?? startedAt ?? null } : {}),
       } : {}),
       time: role === "user" && turnUserSlot === "root"
         ? message.submittedAt ?? submittedAt ?? message.time ?? time ?? null
-        : message.time ?? time ?? null,
+        : role === "user" ? message.submittedAt ?? message.time ?? null : message.time ?? time ?? null,
       attachments: Array.isArray(message.attachments) && message.attachments.length
         ? message.attachments.map((attachment) => ({ ...attachment }))
         : role === "user" && turnUserSlot === "root"
@@ -1100,6 +1101,10 @@ function mergeLiveUserMessages(messages, {
         ? existing.author
         : candidate.author,
       time: candidate.time ?? existing.time ?? null,
+      ...(role === "user" && turnUserSlot === "steer" && existing.submittedAt ? {
+        submittedAt: existing.submittedAt,
+        time: existing.submittedAt,
+      } : {}),
       attachments: candidate.attachments.length
         ? candidate.attachments
         : existing.attachments ?? [],
@@ -1201,6 +1206,7 @@ function queueHistoryReceiptProjection(receipt) {
   const immediateIntake = !providerAccepted
     && !terminal
     && !requiresQueue
+    && receipt?.accepted !== false
     && (
       projectionIntent === "conversation"
       || (
@@ -1283,6 +1289,9 @@ function queuedCommandUsesQueue(deferredInput, messageReceipts = []) {
   if (String(deferredInput?.waitReason ?? "").trim() === "provider-start-unconfirmed") return true;
   const receipt = deferredInputReceipt(deferredInput, messageReceipts);
   if (receipt) return queueHistoryReceiptProjection(receipt).ownsDeferredQueue;
+  const conflictKind = String(deferredInput?.conflictKind ?? "").trim();
+  if (conflictKind && conflictKind !== "message-intake"
+    && ["pending", "queued", "dispatching", "steering"].includes(state)) return true;
   const projectionIntent = clientProjectionIntent(deferredInput?.clientProjectionIntent);
   if (projectionIntent === "conversation") return false;
   if (projectionIntent === "queue") return true;
