@@ -71,6 +71,17 @@ test("RunJournalService preserves authoritative answer time during repeated obse
   assert.equal(service.lastMessageRecord(task).text, "Answer");
 });
 
+test("RunJournalService never replaces a newer exact terminal revision with an older projection", () => {
+  const { service } = fixture();
+  const task = { provider: "codex", projectRoot: "C:/workspace", threadId: "thread", turnId: "turn" };
+  service.rememberLastMessage(task, "Richer final", { terminalRevision: 2 });
+  const revision = service.revision;
+  assert.equal(service.rememberLastMessage(task, "Older final", { terminalRevision: 1 }), false);
+  assert.equal(service.lastMessage(task), "Richer final");
+  assert.equal(service.lastMessageRecord(task).terminalRevision, 2);
+  assert.equal(service.revision, revision);
+});
+
 test("RunJournalService rejects an older turn that finishes projection after a newer turn", () => {
   const { service } = fixture();
   const task = { provider: "codex", projectRoot: "C:/workspace", threadId: "thread" };

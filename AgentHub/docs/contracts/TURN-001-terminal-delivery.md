@@ -57,6 +57,11 @@ final status and final content.
   intake validation; terminal coalescing cannot strip or retarget them.
 - Delivery uses a durable outbox. A missing UI ACK retries delivery without
   reverting terminal state or regenerating the provider effect.
+- Recovery may stage a bounded batch of exact outbox revisions and perform one
+  shared journal projection. Every revision remains unacknowledged until its
+  history and journal data are persisted and the shared projection succeeds.
+  Projection failure preserves retryability; a superseding revision retains its
+  own delivery identity. Ordinary live completion does not wait for a batch.
 - A later user turn cannot suppress or mutate the previous terminal entity.
 - Projection overlays the exact latest terminal independently of a later active
   turn, so both entities remain visible in provider sequence.
