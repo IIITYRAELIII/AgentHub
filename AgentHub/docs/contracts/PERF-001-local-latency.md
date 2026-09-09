@@ -48,6 +48,12 @@ fallback physically reads/projects at most the latest 16 MiB plus two bounded
 Provenance requires exactly one valid canonical session record in those samples;
 otherwise unkeyed provider users fail closed. Append-only reads resume from the
 cached raw-byte cursor.
+An explicit operator repair of legacy subagent authors may locate the exact
+completed-turn start outside this tail and read from there in a worker, with
+64 KiB chunks and a 4 MiB record cap. It is not an activity fallback, automatic
+refresh or startup scan. Only requested completed turns (at most 20, 1,000 source
+occurrences) are eligible; no provider operation is issued. This temporary
+migration exception is removed with the legacy author repair (UI-001).
 Exact App Server state and managed run identity remain preferred over JSONL
 fallback; reducing the projection window must not truncate the terminal answer
 retained by TURN-001.

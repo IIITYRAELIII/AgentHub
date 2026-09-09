@@ -31,6 +31,14 @@
   ambiguous occurrence prevents replacement. This migration guard is removable
   after retained histories from the pre-fix rollout adapter have expired or
   been reprojected; it must never use text or provider item IDs as evidence.
+  Reports outside the live tail can be repaired explicitly through `task-history`
+  with `repairSubagentTurnIds` (at most 20 exact turns). The provider worker locates
+  their retained turn-start boundaries and reads bounded JSONL records from that
+  point, matching only the existing byte-coordinate source identities. The normal
+  history owner persists the correction. This maintenance is never part of startup,
+  polling or ordinary refresh, never dispatches a turn, and leaves unavailable,
+  rewritten, client-bound or ambiguous evidence unchanged. Remove this opt-in
+  migration together with the pre-fix subagent projection guard.
 - Internal probes, measurements and maintenance operations have separate kinds
   and never create user-turn cards.
 - The ordinary browser shell never waits on the third-party Telegram runtime.

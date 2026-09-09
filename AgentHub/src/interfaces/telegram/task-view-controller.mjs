@@ -9,6 +9,7 @@ import {
   withoutMisclassifiedSubagentUsers,
 } from "../../application/task-history.mjs";
 import { taskViewCallbackData } from "./task-view-callback.mjs";
+import { recoverCodexRolloutSubagents } from "../../providers/codex/codex-rollout-activity-worker-client.mjs";
 import {
   hasCanonicalUserMessages,
   mergedUserMessageSnapshotAuthority,
@@ -562,7 +563,7 @@ export class TaskViewController {
         === String(identity?.threadId ?? "").toLowerCase();
   }
 
-  async readHistory(binding, { completedOnly = false, cachedOnly = false, limit = null } = {}) {
+  async readHistory(binding, { completedOnly = false, cachedOnly = false, limit = null, repairSubagentTurnIds = [] } = {}) {
     const d = this.deps;
     const task = this.task(binding, binding.chatId);
     const detachedThread = d.workspaceCatalogStore?.thread?.({
@@ -586,6 +587,24 @@ export class TaskViewController {
         const directRolloutPath = await d.findCodexRolloutPath?.(binding.threadId, "");
         if (directRolloutPath) {
           const cached = d.taskSyncStore.history(task);
+          if (repairSubagentTurnIds.length) {
+            const turns = cached.filter((turn) => repairSubagentTurnIds.includes(turn.id)
+              && turn.completed === true && turn.active !== true);
+            const candidates = turns.flatMap((turn) => (turn.messages ?? [])
+              .filter((message) => message.role === "user" && !message.clientUserMessageId
+                && !message.clientId && !message.submissionId && !message.origin && !message.messageOrigin
+                && /^codex-rollout:[0-9a-f]{64}$/u.test(message.sourceOccurrenceId ?? ""))
+              .map((message) => ({ turnId: turn.id, sourceOccurrenceId: message.sourceOccurrenceId })));
+            const evidence = await (d.recoverCodexRolloutSubagents ?? recoverCodexRolloutSubagents)(directRolloutPath, candidates);
+            for (const turn of turns) {
+              const retained = withoutMisclassifiedSubagentUsers(turn.messages, evidence);
+              const retainedSet = new Set(retained);
+              turn.messages = turn.messages.map((message) => retainedSet.has(message) ? message : {
+                ...message,
+                ...evidence.find((item) => item.sourceOccurrenceId === message.sourceOccurrenceId),
+              });
+            }
+          }
           const rolloutActivity = await d.readCodexRolloutActivity(
             directRolloutPath,
             {

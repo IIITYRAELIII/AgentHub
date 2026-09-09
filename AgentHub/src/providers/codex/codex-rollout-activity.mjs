@@ -126,7 +126,7 @@ function rolloutSessionMeta(lines) {
   return values.values().next().value;
 }
 
-async function rolloutObservationGeneration(
+export async function rolloutObservationGeneration(
   filePath,
   info,
   maximumBytes = CODEX_ROLLOUT_PROVENANCE_BYTES,
@@ -160,7 +160,7 @@ async function rolloutObservationGeneration(
   }
 }
 
-function rolloutRecordFingerprint(entry) {
+export function rolloutRecordFingerprint(entry) {
   if (!entry || typeof entry !== "object") return "";
   return createHash("sha256").update(JSON.stringify(entry)).digest("hex");
 }
@@ -180,7 +180,7 @@ function rolloutSourceOccurrenceId(generation, recordFingerprint, occurrenceInde
     .digest("hex")}`;
 }
 
-function rolloutSourceByteOccurrenceId(generation, recordFingerprint, byteOffset) {
+export function rolloutSourceByteOccurrenceId(generation, recordFingerprint, byteOffset) {
   const source = String(generation ?? "").trim();
   const fingerprint = String(recordFingerprint ?? "").trim();
   if (!source || !fingerprint || !Number.isSafeInteger(byteOffset) || byteOffset < 0) {
