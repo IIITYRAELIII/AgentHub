@@ -888,6 +888,17 @@
       </button>
     </header>
     <section class="task-card-content">
+      <section class="task-card-preview" aria-label="Детали задачи">
+        <div class="task-card-preview-meta">
+          <strong data-task-preview-number></strong>
+          <button type="button" class="board-task-quiet" data-task-card-edit-toggle>Изменить</button>
+        </div>
+        <h3 data-task-preview-title></h3>
+        <div class="task-card-preview-description">
+          <strong>Описание</strong>
+          <p data-task-preview-description></p>
+        </div>
+      </section>
       <form class="task-card-editor" data-task-card-editor>
         <label>
           <span>Заголовок</span>
