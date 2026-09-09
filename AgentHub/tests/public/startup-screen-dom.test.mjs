@@ -61,8 +61,41 @@ test("failed startup exposes details and retry/restart controls inside the overl
     await page.locator(".hub-startup-screen.is-disconnected").waitFor({ state: "visible" });
     assert.doesNotMatch(await screen.innerText(), /Если сервер остановлен|установленный ярлык|Перезагрузка компьютера не нужна/u);
     assert.equal(await page.getByRole("button", { name: "Перезапустить Хаб" }).isDisabled(), true);
-    assert.deepEqual(errors, []);
+    assert.equal(await page.locator(".hub-startup-completed").isHidden(), true);
+    assert.equal(await page.locator(".hub-startup-completed-item").count(), 0);
+    assert.equal(await page.locator(".hub-startup-dial-segment").count(), 0);
+
+    // A fresh authoritative health generation replaces the disconnected view.
+    health.status = "starting";
+    health.startup = {
+      startedAtMs: 50000,
+      operations: [
+        { id: "web", label: "Web", state: "completed" },
+        { id: "provider", label: "Инициализация провайдера", state: "running" },
+      ],
+    };
+    await page.waitForFunction(() => document.querySelector(".hub-startup-title")?.textContent === "Инициализация провайдера");
+    assert.equal(await page.locator(".hub-startup-completed-item").count(), 1);
+    health.ready = true;
+    health.status = "ready";
+    health.startup.operations[1].state = "completed";
+    await screen.waitFor({ state: "hidden" });
+
+    // This is the incident: a ready process receives another real restart event.
+    await page.evaluate(() => window.dispatchEvent(new CustomEvent("agenthub:connection-state", {
+      detail: { status: "restarting" },
+    })));
+    await screen.waitFor({ state: "visible" });
+    assert.equal(await page.locator(".hub-startup-title").innerText(), "Ожидание нового процесса");
+    assert.equal(await page.locator(".hub-startup-completed").isHidden(), true);
+    assert.equal(await page.locator(".hub-startup-completed-item").count(), 0);
+    assert.equal(await page.locator(".hub-startup-dial-segment").count(), 0);
     if (process.env.STARTUP_QA_SCREENSHOT) await page.screenshot({ path: process.env.STARTUP_QA_SCREENSHOT });
+    await page.evaluate(() => window.dispatchEvent(new CustomEvent("agenthub:connection-state", {
+      detail: { status: "online" },
+    })));
+    await screen.waitFor({ state: "hidden" });
+    assert.deepEqual(errors, []);
   } finally {
     await browser.close();
   }

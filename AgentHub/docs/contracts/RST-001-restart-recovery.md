@@ -29,6 +29,11 @@ a user turn and does not alter the restart/compaction operation schema.
 - A replacement runtime finalizes the persisted restart and marks its instance
   ready before it starts deferred-input timers. Queued commands are then
   admitted once under their original `clientUserMessageId`.
+- When replacement fails and the previous runtime restores ownership and its
+  services, recovery settles that exact persisted restart as failed before
+  clearing its request and publishing readiness. The restored runtime marks
+  itself ready before resuming timers. Deferred cutover uses the same settlement
+  even when it did not run through the initial request scheduler.
 - Runtime startup wakes the queue owner, which reconciles recoverable persisted
   `task-running` and `activity-unknown` lane heads against current occupancy
   before FIFO dispatch. A stale external-observation reservation therefore
@@ -53,6 +58,11 @@ a user turn and does not alter the restart/compaction operation schema.
   sorts terminal JSON to discover candidates.
 - Restart UI appears only for a real persisted restart phase and cannot hide a
   final response.
+  A disconnected health request alone never asserts a restart. While waiting
+  for connection or replacement, the screen shows no stage progress inherited
+  from the previous health sample and does not claim readiness. Known failed
+  startup details remain available during ordinary connection loss. Fresh
+  health and the canonical connection state remain the reconnect authority.
 - The startup screen retains failed-stage details and exposes authenticated
   retry and restart actions. Retry is fenced by the exact runtime startup
   generation, coalesces concurrent requests, and runs only failed recoverable

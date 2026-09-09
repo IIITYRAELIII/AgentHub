@@ -15,13 +15,14 @@ test("failed replacement restores the previous bot before marking it ready", asy
     restoreProvider: async () => events.push("provider"),
     recoverRuns: async () => events.push("runs"),
     updateMessage: async (message) => events.push(message.includes("launcher failed") ? "message" : "bad-message"),
+    failRestartOperation: async (error) => events.push(`failed:${error.message}`),
     clearRestartRequest: () => events.push("clear"),
     saveState: async () => events.push("state"),
     startTimers: () => events.push("timers"),
     markReady: async () => events.push("ready"),
   });
   assert.deepEqual(events, [
-    "lock", "command", "stopping:false", "provider", "runs", "message", "clear", "state", "timers", "ready",
+    "lock", "command", "stopping:false", "provider", "runs", "message", "failed:launcher failed", "clear", "state", "ready", "timers",
   ]);
 });
 
@@ -35,12 +36,32 @@ test("failed restoration never starts timers or marks a broken bot ready", async
     restoreProvider: async () => events.push("provider"),
     recoverRuns: async () => events.push("runs"),
     updateMessage: async () => events.push("message"),
+    failRestartOperation: async () => events.push("failed"),
     clearRestartRequest: () => events.push("clear"),
     saveState: async () => events.push("state"),
     startTimers: () => events.push("timers"),
     markReady: async () => events.push("ready"),
   }), /pipe busy/);
   assert.deepEqual(events, ["lock"]);
+});
+
+test("failed restart settlement cannot expose a recovered runtime as ready or resume timers", async () => {
+  const events = [];
+  await assert.rejects(restorePreviousBotAfterFailedReplacement({
+    replacementError: new Error("launcher failed"),
+    acquireLock: async () => {},
+    startCommandServer: async () => {},
+    setStopping: () => {},
+    restoreProvider: async () => {},
+    recoverRuns: async () => {},
+    updateMessage: async () => {},
+    failRestartOperation: async () => { throw new Error("cannot persist restart outcome"); },
+    clearRestartRequest: () => events.push("clear"),
+    saveState: async () => events.push("state"),
+    startTimers: () => events.push("timers"),
+    markReady: async () => events.push("ready"),
+  }), /cannot persist restart outcome/);
+  assert.deepEqual(events, []);
 });
 
 test("successful replacement clears restart state after editing the original message", async () => {
