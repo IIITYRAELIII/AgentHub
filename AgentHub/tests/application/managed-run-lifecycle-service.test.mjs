@@ -130,6 +130,77 @@ test("managed run lifecycle creates and persists one owned run", async () => {
   assert.deepEqual(events, ["catalog", "diff", "clear-diff", "sync-start", "save", "progress"]);
 });
 
+test("failed pre-turn admission cannot leave a recoverable active run", async () => {
+  const failure = new Error("database is locked");
+  let saves = 0;
+  let rejectedRun;
+  const deferredInput = { clientUserMessageId: "queued-after-compaction" };
+  const { service, taskRuns, events } = harness({
+    prepareAdmission: async () => ({ commit: (run) => { rejectedRun = run; } }),
+    revokeAdmission: (run) => assert.equal(run, rejectedRun),
+    saveState: async () => {
+      saves += 1;
+      if (saves === 1) throw failure;
+      assert.equal(taskRuns.size, 0);
+    },
+  });
+
+  await assert.rejects(service.begin("continue", {
+    clientUserMessageId: deferredInput.clientUserMessageId,
+    deferredInput,
+  }), (error) => error === failure);
+
+  assert.equal(taskRuns.forTask(rejectedRun), null);
+  assert.equal(taskRuns.size, 0);
+  assert.equal(rejectedRun.status, "failed");
+  assert.equal(deferredInput.dispatchingRunId, undefined);
+  assert.equal(events.includes("progress"), false);
+  assert.equal(events.includes("before"), false);
+  assert.equal(saves, 2);
+});
+
+test("failed admission rollback keeps the original error and removes only its own run", async () => {
+  const failure = new Error("database is locked");
+  const rollbackFailure = new Error("snapshot write failed");
+  let saves = 0;
+  const { service, taskRuns } = harness({
+    saveState: async () => {
+      saves += 1;
+      if (saves === 2) throw failure;
+      if (saves === 3) throw rollbackFailure;
+    },
+  });
+  const otherRun = await service.begin("other", { threadId: "other-thread" });
+  const deferredInput = { dispatchingRunId: "previous-attempt" };
+
+  await assert.rejects(service.begin("continue", { deferredInput }), (error) => {
+    assert.equal(error.cause, failure);
+    assert.deepEqual(error.errors, [failure, rollbackFailure]);
+    return true;
+  });
+
+  assert.deepEqual(taskRuns.values(), [otherRun]);
+  assert.equal(otherRun.status, "running");
+  assert.equal(deferredInput.dispatchingRunId, "previous-attempt");
+});
+
+test("admission persistence failure retains a provider turn accepted during the write", async () => {
+  const failure = new Error("database is locked");
+  let acceptedRun;
+  const { service, taskRuns } = harness({
+    prepareAdmission: async () => ({ commit: (run) => { acceptedRun = run; } }),
+    revokeAdmission: () => assert.fail("accepted provider work must remain owned"),
+    saveState: async () => {
+      acceptedRun.turnId = "accepted-turn";
+      throw failure;
+    },
+  });
+
+  await assert.rejects(service.begin("continue"), (error) => error === failure);
+  assert.equal(taskRuns.forTask(acceptedRun), acceptedRun);
+  assert.equal(acceptedRun.status, "running");
+});
+
 test("managed run preserves durable submission time separately from provider start", async () => {
   const { service } = harness();
   const run = await service.begin("queued", {

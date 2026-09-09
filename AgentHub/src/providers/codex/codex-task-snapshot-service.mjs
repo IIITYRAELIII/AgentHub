@@ -151,6 +151,7 @@ export class CodexTaskSnapshotService {
 
   async read(run, { threadResult = null, fresh = false } = {}) {
     const d = this.#d;
+    if (run.observer !== true && !String(run.turnId ?? "").trim()) return null;
     if (run.observer === true) {
       const rolloutPath = String(
         threadResult?.thread?.path
@@ -201,7 +202,7 @@ export class CodexTaskSnapshotService {
     });
     const turns = (Array.isArray(result.thread?.turns) ? result.thread.turns : [])
       .filter((turn) => !isCodexContextProbeTurn(turn));
-    const exact = run.exactTurnObserver === true;
+    const exact = run.observer !== true || run.exactTurnObserver === true;
     const activity = await d.readRolloutActivity(
       result.thread?.path,
       {
