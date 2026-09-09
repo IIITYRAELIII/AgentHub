@@ -6,6 +6,7 @@ import {
   isEmptyTurnCompletionPlaceholder,
   userTaskReferencePromptDetails,
   withoutCodexInspectionAttachments,
+  withoutMisclassifiedSubagentUsers,
 } from "../../application/task-history.mjs";
 import { normalizedResponseAnnotations } from "../../domain/response-annotation-source.mjs";
 import {
@@ -179,8 +180,8 @@ function exactTerminalAgentCandidate(message, turnId, canonicalItemId) {
 
 // Builds the bounded Desktop/Mini App history read-model for one task.
 function mergeDurableMessages(hydratedMessages, durableMessages, turnId, hydratedTurn, durableTurn) {
-  const durableValues = Array.isArray(durableMessages) ? durableMessages : [];
-  const hydratedValues = Array.isArray(hydratedMessages) ? hydratedMessages : [];
+  const durableValues = withoutMisclassifiedSubagentUsers(durableMessages, hydratedMessages);
+  const hydratedValues = withoutMisclassifiedSubagentUsers(hydratedMessages, durableMessages);
   const hydratedUsers = canonicalizeUserMessages(
     hydratedValues.filter((message) => message?.role === "user"),
   );

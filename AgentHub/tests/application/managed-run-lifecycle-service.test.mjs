@@ -16,11 +16,13 @@ function harness({
   prepareAdmission = null,
   revokeAdmission = null,
   saveState = null,
+  commandTrace = null,
 } = {}) {
   const events = [];
   const taskRuns = new TaskRunRegistry();
   const service = new ManagedRunLifecycleService({
     taskRuns,
+    commandTrace,
     currentTarget: currentTarget ?? (() => ({
       provider, projectRoot: "D:/Work", streamId: "stream-1", threadId: "thread-1", taskTitle: "Task", chatId: 7,
     })),
@@ -131,11 +133,13 @@ test("managed run lifecycle creates and persists one owned run", async () => {
 });
 
 test("failed pre-turn admission cannot leave a recoverable active run", async () => {
-  const failure = new Error("database is locked");
+  const failure = Object.assign(new Error("database is locked"), { code: "ERR_SQLITE_ERROR", errcode: 5 });
+  const traceResults = [];
   let saves = 0;
   let rejectedRun;
   const deferredInput = { clientUserMessageId: "queued-after-compaction" };
   const { service, taskRuns, events } = harness({
+    commandTrace: { startBestEffortSpan: () => ({ finish: (result) => traceResults.push(result) }) },
     prepareAdmission: async () => ({ commit: (run) => { rejectedRun = run; } }),
     revokeAdmission: (run) => assert.equal(run, rejectedRun),
     saveState: async () => {
@@ -157,6 +161,10 @@ test("failed pre-turn admission cannot leave a recoverable active run", async ()
   assert.equal(events.includes("progress"), false);
   assert.equal(events.includes("before"), false);
   assert.equal(saves, 2);
+  assert.deepEqual(traceResults, [{
+    outcome: "failed",
+    metadata: { operation: "save-state", errorCode: "ERR_SQLITE_ERROR", sqliteErrorCode: 5, runId: rejectedRun.id },
+  }]);
 });
 
 test("failed admission rollback keeps the original error and removes only its own run", async () => {

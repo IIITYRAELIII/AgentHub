@@ -5,6 +5,8 @@ import {
   workspaceBindingForTask,
 } from "../../../src/interfaces/desktop/desktop-snapshot.mjs";
 import { mergeTaskCatalog } from "../../../src/application/task-catalog-projection.mjs";
+import { messageWithTaskReferences, taskReferenceDescriptor } from "../../../src/domain/task-board-task.mjs";
+import { restoreDeferredInput } from "../../../src/domain/deferred-input.mjs";
 import {
   createMaintenanceOperation,
   MAINTENANCE_OPERATION_KINDS,
@@ -1250,6 +1252,23 @@ test("desktopSnapshot exposes failed pending intake for explicit recovery in its
   assert.equal(snapshot.deferredInputs.find((item) => item.id === "queued-sibling").streamId, "stream-1");
   assert.equal(state.pending[0], failed);
   assert.equal(failed.attentionRequired, undefined);
+});
+
+test("desktopSnapshot retains task attachments in restored pending and paused queues", async () => {
+  const reference = taskReferenceDescriptor({ id: "task-1", title: "Review", taskNumber: "HUB-176" });
+  const persisted = JSON.parse(JSON.stringify({
+    id: "retained", provider: "codex", threadId: "thread-1", paused: true,
+    input: [{ type: "text", text: messageWithTaskReferences("Review this", [reference]) }],
+  }));
+  const restored = restoreDeferredInput(persisted).item;
+  const { desktopSnapshot } = fixture({
+    pending: [restored], queued: [{ ...restored, id: "paused" }],
+  });
+  const snapshot = await desktopSnapshot();
+  for (const queued of snapshot.deferredInputs) {
+    assert.deepEqual(queued.attachments, [reference]);
+  }
+  assert.equal(snapshot.deferredInputs.find((queued) => queued.id === "paused").state, "paused");
 });
 
 test("desktopSnapshot keeps normal intake and transient waits out of attention-required projection", async () => {

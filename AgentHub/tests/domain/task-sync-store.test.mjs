@@ -876,7 +876,7 @@ test("local task sync preserves subagent identity through SQLite", async () => {
     status: "completed",
     completed: true,
     messages: [{
-      itemId: "turn-parent:subagent:child-terra",
+      itemId: "msg-provider-child-terra",
       role: "agent",
       kind: "subagent",
       agentThreadId: "child-terra",
@@ -890,7 +890,7 @@ test("local task sync preserves subagent identity through SQLite", async () => {
   store = new LocalTaskSyncStore({ filePath });
   await store.load();
   assert.deepEqual(store.history(task)[0].messages[0], {
-    itemId: "turn-parent:subagent:child-terra",
+    itemId: "msg-provider-child-terra",
     role: "agent",
     text: "Независимый отчёт",
     author: "Субагент (Terra)",

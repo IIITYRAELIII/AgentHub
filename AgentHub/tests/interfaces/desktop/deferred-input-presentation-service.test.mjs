@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { DeferredInputPresentationService } from "../../../src/interfaces/desktop/deferred-input-presentation-service.mjs";
 import { MessageReceiptRegistry } from "../../../src/infrastructure/persistence/message-receipts.mjs";
+import { messageWithTaskReferences, taskReferenceDescriptor } from "../../../src/domain/task-board-task.mjs";
 
 function fixture() {
   const updates = [];
@@ -97,4 +98,17 @@ test("Telegram card update keeps the exact deferred message address", async () =
     text: "waiting",
     reply_markup: { inline_keyboard: [] },
   }]);
+});
+
+test("accepted and steered receipts retain both file and task attachments after serialization", () => {
+  const setup = fixture();
+  const reference = taskReferenceDescriptor({ id: "task-1", title: "Review", taskNumber: "HUB-176" });
+  const restored = JSON.parse(JSON.stringify({
+    ...item,
+    input: [{ type: "text", text: messageWithTaskReferences("Review this", [reference]) }],
+  }));
+  for (const state of ["started", "steered"]) {
+    setup.value.updateDesktopReceipt(restored, state, { id: "run-1", turnId: "turn-1" });
+    assert.deepEqual(setup.updates.at(-1).result.attachments, [{ path: "shot.png" }, reference]);
+  }
 });

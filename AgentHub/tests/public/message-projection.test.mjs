@@ -279,6 +279,38 @@ test("a truncated unkeyed refresh cannot leave optimistic duplicates after navig
   }
 });
 
+test("canonical projection strips an interstream wrapper only with matching origin and command identity", async () => {
+  const projection = await projectionApi();
+  const origin = {
+    kind: "interstream", workspaceId: "hub", workspaceName: "Agent HUB",
+    streamId: "themes", streamName: "Themes", provider: "codex", model: "GPT-5.6-Terra",
+    sourceThreadId: "themes-thread", requestId: "hub176-design-review",
+  };
+  const rawText = `<agent-hub-stream-message>\n${JSON.stringify(origin)}\n</agent-hub-stream-message>\nПроверь дизайн`;
+  const message = {
+    role: "user", kind: "interstream", origin, text: rawText,
+    provider: "codex", threadId: "architect-thread", turnId: "turn-review", itemId: "review-item",
+    clientUserMessageId: "mcp:hub176-design-review", projectionAuthority: "canonical",
+    author: "Agent HUB - Themes (Terra)", projectionState: "completed",
+  };
+  const [trusted] = plain(projection.projectCanonicalMessages([message]));
+  assert.equal(trusted.text, "Проверь дизайн");
+  assert.equal(trusted.author, message.author);
+  assert.deepEqual(trusted.origin, origin);
+  for (const value of [
+    { ...message, origin: undefined },
+    { ...message, origin: { ...origin, sourceThreadId: "foreign" } },
+    { ...message, clientUserMessageId: "literal-client" },
+    { ...message, text: rawText.replace('"kind"', 'broken"kind"') },
+  ]) {
+    assert.equal(projection.projectCanonicalMessages([value])[0].text, value.text);
+  }
+  const live = { ...message, projectionAuthority: "live", projectionState: "active" };
+  for (const values of [[live, trusted], [trusted, live]]) {
+    assert.equal(projection.projectCanonicalMessages(values)[0].text, "Проверь дизайн");
+  }
+});
+
 test("terminal revision absorbs reordered and duplicated active progress", async () => {
   const projection = await projectionApi();
   const active = {

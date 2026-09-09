@@ -25,6 +25,12 @@
   occurrence when `clientUserMessageId` arrives later; this same-source evidence
   replaces the earlier unkeyed entity and preserves Hub payload/origin.
 - `unknown` is displayed as unknown and never inferred as running.
+- Legacy rollout projections that misclassified a subagent report as a user
+  may be corrected only by one matching internally generated source occurrence
+  in the same turn. A Hub client identity, origin, missing source identity or
+  ambiguous occurrence prevents replacement. This migration guard is removable
+  after retained histories from the pre-fix rollout adapter have expired or
+  been reprojected; it must never use text or provider item IDs as evidence.
 - Internal probes, measurements and maintenance operations have separate kinds
   and never create user-turn cards.
 - The ordinary browser shell never waits on the third-party Telegram runtime.
