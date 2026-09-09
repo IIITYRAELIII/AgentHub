@@ -58,8 +58,14 @@ handoff metadata, provider catalog/backfill and Spark/Terra binding, settings,
 journal completion, thread binding and Task lifecycle.
 Bounded contention retry surrounds the real transaction, preserves the original
 identity and yields to HTTP, SSE and timers instead of increasing `busy_timeout`.
-The owners expose explicit read and mutation allowlists only; an unclassified
-raw member is not bound into application code. Release completion uses the same
+The owners expose explicit read, short-mutation and internally managed-effect
+allowlists only; an unclassified raw member is not bound into application code.
+Checklist event delivery is an internally managed effect (ADR-0029): its
+single-flight durable outbox drain invokes delivery outside SQL retry and queues
+only quarantine/acknowledgment writes with the original event ID. A busy
+acknowledgment cannot replay that invocation. An interrupted drain remains
+recoverable through the existing idempotent event identity.
+Release completion uses the same
 Task owner. `hub_task_claim` enters Git through public Task admission, which
 creates the durable per-Task/repository process-tree guard before the first
 child process; an unproven survivor blocks claim effects and retries until the

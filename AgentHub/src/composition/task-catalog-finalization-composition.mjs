@@ -79,7 +79,7 @@ export function createTaskCatalogFinalizationComposition({
       selectionStore.setTitle(current.displayTitle);
       titleChanged = true;
     }
-    taskSyncStore.recordCatalog(nextCatalog);
+    await taskSyncStore.recordCatalog(nextCatalog);
     await taskSyncStore.save();
     if (titleChanged) await saveState();
     return nextCatalog;

@@ -15,7 +15,7 @@ export async function createRuntimeStateBootstrapWiring({
   } = await createRuntimeStateRestorationComposition(restoration);
 
   const restoredTurnEndSnapshot = restoredState
-    ? applyRestoredState(restoredState) ?? {}
+    ? await applyRestoredState(restoredState) ?? {}
     : {};
   const journalStartupReady = initializeJournal(restoredTurnEndSnapshot).catch((error) => {
     logger.error("Cannot initialize journal projection:", error.message);

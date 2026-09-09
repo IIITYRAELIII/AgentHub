@@ -959,8 +959,8 @@ test("local control client survives App Server exit during delayed startup and s
     messageCommandDatabaseFile: ledgerFile,
   });
   await recoveryStore.load();
-  recoveryStore.recordCatalog([recoveryTask], Date.now());
-  recoveryStore.recordHistory(recoveryTask, [{
+  await recoveryStore.recordCatalog([recoveryTask], Date.now());
+  await recoveryStore.recordHistory(recoveryTask, [{
     id: recoveryTurnId,
     prompt: "Corrupted tail",
     answer: "Recovery final",

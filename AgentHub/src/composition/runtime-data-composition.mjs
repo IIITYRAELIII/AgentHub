@@ -36,7 +36,7 @@ export async function createRuntimeDataComposition({
   const messagePins = new StreamMessagePinStore({
     databaseFile: path.join(config.dataDir, "journal.sqlite"),
   });
-  await Promise.all([taskDiffs.load(), taskSyncStore.load()]);
+  await Promise.all([taskDiffs.load(), taskSyncStore.load(), messagePins.initialize()]);
   await taskSyncStore.save();
 
   return {

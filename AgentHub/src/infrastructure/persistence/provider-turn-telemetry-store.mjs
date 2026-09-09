@@ -1,5 +1,6 @@
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 
 function optionalNumber(value) {
   const number = Number(value);
@@ -58,9 +59,9 @@ function normalize(record) {
 
 function configure(database) {
   database.exec(`
+    PRAGMA busy_timeout = 0;
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
-    PRAGMA busy_timeout = 0;
     CREATE TABLE IF NOT EXISTS provider_turn_telemetry (
       provider TEXT NOT NULL,
       thread_id TEXT NOT NULL,
@@ -112,26 +113,32 @@ function configure(database) {
 export class ProviderTurnTelemetryStore {
   #database = null;
   #databaseFile;
-  #tail = Promise.resolve();
+  #mutations = new AsyncSqliteMutationQueue();
+  #mutationTimeoutMs;
   #closed = false;
 
-  constructor({ databaseFile }) {
+  constructor({ databaseFile, mutationTimeoutMs = 5_000 }) {
     this.#databaseFile = path.resolve(databaseFile);
+    this.#mutationTimeoutMs = mutationTimeoutMs;
   }
 
   #open() {
     if (this.#closed) throw new Error("Provider turn telemetry store is closed");
     if (!this.#database) {
-      this.#database = new DatabaseSync(this.#databaseFile);
-      configure(this.#database);
+      const database = new DatabaseSync(this.#databaseFile);
+      try {
+        configure(database);
+        this.#database = database;
+      } catch (error) {
+        database.close();
+        throw error;
+      }
     }
     return this.#database;
   }
 
   #enqueue(operation) {
-    const next = this.#tail.then(operation, operation);
-    this.#tail = next.catch(() => {});
-    return next;
+    return this.#mutations.run(operation, { timeoutMs: this.#mutationTimeoutMs });
   }
 
   initialize() {
@@ -237,10 +244,10 @@ export class ProviderTurnTelemetryStore {
   }
 
   async close() {
-    if (this.#closed) return;
-    await this.#tail;
-    this.#closed = true;
-    this.#database?.close();
-    this.#database = null;
+    await this.#enqueue(() => {
+      this.#closed = true;
+      this.#database?.close();
+      this.#database = null;
+    });
   }
 }

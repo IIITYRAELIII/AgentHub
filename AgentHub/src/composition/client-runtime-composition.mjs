@@ -1,3 +1,4 @@
+import { recoverRestartOperation } from "../application/restart-operation-mutations.mjs";
 import { canonicalizeProjectRoots, findContainingProject, samePath } from "../infrastructure/filesystem/config.mjs";
 import { taskGitDiff } from "../infrastructure/filesystem/task-git-diff.mjs";
 import { contextualCallback } from "../interfaces/telegram/callback-context.mjs";
@@ -315,27 +316,16 @@ export async function createClientRuntimeComposition({
         statusMediaFileIds,
       },
     },
-    applyRestoredState: (restoredState) => {
+    applyRestoredState: async (restoredState) => {
       hostState.restore(restoredState);
       const restartTarget = {
         streamId: selectionStore.snapshot().streamId,
         threadId: selectedThreadId(),
       };
-      const restoredOperationId = String(restoredState.restartRequest?.operationId ?? "").trim();
-      const interruptedRestart = restoredOperationId
-        ? maintenanceOperations.get(restoredOperationId)
-        : maintenanceOperations.migrateLegacyRestart(restoredState.restartRequest, restartTarget)
-          ?? maintenanceOperations.latestRestart(restartTarget);
-      if (interruptedRestart) {
-        maintenanceOperations.recoverInterrupted({
-          operationIds: [interruptedRestart.operationId],
-        });
-        hostState.setRestartRequest(restartRequestProjection(
-          maintenanceOperations.get(interruptedRestart.operationId),
-        ));
-      } else {
-        hostState.setRestartRequest(null);
-      }
+      const interruptedRestart = await recoverRestartOperation(
+        maintenanceOperations, restoredState.restartRequest, restartTarget,
+      );
+      hostState.setRestartRequest(interruptedRestart ? restartRequestProjection(interruptedRestart) : null);
       replaceCodexHookReceipts(restoredState.codexHookReceipts);
       const restoredThreadId = selectedThreadId();
       if (isCodex() && restoredThreadId) {

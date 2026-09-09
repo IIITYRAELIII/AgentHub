@@ -66,7 +66,7 @@ test("exact durable probe repair preserves usage and removes only its history an
   const initial = await terminalCommits.commit(completion, {
     channelIntents: { telegram: { requested: true } },
   });
-  taskSyncStore.recordHistory(completion, [
+  await taskSyncStore.recordHistory(completion, [
     { id: identity.turnId, prompt: CODEX_CONTEXT_PROBE_PROMPT, answer: "Probephantom", completed: true },
     { id: "real-user", prompt: CODEX_CONTEXT_PROBE_PROMPT, answer: "Ordinaryreply", completed: true,
       messages: [{ itemId: "real-input", role: "user", text: CODEX_CONTEXT_PROBE_PROMPT, clientUserMessageId: "ordinary-user" }] },
@@ -181,7 +181,7 @@ test("stale probe history projection cannot erase a newer ordinary terminal", as
   await terminalCommits.commit(completion);
   const repaired = await terminalCommits.reclassifyContextProbe(identity, evidence);
   await terminalCommits.commit({ ...completion, clientUserMessageId: "ordinary-user", finalAnswer: "Real answer" });
-  taskSyncStore.recordHistory(completion, [{ id: identity.turnId, prompt: CODEX_CONTEXT_PROBE_PROMPT, answer: "Real answer", completed: true }]);
+  await taskSyncStore.recordHistory(completion, [{ id: identity.turnId, prompt: CODEX_CONTEXT_PROBE_PROMPT, answer: "Real answer", completed: true }]);
   await managedHistory.persist(repaired.terminal.payload.history, { active: false, terminalRevision: repaired.terminal.terminalRevision });
   assert.equal(taskSyncStore.history(completion).length, 1);
   assert.equal(taskSyncStore.history(completion)[0].answer, "Real answer");
@@ -190,7 +190,7 @@ test("stale probe history projection cannot erase a newer ordinary terminal", as
 test("historical equal-usage fast return still repairs through the runtime facade and durable outbox", async (context) => {
   const { completion, terminalCommits, delivery, taskSyncStore, projected } = await fixture(context);
   await terminalCommits.commit(completion);
-  taskSyncStore.recordHistory(completion, [{ id: identity.turnId, prompt: CODEX_CONTEXT_PROBE_PROMPT, answer: "Ghost", completed: true }]);
+  await taskSyncStore.recordHistory(completion, [{ id: identity.turnId, prompt: CODEX_CONTEXT_PROBE_PROMPT, answer: "Ghost", completed: true }]);
   delivery.rememberLastMessage = () => assert.fail("Probe cannot revive a last message");
   delivery.rememberSeenTurn = () => assert.fail("Probe cannot replace the seen user turn");
   const facades = createRuntimeFacadesComposition({ turnEndDelivery: delivery });

@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 
 import { catalogTaskKey } from "../../domain/task-catalog-identity.mjs";
 import { withoutClaudeManagedTranscriptDuplicates } from "../../domain/claude-transcript.mjs";
@@ -1127,6 +1128,9 @@ export class LocalTaskSyncStore {
   #taskLimit;
   #canonicalizeProjectRoot;
   #canonicalizeValue;
+  #mutations = new AsyncSqliteMutationQueue();
+  #mutationTimeoutMs;
+  #revision = 0;
 
   constructor({
     filePath,
@@ -1137,6 +1141,7 @@ export class LocalTaskSyncStore {
     taskLimit = DEFAULT_TASK_LIMIT,
     canonicalizeProjectRoot = (projectRoot) => projectRoot,
     canonicalizeValue = (value) => value,
+    mutationTimeoutMs = 2_000,
   }) {
     this.#filePath = path.resolve(filePath);
     this.#databaseFile = path.resolve(databaseFile);
@@ -1146,21 +1151,25 @@ export class LocalTaskSyncStore {
     this.#taskLimit = Math.max(1, Number(taskLimit) || DEFAULT_TASK_LIMIT);
     this.#canonicalizeProjectRoot = canonicalizeProjectRoot;
     this.#canonicalizeValue = canonicalizeValue;
+    this.#mutationTimeoutMs = mutationTimeoutMs;
   }
 
   async #open() {
     if (this.#database) return this.#database;
     await mkdir(path.dirname(this.#databaseFile), { recursive: true });
-    let database;
-    try {
-      database = new DatabaseSync(this.#databaseFile);
-      configure(database);
-    } catch (error) {
-      database?.close();
-      throw error;
-    }
-    this.#database = database;
-    return database;
+    return this.#mutations.run(() => {
+      if (this.#database) return this.#database;
+      let database;
+      try {
+        database = new DatabaseSync(this.#databaseFile);
+        configure(database);
+        this.#database = database;
+        return database;
+      } catch (error) {
+        database?.close();
+        throw error;
+      }
+    }, { timeoutMs: this.#mutationTimeoutMs });
   }
 
   #taskRow(task) {
@@ -1895,8 +1904,11 @@ export class LocalTaskSyncStore {
   #transaction(run) {
     this.#database.exec("BEGIN IMMEDIATE");
     try {
+      const changesBefore = this.#database.prepare("SELECT total_changes() AS count").get().count;
       const result = run();
+      const changed = this.#database.prepare("SELECT total_changes() AS count").get().count !== changesBefore;
       this.#database.exec("COMMIT");
+      if (changed) this.#revision += 1;
       return result;
     } catch (error) {
       this.#database.exec("ROLLBACK");
@@ -1953,7 +1965,7 @@ export class LocalTaskSyncStore {
       .map((value) => persistedTask(value, this.#canonicalizeProjectRoot))
       .filter(Boolean);
     if (String(migrated?.value ?? "") !== fingerprint) {
-      this.#transaction(() => {
+      await this.#mutations.run(() => this.#transaction(() => {
         for (const task of tasks) {
           this.#writeTask(task);
           this.#writeHistory(task, cleanHistory(task.history, this.#historyLimit, { provider: task.provider }));
@@ -1963,7 +1975,7 @@ export class LocalTaskSyncStore {
           INSERT INTO task_read_model_meta (key, value) VALUES ('legacy_task_sync_sha256', ?)
           ON CONFLICT(key) DO UPDATE SET value = excluded.value
         `).run(fingerprint);
-      });
+      }), { timeoutMs: this.#mutationTimeoutMs, requestId: `task-sync:migrate:${fingerprint}` });
     }
     for (const expected of tasks) {
       const actual = this.#readTask(expected, true);
@@ -1981,7 +1993,7 @@ export class LocalTaskSyncStore {
   async load() {
     await this.#open();
     await this.#migrateLegacyFile();
-    this.#transaction(() => {
+    await this.#mutations.run(() => this.#transaction(() => {
       this.#recoverTerminalCommandIdentities();
       this.#runVersionedBackfill(
         "backfill_task_message_search_version",
@@ -2010,7 +2022,7 @@ export class LocalTaskSyncStore {
         `${SEARCH_BACKFILL_VERSION}:${journalIdentity}`,
         () => this.#backfillJournalSearchIndex(),
       );
-    });
+    }), { timeoutMs: this.#mutationTimeoutMs, requestId: "task-sync:load" });
     return this;
   }
 
@@ -2048,6 +2060,14 @@ export class LocalTaskSyncStore {
   }
 
   recordCatalog(entries, nowMs = Date.now()) {
+    const captured = (Array.isArray(entries) ? entries : []).map((entry) => ({ ...entry }));
+    return this.#mutations.run(() => this.#recordCatalog(captured, nowMs), {
+      timeoutMs: this.#mutationTimeoutMs,
+      requestId: "task-sync:catalog",
+    });
+  }
+
+  #recordCatalog(entries, nowMs) {
     let changed = false;
     this.#transaction(() => {
       for (const entry of Array.isArray(entries) ? entries : []) {
@@ -2071,6 +2091,17 @@ export class LocalTaskSyncStore {
     executionOwner = null,
     nowMs = Date.now(),
   } = {}) {
+    const capturedTask = { ...task };
+    const capturedSnapshot = { ...snapshot };
+    return this.#mutations.run(() => this.#recordSnapshot(capturedTask, capturedSnapshot, {
+      executionOwner, nowMs,
+    }), {
+      timeoutMs: this.#mutationTimeoutMs,
+      requestId: `task-sync:snapshot:${catalogTaskKey(capturedTask)}`,
+    });
+  }
+
+  #recordSnapshot(task, snapshot, { executionOwner, nowMs }) {
     const existing = this.#readTask(task) ?? {};
     const activityAtMs = Number(snapshot.activityAtMs ?? snapshot.modifiedAtMs ?? nowMs) || nowMs;
     const next = persistedTask({
@@ -2095,6 +2126,16 @@ export class LocalTaskSyncStore {
   }
 
   recordHistory(task, history, snapshot = null, nowMs = Date.now()) {
+    const capturedTask = { ...task };
+    const capturedSnapshot = snapshot ? { ...snapshot } : null;
+    const capturedHistory = structuredClone(history);
+    return this.#mutations.run(() => this.#recordHistory(capturedTask, capturedHistory, capturedSnapshot, nowMs), {
+      timeoutMs: this.#mutationTimeoutMs,
+      requestId: `task-sync:history:${catalogTaskKey(capturedTask)}`,
+    });
+  }
+
+  #recordHistory(task, history, snapshot, nowMs) {
     const existing = this.#readTask(task, true) ?? {};
     const terminals = terminalHistoryTurns(existing.history);
     const journalHistory = this.#reconcileHistoryWithJournal(task, history);
@@ -2375,10 +2416,20 @@ export class LocalTaskSyncStore {
   }
 
   save() {
-    return Promise.resolve();
+    return this.#mutations.idle();
+  }
+
+  mutationDiagnostics() {
+    return this.#mutations.diagnostics();
+  }
+
+  // Process-local read-model invalidation, never a command/CAS identity.
+  get revision() {
+    return this.#revision;
   }
 
   close() {
+    if (this.#mutations.diagnostics().queued > 0) return this.#mutations.idle().then(() => this.close());
     this.#database?.close();
     this.#database = null;
   }

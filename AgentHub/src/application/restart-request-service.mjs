@@ -1,3 +1,4 @@
+import { mutateRestartOperation, restartOperationId, retainedRestartRequest } from "./restart-operation-mutations.mjs";
 import {
   MAINTENANCE_OPERATION_KINDS,
   MAINTENANCE_OPERATION_STATUSES,
@@ -71,25 +72,42 @@ export class RestartRequestService {
     return request;
   }
 
-  #activeOperation(target = this.#target()) {
-    const request = this.getRequest();
-    let operation = request?.operationId
-      ? this.operationStore.get(request.operationId)
-      : null;
-    if (!operation && request) operation = this.operationStore.migrateLegacyRestart(request, target);
-    return operation ?? this.operationStore.activeFor({
-      kind: MAINTENANCE_OPERATION_KINDS.RESTART,
-      ...target,
-    });
+  #acquire(target, notification) {
+    const legacy = retainedRestartRequest(this.operationStore, this.getRequest());
+    const operationId = restartOperationId(this.operationStore);
+    const createdAt = this.nowIso();
+    return mutateRestartOperation(this.operationStore, () => {
+      const existing = (legacy?.operationId ? this.operationStore.get(legacy.operationId) : null)
+        ?? (legacy ? this.operationStore.migrateLegacyRestart(legacy, target) : null)
+        ?? this.operationStore.activeFor({ kind: MAINTENANCE_OPERATION_KINDS.RESTART, ...target });
+      if (existing) return { operation: existing, created: false };
+      const blockingCount = notification.blockingCount;
+      const operation = this.operationStore.create({
+        operationId,
+        kind: MAINTENANCE_OPERATION_KINDS.RESTART,
+        ...target,
+        status: blockingCount > 0
+          ? MAINTENANCE_OPERATION_STATUSES.BLOCKED : MAINTENANCE_OPERATION_STATUSES.REQUESTED,
+        phase: blockingCount > 0 ? "waiting-for-work" : "requested",
+        blockers: blockingCount > 0 ? ["active-work"] : [],
+        metadata: notification,
+        createdAt,
+      });
+      return { operation, created: true };
+    }, operationId);
   }
 
   #transition(operationId, patch) {
-    const current = this.operationStore.get(operationId);
-    if (!current || maintenanceOperationIsTerminal(current)) return current;
-    return this.operationStore.transition(operationId, patch, {
-      expectedRevision: current.revision,
-      updatedAt: this.nowIso(),
-    }).operation;
+    return mutateRestartOperation(this.operationStore, () => {
+      const current = this.operationStore.get(operationId);
+      if (!current || maintenanceOperationIsTerminal(current)) return null;
+      const resolvedPatch = typeof patch === "function" ? patch(current) : patch;
+      if (!resolvedPatch) return null;
+      return this.operationStore.transition(operationId, resolvedPatch, {
+        expectedRevision: current.revision,
+        updatedAt: this.nowIso(),
+      }).operation;
+    }, operationId);
   }
 
   #schedule(operation) {
@@ -112,7 +130,7 @@ export class RestartRequestService {
       return { status: "aborted", error };
     }
     if (result?.status === "failed") {
-      const operation = this.#transition(operationId, {
+      const operation = await this.#transition(operationId, {
         status: MAINTENANCE_OPERATION_STATUSES.RECONCILING,
         phase: "reconciling",
         blockers: ["authoritative-state-unknown"],
@@ -130,18 +148,18 @@ export class RestartRequestService {
   async setWaiting(waiting, blockingCount = this.blockingWorkCount()) {
     const request = this.getRequest();
     if (!request?.operationId) return false;
-    const current = this.operationStore.get(request.operationId);
-    if (!current || maintenanceOperationIsTerminal(current)
-      || current.status === MAINTENANCE_OPERATION_STATUSES.RECONCILING) return false;
-    const operation = this.#transition(request.operationId, {
-      status: waiting
-        ? current.status === MAINTENANCE_OPERATION_STATUSES.REQUESTED
-          ? MAINTENANCE_OPERATION_STATUSES.BLOCKED
-          : current.status
-        : MAINTENANCE_OPERATION_STATUSES.RUNNING,
-      phase: waiting ? "waiting-for-work" : "cutover",
-      blockers: waiting ? ["active-work"] : [],
-      metadata: { blockingCount: Math.max(0, Number(blockingCount) || 0) },
+    const operation = await this.#transition(request.operationId, (current) => {
+      if (current.status === MAINTENANCE_OPERATION_STATUSES.RECONCILING) return null;
+      return {
+        status: waiting
+          ? current.status === MAINTENANCE_OPERATION_STATUSES.REQUESTED
+            ? MAINTENANCE_OPERATION_STATUSES.BLOCKED
+            : current.status
+          : MAINTENANCE_OPERATION_STATUSES.RUNNING,
+        phase: waiting ? "waiting-for-work" : "cutover",
+        blockers: waiting ? ["active-work"] : [],
+        metadata: { blockingCount: Math.max(0, Number(blockingCount) || 0) },
+      };
     });
     if (!operation) return false;
     this.#project(operation);
@@ -151,16 +169,18 @@ export class RestartRequestService {
 
   complete(operationId = this.getRequest()?.operationId) {
     if (!operationId) return null;
-    return this.operationStore.settle(operationId, { succeeded: true, phase: "completed" });
+    return mutateRestartOperation(this.operationStore, () => this.operationStore.settle(
+      operationId, { succeeded: true, phase: "completed" },
+    ), operationId);
   }
 
   async fail(operationId = this.getRequest()?.operationId, error = null) {
     if (!operationId) return null;
-    const operation = this.operationStore.settle(operationId, {
+    const operation = await mutateRestartOperation(this.operationStore, () => this.operationStore.settle(operationId, {
       succeeded: false,
       phase: "failed",
       metadata: { error: String(error?.message ?? error ?? "").slice(0, 1_000) || null },
-    });
+    }), operationId);
     this.setRequest(null);
     await this.saveState();
     return operation;
@@ -168,7 +188,16 @@ export class RestartRequestService {
 
   async fromDesktop() {
     const target = this.#target();
-    const existing = this.#activeOperation(target);
+    const blockingCount = this.blockingWorkCount();
+    const notification = this.#notification({
+      messageId: null,
+      minimumUpdateOffset: this.updateOffset(),
+      notifyTelegram: false,
+      blockingCount,
+    });
+    const acquired = await this.#acquire(target, notification);
+    const operation = acquired.operation;
+    const existing = acquired.created ? null : operation;
     if (existing) {
       const blockingCount = this.blockingWorkCount();
       const stopping = this.isStopping();
@@ -188,24 +217,7 @@ export class RestartRequestService {
             : "Перезапуск уже запрошен и запущен повторно",
       };
     }
-    const blockingCount = this.blockingWorkCount();
-    const notification = this.#notification({
-      messageId: null,
-      minimumUpdateOffset: this.updateOffset(),
-      notifyTelegram: false,
-      blockingCount,
-    });
-    const operation = this.operationStore.create({
-      kind: MAINTENANCE_OPERATION_KINDS.RESTART,
-      ...target,
-      status: blockingCount > 0
-        ? MAINTENANCE_OPERATION_STATUSES.BLOCKED
-        : MAINTENANCE_OPERATION_STATUSES.REQUESTED,
-      phase: blockingCount > 0 ? "waiting-for-work" : "requested",
-      blockers: blockingCount > 0 ? ["active-work"] : [],
-      metadata: notification,
-      createdAt: this.nowIso(),
-    });
+
     const request = this.#project(operation, notification);
     await this.saveState();
     void this.announceDesktop(request, blockingCount);
@@ -222,14 +234,6 @@ export class RestartRequestService {
 
   async fromTelegram() {
     const target = this.#target();
-    const existing = this.#activeOperation(target);
-    if (existing) {
-      this.#project(existing);
-      await this.sendTelegram(existing.blockers.includes("active-work")
-        ? "Перезапуск уже ожидает завершения выполняющихся потоков."
-        : "Бот уже перезапускается.");
-      return { accepted: false, operationId: existing.operationId };
-    }
     const blockingCount = this.blockingWorkCount();
     const processingUpdateId = this.processingUpdateId();
     const notification = this.#notification({
@@ -240,17 +244,17 @@ export class RestartRequestService {
       notifyTelegram: true,
       blockingCount,
     });
-    let operation = this.operationStore.create({
-      kind: MAINTENANCE_OPERATION_KINDS.RESTART,
-      ...target,
-      status: blockingCount > 0
-        ? MAINTENANCE_OPERATION_STATUSES.BLOCKED
-        : MAINTENANCE_OPERATION_STATUSES.REQUESTED,
-      phase: blockingCount > 0 ? "waiting-for-work" : "requested",
-      blockers: blockingCount > 0 ? ["active-work"] : [],
-      metadata: notification,
-      createdAt: this.nowIso(),
-    });
+    const acquired = await this.#acquire(target, notification);
+    let operation = acquired.operation;
+    const existing = acquired.created ? null : operation;
+    if (existing) {
+      this.#project(existing);
+      await this.sendTelegram(existing.blockers.includes("active-work")
+        ? "Перезапуск уже ожидает завершения выполняющихся потоков."
+        : "Бот уже перезапускается.");
+      return { accepted: false, operationId: existing.operationId };
+    }
+
     this.#project(operation, notification);
     await this.saveState();
     try {
@@ -258,7 +262,7 @@ export class RestartRequestService {
         ? `🔄 Перезапущу бота после завершения выполняющихся потоков: ${blockingCount}.`
         : "🔄 Перезапускаю Agent Hub…");
       if (!message?.message_id) throw new Error("Telegram не вернул ID сообщения перезапуска");
-      operation = this.#transition(operation.operationId, {
+      operation = await this.#transition(operation.operationId, {
         metadata: { messageId: message.message_id },
       });
       this.#project(operation);

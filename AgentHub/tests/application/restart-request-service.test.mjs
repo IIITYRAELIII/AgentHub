@@ -2,17 +2,24 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { RestartRequestService } from "../../src/application/restart-request-service.mjs";
+import { AsyncSqliteMutationQueue } from "../../src/infrastructure/persistence/async-sqlite-mutation-queue.mjs";
 import {
   createMaintenanceOperation,
   transitionMaintenanceOperation,
 } from "../../src/domain/maintenance-operation.mjs";
 
 class MemoryOperationStore {
+  #restartMutations = new AsyncSqliteMutationQueue();
+
+  runRestartMutation(operation, options) { return this.#restartMutations.run(operation, options); }
+
   constructor(events) {
     this.events = events;
     this.items = new Map();
     this.nextId = 0;
   }
+
+  idFactory() { return "restart-" + (++this.nextId); }
 
   create(value) {
     const operation = createMaintenanceOperation({

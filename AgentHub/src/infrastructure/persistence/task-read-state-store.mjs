@@ -1,4 +1,5 @@
 import { openRuntimeDatabase } from "./runtime-state-store.mjs";
+import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 
 const ACCOUNT_ID_MAX_CHARS = 160;
 const THREAD_ID_MAX_CHARS = 200;
@@ -80,36 +81,59 @@ export function taskHasUnreadAnswer(task, cursor) {
  */
 export class TaskReadStateStore {
   #database;
+  #dataDir;
   #now;
   #revision = 0;
+  #mutations = new AsyncSqliteMutationQueue();
 
   constructor({ dataDir, now = () => Date.now() } = {}) {
     if (!dataDir) throw new Error("TaskReadStateStore dataDir is required");
-    this.#database = openRuntimeDatabase(dataDir);
+    this.#dataDir = dataDir;
     this.#now = now;
-    this.#database.exec(`
-      CREATE TABLE IF NOT EXISTS task_read_state (
-        account_id TEXT NOT NULL,
-        provider TEXT NOT NULL,
-        thread_id TEXT NOT NULL,
-        answer_at_ms INTEGER NOT NULL,
-        answer_turn_id TEXT NOT NULL DEFAULT '',
-        answer_revision INTEGER NOT NULL DEFAULT 0,
-        read_at_ms INTEGER NOT NULL,
-        updated_at TEXT NOT NULL,
-        PRIMARY KEY (account_id, provider, thread_id)
-      ) WITHOUT ROWID;
-      CREATE INDEX IF NOT EXISTS task_read_state_account_updated_idx
-        ON task_read_state(account_id, updated_at DESC);
-    `);
-    const columns = new Set(this.#database.prepare("PRAGMA table_info(task_read_state)").all()
-      .map((column) => String(column.name)));
-    if (!columns.has("answer_revision")) {
-      this.#database.exec("ALTER TABLE task_read_state ADD COLUMN answer_revision INTEGER NOT NULL DEFAULT 0");
-    }
+  }
+
+  initialize() {
+    return this.#mutations.run(() => {
+      if (this.#database) return this;
+      const database = openRuntimeDatabase(this.#dataDir);
+      let transaction = false;
+      try {
+        database.exec("BEGIN IMMEDIATE");
+        transaction = true;
+        database.exec(`
+          CREATE TABLE IF NOT EXISTS task_read_state (
+            account_id TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            thread_id TEXT NOT NULL,
+            answer_at_ms INTEGER NOT NULL,
+            answer_turn_id TEXT NOT NULL DEFAULT '',
+            answer_revision INTEGER NOT NULL DEFAULT 0,
+            read_at_ms INTEGER NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (account_id, provider, thread_id)
+          ) WITHOUT ROWID;
+          CREATE INDEX IF NOT EXISTS task_read_state_account_updated_idx
+            ON task_read_state(account_id, updated_at DESC);
+        `);
+        const columns = new Set(database.prepare("PRAGMA table_info(task_read_state)").all()
+          .map((column) => String(column.name)));
+        if (!columns.has("answer_revision")) {
+          database.exec("ALTER TABLE task_read_state ADD COLUMN answer_revision INTEGER NOT NULL DEFAULT 0");
+        }
+        database.exec("COMMIT");
+        transaction = false;
+        this.#database = database;
+        return this;
+      } catch (error) {
+        if (transaction) database.exec("ROLLBACK");
+        database.close();
+        throw error;
+      }
+    }, { requestId: "read-state:initialize" });
   }
 
   get(value) {
+    if (!this.#database) throw new Error("TaskReadStateStore is not initialized");
     const identity = normalizedIdentity(value);
     return rowValue(this.#database.prepare(`
       SELECT account_id, provider, thread_id, answer_at_ms, answer_turn_id, answer_revision, read_at_ms, updated_at
@@ -121,6 +145,13 @@ export class TaskReadStateStore {
   get revision() { return this.#revision; }
 
   markRead(value) {
+    const retained = { ...value };
+    return this.#mutations.run(() => this.#markRead(retained), {
+      requestId: `read:${retained.accountId}:${retained.provider}:${retained.threadId}:${retained.answerTurnId}:${retained.answerRevision}`,
+    });
+  }
+
+  #markRead(value) {
     const identity = normalizedIdentity(value);
     const next = marker(value);
     if (!next) return this.get(identity);
@@ -178,7 +209,8 @@ export class TaskReadStateStore {
     return this.get(identity);
   }
 
-  close() {
+  async close() {
+    await this.#mutations.idle();
     this.#database?.close();
     this.#database = null;
   }
