@@ -1880,6 +1880,10 @@
   }
 
   function renderBoard() {
+    return window.AgentHubCommandTrace.measure("ui-render", "task-board", renderBoardContent);
+  }
+
+  function renderBoardContent() {
     const scrollSnapshot = taskBoardScrollSnapshot(boardColumnRegions);
     pointerTaskDrag.cancelForRerender();
     const visibleTasks = tasksForMode(state.tasks, { completedOnly: state.completedOnly });

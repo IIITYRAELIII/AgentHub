@@ -3,6 +3,7 @@ import { open, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
+import { setImmediate } from "node:timers/promises";
 
 import { uuidV7TimestampMs } from "./codex-subagent-accounting.mjs";
 import { IMAGE_GENERATION_ESTIMATE_CREDITS } from "../../domain/codex-usage-estimate.mjs";
@@ -873,7 +874,7 @@ export async function readCodexRecentTerminalTurns(transcriptPath, {
   );
 }
 
-async function scanJsonlChunks(input, acceptEntry, byteLimit = Number.POSITIVE_INFINITY) {
+async function scanJsonlChunks(input, acceptEntry, byteLimit = Number.POSITIVE_INFINITY, { signal } = {}) {
   let pendingParts = [];
   let pendingLength = 0;
   let bytesRead = 0;
@@ -891,6 +892,7 @@ async function scanJsonlChunks(input, acceptEntry, byteLimit = Number.POSITIVE_I
   };
 
   for await (const chunk of input) {
+    if (signal) await setImmediate(undefined, { signal });
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     bytesRead += buffer.length;
     let start = 0;
@@ -1454,6 +1456,7 @@ export async function readCodexSubagentSpawn(transcriptPath, childThreadId, {
 
 export async function scanCodexTurnPricingMetadata(transcriptPath, turnIds, {
   createReadStreamImpl = createReadStream,
+  signal,
 } = {}) {
   const requested = new Set(
     [...(turnIds ?? [])].map((value) => String(value ?? "").trim()).filter(Boolean),
@@ -1462,10 +1465,14 @@ export async function scanCodexTurnPricingMetadata(transcriptPath, turnIds, {
   if (!requested.size) return result;
   let latestModel = "";
   let latestServiceTier = "default";
-  const input = createReadStreamImpl(transcriptPath, { encoding: "utf8" });
+  signal?.throwIfAborted();
+  const input = createReadStreamImpl(transcriptPath, { encoding: "utf8", signal });
+  let processedLines = 0;
   const lines = createInterface({ input, crlfDelay: Infinity });
   try {
     for await (const line of lines) {
+      signal?.throwIfAborted();
+      if (++processedLines % 256 === 0) await setImmediate(undefined, { signal });
       if (!line) continue;
       let entry;
       try {
@@ -1633,12 +1640,12 @@ async function scanCodexTurnJsonlFromOffset(
   transcriptPath,
   accumulator,
   start,
-  { createReadStreamImpl = createReadStream } = {},
+  { createReadStreamImpl = createReadStream, signal } = {},
 ) {
-  const input = createReadStreamImpl(transcriptPath, { start });
+  const input = createReadStreamImpl(transcriptPath, { start, signal });
   const { bytesRead, pending } = await scanJsonlChunks(input, (entry) => {
     accumulator.accept(entry);
-  });
+  }, Number.POSITIVE_INFINITY, { signal });
   if (pending.length) {
     try {
       accumulator.accept(JSON.parse(pending.toString("utf8").replace(/\r$/u, "")));
@@ -1655,7 +1662,9 @@ export async function scanCodexTurnJsonlIncrementally(transcriptPath, turnId, {
   findTurnStartImpl = findCodexTurnStartOffsetFromTail,
   attempts = 5,
   retryDelayMs = 40,
+  signal,
 } = {}) {
+  signal?.throwIfAborted();
   const accumulator = createTurnAccumulator(turnId);
   let position;
   try {
@@ -1666,16 +1675,18 @@ export async function scanCodexTurnJsonlIncrementally(transcriptPath, turnId, {
   let result = null;
   let error = null;
   for (let attempt = 0; attempt < Math.max(1, attempts); attempt += 1) {
+    signal?.throwIfAborted();
     try {
       position = await scanCodexTurnJsonlFromOffset(
         transcriptPath,
         accumulator,
         position,
-        { createReadStreamImpl },
+        { createReadStreamImpl, signal },
       );
       result = accumulator.result();
       if (result.reported && result.finalTokenSeen && result.terminal) return result;
     } catch (currentError) {
+      signal?.throwIfAborted();
       error = currentError;
     }
     if (attempt + 1 < attempts) await delay(retryDelayMs);
@@ -1692,9 +1703,10 @@ export async function readCodexTurnUsage(transcriptPath, turnId, {
   scanIncrementalImpl = scanCodexTurnJsonlIncrementally,
   attempts = 5,
   retryDelayMs = 40,
+  signal,
 } = {}) {
   if (!readFileImpl && !readTailImpl && !scanImpl) {
-    return scanIncrementalImpl(transcriptPath, turnId, { attempts, retryDelayMs });
+    return scanIncrementalImpl(transcriptPath, turnId, { attempts, retryDelayMs, ...(signal ? { signal } : {}) });
   }
   let result = null;
   let error = null;

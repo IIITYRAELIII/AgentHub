@@ -34,6 +34,7 @@ export function createAgentHubBootstrapComposition({
   beginStopping,
   sqliteRecovery,
   acknowledgeSqliteRecovery,
+  commandTrace = null,
   createDesktopControlServer = (options) => new DesktopControlServer(options),
 }) {
   let desktopControlServer = null;
@@ -82,6 +83,7 @@ export function createAgentHubBootstrapComposition({
     warnUser,
     sqliteRecovery,
     acknowledgeSqliteRecovery,
+    commandTrace,
   });
 
   return {

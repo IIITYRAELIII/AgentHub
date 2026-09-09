@@ -492,7 +492,9 @@ export async function createHubInfrastructure({
   });
 
   await mkdir(path.dirname(stateFile), { recursive: true });
-  commandTrace = createCommandTraceComposition({ dataDir: config.dataDir });
+  commandTrace = createCommandTraceComposition({ dataDir: config.dataDir,
+    instanceId: instanceGuard.instanceToken, releaseId: process.env.AGENT_HUB_RELEASE_ID,
+    readHealth: () => agentHubRuntimeHealth.snapshot() });
   await commandTrace.initialize();
   const usdRubRateStore = new UsdRubRateStore({ cacheFile: exchangeRatesFile });
   await usdRubRateStore.load().catch((error) => {

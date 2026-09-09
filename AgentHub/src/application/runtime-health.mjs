@@ -43,6 +43,7 @@ function operationSnapshot(operation) {
     id: operation.id,
     label: operation.label,
     state: operation.state,
+    ...(operation.background ? { background: true } : {}),
     ...(operation.startedAtMs ? { startedAtMs: operation.startedAtMs } : {}),
     ...(operation.completedAtMs ? { completedAtMs: operation.completedAtMs } : {}),
     ...(operation.state === "failed" && operation.error ? { error: operation.error } : {}),
@@ -113,15 +114,16 @@ export class RuntimeHealth {
     return operation;
   }
 
-  startOperation(id) {
+  startOperation(id, { background = false } = {}) {
     const operation = this.#operation(id);
     const running = [...this.#startup.operations.values()]
-      .find((entry) => entry.state === "running" && entry.id !== operation.id);
-    if (running) throw new Error(`runtime health operation already running: ${running.id}`);
+      .find((entry) => entry.state === "running" && !entry.background && entry.id !== operation.id);
+    if (running && !background) throw new Error(`runtime health operation already running: ${running.id}`);
     if (!["pending", "running"].includes(operation.state)) {
       throw new Error(`runtime health operation cannot start from ${operation.state}: ${operation.id}`);
     }
     operation.state = "running";
+    operation.background = background;
     operation.startedAtMs ||= Number(this.#now());
     operation.completedAtMs = 0;
     operation.error = "";
@@ -140,19 +142,21 @@ export class RuntimeHealth {
     return this;
   }
 
-  retryOperation(id) {
+  retryOperation(id, { background = false } = {}) {
     const operation = this.#operation(id);
     if (!["failed", "skipped"].includes(operation.state)) {
       throw new Error(`runtime health operation cannot retry from ${operation.state}: ${operation.id}`);
     }
-    if ([...this.#startup.operations.values()].some((entry) => entry.state === "running")) {
+    if (!background && [...this.#startup.operations.values()].some((entry) => entry.state === "running" && !entry.background)) {
       throw new Error("runtime health operation is already running");
     }
     operation.state = "pending";
     operation.startedAtMs = 0;
-    this.#phase = "starting";
-    this.#startup.completedAtMs = 0;
-    return this.startOperation(id);
+    if (!background) {
+      this.#phase = "starting";
+      this.#startup.completedAtMs = 0;
+    }
+    return this.startOperation(id, { background });
   }
 
   failOperation(id, error = "") {

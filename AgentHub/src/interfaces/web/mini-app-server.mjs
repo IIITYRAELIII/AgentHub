@@ -8,6 +8,7 @@ import { pipeline } from "node:stream/promises";
 import { gzipSync } from "node:zlib";
 import { agentHubRuntimeHealth } from "../../application/runtime-health.mjs";
 import { clientCommandAckTraceSpan } from "../../application/client-command-trace.mjs";
+import { clientPerformanceTraceSpans } from "../../application/client-performance-trace.mjs";
 import { WorkspaceFileTransferTickets } from "../../application/workspace-file-transfer-tickets.mjs";
 
 import {
@@ -1075,7 +1076,7 @@ export class MiniAppServer {
       }
       return;
     }
-    if (url.pathname === "/api/command-trace/client-ack") {
+    if (["/api/command-trace/client-ack", "/api/command-trace/client-events"].includes(url.pathname)) {
       if (method !== "POST") {
         response.writeHead(405, {
           Allow: "POST",
@@ -1087,7 +1088,13 @@ export class MiniAppServer {
       const authorization = await this.#authorize(request, response);
       if (!authorization) return;
       try {
-        const body = await readJsonBody(request);
+        const body = await readJsonBody(request, 32 * 1024);
+        if (url.pathname.endsWith("/client-events")) {
+          const spans = clientPerformanceTraceSpans(body);
+          for (const span of spans) this.#recordCommandTrace?.(span);
+          json(response, 200, { ok: true, accepted: spans.length }, method);
+          return;
+        }
         const commandId = String(body.commandId ?? "").trim();
         if (!CONTROL_COMMAND_ID_PATTERN.test(commandId)) {
           throw new Error("Некорректный идентификатор команды");

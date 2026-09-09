@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createAgentHubBootstrapComposition } from "../../src/composition/agent-hub-bootstrap-composition.mjs";
 import { createRuntimeLifecycleComposition } from "../../src/composition/runtime-lifecycle-composition.mjs";
+import { RuntimeResourceRegistry } from "../../src/runtime/runtime-resource-registry.mjs";
 import { RuntimeLifecycleController } from "../../src/runtime/runtime-lifecycle-controller.mjs";
 
 test("runtime composition marks readiness before starting background timers", async () => {
@@ -224,4 +225,39 @@ test("runtime lifecycle reports an unexpected phase exception before rethrowing"
       action: "quiesce",
     },
   }]);
+});
+
+
+test("shutdown aborts optional metadata and drains its current operation before closing stores", async () => {
+  let entered;
+  let aborted;
+  let release;
+  let closed = false;
+  const atMetadata = new Promise((resolve) => { entered = resolve; });
+  const atAbort = new Promise((resolve) => { aborted = resolve; });
+  const noOp = async () => {};
+  const resources = new RuntimeResourceRegistry({ close: [{ name: "stores", run: () => { closed = true; } }] });
+  const lifecycle = createRuntimeLifecycleComposition({
+    telegramEnabled: true, beginStopping: () => true,
+    stopRuntimeTimers() {}, stopManagedRuns() {}, stopMedia() {}, runtimeResources: resources,
+    startDesktopControl: noOp, startRuntimeCommand: noOp, startHubMcp: noOp,
+    startMiniApp: noOp, sanitizeRollouts: noOp, initializeProvider: noOp,
+    providerIsRunning: () => true,
+    backfillProviderMetadata: ({ signal }) => {
+      signal.addEventListener("abort", () => aborted(), { once: true });
+      entered();
+      return new Promise((resolve) => { release = resolve; });
+    },
+    recoverRuns: noOp, retryNotifications: noOp, restoreBackgroundJobs: noOp,
+    startTimers() {}, registerTelegramCommands: noOp, hasPendingRestart: () => false,
+    finalizeRestart: noOp, markReady: noOp, readyMessage: () => "ready", pollTelegram: () => "polling",
+  });
+  await lifecycle.startAgentHub();
+  await atMetadata;
+  const stopped = lifecycle.shutdownAgentHub("test");
+  await atAbort;
+  assert.equal(closed, false);
+  release();
+  assert.equal(await stopped, true);
+  assert.equal(closed, true);
 });
