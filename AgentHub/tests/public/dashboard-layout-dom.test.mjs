@@ -185,6 +185,10 @@ test("Dashboard detail is a theme-safe grid panel and becomes a modal on narrow 
       assert.ok(boxes.filter.right <= boxes.toolbar.right, `${theme}: filters stay inside toolbar with many Workspaces`);
       assert.ok(boxes.scopes.right <= boxes.filter.x, `${theme}: scopes scroll without covering filters`);
       assert.ok(boxes.board.x >= 8 && boxes.detail.right < 1487, `${theme}: small outer gutters`);
+      assert.equal(await page.locator('.task-board-row-head').first().evaluate((el) => {
+        const cells = [...el.children].map((child) => child.getBoundingClientRect());
+        return cells.every((cell, index) => index === 0 || cells[index - 1].right <= cell.x);
+      }), true, `${theme}: metadata headings do not overlap`);
       assert.equal(await page.locator("[data-task-preview-title]").textContent(), "Задача 1");
     }
     await page.locator("[data-task-card-edit-toggle]").click();
