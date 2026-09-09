@@ -90,11 +90,11 @@ const tasks = [
   task("7", { status: "done", workflowStatus: "done" }),
 ];
 
-async function setBoard(page) {
+async function setBoard(page, boardWorkspaces = workspaces) {
   await page.evaluate(({ tasks, workspaces }) => {
     document.documentElement.dataset.view = "dashboard";
     window.AgentHubTaskBoard.setSnapshot({ tasks, workspaces, columnOrder: ["notes", "workspace:two", "workspace:one"] });
-  }, { tasks, workspaces });
+  }, { tasks, workspaces: boardWorkspaces });
 }
 
 async function dropTask(page, taskId, target) {
@@ -159,7 +159,9 @@ test("Dashboard detail is a theme-safe grid panel and becomes a modal on narrow 
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await openFixture(page);
-    await setBoard(page);
+    await setBoard(page, [...workspaces, ...Array.from({ length: 20 }, (_, index) => ({
+      id: `extra-${index}`, name: `Дополнительный Workspace ${index}`, streams: [],
+    }))]);
     await page.locator('[data-task-board-columns] [data-board-task-id="1"]').click();
     const dialog = page.locator("[data-task-card-modal]");
     for (const theme of THEMES) {
@@ -170,12 +172,15 @@ test("Dashboard detail is a theme-safe grid panel and becomes a modal on narrow 
           return { x: r.x, y: r.y, right: r.right, bottom: r.bottom, width: r.width };
         };
         return { board: box("[data-task-board-columns]"), detail: box("[data-task-card-modal]"), toolbar: box(".task-board-toolbar"),
+          filter: box("[data-task-board-filter-toggle]"), scopes: box("[data-task-board-scopes]"),
           modal: document.querySelector("[data-task-card-modal]").matches(":modal") };
       });
       assert.equal(boxes.modal, false, theme);
       assert.ok(boxes.board.right <= boxes.detail.x + 1, `${theme}: board does not overlap detail`);
       assert.ok(Math.abs(boxes.board.y - boxes.detail.y) < 1, `${theme}: aligned top boundaries`);
       assert.ok(boxes.toolbar.bottom <= boxes.detail.y + 1, `${theme}: full-width toolbar above panel`);
+      assert.ok(boxes.filter.right <= boxes.toolbar.right, `${theme}: filters stay inside toolbar with many Workspaces`);
+      assert.ok(boxes.scopes.right <= boxes.filter.x, `${theme}: scopes scroll without covering filters`);
       assert.equal(await page.locator("[data-task-preview-title]").textContent(), "Задача 1");
     }
     await page.locator("[data-task-card-edit-toggle]").click();

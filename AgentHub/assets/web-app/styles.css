@@ -3727,6 +3727,10 @@ html[data-view="dashboard"] .task-board-view {
   scrollbar-width: thin;
 }
 
+.task-board-toolbar-actions {
+  flex: 0 0 auto;
+}
+
 .task-board-scope,
 .task-board-filter-toggle {
   background: transparent;
