@@ -2155,6 +2155,12 @@ test("explicit archival recovery persists a report outside the cold live tail wi
     const view = new TaskViewController({ taskSyncStore: store, findCodexRolloutPath: async () => rolloutPath, readCodexRolloutActivity });
     await view.readHistory(task, { completedOnly: true });
     assert.equal(store.history(task)[0].messages.find((message) => message.itemId === "child-report").role, "user");
+    const withoutReport = store.history(task).map((turn) => ({
+      ...turn, messages: turn.messages.filter((message) => message.itemId !== "child-report"),
+    }));
+    store.recordHistory(task, withoutReport);
+    await store.save();
+    await appendFile(rolloutPath, JSON.stringify({ type: "event_msg", payload: { type: "task_complete", turn_id: turnId, last_agent_message: "Итог" } }) + "\n");
     const harness = fixture({ history: store.history(task), run: null, refresh: async (binding, options) => {
       const result = await view.readHistory(binding, { ...options, completedOnly: true });
       harness.state.history = store.history(task);
@@ -2165,13 +2171,14 @@ test("explicit archival recovery persists a report outside the cold live tail wi
     assert.equal(report.role, "agent");
     assert.equal(report.kind, "subagent");
     assert.equal(report.time, "2026-09-09T11:48:29.467Z");
+    await view.readHistory(task, { completedOnly: true });
     store.close();
     store = new LocalTaskSyncStore({ filePath });
     await store.load();
     const messages = store.history(task)[0].messages;
     assert.equal(messages.find((message) => message.itemId === "child-report").role, "agent");
     assert.equal(messages.find((message) => message.clientUserMessageId === "real-client").role, "user");
-    assert.equal(messages.length, 2);
+    assert.equal(messages.filter((message) => message.kind === "subagent").length, 1);
   } finally {
     store.close();
     await rm(directory, { recursive: true, force: true });

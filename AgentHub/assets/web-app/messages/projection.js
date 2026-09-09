@@ -57,7 +57,9 @@
     const turn = providerTurnIdentity(value);
     const role = text(value?.role);
     const providerEntity = providerEntityIdentity(value);
-    if (providerEntity) aliases.push(providerEntity);
+    if (providerEntity && !(role === "user" && aliases.length && !text(value?.itemId))) {
+      aliases.push(providerEntity);
+    }
     if (turn && ["agent", "assistant"].includes(role) && value?.kind !== "subagent") {
       aliases.push(`provider-turn\0${turn}\0agent-card`);
     }

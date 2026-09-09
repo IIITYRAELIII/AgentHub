@@ -20,6 +20,13 @@ match; text and provider item IDs are not recovery evidence. Client-bound or
 ambiguous records remain unchanged. The existing history controller persists the
 result and the existing merge guard prevents stale caches from restoring it.
 
+Startup terminal-ledger recovery can already have removed misclassified users.
+Consequently explicit recovery also reconstructs missing subagent reports from
+source-native notifications in the requested exact completed turn, rather than
+requiring a surviving bad row. Partial final-answer refreshes retain those
+independent reports. Client projection must not merge distinct command IDs through
+an absent provider item ID after terminal-ledger recovery.
+
 ## Consequences
 
 Normal startup, polling and live refresh retain their current bounds. Explicit

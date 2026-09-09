@@ -12,8 +12,9 @@ const MAX_LINE_BYTES = 4 * 1024 * 1024;
 
 export async function recoverCodexRolloutSubagentsOnCurrentThread(rolloutPath, candidates) {
   if (!Array.isArray(candidates) || candidates.length > 1000) throw new Error("Invalid recovery candidates");
-  const wanted = new Set(candidates.map((item) => item.sourceOccurrenceId));
-  if (!wanted.size) return [];
+  const wanted = new Set(candidates.map((item) => item.sourceOccurrenceId).filter(Boolean));
+  const completeTurns = new Set(candidates.filter((item) => !item.sourceOccurrenceId).map((item) => item.turnId));
+  if (!wanted.size && !completeTurns.size) return [];
   const turnIds = [...new Set(candidates.map((item) => item.turnId))];
   if (turnIds.length > 20 || turnIds.some((id) => typeof id !== "string" || !id.trim())) {
     throw new Error("Invalid recovery turns");
@@ -62,18 +63,21 @@ export async function recoverCodexRolloutSubagentsOnCurrentThread(rolloutPath, c
               const sourceOccurrenceId = rolloutSourceByteOccurrenceId(
                 generation, rolloutRecordFingerprint(entry), offset - pending.length + fragment.length,
               );
-              if (wanted.has(sourceOccurrenceId)) {
+              const metadata = entry.payload.internal_chat_message_metadata_passthrough;
+              const turnId = String(metadata?.turn_id ?? currentTurnId);
+              if (wanted.has(sourceOccurrenceId) || completeTurns.has(turnId)) {
                 const text = (Array.isArray(entry.payload.content) ? entry.payload.content : [])
                   .filter((part) => part.type === "input_text" || part.type === "text")
                   .map((part) => String(part.text ?? "")).join("\n");
                 const notification = codexSubagentNotificationDetails(text);
-                const metadata = entry.payload.internal_chat_message_metadata_passthrough;
                 const clientId = entry.payload.client_id || metadata?.client_id;
-                const turnId = String(metadata?.turn_id ?? currentTurnId);
                 if (notification?.agentThreadId && !clientId
-                  && candidates.some((item) => item.turnId === turnId && item.sourceOccurrenceId === sourceOccurrenceId)) {
+                  && (completeTurns.has(turnId) || candidates.some((item) => item.turnId === turnId && item.sourceOccurrenceId === sourceOccurrenceId))) {
+                  if (recovered.length >= 1000) throw new Error("Subagent recovery result limit exceeded");
                   recovered.push({
                     ...notification, sourceOccurrenceId, role: "agent",
+                    turnId,
+                    itemId: String(entry.payload.id ?? "").trim() || `${turnId}:subagent:${sourceOccurrenceId}`,
                     ...(entry.timestamp ? { time: entry.timestamp } : {}),
                   });
                 }
@@ -86,9 +90,9 @@ export async function recoverCodexRolloutSubagentsOnCurrentThread(rolloutPath, c
         }
         offset += end - cursor + (newline < 0 ? 0 : 1);
         cursor = newline < 0 ? chunk.length : newline + 1;
-        if (!wanted.size) break;
+        if (!wanted.size && !completeTurns.size) break;
       }
-      if (!wanted.size) break;
+      if (!wanted.size && !completeTurns.size) break;
     }
   } finally {
     stream.destroy();

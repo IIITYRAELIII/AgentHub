@@ -168,6 +168,18 @@ function mergeMessageAttachments(target, source) {
   return merged;
 }
 
+function retainSubagentReports(currentMessages, observedMessages) {
+  const result = observedMessages.map((message) => structuredClone(message));
+  for (const report of currentMessages.filter((message) => message.role === "agent" && message.kind === "subagent")) {
+    const sourceId = String(report.sourceOccurrenceId ?? "").trim();
+    const exists = result.some((message) => message.role === "agent" && message.kind === "subagent"
+      && (sourceId ? message.sourceOccurrenceId === sourceId
+        : report.itemId && message.itemId === report.itemId && message.agentThreadId === report.agentThreadId));
+    if (!exists) result.push(structuredClone(report));
+  }
+  return result;
+}
+
 function mergeObservedTurn(current, observed) {
   const observedMessages = Array.isArray(observed?.messages) ? observed.messages : [];
   const currentMessages = withoutMisclassifiedSubagentUsers(current?.messages, observedMessages);
@@ -191,8 +203,7 @@ function mergeObservedTurn(current, observed) {
     ...(canonical && current?.prompt ? { prompt: current.prompt } : {}),
     messages: [
       ...users,
-      ...(observedNonUsers.length ? observedNonUsers : currentNonUsers)
-        .map((message) => structuredClone(message)),
+      ...retainSubagentReports(currentNonUsers, observedNonUsers.length ? observedNonUsers : currentNonUsers),
     ],
   };
 }
@@ -231,7 +242,7 @@ function mergeAuthoritativeRolloutTurn(current, rollout) {
     status: rollout.status || current?.status,
     active: Boolean(rollout.active),
     completed: Boolean(rollout.completed),
-    messages: [...users, ...agents],
+    messages: [...users, ...retainSubagentReports(currentAgents, agents)],
     ...(rollout.activityGroups?.length
       ? {
         activityGroups: structuredClone(rollout.activityGroups),
@@ -590,19 +601,16 @@ export class TaskViewController {
           if (repairSubagentTurnIds.length) {
             const turns = cached.filter((turn) => repairSubagentTurnIds.includes(turn.id)
               && turn.completed === true && turn.active !== true);
-            const candidates = turns.flatMap((turn) => (turn.messages ?? [])
-              .filter((message) => message.role === "user" && !message.clientUserMessageId
-                && !message.clientId && !message.submissionId && !message.origin && !message.messageOrigin
-                && /^codex-rollout:[0-9a-f]{64}$/u.test(message.sourceOccurrenceId ?? ""))
-              .map((message) => ({ turnId: turn.id, sourceOccurrenceId: message.sourceOccurrenceId })));
+            const candidates = turns.map((turn) => ({ turnId: turn.id }));
             const evidence = await (d.recoverCodexRolloutSubagents ?? recoverCodexRolloutSubagents)(directRolloutPath, candidates);
             for (const turn of turns) {
-              const retained = withoutMisclassifiedSubagentUsers(turn.messages, evidence);
-              const retainedSet = new Set(retained);
-              turn.messages = turn.messages.map((message) => retainedSet.has(message) ? message : {
-                ...message,
-                ...evidence.find((item) => item.sourceOccurrenceId === message.sourceOccurrenceId),
-              });
+              const reports = evidence.filter((message) => message.turnId === turn.id);
+              const current = turn.messages ?? [];
+              const retained = withoutMisclassifiedSubagentUsers(current, reports);
+              const recovered = reports.filter((report) => !retained.some((message) => (
+                message.sourceOccurrenceId === report.sourceOccurrenceId
+              )));
+              turn.messages = [...retained, ...recovered];
             }
           }
           const rolloutActivity = await d.readCodexRolloutActivity(

@@ -34,11 +34,17 @@
   Reports outside the live tail can be repaired explicitly through `task-history`
   with `repairSubagentTurnIds` (at most 20 exact turns). The provider worker locates
   their retained turn-start boundaries and reads bounded JSONL records from that
-  point, matching only the existing byte-coordinate source identities. The normal
+  point, matching existing byte-coordinate source identities and recovering
+  missing reports from source-native notifications in the exact completed turn.
+  A terminal command-only payload is not evidence that subagent reports never
+  existed. Later partial final-answer refreshes retain recovered reports. The normal
   history owner persists the correction. This maintenance is never part of startup,
   polling or ordinary refresh, never dispatches a turn, and leaves unavailable,
   rewritten, client-bound or ambiguous evidence unchanged. Remove this opt-in
   migration together with the pre-fix subagent projection guard.
+- Distinct client command identities remain distinct when terminal recovery
+  supplies no provider item ID. A shared turn/role is not an alias joining those
+  commands; inter-Stream authorship must not leak into another user message.
 - Internal probes, measurements and maintenance operations have separate kinds
   and never create user-turn cards.
 - The ordinary browser shell never waits on the third-party Telegram runtime.

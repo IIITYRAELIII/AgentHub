@@ -19,6 +19,22 @@ function plain(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+test("terminal client messages without provider item IDs remain distinct including interstream input", async () => {
+  const projection = await projectionApi();
+  const users = Array.from({ length: 6 }, (_, index) => ({
+    role: "user", provider: "codex", threadId: "thread", turnId: "turn", itemId: "",
+    clientUserMessageId: `client-${index}`, text: `Message ${index}`,
+    projectionAuthority: "canonical", projectionState: "completed",
+    ...(index === 4 ? { kind: "interstream", author: "Themes" } : {}),
+  }));
+  for (const order of [users, [...users].reverse()]) {
+    const result = plain(projection.projectCanonicalMessages([...order, ...order]));
+    assert.deepEqual(result, order);
+    assert.equal(result.find((message) => message.clientUserMessageId === "client-5").kind, undefined);
+    assert.equal(result.find((message) => message.clientUserMessageId === "client-4").author, "Themes");
+  }
+});
+
 test("canonical submission atomically replaces optimistic aliases in either order", async () => {
   const projection = await projectionApi();
   const optimistic = {
