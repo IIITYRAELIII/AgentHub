@@ -1808,20 +1808,22 @@
 
   function renderColumn({
     id, title, subtitle, tasks, accent = "", workspace = null, movable = false,
-    emptyText = "Перетащите задачу сюда",
+    acceptsTaskDrops = movable, emptyText = "Нет задач",
   }) {
     const column = node("section", {
       class: `task-board-column ${accent}${workspace ? " is-workspace" : ""}`,
-      "data-board-destination": id,
+      "data-board-destination": acceptsTaskDrops ? id : null,
       "data-board-workspace-id": workspace?.id,
     });
     column.addEventListener("dragover", (event) => {
+      if (!acceptsTaskDrops) return;
       if (hasColumnDrag(event.dataTransfer) && !movable) return;
       event.preventDefault();
       column.classList.add("is-dragover");
     });
     column.addEventListener("dragleave", () => column.classList.remove("is-dragover"));
     column.addEventListener("drop", (event) => {
+      if (!acceptsTaskDrops) return;
       event.preventDefault();
       column.classList.remove("is-dragover");
       const movedColumnId = draggedColumnId(event.dataTransfer);
@@ -1895,7 +1897,7 @@
     if (!scopeStrip) return;
     const openTasks = (predicate) => state.tasks.filter((task) => task.status !== "done" && predicate(task)).length;
     const scopes = [
-      { id: "all", label: "Workspace", count: openTasks((task) => task.bucket !== "backlog") },
+      { id: "all", label: "Все Workspace", count: openTasks((task) => task.bucket !== "backlog") },
       ...state.workspaces.map((workspace) => ({
         id: `workspace:${workspace.id}`,
         label: workspace.name,
@@ -1920,7 +1922,7 @@
     const scrollSnapshot = taskBoardScrollSnapshot({ workspaces: boardColumnRegions.columns });
     pointerTaskDrag.cancelForRerender();
     const visibleTasks = tasksForMode(state.tasks, { completedOnly: state.completedOnly });
-    const emptyText = state.completedOnly ? "Нет закрытых задач" : "Перетащите задачу сюда";
+    const emptyText = state.completedOnly ? "Нет закрытых задач" : "Нет задач";
     const completedCount = state.tasks.filter((task) => task.status === "done").length;
     const openCount = state.tasks.length - completedCount;
     for (const button of statusLanguageButtons) {
