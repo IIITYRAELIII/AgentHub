@@ -787,11 +787,8 @@
   </div>
 
   <main class="task-board-view" data-task-board>
-    <aside class="task-board-sidebar" aria-label="Workspace">
-      <h2 class="eyebrow">Workspaces</h2>
-      <nav class="task-board-scope-strip" data-task-board-scopes aria-label="Workspace и заметки"></nav>
-    </aside>
     <header class="task-board-toolbar">
+      <h2 class="eyebrow task-board-catalog-title">Workspaces</h2>
       <div class="task-board-toolbar-actions">
         <button type="button" class="task-board-filter-toggle" data-task-board-filter-toggle
           aria-expanded="false" aria-controls="task-board-filter-controls">Фильтры</button>
@@ -815,6 +812,9 @@
         </button>
       </div>
     </header>
+    <aside class="task-board-sidebar" aria-label="Workspace">
+      <nav class="task-board-scope-strip" data-task-board-scopes aria-label="Workspace и заметки"></nav>
+    </aside>
     <div class="task-board-columns" data-task-board-columns aria-live="polite"></div>
   </main>
 

@@ -3733,6 +3733,27 @@ html[data-view="dashboard"] .task-board-view {
   padding: 0.75rem;
 }
 .task-board-sidebar > h2 { margin: 0 0 0.8rem; }
+.task-board-catalog-title { display: none; }
+.is-status-view .task-board-toolbar {
+  grid-column: 1;
+  grid-row: 1;
+  justify-content: space-between;
+  gap: 0.3rem;
+  padding: 0.6rem;
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  background: var(--surface-1);
+}
+.is-status-view .task-board-catalog-title {
+  display: block;
+  margin: 0;
+  font-size: 0.6rem;
+  letter-spacing: 0.1em;
+}
+.is-status-view .task-board-toolbar-actions { gap: 0.3rem; }
+.is-status-view .task-board-filter-toggle { padding: 0.45rem; font-size: 0.65rem; }
+.is-status-view .task-board-sidebar { grid-row: 2; border-top: 0; padding-top: 0.25rem; }
+.is-status-view .task-board-columns { grid-row: 1 / -1; }
 .task-board-scope-strip { display: grid; gap: 0.25rem; }
 .task-board-scope-strip .task-board-scope {
   width: 100%;
@@ -3974,6 +3995,9 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 @media (min-width: 960px) {
+  html[data-view="dashboard"] .task-board-view.is-status-view > .task-card-modal[open] {
+    grid-row: 1 / -1;
+  }
   html[data-view="dashboard"] .task-board-view.has-open-task {
     --task-board-detail-width: clamp(19rem, 24vw, 25rem);
     grid-template-columns: var(--task-rail-width, 17.5rem) minmax(0, 1fr) var(--task-board-detail-width);
@@ -4516,6 +4540,9 @@ html[data-view="dashboard"] .task-board-view.is-workspace-view {
   .task-board-sidebar { grid-column: 1; grid-row: 1; max-height: 12rem; }
   .task-board-toolbar { grid-column: 1; grid-row: 2; }
   .task-board-columns { grid-column: 1; grid-row: 3; }
+  .is-status-view .task-board-toolbar { flex-direction: row; align-items: center; }
+  .is-status-view .task-board-sidebar { grid-row: 2; }
+  .is-status-view .task-board-columns { grid-row: 3; }
   html[data-view="dashboard"] .task-board-view.is-workspace-view {
     grid-template-rows: auto minmax(0, 1fr);
   }
