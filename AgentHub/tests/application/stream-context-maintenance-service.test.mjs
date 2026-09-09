@@ -206,6 +206,55 @@ test("hung post-turn rollout read releases maintenance and wakes the original qu
   state.registry.end(otherReservation);
 });
 
+test("cancelling preparation wakes once and late idle read cannot start work or release a replacement", async () => {
+  const state = fixture();
+  state.deferredInputs.put({ id: "queued-cancel", streamId: state.source.streamId,
+    provider: state.source.provider, threadId: state.source.threadId, prompt: "next" }, "queued");
+  let finishIdle;
+  state.service.provider.waitForContextProbeIdle = () => new Promise((resolve) => { finishIdle = resolve; });
+  assert.equal(state.service.reserveAfterTurn(state.source), true);
+  const old = state.registry.entry(state.source);
+  assert.equal(old.phase, "preparing");
+  const maintaining = state.service.maintainAfterTurn(state.source);
+  assert.equal(state.service.cancelPreparing(state.source).accepted, true);
+  assert.equal(state.service.cancelPreparing(state.source), null);
+  const current = state.registry.begin({ ...state.source, turnId: "turn-next" }, "automatic-post-turn");
+  finishIdle(true);
+  assert.equal((await maintaining).cancelled, true);
+  assert.equal(state.registry.entry(state.source), current);
+  assert.equal(state.events.some(([name]) => name === "compact"), false);
+  assert.deepEqual(state.events.filter(([name]) => name === "wake"), [["wake", "queued-cancel"]]);
+});
+
+test("provider start owns maintenance before awaiting acceptance and cannot be cancelled as preparation", async () => {
+  const state = fixture();
+  let finishStart;
+  state.service.provider.start = () => new Promise((resolve) => { finishStart = resolve; });
+  state.service.reserveAfterTurn(state.source);
+  const maintaining = state.service.maintainAfterTurn(state.source);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(state.registry.entry(state.source).phase, "starting");
+  assert.equal(state.service.cancelPreparing(state.source).accepted, false);
+  assert.equal(state.registry.isActive(state.source), true);
+  finishStart({ accepted: false, message: "Provider rejected compaction" });
+  assert.equal((await maintaining).reason, "Provider rejected compaction");
+  assert.equal(state.registry.isActive(state.source), false);
+});
+
+test("provider compaction failure releases its reservation and wakes the original input", async () => {
+  const state = fixture();
+  state.service.logger = { error() {} };
+  state.service.provider.compactions.waitForSettlement = async () => ({ status: "failed" });
+  state.deferredInputs.put({ id: "queued-failure", streamId: state.source.streamId,
+    provider: state.source.provider, threadId: state.source.threadId, prompt: "next" }, "queued");
+  state.service.reserveAfterTurn(state.source);
+  const result = await state.service.maintainAfterTurn(state.source);
+  assert.equal(result.compacted, false);
+  assert.equal(state.registry.isActive(state.source), false);
+  assert.deepEqual(state.events.filter(([name]) => name === "wake"), [["wake", "queued-failure"]]);
+  assert.equal(state.events.some(([name]) => name === "probe" || name === "rotate"), false);
+});
+
 function claudeFixture({ measuresContextItself = true, settlementStatus = "completed" } = {}) {
   const events = [];
   const registry = new StreamMaintenanceRegistry();

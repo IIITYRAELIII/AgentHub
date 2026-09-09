@@ -2,6 +2,7 @@ import {
   catalogTaskKey,
   normalizedCatalogPath,
 } from "./task-catalog-identity.mjs";
+import { isCodexContextProbeText } from "./codex-context-probe.mjs";
 
 export function taskCatalogTitleSignature(entries = []) {
   return JSON.stringify(
@@ -52,14 +53,14 @@ export function preferredCodexTaskTitle(
   const liveTitle = String(threadTitle ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
   const pinned = String(pinnedTitle ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
   const pending = String(pendingTitle ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
-  if (pending) return pending;
+  if (pending && !isCodexContextProbeText(pending)) return pending;
   // A successful Hub rename is written to the App Server before the append-only
   // session index catches up. Keep the confirmed live title during that gap.
-  if (pinned && liveTitle === pinned) return pinned;
-  return String(
-    titleHistory.recoverableTitle
-      || titleHistory.currentTitle
-      || liveTitle
-      || "",
-  ).replace(/\s+/g, " ").trim().slice(0, 80);
+  if (pinned && !isCodexContextProbeText(pinned)
+    && (liveTitle === pinned || isCodexContextProbeText(liveTitle))) return pinned;
+  // A hidden probe can enter provider auto-naming and its append-only index.
+  // Reuse the normal pin reconciliation without retaining that service text.
+  return [titleHistory.recoverableTitle, titleHistory.currentTitle, liveTitle, pinned]
+    .map((value) => String(value ?? "").replace(/\s+/g, " ").trim().slice(0, 80))
+    .find((value) => value && !isCodexContextProbeText(value)) || "";
 }

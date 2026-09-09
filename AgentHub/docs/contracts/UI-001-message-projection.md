@@ -313,6 +313,10 @@ A current compaction with an unknown outcome has a dedicated system marker,
 Legacy timeout state has the same unknown presentation, never a failed or
 running claim. A later confirmed completion replaces that exact marker. An
 active system marker does not require a provider turn ID before acceptance.
+Automatic post-turn preparation has its own system marker and context label,
+derived from the current maintenance reservation even if the previous compaction
+is already completed. Stop is available during cancellable preparation; the
+client does not invent a running user turn to expose that action.
 A task snapshot with no active run is authoritative after any available
 completion has been promoted: it removes the cached live card, probe and
 live-user projection even when the previous card was a valid `user-turn`.

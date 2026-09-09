@@ -9,15 +9,10 @@ import { readClaudeAccount } from "../providers/claude/claude-account.mjs";
 import { ClaudeContextMaintenanceService } from "../providers/claude/claude-context-maintenance-service.mjs";
 import { processIsAlive } from "../providers/claude/claude-run-io.mjs";
 import { readClaudeSessionSnapshot } from "../providers/claude/claude-session-reader.mjs";
-import {
-  ClaudeRunAdmissionGate,
-  ClaudeRuntimeOwner,
-} from "../providers/claude/claude-runtime-owner.mjs";
+import { ClaudeRunAdmissionGate, ClaudeRuntimeOwner } from "../providers/claude/claude-runtime-owner.mjs";
 import { readCodexTurnUsage } from "../providers/codex/codex-turn-usage.mjs";
 import {
-  codexObservedRuntimeActive,
-  resolveCodexObservedExecutionOwner,
-  resolveCodexTaskActivity,
+  codexObservedRuntimeActive, resolveCodexObservedExecutionOwner, resolveCodexTaskActivity,
 } from "../providers/codex/codex-runtime-owner.mjs";
 import { readCodexThreadTitleHistories } from "../../send-message.mjs";
 import { createBackgroundWorkComposition } from "./background-work-composition.mjs";
@@ -27,6 +22,7 @@ import { createCodexObservabilityComposition } from "./codex-observability-compo
 import { createJournalBackfillComposition } from "./journal-backfill-composition.mjs";
 import { createProviderCatalogComposition } from "./provider-catalog-composition.mjs";
 import { createProviderOperationComposition } from "./provider-operation-composition.mjs";
+import { createHubThreadNamingService } from "../application/hub-thread-naming-service.mjs";
 import { createProviderProcessComposition } from "./provider-process-composition.mjs";
 import { createProviderSnapshotComposition } from "./provider-snapshot-composition.mjs";
 import { createProviderStartupComposition } from "./provider-startup-composition.mjs";
@@ -283,9 +279,13 @@ export async function createProviderApplicationComposition({
     commandTrace: commandTraceService,
   });
 
+  const hubThreadNaming = createHubThreadNamingService({
+    workspaceCatalog: workspaceCatalogStore, taskMetadata, sendRpc: api.sendRpc,
+    saveTitles: api.savePinnedTaskTitles, saveState: api.saveState,
+  });
   const codexContextMaintenance = createCodexContextMaintenanceComposition({
-    config,
-    runtimeTimers,
+    preserveProbeTitle: hubThreadNaming.preserveProbeTitle,
+    config, runtimeTimers,
     contextCompactions: codexObservability.compactions,
     sanitizer: codexRolloutContextSanitizer,
     isStopping: () => hostState.stopping,
@@ -429,6 +429,7 @@ export async function createProviderApplicationComposition({
     delay,
   });
   const providerOperations = createProviderOperationComposition({
+    nameCreatedThread: hubThreadNaming.nameCreatedThread,
     claudeContextMaintenance,
     taskRuns: runtimeData.taskRuns,
     selectionStore,

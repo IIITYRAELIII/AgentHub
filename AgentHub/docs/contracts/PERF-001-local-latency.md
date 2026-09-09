@@ -30,6 +30,11 @@ telemetry loss may remove either end. Instance/release identity accompanies
 server records. UTC timestamps correlate processes; only monotonic same-process
 durations measure latency. Existing runtime-health event-loop percentiles remain
 cumulative for that process and are labelled separately from request durations.
+Configuration and infrastructure construction precede the trace worker. Their
+monotonic durations and original UTC endpoints are captured before the work and
+submitted to that same worker once it exists, marked `bufferedUntilTraceReady`.
+A process failure before trace initialization cannot leave these records; the
+startup error log remains the evidence for that boundary.
 
 Retention is at most seven days and 250,000 spans. The existing worker prunes at
 startup, on writes and at most once per minute while idle. Limit maintenance
@@ -138,6 +143,29 @@ updates in the usage worker. A revision conflict cannot overwrite newer usage
 or answers. The durable projection-source revision and project scope distinguish
 an unchanged, already-visible title from an update whose projection must retry.
 The runtime releases its repository lock before requesting full projection.
+Usage-history aggregation and pricing/image-estimate metadata scans also execute
+in that existing worker. After legacy-read readiness is established, statistics
+reads do not wait on the runtime mutation FIFO or materialize its ledger. They
+use the same canonical pricing, attribution and filtering functions and omit
+only fields those functions do not consume. Metadata writes read exact records
+under the existing mutation handshake and preserve revision guards and unrelated
+payload fields. Replaying the same metadata after an interrupted projection
+uses the durable row/projection revisions to repair visibility without another
+metadata write.
+After restart, even an empty rediscovery result checks the indexed durable
+changed-record revisions in its project scope and finishes a pending projection.
+An account-panel-only revision does not invalidate the record projection.
+Journal HTML is assembled once from its day fragments, and lazy turn extraction
+runs once per day for both the fragment store and virtual index. Worker request
+measurements distinguish queue wait, execution and the read/normalize/render/
+commit phases through the same trace service; diagnostics carry no journal text.
+Runtime code must not enqueue another usage-worker request while holding its
+journal repository mutation lane. The worker may already be waiting for that
+lane through the exact metadata-mutation handshake. Export, import and account
+projection perform worker I/O outside the lane; journal commits re-enter it
+with the existing revision fence. The handshake acquires the lane only when
+the worker reaches that mutation and releases it before any further request.
+
 When the Codex transport is offline or reconnecting, versioned historical
 maintenance resolves subagent accounting roots only from retained rollout files.
 It must not attempt provider RPC before falling back locally; an unavailable or

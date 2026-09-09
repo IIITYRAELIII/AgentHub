@@ -584,7 +584,54 @@ test("Web control retries only blank gateway failures", async () => {
   });
   assert.equal(result, "accepted");
   assert.deepEqual(attempts, [0, 1, 2]);
-  assert.match(hubClientSource, /const commandId = crypto\.randomUUID\(\);[\s\S]*retryConnectionFailure[\s\S]*const requestParams = action === "send-message"[\s\S]*JSON\.stringify\(\{ action, params: requestParams, commandId \}\)/u);
+  const executeHttpControl = (responses) => {
+    const requests = [];
+    let sequence = 0;
+    const sandbox = vm.createContext({
+      crypto: { randomUUID: () => `command-${++sequence}` },
+      performance: { now: () => requests.length },
+      localSessionReady: Promise.resolve(),
+      retryConnectionFailure: lifecycle.retryConnectionFailure,
+      httpControlError: lifecycle.httpControlError,
+      HTTP_CONTROL_RETRY_DELAYS_MS: [0, 0, 0],
+      LONG_CONTROL_ACTIONS: new Set(),
+      DEFAULT_CONTROL_TIMEOUT_MS: 1_000,
+      window: { setTimeout: (callback) => callback() },
+      authorizationHeaders: () => ({}),
+      hubFetchWithin: async (_url, options) => {
+        requests.push(JSON.parse(options.body));
+        const response = responses.shift();
+        if (response instanceof Error) throw response;
+        return { status: response.status, ok: response.status === 200, json: async () => response.payload };
+      },
+    });
+    vm.runInContext(clientFunctionSource("httpControl", "function clientTraceSurface"), sandbox);
+    return { requests, result: sandbox.httpControl("send-message", {
+      text: "same message", clientUserMessageId: "original-message", clientTraceId: "trace-1",
+      clientTiming: { submittedAtMs: 123 },
+    }) };
+  };
+  const retried = executeHttpControl([
+    ...[502, 503, 504].map((status) => ({ status, payload: {} })),
+    { status: 200, payload: { result: { accepted: true } } },
+  ]);
+  assert.equal((await retried.result).accepted, true);
+  assert.equal(retried.requests.length, 4);
+  for (const request of retried.requests) {
+    assert.equal(request.commandId, retried.requests[0].commandId);
+    assert.equal(request.params.clientUserMessageId, "original-message");
+    assert.equal(request.params.clientTiming.submittedAtMs, 123);
+    assert.equal(request.params.text, "same message");
+  }
+  for (const response of [
+    { status: 503, payload: { error: "Application rejected" } },
+    { status: 400, payload: {} },
+    lifecycle.markConnectionFailure(new Error("network disconnected")),
+  ]) {
+    const rejected = executeHttpControl([response]);
+    await assert.rejects(rejected.result);
+    assert.equal(rejected.requests.length, 1);
+  }
 });
 
 test("optional history reads settle without becoming connection failures", async () => {

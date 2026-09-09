@@ -181,6 +181,7 @@ export function createDesktopCommandWiring({
       restoreCodexSettings: services.restoreCodexSettings,
       diffs: services.diffs,
       providerCancel: services.providerCancel,
+      cancelContextMaintenance: (target) => services.streamContextMaintenance.cancelPreparing(target),
       progress: services.progress,
       dismissedExternalTasks: services.dismissedExternalTasks,
       completeRun: services.completeRun,

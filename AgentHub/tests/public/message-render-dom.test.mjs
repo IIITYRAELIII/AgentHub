@@ -65,8 +65,8 @@ async function openWebApp(page) {
   await page.waitForFunction(() => typeof window.AgentHub === "object");
 }
 
-async function seedMessages(page, messages) {
-  await page.evaluate((values) => {
+async function seedMessages(page, messages, taskPatch = {}) {
+  await page.evaluate(({ values, taskPatch }) => {
     window.AgentHub.setWorkspaces([{ id: "workspace-1", name: "Agent HUB", title: "Agent HUB" }]);
     window.AgentHub.setTasks([{
       id: "task-1",
@@ -85,9 +85,10 @@ async function seedMessages(page, messages) {
       unread: false,
       running: false,
       selected: true,
+      ...taskPatch,
     }]);
     window.AgentHub.setMessages("task-1", values);
-  }, messages);
+  }, { values: messages, taskPatch });
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 }
 
@@ -142,6 +143,45 @@ test("compaction without provider turn renders a system marker and unknown compl
     assert.equal(await page.locator(".msg-maintenance").count(), 1);
     assert.match(await page.locator(".msg-maintenance").textContent(), /Автосвёртка контекста/u);
     assert.equal(await page.locator(".msg-agent").count(), 0);
+    const preparation = {
+      maintenance: { reason: "automatic-post-turn", phase: "preparing", reservationId: "reservation-new" },
+      context: { usedTokens: 75.04, modelContextWindow: 100, percent: 75.04, compacting: false,
+        compaction: { id: "older", status: "completed", measurementStatus: "completed", afterPercent: 14 } },
+    };
+    const preparationMarker = await page.evaluate((details) => window.compactionProjection.active({
+      provider: "codex", threadId: "thread-1", ...details,
+    }), preparation);
+    await page.evaluate(() => {
+      window.__stops = [];
+      window.AgentHub.on("task:stop", (value) => window.__stops.push(value));
+    });
+    for (const viewport of [{ width: 1366, height: 900 }, { width: 390, height: 844 }]) {
+      await page.setViewportSize(viewport);
+      await seedMessages(page, [preparationMarker], preparation);
+      if (viewport.width < 600) await page.locator('[data-mobile-button="chat"]').click();
+      assert.match(await page.locator(".msg-maintenance").textContent(), /Подготовка обслуживания контекста/u);
+      assert.equal(await page.locator(".msg-agent").count(), 0);
+      assert.equal(await page.locator("[data-context-label]").textContent(), "подготовка…");
+      assert.equal(await page.locator("[data-context-usage]").getAttribute("data-compacting"), null);
+      const stop = page.locator("[data-chat-stop]:visible");
+      assert.equal(await stop.count(), 1);
+      await stop.click();
+      await page.locator("[data-context-usage]").click();
+      assert.equal(await page.locator("[data-context-usage-compact]").isDisabled(), true);
+      await page.locator('[data-context-usage-modal] [data-action="context-usage-close"]').first().click();
+      if (process.env.AGENT_HUB_QA_SCREENSHOT) await page.screenshot({
+        path: `${process.env.AGENT_HUB_QA_SCREENSHOT}-${viewport.width}.png`, fullPage: true,
+      });
+    }
+    assert.deepEqual(await page.evaluate(() => window.__stops), [{ id: "task-1" }, { id: "task-1" }]);
+    await seedMessages(page, [], { ...preparation,
+      maintenance: { ...preparation.maintenance, phase: "starting" },
+    });
+    assert.equal(await page.locator("[data-context-label]").textContent(), "запуск…");
+    assert.equal(await page.locator("[data-chat-stop]:visible").count(), 0);
+    await seedMessages(page, [], { ...preparation, maintenance: null });
+    assert.equal(await page.locator("[data-context-label]").textContent(), "75% контекста");
+    assert.equal(await page.locator("[data-chat-stop]:visible").count(), 0);
     for (const [status, expectedText] of [
       ["failed", "Автосвёртка контекста не завершилась"],
       ["unknown", "Статус свёртки неизвестен"],

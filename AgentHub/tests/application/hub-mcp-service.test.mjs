@@ -777,7 +777,7 @@ test("Await status and old evidence remain unchanged when the Task branch confli
 });
 
 test("Test transition rejects an empty Task diff as no_result and preserves workflow state", async (context) => {
-  const { service, token, tasks, taskGitWorkspaces } = await fixture(context);
+  const { service, token, tasks, taskGitWorkspaces } = await fixture(context, { releaseWorkflowEnabled: true });
   taskGitWorkspaces.snapshotAndMerge = async ({ taskId }) => ({
     snapshot: {
       taskId, branch: "HUB-empty", projectRoot: "D:/task", repositoryRoot: "D:/repo",
@@ -835,7 +835,7 @@ test("Task status integration uses its executor Stream root without reassigning 
 });
 
 test("Task status integration resolves an executor root in another Workspace", async (context) => {
-  const { service, token, tasks, foreignStreamWorkingDirectory, taskGitPrepareCalls } = await fixture(context);
+  const { service, token, tasks, foreignStreamWorkingDirectory, taskGitPrepareCalls } = await fixture(context, { releaseWorkflowEnabled: true });
   Object.assign(tasks.get("task-foreign"), {
     status: "started", workflowStatus: "in_progress", streamId: "stream-3",
   });
@@ -1048,6 +1048,30 @@ test("HubMcpService binds the current turn to its dedicated Task worktree", asyn
   const tools = service.tools();
   assert.equal(tools.some((tool) => tool.name === "hub_task_release_freeze"), false);
   assert.equal(tools.some((tool) => tool.name === "hub_release_preflight"), true);
+});
+
+test("HubMcpService claims the active turn while an older terminal remains retained", async (context) => {
+  const { service, token, activeRun, taskClaimCalls } = await fixture(context);
+  service.setActiveRuns(() => [
+    { ...activeRun, id: "old-run", turnId: "old-turn", status: "completed" },
+    activeRun,
+    { ...activeRun, id: "observer", turnId: "external-turn", observer: true },
+  ]);
+  const claimed = await service.call("hub_task_claim", {
+    context_token: token, request_id: "claim-after-terminal", task_id: "task-current",
+  });
+  assert.equal(claimed.claimedTurnId, activeRun.turnId);
+  assert.equal(taskClaimCalls.length, 1);
+});
+
+test("HubMcpService keeps genuinely ambiguous active turns blocked without Task effects", async (context) => {
+  const { service, token, activeRun, taskClaimCalls, taskGitPrepareCalls } = await fixture(context);
+  service.setActiveRuns(() => [activeRun, { ...activeRun, id: "second", turnId: "second-turn" }]);
+  await assert.rejects(service.call("hub_task_claim", {
+    context_token: token, request_id: "claim-ambiguous", task_id: "task-current",
+  }), /ambiguous active runs/u);
+  assert.equal(taskClaimCalls.length, 0);
+  assert.equal(taskGitPrepareCalls.length, 0);
 });
 
 test("HubMcpService claim keeps an unproven process-tree guard before every Task effect", {

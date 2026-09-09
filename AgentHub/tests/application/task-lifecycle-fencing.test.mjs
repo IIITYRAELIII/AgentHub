@@ -54,9 +54,10 @@ function lifecycleFixture({ synchronousFence = false } = {}) {
     taskBoard,
     taskGitWorkspaces,
     workspaceCatalog: {
-      workspace: () => ({ id: "workspace-1", settings: { workingDirectory: "D:/project" } }),
+      workspace: () => ({ id: "workspace-1", settings: { workingDirectory: "D:/project", releaseWorkflowEnabled: true } }),
       stream: () => ({ id: "stream-1", workspaceId: "workspace-1", settings: {} }),
     },
+    releasePreflight: { withAwaitTransition: (_id, operation) => operation(), prepareAwaitSet: async () => ({}) },
   });
   return { service, calls, task };
 }

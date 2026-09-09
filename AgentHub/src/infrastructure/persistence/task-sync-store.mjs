@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 
 import { catalogTaskKey } from "../../domain/task-catalog-identity.mjs";
+import { rebaseActiveCodexUsers } from "../../domain/canonical-user-messages.mjs";
 import { withoutClaudeManagedTranscriptDuplicates } from "../../domain/claude-transcript.mjs";
 import {
   interstreamOriginAuthor,
@@ -2138,7 +2139,8 @@ export class LocalTaskSyncStore {
   #recordHistory(task, history, snapshot, nowMs) {
     const existing = this.#readTask(task, true) ?? {};
     const terminals = terminalHistoryTurns(existing.history);
-    const journalHistory = this.#reconcileHistoryWithJournal(task, history);
+    const rebasedHistory = task.provider === "codex" ? rebaseActiveCodexUsers(existing.history, history) : history;
+    const journalHistory = this.#reconcileHistoryWithJournal(task, rebasedHistory);
     const reconciledHistory = preserveTerminalHistory(terminals, journalHistory);
     const durableAttachments = preserveDurableAttachments(existing.history, reconciledHistory);
     const durableHistory = preserveDurableChronology(existing.history, durableAttachments);

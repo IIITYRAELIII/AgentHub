@@ -20,6 +20,49 @@ async function fixture(t, options = {}) {
 
 const task = { provider: "codex", threadId: "original-thread", projectRoot: "D:/project", title: "Task" };
 
+const occurrence = (letter, clientUserMessageId) => ({ role: "user", text: "identical text",
+  itemId: `item-${letter}`, sourceOccurrenceId: `codex-rollout:${letter.repeat(64)}`,
+  ...(clientUserMessageId ? { clientUserMessageId } : {}) });
+const activeHistory = (messages, authority = "incremental") => [{ id: "active-turn", active: true,
+  completed: false, status: "inProgress", prompt: "identical text", messages,
+  userMessageSnapshotAuthority: authority }];
+
+test("queued active history rebases stale provider projections on the latest durable user order", async (t) => {
+  const { store, blocker } = await fixture(t);
+  const first = occurrence("a");
+  const owned = occurrence("b", "owned-root");
+  const later = occurrence("c");
+  await store.recordHistory(task, activeHistory([first, owned]));
+  blocker.exec("BEGIN IMMEDIATE");
+  const newer = store.recordHistory(task, activeHistory([first, owned, later]));
+  const stale = store.recordHistory(task, activeHistory([
+    { ...owned, sourceOccurrenceId: `codex-app-server:${"d".repeat(64)}` }, first,
+  ]));
+  await delay(35);
+  blocker.exec("COMMIT");
+  await Promise.all([newer, stale]);
+  assert.deepEqual(store.history(task)[0].messages.map((message) => message.clientUserMessageId || message.sourceOccurrenceId),
+    [first.sourceOccurrenceId, "owned-root", later.sourceOccurrenceId]);
+  assert.equal(store.history(task)[0].messages[1].sourceOccurrenceId, owned.sourceOccurrenceId);
+});
+
+test("active history rebase honors explicit complete source authority", async (t) => {
+  const { store } = await fixture(t);
+  const first = occurrence("a");
+  const replacement = occurrence("b");
+  await store.recordHistory(task, activeHistory([first], "complete"));
+  await store.recordHistory(task, activeHistory([replacement], "complete"));
+  assert.deepEqual(store.history(task)[0].messages.map((message) => message.sourceOccurrenceId), [replacement.sourceOccurrenceId]);
+});
+
+test("active history never invents aliases for legacy users without an exact identity", async (t) => {
+  const { store } = await fixture(t);
+  const history = activeHistory([{ role: "user", itemId: "legacy", text: "legacy" }]);
+  await store.recordHistory(task, history);
+  await store.recordHistory(task, history);
+  assert.equal(store.history(task)[0].messages.length, 1);
+});
+
 test("history, snapshots and catalog wait for SQLite without blocking timers or losing write order", async (t) => {
   const { store, blocker } = await fixture(t);
   blocker.exec("BEGIN IMMEDIATE");

@@ -46,6 +46,7 @@ export class CodexContextMaintenanceService {
     startCompaction = async () => {},
     startContextProbe = async () => null,
     interruptContextProbe = async () => null,
+    preserveProbeTitle = async () => {},
     startThread = async () => null,
     injectItems = async () => null,
     deleteThread = async () => null,
@@ -88,6 +89,7 @@ export class CodexContextMaintenanceService {
     this.startCompaction = startCompaction;
     this.startContextProbe = startContextProbe;
     this.interruptContextProbe = interruptContextProbe;
+    this.preserveProbeTitle = preserveProbeTitle;
     this.startThread = startThread;
     this.injectItems = injectItems;
     this.deleteThread = deleteThread;
@@ -258,7 +260,14 @@ export class CodexContextMaintenanceService {
         if (currentTime >= deadline) return false;
         if (probeBusy) idleSince = null;
         else if (idleSince === null) idleSince = currentTime;
-        else if (currentTime - idleSince >= Math.max(1, Number(quietMs) || 250)) return true;
+        else if (currentTime - idleSince >= Math.max(1, Number(quietMs) || 250)) {
+          // Naming is presentation maintenance; it never holds admission after
+          // the exact probe became idle, and the catalog retries stale names.
+          void this.preserveProbeTitle(target).catch((error) => {
+            this.logger.warn?.(`Cannot restore Thread title after context probe: ${error.message}`);
+          });
+          return true;
+        }
         stage = "idle-poll";
         await Promise.race([
           this.sleep(Math.min(Math.max(1, Number(pollMs) || 25), deadline - currentTime)),

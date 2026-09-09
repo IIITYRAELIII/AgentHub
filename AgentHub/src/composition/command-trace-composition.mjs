@@ -1,7 +1,32 @@
 import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { CommandTraceService } from "../application/command-trace-service.mjs";
 import { CommandTraceWorkerStore } from "../infrastructure/persistence/command-trace-worker-store.mjs";
 import { createRuntimePerformanceSampler } from "../application/runtime-performance-sampler.mjs";
+
+// Configuration and infrastructure precede the trace worker. Capture their real
+// duration now, then submit to that same worker once infrastructure is available.
+// A failure before the worker exists still belongs to the ordinary startup log.
+export async function measureStartupBeforeTrace(stage, operation, {
+  clock = Date.now, monotonicClock = () => performance.now(),
+} = {}) {
+  const operationSpanId = randomUUID();
+  const startedAtMs = clock();
+  const startedMonotonicMs = monotonicClock();
+  const value = await operation();
+  const observedAtMs = clock();
+  const monotonicDurationMs = Math.max(0, monotonicClock() - startedMonotonicMs);
+  const common = { commandId: `startup:${operationSpanId}`, stage: `startup-${stage}`, transport: "server-runtime",
+    metadata: { operationSpanId, startedAtMs, operationId: stage, bufferedUntilTraceReady: true } };
+  let recorded = false;
+  return { value, record(trace) {
+    if (recorded) return;
+    recorded = true;
+    trace.recordBestEffort({ ...common, outcome: "started", observedAtMs: startedAtMs });
+    trace.recordBestEffort({ ...common, spanId: operationSpanId, outcome: "succeeded", observedAtMs, monotonicDurationMs });
+  } };
+}
 
 export function createCommandTraceComposition({
   dataDir,

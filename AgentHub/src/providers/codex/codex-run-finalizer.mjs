@@ -219,7 +219,9 @@ export class CodexRunFinalizer {
     run.terminalRevision = Number(committed.terminal?.terminalRevision) || null;
     await this.markRunCompleted(run);
     this.turnStarts.delete(startKey);
-    await this.saveState();
+    // The durable terminal owns delivery retries. Release admission and start
+    // reserved post-turn maintenance before optional outbox materialization.
+    await this.completeRun(run);
     let deliveryResult = null;
     try {
       deliveryResult = await this.deliverTerminal(committed.outbox);
@@ -228,8 +230,6 @@ export class CodexRunFinalizer {
         `Terminal revision ${committed.terminal.terminalRevision} remains pending for ${completedTurnId}:`,
         error.message,
       );
-    } finally {
-      await this.completeRun(run);
     }
     return deliveryResult?.telegram ?? deliveryResult;
   }

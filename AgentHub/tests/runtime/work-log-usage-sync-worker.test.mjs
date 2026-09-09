@@ -148,6 +148,12 @@ for (const scenario of [
         saves += 1;
         return super.save(options);
       }
+      async applyExternalMutation(operation) {
+        assert.equal(locked, true);
+        const result = await super.applyExternalMutation(operation);
+        if (result.updated) saves += 1;
+        return result;
+      }
       replaceProjection() { throw new Error("Main projection must not run"); }
     }
     const store = createWorkLogUsageStore({

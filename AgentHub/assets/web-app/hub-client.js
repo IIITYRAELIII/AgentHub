@@ -1856,6 +1856,16 @@ function rotationMaintenanceActive(task) {
 
 function activeMaintenanceMessage(task) {
   const stableTaskId = taskId(task.provider, task.threadId, task.streamId);
+  if (["automatic-post-turn", "automatic-post-turn-rotation"].includes(task.maintenance?.reason)
+    && ["preparing", "starting"].includes(task.maintenance?.phase)) {
+    const id = `maintenance:preparation:${task.maintenance.reservationId ?? stableTaskId}:active`;
+    return {
+      id, itemId: id, provider: task.provider, threadId: task.threadId,
+      role: "system", kind: "maintenance", operationKind: "maintenance",
+      text: task.maintenance.phase === "starting" ? "Запуск обслуживания контекста…" : "Подготовка обслуживания контекста…",
+      time: task.maintenance.startedAt ?? null,
+    };
+  }
   if (rotationMaintenanceActive(task)) {
     return {
       id: `maintenance:rotation:${stableTaskId}:active`,

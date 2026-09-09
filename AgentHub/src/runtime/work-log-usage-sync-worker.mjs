@@ -14,6 +14,8 @@ import { buildLazyJournalPayload } from "../application/journal-projection-data.
 import { JournalDatabase } from "../infrastructure/persistence/journal-database.mjs";
 import { AsyncSqliteMutationQueue } from "../infrastructure/persistence/async-sqlite-mutation-queue.mjs";
 import { WorkLogUsageSyncStore } from "../infrastructure/persistence/work-log-usage-sync-store.mjs";
+import { readTurnMetadataCandidates, synchronizeTurnMetadata } from "./work-log-turn-metadata.mjs";
+import { projectUsageHistory } from "./usage-history-projection.mjs";
 
 const store = new WorkLogUsageSyncStore(workerData);
 const journal = new JournalDatabase(workerData.databaseFile);
@@ -69,13 +71,19 @@ async function synchronizeTaskTitles(payload) {
 
 async function projectJournal(payload, id) {
   const startedAt = performance.now();
-  const observedRevision = await journalOperations.run(() => journal.currentRevision());
+  const phases = {};
+  const measure = async (name, operation) => {
+    const start = performance.now();
+    try { return await operation(); }
+    finally { phases[name] = performance.now() - start; }
+  };
+  const observedRevision = await measure("revisionReadMs", () => journalOperations.run(() => journal.currentRevision()));
   const expectedRevision = payload.expectedRevision ?? observedRevision;
-  const current = await journal.payload();
-  const persisted = await journal.loadLedger();
-  const normalized = normalizePersistedWorkLog(persisted, {
+  const current = await measure("projectionReadMs", () => journal.payload());
+  const persisted = await measure("ledgerReadMs", () => journal.loadLedger());
+  const normalized = await measure("normalizeMs", () => normalizePersistedWorkLog(persisted, {
     defaultProjectRoot: payload.defaultProjectRoot,
-  });
+  }));
   const invalidRecordReasonCounts = {};
   for (const invalid of normalized.invalidRecords) {
     const reason = invalid.error === "inherited parent turn was copied into a subagent rollout"
@@ -89,6 +97,7 @@ async function projectJournal(payload, id) {
   )));
   const bindings = new Map();
   const bindingKey = (reference) => `${reference.provider}\0${reference.threadId}`;
+  const workspaceStartedAt = performance.now();
   if (payload.resolveWorkspaces) {
     const references = [...new Map(Object.values(turns).map((record) => {
       const reference = {
@@ -105,19 +114,21 @@ async function projectJournal(payload, id) {
       batch.forEach((reference, index) => bindings.set(bindingKey(reference), resolved[index] ?? null));
     }
   }
+  phases.workspaceResolveMs = performance.now() - workspaceStartedAt;
   const rateLimits = String(current?.html ?? "").match(
     /<div\b[^>]*data-work-log-rate-limits\b[^>]*>[\s\S]*?<\/div>/iu,
   )?.[0] ?? "";
-  const syncedUsageFacts = await store.facts();
-  const updated = projectWorkLogUsage(`# Глобальный журнал работ\n${rateLimits ? `${rateLimits}\n` : ""}`, turns, {
+  const syncedUsageFacts = await measure("factsReadMs", () => store.facts());
+  const accountCatalog = await measure("accountCatalogReadMs", () => journal.accountCatalog());
+  const updated = await measure("renderMs", () => projectWorkLogUsage(`# Глобальный журнал работ\n${rateLimits ? `${rateLimits}\n` : ""}`, turns, {
     includeClaudeUsage: payload.includeClaudeUsage,
     workspaceResolver: payload.resolveWorkspaces ? (reference) => bindings.get(bindingKey(reference)) : null,
-    accountCatalog: await journal.accountCatalog(),
+    accountCatalog,
     syncedUsageEvents: syncedUsageFacts,
     localDeviceId: payload.localDeviceId,
     localDeviceLabel: payload.localDeviceLabel,
     now: payload.now,
-  });
+  }));
   const version = `sha256:${crypto.createHash("sha256").update(updated, "utf8").digest("hex")}`;
   let result;
   const projectionSource = { revision: expectedRevision, projectRoots: roots };
@@ -127,11 +138,11 @@ async function projectJournal(payload, id) {
     && JSON.stringify(previousSource.projectRoots) === JSON.stringify(roots)) {
     result = { projected: false, reason: "unchanged", version, revision: expectedRevision };
   } else {
-    const lazyPayload = buildLazyJournalPayload(updated);
-    result = await journalOperations.run(() => journal.replaceProjection(lazyPayload, {
+    const lazyPayload = await measure("lazyBuildMs", () => buildLazyJournalPayload(updated));
+    result = await measure("commitMs", () => journalOperations.run(() => journal.replaceProjection(lazyPayload, {
       expectedRevision, version, projectionSource,
       accountUsageProjectionVersion: WORK_LOG_ACCOUNT_USAGE_PROJECTION_VERSION,
-    }));
+    })));
   }
   return {
     ...result,
@@ -140,6 +151,7 @@ async function projectJournal(payload, id) {
     invalidRecordCount: normalized.invalidRecords.length,
     invalidRecordReasonCounts,
     eventCount: syncedUsageFacts.length,
+    ...phases,
     durationMs: performance.now() - startedAt,
     workerThreadId: threadId,
   };
@@ -191,18 +203,41 @@ async function handle(message) {
   switch (message.type) {
     case "events": return store.events();
     case "facts": return store.facts();
+    case "usage-history": {
+      const result = await projectUsageHistory({
+        journal, store, payload: message.payload,
+        resolveWorkspaces: (references) => new Promise((resolve, reject) => {
+          workspaceRequests.set(message.id, { resolve, reject });
+          parentPort.postMessage({ id: message.id, type: "journal-workspaces", references });
+        }),
+      });
+      result.measurements.queueWaitMs = message.queueWaitMs;
+      return result;
+    }
     case "import-snapshot": return store.importSnapshot(message.payload.snapshot);
     case "reconcile-snapshot": return store.reconcileSnapshot(message.payload.snapshot);
     case "replace-events": return store.replaceEvents(message.payload.events);
     case "adopt-device-ids": return store.adoptDeviceIds(message.payload.deviceIds);
     case "project-account-usage": return projectAccountUsage(message.payload);
-    case "project-journal": return projectJournal(message.payload, message.id);
+    case "project-journal": return {
+      ...await projectJournal(message.payload, message.id), queueWaitMs: message.queueWaitMs,
+    };
+    case "read-turn-metadata-candidates": {
+      const result = await readTurnMetadataCandidates(journal, message.payload);
+      return { ...result, candidateCount: result.candidates.length, workerThreadId: threadId,
+        queueWaitMs: message.queueWaitMs };
+    }
+    case "synchronize-turn-metadata":
     case "synchronize-task-titles": {
       if (message.payload.serializeMutation) {
         await new Promise((resolve, reject) => {
           mutationRequests.set(message.id, { resolve, reject });
           parentPort.postMessage({ id: message.id, type: "journal-mutation" });
         });
+      }
+      if (message.type === "synchronize-turn-metadata") {
+        const result = await synchronizeTurnMetadata(journal, journalOperations, message.payload);
+        return { ...result, workerThreadId: threadId, queueWaitMs: message.queueWaitMs };
       }
       return synchronizeTaskTitles(message.payload);
     }
@@ -232,7 +267,9 @@ parentPort.on("message", (message) => {
     else request?.resolve(message.bindings);
     return;
   }
+  const queuedAt = performance.now();
   queue = queue.then(async () => {
+    message.queueWaitMs = performance.now() - queuedAt;
     try {
       const value = await handle(message);
       parentPort.postMessage({ id: message.id, value });

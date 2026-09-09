@@ -38,6 +38,27 @@
   opposite-provider continuation command. Missing or unknown provider exposes
   no enabled continuation command.
 
+## Provider Thread names
+
+- A new Hub-created Codex Thread uses `Workspace — Поток N`, where the number
+  is the bound Stream's durable ordinal. An explicitly named Stream contributes
+  its exact name instead of `Поток N`, including when it is the only Stream.
+  Workspace/Stream UUIDs, the first message and transport timestamps are not
+  naming sources. Creating a Thread never renames its Workspace implicitly.
+- The durable Workspace/Stream binding precedes the provider name write. The
+  existing pinned-title and expected-title stores retain the intended name for
+  normal catalog reconciliation; naming introduces no second identity owner.
+- Rotation names its newly bound Thread before the hidden context probe. Probe
+  text and responses cannot become a retained managed Thread title. Existing
+  explicit custom titles are preserved. Probe title repair has bounded provider
+  calls; failure does not prevent the probe, and repair after confirmed idle
+  cannot hold admission. Normal pinned/expected-title reconciliation retries the
+  intended name and excludes probe text from title history.
+- Probe-time title preservation applies only to exact bindings marked `created`
+  or `rebirth`, using their current Workspace and Stream. Foreign and merely
+  discovered Threads remain untouched. Naming adds no bulk legacy-title repair
+  work or provider calls to catalog discovery or startup.
+
 ## Quick replies and quote input
 
 - Quick replies persist as ordered `{title, text}` entries. Legacy strings

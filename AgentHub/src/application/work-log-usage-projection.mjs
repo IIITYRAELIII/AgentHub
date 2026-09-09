@@ -2825,8 +2825,8 @@ export function projectWorkLogUsage(workLogText, turns = {}, {
   const defaultOpenDate = dayStarts.some((match) => match[1] === currentDate)
     ? currentDate
     : dayStarts[0]?.[1];
-  let projected = text;
-  for (let index = dayStarts.length - 1; index >= 0; index -= 1) {
+  const projected = [text.slice(0, dayStarts[0]?.index ?? text.length)];
+  for (let index = 0; index < dayStarts.length; index += 1) {
     const start = dayStarts[index].index;
     const end = index + 1 < dayStarts.length ? dayStarts[index + 1].index : text.length;
     const section = text.slice(start, end);
@@ -2839,9 +2839,9 @@ export function projectWorkLogUsage(workLogText, turns = {}, {
       includeClaudeUsage,
       workspaceResolver,
     );
-    projected = `${projected.slice(0, start)}${replacement}${projected.slice(end)}`;
+    projected.push(replacement);
   }
-  return insertAccountUsagePanel(projected, accountPanel);
+  return insertAccountUsagePanel(projected.join(""), accountPanel);
 }
 
 export function projectWorkLogAccountUsage(workLogText, turns = {}, {

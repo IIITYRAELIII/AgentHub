@@ -215,6 +215,18 @@ test("a live App Server title confirmed by the Hub pin survives a stale index", 
   );
 });
 
+test("probe auto-naming cannot replace a valid Hub pin or a later explicit provider name", () => {
+  const probe = "AGENT_HUB_CONTEXT_PROBE_OK_V1";
+  assert.equal(preferredCodexTaskTitle(probe, { currentTitle: probe }, "Хаб — Поток 1"), "Хаб — Поток 1");
+  assert.equal(preferredCodexTaskTitle("", { currentTitle: probe }, "Хаб — Поток 1"), "Хаб — Поток 1");
+  assert.equal(preferredCodexTaskTitle("Новое название", {
+    recoverableTitle: probe, currentTitle: probe,
+  }, "Хаб — Поток 1"), "Новое название");
+  assert.equal(preferredCodexTaskTitle("Новое название", {
+    currentTitle: "Новое название",
+  }, "Хаб — Поток 1"), "Новое название");
+});
+
 test("a successful Hub rename stays authoritative until the Codex index confirms it", () => {
   assert.equal(
     preferredCodexTaskTitle("Старое название", {

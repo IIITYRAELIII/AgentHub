@@ -52,6 +52,7 @@ export function createProviderOperationComposition({
   startCodexTransport,
   initializeCodex,
   sendRpc,
+  nameCreatedThread,
   activeProjectRoot,
   codexSandboxMode,
   codexModel,
@@ -102,6 +103,7 @@ export function createProviderOperationComposition({
   wakeDeferredInputs,
 }) {
   const codexProviderTasks = new CodexProviderTaskService({
+    nameCreatedThread,
     transportRunning: codexTransportRunning,
     startTransport: startCodexTransport,
     initialize: initializeCodex,

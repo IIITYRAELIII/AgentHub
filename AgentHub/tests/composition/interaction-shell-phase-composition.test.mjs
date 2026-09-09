@@ -30,7 +30,7 @@ test("interaction phase owns server, Desktop and run shell assembly", async () =
   }
   assert.equal(root.includes("createInteractionShellPhase"), true);
   assert.match(root, /infrastructure:\s*\{[\s\S]*workspaceCatalogStore,[\s\S]*\},\s*provider: providerApplication/u);
-  assert.match(root, /rateLimitHistoryStore, providerTurnTelemetryStore, commandTraceService/u);
+  // Trace dependency wiring is exercised by the real local-control startup E2E.
   assert.match(root, /rateLimitHistoryStore, commandTraceService, runJournal/u);
   assert.match(owner, /workspaceCatalogStore: infrastructure\.workspaceCatalogStore/u);
   assert.match(owner, /commandTraceService: infrastructure\.commandTraceService/u);

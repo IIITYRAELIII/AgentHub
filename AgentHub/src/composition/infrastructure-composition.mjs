@@ -210,8 +210,8 @@ async function resolveReleaseTestContourSource(repositories) {
 export async function createHubInfrastructure({
   config,
   agentHubRoot,
-  runtimeCommandRoot,
-  localWebSecret,
+  runtimeCommandRoot, localWebSecret,
+  serverInstanceId, serverReleaseId,
   journalDatabaseFile,
   legacyWorkLogLedgerFile,
   legacyWorkLogFile,
@@ -493,9 +493,10 @@ export async function createHubInfrastructure({
 
   await mkdir(path.dirname(stateFile), { recursive: true });
   commandTrace = createCommandTraceComposition({ dataDir: config.dataDir,
-    instanceId: instanceGuard.instanceToken, releaseId: process.env.AGENT_HUB_RELEASE_ID,
+    instanceId: serverInstanceId, releaseId: serverReleaseId,
     readHealth: () => agentHubRuntimeHealth.snapshot() });
   await commandTrace.initialize();
+  workLogUsageSyncStore.setTraceService(commandTrace.service);
   const usdRubRateStore = new UsdRubRateStore({ cacheFile: exchangeRatesFile });
   await usdRubRateStore.load().catch((error) => {
     console.warn(`Cannot load cached exchange rate: ${error.message}`);

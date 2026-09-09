@@ -181,6 +181,12 @@ export class WorkLogUsageRepository {
     return queued;
   }
 
+  prepareIndependentRead() {
+    return this.#pointReadsReady
+      ? Promise.resolve()
+      : this.enqueue(() => null, { load: false, pointRead: true });
+  }
+
   getRecord(identity) {
     return this.#database.getRecord(identity);
   }
@@ -208,6 +214,10 @@ export class WorkLogUsageRepository {
 
   payload() {
     return this.#database.payload();
+  }
+
+  currentRevision() {
+    return this.#database.currentRevision();
   }
 
   accountUsageProjectionVersion() {

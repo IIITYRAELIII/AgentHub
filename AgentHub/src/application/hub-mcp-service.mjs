@@ -16,6 +16,7 @@ import {
   interstreamDisplayText,
 } from "../domain/interstream-message.mjs";
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
+import { taskRunIsActive } from "../domain/task-runs.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
 import { TaskLifecycleService } from "./task-lifecycle-service.mjs";
 import { createWorkspaceCatalogMutationOwner } from "./sqlite-mutation-owner.mjs";
@@ -525,7 +526,9 @@ export class HubMcpService {
 
   setActiveRuns(value) {
     if (typeof value !== "function") throw new TypeError("active runs provider is required");
-    this.#activeRuns = value;
+    // Registry retention is not activity: terminal runs can remain present
+    // while their final projection is being delivered.
+    this.#activeRuns = () => value().filter(taskRunIsActive);
   }
 
   setDeferredInputs(value) {

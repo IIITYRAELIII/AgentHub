@@ -16,6 +16,7 @@ import { ensureLocalWebSecret } from "../interfaces/web/local-web-auth.mjs";
 import { agentHubAutostartShortcut } from "../interfaces/web/server-page.mjs";
 import { createHubStaticSettings } from "./hub-static-settings.mjs";
 import { createHubInfrastructure } from "./infrastructure-composition.mjs";
+import { measureStartupBeforeTrace } from "./command-trace-composition.mjs";
 import { createStateComposition } from "./state-composition.mjs";
 import { createAgentHubDeferredPorts } from "./agent-hub-deferred-ports.mjs";
 import { createProviderApplicationComposition } from "./provider-application-composition.mjs";
@@ -27,7 +28,7 @@ import { createExecutionBootstrapPhase } from "./execution-bootstrap-phase-compo
 import { HubSessionState } from "../runtime/hub-session-state.mjs";
 if (process.platform === "win32") dns.setDefaultResultOrder("ipv4first");
 const agentHubDeferred = createAgentHubDeferredPorts();
-const config = await loadConfig();
+const { value: config, record: recordConfiguration } = await measureStartupBeforeTrace("configuration", loadConfig);
 const serverStartedAt = new Date().toISOString();
 const serverInstanceId = randomUUID();
 const serverReleaseId = path.basename(AGENT_HUB_ROOT);
@@ -76,9 +77,8 @@ const agentHubAutostartShortcutPath = agentHubAutostartShortcut({ environment: p
 const localWebSecret = config.miniApp.enabled
   ? await ensureLocalWebSecret(path.join(runtimeCommandRoot, "local-web.secret"))
   : "";
-const {
-  trustedDeviceStore,
-  taskLifecycle,
+const { value: {
+  trustedDeviceStore, taskLifecycle,
   codexRolloutContextSanitizer,
   workLogUsageStore, workLogUsageIdentityStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, workspaceReleaseService, preTurnInstructions, taskBoard, taskVoiceTranscriber, hubMcpService, hubMcpServer, mcpAdmissionCoordinator,
   miniAppServer,
@@ -89,16 +89,15 @@ const {
   runtimeStateStore,
   taskReadStateStore,
   turnEndNotifications,
-  runtimeNotificationController,
-  runJournal,
+  runtimeNotificationController, runJournal,
   runtimeCommandServer,
-  rateLimitHistoryStore, providerTurnTelemetryStore, commandTraceService,
+  rateLimitHistoryStore, providerTurnTelemetryStore, commandTrace, commandTraceService,
   sqliteRecovery, acknowledgeSqliteRecovery,
-} = await createHubInfrastructure({
+}, record: recordInfrastructure } = await measureStartupBeforeTrace("infrastructure", () => createHubInfrastructure({
   config,
   agentHubRoot: AGENT_HUB_ROOT,
-  runtimeCommandRoot,
-  localWebSecret,
+  runtimeCommandRoot, localWebSecret,
+  serverInstanceId, serverReleaseId,
   journalDatabaseFile,
   legacyWorkLogLedgerFile,
   legacyWorkLogFile,
@@ -114,7 +113,8 @@ const {
   reconcileRuntimeCommand: agentHubDeferred.api.reconcileRuntimeCommand,
   handleRuntimeCommand: agentHubDeferred.api.handleRuntimeCommand,
   stopProcessTree,
-});
+}));
+for (const record of [recordConfiguration, recordInfrastructure]) record(commandTraceService);
 const initialProvider = config.provider === "codex" ? "codex" : "claude";
 const token = config.token;
 const { taskMetadata, selectionStore, agentPreferences } = createStateComposition({
@@ -619,7 +619,7 @@ const executionBootstrap = createExecutionBootstrapPhase({
     instanceGuard, runtimeCommandServer,
     runtimeStateStore, taskReadStateStore,
     workLogUsageStore, rateLimitHistoryStore, providerTurnTelemetryStore, taskBoard, hubMcpServer, hubMcpService, sqliteRecovery, acknowledgeSqliteRecovery,
-    preTurnInstructions,
+    preTurnInstructions, commandTrace, commandTraceService,
   },
   provider: providerApplication,
   clients: clientRuntime,

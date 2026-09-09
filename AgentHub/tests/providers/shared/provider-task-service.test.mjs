@@ -36,12 +36,15 @@ test("Codex task service creates, names and discovers tasks through its port", a
     updateSettings: async () => calls.push("settings"),
     clearLatestDiff: () => { state.diff = ""; },
     saveState: async () => calls.push("save"),
-    clock: () => new Date("2026-08-04T15:00:00Z"),
+    nameCreatedThread: async ({ threadId }) => {
+      calls.push(["thread/name/set", { threadId, name: "Workspace — Поток 1" }]);
+      return "Workspace — Поток 1";
+    },
   });
   const created = await service.createTask();
   assert.equal(state.threadId, "thread-1");
   assert.equal(state.streamId, "stream-1");
-  assert.match(state.title, /^Telegram · /u);
+  assert.equal(state.title, "Workspace — Поток 1");
   assert.equal(state.diff, "");
   assert.equal(created.threadId, "thread-1");
   assert.equal(
@@ -131,6 +134,7 @@ test("Codex task discovery falls back before a project has its first rollout", a
 test("Codex task service binds and persists the created Thread before post-create setup", async () => {
   const state = { streamId: "stream-1", threadId: null, binding: null, savedThreadId: null };
   const service = new CodexProviderTaskService({
+    nameCreatedThread: async () => { throw new Error("post-create failure"); },
     transportRunning: () => true,
     startTransport: async () => {},
     initialize: async () => {},

@@ -69,8 +69,8 @@ export class TaskLifecycleService {
     return workspace ? taskProjectRoot({ workspace, stream }) : null;
   }
 
-  #withLock(taskId, operation) {
-    return this.taskGitWorkspaces?.withTaskLock
+  #withLock(taskId, operation, { git = true } = {}) {
+    return git && this.taskGitWorkspaces?.withTaskLock
       ? this.taskGitWorkspaces.withTaskLock(taskId, operation)
       : operation({ signal: null, async assertOwned() {} });
   }
@@ -110,19 +110,19 @@ export class TaskLifecycleService {
     }
     return this.releasePreflight.withAwaitTransition(
       workspace.id,
-      () => this.#updateWorkflowStatusLocked(options),
+      () => this.#updateWorkflowStatusLocked(options, { releaseWorkflow: true }),
     );
   }
 
-  async #updateWorkflowStatusLocked({ taskId, status, operationId, binding = {}, projectRoot = null } = {}) {
+  async #updateWorkflowStatusLocked({ taskId, status, operationId, binding = {}, projectRoot = null } = {}, { releaseWorkflow = false } = {}) {
     return this.#withLock(taskId, async (lease = {}) => {
       const task = this.#task(taskId);
       const workflowStatus = String(status ?? "").trim();
-      const snapshotsResult = ["testing", "awaiting_implementation", "done"].includes(workflowStatus);
+      const snapshotsResult = releaseWorkflow && ["testing", "awaiting_implementation", "done"].includes(workflowStatus);
       const workspace = task.workspaceId ? this.workspaceCatalog.workspace(task.workspaceId) : null;
       const affectsAwait = workspace?.settings?.releaseWorkflowEnabled === true
         && (task.workflowStatus === "awaiting_implementation" || workflowStatus === "awaiting_implementation");
-      const selectedProjectRoot = projectRoot || this.#projectRoot(task);
+      const selectedProjectRoot = releaseWorkflow ? projectRoot || this.#projectRoot(task) : null;
       if (affectsAwait && !selectedProjectRoot) {
         throw new Error("Task project root is unavailable; Await set was not changed");
       }
@@ -142,6 +142,7 @@ export class TaskLifecycleService {
             operationId,
             gitReferences: [],
             replaceGitReferences: false,
+            ...binding,
             evidence: { outcome: "not_required" },
           }), operationId);
           committed = true;
@@ -225,7 +226,7 @@ export class TaskLifecycleService {
         }
         throw error;
       }
-    });
+    }, { git: releaseWorkflow });
   }
 
   async #cleanupPreview(task, action) {

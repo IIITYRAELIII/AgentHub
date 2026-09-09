@@ -444,6 +444,28 @@ test("local control client survives App Server exit during delayed startup and s
       : null;
   }, "desktop context compaction after reconnect", 5_000);
 
+  const startupProcess = (await callDesktopControl("snapshot", {}, { runtimeRoot })).server.process;
+  const expectedStartupStages = ["configuration", "infrastructure", "web", "desktop-control", "runtime-command", "hub-mcp", "history",
+    "provider", "runs", "readiness", "timers"].map((stage) => `startup-${stage}`);
+  const startupSpans = await waitFor(() => {
+    const traceDatabase = new DatabaseSync(path.join(dataDir, "command-traces.sqlite"), { readOnly: true });
+    try {
+      const spans = traceDatabase.prepare("SELECT * FROM command_trace_spans WHERE stage LIKE 'startup-%'")
+        .all().map((span) => ({ ...span, metadata: JSON.parse(span.metadata_json) }))
+        .filter((span) => span.metadata.instanceId === startupProcess.instanceId);
+      return expectedStartupStages.every((stage) => spans.some((span) => span.stage === stage
+        && span.outcome === "succeeded")) ? spans : null;
+    } finally { traceDatabase.close(); }
+  }, "startup measurements persisted through production composition", 5_000);
+  for (const span of startupSpans.filter((entry) => expectedStartupStages.includes(entry.stage))) {
+    assert.equal(span.metadata.releaseId, startupProcess.releaseId);
+    if (span.outcome !== "succeeded") continue;
+    assert.ok(startupSpans.some((entry) => entry.outcome === "started"
+      && entry.stage === span.stage && entry.metadata.operationSpanId === span.metadata.operationSpanId),
+    `${span.stage} must retain its start marker and terminal measurement`);
+    assert.ok(span.monotonic_duration_ms >= 0);
+  }
+
   const firstMessageId = "desktop-message-first";
   const steerMessageId = "desktop-message-steer";
   const firstStart = await callDesktopControl("send-message", {
@@ -707,19 +729,22 @@ test("local control client survives App Server exit during delayed startup and s
       provider: "codex",
       threadId: firstThreadId,
       limit: 20,
+      refreshSource: true,
     }, { runtimeRoot });
     const exchange = result.items.find((item) => item.id === externalState.turnId);
-    return (exchange?.messages ?? [])
+    const users = (exchange?.messages ?? [])
       .filter((message) => (
         message.role === "user"
         && message.text === "[external-unchanged] VSCode task"
-        && message.sourceOccurrenceId
-      ))
-      .map((message) => message.sourceOccurrenceId);
+        && (message.clientUserMessageId || message.sourceOccurrenceId)
+      ));
+    // The keyed root keeps its canonical command identity across adapters;
+    // independent unkeyed observations must retain their exact source identity.
+    return users.map((message) => message.clientUserMessageId || message.sourceOccurrenceId);
   };
   const initialExternalOccurrenceIds = await waitFor(async () => {
     const ids = await readExternalOccurrenceIds();
-    return ids.length ? ids : null;
+    return ids.length === 2 && ids.includes(`fake-vscode-${externalState.turnId}`) ? ids : null;
   }, "incremental external history hydration", 5_000);
   for (let replay = 0; replay < 4; replay += 1) {
     assert.deepEqual(
@@ -749,6 +774,15 @@ test("local control client survives App Server exit during delayed startup and s
   for (let replay = 0; replay < 3; replay += 1) {
     assert.deepEqual(await readExternalOccurrenceIds(), appendedExternalOccurrenceIds);
   }
+  const readDurableExternalOccurrences = () => {
+    const db = new DatabaseSync(path.join(dataDir, "journal.sqlite"), { readOnly: true });
+    try { return db.prepare(`SELECT m.client_user_message_id,m.source_occurrence_id
+      FROM task_read_model_messages m JOIN task_read_model_turns t ON t.provider=m.provider AND t.thread_id=m.thread_id AND t.position=m.turn_position
+      WHERE t.provider='codex' AND t.thread_id=? AND t.id=? AND m.role='user' ORDER BY m.position`).all(firstThreadId, externalState.turnId); }
+    finally { db.close(); }
+  };
+  const durableBeforeRestart = readDurableExternalOccurrences();
+  assert.deepEqual(durableBeforeRestart.map((row) => row.client_user_message_id || row.source_occurrence_id), appendedExternalOccurrenceIds, "restart fixture must first commit exact canonical occurrence order");
   await stopBot();
   startBot();
   await waitFor(
@@ -760,9 +794,12 @@ test("local control client survives App Server exit during delayed startup and s
   const restoredOccurrenceIds = await waitFor(async () => {
       const ids = await readExternalOccurrenceIds();
       restartOccurrenceIds = ids;
-      return ids.length === appendedExternalOccurrenceIds.length ? ids : null;
+      // Control becomes available before rollout recovery. Equal cardinality
+      // can still contain provisional App Server identities; await exact ones.
+      return ids.length === appendedExternalOccurrenceIds.length
+        && ids.every((id, index) => id === appendedExternalOccurrenceIds[index]) ? ids : null;
     }, "incremental occurrence recovery after restart", 8_000).catch((error) => {
-      throw new Error(`${error.message}; expected=${JSON.stringify(appendedExternalOccurrenceIds)}; actual=${JSON.stringify(restartOccurrenceIds)}`);
+      throw new Error(`${error.message}; expected=${JSON.stringify(appendedExternalOccurrenceIds)}; actual=${JSON.stringify(restartOccurrenceIds)}; before=${JSON.stringify(durableBeforeRestart)}; after=${JSON.stringify(readDurableExternalOccurrences())}`);
     });
   assert.deepEqual(
     restoredOccurrenceIds,

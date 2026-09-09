@@ -192,6 +192,43 @@ test("Codex history refresh reads the rollout directly without blocking App Serv
   assert.equal(result.history[1].messages[0].text, "Новый запрос");
 });
 
+for (const directRollout of [true, false]) test(`Codex history returns committed active user chronology without losing requested detail (${directRollout ? "rollout" : "App Server"})`, async () => {
+  const sourceUser = (id) => ({ role: "user", text: "same", sourceOccurrenceId: `codex-rollout:${id.repeat(64)}` });
+  const ownedUser = { role: "user", text: "owned", clientUserMessageId: "owned-command" };
+  const olderTurn = { id: "turn-old", prompt: "old", completed: true,
+    messages: [{ role: "agent", text: "older full answer" }],
+    activities: [{ type: "tool", text: "older full tool detail" }] };
+  const activeTurn = { id: "turn-live", active: true, completed: false,
+    messages: [sourceUser("a"), ownedUser, { role: "agent", text: "current full answer" }],
+    activities: [{ type: "tool", text: "current full tool detail" }] };
+  let durable = [olderTurn, activeTurn];
+  const view = controller({
+    findCodexRolloutPath: async () => directRollout ? "C:/rollout.jsonl" : null,
+    ensureCodex: async () => {},
+    readCodexThread: async () => ({ thread: { turns: [] } }),
+    readCodexRolloutActivity: async () => ({ activeTurnIds: [], userMessages: {}, finalMessages: {} }),
+    readCodexSnapshot: async () => ({ active: true, turnId: "turn-live" }),
+    taskSyncStore: {
+      history: () => structuredClone(durable),
+      recordHistory: async () => {
+        // Another observation won the write lane. The bounded durable page
+        // owns user chronology, but does not replace the requested rich page.
+        durable = [{ ...activeTurn, messages: [ownedUser, sourceUser("a"), sourceUser("c")] }];
+      },
+      save: async () => {},
+    },
+  });
+  const result = await view.readHistory({ provider: "codex", threadId: "thread-shared", projectRoot: "C:/repo", chatId: 1 });
+  assert.deepEqual(result.history.map((turn) => turn.id), ["turn-old", "turn-live"]);
+  assert.deepEqual(result.history[0].messages, olderTurn.messages);
+  assert.deepEqual(result.history[0].activities, olderTurn.activities);
+  const live = result.history[1];
+  assert.deepEqual(live.messages.filter((message) => message.role === "user").map((message) => message.clientUserMessageId || message.sourceOccurrenceId),
+    ["owned-command", sourceUser("a").sourceOccurrenceId, sourceUser("c").sourceOccurrenceId]);
+  assert.equal(live.messages.find((message) => message.role === "agent").text, "current full answer");
+  assert.deepEqual(live.activities, activeTurn.activities);
+});
+
 test("Codex history removes a context probe turn identified by rollout metadata", async () => {
   const probeTurnId = "019ffc97-c47f-7de0-aea6-00e1da772d7d";
   const realTurnId = "019ffc98-65c9-7b02-a2f1-402378bf70e4";

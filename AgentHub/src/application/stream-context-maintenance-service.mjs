@@ -115,6 +115,21 @@ export class StreamContextMaintenanceService {
     return released;
   }
 
+  cancelPreparing(target) {
+    const reservation = this.registry.entry(target);
+    if (!reservation) return null;
+    if (!["automatic-post-turn", "automatic-post-turn-rotation"].includes(reservation.reason)
+      || reservation.phase !== "preparing"
+      || this.maintenanceProvider(target)?.compactions?.isRunning?.(normalized(target.threadId))) {
+      return { accepted: false, message: "Обслуживание контекста уже запущено; его остановка не подтверждена" };
+    }
+    const released = this.registry.end(reservation);
+    if (released) this.#wakeQueue(target);
+    return { accepted: released, message: released
+      ? "Подготовка обслуживания контекста отменена. Очередь продолжит работу."
+      : "Подготовка обслуживания контекста уже завершилась" };
+  }
+
   async maintainAfterTurn(run) {
     const reservation = this.registry.entry(run);
     if (
@@ -131,6 +146,9 @@ export class StreamContextMaintenanceService {
       }) === false) {
         return { compacted: false, deferred: true, reason: "turn-still-active" };
       }
+      // Cancellation can release preparation while the bounded idle read is
+      // pending. Only the same reservation may cross the provider boundary.
+      if (!this.registry.entry(reservation)) return { compacted: false, cancelled: true };
       if (reservation.reason === "automatic-post-turn-rotation") {
         const compaction = this.#completedTurnCompaction(run);
         if (!compaction) throw new Error("Завершённая свёртка текущего хода больше недоступна");
@@ -155,7 +173,7 @@ export class StreamContextMaintenanceService {
             afterPercent,
           };
         }
-        this.registry.update?.(reservation, { reason: "automatic-rotation" });
+        this.registry.update?.(reservation, { reason: "automatic-rotation", phase: "starting" });
         const rotated = await this.provider.rotateCompacted(run, {
           compactionId: compaction.id,
           settlement: compaction,
@@ -178,6 +196,7 @@ export class StreamContextMaintenanceService {
       if (beforePercent === null || beforePercent <= Number(this.autoCompactThreshold())) {
         return { compacted: false, beforePercent };
       }
+      this.registry.update?.(reservation, { phase: "starting" });
       const started = await this.provider.start(run, {
         captureRawItem: true,
         origin: "automatic",
@@ -185,6 +204,7 @@ export class StreamContextMaintenanceService {
       });
       if (!started.accepted) return { compacted: false, reason: started.message };
       compactionId = started.compactionId;
+      this.registry.update?.(reservation, { phase: "running" });
       this.provider.compactions.annotate?.(run.threadId, compactionId, { beforePercent });
       const settled = await this.provider.compactions.waitForSettlement(
         run.threadId,
@@ -195,6 +215,7 @@ export class StreamContextMaintenanceService {
           ? "Автосвёртка контекста не завершилась вовремя"
           : "Автосвёртка контекста не завершилась");
       }
+      this.registry.update?.(reservation, { phase: "measuring" });
       const after = await this.#exactContextAfterCompaction(run, before, started.compactionId);
       const afterPercent = contextUsagePercent(after);
       this.provider.compactions.annotate?.(run.threadId, started.compactionId, {
@@ -207,7 +228,7 @@ export class StreamContextMaintenanceService {
         compactionId = null;
         return { compacted: true, rotated: false, beforePercent, afterPercent };
       }
-      this.registry.update?.(reservation, { reason: "automatic-rotation" });
+      this.registry.update?.(reservation, { reason: "automatic-rotation", phase: "starting" });
       const rotated = await this.provider.rotateCompacted(run, {
         compactionId: started.compactionId,
         settlement: settled,
@@ -222,8 +243,7 @@ export class StreamContextMaintenanceService {
       return { compacted: false, error: error.message };
     } finally {
       if (compactionId) this.provider.discardCompactionTransfer(run.threadId, compactionId);
-      this.registry.end(reservation);
-      this.#wakeQueue(queueTarget);
+      if (this.registry.end(reservation)) this.#wakeQueue(queueTarget);
     }
   }
 

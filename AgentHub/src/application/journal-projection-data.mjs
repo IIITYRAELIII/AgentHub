@@ -170,10 +170,7 @@ export function buildLazyJournalPayload(markdown, {
   const virtualDates = sections
     .filter((section) => !/^<details\b[^>]*\bdata-lazy-day=/iu.test(section.html))
     .map((section) => section.date);
-  const virtual = buildVirtualJournalProjection(sections.map((section) => ({
-    ...section,
-    html: shallowDaySection(section.html).html,
-  })));
+  const shallowSections = [];
   for (const section of sections) {
     /* Раздел уже свёрнут до оболочки: его содержимое лежит в базе, и повторная
        проекция обязана оставить оболочку как есть. Иначе фрагмент дня будет
@@ -183,9 +180,11 @@ export function buildLazyJournalPayload(markdown, {
        прежний includes тогда ошибочно оставлял весь такой день eager. */
     if (/^<details\b[^>]*\bdata-lazy-day="/iu.test(section.html)) {
       initialSections.push(section.html);
+      shallowSections.push(section);
       continue;
     }
     const shallow = shallowDaySection(section.html);
+    shallowSections.push({ ...section, html: shallow.html });
     Object.assign(turns, shallow.turns);
     /* Свежие дни нужны сразу, но полные запросы и финалы каждого хода не нужны
        до раскрытия карточки. Иначе большой день попадает в initial HTML целиком,
@@ -197,6 +196,7 @@ export function buildLazyJournalPayload(markdown, {
     initialSections.push(lazyDayShell(section));
     days[section.date] = shallow.html;
   }
+  const virtual = buildVirtualJournalProjection(shallowSections);
   return {
     html: [rateLimits, accountPanel, ...initialSections].filter(Boolean).join("\n"),
     days,

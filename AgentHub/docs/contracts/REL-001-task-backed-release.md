@@ -122,7 +122,8 @@ after every supported database version is guaranteed to contain operation IDs.
 
 ## Test and acceptance integration
 
-Moving a Task to `testing`, or directly to a later implementation status,
+In a Workspace with `settings.releaseWorkflowEnabled === true`, moving a Task
+to `testing`, or directly to a later implementation status,
 snapshots its complete dirty worktree into a local result commit and merges that
 result into the shared local `dev` branch. Git derives the stable changed-file
 set between the Task base commit and Task result commit:
@@ -203,7 +204,7 @@ base/result revision pairs, blobs or manifests. Work-log changed files remain
 diagnostic journal data only. There is no separate readiness row, frozen
 manifest or freeze command. The release plan hashes the current Task revision
 and Git references. Generic status mutation may roll back to a non-result status
-at any time, but Test, Await and Done require a proven integrated result. Any
+at any time, but Test, Await and Done in a release-enabled Workspace require a proven integrated result. Any
 intervening Task or accepted-result mutation changes the plan
 revision and invalidates an older Architect plan. Provider terminal callbacks
 do not infer file ownership or release readiness.
@@ -378,6 +379,15 @@ confirmed mutation.
 `settings.releaseWorkflowEnabled=true` activates Task release tracking and the
 built-in workflow rules. Architect authority is only
 `stream.settings.architect === true`; multiple Architect Streams are allowed.
+
+When that setting is false or absent, every Task workflow status, including
+Test, Await and Done, is an ordinary database transition through the same
+Task lifecycle owner. It keeps row-revision CAS, durable operation outcomes,
+exact claimed-turn bindings and status events, but does not acquire a Git lease,
+require a Stream/project root, prepare a worktree, snapshot or integrate Git,
+or invoke release preflight. Existing Git references remain unchanged. This
+scope clarification is recorded in ADR-0031; Complete/Delete retain their
+separate artifact-aware cleanup contract.
 
 A Stream with `settings.teamLead=true` sends each exact implementation result
 to an independent Workspace Stream for review; the implementation executor

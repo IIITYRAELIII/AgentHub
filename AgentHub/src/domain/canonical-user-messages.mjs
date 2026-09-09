@@ -178,3 +178,24 @@ export function mergeCanonicalUserMessages(currentMessages, observedMessages, {
   }
   return merged;
 }
+
+export function rebaseActiveCodexUsers(existingHistory, incomingHistory) {
+  const existing = new Map((existingHistory ?? []).map((turn) => [turn.id, turn]));
+  return (incomingHistory ?? []).map((turn) => {
+    const current = existing.get(turn.id);
+    if (current?.active !== true || turn.active !== true || current.completed || turn.completed) return turn;
+    const users = (value) => (value.messages ?? []).filter((message) => message.role === "user");
+    const currentUsers = users(current);
+    const incomingUsers = users(turn);
+    // Identity-less legacy rows retain the existing projection behavior until
+    // an authoritative provider read supplies identities. Text is never an alias.
+    if (![...currentUsers, ...incomingUsers].every((message) => clientUserMessageId(message) || sourceOccurrenceId(message))) return turn;
+    return { ...turn,
+      userMessageSnapshotAuthority: mergedUserMessageSnapshotAuthority(currentUsers, current, turn),
+      messages: [...mergeCanonicalUserMessages(currentUsers, incomingUsers, {
+        currentSnapshotAuthority: userMessageSnapshotAuthority(current),
+        snapshotAuthority: userMessageSnapshotAuthority(turn),
+      }), ...(turn.messages ?? []).filter((message) => message.role !== "user")],
+    };
+  });
+}

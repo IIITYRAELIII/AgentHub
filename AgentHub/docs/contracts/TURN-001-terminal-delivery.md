@@ -15,6 +15,14 @@ final status and final content.
 
 - Terminal status, final content, usage identity and last-message identity are
   committed before admission or queue ownership is released.
+- The post-turn reservation is acquired before admission release. Once the
+  terminal is durable, admission completion starts reserved post-turn
+  maintenance independently of outbox delivery. A stalled delivery cannot hold
+  an otherwise idle Stream in preparation. The existing maintenance reservation
+  has an exact identity: cancellation before provider start releases only that
+  preparation and wakes the original queued input. Late idle checks and cleanup
+  cannot start work or release a replacement reservation. Cancellation after
+  provider start is not reported as confirmed without provider evidence.
 - Post-turn context idle checks bound awaited rollout discovery and observation
   by one deadline. If the check cannot establish inactivity before that deadline,
   no compaction is started; its reservation is released and the original queued

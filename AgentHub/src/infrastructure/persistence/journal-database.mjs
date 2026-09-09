@@ -647,13 +647,14 @@ export class JournalDatabase {
     };
   }
 
-  async loadLedger() {
+  async loadLedger({ usageHistory = false } = {}) {
     const database = await this.#open();
     const turns = {};
     for (const row of database.prepare(`
-      SELECT provider, thread_id, turn_id, record_json
+      SELECT provider, thread_id, turn_id,
+        ${usageHistory ? "CASE WHEN json_valid(record_json) THEN json_remove(record_json, '$.diff') ELSE record_json END" : "record_json"} AS record_json
       FROM journal_records ORDER BY provider, thread_id, turn_id
-    `).all()) {
+    `).iterate()) {
       try {
         const record = normalizedRecord(JSON.parse(row.record_json),
           ledgerKey({ provider: row.provider, threadId: row.thread_id, turnId: row.turn_id }));
@@ -740,6 +741,37 @@ export class JournalDatabase {
     const result = { replaced: rows.length, revision };
     this.#changed({ type: "ledger", ...result });
     return result;
+  }
+
+  async *metadataRecords({ provider }) {
+    const database = await this.#open();
+    for (const row of database.prepare(`
+      SELECT provider, thread_id, turn_id,
+        CASE WHEN json_valid(record_json) THEN json_remove(record_json, '$.diff') END AS record_json
+      FROM journal_records WHERE provider = ? ORDER BY thread_id, turn_id
+    `).iterate(provider)) {
+      try {
+        const record = normalizedRecord(JSON.parse(row.record_json), ledgerKey({
+          provider: row.provider, threadId: row.thread_id, turnId: row.turn_id,
+        }));
+        if (record) yield record;
+      } catch {
+        // Preserve malformed persisted rows for explicit repair, as loadLedger does.
+      }
+    }
+  }
+
+  async changedRecordProjectRoots({ afterRevision = -1, throughRevision }) {
+    return (await this.#open()).prepare(`
+      SELECT DISTINCT project_root AS projectRoot FROM journal_records
+      WHERE changed_revision > ? AND changed_revision <= ?
+    `).all(afterRevision, throughRevision).map((row) => row.projectRoot);
+  }
+
+  async recordRevision({ provider, threadId, turnId }) {
+    return (await this.#open()).prepare(`
+      SELECT changed_revision FROM journal_records WHERE provider = ? AND thread_id = ? AND turn_id = ?
+    `).get(provider, threadId, turnId)?.changed_revision ?? null;
   }
 
   async taskTitleMetadata({ provider, threadId }) {

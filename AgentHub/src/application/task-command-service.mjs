@@ -21,6 +21,7 @@ export class TaskCommandService {
     restoreCodexSettings,
     diffs,
     providerCancel,
+    cancelContextMaintenance = () => null,
     progress,
     dismissedExternalTasks,
     completeRun,
@@ -55,6 +56,7 @@ export class TaskCommandService {
       restoreCodexSettings,
       diffs,
       providerCancel,
+      cancelContextMaintenance,
       progress,
       dismissedExternalTasks,
       completeRun,
@@ -148,7 +150,8 @@ export class TaskCommandService {
   async cancel(params) {
     const target = await this.resolveTarget(params);
     const run = this.runForTask(target);
-    if (!run) return { accepted: false, message: "В выбранном потоке сейчас ничего не выполняется" };
+    if (!run) return await this.cancelContextMaintenance(target)
+      ?? { accepted: false, message: "В выбранном потоке сейчас ничего не выполняется" };
     const result = await this.providerCancel(run);
     if (result.interruptFailed) {
       if (run.observer) {
@@ -181,7 +184,6 @@ export class TaskCommandService {
     let workspace = null;
     let stream = null;
     let sourceStream = null;
-    let createdWorkspace = false;
     if (params.streamId) {
       stream = this.workspaceCatalog.stream(params.streamId);
       if (!stream) throw new Error("Stream не найден");
@@ -218,7 +220,6 @@ export class TaskCommandService {
       workspace = await this.#mutateWorkspace(() => this.workspaceCatalog.createWorkspace({
         name: String(params.workspaceName ?? "New Workspace").trim(),
       }), "desktop-workspace-create");
-      createdWorkspace = true;
       stream = await this.#mutateWorkspace(() => this.workspaceCatalog.createStream({
         workspaceId: workspace.id,
         name: params.streamName,
@@ -267,13 +268,6 @@ export class TaskCommandService {
         projectRoot: this.selectionStore.activeProjectRoot,
         title: this.selectionStore.activeThreadTitle || workspace.name,
       };
-    }
-    if (createdWorkspace && !params.workspaceName && created?.title
-      && typeof this.workspaceCatalog.renameWorkspace === "function") {
-      workspace = await this.#mutateWorkspace(
-        () => this.workspaceCatalog.renameWorkspace(workspace.id, created.title),
-        `desktop-workspace-rename:${workspace.id}`,
-      );
     }
     if (created?.threadId) {
       await this.#mutateWorkspace(() => this.workspaceCatalog.bindThread({

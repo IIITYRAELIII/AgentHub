@@ -28,6 +28,8 @@ export function createCodexContextMaintenanceComposition({
   runForTask,
   sendRpc,
   normalizeCodexModel,
+  preserveProbeTitle = async () => {},
+  logger = console,
 }) {
   return new CodexContextMaintenanceService({
     timers: runtimeTimers,
@@ -55,6 +57,8 @@ export function createCodexContextMaintenanceComposition({
     invalidateTaskCatalog,
     restartTransportAfterCrash,
     runForTask,
+    preserveProbeTitle,
+    logger,
     ensureTransport: async () => {
       if (transportRunning()) return;
       await startTransport();
@@ -65,11 +69,15 @@ export function createCodexContextMaintenanceComposition({
       ...sandbox,
     }),
     startCompaction: (threadId) => sendRpc("thread/compact/start", { threadId }),
-    startContextProbe: (threadId) => sendRpc("turn/start", {
-      threadId,
-      input: [{ type: "text", text: CODEX_CONTEXT_PROBE_PROMPT }],
-      clientUserMessageId: codexContextProbeClientId(),
-    }),
+    startContextProbe: async (threadId) => {
+      try { await preserveProbeTitle({ provider: "codex", threadId }); }
+      catch (error) { logger.warn?.(`Cannot preserve Thread title before context probe: ${error.message}`); }
+      return sendRpc("turn/start", {
+        threadId,
+        input: [{ type: "text", text: CODEX_CONTEXT_PROBE_PROMPT }],
+        clientUserMessageId: codexContextProbeClientId(),
+      });
+    },
     interruptContextProbe: (threadId, turnId) => sendRpc("turn/interrupt", {
       threadId,
       turnId,

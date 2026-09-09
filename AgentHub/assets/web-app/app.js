@@ -5100,7 +5100,12 @@ function renderChatContent({ preserveStreamTabs = false } = {}) {
   renderDialogSettings();
   renderStreamChatHeader(task);
   renderMessagePinShelf();
-  for (const stop of chatStops) stop.hidden = !task.running;
+  for (const stop of chatStops) {
+    const preparing = contextMaintenancePreparing(task);
+    stop.hidden = !task.running && !preparing;
+    stop.title = preparing ? "Отменить подготовку обслуживания контекста" : "Остановить ход";
+    stop.setAttribute("aria-label", stop.title);
+  }
   renderContextUsage(task);
   if (preserveStreamTabs) syncStreamTabsSelection();
   else renderStreamTabs();
@@ -5122,6 +5127,11 @@ function renderChatContent({ preserveStreamTabs = false } = {}) {
   if (taskChanged) restoreDraft();
 }
 
+function contextMaintenancePreparing(task) {
+  return ["automatic-post-turn", "automatic-post-turn-rotation"].includes(task?.maintenance?.reason)
+    && task?.maintenance?.phase === "preparing";
+}
+
 function renderContextUsage(task) {
   if (!contextUsageButton) return;
   const context = task?.context;
@@ -5132,11 +5142,15 @@ function renderContextUsage(task) {
   const used = Math.max(0, Number(context.usedTokens) || 0);
   const total = Math.max(0, Number(context.modelContextWindow) || 0);
   const cleaningImages = context.compaction?.stage === "cleaning-images";
-  contextLabel.textContent = context.compacting
+  const preparing = contextMaintenancePreparing(task);
+  const starting = ["automatic-post-turn", "automatic-post-turn-rotation"].includes(task?.maintenance?.reason)
+    && task?.maintenance?.phase === "starting";
+  contextLabel.textContent = preparing ? "подготовка…" : starting ? "запуск…" : context.compacting
     ? "свёртка…"
     : context.usagePending ? "обновление…" : `${Math.round(percent)}% контекста`;
   contextRing.style.setProperty("--context-percent", `${percent}%`);
-  contextUsageButton.title = context.compacting
+  contextUsageButton.title = preparing ? "Подготовка обслуживания контекста. Проверяется завершение предыдущего хода…"
+    : starting ? "Запуск обслуживания контекста…" : context.compacting
     ? cleaningImages
       ? "Свёртка создана. Удаляются дубликаты изображений…"
       : "Контекст сворачивается…"
@@ -5196,7 +5210,7 @@ function renderContextUsageDetails(task) {
   }
   contextUsageNote.textContent = context.breakdown?.note ?? "";
   contextUsageCompact.hidden = !["codex", "claude"].includes(String(task.provider ?? ""));
-  contextUsageCompact.disabled = Boolean(task.running || context.compacting || context.usagePending);
+  contextUsageCompact.disabled = Boolean(task.running || task.maintenance || context.compacting || context.usagePending);
   contextUsageCompact.textContent = context.compacting ? "Контекст сворачивается…" : "Свернуть контекст";
 }
 

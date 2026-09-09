@@ -11,6 +11,7 @@ import {
 import { taskViewCallbackData } from "./task-view-callback.mjs";
 import {
   hasCanonicalUserMessages,
+  rebaseActiveCodexUsers,
   mergedUserMessageSnapshotAuthority,
   mergeCanonicalUserMessages,
   userMessageSnapshotAuthority,
@@ -644,7 +645,7 @@ export class TaskViewController {
           await materializeHistoryAttachments(history, d.attachmentImporter);
           await d.taskSyncStore.recordHistory(task, history, snapshot);
           await d.taskSyncStore.save();
-          return { history, snapshot };
+          return { history: rebaseActiveCodexUsers(d.taskSyncStore.history(task), history), snapshot };
         }
         await d.ensureCodex();
         const result = await d.readCodexThread(binding.threadId, { fresh: true });
@@ -676,7 +677,7 @@ export class TaskViewController {
         await materializeHistoryAttachments(history, d.attachmentImporter);
         await d.taskSyncStore.recordHistory(task, history, snapshot);
         await d.taskSyncStore.save();
-        return { history, snapshot };
+        return { history: rebaseActiveCodexUsers(d.taskSyncStore.history(task), history), snapshot };
       }
       const snapshot = await d.readClaudeSnapshot(binding.threadId, { includeHistory: true });
       const cached = d.taskSyncStore.history(task);
