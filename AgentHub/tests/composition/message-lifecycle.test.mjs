@@ -1325,6 +1325,44 @@ test("new-turn root reconciles after App Server replaces its client id", () => {
   assert.deepEqual([...result.matchedIds], ["client-local"]);
 });
 
+test("root fallback preserves earlier steer exclusion and exact provider-thread scope", () => {
+  const local = { ...message("local-root", "Root"), turnUserSlot: "root" };
+  const otherThread = { ...local, threadId: "other-thread", clientUserMessageId: "other-thread-root" };
+  const otherProvider = { ...local, provider: "claude", clientUserMessageId: "other-provider-root" };
+  const server = [
+    { ...local, itemId: "first-steer", clientUserMessageId: "", turnUserSlot: "steer" },
+    { ...local, itemId: "later-root", clientUserMessageId: "" },
+    { ...otherThread, itemId: "thread-root", clientUserMessageId: "" },
+    { ...otherProvider, itemId: "provider-root", clientUserMessageId: "" },
+    { ...local, itemId: "exact-steer", turnUserSlot: "steer" },
+  ];
+  const result = lifecycle.reconcile(server, [local, otherThread, otherProvider]);
+  assert.deepEqual(Array.from(result.matches, (match) => match.local), [
+    null, null, otherThread, otherProvider, local,
+  ]);
+  assert.deepEqual([...result.matchedIds], ["other-thread-root", "other-provider-root", "local-root"]);
+});
+
+test("reconciliation reads long history identities in linear work with and without outgoing roots", () => {
+  let identityReads = 0;
+  const history = Array.from({ length: 1000 }, (_, index) => ({
+    ...message(`server-${index}`, "Root"),
+    get provider() { identityReads += 1; return "codex"; },
+    turnId: `turn-${index}`,
+    turnUserSlot: "root",
+  }));
+  const local = { ...history.at(-1), clientUserMessageId: "local-root", itemId: "local-root" };
+  for (const outgoing of [[], [local]]) {
+    identityReads = 0;
+    const result = lifecycle.reconcile(history, outgoing);
+    assert.equal(result.matches.length, history.length);
+    assert.ok(result.matches.every((match, index) => match.message === history[index]));
+    assert.ok(identityReads <= history.length * 8, `identity reads: ${identityReads}`);
+    assert.deepEqual([...result.matchedIds], outgoing.length ? ["local-root"] : []);
+    assert.equal(result.matches.at(-1).local, outgoing.length ? local : null);
+  }
+});
+
 test("matching text attachments and time never confirm a different stable identity", () => {
   const local = {
     provider: "codex",

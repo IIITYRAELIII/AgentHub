@@ -188,6 +188,13 @@ scans. Periodic external history refresh runs only while chat is visible, and
 unchanged Dashboard collections retain their snapshot identity so they do not
 incur stringify comparison or card rebuild.
 
+A lazy Journal version conflict supersedes that read. The client requests at
+most one refresh per displayed version through the existing refresh owner,
+restores open scopes, and restarts their paging from offset zero. Responses from
+a superseded version or render generation cannot mutate the current DOM or
+trigger another refresh. Expected version conflicts are not transport-error
+notifications; actual read failures remain visible.
+
 Public Worker publication materializes an immutable versioned Journal layout
 before atomically advancing its manifest. Compact index HTML, resource summary,
 aggregate profile cohorts, exact per-Stream and per-Workspace aggregates, exact
@@ -212,6 +219,12 @@ The “Local Hub” health RTT is not message ACK latency and must not be presen
 as such. Provider latency and remote Worker latency are separate indicators.
 
 ## Navigation responsiveness
+
+Message reconciliation identifies legacy turn-root candidates in one pass over
+the retained history. It does not copy and rescan every earlier message for each
+user item. The temporary identity fallback retains UI-001's exact provider,
+Thread, turn, first-user and explicit-steer semantics; optimizing the traversal
+must not broaden which outgoing command can own a historical occurrence.
 
 Switching between Chat, Dashboard and Journal exposes the target shell before
 optional data hydration completes. On production-shaped data the input-to-first-

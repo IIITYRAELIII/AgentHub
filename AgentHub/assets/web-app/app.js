@@ -13872,17 +13872,31 @@ function disableLocalLinks(scope = journal) {
   }
 }
 
+let journalFragmentRefreshVersion = null;
+
+function isSupersededJournalFragment(error) {
+  return error?.code === "JOURNAL_FRAGMENT_SUPERSEDED";
+}
+
 async function fetchJournalFragment(pathname, params) {
   await localSessionReady;
-  const query = new URLSearchParams({ ...params, version: currentVersion });
+  const requestedVersion = currentVersion;
+  const query = new URLSearchParams({ ...params, version: requestedVersion });
   const response = await fetch(`${pathname}?${query}`, {
     cache: "no-store",
     headers: await authenticatedRequestHeaders(),
   });
   const payload = await response.json();
-  if (response.status === 409 || payload.version && payload.version !== currentVersion) {
-    void loadJournal({ force: true });
-    throw new Error("Журнал обновился.");
+  if (requestedVersion !== currentVersion || response.status === 409
+    || payload.version && payload.version !== requestedVersion) {
+    // A fragment belongs to its requested snapshot. Refresh through the normal
+    // owner once per stale version, never replay an old page into the new DOM.
+    // Do not await this refresh: the current render may itself await a fragment.
+    if (requestedVersion === currentVersion && journalFragmentRefreshVersion !== requestedVersion) {
+      journalFragmentRefreshVersion = requestedVersion;
+      void loadJournal({ force: true });
+    }
+    throw Object.assign(new Error("Журнал обновился."), { code: "JOURNAL_FRAGMENT_SUPERSEDED" });
   }
   if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
   return payload;
@@ -13940,7 +13954,7 @@ async function loadLazyDay(details) {
   })().catch((error) => {
     if (details.isConnected) {
       details.removeAttribute("aria-busy");
-      details.title = error.message;
+      if (!isSupersededJournalFragment(error)) details.title = error.message;
     }
   }).finally(() => loadingDays.delete(date));
   loadingDays.set(date, promise);
@@ -13967,7 +13981,7 @@ async function loadLazyTurn(details) {
   })().catch((error) => {
     if (details.isConnected) {
       details.removeAttribute("aria-busy");
-      details.title = error.message;
+      if (!isSupersededJournalFragment(error)) details.title = error.message;
     }
   }).finally(() => loadingTurns.delete(turnId));
   loadingTurns.set(turnId, promise);
@@ -15646,6 +15660,7 @@ function renderVirtualWorkspaceProfile(summary, scopeKey) {
 
 async function loadVirtualWorkspaceProfile(details) {
   if (!details || details.dataset.virtualWorkspaceProfileLoaded === "true") return;
+  const renderSequence = journalRenderSequence;
   details.dataset.virtualWorkspaceProfileLoaded = "true";
   try {
     const payload = await fetchJournalFragment("/api/journal/turns", {
@@ -15653,11 +15668,14 @@ async function loadVirtualWorkspaceProfile(details) {
       profileMode: "stream",
       limit: "1",
     });
+    if (!details.isConnected || renderSequence !== journalRenderSequence) return;
     if (payload.profileSummary) {
       renderVirtualWorkspaceProfile(payload.profileSummary, details.dataset.journalVirtualScope ?? "");
     }
   } catch (error) {
     delete details.dataset.virtualWorkspaceProfileLoaded;
+    if (!details.isConnected || renderSequence !== journalRenderSequence
+      || isSupersededJournalFragment(error)) return;
     showToast(`Не удалось загрузить профиль Workspace: ${error.message}`);
   }
 }
@@ -15742,6 +15760,7 @@ function renderVirtualJournal() {
 
 async function appendVirtualTurnPage(container, { nextPage = false } = {}) {
   if (!container?.isConnected || container.dataset.virtualLoading === "true") return;
+  const renderSequence = journalRenderSequence;
   if (container.dataset.virtualLoaded === "true" && !nextPage) return;
   const table = container.querySelector(":scope [data-journal-turn-table]")
     ?? container.querySelector("[data-journal-turn-table]");
@@ -15761,6 +15780,7 @@ async function appendVirtualTurnPage(container, { nextPage = false } = {}) {
       offset: String(offset),
       limit: "30",
     });
+    if (!container.isConnected || renderSequence !== journalRenderSequence) return;
     if (payload.profileSummary) {
       renderVirtualStreamProfiles(
         payload.profileSummary,
@@ -15803,6 +15823,8 @@ async function appendVirtualTurnPage(container, { nextPage = false } = {}) {
     refreshUsageUnits(table);
     disableLocalLinks(table);
   } catch (error) {
+    if (!container.isConnected || renderSequence !== journalRenderSequence
+      || isSupersededJournalFragment(error)) return;
     container.title = error.message;
     showToast(`Не удалось загрузить ходы: ${error.message}`);
   } finally {
@@ -15863,6 +15885,7 @@ async function renderJournal() {
   } catch (error) {
     if (sequence !== journalRenderSequence) return;
     journal.setAttribute("aria-busy", "false");
+    if (isSupersededJournalFragment(error)) return;
     showToast(`Не удалось собрать журнал: ${error.message}`);
   }
 }

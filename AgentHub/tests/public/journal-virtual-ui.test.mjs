@@ -57,6 +57,10 @@ async function openProductionJournal(page, {
   grouping = "stream",
   groupStreams = true,
   summaryBuckets = null,
+  getVersion = () => VERSION,
+  turnPageResponse = null,
+  journalRequests = [],
+  waitForProfile = true,
 } = {}) {
   const requests = [];
   const profileSummary = { version: 1, buckets: [
@@ -92,12 +96,9 @@ async function openProductionJournal(page, {
     if (url.hostname !== "agent-hub.test") return route.abort();
     if (url.pathname === "/api/journal/turns") {
       requests.push(url.toString());
-      return route.fulfill({
-        status: 200,
-        contentType: "application/json; charset=utf-8",
-        body: JSON.stringify({
+      const payload = {
           conflict: false,
-          version: VERSION,
+          version: getVersion(),
           profileSummary,
           turns: [{
             turnRef: "turn-ref-high",
@@ -112,21 +113,28 @@ async function openProductionJournal(page, {
               + '<div data-lazy-turn-content></div></details></div>',
           }],
           nextOffset: null,
-        }),
+      };
+      const result = await turnPageResponse?.({ payload, url, requestNumber: requests.length });
+      return route.fulfill({
+        status: result?.status ?? 200,
+        contentType: "application/json; charset=utf-8",
+        body: JSON.stringify(result?.payload ?? payload),
       });
     }
     if (url.pathname === "/api/journal") {
+      const version = getVersion();
+      journalRequests.push(version);
       return route.fulfill({
         status: 200,
         contentType: "application/json; charset=utf-8",
-        headers: { ETag: `"${VERSION}"` },
+        headers: { ETag: `"${version}"` },
         body: JSON.stringify({
           html: '<details data-work-log-day-section data-lazy-day="07.09.2026">'
             + '<summary data-work-log-day><strong>07.09.2026</strong></summary>'
             + '<div data-lazy-day-content></div></details>',
           summary,
           updatedAt: "2026-09-07T12:00:00.000Z",
-          version: VERSION,
+          version,
           usageSync: { configured: false },
         }),
       });
@@ -161,7 +169,7 @@ async function openProductionJournal(page, {
   await page.goto("http://agent-hub.test/", { waitUntil: "load" });
   await page.locator('[data-view-button="journal"]').click();
   await page.locator(`[data-journal-virtual-mode="${grouping}"]`).first().waitFor();
-  if (grouping === "stream") await page.locator("[data-journal-profile-metrics]").first().waitFor();
+  if (grouping === "stream" && waitForProfile) await page.locator("[data-journal-profile-metrics]").first().waitFor();
   return requests;
 }
 
@@ -196,6 +204,101 @@ test("virtual Stream mode preserves overview profile and default-open semantics"
     assert.equal(request.searchParams.get("workspaceId"), "workspace-1");
     assert.equal(request.searchParams.get("streamId"), "stream-high");
     assert.equal(request.searchParams.get("version"), VERSION);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("journal version conflict refreshes once and restores the open Stream without an error", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch(process.platform === "win32"
+    ? { channel: "msedge", headless: true } : { headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    let version = "journal-v1";
+    const journalRequests = [];
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const requests = await openProductionJournal(page, {
+      getVersion: () => version,
+      journalRequests,
+      turnPageResponse: ({ requestNumber }) => {
+        if (requestNumber !== 1) return null;
+        version = "journal-v2";
+        return { status: 409, payload: { error: "Журнал обновился.", version } };
+      },
+    });
+    await page.locator("[data-work-log-turn-title]").first().waitFor();
+    assert.deepEqual(journalRequests, ["journal-v1", "journal-v2"]);
+    assert.deepEqual(requests.map((request) => new URL(request).searchParams.get("version")), ["journal-v1", "journal-v2"]);
+    assert.equal(await page.locator('[data-journal-virtual-mode="stream"]').first().getAttribute("open"), "");
+    assert.doesNotMatch(await page.locator("[data-toast]").innerText(), /Не удалось/u);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("late journal page from the previous version neither refreshes nor mutates the new scope", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch(process.platform === "win32"
+    ? { channel: "msedge", headless: true } : { headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    let version = "journal-v1";
+    let release;
+    let markStarted;
+    const started = new Promise((resolve) => { markStarted = resolve; });
+    const gate = new Promise((resolve) => { release = resolve; });
+    const journalRequests = [];
+    const requests = await openProductionJournal(page, {
+      getVersion: () => version,
+      journalRequests,
+      waitForProfile: false,
+      turnPageResponse: async ({ payload, requestNumber }) => {
+        if (requestNumber !== 1) return null;
+        markStarted();
+        await gate;
+        return { payload: { ...payload, turns: payload.turns.map((turn) => ({
+          ...turn, html: turn.html.replace("High turn", "STALE TURN"),
+        })), profileSummary: { version: 1, buckets: [bucket({ fileTouches: 999 })] } } };
+      },
+    });
+    await started;
+    version = "journal-v2";
+    await page.locator("[data-refresh]").click();
+    await page.locator("[data-work-log-turn-title]").first().waitFor();
+    const before = await page.locator('[data-journal-virtual-mode="stream"]').first().innerHTML();
+    const response = page.waitForResponse((value) => value.url().includes("/api/journal/turns")
+      && new URL(value.url()).searchParams.get("version") === "journal-v1");
+    release();
+    await (await response).finished();
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.deepEqual(journalRequests, ["journal-v1", "journal-v2"]);
+    assert.equal(requests.length, 2);
+    assert.equal(await page.locator('[data-journal-virtual-mode="stream"]').first().innerHTML(), before);
+    assert.doesNotMatch(await page.locator("[data-toast]").innerText(), /Не удалось/u);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("journal page service failures remain visible and do not trigger version reconciliation", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch(process.platform === "win32"
+    ? { channel: "msedge", headless: true } : { headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const journalRequests = [];
+    const requests = await openProductionJournal(page, {
+      journalRequests,
+      waitForProfile: false,
+      turnPageResponse: () => ({ status: 503, payload: { error: "Storage unavailable" } }),
+    });
+    await page.getByText("Не удалось загрузить ходы: Storage unavailable", { exact: true }).waitFor();
+    assert.equal(journalRequests.length, 1);
+    assert.equal(requests.length, 1);
+    assert.equal(await page.locator('[data-journal-virtual-turns][aria-busy="true"]').count(), 0);
   } finally {
     await browser.close();
   }
