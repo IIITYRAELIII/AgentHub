@@ -109,6 +109,98 @@ async function dropTask(page, taskId, target) {
   return page.evaluate(() => window.__boardActions.at(-1));
 }
 
+test("Dashboard separates settings from filters and restores Workspace grouping", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchEdge(chromium);
+  try {
+    const page = await browser.newPage({ viewport: { width: 1487, height: 1058 } });
+    await openFixture(page);
+    await setBoard(page, workspaces.map((workspace) => ({ ...workspace, settings: { catalogFolder: 'Team' } })));
+    await page.locator('[data-task-board-filter-toggle]').click();
+    assert.equal(await page.locator('[data-task-board-filter-controls] [data-task-status-language]').count(), 0);
+    assert.equal(await page.locator('[data-task-board-completed-toggle]').isVisible(), true);
+    await page.locator('[data-task-board-settings-toggle]').click();
+    assert.equal(await page.locator('#task-board-settings').isVisible(), true);
+    assert.equal(await page.locator('[data-task-status-language="ru"]').isVisible(), true);
+    await page.keyboard.press('Escape');
+    await page.locator('[data-task-board-view="workspaces"]').click();
+    const columns = page.locator('[data-task-board-columns] .task-board-column');
+    assert.deepEqual(await columns.locator('h2').allTextContents(), ['Бэклог', 'DevOps', 'Agent HUB', 'Заметки']);
+    const workspace = page.locator('[data-task-board-columns] [data-board-destination="workspace:one"]');
+    assert.equal(await workspace.locator('[data-board-task-id]').count(), 3);
+    assert.equal(await workspace.locator('[data-board-task-id="2"] .board-task-status').isVisible(), true);
+    await workspace.getByRole('button', { name: 'Создать', exact: true }).click();
+    assert.equal(await workspace.locator('textarea').isVisible(), true);
+    assert.deepEqual(await dropTask(page, '1', page.locator('[data-task-board-columns] [data-board-destination="workspace:two"]')),
+      { type: 'move', id: '1', bucket: 'workspace', workspaceId: 'two', beforeId: null });
+    await page.locator('[data-board-scope="folder:Team"]').click();
+    assert.equal(await columns.count(), 3);
+    await page.locator('[data-board-scope="workspace:one"]').click();
+    assert.deepEqual(await columns.locator('h2').allTextContents(), ['Бэклог', 'Agent HUB']);
+    await page.reload();
+    await setBoard(page);
+    assert.equal(await page.locator('[data-task-board-view="workspaces"]').getAttribute('aria-pressed'), 'true');
+    await page.locator('[data-task-board-view="statuses"]').click();
+    assert.equal(await page.locator('.is-status-testing').count(), 1);
+  } finally { await browser.close(); }
+});
+
+test("Dashboard saves each task opening mode and retains drafts when switching", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchEdge(chromium);
+  try {
+    const page = await browser.newPage({ viewport: { width: 1487, height: 1058 } });
+    await openFixture(page);
+    await setBoard(page);
+    const chooseMode = async (mode) => {
+      await page.locator('[data-task-board-settings-toggle]').click();
+      await page.locator(`[data-task-open-mode="${mode}"]`).click();
+    };
+    const row = page.locator('[data-task-board-columns] [data-board-task-id="1"]');
+    const dialog = page.locator('[data-task-card-modal]');
+    await chooseMode('modal');
+    await row.dblclick();
+    assert.equal(await dialog.evaluate((el) => el.matches(':modal')), true);
+    assert.equal(await page.locator('.task-card-backdrop').count(), 0);
+    assert.equal(await page.locator('[data-task-board]').evaluate((el) => el.classList.contains('has-open-task')), false);
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => !document.querySelector('[data-task-card-modal]').open);
+    await chooseMode('side');
+    await row.dblclick();
+    assert.equal(await dialog.evaluate((el) => el.matches(':modal')), false);
+    await row.press('Shift+Enter');
+    assert.equal(await dialog.evaluate((el) => el.matches(':modal')), false);
+    await page.locator('[data-task-card-edit-toggle]').click();
+    await page.locator('[data-task-card-title]').fill('Сохранить черновик');
+    await chooseMode('modal');
+    assert.equal(await dialog.evaluate((el) => el.matches(':modal')), true);
+    assert.equal(await page.locator('[data-task-card-title]').inputValue(), 'Сохранить черновик');
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => !document.querySelector('[data-task-card-modal]').open);
+    await chooseMode('both');
+    await row.dblclick();
+    assert.equal(await dialog.evaluate((el) => el.matches(':modal')), true);
+    assert.equal(await page.locator('.task-card-backdrop').isVisible(), true);
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => !document.querySelector('[data-task-card-modal]').matches(':modal'));
+    assert.equal(await dialog.isVisible(), true);
+    await page.keyboard.press('Escape');
+    await chooseMode('side');
+    await page.reload();
+    await setBoard(page);
+    await row.click();
+    assert.equal(await dialog.evaluate((el) => el.matches(':modal')), false);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForFunction(() => document.querySelector('[data-task-card-modal]').matches(':modal'));
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => !document.querySelector('[data-task-card-modal]').open);
+    await page.locator('[data-task-board-settings-toggle]').click();
+    const box = await page.locator('#task-board-settings').boundingBox();
+    assert.ok(box.x >= 0 && box.x + box.width <= 390);
+    assert.equal(await page.locator('[data-task-open-mode="side"]').getAttribute('aria-pressed'), 'true');
+  } finally { await browser.close(); }
+});
+
 test("Backlog stays separate in every scope and hides status in docked and modal cards", async () => {
   const { chromium } = await import("playwright");
   const browser = await launchEdge(chromium);
@@ -184,7 +276,9 @@ test("Dashboard preserves scope, create, filter and native drop commands", async
     assert.equal(await page.locator("[data-task-board-filter-controls]").isVisible(), false);
     await page.locator("[data-task-board-filter-toggle]").click();
     assert.equal(await page.locator("[data-task-board-filter-controls]").isVisible(), true);
+    await page.locator('[data-task-board-settings-toggle]').click();
     await page.locator('[data-task-status-language="ru"]').click();
+    await page.locator('[data-task-board-settings-toggle]').click();
     assert.match(await page.locator(".is-status-testing h2").textContent(), /Тест/u);
     await page.locator("[data-task-board-completed-toggle]").click();
     assert.equal(await board.locator(".board-task-card").count(), 1);
