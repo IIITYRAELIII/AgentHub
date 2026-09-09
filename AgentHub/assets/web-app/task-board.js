@@ -579,11 +579,18 @@
     })).filter(({ id }) => id);
     return Object.freeze({
       workspaceScrollLeft: Math.max(0, Number(regions?.workspaces?.scrollLeft) || 0),
+      matrixScrollLeft: Math.max(0, Number(regions?.workspaces?.querySelector?.('[data-task-board-matrix]')?.scrollLeft) || 0),
+      matrixScrollTop: Math.max(0, Number(regions?.workspaces?.querySelector?.('[data-task-board-matrix]')?.scrollTop) || 0),
       columns: Object.freeze(columns.map((entry) => Object.freeze(entry))),
     });
   }
 
   function restoreTaskBoardScroll(regions, snapshot) {
+    const matrix = regions?.workspaces?.querySelector?.('[data-task-board-matrix]');
+    if (matrix) {
+      matrix.scrollLeft = Math.max(0, Number(snapshot?.matrixScrollLeft) || 0);
+      matrix.scrollTop = Math.max(0, Number(snapshot?.matrixScrollTop) || 0);
+    }
     if (regions?.workspaces) {
       regions.workspaces.scrollLeft = Math.max(
         0,
@@ -861,6 +868,8 @@
   const filterControls = document.querySelector("[data-task-board-filter-controls]");
   const settingsToggle = document.querySelector("[data-task-board-settings-toggle]");
   const settingsPanel = document.querySelector("#task-board-settings");
+  const groupingToggle = document.querySelector('[data-task-board-grouping-toggle]');
+  const groupingSetting = document.querySelector('[data-task-board-grouping-setting]');
   const viewButtons = Array.from(document.querySelectorAll?.("[data-task-board-view]") ?? []);
   const openModeButtons = Array.from(document.querySelectorAll?.("[data-task-open-mode]") ?? []);
   const completedToggle = document.querySelector("[data-task-board-completed-toggle]");
@@ -958,6 +967,8 @@
     completedOnly: false,
     filtersOpen: false,
     boardView: storedBoardPreference("view", ["statuses", "workspaces"], "statuses"),
+    groupByWorkspace: storedBoardPreference("group-workspaces", ["on", "off"], "on") === "on",
+    collapsedBoardGroups: new Set(),
     taskOpenMode: storedBoardPreference("task-open", ["modal", "side", "both"], "both"),
     boardScope: "all",
     taskCardModalRequested: false,
@@ -1183,6 +1194,12 @@
     if (destination.startsWith("status:")) {
       const status = destination.slice(destination.lastIndexOf(":") + 1);
       if (task.bucket === "backlog" || !selectedScopeTasks([task]).length) return;
+      // A lane changes status inside its Workspace; moving ownership still uses
+      // the canonical Workspace destination (sidebar or task editor).
+      if (destination.startsWith("status:lane:")) {
+        const group = destination.slice("status:lane:".length, destination.lastIndexOf(":"));
+        if (encodeURIComponent(destinationValue(task)) !== group) return;
+      }
       if (taskWorkflowStatus(task) !== status) {
         if (state.savingStatusTaskId != null) return;
         state.savingStatusTaskId = task.id;
@@ -1974,10 +1991,11 @@
 
   function renderColumn({
     id, title, subtitle, tasks, accent = "", workspace = null, movable = false,
-    acceptsTaskDrops = movable, emptyText = "Нет задач",
+    acceptsTaskDrops = movable, emptyText = "Нет задач", laneCell = false,
   }) {
     const column = node("section", {
-      class: `task-board-column ${accent}${workspace ? " is-workspace" : ""}`,
+      class: `task-board-column ${accent}${workspace ? " is-workspace" : ""}${laneCell ? " task-board-lane-cell" : ""}`,
+      "aria-label": laneCell ? title : null,
       "data-board-destination": acceptsTaskDrops ? id : null,
       "data-board-workspace-id": workspace?.id,
     });
@@ -2053,7 +2071,83 @@
       for (const task of tasks) list.append(taskCard(task, { boardRow: true }));
     }
     column.append(list);
+    if (laneCell) {
+      column.querySelector('.task-board-column-head').remove();
+      column.querySelector('.task-board-row-head').remove();
+      if (!tasks.length) list.querySelector('.task-board-empty')?.remove();
+    }
     return column;
+  }
+
+  function renderStatusMatrix(tasks, statuses, emptyText) {
+    const matrix = node('div', { class: 'task-board-matrix', 'data-task-board-matrix': '' });
+    const content = node('div', { class: 'task-board-matrix-content' });
+    content.style.setProperty('--task-status-count', statuses.length);
+    const headers = node('div', { class: 'task-board-matrix-head' });
+    for (const status of statuses) {
+      const title = taskWorkflowPresentation({ workflowStatus: status }, state.statusLanguage).full;
+      const header = renderColumn({
+        id: `status:${state.boardScope}:${status}`, title,
+        tasks: [], accent: `is-status-${status}`, acceptsTaskDrops: !state.completedOnly,
+      });
+      header.classList.add('task-board-status-heading');
+      header.querySelector('.task-board-count').textContent = String(tasks.filter((task) => taskWorkflowStatus(task) === status).length);
+      header.querySelector('.task-board-row-head').remove();
+      header.querySelector('.task-board-column-list').remove();
+      headers.append(header);
+    }
+    content.append(headers);
+    const groups = new Map();
+    for (const task of tasks) {
+      const id = destinationValue(task);
+      if (!groups.has(id)) groups.set(id, []);
+      groups.get(id).push(task);
+    }
+    // Keep an explicitly selected empty Workspace available for task creation.
+    if (state.boardScope.startsWith('workspace:') && !groups.has(state.boardScope)) groups.set(state.boardScope, []);
+    const order = orderedDashboardColumnIds(state.columnOrder, groups.keys());
+    for (const id of order) {
+      const groupTasks = groups.get(id);
+      const workspace = id.startsWith('workspace:') ? workspaceById(id.slice(10)) : null;
+      const title = id === 'notes' ? 'Заметки' : workspace?.name || 'Workspace недоступен';
+      const lane = node('details', {
+        class: 'task-board-lane', 'data-task-board-group': id,
+        open: state.collapsedBoardGroups.has(id) ? null : '',
+      });
+      lane.addEventListener('toggle', () => {
+        if (!lane.isConnected) return;
+        if (lane.open) state.collapsedBoardGroups.delete(id);
+        else state.collapsedBoardGroups.add(id);
+      });
+      const summary = node('summary', { class: 'task-board-lane-heading' }, [
+        node('span', { text: title }),
+        node('span', { class: 'task-board-count', text: String(groupTasks.length) }),
+      ]);
+      lane.append(summary);
+      const cells = node('div', { class: 'task-board-lane-cells' });
+      for (const status of statuses) {
+        const cell = renderColumn({
+          id: `status:lane:${encodeURIComponent(id)}:${status}`,
+          title: `${title}: ${taskWorkflowPresentation({ workflowStatus: status }, state.statusLanguage).full}`,
+          tasks: groupTasks.filter((task) => taskWorkflowStatus(task) === status),
+          accent: `is-status-${status}`, acceptsTaskDrops: !state.completedOnly,
+          workspace: status === 'new' ? workspace : null, laneCell: true, emptyText,
+        });
+        if (workspace && status === 'new' && !state.completedOnly && state.creatingWorkspaceId !== workspace.id) {
+          cell.querySelector('.task-board-column-list').append(node('button', {
+            type: 'button', class: 'task-board-create-button task-board-lane-create', text: 'Создать',
+            'aria-label': `Создать задачу в ${title}`,
+            onclick: () => { state.creatingWorkspaceId = workspace.id; renderBoard(); },
+          }));
+        }
+        cells.append(cell);
+      }
+      lane.append(cells);
+      content.append(lane);
+    }
+    if (!groups.size) content.append(node('p', { class: 'task-board-empty', text: emptyText }));
+    matrix.append(content);
+    return matrix;
   }
 
   function selectedScopeTasks(tasks) {
@@ -2186,6 +2280,11 @@
     }
     board.classList.toggle("has-workspace-context", showsWorkspaceContext());
     board.classList.toggle("is-workspace-view", state.boardView === "workspaces");
+    board.classList.toggle('is-status-view', state.boardView === 'statuses');
+    const grouped = state.boardView === 'statuses' && state.groupByWorkspace;
+    board.classList.toggle('is-grouped-view', grouped);
+    if (groupingToggle) groupingToggle.checked = state.groupByWorkspace;
+    if (groupingSetting) groupingSetting.hidden = state.boardView !== 'statuses';
     for (const button of viewButtons) button.setAttribute("aria-pressed", String(button.dataset.taskBoardView === state.boardView));
     for (const button of openModeButtons) button.setAttribute("aria-pressed", String(button.dataset.taskOpenMode === state.taskOpenMode));
     const completedCount = state.tasks.filter((task) => task.status === "done").length;
@@ -2217,7 +2316,8 @@
     const statuses = state.completedOnly ? ["done"] : TASK_WORKFLOW_STATUSES.filter((status) => (
       status !== "done" || scopedTasks.some((task) => taskWorkflowStatus(task) === "done")
     ));
-    for (const status of state.boardView === "statuses" ? statuses : []) {
+    if (grouped) rendered.push(renderStatusMatrix(scopedTasks, statuses, emptyText));
+    for (const status of state.boardView === "statuses" && !grouped ? statuses : []) {
       const presentation = taskWorkflowPresentation({ workflowStatus: status }, state.statusLanguage);
       rendered.push(renderColumn({
         id: `status:${state.boardScope}:${status}`,
@@ -2302,6 +2402,13 @@
     settingsPanel.style.maxHeight = `${Math.max(80, window.innerHeight - rect.bottom - 22)}px`;
   }
   settingsPanel?.addEventListener("toggle", positionBoardSettings);
+  groupingToggle?.addEventListener('change', () => {
+    state.groupByWorkspace = groupingToggle.checked;
+    state.creatingWorkspaceId = null;
+    saveBoardPreference('group-workspaces', state.groupByWorkspace ? 'on' : 'off');
+    settingsPanel.hidePopover();
+    renderBoard();
+  });
   for (const button of viewButtons) button.addEventListener("click", () => {
     state.boardView = button.dataset.taskBoardView;
     state.creatingWorkspaceId = null;
