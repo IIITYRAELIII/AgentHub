@@ -311,6 +311,41 @@ test("context probe cleanup waits for stable managed and rollout inactivity", as
   ]);
 });
 
+for (const stage of ["rollout-path", "rollout-activity"]) {
+  test(`context idle deadline bounds a hung ${stage} and ignores late completion`, async () => {
+    let finishRead;
+    let reads = 0;
+    const blocked = new Promise((resolve) => { finishRead = resolve; });
+    const { service } = harness({
+      knownRolloutPath: () => stage === "rollout-path" ? blocked : "rollout.jsonl",
+      readRolloutActivity: () => { reads += 1; return blocked; },
+    });
+    await assert.rejects(service.waitForContextProbeIdle(
+      { provider: "codex", threadId: "thread-1" }, "turn-1", { timeoutMs: 20 },
+    ), { code: "CODEX_CONTEXT_IDLE_TIMEOUT", stage });
+    const readsAtTimeout = reads;
+    finishRead(stage === "rollout-path" ? "rollout.jsonl" : { running: false });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(reads, readsAtTimeout, "timed-out polling must not resume on a late read");
+  });
+}
+
+test("context idle deadline is shared across observations instead of renewed per read", async () => {
+  let now = 0;
+  let reads = 0;
+  const { service } = harness({
+    knownRolloutPath: async () => { now += 6; return "rollout.jsonl"; },
+    readRolloutActivity: async () => { reads += 1; now += 6; return { running: false }; },
+    now: () => now,
+    sleep: async (milliseconds) => { now += milliseconds; },
+  });
+  assert.equal(await service.waitForContextProbeIdle(
+    { provider: "codex", threadId: "thread-1" }, "turn-1",
+    { timeoutMs: 20, pollMs: 1, quietMs: 1 },
+  ), false);
+  assert.equal(reads, 2);
+});
+
 test("rotation compacts into a clean Thread and injects only the raw compaction item", async () => {
   const rawItem = { type: "compaction", encrypted_content: "opaque" };
   const { service, calls } = harness({

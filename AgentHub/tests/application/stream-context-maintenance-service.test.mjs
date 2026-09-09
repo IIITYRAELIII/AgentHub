@@ -8,6 +8,7 @@ import {
   StreamContextMaintenanceService,
 } from "../../src/application/stream-context-maintenance-service.mjs";
 import { StreamMaintenanceRegistry } from "../../src/application/stream-maintenance-registry.mjs";
+import { CodexContextMaintenanceService } from "../../src/providers/codex/codex-context-maintenance-service.mjs";
 
 function fixture({
   beforePercent = 80,
@@ -167,6 +168,43 @@ function fixture({
   });
   return { clientSelections, deferredInputs, events, registry, service, source };
 }
+
+test("hung post-turn rollout read releases maintenance and wakes the original queued input", async () => {
+  const state = fixture({ beforePercent: 90 });
+  const queued = { id: "queued-after-terminal", streamId: state.source.streamId,
+    provider: state.source.provider, threadId: state.source.threadId,
+    clientUserMessageId: "original-client-id", prompt: "next message" };
+  state.deferredInputs.put(queued, "queued");
+  const originalInput = structuredClone(state.deferredInputs.get(queued.id));
+  let finishRead;
+  let reads = 0;
+  const blocked = new Promise((resolve) => { finishRead = resolve; });
+  const provider = new CodexContextMaintenanceService({
+    knownRolloutPath: async () => "rollout.jsonl",
+    readRolloutActivity: () => { reads += 1; return blocked; },
+  });
+  // Use the real provider deadline and the production post-turn timeout.
+  state.service.provider.waitForContextProbeIdle = provider.waitForContextProbeIdle.bind(provider);
+  const errors = [];
+  state.service.logger = { error: (...args) => errors.push(args) };
+  assert.equal(state.service.reserveAfterTurn(state.source), true);
+  const other = { ...state.source, streamId: "other-stream", threadId: "other-thread" };
+  const otherReservation = state.registry.begin(other);
+  const result = await state.service.maintainAfterTurn(state.source);
+  assert.equal(result.compacted, false);
+  assert.match(result.error, /rollout-activity/);
+  assert.equal(errors.length, 1);
+  assert.equal(state.registry.isActive(state.source), false);
+  assert.equal(state.registry.isActive(other), true);
+  assert.deepEqual(state.deferredInputs.get(queued.id), originalInput);
+  assert.equal(state.events.filter(([name, id]) => name === "wake" && id === queued.id).length, 1);
+  assert.equal(state.events.some(([name]) => name === "compact" || name === "rotate"), false);
+  finishRead({ running: false });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(reads, 1);
+  assert.equal(state.events.some(([name]) => name === "compact" || name === "rotate"), false);
+  state.registry.end(otherReservation);
+});
 
 function claudeFixture({ measuresContextItself = true, settlementStatus = "completed" } = {}) {
   const events = [];

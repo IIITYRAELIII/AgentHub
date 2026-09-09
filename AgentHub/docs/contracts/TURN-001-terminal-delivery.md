@@ -15,6 +15,12 @@ final status and final content.
 
 - Terminal status, final content, usage identity and last-message identity are
   committed before admission or queue ownership is released.
+- Post-turn context idle checks bound awaited rollout discovery and observation
+  by one deadline. If the check cannot establish inactivity before that deadline,
+  no compaction is started; its reservation is released and the original queued
+  input is woken through normal admission checks. Late read completion cannot
+  resume the abandoned check or start provider work. A read timeout is not
+  evidence that an already-started provider operation has finished.
 - A Codex `task_complete` event carrying an error is a failed terminal, not a
   successful empty answer. Exact-turn, tail and historical readers retain the
   same outcome. An identity-less context probe stays internal under UI-001;
