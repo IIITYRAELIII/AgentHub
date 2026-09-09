@@ -490,10 +490,11 @@ html[data-theme="pulsar"][data-surface] .task-item[data-selected]::before {
   display: none;
 }
 
-html[data-theme="pulsar"][data-surface] .task-board-column,
-html[data-theme="pulsar"][data-surface] .task-board-column.is-backlog,
-html[data-theme="pulsar"][data-surface] .task-board-column.is-notes,
-html[data-theme="pulsar"][data-surface] .task-board-column.is-dragover {
+/* Status Dashboard owns its card geometry; flat Pulsar surfaces remain elsewhere. */
+html[data-theme="pulsar"][data-surface] .task-board-column:where(:not(.is-status-view *)),
+html[data-theme="pulsar"][data-surface] .task-board-column.is-backlog:where(:not(.is-status-view *)),
+html[data-theme="pulsar"][data-surface] .task-board-column.is-notes:where(:not(.is-status-view *)),
+html[data-theme="pulsar"][data-surface] .task-board-column.is-dragover:where(:not(.is-status-view *)) {
   --pulsar-corner-frame-length: var(--pulsar-panel-corner-length);
   background: var(--pulsar-corner-frame);
   border: 0;
@@ -501,10 +502,10 @@ html[data-theme="pulsar"][data-surface] .task-board-column.is-dragover {
   box-shadow: none;
 }
 
-html[data-theme="pulsar"][data-surface] .board-task-card,
-html[data-theme="pulsar"][data-surface] .board-task-card.is-started,
-html[data-theme="pulsar"][data-surface] .board-task-card.is-completed,
-html[data-theme="pulsar"][data-surface] .board-task-card.is-dragover {
+html[data-theme="pulsar"][data-surface] .board-task-card:where(:not(.is-status-view .task-board-columns *)),
+html[data-theme="pulsar"][data-surface] .board-task-card.is-started:where(:not(.is-status-view .task-board-columns *)),
+html[data-theme="pulsar"][data-surface] .board-task-card.is-completed:where(:not(.is-status-view .task-board-columns *)),
+html[data-theme="pulsar"][data-surface] .board-task-card.is-dragover:where(:not(.is-status-view .task-board-columns *)) {
   background: transparent;
   border: 0;
   border-bottom: 1px solid rgba(74, 226, 214, 0.18);

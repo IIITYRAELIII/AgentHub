@@ -551,3 +551,58 @@ test("Status matrix groups by Workspace, preserves navigation and supports the o
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }
 });
+
+
+test("Status card surfaces survive theme overrides for open, started and completed Tasks", async () => {
+  const { chromium } = await import('playwright');
+  const browser = await launchEdge(chromium);
+  try {
+    const page = await browser.newPage({ viewport: { width: 1752, height: 1000 } });
+    await openFixture(page);
+    await page.evaluate(({ tasks, workspaces }) => {
+      document.documentElement.dataset.view = 'dashboard';
+      document.documentElement.dataset.surface = 'browser';
+      window.AgentHubTaskBoard.setSnapshot({ tasks, workspaces });
+    }, { tasks: [task('open'), task('started', { status: 'started' }), task('closed', { status: 'done', workflowStatus: 'done' })], workspaces });
+    const board = page.locator('[data-task-board-columns]');
+    const surfaces = async () => board.locator('.board-task-card').evaluateAll(els => els.map(el => {
+      const style = getComputedStyle(el);
+      const context = document.createElement('canvas').getContext('2d');
+      context.fillStyle = style.backgroundColor;
+      context.fillRect(0, 0, 1, 1);
+      return { background: style.backgroundColor, alpha: context.getImageData(0, 0, 1, 1).data[3],
+        border: parseFloat(style.borderTopWidth), radius: parseFloat(style.borderTopLeftRadius) };
+    }));
+    for (const grouped of [false, true]) {
+      if (grouped) {
+        await page.locator('[data-task-board-settings-toggle]').click();
+        await page.getByLabel('Группировать по воркспейсам', { exact: true }).click();
+      }
+      for (const theme of THEMES) {
+        await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
+        const cards = await surfaces();
+        assert.equal(cards.length, 2);
+        assert.equal(cards[0].background, cards[1].background, `${theme}: started and open share a surface`);
+        for (const card of cards) {
+          assert.ok(card.alpha >= 240, `${theme}: solid background`);
+          assert.ok(card.border >= 1 && card.radius >= 5, `${theme}: card outline and rounding`);
+        }
+      }
+      await page.locator('[data-task-board-filter-toggle]').click();
+      await page.locator('[data-task-board-completed-toggle]').click();
+      for (const theme of THEMES) {
+        await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
+        const cards = await surfaces();
+        assert.equal(cards.length, 1);
+        assert.ok(cards[0].alpha >= 240 && cards[0].border >= 1 && cards[0].radius >= 5, `${theme}: closed surface`);
+      }
+      await page.locator('[data-task-board-completed-toggle]').click();
+      await page.locator('[data-task-board-filter-toggle]').click();
+    }
+    await page.evaluate(() => { document.documentElement.dataset.theme = 'pulsar'; });
+    await board.locator('[data-board-task-id="started"]').dblclick();
+    assert.equal(await page.locator('[data-task-card-modal]').evaluate(el => el.matches(':modal')), true);
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('[data-task-card-modal]').isVisible(), true);
+  } finally { await browser.close(); }
+});
