@@ -3668,6 +3668,8 @@ html[data-view="chat"]:not([data-surface="mobile"])
 
 /* ======================================================= Task board === */
 .task-board-view {
+  --task-board-detail-width: 0px;
+  --task-board-content-end: 1.2rem;
   display: none;
   min-height: 0;
   width: 100%;
@@ -3687,6 +3689,7 @@ html[data-view="dashboard"] .server-view {
 }
 
 html[data-view="dashboard"] .task-board-view {
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   height: calc(100dvh - var(--app-header-h, 4.2rem));
@@ -3703,7 +3706,7 @@ html[data-view="dashboard"] .task-board-view {
   gap: 0.55rem;
   justify-content: space-between;
   min-width: 0;
-  padding: 0.65rem 1.2rem;
+  padding: 0.65rem var(--task-board-content-end) 0.65rem 1.2rem;
 }
 
 .task-board-scope-strip,
@@ -3839,16 +3842,16 @@ html[data-view="dashboard"] .task-board-view {
 
 .task-board-columns {
   --task-board-column-base-width: clamp(
-    15rem,
-    21vw,
-    20rem
+    12rem,
+    17.5vw,
+    16.5rem
   );
   display: flex;
   flex: 1 1 auto;
   min-height: 0;
   overflow-x: auto;
   overflow-y: hidden;
-  padding: 1rem 1.2rem 1.1rem;
+  padding: 1rem var(--task-board-content-end) 1.1rem 1.2rem;
 }
 
 .task-board-status-columns {
@@ -3898,17 +3901,26 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .task-board-column.is-status-awaiting_implementation {
-  border-top-color: color-mix(in srgb, #e87823 70%, var(--line));
+  border-top-color: color-mix(
+    in srgb,
+    var(--task-status-awaiting-color, color-mix(in srgb, var(--pending) 84%, var(--accent))) 70%,
+    var(--line)
+  );
 }
 
 @media (min-width: 960px) {
+  html[data-view="dashboard"] .task-board-view.has-open-task {
+    --task-board-detail-width: clamp(20rem, 28vw, 27rem);
+    --task-board-content-end: calc(var(--task-board-detail-width) + 1.5rem);
+  }
+
   html[data-view="dashboard"] .task-board-view.has-open-task .task-board-columns {
-    padding-inline-end: min(31rem, 34vw);
+    --task-board-column-base-width: clamp(11rem, 15vw, 13.5rem);
   }
 
   html[data-view="dashboard"] .task-card-modal[open] {
     block-size: auto;
-    inline-size: min(30rem, 32vw);
+    inline-size: var(--task-board-detail-width);
     inset: calc(var(--app-header-h, 4.2rem) + 0.75rem) 0.75rem 0.75rem auto;
     margin: 0;
     max-height: none;
@@ -3917,16 +3929,16 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .task-board-column-head {
-  align-items: start;
+  align-items: center;
   border-bottom: 1px solid var(--line);
   box-sizing: border-box;
   display: flex;
-  flex: 0 0 6.5rem;
+  flex: 0 0 4.25rem;
   gap: 0.6rem;
-  height: 6.5rem;
+  height: 4.25rem;
   justify-content: space-between;
   overflow: hidden;
-  padding: 0.75rem;
+  padding: 0.6rem 0.7rem;
 }
 
 .task-board-column-head > div:first-child {
@@ -4133,7 +4145,10 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .board-task-status[data-workflow-status="awaiting_implementation"] {
-  --task-status-color: #e87823;
+  --task-status-color: var(
+    --task-status-awaiting-color,
+    color-mix(in srgb, var(--pending) 84%, var(--accent))
+  );
 }
 
 .board-task-status[data-workflow-status="done"] {
