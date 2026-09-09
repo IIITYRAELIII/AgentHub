@@ -117,7 +117,8 @@ test("Dashboard preserves scope, create, filter and native drop commands", async
     await openFixture(page);
     await setBoard(page);
     const board = page.locator("[data-task-board-columns]");
-    assert.equal(await board.locator(".task-board-column").count(), 6);
+    assert.equal(await board.locator(".task-board-column").count(), 5);
+    assert.equal(await board.locator(".is-backlog").count(), 0);
     assert.equal(await board.locator('[data-board-task-id="6"]').count(), 1, "workflow Done remains visible until closed");
     assert.equal(await board.locator('[data-board-task-id="1"]').getAttribute("draggable"), "true");
     const scopes = await page.locator("[data-task-board-scopes] button").allTextContents();
@@ -139,7 +140,9 @@ test("Dashboard preserves scope, create, filter and native drop commands", async
     assert.equal(await page.evaluate(() => window.__boardActions.length), actionCount, "one pending status operation");
     await page.evaluate(() => window.AgentHubTaskBoard.finishAction({ type: "status", id: "1", succeeded: true }));
     assert.deepEqual(await dropTask(page, "1", page.getByRole("button", { name: /^DevOps ·/u })), { type: "move", id: "1", bucket: "workspace", workspaceId: "two", beforeId: null });
+    await page.getByRole("button", { name: /^Agent HUB ·/u }).click();
     assert.deepEqual(await dropTask(page, "1", page.locator(".is-backlog")), { type: "move", id: "1", bucket: "backlog", beforeId: null });
+    await page.getByRole("button", { name: /^Все задачи ·/u }).click();
     assert.equal(await page.locator("[data-task-board-filter-controls]").isVisible(), false);
     await page.locator("[data-task-board-filter-toggle]").click();
     assert.equal(await page.locator("[data-task-board-filter-controls]").isVisible(), true);
@@ -181,6 +184,7 @@ test("Dashboard detail is a theme-safe grid panel and becomes a modal on narrow 
       assert.ok(boxes.toolbar.bottom <= boxes.detail.y + 1, `${theme}: full-width toolbar above panel`);
       assert.ok(boxes.filter.right <= boxes.toolbar.right, `${theme}: filters stay inside toolbar with many Workspaces`);
       assert.ok(boxes.scopes.right <= boxes.filter.x, `${theme}: scopes scroll without covering filters`);
+      assert.ok(boxes.board.x >= 8 && boxes.detail.right < 1487, `${theme}: small outer gutters`);
       assert.equal(await page.locator("[data-task-preview-title]").textContent(), "Задача 1");
     }
     await page.locator("[data-task-card-edit-toggle]").click();
@@ -198,6 +202,91 @@ test("Dashboard detail is a theme-safe grid panel and becomes a modal on narrow 
     await page.keyboard.press("Escape");
     assert.equal(await dialog.isVisible(), false);
     assert.equal(await page.locator('[data-task-board-columns] [data-board-task-id="1"]').evaluate((el) => document.activeElement === el), true);
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
+test("Dashboard groups existing folders, selects their Workspaces and opens the standard card on double click", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchEdge(chromium);
+  try {
+    const page = await browser.newPage({ viewport: { width: 1487, height: 1058 } });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await openFixture(page);
+    const groupedWorkspaces = workspaces.map((workspace) => ({ ...workspace, settings: { catalogFolder: "Команда" } }));
+    await setBoard(page, groupedWorkspaces);
+    const rows = page.locator("[data-task-board-columns]");
+    const first = rows.locator('[data-board-task-id="1"]');
+    assert.equal(await first.locator(".board-task-workspace").textContent(), "Agent HUB");
+    const assignment = await first.locator(".board-task-assignment").evaluate((el) => {
+      const workspace = el.children[0].getBoundingClientRect();
+      const stream = el.children[1].getBoundingClientRect();
+      return { workspaceBottom: workspace.bottom, streamTop: stream.top, workspaceX: workspace.x, streamX: stream.x };
+    });
+    assert.ok(assignment.workspaceBottom < assignment.streamTop);
+    assert.equal(assignment.workspaceX, assignment.streamX);
+    assert.equal(await page.locator('[data-task-board-scopes] [data-board-scope="workspace:one"]').count(), 0);
+    const folder = page.locator('[data-board-scope="folder:Команда"]');
+    await folder.click();
+    assert.equal(await rows.locator('[data-board-task-id="4"]').count(), 0);
+    assert.equal(await rows.locator('[data-board-task-id="3"]').count(), 1);
+    assert.equal(await rows.locator(".is-backlog").count(), 1);
+    assert.equal(await first.locator(".board-task-workspace").textContent(), "Agent HUB");
+    const toggle = page.getByRole("button", { name: "Выбрать Workspace в папке Команда" });
+    await toggle.click();
+    const picker = page.locator(".task-board-folder-picker:popover-open");
+    assert.equal(await picker.locator("button").count(), 2);
+    await picker.locator('[data-board-scope="workspace:one"]').click();
+    assert.equal(await rows.locator('[data-board-task-id="3"]').count(), 0);
+    assert.equal(await first.locator(".board-task-workspace").count(), 0);
+    assert.equal(await picker.count(), 0);
+    assert.match(await folder.textContent(), /Команда \/ Agent HUB/u);
+    await first.click();
+    const dialog = page.locator("[data-task-card-modal]");
+    assert.equal(await dialog.evaluate((el) => el.matches(":modal")), false);
+    await first.dblclick();
+    assert.equal(await dialog.evaluate((el) => el.matches(":modal")), true);
+    assert.equal(await page.locator("[data-task-card-title]").isVisible(), true);
+    await page.keyboard.press("Escape");
+    assert.equal(await dialog.isVisible(), false);
+    await rows.locator('[data-board-task-id="2"]').dblclick();
+    assert.equal(await dialog.evaluate((el) => el.matches(":modal")), true, "double click from a later column with the panel closed");
+    assert.equal(await page.locator("[data-task-card-title]").inputValue(), "Задача 2");
+    await page.keyboard.press("Escape");
+    await first.press("Shift+Enter");
+    assert.equal(await dialog.evaluate((el) => el.matches(":modal")), true);
+    await page.keyboard.press("Escape");
+    await first.click();
+    assert.equal(await dialog.evaluate((el) => el.matches(":modal")), false);
+    await page.keyboard.press("Escape");
+    await toggle.click();
+    await page.keyboard.press("Escape");
+    assert.equal(await toggle.evaluate((el) => document.activeElement === el), true);
+    await toggle.click();
+    await page.locator(".is-status-testing h2").click();
+    assert.equal(await picker.count(), 0, "native outside dismissal");
+    await toggle.click();
+    assert.equal(await picker.count(), 1, "picker reopens on the next click");
+    assert.deepEqual(await dropTask(page, "1", picker.locator('[data-board-scope="workspace:two"]')),
+      { type: "move", id: "1", bucket: "workspace", workspaceId: "two", beforeId: null });
+    await page.keyboard.press("Escape");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await toggle.click();
+    const mobilePicker = await picker.boundingBox();
+    assert.ok(mobilePicker.x >= 0 && mobilePicker.x + mobilePicker.width <= 390);
+    await picker.locator('[data-board-scope="workspace:two"]').click();
+    assert.equal(await rows.locator('[data-board-task-id="1"]').count(), 0);
+    assert.equal(await rows.locator('[data-board-task-id="3"]').count(), 1);
+    await setBoard(page, workspaces);
+    assert.equal(await page.locator(".task-board-folder").count(), 0);
+    await page.setViewportSize({ width: 1487, height: 1058 });
+    await page.locator('[data-board-scope="all"]').click();
+    const clickPoint = await first.boundingBox();
+    await first.click();
+    await setBoard(page, [...workspaces, { id: "three", name: "Another", streams: [] }]);
+    await page.mouse.click(clickPoint.x + clickPoint.width / 2, clickPoint.y + clickPoint.height / 2, { clickCount: 2 });
+    assert.equal(await dialog.evaluate((el) => el.matches(":modal")), false, "a replaced row cannot inherit a double click");
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }
 });

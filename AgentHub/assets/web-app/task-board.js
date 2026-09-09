@@ -942,6 +942,7 @@
     completedOnly: false,
     filtersOpen: false,
     boardScope: "all",
+    taskCardModalRequested: false,
     openTaskId: null,
     startingTaskId: null,
     creatingWorkspaceId: null,
@@ -1045,7 +1046,7 @@
   }
 
   function taskCardIsDocked() {
-    return document.documentElement.dataset.view === "dashboard"
+    return !state.taskCardModalRequested && document.documentElement.dataset.view === "dashboard"
       && window.matchMedia?.("(min-width: 960px)")?.matches === true;
   }
 
@@ -1288,6 +1289,7 @@
     const openedTaskId = state.openTaskId;
     taskDeleteDialog.close();
     state.openTaskId = null;
+    state.taskCardModalRequested = false;
     state.editingTaskId = null;
     state.editDirty = false;
     state.editingChecklistItemId = null;
@@ -1715,7 +1717,8 @@
     taskCardActions.replaceChildren(...actions);
   }
 
-  function openTaskCard(task) {
+  function openTaskCard(task, { modal = false } = {}) {
+    state.taskCardModalRequested = modal;
     state.openTaskId = task.id;
     state.editingTaskId = null;
     state.editDirty = false;
@@ -1727,7 +1730,38 @@
     scheduleTaskCardEditorSizing();
   }
 
-  function taskCard(task, { compact = false, linked = false, movable = !compact } = {}) {
+  let firstBoardClick = null;
+
+  function continuesBoardDoubleClick(event) {
+    return event.detail === 2 && event.button === 0 && firstBoardClick
+      && firstBoardClick.card.isConnected
+      && firstBoardClick.card.dataset.boardTaskId === firstBoardClick.id
+      && state.openTaskId === firstBoardClick.id && taskCardIsDocked()
+      && Math.abs(event.clientX - firstBoardClick.x) <= 4
+      && Math.abs(event.clientY - firstBoardClick.y) <= 4;
+  }
+
+  // Docking shifts columns after the first click. Preserve the original connected
+  // row for the browser's native double-click sequence, without delaying preview.
+  document.addEventListener("mousedown", (event) => {
+    if (event.detail === 1) firstBoardClick = null;
+  }, true);
+  document.addEventListener("click", (event) => {
+    if (!continuesBoardDoubleClick(event)) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }, true);
+  document.addEventListener("dblclick", (event) => {
+    if (!continuesBoardDoubleClick(event)) return;
+    const task = state.tasks.find((candidate) => candidate.id === firstBoardClick.id);
+    firstBoardClick = null;
+    if (!task) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    openTaskCard(task, { modal: true });
+  }, true);
+
+  function taskCard(task, { compact = false, linked = false, movable = !compact, boardRow = false } = {}) {
     const completed = task.status === "done";
     const movableCard = movable && !completed;
     const attachable = !linked && movableCard;
@@ -1741,12 +1775,15 @@
       "data-board-task-movable": movableCard ? "true" : null,
       onclick: (event) => {
         event?.stopPropagation?.();
+        if (boardRow && event.detail === 1) firstBoardClick = {
+          card, id: task.id, x: event.clientX, y: event.clientY,
+        };
         openTaskCard(state.tasks.find((candidate) => candidate.id === task.id) ?? task);
       },
       onkeydown: (event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
-        openTaskCard(task);
+        openTaskCard(task, { modal: boardRow && event.shiftKey });
       },
       ondragstart: attachable ? (event) => {
         TaskReferences.beginDrag(event.dataTransfer, task);
@@ -1811,6 +1848,17 @@
       }),
     ]));
     card.append(node("h3", { class: "board-task-title", text: task.title || task.text }));
+    if (boardRow && showsWorkspaceContext()) {
+      const executor = card.querySelector(".board-task-executor");
+      const workspaceName = task.bucket === "notes" ? "Заметки"
+        : task.bucket === "backlog" ? "Бэклог"
+          : workspaceById(task.workspaceId)?.name || "Workspace недоступен";
+      const assignment = node("div", { class: "board-task-assignment" }, [
+        node("span", { class: "board-task-workspace", text: workspaceName, title: workspaceName }),
+      ]);
+      assignment.append(executor);
+      card.append(assignment);
+    }
     const attachmentCountLabel = taskAttachmentCountLabel(task.attachments);
     if (attachmentCountLabel) {
       card.append(node("div", { class: "board-task-attachments is-compact" }, [
@@ -1922,14 +1970,17 @@
       controls,
     ]));
     column.append(node("div", { class: "task-board-row-head", "aria-hidden": "true" }, [
-      node("span", { text: "ID" }), node("span", { text: "Задача" }), node("span", { text: "Поток" }),
+      node("span", { text: "ID" }), node("span", { text: "Задача" }),
+      showsWorkspaceContext() ? node("span", { class: "board-task-assignment" }, [
+        node("span", { text: "Workspace" }), node("span", { text: "Поток" }),
+      ]) : node("span", { text: "Поток" }),
     ]));
     const list = node("div", { class: "task-board-column-list" });
     if (workspace && state.creatingWorkspaceId === workspace.id) list.append(renderCreateForm(workspace));
     if (!tasks.length && state.creatingWorkspaceId !== workspace?.id) {
       list.append(node("p", { class: "task-board-empty", text: emptyText }));
     } else {
-      for (const task of tasks) list.append(taskCard(task));
+      for (const task of tasks) list.append(taskCard(task, { boardRow: true }));
     }
     column.append(list);
     return column;
@@ -1937,6 +1988,11 @@
 
   function selectedScopeTasks(tasks) {
     if (state.boardScope === "notes") return tasks.filter((task) => task.bucket === "notes");
+    if (state.boardScope.startsWith("folder:")) {
+      const folder = state.boardScope.slice(7);
+      const ids = new Set(state.workspaces.filter((workspace) => workspaceFolder(workspace) === folder).map((workspace) => workspace.id));
+      return tasks.filter((task) => task.bucket === "workspace" && ids.has(task.workspaceId));
+    }
     if (state.boardScope.startsWith("workspace:")) {
       const workspaceId = state.boardScope.slice(10);
       return tasks.filter((task) => task.bucket === "workspace" && task.workspaceId === workspaceId);
@@ -1944,41 +2000,77 @@
     return tasks.filter((task) => task.bucket === "workspace" || task.bucket === "notes");
   }
 
-  function renderScopeStrip() {
-    if (!scopeStrip) return;
-    const openTasks = (predicate) => tasksForMode(state.tasks, { completedOnly: state.completedOnly }).filter(predicate).length;
-    const scopes = [
-      { id: "all", label: "Все задачи", count: openTasks((task) => task.bucket !== "backlog") },
-      ...state.workspaces.map((workspace) => ({
-        id: `workspace:${workspace.id}`,
-        label: workspace.name,
-        count: openTasks((task) => task.bucket === "workspace" && task.workspaceId === workspace.id),
-      })),
-      { id: "notes", label: "Заметки", count: openTasks((task) => task.bucket === "notes") },
-    ];
-    const scopeById = new Map(scopes.map((scope) => [scope.id, scope]));
-    const orderedScopes = [...new Set(["all", ...state.columnOrder, ...scopes.map((scope) => scope.id)])]
-      .map((id) => scopeById.get(id)).filter(Boolean);
-    scopeStrip.replaceChildren(...orderedScopes.map((scope) => node("button", {
+  function showsWorkspaceContext() {
+    return state.boardScope === "all" || state.boardScope.startsWith("folder:");
+  }
+
+  function workspaceFolder(workspace) {
+    return window.AgentHubStreamTabs?.normalizeWorkspaceFolderName(workspace?.settings?.catalogFolder) || "";
+  }
+
+  let folderPicker = null;
+  let folderPickerButton = null;
+  function closeFolderPicker() {
+    folderPicker?.hidePopover?.();
+    folderPicker?.remove();
+    folderPickerButton?.setAttribute("aria-expanded", "false");
+    folderPicker = null;
+    folderPickerButton = null;
+  }
+
+  function openFolderPicker(button, folder, members) {
+    if (folderPickerButton === button && folderPicker?.matches(":popover-open")) { closeFolderPicker(); return; }
+    closeFolderPicker();
+    folderPickerButton = button;
+    folderPicker = node("div", {
+      class: "task-board-folder-picker", id: "task-board-folder-picker", popover: "auto",
+      "aria-label": `Workspace папки ${folder}`,
+      onkeydown: (event) => {
+        if (event.key === "Escape") { event.preventDefault(); closeFolderPicker(); button.focus(); }
+      },
+    }, members.map(scopeButton));
+    document.body.append(folderPicker);
+    folderPicker.addEventListener("toggle", (event) => {
+      button.setAttribute("aria-expanded", String(event.newState === "open"));
+    });
+    folderPicker.showPopover();
+    positionFolderPicker();
+    folderPicker.querySelector("button[aria-pressed='true']")?.focus();
+    if (!folderPicker.contains(document.activeElement)) folderPicker.querySelector("button")?.focus();
+  }
+
+  function positionFolderPicker() {
+    if (!folderPicker?.matches(":popover-open")) return;
+    const rect = folderPickerButton.getBoundingClientRect();
+    const width = folderPicker.getBoundingClientRect().width;
+    folderPicker.style.left = `${Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8))}px`;
+    folderPicker.style.top = `${rect.bottom + 6}px`;
+    folderPicker.style.maxHeight = `${Math.max(80, window.innerHeight - rect.bottom - 22)}px`;
+  }
+
+  function scopeButton(scope) {
+    const destination = scope.id === "notes" || scope.id.startsWith("workspace:");
+    return node("button", {
       type: "button",
       class: `task-board-scope${state.boardScope === scope.id ? " is-selected" : ""}`,
       "aria-pressed": String(state.boardScope === scope.id),
-      "data-board-destination": scope.id === "all" ? null : scope.id,
-      draggable: scope.id === "all" ? null : "true",
-      ondragstart: scope.id === "all" ? null : (event) => {
+      "data-board-scope": scope.id,
+      "data-board-destination": destination ? scope.id : null,
+      draggable: destination ? "true" : null,
+      ondragstart: destination ? (event) => {
         state.draggingColumnId = scope.id;
         event.dataTransfer.setData(COLUMN_MIME, scope.id);
         event.dataTransfer.effectAllowed = "move";
-      },
+      } : null,
       ondragend: () => { state.draggingColumnId = null; },
       ondragover: (event) => {
-        if (scope.id === "all") return;
+        if (!destination) return;
         event.preventDefault();
         event.currentTarget.classList.add("is-dragover");
       },
       ondragleave: (event) => event.currentTarget.classList.remove("is-dragover"),
       ondrop: (event) => {
-        if (scope.id === "all") return;
+        if (!destination) return;
         event.preventDefault();
         event.currentTarget.classList.remove("is-dragover");
         const columnId = draggedColumnId(event.dataTransfer);
@@ -1992,11 +2084,53 @@
       },
       text: `${scope.label} · ${scope.count}`,
       onclick: () => {
+        closeFolderPicker();
         state.boardScope = scope.id;
         state.creatingWorkspaceId = null;
         renderBoard();
       },
-    })));
+    });
+  }
+
+  function renderScopeStrip() {
+    if (!scopeStrip) return;
+    closeFolderPicker();
+    const openTasks = (predicate) => tasksForMode(state.tasks, { completedOnly: state.completedOnly }).filter(predicate).length;
+    const scopes = [
+      { id: "all", label: "Все задачи", count: openTasks((task) => task.bucket !== "backlog") },
+      ...state.workspaces.map((workspace) => ({
+        id: `workspace:${workspace.id}`,
+        label: workspace.name,
+        folder: workspaceFolder(workspace),
+        count: openTasks((task) => task.bucket === "workspace" && task.workspaceId === workspace.id),
+      })),
+      { id: "notes", label: "Заметки", count: openTasks((task) => task.bucket === "notes") },
+    ];
+    const scopeById = new Map(scopes.map((scope) => [scope.id, scope]));
+    const orderedScopes = [...new Set(["all", ...state.columnOrder, ...scopes.map((scope) => scope.id)])]
+      .map((id) => scopeById.get(id)).filter(Boolean);
+    const folders = new Set();
+    const groups = [];
+    for (const scope of orderedScopes) {
+      if (!scope.folder) { groups.push(scopeButton(scope)); continue; }
+      if (folders.has(scope.folder)) continue;
+      folders.add(scope.folder);
+      const members = orderedScopes.filter((candidate) => candidate.folder === scope.folder);
+      const selectedMember = members.find((candidate) => candidate.id === state.boardScope);
+      const folderScope = { id: `folder:${scope.folder}`, label: scope.folder,
+        count: members.reduce((sum, member) => sum + member.count, 0) };
+      const main = scopeButton(folderScope);
+      main.title = `Все Workspace папки ${scope.folder}`;
+      if (selectedMember) main.textContent = `${scope.folder} / ${selectedMember.label} · ${selectedMember.count}`;
+      const toggle = node("button", {
+        type: "button", class: "task-board-folder-toggle", text: "⌄",
+        "aria-label": `Выбрать Workspace в папке ${scope.folder}`,
+        "aria-expanded": "false", "aria-controls": "task-board-folder-picker",
+        onclick: (event) => openFolderPicker(event.currentTarget, scope.folder, members),
+      });
+      groups.push(node("div", { class: `task-board-folder${selectedMember || state.boardScope === folderScope.id ? " is-selected" : ""}` }, [main, toggle]));
+    }
+    scopeStrip.replaceChildren(...groups);
   }
 
   function renderBoard() {
@@ -2004,6 +2138,11 @@
     pointerTaskDrag.cancelForRerender();
     const visibleTasks = tasksForMode(state.tasks, { completedOnly: state.completedOnly });
     const emptyText = state.completedOnly ? "Нет закрытых задач" : "Нет задач";
+    if ((state.boardScope.startsWith("workspace:") && !workspaceById(state.boardScope.slice(10)))
+      || (state.boardScope.startsWith("folder:") && !state.workspaces.some((workspace) => workspaceFolder(workspace) === state.boardScope.slice(7)))) {
+      state.boardScope = "all";
+    }
+    board.classList.toggle("has-workspace-context", showsWorkspaceContext());
     const completedCount = state.tasks.filter((task) => task.status === "done").length;
     const openCount = state.tasks.length - completedCount;
     for (const button of statusLanguageButtons) {
@@ -2024,7 +2163,7 @@
     if (filterControls) filterControls.hidden = !state.filtersOpen;
     filterToggle?.setAttribute("aria-expanded", String(state.filtersOpen));
     renderScopeStrip();
-    const rendered = [renderColumn({
+    const rendered = state.boardScope === "all" ? [] : [renderColumn({
       id: "backlog", title: "Бэклог", subtitle: "Неразобранные входящие",
       tasks: visibleTasks.filter((task) => task.bucket === "backlog"), accent: "is-backlog", emptyText,
       acceptsTaskDrops: !state.completedOnly,
@@ -2105,6 +2244,7 @@
     });
   }
   window.addEventListener("resize", () => {
+    positionFolderPicker();
     syncTaskCardPlacement();
     scheduleTaskCardEditorSizing();
   }, { passive: true });
@@ -2121,6 +2261,11 @@
     }
   });
   document.querySelector("[data-task-card-close]")?.addEventListener("click", closeTaskCard);
+  taskCardModal?.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    closeTaskCard();
+  });
+  scopeStrip?.addEventListener("scroll", positionFolderPicker, { passive: true });
   document.querySelector("[data-task-card-edit-toggle]")?.addEventListener("click", () => {
     taskCardModal.classList.add("is-editing");
     scheduleTaskCardEditorSizing();
