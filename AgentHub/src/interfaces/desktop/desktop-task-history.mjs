@@ -942,8 +942,9 @@ export function createDesktopTaskHistoryFactory({
                 : attachments.some((attachment) => (
                   String(attachment?.type ?? "").toLowerCase().startsWith("image/")
                 )) ? "Изображение" : "Вложение");
-              const rootSubmittedAt = role === "user" && messageIndex === rootUserIndex
-                ? message.submittedAt ?? receipt?.createdAt ?? message.time ?? item.submittedAt ?? item.startedAt ?? null
+              const userSubmittedAt = role === "user"
+                ? message.submittedAt ?? receipt?.createdAt ?? message.time
+                  ?? (messageIndex === rootUserIndex ? item.submittedAt ?? item.startedAt : null) ?? null
                 : null;
               const rootStartedAt = role === "user" && messageIndex === rootUserIndex
                 ? message.startedAt ?? item.startedAt ?? null
@@ -982,14 +983,14 @@ export function createDesktopTaskHistoryFactory({
                   }
                   : {}),
                 ...(message.phase ? { phase: String(message.phase) } : {}),
-                ...(rootSubmittedAt
-                  ? { submittedAt: rootSubmittedAt }
+                ...(userSubmittedAt
+                  ? { submittedAt: userSubmittedAt }
                   : {}),
                 ...(rootStartedAt
                   ? { startedAt: rootStartedAt }
                   : {}),
-                time: role === "user" && messageIndex === rootUserIndex
-                  ? rootSubmittedAt
+                time: role === "user"
+                  ? userSubmittedAt
                   : message.time
                     ?? (role === "user" ? item.startedAt : item.completedAt)
                     ?? receipt?.createdAt

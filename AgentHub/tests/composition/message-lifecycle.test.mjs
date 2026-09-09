@@ -447,6 +447,55 @@ test("message delivery distinguishes a server rejection from an unconfirmed tran
   assert.equal(rejected.agentHubCommandRejected, true);
 });
 
+test("live steer timing never borrows the root timestamp and enriches from its own intake", () => {
+  const input = {
+    provider: "codex", threadId: "thread-1", turnId: "turn-1",
+    clientUserMessageId: "root", prompt: "Root",
+    submittedAt: "2026-09-09T15:51:10.190Z", time: "2026-09-09T15:51:10.190Z",
+    userMessages: [{ clientUserMessageId: "steer", text: "Later clarification" }],
+  };
+  const sparse = lifecycle.mergeLiveUserMessages([], input);
+  assert.equal(sparse[0].time, null);
+  assert.equal(sparse[0].submittedAt, null);
+  const ownTime = "2026-09-09T16:05:45.479Z";
+  input.userMessages[0].submittedAt = ownTime;
+  const enriched = lifecycle.mergeLiveUserMessages(sparse, input);
+  assert.equal(enriched.length, 1);
+  assert.equal(enriched[0].time, ownTime);
+  assert.equal(enriched[0].submittedAt, ownTime);
+  input.userMessages[0].submittedAt = "2026-09-09T16:05:47.070Z";
+  const afterReceiptEviction = lifecycle.mergeLiveUserMessages(enriched, input);
+  assert.equal(afterReceiptEviction[0].submittedAt, ownTime);
+  assert.equal(afterReceiptEviction[0].time, ownTime);
+  delete input.userMessages[0].submittedAt;
+  assert.equal(lifecycle.mergeLiveUserMessages(enriched, input)[0].submittedAt, ownTime);
+});
+
+test("history and focused steers never inherit a parent turn timestamp", () => {
+  const source = clientFunctionSource("historyMessages", "function mergeNewestHistory");
+  const sandbox = vm.createContext({
+    attachmentViews: () => [],
+    conversationMessageAuthor: (_message, provider) => provider,
+    focusedTurnAlreadyVisible: () => true,
+    focusedTurnTaskThreadId: (turn) => turn.threadId,
+    historicalMessagesForDisplay: (item) => item.messages,
+  });
+  vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
+  const messages = [
+    { itemId: "root", role: "user", turnUserSlot: "root", text: "Root" },
+    { itemId: "steer", role: "user", turnUserSlot: "steer", text: "Later clarification" },
+  ];
+  const turn = { id: "turn-1", turnId: "turn-1", provider: "codex", threadId: "thread-1",
+    startedAt: "2026-09-09T15:51:11.165Z", messages };
+  for (const focused of [false, true]) {
+    const result = sandbox.mapHistory({ provider: "codex", threadId: "thread-1",
+      items: focused ? [] : [turn] }, focused ? turn : null);
+    assert.equal(result.find((m) => m.itemId === "root").time, turn.startedAt);
+    assert.equal(result.find((m) => m.itemId === "steer").time, null);
+    assert.equal(result.find((m) => m.itemId === "steer").submittedAt, null);
+  }
+});
+
 test("focused turn without message times keeps its startedAt chronology", () => {
   const source = clientFunctionSource("historyMessages", "function mergeNewestHistory");
   const sandbox = vm.createContext({
@@ -2139,6 +2188,40 @@ test("known-idle intake stays as one optimistic conversation card for every clie
   }
 });
 
+test("server queue overrides stale idle intent with and without the bounded receipt", () => {
+  const clientUserMessageId = "stale-idle-queued";
+  const entry = {
+    clientUserMessageId, state: "queued",
+    conflictKind: "task-running", clientProjectionIntent: "conversation",
+  };
+  // Snapshot receipts omit reason/conflictKind.
+  const receipt = {
+    clientUserMessageId, accepted: false, deferred: true, queued: true,
+    clientProjectionIntent: "conversation",
+  };
+  const projection = lifecycle.queueHistoryReceiptProjection(receipt);
+  assert.equal(projection.ownsDeferredQueue, true);
+  assert.equal(projection.ownsOptimisticConversation, false);
+  assert.equal(projection.deliveryState, "queued");
+  for (const receipts of [[receipt], []]) {
+    assert.equal(lifecycle.queuedCommandUsesQueue(entry, receipts), true);
+    assert.equal(lifecycle.queuedCommandDeliveryState(entry, receipts), "queued");
+    assert.equal(lifecycle.deferredInputConversationProjection(entry, receipts), null);
+    assert.deepEqual(lifecycle.visibleConversationMessages([{
+      ...message(clientUserMessageId, "Waiting for the current turn"),
+      turnId: "", providerAccepted: false, projectionState: "optimistic",
+    }], {
+      deferredClientUserMessageIds: lifecycle.queuedCommandClientUserMessageIds([entry], receipts),
+    }), []);
+  }
+  const accepted = {
+    ...receipt, accepted: true, deferred: false, queued: false,
+    runId: "accepted-run", turnId: "accepted-turn",
+  };
+  assert.equal(lifecycle.queuedCommandUsesQueue(entry, [accepted]), false);
+  assert.equal(lifecycle.queueHistoryReceiptProjection(accepted).providerAccepted, true);
+});
+
 test("known-busy submissions use only the queue surface", () => {
   assert.equal(lifecycle.optimisticSubmissionUsesQueue({ followUpMode: "" }), false);
   assert.equal(lifecycle.optimisticSubmissionUsesQueue({ followUpMode: "queue" }), false);
@@ -2411,7 +2494,7 @@ test("idle intake survives receipt-window loss and reload without moving to the 
   );
 });
 
-test("idle-to-busy race preserves the already visible exact card", () => {
+test("idle-to-busy race transfers the already visible exact command to the queue", () => {
   const clientUserMessageId = "client-idle-race";
   const optimistic = {
     ...message(clientUserMessageId, "Не мигай"),
@@ -2444,25 +2527,14 @@ test("idle-to-busy race preserves the already visible exact card", () => {
     [deferredInput],
     [receipt],
   );
-  assert.deepEqual(deferredIds, []);
+  assert.deepEqual(deferredIds, [clientUserMessageId]);
   assert.deepEqual(
     lifecycle.visibleConversationMessages([optimistic], {
       deferredClientUserMessageIds: deferredIds,
     }).map((item) => item.clientUserMessageId),
-    [clientUserMessageId],
+    [],
   );
-  assert.deepEqual(
-    { ...lifecycle.deferredInputConversationProjection(deferredInput, [receipt]) },
-    {
-      clientUserMessageId,
-      submissionId: clientUserMessageId,
-      projectionState: "optimistic",
-      providerAccepted: false,
-      deliveryState: "accepted",
-      clientProjectionIntent: "conversation",
-      submittedAt: deferredInput.createdAt,
-    },
-  );
+  assert.equal(lifecycle.deferredInputConversationProjection(deferredInput, [receipt]), null);
 });
 
 test("busy-origin intent remains queue-only when admission finds the Stream idle", () => {

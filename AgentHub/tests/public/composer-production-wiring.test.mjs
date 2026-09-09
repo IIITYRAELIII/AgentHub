@@ -651,6 +651,98 @@ test("late rejection cannot downgrade an exact canonical admission", { timeout: 
   }
 });
 
+test("production live clarification keeps its own time and chronological position", {
+  timeout: 90_000,
+}, async () => {
+  const browser = await launchBrowser();
+  const page = await browser.newPage({ timezoneId: "UTC" });
+  const initial = snapshot();
+  initial.tasks[0] = { ...initial.tasks[0], running: true, run: {
+    id: "run-live", turnId: "turn-live", operationKind: "user-turn",
+    providerStart: { state: "observed", turnId: "turn-live" },
+    clientUserMessageId: "root", prompt: "Root question",
+    startedAt: "2026-09-09T15:51:11.165Z", submittedAt: "2026-09-09T15:51:10.190Z",
+    userMessages: [
+      { role: "user", clientUserMessageId: "root", text: "Root question",
+        submittedAt: "2026-09-09T15:51:10.190Z" },
+      { role: "user", clientUserMessageId: "middle", text: "Earlier clarification",
+        time: "2026-09-09T15:56:59.262Z" },
+      { role: "user", clientUserMessageId: "later", text: "Latest clarification" },
+    ],
+  } };
+  try {
+    const diagnostics = await openFixture(page, { fixtureSnapshot: initial });
+    const next = structuredClone(initial);
+    next.version = "clarification-intake-enriched";
+    next.tasks[0].run.userMessages[2].submittedAt = "2026-09-09T16:05:45.479Z";
+    await applyFixtureSnapshot(page, next);
+    const latest = page.locator(".msg").filter({ has: page.locator(".msg-body", { hasText: "Latest clarification" }) });
+    await page.waitForFunction(() => [...document.querySelectorAll(".msg")]
+      .some((node) => node.querySelector(".msg-body")?.textContent.includes("Latest clarification")
+        && node.querySelector(".msg-time")?.textContent === "16:05"));
+    assert.equal(await latest.count(), 1);
+    const order = await page.locator(".msg-body").allTextContents();
+    assert.ok(order.indexOf("Earlier clarification") < order.indexOf("Latest clarification"));
+    assert.deepEqual(diagnostics, []);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("production queue corrects stale idle placement and survives receipt eviction", {
+  timeout: 90_000,
+}, async () => {
+  const browser = await launchBrowser();
+  const page = await browser.newPage();
+  const requestId = "stale-idle-queue";
+  const text = "Сообщение ждёт текущий ход";
+  const receipt = {
+    provider: "codex", threadId: "thread-a", streamId: "stream-a",
+    clientUserMessageId: requestId, accepted: false, deferred: true, queued: true,
+    clientProjectionIntent: "conversation", displayText: text,
+  };
+  const queued = snapshot([receipt]);
+  queued.version = "stale-idle-queued";
+  queued.deferredInputs = [{
+    id: "server-queue-entry", ...receipt, text, state: "queued",
+    conflictKind: "task-running", createdAt: "2026-09-09T15:51:41.497Z",
+  }];
+  try {
+    const diagnostics = await openFixture(page, { fixtureSnapshot: queued });
+    const row = page.locator(".queue-item[data-queue-id='server-queue-entry']");
+    await row.waitFor({ state: "visible" });
+    assert.match(await row.innerText(), /Сообщение ждёт текущий ход/u);
+    assert.equal(await row.locator("[data-action='queue-remove']").count(), 1);
+    assert.equal(await page.locator(".msg-body").filter({ hasText: text }).count(), 0);
+    const evicted = { ...queued, version: "stale-idle-evicted", messageReceipts: [] };
+    await applyFixtureSnapshot(page, evicted);
+    await page.reload();
+    await row.waitFor({ state: "visible" });
+    assert.equal(await page.locator(".msg-body").filter({ hasText: text }).count(), 0);
+    if (process.env.AGENT_HUB_QUEUE_SCREENSHOT) {
+      await page.screenshot({ path: process.env.AGENT_HUB_QUEUE_SCREENSHOT });
+    }
+    const accepted = snapshot([{
+      ...receipt, accepted: true, deferred: false, queued: false,
+      runId: "accepted-run", turnId: "accepted-turn",
+    }]);
+    accepted.version = "stale-idle-provider-accepted";
+    await applyFixtureSnapshot(page, accepted);
+    await row.waitFor({ state: "hidden" });
+    await page.evaluate(({ requestId, text }) => window.AgentHub.setMessages("stream-a", [{
+      id: "provider-item", itemId: "provider-item", clientUserMessageId: requestId,
+      provider: "codex", threadId: "thread-a", turnId: "accepted-turn",
+      role: "user", text, providerAccepted: true, projectionState: "history",
+      time: "2026-09-09T15:55:00.000Z",
+    }]), { requestId, text });
+    await page.locator(".msg-body").filter({ hasText: text }).waitFor({ state: "visible" });
+    assert.equal(await page.locator(".msg-body").filter({ hasText: text }).count(), 1);
+    assert.deepEqual(diagnostics, []);
+  } finally {
+    await browser.close();
+  }
+});
+
 test("production startup restores recovery before applying accepted snapshot evidence", {
   timeout: 90_000,
 }, async () => {
