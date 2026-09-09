@@ -102,7 +102,7 @@ async function setBoard(page, boardWorkspaces = workspaces) {
   }, { tasks, workspaces: boardWorkspaces });
 }
 
-async function dropTask(page, taskId, target) {
+async function dropTask(page, taskId, target, { confirmMove = false } = {}) {
   const dataTransfer = await page.evaluateHandle((id) => {
     const transfer = new DataTransfer();
     window.AgentHubTaskReferences.beginDrag(transfer, { id, title: id });
@@ -111,8 +111,98 @@ async function dropTask(page, taskId, target) {
   await target.dispatchEvent("drop", { dataTransfer });
   await page.evaluate(() => window.AgentHubTaskReferences.endDrag());
   await dataTransfer.dispose();
-  return page.evaluate(() => window.__boardActions.at(-1));
+  if (confirmMove) {
+    await page.locator('[data-task-move-modal]').getByRole('button', { name: 'Перенести', exact: true }).click();
+  }
+  return page.evaluate(() => {
+    const { requestId: _requestId, ...action } = window.__boardActions.at(-1) || {};
+    return action;
+  });
 }
+
+test("Status drops choose ownership, confirm Workspace changes and await the exact move result", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchEdge(chromium);
+  try {
+    const page = await browser.newPage({ viewport: { width: 1752, height: 1000 } });
+    const errors = [];
+    page.on('pageerror', error => errors.push(error.message));
+    await openFixture(page, { grouping: 'on' });
+    await setBoard(page);
+    const target = page.locator('[data-task-board-group="workspace:two"] .is-status-testing');
+    const source = page.locator('.is-backlog [data-board-task-id="5"]');
+    await source.dragTo(target);
+    const move = await page.evaluate(() => window.__boardActions.at(-1));
+    assert.equal(move.type, 'move');
+    assert.equal(move.id, '5');
+    assert.equal(move.workspaceId, 'two');
+    assert.ok(move.requestId);
+    assert.equal(await page.evaluate(() => window.__boardActions.length), 1, 'status waits for the move receipt');
+    await page.evaluate(move => window.AgentHubTaskBoard.finishAction({ ...move, requestId: 'other', succeeded: true }), move);
+    assert.equal(await page.evaluate(() => window.__boardActions.length), 1, 'unrelated receipt cannot advance a move');
+    await page.evaluate(({ move, tasks, workspaces }) => {
+      const moved = tasks.map(task => task.id === '5' ? { ...task, bucket: 'workspace', workspaceId: 'two', revision: 2 } : task);
+      window.AgentHubTaskBoard.setSnapshot({ tasks: moved, workspaces });
+      window.AgentHubTaskBoard.finishAction({ ...move, succeeded: true });
+      window.AgentHubTaskBoard.finishAction({ ...move, succeeded: true });
+    }, { move, tasks, workspaces });
+    const status = await page.evaluate(() => window.__boardActions.at(-1));
+    assert.deepEqual(status, { type: 'status', id: '5', status: 'testing', requestId: move.requestId });
+    assert.equal(await page.evaluate(() => window.__boardActions.length), 2, 'one status command even after a duplicate receipt');
+    await page.evaluate(status => window.AgentHubTaskBoard.finishAction({ ...status, succeeded: false }), status);
+    assert.equal(await page.getByText('Задача перенесена, но изменить статус не удалось. Текущий статус сохранён.', { exact: true }).isVisible(), true);
+    assert.equal(await page.locator('[data-task-board-group="workspace:two"] .is-status-new [data-board-task-id="5"]').count(), 1, 'failed status retains the confirmed location and actual status');
+    await setBoard(page);
+    await page.evaluate(() => { window.__boardActions = []; });
+    await page.locator('[data-task-board-group="workspace:one"] [data-board-task-id="1"]').dragTo(target);
+    const dialog = page.locator('[data-task-move-modal]');
+    assert.equal(await dialog.isVisible(), true);
+    assert.match(await dialog.textContent(), /Agent HUB.*DevOps.*Привязка к потоку будет снята/su);
+    assert.equal(await page.evaluate(() => window.__boardActions.length), 0);
+    await page.keyboard.press('Escape');
+    assert.equal(await page.evaluate(() => window.__boardActions.length), 0, 'Escape cancels without side effects');
+    await dropTask(page, '1', target);
+    await dialog.getByRole('button', { name: 'Перенести', exact: true }).click();
+    assert.equal(await page.evaluate(() => window.__boardActions.length), 1);
+    const crossMove = await page.evaluate(() => window.__boardActions.at(-1));
+    assert.equal(crossMove.workspaceId, 'two');
+    await page.evaluate(move => window.AgentHubTaskBoard.finishAction({ ...move, succeeded: false }), crossMove);
+    assert.equal(await page.evaluate(() => window.__boardActions.length), 1, 'failed placement never sends a status command');
+    assert.equal(await page.locator('[data-task-board-group="workspace:one"] [data-board-task-id="1"]').count(), 1);
+    await dropTask(page, '1', target);
+    await page.evaluate(({ tasks, workspaces }) => window.AgentHubTaskBoard.setSnapshot({
+      tasks: tasks.map(task => task.id === '1' ? { ...task, revision: 9 } : task), workspaces,
+    }), { tasks, workspaces });
+    await dialog.getByRole('button', { name: 'Перенести', exact: true }).click();
+    assert.equal(await page.evaluate(() => window.__boardActions.length), 1, 'changed Task invalidates the open confirmation');
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
+test("Flat status drop from Backlog asks for a Workspace only when the destination is ambiguous", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchEdge(chromium);
+  try {
+    const page = await browser.newPage({ viewport: { width: 1752, height: 1000 } });
+    await openFixture(page);
+    await setBoard(page);
+    const target = page.locator('[data-task-board-columns] .is-status-testing');
+    await dropTask(page, '5', target);
+    const dialog = page.locator('[data-task-move-modal]');
+    assert.equal(await dialog.isVisible(), true);
+    assert.equal(await dialog.getByRole('button', { name: 'Перенести', exact: true }).isDisabled(), true);
+    await dialog.getByRole('button', { name: 'Воркспейс назначения' }).click();
+    await page.getByRole('option', { name: 'DevOps', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Перенести', exact: true }).click();
+    const move = await page.evaluate(() => window.__boardActions.at(-1));
+    assert.equal(move.workspaceId, 'two');
+    await page.evaluate(move => window.AgentHubTaskBoard.finishAction({ ...move, succeeded: false }), move);
+    await page.locator('[data-board-scope="workspace:one"]').click();
+    await dropTask(page, '5', target);
+    assert.equal(await dialog.count(), 0);
+    assert.equal(await page.evaluate(() => window.__boardActions.at(-1).workspaceId), 'one');
+  } finally { await browser.close(); }
+});
 
 test("Dashboard separates settings from filters and restores Workspace grouping", async () => {
   const { chromium } = await import("playwright");
@@ -148,7 +238,7 @@ test("Dashboard separates settings from filters and restores Workspace grouping"
     assert.equal(statusBox.y, streamBox.y);
     await workspace.getByRole('button', { name: 'Создать', exact: true }).click();
     assert.equal(await workspace.locator('textarea').isVisible(), true);
-    assert.deepEqual(await dropTask(page, '1', page.locator('[data-task-board-columns] [data-board-destination="workspace:two"]')),
+    assert.deepEqual(await dropTask(page, '1', page.locator('[data-task-board-columns] [data-board-destination="workspace:two"]'), { confirmMove: true }),
       { type: 'move', id: '1', bucket: 'workspace', workspaceId: 'two', beforeId: null });
     await changeView('statuses');
     assert.equal(await page.locator('.task-board-sidebar').isVisible(), true);
@@ -261,6 +351,7 @@ test("Native Task drag uses one bounded bitmap and delivers one Task in each boa
         : view === 'grouped' ? page.locator('.task-board-matrix-head .is-status-testing')
           : board.locator('.is-status-testing .task-board-column-head');
       await source.dragTo(target);
+      if (view === 'legacy') await page.getByRole('button', { name: 'Перенести', exact: true }).click();
       const image = await page.evaluate(() => window.__dragImage);
       assert.equal(image.tag, 'CANVAS', view);
       assert.equal(image.width, 360, view);
@@ -306,9 +397,6 @@ test("Backlog stays separate in every scope and hides status in docked and modal
     assert.equal(await page.locator('[data-task-card-modal]').evaluate((el) => el.matches(':modal')), true);
     assert.equal(await field.isVisible(), false);
     await page.keyboard.press('Escape');
-    const actionCount = await page.evaluate(() => window.__boardActions.length);
-    await dropTask(page, '5', board.locator('.is-status-testing'));
-    assert.equal(await page.evaluate(() => window.__boardActions.length), actionCount);
     await page.keyboard.press('Escape');
     await page.locator('[data-board-scope="all"]').click();
     await board.locator('[data-board-task-id="1"]').click();
@@ -347,7 +435,8 @@ test("Dashboard preserves scope, create, filter and native drop commands", async
     await dropTask(page, "1", page.locator('.is-status-testing'));
     assert.equal(await page.evaluate(() => window.__boardActions.length), actionCount, "one pending status operation");
     await page.evaluate(() => window.AgentHubTaskBoard.finishAction({ type: "status", id: "1", succeeded: true }));
-    assert.deepEqual(await dropTask(page, "1", page.getByRole("button", { name: /^DevOps ·/u })), { type: "move", id: "1", bucket: "workspace", workspaceId: "two", beforeId: null });
+    assert.deepEqual(await dropTask(page, "1", page.getByRole("button", { name: /^DevOps ·/u }), { confirmMove: true }), { type: "move", id: "1", bucket: "workspace", workspaceId: "two", beforeId: null });
+    await page.evaluate(() => window.AgentHubTaskBoard.finishAction({ ...window.__boardActions.at(-1), succeeded: true }));
     await page.getByRole("button", { name: /^Agent HUB ·/u }).click();
     assert.deepEqual(await dropTask(page, "1", page.locator(".is-backlog")), { type: "move", id: "1", bucket: "backlog", beforeId: null });
     await page.getByRole("button", { name: /^Все задачи ·/u }).click();
@@ -496,7 +585,7 @@ test("Dashboard groups existing folders, selects their Workspaces and opens the 
     assert.equal(await dialog.isVisible(), true, 'outside dismissal retains the panel');
     assert.equal(await dialog.evaluate((el) => el.matches(':modal')), false);
     await page.keyboard.press('Escape');
-    assert.deepEqual(await dropTask(page, '1', sidebar.locator('[data-board-scope="workspace:two"]')),
+    assert.deepEqual(await dropTask(page, '1', sidebar.locator('[data-board-scope="workspace:two"]'), { confirmMove: true }),
       { type: 'move', id: '1', bucket: 'workspace', workspaceId: 'two', beforeId: null });
     await page.setViewportSize({ width: 390, height: 844 });
     const mobileSidebar = await sidebar.boundingBox();
@@ -577,8 +666,11 @@ test("Status matrix groups by Workspace, preserves navigation and supports the o
     await page.evaluate(() => window.AgentHubTaskBoard.finishAction({ type: 'status', id: '1', succeeded: true }));
     const actionCount = await page.evaluate(() => window.__boardActions.length);
     await dropTask(page, '1', two.locator('.is-status-testing'));
+    assert.equal(await page.locator('[data-task-move-modal]').isVisible(), true);
+    await page.getByRole('button', { name: 'Отмена', exact: true }).click();
+    assert.equal(await page.evaluate(() => window.__boardActions.length), actionCount, 'cancelling a cross-Workspace drop sends no command');
     await dropTask(page, '5', one.locator('.is-status-testing'));
-    assert.equal(await page.evaluate(() => window.__boardActions.length), actionCount, 'cross-Workspace and backlog drops cannot change status');
+    assert.equal(await page.evaluate(() => window.__boardActions.at(-1).type), 'move', 'backlog first moves into the target Workspace');
     await page.getByRole('button', { name: 'Создать задачу в Agent HUB', exact: true }).click();
     assert.equal(await one.locator('textarea').isVisible(), true);
     await page.locator('[data-board-scope="workspace:one"]').click();

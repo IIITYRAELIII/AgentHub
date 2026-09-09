@@ -1190,39 +1190,102 @@
     return task.bucket;
   }
 
-  function moveTask(task, destination, beforeId = null) {
+  const pendingBoardMoves = new Map();
+  let boardMovePromptOpen = false;
+
+  function chooseMoveDestination(task, destination, status) {
+    boardMovePromptOpen = true;
+    return new Promise((resolve) => {
+      const dialog = node("dialog", { class: "task-delete-modal", "data-task-move-modal": "",
+        "aria-labelledby": "task-move-title" });
+      const title = node("h2", { id: "task-move-title", text: destination ? "Перенести задачу?" : "Куда перенести задачу?" });
+      const section = node("section", {}, [title, node("p", { text: task.title || task.text })]);
+      let select = null;
+      if (destination) {
+        section.append(node("p", { text: `Из «${workspaceById(task.workspaceId)?.name || "Workspace недоступен"}» в «${workspaceById(destination.slice(10))?.name || "Workspace недоступен"}». Привязка к потоку будет снята.` }));
+      } else {
+        select = node("select", { class: "board-task-destination", "aria-label": "Воркспейс назначения" });
+        select.append(node("option", { value: "", text: "Выберите воркспейс" }));
+        const folder = state.boardScope.startsWith("folder:") ? state.boardScope.slice(7) : null;
+        for (const workspace of state.workspaces) {
+          if (folder != null && workspaceFolder(workspace) !== folder) continue;
+          select.append(node("option", { value: `workspace:${workspace.id}`, text: workspace.name }));
+        }
+        section.append(select);
+      }
+      if (status) section.append(node("p", { text: `Статус: ${taskWorkflowPresentation({ workflowStatus: status }, state.statusLanguage).full}` }));
+      const cancel = node("button", { type: "button", class: "board-task-quiet", text: "Отмена" });
+      const accept = node("button", { type: "button", class: "board-task-primary", text: "Перенести", disabled: destination ? null : "" });
+      select?.addEventListener("change", () => { accept.disabled = !select.value; });
+      dialog.append(section, node("footer", {}, [cancel, accept]));
+      let settled = false;
+      let uninstall = () => {};
+      const settle = (value) => {
+        if (settled) return;
+        settled = true;
+        uninstall();
+        if (dialog.open) dialog.close();
+        dialog.remove();
+        boardMovePromptOpen = false;
+        resolve(value);
+      };
+      cancel.addEventListener("click", () => settle(null));
+      accept.addEventListener("click", () => { if (destination || select.value) settle(destination || select.value); });
+      dialog.addEventListener("close", () => settle(null));
+      uninstall = modalOverlays.installDismissibleOverlay({ dialog, close: () => settle(null) });
+      document.body.append(dialog);
+      dialog.showModal();
+      (select || cancel).focus();
+    });
+  }
+
+  async function moveTask(task, destination, beforeId = null) {
+    if (boardMovePromptOpen || pendingBoardMoves.has(task.id) || state.savingStatusTaskId != null) return;
+    let status = null;
     if (destination.startsWith("status:")) {
-      const status = destination.slice(destination.lastIndexOf(":") + 1);
-      if (task.bucket === "backlog" || !selectedScopeTasks([task]).length) return;
-      // A lane changes status inside its Workspace; moving ownership still uses
-      // the canonical Workspace destination (sidebar or task editor).
+      status = destination.slice(destination.lastIndexOf(":") + 1);
+      if (!TASK_WORKFLOW_STATUSES.includes(status)) return;
       if (destination.startsWith("status:lane:")) {
         const group = destination.slice("status:lane:".length, destination.lastIndexOf(":"));
-        if (encodeURIComponent(destinationValue(task)) !== group) return;
-      }
-      if (taskWorkflowStatus(task) !== status) {
-        if (state.savingStatusTaskId != null) return;
-        state.savingStatusTaskId = task.id;
-        renderTaskCardSaving(task.id);
-        emit("status", { id: task.id, status });
-      } else if (beforeId) {
+        destination = decodeURIComponent(group);
+      } else {
         const beforeTask = state.tasks.find((item) => item.id === beforeId);
-        moveTask(task, beforeTask ? destinationValue(beforeTask) : destinationValue(task), beforeId);
+        destination = beforeTask ? destinationValue(beforeTask)
+          : task.bucket !== "backlog" ? destinationValue(task)
+            : state.boardScope === "notes" || state.boardScope.startsWith("workspace:") ? state.boardScope : null;
       }
+    }
+    const changesWorkspace = task.bucket === "workspace" && destination?.startsWith("workspace:")
+      && destination !== destinationValue(task);
+    if (!destination || changesWorkspace) {
+      const original = task;
+      destination = await chooseMoveDestination(task, destination, status);
+      if (!destination) return;
+      task = state.tasks.find((item) => item.id === original.id);
+      if (!task || task.status === "done" || task.revision !== original.revision
+        || destinationValue(task) !== destinationValue(original) || taskWorkflowStatus(task) !== taskWorkflowStatus(original)) {
+        window.AgentHub?.toast("Задача изменилась. Повторите перенос.");
+        return;
+      }
+    }
+    if (destination.startsWith("workspace:") && !workspaceById(destination.slice(10))) {
+      window.AgentHub?.toast("Воркспейс назначения недоступен. Повторите перенос.");
       return;
     }
-    if (destination === "backlog" || destination === "notes") {
-      emit("move", { id: task.id, bucket: destination, beforeId });
+    if (destination === destinationValue(task) && status && taskWorkflowStatus(task) !== status) {
+      state.savingStatusTaskId = task.id;
+      renderTaskCardSaving(task.id);
+      emit("status", { id: task.id, status });
       return;
     }
-    if (destination.startsWith("workspace:")) {
-      emit("move", {
-        id: task.id,
-        bucket: "workspace",
-        workspaceId: destination.slice(10),
-        beforeId,
-      });
-    }
+    if (destination === destinationValue(task) && !beforeId) return;
+    const params = destination.startsWith("workspace:")
+      ? { bucket: "workspace", workspaceId: destination.slice(10) } : { bucket: destination };
+    if (!["backlog", "notes", "workspace"].includes(params.bucket)) return;
+    const requestId = `board-move:${task.id}:${window.crypto?.randomUUID?.()
+      || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+    pendingBoardMoves.set(task.id, { requestId, destination, status, phase: "move" });
+    emit("move", { id: task.id, ...params, beforeId, requestId });
   }
 
   const pointerTaskDrag = createTaskBoardPointerDrag({
@@ -2641,6 +2704,28 @@
       if (changes.openTaskChanged) renderOpenTaskCard();
     },
     finishAction({ type, id, succeeded, requestId = null, operation = null, itemId = null } = {}) {
+      const pendingMove = pendingBoardMoves.get(id);
+      if (type === "status" && pendingMove?.phase === "status" && pendingMove.requestId !== requestId) return;
+      if (pendingMove?.requestId === requestId && pendingMove.phase === type) {
+        pendingBoardMoves.delete(id);
+        if (type === "move" && succeeded && pendingMove.status) {
+          const task = state.tasks.find((item) => item.id === id);
+          if (task && task.status !== "done" && destinationValue(task) === pendingMove.destination
+            && taskWorkflowStatus(task) !== pendingMove.status) {
+            if (state.savingStatusTaskId == null) {
+              pendingBoardMoves.set(id, { ...pendingMove, phase: "status" });
+              state.savingStatusTaskId = id;
+              renderTaskCardSaving(id);
+              emit("status", { id, status: pendingMove.status, requestId });
+            } else {
+              window.AgentHub?.toast("Задача перенесена. Дождитесь текущей операции и выберите статус.");
+            }
+          }
+        }
+        if (type === "status" && !succeeded) {
+          window.AgentHub?.toast("Задача перенесена, но изменить статус не удалось. Текущий статус сохранён.");
+        }
+      }
       if (type === "update" && state.savingTaskId === id) {
         state.savingTaskId = null;
         if (succeeded) {
