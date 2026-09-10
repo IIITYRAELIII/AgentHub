@@ -135,6 +135,7 @@ test("publication requests the server's safe deferred restart last", async () =>
   const events = [];
   await publishAll(["--skip-tests", "--skip-worker"], {
     run: async (step) => events.push(step.label),
+    readRuntimeStatus: async () => ({ current: "release-new", running: true }),
     restart: async (action) => {
       events.push(action);
       return { message: "scheduled" };
@@ -156,7 +157,10 @@ test("publication restart tolerates a stalled outgoing runtime", async () => {
   await restartRuntimeAndVerify(async (...args) => {
     request = args;
     return { accepted: true };
-  }, async () => {}, "C:\\runtime");
+  }, async () => {}, "C:\\runtime", {
+    readStatus: async () => ({ current: "release-new", running: true }),
+    readEndpoint: async () => ({ endpointId: "old" }),
+  });
   assert.deepEqual(request, [
     "restart-server",
     {},
@@ -168,6 +172,7 @@ test("publication skips optional test contour when the component is disabled", a
   const events = [];
   await publishAll([], {
     run: async (step) => events.push(step.label),
+    readRuntimeStatus: async () => ({ current: "release-new", running: true }),
     restart: async (action) => {
       events.push(action);
       return { message: "scheduled" };
@@ -186,6 +191,7 @@ test("full publication does not wait on the release turn that blocks its safe re
   await publishAll(["--skip-tests", "--skip-worker"], {
     prepareVersion: async () => events.push("release-version"),
     run: async (step) => events.push(step.label),
+    readRuntimeStatus: async () => ({ current: "release-new", running: true }),
     restart: async () => {
       events.push("restart-server");
       return { accepted: true, waiting: true, message: "waiting for active turn" };
@@ -237,9 +243,14 @@ test("runtime readiness requires a replacement endpoint and a successful probe",
   const probes = [];
   const result = await waitForRuntimeReplacement({
     previousEndpointId: "old",
+    expectedReleaseId: "release-new",
+    readStatus: async () => ({ current: "release-new", runningRelease: "release-new", pid: 12, running: true, ready: true }),
     timeoutMs: 100,
     readEndpoint: async () => endpoints.shift() ?? { endpointId: "new" },
-    probe: async (action) => probes.push(action),
+    probe: async (action) => {
+      probes.push(action);
+      return { server: { process: { releaseId: "release-new", pid: 12 } } };
+    },
     delay: async () => {},
   });
   assert.equal(result.endpointId, "new");
@@ -327,6 +338,7 @@ test("selective publication runs unit and cross-surface E2E tests for runtime co
   const labels = [];
   const result = await publishChanged(["--from", "base", "--skip-restart"], {
     run: async (step) => labels.push(step.label),
+    readRuntimeStatus: async () => ({ current: "release-new", running: true }),
     restart: async () => assert.fail("restart must be skipped"),
     readState: async () => null,
     writeState: async () => {},
@@ -351,6 +363,7 @@ test("selective publication keeps Test Contour optional with full tests", async 
   const steps = [];
   await publishChanged(["--from", "base", "--skip-restart", "--full-tests"], {
     run: async (step) => steps.push(step),
+    readRuntimeStatus: async () => ({ current: "release-new", running: true }),
     restart: async () => assert.fail("restart must be skipped"),
     readState: async () => null,
     writeState: async () => {},
@@ -378,6 +391,7 @@ test("selective publication can opt into Test Contour without full tests", async
   const labels = [];
   await publishChanged(["--from", "base", "--skip-restart", "--test-contour"], {
     run: async (step) => labels.push(step.label),
+    readRuntimeStatus: async () => ({ current: "release-new", running: true }),
     restart: async () => assert.fail("restart must be skipped"),
     readState: async () => null,
     writeState: async () => {},
@@ -395,6 +409,7 @@ test("selective publication records the exact published revision", async () => {
   let written = null;
   const result = await publishChanged(["--from", "base", "--skip-restart"], {
     run: async (step) => steps.push(step),
+    readRuntimeStatus: async () => ({ current: "release-new", running: true }),
     restart: async () => assert.fail("restart must be skipped"),
     readState: async () => null,
     writeState: async (value) => { written = value; },
@@ -446,6 +461,7 @@ test("selective frontend publication records state after verified restart", asyn
   const events = [];
   await publishChanged(["--from", "base"], {
     run: async (step) => events.push(step.label),
+    readRuntimeStatus: async () => ({ current: "release-new", running: true }),
     restart: async () => events.push("restart-server"),
     readState: async () => null,
     writeState: async () => events.push("record-publication"),
@@ -461,6 +477,7 @@ test("selective backend publication records state after verified restart", async
   const events = [];
   await publishChanged(["--from", "base"], {
     run: async (step) => events.push(step.label),
+    readRuntimeStatus: async () => ({ current: "release-new", running: true }),
     restart: async () => events.push("restart-server"),
     readState: async () => null,
     writeState: async () => events.push("record-publication"),
@@ -474,6 +491,7 @@ test("selective backend publication records an already queued safe restart witho
   const events = [];
   await publishChanged(["--from", "base"], {
     run: async (step) => events.push(step.label),
+    readRuntimeStatus: async () => ({ current: "release-new", running: true }),
     restart: async () => {
       events.push("restart-server");
       return { accepted: false, message: "already queued" };
@@ -514,6 +532,7 @@ test("every validation failure stops publication before deployment", async () =>
             throw new Error(`synthetic validation failure: ${failedLabel}`);
           }
         },
+        readRuntimeStatus: async () => ({ current: "release-new", running: true }),
         restart: async () => {
           restartCalled = true;
         },
@@ -619,6 +638,7 @@ test("selective publication resumes after the last successful stage", async () =
     clear: async () => { savedCheckpoint = null; },
   };
   const common = {
+    readRuntimeStatus: async () => ({ current: "release-new", running: true }),
     restart: async () => assert.fail("restart must be skipped"),
     readState: async () => null,
     writeState: async () => {},
@@ -657,6 +677,7 @@ test("selective publication prepares the committed product version before valida
     before: async () => events.push("clean-tree"),
     prepareVersion: async () => events.push("release-version"),
     run: async (step) => events.push(step.label),
+    readRuntimeStatus: async () => ({ current: "release-new", running: true }),
     restart: async () => assert.fail("restart must be skipped"),
     readState: async () => null,
     writeState: async () => {},

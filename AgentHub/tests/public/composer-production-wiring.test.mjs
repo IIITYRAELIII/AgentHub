@@ -162,43 +162,51 @@ test("late rejection cannot downgrade an exact canonical admission", { timeout: 
   }
 });
 
-test("production live clarification keeps its own time and chronological position", {
-  timeout: 90_000,
-}, async () => {
-  const browser = await launchBrowser();
-  const page = await browser.newPage({ timezoneId: "UTC" });
-  const initial = snapshot();
-  initial.tasks[0] = { ...initial.tasks[0], running: true, run: {
-    id: "run-live", turnId: "turn-live", operationKind: "user-turn",
-    providerStart: { state: "observed", turnId: "turn-live" },
-    clientUserMessageId: "root", prompt: "Root question",
-    startedAt: "2026-09-09T15:51:11.165Z", submittedAt: "2026-09-09T15:51:10.190Z",
-    userMessages: [
-      { role: "user", clientUserMessageId: "root", text: "Root question",
-        submittedAt: "2026-09-09T15:51:10.190Z" },
-      { role: "user", clientUserMessageId: "middle", text: "Earlier clarification",
-        time: "2026-09-09T15:56:59.262Z" },
-      { role: "user", clientUserMessageId: "later", text: "Latest clarification" },
-    ],
-  } };
-  try {
-    const diagnostics = await openFixture(page, { fixtureSnapshot: initial });
-    const next = structuredClone(initial);
-    next.version = "clarification-intake-enriched";
-    next.tasks[0].run.userMessages[2].submittedAt = "2026-09-09T16:05:45.479Z";
-    await applyFixtureSnapshot(page, next);
-    const latest = page.locator(".msg").filter({ has: page.locator(".msg-body", { hasText: "Latest clarification" }) });
-    await page.waitForFunction(() => [...document.querySelectorAll(".msg")]
-      .some((node) => node.querySelector(".msg-body")?.textContent.includes("Latest clarification")
-        && node.querySelector(".msg-time")?.textContent === "16:05"));
-    assert.equal(await latest.count(), 1);
-    const order = await page.locator(".msg-body").allTextContents();
-    assert.ok(order.indexOf("Earlier clarification") < order.indexOf("Latest clarification"));
-    assert.deepEqual(diagnostics, []);
-  } finally {
-    await browser.close();
-  }
-});
+for (const { now, expectedTime } of [
+  { now: "2026-09-09T16:06:00.000Z", expectedTime: "16:05" },
+  { now: "2026-09-10T16:06:00.000Z", expectedTime: "09.09.2026 16:05" },
+]) {
+  test(`production live clarification keeps its own time and chronological position (${expectedTime})`, {
+    timeout: 90_000,
+  }, async () => {
+    const browser = await launchBrowser();
+    const page = await browser.newPage({ timezoneId: "UTC" });
+    // The rendered label includes the date for earlier days. Keep both calendar
+    // cases deterministic without pausing the fixture's transport timers.
+    await page.clock.setFixedTime(now);
+    const initial = snapshot();
+    initial.tasks[0] = { ...initial.tasks[0], running: true, run: {
+      id: "run-live", turnId: "turn-live", operationKind: "user-turn",
+      providerStart: { state: "observed", turnId: "turn-live" },
+      clientUserMessageId: "root", prompt: "Root question",
+      startedAt: "2026-09-09T15:51:11.165Z", submittedAt: "2026-09-09T15:51:10.190Z",
+      userMessages: [
+        { role: "user", clientUserMessageId: "root", text: "Root question",
+          submittedAt: "2026-09-09T15:51:10.190Z" },
+        { role: "user", clientUserMessageId: "middle", text: "Earlier clarification",
+          time: "2026-09-09T15:56:59.262Z" },
+        { role: "user", clientUserMessageId: "later", text: "Latest clarification" },
+      ],
+    } };
+    try {
+      const diagnostics = await openFixture(page, { fixtureSnapshot: initial });
+      const next = structuredClone(initial);
+      next.version = "clarification-intake-enriched";
+      next.tasks[0].run.userMessages[2].submittedAt = "2026-09-09T16:05:45.479Z";
+      await applyFixtureSnapshot(page, next);
+      const latest = page.locator(".msg").filter({ has: page.locator(".msg-body", { hasText: "Latest clarification" }) });
+      await page.waitForFunction((label) => [...document.querySelectorAll(".msg")]
+        .some((node) => node.querySelector(".msg-body")?.textContent.includes("Latest clarification")
+          && node.querySelector(".msg-time")?.textContent === label), expectedTime);
+      assert.equal(await latest.count(), 1);
+      const order = await page.locator(".msg-body").allTextContents();
+      assert.ok(order.indexOf("Earlier clarification") < order.indexOf("Latest clarification"));
+      assert.deepEqual(diagnostics, []);
+    } finally {
+      await browser.close();
+    }
+  });
+}
 
 test("production queue corrects stale idle placement and survives receipt eviction", {
   timeout: 90_000,

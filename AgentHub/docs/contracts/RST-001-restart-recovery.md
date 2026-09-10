@@ -20,6 +20,11 @@ a user turn and does not alter the restart/compaction operation schema.
 
 - Timeout is ambiguous until reconciliation; it does not authorize duplicate
   non-idempotent starts.
+- Publication readiness binds the expected current release to both the ready
+  instance lock and the responding control snapshot's release and PID. A new
+  endpoint serving an old release is not successful cutover. A publication may
+  cold-start the verified installed launcher only after process absence is
+  confirmed; a failed or timed-out restart RPC never authorizes that fallback.
 - Compaction lifecycle writes use a Thread-scoped asynchronous mutation queue.
   SQLite contention retries only persistence under the same operation identity,
   never the provider RPC. Completion/failure cancels its watchdog only after the

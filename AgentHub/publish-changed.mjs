@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 import { callDesktopControl } from "./desktop-control.mjs";
+import { publicationRuntimeStatus } from "./src/runtime/runtime-publication-start.mjs";
 import {
   npmStep,
   publicationSteps,
@@ -277,6 +278,7 @@ export async function publishChanged(args = process.argv.slice(2), {
   journal = null,
   runtimeRoot = defaultRuntimeRoot(),
   verifyRestart = restart === callDesktopControl ? waitForRuntimeReplacement : async () => {},
+  readRuntimeStatus = publicationRuntimeStatus,
 } = {}) {
   return exclusive(async () => {
     const options = parseChangedArguments(args);
@@ -322,7 +324,7 @@ export async function publishChanged(args = process.argv.slice(2), {
         journal,
       });
       if (plan.runtimeRestart && !options.skipRestart) {
-        const result = await restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot);
+        const result = await restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot, { readStatus: readRuntimeStatus });
         if (result?.deferred) {
           console.log(`${result?.message ?? "Перезапуск запрошен"}. Готовность подтвердится после завершения активного хода.`);
         }

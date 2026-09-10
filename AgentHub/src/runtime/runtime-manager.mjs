@@ -547,10 +547,17 @@ export async function rollbackRuntime({ runtimeRoot = defaultRuntimeRoot() } = {
   return { current: pointer.previous, previous: pointer.current };
 }
 
-export async function runtimeStatus({ runtimeRoot = defaultRuntimeRoot() } = {}) {
+export async function runtimeStatus({ runtimeRoot = defaultRuntimeRoot(), requireProcessEvidence = false } = {}) {
   const layout = runtimeLayout(runtimeRoot);
   const pointer = JSON.parse(await readFile(layout.currentFile, "utf8").catch(() => "{}"));
-  const lock = JSON.parse(await readFile(path.join(layout.dataDir, "bot.lock"), "utf8").catch(() => "{}"));
+  const lockText = await readFile(path.join(layout.dataDir, "bot.lock"), "utf8").catch((error) => {
+    if (requireProcessEvidence && error.code !== "ENOENT") throw error;
+    return null;
+  });
+  const lock = JSON.parse(lockText ?? "{}");
+  if (requireProcessEvidence && lockText !== null && (!Number.isSafeInteger(lock.pid) || lock.pid <= 0)) {
+    throw new Error("Agent Hub lock has no valid process identity");
+  }
   const pid = Number.isSafeInteger(lock.pid) ? lock.pid : null;
   const running = pid !== null && processIsAlive(pid);
   const runningRelease = running ? String(lock.releaseId ?? "").trim() || null : null;

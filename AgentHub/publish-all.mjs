@@ -6,6 +6,7 @@ import path from "node:path";
 import { callDesktopControl, readDesktopControlEndpoint } from "./desktop-control.mjs";
 import { ensureWrangler } from "./wrangler-runner.mjs";
 import { defaultRuntimeRoot } from "./src/infrastructure/filesystem/runtime-layout.mjs";
+import { publicationRuntimeStatus, startInstalledPublicationRuntime } from "./src/runtime/runtime-publication-start.mjs";
 import { prepareCommittedAgentHubReleaseVersion } from "./src/infrastructure/filesystem/release-version.mjs";
 import { assertReleaseCloneForPublication } from "./src/infrastructure/filesystem/release-git-workspace.mjs";
 import {
@@ -155,18 +156,29 @@ export function runStep({
 export async function waitForRuntimeReplacement({
   previousEndpointId = null,
   runtimeRoot = defaultRuntimeRoot(),
+  expectedReleaseId,
   timeoutMs = RESTART_READINESS_TIMEOUT_MS,
   readEndpoint = readDesktopControlEndpoint,
+  readStatus = publicationRuntimeStatus,
   probe = callDesktopControl,
   delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  now = Date.now,
 } = {}) {
-  const deadline = Date.now() + timeoutMs;
+  if (!expectedReleaseId) throw new Error("Expected publication release is required for readiness verification");
+  const deadline = now() + timeoutMs;
   let lastError = null;
-  while (Date.now() < deadline) {
+  while (now() < deadline) {
     try {
       const endpoint = await readEndpoint(runtimeRoot);
       if (!previousEndpointId || endpoint.endpointId !== previousEndpointId) {
-        await probe("snapshot", {}, { runtimeRoot, timeoutMs: Math.min(10_000, timeoutMs) });
+        const snapshot = await probe("snapshot", {}, { runtimeRoot, timeoutMs: Math.min(10_000, timeoutMs) });
+        const status = await readStatus({ runtimeRoot });
+        if (status.current !== expectedReleaseId || status.runningRelease !== expectedReleaseId
+          || status.running !== true || status.ready !== true
+          || snapshot?.server?.process?.releaseId !== expectedReleaseId
+          || snapshot?.server?.process?.pid !== status.pid) {
+          throw new Error(`Expected ready runtime ${expectedReleaseId}; current=${status.current}, running=${status.runningRelease}`);
+        }
         return endpoint;
       }
     } catch (error) {
@@ -177,14 +189,27 @@ export async function waitForRuntimeReplacement({
   throw new Error(`Agent Hub Runtime не подтвердил готовность после перезапуска: ${lastError?.message ?? "timeout"}`);
 }
 
-export async function restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot) {
-  const before = await readDesktopControlEndpoint(runtimeRoot).catch(() => null);
+export async function restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot, {
+  readStatus = publicationRuntimeStatus,
+  readEndpoint = readDesktopControlEndpoint,
+  startInstalled = startInstalledPublicationRuntime,
+} = {}) {
+  const status = await readStatus({ runtimeRoot });
+  const expectedReleaseId = status.current;
+  if (!expectedReleaseId) throw new Error("No published runtime is available for restart");
+  const before = await readEndpoint(runtimeRoot).catch(() => null);
+  if (status.running === false) {
+    const launch = await startInstalled({ runtimeRoot, expectedReleaseId, readStatus });
+    await verifyRestart({ runtimeRoot, expectedReleaseId, readStatus });
+    return { accepted: true, started: launch.started, message: "Опубликованный runtime запущен и проверен" };
+  }
+  if (status.running !== true) throw new Error("Agent Hub process state is unknown");
   const result = await restart("restart-server", {}, {
     runtimeRoot,
     timeoutMs: RESTART_REQUEST_TIMEOUT_MS,
   });
   if (result?.waiting === true || result?.accepted === false) return { ...result, deferred: true };
-  await verifyRestart({ previousEndpointId: before?.endpointId ?? null, runtimeRoot });
+  await verifyRestart({ previousEndpointId: before?.endpointId ?? null, runtimeRoot, expectedReleaseId, readStatus });
   return result;
 }
 
@@ -217,6 +242,7 @@ export async function publishAll(args = process.argv.slice(2), {
   journal = null,
   runtimeRoot = defaultRuntimeRoot(),
   verifyRestart = restart === callDesktopControl ? waitForRuntimeReplacement : async () => {},
+  readRuntimeStatus = publicationRuntimeStatus,
 } = {}) {
   return exclusive(async () => {
     const options = parseArguments(args);
@@ -243,7 +269,7 @@ export async function publishAll(args = process.argv.slice(2), {
       });
       if (!options.skipRestart) {
         console.log("\n==> Запрос безопасного перезапуска Agent Hub");
-        const result = await restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot);
+        const result = await restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot, { readStatus: readRuntimeStatus });
         console.log(result?.deferred
           ? `${result?.message ?? "Перезапуск запрошен"}. Готовность подтвердится после завершения активного хода.`
           : result?.message ?? "Перезапуск запрошен");
