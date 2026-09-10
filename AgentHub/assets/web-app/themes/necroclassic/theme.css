@@ -34,7 +34,8 @@ html[data-theme="necroclassic"] {
   --plate-bg: #1c2023;
   --plate-texture: none;
   --plate-shadow: none;
-  --turn-shadow: 0 2px 8px rgb(0 0 0 / 10%);
+  --turn-shadow: inset 0 1px 0 rgb(231 240 245 / 6%), 0 3px 12px rgb(0 0 0 / 16%);
+  --necro-graphite-sheen: linear-gradient(180deg, rgb(228 237 243 / 3.5%), transparent 110px);
   --text: #e1e5e8;
   --text-soft: #c5cdd2;
   --text-muted: #a0acb4;
@@ -116,6 +117,21 @@ html[data-theme="necroclassic"] body::after {
 }
 
 /* Сцены управляются стандартным переключателем фона, включая «Нет». */
+html[data-background-override="true"][data-background="necroclassic-mist"] {
+  --hub-background-color: #131416;
+  --hub-background-image: var(--necroclassic-mist-image);
+}
+
+html[data-background-override="true"][data-background="necroclassic-stone"] {
+  --hub-background-color: #131416;
+  --hub-background-image: var(--necroclassic-stone-image);
+}
+
+html[data-background-override="true"][data-background="necroclassic-eclipse"] {
+  --hub-background-color: #131416;
+  --hub-background-image: var(--necroclassic-eclipse-image);
+}
+
 html[data-background-override="true"][data-background="necroclassic-quiet"] {
   --hub-background-color: #131416;
   --hub-background-image: none;
@@ -157,9 +173,10 @@ html[data-theme="necroclassic"] .activity-stream-item[data-current] {
 html[data-theme="necroclassic"] .board-task-card,
 html[data-theme="necroclassic"] .activity-stream-item {
   background: #222629;
+  background-image: var(--necro-graphite-sheen);
   border: 1px solid var(--line);
   border-radius: 6px;
-  box-shadow: none;
+  box-shadow: var(--turn-shadow);
 }
 
 html[data-theme="necroclassic"] .msg:not(.msg-system) {
@@ -176,10 +193,17 @@ html[data-theme="necroclassic"] .msg-user:not(.msg-system) {
   border-color: #37474e;
 }
 
-html[data-theme="necroclassic"][data-view="chat"][data-surface] .msg-user-bubble {
+html[data-theme="necroclassic"][data-view="chat"][data-surface] .msg-user .msg-user-bubble {
   background: var(--dialog-bubble-user);
+  background-image: var(--necro-graphite-sheen);
   border: 1px solid #37474e;
   border-radius: 9px;
+  box-shadow: var(--turn-shadow);
+}
+
+html[data-theme="necroclassic"][data-view="chat"][data-surface] .chat-log .msg.msg-agent:not(.msg-live),
+html[data-theme="necroclassic"][data-view="chat"][data-surface] .chat-scroll > .msg.msg-live {
+  background-image: var(--necro-graphite-sheen);
 }
 
 html[data-theme="necroclassic"][data-view="chat"][data-surface] form.composer {
@@ -209,12 +233,24 @@ html[data-theme="necroclassic"] .msg-author {
   color: var(--text-soft);
 }
 
-html[data-theme="necroclassic"] .msg-body blockquote {
-  background: #1a2024;
+html[data-theme="necroclassic"] .msg-body blockquote,
+html[data-theme="necroclassic"] .msg-reasoning blockquote,
+html[data-theme="necroclassic"] .msg-annotation-content,
+html[data-theme="necroclassic"] .annotation,
+html[data-theme="necroclassic"] .msg-response-citation {
+  background: linear-gradient(180deg, #151b1f, #1a2227);
   border-left: 2px solid var(--accent);
-  border-radius: 0 5px 5px 0;
+  border-radius: 0 6px 6px 0;
+  box-shadow: inset 0 2px 5px rgb(0 0 0 / 24%), inset 0 -1px 0 rgb(213 234 243 / 4%);
   color: var(--text-soft);
   padding: 0.6rem 0.85rem;
+}
+
+html[data-theme="necroclassic"] .msg-annotation-content[data-response-annotation-source]:hover,
+html[data-theme="necroclassic"] .msg-annotation-content[data-response-annotation-source]:focus-visible,
+html[data-theme="necroclassic"] .msg-response-citation:not(.is-fallback):hover,
+html[data-theme="necroclassic"] .msg-response-citation:not(.is-fallback):focus-visible {
+  background: linear-gradient(180deg, #192329, #202c32);
 }
 
 html[data-theme="necroclassic"] .turn-trace {
@@ -248,6 +284,10 @@ html[data-theme="necroclassic"] ::selection {
 }
 
 @media (max-width: 700px) {
+  html:is([data-background="necroclassic-mist"], [data-background="necroclassic-stone"], [data-background="necroclassic-eclipse"]) {
+    --hub-background-position: 15% center;
+  }
+
   html[data-theme="necroclassic"] .msg:not(.msg-system) {
     padding: 0.7rem 0.8rem;
   }
