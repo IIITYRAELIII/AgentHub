@@ -80,7 +80,7 @@ const localWebSecret = config.miniApp.enabled
 const { value: {
   trustedDeviceStore, taskLifecycle,
   codexRolloutContextSanitizer,
-  workLogUsageStore, workLogUsageIdentityStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, workspaceReleaseService, preTurnInstructions, taskBoard, taskVoiceTranscriber, hubMcpService, hubMcpServer, mcpAdmissionCoordinator,
+  workLogUsageStore, workLogUsageIdentityStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, taskReleasePlanner, workspaceReleaseService, preTurnInstructions, taskBoard, taskVoiceTranscriber, hubMcpService, hubMcpServer, mcpAdmissionCoordinator,
   miniAppServer,
   publicMiniAppServer,
   attachmentDirectory,
@@ -567,6 +567,7 @@ const interactionShell = createInteractionShellPhase({
   },
   infrastructure: {
     trustedDeviceStore, workLogUsageStore, workspaceCatalogStore, preTurnInstructions, taskBoard, taskVoiceTranscriber,
+    taskReleasePlanner, workspaceReleaseService,
     taskLifecycle,
     attachmentDirectory,
     usdRubRateStore, runtimeStateStore, taskReadStateStore, rateLimitHistoryStore, commandTraceService, runJournal,

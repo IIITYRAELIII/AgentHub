@@ -52,6 +52,18 @@ prepared aggregate into the candidate manifest before promoting main inside the
 independent clone. A durable freeze intent makes promotion resumable; the CLI
 does not accept arbitrary dirty source files as a new candidate.
 
+The first CLI execution exposed missing release-planner and release-completer
+forwarding through both startup composition layers. Both services now reach the
+Desktop boundary; composition behavior is covered directly. Bootstrapping an
+older running installation permits an explicit local MCP context file, bound to
+its exact published revision and Workspace. Only the exact missing-planner
+Desktop error selects the existing live `hub_release_plan_get` tool. This
+retains that tool's canonical dev preparation, not a parallel planner or stale
+plan-file authority. Other control actions and errors never use this bridge.
+Credentials are neither persisted in publication identity nor logged. Remove
+the local context after the first update; remove the bridge when installations
+without the corrected Desktop wiring are no longer supported.
+
 Quick mode is explicit, not a silently weakened full gate. Expensive tests with
 unknown external inputs remain uncached until their inputs can be proved.
 Old cache entries are ignored; old completion journals without identity/draft

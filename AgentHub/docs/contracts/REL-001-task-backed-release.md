@@ -471,6 +471,19 @@ historical provider Thread.
 Disabling release workflow changes only Workspace policy. It does not mutate or
 discard Tasks or historical publication evidence.
 
+## Bootstrap of the release-control wiring
+
+The canonical planner and completer must reach Desktop through both startup
+composition layers. A first update from an installation missing that wiring
+may explicitly supply a local MCP context bound to its exact published revision
+and Workspace. Only `Task release plan is unavailable` permits a live call to
+the existing `hub_release_plan_get`; its canonical dev preparation remains in
+force. A cached plan is never a substitute. Other errors, Git publication and
+finalization never fall back to MCP through this bridge. The context capability
+is not part of durable publication identity or logs. Delete the local context
+after the first update; retire this compatibility bridge when the old wiring is
+outside the supported migration range.
+
 ## Legacy cutover
 
 A legacy open Await Task that predates Task Git references may be adopted only

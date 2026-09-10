@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
+import { WorkspaceCatalogService } from "../../src/application/workspace-catalog-service.mjs";
+import { createWorkspaceActions } from "../../src/composition/desktop-command-wiring-composition.mjs";
 
 async function loadComposition(filename, overrides = {}) {
   const url = new URL(`../../src/composition/${filename}`, import.meta.url);
@@ -26,7 +28,7 @@ async function loadComposition(filename, overrides = {}) {
   return scope;
 }
 
-async function fixture(taskLifecycle) {
+async function fixture(taskLifecycle, releaseServices = {}) {
   const snapshot = { boardTasks: [{ id: "task-test", status: "done" }] };
   const runRouter = await loadComposition("desktop-run-router-wiring-composition.mjs", {
     createDesktopRunInputComposition: () => ({ desktopMessageController: { sendMessage() {} } }),
@@ -40,10 +42,10 @@ async function fixture(taskLifecycle) {
   });
   const desktop = await loadComposition("desktop-shell-composition.mjs", {
     createDesktopReadSystemWiring: () => ({ desktopSnapshot: async () => snapshot }),
-    createDesktopCommandWiring: () => ({ desktopSnapshotActions: {} }),
+    createDesktopCommandWiring: ({ services }) => ({ desktopSnapshotActions: {}, ...createWorkspaceActions(services) }),
     createDesktopRunRouterWiring: runRouter.createDesktopRunRouterWiring,
     createDesktopTaskCreationPreparation: () => () => {},
-    WorkspaceCatalogService: class {},
+    WorkspaceCatalogService,
     ClientTaskSelectionService: class {},
     StreamMessagePinService: class {},
   });
@@ -61,7 +63,8 @@ async function fixture(taskLifecycle) {
     selection: { hostState: {} },
     infrastructure: {
       taskLifecycle,
-      workspaceCatalogStore: {},
+      ...releaseServices,
+      workspaceCatalogStore: { hierarchy: () => [] },
       runtimeStateStore: { saveDeferredIntake() {} },
     },
     provider: {
@@ -112,4 +115,17 @@ test("Task lifecycle rejection propagates through the composed completion route"
     params: { id: "task-test" },
     context: { commandId: "complete-test" },
   }), (error) => error === rejection);
+});
+
+test("Workspace release actions cross interaction and Desktop composition with the canonical owners", async () => {
+  const calls = [];
+  const plan = { revision: "exact-plan", ready: [{ taskId: "task" }] };
+  const completion = { finalization: { status: "completed" } };
+  const taskReleasePlanner = { async plan(workspaceId) { assert.equal(this, taskReleasePlanner); calls.push(["plan", workspaceId]); return plan; } };
+  const workspaceReleaseService = { async completeRelease(params) { assert.equal(this, workspaceReleaseService); calls.push(["complete", params]); return completion; } };
+  const { composition } = await fixture({}, { taskReleasePlanner, workspaceReleaseService });
+  assert.equal(await composition.readWorkspaceReleasePlan({ workspaceId: "workspace" }), plan);
+  const params = { workspaceId: "workspace", expectedPlanRevision: "exact-plan", deploymentVerified: true };
+  assert.equal(await composition.completeWorkspaceRelease(params), completion);
+  assert.deepEqual(calls, [["plan", "workspace"], ["complete", params]]);
 });

@@ -18,6 +18,7 @@ import { prepareCommittedAgentHubReleaseVersion } from "./src/infrastructure/fil
 import { assertReleaseCloneForPublication, ReleaseGitWorkspaceService } from "./src/infrastructure/filesystem/release-git-workspace.mjs";
 import { withPublicationLock } from "./src/infrastructure/process/publication-lock.mjs";
 import { createFrozenReleasePublication } from "./src/infrastructure/process/frozen-release-publication.mjs";
+import { createBootstrapReleasePlanControl } from "./src/infrastructure/process/bootstrap-release-plan-control.mjs";
 import {
   publicationCheckpointStore,
   runPublicationSteps,
@@ -270,6 +271,7 @@ export function parseChangedArguments(args) {
   let quick = false;
   let resume = false;
   let workspaceId = "";
+  let bootstrapMcpContext = "";
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] === "--skip-restart") skipRestart = true;
     else if (args[index] === "--full-tests") fullTests = true;
@@ -279,11 +281,14 @@ export function parseChangedArguments(args) {
     else if (args[index] === "--validation=focused") { /* default validation */ }
     else if (args[index] === "--resume") resume = true;
     else if (args[index] === "--workspace" && args[index + 1]) workspaceId = args[++index];
+    else if (args[index] === "--bootstrap-mcp-context" && args[index + 1] && !args[index + 1].startsWith("--")) bootstrapMcpContext = args[++index];
     else if (args[index] === "--from" && args[index + 1]) from = args[++index];
     else throw new Error(`Неизвестный аргумент: ${args[index]}`);
   }
   if (quick && fullTests) throw new Error("Choose either quick or full validation");
-  return { from, skipRestart, fullTests, testContour, quick, resume, workspaceId };
+  return { from, skipRestart, fullTests, testContour, quick, resume, workspaceId,
+    ...(bootstrapMcpContext ? { bootstrapMcpContext } : {}),
+  };
 }
 
 export async function publishChanged(args = process.argv.slice(2), {
@@ -463,7 +468,11 @@ export async function publishChanged(args = process.argv.slice(2), {
 
 const invokedFile = process.argv[1] ? path.resolve(process.argv[1]) : "";
 if (invokedFile === fileURLToPath(import.meta.url)) {
-  const adapter = createFrozenReleasePublication({ repositoryRoot: REPOSITORY_ROOT, runtimeRoot: defaultRuntimeRoot() });
+  const control = createBootstrapReleasePlanControl({
+    contextFile: parseChangedArguments(process.argv.slice(2)).bootstrapMcpContext,
+    control: callDesktopControl, readState: readPublicationState,
+  });
+  const adapter = createFrozenReleasePublication({ repositoryRoot: REPOSITORY_ROOT, runtimeRoot: defaultRuntimeRoot(), control });
   publishChanged(process.argv.slice(2), {
     preparePublication: adapter.prepare,
     publishGit: adapter.publishGit,
@@ -486,7 +495,7 @@ if (invokedFile === fileURLToPath(import.meta.url)) {
         expectedPlanRevision: checkpoint.planRevision, expectedPreparedHead: checkpoint.preReleaseHead,
         changelogContent,
         validateBeforeCommit: async () => {
-          const plan = await callDesktopControl("read-workspace-release-plan", { workspaceId }, { runtimeRoot: defaultRuntimeRoot() });
+          const plan = await control("read-workspace-release-plan", { workspaceId }, { runtimeRoot: defaultRuntimeRoot() });
           if (plan.revision !== checkpoint.planRevision) throw new Error("release plan changed before publication freeze");
         },
       });
