@@ -19,6 +19,12 @@ async function git(args, { cwd }) {
   return stdout.trim();
 }
 
+// Planning prepares and verifies managed Git state. The interactive Desktop
+// default (10 seconds) is shorter than this repository operation.
+export function readPublicationReleasePlan(control, workspaceId, runtimeRoot) {
+  return control("read-workspace-release-plan", { workspaceId }, { runtimeRoot, timeoutMs: 120_000 });
+}
+
 // This adapter executes the already frozen release; it never selects Tasks,
 // manufactures approval, or writes the registered primary checkout.
 export function createFrozenReleasePublication({
@@ -55,7 +61,7 @@ export function createFrozenReleasePublication({
         invoke(["rev-parse", "HEAD^{commit}"]), invoke(["status", "--porcelain=v1", "--untracked-files=all"]),
       ]);
       if (head !== identity.revision || dirty) throw new Error("release checkout changed before publication");
-      const plan = await control("read-workspace-release-plan", { workspaceId: selectedWorkspace }, { runtimeRoot });
+      const plan = await readPublicationReleasePlan(control, selectedWorkspace, runtimeRoot);
       if (plan.revision !== checkpoint.planRevision) throw new Error("release plan changed before publication");
       const roots = new Set((plan.candidates ?? []).flatMap((task) => (task.gitReferences ?? []).map((ref) => path.resolve(ref.projectRoot))));
       if (roots.size !== 1 || ![...roots].some((root) => samePath(root, marker.primaryRoot))) {

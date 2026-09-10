@@ -243,6 +243,13 @@ existing composition, never an unchecked result snapshot. This permits a later
 Task resolution against published main to replace its obsolete intermediate
 conflicts without widening ownership. See ADR-0034.
 
+For a reopened Task, an earlier integration's result already contained in the
+approved main base is accepted only when that integration's automatic merge
+tree is still verified. Ownership is proved before overlap detection; proven
+Tasks use their pending net paths, while unproven Tasks retain all effective
+replay paths. Removing a projection restores its historical paths and overlap
+detection repeats until stable, independently of Task ordering.
+
 At explicit release start, Architect reads and selects the exact ready Await
 set. Before choosing the base, Agent Hub fetches without pull/merge/rebase and
 reports every local unpublished or remote main change since the last published
@@ -494,6 +501,11 @@ Disabling release workflow changes only Workspace policy. It does not mutate or
 discard Tasks or historical publication evidence.
 
 ## Bootstrap of the release-control wiring
+
+Publication plan reads during freeze and Git publication use the bounded
+120-second repository-operation deadline. Planning may prepare managed Git
+state and must not inherit the 10-second interactive Desktop deadline.
+This does not relax the exact plan, manifest, repository or Git lease checks.
 
 The canonical planner and completer must reach Desktop through both startup
 composition layers. A first update from an installation missing that wiring

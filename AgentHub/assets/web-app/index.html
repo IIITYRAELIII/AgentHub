@@ -789,22 +789,65 @@
 
   <main class="task-board-view" data-task-board>
     <header class="task-board-toolbar">
-      <div class="task-board-status-language" role="group" aria-label="Язык статусов задач">
-        <span>Статусы</span>
-        <div class="task-board-status-language-options">
-          <button type="button" data-task-status-language="en" aria-pressed="true">en</button>
-          <button type="button" data-task-status-language="ru" aria-pressed="false">ru</button>
+      <h2 class="eyebrow task-board-catalog-title">Workspaces</h2>
+      <div class="task-board-toolbar-actions">
+        <button type="button" class="task-board-filter-toggle" data-task-board-filter-toggle
+          aria-expanded="false" aria-controls="task-board-filter-controls">Фильтры</button>
+        <div class="task-board-filter-controls" id="task-board-filter-controls" data-task-board-filter-controls hidden>
+          <button
+            type="button"
+            class="task-board-completed-toggle"
+            data-task-board-completed-toggle
+            aria-pressed="false"
+          >Закрытые</button>
         </div>
+        <button type="button" class="refresh view-settings" data-task-board-settings-toggle
+          popovertarget="task-board-settings" title="Настройки доски" aria-label="Настройки доски">
+          <svg data-phosphor-icon="sliders-horizontal" viewBox="0 0 256 256" aria-hidden="true">
+            <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16">
+              <circle cx="104" cy="80" r="24"></circle>
+              <circle cx="168" cy="176" r="24"></circle>
+              <path d="M128 80h88M40 80h40M192 176h24M40 176h104"></path>
+            </g>
+          </svg>
+        </button>
       </div>
-      <button
-        type="button"
-        class="task-board-completed-toggle"
-        data-task-board-completed-toggle
-        aria-pressed="false"
-      >Закрытые</button>
     </header>
+    <aside class="task-board-sidebar" aria-label="Workspace">
+      <nav class="task-board-scope-strip" data-task-board-scopes aria-label="Workspace и заметки"></nav>
+    </aside>
     <div class="task-board-columns" data-task-board-columns aria-live="polite"></div>
   </main>
+
+  <div class="task-board-settings" id="task-board-settings" popover="auto" role="group" aria-label="Настройки доски">
+    <div class="task-board-setting">
+      <strong>Вид доски</strong>
+      <div class="task-board-status-language-options task-board-view-options" role="group" aria-label="Вид доски">
+        <button type="button" data-task-board-view="statuses" aria-pressed="true">По статусам</button>
+        <button type="button" data-task-board-view="workspaces" aria-pressed="false">По воркспейсам</button>
+      </div>
+    </div>
+    <div class="task-board-setting">
+      <strong>Открывать задачу</strong>
+      <div class="task-board-status-language-options" role="group" aria-label="Открывать задачу">
+        <button type="button" data-task-open-mode="modal" aria-pressed="false">В окне</button>
+        <button type="button" data-task-open-mode="side" aria-pressed="false">Справа</button>
+        <button type="button" data-task-open-mode="both" aria-pressed="true">Справа + окно</button>
+      </div>
+      <p>«Справа + окно»: клик — справа, двойной клик — в окне. На узком экране всегда открывается окно.</p>
+    </div>
+    <label class="task-board-grouping-setting" data-task-board-grouping-setting>
+      <input type="checkbox" data-task-board-grouping-toggle checked>
+      <span>Группировать по воркспейсам</span>
+    </label>
+    <div class="task-board-status-language" role="group" aria-label="Язык статусов задач">
+      <span>Язык статусов</span>
+      <div class="task-board-status-language-options">
+        <button type="button" data-task-status-language="en" aria-pressed="true">en</button>
+        <button type="button" data-task-status-language="ru" aria-pressed="false">ru</button>
+      </div>
+    </div>
+  </div>
 
   <dialog class="context-usage-modal" data-context-usage-modal aria-labelledby="context-usage-title">
     <header>
@@ -882,6 +925,17 @@
       </button>
     </header>
     <section class="task-card-content">
+      <section class="task-card-preview" aria-label="Детали задачи">
+        <div class="task-card-preview-meta">
+          <strong data-task-preview-number></strong>
+          <button type="button" class="board-task-quiet" data-task-card-edit-toggle>Изменить</button>
+        </div>
+        <h3 data-task-preview-title></h3>
+        <div class="task-card-preview-description">
+          <strong>Описание</strong>
+          <p data-task-preview-description></p>
+        </div>
+      </section>
       <form class="task-card-editor" data-task-card-editor>
         <label>
           <span>Заголовок</span>

@@ -579,11 +579,18 @@
     })).filter(({ id }) => id);
     return Object.freeze({
       workspaceScrollLeft: Math.max(0, Number(regions?.workspaces?.scrollLeft) || 0),
+      matrixScrollLeft: Math.max(0, Number(regions?.workspaces?.querySelector?.('[data-task-board-matrix]')?.scrollLeft) || 0),
+      matrixScrollTop: Math.max(0, Number(regions?.workspaces?.querySelector?.('[data-task-board-matrix]')?.scrollTop) || 0),
       columns: Object.freeze(columns.map((entry) => Object.freeze(entry))),
     });
   }
 
   function restoreTaskBoardScroll(regions, snapshot) {
+    const matrix = regions?.workspaces?.querySelector?.('[data-task-board-matrix]');
+    if (matrix) {
+      matrix.scrollLeft = Math.max(0, Number(snapshot?.matrixScrollLeft) || 0);
+      matrix.scrollTop = Math.max(0, Number(snapshot?.matrixScrollTop) || 0);
+    }
     if (regions?.workspaces) {
       regions.workspaces.scrollLeft = Math.max(
         0,
@@ -856,6 +863,15 @@
 
   const board = document.querySelector("[data-task-board]");
   const columns = document.querySelector("[data-task-board-columns]");
+  const scopeStrip = document.querySelector("[data-task-board-scopes]");
+  const filterToggle = document.querySelector("[data-task-board-filter-toggle]");
+  const filterControls = document.querySelector("[data-task-board-filter-controls]");
+  const settingsToggle = document.querySelector("[data-task-board-settings-toggle]");
+  const settingsPanel = document.querySelector("#task-board-settings");
+  const groupingToggle = document.querySelector('[data-task-board-grouping-toggle]');
+  const groupingSetting = document.querySelector('[data-task-board-grouping-setting]');
+  const viewButtons = Array.from(document.querySelectorAll?.("[data-task-board-view]") ?? []);
+  const openModeButtons = Array.from(document.querySelectorAll?.("[data-task-open-mode]") ?? []);
   const completedToggle = document.querySelector("[data-task-board-completed-toggle]");
   const statusLanguageButtons = Array.from(document.querySelectorAll?.("[data-task-status-language]") ?? []);
   const workspacePanel = document.querySelector("[data-workspace-task-panel]");
@@ -863,6 +879,7 @@
   const workspacePanelList = document.querySelector("[data-workspace-task-list]");
   const activityTaskHeading = document.querySelector("[data-activity-task-heading]");
   const taskCardModal = document.querySelector("[data-task-card-modal]");
+  const taskCardHome = taskCardModal?.parentElement;
   const taskCardSource = document.querySelector("[data-task-card-source]");
   const taskCardEditor = document.querySelector("[data-task-card-editor]");
   const taskCardNumber = document.querySelector("[data-task-card-number]");
@@ -908,24 +925,12 @@
   if (!board || !columns) return;
 
   const boardColumnRegions = {
-    backlog: node("div", {
-      class: "task-board-edge is-backlog-edge",
-      "data-task-board-backlog": "",
-    }),
-    workspaces: node("div", {
-      class: "task-board-workspace-columns",
-      "data-task-board-workspace-columns": "",
-    }),
-    notes: node("div", {
-      class: "task-board-edge is-notes-edge",
-      "data-task-board-notes": "",
+    columns: node("div", {
+      class: "task-board-status-columns",
+      "data-task-board-status-columns": "",
     }),
   };
-  columns.replaceChildren(
-    boardColumnRegions.backlog,
-    boardColumnRegions.workspaces,
-    boardColumnRegions.notes,
-  );
+  columns.replaceChildren(boardColumnRegions.columns);
 
   const TaskReferences = window.AgentHubTaskReferences;
   const COLUMN_MIME = "application/x-agent-hub-board-column";
@@ -935,6 +940,18 @@
   const TASK_CARD_MODAL_MAX_HEIGHT_REM = 56;
   const TASK_CARD_MODAL_VIEWPORT_GAP_PX = 32;
   let taskCardEditorSizingFrame = null;
+
+  function storedBoardPreference(name, values, fallback) {
+    try {
+      const value = window.localStorage?.getItem(`agent-hub.dashboard.${name}`);
+      return values.includes(value) ? value : fallback;
+    } catch { return fallback; }
+  }
+
+  function saveBoardPreference(name, value) {
+    try { window.localStorage?.setItem(`agent-hub.dashboard.${name}`, value); }
+    catch { /* The choice still applies when browser storage is unavailable. */ }
+  }
 
   const state = {
     tasks: [],
@@ -948,6 +965,13 @@
     deferredInputs: [],
     statusLanguage: storedTaskStatusLanguage(),
     completedOnly: false,
+    filtersOpen: false,
+    boardView: storedBoardPreference("view", ["statuses", "workspaces"], "statuses"),
+    groupByWorkspace: storedBoardPreference("group-workspaces", ["on", "off"], "on") === "on",
+    collapsedBoardGroups: new Set(),
+    taskOpenMode: storedBoardPreference("task-open", ["modal", "side", "both"], "both"),
+    boardScope: "all",
+    taskCardModalRequested: false,
     openTaskId: null,
     startingTaskId: null,
     creatingWorkspaceId: null,
@@ -1001,6 +1025,7 @@
     taskCardModal.removeAttribute("data-width-expanded");
     taskCardTitleSizer.resize();
     taskCardDescriptionSizer.resize();
+    if (taskCardIsDocked()) return;
 
     const rootFontSize = numericCssValue(window.getComputedStyle(document.documentElement).fontSize) || 16;
     const viewportWidth = Math.max(1, document.documentElement.clientWidth || window.innerWidth);
@@ -1047,6 +1072,75 @@
   function scheduleTaskCardEditorSizing() {
     if (taskCardEditorSizingFrame != null) window.cancelAnimationFrame(taskCardEditorSizingFrame);
     taskCardEditorSizingFrame = window.requestAnimationFrame(resizeTaskCardEditor);
+  }
+
+  function taskCardIsDocked() {
+    return !state.taskCardModalRequested && dashboardHasDetailPanel();
+  }
+
+  function dashboardHasDetailPanel() {
+    return state.taskOpenMode !== "modal" && document.documentElement.dataset.view === "dashboard"
+      && window.matchMedia?.("(min-width: 960px)")?.matches === true;
+  }
+
+  let taskCardBackdrop = null;
+  let dockedScrollTop = 0;
+  function syncTaskCardBackdrop() {
+    taskCardBackdrop?.remove();
+    taskCardBackdrop = null;
+    if (!state.openTaskId || !state.taskCardModalRequested || !dashboardHasDetailPanel()) return;
+    // The native modal makes the background inert. Keep its docked projection
+    // visible without creating another editor or duplicate document identities.
+    taskCardBackdrop = node("aside", { class: taskCardModal.className });
+    for (const child of taskCardModal.childNodes) taskCardBackdrop.append(child.cloneNode(true));
+    for (const control of taskCardBackdrop.querySelectorAll("input, textarea, select")) {
+      const presentation = node("span", { class: control.className, text: control.value });
+      if (control.tagName === "SELECT") presentation.textContent = control.selectedOptions[0]?.textContent ?? "";
+      if (control.type === "checkbox") presentation.textContent = control.checked ? "☑" : "☐";
+      if (control.type === "hidden") presentation.hidden = true;
+      control.replaceWith(presentation);
+    }
+    for (const element of [taskCardBackdrop, ...taskCardBackdrop.querySelectorAll("*")]) {
+      for (const attribute of [...element.attributes]) {
+        if (attribute.name === "id" || attribute.name.startsWith("data-")
+          || attribute.name.startsWith("aria-") || attribute.name === "for") element.removeAttribute(attribute.name);
+      }
+    }
+    taskCardBackdrop.classList.add("task-card-backdrop");
+    taskCardBackdrop.classList.remove("is-editing");
+    taskCardBackdrop.removeAttribute("style");
+    taskCardBackdrop.setAttribute("inert", "");
+    taskCardBackdrop.setAttribute("aria-hidden", "true");
+    taskCardBackdrop.setAttribute("open", "");
+    board.append(taskCardBackdrop);
+    taskCardBackdrop.querySelector(".task-card-content").scrollTop = dockedScrollTop;
+  }
+
+  function syncTaskCardPlacement() {
+    if (!taskCardModal?.open && !state.openTaskId) return;
+    const docked = taskCardIsDocked();
+    const target = docked ? board : taskCardHome;
+    const changed = taskCardModal.parentElement !== target
+      || (taskCardModal.matches?.(":modal") === true) === docked;
+    if (changed && taskCardModal.open) taskCardModal.close();
+    if (docked) {
+      taskCardModal.style.removeProperty("inline-size");
+      taskCardModal.style.removeProperty("block-size");
+      taskCardModal.removeAttribute("data-width-expanded");
+    }
+    if (target && taskCardModal.parentElement !== target) target.append(taskCardModal);
+    board.classList.toggle("has-open-task", dashboardHasDetailPanel());
+    if (!taskCardModal.open) {
+      if (docked) taskCardModal.show?.();
+      else taskCardModal.showModal?.();
+    }
+    if (!taskCardModal.open) taskCardModal.setAttribute("open", "");
+    syncTaskCardBackdrop();
+    for (const card of columns.querySelectorAll("[data-board-task-id]")) {
+      const selected = card.dataset.boardTaskId === state.openTaskId;
+      card.classList.toggle("is-selected", selected);
+      card.setAttribute("aria-current", selected ? "true" : "false");
+    }
   }
 
   function emit(type, detail = {}) {
@@ -1096,19 +1190,102 @@
     return task.bucket;
   }
 
-  function moveTask(task, destination, beforeId = null) {
-    if (destination === "backlog" || destination === "notes") {
-      emit("move", { id: task.id, bucket: destination, beforeId });
+  const pendingBoardMoves = new Map();
+  let boardMovePromptOpen = false;
+
+  function chooseMoveDestination(task, destination, status) {
+    boardMovePromptOpen = true;
+    return new Promise((resolve) => {
+      const dialog = node("dialog", { class: "task-delete-modal", "data-task-move-modal": "",
+        "aria-labelledby": "task-move-title" });
+      const title = node("h2", { id: "task-move-title", text: destination ? "Перенести задачу?" : "Куда перенести задачу?" });
+      const section = node("section", {}, [title, node("p", { text: task.title || task.text })]);
+      let select = null;
+      if (destination) {
+        section.append(node("p", { text: `Из «${workspaceById(task.workspaceId)?.name || "Workspace недоступен"}» в «${workspaceById(destination.slice(10))?.name || "Workspace недоступен"}». Привязка к потоку будет снята.` }));
+      } else {
+        select = node("select", { class: "board-task-destination", "aria-label": "Воркспейс назначения" });
+        select.append(node("option", { value: "", text: "Выберите воркспейс" }));
+        const folder = state.boardScope.startsWith("folder:") ? state.boardScope.slice(7) : null;
+        for (const workspace of state.workspaces) {
+          if (folder != null && workspaceFolder(workspace) !== folder) continue;
+          select.append(node("option", { value: `workspace:${workspace.id}`, text: workspace.name }));
+        }
+        section.append(select);
+      }
+      if (status) section.append(node("p", { text: `Статус: ${taskWorkflowPresentation({ workflowStatus: status }, state.statusLanguage).full}` }));
+      const cancel = node("button", { type: "button", class: "board-task-quiet", text: "Отмена" });
+      const accept = node("button", { type: "button", class: "board-task-primary", text: "Перенести", disabled: destination ? null : "" });
+      select?.addEventListener("change", () => { accept.disabled = !select.value; });
+      dialog.append(section, node("footer", {}, [cancel, accept]));
+      let settled = false;
+      let uninstall = () => {};
+      const settle = (value) => {
+        if (settled) return;
+        settled = true;
+        uninstall();
+        if (dialog.open) dialog.close();
+        dialog.remove();
+        boardMovePromptOpen = false;
+        resolve(value);
+      };
+      cancel.addEventListener("click", () => settle(null));
+      accept.addEventListener("click", () => { if (destination || select.value) settle(destination || select.value); });
+      dialog.addEventListener("close", () => settle(null));
+      uninstall = modalOverlays.installDismissibleOverlay({ dialog, close: () => settle(null) });
+      document.body.append(dialog);
+      dialog.showModal();
+      (select || cancel).focus();
+    });
+  }
+
+  async function moveTask(task, destination, beforeId = null) {
+    if (boardMovePromptOpen || pendingBoardMoves.has(task.id) || state.savingStatusTaskId != null) return;
+    let status = null;
+    if (destination.startsWith("status:")) {
+      status = destination.slice(destination.lastIndexOf(":") + 1);
+      if (!TASK_WORKFLOW_STATUSES.includes(status)) return;
+      if (destination.startsWith("status:lane:")) {
+        const group = destination.slice("status:lane:".length, destination.lastIndexOf(":"));
+        destination = decodeURIComponent(group);
+      } else {
+        const beforeTask = state.tasks.find((item) => item.id === beforeId);
+        destination = beforeTask ? destinationValue(beforeTask)
+          : task.bucket !== "backlog" ? destinationValue(task)
+            : state.boardScope === "notes" || state.boardScope.startsWith("workspace:") ? state.boardScope : null;
+      }
+    }
+    const changesWorkspace = task.bucket === "workspace" && destination?.startsWith("workspace:")
+      && destination !== destinationValue(task);
+    if (!destination || changesWorkspace) {
+      const original = task;
+      destination = await chooseMoveDestination(task, destination, status);
+      if (!destination) return;
+      task = state.tasks.find((item) => item.id === original.id);
+      if (!task || task.status === "done" || task.revision !== original.revision
+        || destinationValue(task) !== destinationValue(original) || taskWorkflowStatus(task) !== taskWorkflowStatus(original)) {
+        window.AgentHub?.toast("Задача изменилась. Повторите перенос.");
+        return;
+      }
+    }
+    if (destination.startsWith("workspace:") && !workspaceById(destination.slice(10))) {
+      window.AgentHub?.toast("Воркспейс назначения недоступен. Повторите перенос.");
       return;
     }
-    if (destination.startsWith("workspace:")) {
-      emit("move", {
-        id: task.id,
-        bucket: "workspace",
-        workspaceId: destination.slice(10),
-        beforeId,
-      });
+    if (destination === destinationValue(task) && status && taskWorkflowStatus(task) !== status) {
+      state.savingStatusTaskId = task.id;
+      renderTaskCardSaving(task.id);
+      emit("status", { id: task.id, status });
+      return;
     }
+    if (destination === destinationValue(task) && !beforeId) return;
+    const params = destination.startsWith("workspace:")
+      ? { bucket: "workspace", workspaceId: destination.slice(10) } : { bucket: destination };
+    if (!["backlog", "notes", "workspace"].includes(params.bucket)) return;
+    const requestId = `board-move:${task.id}:${window.crypto?.randomUUID?.()
+      || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+    pendingBoardMoves.set(task.id, { requestId, destination, status, phase: "move" });
+    emit("move", { id: task.id, ...params, beforeId, requestId });
   }
 
   const pointerTaskDrag = createTaskBoardPointerDrag({
@@ -1250,14 +1427,25 @@
   }
 
   function closeTaskCard() {
+    taskCardBackdrop?.remove();
+    taskCardBackdrop = null;
+    const openedTaskId = state.openTaskId;
     taskDeleteDialog.close();
     state.openTaskId = null;
+    state.taskCardModalRequested = false;
     state.editingTaskId = null;
     state.editDirty = false;
     state.editingChecklistItemId = null;
     setTaskCardOriginalExpanded(false);
+    board.classList.remove("has-open-task");
     taskCardModal?.close?.();
     taskCardModal?.removeAttribute("open");
+    if (taskCardHome && taskCardModal?.parentElement !== taskCardHome) taskCardHome.append(taskCardModal);
+    for (const card of columns.querySelectorAll(".is-selected")) {
+      card.classList.remove("is-selected");
+      card.removeAttribute("aria-current");
+      if (card.dataset.boardTaskId === openedTaskId) card.focus();
+    }
   }
 
   function openTaskExecutor(task, event = null) {
@@ -1560,6 +1748,13 @@
       return;
     }
     taskCardSource.textContent = task.source === "telegram" ? "Telegram" : "Hub";
+    const previewNumber = document.querySelector("[data-task-preview-number]");
+    const previewTitle = document.querySelector("[data-task-preview-title]");
+    const previewDescription = document.querySelector("[data-task-preview-description]");
+    if (previewNumber) previewNumber.textContent = task.taskNumber || "";
+    if (previewTitle) previewTitle.textContent = task.title || task.text;
+    if (previewDescription) previewDescription.textContent = task.description || "Описание пока не добавлено.";
+    taskCardStatus.closest(".task-card-status-field").hidden = task.bucket === "backlog";
     syncTaskStatusControl(taskCardStatus, task, state.statusLanguage, {
       pending: state.savingStatusTaskId === task.id,
     });
@@ -1664,24 +1859,111 @@
       onclick: () => taskDeleteDialog.request(task.id),
     }));
     taskCardActions.replaceChildren(...actions);
+    syncTaskCardBackdrop();
   }
 
-  function openTaskCard(task) {
+  function openTaskCard(task, { modal = false } = {}) {
+    modal = state.taskOpenMode === "modal" || (modal && state.taskOpenMode === "both");
+    if (modal && taskCardIsDocked()) dockedScrollTop = taskCardContent?.scrollTop ?? 0;
+    state.taskCardModalRequested = modal;
     state.openTaskId = task.id;
     state.editingTaskId = null;
     state.editDirty = false;
+    taskCardModal?.classList.remove("is-editing");
     setTaskCardOriginalExpanded(false);
     renderOpenTaskCard();
-    taskCardModal.showModal?.();
-    if (!taskCardModal.open) taskCardModal.setAttribute("open", "");
+    syncTaskCardPlacement();
     if (taskCardContent) taskCardContent.scrollTop = 0;
     scheduleTaskCardEditorSizing();
   }
 
-  function taskCard(task, { compact = false, linked = false } = {}) {
+  let firstBoardClick = null;
+
+  function continuesBoardClick(event) {
+    return event.detail === 2 && event.button === 0 && firstBoardClick
+      && firstBoardClick.card.isConnected
+      && firstBoardClick.card.dataset.boardTaskId === firstBoardClick.id
+      && state.openTaskId === firstBoardClick.id
+      && Math.abs(event.clientX - firstBoardClick.x) <= 4
+      && Math.abs(event.clientY - firstBoardClick.y) <= 4;
+  }
+
+  function continuesBoardDoubleClick(event) {
+    return state.taskOpenMode === "both" && taskCardIsDocked() && continuesBoardClick(event);
+  }
+
+  // Docking shifts columns after the first click. Preserve the original connected
+  // row for the browser's native double-click sequence, without delaying preview.
+  document.addEventListener("mousedown", (event) => {
+    if (event.detail === 1) firstBoardClick = null;
+  }, true);
+  document.addEventListener("click", (event) => {
+    if (!continuesBoardDoubleClick(event)
+      && !(state.taskOpenMode === "modal" && continuesBoardClick(event))) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }, true);
+  document.addEventListener("dblclick", (event) => {
+    if (!continuesBoardDoubleClick(event)) return;
+    const task = state.tasks.find((candidate) => candidate.id === firstBoardClick.id);
+    firstBoardClick = null;
+    if (!task) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    openTaskCard(task, { modal: true });
+  }, true);
+
+  function setTaskDragImage(event, card) {
+    // A bitmap cannot capture adjacent composited grid lanes like Chromium's
+    // automatic DOM drag image can. It has no duplicate interactive DOM nodes.
+    const canvas = document.createElement("canvas");
+    canvas.width = 360;
+    canvas.height = 110;
+    const context = canvas.getContext("2d");
+    const style = getComputedStyle(card);
+    const titleStyle = getComputedStyle(card.querySelector(".board-task-title"));
+    const metadata = [".board-task-number", ".board-task-workspace", ".board-task-executor"]
+      .map((selector) => card.querySelector(selector)?.textContent?.trim()).filter(Boolean).join(" · ");
+    const fit = (text, width) => {
+      const characters = Array.from(text);
+      if (context.measureText(text).width <= width) return text;
+      let low = 0;
+      let high = characters.length;
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        if (context.measureText(characters.slice(0, middle).join("") + "…").width <= width) low = middle;
+        else high = middle - 1;
+      }
+      return characters.slice(0, low).join("") + "…";
+    };
+    context.beginPath();
+    context.roundRect(0.5, 0.5, 359, 109, 6);
+    context.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
+    context.fill();
+    context.fillStyle = style.backgroundColor;
+    context.fill();
+    context.strokeStyle = style.borderColor;
+    context.stroke();
+    context.textBaseline = "top";
+    context.fillStyle = getComputedStyle(card.querySelector(".board-task-number")).color;
+    context.font = `11px ${titleStyle.fontFamily}`;
+    context.fillText(fit(metadata, 332), 14, 12);
+    context.fillStyle = titleStyle.color;
+    context.font = `500 15px ${titleStyle.fontFamily}`;
+    const words = card.querySelector(".board-task-title").textContent.trim().split(/\s+/u);
+    for (let line = 0; line < 3 && words.length; line += 1) {
+      let text = words.shift();
+      while (words.length && context.measureText(text + " " + words[0]).width <= 332) text += " " + words.shift();
+      if (line === 2 && words.length) text += " " + words.join(" ");
+      context.fillText(fit(text, 332), 14, 34 + line * 22);
+    }
+    event.dataTransfer.setDragImage(canvas, 18, 18);
+  }
+
+  function taskCard(task, { compact = false, linked = false, movable = !compact, boardRow = false } = {}) {
     const completed = task.status === "done";
-    const movable = !compact && !completed;
-    const attachable = !linked;
+    const movableCard = movable && !completed;
+    const attachable = !linked && movableCard;
     const card = node("article", {
       class: `board-task-card${task.status === "started" ? " is-started" : ""}${completed ? " is-completed" : ""}${compact ? " is-compact" : ""}`,
       draggable: attachable ? "true" : null,
@@ -1689,22 +1971,26 @@
       tabindex: "0",
       "aria-label": `Открыть задачу ${task.title || task.text}`,
       "data-board-task-id": task.id,
-      "data-board-task-movable": movable ? "true" : null,
+      "data-board-task-movable": movableCard ? "true" : null,
       onclick: (event) => {
         event?.stopPropagation?.();
+        if (boardRow && event.detail === 1) firstBoardClick = {
+          card, id: task.id, x: event.clientX, y: event.clientY,
+        };
         openTaskCard(state.tasks.find((candidate) => candidate.id === task.id) ?? task);
       },
       onkeydown: (event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
-        openTaskCard(task);
+        openTaskCard(task, { modal: boardRow && event.shiftKey });
       },
       ondragstart: attachable ? (event) => {
         TaskReferences.beginDrag(event.dataTransfer, task);
+        setTaskDragImage(event, card);
       } : null,
       ondragend: attachable ? () => TaskReferences.endDrag() : null,
     });
-    if (movable) {
+    if (movableCard) {
       card.addEventListener("dragover", (event) => {
         if (hasColumnDrag(event.dataTransfer)) return;
         if (!TaskReferences.hasTransfer(event.dataTransfer)) return;
@@ -1722,7 +2008,8 @@
         event.preventDefault();
         event.stopPropagation();
         card.classList.remove("is-dragover");
-        moveTask(draggedTask, destinationValue(task), task.id);
+        const columnDestination = card.closest("[data-board-destination]")?.dataset.boardDestination;
+        moveTask(draggedTask, columnDestination || destinationValue(task), task.id);
       });
     }
     const [numberSummary, executorSummary, statusSummary] = taskSummaryItems(
@@ -1754,6 +2041,7 @@
         }),
       node("span", {
         class: "board-task-status",
+        hidden: task.bucket === "backlog" ? "" : null,
         "data-workflow-status": statusSummary.status,
         text: statusSummary.short,
         title: statusSummary.full,
@@ -1761,6 +2049,15 @@
       }),
     ]));
     card.append(node("h3", { class: "board-task-title", text: task.title || task.text }));
+    if (boardRow) {
+      const workspaceName = task.bucket === "notes" ? "Заметки"
+        : task.bucket === "backlog" ? "Бэклог"
+          : workspaceById(task.workspaceId)?.name || "Workspace недоступен";
+      card.querySelector(".board-task-summary").append(node("span", {
+        class: "board-task-workspace", text: showsWorkspaceContext() ? workspaceName : "",
+        title: showsWorkspaceContext() ? workspaceName : null,
+      }));
+    }
     const attachmentCountLabel = taskAttachmentCountLabel(task.attachments);
     if (attachmentCountLabel) {
       card.append(node("div", { class: "board-task-attachments is-compact" }, [
@@ -1805,24 +2102,28 @@
 
   function renderColumn({
     id, title, subtitle, tasks, accent = "", workspace = null, movable = false,
-    emptyText = "Перетащите задачу сюда",
+    acceptsTaskDrops = movable, emptyText = "Нет задач", laneCell = false,
   }) {
     const column = node("section", {
-      class: `task-board-column ${accent}${workspace ? " is-workspace" : ""}`,
-      "data-board-destination": id,
+      class: `task-board-column ${accent}${workspace ? " is-workspace" : ""}${laneCell ? " task-board-lane-cell" : ""}`,
+      "aria-label": laneCell ? title : null,
+      "data-board-destination": acceptsTaskDrops ? id : null,
       "data-board-workspace-id": workspace?.id,
     });
     column.addEventListener("dragover", (event) => {
+      if (!acceptsTaskDrops) return;
       if (hasColumnDrag(event.dataTransfer) && !movable) return;
       event.preventDefault();
       column.classList.add("is-dragover");
     });
     column.addEventListener("dragleave", () => column.classList.remove("is-dragover"));
     column.addEventListener("drop", (event) => {
+      if (!acceptsTaskDrops) return;
       event.preventDefault();
       column.classList.remove("is-dragover");
       const movedColumnId = draggedColumnId(event.dataTransfer);
       if (movedColumnId) {
+        if (!movable) return;
         if (movedColumnId !== id) {
           emit("move-column", { columnId: movedColumnId, beforeColumnId: id });
         }
@@ -1868,15 +2169,215 @@
       heading,
       controls,
     ]));
+    column.append(node("div", { class: "task-board-row-head", "aria-hidden": "true" }, [
+      node("span", { text: "ID" }),
+      node("span", { text: state.boardView === "workspaces" ? "Поток" : showsWorkspaceContext() ? "Workspace" : "" }),
+      node("span", { text: state.boardView === "workspaces" ? id !== "backlog" ? "Статус" : "" : "Поток" }),
+    ]));
     const list = node("div", { class: "task-board-column-list" });
     if (workspace && state.creatingWorkspaceId === workspace.id) list.append(renderCreateForm(workspace));
     if (!tasks.length && state.creatingWorkspaceId !== workspace?.id) {
       list.append(node("p", { class: "task-board-empty", text: emptyText }));
     } else {
-      for (const task of tasks) list.append(taskCard(task));
+      for (const task of tasks) list.append(taskCard(task, { boardRow: true }));
     }
     column.append(list);
+    if (laneCell) {
+      column.querySelector('.task-board-column-head').remove();
+      column.querySelector('.task-board-row-head').remove();
+      if (!tasks.length) list.querySelector('.task-board-empty')?.remove();
+    }
     return column;
+  }
+
+  function renderStatusMatrix(tasks, statuses, emptyText) {
+    const matrix = node('div', { class: 'task-board-matrix', 'data-task-board-matrix': '' });
+    const content = node('div', { class: 'task-board-matrix-content' });
+    content.style.setProperty('--task-status-count', statuses.length);
+    const headers = node('div', { class: 'task-board-matrix-head' });
+    for (const status of statuses) {
+      const title = taskWorkflowPresentation({ workflowStatus: status }, state.statusLanguage).full;
+      const header = renderColumn({
+        id: `status:${state.boardScope}:${status}`, title,
+        tasks: [], accent: `is-status-${status}`, acceptsTaskDrops: !state.completedOnly,
+      });
+      header.classList.add('task-board-status-heading');
+      header.querySelector('.task-board-count').textContent = String(tasks.filter((task) => taskWorkflowStatus(task) === status).length);
+      header.querySelector('.task-board-row-head').remove();
+      header.querySelector('.task-board-column-list').remove();
+      headers.append(header);
+    }
+    content.append(headers);
+    const groups = new Map();
+    for (const task of tasks) {
+      const id = destinationValue(task);
+      if (!groups.has(id)) groups.set(id, []);
+      groups.get(id).push(task);
+    }
+    // Keep an explicitly selected empty Workspace available for task creation.
+    if (state.boardScope.startsWith('workspace:') && !groups.has(state.boardScope)) groups.set(state.boardScope, []);
+    const order = orderedDashboardColumnIds(state.columnOrder, groups.keys());
+    for (const id of order) {
+      const groupTasks = groups.get(id);
+      const workspace = id.startsWith('workspace:') ? workspaceById(id.slice(10)) : null;
+      const title = id === 'notes' ? 'Заметки' : workspace?.name || 'Workspace недоступен';
+      const lane = node('details', {
+        class: 'task-board-lane', 'data-task-board-group': id,
+        open: state.collapsedBoardGroups.has(id) ? null : '',
+      });
+      lane.addEventListener('toggle', () => {
+        if (!lane.isConnected) return;
+        if (lane.open) state.collapsedBoardGroups.delete(id);
+        else state.collapsedBoardGroups.add(id);
+      });
+      const summary = node('summary', { class: 'task-board-lane-heading' }, [
+        node('span', { text: title }),
+        node('span', { class: 'task-board-count', text: String(groupTasks.length) }),
+      ]);
+      lane.append(summary);
+      const cells = node('div', { class: 'task-board-lane-cells' });
+      for (const status of statuses) {
+        const cell = renderColumn({
+          id: `status:lane:${encodeURIComponent(id)}:${status}`,
+          title: `${title}: ${taskWorkflowPresentation({ workflowStatus: status }, state.statusLanguage).full}`,
+          tasks: groupTasks.filter((task) => taskWorkflowStatus(task) === status),
+          accent: `is-status-${status}`, acceptsTaskDrops: !state.completedOnly,
+          workspace: status === 'new' ? workspace : null, laneCell: true, emptyText,
+        });
+        if (workspace && status === 'new' && !state.completedOnly && state.creatingWorkspaceId !== workspace.id) {
+          cell.querySelector('.task-board-column-list').append(node('button', {
+            type: 'button', class: 'task-board-create-button task-board-lane-create', text: 'Создать',
+            'aria-label': `Создать задачу в ${title}`,
+            onclick: () => { state.creatingWorkspaceId = workspace.id; renderBoard(); },
+          }));
+        }
+        cells.append(cell);
+      }
+      lane.append(cells);
+      content.append(lane);
+    }
+    if (!groups.size) content.append(node('p', { class: 'task-board-empty', text: emptyText }));
+    matrix.append(content);
+    return matrix;
+  }
+
+  function selectedScopeTasks(tasks) {
+    if (state.boardScope === "notes") return tasks.filter((task) => task.bucket === "notes");
+    if (state.boardScope.startsWith("folder:")) {
+      const folder = state.boardScope.slice(7);
+      const ids = new Set(state.workspaces.filter((workspace) => workspaceFolder(workspace) === folder).map((workspace) => workspace.id));
+      return tasks.filter((task) => task.bucket === "workspace" && ids.has(task.workspaceId));
+    }
+    if (state.boardScope.startsWith("workspace:")) {
+      const workspaceId = state.boardScope.slice(10);
+      return tasks.filter((task) => task.bucket === "workspace" && task.workspaceId === workspaceId);
+    }
+    return tasks.filter((task) => task.bucket === "workspace" || task.bucket === "notes");
+  }
+
+  function showsWorkspaceContext() {
+    return state.boardView === "statuses"
+      && (state.boardScope === "all" || state.boardScope.startsWith("folder:"));
+  }
+
+  function workspaceFolder(workspace) {
+    return window.AgentHubStreamTabs?.normalizeWorkspaceFolderName(workspace?.settings?.catalogFolder) || "";
+  }
+
+  const expandedBoardFolders = new Map();
+
+  function scopeButton(scope) {
+    const destination = scope.id === "notes" || scope.id.startsWith("workspace:");
+    return node("button", {
+      type: "button",
+      class: `task-board-scope${state.boardScope === scope.id ? " is-selected" : ""}`,
+      "aria-pressed": String(state.boardScope === scope.id),
+      "data-board-scope": scope.id,
+      "data-board-destination": destination ? scope.id : null,
+      draggable: destination ? "true" : null,
+      ondragstart: destination ? (event) => {
+        state.draggingColumnId = scope.id;
+        event.dataTransfer.setData(COLUMN_MIME, scope.id);
+        event.dataTransfer.effectAllowed = "move";
+      } : null,
+      ondragend: () => { state.draggingColumnId = null; },
+      ondragover: (event) => {
+        if (!destination) return;
+        event.preventDefault();
+        event.currentTarget.classList.add("is-dragover");
+      },
+      ondragleave: (event) => event.currentTarget.classList.remove("is-dragover"),
+      ondrop: (event) => {
+        if (!destination) return;
+        event.preventDefault();
+        event.currentTarget.classList.remove("is-dragover");
+        const columnId = draggedColumnId(event.dataTransfer);
+        if (columnId) {
+          if (columnId !== scope.id) emit("move-column", { columnId, beforeColumnId: scope.id });
+          return;
+        }
+        const taskId = TaskReferences.fromTransfer(event.dataTransfer)?.taskId;
+        const task = state.tasks.find((item) => item.id === taskId);
+        if (task && task.status !== "done") moveTask(task, scope.id);
+      },
+      text: `${scope.label} · ${scope.count}`,
+      onclick: () => {
+        state.boardScope = scope.id;
+        state.creatingWorkspaceId = null;
+        renderBoard();
+      },
+    });
+  }
+
+  function renderScopeStrip() {
+    if (!scopeStrip) return;
+    const openTasks = (predicate) => tasksForMode(state.tasks, { completedOnly: state.completedOnly }).filter(predicate).length;
+    const scopes = [
+      { id: "all", label: "Все задачи", count: openTasks(() => true) },
+      ...state.workspaces.map((workspace) => ({
+        id: `workspace:${workspace.id}`,
+        label: workspace.name,
+        folder: workspaceFolder(workspace),
+        count: openTasks((task) => task.bucket === "workspace" && task.workspaceId === workspace.id),
+      })),
+      { id: "notes", label: "Заметки", count: openTasks((task) => task.bucket === "notes") },
+    ];
+    const scopeById = new Map(scopes.map((scope) => [scope.id, scope]));
+    const orderedScopes = [...new Set(["all", ...state.columnOrder, ...scopes.map((scope) => scope.id)])]
+      .map((id) => scopeById.get(id)).filter(Boolean);
+    const folders = new Set();
+    const groups = [];
+    for (const scope of orderedScopes) {
+      if (!scope.folder) { groups.push(scopeButton(scope)); continue; }
+      if (folders.has(scope.folder)) continue;
+      folders.add(scope.folder);
+      const members = orderedScopes.filter((candidate) => candidate.folder === scope.folder);
+      const selectedMember = members.find((candidate) => candidate.id === state.boardScope);
+      const folderScope = { id: `folder:${scope.folder}`, label: scope.folder,
+        count: members.reduce((sum, member) => sum + member.count, 0) };
+      const main = scopeButton(folderScope);
+      main.title = `Все Workspace папки ${scope.folder}`;
+      const expanded = expandedBoardFolders.get(scope.folder) ?? true;
+      const memberList = node("div", {
+        class: "task-workspace-folder-list", hidden: expanded ? null : "",
+      }, members.map(scopeButton));
+      const toggle = node("button", {
+        type: "button", class: "task-board-folder-toggle", text: expanded ? "⌄" : "›",
+        "aria-label": `Выбрать Workspace в папке ${scope.folder}`,
+        "aria-expanded": String(expanded),
+        onclick: () => {
+          const open = memberList.hidden;
+          memberList.hidden = !open;
+          expandedBoardFolders.set(scope.folder, open);
+          toggle.setAttribute("aria-expanded", String(open));
+          toggle.textContent = open ? "⌄" : "›";
+        },
+      });
+      groups.push(node("div", {
+        class: `task-board-folder task-workspace-folder-details${selectedMember || state.boardScope === folderScope.id ? " is-selected" : ""}`,
+      }, [node("div", { class: "task-board-folder-heading" }, [main, toggle]), memberList]));
+    }
+    scopeStrip.replaceChildren(...groups);
   }
 
   function renderBoard() {
@@ -1884,10 +2385,23 @@
   }
 
   function renderBoardContent() {
-    const scrollSnapshot = taskBoardScrollSnapshot(boardColumnRegions);
+    const scrollSnapshot = taskBoardScrollSnapshot({ workspaces: boardColumnRegions.columns });
     pointerTaskDrag.cancelForRerender();
     const visibleTasks = tasksForMode(state.tasks, { completedOnly: state.completedOnly });
-    const emptyText = state.completedOnly ? "Нет закрытых задач" : "Перетащите задачу сюда";
+    const emptyText = state.completedOnly ? "Нет закрытых задач" : "Нет задач";
+    if ((state.boardScope.startsWith("workspace:") && !workspaceById(state.boardScope.slice(10)))
+      || (state.boardScope.startsWith("folder:") && !state.workspaces.some((workspace) => workspaceFolder(workspace) === state.boardScope.slice(7)))) {
+      state.boardScope = "all";
+    }
+    board.classList.toggle("has-workspace-context", showsWorkspaceContext());
+    board.classList.toggle("is-workspace-view", state.boardView === "workspaces");
+    board.classList.toggle('is-status-view', state.boardView === 'statuses');
+    const grouped = state.boardView === 'statuses' && state.groupByWorkspace;
+    board.classList.toggle('is-grouped-view', grouped);
+    if (groupingToggle) groupingToggle.checked = state.groupByWorkspace;
+    if (groupingSetting) groupingSetting.hidden = state.boardView !== 'statuses';
+    for (const button of viewButtons) button.setAttribute("aria-pressed", String(button.dataset.taskBoardView === state.boardView));
+    for (const button of openModeButtons) button.setAttribute("aria-pressed", String(button.dataset.taskOpenMode === state.taskOpenMode));
     const completedCount = state.tasks.filter((task) => task.status === "done").length;
     const openCount = state.tasks.length - completedCount;
     for (const button of statusLanguageButtons) {
@@ -1905,30 +2419,54 @@
       );
     }
     board.classList.toggle("is-completed-only", state.completedOnly);
-    columns.style.setProperty("--board-column-count", String(state.workspaces.length + 2));
-    const rendered = new Map();
-    rendered.set("backlog", renderColumn({
+    if (filterControls) filterControls.hidden = !state.filtersOpen;
+    filterToggle?.setAttribute("aria-expanded", String(state.filtersOpen));
+    renderScopeStrip();
+    const rendered = [renderColumn({
       id: "backlog", title: "Бэклог", subtitle: "Неразобранные входящие",
       tasks: visibleTasks.filter((task) => task.bucket === "backlog"), accent: "is-backlog", emptyText,
-    }));
-    for (const workspace of state.workspaces) {
-      const id = `workspace:${workspace.id}`;
-      rendered.set(id, renderColumn({
-        id,
-        title: workspace.name,
-        subtitle: workspace.comment ?? "",
-        tasks: visibleTasks.filter((task) => task.bucket === "workspace" && task.workspaceId === workspace.id),
-        workspace, movable: !state.completedOnly, emptyText,
+      acceptsTaskDrops: !state.completedOnly,
+    })];
+    const scopedTasks = selectedScopeTasks(visibleTasks);
+    const statuses = state.completedOnly ? ["done"] : TASK_WORKFLOW_STATUSES.filter((status) => (
+      status !== "done" || scopedTasks.some((task) => taskWorkflowStatus(task) === "done")
+    ));
+    if (grouped) rendered.push(renderStatusMatrix(scopedTasks, statuses, emptyText));
+    for (const status of state.boardView === "statuses" && !grouped ? statuses : []) {
+      const presentation = taskWorkflowPresentation({ workflowStatus: status }, state.statusLanguage);
+      rendered.push(renderColumn({
+        id: `status:${state.boardScope}:${status}`,
+        title: presentation.full,
+        subtitle: state.boardScope === "notes" ? state.notesComment : "",
+        tasks: scopedTasks.filter((task) => taskWorkflowStatus(task) === status),
+        accent: `is-status-${status}`,
+        acceptsTaskDrops: !state.completedOnly,
+        workspace: status === "new" && state.boardScope.startsWith("workspace:")
+          ? workspaceById(state.boardScope.slice(10)) : null,
+        emptyText,
       }));
     }
-    rendered.set("notes", renderColumn({
-      id: "notes", title: "Заметки", subtitle: state.notesComment,
-      tasks: visibleTasks.filter((task) => task.bucket === "notes"),
-      accent: "is-notes", movable: !state.completedOnly, emptyText,
-    }));
-    const orderedIds = orderedDashboardColumnIds(state.columnOrder, rendered.keys());
-    replaceBoardColumnRegionsPreservingScroll(boardColumnRegions, orderedIds, rendered);
-    restoreTaskBoardScroll(boardColumnRegions, scrollSnapshot);
+    if (state.boardView === "workspaces") {
+      const workspaceColumns = new Map([["backlog", rendered[0]]]);
+      for (const workspace of state.workspaces) {
+        const id = `workspace:${workspace.id}`;
+        workspaceColumns.set(id, renderColumn({
+          id, title: workspace.name, subtitle: workspace.comment ?? "",
+          tasks: visibleTasks.filter((task) => task.bucket === "workspace" && task.workspaceId === workspace.id),
+          workspace, movable: !state.completedOnly, emptyText,
+        }));
+      }
+      workspaceColumns.set("notes", renderColumn({
+        id: "notes", title: "Заметки", subtitle: state.notesComment,
+        tasks: visibleTasks.filter((task) => task.bucket === "notes"),
+        accent: "is-notes", movable: !state.completedOnly, emptyText,
+      }));
+      rendered.splice(0, rendered.length, ...orderedDashboardColumnIds(state.columnOrder, workspaceColumns.keys())
+        .map((id) => workspaceColumns.get(id)));
+    }
+    replaceBoardColumnsPreservingScroll(boardColumnRegions.columns, rendered);
+    restoreTaskBoardScroll({ workspaces: boardColumnRegions.columns }, scrollSnapshot);
+    if (state.openTaskId) syncTaskCardPlacement();
   }
 
   function renderWorkspacePanel() {
@@ -1966,6 +2504,41 @@
     state.completedOnly = !state.completedOnly;
     renderBoard();
   });
+  filterToggle?.addEventListener("click", () => {
+    state.filtersOpen = !state.filtersOpen;
+    renderBoard();
+  });
+  function positionBoardSettings() {
+    if (!settingsPanel?.matches(":popover-open")) return;
+    const rect = settingsToggle.getBoundingClientRect();
+    const width = settingsPanel.getBoundingClientRect().width;
+    settingsPanel.style.left = `${Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8))}px`;
+    settingsPanel.style.top = `${rect.bottom + 6}px`;
+    settingsPanel.style.maxHeight = `${Math.max(80, window.innerHeight - rect.bottom - 22)}px`;
+  }
+  settingsPanel?.addEventListener("toggle", positionBoardSettings);
+  groupingToggle?.addEventListener('change', () => {
+    state.groupByWorkspace = groupingToggle.checked;
+    state.creatingWorkspaceId = null;
+    saveBoardPreference('group-workspaces', state.groupByWorkspace ? 'on' : 'off');
+    settingsPanel.hidePopover();
+    renderBoard();
+  });
+  for (const button of viewButtons) button.addEventListener("click", () => {
+    state.boardView = button.dataset.taskBoardView;
+    state.creatingWorkspaceId = null;
+    saveBoardPreference("view", state.boardView);
+    settingsPanel.hidePopover();
+    renderBoard();
+  });
+  for (const button of openModeButtons) button.addEventListener("click", () => {
+    state.taskOpenMode = button.dataset.taskOpenMode;
+    saveBoardPreference("task-open", state.taskOpenMode);
+    state.taskCardModalRequested = state.taskOpenMode === "modal";
+    settingsPanel.hidePopover();
+    renderBoard();
+    scheduleTaskCardEditorSizing();
+  });
   for (const button of statusLanguageButtons) {
     button.addEventListener("click", () => {
       state.statusLanguage = normalizedTaskStatusLanguage(button.dataset.taskStatusLanguage);
@@ -1979,8 +2552,38 @@
       renderOpenTaskCard();
     });
   }
-  window.addEventListener("resize", scheduleTaskCardEditorSizing, { passive: true });
-  document.querySelector("[data-task-card-close]")?.addEventListener("click", closeTaskCard);
+  window.addEventListener("resize", () => {
+    positionBoardSettings();
+    syncTaskCardPlacement();
+    scheduleTaskCardEditorSizing();
+  }, { passive: true });
+  if (typeof MutationObserver === "function") {
+    new MutationObserver(() => {
+      syncTaskCardPlacement();
+      scheduleTaskCardEditorSizing();
+    }).observe(document.documentElement, { attributes: true, attributeFilter: ["data-view"] });
+  }
+  taskCardModal?.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !event.defaultPrevented && taskCardIsDocked()) {
+      event.preventDefault();
+      dismissTaskCard();
+    }
+  });
+  function dismissTaskCard() {
+    if (state.taskCardModalRequested && dashboardHasDetailPanel()) {
+      state.taskCardModalRequested = false;
+      syncTaskCardPlacement();
+      if (taskCardContent) taskCardContent.scrollTop = dockedScrollTop;
+      scheduleTaskCardEditorSizing();
+      taskCardModal.querySelector("[data-task-card-close]")?.focus();
+    } else closeTaskCard();
+  }
+  document.querySelector("[data-task-card-close]")?.addEventListener("click", dismissTaskCard);
+  document.querySelector("[data-task-card-edit-toggle]")?.addEventListener("click", () => {
+    taskCardModal.classList.add("is-editing");
+    scheduleTaskCardEditorSizing();
+    taskCardTitle.focus();
+  });
   taskCardOriginalToggle?.addEventListener("click", () => {
     setTaskCardOriginalExpanded(taskCardOriginalToggle.getAttribute("aria-expanded") !== "true");
     scheduleTaskCardEditorSizing();
@@ -2044,7 +2647,7 @@
   });
   modalOverlays?.installDismissibleOverlay({
     dialog: taskCardModal,
-    close: closeTaskCard,
+    close: dismissTaskCard,
   });
   modalOverlays?.installDismissibleOverlay({
     dialog: startModal,
@@ -2101,11 +2704,34 @@
       if (changes.openTaskChanged) renderOpenTaskCard();
     },
     finishAction({ type, id, succeeded, requestId = null, operation = null, itemId = null } = {}) {
+      const pendingMove = pendingBoardMoves.get(id);
+      if (type === "status" && pendingMove?.phase === "status" && pendingMove.requestId !== requestId) return;
+      if (pendingMove?.requestId === requestId && pendingMove.phase === type) {
+        pendingBoardMoves.delete(id);
+        if (type === "move" && succeeded && pendingMove.status) {
+          const task = state.tasks.find((item) => item.id === id);
+          if (task && task.status !== "done" && destinationValue(task) === pendingMove.destination
+            && taskWorkflowStatus(task) !== pendingMove.status) {
+            if (state.savingStatusTaskId == null) {
+              pendingBoardMoves.set(id, { ...pendingMove, phase: "status" });
+              state.savingStatusTaskId = id;
+              renderTaskCardSaving(id);
+              emit("status", { id, status: pendingMove.status, requestId });
+            } else {
+              window.AgentHub?.toast("Задача перенесена. Дождитесь текущей операции и выберите статус.");
+            }
+          }
+        }
+        if (type === "status" && !succeeded) {
+          window.AgentHub?.toast("Задача перенесена, но изменить статус не удалось. Текущий статус сохранён.");
+        }
+      }
       if (type === "update" && state.savingTaskId === id) {
         state.savingTaskId = null;
         if (succeeded) {
           state.editDirty = false;
-          closeTaskCard();
+          renderOpenTaskCard();
+          dismissTaskCard();
           return;
         }
         renderOpenTaskCard();
