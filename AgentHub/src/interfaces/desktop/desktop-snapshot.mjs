@@ -527,7 +527,7 @@ export function createDesktopSnapshotFactory({
       }, { allowTextFallback: false }));
   }
 
-  function desktopTaskSnapshot(entry, { accountId = "", compactSnapshot = false } = {}) {
+  function desktopTaskSnapshot(entry, { accountId = "", compactSnapshot = false, computeUnread = true } = {}) {
     const displayTitle = taskDisplayTitle(entry);
     const task = {
       streamId: entry.streamId ?? null,
@@ -562,7 +562,8 @@ export function createDesktopSnapshotFactory({
       ? null
       : run;
     const unread = Boolean(
-      accountId
+      computeUnread
+      && accountId
       && lastMessage?.updatedAt
       && readState?.hasUnread?.({
         accountId,
@@ -623,6 +624,7 @@ export function createDesktopSnapshotFactory({
     knownVersion = "",
     compactSnapshot = false,
     snapshotProtocol = 3,
+    projectTask = null,
     conversationsVersion = "",
     workspacesVersion = "",
     boardTasksVersion = "",
@@ -695,7 +697,10 @@ export function createDesktopSnapshotFactory({
         running: false,
       }]);
     }
-    const taskSnapshots = entries.map((entry) => desktopTaskSnapshot(entry, { accountId, compactSnapshot }));
+    const taskSnapshots = entries.map((entry) => {
+      const task = desktopTaskSnapshot(entry, { accountId, compactSnapshot, computeUnread: !projectTask });
+      return projectTask ? projectTask(task) : task;
+    });
     snapshotTiming.taskProjectionMs = Math.round((monotonicNow() - phaseStartedAt) * 10) / 10;
     const selectedTaskSnapshot = taskSnapshots.find((task) => task.selected) ?? null;
     phaseStartedAt = monotonicNow();
