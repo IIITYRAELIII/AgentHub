@@ -53,7 +53,6 @@ export async function releaseTaskNetProjections({ tasks, baseCommit, git }) {
       const bases = (await git(["merge-base", "--all", baseCommit, task.resultCommit])).split(/\r?\n/u);
       if (bases.length !== 1) continue;
       const paths = (await git(["diff", "--name-only", "-z", bases[0], task.resultCommit, "--", ...PATHS])).split("\0").filter(Boolean);
-      if (tasks.some((other) => other.taskId !== task.taskId && paths.some((name) => effectivePaths.get(other.taskId).has(name)))) continue;
       const ancestry = (await git(["rev-list", `--max-count=${MAX_ANCESTRY + 1}`, task.resultCommit, `^${baseCommit}`])).split(/\r?\n/u).filter(Boolean);
       if (ancestry.length > MAX_ANCESTRY) continue;
       const earliest = task.integrations.reduce((left, right) => left.order <= right.order ? left : right);
@@ -64,7 +63,8 @@ export async function releaseTaskNetProjections({ tasks, baseCommit, git }) {
       let proven = true;
       for (const integration of task.integrations) {
         const values = await getParents(integration.commit);
-        if (values.length !== 2 || !own.has(values[1]) || !await isAutomatic(integration.commit)) { proven = false; break; }
+        if (values.length !== 2 || (!own.has(values[1]) && !await isApproved(values[1]))
+            || !await isAutomatic(integration.commit)) { proven = false; break; }
       }
       if (!proven) continue;
       for (const commit of ancestry) {
@@ -75,6 +75,22 @@ export async function releaseTaskNetProjections({ tasks, baseCommit, git }) {
       }
       if (proven) proofs.set(task.taskId, { parent: bases[0], commit: task.resultCommit, paths });
     } catch { /* A failed or unsupported proof falls back to the existing fenced replay. */ }
+  }
+  // A reopened Task may have published integrations whose old paths no longer
+  // belong to its pending delta. Use net paths only after proving ownership.
+  // Withdrawing a proof restores effective replay and may expose more overlaps.
+  while (proofs.size) {
+    const rejected = [];
+    for (const [taskId, proof] of proofs) {
+      if (tasks.some((other) => {
+        if (other.taskId === taskId) return false;
+        const paths = proofs.has(other.taskId)
+          ? new Set(proofs.get(other.taskId).paths) : effectivePaths.get(other.taskId);
+        return proof.paths.some((name) => paths.has(name));
+      })) rejected.push(taskId);
+    }
+    if (!rejected.length) break;
+    for (const taskId of rejected) proofs.delete(taskId);
   }
   return proofs;
 }

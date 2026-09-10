@@ -47,6 +47,13 @@ cross-Task effective-path overlap. All other cases keep the existing effective
 delta algorithm and honest conflict evidence. This does not authorize broad
 Task snapshots or hide a dependency on an unselected Task.
 
+Reopening HUB-182 after publication exposed two further assumptions: historical
+paths blocked an unrelated pending Task, and the proof required already
+published results to remain in unpublished ancestry. The v2 projection policy
+verifies those old automatic merges against approved ancestry, proves ownership
+before choosing path sets, and propagates overlap rejection to a fixed point.
+Unproven contributions keep chronological replay and remain fail-closed.
+
 Publication freeze also explicitly binds consolidated CHANGELOG bytes and the
 prepared aggregate into the candidate manifest before promoting main inside the
 independent clone. A durable freeze intent makes promotion resumable; the CLI

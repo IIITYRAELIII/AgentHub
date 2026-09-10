@@ -555,7 +555,7 @@ export class ReleaseGitWorkspaceService {
       }
       const manifest = {
         schemaVersion: 2,
-        projectionPolicy: "task-net-ancestry-v1",
+        projectionPolicy: "task-net-ancestry-v2",
         ...(workspaceId ? { workspaceId: String(workspaceId) } : {}),
         planRevision: revision,
         primaryRoot: initial.root,
