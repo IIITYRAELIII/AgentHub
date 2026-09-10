@@ -1,4 +1,4 @@
-import { callDesktopControl, readDesktopControlEndpoint } from "../../desktop-control.mjs";
+import { callDesktopControl, readDesktopControlEndpoint } from "../infrastructure/process/desktop-control.mjs";
 import { defaultRuntimeRoot } from "../infrastructure/filesystem/runtime-layout.mjs";
 import { publicationRuntimeStatus } from "./runtime-publication-start.mjs";
 

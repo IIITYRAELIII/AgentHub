@@ -53,7 +53,7 @@
       "id": "MCP-001",
       "title": "Bounded Agent Hub tool bridge",
       "document": "MCP-001-bounded-hub-tool-bridge.md",
-      "paths": ["src/interfaces/mcp/hub-mcp-server.mjs", "src/application/hub-mcp-service.mjs", "src/application/task-lifecycle-service.mjs", "src/application/sqlite-mutation-owner.mjs", "src/application/mcp-admission-coordinator.mjs", "src/composition/persistence-mutation-composition.mjs", "src/providers/codex/codex-hub-mcp-bridge-recovery.mjs", "src/providers/codex/codex-event-service.mjs", "src/providers/codex/codex-app-server*", "src/infrastructure/filesystem/task-git-workspace.mjs", "src/infrastructure/persistence/async-sqlite-mutation-queue.mjs", "src/infrastructure/persistence/task-board-store.mjs", "src/infrastructure/persistence/workspace-catalog-store.mjs"]
+      "paths": ["desktop-control.mjs", "src/infrastructure/process/desktop-control.mjs", "src/interfaces/mcp/hub-mcp-server.mjs", "src/application/hub-mcp-service.mjs", "src/application/task-lifecycle-service.mjs", "src/application/sqlite-mutation-owner.mjs", "src/application/mcp-admission-coordinator.mjs", "src/composition/persistence-mutation-composition.mjs", "src/providers/codex/codex-hub-mcp-bridge-recovery.mjs", "src/providers/codex/codex-event-service.mjs", "src/providers/codex/codex-app-server*", "src/infrastructure/filesystem/task-git-workspace.mjs", "src/infrastructure/persistence/async-sqlite-mutation-queue.mjs", "src/infrastructure/persistence/task-board-store.mjs", "src/infrastructure/persistence/workspace-catalog-store.mjs"]
     },
     {
       "id": "USG-001",

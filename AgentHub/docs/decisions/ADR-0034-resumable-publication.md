@@ -64,6 +64,14 @@ Credentials are neither persisted in publication identity nor logged. Remove
 the local context after the first update; remove the bridge when installations
 without the corrected Desktop wiring are no longer supported.
 
+The full gate caught two internal imports of the old public Desktop transport
+entrypoint. The unchanged transport moves to its infrastructure owner and the
+public module retains a re-export facade, preserving the protocol and callers.
+Two historical composition line-count assertions are removed: numeric file-size
+budgets do not establish behavior or ownership. Dependency-matrix, acyclic-graph
+and state-owner checks remain. This removes false failures, not a material test
+latency source.
+
 Quick mode is explicit, not a silently weakened full gate. Expensive tests with
 unknown external inputs remain uncached until their inputs can be proved.
 Old cache entries are ignored; old completion journals without identity/draft

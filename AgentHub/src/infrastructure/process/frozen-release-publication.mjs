@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { callDesktopControl } from "../../../desktop-control.mjs";
+import { callDesktopControl } from "./desktop-control.mjs";
 import { assertReleaseCloneForPublication } from "../filesystem/release-git-workspace.mjs";
 
 const execute = promisify(execFile);
