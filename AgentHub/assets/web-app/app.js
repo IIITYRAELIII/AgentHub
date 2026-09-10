@@ -6396,7 +6396,8 @@ function renderMarkdownCodeBlock(lines, language = "") {
   ]);
 }
 
-function renderMarkdown(target, source, fileContext = currentFileLinkContext(), messageRole = "agent") {
+function renderMarkdown(target, source, fileContext = currentFileLinkContext(), messageRole = "agent", detailsDepth = 0) {
+  const disclosureState = MessageView.captureMarkdownDetailsState(target);
   target.replaceChildren();
   const lines = String(source ?? "").replace(/\r\n?/gu, "\n").split("\n");
   let index = 0;
@@ -6406,13 +6407,25 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
       index += 1;
       continue;
     }
-    const fence = line.match(/^\s*```([\w+-]*)\s*$/u);
+    const fence = MessageView.markdownFenceStart(line);
     if (fence) {
       const code = [];
       index += 1;
-      while (index < lines.length && !/^\s*```\s*$/u.test(lines[index])) code.push(lines[index++]);
+      while (index < lines.length && !MessageView.markdownFenceEnd(lines[index], fence)) code.push(lines[index++]);
       if (index < lines.length) index += 1;
-      target.append(renderMarkdownCodeBlock(code, fence[1]));
+      target.append(renderMarkdownCodeBlock(code, fence.language));
+      continue;
+    }
+    const disclosure = detailsDepth < 32 ? MessageView.markdownDetailsAt(lines, index) : null;
+    if (disclosure) {
+      const summary = el("summary");
+      appendInlineMarkdown(summary, disclosure.summary || "Подробнее", fileContext);
+      const body = el("div", { class: "markdown-details-body" });
+      renderMarkdown(body, disclosure.body, fileContext, messageRole, detailsDepth + 1);
+      const details = el("details", { class: "markdown-details" }, [summary, body]);
+      details.agentHubMarkdownDetailsSource = JSON.stringify([disclosure.summary, disclosure.body]);
+      target.append(details);
+      index = disclosure.nextIndex;
       continue;
     }
     const standaloneCode = MessageView.standaloneInlineCode(line);
@@ -6483,7 +6496,9 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
     const paragraph = [];
     while (index < lines.length
       && lines[index].trim()
-      && !/^\s*(?:```|#{1,6}\s|[-+*]\s+|\d+\.\s+|>\s?)/u.test(lines[index])
+      && !MessageView.markdownFenceStart(lines[index])
+      && !/^\s*(?:#{1,6}\s|[-+*]\s+|\d+\.\s+|>\s?)/u.test(lines[index])
+      && !(paragraph.length && detailsDepth < 32 && MessageView.markdownDetailsAt(lines, index))
       && !markdownTableAt(lines, index)) {
       paragraph.push(lines[index++]);
     }
@@ -6499,6 +6514,7 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
     const technicalRows = renderTechnicalRows(extracted.rows);
     if (technicalRows) target.append(technicalRows);
   }
+  MessageView.restoreMarkdownDetailsState(target, disclosureState);
 }
 
 function activityDisclosureSummary({ label = "Выполненные действия", count = 0, stage = "" } = {}) {
