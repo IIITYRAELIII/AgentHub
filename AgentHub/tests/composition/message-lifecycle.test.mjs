@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
 import vm from "node:vm";
 import test from "node:test";
+import { createDesktopTaskHistoryFactory } from "../../src/interfaces/desktop/desktop-task-history.mjs";
+import { mergeActiveTaskHistory, mergeCompletedTaskHistory } from "../../src/application/task-history.mjs";
 
 const disclosureSource = await readFile(
   new URL("../../assets/web-app/messages/disclosure.js", import.meta.url),
@@ -70,6 +72,124 @@ function message(itemId, text) {
     text,
   };
 }
+
+async function pagedActiveHistoryHarness(durableTurnCount) {
+  const identity = { streamId: "stream-active", provider: "codex", threadId: "thread-active" };
+  const startedAt = "2026-09-11T01:53:00Z";
+  const durable = Array.from({ length: durableTurnCount }, (_, index) => ({
+    id: `old-${index}`,
+    completed: true,
+    status: "completed",
+    startedAt: new Date(Date.parse(startedAt) - (durableTurnCount - index) * 60_000).toISOString(),
+    messages: [{ role: "user", itemId: `old-user-${index}`, clientUserMessageId: `old-client-${index}`, text: `Question ${index}` }],
+  }));
+  const run = {
+    ...identity,
+    id: "run-active",
+    turnId: "turn-active",
+    promptPreview: "Accepted question",
+    responseText: "Unfinished answer",
+    clientUserMessageId: "client-active",
+    startedAt,
+    userMessages: [{ role: "user", itemId: "user-active", clientUserMessageId: "client-active",
+      text: "Accepted question", submittedAt: startedAt, time: startedAt }],
+    responseItemId: "agent-active",
+  };
+  // Match the production SQLite readPage boundary: a live-only turn is absent
+  // from the durable page even after the factory has warmed its hydrated cache.
+  const backend = createDesktopTaskHistoryFactory({
+    selection: { activeProvider: () => identity.provider, threadId: () => identity.threadId, chatId: () => 1 },
+    catalog: { entries: () => [{ ...identity, title: "Active chat", projectRoot: "fixture" }] },
+    historyReader: {
+      readPage: async (_bindings, { before, limit }) => {
+        const end = before == null ? durable.length : Math.min(before, durable.length);
+        const start = Math.max(0, end - limit);
+        return { start, end, total: durable.length, messageTotal: durable.length,
+          items: durable.slice(start, end).map((turn) => ({ ...identity, turn: structuredClone(turn) })) };
+      },
+    },
+    runs: { forTask: () => run },
+    historyMerger: { mergeActive: mergeActiveTaskHistory, mergeCompleted: mergeCompletedTaskHistory },
+    responseBudget: { fit: (payload) => payload },
+  });
+  const pending = new Map([["client-active", { ...identity, turnId: run.turnId,
+    ...run.userMessages[0], submittedAt: startedAt }]]);
+  const sandbox = vm.createContext({
+    ...lifecycle,
+    ...projection,
+    Map, Set,
+    historyByTask: new Map(), historyPageByTask: new Map(), historyLoadStates: new Map(),
+    historyRequestGenerationByTask: new Map(), visibleHistoryLoads: new Set(),
+    completionOverlaysByTask: new Map(), maintenanceEventsByTask: new Map(), activeMaintenanceByTask: new Map(),
+    liveUserMessagesByTask: new Map(), liveProbeByTask: new Map(),
+    optimisticDeferredClientUserMessageIds: new Set(), deferredClientUserMessageIds: new Set(),
+    selectedTaskId: identity.streamId,
+    lastSnapshot: { tasks: [] },
+    taskId: (provider, threadId, streamId) => streamId || `${provider}:${threadId}`,
+    taskIdentity: () => identity,
+    attachmentViews: (values) => values ?? [],
+    outgoingMessages: () => pending,
+    reconcileMessageLifecycle: lifecycle.reconcile,
+    deliveryPatch: (deliveryState) => ({ deliveryState }),
+    backgroundHttpScheduler: { run: (read) => read() },
+    control: (action, params) => { assert.equal(action, "task-history"); return backend(params); },
+    clearDurablyCompletedLiveCard: () => {},
+    syncHistoryPagination: () => {}, renderTaskMessages: () => [], renderTaskQueue: () => {},
+    updateHistoryCatchUp: () => {}, displayedFinalAcknowledgement: () => false,
+  });
+  sandbox.window = sandbox;
+  vm.runInContext([
+    clientFunctionSource("verifiedTaskHistory", "function beginNavigation"),
+    clientFunctionSource("historyMessages", "function applyOpened"),
+    clientFunctionSource("applyOpened", "function acknowledgeDisplayedFinal"),
+    clientFunctionSource("reconciledMessages", "function deferredEntriesForTask"),
+    clientFunctionSource("mergeHistoryLoadRequest", "async function loadVisibleTaskHistories"),
+  ].join("\n"), sandbox);
+  const opened = await backend({ ...identity, limit: 20 });
+  sandbox.applyOpened({ history: opened }, { selectTask: false, skipSnapshot: true });
+  return {
+    pending,
+    messages: () => Array.from(sandbox.reconciledMessages(identity.streamId)),
+    page: () => sandbox.historyPageByTask.get(identity.streamId),
+    refresh: () => sandbox.enqueueTaskHistoryLoad(identity.streamId, identity),
+    loadOlder: async () => {
+      const page = sandbox.historyPageByTask.get(identity.streamId);
+      const older = await backend({ ...identity, before: page.start, limit: 20 });
+      sandbox.historyByTask.set(identity.streamId, sandbox.prependOlderHistory(
+        sandbox.historyByTask.get(identity.streamId), sandbox.historyMessages(older),
+      ));
+      Object.assign(page, { start: older.start, nextBefore: older.nextBefore });
+    },
+  };
+}
+
+test("paged background history retains an accepted active question after optimistic reconciliation", async () => {
+  const harness = await pagedActiveHistoryHarness(1);
+  assert.equal(harness.messages().filter((item) => item.clientUserMessageId === "client-active").length, 1);
+  assert.equal(harness.pending.size, 0, "the question must no longer depend on its optimistic copy");
+  assert.equal(harness.messages().filter((item) => item.role === "agent").length, 0);
+  await harness.refresh();
+  assert.equal(harness.messages().filter((item) => item.clientUserMessageId === "client-active").length, 1,
+    "a warm paged history refresh must not erase the accepted live-only question");
+  assert.equal(harness.messages().filter((item) => item.role === "agent").length, 0, "intermediate answer stays on the live surface");
+  assert.equal(harness.messages().filter((item) => item.clientUserMessageId === "old-client-0").length, 1);
+});
+
+test("active history refresh preserves previously loaded older pages without duplicating the question", async () => {
+  const harness = await pagedActiveHistoryHarness(25);
+  harness.messages();
+  await harness.loadOlder();
+  const before = harness.messages().map((item) => item.clientUserMessageId);
+  const previousStart = harness.page().start;
+  const previousCursor = harness.page().nextBefore;
+  assert.equal(before.length, 26);
+  await harness.refresh();
+  assert.deepEqual(harness.messages().map((item) => item.clientUserMessageId), before);
+  assert.equal(harness.page().start, previousStart);
+  assert.equal(harness.page().nextBefore, previousCursor);
+  assert.equal(harness.messages().filter((item) => item.clientUserMessageId === "client-active").length, 1);
+  assert.equal(harness.messages().filter((item) => item.role === "agent").length, 0);
+});
 
 test("latest navigation intent wins when responses settle out of order", async () => {
   const source = clientFunctionSource(

@@ -157,6 +157,14 @@ text-prefix guessing nor command replay is a migration path.
 
 ## Canonical reducer
 
+Opening a chat and refreshing its newest history both include the authoritative
+active-turn overlay. A paged durable history response alone cannot replace that
+combined projection after its exact optimistic user entity has been retired.
+The history owner merges the active run; the client uses the existing canonical
+reducer and live-card filtering, preserving one user entity without presenting
+an intermediate agent response as a final. Older loaded pages and request/Stream
+generation fences retain their existing ownership.
+
 Opening history shares a bounded transport envelope with optional global
 snapshot data. If that snapshot leaves insufficient space, the server returns
 `snapshot: null` and `snapshotDeferred: true`, preserving the complete quote and
@@ -257,7 +265,12 @@ as `unknown` while snapshot reconciliation is pending. Only an authoritative
 rejection without durable receipt, deferred-input or run evidence may restore
 the submitted payload. Such a restored draft persists its exact request
 identity, exact payload fingerprint and bounded local re-uploadable attachment
-bytes; temporary transport paths are never persisted or reused. On reload the
+bytes; temporary transport paths are never persisted or reused. A versioned
+Blob reference may instead bind byte length, immutable file metadata and the
+ordered SHA-256 part manifest in IndexedDB (MSG-002, ADR-0037). Its bytes must be
+durably written and verified before recovery is granted, and asynchronously
+hydrated and verified before the existing recovery epoch/fingerprint gate.
+A Promise is never interpreted as successful synchronous persistence. On reload the
 client reconstructs retry identity only when the complete recovered payload
 matches that fingerprint. Re-uploadable attachment evidence is accepted only
 after strict base64 decode/canonical round-trip, exact declared-byte-length and
@@ -318,6 +331,19 @@ Unlabelled fenced blocks are treated as prose-oriented preformatted text and
 wrap inside the message column without horizontal page movement. Fences with an
 explicit language preserve code whitespace and may scroll horizontally. Both
 presentations copy the original unmodified block text.
+
+Complete Markdown `details/summary` blocks render as native disclosures, closed
+by default, in both historical and new messages. This is a constrained Markdown
+extension, not raw HTML: the opening details tag begins a line; its initial
+summary may share that line or span subsequent lines. The closing details tag
+occupies its own line, except for a compact block entirely on one line. Nested
+blocks are supported to depth 32; malformed or unsupported forms remain literal.
+Source attributes, including `open`, are ignored. Summary text and body use the
+existing safe Markdown/link renderer; fenced and inline code preserve literal
+tags. Paragraphs, lists and code stay within the message column. Native keyboard
+and pointer disclosure controls remain available. Unchanged block occurrences
+retain their open state when the same keyed message is refreshed or receives
+additional text; disclosure content never establishes message identity.
 
 ## Journal hierarchy
 
@@ -434,6 +460,10 @@ The snapshot exposes the latest final as
 sends `mark-task-read` with the exact identity. The server compares it with the
 current latest final and advances the account cursor only on an exact match;
 stale requests are rejected with the newer identity and retries are idempotent.
+The same canonical projection runs before snapshot versioning for both full
+snapshots and protocol 4 conversation deltas. Final revisions and read-cursor
+changes participate in collection hashes; unchanged snapshots reuse the existing
+revision cache without re-projecting conversations.
 Snapshot receipt alone is not display evidence: acknowledgement is emitted only
 after `applyOpened` rendered a terminal card with the same exact identity and
 revision. Startup snapshot-before-history therefore cannot clear unread state.

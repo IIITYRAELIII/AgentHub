@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { MessageReceiptRegistry } from "../../../src/infrastructure/persistence/message-receipts.mjs";
 import test from "node:test";
+import { createDesktopReadComposition } from "../../../src/composition/desktop-read-composition.mjs";
 
 test("exact receipt display follows queued and active messages without changing wire input", async () => {
   const receipts = new MessageReceiptRegistry();
@@ -148,7 +149,7 @@ function fixture(overrides = {}) {
     refreshCatalog: null,
     ...overrides,
   };
-  const factory = createDesktopSnapshotFactory({
+  const factory = (overrides.createFactory ?? createDesktopSnapshotFactory)({
     clock: {
       nowMs: () => 7_000,
       nowIso: () => "2026-07-30T10:02:00.000Z",
@@ -297,9 +298,78 @@ function fixture(overrides = {}) {
     },
     monotonicNow: overrides.monotonicNow,
     warn: (...args) => state.warnings.push(args),
-  });
+  }, state);
   return { ...factory, state, selected, run, entry };
 }
+
+test("composed protocol 4 snapshots carry exact read identity before delta versioning", async () => {
+  const reads = [];
+  let cursor = null;
+  let cursorReads = 0;
+  const setup = fixture({
+    run: null,
+    createFactory: (snapshot, state) => createDesktopReadComposition({
+      snapshot,
+      history: {},
+      readModel: {
+        readStateStore: {
+          get: ({ accountId }) => { cursorReads += 1; return cursor?.accountId === accountId ? cursor : null; },
+          markRead: (value) => {
+            reads.push(value);
+            cursor = { accountId: value.accountId, answerAtMs: Date.parse(value.answerAt), answerTurnId: value.answerTurnId,
+              answerRevision: value.answerRevision };
+            state.revision = `read-${reads.length}`;
+            return cursor;
+          },
+        },
+        trustedDeviceUserId: (context) => context?.userId ?? "owner",
+        hasAllowedUsers: () => true,
+        lastTaskMessage: (task) => task?.threadId === "thread-1" ? state.lastMessage : null,
+      },
+    }),
+  });
+  setup.entry.running = false;
+  setup.state.lastMessage.terminalRevision = 2;
+  const first = await setup.desktopSnapshot({ snapshotProtocol: 4, compactSnapshot: true });
+  const [task] = first.collectionDeltas.conversations.reset;
+  assert.equal(task.latestFinal?.revision, 2);
+  assert.equal(task.latestFinal?.turnId, "turn-previous");
+  assert.equal(task.unread, true);
+  assert.equal(task.running, false);
+  assert.equal(cursorReads, 1);
+  const builds = setup.state.snapshotBuilds;
+  const unchanged = await setup.desktopSnapshot({ snapshotProtocol: 4, compactSnapshot: true,
+    knownVersion: first.version,
+    ...Object.fromEntries(Object.entries(first.collectionDeltas).map(([name, delta]) => [`${name}Version`, delta.version])),
+  });
+  assert.equal(unchanged.notModified, true);
+  assert.equal(unchanged.snapshotTiming.cacheHit, true);
+  assert.equal(setup.state.snapshotBuilds, builds);
+  assert.equal(cursorReads, 1);
+  const legacy = await setup.desktopSnapshot({ snapshotProtocol: 3 });
+  assert.deepEqual(task.latestFinal, legacy.tasks[0].latestFinal);
+  assert.equal((await setup.markDesktopTaskRead({ final: { ...task.latestFinal, revision: 1 } })).marked, false);
+  assert.equal((await setup.markDesktopTaskRead({ final: { ...task.latestFinal, threadId: "foreign" } })).marked, false);
+  assert.equal(reads.length, 0);
+  assert.equal((await setup.markDesktopTaskRead({ final: task.latestFinal })).marked, true);
+  const read = await setup.desktopSnapshot({ snapshotProtocol: 4, compactSnapshot: true,
+    conversationsVersion: first.collectionDeltas.conversations.version });
+  assert.equal(read.collectionDeltas.conversations.upserts[0].unread, false);
+  assert.notEqual(read.collectionDeltas.conversations.version, first.collectionDeltas.conversations.version);
+  const fullRead = await setup.desktopSnapshot({ snapshotProtocol: 3 });
+  assert.equal(fullRead.tasks[0].unread, false);
+  assert.notEqual(fullRead.version, legacy.version);
+  const otherAccount = await setup.desktopSnapshot({ snapshotProtocol: 4, compactSnapshot: true }, { userId: "other" });
+  assert.equal(otherAccount.collectionDeltas.conversations.reset[0].unread, true);
+  setup.state.lastMessage.terminalRevision = 3;
+  setup.state.revision = "final-revision-3";
+  const newer = await setup.desktopSnapshot({ snapshotProtocol: 4, compactSnapshot: true,
+    conversationsVersion: read.collectionDeltas.conversations.version });
+  assert.equal(newer.collectionDeltas.conversations.upserts[0].latestFinal.revision, 3);
+  assert.equal(newer.collectionDeltas.conversations.upserts[0].unread, true);
+  assert.equal((await setup.markDesktopTaskRead({ final: task.latestFinal })).marked, false);
+  assert.equal(reads.length, 1);
+});
 
 test("desktopContextSnapshot preserves the context JSON contract", () => {
   const { desktopContextSnapshot, state } = fixture();
