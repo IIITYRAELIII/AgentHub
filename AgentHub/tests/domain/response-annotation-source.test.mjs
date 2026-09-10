@@ -40,7 +40,7 @@ function source(overrides = {}) {
 
 test("response annotation source accepts only exact bounded provider item ranges", () => {
   assert.deepEqual(normalizedResponseAnnotationSource(source()), source());
-  assert.equal(normalizedResponseAnnotationSource(source({ end: 408 })), null);
+  assert.equal(normalizedResponseAnnotationSource(source({ end: 1_000_001 })), null);
   assert.equal(normalizedResponseAnnotationSource(source({ start: -1 })), null);
   assert.equal(normalizedResponseAnnotationSource(source({ contentHash: "sha256:nope" })), null);
   assert.equal(normalizedResponseAnnotationSource(source({ messageKey: "provider\u001fwrong" })), null);
@@ -86,7 +86,7 @@ test("client user locators remain exact across item hydration and preserve provi
     { ...locator, itemId: "mixed-provider-item" },
     { ...locator, messageKey: providerLocator.messageKey },
     { ...locator, selectionHash: "missing" },
-    { ...locator, end: 409 },
+    { ...locator, end: 1_000_001 },
   ]) {
     assert.equal(normalizedResponseAnnotationSource(invalid), null);
     assert.equal(api.normalizedResponseAnnotationSource(invalid), null);
@@ -105,6 +105,17 @@ test("browser and backend source normalizers keep the same canonical schema", as
   assert.deepEqual(JSON.parse(JSON.stringify(browserSource)), source());
   const digest = await context.AgentHubMessageDisclosure.responseAnnotationSha256("exact content");
   assert.match(digest, /^sha256:[0-9a-f]{64}$/u);
+  for (const length of [401, 430, 12_000]) {
+    const text = "Полная цитата. ".repeat(length).slice(0, length - 1) + "!";
+    const locator = source({ end: 7 + text.length });
+    assert.deepEqual(normalizedResponseAnnotationSource(locator), locator);
+    assert.deepEqual(JSON.parse(JSON.stringify(
+      context.AgentHubMessageDisclosure.normalizedResponseAnnotationSource(locator),
+    )), locator);
+    assert.deepEqual(normalizedResponseAnnotations([{ text, source: locator }]), [
+      { text, annotation: "", source: locator },
+    ]);
+  }
 });
 
 test("browser source resolution ignores equal text and fails closed on absent identity or stale hashes", async () => {

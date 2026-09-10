@@ -85,6 +85,11 @@ locator enters a receipt. The same validated object crosses queue, provider
 prompt and history with the original `clientUserMessageId`; no downstream layer
 reconstructs it from selected text, time or order.
 
+The selected quote has no separate character limit and is never silently
+truncated during intake or history normalization. General message/transport
+bounds continue to govern the complete command; locator identity, offset and
+hash validation remain unchanged.
+
 ## State machine
 
 `accepted` may advance to `queued`, `attention-required` or `dispatching`.

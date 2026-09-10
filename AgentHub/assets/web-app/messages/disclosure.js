@@ -7,7 +7,6 @@
   const TURN_TRACE_ACTIVITY_GROUP_ID = "trace:activities";
   const RESPONSE_ANNOTATION_SOURCE_VERSION = 1;
   const RESPONSE_ANNOTATION_MAX_OFFSET = 1_000_000;
-  const RESPONSE_ANNOTATION_MAX_SPAN = 400;
   const RESPONSE_ANNOTATION_MAX_SURFACE_INDEX = 199;
   const RESPONSE_ANNOTATION_SURFACES = new Set(["message-body", "trace-reasoning", "reasoning"]);
   const RESPONSE_ANNOTATION_SOURCE_ROLES = new Set(["agent", "user"]);
@@ -90,7 +89,6 @@
       || surfaceIndex > RESPONSE_ANNOTATION_MAX_SURFACE_INDEX
       || !Number.isSafeInteger(start) || !Number.isSafeInteger(end)
       || start < 0 || end <= start || end > RESPONSE_ANNOTATION_MAX_OFFSET
-      || end - start > RESPONSE_ANNOTATION_MAX_SPAN
       || !SHA256.test(contentHash) || !SHA256.test(surfaceHash) || !SHA256.test(selectionHash)) return null;
     return {
       version: RESPONSE_ANNOTATION_SOURCE_VERSION,
@@ -171,8 +169,7 @@
     const trailing = selected.match(/\s*$/u)?.[0].length ?? 0;
     const trimmedStart = start + leading;
     const trimmedEnd = end - trailing;
-    if (trimmedEnd <= trimmedStart || trimmedEnd > RESPONSE_ANNOTATION_MAX_OFFSET
-      || trimmedEnd - trimmedStart > RESPONSE_ANNOTATION_MAX_SPAN) return null;
+    if (trimmedEnd <= trimmedStart || trimmedEnd > RESPONSE_ANNOTATION_MAX_OFFSET) return null;
     return { start: trimmedStart, end: trimmedEnd };
   }
 

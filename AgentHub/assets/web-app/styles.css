@@ -8497,7 +8497,8 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   font-size: 0.78rem;
   font-style: italic;
   line-height: 1.4;
-  overflow: hidden;
+  max-height: 8.4em;
+  overflow: auto;
   overflow-wrap: anywhere;
 }
 

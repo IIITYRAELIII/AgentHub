@@ -1633,7 +1633,7 @@ function normalizedDraftAnnotations(value) {
   return value.slice(0, 20).map((annotation) => {
     const source = normalizedResponseAnnotationSource(annotation?.source);
     return {
-      quote: String(annotation?.quote ?? "").slice(0, 400),
+      quote: String(annotation?.quote ?? ""),
       annotation: String(annotation?.annotation ?? annotation?.comment ?? "").slice(0, 20_000),
       ...(source ? { source } : {}),
     };
@@ -8132,7 +8132,7 @@ function renderAnnotations() {
   annotations.forEach((annotation, index) => {
     annotationsBox.append(el("div", { class: "annotation" }, [
       el("div", { class: "annotation-content" }, [
-        el("span", { class: "annotation-quote", text: annotation.quote }),
+        el("span", { class: "annotation-quote", tabindex: "0", text: annotation.quote }),
         el("textarea", {
           class: "annotation-comment",
           "data-annotation-comment-index": index,
@@ -8264,8 +8264,7 @@ function selectedQuotableSelectionAt(target) {
 }
 
 function normalizedAnnotationQuote(value) {
-  const quote = String(value ?? "").trim();
-  return quote.length <= 400 ? quote : "";
+  return String(value ?? "").trim();
 }
 
 function meaningfulAnnotationSelection(value) {

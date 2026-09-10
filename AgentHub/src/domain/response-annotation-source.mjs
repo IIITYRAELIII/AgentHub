@@ -1,7 +1,6 @@
 const SOURCE_VERSION = 1;
 const MAX_IDENTITY_LENGTH = 300;
 const MAX_SOURCE_OFFSET = 1_000_000;
-const MAX_SOURCE_SPAN = 400;
 const MAX_SURFACE_INDEX = 199;
 const SOURCE_SURFACES = new Set(["message-body", "trace-reasoning", "reasoning"]);
 const SOURCE_ROLES = new Set(["agent", "user"]);
@@ -50,7 +49,7 @@ export function normalizedResponseAnnotationSource(value) {
     || !SOURCE_SURFACES.has(surfaceKind)
     || !Number.isSafeInteger(surfaceIndex) || surfaceIndex < 0 || surfaceIndex > MAX_SURFACE_INDEX
     || !Number.isSafeInteger(start) || !Number.isSafeInteger(end)
-    || start < 0 || end <= start || end > MAX_SOURCE_OFFSET || end - start > MAX_SOURCE_SPAN
+    || start < 0 || end <= start || end > MAX_SOURCE_OFFSET
     || !SHA256.test(contentHash) || !SHA256.test(surfaceHash) || !SHA256.test(selectionHash)) return null;
   return {
     version: SOURCE_VERSION,
@@ -72,11 +71,10 @@ export function normalizedResponseAnnotationSource(value) {
 }
 
 export function normalizedResponseAnnotations(values, {
-  textLimit = 4_000,
   annotationLimit = 4_000,
 } = {}) {
   return (Array.isArray(values) ? values : []).slice(0, 20).flatMap((item) => {
-    const text = String(item?.text ?? item?.quote ?? "").trim().slice(0, textLimit);
+    const text = String(item?.text ?? item?.quote ?? "").trim();
     const annotation = String(item?.annotation ?? item?.comment ?? "").trim().slice(0, annotationLimit);
     if (!text && !annotation) return [];
     const source = normalizedResponseAnnotationSource(item?.source);
