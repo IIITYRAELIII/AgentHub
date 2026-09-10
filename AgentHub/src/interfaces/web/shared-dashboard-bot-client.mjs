@@ -419,23 +419,34 @@ export class SharedDashboardBotClient {
   async #downloadAttachmentChunks({ command, descriptors, id, manifest }) {
     const bodies = new Array(descriptors.length);
     let nextIndex = 0;
+    let failed = false;
+    let firstError;
     const workers = Array.from(
       { length: Math.min(ATTACHMENT_CHUNK_CONCURRENCY, descriptors.length) },
       async () => {
-        for (;;) {
+        while (!failed) {
           const index = nextIndex;
           nextIndex += 1;
           if (index >= descriptors.length) break;
-          bodies[index] = await this.#downloadAttachmentChunk({
-            command,
-            descriptor: descriptors[index],
-            id,
-            manifest,
-          });
+          try {
+            bodies[index] = await this.#downloadAttachmentChunk({
+              command,
+              descriptor: descriptors[index],
+              id,
+              manifest,
+            });
+          } catch (error) {
+            if (!failed) firstError = error;
+            failed = true;
+            throw error;
+          }
         }
       },
     );
-    await Promise.all(workers);
+    // A retry must not outlive this attempt's downloads. Started requests keep
+    // their existing deadlines; no further chunks are scheduled after failure.
+    await Promise.allSettled(workers);
+    if (failed) throw firstError;
     return bodies;
   }
 

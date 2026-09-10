@@ -870,6 +870,79 @@ test("shared Dashboard bot accepts a text reply clarification without a source k
   assert.equal(handled[0].params.sourceKey, undefined);
 });
 
+test("failed attachment stops scheduling chunks and drains every started download before retry", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-attachment-drain-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const secretFile = path.join(directory, "secret");
+  await writeFile(secretFile, "s".repeat(64), "utf8");
+  const attachmentId = "018f6c86-3f34-7a31-8f27-16f5b96ccea2";
+  const command = {
+    id: "018f6c86-3f34-7a31-8f27-16f5b96ccea3", userId: "42", action: "board-task-ingest",
+    params: { text: "request", sourceKey: "shared-dashboard:123", attachments: [`remote-attachment:${attachmentId}`] },
+  };
+  const body = Buffer.alloc(10 * 16 * 1024, 7);
+  const transport = attachmentChunkTransport(body, { id: attachmentId });
+  const started = [];
+  const gates = Array.from({ length: 8 }, () => Promise.withResolvers());
+  const allStarted = Promise.withResolvers();
+  const firstError = Object.assign(new TypeError("fetch failed on first chunk"), { code: "ECONNRESET" });
+  let firstAttempt = true;
+  let handled = 0;
+  let results = 0;
+  const client = new SharedDashboardBotClient({
+    publicUrl: "https://hub.example.com", hubId: "018f6c86-3f34-7a31-8f27-16f5b96ccea4", secretFile,
+    attachmentDirectory: path.join(directory, "attachments"),
+    fetchImpl: async (url, options) => {
+      if (url.endsWith("/api/dashboard-bot/pull")) return Response.json({ commands: [command] });
+      if (url.endsWith("/api/dashboard-bot/result")) { results += 1; return Response.json({ ok: true }); }
+      const payload = JSON.parse(options.body);
+      assert.equal(payload.commandId, command.id);
+      if (firstAttempt && payload.mode === "chunk") {
+        started.push(payload.index);
+        if (started.length === 8) allStarted.resolve();
+        await gates[payload.index]?.promise;
+      }
+      return transport(payload);
+    },
+    handler: async ({ params }) => {
+      assert.deepEqual(await readFile(params.attachments[0]), body);
+      handled += 1;
+      return {};
+    },
+  });
+  let settled = false;
+  const attempt = client.poll().then(
+    () => { settled = true; return null; },
+    (error) => { settled = true; return error; },
+  );
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+  try {
+    await allStarted.promise;
+    gates[5].reject(firstError);
+    await flush();
+    gates[1].resolve();
+    await flush();
+    assert.deepEqual([...started].sort((a, b) => a - b), [0, 1, 2, 3, 4, 5, 6, 7]);
+    assert.equal(settled, false);
+    assert.equal(handled, 0);
+    assert.equal(results, 0);
+    gates[0].reject(new TypeError("fetch failed on later chunk"));
+    for (const gate of gates) gate.resolve();
+    const error = await attempt;
+    assert.equal(error.code, firstError.code);
+    let cause = error;
+    while (cause && cause !== firstError) cause = cause.cause;
+    assert.equal(cause, firstError);
+    firstAttempt = false;
+    assert.equal(await client.poll(), 1);
+    assert.equal(handled, 1);
+    assert.equal(results, 1);
+  } finally {
+    for (const gate of gates) gate.resolve();
+    await attempt;
+  }
+});
+
 for (const phase of ["headers", "body"]) {
   test(`shared Dashboard bot diagnoses a real HTTP ${phase} timeout without acknowledging the command`, async (context) => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-attachment-diagnostic-"));
