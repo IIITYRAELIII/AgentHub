@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { after } from "node:test";
 import vm from "node:vm";
 
 const WEB_APP_ROOT = new URL("../../assets/web-app/", import.meta.url);
@@ -118,10 +119,71 @@ function persistedRecovery({
   };
 }
 
+// One process per shared fixture module (all consumers with test isolation off).
+// Each lease owns separate BrowserContexts; closing a lease never affects peers.
+let sharedBrowserPromise = null;
+
+function sharedBrowser() {
+  if (!sharedBrowserPromise) {
+    const pending = (async () => {
+      const { chromium } = await import("playwright-core");
+      return process.platform === "win32"
+        ? chromium.launch({ channel: "msedge", headless: true })
+        : chromium.launch({ headless: true });
+    })();
+    sharedBrowserPromise = pending;
+    void pending.catch(() => {
+      if (sharedBrowserPromise === pending) sharedBrowserPromise = null;
+    });
+  }
+  return sharedBrowserPromise;
+}
+
+after(async () => {
+  const pending = sharedBrowserPromise;
+  sharedBrowserPromise = null;
+  if (pending) await (await pending).close();
+});
+
 async function launchBrowser() {
-  const { chromium } = await import("playwright-core");
-  if (process.platform === "win32") return chromium.launch({ channel: "msedge", headless: true });
-  return chromium.launch({ headless: true });
+  const browser = await sharedBrowser();
+  const contexts = new Set();
+  const creating = new Set();
+  let closed = false;
+  let closing = null;
+  const newContext = async (options) => {
+    if (closed) throw new Error("Composer browser handle is closed");
+    const pending = browser.newContext(options);
+    creating.add(pending);
+    try {
+      const context = await pending;
+      contexts.add(context);
+      context.once("close", () => contexts.delete(context));
+      if (closed) throw new Error("Composer browser handle is closed");
+      return context;
+    } finally {
+      creating.delete(pending);
+    }
+  };
+  return {
+    newContext,
+    async newPage(options) {
+      // Match browser.newPage(): context options and a fresh context per page.
+      return (await newContext(options)).newPage();
+    },
+    close() {
+      if (!closing) {
+        closed = true;
+        closing = (async () => {
+          await Promise.allSettled([...creating]);
+          const results = await Promise.allSettled([...contexts].map(async (context) => context.close()));
+          const failure = results.find((result) => result.status === "rejected");
+          if (failure) throw failure.reason;
+        })();
+      }
+      return closing;
+    },
+  };
 }
 
 async function openFixture(page, {

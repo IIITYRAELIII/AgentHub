@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -10,6 +12,63 @@ import {
   interstreamMessageDetails,
 } from "../../../src/domain/interstream-message.mjs";
 import { DeferredComposerTransferRegistry } from "../../../src/application/deferred-composer-transfer-registry.mjs";
+
+test("same-id transport retry preserves the accepted attachment through receipt reload and steering", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub-retry-owned-attachment-"));
+  const file = path.join(directory, "48c5435f-a6e6-4559-a3c6-0ab0f09c8d07--aW1hZ2UucG5n.png");
+  const bytes = Buffer.from("exact uploaded image bytes");
+  await writeFile(file, bytes);
+  try {
+    for (const withTransfer of [false, true]) {
+      const receipts = new MessageReceiptRegistry();
+      const submitted = [];
+      const steered = [];
+      let rejectClaim = false;
+      const runCoordinator = {
+        submitClientInput: async (input) => { submitted.push(input); return { accepted: true, deferred: true, queued: true, id: "queue-1" }; },
+        steer: async (input) => { steered.push(input); return { accepted: true, steered: true }; },
+      };
+      const options = {
+        receipts, runCoordinator,
+        attachmentPaths: async (files) => { for (const name of files) await stat(name); return files; },
+        describeAttachments: (files) => files.map((name) => ({ id: path.basename(name), name: "image.png", type: "image/png" })),
+        discardPreparedAttachments: async (files) => { await Promise.all(files.map((name) => unlink(name))); },
+        ...(withTransfer ? { composerTransfers: {
+          resolve: (value) => value, claim: async (value) => {
+            if (rejectClaim) throw new Error("claim rejected");
+            return value;
+          }, consume: async () => true,
+        } } : {}),
+      };
+      const request = { text: "Оформление этой страницы", clientUserMessageId: "image-message", attachments: [file],
+        ...(withTransfer ? { composerTransfer: { id: "draft-1", token: "token-1" } } : {}) };
+      const first = controller(options);
+      const result = await first.sendMessage(request, { source: "direct-http" });
+      await first.sendMessage(request, { source: "vscode-ipc" });
+      assert.deepEqual(await readFile(file), bytes);
+      const restored = new MessageReceiptRegistry();
+      restored.restore([...receipts.receipts.values()]);
+      const afterReload = controller({ ...options, receipts: restored });
+      const repeated = await afterReload.sendMessage(request, { source: "vscode-ipc" });
+      assert.equal(repeated.id, result.id);
+      assert.deepEqual(repeated.attachments, result.attachments);
+      await assert.rejects(afterReload.sendMessage({ ...request, text: "Changed retry" }),
+        (error) => error.code === "MESSAGE_RECEIPT_FINGERPRINT_MISMATCH");
+      assert.deepEqual(await readFile(file), bytes);
+      if (withTransfer) {
+        rejectClaim = true;
+        await assert.rejects(afterReload.sendMessage(request), /claim rejected/u);
+        assert.deepEqual(await readFile(file), bytes);
+        rejectClaim = false;
+      }
+      assert.equal(submitted.length, 1);
+      await afterReload.steerActiveInput({ input: submitted[0].input, target: submitted[0].target,
+        clientUserMessageId: request.clientUserMessageId });
+      assert.equal(steered.length, 1);
+      assert.deepEqual(await readFile(file), bytes);
+    }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
 
 const EXISTING_IMAGE = fileURLToPath(
   new URL("../../../assets/web-app/themes/blackhole/blackhole-blue.jpg", import.meta.url),

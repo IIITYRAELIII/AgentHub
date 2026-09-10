@@ -496,6 +496,11 @@ html[data-view="chat"][data-surface][data-theme] {
   grid-template-columns: 7px 13px minmax(0, 1fr) auto;
 }
 
+.activity-stream-list .activity-stream-item {
+  --shell-stream-tab-min-width: 0;
+  overflow: hidden;
+}
+
 .activity-stream-list :is(.stream-tab-card) {
   align-items: center;
 }

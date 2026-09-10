@@ -132,18 +132,32 @@ export function createDesktopMessageController({
       text, attachmentIdentities: descriptors, taskReferences, followUpMode, clientProjectionIntent,
       messageOrigin: composerTransfer ? messageOrigin : null,
     });
+    const discardUnownedPreparedAttachments = async (files) => {
+      const receipt = receipts.get?.(receiptIdentity);
+      const ownedIds = new Set(receipt
+        && receipt.provider === receiptIdentity.provider
+        && receipt.threadId === receiptIdentity.threadId
+        && receipt.clientUserMessageId === clientUserMessageId
+        ? (receipt.result?.attachments ?? []).map((attachment) => attachment?.id).filter(Boolean)
+        : []);
+      const inflightFiles = inflightReceipts.get(messageReceiptKey(receiptIdentity))?.attachments ?? [];
+      await discardPreparedAttachments(files.filter((file) => (
+        !inflightFiles.includes(file)
+        && !ownedIds.has(descriptors[attachments.indexOf(file)]?.id)
+      )));
+    };
     if (composerTransfer) {
       try {
         composerTransfer = await composerTransfers.claim(requestedComposerTransfer, target, {
           clientUserMessageId,
         });
       } catch (error) {
-        await discardPreparedAttachments(attachments);
+        await discardUnownedPreparedAttachments(attachments);
         preparation?.finish({ outcome: "failed", metadata: { errorCode: error?.code ?? null } });
         throw error;
       }
       if (!composerTransfer) {
-        await discardPreparedAttachments(attachments);
+        await discardUnownedPreparedAttachments(attachments);
         preparation?.finish({ outcome: "failed" });
         throw new Error("Перенос черновика уже закреплён за другой отправкой");
       }
@@ -156,7 +170,7 @@ export function createDesktopMessageController({
     const inflight = inflightReceipts.get(receiptKey);
     if (inflight) {
       if (inflight.fingerprint !== fingerprint) {
-        if (composerTransfer) await discardPreparedAttachments(attachments);
+        if (composerTransfer) await discardUnownedPreparedAttachments(attachments);
         const error = new Error("Идентификатор сообщения уже используется для другого содержимого");
         error.code = "MESSAGE_RECEIPT_FINGERPRINT_MISMATCH";
         throw error;
@@ -166,7 +180,7 @@ export function createDesktopMessageController({
       } finally {
         if (composerTransfer) {
           const duplicateFiles = attachments.filter((file) => !inflight.attachments.includes(file));
-          await discardPreparedAttachments(duplicateFiles);
+          await discardUnownedPreparedAttachments(duplicateFiles);
         }
       }
     }
@@ -174,12 +188,14 @@ export function createDesktopMessageController({
     try {
       previous = receipts.find(receiptIdentity, fingerprint);
     } catch (error) {
-      if (composerTransfer) await discardPreparedAttachments(attachments);
+      if (composerTransfer) await discardUnownedPreparedAttachments(attachments);
       throw error;
     }
     if (previous) {
-      await discardPreparedAttachments(attachments);
       if (composerTransfer) {
+        // Ordinary retries reuse the already accepted files. Composer retries
+        // can prepare replacement uploads, but must keep receipt-owned IDs.
+        await discardUnownedPreparedAttachments(attachments);
         const consumed = await composerTransfers.consume(composerTransfer, { clientUserMessageId });
         if (!consumed) throw new Error("Не удалось подтвердить владение переносом черновика");
       }

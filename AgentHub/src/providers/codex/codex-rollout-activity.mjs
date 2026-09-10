@@ -515,6 +515,13 @@ function generatedImagePathsFromJsonSample(sample) {
 
 function generatedImagePaths(entry) {
   const payload = entry?.payload ?? {};
+  if (entry?.type === "event_msg" && payload.type === "item_completed") {
+    const item = payload.item;
+    if (item?.type !== "Extension" || item.kind !== "image_gen.generation"
+      || item.status !== "completed" || item.failure != null) return [];
+    const value = String(item.savedPath ?? "").trim();
+    return value ? [value] : [];
+  }
   if (entry?.type === "event_msg" && payload.type === "image_generation_end") {
     const value = String(payload.saved_path ?? "").trim();
     return value ? [value] : [];
@@ -749,6 +756,16 @@ function rememberCodexTraceEntry(metadata, turnId, entry) {
 
 function observeOversizedCodexLine(metadata, { head = "", tail = "" } = {}) {
   const sample = `${head}\n${tail}`;
+  if (/"type"\s*:\s*"event_msg"/u.test(head)
+    && /"type"\s*:\s*"item_completed"/u.test(head)
+    && /"item"\s*:\s*\{\s*"type"\s*:\s*"Extension"/u.test(head)
+    && /"kind"\s*:\s*"image_gen\.generation"/u.test(head)
+    && /"status"\s*:\s*"completed"/u.test(head)
+    && /"failure"\s*:\s*null/u.test(sample)) {
+    const turnId = decodedJsonString(/"turn_id"\s*:\s*"((?:\\.|[^"\\])*)"/u.exec(head)?.[1]);
+    const savedPath = decodedJsonString(/"savedPath"\s*:\s*"((?:\\.|[^"\\])*)"/u.exec(sample)?.[1]);
+    if (turnId && savedPath) rememberCodexImagePaths(metadata, turnId, [savedPath]);
+  }
   if (/"type"\s*:\s*"image_generation_end"/u.test(sample)) {
     const pathMatch = /"saved_path"\s*:\s*"((?:\\.|[^"\\])*)"/u.exec(sample);
     const savedPath = decodedJsonString(pathMatch?.[1]);

@@ -802,3 +802,49 @@ test("activity rail keeps running effects and drags compact Tasks into the compo
     await browser.close();
   }
 });
+
+
+test("activity rail clips running effects to each card without horizontal overflow", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchEdge(chromium);
+  try {
+    const page = await browser.newPage({ viewport: { width: 2048, height: 1100 } });
+    await openFixture(page);
+    await page.evaluate(() => {
+      document.documentElement.dataset.view = "chat";
+      document.documentElement.dataset.streamStatusStyle = "fill";
+      window.AgentHub.setTasks(["Sirius", "S3"].map((name, index) => ({
+        id: `conversation-${index}`, workspaceId: "one", workspaceName: "Agent HUB",
+        streamId: `stream-${index}`, streamName: name, title: "Agent HUB", provider: "codex",
+        running: true, selected: !index, startedAt: new Date().toISOString(),
+        run: { turnId: `turn-${index}`, operationKind: "user-turn",
+          providerStart: { turnId: `turn-${index}`, state: "observed" } },
+      })));
+    });
+    const checks = await page.evaluate(() => ["scanner", "energy", "impulse", "breath"].flatMap((effect) => {
+      document.documentElement.dataset.streamStatusEffect = effect;
+      return [0, 500, 1200].map((time) => {
+        for (const animation of document.getAnimations()) { animation.pause(); animation.currentTime = time; }
+        return {
+          effect, time,
+          cards: [...document.querySelectorAll(".activity-stream-item[data-running]")].map((card) => {
+            const outer = card.getBoundingClientRect();
+            const layer = card.querySelector(".stream-tab-status-layer").getBoundingClientRect();
+            return { clipped: getComputedStyle(card).overflow === "hidden",
+              inside: layer.left >= outer.left && layer.top >= outer.top
+                && layer.right <= outer.right && layer.bottom <= outer.bottom };
+          }),
+          overflow: [...document.querySelectorAll(".activity-rail, .activity-stream-list")]
+            .some((element) => element.scrollWidth > element.clientWidth + 1),
+        };
+      });
+    }));
+    for (const check of checks) {
+      assert.equal(check.cards.length, 2);
+      assert.ok(check.cards.every((card) => card.clipped && card.inside), `${check.effect}/${check.time}: animation escapes its card`);
+      assert.equal(check.overflow, false, `${check.effect}/${check.time}: horizontal scrollbar`);
+    }
+  } finally {
+    await browser.close();
+  }
+});

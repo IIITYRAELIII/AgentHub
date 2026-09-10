@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { activeTurnNotSteerable, RunCoordinator } from "../../src/application/run-coordinator.mjs";
-import { createInterstreamMessage } from "../../src/domain/interstream-message.mjs";
+import { createInterstreamMessage, trustedInterstreamMessageDetails } from "../../src/domain/interstream-message.mjs";
 import {
   completeCodexAgentMessage,
   hydrateCodexAgentMessages,
@@ -799,6 +799,34 @@ test("RunCoordinator keeps the provider envelope out of a live interstream steer
   assert.equal(f.calls.find(([name]) => name === "provider")[3].input, input);
   assert.equal(active.userMessages[0].text, "Проверь текущий ход.");
   assert.deepEqual(active.userMessages[0].origin, origin);
+});
+
+test("RunCoordinator preserves interstream metadata when the provider user event wins the steer race", async () => {
+  const origin = { kind: "interstream", workspaceId: "workspace-1", workspaceName: "Hub", streamId: "source-stream",
+    streamName: "S3", provider: "claude", sourceThreadId: "source-thread", requestId: "race-1" };
+  const input = createInterstreamMessage({ ...origin, text: "Патч готов." });
+  for (const scenario of ["event-first", "other-client", "conflicting-origin", "duplicate-client"]) {
+    const active = { id: "active", provider: "codex", threadId: "thread-1", turnId: "turn-1",
+      status: "running", executionOwner: "hub", userMessages: [] };
+    const clientUserMessageId = "mcp:race-1";
+    const f = fixture({ taskRuns: { forTask: () => active }, providers: { call: async () => {
+      active.userMessages.push({ role: "user", itemId: "provider-user-1", text: input,
+        clientUserMessageId: scenario === "other-client" ? "another-client" : clientUserMessageId,
+        ...(scenario === "conflicting-origin" ? { origin: { ...origin, requestId: "conflict" } } : {}) });
+      if (scenario === "duplicate-client") active.userMessages.push({ ...active.userMessages[0], itemId: "provider-user-2" });
+      return {};
+    } } });
+    await f.coordinator.steer({ input, target: { ...f.target, messageOrigin: origin, steerTargetRunId: active.id,
+      steerTargetTurnId: active.turnId }, clientUserMessageId });
+    const first = active.userMessages[0];
+    assert.equal(first.text, input);
+    if (scenario === "event-first") {
+      assert.equal(active.userMessages.length, 1);
+      assert.deepEqual(first.origin, origin);
+      assert.equal(trustedInterstreamMessageDetails(first.text, { origin: first.origin, clientUserMessageId }).text, "Патч готов.");
+    } else if (scenario === "conflicting-origin") assert.equal(first.origin.requestId, "conflict");
+    else assert.equal(first.origin, undefined);
+  }
 });
 
 test("RunCoordinator ignores final-answer markers outside the exact Codex run identity", async () => {

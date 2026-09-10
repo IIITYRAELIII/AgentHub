@@ -667,6 +667,18 @@ export class RunCoordinator {
           time: new Date().toISOString(),
         });
         existingRun.userMessages = userMessages;
+      } else if (messageOrigin) {
+        // A provider user event can arrive before steerTurn resolves. Enrich
+        // its exact occurrence instead of losing the admitted source metadata.
+        const matches = userMessages.filter((message) => message.role === "user"
+          && String(message.clientUserMessageId ?? "") === clientUserMessageId);
+        if (matches.length === 1 && !matches[0].origin && !matches[0].messageOrigin) {
+          Object.assign(matches[0], {
+            kind: "interstream",
+            origin: structuredClone(messageOrigin),
+            author: interstreamOriginAuthor(messageOrigin),
+          });
+        }
       }
       this.setProgressStage(existingRun, "Уточнение принято.");
       this.noteRunActivity(existingRun);

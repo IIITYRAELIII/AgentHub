@@ -473,7 +473,7 @@ export function createDesktopSnapshotFactory({
       || !String(compaction?.turnId ?? "").trim()
     ) return false;
     if (String(run.turnId ?? "").trim() !== String(compaction.turnId).trim()) return false;
-    if (compaction.origin === "manual") return true;
+    if (compaction.origin === "manual" || compaction.dedicatedProviderTurn === true) return true;
     return !String(run.promptPreview ?? "").trim()
       && !(Array.isArray(run.userMessages) && run.userMessages.some((message) => (
         String(message?.text ?? "").trim()

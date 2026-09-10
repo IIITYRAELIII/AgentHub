@@ -539,6 +539,23 @@ test("desktop task snapshot keeps an ordinary Claude turn that compacted automat
   assert.equal(snapshot.context.compaction.id, "claude-compact-1");
 });
 
+test("dedicated automatic compaction hides an exact observer with stale prior content only", () => {
+  const { desktopTaskSnapshot, entry, state } = fixture();
+  state.compaction = { id: "compact-dedicated", origin: "automatic", status: "running",
+    turnId: state.run.turnId, dedicatedProviderTurn: true };
+  // A resumed observer can retain nonempty prior prompt/answer during compact.
+  state.run.responseText = "Старый ответ про Happ";
+  assert.equal(desktopTaskSnapshot(entry).run, null);
+  state.run.observer = false;
+  assert.equal(desktopTaskSnapshot(entry).run.response, "Старый ответ про Happ");
+  state.run.observer = true;
+  state.compaction.turnId = "another-turn";
+  assert.equal(desktopTaskSnapshot(entry).run.response, "Старый ответ про Happ");
+  state.compaction.turnId = state.run.turnId;
+  state.compaction.dedicatedProviderTurn = false;
+  assert.equal(desktopTaskSnapshot(entry).run.response, "Старый ответ про Happ");
+});
+
 test("desktop snapshot exposes bounded delivery receipts for client reconciliation", async () => {
   const { desktopSnapshot, state } = fixture();
   state.receipts = [{

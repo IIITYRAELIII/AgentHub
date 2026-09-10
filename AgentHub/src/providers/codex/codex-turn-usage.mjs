@@ -287,6 +287,13 @@ function generatedImagePathsFromText(value) {
 
 function generatedImageOutputPaths(entry) {
   const payload = entry?.payload ?? {};
+  if (entry?.type === "event_msg" && payload.type === "item_completed") {
+    const item = payload.item;
+    if (item?.type !== "Extension" || item.kind !== "image_gen.generation"
+      || item.status !== "completed" || item.failure != null) return [];
+    const value = String(item.savedPath ?? "").trim();
+    return value ? [value] : [];
+  }
   if (entry?.type === "event_msg" && payload.type === "image_generation_end") {
     const value = String(payload.saved_path ?? "").trim();
     return value ? [value] : [];
