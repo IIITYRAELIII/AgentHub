@@ -6,6 +6,9 @@
   "styles": "theme.css",
   "backgrounds": [
     { "id": "necroclassic", "name": "Призрачный пепел", "asset": "spectral-ash.png" },
+    { "id": "necroclassic-mist", "name": "Пепельный туман", "asset": "ash-mist.png" },
+    { "id": "necroclassic-stone", "name": "Холодный камень", "asset": "cold-stone.png" },
+    { "id": "necroclassic-eclipse", "name": "Холодное затмение", "asset": "cold-eclipse.png" },
     { "id": "necroclassic-quiet", "name": "Тихий пепел" }
   ]
 }
