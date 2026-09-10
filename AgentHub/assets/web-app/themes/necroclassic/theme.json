@@ -1,0 +1,11 @@
+{
+  "id": "necroclassic",
+  "name": "Некроклассика",
+  "color": "#131416",
+  "order": 116,
+  "styles": "theme.css",
+  "backgrounds": [
+    { "id": "necroclassic", "name": "Призрачный пепел", "asset": "spectral-ash.png" },
+    { "id": "necroclassic-quiet", "name": "Тихий пепел" }
+  ]
+}
