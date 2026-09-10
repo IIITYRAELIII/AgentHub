@@ -1,0 +1,246 @@
+/* Некроклассика: спокойная классическая оболочка и холодный призрачный дым.
+   Только оформление: геометрия shell и владельцы состояния остаются общими. */
+html[data-theme="necroclassic"] {
+  color-scheme: dark;
+  --font-body: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-display: var(--font-body);
+  --font-title: var(--font-body);
+  --font-numeric: var(--font-body);
+  --display-weight: 600;
+  --display-spacing: 0.02em;
+  --display-transform: none;
+  --display-shadow: none;
+  --title-weight: 600;
+  --label-spacing: 0.08em;
+  --section-heading-color: var(--text-soft);
+  --radius-lg: 10px;
+  --radius-md: 8px;
+  --radius-sm: 4px;
+  --radius-chip: 5px;
+  --rail-width: 1px;
+  --bg: #131416;
+  --surface-1: #191c1f;
+  --surface-2: #222629;
+  --surface-3: #2c3135;
+  --sunken: #111416;
+  --line: #32393e;
+  --line-strong: #4c5b64;
+  --card-bg: #222629;
+  --card-bg-open: #292e32;
+  --card-texture: none;
+  --card-border: #343d43;
+  --card-border-open: #577984;
+  --card-shadow: 0 3px 12px rgb(0 0 0 / 12%);
+  --plate-bg: #1c2023;
+  --plate-texture: none;
+  --plate-shadow: none;
+  --turn-shadow: 0 2px 8px rgb(0 0 0 / 10%);
+  --text: #e1e5e8;
+  --text-soft: #c5cdd2;
+  --text-muted: #a0acb4;
+  --text-faint: #89969e;
+  --accent: #6ac8e0;
+  --accent-soft: rgb(106 200 224 / 10%);
+  --accent-line: rgb(106 200 224 / 48%);
+  --accent-glow: none;
+  --selection: rgb(106 200 224 / 25%);
+  --brand-gradient: #222629;
+  --brand-shadow: none;
+  --provider-none: #9ca6ae;
+  --provider-codex: #6ac8e0;
+  --provider-claude: #b8c2cb;
+  --provider-tone-lightness: 0.76;
+  --provider-tone-chroma: 0.035;
+  --provider-tone-alpha: 0.12;
+  --ok: #6ac8e0;
+  --pending: #c4b99c;
+  --dot-input: #6ac8e0;
+  --dot-cache: #a4b2bc;
+  --dot-output: #d3dbe0;
+  --dot-think: #8e9baa;
+  --space-base: #131416;
+  --space-glow-a: transparent;
+  --space-glow-b: transparent;
+  --space-star: transparent;
+  --star-opacity: 0;
+  --decor-opacity: 1;
+  --dialog-chrome: #191c1f;
+  --dialog-raised: #1c2023;
+  --dialog-bubble-agent: #222629;
+  --dialog-bubble-user: #1c2226;
+  --dialog-agent-1: #8ec6d6;
+  --dialog-agent-2: #a2becb;
+  --dialog-agent-3: #b7cad3;
+  --comparison-local: #d3dbe0;
+  --comparison-deviation: #a4b2bc;
+  --comparison-cost: #6ac8e0;
+  --shell-header-background: rgb(19 22 24 / 97%);
+  --shell-header-border: 1px solid var(--line);
+  --shell-header-rule: none;
+  --shell-header-rule-opacity: 0;
+  --shell-header-shadow: none;
+  --shell-control-background: #1c2023;
+  --shell-control-border: 1px solid var(--line);
+  --shell-control-shadow: none;
+  --shell-view-switch-background: transparent;
+  --shell-view-switch-border: 0;
+  --shell-view-switch-shadow: none;
+  --shell-tab-active-background: #222a2e;
+  --shell-tab-active-border: 1px solid transparent;
+  --shell-tab-active-shadow: inset 0 -2px 0 var(--accent);
+  --shell-panel-border: 1px solid var(--line);
+  --shell-panel-radius: 8px;
+  --shell-chat-border: 1px solid rgb(50 57 62 / 70%);
+  --shell-stream-tabs-background: rgb(25 28 31 / 96%);
+  --shell-stream-tabs-border: 0;
+  --shell-stream-tabs-border-bottom: 1px solid var(--line);
+  --shell-stream-tab-background: transparent;
+  --shell-stream-tab-border: 1px solid transparent;
+  --shell-stream-tab-hover-background: #282e32;
+  --shell-stream-tab-active-background: #252e33;
+  --shell-stream-card-background: transparent;
+  --shell-stream-card-border: 0;
+  --shell-stream-card-shadow: none;
+}
+
+html[data-theme="necroclassic"] body {
+  background: var(--bg);
+}
+
+html[data-theme="necroclassic"] body::before {
+  content: none;
+}
+
+html[data-theme="necroclassic"] body::after {
+  background: url("./spectral-ash.png") center / cover no-repeat;
+}
+
+/* Сцены управляются стандартным переключателем фона, включая «Нет». */
+html[data-background-override="true"][data-background="necroclassic-quiet"] {
+  --hub-background-color: #131416;
+  --hub-background-image: none;
+}
+
+html[data-theme="necroclassic"] .task-rail,
+html[data-theme="necroclassic"] .activity-rail {
+  background: rgb(22 25 28 / 94%);
+  box-shadow: none;
+}
+
+html[data-theme="necroclassic"] .chat {
+  background: transparent;
+}
+
+html[data-theme="necroclassic"] .chat-head {
+  background: rgb(25 28 31 / 96%);
+}
+
+html[data-theme="necroclassic"] .task-workspace-item {
+  background: transparent;
+  border-color: transparent transparent var(--line);
+  border-radius: 3px;
+  box-shadow: none;
+}
+
+html[data-theme="necroclassic"] .task-workspace-item:hover,
+html[data-theme="necroclassic"] .activity-stream-item:hover {
+  background: #262c30;
+}
+
+html[data-theme="necroclassic"] .task-workspace-item[data-selected],
+html[data-theme="necroclassic"] .activity-stream-item[data-current] {
+  background: #252f34;
+  border-color: var(--accent-line);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+html[data-theme="necroclassic"] .board-task-card,
+html[data-theme="necroclassic"] .activity-stream-item {
+  background: #222629;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: none;
+}
+
+html[data-theme="necroclassic"] .msg:not(.msg-system) {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: #222629;
+  border: 1px solid #343d43;
+  border-radius: 9px;
+  padding: 0.85rem 1rem;
+}
+
+html[data-theme="necroclassic"] .msg-user:not(.msg-system) {
+  background: #1b2023;
+  border-color: #37474e;
+}
+
+html[data-theme="necroclassic"][data-view="chat"][data-surface] .msg-user-bubble {
+  background: var(--dialog-bubble-user);
+  border: 1px solid #37474e;
+  border-radius: 9px;
+}
+
+html[data-theme="necroclassic"][data-view="chat"][data-surface] .composer {
+  border-color: #46616d;
+  border-radius: 8px;
+}
+
+html[data-theme="necroclassic"] .msg-body,
+html[data-theme="necroclassic"] .msg-reasoning {
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+html[data-theme="necroclassic"] .msg-head {
+  margin-bottom: 0.65rem;
+}
+
+html[data-theme="necroclassic"] .msg-author {
+  color: var(--text-soft);
+}
+
+html[data-theme="necroclassic"] .msg-body blockquote {
+  background: #1a2024;
+  border-left: 2px solid var(--accent);
+  border-radius: 0 5px 5px 0;
+  color: var(--text-soft);
+  padding: 0.6rem 0.85rem;
+}
+
+html[data-theme="necroclassic"] .turn-trace {
+  background: #1c2125;
+  border-radius: 5px;
+}
+
+html[data-theme="necroclassic"] .composer {
+  background: rgb(26 30 33 / 97%);
+  border: 1px solid #46616d;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 20%);
+}
+
+html[data-theme="necroclassic"] .composer-input {
+  background: transparent;
+  box-shadow: none;
+}
+
+html[data-theme="necroclassic"] .composer-input > textarea {
+  font-size: 15px;
+}
+
+html[data-theme="necroclassic"] .settings-panel {
+  background: #1c2023;
+}
+
+html[data-theme="necroclassic"] ::selection {
+  background: var(--selection);
+  color: #fff;
+}
+
+@media (max-width: 700px) {
+  html[data-theme="necroclassic"] .msg:not(.msg-system) {
+    padding: 0.7rem 0.8rem;
+  }
+}
