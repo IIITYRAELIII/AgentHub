@@ -9,7 +9,7 @@ function createController(overrides = {}) {
     getRequest: () => request,
     updateOffset: () => 2,
     hasBlockingWork: () => false,
-    setWaiting: (value) => { request.waitingForRuns = value; events.push(`waiting:${value}`); },
+    setWaiting: async (value) => { request.waitingForRuns = value; events.push(`waiting:${value}`); return true; },
     updateMessage: async () => events.push("message"),
     saveState: async () => events.push("save"),
     resources: {
@@ -38,7 +38,7 @@ test("restart controller executes the explicit lifecycle phases in order", async
   const { controller, events } = createController();
   assert.deepEqual(await controller.perform(), { status: "replaced" });
   assert.deepEqual(events, [
-    "waiting:false", "stopping", "message", "quiesce", "timers", "media", "save", "drain",
+    "stopping", "waiting:false", "message", "quiesce", "timers", "media", "save", "drain",
     "close", "lock", "ready", "finalize", "exit",
   ]);
 });
@@ -57,6 +57,83 @@ test("restart controller closes admission before asynchronous preparation", asyn
   assert.equal(admissionClosed, true);
   releaseMessage();
   assert.equal((await restart).status, "replaced");
+});
+
+test("restart controller waits for durable cutover with admission closed and one replacement owner", async () => {
+  let releaseWrite;
+  const writeGate = new Promise((resolve) => { releaseWrite = resolve; });
+  const { controller, events } = createController({
+    setWaiting: async () => {
+      events.push("persist-start");
+      await writeGate;
+      events.push("persist-finish");
+      return true;
+    },
+  });
+  const restart = controller.perform();
+  const duplicate = controller.perform();
+  assert.equal(duplicate, restart);
+  assert.deepEqual(events, ["stopping", "persist-start"]);
+  releaseWrite();
+  assert.equal((await restart).status, "replaced");
+  assert.deepEqual(events.slice(0, 5), ["stopping", "persist-start", "persist-finish", "message", "quiesce"]);
+  assert.equal(events.filter((event) => event === "exit").length, 1);
+});
+
+test("restart controller waits for blocked persistence without closing admission or resources", async () => {
+  let releaseWrite;
+  const writeGate = new Promise((resolve) => { releaseWrite = resolve; });
+  let settled = false;
+  const { controller, events } = createController({
+    hasBlockingWork: () => true,
+    setWaiting: async (value) => { events.push(`waiting:${value}`); await writeGate; return true; },
+  });
+  const waiting = controller.perform().then((result) => { settled = true; return result; });
+  await Promise.resolve();
+  assert.equal(settled, false);
+  assert.deepEqual(events, ["waiting:true"]);
+  releaseWrite();
+  assert.equal((await waiting).status, "waiting-for-work");
+});
+
+for (const blocked of [false, true]) {
+  test(`restart controller contains rejected ${blocked ? "waiting" : "cutover"} persistence before closing resources`, async () => {
+    const failure = new Error("database is locked");
+    const captured = [];
+    const { controller, events } = createController({
+      hasBlockingWork: () => blocked,
+      setWaiting: async () => { await Promise.resolve(); throw failure; },
+      captureException: (error, context) => captured.push([error, context.action]),
+    });
+    const result = await controller.perform();
+    assert.equal(result.status, "aborted");
+    assert.equal(result.error, failure);
+    assert.equal(result.phase, blocked ? "waiting" : "cutover-state");
+    assert.deepEqual(events, [...(blocked ? [] : ["stopping"]), "abort", "poll"]);
+    assert.deepEqual(captured, [[failure, result.phase]]);
+  });
+}
+
+test("restart controller does not cut over when the durable transition was refused", async () => {
+  const { controller, events } = createController({ setWaiting: async () => false });
+  const result = await controller.perform();
+  assert.equal(result.status, "aborted");
+  assert.equal(result.phase, "cutover-state");
+  assert.deepEqual(events, ["stopping", "abort", "poll"]);
+});
+
+test("restart controller retains a failed abort receipt without reporting replacement success", async () => {
+  const failure = new Error("database is locked");
+  const abortFailure = new Error("abort write is locked");
+  const { controller, request, events } = createController({
+    setWaiting: async () => { throw failure; },
+    abortRestart: async () => { throw abortFailure; },
+  });
+  const result = await controller.perform();
+  assert.equal(result.status, "aborted");
+  assert.equal(result.abortError, abortFailure);
+  assert.equal(controller.getRequest(), request);
+  assert.deepEqual(events, ["stopping", "poll"]);
 });
 
 test("restart controller aborts safely when drain reports failures", async () => {
@@ -79,7 +156,7 @@ test("restart controller aborts safely when drain reports failures", async () =>
   assert.equal(result.phase, "drain");
   assert.deepEqual(result.error.failures, [{ name: "state", error: failure }]);
   assert.deepEqual(events, [
-    "waiting:false", "stopping", "message", "quiesce", "timers", "media", "save", "drain",
+    "stopping", "waiting:false", "message", "quiesce", "timers", "media", "save", "drain",
     "abort", "resume", "poll",
   ]);
 });
@@ -104,7 +181,7 @@ test("restart controller restores the old runtime when close reports failures", 
   assert.equal(result.phase, "close");
   assert.deepEqual(result.error.failures, [{ name: "pipe", error: failure }]);
   assert.deepEqual(events, [
-    "waiting:false", "stopping", "message", "quiesce", "timers", "media", "save", "drain", "close", "restore:false", "poll",
+    "stopping", "waiting:false", "message", "quiesce", "timers", "media", "save", "drain", "close", "restore:false", "poll",
   ]);
 });
 
@@ -124,7 +201,7 @@ test("restart controller restores the old runtime and never finalizes after laun
   assert.equal(result.status, "recovered");
   assert.equal(result.error, failure);
   assert.deepEqual(events, [
-    "waiting:false", "stopping", "message", "quiesce", "timers", "media", "save", "drain",
+    "stopping", "waiting:false", "message", "quiesce", "timers", "media", "save", "drain",
     "close", "lock", "restore:true", "poll",
   ]);
 });
@@ -177,5 +254,5 @@ test("restart controller does not recover or release after a lifecycle timeout",
   const result = await controller.perform();
   assert.equal(result.status, "failed");
   assert.equal(result.phase, "quiesce");
-  assert.deepEqual(events, ["waiting:false", "stopping", "message", "quiesce"]);
+  assert.deepEqual(events, ["stopping", "waiting:false", "message", "quiesce"]);
 });

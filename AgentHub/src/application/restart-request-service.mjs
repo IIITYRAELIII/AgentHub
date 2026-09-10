@@ -30,6 +30,7 @@ export class RestartRequestService {
     isStopping = () => false,
     scheduleRestart = (callback) => setTimeout(callback, 0).unref(),
     nowIso = () => new Date().toISOString(),
+    logger = console,
   }) {
     if (!operationStore) throw new TypeError("operationStore is required");
     if (typeof currentTarget !== "function") throw new TypeError("currentTarget is required");
@@ -49,6 +50,7 @@ export class RestartRequestService {
       isStopping,
       scheduleRestart,
       nowIso,
+      logger,
     });
   }
 
@@ -111,7 +113,20 @@ export class RestartRequestService {
   }
 
   #schedule(operation) {
-    this.scheduleRestart(() => void this.#perform(operation.operationId));
+    this.scheduleRestart(() => void this.performScheduled(operation.operationId));
+  }
+
+  async performScheduled(operationId = this.getRequest()?.operationId) {
+    try {
+      if (operationId !== this.getRequest()?.operationId || !this.canPerform(operationId)) {
+        return { status: "reconciling" };
+      }
+      return await this.#perform(operationId);
+    } catch (error) {
+      // The durable operation remains authoritative when settlement itself fails.
+      this.logger.error("Scheduled restart remains pending after a state-store failure:", operationId, error);
+      return { status: "settlement-pending", operationId, error };
+    }
   }
 
   canPerform(operationId = this.getRequest()?.operationId) {
@@ -139,7 +154,8 @@ export class RestartRequestService {
       });
       if (operation) this.#project(operation);
       await this.saveState();
-    } else if (["aborted", "recovered"].includes(String(result?.status ?? ""))) {
+    } else if (["aborted", "recovered"].includes(String(result?.status ?? ""))
+      && typeof result.restartStateSettled !== "boolean") {
       await this.fail(operationId, result?.error);
     }
     return result;

@@ -167,3 +167,60 @@ test("an unknown restart is not replayed before authoritative reconciliation", a
   assert.equal(result.message, "Исход перезапуска уточняется");
   assert.deepEqual(state.events, []);
 });
+
+test("scheduled restart contains a rejected outcome write and retains the exact durable operation", async () => {
+  const state = fixture({ blockingCount: 1 });
+  await state.service.fromDesktop();
+  const request = state.request();
+  const failure = new Error("database is locked");
+  const diagnostics = [];
+  state.service.logger = { error: (...values) => diagnostics.push(values) };
+  state.service.performRestart = async () => ({ status: "failed", phase: "launch" });
+  state.operationStore.transition = () => { throw failure; };
+
+  const result = await state.service.performScheduled(request.operationId);
+  assert.equal(result.status, "settlement-pending");
+  assert.equal(result.error, failure);
+  assert.equal(result.operationId, request.operationId);
+  assert.equal(state.request(), request);
+  assert.equal(state.operationStore.get(request.operationId).status, "blocked");
+  assert.equal(diagnostics.length, 1);
+  assert.equal(diagnostics[0][1], request.operationId);
+});
+
+test("scheduled restart does not repeat the controller's attempted canonical abort", async () => {
+  const state = fixture({ blockingCount: 1 });
+  await state.service.fromDesktop();
+  const request = state.request();
+  let failCalls = 0;
+  state.service.fail = async () => { failCalls += 1; throw new Error("second settlement"); };
+  for (const restartStateSettled of [true, false]) {
+    state.service.performRestart = async () => ({ status: "aborted", restartStateSettled });
+    assert.equal((await state.service.performScheduled(request.operationId)).status, "aborted");
+  }
+  assert.equal(failCalls, 0);
+  assert.equal(state.request(), request);
+});
+
+test("scheduled restart ignores a stale operation instead of running its replacement", async () => {
+  const state = fixture({ blockingCount: 1 });
+  await state.service.fromDesktop();
+  assert.equal((await state.service.performScheduled("old-operation")).status, "reconciling");
+  assert.equal(state.events.includes("restart"), false);
+});
+
+test("scheduled restart contains failure to read its durable admission state", async () => {
+  const state = fixture({ blockingCount: 1 });
+  await state.service.fromDesktop();
+  const request = state.request();
+  const failure = new Error("database unavailable");
+  const diagnostics = [];
+  state.service.logger = { error: (...values) => diagnostics.push(values) };
+  state.operationStore.get = () => { throw failure; };
+  const result = await state.service.performScheduled(request.operationId);
+  assert.equal(result.status, "settlement-pending");
+  assert.equal(result.error, failure);
+  assert.equal(state.request(), request);
+  assert.equal(state.events.includes("restart"), false);
+  assert.equal(diagnostics.length, 1);
+});

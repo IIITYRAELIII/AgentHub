@@ -24,9 +24,11 @@ export function createTaskCatalogFinalizationComposition({
   selectionStore,
   taskSyncStore,
   saveState,
+  logger = console,
 }) {
   let synchronizedTitleSignature = "";
   let titlesSynchronizedAt = 0;
+  let titleProjectionPending = false;
 
   async function finalize(mergedEntries) {
     let nextCatalog = mergedEntries;
@@ -41,25 +43,37 @@ export function createTaskCatalogFinalizationComposition({
     }
     nextCatalog = statusTaskEntries(nextCatalog, nextCatalog.length);
     const nextTitleSignature = taskCatalogTitleSignature(nextCatalog);
-    const shouldSynchronizeTitles = nextTitleSignature !== synchronizedTitleSignature
+    const shouldSynchronizeTitles = titleProjectionPending || nextTitleSignature !== synchronizedTitleSignature
       || Date.now() - titlesSynchronizedAt >= titleReconcileIntervalMs;
     if (shouldSynchronizeTitles) {
+      let projectionDeferred = false;
       for (const project of projects) {
-        await workLogUsageStore.synchronizeTaskTitlesAndProject({
-          titles: nextCatalog
-            .filter((entry) => samePath(entry.projectRoot, project.path))
-            .map((entry) => ({
-              provider: entry.provider,
-              threadId: entry.threadId,
-              taskTitle: entry.title,
-            })),
-          projectRoot: project.path,
-          journalDatabaseFile,
-          projectionProjectRoots,
-        });
+        try {
+          await workLogUsageStore.synchronizeTaskTitlesAndProject({
+            titles: nextCatalog
+              .filter((entry) => samePath(entry.projectRoot, project.path))
+              .map((entry) => ({
+                provider: entry.provider,
+                threadId: entry.threadId,
+                taskTitle: entry.title,
+              })),
+            projectRoot: project.path,
+            journalDatabaseFile,
+            projectionProjectRoots,
+          });
+        } catch (error) {
+          if (error?.code !== "JOURNAL_PROJECTION_CONFLICT") throw error;
+          projectionDeferred = true;
+          logger.warn("Journal title projection deferred after a revision conflict; task catalog refresh continues.");
+        }
       }
-      synchronizedTitleSignature = nextTitleSignature;
-      titlesSynchronizedAt = Date.now();
+      // A derived journal conflict must not discard the current provider catalog.
+      // Keep reconciliation dirty so its existing owner retries the same titles.
+      titleProjectionPending = projectionDeferred;
+      if (!projectionDeferred) {
+        synchronizedTitleSignature = nextTitleSignature;
+        titlesSynchronizedAt = Date.now();
+      }
     }
 
     let titleChanged = false;
