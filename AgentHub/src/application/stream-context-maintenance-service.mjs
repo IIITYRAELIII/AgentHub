@@ -179,10 +179,9 @@ export class StreamContextMaintenanceService {
           settlement: compaction,
           includeTurnId: run.turnId,
         });
-        this.provider.compactions.annotate?.(run.threadId, compaction.id, { rotated: true });
+        queueTarget = await this.#bindRotation(run, rotated, compaction.id);
         compactionId = null;
-        queueTarget = await this.#bindRotation(run, rotated);
-        await this.#exactContextAfterRotation(queueTarget);
+        await this.#measureBoundRotation(run, queueTarget, compaction.id);
         return {
           compacted: true,
           rotated: true,
@@ -233,10 +232,9 @@ export class StreamContextMaintenanceService {
         compactionId: started.compactionId,
         settlement: settled,
       });
-      this.provider.compactions.annotate?.(run.threadId, started.compactionId, { rotated: true });
+      queueTarget = await this.#bindRotation(run, rotated, started.compactionId);
       compactionId = null;
-      queueTarget = await this.#bindRotation(run, rotated);
-      await this.#exactContextAfterRotation(queueTarget);
+      await this.#measureBoundRotation(run, queueTarget, started.compactionId);
       return { compacted: true, rotated: true, beforePercent, afterPercent, ...rotated };
     } catch (error) {
       this.logger.error(`Automatic context maintenance failed for ${run?.threadId ?? "unknown"}:`, error.message);
@@ -304,7 +302,7 @@ export class StreamContextMaintenanceService {
     try {
       const rotated = await provider.rotate(target);
       queueTarget = await this.#bindRotation(target, rotated);
-      await this.#exactContextAfterRotation(queueTarget);
+      await this.#measureBoundRotation(target, queueTarget, rotated?.compactionId);
       return rotated;
     } finally {
       this.registry.end(reservation);
@@ -312,7 +310,7 @@ export class StreamContextMaintenanceService {
     }
   }
 
-  async #bindRotation(source, rotated) {
+  async #bindRotation(source, rotated, compactionId = rotated?.compactionId) {
     const binding = this.workspaceCatalog.thread({
       provider: source.provider,
       threadId: source.threadId,
@@ -332,6 +330,13 @@ export class StreamContextMaintenanceService {
       projectRoot,
       source: "rebirth",
     });
+    if (normalized(compactionId)) {
+      this.maintenanceProvider(source)?.compactions.annotate?.(source.threadId, compactionId, {
+        rotated: true,
+        rotationThreadId: threadId,
+        rotationCompletedAt: new Date().toISOString(),
+      });
+    }
     if (this.selectionStore.threadId === source.threadId) {
       this.selectionStore.setThread(threadId, {
         provider: "codex",
@@ -390,6 +395,16 @@ export class StreamContextMaintenanceService {
       this.logger.warn?.(`Cannot measure compacted context for ${target.threadId}: ${error.message}`);
       return null;
     }
+  }
+
+  async #measureBoundRotation(source, target, compactionId) {
+    const measured = await this.#exactContextAfterRotation(target);
+    const rotationAfterPercent = contextUsagePercent(measured);
+    if (!normalized(compactionId) || rotationAfterPercent === null) return;
+    this.maintenanceProvider(source)?.compactions.annotate?.(source.threadId, compactionId, {
+      rotationAfterPercent,
+    });
+    await this.saveState();
   }
 
   #completedTurnCompaction(run) {

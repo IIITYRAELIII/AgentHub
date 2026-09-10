@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
 
 const WEB_APP_ROOT = new URL("../../assets/web-app/", import.meta.url);
@@ -201,6 +202,118 @@ test("Markdown details nesting and code literals do not consume later ordinary t
     await seedMessages(page, [{ id: 'bounded', role: 'agent', text: deeplyNested }]);
     assert.equal(await page.locator('.msg-agent .markdown-details').count(), 32);
     assert.equal(await page.locator('.msg-agent .msg-body > p').last().textContent(), 'После глубокой вложенности.');
+  } finally {
+    await page.close();
+  }
+});
+
+test("persisted rotation renders once after missed snapshots and page reload", async () => {
+  const page = await browser.newPage({ viewport: { width: 1366, height: 900 } });
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  const sourceTask = {
+    provider: "codex", streamId: "stream-1", threadId: "thread-old", threadPosition: 37,
+    context: { compaction: {
+      operationId: "rotation-source-operation", status: "completed", rotated: true,
+      beforePercent: 78.408282, afterPercent: 25.770898,
+      completedAt: "2026-09-10T20:53:46.990Z",
+    } },
+  };
+  const currentTask = {
+    provider: "codex", streamId: "stream-1", threadId: "thread-new", threadPosition: 38,
+    context: { percent: 61 },
+  };
+  const olderTask = {
+    ...sourceTask, threadId: "thread-older", threadPosition: 36,
+    context: { compaction: {
+      ...sourceTask.context.compaction, operationId: "earlier-rotation",
+      completedAt: "2026-09-09T20:00:00.000Z",
+    } },
+  };
+  const source = await readFile(new URL("hub-client.js", WEB_APP_ROOT), "utf8");
+  const clientFunction = (name, next) => {
+    const start = source.indexOf(`function ${name}(`);
+    return source.slice(start, source.indexOf(`function ${next}`, start));
+  };
+  const installProjection = () => page.addScriptTag({ content: `(() => {
+    const taskId = () => "task-1";
+    const maintenanceEventStorageKey = "rotation-dom-maintenance";
+    const { latestMaintenanceMessages } = window.AgentHubMessageLifecycle;
+    ${clientFunction("readMaintenanceEvents", "persistMaintenanceEvents")}
+    const maintenanceEventsByTask = readMaintenanceEvents();
+    let writes = 0;
+    const persistMaintenanceEvents = () => {
+      writes += 1;
+      localStorage.setItem(maintenanceEventStorageKey, JSON.stringify(
+        [...maintenanceEventsByTask].flatMap(([taskId, messages]) => (
+          messages.map((message) => ({ taskId, message }))
+        )),
+      ));
+    };
+    const pendingStreamRotations = new Map();
+    const observedContextCompactions = new Map();
+    const requestedContextCompactions = new Set();
+    const contextPercent = (value) => value == null ? null : Math.round(Number(value));
+    const storedMaintenancePercent = () => null;
+    const agentHub = { toast: () => {} };
+    ${clientFunction("rotationMaintenanceActive", "syncActiveMaintenanceMessages")}
+    ${clientFunction("rememberMaintenanceEvent", "taskIdentity")}
+    ${clientFunction("observeContextCompactions", "representativeSnapshotTasks")}
+    window.rotationProjection = {
+      observe: (tasks, previous = []) => {
+        observeContextCompactions(tasks);
+        observeStreamRotations(previous, tasks);
+        return { messages: maintenanceEventsByTask.get("task-1") ?? [], writes };
+      },
+    };
+  })();` });
+  try {
+    await openWebApp(page);
+    const title = await page.title();
+    assert.ok(title.trim());
+    assert.equal(page.url(), "http://127.0.0.1/");
+    for (const reload of [false, true]) {
+      if (reload) await page.reload({ waitUntil: "load" });
+      await installProjection();
+      const snapshotTasks = [sourceTask, currentTask, olderTask];
+      const first = await page.evaluate((tasks) => window.rotationProjection.observe(tasks), snapshotTasks);
+      const repeated = await page.evaluate((tasks) => window.rotationProjection.observe(tasks, tasks), snapshotTasks);
+      assert.equal(first.messages.length, 1);
+      assert.deepEqual(repeated.messages, first.messages);
+      assert.equal(repeated.writes, first.writes, "unchanged polling does not rewrite the notice");
+      if (reload) assert.equal(first.writes, 0, "saved projection retains the same exact event on reload");
+      assert.equal(first.messages[0].afterPercent, null);
+      for (const viewport of [{ width: 1366, height: 900 }, { width: 390, height: 844 }]) {
+        await page.setViewportSize(viewport);
+        await seedMessages(page, [
+          { id: "before", role: "agent", threadId: "thread-old", turnId: "turn-before",
+            text: "Ответ до ротации", time: "2026-09-10T20:53:50.000Z" },
+          ...first.messages,
+          { id: "after", role: "user", threadId: "thread-new", turnId: "turn-after",
+            text: "Сообщение после ротации", time: "2026-09-10T20:56:00.000Z" },
+        ], currentTask);
+        if (viewport.width < 600) await page.locator('[data-mobile-button="chat"]').click();
+        assert.equal(await page.locator(".msg-maintenance").count(), 1);
+        assert.match(await page.locator(".msg-maintenance").textContent(), /Ротация завершена/u);
+        assert.equal(await page.locator(".msg-agent").count(), 1, "rotation is not a second agent turn");
+        const positions = await page.evaluate(() => {
+          const marker = document.querySelector(".msg-maintenance");
+          const before = document.querySelector(".msg-agent");
+          const after = document.querySelector(".msg-user");
+          return {
+            afterSource: Boolean(before.compareDocumentPosition(marker) & Node.DOCUMENT_POSITION_FOLLOWING),
+            beforeTarget: Boolean(marker.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING),
+            visible: marker.getBoundingClientRect().height > 0,
+          };
+        });
+        assert.deepEqual(positions, { afterSource: true, beforeTarget: true, visible: true });
+        if (reload && process.env.AGENT_HUB_ROTATION_QA_DIR) {
+          await mkdir(process.env.AGENT_HUB_ROTATION_QA_DIR, { recursive: true });
+          await page.screenshot({ path: path.join(process.env.AGENT_HUB_ROTATION_QA_DIR, `rotation-${viewport.width}.png`) });
+        }
+      }
+    }
+    assert.deepEqual(errors, []);
   } finally {
     await page.close();
   }

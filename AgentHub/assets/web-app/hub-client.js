@@ -420,7 +420,7 @@ function rememberMaintenanceEvent(taskIdValue, message) {
   const stableTaskId = String(taskIdValue ?? "").trim();
   const eventId = String(message?.id ?? "").trim();
   if (!stableTaskId || !eventId) return false;
-  const events = maintenanceEventsByTask.get(stableTaskId) ?? [];
+  const events = [...(maintenanceEventsByTask.get(stableTaskId) ?? [])];
   const previous = JSON.stringify(events);
   const index = events.findIndex((entry) => entry.id === eventId);
   const value = {
@@ -1949,6 +1949,9 @@ function observeContextCompactions(tasks) {
     const compaction = context?.compaction;
     const compactionId = String(compaction?.operationId ?? compaction?.id ?? "");
     if (!compactionId) continue;
+    // The later rotation is projected from this same durable operation below.
+    // Do not replace it with its earlier compaction on every snapshot.
+    if (compaction.status === "completed" && compaction.rotated === true) continue;
     const stableTaskId = taskId(task.provider, task.threadId, task.streamId);
     const eventId = `maintenance:compaction:${compactionId}`;
     const existingEvent = (maintenanceEventsByTask.get(stableTaskId) ?? [])
@@ -2057,8 +2060,19 @@ function observeContextCompactions(tasks) {
 
 function observeStreamRotations(previousTasks, tasks) {
   const changed = new Set();
+  const persisted = window.AgentHubStreamTabs.persistedStreamRotationMessages(tasks);
+  const persistedSources = new Set(persisted.map((message) => (
+    JSON.stringify([message.streamId, message.provider, message.sourceThreadId])
+  )));
+  for (const message of persisted) {
+    const stableTaskId = taskId(message.provider, message.threadId, message.streamId);
+    if (rememberMaintenanceEvent(stableTaskId, message)) changed.add(stableTaskId);
+  }
   const currentByStream = window.AgentHubStreamTabs.streamHeadTasks(tasks);
   for (const transition of window.AgentHubStreamTabs.streamRotationTransitions(previousTasks, tasks)) {
+    if (persistedSources.has(JSON.stringify([
+      transition.streamId, transition.task.provider, transition.sourceThreadId,
+    ]))) continue;
     pendingStreamRotations.set(transition.streamId, {
       provider: transition.task.provider,
       threadId: transition.task.threadId,
@@ -2070,6 +2084,10 @@ function observeStreamRotations(previousTasks, tasks) {
   for (const [streamId, task] of currentByStream) {
     const pending = pendingStreamRotations.get(streamId);
     if (!pending || String(pending.threadId) !== String(task.threadId)) continue;
+    if (persistedSources.has(JSON.stringify([streamId, pending.provider, pending.sourceThreadId]))) {
+      pendingStreamRotations.delete(streamId);
+      continue;
+    }
     if (rotationMaintenanceActive(task)) continue;
     const beforePercent = contextPercent(pending.beforePercent);
     const afterPercent = task.context?.usagePending

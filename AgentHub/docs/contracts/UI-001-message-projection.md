@@ -374,6 +374,20 @@ replaces it with the observation time or uses text/time as entity identity.
 
 ## Operation kinds
 
+Completed context rotation is projected from the source Thread's retained
+compaction operation, independently of whether the client observed a head change.
+Its system marker is keyed by Stream, provider, source Thread and operation ID,
+placed after the source answer and restored on first snapshot and reload without
+creating a user turn. The bound target Thread and completion time are recorded
+after successful catalog binding; only the exact post-rotation probe supplies
+the historical after-percentage. Current target usage is never that measurement.
+Legacy `rotated: true` operations without target metadata retain a generic
+rotation marker without guessing a target or its context percentage. The existing
+live transition observer remains a compatibility path only when no retained
+rotation operation is available; remove that path when all supported providers
+and retained rotations expose such operations. An unchanged snapshot does not
+rewrite the maintenance cache or accumulate discarded older events.
+
 Every live projection has an explicit `operationKind`. Only `user-turn` may
 produce user-visible running state. `probe`, `compaction`, `measurement` and
 `maintenance` may have dedicated system presentation but cannot create or revive

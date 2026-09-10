@@ -99,7 +99,7 @@ function fixture({
       events.push(["probe-idle", ...args, registry.isActive(source)]);
       return args[1] === source.turnId ? sourceIdle : probeIdle;
     },
-    rotate: async () => ({ thread: { id: "thread-new" } }),
+    rotate: async () => ({ compactionId: "manual-1", thread: { id: "thread-new" } }),
     rotateCompacted: async (...args) => {
       events.push([
         "rotate",
@@ -628,6 +628,78 @@ test("a failed post-rotation probe keeps the new Thread and releases the queue",
   assert.equal(state.deferredInputs.get("queued-after-failed-probe").threadId, "thread-new");
   assert.equal(state.events.some(([name, id]) => name === "wake" && id === "queued-after-failed-probe"), true);
   assert.equal(state.registry.isActive(state.source), false);
+  const rotation = state.events.find(([name, , , details]) => name === "annotate" && details.rotated);
+  assert.equal(rotation[2], "manual-1");
+  assert.equal(rotation[3].rotationThreadId, "thread-new");
+  assert.ok(Number.isFinite(Date.parse(rotation[3].rotationCompletedAt)));
+  assert.equal(state.events.some(([name, , , details]) => (
+    name === "annotate" && details.rotationAfterPercent !== undefined
+  )), false);
+  assert.ok(state.events.findIndex(([name]) => name === "save") > state.events.indexOf(rotation));
+});
+
+for (const mode of ["manual", "automatic", "observed"]) {
+  test(`${mode} rotation records its exact target only after binding and saves before releasing maintenance`, async () => {
+    const state = fixture({
+      afterPercent: 28,
+      observedCompaction: mode === "observed",
+      observedAfterPercent: 28,
+    });
+    let bind;
+    state.service.workspaceCatalog.bindThread = () => new Promise((resolve) => { bind = resolve; });
+    const snapshots = [];
+    let finishSave;
+    state.service.saveState = () => {
+      snapshots.push({
+        active: state.registry.isActive(state.source),
+        annotations: structuredClone(state.events.filter(([name]) => name === "annotate")),
+      });
+      return snapshots.length === 1 ? new Promise((resolve) => { finishSave = resolve; }) : Promise.resolve();
+    };
+    if (mode !== "manual") assert.equal(state.service.reserveAfterTurn(state.source), true);
+    const result = mode === "manual"
+      ? state.service.rotate(state.source)
+      : state.service.maintainAfterTurn(state.source);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(typeof bind, "function");
+    assert.equal(state.events.some(([name, , , details]) => name === "annotate" && details.rotated), false);
+    bind();
+    await new Promise((resolve) => setImmediate(resolve));
+    const rotation = snapshots[0].annotations.find(([, , , details]) => details.rotated);
+    assert.equal(rotation[2], mode === "manual" ? "manual-1" : mode === "observed" ? "compact-observed" : "compact-1");
+    assert.equal(rotation[3].rotationThreadId, "thread-new");
+    assert.ok(Number.isFinite(Date.parse(rotation[3].rotationCompletedAt)));
+    assert.equal(state.registry.isActive(state.source), true);
+    assert.equal(state.events.some(([name, target]) => name === "probe" && target.threadId === "thread-new"), false);
+    finishSave();
+    await result;
+    assert.equal(snapshots.length, 2);
+    assert.equal(snapshots.every((snapshot) => snapshot.active), true);
+    assert.equal(snapshots[1].annotations.at(-1)[3].rotationAfterPercent, 6);
+    assert.equal(state.registry.isActive(state.source), false);
+  });
+
+  test(`${mode} failed binding cannot report a completed rotation`, async () => {
+    const state = fixture({ afterPercent: 28, observedCompaction: mode === "observed", observedAfterPercent: 28 });
+    state.service.workspaceCatalog.bindThread = async () => { throw new Error("binding failed"); };
+    state.service.logger = { error() {} };
+    if (mode === "manual") {
+      await assert.rejects(state.service.rotate(state.source), /binding failed/);
+    } else {
+      state.service.reserveAfterTurn(state.source);
+      assert.equal((await state.service.maintainAfterTurn(state.source)).error, "binding failed");
+    }
+    assert.equal(state.events.some(([name, , , details]) => name === "annotate" && details.rotated), false);
+    assert.equal(state.events.some(([name]) => name === "save"), false);
+    assert.equal(state.registry.isActive(state.source), false);
+  });
+}
+
+test("manual rotation without a returned compaction identity never annotates another operation", async () => {
+  const state = fixture({ observedCompaction: true, observedAfterPercent: 28 });
+  state.service.provider.rotate = async () => ({ thread: { id: "thread-new" } });
+  await state.service.rotate(state.source);
+  assert.equal(state.events.some(([name]) => name === "annotate"), false);
 });
 
 test("a mid-turn compaction rotates only after completion and transfers that whole turn", async () => {

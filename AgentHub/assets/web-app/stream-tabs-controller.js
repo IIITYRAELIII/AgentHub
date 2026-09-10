@@ -430,6 +430,42 @@
     return transitions;
   }
 
+  function persistedStreamRotationMessages(tasks) {
+    const messages = new Map();
+    for (const task of tasks ?? []) {
+      const compaction = task?.context?.compaction;
+      const provider = String(task?.provider ?? "").trim();
+      const streamId = String(task?.streamId ?? "").trim();
+      const sourceThreadId = String(task?.threadId ?? "").trim();
+      const operationId = String(compaction?.operationId ?? compaction?.id ?? "").trim();
+      if (!provider || !streamId || !sourceThreadId || !operationId
+        || compaction?.status !== "completed" || compaction.rotated !== true) continue;
+      const targetThreadId = String(compaction.rotationThreadId ?? "").trim();
+      const beforePercent = normalizedContextPercent(compaction.afterPercent);
+      // Only the recorded rotation probe is a historical after-measurement.
+      // Today's usage of the new Thread is not the result of that rotation.
+      const afterPercent = normalizedContextPercent(compaction.rotationAfterPercent);
+      const presentation = rotationMaintenancePresentation(beforePercent, afterPercent);
+      const id = `maintenance:rotation:${streamId}:${provider}:${sourceThreadId}:${operationId}`;
+      messages.set(id, {
+        id, itemId: id, provider, streamId, operationId,
+        threadId: targetThreadId || sourceThreadId,
+        sourceThreadId,
+        maintenanceType: "rotation",
+        maintenanceStatus: "completed",
+        maintenanceLabel: presentation.maintenanceLabel,
+        maintenanceDetail: afterPercent === null
+          ? `${beforePercent === null ? "" : `Контекст источника ${beforePercent}%; `}замер нового Thread не сохранён`
+          : presentation.maintenanceDetail,
+        placement: "after-source-turn",
+        beforePercent, afterPercent,
+        text: presentation.text,
+        time: compaction.rotationCompletedAt ?? compaction.completedAt ?? null,
+      });
+    }
+    return [...messages.values()];
+  }
+
   function rotationMaintenancePresentation(beforeValue, afterValue) {
     const beforePercent = normalizedContextPercent(beforeValue);
     const afterPercent = normalizedContextPercent(afterValue);
@@ -1609,6 +1645,7 @@
     reconcileOpenStreamIds,
     resolveStableStreamCardWidth,
     rotationMaintenancePresentation,
+    persistedStreamRotationMessages,
     streamDeckRenderKey,
     streamDisplayName,
     streamTabsMutationAction,

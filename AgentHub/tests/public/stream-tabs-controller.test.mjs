@@ -370,6 +370,56 @@ test("rotation notice follows the actually compacted Thread instead of the previ
   assert.match(presentation.text, /новый Thread создан/u);
 });
 
+test("persisted rotation restores the source event without observing the Thread transition", async () => {
+  const { persistedStreamRotationMessages } = await streamTabsApi();
+  const source = {
+    streamId: "stream-1", provider: "codex", threadId: "source",
+    context: { compaction: {
+      operationId: "compaction-1", status: "completed", rotated: true,
+      afterPercent: 26, completedAt: "2026-09-10T20:55:00.000Z",
+    } },
+  };
+  const current = {
+    streamId: "stream-1", provider: "codex", threadId: "current",
+    context: { percent: 81 },
+  };
+  const [message] = persistedStreamRotationMessages([source, current]);
+  assert.equal(message.sourceThreadId, "source");
+  assert.equal(message.threadId, "source", "legacy evidence does not invent a target");
+  assert.equal(message.afterPercent, null, "current usage is not a historical probe");
+  assert.equal(message.maintenanceLabel, "Ротация завершена");
+  assert.doesNotMatch(message.maintenanceDetail, /выполняется/u);
+  assert.equal(message.placement, "after-source-turn");
+  assert.equal(message.time, source.context.compaction.completedAt);
+  const reloaded = persistedStreamRotationMessages(JSON.parse(JSON.stringify([source, current])));
+  assert.equal(JSON.stringify(reloaded), JSON.stringify([message]));
+  assert.equal(persistedStreamRotationMessages([source, source, current]).length, 1);
+});
+
+test("persisted rotation uses only exact recorded target and probe measurements", async () => {
+  const { persistedStreamRotationMessages } = await streamTabsApi();
+  const source = {
+    streamId: "stream-1", provider: "codex", threadId: "source",
+    context: { compaction: {
+      id: "compaction-1", status: "completed", rotated: true, afterPercent: 26,
+      rotationThreadId: "target", rotationAfterPercent: 7,
+      rotationCompletedAt: "2026-09-10T20:56:00.000Z",
+      completedAt: "2026-09-10T20:55:00.000Z",
+    } },
+  };
+  const [message] = persistedStreamRotationMessages([source]);
+  assert.equal(message.threadId, "target");
+  assert.equal(message.afterPercent, 7);
+  assert.equal(message.time, source.context.compaction.rotationCompletedAt);
+  assert.match(message.text, /новый Thread 7%/u);
+  for (const patch of [{ rotated: false }, { status: "running" }, { status: "unknown" }, { id: "" }]) {
+    assert.equal(persistedStreamRotationMessages([{
+      ...source, context: { compaction: { ...source.context.compaction, ...patch } },
+    }]).length, 0);
+  }
+  assert.equal(persistedStreamRotationMessages([{ ...source, streamId: "" }]).length, 0);
+});
+
 test("ordinary Thread continuation does not reuse an old rotation event", async () => {
   const { streamRotationTransitions } = await streamTabsApi();
   const previousTasks = [
