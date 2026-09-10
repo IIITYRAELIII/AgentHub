@@ -7,6 +7,32 @@ import {
   isRawCompactionItem,
 } from "../../../src/providers/codex/context-compaction-tracker.mjs";
 
+test("exact bound rotation metadata survives snapshot restore without replacing compaction measurements", () => {
+  const original = new ContextCompactionTracker({ idFactory: () => "rotation-source-operation" });
+  const record = original.begin("source-thread", { origin: "manual" });
+  original.complete("source-thread", { operationId: record.id });
+  original.annotate("source-thread", record.id, {
+    beforePercent: 78, afterPercent: 26, rotated: true,
+    rotationThreadId: "target-thread", rotationCompletedAt: "2026-09-11T01:00:00.000Z",
+  });
+  const restored = new ContextCompactionTracker();
+  restored.restore(original.snapshot());
+  assert.equal(restored.get("source-thread").rotationThreadId, "target-thread");
+  assert.equal(restored.get("source-thread").rotationCompletedAt, "2026-09-11T01:00:00.000Z");
+  assert.equal(restored.get("source-thread").rotationAfterPercent, undefined);
+  assert.equal(restored.annotate("source-thread", "unrelated-operation", { rotationAfterPercent: 90 }), null);
+  restored.annotate("source-thread", record.id, { rotationAfterPercent: 6 });
+  const measured = new ContextCompactionTracker();
+  measured.restore(restored.snapshot());
+  assert.equal(measured.get("source-thread").rotated, true);
+  assert.equal(measured.get("source-thread").beforePercent, 78);
+  assert.equal(measured.get("source-thread").afterPercent, 26);
+  assert.equal(measured.get("source-thread").rotationAfterPercent, 6);
+  original.dispose();
+  restored.dispose();
+  measured.dispose();
+});
+
 test("modern compaction item lifecycle completes a manual request without changing its id", () => {
   let now = Date.parse("2026-07-31T18:20:00.000Z");
   const tracker = new ContextCompactionTracker({

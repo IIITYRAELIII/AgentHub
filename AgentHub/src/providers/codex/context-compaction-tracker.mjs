@@ -61,7 +61,7 @@ function persistedCompaction(record) {
     completedAt: normalizedThreadId(record.completedAt) || null,
     probeTurnIds: normalizedProbeTurnIds(record.probeTurnIds),
   };
-  for (const name of ["beforePercent", "afterPercent"]) {
+  for (const name of ["beforePercent", "afterPercent", "rotationAfterPercent"]) {
     const percent = boundedPercent(record[name]);
     if (percent !== null) value[name] = percent;
   }
@@ -69,6 +69,10 @@ function persistedCompaction(record) {
     value.measurementStatus = String(record.measurementStatus);
   }
   if (record.rotated !== undefined) value.rotated = record.rotated === true;
+  const rotationThreadId = normalizedThreadId(record.rotationThreadId);
+  const rotationCompletedAt = normalizedTimestamp(record.rotationCompletedAt, null);
+  if (rotationThreadId) value.rotationThreadId = rotationThreadId;
+  if (rotationCompletedAt) value.rotationCompletedAt = rotationCompletedAt;
   return value;
 }
 
@@ -141,7 +145,7 @@ export class ContextCompactionTracker {
     const existing = this.entries.get(key);
     if (!existing || (expectedId && existing.id !== expectedId)) return null;
     const record = { ...existing };
-    for (const name of ["beforePercent", "afterPercent"]) {
+    for (const name of ["beforePercent", "afterPercent", "rotationAfterPercent"]) {
       const value = boundedPercent(details[name]);
       if (value !== null) record[name] = value;
     }
@@ -156,6 +160,10 @@ export class ContextCompactionTracker {
       }
     }
     if (details.rotated !== undefined) record.rotated = details.rotated === true;
+    const rotationThreadId = normalizedThreadId(details.rotationThreadId);
+    const rotationCompletedAt = normalizedTimestamp(details.rotationCompletedAt, null);
+    if (rotationThreadId) record.rotationThreadId = rotationThreadId;
+    if (rotationCompletedAt) record.rotationCompletedAt = rotationCompletedAt;
     const probeTurnId = normalizedThreadId(details.probeTurnId);
     if (probeTurnId) {
       record.probeTurnIds = normalizedProbeTurnIds([
