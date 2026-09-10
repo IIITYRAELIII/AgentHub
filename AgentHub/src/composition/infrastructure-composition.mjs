@@ -65,7 +65,7 @@ import { RuntimeNotificationController } from "../runtime/runtime-notification-c
 import { readTestContourStatus, startTestContour } from "../runtime/test-contour-manager.mjs";
 import { sentryDiagnostics } from "../infrastructure/diagnostics/sentry-diagnostics.mjs";
 import { readPublicationState } from "../infrastructure/persistence/publication-state.mjs";
-import { createCommandTraceComposition } from "./command-trace-composition.mjs";
+import { createCommandTraceComposition, measureStartupBeforeTrace } from "./command-trace-composition.mjs";
 import { createPersistenceMutationCapabilities } from "./persistence-mutation-composition.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -228,12 +228,30 @@ export async function createHubInfrastructure({
   handleRuntimeCommand,
   stopProcessTree,
 }) {
+  const defaultDataDirectory = path.join(agentHubRoot, "data");
+  const logDirectory = samePath(config.dataDir, defaultDataDirectory)
+    ? agentHubRoot
+    : config.dataDir;
+  await mkdir(logDirectory, { recursive: true });
+  installRotatingConsole({
+    stdoutFile: path.join(logDirectory, "agent-hub.log"),
+    stderrFile: path.join(logDirectory, "agent-hub-error.log"),
+    maxBytes: config.logMaxBytes,
+    maxFiles: config.logMaxFiles,
+    mirror: process.stdout.isTTY || process.stderr.isTTY,
+  });
+  const startupRecords = [];
+  const startupStep = async (stage, operation) => {
+    const measured = await measureStartupBeforeTrace(stage, operation);
+    startupRecords.push(measured.record);
+    return measured.value;
+  };
   sentryDiagnostics.configure({
     ...config.diagnostics.sentry,
     release: config.diagnostics.sentry.release || `agent-hub@${AGENT_HUB_VERSION}`,
   });
   const instanceGuard = new SingleInstanceGuard({ dataDir: config.dataDir, lockFile: instanceLockFile });
-  await instanceGuard.acquire();
+  await startupStep("instance-lock", () => instanceGuard.acquire());
   const sqliteRecoveryCoordinator = new SharedSqliteRecoveryCoordinator({
     databaseFile: journalDatabaseFile,
     instanceId: instanceGuard.instanceToken,
@@ -242,41 +260,41 @@ export async function createHubInfrastructure({
   let sqliteRecovery;
   let commandTrace;
   try {
-    sqliteRecovery = await sqliteRecoveryCoordinator.prepare();
+    sqliteRecovery = await startupStep("sqlite-recovery", () => sqliteRecoveryCoordinator.prepare());
   const localTrustedDeviceStore = new TrustedDeviceStore({
     filePath: path.join(config.dataDir, "trusted-devices.json"),
     // Signatures without the verifier origin are rejected unless an operator
     // explicitly keeps a not yet rebuilt Android client working.
     allowLegacySessions: process.env.AGENT_HUB_LEGACY_DEVICE_SESSIONS === "1",
   });
-  await localTrustedDeviceStore.load();
+  await startupStep("trusted-devices", () => localTrustedDeviceStore.load());
   const trustedDeviceStore = new TrustedDeviceRegistry(localTrustedDeviceStore);
   const codexRolloutContextSanitizer = new CodexRolloutContextSanitizer({
     ...config.codexRolloutContext,
   });
-  const rawWorkspaceCatalogStore = new WorkspaceCatalogStore({
+  const rawWorkspaceCatalogStore = await startupStep("workspace-store-open", () => new WorkspaceCatalogStore({
     databaseFile: journalDatabaseFile,
-  });
-  const rawTaskBoardStore = new TaskBoardStore({ databaseFile: journalDatabaseFile });
-  await rawWorkspaceCatalogStore.load();
+  }));
+  const rawTaskBoardStore = await startupStep("task-board-open", () => new TaskBoardStore({ databaseFile: journalDatabaseFile }));
+  await startupStep("workspace-catalog-load", () => rawWorkspaceCatalogStore.load());
   const preTurnInstructions = new PreTurnInstructionStore({
     guideFile: path.join(agentHubRoot, "AGENT_HUB_GUIDE.md"),
     globalFile: path.join(config.dataDir, "global-pre-turn-instructions.md"),
   });
-  await preTurnInstructions.loadGuide();
+  await startupStep("pre-turn-guide", () => preTurnInstructions.loadGuide());
   const dashBotStream = config.taskBoard.triageEnabled
-    ? await rawWorkspaceCatalogStore.runMutation(() => ensureDashBotStream(rawWorkspaceCatalogStore, {
+    ? await startupStep("dashbot-stream", () => rawWorkspaceCatalogStore.runMutation(() => ensureDashBotStream(rawWorkspaceCatalogStore, {
       model: config.taskBoard.triageModel,
       projectRoot: config.projectRoot,
-    }))
+    })))
     : null;
   const existingDashBotStream = dashBotStream ?? rawWorkspaceCatalogStore.hierarchy()
     .find((workspace) => workspace.name === "Other")?.streams
     .find((stream) => stream.name === "DashBot") ?? null;
-  const dashBotTerraStream = await rawWorkspaceCatalogStore.runMutation(() => ensureDashBotTerraStream(rawWorkspaceCatalogStore, {
+  const dashBotTerraStream = await startupStep("dashbot-terra-stream", () => rawWorkspaceCatalogStore.runMutation(() => ensureDashBotTerraStream(rawWorkspaceCatalogStore, {
     firstStreamId: existingDashBotStream?.id ?? null,
     projectRoot: config.projectRoot,
-  }));
+  })));
   const { workspaceCatalogStore, taskBoardStore } = createPersistenceMutationCapabilities({
     rawWorkspaceCatalogStore,
     rawTaskBoardStore,
@@ -312,7 +330,7 @@ export async function createHubInfrastructure({
     autoPlaceConfidence: config.taskBoard.autoPlaceConfidence,
     recordEvent: (event) => workspaceCatalogStore.recordWorkspaceEvent(event),
   });
-  await recoverTaskBoardStartup(taskBoard);
+  await startupStep("task-board-recovery", () => recoverTaskBoardStartup(taskBoard));
   const workLogUsageIdentityStore = await usageSyncIdentity(config, agentHubRoot);
   const workLogUsageRemoteConfigStore = new UsageSyncRemoteConfigStore({
     file: path.join(config.dataDir, "usage-sync-remote.json"),
@@ -326,14 +344,14 @@ export async function createHubInfrastructure({
     deviceId: workLogUsageSyncDeviceId,
     defaultRuntimeHomeIds: workLogUsageRuntimeHomeIds,
   });
-  const adoptedUsageSyncEvents = await workLogUsageSyncStore
-    .adoptDeviceIds(workLogUsageIdentityStore.legacyDeviceIds);
+  const adoptedUsageSyncEvents = await startupStep("usage-sync-device-adoption", () => workLogUsageSyncStore
+    .adoptDeviceIds(workLogUsageIdentityStore.legacyDeviceIds));
   if (adoptedUsageSyncEvents.migrated) {
     console.log(
       `Adopted ${adoptedUsageSyncEvents.migrated} usage sync event(s) onto device ${workLogUsageSyncDeviceId}`,
     );
   }
-  const workLogUsageStore = createWorkLogUsageStore({
+  const workLogUsageStore = await startupStep("usage-store-open", () => createWorkLogUsageStore({
     repositoryFactory: (options) => new WorkLogUsageRepository(options),
     ledgerFile: legacyWorkLogLedgerFile,
     databaseFile: journalDatabaseFile,
@@ -344,7 +362,7 @@ export async function createHubInfrastructure({
     usageSyncRuntimeHomeIds: workLogUsageRuntimeHomeIds,
     usageSyncIdentity: workLogUsageIdentityStore,
     workspaceCatalogStore,
-  });
+  }));
   agentHubRuntimeHealth.setDiagnosticSource("usageSync", () => workLogUsageSyncStore.diagnostics());
   agentHubRuntimeHealth.setDiagnosticSource("journal", () => workLogUsageStore.diagnostics());
   const streamHandoff = new StreamHandoffService({
@@ -369,12 +387,12 @@ export async function createHubInfrastructure({
         : "runtime_default",
     }))
     .filter((workspace) => workspace.projectRoot);
-  const releaseReconciliation = await releaseGitWorkspaces.reconcile({
+  const releaseReconciliation = await startupStep("release-git-reconciliation", () => releaseGitWorkspaces.reconcile({
     projectRoots: registeredReleaseProjectRoots,
-  });
-  const taskGitReconciliation = await taskGitWorkspaces.reconcile({
+  }));
+  const taskGitReconciliation = await startupStep("task-git-reconciliation", () => taskGitWorkspaces.reconcile({
     projectRoots: registeredReleaseProjectRoots,
-  });
+  }));
   agentHubRuntimeHealth.setDiagnosticSource("taskGit", () => taskGitReconciliation);
   agentHubRuntimeHealth.setDiagnosticSource("releaseGit", () => releaseGitWorkspaces.diagnostics());
   for (const repository of releaseReconciliation.repositories.filter((item) => item.status !== "ready")) {
@@ -479,23 +497,12 @@ export async function createHubInfrastructure({
       requireTelegramAuth: true,
     })
     : null;
-  const defaultDataDirectory = path.join(agentHubRoot, "data");
-  const logDirectory = samePath(config.dataDir, defaultDataDirectory)
-    ? agentHubRoot
-    : config.dataDir;
-  installRotatingConsole({
-    stdoutFile: path.join(logDirectory, "agent-hub.log"),
-    stderrFile: path.join(logDirectory, "agent-hub-error.log"),
-    maxBytes: config.logMaxBytes,
-    maxFiles: config.logMaxFiles,
-    mirror: process.stdout.isTTY || process.stderr.isTTY,
-  });
-
   await mkdir(path.dirname(stateFile), { recursive: true });
   commandTrace = createCommandTraceComposition({ dataDir: config.dataDir,
     instanceId: serverInstanceId, releaseId: serverReleaseId,
     readHealth: () => agentHubRuntimeHealth.snapshot() });
-  await commandTrace.initialize();
+  await startupStep("command-trace-initialize", () => commandTrace.initialize());
+  for (const record of startupRecords) record(commandTrace.service);
   workLogUsageSyncStore.setTraceService(commandTrace.service);
   const usdRubRateStore = new UsdRubRateStore({ cacheFile: exchangeRatesFile });
   await usdRubRateStore.load().catch((error) => {

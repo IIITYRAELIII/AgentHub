@@ -9,12 +9,30 @@ import { createRuntimePerformanceSampler } from "../application/runtime-performa
 // duration now, then submit to that same worker once infrastructure is available.
 // A failure before the worker exists still belongs to the ordinary startup log.
 export async function measureStartupBeforeTrace(stage, operation, {
-  clock = Date.now, monotonicClock = () => performance.now(),
+  clock = Date.now, monotonicClock = () => performance.now(), logger = console,
 } = {}) {
   const operationSpanId = randomUUID();
   const startedAtMs = clock();
   const startedMonotonicMs = monotonicClock();
-  const value = await operation();
+  const checkpoint = (outcome, error = null) => {
+    try {
+      logger.info("[startup]", JSON.stringify({
+        pid: process.pid, releaseId: process.env.AGENT_HUB_RELEASE_ID ?? "",
+        operationSpanId, stage, outcome,
+        durationMs: Math.max(0, monotonicClock() - startedMonotonicMs),
+        ...(error ? { error: String(error.message ?? error) } : {}),
+      }));
+    } catch {}
+  };
+  checkpoint("started");
+  let value;
+  try {
+    value = await operation();
+  } catch (error) {
+    checkpoint("failed", error);
+    throw error;
+  }
+  checkpoint("succeeded");
   const observedAtMs = clock();
   const monotonicDurationMs = Math.max(0, monotonicClock() - startedMonotonicMs);
   const common = { commandId: `startup:${operationSpanId}`, stage: `startup-${stage}`, transport: "server-runtime",
