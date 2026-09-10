@@ -310,6 +310,19 @@ wrap inside the message column without horizontal page movement. Fences with an
 explicit language preserve code whitespace and may scroll horizontally. Both
 presentations copy the original unmodified block text.
 
+Complete Markdown `details/summary` blocks render as native disclosures, closed
+by default, in both historical and new messages. This is a constrained Markdown
+extension, not raw HTML: the opening details tag begins a line; its initial
+summary may share that line or span subsequent lines. The closing details tag
+occupies its own line, except for a compact block entirely on one line. Nested
+blocks are supported to depth 32; malformed or unsupported forms remain literal.
+Source attributes, including `open`, are ignored. Summary text and body use the
+existing safe Markdown/link renderer; fenced and inline code preserve literal
+tags. Paragraphs, lists and code stay within the message column. Native keyboard
+and pointer disclosure controls remain available. Unchanged block occurrences
+retain their open state when the same keyed message is refreshed or receives
+additional text; disclosure content never establishes message identity.
+
 ## Journal hierarchy
 
 Collapsed Journal groups show resource totals only. In date, week and month

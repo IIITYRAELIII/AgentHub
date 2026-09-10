@@ -103,6 +103,109 @@ test.after(async () => {
   await browser?.close();
 });
 
+test("Markdown details safely render historical and new messages with native disclosure and contained JSON", { timeout: 20_000 }, async () => {
+  const page = await browser.newPage({ viewport: { width: 1366, height: 900 } });
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("console", (message) => {
+    // The routed DOM fixture intentionally has no runtime health/SSE server.
+    if (message.text().includes("404 (Not Found)")
+      && ["http://127.0.0.1/health", "http://127.0.0.1/events"].includes(message.location().url)) return;
+    if (["error", "warning"].includes(message.type())) errors.push(`${message.text()} ${message.location().url}`);
+  });
+  try {
+    await openWebApp(page);
+    const json = JSON.stringify({ payload: "x".repeat(360), literal: "</details><script>bad()</script>" }, null, 2);
+    const text = [
+      "Ответ с подробностями",
+      "<details open onclick=bad()>",
+      '<summary onmouseover="bad()">Данные **JSON**</summary>',
+      "", "Пояснение внутри блока.", "", "- Первый пункт", "- Второй пункт", "",
+      "```json", json, "</details>", "```", "",
+      "[Опасная ссылка](javascript:bad)", '<img src=x onerror="bad()">',
+      "<script>bad()</script>", "</details>", "Текст после блока.",
+      "", "```html", "<details><summary>Literal</summary></details>", "```",
+    ].join("\n");
+    const historical = { id: "details-history", role: "agent", provider: "codex", threadId: "thread-1",
+      turnId: "history-turn", itemId: "history-item", text };
+    await seedMessages(page, [historical]);
+    const details = page.locator('.msg-agent .markdown-details').first();
+    assert.equal(await details.count(), 1);
+    assert.equal(await details.evaluate((node) => node.open), false);
+    assert.equal(await details.locator("summary").textContent(), "Данные JSON");
+    assert.equal(await details.locator("summary strong").textContent(), "JSON");
+    assert.equal(await details.locator("p").first().isVisible(), false);
+    await details.locator("summary").click();
+    assert.equal(await details.evaluate((node) => node.open), true);
+    assert.equal(await details.locator("li").count(), 2);
+    assert.equal(await details.locator("code.language-json").textContent(), `${json}\n</details>`);
+    assert.equal(await details.locator("script, img, [onclick], [onmouseover], [onerror], a[href^='javascript:']").count(), 0);
+    assert.equal(await page.locator('.msg-agent code.language-html').textContent(), '<details><summary>Literal</summary></details>');
+    assert.equal(await page.locator('.msg-agent .msg-body > p').last().textContent(), 'Текст после блока.');
+    const next = { ...historical, id: "details-new", turnId: "new-turn", itemId: "new-item", text: '<details><summary>Новый ответ</summary>\nАбзац нового ответа.\n</details>' };
+    await seedMessages(page, [historical, next]);
+    assert.equal(await details.evaluate((node) => node.open), true);
+    assert.equal(await page.locator('.msg-agent .markdown-details').last().evaluate((node) => node.open), false);
+    await seedMessages(page, [{ ...historical, text: `${text}\nДополнение того же сообщения.` }, next]);
+    assert.equal(await details.evaluate((node) => node.open), true);
+    await details.locator("summary").focus();
+    await page.keyboard.press("Enter");
+    assert.equal(await details.evaluate((node) => node.open), false);
+    await page.keyboard.press("Space");
+    assert.equal(await details.evaluate((node) => node.open), true);
+    for (const width of [1366, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      if (width === 390) await page.locator('[data-mobile-button="chat"]').click();
+      const geometry = await details.locator("pre").evaluate((node) => ({
+        wide: node.scrollWidth > node.clientWidth,
+        outside: node.getBoundingClientRect().right > innerWidth + 1,
+        pageOverflow: document.documentElement.scrollWidth > innerWidth + 1,
+      }));
+      assert.deepEqual(geometry, { wide: true, outside: false, pageOverflow: false });
+      if (process.env.AGENT_HUB_QA_SCREENSHOT) await page.screenshot({
+        path: `${process.env.AGENT_HUB_QA_SCREENSHOT}-details-${width}.png`, fullPage: false,
+      });
+    }
+    assert.equal(new URL(page.url()).hostname, "127.0.0.1");
+    assert.match(await page.title(), /Agent Hub/iu);
+    assert.deepEqual(errors, []);
+  } finally {
+    await page.close();
+  }
+});
+
+test("Markdown details nesting and code literals do not consume later ordinary text", { timeout: 20_000 }, async () => {
+  const page = await browser.newPage();
+  try {
+    await openWebApp(page);
+    const text = [
+      '`<details><summary>inline literal</summary></details>`', '',
+      '````html', '<details>', '<summary>fenced literal</summary>', '```', '</details>', '````', '',
+      '<details><summary>Внешний</summary>', 'Абзац.',
+      '<details>', '<summary>', 'Внутренний', '**блок**', '</summary>', '- Пункт', '</details>',
+      'Ещё абзац.', '</details>', 'Обычный текст после обоих блоков.',
+    ].join('\n');
+    await seedMessages(page, [{ id: 'nested', role: 'agent', text }]);
+    const details = page.locator('.msg-agent .markdown-details');
+    assert.equal(await details.count(), 2);
+    assert.equal(await page.locator('.msg-agent code').first().textContent(), '<details><summary>inline literal</summary></details>');
+    assert.equal(await page.locator('.msg-agent code.language-html').textContent(), '<details>\n<summary>fenced literal</summary>\n```\n</details>');
+    await details.first().locator(':scope > summary').click();
+    assert.equal(await details.last().evaluate((node) => node.open), false);
+    await details.last().locator('summary').click();
+    assert.match(await details.last().locator('summary').textContent(), /Внутренний\s+блок/u);
+    assert.equal(await details.last().locator('li').textContent(), 'Пункт');
+    assert.equal(await page.locator('.msg-agent .msg-body > p').last().textContent(), 'Обычный текст после обоих блоков.');
+    const deeplyNested = Array(40).fill('<details><summary>Вложенный</summary>').join('\n')
+      + '\nСодержимое\n' + Array(40).fill('</details>').join('\n') + '\nПосле глубокой вложенности.';
+    await seedMessages(page, [{ id: 'bounded', role: 'agent', text: deeplyNested }]);
+    assert.equal(await page.locator('.msg-agent .markdown-details').count(), 32);
+    assert.equal(await page.locator('.msg-agent .msg-body > p').last().textContent(), 'После глубокой вложенности.');
+  } finally {
+    await page.close();
+  }
+});
+
 test("compaction without provider turn renders a system marker and unknown completion stays explicit", async () => {
   const page = await browser.newPage();
   const errors = [];
