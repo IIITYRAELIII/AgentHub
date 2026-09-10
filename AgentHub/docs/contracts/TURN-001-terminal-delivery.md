@@ -49,7 +49,7 @@ final status and final content.
   uses the exact reconciled provider final after a bounded settle window.
 - Terminal is absorbing: late running, progress, snapshot or reconnect events
   cannot revive it.
-- A bounded restart reprojection may replace a corrupted terminal user
+- A bounded restart or opened-history-page reprojection may replace a corrupted terminal user
   projection only when the retained terminal payload and command ledger prove
   the same non-empty `provider + threadId + turnId + runId` for every distinct
   Hub command identity. Missing, duplicate or conflicting proof fails closed;

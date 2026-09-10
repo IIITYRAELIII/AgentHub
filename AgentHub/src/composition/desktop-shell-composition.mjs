@@ -255,7 +255,7 @@ export function createDesktopShellComposition({
       hasAllowedUsers: () => Boolean(config.allowedUserIds.size),
       androidEnabled: () => Boolean(config.components.androidApp),
       readCachedHistory,
-      readHistoryPage: (...args) => taskSyncStore.historyPage(...args),
+      readHistoryPage: (...args) => taskSyncStore.readHistoryPage(...args),
       refreshHistory,
       attachmentImporter: importCodexDesktopAttachments,
       warn: (...args) => console.warn(...args),

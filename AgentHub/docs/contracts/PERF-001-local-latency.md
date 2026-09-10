@@ -223,6 +223,15 @@ skipped fail-closed: they cannot rewrite message identities and remain available
 to their owning terminal store. No SQL window, payload-length expression or
 temporary result materializes/sorts the payloads for all 200 candidates.
 
+Opening a history page reuses terminal-identity recovery for at most its 20
+exact terminal identities, including those older than the startup window.
+It retains the same per-payload and aggregate byte bounds. Primary-key terminal
+lookups and indexed exact-turn read-model queries never hydrate the rest of a
+Thread. Recovery commits only the addressed turn positions and their history
+search documents through the existing asynchronous SQLite mutation owner.
+Already repaired pages remain read-only; stale cached or delayed history cannot
+replace the durable `terminal-ledger` authority.
+
 Runtime durability saves coalesce pending requests before snapshot capture while
 preserving each caller's persistence fence. After the durable command ledger has
 projected a snapshot, exact ledger-owned pending inputs, queued inputs and

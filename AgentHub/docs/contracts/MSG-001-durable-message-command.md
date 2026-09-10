@@ -56,6 +56,9 @@ turns incremental. Completing a cached trailing record may restore completeness
 only when the reader retained a full, otherwise lossless generation.
 
 A terminal read-model row that lost its command aliases is repaired only from
+the existing recovery owner at startup or when its bounded history page opens.
+Page recovery addresses at most 20 exact turns, without extending the startup
+window or reading other turns' payloads. The repair uses
 the exact retained terminal payload after every payload `clientUserMessageId`
 is verified against a terminal ledger record with the same
 `provider + threadId + turnId + runId`. Recovery is bounded and idempotent and

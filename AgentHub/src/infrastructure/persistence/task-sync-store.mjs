@@ -1424,7 +1424,7 @@ export class LocalTaskSyncStore {
     }
   }
 
-  #recoverTerminalCommandIdentities() {
+  #recoverTerminalCommandIdentities(references = null) {
     if (!existsSync(this.#terminalDatabaseFile) || !existsSync(this.#messageCommandDatabaseFile)) {
       return 0;
     }
@@ -1458,7 +1458,16 @@ export class LocalTaskSyncStore {
       if (JSON.stringify(recoveryIndexColumns) !== JSON.stringify([
         "committed_at", "provider", "thread_id", "turn_id", "payload_bytes",
       ])) return 0;
-      const candidates = terminalDatabase.prepare(`
+      const candidateByIdentity = references ? terminalDatabase.prepare(`
+        SELECT provider, thread_id, turn_id, committed_at, payload_bytes
+        FROM provider_turn_terminals
+        WHERE provider = ? AND thread_id = ? AND turn_id = ?
+      `) : null;
+      const candidates = references
+        ? references.map((reference) => candidateByIdentity.get(
+          reference.provider, reference.threadId, reference.turnId,
+        )).filter(Boolean)
+        : terminalDatabase.prepare(`
         SELECT provider, thread_id, turn_id,
           committed_at, payload_bytes
         FROM provider_turn_terminals INDEXED BY provider_turn_terminals_recovery_idx
@@ -1506,6 +1515,28 @@ export class LocalTaskSyncStore {
         const provider = String(candidate.provider);
         const threadId = String(candidate.thread_id);
         const turnId = String(candidate.turn_id);
+        // Page recovery re-reads the exact durable turn inside the writer lane.
+        // It must neither scan the Thread nor overwrite another page/position.
+        if (references) {
+          const rows = this.#database.prepare(`
+            SELECT * FROM task_read_model_turns
+            WHERE provider = ? AND thread_id = ? AND id = ?
+          `).all(provider, threadId, turnId);
+          if (rows.length !== 1 || Number(rows[0].completed) !== 1
+            || Number(rows[0].active) === 1 || rows[0].user_message_authority === "terminal-ledger") continue;
+          const [turn] = this.#hydrateHistoryRows(rows);
+          const nextTurn = recoverTerminalTurnMessages(
+            turn, terminalPayload, ledger, { provider, threadId, turnId },
+          );
+          if (nextTurn === turn) continue;
+          const cleaned = cleanHistory([nextTurn], 1, { provider });
+          this.#writeHistory({ provider, threadId }, cleaned, [Number(rows[0].position)]);
+          // Invalidate the whole-Thread search fingerprint; update only this
+          // turn's history documents, leaving journal and other turns intact.
+          this.#writeSearchHistory({ provider, threadId }, cleaned, "");
+          recovered += 1;
+          continue;
+        }
         const key = `${provider}\0${threadId}`;
         const history = histories.get(key) ?? this.#readHistory({ provider, threadId });
         histories.set(key, history);
@@ -1597,12 +1628,19 @@ export class LocalTaskSyncStore {
     );
   }
 
-  #writeHistory(task, history) {
+  #writeHistory(task, history, positions = null) {
     const provider = task.provider;
     const threadId = task.threadId;
-    this.#database.prepare(`
-      DELETE FROM task_read_model_turns WHERE provider = ? AND thread_id = ?
-    `).run(provider, threadId);
+    if (positions) {
+      const remove = this.#database.prepare(`
+        DELETE FROM task_read_model_turns WHERE provider = ? AND thread_id = ? AND position = ?
+      `);
+      for (const position of positions) remove.run(provider, threadId, position);
+    } else {
+      this.#database.prepare(`
+        DELETE FROM task_read_model_turns WHERE provider = ? AND thread_id = ?
+      `).run(provider, threadId);
+    }
     const insertTurn = this.#database.prepare(`
       INSERT INTO task_read_model_turns (
         provider, thread_id, position, id, prompt, answer, status, active,
@@ -1621,7 +1659,8 @@ export class LocalTaskSyncStore {
         response_annotation_references_json, attachments_json
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    history.forEach((turn, turnPosition) => {
+    history.forEach((turn, index) => {
+      const turnPosition = positions ? positions[index] : index;
       insertTurn.run(
         provider,
         threadId,
@@ -2338,6 +2377,19 @@ export class LocalTaskSyncStore {
 
   history(task, { limit = this.#historyLimit } = {}) {
     return cleanHistory(this.#readHistory(task, limit), limit, { provider: task.provider });
+  }
+
+  async readHistoryPage(references, options = {}) {
+    const page = this.historyPage(references, options);
+    const candidates = page.items.filter(({ turn }) => (
+      turn.completed === true && turn.active !== true
+      && turn.userMessageAuthority !== "terminal-ledger"
+    )).map(({ provider, threadId, turn }) => ({ provider, threadId, turnId: turn.id }));
+    if (!candidates.length) return page;
+    await this.#mutations.run(() => this.#transaction(() => (
+      this.#recoverTerminalCommandIdentities(candidates)
+    )), { timeoutMs: this.#mutationTimeoutMs, requestId: "task-sync:page-terminal-recovery" });
+    return this.historyPage(references, options);
   }
 
   historyPage(references, {
