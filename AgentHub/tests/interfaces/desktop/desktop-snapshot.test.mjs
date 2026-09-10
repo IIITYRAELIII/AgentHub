@@ -1908,6 +1908,34 @@ test("a receipt origin cannot be borrowed by another message or forged by its au
   };
   const mismatch = conflicting();
   assert.match(mismatch.text, /<agent-hub-stream-message>/u, "конверт раскрыт при конфликтующем origin");
+  assert.equal(mismatch.origin, undefined, "неподтверждённый origin попал в проекцию");
+  assert.equal(mismatch.kind, undefined, "неподтверждённый конверт получил межпоточный вид");
+  assert.notEqual(mismatch.author, author, "неподтверждённый origin назвал чужого автора");
+
+  // The provider echo may contradict the envelope while the exact receipt holds
+  // the correct origin. A contradiction is never resolved in favour of either
+  // side: the message keeps its ordinary attribution.
+  const conflictingEcho = () => {
+    const receipts = new MessageReceiptRegistry();
+    receipts.reserve({ provider: "codex", threadId: "thread-1", clientUserMessageId },
+      "fingerprint", { pending: true, displayText: envelope, author, origin });
+    const setup = fixture({ receiptForMessage: (key) => receipts.get(key) });
+    setup.run.clientUserMessageId = clientUserMessageId;
+    setup.run.userMessages = [{
+      itemId: "user-1",
+      clientUserMessageId,
+      role: "user",
+      text: envelope,
+      messageOrigin: { ...origin, streamName: "WRONG", requestId: "other-request" },
+    }];
+    return setup.desktopRunSnapshot(setup.run).userMessages[0];
+  };
+  const echo = conflictingEcho();
+  assert.match(echo.text, /<agent-hub-stream-message>/u, "конверт раскрыт при конфликтующем эхе провайдера");
+  assert.equal(echo.origin, undefined, "конфликтующее эхо попало в проекцию");
+  assert.equal(echo.kind, undefined, "конфликтующее эхо получило межпоточный вид");
+  assert.doesNotMatch(String(echo.author ?? ""), /WRONG/u, "проекция назвала автора из конфликтующего эха");
+  assert.notEqual(echo.author, author);
 
   const spoofed = () => {
     const receipts = new MessageReceiptRegistry();

@@ -8,6 +8,7 @@ import {
 import { isClaudeCompactionRun } from "../../domain/claude-context-maintenance.mjs";
 import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 import {
+  confirmedInterstreamOrigin,
   interstreamOriginAuthor,
   normalizeInterstreamOrigin,
   trustedInterstreamMessageDetails,
@@ -77,7 +78,8 @@ function deferredMessageProjection(item, deferred, receipts) {
   };
   const textInterstream = trustedInterstreamMessageDetails(rawText, identity);
   const previewInterstream = trustedInterstreamMessageDetails(rawPreview, identity);
-  const origin = normalizeInterstreamOrigin(item.messageOrigin);
+  const origin = confirmedInterstreamOrigin(rawText, identity)
+    && confirmedInterstreamOrigin(rawPreview, identity);
   return {
     text: displayUserPrompt(textInterstream?.text ?? rawText),
     preview: displayUserPrompt(previewInterstream?.text ?? rawPreview),
@@ -292,7 +294,10 @@ export function createDesktopSnapshotFactory({
       origin: run.messageOrigin,
       clientUserMessageId: run.clientUserMessageId,
     });
-    const promptOrigin = normalizeInterstreamOrigin(run.messageOrigin);
+    const promptOrigin = confirmedInterstreamOrigin(promptDisplay, {
+      origin: run.messageOrigin,
+      clientUserMessageId: run.clientUserMessageId,
+    });
     const responseItem = (Array.isArray(run.responseItems) ? run.responseItems : [])
       .find((item) => String(item?.id ?? "") === String(run.responseItemId ?? ""));
     const compactActivity = (activity) => {
@@ -372,7 +377,9 @@ export function createDesktopSnapshotFactory({
           origin: directOrigin,
           clientUserMessageId,
         }) : null;
-        const origin = normalizeInterstreamOrigin(directOrigin);
+        const origin = role === "user"
+          ? confirmedInterstreamOrigin(displayText, { origin: directOrigin, clientUserMessageId })
+          : normalizeInterstreamOrigin(directOrigin);
         const text = role === "user"
           ? displayUserPrompt(interstream?.text ?? displayText)
           : rawText.trim();

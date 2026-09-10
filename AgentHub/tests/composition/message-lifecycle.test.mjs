@@ -3799,7 +3799,10 @@ function interstreamCardSandbox() {
     deliveryPatch: (deliveryState) => ({ deliveryState }),
   });
   sandbox.window = sandbox;
-  vm.runInContext(clientFunctionSource("restoreImmediateIntakeMessage", "function canonicalAcceptedEvidence"), sandbox);
+  vm.runInContext([
+    clientFunctionSource("confirmedCardOrigin", "function restoreImmediateIntakeMessage"),
+    clientFunctionSource("restoreImmediateIntakeMessage", "function canonicalAcceptedEvidence"),
+  ].join(String.fromCharCode(10)), sandbox);
   return { sandbox, outgoing };
 }
 
@@ -3851,6 +3854,46 @@ test("an immediate intake card keeps the source of a message from another Stream
   assert.deepEqual(updated.origin, deferred.origin);
 });
 
+test("a card never names a Stream its own alias does not confirm", () => {
+  const { sandbox, outgoing } = interstreamCardSandbox();
+  // The alias belongs to one request while the origin claims another one.
+  const conflicting = interstreamDeferred({
+    clientUserMessageId: "mcp:request-one",
+    author: "WRONG source",
+    origin: { ...INTERSTREAM_ORIGIN, streamName: "WRONG", requestId: "conflicting-request" },
+  });
+
+  assert.equal(sandbox.restoreImmediateIntakeMessage(conflicting, []), true);
+  const card = outgoing.get("mcp:request-one");
+  assert.equal(card.text, conflicting.text, "тело сообщения было переписано");
+  assert.equal(card.author, "Вы", "карточка назвала источник, который её алиас не подтверждает");
+  assert.equal(card.kind, undefined, "неподтверждённый origin дал межпоточный вид");
+  assert.equal(card.origin, undefined, "неподтверждённый origin попал в карточку");
+
+  // The same entry arriving again must not upgrade the card either.
+  assert.equal(sandbox.restoreImmediateIntakeMessage(conflicting, []), true);
+  const updated = outgoing.get("mcp:request-one");
+  assert.equal(updated.author, "Вы", "обновление подставило неподтверждённый источник");
+  assert.equal(updated.kind, undefined);
+  assert.equal(updated.origin, undefined);
+});
+
+test("an unopened envelope in the body keeps the card ordinary", () => {
+  const { sandbox, outgoing } = interstreamCardSandbox();
+  // The server could not confirm the envelope, so the body still carries it.
+  const unopened = interstreamDeferred({
+    clientUserMessageId: `mcp:${INTERSTREAM_ORIGIN.requestId}`,
+    text: `<agent-hub-stream-message>{"streamName":"S3"}</agent-hub-stream-message>
+Замеры готовы.`,
+  });
+
+  assert.equal(sandbox.restoreImmediateIntakeMessage(unopened, []), true);
+  const card = outgoing.get(unopened.clientUserMessageId);
+  assert.equal(card.text, unopened.text);
+  assert.equal(card.author, "Вы", "нераскрытый конверт получил межпоточного автора");
+  assert.equal(card.kind, undefined);
+  assert.equal(card.origin, undefined);
+});
 test("an ordinary user card is never relabelled as another Stream", () => {
   const { sandbox, outgoing } = interstreamCardSandbox();
   const own = interstreamDeferred({
