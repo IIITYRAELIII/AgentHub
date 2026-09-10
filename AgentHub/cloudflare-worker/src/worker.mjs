@@ -60,6 +60,9 @@ const REMOTE_ATTACHMENT_PREFIX = "remote-attachment:";
 const ATTACHMENT_MANIFEST_PREFIX = "control:attachment-manifest:";
 const LEGACY_ATTACHMENT_MANIFEST_PREFIX = "control:attachment:";
 const ATTACHMENT_CHUNK_PREFIX = "control:attachment-chunk:";
+const ATTACHMENT_UPLOAD_PREFIX = "control:attachment-upload:";
+export const ATTACHMENT_UPLOAD_PROTOCOL = "agent-hub-attachment-upload-v1";
+const ATTACHMENT_UPLOAD_HARD_MAX_BYTES = 256 * 1024 * 1024;
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const ATTACHMENT_STORAGE_CHUNK_BYTES = 1024 * 1024;
 export const ATTACHMENT_TRANSPORT_PROTOCOL = "agent-hub-attachment-chunks-v1";
@@ -69,8 +72,28 @@ const ATTACHMENT_TRANSPORT_MAX_RESPONSE_BYTES = 24 * 1024;
 const ATTACHMENT_TRANSPORT_PROBE_BYTES = 128 * 1024 + 123;
 const MAX_ATTACHMENTS_PER_COMMAND = 8;
 const MAX_ATTACHMENTS_PER_USER = 32;
-const MAX_ATTACHMENT_BYTES_PER_USER = 100 * 1024 * 1024;
 const ATTACHMENT_EXPIRY_MS = 30 * 60 * 1_000;
+
+function attachmentUploadLimits(env) {
+  const bounded = (value, fallback, max) => Number.isSafeInteger(Number(value)) && Number(value) > 0
+    ? Math.min(Number(value), max) : fallback;
+  return {
+    protocol: ATTACHMENT_UPLOAD_PROTOCOL,
+    chunkBytes: ATTACHMENT_STORAGE_CHUNK_BYTES,
+    maxBytes: bounded(env?.AGENT_HUB_ATTACHMENT_MAX_BYTES, 128 * 1024 * 1024, ATTACHMENT_UPLOAD_HARD_MAX_BYTES),
+    maxTotalBytes: bounded(env?.AGENT_HUB_ATTACHMENT_USER_MAX_BYTES, 256 * 1024 * 1024, 512 * 1024 * 1024),
+    maxUploads: MAX_ATTACHMENTS_PER_USER,
+    expiresInMs: ATTACHMENT_EXPIRY_MS,
+  };
+}
+
+function attachmentUploadStatus(record, limits) {
+  return {
+    ...limits, id: record.id, uploadId: record.id, name: record.name, type: record.contentType, size: record.size,
+    status: record.state, received: record.received, expiresAt: record.expiresAt,
+    ...(record.state === "ready" ? { path: `${REMOTE_ATTACHMENT_PREFIX}${record.id}`, sha256: record.bodyHash } : {}),
+  };
+}
 const DEVICE_PAIRING_EXPIRY_MS = 10 * 60 * 1_000;
 const DEVICE_CHALLENGE_EXPIRY_MS = 2 * 60 * 1_000;
 const DEVICE_SESSION_EXPIRY_MS = 12 * 60 * 60 * 1_000;
@@ -2956,6 +2979,159 @@ export class JournalStore extends DurableObject {
     return markers.size;
   }
 
+  async #cleanupAttachmentUploads(now, storage) {
+    let nextExpiry = Infinity;
+    for (const [key, record] of await storage.list({ prefix: ATTACHMENT_UPLOAD_PREFIX })) {
+      if (record.expiresAt > now) {
+        nextExpiry = Math.min(nextExpiry, record.expiresAt);
+        continue;
+      }
+      // Ready files belong to the existing command/manifest lifecycle. An upload
+      // expiry never deletes files after ownership has transferred to a command.
+      if (record.state === "uploading") {
+        await deleteStorageKeys(storage, record.received.map(({ index }) => `${ATTACHMENT_CHUNK_PREFIX}${record.id}:${index}`));
+      }
+      await storage.delete(key);
+    }
+    return nextExpiry;
+  }
+
+  async #attachmentUploadQuota(userId, manifests, storage) {
+    const records = [...(await storage.list({ prefix: ATTACHMENT_UPLOAD_PREFIX })).values()]
+      .filter((record) => record.userId === userId);
+    const pending = records.filter((record) => record.state === "uploading");
+    const ready = manifests.filter((manifest) => manifest.userId === userId);
+    return {
+      count: new Set([...records, ...ready].map((record) => record.id)).size,
+      bytes: [...pending, ...ready].reduce((total, record) => total + Number(record.size), 0),
+    };
+  }
+
+  async #attachmentUpload(request) {
+    const url = new URL(request.url);
+    const userId = String(request.headers.get("X-Agent-Hub-User-Id") ?? "");
+    const viewOnly = request.headers.get("X-Agent-Hub-Upload-View-Only") === "1";
+    if (!userId) return json({ error: "attachment upload owner required" }, 401);
+    const limits = attachmentUploadLimits(this.env);
+    if (request.method === "GET" && !url.searchParams.has("id")) return json(limits);
+    let metadata = null;
+    let part = null;
+    let hash = null;
+    let id = String(url.searchParams.get("id") ?? "").toLowerCase();
+    if (request.method === "POST" && !url.searchParams.has("id")) {
+      metadata = JSON.parse(new TextDecoder().decode(await readBoundedBinary(request, 4096, "upload metadata")));
+      id = String(metadata?.uploadId ?? "").toLowerCase();
+      if (!Number.isSafeInteger(metadata?.size) || metadata.size < 1 || metadata.size > limits.maxBytes) {
+        return json({ error: "attachment size exceeds upload limit" }, 413);
+      }
+      metadata = { size: metadata.size, name: attachmentFileName(metadata.name), contentType: attachmentContentType(metadata.type), viewOnly };
+    }
+    if (!CONTROL_ID_PATTERN.test(id)) return json({ error: "invalid attachment upload id" }, 400);
+    const index = Number(url.searchParams.get("index"));
+    if (request.method === "PUT") {
+      hash = String(request.headers.get("X-Agent-Hub-Chunk-Sha256") ?? "").toLowerCase();
+      if (!url.searchParams.has("index") || !Number.isSafeInteger(index) || index < 0 || !/^[a-f0-9]{64}$/u.test(hash)) {
+        return json({ error: "invalid attachment part metadata" }, 400);
+      }
+      part = await readBoundedBinary(request, limits.chunkBytes, "attachment part");
+      if (await sha256(part) !== hash) return json({ error: "attachment part hash mismatch" }, 400);
+    }
+    return this.ctx.storage.transaction(async (storage) => {
+      const now = Date.now();
+      await this.#cleanupAttachmentUploads(now, storage);
+      const manifests = await this.#cleanupAttachments(now, storage);
+      const key = `${ATTACHMENT_UPLOAD_PREFIX}${id}`;
+      let record = await storage.get(key);
+      const existing = await this.#attachmentManifestRecord(id, storage);
+      if (existing.state === "conflict") return json({ error: "attachment identity conflict" }, 409);
+      if (record && record.userId !== userId || existing.manifest && existing.manifest.userId !== userId) {
+        return json({ error: "attachment upload not found" }, 404);
+      }
+      if (record && Boolean(record.viewOnly) !== viewOnly) return json({ error: "attachment upload not found" }, 404);
+      if (record?.state === "uploading" && existing.state === "active") return json({ error: "attachment identity conflict" }, 409);
+      if (metadata) {
+        if (record && (record.size !== metadata.size || record.name !== metadata.name || record.contentType !== metadata.contentType)) {
+          return json({ error: "attachment upload metadata conflict" }, 409);
+        }
+        if (!record) {
+          if (existing.state === "active") return json({ error: "attachment identity already exists" }, 409);
+          const quota = await this.#attachmentUploadQuota(userId, manifests, storage);
+          if (quota.count >= limits.maxUploads || quota.bytes + metadata.size > limits.maxTotalBytes) {
+            return json({ error: "attachment upload quota exceeded" }, 429);
+          }
+          record = { ...metadata, id, userId, state: "uploading", received: [], createdAt: now, expiresAt: now + ATTACHMENT_EXPIRY_MS };
+          await storage.put(key, record);
+          await this.#scheduleCleanupAlarm(record.expiresAt, storage);
+        }
+      }
+      if (!record) return json({ error: "attachment upload not found or expired" }, 404);
+      if (record.state === "cancelled" || record.state === "ready" && existing.state !== "active") {
+        return json({ error: "attachment upload no longer available", state: record.state === "cancelled" ? "cancelled" : "consumed" }, 410);
+      }
+      if (metadata || request.method === "GET") return json(attachmentUploadStatus(record, limits));
+      if (request.method === "DELETE") {
+        if (existing.manifest?.commandIds?.length) return json({ error: "attachment is owned by an accepted command" }, 409);
+        if (existing.state === "active") await this.#deleteAttachment(existing.manifest, storage, id);
+        else await deleteStorageKeys(storage, record.received.map(({ index: partIndex }) => `${ATTACHMENT_CHUNK_PREFIX}${id}:${partIndex}`));
+        record = { ...record, state: "cancelled", received: [] };
+        await storage.put(key, record);
+        return json(attachmentUploadStatus(record, limits));
+      }
+      if (request.method === "PUT") {
+        const expectedSize = Math.min(limits.chunkBytes, record.size - index * limits.chunkBytes);
+        if (expectedSize <= 0 || part.byteLength !== expectedSize) return json({ error: "attachment part size mismatch" }, 400);
+        const previous = record.received.find((item) => item.index === index);
+        if (previous && (previous.sha256 !== hash || previous.size !== part.byteLength)) return json({ error: "attachment part conflict" }, 409);
+        if (!previous) {
+          if (record.state !== "uploading") return json({ error: "attachment already finalized" }, 409);
+          record = { ...record, received: [...record.received, { index, size: part.byteLength, sha256: hash }].sort((a, b) => a.index - b.index) };
+          await storage.put({ [key]: record, [`${ATTACHMENT_CHUNK_PREFIX}${id}:${index}`]: part }, { noCache: true });
+        }
+        return json(attachmentUploadStatus(record, limits));
+      }
+      if (request.method === "POST" && url.searchParams.get("complete") === "1") {
+        if (record.state === "ready") return json(attachmentUploadStatus(record, limits));
+        const count = Math.ceil(record.size / limits.chunkBytes);
+        if (record.received.length !== count) return json({ error: "attachment upload is incomplete" }, 409);
+        // Cloudflare's DigestStream retains only hash state, never the full file.
+        const digest = new crypto.DigestStream("SHA-256");
+        const writer = digest.getWriter();
+        let total = 0;
+        try {
+          for (const descriptor of record.received) {
+            const bytes = await storage.get(`${ATTACHMENT_CHUNK_PREFIX}${id}:${descriptor.index}`, { noCache: true });
+            if (!bytes || bytes.byteLength !== descriptor.size || await sha256(bytes) !== descriptor.sha256) {
+              throw new Error("attachment part is missing or damaged");
+            }
+            if (descriptor.index === 0 && !attachmentMatchesContentType(bytes, record.contentType)) {
+              throw new Error("attachment content does not match its type");
+            }
+            total += bytes.byteLength;
+            await writer.write(bytes);
+          }
+          if (total !== record.size) throw new Error("attachment total size mismatch");
+          await writer.close();
+        } catch (error) {
+          await writer.abort(error).catch(() => {});
+          await digest.digest.catch(() => {});
+          return json({ error: error.message }, 409);
+        }
+        const bodyHash = hex(await digest.digest);
+        record = { ...record, state: "ready", bodyHash };
+        await storage.put({
+          [key]: record,
+          [`${ATTACHMENT_MANIFEST_PREFIX}${id}`]: {
+            id, userId, contentType: record.contentType, name: record.name, bodyHash,
+            size: record.size, chunkCount: count, commandIds: [], createdAt: record.createdAt, expiresAt: record.expiresAt,
+            ...(record.viewOnly ? { viewOnly: true, chunks: record.received } : {}),
+          },
+        });
+        return json(attachmentUploadStatus(record, limits));
+      }
+      return json({ error: "Method Not Allowed" }, 405);
+    });
+  }
+
   async #attachmentManifests(storage = this.ctx.storage) {
     return [...(await storage.list({ prefix: ATTACHMENT_MANIFEST_PREFIX })).values()];
   }
@@ -2994,7 +3170,7 @@ export class JournalStore extends DurableObject {
   }
 
   async #deleteAttachment(manifest, storage = this.ctx.storage, exactId = manifest.id) {
-    await storage.delete([
+    await deleteStorageKeys(storage, [
       `${ATTACHMENT_MANIFEST_PREFIX}${exactId}`,
       `${LEGACY_ATTACHMENT_MANIFEST_PREFIX}${exactId}`,
       ...Array.from(
@@ -3053,7 +3229,7 @@ export class JournalStore extends DurableObject {
     if (
       !Number.isSafeInteger(metadata.size)
       || metadata.size < 1
-      || metadata.size > MAX_ATTACHMENT_BYTES
+      || metadata.size > ATTACHMENT_UPLOAD_HARD_MAX_BYTES
       || !/^[a-f0-9]{64}$/u.test(metadata.hash)
     ) {
       return json({ error: "remote attachment metadata is invalid" }, 503);
@@ -3259,8 +3435,10 @@ export class JournalStore extends DurableObject {
     await Promise.all([...receipts.values()].map(({ id }) => this.#deliverDashboardBotReceipt(id)));
     await this.ctx.storage.transaction(async (storage) => {
       const nextSyncExpiry = await this.#cleanupSyncStaging(Date.now(), storage);
+      const nextUploadExpiry = await this.#cleanupAttachmentUploads(Date.now(), storage);
+      await this.#cleanupAttachments(Date.now(), storage);
       await this.#cleanupExpiredControlCommands(Date.now(), storage);
-      const nextExpiry = Math.min(nextSyncExpiry, await this.#nextControlExpiry(storage),
+      const nextExpiry = Math.min(nextSyncExpiry, nextUploadExpiry, await this.#nextControlExpiry(storage),
         await this.#nextDashboardBotReceipt(storage));
       if (Number.isFinite(nextExpiry)) await storage.setAlarm(nextExpiry);
       else await storage.deleteAlarm();
@@ -3710,6 +3888,13 @@ export class JournalStore extends DurableObject {
         return json({ error: error.message }, 400);
       }
     }
+    if (url.pathname === "/attachment-upload") {
+      try { return await this.#attachmentUpload(request); }
+      catch (error) {
+        const status = /too large/iu.test(error.message) ? 413 : error instanceof SyntaxError ? 400 : 503;
+        return json({ error: status === 503 ? "attachment upload storage unavailable" : error.message }, status);
+      }
+    }
     if (request.method === "POST" && url.pathname === "/attachment/upload") {
       const userId = String(request.headers.get("X-Agent-Hub-User-Id") ?? "");
       const id = String(request.headers.get("X-Agent-Hub-Attachment-Id") ?? "").toLowerCase();
@@ -3730,8 +3915,11 @@ export class JournalStore extends DurableObject {
       }
       const now = Date.now();
       return this.ctx.storage.transaction(async (storage) => {
+        await this.#cleanupAttachmentUploads(now, storage);
         const manifests = await this.#cleanupAttachments(now, storage);
         const key = `${ATTACHMENT_MANIFEST_PREFIX}${id}`;
+        const upload = await storage.get(`${ATTACHMENT_UPLOAD_PREFIX}${id}`);
+        if (upload && upload.state !== "ready") return json({ error: "attachment upload identity reserved" }, 409);
         let existingRecord = await this.#activeAttachmentManifestRecord(id, now, storage);
         if (existingRecord.state === "conflict") {
           return json({ error: "remote attachment id conflict" }, 409);
@@ -3754,11 +3942,10 @@ export class JournalStore extends DurableObject {
             expiresAt: existingRecord.manifest.expiresAt,
           });
         }
-        const userAttachments = manifests.filter((manifest) => manifest.userId === userId);
-        const userBytes = userAttachments.reduce((total, manifest) => total + Number(manifest.size ?? 0), 0);
+        const quota = await this.#attachmentUploadQuota(userId, manifests, storage);
         if (
-          userAttachments.length >= MAX_ATTACHMENTS_PER_USER
-          || userBytes + body.byteLength > MAX_ATTACHMENT_BYTES_PER_USER
+          quota.count >= MAX_ATTACHMENTS_PER_USER
+          || quota.bytes + body.byteLength > attachmentUploadLimits(this.env).maxTotalBytes
         ) {
           return json({ error: "remote attachment quota exceeded" }, 429);
         }
@@ -3813,8 +4000,11 @@ export class JournalStore extends DurableObject {
       }
       const now = Date.now();
       return this.ctx.storage.transaction(async (storage) => {
+        await this.#cleanupAttachmentUploads(now, storage);
         const manifests = await this.#cleanupAttachments(now, storage);
         const key = `${ATTACHMENT_MANIFEST_PREFIX}${id}`;
+        const upload = await storage.get(`${ATTACHMENT_UPLOAD_PREFIX}${id}`);
+        if (upload) return json({ error: "attachment upload identity reserved" }, 409);
         let existingRecord = await this.#activeAttachmentManifestRecord(id, now, storage);
         if (existingRecord.state === "conflict") {
           return json({ error: "attachment view id conflict" }, 409);
@@ -3833,11 +4023,10 @@ export class JournalStore extends DurableObject {
           existingRecord = await this.#promoteAttachmentManifestRecord(existingRecord, storage);
           return json({ ok: true, id, expiresAt: existingRecord.manifest.expiresAt });
         }
-        const userAttachments = manifests.filter((manifest) => manifest.userId === userId);
-        const userBytes = userAttachments.reduce((total, manifest) => total + Number(manifest.size ?? 0), 0);
+        const quota = await this.#attachmentUploadQuota(userId, manifests, storage);
         if (
-          userAttachments.length >= MAX_ATTACHMENTS_PER_USER
-          || userBytes + body.byteLength > MAX_ATTACHMENT_BYTES_PER_USER
+          quota.count >= MAX_ATTACHMENTS_PER_USER
+          || quota.bytes + body.byteLength > attachmentUploadLimits(this.env).maxTotalBytes
         ) {
           return json({ error: "attachment view quota exceeded" }, 429);
         }
@@ -3881,6 +4070,32 @@ export class JournalStore extends DurableObject {
       const manifest = record.state === "active" ? record.manifest : null;
       if (!manifest || manifest.userId !== userId || manifest.viewOnly !== true) {
         return json({ error: "attachment view not found" }, 404);
+      }
+      if (Array.isArray(manifest.chunks)) {
+        let index = 0;
+        const storage = this.ctx.storage;
+        const body = new ReadableStream({
+          async pull(controller) {
+            if (index === manifest.chunks.length) { controller.close(); return; }
+            const descriptor = manifest.chunks[index++];
+            try {
+              const bytes = await storage.get(`${ATTACHMENT_CHUNK_PREFIX}${id}:${descriptor.index}`, { noCache: true });
+              if (!bytes || bytes.byteLength !== descriptor.size || await sha256(bytes) !== descriptor.sha256) {
+                throw new Error("attachment view is missing or damaged");
+              }
+              controller.enqueue(new Uint8Array(bytes));
+            } catch (error) { controller.error(error); }
+          },
+        });
+        return new Response(body, {
+          headers: {
+            "Cache-Control": "private, no-store", "Content-Type": manifest.contentType,
+            "Content-Length": String(manifest.size), "X-Content-Type-Options": "nosniff",
+            "X-Agent-Hub-File-Name": encodedAttachmentFileName(manifest.name),
+            ...(String(manifest.contentType).startsWith("image/") ? {}
+              : { "Content-Disposition": `attachment; filename*=UTF-8''${encodedAttachmentFileName(manifest.name)}` }),
+          },
+        });
       }
       const chunkKeys = Array.from(
         { length: manifest.chunkCount },
@@ -3930,6 +4145,7 @@ export class JournalStore extends DurableObject {
         return json({ error: "remote attachment not found" }, 404);
       }
       if (payload?.mode != null) return this.#attachmentTransportResponse(manifest, payload);
+      if (manifest.size > MAX_ATTACHMENT_BYTES) return json({ error: "large attachments require chunks-v1 transport" }, 413);
       const chunkKeys = Array.from(
         { length: manifest.chunkCount },
         (_, index) => `${ATTACHMENT_CHUNK_PREFIX}${id}:${index}`,
@@ -3992,7 +4208,7 @@ export class JournalStore extends DurableObject {
           if (attachmentRecord.state === "conflict") {
             return json({ error: "remote attachment id conflict" }, 409);
           }
-          if (attachmentRecord.state !== "active" || attachmentRecord.manifest.userId !== userId) {
+          if (attachmentRecord.state !== "active" || attachmentRecord.manifest.userId !== userId || attachmentRecord.manifest.viewOnly === true) {
             return json({ error: "remote attachment not found" }, 404);
           }
           attachmentManifests.push(attachmentRecord);
@@ -4173,7 +4389,14 @@ export class JournalStore extends DurableObject {
               .filter((commandId) => commandId !== command.id),
           };
           if (manifest.commandIds.length) await storage.put(attachmentRecord.key, manifest);
-          else await this.#deleteAttachment(manifest, storage, attachmentRecord.id);
+          else {
+            const upload = await storage.get(`${ATTACHMENT_UPLOAD_PREFIX}${attachmentRecord.id}`);
+            if (upload?.state === "ready" && upload.userId === manifest.userId && upload.expiresAt > now) {
+              // An explicit rejected-command retry reuses the same upload. Its
+              // original TTL is fixed; terminal retries cannot extend retention.
+              await storage.put(attachmentRecord.key, { ...manifest, expiresAt: upload.expiresAt });
+            } else await this.#deleteAttachment(manifest, storage, attachmentRecord.id);
+          }
         }
         return json({
           ...this.#controlStatus(command),
@@ -5113,6 +5336,26 @@ export default {
         ? new Response(null, { status: response.status, headers: response.headers })
         : response;
     }
+    if (url.pathname === "/api/attachment-upload") {
+      if (!["GET", "POST", "PUT", "DELETE"].includes(request.method)) return json({ error: "Method Not Allowed" }, 405);
+      let user;
+      try { user = await clientUser(request, env, store); }
+      catch (error) { return json({ error: error.message }, 401); }
+      try {
+        const body = ["POST", "PUT"].includes(request.method)
+          ? await readBoundedBinary(request, request.method === "PUT" ? ATTACHMENT_STORAGE_CHUNK_BYTES : 4096, "attachment upload request")
+          : undefined;
+        return store.fetch(new Request(`https://journal.internal/attachment-upload${url.search}`, {
+          method: request.method,
+          headers: {
+            "Content-Type": request.headers.get("Content-Type") ?? "application/octet-stream",
+            "X-Agent-Hub-User-Id": String(user.id),
+            "X-Agent-Hub-Chunk-Sha256": request.headers.get("X-Agent-Hub-Chunk-Sha256") ?? "",
+          },
+          body,
+        }));
+      } catch (error) { return json({ error: error.message }, /too large/iu.test(error.message) ? 413 : 400); }
+    }
     if (url.pathname === "/api/attachment") {
       if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
       let user;
@@ -5292,6 +5535,32 @@ export default {
         const status = /too large/iu.test(error.message) ? 413 : 400;
         return json({ error: error.message }, status);
       }
+    }
+    if (url.pathname === "/api/control/attachment-upload") {
+      if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
+      let payload;
+      try {
+        const bytes = await validateControlBinaryServiceRequest(request, env.SYNC_SECRET, { maxBytes: 1.5 * 1024 * 1024 });
+        payload = JSON.parse(new TextDecoder().decode(bytes));
+      } catch (error) { return json({ error: error.message }, /too large/iu.test(error.message) ? 413 : 401); }
+      const id = String(payload?.uploadId ?? "").toLowerCase();
+      const userId = String(payload?.userId ?? "");
+      if (!CONTROL_ID_PATTERN.test(id) || !userId || !["begin", "chunk", "complete"].includes(payload?.action)) {
+        return json({ error: "invalid service attachment upload" }, 400);
+      }
+      try {
+        const isChunk = payload.action === "chunk";
+        const body = isChunk ? Uint8Array.from(atob(String(payload.dataBase64 ?? "")), (char) => char.charCodeAt(0))
+          : payload.action === "begin" ? JSON.stringify({ uploadId: id, name: payload.name, type: payload.type, size: payload.size }) : undefined;
+        if (isChunk && body.byteLength > ATTACHMENT_STORAGE_CHUNK_BYTES) return json({ error: "attachment part too large" }, 413);
+        const query = payload.action === "begin" ? "" : `?id=${id}&${isChunk ? `index=${encodeURIComponent(payload.index)}` : "complete=1"}`;
+        return store.fetch(new Request(`https://journal.internal/attachment-upload${query}`, {
+          method: isChunk ? "PUT" : "POST",
+          headers: { "Content-Type": isChunk ? "application/octet-stream" : "application/json",
+            "X-Agent-Hub-User-Id": userId, "X-Agent-Hub-Upload-View-Only": "1", "X-Agent-Hub-Chunk-Sha256": String(payload.sha256 ?? "") },
+          body,
+        }));
+      } catch (error) { return json({ error: error.message }, 400); }
     }
     if (url.pathname === "/api/control/attachment/view/push") {
       if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);

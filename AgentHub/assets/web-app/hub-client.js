@@ -107,6 +107,11 @@ const visibleHistoryLoads = new Set();
 const historyLoadStates = new Map();
 const historyRequestGenerationByTask = new Map();
 const outgoingByTask = new Map();
+window.AgentHubRetainedUploadAttachments = () => [...outgoingByTask.values()]
+  .flatMap((messages) => [...messages.values()])
+  .filter((message) => message.projectionAuthority === "optimistic"
+    && !["accepted", "rejected"].includes(message.deliveryState))
+  .flatMap((message) => message.attachments ?? []);
 const liveProbeByTask = new Map();
 const liveUserMessagesByTask = new Map();
 const liveCardsByTask = new Map();
@@ -616,6 +621,9 @@ function updateOutgoing(taskIdValue, clientUserMessageId, patch) {
   const message = outgoingMessages(resolvedTaskId).get(clientUserMessageId);
   if (!message) return "";
   Object.assign(message, patch);
+  if (patch.projectionAuthority === "canonical" || ["accepted", "rejected"].includes(patch.deliveryState)) {
+    queueMicrotask(() => window.AgentHubPruneComposerFiles?.());
+  }
   return resolvedTaskId;
 }
 
@@ -753,6 +761,7 @@ function optimisticDeferredEntries(taskIdValue, serverEntries = []) {
       createdAt: message.submittedAt ?? message.time,
       delivery: message.delivery,
       deliveryState: message.deliveryState,
+      uploadState: message.uploadState,
       admissionRetryAvailable: message.deliveryState === "unconfirmed" && Boolean(message.retryRequest),
       remoteCommandId: message.remoteCommandId,
       optimistic: !serverClientIds.has(message.clientUserMessageId),
@@ -2119,6 +2128,14 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
     const previousTasks = previousSnapshot?.tasks ?? [];
     updateSendTaskGenerations(previousTasks, snapshot.tasks);
     lastSnapshot = snapshot;
+    for (const session of attachmentSendSessions.values()) {
+      try { assertCurrentSendTaskOperation(session.operation); }
+      catch (error) {
+        session.cancellationError = error;
+        session.controller.abort();
+        session.resume?.();
+      }
+    }
     const representativeTasks = representativeSnapshotTasks(snapshot.tasks);
     agentHub.setExchangeRates(snapshot.exchangeRates ?? null);
     agentHub.setServerStatus(snapshot.server ?? null);
@@ -2661,7 +2678,24 @@ function dataUrlBody(dataUrl) {
   return { type: match[1], body: bytes };
 }
 
-async function uploadAttachment(attachment) {
+const attachmentUploader = window.AgentHubAttachmentUpload.create({
+  request: async (path, init) => {
+    if (vscode && !(await window.__agentHubDirectTransport?.available())) {
+      throw new Error("Локальное соединение для загрузки файлов недоступно. Повтори после подключения Hub.");
+    }
+    await localSessionReady;
+    const signal = AbortSignal.any([...(init?.signal ? [init.signal] : []), AbortSignal.timeout(30_000)]);
+    return hubFetch(path, { ...init, signal, headers: { ...authorizationHeaders(), ...init?.headers } });
+  },
+});
+window.AgentHubAttachmentCapabilities = () => attachmentUploader.capabilities();
+
+async function uploadAttachment(attachment, options) {
+  if (attachment?.blobId) return attachmentUploader.upload(attachment, options);
+  if (Number(attachment?.size) > 20 * 1024 * 1024
+    || String(attachment?.dataUrl ?? "").length > 28 * 1024 * 1024) {
+    throw new Error("Устаревший формат вложения ограничен 20 МБ. Выбери файл снова.");
+  }
   if (vscode) {
     return bridgeCall("upload-attachment", {
       name: attachment.name ?? "attachment.bin",
@@ -2916,6 +2950,17 @@ agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
   }
 }));
 
+const attachmentSendSessions = new Map();
+agentHub.on("message:upload-resume", ({ clientUserMessageId }) => {
+  attachmentSendSessions.get(clientUserMessageId)?.resume?.();
+});
+agentHub.on("message:upload-cancel", ({ clientUserMessageId }) => {
+  const session = attachmentSendSessions.get(clientUserMessageId);
+  if (!session) return;
+  session.controller.abort();
+  session.resume?.();
+});
+
 function sendUserMessage(request, frozenParams = null) {
   const sendTransaction = window.AgentHubMessageSendTransaction;
   const optimisticId = `local:${request.requestId}`;
@@ -3006,11 +3051,52 @@ function sendUserMessage(request, frozenParams = null) {
         { remote: !vscode },
       );
       if (!paths.length) {
-        for (const attachment of request.attachments ?? []) {
-          assertCurrentSendTaskOperation(sendTaskOperation);
-          const path = await uploadAttachment(attachment);
-          assertCurrentSendTaskOperation(sendTaskOperation);
-          paths.push(path);
+        const session = { controller: new AbortController(), resume: null, operation: sendTaskOperation };
+        const total = requestAttachments.reduce((sum, file) => sum + Number(file.size || 0), 0);
+        let uploaded = 0;
+        const project = (uploadState, delivery) => {
+          updateOutgoing(request.taskId, request.requestId, { uploadState, delivery });
+          renderOutgoingWithoutBlockingSend(request.taskId, { queue: true });
+        };
+        attachmentSendSessions.set(request.requestId, session);
+        try {
+          for (const attachment of requestAttachments) {
+            let path;
+            while (!path) {
+              session.controller.signal.throwIfAborted();
+              assertCurrentSendTaskOperation(sendTaskOperation);
+              try {
+                project("uploading", `Загрузка ${attachment.name}…`);
+                path = await uploadAttachment(attachment, {
+                  signal: session.controller.signal,
+                  progress: (bytes) => project("uploading", `Загрузка файлов: ${Math.floor((uploaded + bytes) / Math.max(1, total) * 100)}%`),
+                });
+                session.controller.signal.throwIfAborted();
+              } catch (error) {
+                if (session.controller.signal.aborted || error?.attachmentUploadTerminal
+                  || error?.agentHubMessagePreparationCancelled || !attachment.blobId) throw error;
+                await new Promise((resolve) => {
+                  session.resume = resolve;
+                  project("paused", `Загрузка приостановлена: ${hubErrorMessage(error)}`);
+                });
+                session.resume = null;
+              }
+            }
+            assertCurrentSendTaskOperation(sendTaskOperation);
+            paths.push(path);
+            uploaded += Number(attachment.size || 0);
+          }
+          session.controller.signal.throwIfAborted();
+        } catch (error) {
+          // No send-message command exists yet: recovery is an exact rejected
+          // preparation, never an unknown provider admission or a new identity.
+          const failure = new Error(session.cancellationError ? hubErrorMessage(session.cancellationError)
+            : session.controller.signal.aborted ? "Отправка отменена. Вложения сохранены для повтора." : hubErrorMessage(error));
+          failure.agentHubMessagePreparationCancelled = true;
+          throw failure;
+        } finally {
+          attachmentSendSessions.delete(request.requestId);
+          updateOutgoing(request.taskId, request.requestId, { uploadState: "" });
         }
         assertCurrentSendTaskOperation(sendTaskOperation);
         updateOutgoing(request.taskId, request.requestId, { uploadedPaths: paths.slice() });
