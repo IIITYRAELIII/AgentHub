@@ -9,6 +9,7 @@ const TRACE_MEASUREMENTS = [
   "metadataReadMs", "recordReadMs",
   "workspaceResolveMs", "workspaceReadMs", "factsReadMs", "accountCatalogReadMs", "renderMs",
   "lazyBuildMs", "commitMs", "aggregateMs",
+  "expectedRevision", "revision",
 ];
 
 function workerError(value) {
@@ -90,9 +91,14 @@ export class WorkLogUsageSyncWorkerStore {
     try {
       request.trace?.finish({
         outcome, queueDepth: request.queueDepth,
-        metadata: Object.fromEntries(TRACE_MEASUREMENTS
-          .filter((key) => Number.isFinite(source?.[key]) && source[key] >= 0)
-          .map((key) => [key, source[key]])),
+        metadata: {
+          ...Object.fromEntries(TRACE_MEASUREMENTS
+            .filter((key) => Number.isFinite(source?.[key]) && source[key] >= 0)
+            .map((key) => [key, source[key]])),
+          ...Object.fromEntries(["conflict", "projectionDeferred"]
+            .filter((key) => typeof value?.[key] === "boolean")
+            .map((key) => [key, value[key]])),
+        },
       });
     } catch { /* Diagnostics never change a worker operation's result. */ }
   }
@@ -296,7 +302,9 @@ export class WorkLogUsageSyncWorkerStore {
       return;
     }
     this.#pending.delete(message.id);
-    this.#finishTrace(request, message.error ? "failed" : "succeeded", message.value);
+    const failed = message.error || message.value?.conflict === true
+      || message.value?.projectionDeferred === true;
+    this.#finishTrace(request, failed ? "failed" : "succeeded", message.value);
     if (message.error) request.reject(workerError(message.error));
     else request.resolve(message.value);
     if (!this.#pending.size) this.#worker?.unref?.();

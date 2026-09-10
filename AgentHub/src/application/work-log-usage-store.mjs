@@ -5,7 +5,8 @@ import {
   looksLikeImageGenerationPrompt,
 } from "../domain/codex-usage-estimate.mjs";
 import { normalizeServiceTier } from "../domain/token-usage.mjs";
-import { replaceJournalProjectionFromMarkdown } from "./journal-projection-service.mjs";
+import { journalProjectionVersion, replaceJournalProjectionFromMarkdown } from "./journal-projection-service.mjs";
+import { buildLazyJournalPayload } from "./journal-projection-data.mjs";
 import {
   buildWorkLogUsageHistory,
   incomingLedgerRecord,
@@ -877,11 +878,12 @@ export class WorkLogUsageStore {
           summary,
           sampledAt,
         );
-        if (updated === String(current?.html ?? "")) {
+        const html = buildLazyJournalPayload(updated).html;
+        if (html === String(current?.html ?? "")) {
           return { projected: false, reason: "unchanged" };
         }
-        const projection = await replaceJournalProjectionFromMarkdown(this.#repository, updated, {
-          expectedRevision,
+        const projection = await this.#repository.replaceIndexProjection(html, {
+          expectedRevision, version: journalProjectionVersion(updated),
         });
         if (!projection.conflict) return { projected: true };
       }

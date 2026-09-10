@@ -42,7 +42,7 @@ async function fixture(t, interleavings) {
     },
   });
   t.after(async () => { await store.close(); journal.close(); await rm(root, { recursive: true, force: true }); });
-  return { store, journal, reads: () => reads, latestWorkerHtml: () => latestWorkerHtml };
+  return { store, journal, worker, root, reads: () => reads, latestWorkerHtml: () => latestWorkerHtml };
 }
 
 test("rate-limit projection rereads after a worker commits a newer journal", async (t) => {
@@ -86,4 +86,36 @@ test("rate-limit projection reports bounded CAS exhaustion without replacing the
   await assert.rejects(f.store.projectRateLimits(null, "Codex: 25%"), { code: "JOURNAL_PROJECTION_CONFLICT" });
   assert.equal(f.reads(), 2);
   assert.equal((await f.journal.payload()).html, f.latestWorkerHtml());
+});
+
+test("rate-limit updates preserve durable record coverage and lazy journal data", async (t) => {
+  const f = await fixture(t, 0);
+  await f.journal.upsertRecords([incomingLedgerRecord({
+    provider: "codex", threadId: "thread", turnId: "retained", projectRoot: f.root,
+    taskTitle: "Retained task", title: "Retained turn", prompt: "request", body: "answer",
+    usageReported: true, usage: { inputTokens: 100 }, status: "completed",
+    completedAt: "2026-09-10T10:00:00.000Z",
+  })]);
+  await f.worker.projectJournal({ defaultProjectRoot: f.root, projectRoots: [f.root] });
+  const source = await f.journal.projectionSource();
+  const before = await f.journal.snapshot();
+  assert.ok(source);
+  assert.equal(before.turnEntries.length, 1);
+  assert.equal(Object.keys(before.turns).length, 1);
+  const update = await f.store.projectRateLimits(null, "Codex: 25%", "2026-09-10T11:00:00.000Z");
+  assert.equal(update.projected, true);
+  assert.deepEqual(await f.journal.projectionSource(), source);
+  const after = await f.journal.snapshot();
+  for (const field of ["days", "turns", "summary", "turnEntries"]) assert.deepEqual(after[field], before[field]);
+  assert.match(after.html, /25%/u);
+  const titles = await f.worker.synchronizeTaskTitles({
+    defaultProjectRoot: f.root, projectRoot: f.root,
+    titles: [{ provider: "codex", threadId: "thread", taskTitle: "Retained task" }],
+  });
+  assert.equal(titles.updated, 0);
+  assert.equal(titles.projectionRequired, false);
+  const revision = await f.journal.currentRevision();
+  const repeated = await f.store.projectRateLimits(null, "Codex: 25%", "2026-09-10T11:00:00.000Z");
+  assert.deepEqual(repeated, { projected: false, reason: "unchanged" });
+  assert.equal(await f.journal.currentRevision(), revision);
 });

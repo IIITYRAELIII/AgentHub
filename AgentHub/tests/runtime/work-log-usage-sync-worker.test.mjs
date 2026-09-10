@@ -11,6 +11,7 @@ import { JournalDatabase } from "../../src/infrastructure/persistence/journal-da
 import { WorkLogUsageRepository } from "../../src/infrastructure/persistence/work-log-usage-repository.mjs";
 import { createWorkLogUsageStore } from "../../src/application/work-log-usage-store.mjs";
 import { buildLazyJournalPayload } from "../../src/application/journal-projection-data.mjs";
+import { COMMAND_TRACE_OUTCOMES } from "../../src/domain/command-trace-span.mjs";
 import {
   normalizePersistedWorkLog,
   projectWorkLogUsage,
@@ -582,6 +583,51 @@ test("worker journal initialization retries contention with a bounded deadline a
     await worker?.close();
     journal.close();
     await removeRoot(root);
+  }
+});
+
+test("journal worker traces refused projections without changing results or exposing content", async (t) => {
+  for (const scenario of [
+    { conflict: true, projectionDeferred: true, projected: false, outcome: "failed" },
+    { projectionDeferred: true, projected: false, outcome: "failed" },
+    { conflict: false, projectionDeferred: false, projected: true, outcome: "succeeded" },
+    { projected: false, reason: "unchanged", outcome: "succeeded" },
+  ]) {
+    await t.test(JSON.stringify(scenario), async () => {
+      const { outcome, ...result } = scenario;
+      const value = {
+        ...result, expectedRevision: 41, revision: 42, durationMs: 12,
+        html: "Private journal content", reasonDetail: "Private conflict detail",
+        recordCount: NaN, renderMs: -1,
+      };
+      class ReplyWorker extends EventEmitter {
+        postMessage(message) {
+          queueMicrotask(() => this.emit("message", {
+            id: message.id, value: message.type === "close" ? {} : value,
+          }));
+        }
+        async terminate() {}
+      }
+      const spans = [];
+      const worker = new WorkLogUsageSyncWorkerStore({ databaseFile: "unused.sqlite", WorkerImpl: ReplyWorker });
+      worker.setTraceService({
+        startBestEffortSpan: () => ({ finish: (span) => spans.push(span) }),
+      });
+      try {
+        assert.deepEqual(await worker.projectJournal(), value);
+        assert.equal(spans.length, 1);
+        assert.equal(spans[0].outcome, outcome);
+        assert.ok(Object.values(COMMAND_TRACE_OUTCOMES).includes(spans[0].outcome));
+        assert.deepEqual(spans[0].metadata, {
+          durationMs: 12, expectedRevision: 41, revision: 42,
+          ...Object.fromEntries(["conflict", "projectionDeferred"]
+            .filter((key) => typeof result[key] === "boolean")
+            .map((key) => [key, result[key]])),
+        });
+      } finally {
+        await worker.close();
+      }
+    });
   }
 });
 
