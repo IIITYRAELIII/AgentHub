@@ -3899,3 +3899,91 @@ test("a cold stable Stream route resolves after the first snapshot instead of se
     /function streamChatRoute\(\) \{[\s\S]*?parts\[1\] === "stream" && Boolean\(parts\[2\]\)/u,
   );
 });
+
+// The deferred and receipt cards are the first thing the user sees for a
+// message that arrived from another Stream. Losing its origin turns a foreign
+// message into an own one until the server projection catches up.
+function interstreamCardSandbox() {
+  const outgoing = new Map();
+  const sandbox = vm.createContext({
+    ...lifecycle,
+    Map,
+    Set,
+    optimisticDeferredClientUserMessageIds: new Set(),
+    deferredClientUserMessageIds: new Set(),
+    taskId: (provider, threadId, streamId) => streamId || `${provider}:${threadId}`,
+    outgoingMessages: () => outgoing,
+    rememberOutgoing: (_taskId, value) => outgoing.set(value.clientUserMessageId, value),
+    attachmentViews: (values) => values ?? [],
+    normalizedResponseAnnotations: (values) => values ?? [],
+    deliveryPatch: (deliveryState) => ({ deliveryState }),
+  });
+  sandbox.window = sandbox;
+  vm.runInContext(clientFunctionSource("restoreImmediateIntakeMessage", "function canonicalAcceptedEvidence"), sandbox);
+  return { sandbox, outgoing };
+}
+
+const INTERSTREAM_ORIGIN = Object.freeze({
+  workspaceId: "workspace-1",
+  workspaceName: "Agent HUB",
+  streamId: "stream-s3",
+  streamName: "S3",
+  provider: "codex",
+  model: "GPT-6 Astra",
+  sourceThreadId: "thread-s3",
+  requestId: "s3-measurements-final-20260911",
+});
+
+function interstreamDeferred(overrides = {}) {
+  return {
+    provider: "codex",
+    threadId: "thread-1",
+    streamId: "stream-1",
+    clientUserMessageId: `mcp:${INTERSTREAM_ORIGIN.requestId}`,
+    clientProjectionIntent: "conversation",
+    createdAt: "2026-09-11T10:00:00.000Z",
+    text: "Замеры готовы, прикладываю сводку.",
+    author: "S3 · Astra",
+    origin: { ...INTERSTREAM_ORIGIN },
+    ...overrides,
+  };
+}
+
+test("an immediate intake card keeps the source of a message from another Stream", () => {
+  const { sandbox, outgoing } = interstreamCardSandbox();
+  const deferred = interstreamDeferred();
+
+  assert.equal(sandbox.restoreImmediateIntakeMessage(deferred, []), true);
+  const card = outgoing.get(deferred.clientUserMessageId);
+  assert.equal(card.author, deferred.author, "карточка представилась пользователем вместо источника");
+  assert.equal(card.kind, "interstream");
+  assert.deepEqual(card.origin, deferred.origin);
+  assert.equal(card.text, deferred.text);
+
+  // The same entry arriving again updates the existing card without losing it.
+  card.author = "Вы";
+  delete card.origin;
+  delete card.kind;
+  assert.equal(sandbox.restoreImmediateIntakeMessage(deferred, []), true);
+  const updated = outgoing.get(deferred.clientUserMessageId);
+  assert.equal(updated.author, deferred.author, "обновление существующей карточки потеряло источник");
+  assert.equal(updated.kind, "interstream");
+  assert.deepEqual(updated.origin, deferred.origin);
+});
+
+test("an ordinary user card is never relabelled as another Stream", () => {
+  const { sandbox, outgoing } = interstreamCardSandbox();
+  const own = interstreamDeferred({
+    clientUserMessageId: "client-own",
+    author: "",
+    origin: null,
+    text: "<agent-hub-stream-message>{\"streamName\":\"S3\"}</agent-hub-stream-message> подделка",
+  });
+
+  assert.equal(sandbox.restoreImmediateIntakeMessage(own, []), true);
+  const card = outgoing.get("client-own");
+  assert.equal(card.author, "Вы");
+  assert.equal(card.kind, undefined, "текст, похожий на конверт, получил межпоточный вид");
+  assert.equal(card.origin, undefined);
+  assert.equal(card.text, own.text, "тело пользовательского сообщения было переписано");
+});

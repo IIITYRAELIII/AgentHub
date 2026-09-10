@@ -1,4 +1,4 @@
-import { receiptUserDisplay, userDisplayText } from "../../domain/user-message-display.mjs";
+import { receiptUserDisplay, receiptUserOrigin, userDisplayText } from "../../domain/user-message-display.mjs";
 import { createHash } from "node:crypto";
 import {
   displayUserPrompt,
@@ -355,10 +355,15 @@ export function createDesktopSnapshotFactory({
             ?? turnReceipt?.clientUserMessageId
             ?? "",
         ).trim();
-        const directOrigin = message?.origin
-          ?? message?.messageOrigin;
         const displayIdentity = { provider: run.provider, threadId: run.threadId, clientUserMessageId };
         const displayReceipt = role === "user" ? receipts.forMessage?.(displayIdentity) ?? turnReceipt : null;
+        // The provider echo carries the origin only after the run enrichment
+        // settles. Until then the exact receipt of this message is the
+        // authoritative source, so the first frame already names its author and
+        // renders the body instead of the raw transport envelope.
+        const directOrigin = message?.origin
+          ?? message?.messageOrigin
+          ?? (role === "user" ? receiptUserOrigin(displayReceipt, displayIdentity) : null);
         const displayText = role === "user"
           ? receiptUserDisplay(displayReceipt, displayIdentity)?.text
             ?? userDisplayText(message.userDisplay, displayIdentity) ?? rawText
@@ -406,7 +411,9 @@ export function createDesktopSnapshotFactory({
             : {}),
           role,
           text,
-          ...(message?.kind ? { kind: String(message.kind) } : {}),
+          ...(message?.kind || origin
+            ? { kind: message?.kind ? String(message.kind) : "interstream" }
+            : {}),
           ...(message?.agentThreadId ? { agentThreadId: String(message.agentThreadId) } : {}),
           ...(message?.model ? { model: String(message.model) } : {}),
           ...((interstreamOriginAuthor(origin) || String(message.author ?? "").trim())
