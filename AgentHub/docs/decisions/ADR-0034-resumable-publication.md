@@ -72,7 +72,10 @@ budgets do not establish behavior or ownership. Dependency-matrix, acyclic-graph
 and state-owner checks remain. This removes false failures, not a material test
 latency source.
 
-Quick mode is explicit, not a silently weakened full gate. Expensive tests with
+Quick mode is explicit, not a silently weakened full gate. Unknown paths expand
+deployment scope but cannot silently replace an explicit quick choice with full
+validation; focused mode retains the unknown-path full-test fallback.
+Expensive tests with
 unknown external inputs remain uncached until their inputs can be proved.
 Old cache entries are ignored; old completion journals without identity/draft
 cannot auto-complete. Legacy Await-only markers retain their narrower scope and

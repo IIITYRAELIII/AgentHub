@@ -134,6 +134,7 @@ function focusedSteps(plan, {
 } = {}) {
   const releaseCandidateContour = plan.fullTests;
   const full = publicationSteps({
+    skipTests: quick && plan.unknown.length > 0,
     skipWorker: plan.unknown.length ? false : !plan.worker,
     fullTestCheckpointId,
     testContour: testContour && !releaseCandidateContour,
@@ -146,7 +147,9 @@ function focusedSteps(plan, {
       ["run", "contour:verify", "--", "--require-installed", "--release-candidate"],
     ));
   }
-  if (plan.unknown.length) return full;
+  if (plan.unknown.length) return quick
+    ? [npmStep("Проверка синтаксиса Agent Hub", ["run", "check"]), ...full]
+    : full;
 
   const byLabel = new Map(full.map((step) => [step.label, step]));
   const steps = [];
@@ -397,8 +400,8 @@ export async function publishChanged(args = process.argv.slice(2), {
     const files = await diff(from, { cwd: REPOSITORY_ROOT });
     const plan = classifyPublicationChanges(files);
     if (options.fullTests) plan.fullTests = true;
-    if (plan.unknown.length) plan.fullTests = true;
-    if (plan.unknown.length) console.warn(`Неизвестные пути требуют полной публикации: ${plan.unknown.join(", ")}`);
+    if (plan.unknown.length && !options.quick) plan.fullTests = true;
+    if (plan.unknown.length) console.warn(`Неизвестные пути требуют публикации всех компонентов${options.quick ? " с выбранной quick-проверкой" : " с полными тестами"}: ${plan.unknown.join(", ")}`);
     if (plan.worker) await ensureWorkerDependency();
     const fullTestCheckpointId = createHash("sha256")
       .update(JSON.stringify({ mode: "changed", from }))

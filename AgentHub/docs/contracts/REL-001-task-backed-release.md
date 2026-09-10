@@ -322,7 +322,9 @@ without a Workspace adapter yields `published` and does not claim Task closure.
 
 Validation is explicit and persisted: full, focused by affected surface, or a
 user-authorized quick mode without the test gate. All modes retain publication
-identity and readiness checks. Full validation runs candidate smoke first.
+identity and readiness checks. Unknown paths expand the publication scope but
+cannot override an explicit quick choice; focused mode retains full validation
+for unknown paths. Full validation runs candidate smoke first.
 Successful test files are reused only with the same proven input fingerprint;
 opaque dynamic inputs without an explicit declaration are uncached. The v2 cache
 survives successful suites/publication, with 30-day and 2000-result bounds; legacy

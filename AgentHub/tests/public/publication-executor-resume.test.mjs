@@ -189,3 +189,29 @@ test("focused visual matrices are selected only for affected UI and renderer pat
     assert.equal(steps.some((step) => step.args?.includes("test:visual")), expected);
   }
 });
+
+test("explicit quick keeps all unknown-file publication surfaces without enabling test gates", async (t) => {
+  const { options } = await fixture(t);
+  const events = [];
+  const steps = [];
+  const result = await publishChanged(["--quick"], {
+    ...options,
+    diff: async () => ["AgentHub/new-resource.bin"],
+    run: async (step) => { steps.push(step); events.push(step.label); },
+    publishGit: async (identity) => { assert.equal(identity.validationMode, "quick"); events.push("Git"); },
+    verifyRestart: async ({ expectedReleaseId }) => { assert.equal(expectedReleaseId, "new"); events.push("ready"); },
+    finalizePublication: async () => { events.push("finalize"); return { status: "completed" }; },
+  });
+  assert.equal(result.status, "succeeded");
+  assert.equal((await options.journal.read()).identity.validationMode, "quick");
+  assert.equal(result.plan.fullTests, false);
+  assert.deepEqual(steps.map((step) => step.label), [
+    "Проверка синтаксиса Agent Hub", "Сборка Agent Hub Mobile", "Сборка runtime-релиза",
+    "Развёртывание Mini App Worker", "Проверка Mini App Worker", "Активация runtime-релиза",
+    "Установка расширения VS Code",
+  ]);
+  assert.equal(steps.some((step) => step.args.some((arg) => arg === "test" || arg === "--test" || arg.startsWith("test:") || arg === "contour:verify")), false);
+  assert.ok(events.indexOf("Git") < events.indexOf("Сборка runtime-релиза"));
+  assert.ok(events.indexOf("Активация runtime-релиза") < events.indexOf("ready"));
+  assert.ok(events.indexOf("ready") < events.indexOf("finalize"));
+});
