@@ -380,6 +380,26 @@ confirmed mutation.
 built-in workflow rules. Architect authority is only
 `stream.settings.architect === true`; multiple Architect Streams are allowed.
 
+Both checkbox-generated policy blocks explicitly permit a user's instructions
+for the current work to override conflicting workflow requirements, including
+Task creation, validation scope and publication sequence. Only an explicit
+request establishes an exception; urgency or frustration does not. The agent
+must preserve its agreed scope in continuation and rotation context until that
+work is completed or the user changes it, without extending it to later work.
+This delegates workflow choices only: system instructions, safety/security,
+unrelated developer instructions, tool authorization and integrity checks still
+apply, and skipped checks and publication state must be reported accurately.
+The default Task and release requirements below apply absent that exception.
+This is prompt policy, not a new persisted authorization owner or a bypass of
+the server transitions and evidence checks defined in this contract.
+
+Composition recognizes the exact former Workspace V6 and Architect V1 generated
+prefixes and replaces them with the current templates without duplication.
+Authored variations are preserved, not identified by headings or fuzzy matching.
+The editable Workspace projection also removes the exact V6 prefix. These
+compatibility entries may be removed only when supported stored rules can no
+longer contain those generated versions. Existing custom text is not rewritten.
+
 When that setting is false or absent, every Task workflow status, including
 Test, Await and Done, is an ordinary database transition through the same
 Task lifecycle owner. It keeps row-revision CAS, durable operation outcomes,
@@ -401,7 +421,7 @@ Task. Initial review may use any suitable independent Workspace Stream. After
 a `RETURN`, the corrected exact result goes back to the same reviewer, and that
 `RETURN` remains open until that reviewer confirms the correction.
 
-The built-in rules require a Task for every change to a repository,
+By default, the built-in rules require a Task for every change to a repository,
 configuration, data, documentation or another deliverable. Read-only diagnosis,
 explanations and answers do not create Tasks. If diagnosis becomes
 implementation, claim a Task before the first change and continue only in its
