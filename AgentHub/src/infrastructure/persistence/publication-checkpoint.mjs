@@ -72,9 +72,9 @@ export async function runPublicationSteps(steps, {
   try {
     for (const step of steps) {
       const fingerprint = String(step.fingerprint ?? "").trim();
-      const reusable = fingerprint
+      const reusable = step.reusable !== false && (fingerprint
         ? completedFingerprints[step.label] === fingerprint
-        : completed.has(step.label);
+        : completed.has(step.label));
       if (reusable) {
         console.log(`\n==> ${step.label}: уже выполнено, продолжаю публикацию`);
         await journal?.stepFinished(step.label, { status: "reused" });

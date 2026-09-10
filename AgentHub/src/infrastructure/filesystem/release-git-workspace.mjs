@@ -514,7 +514,7 @@ export class ReleaseGitWorkspaceService {
   }
 
   async prepareCandidate({
-    planRevision, projectRoot, frozenTasks = [], approvedBaseCommit = null, validateBeforeCommit = null,
+    planRevision, projectRoot, workspaceId = null, frozenTasks = [], approvedBaseCommit = null, validateBeforeCommit = null,
   } = {}) {
     const revision = String(planRevision ?? "").trim();
     if (!revision) throw new Error("release candidate requires the exact plan revision");
@@ -553,6 +553,7 @@ export class ReleaseGitWorkspaceService {
       }
       const manifest = {
         schemaVersion: 2,
+        ...(workspaceId ? { workspaceId: String(workspaceId) } : {}),
         planRevision: revision,
         primaryRoot: initial.root,
         primaryGitCommonDir: initial.commonDir,

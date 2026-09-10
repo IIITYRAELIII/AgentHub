@@ -255,7 +255,9 @@ already frozen candidate.
 
 Completion performs one transaction that CAS-checks every exact Task revision
 and the plan hash, then changes only those Tasks to `done` and persists a
-remaining-Await rebuild marker in the same commit.
+versioned finalization marker in the same commit. That marker binds the exact
+plan and published repository revisions to primary synchronization, dev
+synchronization and remaining-Await rebuild receipts.
 Generic `done` and
 `hub_task_complete` do not create production evidence.
 
@@ -269,9 +271,47 @@ and their managed branches and worktrees may be removed. Published `main` is
 incorporated into `dev` without discarding later Test work. Remaining Await
 Tasks stay accepted and mutable `PreRelease` is immediately rebuilt for the next
 explicit release. If that rematerialization fails, the caller receives
-`retry_required`; a repeated completion request retries only the pending
-rebuild, never publication verification or Task completion, and clears the
-marker only after successful installation.
+`retry_required`; a repeated completion request resumes only unfinished
+synchronization/rebuild stages, never Task closure. Each successful stage
+persists its receipt through a short canonical mutation before the next stage.
+The active marker clears only after all stages have confirmed success.
+The last 16 completed exact-plan outcomes remain canonical evidence for lost-response
+replay; transport acknowledgment is not permission to forget release completion.
+Interrupted Desktop completion reconciles only an existing pending or completed
+outcome, never starts fresh Task closure. Legacy Await-only markers cannot prove
+primary/dev synchronization: recovery explicitly reports unavailable legacy
+evidence and resumes their original rebuild scope.
+
+The publication executor consumes the frozen manifest; it does not select Tasks
+or infer approval. Its durable journal retains exact candidate, validation mode,
+run ID, stage results, expected installed release, publication generation and
+completion command identity. Before deployment, even after a saved Git success,
+it rechecks the approved origin base and frozen plan. Push uses the exact
+candidate revision and exact origin lease with an ancestry guard; observing the
+same candidate on origin reconciles a lost push response without another push.
+The first automated adapter supports one exact repository; multiple repositories
+fail before publication rather than receiving partial completion evidence.
+
+Deferred restart and `--skip-restart` with an unready runtime are
+`awaiting_restart`, not success. Publication-state is recorded only after
+required exact runtime readiness. Pending finalization stays recoverable and
+retains checkpoints. A ready replacement resumes only readiness, publication
+recording and canonical completion under the publication lock, without build,
+deploy, push or restart; startup readiness does not wait for that work.
+Only completed Workspace finalization yields `succeeded`. A low-level publisher
+without a Workspace adapter yields `published` and does not claim Task closure.
+
+Validation is explicit and persisted: full, focused by affected surface, or a
+user-authorized quick mode without the test gate. All modes retain publication
+identity and readiness checks. Full validation runs candidate smoke first.
+Successful test files are reused only with the same proven input fingerprint;
+opaque dynamic inputs without an explicit declaration are uncached. The v2 cache
+survives successful suites/publication, with 30-day and 2000-result bounds; legacy
+or proofless entries are not evidence. A failed file has no unconditional retry.
+The full-test stage has a two-hour wall-clock and ten-minute output-idle bound.
+These timeouts report failure, not an inferred external outcome. The two cosmetic
+browser matrices run in `test:visual`, affected focused UI validation and full
+validation exactly once, rather than every ordinary unit run. See ADR-0034.
 
 Verified release completion invokes the same Task Git owner with each exact
 published repository revision. The returned `devSynchronization` evidence

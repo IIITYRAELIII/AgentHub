@@ -15,7 +15,12 @@ function fixture(plan = {
   const service = new WorkspaceReleaseService({
     store: createTaskBoardMutationOwner({
       runMutation: (operation) => Promise.resolve().then(operation),
-      awaitRebuildPending: () => pending,
+      awaitRebuildPending: () => structuredClone(pending),
+      releaseFinalizationOutcome: () => null,
+      recordReleaseFinalizationStage: (_workspaceId, { stage, projectRoot, receipt }) => {
+        if (stage === "await") pending.awaitResult = structuredClone(receipt);
+        else pending.repositories.find((item) => item.projectRoot === projectRoot)[stage] = structuredClone(receipt);
+      },
       clearAwaitRebuildPending: () => {
         calls.push(["clear-pending"]);
         pending = null;
@@ -23,7 +28,7 @@ function fixture(plan = {
       },
       completeRelease: (workspaceId, options) => {
         calls.push(["complete", workspaceId, options]);
-        pending = options.awaitRebuild;
+        pending = structuredClone(options.awaitRebuild);
         return { workspaceId, released: plan.ready };
       },
     }),
@@ -74,7 +79,7 @@ function fixture(plan = {
 
 test("release completion rejects a raw Task store dependency", () => {
   assert.throws(() => new WorkspaceReleaseService({
-    store: { completeRelease() {}, awaitRebuildPending() {}, clearAwaitRebuildPending() {} },
+    store: { completeRelease() {}, awaitRebuildPending() {}, clearAwaitRebuildPending() {}, recordReleaseFinalizationStage() {}, releaseFinalizationOutcome() {} },
     releasePlanner: { plan() {} },
     releaseGitWorkspaces: { frozenCandidate() {}, synchronizePublishedPrimary() {} },
     taskGitWorkspaces: { synchronizeMainIntoDev() {} },
@@ -145,6 +150,9 @@ test("release completion verifies repositories before atomically closing ready c
     awaitRebuild: {
       planRevision: "plan-1",
       fallbackProjectRoots: ["D:/repo"],
+      version: 2,
+      repositories: [{ projectRoot: "D:/repo", publishedRevision: "abc", primary: null, dev: null }],
+      awaitResult: null,
     },
   });
   assert.deepEqual(calls[6][1], {
@@ -167,10 +175,11 @@ test("failed post-publication Await rebuild is durable and retryable without com
   const first = await service.completeRelease(request);
   assert.equal(first.preReleaseIntegration.status, "retry_required");
   assert.match(first.preReleaseIntegration.reason, /injected rebuild failure/u);
-  assert.deepEqual(state.pending, {
-    planRevision: "plan-1",
-    fallbackProjectRoots: ["D:/repo"],
-  });
+  assert.equal(state.pending.planRevision, "plan-1");
+  assert.equal(state.pending.version, 2);
+  assert.equal(state.pending.repositories[0].primary.completed, true);
+  assert.equal(state.pending.repositories[0].dev.completed, true);
+  assert.equal(state.pending.awaitResult.completed, false);
 
   const second = await service.completeRelease(request);
   assert.equal(second.releaseAlreadyCompleted, true);
@@ -228,9 +237,10 @@ test("manual primary synchronization does not undo verified release completion",
     verificationSummary: "Published and verified",
   });
   assert.equal(result.publication.primarySynchronization[0].status, "manual_required");
+  assert.equal(result.finalization.status, "retry_required");
   assert.deepEqual(
     calls.map(([name]) => name),
-    ["lock-await", "verify", "verify", "complete", "sync-primary", "sync-dev", "rebuild-await", "clear-pending"],
+    ["lock-await", "verify", "verify", "complete", "sync-primary", "sync-dev", "rebuild-await"],
   );
 });
 
@@ -256,9 +266,10 @@ test("release completion records a dev conflict without hiding publication succe
   assert.equal(result.publication.devSynchronization[0].status, "conflict");
   assert.equal(result.publication.devSynchronization[0].integrated, false);
   assert.deepEqual(result.publication.devSynchronization[0].conflicts, ["AgentHub/app.js"]);
+  assert.equal(result.finalization.status, "retry_required");
   assert.deepEqual(
     calls.map(([name]) => name),
-    ["lock-await", "verify", "verify", "complete", "sync-primary", "sync-dev", "rebuild-await", "clear-pending"],
+    ["lock-await", "verify", "verify", "complete", "sync-primary", "sync-dev", "rebuild-await"],
   );
 });
 
@@ -283,4 +294,37 @@ test("publication generation change between verify and closure blocks Task compl
   assert.equal(calls.some(([name]) => name === "complete"), false);
   assert.equal(calls.some(([name]) => name === "sync-primary"), false);
   assert.equal(calls.some(([name]) => name === "sync-dev"), false);
+});
+
+
+test("pending finalization rejects another plan without reusing its publication authority", async () => {
+  const { service, calls } = fixture(undefined, { rebuildFailures: 1 });
+  const request = { workspaceId: "workspace-1", expectedPlanRevision: "plan-1", deploymentVerified: true,
+    verificationSummary: "verified", expectedRepositories: [{ projectRoot: "D:/repo", revision: "abc" }] };
+  await service.completeRelease(request);
+  const before = calls.length;
+  await assert.rejects(service.completeRelease({ ...request, expectedPlanRevision: "plan-2" }), /another plan/u);
+  assert.deepEqual(calls.slice(before), [["lock-await", "workspace-1"]]);
+});
+
+test("retry preserves completed stages and reconciles failed dev with the original exact revision", async () => {
+  const { service, calls, state } = fixture(undefined, { devSync: { status: "conflict", integrated: false } });
+  const request = { workspaceId: "workspace-1", expectedPlanRevision: "plan-1", deploymentVerified: true,
+    verificationSummary: "verified", expectedRepositories: [{ projectRoot: "D:/repo", revision: "abc" }] };
+  await service.completeRelease(request);
+  assert.equal(state.pending.repositories[0].dev.completed, false);
+  service.taskGitWorkspaces.synchronizeMainIntoDev = async (value) => {
+    calls.push(["sync-dev", value]);
+    return { status: "merged", integrated: true };
+  };
+  const result = await service.completeRelease(request);
+  assert.equal(result.finalization.status, "completed");
+  assert.equal(state.pending, null);
+  assert.equal(calls.filter(([name]) => name === "sync-primary").length, 1);
+  assert.equal(calls.filter(([name]) => name === "rebuild-await").length, 1);
+  assert.equal(calls.filter(([name]) => name === "complete").length, 1);
+  assert.deepEqual(calls.filter(([name]) => name === "sync-dev").map(([, args]) => args), [
+    { projectRoot: "D:/repo", publishedRevision: "abc" },
+    { projectRoot: "D:/repo", publishedRevision: "abc" },
+  ]);
 });

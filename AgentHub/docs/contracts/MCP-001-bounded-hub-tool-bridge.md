@@ -66,7 +66,16 @@ only quarantine/acknowledgment writes with the original event ID. A busy
 acknowledgment cannot replay that invocation. An interrupted drain remains
 recoverable through the existing idempotent event identity.
 Release completion uses the same
-Task owner. `hub_task_claim` enters Git through public Task admission, which
+Task owner. Desktop `complete-workspace-release` has action-specific interrupted
+effect reconciliation: under its existing command identity it can only resume
+the exact pending finalization or return the canonical completed outcome.
+It cannot begin fresh closure without that evidence. The Task store retains the
+last 16 completed exact plans/repositories in its existing finalization setting,
+so transport ACK retirement cannot erase release completion. A definitive
+`retry_required` response permits a new finalization attempt against the same
+pending plan; an ambiguous response retains its original command ID. Other
+interrupted Desktop mutations remain unknown and are not replayed.
+`hub_task_claim` enters Git through public Task admission, which
 creates the durable per-Task/repository process-tree guard before the first
 child process; an unproven survivor blocks claim effects and retries until the
 operator proves the tree absent.
