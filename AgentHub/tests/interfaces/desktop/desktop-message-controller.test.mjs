@@ -934,6 +934,21 @@ test("desktop message receipt preserves the visible message before provider laun
   assert.equal(observedReceipt.result.responseAnnotationRequest, "Что изменить?");
 });
 
+test("desktop admission retains full long quotes and exact locators in its receipt", async () => {
+  for (const length of [401, 430, 12_000]) {
+    const text = "я".repeat(length);
+    const annotation = {
+      text, annotation: "Проверить полностью",
+      source: { ...ANNOTATION_SOURCE, end: ANNOTATION_SOURCE.start + length },
+    };
+    const receipts = new MessageReceiptRegistry();
+    const messages = controller({ receipts });
+    const clientUserMessageId = `long-quote-${length}`;
+    await messages.sendMessage({ text: "Вопрос", responseAnnotations: [annotation], clientUserMessageId });
+    assert.deepEqual(receipts.get({ clientUserMessageId }).result.responseAnnotations, [annotation]);
+  }
+});
+
 test("deferred Desktop images remain persistent and visible in the queue", async () => {
   const file = EXISTING_IMAGE;
   let deferredOptions = null;

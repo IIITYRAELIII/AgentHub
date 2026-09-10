@@ -138,7 +138,7 @@ export const LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V5 = [
   "In a regular Stream, the release command accepts the current Task and prepares it for Await but does not publish production. Only an Architect may freeze and publish the release.",
 ].join("\n");
 
-export const RELEASE_WORKFLOW_DEVELOPER_RULES = [
+export const LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V6 = [
   "Release workflow — applies only when the checkbox is enabled",
   "Any work that changes code, configuration, data, documentation, or another deliverable MUST be performed in a Dashboard Task.",
   "If no suitable Task exists, create it before the first edit. If the Task already exists, assign it to the current Stream before the first edit. Do not change files or data without a created and assigned Task.",
@@ -159,7 +159,7 @@ export const RELEASE_WORKFLOW_DEVELOPER_RULES = [
   "Only the user's explicit release command authorizes release tests, builds, final integration, push, production deployment, and release completion. The authorization applies only to the current release.",
   "In a regular Stream, the release command accepts the current Task and prepares it for Await but does not publish production. Only an Architect may freeze and publish the release.",
 ].join("\n");
-export const ARCHITECT_RELEASE_DEVELOPER_RULES = [
+export const LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V1 = [
   "You are a Workspace release architect.",
   "You assemble, validate, and deploy releases.",
   "Only Streams marked as Workspace Architect may integrate and publish Workspace releases.",
@@ -183,6 +183,22 @@ export const ARCHITECT_RELEASE_DEVELOPER_RULES = [
   "Immediately before push, fetch origin/main again and compare it with the frozen approved main commit. If it moved, stop and ask the user; never resolve that race silently.",
   "After confirmed publication, close only the included work items, synchronize published main into dev without losing later Test work, and rebuild the mutable PreRelease from the remaining Await Tasks.",
 ].join("\n");
+
+export const EXPLICIT_USER_WORKFLOW_EXCEPTION = [
+  "Explicit user instructions for the current work take precedence over conflicting requirements of this release workflow, including Task creation, validation scope, and publication sequence.",
+  "Apply only the exception the user explicitly requested; urgency or frustration alone does not authorize one. Preserve the agreed scope in continuation and rotation context, and keep it in effect until that work is complete or the user changes it. Do not extend it to unrelated later work.",
+  "This exception applies only to workflow policy. It does not override system instructions, safety or security requirements, unrelated developer instructions, or tool-enforced authorization and integrity checks. Report skipped validation and actual publication state accurately.",
+].join("\n");
+
+export const RELEASE_WORKFLOW_DEVELOPER_RULES = [
+  LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V6,
+  EXPLICIT_USER_WORKFLOW_EXCEPTION,
+].join("\n\n");
+
+export const ARCHITECT_RELEASE_DEVELOPER_RULES = [
+  LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V1,
+  EXPLICIT_USER_WORKFLOW_EXCEPTION,
+].join("\n\n");
 
 export const TEAM_LEAD_DEVELOPER_RULES = [
   "You are a Workspace team lead.",
@@ -212,6 +228,7 @@ export function workspaceSettingsWithReleaseWorkflow(settings, enabled = false) 
 const KNOWN_WORKSPACE_RULE_PREFIXES = [
   { content: LEGACY_TASK_BRANCH_RELEASE_WORKFLOW_DEVELOPER_RULES, release: true },
   { content: RELEASE_WORKFLOW_DEVELOPER_RULES, release: true },
+  { content: LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V6, release: true },
   { content: LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V5, release: true },
   { content: LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V4, release: true },
   { content: LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V3, release: true },
@@ -262,7 +279,17 @@ export function effectiveWorkspaceDeveloperRules(content, settings) {
 }
 
 export function effectiveStreamDeveloperRules(content, settings) {
-  const source = String(content ?? "");
+  let source = String(content ?? "");
+  // Only exact generated prefixes are replaceable; edited/custom rules remain authored content.
+  // Retire the V1 prefix only after supported stores no longer contain that generated version.
+  let normalized = source.replace(/\r\n?/gu, "\n").replace(/^\n+/u, "");
+  while (normalized) {
+    const prefix = [ARCHITECT_RELEASE_DEVELOPER_RULES, LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V1]
+      .find((candidate) => normalized === candidate || normalized.startsWith(`${candidate}\n`));
+    if (!prefix) break;
+    normalized = normalized.slice(prefix.length).replace(/^\n+/u, "");
+    source = normalized;
+  }
   return [
     settings?.architect === true ? ARCHITECT_RELEASE_DEVELOPER_RULES : "",
     settings?.teamLead === true ? TEAM_LEAD_DEVELOPER_RULES : "",

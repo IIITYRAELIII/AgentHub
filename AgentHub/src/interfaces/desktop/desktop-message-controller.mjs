@@ -94,7 +94,6 @@ export function createDesktopMessageController({
     const messageAttachments = [...descriptors, ...taskReferences];
     const displayText = String(params.displayText ?? params.text ?? "").trim();
     const responseAnnotations = normalizedResponseAnnotations(params.responseAnnotations, {
-      textLimit: 400,
       annotationLimit: 20_000,
     });
     const responseAnnotationRequest = String(params.responseAnnotationRequest ?? "").trim();

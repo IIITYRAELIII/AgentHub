@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   ARCHITECT_RELEASE_DEVELOPER_RULES,
+  EXPLICIT_USER_WORKFLOW_EXCEPTION,
   effectiveStreamDeveloperRules,
   effectiveWorkspaceDeveloperRules,
   LEGACY_AGENT_HUB_WORKSPACE_DEVELOPER_RULES_RU_V1,
@@ -14,6 +15,8 @@ import {
   LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V3,
   LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V4,
   LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V5,
+  LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V6,
+  LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V1,
   RELEASE_WORKFLOW_DEVELOPER_RULES,
   TEAM_LEAD_DEVELOPER_RULES,
 } from "../../src/domain/workspace-release-workflow.mjs";
@@ -44,6 +47,7 @@ test("previous release policies are stripped after title and freeze guidance cha
     LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V3,
     LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V4,
     LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V5,
+    LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V6,
   ]) {
     const rules = effectiveWorkspaceDeveloperRules(
       `${legacyRules}\n\nCustom rule`,
@@ -93,6 +97,48 @@ test("release-disabled Workspace injects no hidden rules", () => {
     "Custom rule",
   );
   assert.equal(effectiveWorkspaceDeveloperRules("", { releaseWorkflowEnabled: false }), "");
+});
+
+test("both generated policies grant a scoped explicit user exception", () => {
+  for (const output of [
+    effectiveWorkspaceDeveloperRules("", { releaseWorkflowEnabled: true }),
+    effectiveStreamDeveloperRules("", { architect: true }),
+  ]) {
+    assert.equal(output.split(EXPLICIT_USER_WORKFLOW_EXCEPTION).length - 1, 1);
+    assert.match(output, /Explicit user instructions for the current work take precedence/u);
+    assert.match(output, /Task creation, validation scope, and publication sequence/u);
+    assert.match(output, /urgency or frustration alone does not authorize/u);
+    assert.match(output, /continuation and rotation context.*until that work is complete/u);
+    assert.match(output, /does not override system instructions, safety or security requirements/u);
+    assert.match(output, /tool-enforced authorization and integrity checks/u);
+  }
+});
+
+test("generated Architect prefixes are replaced once while authored edits survive", () => {
+  for (const prefix of [LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V1, ARCHITECT_RELEASE_DEVELOPER_RULES]) {
+    const stored = `${prefix}\n\n${prefix}\n\nCustom rule`.replace(/\n/gu, "\r\n");
+    const output = effectiveStreamDeveloperRules(stored, { architect: true });
+    assert.equal(output, `${ARCHITECT_RELEASE_DEVELOPER_RULES}\n\nCustom rule`);
+    assert.equal(effectiveStreamDeveloperRules(output, { architect: true }), output);
+    assert.equal(effectiveStreamDeveloperRules(stored, { architect: false }), "Custom rule");
+  }
+  const authored = LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V1.replace(
+    "You assemble, validate, and deploy releases.", "Custom validation and publication rule.",
+  );
+  assert.equal(effectiveStreamDeveloperRules(authored, {}), authored);
+  assert.equal(effectiveStreamDeveloperRules(authored, { architect: true }), `${ARCHITECT_RELEASE_DEVELOPER_RULES}\n\n${authored}`);
+});
+
+test("Workspace legacy exception cutover is idempotent and preserves authored variants", () => {
+  const settings = { releaseWorkflowEnabled: true };
+  const stored = `${LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V6}\n\nCustom rule`;
+  const effective = effectiveWorkspaceDeveloperRules(stored, settings);
+  assert.equal(effectiveWorkspaceDeveloperRules(effective, settings), effective);
+  assert.equal(effectiveWorkspaceDeveloperRules(stored, {}), "Custom rule");
+  const authored = LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V6.replace(
+    "Any work that changes code", "Custom policy for work that changes code",
+  );
+  assert.equal(effectiveWorkspaceDeveloperRules(authored, {}), authored);
 });
 
 test("Architect rules use only explicit settings.architect and allow multiple Streams", () => {
