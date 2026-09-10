@@ -130,6 +130,23 @@ test("history read failure other than size is not retried or hidden", async () =
   assert.equal(reads, 1);
 });
 
+test("a successful but truncated shared history is reread once with the whole envelope", async () => {
+  const { service } = fixture();
+  const text = "Полное сообщение без усечения. ".repeat(4_000);
+  const source = { start: 0, end: 1, total: 1, items: [{ id: "turn", messages: [{ itemId: "user", role: "user", text }] }] };
+  let selections = 0;
+  const reads = [];
+  service.dispatchCommand = async () => { selections += 1; return { payload: "s".repeat(700_000) }; };
+  service.taskHistory = async (params) => { reads.push(params); return fitTaskHistoryPayload(source, { maxBytes: params.maxResponseBytes }); };
+  const result = await service.openTask({ streamId: "stream-1", maxResponseBytes: 850_000 });
+  assert.equal(selections, 1);
+  assert.equal(reads.length, 2);
+  assert.ok(reads.every((request) => request.refreshSource === false));
+  assert.equal(result.snapshotDeferred, true);
+  assert.equal(result.history.items[0].messages[0].text, text);
+  assert.equal(result.history.transportTruncated, undefined);
+});
+
 test("a quote exceeding the whole envelope fails after one read-only budget retry", async () => {
   const { service } = fixture();
   let reads = 0;

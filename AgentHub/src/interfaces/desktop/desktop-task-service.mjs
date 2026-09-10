@@ -229,6 +229,12 @@ export class DesktopTaskService {
       deferSnapshot();
       history = await read();
     }
+    if (history?.transportTruncated === true && !envelope.snapshotDeferred) {
+      // A fitted response may succeed only because message text was shortened.
+      // Give history the whole envelope before presenting that lossy projection.
+      deferSnapshot();
+      history = await read();
+    }
     const result = { ...envelope, history };
     if (Buffer.byteLength(JSON.stringify(result), "utf8") > responseBudget(params)) {
       throw new Error("Ответ открытия истории превышает общий лимит транспорта");

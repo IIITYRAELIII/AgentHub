@@ -273,7 +273,7 @@ html[data-view="chat"][data-surface][data-theme] {
   z-index: 1;
 }
 
-.stream-tabs-track .stream-tab > .stream-tab-status-layer {
+.stream-tab > .stream-tab-status-layer {
   inset: 0;
   pointer-events: none;
   position: absolute;

@@ -219,7 +219,11 @@ durable command to queued intake.
 
 Codex closes steer admission for one exact nonterminal turn when that run has
 observed `item/started` for an `agentMessage` with `phase="final_answer"` and the
-item's non-empty `turnId` equals the registered `run.turnId`. The admission
+item's non-empty `turnId` equals the registered `run.turnId`. An item carrying
+a nonempty typed `questions` array is an asynchronous question, not a final
+answer (UI-001), and cannot close this fence. This holds after live completion,
+hydration and late question metadata; a separate genuine final item still
+closes admission for the exact turn. The admission
 boundary checks this protocol state both before acknowledging a requested steer
 and immediately before `turn/steer`, because the phase may advance while the
 durable command waits for dispatch. The same command remains ordinary durable

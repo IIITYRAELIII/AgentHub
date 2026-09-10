@@ -755,3 +755,50 @@ test("Status card surfaces survive theme overrides for open, started and complet
     assert.equal(await page.locator('[data-task-card-modal]').isVisible(), true);
   } finally { await browser.close(); }
 });
+
+
+test("activity rail keeps running effects and drags compact Tasks into the composer", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchEdge(chromium);
+  try {
+    const page = await browser.newPage({ viewport: { width: 2048, height: 1100 } });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await openFixture(page);
+    await page.evaluate(({ tasks, workspaces }) => {
+      document.documentElement.dataset.view = "chat";
+      document.documentElement.dataset.streamStatusEffect = "energy";
+      window.AgentHub.setTasks([{
+        id: "conversation", workspaceId: "one", workspaceName: "Hub",
+        streamId: "stream", streamName: "Sirius", title: "Hub", provider: "codex",
+        running: true, selected: true, startedAt: new Date().toISOString(),
+        run: { turnId: "turn1", operationKind: "user-turn",
+          providerStart: { turnId: "turn1", state: "observed" } },
+      }]);
+      window.AgentHubTaskBoard.setSnapshot({ tasks: [tasks[0]], workspaces });
+      window.AgentHubTaskBoard.setSelectedWorkspace("one");
+    }, { tasks, workspaces });
+    const effect = await page.locator(".activity-stream-item[data-running]")
+      .evaluate((element) => {
+        const layer = element.querySelector(".stream-tab-status-layer");
+        return layer && getComputedStyle(layer, "::before").animationName;
+      });
+    assert.equal(effect, "stream-energy-charge");
+    const source = await page.locator(".board-task-card.is-compact").first().boundingBox();
+    const target = await page.locator(".chat-pane").boundingBox();
+    await page.mouse.move(source.x + 30, source.y + 25);
+    await page.mouse.down();
+    await page.mouse.move(source.x + 33, source.y + 25);
+    await page.mouse.move(source.x + 38, source.y + 25);
+    await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2, { steps: 15 });
+    await page.mouse.up();
+    const reference = page.locator(".attachment-task-reference");
+    await reference.waitFor({ state: "visible" });
+    assert.equal(await reference.count(), 1);
+    assert.match(await reference.innerText(), /HUB-1/u);
+    assert.deepEqual(await page.evaluate(() => window.__boardActions), []);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});

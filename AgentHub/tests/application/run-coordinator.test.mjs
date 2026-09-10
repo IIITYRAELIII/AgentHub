@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { activeTurnNotSteerable, RunCoordinator } from "../../src/application/run-coordinator.mjs";
 import { createInterstreamMessage } from "../../src/domain/interstream-message.mjs";
+import {
+  completeCodexAgentMessage,
+  hydrateCodexAgentMessages,
+  startCodexAgentMessage,
+} from "../../src/providers/codex/codex-agent-message-reducer.mjs";
 
 function fixture(overrides = {}) {
   const calls = [];
@@ -632,6 +637,97 @@ test("RunCoordinator queues an exact Codex final-answer follow-up instead of ste
   assert.deepEqual(f.calls.find(([name]) => name === "schedule").slice(1), [
     { id: "queued-after-final" }, 500,
   ]);
+});
+
+for (const observation of ["started", "completed", "hydrated", "late-question-metadata"]) {
+  test(`RunCoordinator keeps async questions steerable after ${observation}`, async () => {
+    const active = {
+      id: "active", provider: "codex", threadId: "thread-1", turnId: "turn-1",
+      status: "running", executionOwner: "hub",
+    };
+    const item = {
+      id: "question-1", type: "agentMessage", phase: "final_answer", text: "Choose",
+      questions: [{ title: "Which option?", options: ["A", "B"] }],
+    };
+    if (observation === "started") startCodexAgentMessage(active, { turnId: active.turnId, item });
+    else if (observation === "completed") completeCodexAgentMessage(active, { turnId: active.turnId, item });
+    else if (observation === "hydrated") hydrateCodexAgentMessages(active, [item], { turnId: active.turnId });
+    else {
+      startCodexAgentMessage(active, { turnId: active.turnId, item: { ...item, questions: undefined } });
+      completeCodexAgentMessage(active, { turnId: active.turnId, item });
+    }
+    const f = fixture({ taskRuns: { forTask: () => active } });
+    const admission = await f.coordinator.acceptClientInput({
+      input: "B", target: f.target, clientUserMessageId: "answer-command", followUpMode: "steer",
+    });
+    assert.equal(admission.steerPending, true);
+    assert.equal(admission.queued, false);
+    const deferred = f.calls.find(([name]) => name === "defer")[3];
+    assert.equal(deferred.conflictKind, "message-steer");
+    assert.equal(deferred.steerTargetRunId, active.id);
+    assert.equal(deferred.steerTargetTurnId, active.turnId);
+    const result = await f.coordinator.steer({
+      input: "B", clientUserMessageId: "answer-command",
+      target: { ...f.target, steerTargetRunId: deferred.steerTargetRunId, steerTargetTurnId: deferred.steerTargetTurnId },
+    });
+    assert.equal(result.steered, true);
+    const calls = f.calls.filter(([name]) => name === "provider");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][2], "steerTurn");
+    assert.equal(calls[0][3].clientUserMessageId, "answer-command");
+    assert.equal(calls[0][3].run.turnId, "turn-1");
+  });
+}
+
+test("RunCoordinator async questions do not reopen a genuine final-answer fence", async () => {
+  for (const questions of [undefined, [], null]) {
+    const active = {
+      id: "active", provider: "codex", threadId: "thread-1", turnId: "turn-1",
+      status: "running", executionOwner: "hub",
+    };
+    startCodexAgentMessage(active, { turnId: active.turnId, item: {
+      id: "final-1", type: "agentMessage", phase: "final_answer", text: "Actual final", questions,
+    } });
+    completeCodexAgentMessage(active, { turnId: active.turnId, item: {
+      id: "question-1", type: "agentMessage", phase: "final_answer", text: "Choose",
+      questions: [{ title: "Which option?", options: ["A", "B"] }],
+    } });
+    const f = fixture({ taskRuns: { forTask: () => active } });
+    const admission = await f.coordinator.acceptClientInput({
+      input: "B", target: f.target, clientUserMessageId: "answer-command", followUpMode: "steer",
+    });
+    assert.equal(admission.reason, "final-answer-active");
+    assert.equal(admission.queued, true);
+    await assert.rejects(f.coordinator.steer({
+      input: "B", clientUserMessageId: "answer-command",
+      target: { ...f.target, steerTargetRunId: active.id, steerTargetTurnId: active.turnId },
+    }), /exact Codex final answer already started/u);
+    assert.equal(f.calls.some(([name]) => name === "provider"), false);
+  }
+});
+
+test("RunCoordinator genuine final after async-question admission still blocks dispatch", async () => {
+  const active = {
+    id: "active", provider: "codex", threadId: "thread-1", turnId: "turn-1",
+    status: "running", executionOwner: "hub",
+  };
+  completeCodexAgentMessage(active, { turnId: active.turnId, item: {
+    id: "question-1", type: "agentMessage", phase: "final_answer", text: "Choose",
+    questions: [{ title: "Which option?", options: ["A", "B"] }],
+  } });
+  const f = fixture({ taskRuns: { forTask: () => active } });
+  const admission = await f.coordinator.acceptClientInput({
+    input: "B", target: f.target, clientUserMessageId: "answer-command", followUpMode: "steer",
+  });
+  assert.equal(admission.steerPending, true);
+  startCodexAgentMessage(active, { turnId: active.turnId, item: {
+    id: "final-after-question", type: "agentMessage", phase: "final_answer", text: "",
+  } });
+  await assert.rejects(f.coordinator.steer({
+    input: "B", clientUserMessageId: "answer-command",
+    target: { ...f.target, steerTargetRunId: active.id, steerTargetTurnId: active.turnId },
+  }), /exact Codex final answer already started/u);
+  assert.equal(f.calls.some(([name]) => name === "provider"), false);
 });
 
 test("RunCoordinator keeps exact Codex commentary steering available", async () => {

@@ -1,3 +1,4 @@
+import { receiptUserDisplay } from "../domain/user-message-display.mjs";
 import { isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
 import { isClaudeCompactionRun } from "../domain/claude-context-maintenance.mjs";
 import { providerTurnTelemetrySnapshot } from "../domain/task-runs.mjs";
@@ -12,6 +13,7 @@ export class ManagedRunHistoryService {
     telemetryStore = null,
     terminalCommits = null,
     commandTrace = null,
+    receiptForMessage = () => null,
     logger = console,
   }) {
     this.taskSyncStore = taskSyncStore;
@@ -22,6 +24,7 @@ export class ManagedRunHistoryService {
     this.telemetryStore = telemetryStore;
     this.terminalCommits = terminalCommits;
     this.commandTrace = commandTrace;
+    this.receiptForMessage = receiptForMessage;
     this.logger = logger;
   }
 
@@ -104,6 +107,15 @@ export class ManagedRunHistoryService {
       });
       const current = history.findLast((item) => String(item?.id ?? "") === String(turnId));
       if (current) {
+        for (const message of current.messages ?? []) {
+          if (message.role !== "user" || !message.clientUserMessageId) continue;
+          const identity = {
+            provider: run.provider, threadId: run.threadId,
+            clientUserMessageId: message.clientUserMessageId,
+          };
+          const display = receiptUserDisplay(this.receiptForMessage(identity), identity);
+          if (display) message.userDisplay = display;
+        }
         const responseAttachments = Array.isArray(run.responseAttachments)
           ? run.responseAttachments.map((attachment) => ({ ...attachment }))
           : [];

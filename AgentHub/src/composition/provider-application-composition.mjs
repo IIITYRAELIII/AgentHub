@@ -506,6 +506,7 @@ export async function createProviderApplicationComposition({
     wakeDeferredInputs: api.wakeDeferredInputs,
   });
   const providerCatalog = createProviderCatalogComposition({
+    receiptForMessage: (identity) => runtimeData.desktopMessageReceipts.get(identity),
     taskSyncStore: runtimeData.taskSyncStore,
     workspaceCatalogStore,
     taskRuns: runtimeData.taskRuns,

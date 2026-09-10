@@ -3448,7 +3448,10 @@ function renderActivityRail() {
       "aria-label": [workspaceName, streamName, presentation.agentLabel, presentation.statusLabel]
         .filter(Boolean).join(". "),
       title,
-    }, [renderStreamStatusCard(task, activityTitle, presentation)]);
+    }, [
+      el("span", { class: "stream-tab-status-layer", "aria-hidden": "true" }),
+      renderStreamStatusCard(task, activityTitle, presentation),
+    ]);
   };
   activityStreamList.replaceChildren(...sections.active.map(renderEntry));
   activityRecentList.replaceChildren(...sections.recent.map(renderEntry));

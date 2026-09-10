@@ -1,3 +1,4 @@
+import { userDisplayText } from "../../domain/user-message-display.mjs";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, stat, unlink } from "node:fs/promises";
@@ -20,7 +21,7 @@ import {
 } from "../../domain/stream-message-pin.mjs";
 
 const FORMAT_VERSION = 1;
-const TASK_SCHEMA_VERSION = 11;
+const TASK_SCHEMA_VERSION = 12;
 const MODEL_BACKFILL_VERSION = "1";
 const SUBAGENT_MODEL_BACKFILL_VERSION = "1";
 const SEARCH_BACKFILL_VERSION = "4";
@@ -144,6 +145,22 @@ function withoutInternalContextTurns(history) {
   ));
 }
 
+function preserveUserDisplay(existingHistory, history, task) {
+  const displays = new Map();
+  for (const turn of existingHistory ?? []) {
+    for (const message of turn.messages ?? []) {
+      const identity = { provider: task.provider, threadId: task.threadId, clientUserMessageId: message.clientUserMessageId };
+      if (message.role === "user" && userDisplayText(message.userDisplay, identity) !== null) {
+        displays.set(message.clientUserMessageId, message.userDisplay);
+      }
+    }
+  }
+  return (history ?? []).map((turn) => ({ ...turn, messages: (turn.messages ?? []).map((message) => {
+    const display = message.role === "user" ? displays.get(message.clientUserMessageId) : null;
+    return display ? { ...message, userDisplay: structuredClone(display) } : message;
+  }) }));
+}
+
 function cleanHistory(history, limit, { provider = "" } = {}) {
   const source = String(provider).trim().toLowerCase() === "claude"
     ? withoutClaudeManagedTranscriptDuplicates(history)
@@ -215,6 +232,10 @@ function cleanHistory(history, limit, { provider = "" } = {}) {
               : {}),
             role,
             text,
+            ...(role === "user" && userDisplayText(message.userDisplay, {
+              provider, threadId: message.userDisplay?.threadId,
+              clientUserMessageId: message.clientUserMessageId,
+            }) !== null ? { userDisplay: { ...message.userDisplay, text: cleanText(message.userDisplay.text, 12_000) } } : {}),
             ...(!misattributedSubagent && author
               ? { author }
               : {}),
@@ -809,6 +830,9 @@ function configure(database) {
   if (!messageColumns.has("response_annotation_references_json")) {
     database.exec("ALTER TABLE task_read_model_messages ADD COLUMN response_annotation_references_json TEXT NOT NULL DEFAULT '[]'");
   }
+  if (!messageColumns.has("display_text")) {
+    database.exec("ALTER TABLE task_read_model_messages ADD COLUMN display_text TEXT");
+  }
   if (!turnColumns.has("prompt_author")) {
     database.exec("ALTER TABLE task_read_model_turns ADD COLUMN prompt_author TEXT NOT NULL DEFAULT ''");
   }
@@ -1224,6 +1248,9 @@ export class LocalTaskSyncStore {
           : {}),
         role: String(row.role),
         text: String(row.text),
+        ...(row.role === "user" && row.client_user_message_id && typeof row.display_text === "string"
+          ? { userDisplay: { provider: row.provider, threadId: row.thread_id,
+            clientUserMessageId: row.client_user_message_id, text: row.display_text } } : {}),
         ...(row.author ? { author: String(row.author) } : {}),
         ...(origin ? { origin } : {}),
         ...(row.kind ? { kind: String(row.kind) } : {}),
@@ -1656,8 +1683,8 @@ export class LocalTaskSyncStore {
         client_user_message_id, source_occurrence_id, role, text, author, kind,
         agent_thread_id, model, phase, time,
         origin_json, response_annotations_json, response_annotation_request,
-        response_annotation_references_json, attachments_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        response_annotation_references_json, attachments_json, display_text
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     history.forEach((turn, index) => {
       const turnPosition = positions ? positions[index] : index;
@@ -1705,6 +1732,9 @@ export class LocalTaskSyncStore {
           message.responseAnnotationRequest ?? "",
           JSON.stringify(message.responseAnnotationReferences ?? []),
           JSON.stringify(message.attachments),
+          message.role === "user" ? userDisplayText(message.userDisplay, {
+            provider, threadId, clientUserMessageId: message.clientUserMessageId,
+          }) : null,
         );
       });
     });
@@ -2185,7 +2215,8 @@ export class LocalTaskSyncStore {
     const durableHistory = preserveDurableChronology(existing.history, durableAttachments);
     const enrichedHistory = this.#withJournalSubagentModels(task, durableHistory);
     const durableMetadataHistory = preserveDurableResponseAnnotationReferences(existing.history, enrichedHistory);
-    const cleanedHistory = cleanHistory(durableMetadataHistory, this.#historyLimit, { provider: task.provider });
+    const displayHistory = preserveUserDisplay(existing.history, durableMetadataHistory, task);
+    const cleanedHistory = cleanHistory(displayHistory, this.#historyLimit, { provider: task.provider });
     const effectiveSnapshot = terminalSafeSnapshot(existing, snapshot, terminals);
     const next = persistedTask({
       ...existing,

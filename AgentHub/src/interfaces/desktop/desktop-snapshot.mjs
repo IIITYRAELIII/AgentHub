@@ -1,3 +1,4 @@
+import { receiptUserDisplay, userDisplayText } from "../../domain/user-message-display.mjs";
 import { createHash } from "node:crypto";
 import {
   displayUserPrompt,
@@ -66,9 +67,10 @@ export function workspaceBindingForTask(task, workspaces) {
   };
 }
 
-function deferredMessageProjection(item, deferred) {
-  const rawText = deferred.editableText?.(item.input) ?? deferred.inputPreview(item.input);
-  const rawPreview = deferred.inputPreview(item.input);
+function deferredMessageProjection(item, deferred, receipts) {
+  const display = receiptUserDisplay(receipts.forMessage?.(item), item);
+  const rawText = display?.text ?? deferred.editableText?.(item.input) ?? deferred.inputPreview(item.input);
+  const rawPreview = display?.text ?? deferred.inputPreview(item.input);
   const identity = {
     origin: item.messageOrigin,
     clientUserMessageId: item.clientUserMessageId,
@@ -285,7 +287,8 @@ export function createDesktopSnapshotFactory({
 
   function desktopRunSnapshot(run, { compactSnapshot = false, operationKind = "" } = {}) {
     if (!run) return null;
-    const promptInterstream = trustedInterstreamMessageDetails(run.promptPreview, {
+    const promptDisplay = receiptUserDisplay(receipts.forMessage?.(run), run)?.text ?? run.promptPreview;
+    const promptInterstream = trustedInterstreamMessageDetails(promptDisplay, {
       origin: run.messageOrigin,
       clientUserMessageId: run.clientUserMessageId,
     });
@@ -335,7 +338,7 @@ export function createDesktopSnapshotFactory({
       reasoning: run.reasoning ?? null,
       stage: String(run.progressStage ?? "Выполняется…"),
       ...(run.providerStart ? { providerStart: structuredClone(run.providerStart) } : {}),
-      prompt: displayUserPrompt(promptInterstream?.text ?? run.promptPreview),
+      prompt: displayUserPrompt(promptInterstream?.text ?? promptDisplay),
       ...(promptOrigin ? {
         promptAuthor: interstreamOriginAuthor(promptOrigin),
         promptOrigin,
@@ -354,13 +357,19 @@ export function createDesktopSnapshotFactory({
         ).trim();
         const directOrigin = message?.origin
           ?? message?.messageOrigin;
-        const interstream = role === "user" ? trustedInterstreamMessageDetails(rawText, {
+        const displayIdentity = { provider: run.provider, threadId: run.threadId, clientUserMessageId };
+        const displayReceipt = role === "user" ? receipts.forMessage?.(displayIdentity) ?? turnReceipt : null;
+        const displayText = role === "user"
+          ? receiptUserDisplay(displayReceipt, displayIdentity)?.text
+            ?? userDisplayText(message.userDisplay, displayIdentity) ?? rawText
+          : rawText;
+        const interstream = role === "user" ? trustedInterstreamMessageDetails(displayText, {
           origin: directOrigin,
           clientUserMessageId,
         }) : null;
         const origin = normalizeInterstreamOrigin(directOrigin);
         const text = role === "user"
-          ? displayUserPrompt(interstream?.text ?? rawText)
+          ? displayUserPrompt(interstream?.text ?? displayText)
           : rawText.trim();
         const rootUserMessage = role === "user"
           && clientUserMessageId === String(run.clientUserMessageId ?? "").trim();
@@ -841,7 +850,7 @@ export function createDesktopSnapshotFactory({
             taskTitle: deferredTaskTitle(item),
             clientUserMessageId: item.clientUserMessageId ?? null,
             ...(item.clientProjectionIntent ? { clientProjectionIntent: item.clientProjectionIntent } : {}),
-            ...deferredMessageProjection(item, deferred),
+            ...deferredMessageProjection(item, deferred, receipts),
             annotations: deferred.responseAnnotations?.(item.input) ?? [],
             allowForce: item.allowForce === true,
             conflictKind: item.conflictKind ?? null,
@@ -864,7 +873,7 @@ export function createDesktopSnapshotFactory({
           taskTitle: deferredTaskTitle(item),
           clientUserMessageId: item.clientUserMessageId ?? null,
           ...(item.clientProjectionIntent ? { clientProjectionIntent: item.clientProjectionIntent } : {}),
-          ...deferredMessageProjection(item, deferred),
+          ...deferredMessageProjection(item, deferred, receipts),
           annotations: deferred.responseAnnotations?.(item.input) ?? [],
           allowForce: false,
           conflictKind: item.conflictKind ?? null,

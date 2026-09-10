@@ -41,6 +41,17 @@ test("typed async question retains exact identity, options and free text", () =>
   assert.equal(asyncQuestionFromItem({ ...item, questions: null }, identity), null);
 });
 
+test("answer display keeps the question and answer while routing identifiers stay in provider input", async (t) => {
+  let sent;
+  const f = await fixture(t, async (params) => { sent = params; return { accepted: true }; });
+  await f.service.resolve(f.question.key, "submit", { answers: { 0: ["ща посмотрю"] } });
+  assert.equal(sent.displayText, "Какой профиль?\nОтвет: ща посмотрю");
+  assert.match(sent.text, /call-question/);
+  assert.match(sent.text, /thread-a/);
+  assert.equal(sent.followUpMode, "steer");
+  assert.equal(sent.clientUserMessageId, f.question.clientUserMessageId);
+});
+
 test("question survives restart and duplicate provider completion without dispatch", async (t) => {
   let sends = 0;
   const { dataDir, store, service, question } = await fixture(t, async () => { sends += 1; return { accepted: true }; });

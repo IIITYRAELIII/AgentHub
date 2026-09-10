@@ -118,6 +118,7 @@ export function createProviderCatalogComposition({
   providerTurnTelemetryStore = null,
   terminalCommits = null,
   commandTrace = null,
+  receiptForMessage = () => null,
   persistNow = () => new Date().toISOString(),
   clock = () => Date.now(),
 }) {
@@ -166,6 +167,7 @@ export function createProviderCatalogComposition({
     telemetryStore: providerTurnTelemetryStore,
     terminalCommits,
     commandTrace,
+    receiptForMessage,
   });
   if (typeof claudeRuntimeOwner?.state !== "function") {
     throw new TypeError("claudeRuntimeOwner is required");

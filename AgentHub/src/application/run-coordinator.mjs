@@ -53,6 +53,8 @@ function codexFinalAnswerStarted(run, target) {
     String(item?.id ?? "").trim()
     && item?.type === "agentMessage"
     && String(item?.phase ?? "").trim() === "final_answer"
+    // Async questions reuse final_answer but leave the provider turn open.
+    && !(Array.isArray(item.questions) && item.questions.length > 0)
     && String(item?.turnId ?? "").trim() === runTurnId
   ));
 }

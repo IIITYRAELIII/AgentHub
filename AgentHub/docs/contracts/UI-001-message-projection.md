@@ -82,7 +82,8 @@
 - Codex response-annotation locators cross the provider boundary as unique
   positive safe-integer indices in the provider annotation range `1..20`,
   never as service markup. The trusted Codex parser consumes every complete
-  line-start marker with a quoted index payload before validating the payload;
+  marker outside Markdown code with a quoted index payload, including after
+  ordinary prose, before validating the payload (ADR-0036);
   invalid payloads retain only a readable generic fallback and do not enter
   structured state. Partial markers remain hidden while streaming. The UI
   resolves each valid index to the nearest preceding annotated user entity by
@@ -143,6 +144,17 @@ claimed destination. Closing a still-pending question is durable and sends no
 message; an ambiguous claimed answer cannot be dismissed as if unsent.
 These asynchronous cards do not use the blocking tool-approval RPC response.
 
+The question answer uses ordinary durable intake with `followUpMode=steer`.
+While an eligible turn is active, it reaches that turn rather than waiting for
+the question item to become a final. A real final or completed turn retains the
+ordinary queued delivery semantics. Readable answer display contains the question
+and answer; routing IDs remain in provider input. Display metadata is applied
+only with exact `provider + threadId + clientUserMessageId` receipt identity and
+retained with the canonical user message across history reload and receipt
+eviction. It does not rewrite raw stored input or supply missing identity.
+Legacy answers without this accepted metadata retain their raw display; neither
+text-prefix guessing nor command replay is a migration path.
+
 ## Canonical reducer
 
 Opening history shares a bounded transport envelope with optional global
@@ -150,7 +162,8 @@ snapshot data. If that snapshot leaves insufficient space, the server returns
 `snapshot: null` and `snapshotDeferred: true`, preserving the complete quote and
 source locator within the existing total response limit. Null is not an empty
 authoritative snapshot: the client retains current collections and requests
-one ordinary snapshot refresh separately. A typed history-budget failure may
+one ordinary snapshot refresh separately. A typed history-budget failure or a
+successful history response marked `transportTruncated` may
 retry only the same local history read once without the snapshot; selection
 mutations and provider refresh are never replayed. A single message that exceeds
 the full transport budget still fails visibly rather than losing annotations.

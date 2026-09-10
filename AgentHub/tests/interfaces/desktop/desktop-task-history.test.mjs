@@ -1,8 +1,80 @@
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
+import { ManagedRunHistoryService } from "../../../src/application/managed-run-history-service.mjs";
+import { MessageReceiptRegistry } from "../../../src/infrastructure/persistence/message-receipts.mjs";
 import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+
+test("display column migrates existing messages without rewriting their raw text", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub-display-migration-"));
+  const filePath = path.join(directory, "tasks.json");
+  const task = { provider: "codex", threadId: "thread-1", projectRoot: directory };
+  let store = new LocalTaskSyncStore({ filePath });
+  try {
+    await store.load();
+    await store.recordHistory(task, [{ id: "turn-legacy", messages: [
+      { role: "user", itemId: "old-user", clientUserMessageId: "old-client", text: "Обычное сообщение" },
+    ] }]);
+    store.close();
+    const database = new DatabaseSync(path.join(directory, "journal.sqlite"));
+    try {
+      database.exec("ALTER TABLE task_read_model_messages DROP COLUMN display_text");
+      database.prepare("UPDATE task_read_model_meta SET value = '11' WHERE key = 'schema_version'").run();
+    } finally { database.close(); }
+    store = new LocalTaskSyncStore({ filePath });
+    await store.load();
+    const message = store.history(task)[0].messages[0];
+    assert.equal(message.text, "Обычное сообщение");
+    assert.equal(message.clientUserMessageId, "old-client");
+    assert.equal(message.userDisplay, undefined);
+  } finally {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("receipt display survives terminal persistence, receipt eviction and provider history refresh", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub-user-display-"));
+  const filePath = path.join(directory, "tasks.json");
+  const identity = { provider: "codex", threadId: "thread-1", clientUserMessageId: "client-1" };
+  const receipts = new MessageReceiptRegistry({ limit: 1 });
+  const displayText = "Как продолжать?\nОтвет: Делай";
+  const raw = "Ответ на вопрос агента [call-123]\nИсходный Thread: thread-1\nИсходный ход: turn-original\n\n" + displayText;
+  receipts.reserve(identity, "frozen-fingerprint", { accepted: true, displayText });
+  let store = new LocalTaskSyncStore({ filePath });
+  try {
+    await store.load();
+    const run = { ...identity, projectRoot: directory, turnId: "turn-answer", promptPreview: raw,
+      userMessages: [{ role: "user", itemId: "user-answer", clientUserMessageId: identity.clientUserMessageId, text: raw }], responseText: "Готово" };
+    const service = new ManagedRunHistoryService({ taskSyncStore: store, mergeActiveHistory: mergeActiveTaskHistory,
+      receiptForMessage: (key) => receipts.get(key), nowIso: () => "2026-09-11T08:00:00.000Z", nowMs: () => 123, hubExecutionOwner: "hub" });
+    assert.equal((await service.persist(run, { active: false, status: "completed" })).failed, undefined);
+    const user = store.history(run)[0].messages.find((message) => message.role === "user");
+    assert.equal(user.text, raw);
+    assert.equal(user.userDisplay.text, displayText);
+    receipts.reserve({ ...identity, clientUserMessageId: "next-client" }, "next-fingerprint", { accepted: true });
+    assert.equal(receipts.get(identity), null);
+    store.close();
+    store = new LocalTaskSyncStore({ filePath });
+    await store.load();
+    const providerHistory = store.history(run).map((turn) => ({ ...turn, messages: turn.messages.map(({ userDisplay, ...message }) => message) }));
+    await store.recordHistory(run, providerHistory);
+    const setup = fixture({ run: null, history: store.history(run), receipts: { forMessage: (key) => receipts.get(key) } });
+    const result = await setup.desktopTaskHistory({ provider: "codex", threadId: "thread-1", includeActive: false });
+    const projected = result.items.find((turn) => turn.id === run.turnId).messages.find((message) => message.role === "user");
+    assert.equal(projected.text, displayText);
+    assert.equal(projected.clientUserMessageId, identity.clientUserMessageId);
+    assert.equal(store.history(run)[0].messages.find((message) => message.role === "user").text, raw);
+    setup.state.history[0].messages.find((message) => message.role === "user").userDisplay.threadId = "wrong-thread";
+    const conflicting = await setup.desktopTaskHistory({ provider: "codex", threadId: "thread-1", includeActive: false });
+    assert.equal(conflicting.items[0].messages.find((message) => message.role === "user").text, raw);
+  } finally {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 import {
   createDesktopTaskHistoryFactory,
   mergeCachedTaskHistory,

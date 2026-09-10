@@ -1963,7 +1963,7 @@
   function taskCard(task, { compact = false, linked = false, movable = !compact, boardRow = false } = {}) {
     const completed = task.status === "done";
     const movableCard = movable && !completed;
-    const attachable = !linked && movableCard;
+    const attachable = !linked && !completed;
     const card = node("article", {
       class: `board-task-card${task.status === "started" ? " is-started" : ""}${completed ? " is-completed" : ""}${compact ? " is-compact" : ""}`,
       draggable: attachable ? "true" : null,

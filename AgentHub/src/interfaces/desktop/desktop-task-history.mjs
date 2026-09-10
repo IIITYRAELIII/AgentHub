@@ -1,3 +1,4 @@
+import { receiptUserDisplay, userDisplayText } from "../../domain/user-message-display.mjs";
 import { createHash } from "node:crypto";
 import {
   displayUserPrompt,
@@ -893,6 +894,11 @@ export function createDesktopTaskHistoryFactory({
                 ? item.attachments
                 : [];
               const sourceText = String(message?.text ?? "");
+              const displayIdentity = { provider: itemProvider, threadId: itemThreadId, clientUserMessageId };
+              const displayText = role === "user"
+                ? receiptUserDisplay(receipt, displayIdentity)?.text
+                  ?? userDisplayText(message.userDisplay, displayIdentity) ?? sourceText
+                : sourceText;
               const promptTaskReferences = role === "user"
                 ? userTaskReferencePromptDetails(sourceText)?.references ?? []
                 : [];
@@ -911,12 +917,12 @@ export function createDesktopTaskHistoryFactory({
                 ? auditedOriginForClientMessage(identityClientUserMessageId)
                 : null;
               const identityOrigin = role === "user" ? durableOrigin ?? auditedOrigin : null;
-              const interstream = role === "user" ? trustedInterstreamMessageDetails(sourceText, {
+              const interstream = role === "user" ? trustedInterstreamMessageDetails(displayText, {
                 origin: identityOrigin,
                 clientUserMessageId: identityClientUserMessageId,
                 audited: !durableOrigin && Boolean(auditedOrigin),
               }) ?? (!durableOrigin && auditedOrigin
-                ? trustedAuditedInterstreamBodyDetails(sourceText, {
+                ? trustedAuditedInterstreamBodyDetails(displayText, {
                   origin: auditedOrigin,
                   clientUserMessageId: identityClientUserMessageId,
                 })
@@ -927,7 +933,7 @@ export function createDesktopTaskHistoryFactory({
                 ? "interstream"
                 : String(message?.kind ?? "").trim();
               const text = role === "user"
-                ? displayUserPrompt(interstream?.text ?? sourceText)
+                ? displayUserPrompt(interstream?.text ?? displayText)
                 : sourceText;
               const responseAnnotations = role === "user" && Array.isArray(
                 receipt?.result?.responseAnnotations ?? message.responseAnnotations,

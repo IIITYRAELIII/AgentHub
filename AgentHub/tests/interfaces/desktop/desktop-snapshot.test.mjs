@@ -1,5 +1,32 @@
 import assert from "node:assert/strict";
+import { MessageReceiptRegistry } from "../../../src/infrastructure/persistence/message-receipts.mjs";
 import test from "node:test";
+
+test("exact receipt display follows queued and active messages without changing wire input", async () => {
+  const receipts = new MessageReceiptRegistry();
+  const identity = { provider: "codex", threadId: "thread-1", clientUserMessageId: "client-1" };
+  const raw = "Ответ на вопрос агента [call-123]\nИсходный Thread: thread-1\n\nВопрос\nОтвет: Да";
+  const displayText = "Вопрос\nОтвет: Да";
+  receipts.reserve(identity, "fingerprint", { pending: true, displayText });
+  const setup = fixture({ receiptForMessage: (key) => receipts.get(key) });
+  setup.state.queued = [{ ...identity, id: "queue-1", input: raw }];
+  setup.state.pending = [{ ...identity, id: "pending-1", input: raw }];
+  let snapshot = await setup.desktopSnapshot();
+  assert.deepEqual(snapshot.deferredInputs.map((item) => [item.text, item.preview]), [[displayText, displayText], [displayText, displayText]]);
+  assert.equal(setup.state.queued[0].input, raw);
+  setup.run.promptPreview = raw;
+  setup.run.userMessages[0].text = raw;
+  const live = setup.desktopRunSnapshot(setup.run);
+  assert.equal(live.prompt, displayText);
+  assert.equal(live.userMessages[0].text, displayText);
+  assert.equal(setup.run.userMessages[0].text, raw);
+  setup.run.threadId = "other-thread";
+  setup.state.queued[0].threadId = "other-thread";
+  setup.state.pending[0].clientUserMessageId = "different-id";
+  snapshot = await setup.desktopSnapshot();
+  assert.deepEqual(snapshot.deferredInputs.map((item) => item.text), [raw, raw]);
+  assert.equal(setup.desktopRunSnapshot(setup.run).userMessages[0].text, raw);
+});
 import {
   createDesktopSnapshotFactory,
   workspaceBindingForTask,

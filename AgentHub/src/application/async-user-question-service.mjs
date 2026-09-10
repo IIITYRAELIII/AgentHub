@@ -33,8 +33,12 @@ function normalizedAnswers(question, submitted) {
   return answers;
 }
 
+function answerDisplayText(question, answers) {
+  return question.questions.map((field) => `${field.question}\nОтвет: ${answers[field.id][0]}`).join("\n\n");
+}
+
 function answerMessage(question, answers) {
-  const body = question.questions.map((field) => `${field.question}\nОтвет: ${answers[field.id][0]}`).join("\n\n");
+  const body = answerDisplayText(question, answers);
   return `Ответ на вопрос агента [${question.itemId}]\nИсходный Thread: ${question.threadId}\nИсходный ход: ${question.turnId}\n\n${body}`;
 }
 
@@ -73,7 +77,8 @@ export class AsyncUserQuestionService {
     if (this.#inflight.has(key)) return this.#inflight.get(key);
     const operation = (async () => {
       const receipt = await this.sendAnswer({ ...claim.replyTarget,
-        clientUserMessageId: claim.clientUserMessageId, text, followUpMode: "steer" });
+        clientUserMessageId: claim.clientUserMessageId, text,
+        displayText: answerDisplayText(current, answers), followUpMode: "steer" });
       if (!receipt || receipt.failed === true || receipt.pending === true
         || (receipt.accepted !== true && receipt.queued !== true && receipt.deferred !== true)) {
         throw new Error("Приём ответа не подтверждён. Повторная отправка сохранит тот же идентификатор.");
