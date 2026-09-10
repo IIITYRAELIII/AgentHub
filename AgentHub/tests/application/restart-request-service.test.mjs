@@ -168,6 +168,18 @@ test("an unknown restart is not replayed before authoritative reconciliation", a
   assert.deepEqual(state.events, []);
 });
 
+test("Desktop and Telegram restart retain their own exact selected Stream and Thread", async () => {
+  for (const source of ["Desktop", "Telegram"]) {
+    const state = fixture({ blockingCount: 1 });
+    state.service.desktopTarget = () => ({ streamId: "desktop-stream", threadId: "desktop-thread" });
+    state.service.currentTarget = () => ({ streamId: "telegram-stream", threadId: "telegram-thread" });
+    await state.service[`from${source}`]();
+    const owner = source.toLowerCase();
+    assert.equal(state.request().streamId, `${owner}-stream`);
+    assert.equal(state.request().threadId, `${owner}-thread`);
+  }
+});
+
 test("scheduled restart contains a rejected outcome write and retains the exact durable operation", async () => {
   const state = fixture({ blockingCount: 1 });
   await state.service.fromDesktop();

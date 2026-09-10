@@ -197,6 +197,7 @@ export function createDesktopCommandWiring({
     restart: {
       operationStore: services.maintenanceOperations,
       currentTarget: state.telegramSelectedTask ?? state.selectedTask,
+      desktopTarget: state.selectedTask,
       getRequest: state.restartRequest,
       setRequest: state.setRestartRequest,
       blockingWorkCount: services.blockingWorkCount,

@@ -13,7 +13,7 @@
     {
       "file": "tests/e2e/terminal-queue-contention.local-control.e2e.test.mjs",
       "profile": "reliability",
-      "reason": "Поднимает настоящий Hub с изолированной SQLite и блокировкой writer. Измерено 2026-09-10 однократно: 113 с, проверка НЕ пройдена — таймаут ожидания «FIFO drain after transient terminal contention» (35 с) на строке 184. В момент отказа 3 из 8 сообщений дошли до провайдера, fifo-busy-4..8 остались deferred/queued с runId=null, активных прогонов нет; в stderr трижды повторяется «Codex RPC thread/read timed out after 30000 ms». Причина отказа не установлена одним запуском: наблюдаемая ближайшая причина — таймауты RPC провайдера, а не блокировка SQLite; влияние загрузки машины не исключено. Повторных прогонов не выполнялось. Не вносить в обязательный набор до отдельного разбора.",
+      "reason": "Поднимает настоящий Hub с изолированной SQLite и блокировкой writer. Измерено 2026-09-10 однократно: 113 с, проверка НЕ пройдена — таймаут ожидания «FIFO drain after transient terminal contention» (35 с). Разбор по исходникам и детерминированным репродюсерам (WIP/test-audit-s3-20260910/patch-fake-codex-reply/APPLY.md): причина в harness, а не в runtime и не в SQLite — fake-codex-app-server терял ответ на thread/read, когда save() падал с EPERM на renameSync из-за параллельного readFile state-файла самим тестом (waitFor каждые 25 мс); thread/list без save() отвечал, поэтому health check проходил и процесс не перезапускался. Исправлено патчем harness; после его применения тест требует одного повторного измерения перед возвратом в обязательный набор.",
       "owner": "runtime/persistence",
       "openQuestion": true
     }

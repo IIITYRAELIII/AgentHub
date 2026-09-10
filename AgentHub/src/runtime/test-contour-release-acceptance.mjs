@@ -173,9 +173,13 @@ export async function exerciseAcceptanceReplacement({ root, previous, candidate,
   })();
   // A timed-out command is not retried: readiness is reconciled by identity.
   let requestError = null;
+  let request = null;
   try {
-    try { await probe("restart-server", {}, { runtimeRoot: root, timeoutMs: 10_000 }); }
-    catch (error) { requestError = error.message; }
+    try { request = await probe("restart-server", {}, { runtimeRoot: root, timeoutMs: 10_000 }); }
+    catch (error) {
+      requestError = error.message;
+      if (error.desktopControlRejected === true) throw error;
+    }
     await waitReady({ runtimeRoot: root, expectedReleaseId: candidate.releaseId, timeoutMs });
     const after = await evidence(root, candidate.releaseId);
     if (after.pid === before.pid) throw new Error("Acceptance replacement reused the old process");
@@ -183,11 +187,42 @@ export async function exerciseAcceptanceReplacement({ root, previous, candidate,
     const deadline = Date.now() + 10_000;
     while (alive(before.pid) && Date.now() < deadline) await delay(25);
     if (alive(before.pid)) throw new Error("Previous runtime remained alive after replacement readiness");
-    return { before, after, overlap, requestError };
+    return { before, after, overlap, request, requestError };
+  } catch (error) {
+    throw Object.assign(error, { acceptanceRestart: {
+      before, overlap, request, requestError, rejected: error.desktopControlRejected === true,
+    } });
   } finally {
     observing = false;
     await observation;
   }
+}
+
+// The previous artifact may route Desktop restart through its Telegram binding.
+// A real loopback /new establishes both selections via canonical application
+// commands; no runtime database or fallback binding is edited by this harness.
+export async function prepareAcceptanceRestartTarget({ root, telegram, timeoutMs = 10_000,
+  probe = callDesktopControl, delay = sleep, now = Date.now,
+} = {}) {
+  const firstCall = telegram.calls.length;
+  const message = telegram.pushMessage("/new");
+  const deadline = now() + timeoutMs;
+  while (now() < deadline) {
+    const confirmed = telegram.calls.slice(firstCall).some((call) => call.method === "sendMessage"
+      && Number(call.body.chat_id) === telegram.chatId
+      && String(call.body.text ?? "").startsWith("Создан новый контекст "));
+    if (confirmed) {
+      const snapshot = await probe("snapshot", {}, { runtimeRoot: root, timeoutMs: 10_000 });
+      const selected = snapshot?.selected;
+      if (selected?.provider !== "codex" || !selected.streamId || !selected.threadId) {
+        throw new Error("Acceptance /new did not establish an exact synthetic Stream and Thread");
+      }
+      return { provider: selected.provider, streamId: selected.streamId, threadId: selected.threadId,
+        source: "loopback-telegram-new", messageId: message.message_id };
+    }
+    await delay(25);
+  }
+  throw new Error("Acceptance synthetic /new was not confirmed before restart setup deadline");
 }
 
 export async function acceptReleaseArtifact({ artifactRoot, previousArtifactRoot,
@@ -251,6 +286,8 @@ export async function acceptReleaseArtifact({ artifactRoot, previousArtifactRoot
     ownedPids.add(before.pid);
     passed("previous-runtime-readiness", before);
     await save();
+    report.restartTarget = await prepareAcceptanceRestartTarget({ root, telegram });
+    await save();
     const replacement = await exerciseAcceptanceReplacement({ root, previous, candidate, timeoutMs });
     ownedPids.add(replacement.after.pid);
     passed("replacement-while-previous-alive", replacement.overlap);
@@ -263,6 +300,7 @@ export async function acceptReleaseArtifact({ artifactRoot, previousArtifactRoot
   } catch (error) {
     report.status = "failed";
     report.error = error.message;
+    if (error.acceptanceRestart) report.restart = error.acceptanceRestart;
     throw Object.assign(error, { acceptanceManifest: manifestFile });
   } finally {
     let fenceError = null;

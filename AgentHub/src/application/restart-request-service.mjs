@@ -17,6 +17,7 @@ export class RestartRequestService {
   constructor({
     operationStore,
     currentTarget,
+    desktopTarget = currentTarget,
     getRequest,
     setRequest,
     blockingWorkCount,
@@ -37,6 +38,7 @@ export class RestartRequestService {
     Object.assign(this, {
       operationStore,
       currentTarget,
+      desktopTarget,
       getRequest,
       setRequest,
       blockingWorkCount,
@@ -203,7 +205,7 @@ export class RestartRequestService {
   }
 
   async fromDesktop() {
-    const target = this.#target();
+    const target = normalizedTarget(this.desktopTarget());
     const blockingCount = this.blockingWorkCount();
     const notification = this.#notification({
       messageId: null,

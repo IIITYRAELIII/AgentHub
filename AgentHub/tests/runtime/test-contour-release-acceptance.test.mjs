@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { EventEmitter } from "node:events";
-import { exerciseAcceptanceReplacement, inspectAcceptanceArtifact, releaseAcceptanceConfig, releaseAcceptanceCoverage, waitForAcceptanceHost } from "../../src/runtime/test-contour-release-acceptance.mjs";
+import { exerciseAcceptanceReplacement, inspectAcceptanceArtifact, prepareAcceptanceRestartTarget, releaseAcceptanceConfig, releaseAcceptanceCoverage, waitForAcceptanceHost } from "../../src/runtime/test-contour-release-acceptance.mjs";
 
 test("spawn errors fail initial readiness immediately and drain its observer", async () => {
   const host = new EventEmitter();
@@ -96,6 +96,65 @@ test("ambiguous restart response reconciles readiness without sending another re
   const result = await exerciseAcceptanceReplacement(fixture.options);
   assert.equal(result.requestError, "ambiguous timeout");
   assert.equal(fixture.requests(), 1);
+});
+
+test("explicit restart rejection fails immediately and retains refusal for the manifest", async () => {
+  const fixture = replacementFixture();
+  let waited = false;
+  fixture.options.probe = async () => { throw Object.assign(new Error("exact target missing"), { desktopControlRejected: true }); };
+  fixture.options.waitReady = async () => { waited = true; };
+  await assert.rejects(exerciseAcceptanceReplacement(fixture.options), (error) => {
+    assert.deepEqual(error.acceptanceRestart, {
+      before: { pid: 10, releaseId: "old" }, overlap: null, request: null,
+      requestError: "exact target missing", rejected: true,
+    });
+    return true;
+  });
+  assert.equal(waited, false);
+});
+
+test("ambiguous request failure remains in failure evidence when readiness also fails", async () => {
+  const fixture = replacementFixture({ requestFails: true, readinessFails: true });
+  await assert.rejects(exerciseAcceptanceReplacement(fixture.options), (error) => {
+    assert.equal(error.message, "wrong release");
+    assert.equal(error.acceptanceRestart.requestError, "ambiguous timeout");
+    assert.equal(error.acceptanceRestart.rejected, false);
+    return true;
+  });
+});
+
+test("restart setup waits for canonical loopback creation confirmation then reads exact target", async () => {
+  const root = path.join(os.tmpdir(), "isolated-setup");
+  let sent = 0;
+  let probes = 0;
+  const telegram = { chatId: 84, calls: [], pushMessage: (text) => {
+    assert.equal(text, "/new"); sent += 1; return { message_id: 42 };
+  } };
+  const target = await prepareAcceptanceRestartTarget({ root, telegram,
+    delay: async () => telegram.calls.push({ method: "sendMessage", body: { chat_id: 84, text: "Создан новый контекст Codex." } }),
+    probe: async (action, params, options) => {
+      probes += 1;
+      assert.equal(action, "snapshot");
+      assert.equal(options.runtimeRoot, root);
+      assert.equal(telegram.calls.length, 1);
+      return { selected: { provider: "codex", streamId: "synthetic-stream", threadId: "synthetic-thread" } };
+    },
+  });
+  assert.equal(target.streamId, "synthetic-stream");
+  assert.equal(target.threadId, "synthetic-thread");
+  assert.equal(target.messageId, 42);
+  assert.equal(sent, 1);
+  assert.equal(probes, 1);
+});
+
+test("unconfirmed synthetic creation stops setup without resending commands", async () => {
+  let ticks = 0;
+  let sent = 0;
+  await assert.rejects(prepareAcceptanceRestartTarget({ root: "isolated", timeoutMs: 2,
+    telegram: { calls: [], pushMessage: () => { sent += 1; return { message_id: 1 }; } },
+    now: () => ticks++, delay: async () => {}, probe: async () => assert.fail("No confirmation"),
+  }), /not confirmed/);
+  assert.equal(sent, 1);
 });
 
 test("ready candidate without observed live overlap is not lifecycle success", async () => {

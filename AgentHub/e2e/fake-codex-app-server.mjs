@@ -51,12 +51,33 @@ const loadedThreadIds = new Set(
     .filter(Boolean),
 );
 
+// Windows отклоняет замену файла, который в этот момент открыт на чтение
+// другим процессом (тест опрашивает state каждые 25 мс). Короткий
+// синхронный повтор лишь снижает частоту этой гонки; самодостаточная
+// защита — ответ ошибкой из обработчика запроса, а не этот повтор.
+const RENAME_RETRY_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
+const RENAME_ATTEMPTS = 20;
+const RENAME_PAUSE_MS = 5;
+const sleepLock = new Int32Array(new SharedArrayBuffer(4));
+
+function replaceFileSync(source, destination) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      renameSync(source, destination);
+      return;
+    } catch (error) {
+      if (attempt >= RENAME_ATTEMPTS || !RENAME_RETRY_CODES.has(String(error?.code ?? ""))) throw error;
+      Atomics.wait(sleepLock, 0, 0, RENAME_PAUSE_MS);
+    }
+  }
+}
+
 function save() {
   if (!statePath) return;
   state.loadedThreadIds = [...loadedThreadIds].sort();
   const temporary = `${statePath}.${process.pid}.tmp`;
   writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, "utf8");
-  renameSync(temporary, statePath);
+  replaceFileSync(temporary, statePath);
 }
 
 function send(value) {
@@ -824,11 +845,17 @@ function handleApprovalResponse(message) {
 
 const lines = createInterface({ input: process.stdin });
 lines.on("line", (line) => {
+  let message = null;
   try {
-    const message = JSON.parse(line);
+    message = JSON.parse(line);
     if (message.method && message.id !== undefined) handleRequest(message);
     else if (message.id !== undefined && message.result !== undefined) handleApprovalResponse(message);
   } catch (error) {
+    // Запрос без ответа — это 30-секундный таймаут на стороне Hub и ложный
+    // сигнал «app-server завис». Настоящий App Server отвечает ошибкой.
+    if (message?.method && message.id !== undefined) {
+      send({ id: message.id, error: { message: error.message } });
+    }
     send({ method: "fake/error", params: { message: error.message } });
   }
 });

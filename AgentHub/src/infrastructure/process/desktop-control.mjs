@@ -551,7 +551,10 @@ async function callDesktopControlOnce(action, params, {
         if (state !== "response") {
           throw new Error("Invalid Desktop control response state");
         }
-        if (!value.ok) finish(reject, new Error(value.error || "Desktop control request failed"));
+        if (!value.ok) finish(reject, Object.assign(
+          new Error(value.error || "Desktop control request failed"),
+          { desktopControlRejected: true },
+        ));
         else if (value.ackRequired === true && String(value.commandId ?? "") === commandId) {
           deliveredResult = value.result;
           state = "retirement";
