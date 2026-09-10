@@ -17,7 +17,7 @@ import { defaultRuntimeRoot } from "./src/infrastructure/filesystem/runtime-layo
 import { prepareCommittedAgentHubReleaseVersion } from "./src/infrastructure/filesystem/release-version.mjs";
 import { assertReleaseCloneForPublication, ReleaseGitWorkspaceService } from "./src/infrastructure/filesystem/release-git-workspace.mjs";
 import { withPublicationLock } from "./src/infrastructure/process/publication-lock.mjs";
-import { createFrozenReleasePublication } from "./src/infrastructure/process/frozen-release-publication.mjs";
+import { createFrozenReleasePublication, readPublicationReleasePlan } from "./src/infrastructure/process/frozen-release-publication.mjs";
 import { createBootstrapReleasePlanControl } from "./src/infrastructure/process/bootstrap-release-plan-control.mjs";
 import {
   publicationCheckpointStore,
@@ -498,7 +498,7 @@ if (invokedFile === fileURLToPath(import.meta.url)) {
         expectedPlanRevision: checkpoint.planRevision, expectedPreparedHead: checkpoint.preReleaseHead,
         changelogContent,
         validateBeforeCommit: async () => {
-          const plan = await control("read-workspace-release-plan", { workspaceId }, { runtimeRoot: defaultRuntimeRoot() });
+          const plan = await readPublicationReleasePlan(control, workspaceId, defaultRuntimeRoot());
           if (plan.revision !== checkpoint.planRevision) throw new Error("release plan changed before publication freeze");
         },
       });

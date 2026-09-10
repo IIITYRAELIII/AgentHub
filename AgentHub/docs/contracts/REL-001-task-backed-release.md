@@ -475,6 +475,11 @@ discard Tasks or historical publication evidence.
 
 ## Bootstrap of the release-control wiring
 
+Publication plan reads during freeze and Git publication use the bounded
+120-second repository-operation deadline. Planning may prepare managed Git
+state and must not inherit the 10-second interactive Desktop deadline.
+This does not relax the exact plan, manifest, repository or Git lease checks.
+
 The canonical planner and completer must reach Desktop through both startup
 composition layers. A first update from an installation missing that wiring
 may explicitly supply a local MCP context bound to its exact published revision

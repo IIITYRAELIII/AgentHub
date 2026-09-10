@@ -2,7 +2,22 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import test from "node:test";
-import { createFrozenReleasePublication } from "../../../src/infrastructure/process/frozen-release-publication.mjs";
+import { createFrozenReleasePublication, readPublicationReleasePlan } from "../../../src/infrastructure/process/frozen-release-publication.mjs";
+
+test("publication planning tolerates Git work beyond the interactive Desktop deadline", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const plan = { revision: "slow-plan" };
+  const control = (action, params, options) => new Promise((resolve, reject) => {
+    assert.equal(action, "read-workspace-release-plan");
+    assert.equal(params.workspaceId, "workspace");
+    assert.equal(options.runtimeRoot, "runtime");
+    const timer = setTimeout(() => reject(new Error("Desktop control request timed out")), options.timeoutMs ?? 10_000);
+    setTimeout(() => { clearTimeout(timer); resolve(plan); }, 11_000);
+  });
+  const result = readPublicationReleasePlan(control, "workspace", "runtime");
+  t.mock.timers.tick(11_000);
+  assert.equal(await result, plan);
+});
 
 function fixture(overrides = {}) {
   const root = path.resolve("test-release");
@@ -43,6 +58,8 @@ test("frozen publication validates the manifest and pushes only its candidate wi
     "push", `--force-with-lease=refs/heads/main:${"a".repeat(40)}`, "origin", `${"b".repeat(40)}:refs/heads/main`,
   ]);
   assert.equal(f.commands.some((c) => c.cwd === f.primaryRoot), false);
+  assert.ok(f.calls.filter((c) => c.action === "read-workspace-release-plan")
+    .every((c) => c.options.timeoutMs === 120_000));
 });
 
 test("moved origin and changed plan fail before push", async () => {
