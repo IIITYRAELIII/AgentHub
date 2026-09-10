@@ -33,6 +33,7 @@ import {
 } from "../../../src/interfaces/desktop/desktop-snapshot.mjs";
 import { mergeTaskCatalog } from "../../../src/application/task-catalog-projection.mjs";
 import { messageWithTaskReferences, taskReferenceDescriptor } from "../../../src/domain/task-board-task.mjs";
+import { createInterstreamMessage, interstreamOriginAuthor } from "../../../src/domain/interstream-message.mjs";
 import { restoreDeferredInput } from "../../../src/domain/deferred-input.mjs";
 import {
   createMaintenanceOperation,
@@ -1808,4 +1809,122 @@ test("desktop snapshot coalesces one failing background catalog refresh", async 
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(state.warnings.length, 1);
   assert.match(state.warnings[0].join(" "), /database is locked/u);
+});
+
+test("an unsettled interstream steer names its source on the first projected frame", () => {
+  const origin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-s3",
+    streamName: "S3",
+    provider: "codex",
+    model: "GPT-6 Astra",
+    sourceThreadId: "thread-s3",
+    requestId: "s3-measurements-final-20260911",
+  };
+  const clientUserMessageId = `mcp:${origin.requestId}`;
+  const body = "Замеры готовы, прикладываю сводку.";
+  const envelope = createInterstreamMessage({ ...origin, text: body });
+  const author = interstreamOriginAuthor(origin);
+  const receipts = new MessageReceiptRegistry();
+  const identity = { provider: "codex", threadId: "thread-1", clientUserMessageId };
+  // The accepted receipt already owns the origin; the provider echo does not yet.
+  receipts.reserve(identity, "fingerprint", {
+    pending: true,
+    displayText: envelope,
+    author,
+    origin,
+  });
+  const setup = fixture({ receiptForMessage: (key) => receipts.get(key) });
+  setup.run.clientUserMessageId = clientUserMessageId;
+  setup.run.userMessages = [{
+    itemId: "user-steer",
+    clientUserMessageId,
+    role: "user",
+    text: envelope,
+  }];
+
+  const firstFrame = setup.desktopRunSnapshot(setup.run).userMessages[0];
+  assert.equal(firstFrame.text, body, "первый кадр показал транспортный конверт вместо тела");
+  assert.equal(firstFrame.author, author);
+  assert.equal(firstFrame.kind, "interstream");
+  assert.equal(firstFrame.origin?.streamName, origin.streamName);
+  assert.equal(firstFrame.origin?.requestId, origin.requestId);
+  assert.doesNotMatch(firstFrame.text, /<agent-hub-stream-message>/u);
+
+  // The later provider enrichment must not change what the user already sees.
+  setup.run.userMessages[0].messageOrigin = origin;
+  const enriched = setup.desktopRunSnapshot(setup.run).userMessages[0];
+  assert.equal(enriched.text, firstFrame.text);
+  assert.equal(enriched.author, firstFrame.author);
+  assert.equal(enriched.kind, firstFrame.kind);
+  assert.deepEqual(enriched.origin, firstFrame.origin);
+});
+
+test("a receipt origin cannot be borrowed by another message or forged by its author", () => {
+  const origin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-s3",
+    streamName: "S3",
+    provider: "codex",
+    model: "GPT-6 Astra",
+    sourceThreadId: "thread-s3",
+    requestId: "s3-measurements-final-20260911",
+  };
+  const clientUserMessageId = `mcp:${origin.requestId}`;
+  const envelope = createInterstreamMessage({ ...origin, text: "Замеры готовы." });
+  const author = interstreamOriginAuthor(origin);
+
+  const foreignIdentity = () => {
+    const receipts = new MessageReceiptRegistry();
+    receipts.reserve({ provider: "codex", threadId: "thread-1", clientUserMessageId: "mcp:other-request" },
+      "fingerprint", { pending: true, displayText: envelope, author, origin });
+    const setup = fixture({ receiptForMessage: (key) => receipts.get(key) });
+    setup.run.clientUserMessageId = clientUserMessageId;
+    setup.run.userMessages = [{ itemId: "user-1", clientUserMessageId, role: "user", text: envelope }];
+    return setup.desktopRunSnapshot(setup.run).userMessages[0];
+  };
+  const borrowed = foreignIdentity();
+  assert.equal(borrowed.origin, undefined, "чужой receipt подставил origin");
+  assert.equal(borrowed.kind, undefined);
+  assert.notEqual(borrowed.author, author);
+  assert.match(borrowed.text, /<agent-hub-stream-message>/u, "тело раскрыто без подтверждённого origin");
+
+  const conflicting = () => {
+    const receipts = new MessageReceiptRegistry();
+    // The receipt is exact, but its origin belongs to another request.
+    receipts.reserve({ provider: "codex", threadId: "thread-1", clientUserMessageId },
+      "fingerprint", {
+        pending: true,
+        displayText: envelope,
+        author,
+        origin: { ...origin, requestId: "conflicting-request" },
+      });
+    const setup = fixture({ receiptForMessage: (key) => receipts.get(key) });
+    setup.run.clientUserMessageId = clientUserMessageId;
+    setup.run.userMessages = [{ itemId: "user-1", clientUserMessageId, role: "user", text: envelope }];
+    return setup.desktopRunSnapshot(setup.run).userMessages[0];
+  };
+  const mismatch = conflicting();
+  assert.match(mismatch.text, /<agent-hub-stream-message>/u, "конверт раскрыт при конфликтующем origin");
+
+  const spoofed = () => {
+    const receipts = new MessageReceiptRegistry();
+    // An ordinary user message: no receipt origin at all, the body only looks
+    // like an envelope. It must stay literal text authored by the user.
+    receipts.reserve({ provider: "codex", threadId: "thread-1", clientUserMessageId: "client-user" },
+      "fingerprint", { pending: true, displayText: envelope });
+    const setup = fixture({ receiptForMessage: (key) => receipts.get(key) });
+    setup.run.clientUserMessageId = "client-user";
+    setup.run.userMessages = [{
+      itemId: "user-1", clientUserMessageId: "client-user", role: "user", text: envelope,
+    }];
+    return setup.desktopRunSnapshot(setup.run).userMessages[0];
+  };
+  const forged = spoofed();
+  assert.equal(forged.origin, undefined, "подделанный конверт получил origin");
+  assert.equal(forged.kind, undefined);
+  assert.notEqual(forged.author, author);
+  assert.match(forged.text, /<agent-hub-stream-message>/u);
 });

@@ -779,6 +779,10 @@ function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
   if (!text.trim() && !responseAnnotations.length && !attachments.length) return false;
   optimisticDeferredClientUserMessageIds.delete(projection.clientUserMessageId);
   deferredClientUserMessageIds.delete(projection.clientUserMessageId);
+  // The server entry already carries the authoritative origin of this exact
+  // message. Without it the local card renders as an own message, so the source
+  // and the interstream kind travel together with the author.
+  const deferredOrigin = deferred.origin && typeof deferred.origin === "object" ? deferred.origin : null;
   const existing = messages.get(projection.clientUserMessageId);
   if (existing) {
     Object.assign(existing, {
@@ -786,6 +790,10 @@ function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
       projectionState: projection.projectionState,
       providerAccepted: projection.providerAccepted,
       clientProjectionIntent: projection.clientProjectionIntent,
+      ...(deferredOrigin ? { origin: deferredOrigin, kind: "interstream" } : {}),
+      ...(deferredOrigin && String(deferred.author ?? "").trim()
+        ? { author: String(deferred.author).trim() }
+        : {}),
       ...deliveryPatch(projection.deliveryState),
       ...(!existing.submittedAt && projection.submittedAt
         ? { submittedAt: projection.submittedAt }
@@ -808,6 +816,7 @@ function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
       providerAccepted: projection.providerAccepted,
       clientProjectionIntent: projection.clientProjectionIntent,
       role: "user",
+      ...(deferredOrigin ? { origin: deferredOrigin, kind: "interstream" } : {}),
       author: String(deferred.author ?? "").trim() || "Вы",
       text,
       responseAnnotations,
@@ -883,6 +892,9 @@ function applyMessageReceipts(snapshot) {
     const patch = projection.deliveryState ? deliveryPatch(projection.deliveryState) : null;
     if (!patch) continue;
     const restoredText = String(receipt.displayText ?? "");
+    // Same reason as the deferred card: the receipt owns the origin of its exact
+    // message, and losing it here turns a foreign message into an own one.
+    const receiptOrigin = receipt.origin && typeof receipt.origin === "object" ? receipt.origin : null;
     const restoredAnnotations = normalizedResponseAnnotations(receipt.responseAnnotations);
     const restoredRequest = String(receipt.responseAnnotationRequest ?? "");
     const restoredAttachments = attachmentViews(receipt.attachments);
@@ -908,6 +920,7 @@ function applyMessageReceipts(snapshot) {
         providerAccepted: projection.providerAccepted,
         clientProjectionIntent: projection.clientProjectionIntent,
         role: "user",
+        ...(receiptOrigin ? { origin: receiptOrigin, kind: "interstream" } : {}),
         author: String(receipt.author ?? "").trim() || "Вы",
         text: restoredText,
         responseAnnotations: restoredAnnotations,
@@ -930,6 +943,10 @@ function applyMessageReceipts(snapshot) {
       projectionState: projection.projectionState,
       providerAccepted: projection.providerAccepted,
       clientProjectionIntent: projection.clientProjectionIntent,
+      ...(receiptOrigin ? { origin: receiptOrigin, kind: "interstream" } : {}),
+      ...(receiptOrigin && String(receipt.author ?? "").trim()
+        ? { author: String(receipt.author).trim() }
+        : {}),
       ...(projection.submittedAt ? {
         submittedAt: projection.submittedAt,
         time: projection.submittedAt,

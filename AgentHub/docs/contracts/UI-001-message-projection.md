@@ -168,6 +168,15 @@ retry only the same local history read once without the snapshot; selection
 mutations and provider refresh are never replayed. A single message that exceeds
 the full transport budget still fails visibly rather than losing annotations.
 
+An inter-Stream message names its source on its first projected frame. The
+accepted receipt of the exact `provider + threadId + clientUserMessageId` owns
+the authoritative origin, so the run projection and the local deferred and
+receipt cards read it from there while the provider echo has not yet carried the
+origin back. The transport envelope is never unwrapped by text shape alone: a
+missing, foreign or conflicting origin leaves the literal body, the ordinary
+user author and no interstream kind. A later provider enrichment reproduces the
+same body, author, kind and origin instead of replacing what is already shown.
+
 The client projection has one reducer. User submissions are keyed by the alias
 set `clientUserMessageId + submissionId`; either alias binds the optimistic and
 canonical forms without using text, time or display order. Provider turns are
