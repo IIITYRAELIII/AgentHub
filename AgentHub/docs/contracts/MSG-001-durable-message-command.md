@@ -270,6 +270,25 @@ work-log storage retain the raw root prompt and its separately bounded
 
 ## Remote attachment transport
 
+The shared Dashboard bot's queue notice confirms remote queue admission only.
+Its accepted/failed notice follows the local Hub's durable command result. The
+same remote control command owns the pending Telegram receipt and its delivery
+state; an indexed alarm only addresses that record. Committing a terminal result
+does not prove Telegram delivery or discard a pending receipt. Same-ID result
+retries preserve the first terminal outcome and share one notification attempt.
+Pending receipts retry with bounded backoff for the command's 30-day retention,
+survive Durable Object recreation, and never replay Task creation. Successful
+delivery restores ordinary 30-minute terminal retention. The authenticated Hub
+binding supplies the destination; source metadata cannot choose another chat.
+Native replies keep exact incoming-message or submitted bundle-card identity.
+
+Telegram does not provide an idempotency key for `sendMessage`: a lost response
+after Telegram accepted a notice can produce another notice on retry. This is
+notification delivery uncertainty, never permission to repeat the Task effect.
+Legacy terminal commands without persisted notification state are not replayed:
+their earlier delivery cannot be inferred. Remove this migration gap only with
+authoritative delivery evidence or an explicit user-requested notification.
+
 Dashboard attachment bytes cross the public Worker boundary only through
 `agent-hub-attachment-chunks-v1`. Every response is smaller than 25 KiB. Paged
 manifests bind the immutable attachment id, total size, SHA-256, chunk count,

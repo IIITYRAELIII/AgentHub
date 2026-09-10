@@ -31,6 +31,8 @@ const CLIENT_SNAPSHOT_PREFIX = "client:snapshot:";
 const CONTROL_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const DASHBOARD_BOT_PAIRING_EXPIRY_MS = 10 * 60 * 1_000;
 const DASHBOARD_BOT_COMMAND_EXPIRY_MS = 30 * 24 * 60 * 60 * 1_000;
+const DASHBOARD_BOT_RECEIPT_PREFIX = "control:dashboard-receipt:";
+const DASHBOARD_BOT_RECEIPT_RETRY_MS = 30_000;
 const DASHBOARD_BOT_PAIRING_CODE_PATTERN = /^[A-Z2-9]{8}$/u;
 const DASHBOARD_BOT_HUB_NAME_MAX_CHARS = 80;
 const DASHBOARD_BOT_HUB_VERIFIER_PATTERN = /^sha256:[a-f0-9]{64}$/u;
@@ -832,9 +834,52 @@ async function dashboardBotTelegramRequest(env, method, body = {}) {
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload?.ok !== true) {
-    throw new Error(`Telegram ${method} failed: ${String(payload?.description ?? `HTTP ${response.status}`).slice(0, 300)}`);
+    const error = new Error(`Telegram ${method} failed: ${String(payload?.description ?? `HTTP ${response.status}`).slice(0, 300)}`);
+    const retryAfter = Number(payload?.parameters?.retry_after ?? response.headers.get("Retry-After"));
+    if (Number.isFinite(retryAfter) && retryAfter > 0) error.retryAfterMs = retryAfter * 1_000;
+    throw error;
   }
   return payload.result;
+}
+
+function dashboardBotReplyParameters(messageId) {
+  return Number.isSafeInteger(messageId) && messageId > 0
+    ? { reply_parameters: { message_id: messageId, allow_sending_without_reply: true } }
+    : {};
+}
+
+function dashboardBotCommandReceipt(command, identity) {
+  const source = command.params?.sourceDetails;
+  if (command.action !== "board-task-ingest" || !source || !identity
+    || String(identity.userId) !== command.userId
+    || String(source.chatId) !== String(identity.chatId)) return null;
+  const kind = Number.isSafeInteger(command.params?.replyMessageId) ? "update" : source.bundleId ? "bundle" : "task";
+  const successText = kind === "update"
+    ? "✅ Изменения сохранены в Dashboard."
+    : kind === "bundle"
+      ? source.separate
+        ? source.separateIndex
+          ? `✅ Задача ${source.separateIndex} добавлена в Backlog.`
+          : "✅ Отдельная задача добавлена в Backlog."
+        : "✅ Пачка сообщений добавлена в Backlog."
+      : "✅ Задача добавлена в Backlog.";
+  return {
+    kind,
+    state: "pending",
+    attempt: 0,
+    nextAttemptAt: command.updatedAt,
+    body: {
+      chat_id: identity.chatId,
+      text: command.status === "completed" ? successText
+        : `⚠️ Agent Hub не принял задачу: ${String(command.error ?? "неизвестная ошибка").slice(0, 300)}`,
+      disable_web_page_preview: true,
+      ...dashboardBotReplyParameters(source.cardMessageId ?? source.messageId ?? source.items?.[0]?.messageId),
+    },
+  };
+}
+
+function dashboardBotReceiptKey(command) {
+  return `${DASHBOARD_BOT_RECEIPT_PREFIX}${String(command.dashboardBotReceipt.nextAttemptAt).padStart(16, "0")}:${command.id}`;
 }
 
 async function dashboardBotTelegramFile(env, attachment) {
@@ -921,6 +966,7 @@ async function updateDashboardBotCard(env, registryStore, card) {
     text: card.text,
     disable_web_page_preview: true,
     reply_markup: card.replyMarkup,
+    ...dashboardBotReplyParameters(card.replyToMessageId),
   };
   const clearStoredCard = async () => registryStore.fetch(new Request(
     "https://journal.internal/dashboard-bot/card",
@@ -938,12 +984,14 @@ async function updateDashboardBotCard(env, registryStore, card) {
     await clearStoredCard();
   } else if (card.mode === "edit" && Number.isSafeInteger(card.messageId)) {
     body.message_id = card.messageId;
+    delete body.reply_parameters;
     try {
       return await dashboardBotTelegramRequest(env, "editMessageText", body);
     } catch (error) {
       if (/message is not modified/iu.test(error.message)) return null;
       await clearStoredCard();
       delete body.message_id;
+      Object.assign(body, dashboardBotReplyParameters(card.replyToMessageId));
     }
   }
   let sent;
@@ -1751,6 +1799,7 @@ export class JournalStore extends DurableObject {
   #snapshotWaiters = new Map();
   #controlResultWaiters = new Map();
   #controlWaiters = new Set();
+  #dashboardBotReceiptFlights = new Map();
   #deviceAuthAttempts = new DeviceAuthAttemptLimiter();
 
   webSocketMessage(socket, message) {
@@ -2125,6 +2174,7 @@ export class JournalStore extends DurableObject {
       bundleId: bundle.id,
       chatId: bundle.chatId,
       messageId,
+      replyToMessageId: bundle.items?.[0]?.messageId,
       text: finalText || dashboardBotBundleCardText(bundle, warning),
       replyMarkup: finalText ? { inline_keyboard: [] } : dashboardBotBundleKeyboard(bundle),
     };
@@ -2248,6 +2298,7 @@ export class JournalStore extends DurableObject {
                 sourceDetails: {
                   bundleId: bundle.id,
                   chatId: bundle.chatId,
+                  cardMessageId: bundle.cardMessageId,
                   userId: Number(bundle.userId),
                   messageCount: group.items.length,
                   bundleMessageCount: bundle.items.length,
@@ -2897,7 +2948,7 @@ export class JournalStore extends DurableObject {
       const command = commands.get(key);
       const markerKey = markerEntries[index][0];
       if (!command || command.expiryKey !== markerKey) continue;
-      deletes.push(key, command.availabilityKey);
+      deletes.push(key, command.availabilityKey, command.dashboardBotReceipt?.indexKey);
       if (!["completed", "failed"].includes(command.status)) activeCount = Math.max(0, activeCount - 1);
     }
     await deleteStorageKeys(storage, deletes);
@@ -3109,11 +3160,12 @@ export class JournalStore extends DurableObject {
     return nextExpiry;
   }
 
-  async #scheduleCleanupAlarm(expiresAt) {
+  async #scheduleCleanupAlarm(expiresAt, storage = null) {
     if (!Number.isFinite(expiresAt)) return;
-    const currentAlarm = await this.ctx.storage.getAlarm();
+    if (!storage) return this.ctx.storage.transaction((transaction) => this.#scheduleCleanupAlarm(expiresAt, transaction));
+    const currentAlarm = await storage.getAlarm();
     if (currentAlarm === null || expiresAt < currentAlarm) {
-      await this.ctx.storage.setAlarm(expiresAt);
+      await storage.setAlarm(expiresAt);
     }
   }
 
@@ -3125,13 +3177,94 @@ export class JournalStore extends DurableObject {
     return Number.isFinite(expiresAt) ? expiresAt : Number.POSITIVE_INFINITY;
   }
 
+  async #nextDashboardBotReceipt(storage = this.ctx.storage) {
+    const markers = await storage.list({ prefix: DASHBOARD_BOT_RECEIPT_PREFIX, limit: 1 });
+    const key = markers.keys().next().value;
+    return key ? Number(key.slice(DASHBOARD_BOT_RECEIPT_PREFIX.length, DASHBOARD_BOT_RECEIPT_PREFIX.length + 16))
+      : Number.POSITIVE_INFINITY;
+  }
+
+  #deliverDashboardBotReceipt(id) {
+    const existing = this.#dashboardBotReceiptFlights.get(id);
+    if (existing) return existing;
+    const flight = this.#sendDashboardBotReceipt(id).finally(() => this.#dashboardBotReceiptFlights.delete(id));
+    this.#dashboardBotReceiptFlights.set(id, flight);
+    return flight;
+  }
+
+  async #sendDashboardBotReceipt(id) {
+    const key = controlCommandKey(id);
+    const command = await this.ctx.storage.transaction(async (storage) => {
+      const current = await storage.get(key);
+      const receipt = current?.dashboardBotReceipt;
+      const now = Date.now();
+      if (receipt?.state !== "pending" || receipt.nextAttemptAt > now || current.expiresAt <= now) return null;
+      const previousIndexKey = receipt.indexKey;
+      receipt.attempt += 1;
+      receipt.nextAttemptAt = now + Math.min(15 * 60_000,
+        DASHBOARD_BOT_RECEIPT_RETRY_MS * 2 ** Math.min(receipt.attempt - 1, 5));
+      receipt.indexKey = dashboardBotReceiptKey(current);
+      await storage.put({ [key]: current, [receipt.indexKey]: { id } });
+      await storage.delete(previousIndexKey);
+      await this.#scheduleCleanupAlarm(receipt.nextAttemptAt, storage);
+      return current;
+    });
+    if (!command) return;
+    let sent;
+    try {
+      sent = await dashboardBotTelegramRequest(this.env, "sendMessage", command.dashboardBotReceipt.body);
+      if (!Number.isSafeInteger(sent?.message_id)) throw new Error("Telegram did not confirm a receipt message id");
+    } catch (error) {
+      if (Number.isFinite(error.retryAfterMs) && error.retryAfterMs > 0) {
+        await this.ctx.storage.transaction(async (storage) => {
+          const current = await storage.get(key);
+          const receipt = current?.dashboardBotReceipt;
+          if (receipt?.state !== "pending") return;
+          const previousIndexKey = receipt.indexKey;
+          receipt.nextAttemptAt = Math.min(current.expiresAt,
+            Math.max(receipt.nextAttemptAt, Date.now() + error.retryAfterMs));
+          receipt.indexKey = dashboardBotReceiptKey(current);
+          await storage.put({ [key]: current, [receipt.indexKey]: { id } });
+          if (previousIndexKey !== receipt.indexKey) await storage.delete(previousIndexKey);
+          await this.#scheduleCleanupAlarm(receipt.nextAttemptAt, storage);
+        });
+      }
+      console.warn(`Cannot send Dashboard bot delivery confirmation: ${error.message}`);
+      return;
+    }
+    await this.ctx.storage.transaction(async (storage) => {
+      const current = await storage.get(key);
+      if (current?.dashboardBotReceipt?.state !== "pending") return;
+      const previousIndexKey = current.dashboardBotReceipt.indexKey;
+      const previousExpiryKey = current.expiryKey;
+      current.dashboardBotReceipt.state = "delivered";
+      current.dashboardBotReceipt.messageId = sent.message_id;
+      current.dashboardBotReceipt.deliveredAt = Date.now();
+      delete current.dashboardBotReceipt.indexKey;
+      current.expiresAt = Date.now() + CONTROL_EXPIRY_MS;
+      current.expiryKey = controlExpiryKey(current);
+      await storage.put({ [key]: current, [current.expiryKey]: { id } });
+      await deleteStorageKeys(storage, [previousIndexKey,
+        previousExpiryKey === current.expiryKey ? null : previousExpiryKey]);
+      await this.#scheduleCleanupAlarm(current.expiresAt, storage);
+    });
+  }
+
   async alarm() {
-    const nextSyncExpiry = await this.#cleanupSyncStaging();
-    await this.ctx.storage.transaction((storage) => this.#cleanupExpiredControlCommands(Date.now(), storage));
-    const nextControlExpiry = await this.#nextControlExpiry();
-    const nextExpiry = Math.min(nextSyncExpiry, nextControlExpiry);
-    if (Number.isFinite(nextExpiry)) await this.ctx.storage.setAlarm(nextExpiry);
-    else await this.ctx.storage.deleteAlarm();
+    const receipts = await this.ctx.storage.list({
+      prefix: DASHBOARD_BOT_RECEIPT_PREFIX,
+      end: timedControlRangeEnd(DASHBOARD_BOT_RECEIPT_PREFIX, Date.now()),
+      limit: 20,
+    });
+    await Promise.all([...receipts.values()].map(({ id }) => this.#deliverDashboardBotReceipt(id)));
+    await this.ctx.storage.transaction(async (storage) => {
+      const nextSyncExpiry = await this.#cleanupSyncStaging(Date.now(), storage);
+      await this.#cleanupExpiredControlCommands(Date.now(), storage);
+      const nextExpiry = Math.min(nextSyncExpiry, await this.#nextControlExpiry(storage),
+        await this.#nextDashboardBotReceipt(storage));
+      if (Number.isFinite(nextExpiry)) await storage.setAlarm(nextExpiry);
+      else await storage.deleteAlarm();
+    });
   }
 
   #controlStatus(command) {
@@ -3918,7 +4051,8 @@ export class JournalStore extends DurableObject {
             const current = await storage.get(controlCommandKey(id));
             if (!current || Number(current.expiresAt ?? 0) > Date.now()) return;
             const activeCount = Number(await storage.get(CONTROL_ACTIVE_COUNT_KEY)) || 0;
-            await deleteStorageKeys(storage, [controlCommandKey(id), current.availabilityKey, current.expiryKey]);
+            await deleteStorageKeys(storage, [controlCommandKey(id), current.availabilityKey, current.expiryKey,
+              current.dashboardBotReceipt?.indexKey]);
             if (!["completed", "failed"].includes(current.status)) {
               await storage.put(CONTROL_ACTIVE_COUNT_KEY, Math.max(0, activeCount - 1));
             }
@@ -4011,6 +4145,16 @@ export class JournalStore extends DurableObject {
           command.error = String(payload.error ?? "Agent Hub control action failed").slice(0, MAX_CONTROL_ERROR_CHARS);
           delete command.result;
         }
+        command.dashboardBotReceipt = dashboardBotCommandReceipt(command,
+          await storage.get(DASHBOARD_BOT_SERVICE_IDENTITY_KEY));
+        if (command.dashboardBotReceipt) {
+          command.expiresAt = now + DASHBOARD_BOT_COMMAND_EXPIRY_MS;
+          command.expiryKey = controlExpiryKey(command);
+          command.dashboardBotReceipt.indexKey = dashboardBotReceiptKey(command);
+          await storage.put(command.dashboardBotReceipt.indexKey, { id });
+          // The command, pending receipt and wake-up commit together.
+          await this.#scheduleCleanupAlarm(now, storage);
+        }
         const activeCount = Math.max(0, (Number(await storage.get(CONTROL_ACTIVE_COUNT_KEY)) || 0) - 1);
         await deleteStorageKeys(storage, [
           previousAvailabilityKey,
@@ -4031,28 +4175,14 @@ export class JournalStore extends DurableObject {
           if (manifest.commandIds.length) await storage.put(attachmentRecord.key, manifest);
           else await this.#deleteAttachment(manifest, storage, attachmentRecord.id);
         }
-        const sourceDetails = command.params?.sourceDetails;
-        const dashboardBotReceipt = command.action === "board-task-ingest"
-          && sourceDetails && typeof sourceDetails === "object"
-          ? {
-            kind: Number.isSafeInteger(command.params?.replyMessageId)
-              ? "update"
-              : sourceDetails.bundleId
-                ? "bundle"
-                : "task",
-            bundleId: String(sourceDetails.bundleId ?? ""),
-            separate: sourceDetails.separate === true,
-            separateIndex: Number(sourceDetails.separateIndex) || null,
-          }
-          : null;
         return json({
           ...this.#controlStatus(command),
           resultAccepted: true,
-          ...(dashboardBotReceipt ? { dashboardBotReceipt } : {}),
         });
       });
       if (response.ok) {
         this.#wakeControlResultWaiters(id);
+        await this.#deliverDashboardBotReceipt(id);
         await this.#scheduleCleanupAlarm(Date.now() + CONTROL_EXPIRY_MS);
       }
       return response;
@@ -4721,6 +4851,7 @@ export default {
           chat_id: chatId,
           text: routed.reply,
           disable_web_page_preview: true,
+          ...dashboardBotReplyParameters(update?.message?.message_id ?? update?.callback_query?.message?.message_id),
         });
       }
       return json({ ok: true, ignored: routed.ignored === true });
@@ -4841,26 +4972,6 @@ export default {
         }),
       }), "control-result");
       const result = await resultResponse.json().catch(() => ({}));
-      if (resultResponse.ok && result.resultAccepted === true && result.dashboardBotReceipt) {
-        const receipt = result.dashboardBotReceipt;
-        const successText = receipt.kind === "update"
-          ? "✅ Изменения сохранены в Dashboard."
-          : receipt.kind === "bundle"
-            ? receipt.separate
-              ? receipt.separateIndex
-                ? `✅ Задача ${receipt.separateIndex} добавлена в Backlog.`
-                : "✅ Отдельная задача добавлена в Backlog."
-              : "✅ Пачка сообщений добавлена в Backlog."
-            : "✅ Задача добавлена в Backlog.";
-        const failureText = `⚠️ Agent Hub не принял задачу: ${String(payload.error ?? "неизвестная ошибка").slice(0, 300)}`;
-        await dashboardBotTelegramRequest(env, "sendMessage", {
-          chat_id: identity.chatId,
-          text: payload.ok ? successText : failureText,
-          disable_web_page_preview: true,
-        }).catch((error) => {
-          console.warn(`Cannot send Dashboard bot delivery confirmation: ${error.message}`);
-        });
-      }
       return json(result, resultResponse.status);
     }
     if (url.pathname === "/api/sync") {
