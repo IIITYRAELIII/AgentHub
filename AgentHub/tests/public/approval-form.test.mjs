@@ -67,3 +67,19 @@ test("URL MCP approval exposes one action that opens the link and continues", as
     { id: "decline", label: "Отклонить", kind: "danger" },
   ]);
 });
+
+test("async questions follow their Stream across rotation while ordinary approvals follow run identity", async () => {
+  const { approvalsForTask, approvalOptions } = await approvalFormApi();
+  const approvals = [
+    { key: "a", kind: "async-user-input", streamId: "a", threadId: "old-thread" },
+    { key: "b", kind: "async-user-input", streamId: "b" },
+    { key: "run-a", kind: "command", runId: "run-a" },
+    { key: "run-b", kind: "command", runId: "run-b" },
+    { key: "legacy", kind: "command" },
+  ];
+  const selected = approvalsForTask(approvals, { streamId: "a", threadId: "new-thread", run: { id: "run-a" } });
+  assert.deepEqual(Array.from(selected, (value) => value.id), ["a", "run-a"]);
+  assert.deepEqual(Array.from(approvalsForTask(approvals, { streamId: "b" }), (value) => value.id), ["b"]);
+  assert.deepEqual(Array.from(approvalOptions({ kind: "async-user-input", state: "pending" }), (value) => value.id), ["decline"]);
+  assert.equal(approvalOptions({ kind: "async-user-input", state: "dispatching" }).length, 0);
+});

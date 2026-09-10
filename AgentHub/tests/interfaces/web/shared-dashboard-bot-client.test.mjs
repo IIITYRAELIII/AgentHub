@@ -1064,3 +1064,195 @@ test("shared Dashboard bot retains transport error causes while logging only all
     });
   }
 });
+
+test("отклонённое подтверждение останавливает планирование и дожидается начатых команд", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-shared-bot-pool-drain-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const secretFile = path.join(directory, "shared-dashboard-bot.secret");
+  await writeFile(secretFile, "s".repeat(64), "utf8");
+
+  // Пул берёт ATTACHMENT_COMMAND_CONCURRENCY = 3 команды сразу, четвёртая ждёт
+  // освободившегося worker. Подтверждение первой команды отказывает так же, как
+  // отказывает сегодняшний внешний маршрут: заголовки уже получены, ответа нет.
+  const ids = [
+    "018f6c86-3f34-7a31-8f27-16f5b96cce01",
+    "018f6c86-3f34-7a31-8f27-16f5b96cce02",
+    "018f6c86-3f34-7a31-8f27-16f5b96cce03",
+    "018f6c86-3f34-7a31-8f27-16f5b96cce04",
+  ];
+  const commands = ids.map((id, index) => ({
+    id,
+    userId: "42",
+    action: "board-task-ingest",
+    params: {
+      text: `Задача ${index + 1}`,
+      sourceKey: `shared-dashboard:${100 + index}`,
+      attachments: [`remote-attachment:018f6c86-3f34-7a31-8f27-16f5b96ccf0${index + 1}`],
+    },
+  }));
+
+  let failAcknowledgement;
+  const acknowledgementFailed = new Promise((resolve) => { failAcknowledgement = resolve; });
+  const acknowledged = [];
+  const handled = [];
+  const requested = [];
+  const body = Buffer.from("attachment");
+  const ackError = new Error("acknowledgement body never arrived");
+
+  const client = new SharedDashboardBotClient({
+    publicUrl: "https://hub.example.com",
+    hubId: "018f6c86-3f34-7a31-8f27-16f5b96ccea5",
+    secretFile,
+    attachmentDirectory: path.join(directory, "attachments"),
+    fetchImpl: async (url, init) => {
+      const payload = JSON.parse(String(init?.body ?? "{}"));
+      requested.push({ url, body: String(init?.body ?? "") });
+      if (url.endsWith("/api/dashboard-bot/pull")) return Response.json({ commands });
+      if (url.endsWith("/api/dashboard-bot/attachment/pull")) {
+        return new Response(body, {
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "Content-Length": String(body.length),
+            "X-Agent-Hub-Attachment-Hash": createHash("sha256").update(body).digest("hex"),
+            "X-Agent-Hub-File-Name": encodeURIComponent("attachment.bin"),
+          },
+        });
+      }
+      if (url.endsWith("/api/dashboard-bot/result")) {
+        if (payload.id === ids[0]) {
+          failAcknowledgement();
+          throw ackError;
+        }
+        acknowledged.push(payload.id);
+        return Response.json({ ok: true });
+      }
+      return Response.json({ error: "unexpected request" }, { status: 500 });
+    },
+    handler: async (request) => {
+      handled.push(request.context.commandId);
+      // Соседние worker'ы остаются активными в момент отказа подтверждения.
+      if (request.context.commandId !== ids[0]) await acknowledgementFailed;
+      return { taskId: `task-${request.context.commandId}` };
+    },
+  });
+
+  const polling = client.poll();
+  await assert.rejects(polling, (error) => {
+    assert.equal(error.cause, ackError, "исходная ошибка подтверждения должна сохраниться");
+    return true;
+  });
+
+  // Начатые команды дорабатывают внутри этой попытки: отклонение poll не
+  // оставляет их слать запросы в фоне.
+  assert.deepEqual(acknowledged.toSorted(), [ids[1], ids[2]]);
+  // Четвёртая команда не планируется после первого отказа и остаётся в очереди
+  // для следующего опроса с той же идентичностью.
+  assert.equal(handled.includes(ids[3]), false);
+  const fourth = [ids[3], "018f6c86-3f34-7a31-8f27-16f5b96ccf04"];
+  assert.equal(
+    requested.some((entry) => fourth.some((identity) => entry.body.includes(identity))),
+    false,
+    "ни один запрос не должен относиться к незапланированной четвёртой команде",
+  );
+
+  const settledRequests = requested.length;
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(requested.length, settledRequests, "после отклонения не должно быть новых запросов");
+});
+
+test("отказ текстовой полосы не оставляет полосу вложений работать после отклонения", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-shared-bot-lane-drain-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const secretFile = path.join(directory, "shared-dashboard-bot.secret");
+  await writeFile(secretFile, "s".repeat(64), "utf8");
+
+  // Текстовая полоса идёт последовательно, полоса вложений — пулом. Отказ
+  // подтверждения первой текстовой команды не должен ни запускать вторую, ни
+  // бросать полосу вложений дорабатывать уже после отклонения опроса.
+  const textIds = [
+    "018f6c86-3f34-7a31-8f27-16f5b96ccd01",
+    "018f6c86-3f34-7a31-8f27-16f5b96ccd02",
+  ];
+  const attachmentIds = [
+    "018f6c86-3f34-7a31-8f27-16f5b96ccd11",
+    "018f6c86-3f34-7a31-8f27-16f5b96ccd12",
+  ];
+  const commands = [
+    ...textIds.map((id, index) => ({
+      id,
+      userId: "42",
+      action: "board-task-ingest",
+      params: { text: `Текст ${index + 1}`, sourceKey: `shared-dashboard:${200 + index}` },
+    })),
+    ...attachmentIds.map((id, index) => ({
+      id,
+      userId: "42",
+      action: "board-task-ingest",
+      params: {
+        text: `Вложение ${index + 1}`,
+        sourceKey: `shared-dashboard:${210 + index}`,
+        attachments: [`remote-attachment:018f6c86-3f34-7a31-8f27-16f5b96ccd2${index + 1}`],
+      },
+    })),
+  ];
+
+  let failAcknowledgement;
+  const acknowledgementFailed = new Promise((resolve) => { failAcknowledgement = resolve; });
+  const acknowledged = [];
+  const handled = [];
+  const requested = [];
+  const body = Buffer.from("attachment");
+  const ackError = new Error("text acknowledgement body never arrived");
+
+  const client = new SharedDashboardBotClient({
+    publicUrl: "https://hub.example.com",
+    hubId: "018f6c86-3f34-7a31-8f27-16f5b96ccea5",
+    secretFile,
+    attachmentDirectory: path.join(directory, "attachments"),
+    fetchImpl: async (url, init) => {
+      const payload = JSON.parse(String(init?.body ?? "{}"));
+      requested.push({ url, body: String(init?.body ?? "") });
+      if (url.endsWith("/api/dashboard-bot/pull")) return Response.json({ commands });
+      if (url.endsWith("/api/dashboard-bot/attachment/pull")) {
+        return new Response(body, {
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "Content-Length": String(body.length),
+            "X-Agent-Hub-Attachment-Hash": createHash("sha256").update(body).digest("hex"),
+            "X-Agent-Hub-File-Name": encodeURIComponent("attachment.bin"),
+          },
+        });
+      }
+      if (url.endsWith("/api/dashboard-bot/result")) {
+        if (payload.id === textIds[0]) {
+          failAcknowledgement();
+          throw ackError;
+        }
+        acknowledged.push(payload.id);
+        return Response.json({ ok: true });
+      }
+      return Response.json({ error: "unexpected request" }, { status: 500 });
+    },
+    handler: async (request) => {
+      handled.push(request.context.commandId);
+      if (request.context.commandId !== textIds[0]) await acknowledgementFailed;
+      return { taskId: `task-${request.context.commandId}` };
+    },
+  });
+
+  await assert.rejects(client.poll(), (error) => {
+    assert.equal(error.cause, ackError, "исходная ошибка подтверждения должна сохраниться");
+    return true;
+  });
+
+  // Обе команды с вложениями были начаты до отказа и дорабатывают внутри опроса.
+  assert.deepEqual(acknowledged.toSorted(), attachmentIds.toSorted());
+  // Вторая текстовая команда не запускается и остаётся в очереди для следующего
+  // опроса с той же идентичностью.
+  assert.equal(handled.includes(textIds[1]), false);
+  assert.equal(requested.some((entry) => entry.body.includes(textIds[1])), false);
+
+  const settledRequests = requested.length;
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(requested.length, settledRequests, "после отклонения не должно быть новых запросов");
+});

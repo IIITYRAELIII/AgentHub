@@ -7,6 +7,8 @@ import path from "node:path";
 import test from "node:test";
 import vm from "node:vm";
 
+import { stressMatrix } from "../helpers/test-profile.mjs";
+
 const WEB_APP_ROOT = new URL("../../assets/web-app/", import.meta.url);
 
 const TEST_THEME_CATALOG = JSON.stringify([{
@@ -1996,7 +1998,7 @@ test("current and other Workspace or Stream native dblclicks survive exact-ident
   }
 });
 
-test("Stream card opens on 20 repeated native dblclicks per viewport without console failures", async () => {
+test("Stream card opens on 20 repeated native dblclicks per viewport without console failures", stressMatrix(), async () => {
   const { chromium } = await import("playwright");
   const browser = await launchDomBrowser(chromium);
   const screenshotDirectory = String(process.env.HUB157_QA_SCREENSHOT_DIR ?? "").trim();

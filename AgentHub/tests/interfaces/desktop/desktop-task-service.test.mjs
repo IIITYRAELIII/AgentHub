@@ -5,6 +5,7 @@ import { TurnEndNotificationRegistry } from "../../../src/application/turn-end-n
 import { incomingLedgerRecord } from "../../../src/application/work-log-usage-projection.mjs";
 import { createInterstreamMessage } from "../../../src/domain/interstream-message.mjs";
 import { DesktopTaskService } from "../../../src/interfaces/desktop/desktop-task-service.mjs";
+import { fitTaskHistoryPayload, TaskHistoryResponseBudgetError } from "../../../src/domain/response-budget.mjs";
 
 function fixture() {
   const entry = {
@@ -62,6 +63,93 @@ function fixture() {
   });
   return { service, calls };
 }
+
+function annotatedHistory() {
+  return {
+    provider: "codex", threadId: "thread-1", streamId: "stream-1", start: 0, end: 1, total: 1,
+    items: [{ id: "turn-1", prompt: "comment", answer: "answer", messages: [{
+      role: "user", itemId: "user-1", clientUserMessageId: "client-1", text: "comment",
+      responseAnnotations: [{ text: "Полная цитата ".repeat(10_000), annotation: "comment", source: {
+        provider: "codex", threadId: "thread-1", turnId: "turn-0", itemId: "agent-0",
+        messageKey: "exact-canonical-message", contentHash: "original-content-hash",
+      } }],
+    }],
+  }],
+  };
+}
+
+test("oversized global snapshot cannot starve history into a fabricated 64 KiB budget", async () => {
+  const { service } = fixture();
+  const source = annotatedHistory();
+  const unchanged = structuredClone(source);
+  let selections = 0;
+  let reads = 0;
+  service.dispatchCommand = async () => { selections += 1; return { boardTasks: [{ description: "s".repeat(3_650_000) }] }; };
+  service.taskHistory = async (params) => {
+    reads += 1;
+    assert.equal(params.refreshSource, false);
+    assert.ok(params.maxResponseBytes > 800_000);
+    return fitTaskHistoryPayload(source, { maxBytes: params.maxResponseBytes });
+  };
+  const result = await service.openTask({ streamId: "stream-1", maxResponseBytes: 850_000 });
+  assert.equal(result.snapshot, null);
+  assert.equal(result.snapshotDeferred, true);
+  assert.deepEqual(result.history, unchanged);
+  assert.deepEqual(source, unchanged);
+  assert.equal(selections, 1);
+  assert.equal(reads, 1);
+  assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 850_000);
+});
+
+test("complete annotation larger than shared remainder retries only history without snapshot", async () => {
+  const { service } = fixture();
+  const source = annotatedHistory();
+  let selections = 0;
+  const budgets = [];
+  service.dispatchCommand = async () => { selections += 1; return { payload: "s".repeat(700_000) }; };
+  service.taskHistory = async (params) => {
+    budgets.push(params.maxResponseBytes);
+    assert.equal(params.refreshSource, false);
+    return fitTaskHistoryPayload(source, { maxBytes: params.maxResponseBytes });
+  };
+  const result = await service.openTask({ streamId: "stream-1", maxResponseBytes: 850_000 });
+  assert.equal(budgets.length, 2);
+  assert.ok(budgets[0] > 65_536 && budgets[0] < 150_000);
+  assert.ok(budgets[1] > 800_000);
+  assert.equal(selections, 1);
+  assert.equal(result.snapshot, null);
+  assert.equal(result.snapshotDeferred, true);
+  assert.deepEqual(result.history.items[0].messages[0], source.items[0].messages[0]);
+});
+
+test("history read failure other than size is not retried or hidden", async () => {
+  const { service } = fixture();
+  let reads = 0;
+  service.taskHistory = async () => { reads += 1; throw new Error("database failure"); };
+  await assert.rejects(service.openTask({ streamId: "stream-1" }), /database failure/);
+  assert.equal(reads, 1);
+});
+
+test("a quote exceeding the whole envelope fails after one read-only budget retry", async () => {
+  const { service } = fixture();
+  let reads = 0;
+  service.taskHistory = async (params) => { reads += 1; throw new TaskHistoryResponseBudgetError(params.maxResponseBytes); };
+  await assert.rejects(service.openTask({ streamId: "stream-1" }), { code: "TASK_HISTORY_RESPONSE_BUDGET_EXCEEDED" });
+  assert.equal(reads, 2);
+});
+
+test("openTurn defers oversized snapshot while retaining exact focused-message identity", async () => {
+  const { service } = fixture();
+  service.dispatchCommand = async () => ({ payload: "s".repeat(3_650_000) });
+  service.taskHistory = async (params) => fitTaskHistoryPayload(annotatedHistory(), { maxBytes: params.maxResponseBytes });
+  const result = await service.openTurn({ streamId: "stream-1", turnId: "turn-1", itemId: "assistant-middle", maxResponseBytes: 850_000 });
+  assert.equal(result.snapshot, null);
+  assert.equal(result.snapshotDeferred, true);
+  assert.equal(result.focusedTurn.turnId, "turn-1");
+  assert.equal(result.focusedMessage.itemId, "assistant-middle");
+  assert.equal(result.focusedMessage.text, "intermediate answer");
+  assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 850_000);
+});
 
 test("Desktop task service resolves streamId before provider references", async () => {
   const { service } = fixture();

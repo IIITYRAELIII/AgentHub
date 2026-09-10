@@ -5,12 +5,26 @@ import {
   fitTaskHistoryPayload,
   truncateUtf8,
   utf8ByteLength,
+  TaskHistoryResponseBudgetError,
 } from "../../src/domain/response-budget.mjs";
 
 test("truncateUtf8 preserves valid Russian UTF-8", () => {
   const value = truncateUtf8("Привет 🌧️".repeat(1_000), 257);
   assert.ok(utf8ByteLength(value) <= 257);
   assert.doesNotMatch(value, /\uFFFD/u);
+});
+
+test("an oversized complete annotation reports a typed budget failure without altering quote or locator", () => {
+  const payload = { items: [{ id: "turn", messages: [{ itemId: "item", role: "user", text: "comment",
+    responseAnnotations: [{ text: "quote".repeat(20_000), source: { messageKey: "exact-source", contentHash: "retained-hash" } }],
+  }] }] };
+  const original = structuredClone(payload);
+  assert.throws(() => fitTaskHistoryPayload(payload, { maxBytes: 65_536 }), (error) => (
+    error instanceof TaskHistoryResponseBudgetError
+    && error.code === "TASK_HISTORY_RESPONSE_BUDGET_EXCEEDED"
+    && error.maxBytes === 65_536
+  ));
+  assert.deepEqual(payload, original);
 });
 
 test("task history is fitted by bytes and keeps the newest identity", () => {

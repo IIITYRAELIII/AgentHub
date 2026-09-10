@@ -3,6 +3,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { isMainModule } from "./src/infrastructure/process/main-module.mjs";
+import { acceptReleaseArtifact } from "./src/runtime/test-contour-release-acceptance.mjs";
 import {
   defaultTestContourRoot,
   cloneProductionDataToTestContour,
@@ -53,10 +54,19 @@ function parseArguments(args) {
     else if (argument === "--expected-operation" && args[index + 1]) options.expectedOperationId = args[++index];
     else if (argument === "--expected-head" && args[index + 1]) options.expectedHeadCommit = args[++index];
     else if (argument === "--json") options.json = true;
+    else if (argument === "--artifact" && args[index + 1]) options.artifactRoot = path.resolve(args[++index]);
+    else if (argument === "--previous-artifact" && args[index + 1]) options.previousArtifactRoot = path.resolve(args[++index]);
+    else if (argument === "--output-root" && args[index + 1]) options.outputRoot = path.resolve(args[++index]);
     else throw new Error(`Unknown Test Contour argument: ${argument}`);
   }
   if (options.releaseCandidate && command !== "verify") {
     throw new Error("--release-candidate is supported only by Test Contour verify");
+  }
+  if (command !== "accept-release" && (options.artifactRoot || options.previousArtifactRoot || options.outputRoot)) {
+    throw new Error("Artifact arguments are supported only by accept-release");
+  }
+  if (command === "accept-release" && args.includes("--root")) {
+    throw new Error("accept-release always creates a fresh run root; use --output-root for its parent directory");
   }
   return options;
 }
@@ -81,6 +91,17 @@ export async function main(args = process.argv.slice(2)) {
   const options = parseArguments(args);
   const entryFile = fileURLToPath(import.meta.url);
   const common = { root: options.root };
+  if (options.command === "accept-release") {
+    const result = await acceptReleaseArtifact({
+      artifactRoot: options.artifactRoot,
+      previousArtifactRoot: options.previousArtifactRoot,
+      ...(options.outputRoot ? { outputRoot: options.outputRoot } : {}),
+    });
+    print({ status: result.status, scope: result.scope, productionParity: result.productionParity,
+      artifacts: result.artifacts, manifestFile: result.manifestFile,
+      excluded: result.scenarios.filter((scenario) => scenario.status === "excluded") }, options.json);
+    return result;
+  }
   if (options.command === "install") {
     if (!options.allowUninstalled) await requireComponent(options);
     const result = await installTestContour(common);

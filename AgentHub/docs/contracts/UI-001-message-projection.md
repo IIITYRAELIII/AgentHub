@@ -123,7 +123,37 @@ Long composer quote previews scroll within a visual height bound and remain
 keyboard-accessible, keeping the quote comment and send controls in view without
 shortening stored or submitted text.
 
+## Agent questions
+
+Codex typed `agentMessage.questions` are asynchronous question requests, even
+when the provider labels the item `final_answer`. They never become a final
+answer or duplicate the live commentary. Each question is durably identified by
+provider, Stream, Thread, turn and item; repeated item/terminal observations
+reuse that identity. A pending question remains visible in its Stream after
+turn completion, refresh and restart. It always permits a custom answer and
+never submits a default choice automatically. Background snapshot updates do
+not replace an unchanged form or erase its draft.
+
+An explicit answer durably freezes its content, destination and canonical
+client message identity before message intake. Intake uses the ordinary message
+owner; a form is marked submitted only on a confirmed receipt. An ambiguous
+result remains visible with frozen fields, and only an explicit retry may send
+the same answer to the same destination. Rotation never silently changes a
+claimed destination. Closing a still-pending question is durable and sends no
+message; an ambiguous claimed answer cannot be dismissed as if unsent.
+These asynchronous cards do not use the blocking tool-approval RPC response.
+
 ## Canonical reducer
+
+Opening history shares a bounded transport envelope with optional global
+snapshot data. If that snapshot leaves insufficient space, the server returns
+`snapshot: null` and `snapshotDeferred: true`, preserving the complete quote and
+source locator within the existing total response limit. Null is not an empty
+authoritative snapshot: the client retains current collections and requests
+one ordinary snapshot refresh separately. A typed history-budget failure may
+retry only the same local history read once without the snapshot; selection
+mutations and provider refresh are never replayed. A single message that exceeds
+the full transport budget still fails visibly rather than losing annotations.
 
 The client projection has one reducer. User submissions are keyed by the alias
 set `clientUserMessageId + submissionId`; either alias binds the optimistic and

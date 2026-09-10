@@ -2256,16 +2256,11 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
     for (const task of representativeTasks) {
       renderTaskQueue(taskId(task.provider, task.threadId, task.streamId), snapshot);
     }
-    if (selected) {
-      agentHub.setApprovals(selectedTaskId, effectiveSelectedId === serverSelectedId
-        ? (snapshot.pendingApprovals ?? []).map((approval) => ({
-        id: approval.key ?? approval.id,
-        kind: approval.kind ?? "Подтверждение",
-        text: approval.text ?? approval.preview ?? approval.reason ?? "",
-        questions: Array.isArray(approval.questions) ? approval.questions : null,
-        options: window.AgentHubApprovalForm.approvalOptions(approval),
-        }))
-        : []);
+    for (const task of representativeTasks) {
+      const stableTaskId = taskId(task.provider, task.threadId, task.streamId);
+      agentHub.setApprovals(stableTaskId, window.AgentHubApprovalForm.approvalsForTask(
+        snapshot.pendingApprovals, task, { serverSelected: stableTaskId === serverSelectedId },
+      ));
     }
   });
   const settings = snapshot.settings ?? {};
@@ -2588,6 +2583,7 @@ function applyOpened(result, {
   });
   if (selectTask) rememberSelectedTaskId(id);
   if (!skipSnapshot) applySnapshot(result?.snapshot);
+  if (!skipSnapshot && result?.snapshotDeferred === true) void refresh();
   if (selectTask) agentHub.selectTask(id);
   syncHistoryPagination(id);
   const renderedMessages = renderTaskMessages(id, { preserveScroll, exactNavigation });

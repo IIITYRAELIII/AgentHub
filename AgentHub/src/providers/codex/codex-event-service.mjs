@@ -124,6 +124,18 @@ export class CodexEventService {
         provider: "codex",
         allowThreadFallback: method === "turn/started",
       });
+    if (!contextProbe && run) {
+      // A terminal snapshot can recover an item whose individual notification
+      // was lost. Both observations share the durable question identity.
+      const questionItems = method === "item/completed" ? [params.item]
+        : method === "turn/completed" ? params.turn?.items ?? [] : [];
+      for (const item of questionItems) {
+        if (item?.type !== "agentMessage" || !item.questions?.length) continue;
+        await d.requestUserInput(item.id, {
+          asyncItem: item, threadId: params.threadId, turnId: eventTurnId,
+        }, run);
+      }
+    }
     if (method !== "mcpServer/elicitation/request" && [
       "item/started",
       "item/completed",

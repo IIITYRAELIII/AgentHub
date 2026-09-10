@@ -10,6 +10,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Web.Script.Serialization;
 
 [assembly: AssemblyTitle("Agent Hub Server")]
@@ -41,6 +42,20 @@ namespace AgentHub.RuntimeHost
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool CloseHandle(IntPtr handle);
 
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool TerminateJobObject(IntPtr job, uint exitCode);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool QueryInformationJobObject(IntPtr job, int informationClass,
+            out JobAccounting information, uint length, IntPtr returnLength);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct JobAccounting
+        {
+            public long TotalUserTime, TotalKernelTime, ThisPeriodTotalUserTime, ThisPeriodTotalKernelTime;
+            public uint TotalPageFaultCount, TotalProcesses, ActiveProcesses, TotalTerminatedProcesses;
+        }
+
         [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
         private static extern int SetCurrentProcessExplicitAppUserModelID(string appId);
 
@@ -52,6 +67,11 @@ namespace AgentHub.RuntimeHost
                 Path.AltDirectorySeparatorChar);
             try
             {
+                if (args.Length == 1 && args[0] == "--close-release-acceptance")
+                {
+                    CloseReleaseAcceptance(runtimeRoot);
+                    return 0;
+                }
                 if (args.Length == 1 && args[0] == "--install-autostart")
                 {
                     InstallAutostart(runtimeRoot);
@@ -79,6 +99,19 @@ namespace AgentHub.RuntimeHost
 
         private static int Run(string runtimeRoot, bool checkOnly)
         {
+            Mutex acceptanceGate = EnterAcceptanceGate(runtimeRoot);
+            IntPtr runtimeJob = IntPtr.Zero;
+            try
+            {
+            if (acceptanceGate != null)
+            {
+                if (File.Exists(Path.Combine(runtimeRoot, ".agent-hub-release-acceptance.closed")))
+                    throw new InvalidOperationException("Release acceptance is closed; no later runtime may start");
+                // Register before hashing/validation: cleanup also owns a WMI
+                // launcher that has not reached Node or the instance lock yet.
+                runtimeJob = CreateRuntimeJob(AcceptanceObjectName(runtimeRoot));
+                LeaveAcceptanceGate(ref acceptanceGate);
+            }
             string currentFile = Path.Combine(runtimeRoot, "current.json");
             EnsureRegularFile(currentFile, "Agent Hub current.json is missing or unsafe");
             Dictionary<string, object> pointer = ReadJsonObject(currentFile);
@@ -108,8 +141,7 @@ namespace AgentHub.RuntimeHost
             }
 
             SetCurrentProcessExplicitAppUserModelID(AppUserModelId);
-            IntPtr runtimeJob = CreateRuntimeJob();
-
+            acceptanceGate = EnterAcceptanceGate(runtimeRoot);
             ProcessStartInfo start = new ProcessStartInfo();
             start.FileName = node;
             start.Arguments = QuoteArgument(server);
@@ -117,19 +149,20 @@ namespace AgentHub.RuntimeHost
             start.UseShellExecute = false;
             start.CreateNoWindow = true;
             start.WindowStyle = ProcessWindowStyle.Hidden;
+            ApplyReleaseAcceptanceEnvironment(runtimeRoot, start);
+            if (runtimeJob == IntPtr.Zero) runtimeJob = CreateRuntimeJob();
             start.EnvironmentVariables["AGENT_HUB_CONFIG"] = Path.Combine(runtimeRoot, "config.json");
             start.EnvironmentVariables["AGENT_HUB_LAUNCHER"] = Assembly.GetExecutingAssembly().Location;
             start.EnvironmentVariables["AGENT_HUB_RUNTIME_ROOT"] = runtimeRoot;
             start.EnvironmentVariables["AGENT_HUB_RELEASE_ID"] = current;
 
-            try
-            {
                 using (Process process = Process.Start(start))
                 {
                     if (process == null)
                     {
                         throw new InvalidOperationException("Node.js did not start");
                     }
+                    LeaveAcceptanceGate(ref acceptanceGate);
                     DeleteLegacyLaunchers(runtimeRoot);
                     process.WaitForExit();
                     return process.ExitCode;
@@ -137,13 +170,133 @@ namespace AgentHub.RuntimeHost
             }
             finally
             {
+                LeaveAcceptanceGate(ref acceptanceGate);
                 if (runtimeJob != IntPtr.Zero) CloseHandle(runtimeJob);
             }
         }
 
-        private static IntPtr CreateRuntimeJob()
+        // WMI replacement does not inherit the caller's environment. Persist the
+        // opt-in in the isolated root so every generation receives the same
+        // empty provider homes and cannot inherit production config overrides.
+        private static Dictionary<string, object> ReadAcceptanceMarker(string runtimeRoot)
         {
-            string name = "Local\\IIITYRAELIII.AgentHub." + Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture);
+            string markerFile = Path.Combine(runtimeRoot, ".agent-hub-release-acceptance.json");
+            if (!File.Exists(markerFile)) return null;
+            EnsurePathWithoutReparsePoints(runtimeRoot, markerFile);
+            Dictionary<string, object> marker = ReadJsonObject(markerFile);
+            object version;
+            object ownerRoot;
+            object id;
+            if (!marker.TryGetValue("schemaVersion", out version) || Convert.ToInt32(version) != 1
+                || !marker.TryGetValue("root", out ownerRoot)
+                || !String.Equals(Path.GetFullPath(Convert.ToString(ownerRoot)), Path.GetFullPath(runtimeRoot), StringComparison.OrdinalIgnoreCase)
+                || !marker.TryGetValue("id", out id) || String.IsNullOrWhiteSpace(Convert.ToString(id)))
+            {
+                throw new InvalidOperationException("Release acceptance root identity mismatch");
+            }
+            string productionRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgentHub");
+            if (String.Equals(Path.GetFullPath(runtimeRoot), Path.GetFullPath(productionRoot), StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Release acceptance cannot use the production root");
+            }
+            return marker;
+        }
+
+        private static void ApplyReleaseAcceptanceEnvironment(string runtimeRoot, ProcessStartInfo start)
+        {
+            if (ReadAcceptanceMarker(runtimeRoot) == null) return;
+            if (File.Exists(Path.Combine(runtimeRoot, ".agent-hub-release-acceptance.closed")))
+                throw new InvalidOperationException("Release acceptance is closed; no later runtime may start");
+            Dictionary<string, string> system = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string key in new[] { "SystemRoot", "WINDIR", "SystemDrive", "PATH", "PATHEXT", "COMSPEC", "OS", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE" })
+            {
+                string value = start.EnvironmentVariables[key];
+                if (value != null) system[key] = value;
+            }
+            start.EnvironmentVariables.Clear();
+            foreach (KeyValuePair<string, string> entry in system) start.EnvironmentVariables[entry.Key] = entry.Value;
+            string home = Path.Combine(runtimeRoot, "home");
+            string temporary = Path.Combine(runtimeRoot, "temp");
+            Directory.CreateDirectory(home);
+            Directory.CreateDirectory(temporary);
+            start.EnvironmentVariables["USERPROFILE"] = home;
+            start.EnvironmentVariables["HOME"] = home;
+            start.EnvironmentVariables["LOCALAPPDATA"] = Path.Combine(home, "AppData", "Local");
+            start.EnvironmentVariables["APPDATA"] = Path.Combine(home, "AppData", "Roaming");
+            start.EnvironmentVariables["CODEX_HOME"] = Path.Combine(home, ".codex");
+            start.EnvironmentVariables["CLAUDE_CONFIG_DIR"] = Path.Combine(home, ".claude");
+            start.EnvironmentVariables["TEMP"] = temporary;
+            start.EnvironmentVariables["TMP"] = temporary;
+            start.EnvironmentVariables["AGENT_HUB_TEST_CONTOUR"] = "1";
+            start.EnvironmentVariables["AGENT_HUB_TEST_CONTOUR_PROFILE"] = "fake-codex";
+        }
+
+        private static string AcceptanceObjectName(string root)
+        {
+            using (SHA256 sha = SHA256.Create())
+            {
+                byte[] digest = sha.ComputeHash(Encoding.UTF8.GetBytes(Path.GetFullPath(root).ToUpperInvariant()));
+                return "Local\\IIITYRAELIII.AgentHub.Acceptance." + BitConverter.ToString(digest).Replace("-", "");
+            }
+        }
+
+        private static Mutex EnterAcceptanceGate(string root)
+        {
+            if (ReadAcceptanceMarker(root) == null) return null;
+            Mutex gate = new Mutex(false, AcceptanceObjectName(root) + ".gate");
+            try
+            {
+                try { if (!gate.WaitOne(5000)) throw new InvalidOperationException("Acceptance launch gate timed out"); }
+                catch (AbandonedMutexException) { /* ownership is acquired */ }
+                return gate;
+            }
+            catch { gate.Dispose(); throw; }
+        }
+
+        private static void LeaveAcceptanceGate(ref Mutex gate)
+        {
+            if (gate == null) return;
+            gate.ReleaseMutex();
+            gate.Dispose();
+            gate = null;
+        }
+
+        private static void CloseReleaseAcceptance(string root)
+        {
+            Mutex gate = EnterAcceptanceGate(root);
+            if (gate == null) throw new InvalidOperationException("Missing acceptance ownership marker");
+            IntPtr job = IntPtr.Zero;
+            try
+            {
+                using (FileStream fence = new FileStream(Path.Combine(root, ".agent-hub-release-acceptance.closed"), FileMode.OpenOrCreate, FileAccess.Write, FileShare.Read))
+                {
+                    fence.WriteByte(1);
+                    fence.Flush(true);
+                }
+                job = CreateJobObject(IntPtr.Zero, AcceptanceObjectName(root));
+                if (job == IntPtr.Zero || !TerminateJobObject(job, 1))
+                    throw new InvalidOperationException("Acceptance process job could not be stopped: " + Marshal.GetLastWin32Error());
+                DateTime deadline = DateTime.UtcNow.AddSeconds(5);
+                for (;;)
+                {
+                    JobAccounting accounting;
+                    if (!QueryInformationJobObject(job, 1, out accounting, (uint)Marshal.SizeOf(typeof(JobAccounting)), IntPtr.Zero))
+                        throw new InvalidOperationException("Acceptance process job could not be verified");
+                    if (accounting.ActiveProcesses == 0) break;
+                    if (DateTime.UtcNow >= deadline) throw new InvalidOperationException("Acceptance process job still contains live processes");
+                    Thread.Sleep(25);
+                }
+            }
+            finally
+            {
+                if (job != IntPtr.Zero) CloseHandle(job);
+                LeaveAcceptanceGate(ref gate);
+            }
+        }
+
+        private static IntPtr CreateRuntimeJob(string acceptanceName = null)
+        {
+            string name = acceptanceName ?? "Local\\IIITYRAELIII.AgentHub." + Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture);
             IntPtr job = CreateJobObject(IntPtr.Zero, name);
             if (job == IntPtr.Zero)
             {
@@ -153,6 +306,7 @@ namespace AgentHub.RuntimeHost
             {
                 if (!AssignProcessToJobObject(job, GetCurrentProcess()))
                 {
+                    if (acceptanceName != null) throw new InvalidOperationException("Acceptance launcher could not join its owned process job");
                     CloseHandle(job);
                     return IntPtr.Zero;
                 }

@@ -7205,20 +7205,22 @@ function renderLive() {
 
 function renderApprovals() {
   const approvals = state.approvals.get(state.selectedId) ?? [];
-  approvalsBox.replaceChildren();
-  approvalsBox.hidden = approvals.length === 0;
-  for (const approval of approvals) {
+  window.AgentHubApprovalForm.reconcileApprovals(approvalsBox, approvals, (approval) => {
+    const asyncQuestion = approval.kind === "async-user-input";
+    const frozen = asyncQuestion && approval.state === "dispatching";
     const questions = Array.isArray(approval.questions) ? approval.questions : [];
-    const options = Array.isArray(approval.options) && approval.options.length > 0
+    const options = Array.isArray(approval.options)
       ? approval.options
       : [{ id: "approve", label: "Разрешить", kind: "primary" }, { id: "deny", label: "Отклонить" }];
     const questionFields = questions.map((question, index) => {
       const questionId = String(question.id ?? `question-${index}`);
       const choices = Array.isArray(question.options) ? question.options : [];
+      const frozenAnswer = frozen ? String(approval.answers?.[questionId]?.[0] ?? "") : "";
       const field = el("fieldset", {
         class: "approval-question",
         "data-approval-question": questionId,
         "data-question-kind": choices.length ? "options" : "text",
+        disabled: frozen,
       }, [
         el("legend", { text: question.header || `Вопрос ${index + 1}` }),
         el("div", { class: "approval-question-text", text: question.question || "" }),
@@ -7229,7 +7231,7 @@ function renderApprovals() {
             type: "radio",
             name: `approval-${approval.id}-${questionId}`,
             value: choice.label,
-            checked: choiceIndex === 0,
+            checked: frozen ? frozenAnswer === choice.label : !asyncQuestion && choiceIndex === 0,
           }),
           el("span", {}, [
             el("strong", { text: choice.label }),
@@ -7237,23 +7239,25 @@ function renderApprovals() {
           ]),
         ])));
       }
-      if (!choices.length || question.isOther) {
+      if (!choices.length || question.isOther || asyncQuestion) {
         field.append(el("input", {
           class: "approval-input",
           type: question.isSecret ? "password" : "text",
           "data-approval-other": "",
           placeholder: choices.length ? "Другой ответ" : "Ваш ответ",
           autocomplete: question.isSecret ? "off" : "on",
+          value: frozen && !choices.some((choice) => choice.label === frozenAnswer) ? frozenAnswer : "",
         }));
       }
       return field;
     });
-    approvalsBox.append(el("div", { class: "approval", "data-approval-id": approval.id }, [
+    return el("div", { class: "approval", "data-approval-id": approval.id }, [
       el("div", { class: "approval-head" }, [
-        el("span", { class: "approval-kind", text: approval.kind || "Подтверждение" }),
+        el("span", { class: "approval-kind", text: asyncQuestion ? "Вопрос агента" : approval.kind || "Подтверждение" }),
       ]),
       el("div", { class: "approval-text", text: approval.text || "" }),
       ...questionFields,
+      frozen ? el("div", { class: "approval-text", text: "Ответ сохранён. Доставка уточняется; повтор отправит тот же ответ." }) : null,
       el("div", { class: "approval-actions" }, options.map((option) => {
         const attributes = {
           class: `chip-button ${option.kind === "primary" ? "primary" : option.kind === "danger" ? "danger" : ""}`,
@@ -7270,10 +7274,10 @@ function renderApprovals() {
           class: "chip-button primary",
           "data-action": "approval-submit",
           "data-approval-id": approval.id,
-          text: "Ответить",
+          text: frozen ? "Повторить отправку" : "Ответить",
         })] : [])),
-    ]));
-  }
+    ]);
+  });
 }
 
 function renderQueueForTask(taskId, container) {

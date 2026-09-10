@@ -594,6 +594,22 @@ export function createDesktopShellComposition({
     },
   });
   desktopRunCoordinator = desktopRunRouter.runCoordinator;
+  approvalController.asyncQuestions?.setSender(async (params) => {
+    const current = await desktopActions.messageTarget({ streamId: params.streamId });
+    if (current.provider !== params.provider || current.threadId !== params.threadId) {
+      throw new Error("После отправки вопроса сменился Thread. Автоматический перенос ответа запрещён; уточните исход отправки в истории.");
+    }
+    // Resolve an exact provider Thread rather than a moving Stream head. The
+    // frozen destination cannot silently change the message-ledger identity.
+    const { streamId: _streamId, ...exact } = params;
+    return desktopRunRouter.desktopMessageController.sendMessage(exact, {
+      source: "desktop-control", clientId: "agent-question-form",
+      commandId: params.clientUserMessageId,
+    });
+  }, async (streamId) => {
+    const target = await desktopActions.messageTarget({ streamId });
+    return { streamId: target.streamId, provider: target.provider, threadId: target.threadId };
+  });
 
   desktopCommandsPort.bind({
     messageTarget: desktopActions.messageTarget,

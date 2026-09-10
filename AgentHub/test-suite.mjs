@@ -11,23 +11,49 @@ import {
 
 const ROOT = import.meta.dirname;
 const TEST_RUNNER_FILE = fileURLToPath(import.meta.url);
-const IGNORED_DIRECTORIES = new Set(["node_modules", "build", "dist", ".wrangler"]);
-const E2E_FILES = [
+// WIP не содержит поставляемого кода. Без этого исключения случайный
+// *.test.mjs во временных материалах молча попадал бы в группу unit.
+export const IGNORED_DIRECTORIES = new Set(["node_modules", "build", "dist", ".wrangler", "WIP"]);
+export const E2E_FILES = [
   "tests/e2e/agent-hub-server.e2e.test.mjs",
   "tests/e2e/agent-hub-server.claude.e2e.test.mjs",
   "tests/e2e/agent-hub-server.local-control.e2e.test.mjs",
   "tests/e2e/agent-hub-server.journal.e2e.test.mjs",
+  // Измерено 2026-09-10: 1.4 с, 5 из 5 проверок пройдено. Дешёвая проверка
+  // владения Thread и восстановления MCP-моста, ранее не выполнялась ни одной
+  // группой. Стоимость обычного выпуска практически не меняется.
+  "tests/e2e/fake-codex-accept-all.e2e.test.mjs",
 ];
-const VSCODE_FILES = [
+// Дорогие сценарии надёжности на настоящих процессах. Не входят в `all`.
+// Запускаются профилем `reliability` при правках соответствующих подсистем.
+export const RELIABILITY_E2E_FILES = [
+  "tests/e2e/terminal-queue-contention.local-control.e2e.test.mjs",
+];
+export const VSCODE_FILES = [
   "render.test.js",
   "agent-hub-bridge.test.js",
   "runtime-reload-policy.test.js",
   "activity-bar-launch.test.js",
+  "vscode-direct-transport.test.js",
 ];
-const VISUAL_FILES = [
+export const VISUAL_FILES = [
   "tests/public/card-layout-dom.test.mjs",
   "tests/public/journal-account-provider-column.test.mjs",
 ];
+// Файлы, содержащие проверки под профилем. Профильный режим выполняет эти файлы
+// с включённым профилем; их остальные проверки при этом выполняются повторно.
+// Это сознательный размен: диапазон правки — один аргумент у каждой проверки,
+// а профили запускаются по требованию, а не в каждом выпуске.
+export const PROFILE_FILES = {
+  cosmetic: [
+    "tests/public/card-layout-dom.test.mjs",
+    "tests/public/journal-account-provider-column.test.mjs",
+  ],
+  stress: [
+    "tests/public/stream-tabs-controller.test.mjs",
+  ],
+  reliability: [...RELIABILITY_E2E_FILES],
+};
 const python = process.platform === "win32" ? "python.exe" : "python3";
 
 export async function discoverTestFiles(directory = ROOT) {
@@ -44,9 +70,14 @@ export async function discoverTestFiles(directory = ROOT) {
   return result.toSorted();
 }
 
-function run(command, args, { cwd = ROOT } = {}) {
+function run(command, args, { cwd = ROOT, env } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd, stdio: "inherit", windowsHide: true });
+    const child = spawn(command, args, {
+      cwd,
+      stdio: "inherit",
+      windowsHide: true,
+      ...(env ? { env: { ...process.env, ...env } } : {}),
+    });
     child.once("error", reject);
     child.once("exit", (code, signal) => {
       if (code === 0) resolve();
@@ -63,11 +94,12 @@ export async function runWindowsTestFile(file, {
   cwd = ROOT,
   isolation = true,
   execute = run,
+  env,
 } = {}) {
   const args = ["--test", "--test-concurrency=1", ...(isolation ? ["--test-isolation=none"] : []), file];
   // A failed assertion and an OS failure share exit code 1. Neither proves a
   // transient failure; retries require a new explicit run and reuse successes.
-  await execute(process.execPath, args, { cwd });
+  await execute(process.execPath, args, { cwd, env });
 }
 
 async function declaredFingerprint(file, cwd) {
@@ -140,6 +172,18 @@ export async function runTestSuite(mode, {
     visual: { files: [...VISUAL_FILES], cwd: ROOT, isolation: true },
     e2e: { files: E2E_FILES, cwd: ROOT, isolation: false },
     vscode: { files: VSCODE_FILES, cwd: path.join(ROOT, "VSCodeExtension"), isolation: false },
+    cosmetic: {
+      files: [...PROFILE_FILES.cosmetic], cwd: ROOT, isolation: true,
+      env: { AGENT_HUB_TEST_PROFILES: "cosmetic" },
+    },
+    stress: {
+      files: [...PROFILE_FILES.stress], cwd: ROOT, isolation: true,
+      env: { AGENT_HUB_TEST_PROFILES: "stress" },
+    },
+    reliability: {
+      files: [...PROFILE_FILES.reliability], cwd: ROOT, isolation: false,
+      env: { AGENT_HUB_TEST_PROFILES: "reliability" },
+    },
   };
   const selected = suites[mode];
   if (!selected) throw new Error(`Неизвестная группа тестов: ${mode}.`);
@@ -156,7 +200,8 @@ export async function runTestSuite(mode, {
     return;
   }
 
-  if (mode === "visual" || (process.platform === "win32" && ["architecture", "unit"].includes(mode))) {
+  if (["visual", "cosmetic", "stress", "reliability"].includes(mode)
+    || (process.platform === "win32" && ["architecture", "unit"].includes(mode))) {
     // Separate processes release SQLite and antivirus-observed temporary files
     // before the next test module starts. A single process can retain a Windows
     // file handle briefly even with test concurrency set to one.

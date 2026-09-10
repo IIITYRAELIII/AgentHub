@@ -40,7 +40,7 @@ test("codexTurnAnswer includes the final Plan item", () => {
       { type: "agentMessage", phase: "commentary", text: "Уточняю требования." },
       { type: "plan", text: "1. Исправить\n2. Проверить" },
     ],
-  }), "Уточняю требования.\n\n1. Исправить\n2. Проверить");
+  }), "1. Исправить\n2. Проверить");
 });
 
 test("codexFinalTurnAnswer returns the explicit final answer instead of commentary", () => {

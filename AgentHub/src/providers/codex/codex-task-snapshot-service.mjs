@@ -30,7 +30,7 @@ export function describeCodexItem(item, completed) {
   if (item.type === "dynamicToolCall") return `${mark} Инструмент ${item.tool ?? ""}${completed ? " завершён" : " выполняется…"}`;
   if (item.type === "webSearch") return `${mark} ${completed ? "Поиск завершён" : "Выполняется поиск…"}`;
   if (item.type === "imageView") return `${mark} ${completed ? "Изображение изучено" : "Изучается изображение…"}`;
-  if (item.type === "reasoning") return completed ? "✓ Анализ завершён." : "Анализирую поток…";
+  if (item.type === "reasoning") return completed ? "Этап анализа завершён; ход продолжается." : "Анализирую поток…";
   if (item.type === "plan") return completed ? "✓ План подготовлен." : "Составляю план…";
   return completed ? "Этап завершён." : "Выполняется следующий этап…";
 }
@@ -73,7 +73,9 @@ export function codexTurnSnapshot(turn, threadStatus = null) {
   return {
     answer,
     userMessageSnapshotAuthority: "complete",
-    finalAnswer: codexFinalTurnAnswer(turn),
+    finalAnswer: turn?.status === "inProgress"
+      ? codexExplicitFinalTurnAnswer(turn)
+      : codexFinalTurnAnswer(turn),
     reasoning: "",
     prompt,
     clientUserMessageId: userMessages[0]?.clientUserMessageId ?? null,

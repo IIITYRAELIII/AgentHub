@@ -68,6 +68,23 @@ function persistentRetryableError(error, description) {
   return wrapped;
 }
 
+// Одна попытка опроса. Первый отказ фиксируется один раз и останавливает
+// планирование новых команд во всех полосах, не трогая уже начатые: у них
+// остаются собственные дедлайны, а повтор выполняет следующий опрос.
+function pollAttempt() {
+  let failed = false;
+  let error;
+  return {
+    get failed() { return failed; },
+    get error() { return error; },
+    fail(cause) {
+      if (failed) return;
+      failed = true;
+      error = cause;
+    },
+  };
+}
+
 export function signSharedDashboardBotRequest({
   body,
   secret,
@@ -612,39 +629,55 @@ export class SharedDashboardBotClient {
     return { handled: 1, retryError: null };
   }
 
-  async #handleCommandLane(commands) {
+  async #handleCommandLane(commands, attempt) {
     let handled = 0;
     let retryError = null;
     for (const command of commands) {
-      const result = await this.#handleCommand(command);
-      handled += result.handled;
-      retryError ??= result.retryError;
+      if (attempt.failed) break;
+      try {
+        const result = await this.#handleCommand(command);
+        handled += result.handled;
+        retryError ??= result.retryError;
+      } catch (error) {
+        attempt.fail(error);
+        throw error;
+      }
     }
     return { handled, retryError };
   }
 
-  async #handleCommandPool(commands, concurrency) {
+  async #handleCommandPool(commands, concurrency, attempt) {
     let nextIndex = 0;
     const workers = Array.from(
       { length: Math.min(concurrency, commands.length) },
       async () => {
         let handled = 0;
         let retryError = null;
-        for (;;) {
+        while (!attempt.failed) {
           const index = nextIndex;
           nextIndex += 1;
           if (index >= commands.length) break;
-          const result = await this.#handleCommand(commands[index]);
-          handled += result.handled;
-          retryError ??= result.retryError;
+          try {
+            const result = await this.#handleCommand(commands[index]);
+            handled += result.handled;
+            retryError ??= result.retryError;
+          } catch (error) {
+            attempt.fail(error);
+            throw error;
+          }
         }
         return { handled, retryError };
       },
     );
-    const results = await Promise.all(workers);
-    return results.reduce((total, result) => ({
-      handled: total.handled + result.handled,
-      retryError: total.retryError ?? result.retryError,
+    // Отклонённый пул не должен пережить свою попытку: начатые команды
+    // дорабатывают со своими дедлайнами, новые после отказа не планируются.
+    const settled = await Promise.allSettled(workers);
+    const rejected = settled.find((entry) => entry.status === "rejected");
+    if (attempt.failed) throw attempt.error;
+    if (rejected) throw rejected.reason;
+    return settled.reduce((total, entry) => ({
+      handled: total.handled + entry.value.handled,
+      retryError: total.retryError ?? entry.value.retryError,
     }), { handled: 0, retryError: null });
   }
 
@@ -667,17 +700,23 @@ export class SharedDashboardBotClient {
           ? attachmentCommands
           : textCommands).push(command);
       }
+      const attempt = pollAttempt();
       const lanes = [];
-      if (textCommands.length) lanes.push(this.#handleCommandLane(textCommands));
+      if (textCommands.length) lanes.push(this.#handleCommandLane(textCommands, attempt));
       if (attachmentCommands.length) {
-        lanes.push(this.#handleCommandPool(attachmentCommands, ATTACHMENT_COMMAND_CONCURRENCY));
+        lanes.push(this.#handleCommandPool(attachmentCommands, ATTACHMENT_COMMAND_CONCURRENCY, attempt));
       }
-      const results = await Promise.all(lanes);
+      // Обе полосы дорабатывают внутри этой попытки: ни одна не продолжает
+      // слать запросы после того, как опрос уже отклонён.
+      const settled = await Promise.allSettled(lanes);
+      const rejected = settled.find((entry) => entry.status === "rejected");
+      if (attempt.failed) throw attempt.error;
+      if (rejected) throw rejected.reason;
       let handled = 0;
       let retryError = null;
-      for (const result of results) {
-        handled += result.handled;
-        retryError ??= result.retryError;
+      for (const entry of settled) {
+        handled += entry.value.handled;
+        retryError ??= entry.value.retryError;
       }
       if (retryError) throw retryError;
       return handled;

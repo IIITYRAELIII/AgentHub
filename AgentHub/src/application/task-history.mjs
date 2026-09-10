@@ -349,7 +349,8 @@ function codexVisibleReasoning(item) {
 }
 
 function isCodexAnswerItem(item) {
-  return item?.type === "agentMessage" || item?.type === "plan";
+  return (item?.type === "agentMessage" || item?.type === "plan")
+    && !(Array.isArray(item.questions) && item.questions.length);
 }
 
 function codexAnswerPhase(item) {
@@ -577,7 +578,8 @@ export function codexFinalTurnAnswer(turn) {
   if (explicitFinal) return explicitFinal;
   if (isCodexContextProbeTurn(turn)) return "";
   const messages = (turn?.items ?? [])
-    .filter((item) => isCodexAnswerItem(item) && String(item.text ?? "").trim());
+    .filter((item) => isCodexAnswerItem(item) && String(item.text ?? "").trim()
+      && !codexAnswerPhase(item).trim());
   return codexAssistantResponseProjection(messages.at(-1)?.text ?? "").text.trim();
 }
 

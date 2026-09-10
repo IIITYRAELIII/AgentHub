@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { cosmeticMatrix } from "../helpers/test-profile.mjs";
+
 const WEB_APP_ROOT = new URL("../../assets/web-app/", import.meta.url);
 // Классика адаптирует типографику заголовков, поэтому она нужна в фикстуре
 // наравне с темой по умолчанию.
@@ -323,58 +325,79 @@ function readHeadingTypography(theme) {
   };
 }
 
-test("заголовок чек-листа следует типографике секций текущей темы", async () => {
+// Репрезентативный viewport проверяется всегда: контраст заголовка и его
+// согласованность с заголовком секции — это доступность, а не оформление.
+// Полная матрица остальных viewport живёт в профиле cosmetic.
+const HEADING_TYPOGRAPHY_VIEWPORTS = [
+  { name: "desktop", width: 1600, height: 1000 },
+  { name: "mobile", width: 390, height: 844 },
+  { name: "short", width: 1280, height: 600 },
+];
+
+async function assertHeadingTypography(browser, viewport) {
+  const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+  try {
+    await openFixture(page);
+
+    for (const theme of ["orbit", "classic"]) {
+      const seen = await page.evaluate(readHeadingTypography, theme);
+      const where = `${viewport.name}/${theme}`;
+      for (const property of ["size", "weight", "transform", "spacing", "family", "color"]) {
+        assert.deepEqual(seen.heading[property], seen.sectionTitle[property],
+          `${where}: заголовок чек-листа разошёлся с заголовком секции по ${property}: `
+          + `${seen.heading[property]} против ${seen.sectionTitle[property]}`);
+      }
+    }
+
+    const orbit = await page.evaluate(readHeadingTypography, "orbit");
+    assert.equal(orbit.heading.transform, "uppercase",
+      `${viewport.name}: Orbit потеряла капитель заголовка секции`);
+    assert.ok(Number.parseFloat(orbit.heading.spacing) > 0,
+      `${viewport.name}: Orbit потеряла разрядку заголовка секции`);
+    assert.ok(orbit.heading.size < orbit.progress.size,
+      `${viewport.name}: Orbit потеряла разницу масштабов заголовка и счётчика`);
+
+    const classic = await page.evaluate(readHeadingTypography, "classic");
+    assert.equal(classic.heading.transform, "none",
+      `${viewport.name}: Классика получила капитель, которой у неё нет`);
+    assert.equal(classic.heading.spacing, "normal",
+      `${viewport.name}: Классика получила разрядку, которой у неё нет`);
+    assert.ok(classic.heading.size >= 14,
+      `${viewport.name}: заголовок Классики набран ${classic.heading.size}px вместо секционных 14px`);
+    // Без капители мелкий заголовок читается как ошибка, а не как эйбрау.
+    assert.ok(classic.heading.size >= classic.progress.size,
+      `${viewport.name}: заголовок Классики мельче собственного счётчика — `
+      + `${classic.heading.size}px против ${classic.progress.size}px`);
+    // Абсолютный потолок задаёт палитра темы: --text-muted Классики даёт
+    // 4.47:1 на фоне вложенного блока, столько же у соседнего счётчика и у
+    // секционных заголовков. Проверяется, что заголовок не хуже этого уровня
+    // и далеко ушёл от прежних 2.1:1, которые давал мелкий text-faint.
+    assert.ok(classic.heading.contrast >= classic.progress.contrast,
+      `${viewport.name}: заголовок Классики контрастнее не стал — `
+      + `${classic.heading.contrast}:1 против ${classic.progress.contrast}:1 у счётчика`);
+    assert.ok(classic.heading.contrast >= 4,
+      `${viewport.name}: контраст заголовка Классики ${classic.heading.contrast}:1 ниже 4:1`);
+  } finally {
+    await page.close();
+  }
+}
+
+test("заголовок чек-листа держит контраст и типографику секции на репрезентативном viewport", async () => {
   const { chromium } = await import("playwright");
   const browser = await launchEdge(chromium);
   try {
-    for (const viewport of [
-      { name: "desktop", width: 1600, height: 1000 },
-      { name: "mobile", width: 390, height: 844 },
-      { name: "short", width: 1280, height: 600 },
-    ]) {
-      const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
-      await openFixture(page);
+    await assertHeadingTypography(browser, HEADING_TYPOGRAPHY_VIEWPORTS[0]);
+  } finally {
+    await browser.close();
+  }
+});
 
-      for (const theme of ["orbit", "classic"]) {
-        const seen = await page.evaluate(readHeadingTypography, theme);
-        const where = `${viewport.name}/${theme}`;
-        for (const property of ["size", "weight", "transform", "spacing", "family", "color"]) {
-          assert.deepEqual(seen.heading[property], seen.sectionTitle[property],
-            `${where}: заголовок чек-листа разошёлся с заголовком секции по ${property}: `
-            + `${seen.heading[property]} против ${seen.sectionTitle[property]}`);
-        }
-      }
-
-      const orbit = await page.evaluate(readHeadingTypography, "orbit");
-      assert.equal(orbit.heading.transform, "uppercase",
-        `${viewport.name}: Orbit потеряла капитель заголовка секции`);
-      assert.ok(Number.parseFloat(orbit.heading.spacing) > 0,
-        `${viewport.name}: Orbit потеряла разрядку заголовка секции`);
-      assert.ok(orbit.heading.size < orbit.progress.size,
-        `${viewport.name}: Orbit потеряла разницу масштабов заголовка и счётчика`);
-
-      const classic = await page.evaluate(readHeadingTypography, "classic");
-      assert.equal(classic.heading.transform, "none",
-        `${viewport.name}: Классика получила капитель, которой у неё нет`);
-      assert.equal(classic.heading.spacing, "normal",
-        `${viewport.name}: Классика получила разрядку, которой у неё нет`);
-      assert.ok(classic.heading.size >= 14,
-        `${viewport.name}: заголовок Классики набран ${classic.heading.size}px вместо секционных 14px`);
-      // Без капители мелкий заголовок читается как ошибка, а не как эйбрау.
-      assert.ok(classic.heading.size >= classic.progress.size,
-        `${viewport.name}: заголовок Классики мельче собственного счётчика — `
-        + `${classic.heading.size}px против ${classic.progress.size}px`);
-      // Абсолютный потолок задаёт палитра темы: --text-muted Классики даёт
-      // 4.47:1 на фоне вложенного блока, столько же у соседнего счётчика и у
-      // секционных заголовков. Проверяется, что заголовок не хуже этого уровня
-      // и далеко ушёл от прежних 2.1:1, которые давал мелкий text-faint.
-      assert.ok(classic.heading.contrast >= classic.progress.contrast,
-        `${viewport.name}: заголовок Классики контрастнее не стал — `
-        + `${classic.heading.contrast}:1 против ${classic.progress.contrast}:1 у счётчика`);
-      assert.ok(classic.heading.contrast >= 4,
-        `${viewport.name}: контраст заголовка Классики ${classic.heading.contrast}:1 ниже 4:1`);
-
-      await page.close();
+test("заголовок чек-листа следует типографике секций текущей темы в остальных viewport", cosmeticMatrix(), async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchEdge(chromium);
+  try {
+    for (const viewport of HEADING_TYPOGRAPHY_VIEWPORTS.slice(1)) {
+      await assertHeadingTypography(browser, viewport);
     }
   } finally {
     await browser.close();

@@ -374,6 +374,18 @@ prior workflow state available.
 
 ## Test Contour
 
+The explicit `test-contour.mjs accept-release` command is a separate bounded
+artifact-acceptance scope (ADR-0035), not a rolling contour refresh. It consumes
+already-built previous/candidate Windows runtime artifacts, verifies and retains
+their exact manifest hashes and never rebuilds or edits their release bytes.
+Every run owns a fresh isolated root; its candidate RuntimeHost supplies a
+persistent isolated environment across WMI replacement. All control calls,
+pointers, locks, homes and synthetic adapter state belong to that root.
+Success requires observed simultaneous live previous/replacement PIDs, exact
+candidate ready lock/control identity, and previous process exit. The report
+must enumerate checked and excluded scenarios; passing this lifecycle scope
+does not imply coherent production-data or queue/outbox recovery parity.
+
 There is one rolling Test Contour. It is always built from `dev`; Agent Hub does
 not deploy a contour per Task branch. The contour status records the exact
 `dev` head it displays. Candidate preparation completes before the current

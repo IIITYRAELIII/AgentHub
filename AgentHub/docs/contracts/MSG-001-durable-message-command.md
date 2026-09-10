@@ -307,6 +307,12 @@ Transport timeout or an incomplete chunk leaves the durable command available
 for a later poll with the same command and attachment identities. The client
 does not create an immediate retry loop to make a stalled body appear reliable.
 
+A rejected Dashboard poll cannot leave its command workers running into the
+next attempt. The first failure stops assignment in both text and attachment
+lanes; already-started commands retain their deadlines and settle before the
+poll rejects with the original error. The same drain boundary applies inside
+attachment chunk groups. This lifecycle rule does not establish network health.
+
 The two permanent remote command consumers use
 `agent-hub-control-wake-v1`. An authenticated hibernatable WebSocket carries only
 an availability revision. The command is persisted before the revision is sent;

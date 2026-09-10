@@ -3,9 +3,68 @@ import test from "node:test";
 import {
   CodexTaskSnapshotService,
   codexTurnSnapshot,
+  describeCodexItem,
 } from "../../../src/providers/codex/codex-task-snapshot-service.mjs";
 import { CODEX_CONTEXT_PROBE_PROMPT } from "../../../src/domain/codex-context-probe.mjs";
 import { codexRolloutTurnState } from "../../../src/providers/codex/codex-rollout-activity.mjs";
+
+test("active commentary stays in its trace and never becomes an answer or final", () => {
+  const snapshot = codexTurnSnapshot({
+    id: "active-turn", status: "inProgress",
+    items: [
+      { id: "prompt", type: "userMessage", content: [{ type: "text", text: "Continue" }] },
+      { id: "comment-1", type: "agentMessage", phase: "commentary", text: "Working" },
+      { id: "comment-2", type: "agentMessage", phase: "commentary", text: "Working" },
+      { id: "reasoning-1", type: "reasoning", summary: [] },
+    ],
+  });
+  assert.equal(snapshot.active, true);
+  assert.equal(snapshot.completed, false);
+  assert.equal(snapshot.answer, "");
+  assert.equal(snapshot.finalAnswer, "");
+  assert.deepEqual(snapshot.activityGroups.map((group) => group.reasoning), ["Working", "Working"]);
+  assert.notEqual(snapshot.activityGroups[0].id, snapshot.activityGroups[1].id);
+});
+
+test("a streaming final remains visible even when its text equals commentary", () => {
+  const snapshot = codexTurnSnapshot({
+    id: "active-turn", status: "inProgress",
+    items: [
+      { id: "prompt", type: "userMessage", content: [{ type: "text", text: "Continue" }] },
+      { id: "comment", type: "agentMessage", phase: "commentary", text: "Same text" },
+      { id: "final", type: "agentMessage", phase: "final_answer", text: "Same text" },
+    ],
+  });
+  assert.equal(snapshot.active, true);
+  assert.equal(snapshot.completed, false);
+  assert.equal(snapshot.answer, "Same text");
+  assert.equal(snapshot.finalAnswer, "Same text");
+  assert.equal(snapshot.activityGroups[0].reasoning, "Same text");
+});
+
+test("completed reasoning describes its stage without claiming the turn finished", () => {
+  assert.equal(describeCodexItem({ type: "reasoning" }, true), "Этап анализа завершён; ход продолжается.");
+  assert.equal(codexTurnSnapshot({ status: "completed", items: [] }).stage, "Поток завершён.");
+});
+
+test("async question final phase is a form, not a final answer, including an interrupted turn", () => {
+  for (const status of ["inProgress", "interrupted", "completed"]) {
+    const question = { id: "question", type: "agentMessage", phase: "final_answer",
+      text: "Choose a profile", questions: [{ title: "Profile?", options: ["A", "B"] }] };
+    const snapshot = codexTurnSnapshot({
+      id: "question-turn", status,
+      items: [
+        { id: "prompt", type: "userMessage", content: [{ type: "text", text: "Continue" }] },
+        { id: "comment", type: "agentMessage", phase: "commentary", text: "Working" },
+        question,
+      ],
+    });
+    assert.equal(snapshot.answer, "");
+    assert.equal(snapshot.finalAnswer, "");
+    assert.equal(snapshot.activityGroups[0].reasoning, "Working");
+    assert.deepEqual(question.questions, [{ title: "Profile?", options: ["A", "B"] }]);
+  }
+});
 
 test("managed snapshot never adopts a dangling historical turn before provider acceptance", async () => {
   let reads = 0;

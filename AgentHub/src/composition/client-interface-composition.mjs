@@ -5,6 +5,8 @@ import { BugReportTaskCapture } from "../application/bug-report-task-capture.mjs
 import { RateLimitTelemetryService } from "../application/rate-limit-telemetry-service.mjs";
 import { createCodexAssistantAttachmentImporter } from "../providers/codex/codex-assistant-attachments.mjs";
 import { ApprovalController } from "../interfaces/telegram/approval-controller.mjs";
+import { AsyncUserQuestionService } from "../application/async-user-question-service.mjs";
+import { AsyncUserQuestionStore } from "../infrastructure/persistence/async-user-question-store.mjs";
 import { MediaController } from "../interfaces/telegram/media-controller.mjs";
 import { TelegramClient } from "../infrastructure/telegram/telegram-client.mjs";
 import { TelegramSettingsMenu } from "../interfaces/telegram/telegram-settings-menu.mjs";
@@ -296,7 +298,10 @@ export async function createClientInterfaceComposition({
     stopProcessTree,
   });
   await mediaController.load();
+  const asyncQuestionStore = new AsyncUserQuestionStore({ dataDir: config.dataDir });
+  await asyncQuestionStore.load();
   const approvalController = new ApprovalController({
+    asyncQuestions: new AsyncUserQuestionService({ store: asyncQuestionStore }),
     approvalProtocol,
     autoApprove,
     respond: respondRpc,

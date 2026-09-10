@@ -9,16 +9,17 @@ const MAX_DESKTOP_RESPONSE_BYTES = 3_500_000;
 const MIN_HISTORY_RESPONSE_BYTES = 64 * 1_024;
 const RESPONSE_ENVELOPE_RESERVE_BYTES = 16 * 1_024;
 
-function historyResponseBudget(value, params = {}) {
-  const totalBytes = Math.min(
+function responseBudget(params = {}) {
+  return Math.min(
     Math.max(Number(params.maxResponseBytes) || MAX_DESKTOP_RESPONSE_BYTES, MIN_HISTORY_RESPONSE_BYTES),
     MAX_DESKTOP_RESPONSE_BYTES,
   );
+}
+
+function historyResponseBudget(value, params = {}) {
+  const totalBytes = responseBudget(params);
   const consumedBytes = Buffer.byteLength(JSON.stringify(value), "utf8");
-  return Math.max(
-    MIN_HISTORY_RESPONSE_BYTES,
-    totalBytes - consumedBytes - RESPONSE_ENVELOPE_RESERVE_BYTES,
-  );
+  return totalBytes - consumedBytes - RESPONSE_ENVELOPE_RESERVE_BYTES;
 }
 
 function normalizedTaskReference(params = {}) {
@@ -193,19 +194,46 @@ export class DesktopTaskService {
       context,
       { target: this.commandTaskTarget(resolvedParams) },
     );
-    const history = await this.taskHistory({
+    return this.#openHistoryResponse(selectedSnapshot, {
       streamId: resolvedParams.streamId,
       provider: resolvedParams.provider,
       threadId: resolvedParams.threadId,
       refreshSource: false,
       limit: params.limit,
       maxAnswerChars: params.maxAnswerChars,
-      maxResponseBytes: historyResponseBudget({ snapshot: selectedSnapshot }, params),
-    });
-    return {
-      snapshot: selectedSnapshot,
-      history,
+    }, params);
+  }
+
+  async #openHistoryResponse(snapshot, historyParams, params, extra = {}) {
+    let envelope = { snapshot, ...extra };
+    let maxBytes = historyResponseBudget(envelope, params);
+    const deferSnapshot = () => {
+      // Null is absence, not an empty full snapshot: clients retain their
+      // canonical collections and request the ordinary delta separately.
+      envelope = { ...extra, snapshot: null, snapshotDeferred: true };
+      maxBytes = historyResponseBudget(envelope, params);
     };
+    if (maxBytes < MIN_HISTORY_RESPONSE_BYTES) deferSnapshot();
+    if (maxBytes < MIN_HISTORY_RESPONSE_BYTES) {
+      throw new Error("Содержимое выбранного сообщения превышает общий лимит транспорта");
+    }
+    const read = () => this.taskHistory({ ...historyParams, refreshSource: false, maxResponseBytes: maxBytes });
+    let history;
+    try {
+      history = await read();
+    } catch (error) {
+      if (error?.code !== "TASK_HISTORY_RESPONSE_BUDGET_EXCEEDED" || envelope.snapshotDeferred) throw error;
+      // The first read may contain a complete quote larger than the remaining
+      // shared envelope. Retry only that local read, never task.select or a
+      // provider refresh, and never cut annotations or their source locators.
+      deferSnapshot();
+      history = await read();
+    }
+    const result = { ...envelope, history };
+    if (Buffer.byteLength(JSON.stringify(result), "utf8") > responseBudget(params)) {
+      throw new Error("Ответ открытия истории превышает общий лимит транспорта");
+    }
+    return result;
   }
 
   async openTurn(params, context = null) {
@@ -312,18 +340,15 @@ export class DesktopTaskService {
         focusItemId: indexedMessage.itemId,
       } : {}),
     };
-    return {
-      snapshot,
-      history: await this.taskHistory({
+    return this.#openHistoryResponse(snapshot, {
         streamId: entry.streamId,
         provider: targetProvider,
         threadId: taskThread,
         limit: params.limit,
         maxAnswerChars: params.maxAnswerChars,
-        maxResponseBytes: historyResponseBudget({ snapshot, focusedTurn }, params),
-      }),
+      }, params, {
       focusedTurn,
       ...(indexedMessage ? { focusedMessage: indexedMessage } : {}),
-    };
+    });
   }
 }

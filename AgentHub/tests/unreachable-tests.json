@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "comment": "Реестр тестовых файлов, которые не выполняются группами test-suite.mjs. Проверяется tests/composition/test-suite-coverage.test.mjs: любой файл, отсутствующий и в группах, и здесь, роняет проверку. Записи со ссылкой на несуществующий файл тоже роняют проверку, чтобы реестр не устаревал.",
+  "externalEntrypoints": [
+    {
+      "file": "VSCodeExtension/extension-profile.test.js",
+      "entrypoint": "VSCodeExtension/package.json → scripts.test",
+      "reason": "Выполняется шагом CI «VS Code extension tests» (npm test --prefix VSCodeExtension), не через test-suite.mjs.",
+      "owner": "VSCodeExtension"
+    }
+  ],
+  "notInDefaultRun": [
+    {
+      "file": "tests/e2e/terminal-queue-contention.local-control.e2e.test.mjs",
+      "profile": "reliability",
+      "reason": "Поднимает настоящий Hub с изолированной SQLite и блокировкой writer. Измерено 2026-09-10 однократно: 113 с, проверка НЕ пройдена — таймаут ожидания «FIFO drain after transient terminal contention» (35 с) на строке 184. В момент отказа 3 из 8 сообщений дошли до провайдера, fifo-busy-4..8 остались deferred/queued с runId=null, активных прогонов нет; в stderr трижды повторяется «Codex RPC thread/read timed out after 30000 ms». Причина отказа не установлена одним запуском: наблюдаемая ближайшая причина — таймауты RPC провайдера, а не блокировка SQLite; влияние загрузки машины не исключено. Повторных прогонов не выполнялось. Не вносить в обязательный набор до отдельного разбора.",
+      "owner": "runtime/persistence",
+      "openQuestion": true
+    }
+  ],
+  "unreachable": [
+    {
+      "file": "tests/usage_sync_server/test_agenthub_usage_sync_server.py",
+      "reason": "Python-тест сервера синхронизации потребления. Этап installer запускает только install_test.py; ссылок в .github/workflows/agent-hub-ci.yml нет. Нужен отдельный шаг запуска либо осознанное решение о судьбе файла.",
+      "owner": "не назначен",
+      "openQuestion": true
+    }
+  ],
+  "notes": [
+    "tests/e2e/telegram-harness.test.mjs не имеет суффикса .e2e, поэтому попадает в generic discovery и выполняется в группе unit. Это чистый unit-тест e2eTimeoutMs; поведение корректное, но неочевидное из расположения файла.",
+    "Проверки под профилями cosmetic и stress остаются внутри своих файлов и печатаются как пропущенные с причиной, когда профиль выключен. См. tests/helpers/test-profile.mjs."
+  ]
+}

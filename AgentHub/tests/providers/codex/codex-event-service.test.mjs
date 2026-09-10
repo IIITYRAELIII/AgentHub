@@ -93,6 +93,18 @@ test("Codex event service forwards structured user input requests", async () => 
   assert.equal(activities.at(-1).status, "waiting");
 });
 
+test("typed async questions are persisted through the input owner without claiming a blocking RPC", async () => {
+  const run = { id: "run-a", streamId: "stream-a", threadId: "thread-a", turnId: "turn-a", status: "running" };
+  const requests = [];
+  const service = createService(run, { requestUserInput: async (...args) => { requests.push(args); } });
+  const item = { id: "call-a", type: "agentMessage", phase: "final_answer", text: "",
+    questions: [{ title: "Выберите", options: ["A", "B"] }] };
+  await service.handle({ method: "item/completed", params: { threadId: "thread-a", turnId: "turn-a", item } });
+  assert.equal(requests.length, 1);
+  assert.deepEqual(requests[0], ["call-a", { asyncItem: item, threadId: "thread-a", turnId: "turn-a" }, run]);
+  assert.equal(run.responseText ?? "", "");
+});
+
 test("Codex event service settles MCP admission only on later exact-turn progress", async () => {
   const run = { id: "run-1", status: "running", threadId: "thread-1", turnId: "turn-1" };
   const requests = [];
@@ -416,6 +428,20 @@ test("Codex event service accepts the first real post-compaction context measure
   await service.handle({ method: "thread/tokenUsage/updated", params });
 
   assert.deepEqual(captured, [[params, { provisionalContext: false }]]);
+});
+
+test("terminal event recovers a question without completing it as an answer", async () => {
+  const captured = [];
+  const run = { status: "running", responseText: "", streamId: "stream-1" };
+  const service = createService(run, { requestUserInput: async (...args) => captured.push(args) });
+  const item = { id: "question-item", type: "agentMessage", phase: "final_answer",
+    text: "Choose", questions: [{ title: "Which route?", options: ["A", "B"] }] };
+  await service.handle({ method: "turn/completed", params: {
+    threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [item] },
+  } });
+  assert.equal(captured.length, 1);
+  assert.deepEqual(captured[0], [item.id, { asyncItem: item, threadId: "thread-1", turnId: "turn-1" }, run]);
+  assert.equal(run.responseText, "");
 });
 
 test("Codex event service contains background state persistence failures", async () => {
