@@ -425,6 +425,10 @@ The snapshot exposes the latest final as
 sends `mark-task-read` with the exact identity. The server compares it with the
 current latest final and advances the account cursor only on an exact match;
 stale requests are rejected with the newer identity and retries are idempotent.
+The same canonical projection runs before snapshot versioning for both full
+snapshots and protocol 4 conversation deltas. Final revisions and read-cursor
+changes participate in collection hashes; unchanged snapshots reuse the existing
+revision cache without re-projecting conversations.
 Snapshot receipt alone is not display evidence: acknowledgement is emitted only
 after `applyOpened` rendered a terminal card with the same exact identity and
 revision. Startup snapshot-before-history therefore cannot clear unread state.

@@ -41,17 +41,14 @@ export class DesktopReadModelService {
 
   async snapshot(params = {}, context = null) {
     const accountId = this.accountId(context);
-    const snapshot = await this.snapshotImpl({
+    return this.snapshotImpl({
       ...(params ?? {}),
       // Read state belongs to the authenticated/local Hub account. Request
       // parameters cannot switch the account whose unread markers are read.
       accountId,
+      // Apply canonical read/run state before collection hashes are calculated.
+      projectTask: (task) => this.projectTask(task, accountId),
     });
-    if (!Array.isArray(snapshot?.tasks)) return snapshot;
-    return {
-      ...snapshot,
-      tasks: snapshot.tasks.map((task) => this.projectTask(task, accountId)),
-    };
   }
 
   latestFinal(entry) {
