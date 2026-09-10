@@ -2779,7 +2779,7 @@ function enqueueTaskHistoryLoad(id, identity, {
           () => control("task-history", {
             ...pending.identity,
             limit: 20,
-            includeActive: false,
+            includeActive: true,
             refreshSource: pending.refreshSource,
             knownVersion: historyPageByTask.get(id)?.version ?? "",
           }),

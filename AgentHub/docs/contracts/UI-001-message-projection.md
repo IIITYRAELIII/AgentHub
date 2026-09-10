@@ -157,6 +157,14 @@ text-prefix guessing nor command replay is a migration path.
 
 ## Canonical reducer
 
+Opening a chat and refreshing its newest history both include the authoritative
+active-turn overlay. A paged durable history response alone cannot replace that
+combined projection after its exact optimistic user entity has been retired.
+The history owner merges the active run; the client uses the existing canonical
+reducer and live-card filtering, preserving one user entity without presenting
+an intermediate agent response as a final. Older loaded pages and request/Stream
+generation fences retain their existing ownership.
+
 Opening history shares a bounded transport envelope with optional global
 snapshot data. If that snapshot leaves insufficient space, the server returns
 `snapshot: null` and `snapshotDeferred: true`, preserving the complete quote and
