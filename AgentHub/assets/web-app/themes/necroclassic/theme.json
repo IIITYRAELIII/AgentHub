@@ -9,6 +9,8 @@
     { "id": "necroclassic-mist", "name": "Пепельный туман", "asset": "ash-mist.png" },
     { "id": "necroclassic-stone", "name": "Холодный камень", "asset": "cold-stone.png" },
     { "id": "necroclassic-eclipse", "name": "Холодное затмение", "asset": "cold-eclipse.png" },
+    { "id": "necroclassic-sindragosa", "name": "Ледяная королева · Синдрагоса", "asset": "sindragosa.png" },
+    { "id": "necroclassic-frostmourne", "name": "Фростморн", "asset": "frostmourne.png" },
     { "id": "necroclassic-quiet", "name": "Тихий пепел" }
   ]
 }

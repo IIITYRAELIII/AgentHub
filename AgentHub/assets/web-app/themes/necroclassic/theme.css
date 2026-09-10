@@ -132,6 +132,16 @@ html[data-background-override="true"][data-background="necroclassic-eclipse"] {
   --hub-background-image: var(--necroclassic-eclipse-image);
 }
 
+html[data-background-override="true"][data-background="necroclassic-sindragosa"] {
+  --hub-background-color: #131416;
+  --hub-background-image: var(--necroclassic-sindragosa-image);
+}
+
+html[data-background-override="true"][data-background="necroclassic-frostmourne"] {
+  --hub-background-color: #131416;
+  --hub-background-image: var(--necroclassic-frostmourne-image);
+}
+
 html[data-background-override="true"][data-background="necroclassic-quiet"] {
   --hub-background-color: #131416;
   --hub-background-image: none;
@@ -334,6 +344,14 @@ html[data-theme="necroclassic"] ::selection {
 @media (max-width: 700px) {
   html:is([data-background="necroclassic-mist"], [data-background="necroclassic-stone"], [data-background="necroclassic-eclipse"]) {
     --hub-background-position: 15% center;
+  }
+
+  html[data-background="necroclassic-sindragosa"] {
+    --hub-background-position: 25% center;
+  }
+
+  html[data-background="necroclassic-frostmourne"] {
+    --hub-background-position: 12% center;
   }
 
   html[data-theme="necroclassic"] .msg:not(.msg-system) {
