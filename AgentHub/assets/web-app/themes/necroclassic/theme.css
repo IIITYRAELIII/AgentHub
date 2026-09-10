@@ -182,9 +182,17 @@ html[data-theme="necroclassic"][data-view="chat"][data-surface] .msg-user-bubble
   border-radius: 9px;
 }
 
-html[data-theme="necroclassic"][data-view="chat"][data-surface] .composer {
-  border-color: #46616d;
+html[data-theme="necroclassic"][data-view="chat"][data-surface] form.composer {
+  border-color: #589eb2;
   border-radius: 8px;
+  box-shadow: 0 0 0 1px rgb(106 200 224 / 5%),
+    0 0 16px rgb(106 200 224 / 8%), 0 4px 16px rgb(0 0 0 / 20%);
+}
+
+html[data-theme="necroclassic"][data-view="chat"][data-surface] form.composer:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgb(106 200 224 / 12%),
+    0 0 20px rgb(106 200 224 / 12%), 0 4px 16px rgb(0 0 0 / 20%);
 }
 
 html[data-theme="necroclassic"] .msg-body,
@@ -216,7 +224,7 @@ html[data-theme="necroclassic"] .turn-trace {
 
 html[data-theme="necroclassic"] .composer {
   background: rgb(26 30 33 / 97%);
-  border: 1px solid #46616d;
+  border: 1px solid #589eb2;
   border-radius: 8px;
   box-shadow: 0 4px 16px rgb(0 0 0 / 20%);
 }
