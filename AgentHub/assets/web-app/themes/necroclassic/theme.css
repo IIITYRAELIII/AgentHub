@@ -258,13 +258,11 @@ html[data-theme="necroclassic"] form.composer:focus-within::after {
   opacity: 0.95;
 }
 
-html[data-theme="necroclassic"] .task-rail-head,
-html[data-theme="necroclassic"] .activity-rail-head {
+html[data-theme="necroclassic"] .task-rail-head {
   position: relative;
 }
 
-html[data-theme="necroclassic"] .task-rail-head::after,
-html[data-theme="necroclassic"] .activity-rail-head::after {
+html[data-theme="necroclassic"] .task-rail-head::after {
   content: "";
   position: absolute;
   bottom: 0;
