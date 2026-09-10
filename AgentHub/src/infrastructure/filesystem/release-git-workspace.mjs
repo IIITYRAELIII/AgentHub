@@ -7,6 +7,8 @@ import process from "node:process";
 import { taskRepositoryKey } from "../../domain/task-git-reference.mjs";
 import { canonicalPath } from "./config.mjs";
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
+import { freezePreparedPublicationCandidate } from "./freeze-publication-candidate.mjs";
+import { releaseTaskNetProjections } from "./release-task-net-projection.mjs";
 
 const RELEASE_MARKER = "agent-hub-release-clone.json";
 const RELEASE_BRANCH = "PreRelease";
@@ -514,7 +516,7 @@ export class ReleaseGitWorkspaceService {
   }
 
   async prepareCandidate({
-    planRevision, projectRoot, frozenTasks = [], approvedBaseCommit = null, validateBeforeCommit = null,
+    planRevision, projectRoot, workspaceId = null, frozenTasks = [], approvedBaseCommit = null, validateBeforeCommit = null,
   } = {}) {
     const revision = String(planRevision ?? "").trim();
     if (!revision) throw new Error("release candidate requires the exact plan revision");
@@ -553,6 +555,8 @@ export class ReleaseGitWorkspaceService {
       }
       const manifest = {
         schemaVersion: 2,
+        projectionPolicy: "task-net-ancestry-v1",
+        ...(workspaceId ? { workspaceId: String(workspaceId) } : {}),
         planRevision: revision,
         primaryRoot: initial.root,
         primaryGitCommonDir: initial.commonDir,
@@ -567,6 +571,7 @@ export class ReleaseGitWorkspaceService {
       const checkpoint = await readJson(clone.checkpointFile);
       let preReleaseHead = null;
       let reused = false;
+      let netProjectedTaskIds = [];
       if (checkpoint?.manifestHash === manifestHash && checkpoint?.preReleaseHead) {
         const storedHead = await gitMaybe(["rev-parse", `${checkpoint.preReleaseHead}^{commit}`], { cwd: clone.releaseRoot });
         const branchHead = await gitMaybe(["rev-parse", `refs/heads/${RELEASE_BRANCH}^{commit}`], { cwd: clone.releaseRoot });
@@ -574,6 +579,7 @@ export class ReleaseGitWorkspaceService {
           await runGit(["checkout", RELEASE_BRANCH], { cwd: clone.releaseRoot });
           preReleaseHead = storedHead;
           reused = true;
+          netProjectedTaskIds = checkpoint.netProjectedTaskIds ?? [];
         }
       }
       if (!preReleaseHead) {
@@ -587,21 +593,30 @@ export class ReleaseGitWorkspaceService {
         };
         try {
           await runGit(["checkout", "--detach", baseCommit], { cwd: clone.releaseRoot });
-          const integrations = tasks.flatMap((task) => task.integrations.map((integration) => ({
-            ...integration,
-            taskId: task.taskId,
-          }))).sort((left, right) => left.order - right.order || left.commit.localeCompare(right.commit));
+          const projections = await releaseTaskNetProjections({
+            tasks, baseCommit,
+            git: (args) => runGit(args, { cwd: clone.releaseRoot, timeoutMs: 300_000 }),
+          });
+          netProjectedTaskIds = [...projections.keys()];
+          const integrations = tasks.flatMap((task) => {
+            const projection = projections.get(task.taskId);
+            const selected = projection ? [{
+              ...projection, netProjection: true,
+              order: Math.max(...task.integrations.map((item) => item.order)),
+            }] : task.integrations;
+            return selected.map((integration) => ({ ...integration, taskId: task.taskId }));
+          }).sort((left, right) => left.order - right.order || left.commit.localeCompare(right.commit));
           for (const integration of integrations) {
             const priorTree = await runGit(["write-tree"], { cwd: clone.releaseRoot });
             const actualParents = String(await runGit([
               "show", "-s", "--format=%P", integration.commit,
             ], { cwd: clone.releaseRoot })).split(" ").filter(Boolean);
-            if (actualParents[0] !== integration.parent) {
+            if (!integration.netProjection && actualParents[0] !== integration.parent) {
               throw new Error(`PreRelease integration parent changed for Task ${integration.taskId}`);
             }
             const patch = await runGit([
               "diff", "--binary", "--full-index", "--find-renames",
-              integration.parent, integration.commit, "--", ".", ":(exclude,glob)**/CHANGELOG.md",
+              integration.parent, integration.commit, "--", ".", ":(exclude,glob)**/CHANGELOG.md", ":(exclude)CHANGELOG.md",
             ], { cwd: clone.releaseRoot, timeoutMs: 300_000 });
             if (!patch) continue;
             try {
@@ -648,6 +663,7 @@ export class ReleaseGitWorkspaceService {
           await writeJsonAtomic(clone.checkpointFile, {
             schemaVersion: 2,
             phase: "prepared",
+            netProjectedTaskIds,
             planRevision: revision,
             manifestHash,
             manifestFile,
@@ -690,6 +706,7 @@ export class ReleaseGitWorkspaceService {
         manifestHash,
         manifestFile,
         frozenTasks: tasks,
+        netProjectedTaskIds,
         reused,
         independentGitCommonDir: !samePath(clone.releaseGitCommonDir, initial.commonDir),
         releaseGitCommonDir: clone.releaseGitCommonDir,
@@ -697,6 +714,24 @@ export class ReleaseGitWorkspaceService {
         primaryPreserved: true,
         legacyLinkedHolders: initial.legacyLinkedHolders,
       };
+    });
+  }
+
+  async freezePublicationCandidate({ projectRoot, workspaceId, ...options } = {}) {
+    if (!String(workspaceId ?? "").trim()) throw new Error("publication freeze requires its Workspace");
+    return this.withAwaitTransition(workspaceId, async () => {
+      const initial = await this.assertPrimaryInvariant(projectRoot, { phase: "publication freeze" });
+      const layout = this.#layout(initial.projectRoot);
+      const lock = path.join(this.dataDir, "locks", `release-git-${layout.repositoryKey}`);
+      return withInterprocessLocks([lock], async () => {
+        const marker = await assertReleaseCloneForPublication({ repositoryRoot: layout.releaseRoot });
+        if (!samePath(marker.primaryRoot, initial.projectRoot)) throw new Error("publication freeze clone belongs to another primary");
+        const result = await freezePreparedPublicationCandidate({ ...options, layout, marker, workspaceId });
+        const final = await this.assertPrimaryInvariant(projectRoot, { phase: "publication freeze completion" });
+        if (initial.headCommit !== final.headCommit || initial.indexFingerprint !== final.indexFingerprint
+          || initial.dirtyFingerprint !== final.dirtyFingerprint) throw new Error("primary Workspace changed during publication freeze");
+        return result;
+      });
     });
   }
 

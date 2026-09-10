@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { fingerprintTestInputs } from "./src/infrastructure/persistence/test-input-fingerprint.mjs";
 
 import {
   runCheckpointedTestFiles,
@@ -23,6 +23,10 @@ const VSCODE_FILES = [
   "agent-hub-bridge.test.js",
   "runtime-reload-policy.test.js",
   "activity-bar-launch.test.js",
+];
+const VISUAL_FILES = [
+  "tests/public/card-layout-dom.test.mjs",
+  "tests/public/journal-account-provider-column.test.mjs",
 ];
 const python = process.platform === "win32" ? "python.exe" : "python3";
 
@@ -51,87 +55,44 @@ function run(command, args, { cwd = ROOT } = {}) {
   });
 }
 
-async function discoverModuleFiles(directory = ROOT) {
-  const result = [];
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
-    const absolute = path.join(directory, entry.name);
-    if (entry.isDirectory()) {
-      if (!IGNORED_DIRECTORIES.has(entry.name)) result.push(...await discoverModuleFiles(absolute));
-      continue;
-    }
-    if (entry.name.endsWith(".mjs")) {
-      result.push(path.relative(ROOT, absolute).split(path.sep).join("/"));
-    }
-  }
-  return result.toSorted();
+export async function testFingerprint(file, { cwd = ROOT, root = cwd, declaration, ...options } = {}) {
+  return fingerprintTestInputs(file, { cwd, root, declaration, runnerFile: TEST_RUNNER_FILE, ...options });
 }
 
-export async function testFingerprint(file, { cwd = ROOT } = {}) {
-  const visited = new Set();
-  const hash = createHash("sha256")
-    .update("runner-v3\0")
-    .update(await readFile(TEST_RUNNER_FILE))
-    .update("\0");
-  async function visit(absolute) {
-    const normalized = path.resolve(absolute);
-    if (visited.has(normalized)) return false;
-    visited.add(normalized);
-    let source;
-    try {
-      source = await readFile(normalized);
-    } catch (error) {
-      if (error.code === "ENOENT") return false;
-      throw error;
-    }
-    hash.update(path.relative(cwd, normalized).split(path.sep).join("/")).update("\0").update(source).update("\0");
-    const text = source.toString("utf8");
-    const imports = text.matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s*)["'](\.{1,2}\/[^"']+)["']/gu);
-    for (const match of imports) {
-      const base = path.resolve(path.dirname(normalized), match[1]);
-      const candidates = path.extname(base)
-        ? [base]
-        : [
-          `${base}.mjs`,
-          `${base}.js`,
-          `${base}.cjs`,
-          `${base}.json`,
-          path.join(base, "index.mjs"),
-          path.join(base, "index.js"),
-          path.join(base, "index.cjs"),
-        ];
-      for (const candidate of candidates) {
-        if (await visit(candidate)) break;
-      }
-    }
-    return true;
-  }
-  await visit(path.resolve(cwd, file));
-  return hash.digest("hex");
-}
-
-async function runWindowsTestFile(file, {
+export async function runWindowsTestFile(file, {
   cwd = ROOT,
   isolation = true,
-  maxAttempts = 1,
+  execute = run,
 } = {}) {
   const args = ["--test", "--test-concurrency=1", ...(isolation ? ["--test-isolation=none"] : []), file];
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      await run(process.execPath, args, { cwd });
-      return;
-    } catch (error) {
-      if (attempt === maxAttempts) throw error;
-      console.warn(
-        `Повтор Windows test-file после временного файлового сбоя (${attempt}/${maxAttempts - 1}): ${file}`,
-      );
+  // A failed assertion and an OS failure share exit code 1. Neither proves a
+  // transient failure; retries require a new explicit run and reuse successes.
+  await execute(process.execPath, args, { cwd });
+}
+
+async function declaredFingerprint(file, cwd) {
+  const manifest = JSON.parse(await readFile(path.join(ROOT, "tests/test-cache-inputs.json"), "utf8"));
+  const key = path.relative(ROOT, path.resolve(cwd, file)).split(path.sep).join("/");
+  const declaration = manifest.files[key] ?? null;
+  let browserFile = "";
+  if (declaration?.browser) {
+    if (process.platform === "win32") {
+      browserFile = path.join(process.env["ProgramFiles(x86)"] || process.env.ProgramFiles || "", "Microsoft", "Edge", "Application", "msedge.exe");
+    } else {
+      const { chromium } = await import("playwright");
+      browserFile = chromium.executablePath();
     }
   }
+  return testFingerprint(file, { cwd, root: ROOT, declaration, browserFile });
 }
 
 export async function runTestSuite(mode, {
   checkpointIdentity = String(process.env.AGENT_HUB_FULL_TEST_CHECKPOINT_ID ?? "").trim(),
   checkpoint = checkpointIdentity ? testFileCheckpointStore() : null,
+  execute = run,
+  discover = discoverTestFiles,
 } = {}) {
+  const options = { checkpointIdentity, checkpoint, execute, discover };
   if (mode === "all") {
     const failures = [];
     const stages = [
@@ -139,31 +100,23 @@ export async function runTestSuite(mode, {
         suite: "syntax",
         identity: checkpointIdentity,
         checkpoint,
-        fingerprint: async (file) => {
-          const modules = await discoverModuleFiles(ROOT);
-          const hash = createHash("sha256").update(await testFingerprint(file, { cwd: ROOT }));
-          for (const module of modules) {
-            hash.update(module).update("\0").update(await readFile(path.join(ROOT, module))).update("\0");
-          }
-          return hash.digest("hex");
-        },
-        run: () => run(process.execPath, ["--no-warnings", "--experimental-vm-modules", "syntax-check.mjs"]),
+        // Cheap discovery/contract preflight is deliberately repeated.
+        fingerprint: async () => null,
+        run: () => execute(process.execPath, ["--no-warnings", "--experimental-vm-modules", "syntax-check.mjs"]),
       })],
-      ["architecture", () => runTestSuite("architecture", { checkpointIdentity, checkpoint })],
-      ["unit", () => runTestSuite("unit", { checkpointIdentity, checkpoint })],
+      ["architecture", () => runTestSuite("architecture", options)],
+      ["unit", () => runTestSuite("unit", options)],
+      ["visual", () => runTestSuite("visual", options)],
       ["installer", () => runCheckpointedTestFiles(["install_test.py"], {
         suite: "installer",
         identity: checkpointIdentity,
         checkpoint,
-        fingerprint: async (file) => {
-          const hash = createHash("sha256").update("installer-v2\0");
-          for (const dependency of [file, "install.py"]) hash.update(await readFile(path.join(ROOT, dependency)));
-          return hash.digest("hex");
-        },
-        run: () => run(python, ["-m", "unittest", "install_test.py"]),
+        // Python and host installer state are not covered by a Node fingerprint.
+        fingerprint: async () => null,
+        run: () => execute(python, ["-m", "unittest", "install_test.py"]),
       })],
-      ["e2e", () => runTestSuite("e2e", { checkpointIdentity, checkpoint })],
-      ["vscode", () => runTestSuite("vscode", { checkpointIdentity, checkpoint })],
+      ["e2e", () => runTestSuite("e2e", options)],
+      ["vscode", () => runTestSuite("vscode", options)],
     ];
     for (const [stage, execute] of stages) {
       try {
@@ -176,15 +129,15 @@ export async function runTestSuite(mode, {
       const summary = failures.map(({ stage, error }) => `${stage}: ${error.message}`).join("\n\n");
       throw new AggregateError(failures.map(({ error }) => error), `Полная проверка не пройдена:\n${summary}`);
     }
-    if (checkpointIdentity) await checkpoint.clear();
     return;
   }
-  const allTestFiles = await discoverTestFiles();
+  const allTestFiles = await discover();
   const architectureFiles = allTestFiles.filter((file) => file.startsWith("tests/composition/"));
-  const unitFiles = allTestFiles.filter((file) => !file.startsWith("tests/composition/"));
+  const unitFiles = allTestFiles.filter((file) => !file.startsWith("tests/composition/") && !VISUAL_FILES.includes(file));
   const suites = {
-    architecture: { files: architectureFiles, cwd: ROOT, isolation: true, maxAttempts: 4 },
-    unit: { files: unitFiles, cwd: ROOT, isolation: true, maxAttempts: 4 },
+    architecture: { files: architectureFiles, cwd: ROOT, isolation: true },
+    unit: { files: unitFiles, cwd: ROOT, isolation: true },
+    visual: { files: [...VISUAL_FILES], cwd: ROOT, isolation: true },
     e2e: { files: E2E_FILES, cwd: ROOT, isolation: false },
     vscode: { files: VSCODE_FILES, cwd: path.join(ROOT, "VSCodeExtension"), isolation: false },
   };
@@ -197,25 +150,25 @@ export async function runTestSuite(mode, {
       suite: mode,
       identity: checkpointIdentity,
       checkpoint,
-      fingerprint: (file) => testFingerprint(file, { cwd: selected.cwd }),
-      run: (file) => runWindowsTestFile(file, selected),
+      fingerprint: (file) => declaredFingerprint(file, selected.cwd),
+      run: (file) => runWindowsTestFile(file, { ...selected, execute }),
     });
     return;
   }
 
-  if (process.platform === "win32" && ["architecture", "unit"].includes(mode)) {
+  if (mode === "visual" || (process.platform === "win32" && ["architecture", "unit"].includes(mode))) {
     // Separate processes release SQLite and antivirus-observed temporary files
     // before the next test module starts. A single process can retain a Windows
     // file handle briefly even with test concurrency set to one.
     await runCheckpointedTestFiles(selected.files, {
       suite: mode,
-      run: (file) => runWindowsTestFile(file, selected),
+      run: (file) => runWindowsTestFile(file, { ...selected, execute }),
     });
     return;
   }
 
   const concurrency = mode === "e2e" ? "1" : "4";
-  await run(process.execPath, ["--test", `--test-concurrency=${concurrency}`, ...selected.files], selected);
+  await execute(process.execPath, ["--test", `--test-concurrency=${concurrency}`, ...selected.files], selected);
 }
 
 const invokedFile = process.argv[1] ? path.resolve(process.argv[1]) : "";

@@ -2699,7 +2699,18 @@ export class TaskBoardStore {
       if (!value) return null;
       try {
         const parsed = JSON.parse(value);
+        if (parsed.completed === true) return null;
+        if (parsed.version != null && parsed.version !== 2) throw new Error("unsupported finalization version");
+        if (parsed.version === 2 && (!Array.isArray(parsed.repositories) || !parsed.repositories.length
+          || parsed.repositories.some((repository) => !repository.projectRoot || !repository.publishedRevision))) {
+          throw new Error("invalid exact finalization repositories");
+        }
         return {
+          ...(parsed.version === 2 ? {
+            version: 2,
+            repositories: parsed.repositories,
+            awaitResult: parsed.awaitResult ?? null,
+          } : {}),
           planRevision: String(parsed.planRevision ?? ""),
           fallbackProjectRoots: Array.isArray(parsed.fallbackProjectRoots)
             ? parsed.fallbackProjectRoots.map((root) => String(root)).filter(Boolean)
@@ -2711,11 +2722,72 @@ export class TaskBoardStore {
     });
   }
 
-  clearAwaitRebuildPending(workspaceId) {
+  releaseFinalizationOutcome(workspaceId, planRevision) {
     const key = `release_await_rebuild_pending:${String(workspaceId)}`;
-    return this.#withDatabase((database) => (
-      Number(database.prepare("DELETE FROM hub_board_settings WHERE key = ?").run(key).changes) > 0
-    ));
+    return this.#withDatabase((database) => {
+      const value = database.prepare("SELECT value FROM hub_board_settings WHERE key = ?").get(key)?.value;
+      if (!value) return null;
+      const saved = JSON.parse(value);
+      return (saved.completedOutcomes ?? []).find((outcome) => outcome.planRevision === planRevision) ?? null;
+    });
+  }
+
+  recordReleaseFinalizationStage(workspaceId, { planRevision, stage, projectRoot, receipt }) {
+    const key = `release_await_rebuild_pending:${String(workspaceId)}`;
+    return this.#withDatabase((database) => {
+      const value = database.prepare("SELECT value FROM hub_board_settings WHERE key = ?").get(key)?.value;
+      const pending = value ? JSON.parse(value) : null;
+      if (!pending || pending.version !== 2 || pending.planRevision !== planRevision) {
+        throw new Error("release finalization revision conflict");
+      }
+      if (!receipt || typeof receipt.completed !== "boolean" || !receipt.result) {
+        throw new Error("release finalization requires a stage receipt");
+      }
+      let holder;
+      let field;
+      if (stage === "await") {
+        holder = pending;
+        field = "awaitResult";
+      } else if (["primary", "dev"].includes(stage)) {
+        holder = pending.repositories.find((repository) => repository.projectRoot === projectRoot);
+        field = stage;
+      }
+      if (!holder) throw new Error("unknown release finalization stage or repository");
+      if (holder[field]?.completed) return false;
+      holder[field] = receipt;
+      const updated = database.prepare(`
+        UPDATE hub_board_settings SET value = ?, updated_at_ms = ? WHERE key = ? AND value = ?
+      `).run(JSON.stringify(pending), this.now(), key, value);
+      if (!Number(updated.changes)) throw new Error("release finalization checkpoint changed");
+      return true;
+    });
+  }
+
+  clearAwaitRebuildPending(workspaceId, expectedPlanRevision = null) {
+    const key = `release_await_rebuild_pending:${String(workspaceId)}`;
+    return this.#withDatabase((database) => {
+      const value = database.prepare("SELECT value FROM hub_board_settings WHERE key = ?").get(key)?.value;
+      if (!value) return false;
+      const pending = JSON.parse(value);
+      if (expectedPlanRevision && pending.planRevision !== expectedPlanRevision) {
+        throw new Error("release finalization revision conflict");
+      }
+      if (pending.completed === true) return false;
+      if (pending.version === 2 && (!pending.awaitResult?.completed
+        || pending.repositories.some((repository) => !repository.primary?.completed || !repository.dev?.completed))) {
+        throw new Error("release finalization has unfinished stages");
+      }
+      if (pending.version === 2) {
+        const completedOutcomes = [...(pending.completedOutcomes ?? []), {
+          planRevision: pending.planRevision,
+          repositories: pending.repositories.map(({ projectRoot, publishedRevision }) => ({ projectRoot, publishedRevision })),
+        }].slice(-16);
+        return Number(database.prepare(`
+          UPDATE hub_board_settings SET value = ?, updated_at_ms = ? WHERE key = ? AND value = ?
+        `).run(JSON.stringify({ version: 2, completed: true, completedOutcomes }), this.now(), key, value).changes) > 0;
+      }
+      return Number(database.prepare("DELETE FROM hub_board_settings WHERE key = ? AND value = ?").run(key, value).changes) > 0;
+    });
   }
 
   completeRelease(workspaceId, {
@@ -2725,6 +2797,9 @@ export class TaskBoardStore {
     return this.#withDatabase((database) => {
       database.exec("BEGIN IMMEDIATE");
       try {
+      if (this.awaitRebuildPending(workspaceId)) {
+        throw new Error("release finalization is still pending");
+      }
       const tasks = this.releaseTasks(workspaceId);
       const awaiting = tasks.filter((task) => task.status !== "done"
         && task.workflowStatus === "awaiting_implementation");
@@ -2743,6 +2818,28 @@ export class TaskBoardStore {
         : [];
       if (rebuildPlanRevision !== expected || !fallbackProjectRoots.length) {
         throw new Error("release completion requires durable Await rebuild evidence");
+      }
+      const previousValue = database.prepare("SELECT value FROM hub_board_settings WHERE key = ?")
+        .get(`release_await_rebuild_pending:${String(workspaceId)}`)?.value;
+      const completedOutcomes = previousValue ? JSON.parse(previousValue).completedOutcomes ?? [] : [];
+      const pending = { planRevision: rebuildPlanRevision, fallbackProjectRoots };
+      if (awaitRebuild.version === 2) {
+        const expectedRepositories = verificationEvidence.publication?.repositories ?? [];
+        if (!expectedRepositories.length || !Array.isArray(awaitRebuild.repositories)
+          || awaitRebuild.repositories.length !== expectedRepositories.length
+          || awaitRebuild.repositories.some((repository, index) => (
+            repository.projectRoot !== expectedRepositories[index].root
+            || repository.publishedRevision !== expectedRepositories[index].revision
+            || !repository.publishedRevision
+          ))) throw new Error("release finalization requires exact verified repositories");
+        Object.assign(pending, {
+          version: 2,
+          completedOutcomes,
+          repositories: awaitRebuild.repositories.map(({ projectRoot, publishedRevision }) => ({
+            projectRoot, publishedRevision, primary: null, dev: null,
+          })),
+          awaitResult: null,
+        });
       }
       const timestamp = this.now();
       for (const task of plan.candidates) {
@@ -2776,7 +2873,7 @@ export class TaskBoardStore {
         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at_ms = excluded.updated_at_ms
       `).run(
         `release_await_rebuild_pending:${String(workspaceId)}`,
-        JSON.stringify({ planRevision: rebuildPlanRevision, fallbackProjectRoots }),
+        JSON.stringify(pending),
         timestamp,
       );
       database.exec("COMMIT");

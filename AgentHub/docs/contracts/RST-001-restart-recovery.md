@@ -88,6 +88,15 @@ a user turn and does not alter the restart/compaction operation schema.
 
 ## Optional startup enrichment
 
+A ready replacement may resume the exact pending publication completion
+described in REL-001. This background continuation starts after readiness and
+uses the canonical publication lock, without inheriting the previous publisher's
+lock-bypass session. It does not build, deploy, push Git or request another
+restart. Installed release, ready instance and control snapshot must agree
+before completion; a mismatch remains pending/failed evidence, never success.
+The publication journal and Task finalization store retain their own existing
+authority; this hook creates no second restart operation.
+
 Full provider catalog/pricing enrichment is background work after the mandatory
 startup and readiness barrier. It is measured and retryable, but does not reopen
 the startup barrier or hide the ready interface. Recovery of active ownership,

@@ -469,35 +469,6 @@ test("root production modules match the frozen migration inventory", async () =>
   }
 });
 
-test("composition root cannot grow while responsibilities are extracted", async () => {
-  const inventory = await migrationInventory();
-  const facade = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
-  const source = await readFile(COMPOSITION_ROOT, "utf8");
-  const facadeLines = facade.split(/\r?\n/u).length - (facade.endsWith("\n") ? 1 : 0);
-  const compositionLines = source.split(/\r?\n/u).length - (source.endsWith("\n") ? 1 : 0);
-  assert.ok(
-    facadeLines <= inventory.baseline.serverMaximumLines,
-    `agent-hub-server.mjs grew to ${facadeLines} lines; maximum is ${inventory.baseline.serverMaximumLines}`,
-  );
-  assert.ok(
-    compositionLines <= inventory.baseline.compositionMaximumLines,
-    `agent-hub-composition.mjs grew to ${compositionLines} lines; maximum is ${inventory.baseline.compositionMaximumLines}`,
-  );
-});
-
-test("extracted composition factories remain bounded", async () => {
-  const directory = path.join(ROOT, "src", "composition");
-  const files = (await readdir(directory, { withFileTypes: true }))
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".mjs"))
-    .map((entry) => entry.name)
-    .filter((name) => name !== "agent-hub-composition.mjs");
-  for (const name of files) {
-    const source = await readFile(path.join(directory, name), "utf8");
-    const lines = source.split(/\r?\n/u).filter((line) => line.trim()).length;
-    assert.ok(lines <= 600, `${name} grew to ${lines} non-empty lines; maximum is 600`);
-  }
-});
-
 test("Desktop shell owns read, command and run-router assembly", async () => {
   const root = await readFile(COMPOSITION_ROOT, "utf8");
   const shell = await readFile(

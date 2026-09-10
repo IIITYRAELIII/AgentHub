@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { resolveHubDeveloperInstructions } from "../../../src/composition/hub-developer-instructions-composition.mjs";
 
 import {
   createInterstreamMessage,
@@ -20,6 +21,7 @@ import {
   LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_RU_V1,
   LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V2,
   RELEASE_WORKFLOW_DEVELOPER_RULES,
+  EXPLICIT_USER_WORKFLOW_EXCEPTION,
 } from "../../../src/domain/workspace-release-workflow.mjs";
 import {
   LEGACY_PERSISTED_AGENT_HUB_WORKSPACE_RULES_RU_V1,
@@ -984,6 +986,36 @@ test("release workflow is opt-in and injects policy without changing editable ru
   assert.match(injected.stream.content, /Workspace release architect/u);
   assert.match(injected.stream.content, /releaseCandidates\[\]\.releaseRoot.*only checkout/u);
   assert.doesNotMatch(injected.stream.content, /update local main|separate integration worktree/u);
+});
+
+test("workflow exception reaches provider context across rotation and follows both toggles", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Policy", settings: { releaseWorkflowEnabled: true } });
+  const stream = store.createStream({ workspaceId: workspace.id, name: "Release", settings: { architect: true } });
+  store.updateWorkspaceDeveloperRules(workspace.id, "Authored Workspace policy");
+  store.updateStreamDeveloperRules(stream.id, "Authored Stream policy");
+  const compose = (threadId) => resolveHubDeveloperInstructions({
+    provider: "codex", threadId, workspaceCatalogStore: store,
+    preTurnInstructions: { snapshot: async () => ({ guide: { content: "Guide" }, global: { content: "" } }) },
+    hubMcpService: { developerContext: () => "Synthetic MCP context" },
+  });
+  for (const threadId of ["before-rotation", "after-rotation"]) {
+    store.bindThread({ provider: "codex", threadId, streamId: stream.id });
+    const output = await compose(threadId);
+    assert.equal(output.split(EXPLICIT_USER_WORKFLOW_EXCEPTION).length - 1, 2);
+    assert.match(output, /Authored Workspace policy/u);
+    assert.match(output, /Authored Stream policy/u);
+  }
+  store.updateStreamSettings(stream.id, { architect: false });
+  assert.equal((await compose("after-rotation")).split(EXPLICIT_USER_WORKFLOW_EXCEPTION).length - 1, 1);
+  store.updateStreamSettings(stream.id, { architect: true });
+  store.updateWorkspaceSettings(workspace.id, { releaseWorkflowEnabled: false });
+  const disabled = await compose("after-rotation");
+  assert.equal(disabled.includes(EXPLICIT_USER_WORKFLOW_EXCEPTION), false);
+  assert.match(disabled, /Authored Workspace policy/u);
+  assert.match(disabled, /Authored Stream policy/u);
+  assert.equal(store.workspaceDeveloperRules(workspace.id).content, "Authored Workspace policy");
+  assert.equal(store.streamDeveloperRules(stream.id).content, "Authored Stream policy");
 });
 
 test.skip("retired destructive release registry discard", async (t) => {

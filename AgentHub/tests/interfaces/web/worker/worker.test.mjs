@@ -364,20 +364,214 @@ function dashboardBotHubRegistry(entries) {
   });
 }
 
-function durableNamespace(workerModule) {
+function durableNamespace(workerModule, env = { DASHBOARD_BOT_TOKEN: `123456:${"A".repeat(30)}` }) {
   const stores = new Map();
   return {
     stores,
     namespace: {
       getByName(name) {
         if (!stores.has(name)) {
-          stores.set(name, new workerModule.JournalStore({ storage: new MemoryStorage() }, {}));
+          stores.set(name, new workerModule.JournalStore({ storage: new MemoryStorage() }, env));
         }
         return stores.get(name);
       },
     },
   };
 }
+
+async function dashboardReceiptFixture(context, { source = {}, telegram } = {}) {
+  const worker = await loadWorker();
+  class ReceiptStorage extends MemoryStorage {
+    tail = Promise.resolve();
+    failNextAlarmWrite = false;
+    stopAfterPendingReceiptCommit = false;
+    async get(key) { return structuredClone(await super.get(key)); }
+    async put(key, value) { return super.put(structuredClone(key), structuredClone(value)); }
+    async setAlarm(timestamp) {
+      if (this.failNextAlarmWrite) {
+        this.failNextAlarmWrite = false;
+        throw new Error("simulated alarm storage failure");
+      }
+      return super.setAlarm(timestamp);
+    }
+    transaction(callback) {
+      const operation = this.tail.then(async () => {
+        const values = structuredClone(this.values);
+        const alarmAt = this.alarmAt;
+        let result;
+        try { result = await callback(this); }
+        catch (error) {
+          this.values = values;
+          this.alarmAt = alarmAt;
+          throw error;
+        }
+        if (this.stopAfterPendingReceiptCommit && [...this.values.values()].some((value) => (
+          value?.dashboardBotReceipt?.state === "pending" && value.dashboardBotReceipt.attempt === 0
+        ))) {
+          this.stopAfterPendingReceiptCommit = false;
+          throw new Error("simulated process death after receipt commit");
+        }
+        return result;
+      });
+      this.tail = operation.catch(() => {});
+      return operation;
+    }
+  }
+  const storage = new ReceiptStorage();
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    assert.match(String(url), /^https:\/\/api\.telegram\.org\/bot/u);
+    const call = { method: String(url).split("/").at(-1), body: JSON.parse(options.body) };
+    calls.push(call);
+    return telegram ? telegram(call, calls.length) : Response.json({ ok: true, result: { message_id: 900 } });
+  };
+  context.after(() => { globalThis.fetch = originalFetch; });
+  const hubId = "018f6c86-3f34-7a31-8f27-16f5b96cce50";
+  const secret = "h".repeat(64);
+  const env = { DASHBOARD_BOT_TOKEN: `123456:${"A".repeat(30)}` };
+  let store = new worker.JournalStore({ storage }, env);
+  env.JOURNAL = { getByName: () => store };
+  await storage.put("dashboard-bot:service-identity", {
+    hubId, secret, userId: "42", chatId: "42", updatedAt: Date.now(),
+  });
+  const id = "018f6c86-3f34-7a31-8f27-16f5b96cce90";
+  const internal = (pathname, body) => store.fetch(new Request(`https://journal.internal${pathname}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  }));
+  assert.equal((await internal("/control/enqueue", {
+    id, userId: "42", action: "board-task-ingest",
+    params: { text: "Task", sourceDetails: { chatId: 42, userId: 42, messageId: 123, ...source } },
+  })).status, 202);
+  const claimed = await internal("/control/pull", { limit: 1 });
+  assert.equal((await claimed.json()).commands.length, 1);
+  return {
+    storage, calls, id,
+    result: (payload = {}) => worker.default.fetch(signedServiceRequest(
+      "https://hub.test/api/dashboard-bot/result",
+      { id, userId: "42", ok: true, result: { taskId: "task-1" }, ...payload },
+      secret, { "X-Agent-Hub-Dashboard-Id": hubId },
+    ), env),
+    pull: () => internal("/control/pull", { limit: 1 }),
+    alarm: () => store.alarm(),
+    recreate: () => { store = new worker.JournalStore({ storage }, env); },
+    command: () => storage.get(`control:command:${id}`),
+  };
+}
+
+test("Dashboard confirmation failure stays durable and retries after Worker recreation without replaying the Task", async (context) => {
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  context.after(() => { Date.now = realNow; });
+  const fixture = await dashboardReceiptFixture(context, {
+    source: { bundleId: "bundle-1", cardMessageId: 456, items: [{ messageId: 123 }] },
+    telegram: (_call, attempt) => attempt === 1
+      ? Response.json({ ok: false, description: "Temporary Telegram failure" }, { status: 503 })
+      : Response.json({ ok: true, result: { message_id: 901 } }),
+  });
+  assert.equal((await fixture.result()).status, 200);
+  const completed = await fixture.command();
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.dashboardBotReceipt.state, "pending");
+  assert.ok(completed.expiresAt > now + 24 * 60 * 60_000);
+  assert.equal(fixture.storage.values.get("control:active-count"), 0);
+  assert.equal(fixture.calls[0].body.reply_parameters.message_id, 456);
+  assert.equal(fixture.calls[0].body.text, "✅ Пачка сообщений добавлена в Backlog.");
+  assert.equal((await (await fixture.pull()).json()).commands.length, 0);
+  assert.equal((await (await fixture.result({ ok: false, error: "stale contradictory retry" })).json()).resultAccepted, false);
+  assert.equal(fixture.calls.length, 1, "transport replay respects the persisted receipt backoff");
+  fixture.recreate();
+  now = completed.dashboardBotReceipt.nextAttemptAt;
+  await fixture.alarm();
+  assert.equal(fixture.calls.length, 2);
+  assert.deepEqual(fixture.calls[1].body, fixture.calls[0].body);
+  assert.equal((await fixture.command()).dashboardBotReceipt.state, "delivered");
+  assert.equal((await fixture.command()).dashboardBotReceipt.messageId, 901);
+  fixture.recreate();
+  await fixture.result();
+  await fixture.alarm();
+  assert.equal(fixture.calls.length, 2);
+  assert.equal((await (await fixture.pull()).json()).commands.length, 0);
+});
+
+test("concurrent Dashboard result retries share one confirmation and keep the first durable outcome", async (context) => {
+  let releaseTelegram;
+  let startedTelegram;
+  const started = new Promise((resolve) => { startedTelegram = resolve; });
+  const telegramResponse = new Promise((resolve) => { releaseTelegram = resolve; });
+  const fixture = await dashboardReceiptFixture(context, {
+    telegram: () => { startedTelegram(); return telegramResponse; },
+  });
+  const first = fixture.result({ ok: false, error: "Task validation failed" });
+  await started;
+  const duplicate = fixture.result();
+  releaseTelegram(Response.json({ ok: true, result: { message_id: 902 } }));
+  const results = await Promise.all([first, duplicate]);
+  assert.deepEqual(await Promise.all(results.map(async (response) => (await response.json()).resultAccepted)), [true, false]);
+  assert.equal(fixture.calls.length, 1);
+  assert.equal(fixture.calls[0].body.reply_parameters.message_id, 123);
+  assert.match(fixture.calls[0].body.text, /не принял задачу: Task validation failed/u);
+  assert.equal((await fixture.command()).status, "failed");
+  assert.equal((await fixture.command()).dashboardBotReceipt.state, "delivered");
+});
+
+test("Dashboard result and alarm commit atomically and survive death before the first Telegram attempt", async (context) => {
+  const fixture = await dashboardReceiptFixture(context);
+  fixture.storage.failNextAlarmWrite = true;
+  assert.equal((await fixture.result()).status, 503);
+  assert.equal((await fixture.command()).status, "running");
+  assert.equal((await fixture.command()).dashboardBotReceipt, undefined);
+  assert.equal(fixture.calls.length, 0);
+  assert.equal(fixture.storage.values.get("control:active-count"), 1);
+  fixture.storage.stopAfterPendingReceiptCommit = true;
+  assert.equal((await fixture.result()).status, 503);
+  assert.equal((await fixture.command()).status, "completed");
+  assert.equal((await fixture.command()).dashboardBotReceipt.attempt, 0);
+  assert.ok(fixture.storage.alarmAt <= Date.now());
+  assert.equal(fixture.calls.length, 0);
+  fixture.recreate();
+  await fixture.alarm();
+  assert.equal(fixture.calls.length, 1);
+  assert.equal((await fixture.command()).dashboardBotReceipt.state, "delivered");
+});
+
+test("Dashboard confirmation respects Telegram retry_after across process recreation", async (context) => {
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  context.after(() => { Date.now = realNow; });
+  const fixture = await dashboardReceiptFixture(context, {
+    telegram: (_call, attempt) => attempt === 1
+      ? Response.json({ ok: false, description: "Too Many Requests", parameters: { retry_after: 120 } }, { status: 429 })
+      : Response.json({ ok: true, result: { message_id: 903 } }),
+  });
+  await fixture.result();
+  assert.equal((await fixture.command()).dashboardBotReceipt.nextAttemptAt, now + 120_000);
+  fixture.recreate();
+  now += 30_000;
+  await fixture.alarm();
+  assert.equal(fixture.calls.length, 1);
+  assert.equal(fixture.storage.alarmAt, now + 90_000);
+  now += 90_000;
+  await fixture.alarm();
+  assert.equal(fixture.calls.length, 2);
+});
+
+test("Dashboard receipts reject a forged source chat and never reconstruct legacy delivery state", async (context) => {
+  const fixture = await dashboardReceiptFixture(context, { source: { chatId: 99 } });
+  await fixture.result();
+  assert.equal(fixture.calls.length, 0);
+  assert.equal((await fixture.command()).dashboardBotReceipt, null);
+  const legacy = await fixture.command();
+  delete legacy.dashboardBotReceipt;
+  legacy.params.sourceDetails.chatId = 42;
+  await fixture.storage.put(`control:command:${fixture.id}`, legacy);
+  fixture.recreate();
+  await fixture.result();
+  await fixture.alarm();
+  assert.equal(fixture.calls.length, 0);
+});
 
 function signedBinaryServiceRequest(url, body, secret, headers = {}) {
   const timestamp = Math.trunc(Date.now() / 1_000);
@@ -2113,6 +2307,7 @@ test("shared Dashboard bot pairs one Telegram user and queues Tasks only for tha
   assert.equal(response.status, 200);
   assert.equal((await response.json()).ok, true);
   assert.match(telegramCalls.at(-1).body.text, /Поставлено в очередь Agent Hub/u);
+  assert.equal(telegramCalls.at(-1).body.reply_parameters.message_id, 2);
 
   stores.get(`dashboard-bot:${hubId}`).ctx.storage.values.delete("dashboard-bot:service-identity");
 
@@ -2153,6 +2348,7 @@ test("shared Dashboard bot pairs one Telegram user and queues Tasks only for tha
   ), env);
   assert.equal(response.status, 200);
   assert.equal(telegramCalls.at(-1).body.text, "✅ Задача добавлена в Backlog.");
+  assert.equal(telegramCalls.at(-1).body.reply_parameters.message_id, 2);
   const deliveredConfirmations = telegramCalls
     .filter((call) => call.body.text === "✅ Задача добавлена в Backlog.").length;
   response = await workerModule.default.fetch(signedServiceRequest(

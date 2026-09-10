@@ -31,7 +31,7 @@ const TASK_MUTATIONS = new Set([
   "requestWorkflowStatus", "beginLifecycleTransition", "failLifecycleTransition",
   "commitWorkflowTransition", "rollbackWorkflowOutcome", "finalizeCleanupTransition", "recordTaskTurn",
   "recordTaskGitReference", "adoptLegacyGitReference", "completeRelease", "remove", "setCaptureEnabled",
-  "updateChecklist", "applyChecklistLinkedTaskAction", "clearAwaitRebuildPending",
+  "updateChecklist", "applyChecklistLinkedTaskAction", "clearAwaitRebuildPending", "recordReleaseFinalizationStage",
 ]);
 
 // These owners perform external effects outside SQL retry and queue their own
@@ -41,7 +41,7 @@ const TASK_MANAGED_EFFECTS = new Set(["deliverChecklistEvents"]);
 const TASK_READS = new Set([
   "task", "list", "pendingTriage", "orderedColumnIds", "notesComment", "claimedTaskForTurn",
   "lifecycleTransition", "lifecycleOutcome", "releaseTasks", "captureEnabled", "mutationDiagnostics", "close",
-  "checklistRequestResult", "awaitRebuildPending",
+  "checklistRequestResult", "awaitRebuildPending", "releaseFinalizationOutcome",
 ]);
 
 const READ_PROPERTIES = new Set(["revision"]);

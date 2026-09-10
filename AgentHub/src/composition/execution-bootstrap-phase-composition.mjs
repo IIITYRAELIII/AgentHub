@@ -10,6 +10,7 @@ import { catalogEntryIsSelected } from "../domain/task-catalog-identity.mjs";
 import { taskRunKey } from "../domain/task-runs.mjs";
 import { readCodexRolloutActivity } from "../providers/codex/codex-rollout-activity.mjs";
 import { markProgressHeartbeat, PROGRESS_STALLED_AFTER_MS } from "../runtime/progress-heartbeat.mjs";
+import { publicationAwareReadiness } from "../runtime/runtime-publication-completion.mjs";
 import { delay } from "./runtime-timers-composition.mjs";
 import { createAgentHubBootstrapComposition } from "./agent-hub-bootstrap-composition.mjs";
 import { createRuntimeOrchestrationComposition } from "./runtime-orchestration-composition.mjs";
@@ -367,7 +368,10 @@ export function createExecutionBootstrapPhase({
     }),
     hasPendingRestart: () => Boolean(selection.hostState.restartRequest),
     finalizeRestart: api.finalizeRestartMessage,
-    markReady: () => infrastructure.instanceGuard.markReady(),
+    markReady: publicationAwareReadiness({
+      markReady: () => infrastructure.instanceGuard.markReady(),
+      runtimeRoot: runtimeCommandRoot,
+    }),
     readyMessage: () => (
       `Agent Hub ready; components: ${Object.entries(config.components).filter(([, enabled]) => enabled).map(([name]) => name).join(", ") || "core"}; provider: ${selection.providerTitle()}; project: ${selection.selectedProjectRoot()}`
     ),

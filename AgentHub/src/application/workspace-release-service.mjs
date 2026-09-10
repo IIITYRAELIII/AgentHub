@@ -1,3 +1,4 @@
+import path from "node:path";
 import { isTaskBoardMutationOwner } from "./sqlite-mutation-owner.mjs";
 
 function requiredMethod(value, name) {
@@ -10,6 +11,14 @@ function requiredPlanRevision(value) {
   return revision;
 }
 
+function assertFinalizationRepositories(expectedRepositories, repositories) {
+  const canonical = (root) => process.platform === "win32" ? path.resolve(root).toLowerCase() : path.resolve(root);
+  if (!Array.isArray(expectedRepositories) || !expectedRepositories.length) throw new Error("release repository identity is required");
+  const expected = expectedRepositories.map((item) => [canonical(item.projectRoot), item.revision]).sort();
+  const observed = repositories.map((item) => [canonical(item.projectRoot), item.publishedRevision]).sort();
+  if (JSON.stringify(expected) !== JSON.stringify(observed)) throw new Error("completed release repository identity mismatch");
+}
+
 export class WorkspaceReleaseService {
   constructor({
     store, releasePlanner, releaseGitWorkspaces, taskGitWorkspaces, releasePreflight, verifyPublication,
@@ -17,6 +26,8 @@ export class WorkspaceReleaseService {
     requiredMethod(store, "completeRelease");
     requiredMethod(store, "awaitRebuildPending");
     requiredMethod(store, "clearAwaitRebuildPending");
+    requiredMethod(store, "recordReleaseFinalizationStage");
+    requiredMethod(store, "releaseFinalizationOutcome");
     if (!isTaskBoardMutationOwner(store)) {
       throw new TypeError("WorkspaceReleaseService requires the Task mutation owner facade");
     }
@@ -37,36 +48,36 @@ export class WorkspaceReleaseService {
 
   async completeRelease({
     workspaceId, expectedRepositories = [], expectedPlanRevision, deploymentVerified = false, verificationSummary = "",
-    conflictsResolved = false,
+    conflictsResolved = false, reconcileOnly = false,
   } = {}) {
     if (deploymentVerified !== true || !String(verificationSummary ?? "").trim()) {
       throw new Error("release completion requires verified deployment evidence");
     }
     return this.releasePreflight.withAwaitTransition(workspaceId, async () => {
+      const requestedRevision = requiredPlanRevision(expectedPlanRevision);
+      const completedOutcome = await this.store.releaseFinalizationOutcome(workspaceId, requestedRevision);
+      if (completedOutcome) {
+        assertFinalizationRepositories(expectedRepositories, completedOutcome.repositories);
+        return { workspaceId: String(workspaceId), releaseAlreadyCompleted: true,
+          recoveredPlanRevision: requestedRevision,
+          finalization: { status: "completed", planRevision: requestedRevision },
+          preReleaseIntegration: { status: "already_completed" } };
+      }
       const pending = await this.store.awaitRebuildPending(workspaceId);
       if (pending) {
-        let preReleaseIntegration;
-        try {
-          preReleaseIntegration = await this.releasePreflight.prepareAwaitSet({
-            workspaceId,
-            fallbackProjectRoots: pending.fallbackProjectRoots,
-          });
-          await this.store.clearAwaitRebuildPending(workspaceId);
-        } catch (error) {
-          preReleaseIntegration = {
-            status: "retry_required",
-            planRevision: pending.planRevision,
-            reason: error.message,
-          };
+        if (pending.planRevision !== requiredPlanRevision(expectedPlanRevision)) {
+          throw new Error("pending release finalization belongs to another plan revision");
         }
+        if (pending.version === 2) assertFinalizationRepositories(expectedRepositories, pending.repositories);
         return {
           workspaceId: String(workspaceId),
           releaseAlreadyCompleted: true,
           recoveredPlanRevision: pending.planRevision,
-          preReleaseIntegration,
+          ...await this.finalizeRelease(workspaceId, pending),
         };
       }
 
+      if (reconcileOnly) throw new Error("no durable release finalization evidence for interrupted command");
       const plan = await this.releasePlanner.plan(workspaceId);
       const requestedPlanRevision = requiredPlanRevision(expectedPlanRevision);
       if (plan.revision !== requestedPlanRevision) {
@@ -120,53 +131,105 @@ export class WorkspaceReleaseService {
         awaitRebuild: {
           planRevision: plan.revision,
           fallbackProjectRoots,
+          version: 2,
+          repositories: publication.repositories.map((repository) => ({
+            projectRoot: repository.root,
+            publishedRevision: repository.revision,
+            primary: null,
+            dev: null,
+          })),
+          awaitResult: null,
         },
       });
-      publication.primarySynchronization = [];
-      for (const repository of publication.repositories) {
-        try {
-          publication.primarySynchronization.push(await this.releaseGitWorkspaces.synchronizePublishedPrimary({
-            projectRoot: repository.root,
-            publishedRevision: repository.revision,
-            planRevision: plan.revision,
-          }));
-        } catch (error) {
-          publication.primarySynchronization.push({
-            status: "manual_required", projectRoot: repository.root, reason: error.message,
-          });
+      const finalization = await this.finalizeRelease(
+        workspaceId, await this.store.awaitRebuildPending(workspaceId),
+      );
+      Object.assign(publication, finalization.publication);
+      return { ...completed, ...finalization, publication };
+    }).catch(async (error) => {
+      // A definitive command result can authorize another finalization attempt.
+      // Only the durable post-closure marker proves that no fresh closure will
+      // be repeated; pre-closure or unproven failures keep their original error.
+      const pending = await Promise.resolve().then(() => this.store.awaitRebuildPending(workspaceId)).catch(() => null);
+      if (pending?.version !== 2 || pending.planRevision !== expectedPlanRevision) throw error;
+      assertFinalizationRepositories(expectedRepositories, pending.repositories);
+      return { workspaceId: String(workspaceId), releaseAlreadyCompleted: true,
+        recoveredPlanRevision: pending.planRevision,
+        finalization: { status: "retry_required", planRevision: pending.planRevision, reason: error.message } };
+    });
+  }
+
+  async finalizeRelease(workspaceId, pending) {
+    if (!pending) throw new Error("durable release finalization is missing");
+    const publication = { primarySynchronization: [], devSynchronization: [] };
+    let synchronizationPending = false;
+    // Pre-v2 markers contain no exact published revisions. Recover only their
+    // original Await action; never guess revisions from today's moving refs.
+    const legacy = pending.version !== 2;
+    if (!legacy) {
+      for (const repository of pending.repositories) {
+        for (const stage of ["primary", "dev"]) {
+          let receipt = repository[stage];
+          if (!receipt?.completed) {
+            let result;
+            try {
+              result = stage === "primary"
+                ? await this.releaseGitWorkspaces.synchronizePublishedPrimary({
+                    projectRoot: repository.projectRoot,
+                    publishedRevision: repository.publishedRevision,
+                    planRevision: pending.planRevision,
+                  })
+                : await this.taskGitWorkspaces.synchronizeMainIntoDev({
+                    projectRoot: repository.projectRoot,
+                    publishedRevision: repository.publishedRevision,
+                  });
+            } catch (error) {
+              result = { status: "manual_required", projectRoot: repository.projectRoot, reason: error.message };
+            }
+            const completed = stage === "primary"
+              ? ["already_current", "fast_forwarded"].includes(result?.status)
+              : result?.integrated === true;
+            receipt = { completed, result };
+            // The Git owners reconcile repeated effects with the same exact
+            // revision if a process dies before this durable acknowledgment.
+            await this.store.recordReleaseFinalizationStage(workspaceId, {
+              planRevision: pending.planRevision, stage,
+              projectRoot: repository.projectRoot, receipt,
+            });
+          }
+          publication[stage === "primary" ? "primarySynchronization" : "devSynchronization"].push(receipt.result);
+          if (!receipt.completed) synchronizationPending = true;
         }
       }
-      publication.devSynchronization = [];
-      for (const repository of publication.repositories) {
-        try {
-          publication.devSynchronization.push(await this.taskGitWorkspaces.synchronizeMainIntoDev({
-            projectRoot: repository.root,
-            publishedRevision: repository.revision,
-          }));
-        } catch (error) {
-          publication.devSynchronization.push({
-            status: "manual_required",
-            integrated: false,
-            projectRoot: repository.root,
-            reason: error.message,
-          });
-        }
-      }
-      let preReleaseIntegration;
+    }
+    let preReleaseIntegration = pending.awaitResult?.completed ? pending.awaitResult.result : null;
+    if (!preReleaseIntegration) {
       try {
         preReleaseIntegration = await this.releasePreflight.prepareAwaitSet({
           workspaceId,
-          fallbackProjectRoots,
+          fallbackProjectRoots: pending.fallbackProjectRoots,
         });
-        await this.store.clearAwaitRebuildPending(workspaceId);
       } catch (error) {
-        preReleaseIntegration = {
-          status: "retry_required",
-          planRevision: plan.revision,
-          reason: error.message,
-        };
+        preReleaseIntegration = { status: "retry_required", planRevision: pending.planRevision, reason: error.message };
       }
-      return { ...completed, publication, preReleaseIntegration };
-    });
+      if (!legacy) {
+        await this.store.recordReleaseFinalizationStage(workspaceId, {
+          planRevision: pending.planRevision, stage: "await",
+          receipt: { completed: preReleaseIntegration.status !== "retry_required", result: preReleaseIntegration },
+        });
+      }
+    }
+    const complete = !synchronizationPending && preReleaseIntegration.status !== "retry_required";
+    if (complete) await this.store.clearAwaitRebuildPending(workspaceId, pending.planRevision);
+    return {
+      publication,
+      preReleaseIntegration,
+      finalization: {
+        status: complete ? "completed" : "retry_required",
+        planRevision: pending.planRevision,
+        ...(legacy ? { synchronization: "legacy_evidence_unavailable" } : {}),
+      },
+    };
   }
+
 }

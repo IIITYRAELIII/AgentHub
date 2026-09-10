@@ -113,6 +113,16 @@
   without a locator keep the annotation-card jump and are never backfilled by
   text, time or display order.
 
+User-selected quote text has no independent length cap. Selection, composer
+draft persistence, submission and history retain the complete selected text;
+they cannot reject a valid source range or truncate its quote at 400 or 4,000
+characters. Existing message/transport and draft-storage bounds still apply to
+the complete payload. Source identity, UTF-16 offset validity and all three hash
+checks remain mandatory; removing the quote cap does not loosen source matching.
+Long composer quote previews scroll within a visual height bound and remain
+keyboard-accessible, keeping the quote comment and send controls in view without
+shortening stored or submitted text.
+
 ## Canonical reducer
 
 The client projection has one reducer. User submissions are keyed by the alias

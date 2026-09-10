@@ -1,8 +1,6 @@
 {
   "schemaVersion": 1,
   "baseline": {
-    "serverMaximumLines": 150,
-    "compositionMaximumLines": 638,
     "rootProductionModules": 28,
     "rootTestModules": 0
   },

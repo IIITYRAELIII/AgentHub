@@ -151,6 +151,7 @@ export class WorkspaceReleasePreflightService {
       });
       releaseCandidates.push(await this.releaseGitWorkspaces.prepareCandidate({
         planRevision: plan.revision,
+        workspaceId,
         projectRoot: repository.projectRoot,
         frozenTasks: evidence.tasks,
         validateBeforeCommit: async () => {
@@ -288,6 +289,7 @@ export class WorkspaceReleasePreflightService {
       });
       releaseCandidates.push(await this.releaseGitWorkspaces.prepareCandidate({
         planRevision: plan.revision,
+        workspaceId,
         projectRoot: repository.projectRoot,
         frozenTasks: evidence.tasks,
         approvedBaseCommit: mainAudits.find((audit) => (

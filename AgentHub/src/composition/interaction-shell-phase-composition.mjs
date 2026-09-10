@@ -180,6 +180,8 @@ export function createInteractionShellPhase({
       workLogUsageStore: infrastructure.workLogUsageStore,
       workLogUsageRemoteConfigStore: infrastructure.workLogUsageRemoteConfigStore,
       workspaceCatalogStore: infrastructure.workspaceCatalogStore,
+      taskReleasePlanner: infrastructure.taskReleasePlanner,
+      workspaceReleaseService: infrastructure.workspaceReleaseService,
       streamHandoff: infrastructure.streamHandoff,
       runtimeStateStore,
       taskBoard: infrastructure.taskBoard,

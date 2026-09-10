@@ -230,6 +230,19 @@ edits, and writing one aggregate commit. `dev` is never merged into
 `PreRelease`; Test-only work cannot enter a release through a broad Task
 snapshot.
 
+A Task with repeated integrations may use a net delta from its latest shared
+main ancestor to its accepted result only after bounded Git ancestry proof.
+Unpublished commits must belong to that Task's first-parent lineage or its
+exact canonical integrations; intervening merge wrappers must reproduce the
+automatic parent merge exactly. Unknown or foreign unpublished contributions
+cannot become release content through a Task's merge of dev. Net projection is
+not used where its affected paths overlap another selected Task's effective
+delta: those Tasks retain chronological effective-delta composition and its
+existing conflict evidence. Unavailable or over-budget proof selects that same
+existing composition, never an unchecked result snapshot. This permits a later
+Task resolution against published main to replace its obsolete intermediate
+conflicts without widening ownership. See ADR-0034.
+
 At explicit release start, Architect reads and selects the exact ready Await
 set. Before choosing the base, Agent Hub fetches without pull/merge/rebase and
 reports every local unpublished or remote main change since the last published
@@ -247,7 +260,13 @@ manifest hash and standalone candidate head. Later Await Tasks are not silently
 added. Only a Stream with `settings.architect=true` may record verified release
 completion.
 
-The frozen candidate remains immutable. If an included Task changes, is
+Prepared Await materialization precedes publication freeze. Freeze binds the
+consolidated root CHANGELOG to the exact prepared aggregate and plan, using the
+same release repository owner and lock. It may change only that CHANGELOG,
+records durable freeze intent before promoting the clone's main reference,
+and resumes the identical target after interruption. Source edits or mismatched
+plan/head/content fail closed. The registered primary is never the promotion
+target. The frozen candidate remains immutable. If an included Task changes, is
 withdrawn or is excluded before completion, its Task revision or Git reference
 changes and completion CAS fails. Architect must explicitly rebuild and
 refreeze the release before it can complete; acceptance changes never mutate an
@@ -255,7 +274,9 @@ already frozen candidate.
 
 Completion performs one transaction that CAS-checks every exact Task revision
 and the plan hash, then changes only those Tasks to `done` and persists a
-remaining-Await rebuild marker in the same commit.
+versioned finalization marker in the same commit. That marker binds the exact
+plan and published repository revisions to primary synchronization, dev
+synchronization and remaining-Await rebuild receipts.
 Generic `done` and
 `hub_task_complete` do not create production evidence.
 
@@ -269,9 +290,49 @@ and their managed branches and worktrees may be removed. Published `main` is
 incorporated into `dev` without discarding later Test work. Remaining Await
 Tasks stay accepted and mutable `PreRelease` is immediately rebuilt for the next
 explicit release. If that rematerialization fails, the caller receives
-`retry_required`; a repeated completion request retries only the pending
-rebuild, never publication verification or Task completion, and clears the
-marker only after successful installation.
+`retry_required`; a repeated completion request resumes only unfinished
+synchronization/rebuild stages, never Task closure. Each successful stage
+persists its receipt through a short canonical mutation before the next stage.
+The active marker clears only after all stages have confirmed success.
+The last 16 completed exact-plan outcomes remain canonical evidence for lost-response
+replay; transport acknowledgment is not permission to forget release completion.
+Interrupted Desktop completion reconciles only an existing pending or completed
+outcome, never starts fresh Task closure. Legacy Await-only markers cannot prove
+primary/dev synchronization: recovery explicitly reports unavailable legacy
+evidence and resumes their original rebuild scope.
+
+The publication executor consumes the frozen manifest; it does not select Tasks
+or infer approval. Its durable journal retains exact candidate, validation mode,
+run ID, stage results, expected installed release, publication generation and
+completion command identity. Before deployment, even after a saved Git success,
+it rechecks the approved origin base and frozen plan. Push uses the exact
+candidate revision and exact origin lease with an ancestry guard; observing the
+same candidate on origin reconciles a lost push response without another push.
+The first automated adapter supports one exact repository; multiple repositories
+fail before publication rather than receiving partial completion evidence.
+
+Deferred restart and `--skip-restart` with an unready runtime are
+`awaiting_restart`, not success. Publication-state is recorded only after
+required exact runtime readiness. Pending finalization stays recoverable and
+retains checkpoints. A ready replacement resumes only readiness, publication
+recording and canonical completion under the publication lock, without build,
+deploy, push or restart; startup readiness does not wait for that work.
+Only completed Workspace finalization yields `succeeded`. A low-level publisher
+without a Workspace adapter yields `published` and does not claim Task closure.
+
+Validation is explicit and persisted: full, focused by affected surface, or a
+user-authorized quick mode without the test gate. All modes retain publication
+identity and readiness checks. Unknown paths expand the publication scope but
+cannot override an explicit quick choice; focused mode retains full validation
+for unknown paths. Full validation runs candidate smoke first.
+Successful test files are reused only with the same proven input fingerprint;
+opaque dynamic inputs without an explicit declaration are uncached. The v2 cache
+survives successful suites/publication, with 30-day and 2000-result bounds; legacy
+or proofless entries are not evidence. A failed file has no unconditional retry.
+The full-test stage has a two-hour wall-clock and ten-minute output-idle bound.
+These timeouts report failure, not an inferred external outcome. The two cosmetic
+browser matrices run in `test:visual`, affected focused UI validation and full
+validation exactly once, rather than every ordinary unit run. See ADR-0034.
 
 Verified release completion invokes the same Task Git owner with each exact
 published repository revision. The returned `devSynchronization` evidence
@@ -380,6 +441,26 @@ confirmed mutation.
 built-in workflow rules. Architect authority is only
 `stream.settings.architect === true`; multiple Architect Streams are allowed.
 
+Both checkbox-generated policy blocks explicitly permit a user's instructions
+for the current work to override conflicting workflow requirements, including
+Task creation, validation scope and publication sequence. Only an explicit
+request establishes an exception; urgency or frustration does not. The agent
+must preserve its agreed scope in continuation and rotation context until that
+work is completed or the user changes it, without extending it to later work.
+This delegates workflow choices only: system instructions, safety/security,
+unrelated developer instructions, tool authorization and integrity checks still
+apply, and skipped checks and publication state must be reported accurately.
+The default Task and release requirements below apply absent that exception.
+This is prompt policy, not a new persisted authorization owner or a bypass of
+the server transitions and evidence checks defined in this contract.
+
+Composition recognizes the exact former Workspace V6 and Architect V1 generated
+prefixes and replaces them with the current templates without duplication.
+Authored variations are preserved, not identified by headings or fuzzy matching.
+The editable Workspace projection also removes the exact V6 prefix. These
+compatibility entries may be removed only when supported stored rules can no
+longer contain those generated versions. Existing custom text is not rewritten.
+
 When that setting is false or absent, every Task workflow status, including
 Test, Await and Done, is an ordinary database transition through the same
 Task lifecycle owner. It keeps row-revision CAS, durable operation outcomes,
@@ -401,7 +482,7 @@ Task. Initial review may use any suitable independent Workspace Stream. After
 a `RETURN`, the corrected exact result goes back to the same reviewer, and that
 `RETURN` remains open until that reviewer confirms the correction.
 
-The built-in rules require a Task for every change to a repository,
+By default, the built-in rules require a Task for every change to a repository,
 configuration, data, documentation or another deliverable. Read-only diagnosis,
 explanations and answers do not create Tasks. If diagnosis becomes
 implementation, claim a Task before the first change and continue only in its
@@ -411,6 +492,19 @@ historical provider Thread.
 
 Disabling release workflow changes only Workspace policy. It does not mutate or
 discard Tasks or historical publication evidence.
+
+## Bootstrap of the release-control wiring
+
+The canonical planner and completer must reach Desktop through both startup
+composition layers. A first update from an installation missing that wiring
+may explicitly supply a local MCP context bound to its exact published revision
+and Workspace. Only `Task release plan is unavailable` permits a live call to
+the existing `hub_release_plan_get`; its canonical dev preparation remains in
+force. A cached plan is never a substitute. Other errors, Git publication and
+finalization never fall back to MCP through this bridge. The context capability
+is not part of durable publication identity or logs. Delete the local context
+after the first update; retire this compatibility bridge when the old wiring is
+outside the supported migration range.
 
 ## Legacy cutover
 

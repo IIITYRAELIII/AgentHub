@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "files": {
+    "tests/public/composer-production-wiring.test.mjs": {
+      "inputs": ["assets/web-app", "work-log.css"],
+      "packages": ["playwright", "playwright-core"],
+      "browser": true
+    },
+    "tests/public/card-layout-dom.test.mjs": {
+      "inputs": ["assets/web-app", "work-log.css"],
+      "packages": ["playwright", "playwright-core"],
+      "browser": true
+    },
+    "tests/public/long-response-quotes.test.mjs": {
+      "inputs": ["assets/web-app", "work-log.css"],
+      "packages": ["playwright", "playwright-core"],
+      "browser": true
+    }
+  }
+}

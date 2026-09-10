@@ -7,6 +7,8 @@ import { callDesktopControl, readDesktopControlEndpoint } from "./desktop-contro
 import { ensureWrangler } from "./wrangler-runner.mjs";
 import { defaultRuntimeRoot } from "./src/infrastructure/filesystem/runtime-layout.mjs";
 import { publicationRuntimeStatus, startInstalledPublicationRuntime } from "./src/runtime/runtime-publication-start.mjs";
+import { waitForRuntimeReplacement } from "./src/runtime/publication-readiness.mjs";
+export { waitForRuntimeReplacement } from "./src/runtime/publication-readiness.mjs";
 import { prepareCommittedAgentHubReleaseVersion } from "./src/infrastructure/filesystem/release-version.mjs";
 import { assertReleaseCloneForPublication } from "./src/infrastructure/filesystem/release-git-workspace.mjs";
 import {
@@ -14,6 +16,7 @@ import {
   runPublicationSteps,
 } from "./src/infrastructure/persistence/publication-checkpoint.mjs";
 import { publicationRunStore } from "./src/infrastructure/persistence/publication-run-store.mjs";
+import { completePublication } from "./src/infrastructure/persistence/publication-completion.mjs";
 import { withPublicationLock } from "./src/infrastructure/process/publication-lock.mjs";
 import { stopProcessTree } from "./src/infrastructure/process/process-tree.mjs";
 import {
@@ -27,7 +30,10 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(ROOT, "..");
 const python = process.platform === "win32" ? "python.exe" : "python3";
 const DEFAULT_STEP_TIMEOUT_MS = 15 * 60 * 1_000;
-const RESTART_READINESS_TIMEOUT_MS = 90_000;
+export const FULL_TEST_BUDGET = Object.freeze({
+  timeoutMs: 2 * 60 * 60 * 1_000,
+  idleTimeoutMs: 10 * 60 * 1_000,
+});
 const RESTART_REQUEST_TIMEOUT_MS = 30_000;
 
 export function npmStep(label, args) {
@@ -56,6 +62,7 @@ export function publicationSteps({
     ...(!skipTests ? [
       {
         ...npmStep("Полные тесты Agent Hub", ["run", "test:all"]),
+        ...FULL_TEST_BUDGET,
         ...(fullTestCheckpointId ? {
           env: {
             AGENT_HUB_FULL_TEST_CHECKPOINT_ID: fullTestCheckpointId,
@@ -92,15 +99,21 @@ export function runStep({
   args,
   env = {},
   timeoutMs = DEFAULT_STEP_TIMEOUT_MS,
+  idleTimeoutMs = 0,
   logFile = "",
 }, {
   spawnImpl = spawn,
   stopTree = stopProcessTree,
+  schedule = setTimeout,
+  unschedule = clearTimeout,
 } = {}) {
   const startedAt = Date.now();
   console.log(`\n==> ${label}`);
   return new Promise((resolve, reject) => {
     let settled = false;
+    let stopping = false;
+    let timer = null;
+    let idleTimer = null;
     const log = logFile ? (() => {
       mkdirSync(path.dirname(logFile), { recursive: true });
       const stream = createWriteStream(logFile, { flags: "a" });
@@ -111,33 +124,48 @@ export function runStep({
       cwd: ROOT,
       env: { ...process.env, ...env, PYTHONUTF8: "1" },
       shell: false,
-      stdio: log ? ["inherit", "pipe", "pipe"] : "inherit",
+      stdio: log || idleTimeoutMs ? ["inherit", "pipe", "pipe"] : "inherit",
       windowsHide: true,
       detached: process.platform !== "win32",
-    });
-    child.stdout?.on("data", (chunk) => {
-      process.stdout.write(chunk);
-      log.write(chunk);
-    });
-    child.stderr?.on("data", (chunk) => {
-      process.stderr.write(chunk);
-      log.write(chunk);
     });
     const finish = (operation, value) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      unschedule(timer);
+      unschedule(idleTimer);
       log?.end();
       operation(value);
     };
-    const timer = setTimeout(() => {
+    const stop = (reason) => {
+      if (settled || stopping) return;
+      stopping = true;
       void Promise.resolve(child.pid ? stopTree(child.pid) : false)
+        .then((stopped) => { if (stopped === false) child.kill?.("SIGKILL"); })
         .catch(() => child.kill?.("SIGKILL"))
-        .finally(() => finish(reject, new Error(`${label}: превышен таймаут ${timeoutMs} мс`)));
-    }, timeoutMs);
+        .finally(() => finish(reject, new Error(`${label}: ${reason}`)));
+    };
+    const progress = () => {
+      if (!idleTimeoutMs || settled || stopping) return;
+      unschedule(idleTimer);
+      idleTimer = schedule(() => stop(`нет вывода ${idleTimeoutMs} мс; проверьте последний тест в журнале`), idleTimeoutMs);
+      idleTimer.unref?.();
+    };
+    child.stdout?.on("data", (chunk) => {
+      process.stdout.write(chunk);
+      log?.write(chunk);
+      progress();
+    });
+    child.stderr?.on("data", (chunk) => {
+      process.stderr.write(chunk);
+      log?.write(chunk);
+      progress();
+    });
+    timer = schedule(() => stop(`превышен таймаут ${timeoutMs} мс`), timeoutMs);
     timer.unref?.();
+    progress();
     child.once("error", (error) => finish(reject, error));
     child.once("exit", (code, signal) => {
+      if (stopping) return;
       if (code === 0) {
         const completed = `<== ${label}: ${((Date.now() - startedAt) / 1_000).toFixed(1)} с`;
         console.log(completed);
@@ -151,42 +179,6 @@ export function runStep({
       }
     });
   });
-}
-
-export async function waitForRuntimeReplacement({
-  previousEndpointId = null,
-  runtimeRoot = defaultRuntimeRoot(),
-  expectedReleaseId,
-  timeoutMs = RESTART_READINESS_TIMEOUT_MS,
-  readEndpoint = readDesktopControlEndpoint,
-  readStatus = publicationRuntimeStatus,
-  probe = callDesktopControl,
-  delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
-  now = Date.now,
-} = {}) {
-  if (!expectedReleaseId) throw new Error("Expected publication release is required for readiness verification");
-  const deadline = now() + timeoutMs;
-  let lastError = null;
-  while (now() < deadline) {
-    try {
-      const endpoint = await readEndpoint(runtimeRoot);
-      if (!previousEndpointId || endpoint.endpointId !== previousEndpointId) {
-        const snapshot = await probe("snapshot", {}, { runtimeRoot, timeoutMs: Math.min(10_000, timeoutMs) });
-        const status = await readStatus({ runtimeRoot });
-        if (status.current !== expectedReleaseId || status.runningRelease !== expectedReleaseId
-          || status.running !== true || status.ready !== true
-          || snapshot?.server?.process?.releaseId !== expectedReleaseId
-          || snapshot?.server?.process?.pid !== status.pid) {
-          throw new Error(`Expected ready runtime ${expectedReleaseId}; current=${status.current}, running=${status.runningRelease}`);
-        }
-        return endpoint;
-      }
-    } catch (error) {
-      lastError = error;
-    }
-    await delay(250);
-  }
-  throw new Error(`Agent Hub Runtime не подтвердил готовность после перезапуска: ${lastError?.message ?? "timeout"}`);
 }
 
 export async function restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot, {
@@ -254,34 +246,30 @@ export async function publishAll(args = process.argv.slice(2), {
       ...options,
       fullTestCheckpointId: head ? `full:${head}` : "",
     });
+    const identity = {
+      mode: "full", revision: head, worktreeRoot: REPOSITORY_ROOT, runtimeRoot,
+      validationMode: options.skipTests ? "quick" : "full",
+      labels: steps.map((step) => step.label),
+    };
     try {
       await runPublicationSteps(steps, {
         run,
         checkpoint,
-        identity: {
-          mode: "full",
-          revision: head,
-          worktreeRoot: REPOSITORY_ROOT,
-          runtimeRoot,
-          labels: steps.map((step) => step.label),
-        },
+        identity,
         journal,
       });
-      if (!options.skipRestart) {
-        console.log("\n==> Запрос безопасного перезапуска Agent Hub");
-        const result = await restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot, { readStatus: readRuntimeStatus });
-        console.log(result?.deferred
-          ? `${result?.message ?? "Перезапуск запрошен"}. Готовность подтвердится после завершения активного хода.`
-          : result?.message ?? "Перезапуск запрошен");
-      }
-      await record();
-      if (checkpoint) await checkpoint.clear();
-      await journal?.finish("succeeded");
+      const completion = await completePublication({
+        identity, publicationState: { revision: head, mode: "full", validationMode: identity.validationMode },
+        journal, checkpoint, needsRestart: true, skipRestart: options.skipRestart,
+        readRuntimeStatus, verifyRestart, writeState: record,
+        requestRestart: (verification) => restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot, verification),
+      });
+      console.log(`\nПубликация: ${completion.status}.`);
+      return completion;
     } catch (error) {
       await journal?.finish("failed", error);
       throw error;
     }
-    console.log("\nПубликация завершена. Интерфейс VS Code подхватит runtime после переоткрытия панели или команды «Обновить Agent Hub»; Reload Window нужен только при изменении моста расширения.");
   });
 }
 

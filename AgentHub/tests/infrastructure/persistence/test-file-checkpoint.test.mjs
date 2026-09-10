@@ -42,7 +42,7 @@ test("test files report every failure and resume only failed files", async () =>
   assert.deepEqual(resumedRun, ["b.test.mjs"]);
 });
 
-test("a different release identity starts the suite from the beginning", async () => {
+test("a different release identity preserves content-proven successful files", async () => {
   const checkpoint = memoryCheckpoint();
   await runCheckpointedTestFiles(["a.test.mjs", "b.test.mjs"], {
     suite: "unit",
@@ -59,7 +59,32 @@ test("a different release identity starts the suite from the beginning", async (
     run: async (file) => files.push(file),
   });
 
-  assert.deepEqual(files, ["a.test.mjs", "b.test.mjs"]);
+  assert.deepEqual(files, []);
+});
+
+test("unknown inputs rerun and legacy checkpoints cannot supply success", async () => {
+  const checkpoint = memoryCheckpoint();
+  await checkpoint.write({ identity: "release", suites: { unit: { completedFingerprints: { "a": "unchanged" } } } });
+  let calls = 0;
+  const options = { suite: "unit", identity: "release", checkpoint, run: async () => { calls += 1; }, log: () => {} };
+  await runCheckpointedTestFiles(["a"], options);
+  assert.equal(calls, 1);
+  await runCheckpointedTestFiles(["a"], { ...options, fingerprint: async () => null });
+  await runCheckpointedTestFiles(["a"], { ...options, fingerprint: async () => null });
+  assert.equal(calls, 3);
+  assert.deepEqual(checkpoint.value().suites.unit.completedFingerprints, {});
+});
+
+test("successful evidence expires and the retained entry count stays bounded", async () => {
+  const checkpoint = memoryCheckpoint();
+  let clock = 100;
+  const options = { suite: "unit", identity: "release", checkpoint, run: async () => { clock += 1; }, now: () => clock, retentionMs: 10, maxEntries: 2, log: () => {} };
+  await runCheckpointedTestFiles(["a", "b", "c"], options);
+  assert.deepEqual(Object.keys(checkpoint.value().suites.unit.completedFingerprints), ["b", "c"]);
+  clock += 11;
+  const runs = [];
+  await runCheckpointedTestFiles(["b", "c"], { ...options, run: async (file) => runs.push(file) });
+  assert.deepEqual(runs, ["b", "c"]);
 });
 
 test("suite manifests are checkpointed independently", async () => {

@@ -186,7 +186,7 @@ test("publication skips optional test contour when the component is disabled", a
   assert.ok(events.indexOf("Полные тесты Agent Hub") < events.indexOf("Сборка Agent Hub Mobile"));
 });
 
-test("full publication does not wait on the release turn that blocks its safe restart", async () => {
+test("full publication remains pending when the release turn blocks its safe restart", async () => {
   const events = [];
   await publishAll(["--skip-tests", "--skip-worker"], {
     prepareVersion: async () => events.push("release-version"),
@@ -200,7 +200,8 @@ test("full publication does not wait on the release turn that blocks its safe re
     record: async () => events.push("record-publication"),
   });
   assert.equal(events[0], "release-version");
-  assert.deepEqual(events.slice(-2), ["restart-server", "record-publication"]);
+  assert.equal(events.at(-1), "restart-server");
+  assert.equal(events.includes("record-publication"), false);
 });
 
 test("publication stage timeout terminates the complete process tree", async () => {
@@ -330,6 +331,9 @@ test("selective publication maps shared UI to runtime, Worker and surface tests"
     skipRestart: true,
     fullTests: true,
     testContour: false,
+    quick: false,
+    resume: false,
+    workspaceId: "",
   });
   assert.equal(parseChangedArguments(["--test-contour"]).testContour, true);
 });
@@ -409,7 +413,7 @@ test("selective publication records the exact published revision", async () => {
   let written = null;
   const result = await publishChanged(["--from", "base", "--skip-restart"], {
     run: async (step) => steps.push(step),
-    readRuntimeStatus: async () => ({ current: "release-new", running: true }),
+    readRuntimeStatus: async () => ({ current: "release-new", running: true, runningRelease: "release-new", ready: true }),
     restart: async () => assert.fail("restart must be skipped"),
     readState: async () => null,
     writeState: async (value) => { written = value; },
@@ -422,6 +426,7 @@ test("selective publication records the exact published revision", async () => {
   assert.deepEqual(steps.map((step) => step.label), [
     "Проверка синтаксиса Agent Hub",
     "Unit-тесты Agent Hub",
+    "Визуальные матрицы UI Agent Hub",
     "Межповерхностные E2E Agent Hub",
     "Тесты расширения VS Code",
     "Сборка runtime-релиза",
@@ -487,7 +492,7 @@ test("selective backend publication records state after verified restart", async
   assert.ok(events.indexOf("restart-server") < events.indexOf("record-publication"));
 });
 
-test("selective backend publication records an already queued safe restart without waiting", async () => {
+test("selective backend publication leaves an already queued safe restart pending", async () => {
   const events = [];
   await publishChanged(["--from", "base"], {
     run: async (step) => events.push(step.label),
@@ -502,7 +507,8 @@ test("selective backend publication records an already queued safe restart witho
     revision: async () => "head",
     diff: async () => ["AgentHub/src/interfaces/web/mini-app-server.mjs"],
   });
-  assert.deepEqual(events.slice(-2), ["restart-server", "record-publication"]);
+  assert.equal(events.at(-1), "restart-server");
+  assert.equal(events.includes("record-publication"), false);
 });
 
 test("every validation failure stops publication before deployment", async () => {
@@ -668,7 +674,8 @@ test("selective publication resumes after the last successful stage", async () =
     "Проверка Mini App Worker",
     "Активация runtime-релиза",
   ]);
-  assert.equal(savedCheckpoint, null);
+  assert.equal(savedCheckpoint.identity.revision, "head");
+  assert.ok(savedCheckpoint.completedLabels.includes("Активация runtime-релиза"));
 });
 
 test("selective publication prepares the committed product version before validation", async () => {
