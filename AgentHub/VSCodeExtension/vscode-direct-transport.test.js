@@ -145,3 +145,43 @@ test("VS Code HTTP and IPC hedges share clientUserMessageId while keeping correl
   });
   assert.equal(JSON.parse(fetched[1].options.body).commandId, "client-message-1");
 });
+
+test("VS Code chunk upload preserves raw Blob and cancellation through authenticated loopback HTTP", async () => {
+  const posted = [];
+  const fetched = [];
+  const listeners = new Map();
+  const window = {
+    acquireVsCodeApi: () => ({ postMessage: (message) => posted.push(message) }),
+    addEventListener: (name, listener) => listeners.set(name, listener),
+    clearTimeout, setTimeout,
+    fetch: async (url, options) => { fetched.push({ url, options }); return new Response("{}"); },
+    location: { href: "vscode-webview://agent-hub/index.html" },
+    requestAnimationFrame: () => 1,
+  };
+  vm.runInNewContext(bootstrap, {
+    AbortSignal, console, Headers, Proxy, Reflect, Response, URL, window,
+    document: { addEventListener() {}, body: {}, getAnimations: () => [], hidden: false },
+    MutationObserver: class { observe() {} disconnect() {} },
+  });
+  const session = posted.find((message) => message.type === "agenthub:session");
+  listeners.get("message")({ data: {
+    type: "agenthub:session-result", id: session.id, ok: true,
+    result: { baseUrl: "http://127.0.0.1:8787", token: "fixture-session", expiresAt: Date.now() + 60_000 },
+  } });
+  assert.equal(await window.__agentHubDirectTransport.available(), true);
+  const body = new Blob([new Uint8Array(1024 * 1024)]);
+  const controller = new AbortController();
+  await window.fetch("/api/attachment-upload?id=stable-id&index=0", {
+    method: "PUT", body, signal: controller.signal,
+    headers: { "X-Agent-Hub-Chunk-Sha256": "a".repeat(64) },
+  });
+  assert.equal(fetched.length, 1);
+  assert.equal(fetched[0].url, "http://127.0.0.1:8787/api/attachment-upload?id=stable-id&index=0");
+  assert.equal(fetched[0].options.body, body);
+  assert.equal(fetched[0].options.signal, controller.signal);
+  assert.equal(new Headers(fetched[0].options.headers).get("Authorization"), "webview fixture-session");
+  assert.equal(new Headers(fetched[0].options.headers).get("X-Agent-Hub-Chunk-Sha256"), "a".repeat(64));
+  controller.abort();
+  assert.equal(fetched[0].options.signal.aborted, true);
+  assert.equal(posted.some((message) => message.action === "upload-attachment"), false);
+});

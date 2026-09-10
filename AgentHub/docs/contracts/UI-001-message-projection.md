@@ -248,7 +248,12 @@ as `unknown` while snapshot reconciliation is pending. Only an authoritative
 rejection without durable receipt, deferred-input or run evidence may restore
 the submitted payload. Such a restored draft persists its exact request
 identity, exact payload fingerprint and bounded local re-uploadable attachment
-bytes; temporary transport paths are never persisted or reused. On reload the
+bytes; temporary transport paths are never persisted or reused. A versioned
+Blob reference may instead bind byte length, immutable file metadata and the
+ordered SHA-256 part manifest in IndexedDB (MSG-002, ADR-0037). Its bytes must be
+durably written and verified before recovery is granted, and asynchronously
+hydrated and verified before the existing recovery epoch/fingerprint gate.
+A Promise is never interpreted as successful synchronous persistence. On reload the
 client reconstructs retry identity only when the complete recovered payload
 matches that fingerprint. Re-uploadable attachment evidence is accepted only
 after strict base64 decode/canonical round-trip, exact declared-byte-length and
