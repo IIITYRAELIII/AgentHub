@@ -242,8 +242,11 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   const newThreadMessage = await telegram.waitForText("Создан новый контекст Codex.", { after: mark });
   assert.equal(newThreadMessage.body.reply_markup.is_persistent, true,
     "plain replies must refresh the persistent control keyboard");
-  const secondThreadId = (await readJson(statePath)).threadIds.codex;
+  const secondThreadState = await readJson(statePath);
+  const secondThreadId = secondThreadState.threadIds.codex;
   assert.notEqual(secondThreadId, firstThreadId);
+  assert.equal((await readJson(codexStatePath)).threads
+    .find((thread) => thread.id === secondThreadId)?.name, "New Workspace — Поток 1");
 
   mark = telegram.calls.length;
   telegram.pushMessage("/streams");
@@ -320,11 +323,17 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   await telegram.waitForText("Режим Codex: Plan", { after: mark });
   await waitFor(async () => (await readJson(statePath)).codexCollaborationMode === "plan", "mode switch");
 
+  const beforeRenameState = await readJson(statePath);
   mark = telegram.calls.length;
   telegram.pushMessage("/rename E2E основная");
   await telegram.waitForText("Название закреплено: «E2E основная»", { after: mark });
   const renamedState = await readJson(statePath);
-  assert.equal(renamedState.activeThreadTitle.startsWith("Telegram ·"), true);
+  assert.equal(renamedState.activeThreadTitle, beforeRenameState.activeThreadTitle,
+    "renaming Telegram's selected Thread must retain the shared Desktop fallback title");
+  const renamedProviderThreads = (await readJson(codexStatePath)).threads;
+  assert.equal(renamedProviderThreads.find((thread) => thread.id === firstThreadId)?.name, "E2E основная");
+  assert.equal(renamedProviderThreads.find((thread) => thread.id === secondThreadId)?.name,
+    "New Workspace — Поток 1", "renaming another Thread must preserve the canonical Workspace/Stream name");
   assert.equal(
     renamedState.clientTaskSelections.find(([clientId]) => clientId === `telegram:${CHAT_ID}`)?.[1]?.taskTitle,
     "E2E основная",

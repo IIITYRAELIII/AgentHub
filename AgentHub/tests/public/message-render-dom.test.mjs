@@ -179,6 +179,17 @@ test("compaction without provider turn renders a system marker and unknown compl
     });
     assert.equal(await page.locator("[data-context-label]").textContent(), "запуск…");
     assert.equal(await page.locator("[data-chat-stop]:visible").count(), 0);
+    for (const [compacting, usagePending, expectedLabel] of [
+      [true, false, "свёртка…"],
+      [true, true, "свёртка…"],
+      [false, true, "обновление…"],
+    ]) {
+      await seedMessages(page, [], { ...preparation, maintenance: null,
+        context: { ...preparation.context, compacting, usagePending },
+      });
+      assert.equal(await page.locator("[data-context-label]").textContent(), expectedLabel);
+      assert.equal(await page.locator("[data-context-usage]").getAttribute("data-compacting"), compacting ? "" : null);
+    }
     await seedMessages(page, [], { ...preparation, maintenance: null });
     assert.equal(await page.locator("[data-context-label]").textContent(), "75% контекста");
     assert.equal(await page.locator("[data-chat-stop]:visible").count(), 0);

@@ -1984,7 +1984,8 @@ test("manual context compaction reports completion and stays on the fast refresh
   assert.match(client, /task\.running \|\| task\.context\?\.compacting \|\| task\.maintenance/u);
   assert.match(app, /message\.kind === "maintenance"/u);
   assert.match(styles, /\.msg-maintenance \.msg-body/u);
-  assert.match(app, /contextLabel\.textContent = context\.compacting[\s\S]*\? "свёртка…"[\s\S]*context\.usagePending \? "обновление…"/u);
+  // Context labels and the preparation/start/compaction/measurement transitions
+  // are verified through rendered DOM in message-render-dom.test.mjs.
   assert.match(app, /context\.compaction\?\.stage === "cleaning-images"/u);
   assert.match(app, /Удаляются дубликаты изображений/u);
   assert.match(app, /toggleAttribute\("data-compacting"/u);

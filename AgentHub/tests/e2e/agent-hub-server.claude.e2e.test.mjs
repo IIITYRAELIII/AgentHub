@@ -484,11 +484,16 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   await waitFor(async () => (await activeRuns()).length === 0,
     "reattached Claude turn delivered its final answer", 20_000);
   const journalTurn = await waitFor(async () => {
-    const ledger = await new JournalDatabase(journalDatabasePath).loadLedger().catch(() => null);
-    return Object.values(ledger?.turns ?? {}).find((turn) => (
-      turn.provider === "claude"
-      && String(turn.body ?? "").includes(secondPrompt)
-    )) ?? null;
+    const database = new JournalDatabase(journalDatabasePath);
+    try {
+      const ledger = await database.loadLedger().catch(() => null);
+      return Object.values(ledger?.turns ?? {}).find((turn) => (
+        turn.provider === "claude"
+        && String(turn.body ?? "").includes(secondPrompt)
+      )) ?? null;
+    } finally {
+      database.close();
+    }
   }, "Claude journal entry", 15_000);
   assert.equal(journalTurn.threadId, secondThreadId);
   assert.equal(journalTurn.estimatedCredits, 0.1);
