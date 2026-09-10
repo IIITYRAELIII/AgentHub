@@ -7,6 +7,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { runtimeHostCompilerCandidates } from "../../src/infrastructure/process/runtime-host-builder.mjs";
+import { runtimeSecretAclArguments, runtimeDirectoryAclArguments } from "../../src/infrastructure/filesystem/runtime-security.mjs";
 
 const execute = promisify(execFile);
 const root = path.resolve(import.meta.dirname, "..", "..");
@@ -32,6 +33,14 @@ test("compiled RuntimeHost reapplies isolated environment from persistent marker
   assert.equal(result.home, path.join(owned, "home"));
   assert.equal(result.codexHome, path.join(owned, "home", ".codex"));
   assert.equal(result.profile, "fake-codex");
+  const isolatedEnvironment = { USERNAME: result.userName, USERDOMAIN: result.userDomain };
+  assert.notEqual(result.userName, "synthetic-wrong-owner");
+  assert.ok(result.userName);
+  assert.deepEqual(runtimeSecretAclArguments(path.join(owned, "config.json"), isolatedEnvironment), [
+    path.join(owned, "config.json"), "/inheritance:r", "/grant:r",
+    `${result.windowsOwner}:(F)`, "*S-1-5-18:(F)", "*S-1-5-32-544:(F)",
+  ]);
+  assert.equal(runtimeDirectoryAclArguments(owned, isolatedEnvironment)[3], `${result.windowsOwner}:(OI)(CI)(F)`);
   // Simulate a fresh WMI environment: the marker, not inheritance from the first
   // run, must reproduce the same sandbox on a second independent invocation.
   assert.deepEqual(JSON.parse((await run()).stdout), result);

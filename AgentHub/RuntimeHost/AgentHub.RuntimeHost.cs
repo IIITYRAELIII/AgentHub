@@ -8,6 +8,7 @@ using System.Management;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -215,6 +216,16 @@ namespace AgentHub.RuntimeHost
             }
             start.EnvironmentVariables.Clear();
             foreach (KeyValuePair<string, string> entry in system) start.EnvironmentVariables[entry.Key] = entry.Value;
+            // ACL ownership is the actual process identity, independent of the
+            // isolated profile paths and of caller-provided identity variables.
+            using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+            {
+                string owner = identity.Name;
+                if (String.IsNullOrWhiteSpace(owner)) throw new InvalidOperationException("Acceptance runtime has no Windows owner identity");
+                int separator = owner.LastIndexOf('\\');
+                start.EnvironmentVariables["USERDOMAIN"] = separator >= 0 ? owner.Substring(0, separator) : "";
+                start.EnvironmentVariables["USERNAME"] = separator >= 0 ? owner.Substring(separator + 1) : owner;
+            }
             string home = Path.Combine(runtimeRoot, "home");
             string temporary = Path.Combine(runtimeRoot, "temp");
             Directory.CreateDirectory(home);

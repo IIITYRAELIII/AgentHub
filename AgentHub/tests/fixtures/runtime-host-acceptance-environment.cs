@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Reflection;
+using System.Security.Principal;
 using System.Threading;
 using System.Web.Script.Serialization;
 
@@ -41,6 +42,8 @@ internal static class AcceptanceEnvironmentProbe
         start.EnvironmentVariables["CODEX_EXECUTABLE"] = "unsafe-override";
         start.EnvironmentVariables["SENTRY_DSN"] = "synthetic-dsn";
         start.EnvironmentVariables["NODE_OPTIONS"] = "--require=unsafe.js";
+        start.EnvironmentVariables["USERNAME"] = "synthetic-wrong-owner";
+        start.EnvironmentVariables["USERDOMAIN"] = "synthetic-wrong-domain";
         MethodInfo method = typeof(AgentHub.RuntimeHost.Program).GetMethod(
             "ApplyReleaseAcceptanceEnvironment", BindingFlags.Static | BindingFlags.NonPublic);
         try { method.Invoke(null, new object[] { args[0], start }); }
@@ -53,6 +56,9 @@ internal static class AcceptanceEnvironmentProbe
         result["home"] = start.EnvironmentVariables["USERPROFILE"];
         result["codexHome"] = start.EnvironmentVariables["CODEX_HOME"];
         result["profile"] = start.EnvironmentVariables["AGENT_HUB_TEST_CONTOUR_PROFILE"];
+        result["userName"] = start.EnvironmentVariables["USERNAME"];
+        result["userDomain"] = start.EnvironmentVariables["USERDOMAIN"];
+        using (WindowsIdentity identity = WindowsIdentity.GetCurrent()) result["windowsOwner"] = identity.Name;
         Console.WriteLine(new JavaScriptSerializer().Serialize(result));
         return 0;
     }
