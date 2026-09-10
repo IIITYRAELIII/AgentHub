@@ -230,6 +230,19 @@ edits, and writing one aggregate commit. `dev` is never merged into
 `PreRelease`; Test-only work cannot enter a release through a broad Task
 snapshot.
 
+A Task with repeated integrations may use a net delta from its latest shared
+main ancestor to its accepted result only after bounded Git ancestry proof.
+Unpublished commits must belong to that Task's first-parent lineage or its
+exact canonical integrations; intervening merge wrappers must reproduce the
+automatic parent merge exactly. Unknown or foreign unpublished contributions
+cannot become release content through a Task's merge of dev. Net projection is
+not used where its affected paths overlap another selected Task's effective
+delta: those Tasks retain chronological effective-delta composition and its
+existing conflict evidence. Unavailable or over-budget proof selects that same
+existing composition, never an unchecked result snapshot. This permits a later
+Task resolution against published main to replace its obsolete intermediate
+conflicts without widening ownership. See ADR-0034.
+
 At explicit release start, Architect reads and selects the exact ready Await
 set. Before choosing the base, Agent Hub fetches without pull/merge/rebase and
 reports every local unpublished or remote main change since the last published
@@ -247,7 +260,13 @@ manifest hash and standalone candidate head. Later Await Tasks are not silently
 added. Only a Stream with `settings.architect=true` may record verified release
 completion.
 
-The frozen candidate remains immutable. If an included Task changes, is
+Prepared Await materialization precedes publication freeze. Freeze binds the
+consolidated root CHANGELOG to the exact prepared aggregate and plan, using the
+same release repository owner and lock. It may change only that CHANGELOG,
+records durable freeze intent before promoting the clone's main reference,
+and resumes the identical target after interruption. Source edits or mismatched
+plan/head/content fail closed. The registered primary is never the promotion
+target. The frozen candidate remains immutable. If an included Task changes, is
 withdrawn or is excluded before completion, its Task revision or Git reference
 changes and completion CAS fails. Architect must explicitly rebuild and
 refreeze the release before it can complete; acceptance changes never mutate an

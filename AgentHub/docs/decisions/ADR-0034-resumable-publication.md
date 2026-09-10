@@ -37,6 +37,21 @@ does not gain permission to replay unknown effects.
 
 ## Consequences and migration
 
+The first real publication attempt reproduced another historical failure:
+HUB-176 had sixteen intermediate integrations; replaying its earliest revision
+on newer main conflicted before reaching its later main-merge resolution.
+Its accepted net delta applied cleanly and preserved later published changes.
+Repeated integrations therefore admit net projection only with bounded proof
+of exclusive unpublished ancestry and verified merge-wrapper trees, and without
+cross-Task effective-path overlap. All other cases keep the existing effective
+delta algorithm and honest conflict evidence. This does not authorize broad
+Task snapshots or hide a dependency on an unselected Task.
+
+Publication freeze also explicitly binds consolidated CHANGELOG bytes and the
+prepared aggregate into the candidate manifest before promoting main inside the
+independent clone. A durable freeze intent makes promotion resumable; the CLI
+does not accept arbitrary dirty source files as a new candidate.
+
 Quick mode is explicit, not a silently weakened full gate. Expensive tests with
 unknown external inputs remain uncached until their inputs can be proved.
 Old cache entries are ignored; old completion journals without identity/draft

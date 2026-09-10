@@ -15,7 +15,7 @@ import {
 import { ensureWrangler } from "./wrangler-runner.mjs";
 import { defaultRuntimeRoot } from "./src/infrastructure/filesystem/runtime-layout.mjs";
 import { prepareCommittedAgentHubReleaseVersion } from "./src/infrastructure/filesystem/release-version.mjs";
-import { assertReleaseCloneForPublication } from "./src/infrastructure/filesystem/release-git-workspace.mjs";
+import { assertReleaseCloneForPublication, ReleaseGitWorkspaceService } from "./src/infrastructure/filesystem/release-git-workspace.mjs";
 import { withPublicationLock } from "./src/infrastructure/process/publication-lock.mjs";
 import { createFrozenReleasePublication } from "./src/infrastructure/process/frozen-release-publication.mjs";
 import {
@@ -308,6 +308,54 @@ export async function publishChanged(args = process.argv.slice(2), {
 } = {}) {
   return exclusive(async () => {
     const options = parseChangedArguments(args);
+    // Finalization can rebuild PreRelease and move this clone before its reply
+    // reaches the publisher. Explicit resume owns the saved run, not that newer
+    // checkout; it must not freeze or deploy the next candidate.
+    const pending = options.resume ? await journal?.read?.() : null;
+    if (pending?.progress?.publicationState) {
+      const identity = pending.identity;
+      if (identity?.worktreeRoot !== REPOSITORY_ROOT || identity?.runtimeRoot !== runtimeRoot) {
+        throw new Error("No matching publication candidate to resume");
+      }
+      if (options.from && options.from !== identity.from) throw new Error("Resume source revision differs from the saved publication");
+      const explicitMode = args.some((arg) => arg === "--full-tests" || arg === "--quick" || arg.startsWith("--validation="));
+      const requestedMode = options.fullTests ? "full" : options.quick ? "quick" : "focused";
+      if ((explicitMode && requestedMode !== identity.validationMode)
+        || (options.workspaceId && options.workspaceId !== identity.workspaceId)
+        || (options.testContour && !identity.testContour)) {
+        throw new Error("Resume options differ from the saved publication");
+      }
+      if (preparePublication) await preparePublication(identity, { completionOnly: true });
+      if (["succeeded", "published"].includes(pending.status)) {
+        const recorded = await readState();
+        if (recorded?.revision !== identity.revision
+          || recorded?.generation !== pending.progress.publicationState.generation) {
+          throw new Error("Recorded publication changed after completion");
+        }
+        if (pending.progress.expectedReleaseId) {
+          await verifyRestart({ runtimeRoot, expectedReleaseId: pending.progress.expectedReleaseId, readStatus: readRuntimeStatus });
+        }
+        return { status: pending.status, revision: identity.revision, files: identity.files,
+          plan: recorded.plan, alreadyCompleted: true, publicationOnly: pending.status === "published" };
+      }
+      if (!["running", "failed", "awaiting_restart", "awaiting_finalization"].includes(pending.status)) {
+        throw new Error("Publication does not have a resumable completion");
+      }
+      if (identity.release && !finalizePublication) throw new Error("Pending Workspace release requires its finalization adapter");
+      await journal.start(identity, []);
+      try {
+        const completion = await completePublication({
+          identity, publicationState: pending.progress.publicationState,
+          journal, checkpoint, needsRestart: Boolean(pending.progress.publicationState.plan?.runtimeRestart),
+          skipRestart: options.skipRestart, readRuntimeStatus, verifyRestart, writeState, finalizePublication,
+          requestRestart: (verification) => restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot, verification),
+        });
+        return { revision: identity.revision, files: identity.files, plan: pending.progress.publicationState.plan, ...completion };
+      } catch (error) {
+        await journal.finish("failed", error);
+        throw error;
+      }
+    }
     await before();
     await prepareVersion();
     const head = await revision({ cwd: REPOSITORY_ROOT });
@@ -423,7 +471,25 @@ if (invokedFile === fileURLToPath(import.meta.url)) {
     checkpoint: publicationCheckpointStore(),
     journal: publicationRunStore(),
     before: async () => {
-      await assertReleaseCloneForPublication({ repositoryRoot: REPOSITORY_ROOT });
+      const marker = await assertReleaseCloneForPublication({ repositoryRoot: REPOSITORY_ROOT });
+      const checkpoint = JSON.parse(await readFile(path.join(REPOSITORY_ROOT, "..", "checkpoint.json"), "utf8"));
+      if (!/^[a-f0-9]{64}$/u.test(checkpoint.manifestHash ?? "")) throw new Error("invalid prepared manifest hash");
+      const manifest = JSON.parse(await readFile(path.join(REPOSITORY_ROOT, "..", "evidence", `${checkpoint.manifestHash}.json`), "utf8"));
+      const workspaceId = parseChangedArguments(process.argv.slice(2)).workspaceId || manifest.workspaceId;
+      const changelogContent = await readFile(path.join(REPOSITORY_ROOT, "CHANGELOG.md")).catch((error) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      const workspace = new ReleaseGitWorkspaceService({ dataDir: path.dirname(marker.managedRoot) });
+      await workspace.freezePublicationCandidate({
+        projectRoot: marker.primaryRoot, workspaceId,
+        expectedPlanRevision: checkpoint.planRevision, expectedPreparedHead: checkpoint.preReleaseHead,
+        changelogContent,
+        validateBeforeCommit: async () => {
+          const plan = await callDesktopControl("read-workspace-release-plan", { workspaceId }, { runtimeRoot: defaultRuntimeRoot() });
+          if (plan.revision !== checkpoint.planRevision) throw new Error("release plan changed before publication freeze");
+        },
+      });
       await assertCleanPublicationTree({ cwd: REPOSITORY_ROOT });
       await assertCurrentPublicationRevision({ cwd: REPOSITORY_ROOT });
     },

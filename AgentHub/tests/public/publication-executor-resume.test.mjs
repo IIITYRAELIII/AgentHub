@@ -144,6 +144,9 @@ test("executor resumes a pending finalization without another deployment or Git 
   }), /Resume source revision differs/u);
   const resumed = await publishChanged(["--resume"], {
     ...common, journal: journal(),
+    before: () => assert.fail("completion must not freeze a replacement Await candidate"),
+    revision: () => assert.fail("completion must use its saved revision after Await moves HEAD"),
+    diff: () => assert.fail("completion must use its saved file set"),
     run: async () => assert.fail("completion cannot deploy again"),
     publishGit: async () => assert.fail("completion cannot push again"),
     finalizePublication: async () => ({ status: "completed" }),
@@ -158,7 +161,10 @@ test("an explicit contour request cannot reuse an earlier completion without tha
   const common = { ...options, readState: async () => state, writeState: async (value) => { state = value; } };
   await publishChanged(["--quick"], { ...common, run: async () => {} });
   const steps = [];
-  const result = await publishChanged(["--resume", "--test-contour"], {
+  await assert.rejects(publishChanged(["--resume", "--test-contour"], {
+    ...common, journal: journal(), run: () => assert.fail("resume cannot change its saved contour selection"),
+  }), /Resume options differ/u);
+  const result = await publishChanged(["--test-contour"], {
     ...common, journal: journal(), run: async (step) => steps.push(step.label),
   });
   assert.notEqual(result.alreadyCompleted, true);
