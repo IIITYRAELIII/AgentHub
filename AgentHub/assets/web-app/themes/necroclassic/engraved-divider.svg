@@ -1,6 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 10" fill="none">
-  <g stroke="white" stroke-width=".7" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M1 5H74M106 5H179M78 5H84M96 5H102M85 5L90 1L95 5L90 9Z"/>
-    <path d="M66 5L70 3M110 3L114 5"/>
-  </g>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 18" fill="none">
+  <defs>
+    <linearGradient id="silver"><stop stop-color="#374249"/><stop offset=".5" stop-color="#9aa9b0"/><stop offset="1" stop-color="#374249"/></linearGradient>
+    <path id="cut" d="M1 6H52L59 12H77L85 5L92 12L100 3L108 12L115 5L123 12H141L148 6H199M8 11H46L53 16H68M132 16H147L154 11H192M94 9L100 15L106 9M77 12H84M116 12H123"/>
+  </defs>
+  <use href="#cut" stroke="#0b0f12" stroke-width="3" stroke-linejoin="miter"/>
+  <use href="#cut" transform="translate(0 1)" stroke="url(#silver)" stroke-width="1" stroke-linejoin="miter"/>
 </svg>

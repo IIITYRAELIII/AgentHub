@@ -208,6 +208,7 @@ html[data-theme="necroclassic"][data-view="chat"][data-surface] .chat-scroll > .
 
 html[data-theme="necroclassic"][data-view="chat"][data-surface] form.composer {
   position: relative;
+  padding-top: 27px;
   border-color: #589eb2;
   border-radius: 8px;
   box-shadow: 0 0 0 1px rgb(106 200 224 / 5%),
@@ -225,28 +226,26 @@ html[data-theme="necroclassic"] form.composer::before,
 html[data-theme="necroclassic"] form.composer::after {
   content: "";
   position: absolute;
-  top: -9px;
-  width: 88px;
-  height: 18px;
-  background: #a9bdc7;
-  mask: url("./engraved-corner.svg") center / contain no-repeat;
-  opacity: 0.45;
+  top: 4px;
+  width: 132px;
+  height: 44px;
+  background: url("./engraved-corner.svg") center / contain no-repeat;
+  opacity: 0.75;
   pointer-events: none;
 }
 
 html[data-theme="necroclassic"] form.composer::before {
-  left: 10px;
+  left: 4px;
 }
 
 html[data-theme="necroclassic"] form.composer::after {
-  right: 10px;
+  right: 4px;
   transform: scaleX(-1);
 }
 
 html[data-theme="necroclassic"] form.composer:focus-within::before,
 html[data-theme="necroclassic"] form.composer:focus-within::after {
-  background: var(--accent);
-  opacity: 0.7;
+  opacity: 0.95;
 }
 
 html[data-theme="necroclassic"] .task-rail-head,
@@ -258,14 +257,13 @@ html[data-theme="necroclassic"] .task-rail-head::after,
 html[data-theme="necroclassic"] .activity-rail-head::after {
   content: "";
   position: absolute;
-  bottom: -4px;
+  bottom: 0;
   left: 50%;
-  width: min(180px, 70%);
-  height: 10px;
+  width: min(200px, 76%);
+  height: 18px;
   transform: translateX(-50%);
-  background: #a9bdc7;
-  mask: url("./engraved-divider.svg") center / 100% 100% no-repeat;
-  opacity: 0.4;
+  background: url("./engraved-divider.svg") center / 100% 100% no-repeat;
+  opacity: 0.75;
   pointer-events: none;
 }
 
