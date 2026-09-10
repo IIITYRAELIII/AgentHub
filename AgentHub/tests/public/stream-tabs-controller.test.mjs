@@ -1619,7 +1619,18 @@ test("backend permanent-delete rejection retains archive UI and restores exact a
       hasText: "Сначала переместите или удалите связанные Dashboard Task",
     }).waitFor({ state: "visible" });
     assert.deepEqual(commands.filter(({ action }) => action === "delete-archived-workspace")
-      .map(({ action, params }) => ({ action, params })), [{
+      .map(({ action, params }) => {
+        const { clientTraceId, clientTiming, ...businessParams } = params;
+        assert.equal(typeof clientTraceId, "string");
+        assert.ok(clientTraceId.length > 0);
+        assert.equal(clientTiming.surface, "browser");
+        assert.equal(clientTiming.transport, "direct-http");
+        assert.ok(Number.isFinite(clientTiming.submittedAtMs));
+        assert.ok(Number.isFinite(clientTiming.submittedMonotonicMs));
+        assert.ok(clientTiming.controlStartedMonotonicMs >= clientTiming.submittedMonotonicMs);
+        assert.ok(clientTiming.transportStartedMonotonicMs >= clientTiming.controlStartedMonotonicMs);
+        return { action, params: businessParams };
+      }), [{
       action: "delete-archived-workspace",
       params: {
         workspaceId: "archived-rejected",
