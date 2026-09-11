@@ -115,6 +115,31 @@ html[data-theme="senpo"] body::before { content: none; }
 html[data-theme="senpo"] body::after {
   background: url("./night-temple.png") center / cover no-repeat;
 }
+html[data-background-override="true"][data-background="senpo-red-maples"] {
+  --hub-background-color: #160e0c;
+  --hub-background-image: var(--senpo-red-maples-image);
+}
+
+html[data-background-override="true"][data-background="senpo-thousand-buddhas"] {
+  --hub-background-color: #160e0c;
+  --hub-background-image: var(--senpo-thousand-buddhas-image);
+}
+
+html[data-background-override="true"][data-background="senpo-incense-ash"] {
+  --hub-background-color: #160e0c;
+  --hub-background-image: var(--senpo-incense-ash-image);
+}
+
+html[data-background-override="true"][data-background="senpo-mist-gates"] {
+  --hub-background-color: #160e0c;
+  --hub-background-image: var(--senpo-mist-gates-image);
+}
+
+html[data-background-override="true"][data-background="senpo-forbidden-hall"] {
+  --hub-background-color: #160e0c;
+  --hub-background-image: var(--senpo-forbidden-hall-image);
+}
+
 html[data-background-override="true"][data-background="senpo-quiet"] {
   --hub-background-color: #160e0c;
   --hub-background-image: none;
