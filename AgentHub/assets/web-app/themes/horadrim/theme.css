@@ -205,10 +205,24 @@ html[data-theme="horadrim"] .msg-response-citation:not(.is-fallback):hover { bac
 html[data-theme="horadrim"] .turn-trace { background: #14120e; border-radius: 2px; }
 html[data-theme="horadrim"][data-view="chat"][data-surface] form.composer {
   position: relative;
-  background: #161410 url("./stone-grain.svg");
+  isolation: isolate;
+  --horadrim-composer-cut: 12px;
+  background: transparent;
   border: 1px solid transparent;
-  border-radius: 3px;
-  box-shadow: 0 4px 22px rgb(0 0 0 / 40%);
+  border-radius: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+/* Срезаем только подложку: меню и подсказки композера не обрезаются. */
+html[data-theme="horadrim"] form.composer::after {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  z-index: -1;
+  background: #161410 url("./stone-grain.svg");
+  clip-path: polygon(var(--horadrim-composer-cut) 0, calc(100% - var(--horadrim-composer-cut)) 0, 100% var(--horadrim-composer-cut), 100% calc(100% - var(--horadrim-composer-cut)), calc(100% - var(--horadrim-composer-cut)) 100%, var(--horadrim-composer-cut) 100%, 0 calc(100% - var(--horadrim-composer-cut)), 0 var(--horadrim-composer-cut));
+  pointer-events: none;
 }
 html[data-theme="horadrim"] form.composer::before {
   content: "";
@@ -220,7 +234,7 @@ html[data-theme="horadrim"] form.composer::before {
 }
 html[data-theme="horadrim"][data-view="chat"][data-surface] form.composer:focus-within {
   border-color: transparent;
-  box-shadow: 0 0 12px rgb(216 173 97 / 10%);
+  box-shadow: none;
 }
 html[data-theme="horadrim"] form.composer:focus-within::before {
   filter: brightness(1.35);
@@ -236,6 +250,7 @@ html[data-theme="horadrim"] .composer-send {
 html[data-theme="horadrim"] .settings-panel { background: #1b1711; }
 html[data-theme="horadrim"] ::selection { background: var(--selection); color: #fff4df; }
 @media (max-width: 700px) {
+  html[data-theme="horadrim"][data-view="chat"][data-surface] form.composer { --horadrim-composer-cut: 9px; }
   html[data-theme="horadrim"] .msg:not(.msg-system),
   html[data-theme="horadrim"][data-view="chat"][data-surface] .msg-user .msg-user-bubble { padding: .8rem .95rem; }
   html[data-theme="horadrim"] form.composer::before { border-image-width: 18px; }
