@@ -6,6 +6,7 @@ import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:f
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { runtimeHostCompilerCandidates } from "../../src/infrastructure/process/runtime-host-builder.mjs";
 import { runtimeSecretAclArguments, runtimeDirectoryAclArguments } from "../../src/infrastructure/filesystem/runtime-security.mjs";
@@ -104,7 +105,20 @@ test("compiled RuntimeHost verifies and persists recording acceptance profile ac
   assert.equal(first.profile, "recording"); assert.equal(first.recordingRoot, recording); assert.equal(first.testContour, "1");
   for (const [key, env] of [["home", "HOME"], ["codexHome", "CODEX_HOME"], ["claudeHome", "CLAUDE_CONFIG_DIR"],
     ["appData", "APPDATA"], ["localAppData", "LOCALAPPDATA"], ["temp", "TEMP"], ["tmp", "TMP"]]) assert.equal(first[key], expectedEnvironment[env]);
-  for (const key of ["tokenPresent", "executableOverridePresent", "sentryPresent", "nodeOptionsPresent", "pathPresent"]) assert.equal(first[key], false);
+  for (const key of ["tokenPresent", "executableOverridePresent", "sentryPresent", "nodeOptionsPresent"]) assert.equal(first[key], false);
+  // Exercise the actual Node ACL owner with the environment reconstructed by
+  // compiled Host. No shell, ambient PATH, or ACL-disable switch is supplied.
+  const aclTarget = path.join(owned, "acl-probe.txt");
+  await writeFile(aclTarget, "owned ACL probe");
+  const securityModule = pathToFileURL(path.join(root, "src/infrastructure/filesystem/runtime-security.mjs")).href;
+  const aclProbe = path.join(temporary, "acl-probe.mjs");
+  await writeFile(aclProbe, `import { protectRuntimeConfig } from ${JSON.stringify(securityModule)}; await protectRuntimeConfig(${JSON.stringify(aclTarget)}); console.log('acl-protected');`);
+  // Launch through Process.Start just like Host: Node child_process itself
+  // injects parent essential Windows variables when absent from options.env.
+  const acl = await execute(binary, [owned, "acl-probe", process.execPath, aclProbe], { windowsHide: true, timeout: 3_000 });
+  assert.match(acl.stdout, /acl-protected/);
+  assert.deepEqual(first.path.split(path.delimiter), [first.systemDirectory, path.join(first.systemDirectory, "WindowsPowerShell", "v1.0")]);
+  assert.equal(first.path.includes("unsafe-inherited-tool-directory"), false);
   assert.deepEqual(JSON.parse((await run()).stdout), first);
   await save(markerFile, { ...marker, profile: "unknown" }); await assert.rejects(run(), /Unknown release acceptance profile/);
   await save(markerFile, { ...marker, schemaVersion: 3 }); await assert.rejects(run(), /identity mismatch/);

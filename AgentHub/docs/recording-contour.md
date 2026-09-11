@@ -134,6 +134,11 @@ project descriptor and persistent config. Windows Host validates them on every
 independent launch, fixes literal-provider identity and isolated homes, and
 rejects links or partial profiles. The close fence still closes the owned Job
 after config corruption. Legacy synthetic v1 acceptance remains unchanged.
+The recording Host reconstructs the OS utility search path from the Windows
+system known folder and its WindowsPowerShell directory, after checking both
+directories. It never inherits tool directories from the caller's PATH. This
+keeps the normal Windows ACL and process owners available without admitting
+ambient provider tools or disabling access protection.
 
 The harness reads a captured selected Stream/Thread; it sends no `/new` and no
 user input. It requests replacement once and reconciles exact release/PID

@@ -43,12 +43,30 @@ internal static class AcceptanceEnvironmentProbe
         start.EnvironmentVariables["SENTRY_DSN"] = "synthetic-dsn";
         start.EnvironmentVariables["NODE_OPTIONS"] = "--require=unsafe.js";
         start.EnvironmentVariables["AGENT_HUB_RECORDING_PROVIDER_ROOT"] = "unsafe-recording-root";
+        start.EnvironmentVariables["PATH"] = "unsafe-inherited-tool-directory";
         start.EnvironmentVariables["USERNAME"] = "synthetic-wrong-owner";
         start.EnvironmentVariables["USERDOMAIN"] = "synthetic-wrong-domain";
         MethodInfo method = typeof(AgentHub.RuntimeHost.Program).GetMethod(
             "ApplyReleaseAcceptanceEnvironment", BindingFlags.Static | BindingFlags.NonPublic);
         try { method.Invoke(null, new object[] { args[0], start }); }
         catch (TargetInvocationException error) { Console.Error.WriteLine(error.InnerException.Message); return 2; }
+        if (args.Length > 3 && args[1] == "acl-probe")
+        {
+            start.FileName = args[2];
+            start.Arguments = "\"" + args[3] + "\"";
+            start.WorkingDirectory = args[0];
+            start.UseShellExecute = false;
+            start.CreateNoWindow = true;
+            start.RedirectStandardOutput = true;
+            start.RedirectStandardError = true;
+            using (Process child = Process.Start(start))
+            {
+                Console.Write(child.StandardOutput.ReadToEnd());
+                Console.Error.Write(child.StandardError.ReadToEnd());
+                child.WaitForExit();
+                return child.ExitCode;
+            }
+        }
         Dictionary<string, object> result = new Dictionary<string, object>();
         result["tokenPresent"] = start.EnvironmentVariables["TELEGRAM_BOT_TOKEN"] != null;
         result["executableOverridePresent"] = start.EnvironmentVariables["CODEX_EXECUTABLE"] != null;
@@ -65,6 +83,8 @@ internal static class AcceptanceEnvironmentProbe
         result["temp"] = start.EnvironmentVariables["TEMP"];
         result["tmp"] = start.EnvironmentVariables["TMP"];
         result["pathPresent"] = start.EnvironmentVariables["PATH"] != null;
+        result["path"] = start.EnvironmentVariables["PATH"];
+        result["systemDirectory"] = Environment.GetFolderPath(Environment.SpecialFolder.System);
         result["userName"] = start.EnvironmentVariables["USERNAME"];
         result["userDomain"] = start.EnvironmentVariables["USERDOMAIN"];
         using (WindowsIdentity identity = WindowsIdentity.GetCurrent()) result["windowsOwner"] = identity.Name;
