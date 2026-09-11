@@ -16,7 +16,9 @@ import {
 import { normalizedCodexResponseAnnotationReferences } from "../../domain/codex-response-annotation.mjs";
 import { normalizedResponseAnnotations } from "../../domain/response-annotation-source.mjs";
 import {
+  durableUserCommandItemId,
   indexedDurableMessageMetadata,
+  indexedDurableMessageMetadataWithEvidence,
   withDurableMessageMetadata,
 } from "../../domain/stream-message-pin.mjs";
 
@@ -24,7 +26,7 @@ const FORMAT_VERSION = 1;
 const TASK_SCHEMA_VERSION = 12;
 const MODEL_BACKFILL_VERSION = "1";
 const SUBAGENT_MODEL_BACKFILL_VERSION = "1";
-const SEARCH_BACKFILL_VERSION = "4";
+const SEARCH_BACKFILL_VERSION = "5";
 const TERMINAL_HISTORY_BACKFILL_VERSION = "4";
 const DEFAULT_HISTORY_LIMIT = 50;
 const DEFAULT_RUNNING_FRESHNESS_MS = 10 * 60 * 1000;
@@ -269,6 +271,15 @@ function cleanHistory(history, limit, { provider = "" } = {}) {
     });
   const normalized = withoutRepeatedClientMessages(cleaned);
   return withoutPromptlessAnswerEchoes(withoutInternalContextTurns(normalized)).slice(-limit);
+}
+
+function normalizedStoredHistory(history, limit, { provider, threadId }) {
+  const cleaned = cleanHistory(history, limit, { provider });
+  const canonical = cleaned.map((turn) => withDurableMessageMetadata(turn, {
+    provider,
+    threadId,
+  }));
+  return cleanHistory(canonical, limit, { provider });
 }
 
 const TERMINAL_TURN_STATUSES = new Set([
@@ -649,6 +660,46 @@ function searchHistoryFingerprint(history) {
     .digest("hex");
 }
 
+function migrateReceiptBackedUserItemIds(database) {
+  const rows = database.prepare(`
+    SELECT provider, thread_id, turn_position, position, client_user_message_id
+    FROM task_read_model_messages
+    WHERE role = 'user'
+      AND trim(item_id) = ''
+      AND trim(client_user_message_id) <> ''
+    ORDER BY provider, thread_id, turn_position, position
+  `).all();
+  const collision = database.prepare(`
+    SELECT 1 AS present FROM task_read_model_messages
+    WHERE provider = ? AND thread_id = ? AND turn_position = ?
+      AND item_id = ? AND position <> ?
+    LIMIT 1
+  `);
+  const update = database.prepare(`
+    UPDATE task_read_model_messages SET item_id = ?
+    WHERE provider = ? AND thread_id = ? AND turn_position = ? AND position = ?
+      AND role = 'user' AND trim(item_id) = '' AND client_user_message_id = ?
+  `);
+  for (const row of rows) {
+    const itemId = durableUserCommandItemId(row.client_user_message_id);
+    if (!itemId || collision.get(
+      row.provider,
+      row.thread_id,
+      row.turn_position,
+      itemId,
+      row.position,
+    )) continue;
+    update.run(
+      itemId,
+      row.provider,
+      row.thread_id,
+      row.turn_position,
+      row.position,
+      row.client_user_message_id,
+    );
+  }
+}
+
 function configure(database) {
   database.exec(`
     PRAGMA journal_mode = WAL;
@@ -742,6 +793,11 @@ function configure(database) {
       turn_id TEXT NOT NULL,
       item_id TEXT NOT NULL,
       role TEXT NOT NULL CHECK (role IN ('user', 'agent')),
+      client_user_message_id TEXT NOT NULL DEFAULT '',
+      message_key TEXT NOT NULL DEFAULT '',
+      source_alias TEXT NOT NULL DEFAULT '',
+      semantic_slot TEXT NOT NULL DEFAULT '',
+      pin_eligible INTEGER NOT NULL DEFAULT 0,
       message_text TEXT NOT NULL,
       author TEXT NOT NULL DEFAULT '',
       annotation_text TEXT NOT NULL DEFAULT '',
@@ -884,6 +940,18 @@ function configure(database) {
   if (!searchColumns.has("author")) {
     database.exec("ALTER TABLE task_message_search_documents ADD COLUMN author TEXT NOT NULL DEFAULT ''");
   }
+  for (const [column, definition] of [
+    ["client_user_message_id", "TEXT NOT NULL DEFAULT ''"],
+    ["message_key", "TEXT NOT NULL DEFAULT ''"],
+    ["source_alias", "TEXT NOT NULL DEFAULT ''"],
+    ["semantic_slot", "TEXT NOT NULL DEFAULT ''"],
+    ["pin_eligible", "INTEGER NOT NULL DEFAULT 0"],
+  ]) {
+    if (!searchColumns.has(column)) {
+      database.exec(`ALTER TABLE task_message_search_documents ADD COLUMN ${column} ${definition}`);
+    }
+  }
+  migrateReceiptBackedUserItemIds(database);
   database.exec(`
     CREATE TRIGGER IF NOT EXISTS task_read_model_subagent_insert
     AFTER INSERT ON task_read_model_messages
@@ -1686,7 +1754,8 @@ export class LocalTaskSyncStore {
         response_annotation_references_json, attachments_json, display_text
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    history.forEach((turn, index) => {
+    history.forEach((sourceTurn, index) => {
+      const turn = withDurableMessageMetadata(sourceTurn, { provider, threadId });
       const turnPosition = positions ? positions[index] : index;
       insertTurn.run(
         provider,
@@ -1741,6 +1810,7 @@ export class LocalTaskSyncStore {
   }
 
   #writeSearchDocument(document, { replace = true } = {}) {
+    const durableMetadata = indexedDurableMessageMetadata(document);
     const occurredAt = String(document.occurredAt ?? "").trim() || null;
     const occurredAtMs = occurredAt ? Date.parse(occurredAt) : 0;
     const source = document.source ?? "history";
@@ -1756,6 +1826,11 @@ export class LocalTaskSyncStore {
       document.turnId,
       document.itemId,
       document.role,
+      String(document.clientUserMessageId ?? "").trim(),
+      durableMetadata.messageKey,
+      durableMetadata.sourceAlias,
+      durableMetadata.semanticSlot,
+      durableMetadata.pinEligible === true ? 1 : 0,
       String(document.text ?? "").trim(),
       String(document.author ?? "").trim(),
       String(document.annotationText ?? "").trim(),
@@ -1766,6 +1841,11 @@ export class LocalTaskSyncStore {
     ];
     const conflict = replace ? `DO UPDATE SET
       turn_thread_id = excluded.turn_thread_id,
+      client_user_message_id = excluded.client_user_message_id,
+      message_key = excluded.message_key,
+      source_alias = excluded.source_alias,
+      semantic_slot = excluded.semantic_slot,
+      pin_eligible = excluded.pin_eligible,
       message_text = excluded.message_text,
       author = excluded.author,
       annotation_text = excluded.annotation_text,
@@ -1776,9 +1856,9 @@ export class LocalTaskSyncStore {
     this.#database.prepare(`
       INSERT INTO task_message_search_documents (
         document_key, provider, thread_id, turn_thread_id, turn_id, item_id,
-        role, message_text, author, annotation_text, attachment_names,
-        occurred_at, occurred_at_ms, source
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        role, client_user_message_id, message_key, source_alias, semantic_slot, pin_eligible,
+        message_text, author, annotation_text, attachment_names, occurred_at, occurred_at_ms, source
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(document_key) ${conflict}
     `).run(...values);
   }
@@ -1853,7 +1933,11 @@ export class LocalTaskSyncStore {
           attachments: [],
         });
       }
-      for (const [position, message] of messages.entries()) {
+      const durableMessages = withDurableMessageMetadata({ ...turn, messages }, {
+        provider,
+        threadId,
+      }).messages;
+      for (const [position, message] of durableMessages.entries()) {
         const text = String(message?.text ?? "").trim();
         const annotations = [
           ...(Array.isArray(message?.responseAnnotations) ? message.responseAnnotations : []),
@@ -1872,6 +1956,10 @@ export class LocalTaskSyncStore {
           turnId: turn.id,
           itemId: String(message?.itemId ?? "").trim() || `${turn.id}:${message.role}:${position}`,
           role: message.role,
+          clientUserMessageId: message.clientUserMessageId,
+          messageKey: message.messageKey,
+          sourceAlias: message.sourceAlias,
+          semanticSlot: message.semanticSlot,
           text,
           author: message.author,
           annotationText,
@@ -2037,8 +2125,9 @@ export class LocalTaskSyncStore {
     if (String(migrated?.value ?? "") !== fingerprint) {
       await this.#mutations.run(() => this.#transaction(() => {
         for (const task of tasks) {
+          const history = normalizedStoredHistory(task.history, this.#historyLimit, task);
           this.#writeTask(task);
-          this.#writeHistory(task, cleanHistory(task.history, this.#historyLimit, { provider: task.provider }));
+          this.#writeHistory(task, history);
         }
         this.#prune();
         this.#database.prepare(`
@@ -2049,9 +2138,11 @@ export class LocalTaskSyncStore {
     }
     for (const expected of tasks) {
       const actual = this.#readTask(expected, true);
-      if (!actual || JSON.stringify(actual) !== JSON.stringify({
+      const expectedHistory = normalizedStoredHistory(expected.history, this.#historyLimit, expected);
+      const actualHistory = normalizedStoredHistory(actual?.history, this.#historyLimit, expected);
+      if (!actual || JSON.stringify({ ...actual, history: actualHistory }) !== JSON.stringify({
         ...expected,
-        history: cleanHistory(expected.history, this.#historyLimit, { provider: expected.provider }),
+        history: expectedHistory,
       })) {
         throw new Error(`SQLite verification failed for ${catalogTaskKey(expected)}`);
       }
@@ -2299,7 +2390,7 @@ export class LocalTaskSyncStore {
     };
   }
 
-  searchMessage({ provider, threadId, turnId, itemId } = {}) {
+  searchMessage({ provider, threadId, turnId, itemId, durableIdentity = null } = {}) {
     const row = this.#database.prepare(`
       SELECT * FROM task_message_search_documents
       WHERE provider = ? AND thread_id = ? AND turn_id = ? AND item_id = ?
@@ -2318,15 +2409,34 @@ export class LocalTaskSyncStore {
       turnId: String(row.turn_id),
       itemId: String(row.item_id),
       role: String(row.role),
+      ...(row.client_user_message_id
+        ? { clientUserMessageId: String(row.client_user_message_id) }
+        : {}),
+      messageKey: String(row.message_key ?? ""),
+      sourceAlias: String(row.source_alias ?? ""),
+      semanticSlot: String(row.semantic_slot ?? ""),
       text: String(row.message_text),
       ...(row.author ? { author: String(row.author) } : {}),
       attachmentNames: String(row.attachment_names ?? "").split(/\s*\n\s*/u).filter(Boolean),
       occurredAt: row.occurred_at ? String(row.occurred_at) : null,
     };
-    return { ...value, ...indexedDurableMessageMetadata(value) };
+    return {
+      ...value,
+      ...indexedDurableMessageMetadataWithEvidence(value, durableIdentity ?? {}),
+    };
   }
 
-  durableMessageCandidate({ provider, threadId, turnId, itemId, role } = {}) {
+  durableMessageCandidate({
+    provider,
+    threadId,
+    turnId,
+    itemId,
+    role,
+    clientUserMessageId,
+    messageKey: expectedMessageKey,
+    sourceAlias: expectedSourceAlias,
+    semanticSlot,
+  } = {}) {
     const normalizedProvider = cleanText(provider, 20).toLowerCase();
     const normalizedThreadId = cleanText(threadId, 100);
     const normalizedTurnId = cleanText(turnId, 100);
@@ -2359,6 +2469,17 @@ export class LocalTaskSyncStore {
       threadId: normalizedThreadId,
       turnId: normalizedTurnId,
       itemId: normalizedItemId,
+      durableIdentity: {
+        provider: normalizedProvider,
+        threadId: normalizedThreadId,
+        turnId: normalizedTurnId,
+        itemId: normalizedItemId,
+        role: normalizedRole,
+        clientUserMessageId,
+        messageKey: expectedMessageKey,
+        sourceAlias: expectedSourceAlias,
+        semanticSlot,
+      },
     });
     return indexed?.role === normalizedRole ? indexed : null;
   }

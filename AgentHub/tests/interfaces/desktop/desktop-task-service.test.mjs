@@ -535,6 +535,105 @@ test("Desktop turn open returns the exact indexed intermediate message", async (
   assert.equal(result.focusedTurn.messages[0].text, "intermediate answer");
 });
 
+test("Desktop turn open hydrates one exact cold receipt-backed user message", async () => {
+  const { service, calls } = fixture();
+  const coldMessages = new Map([
+    ["cold-command-a", {
+      provider: "codex",
+      threadId: "thread-1",
+      turnThreadId: "thread-1",
+      turnId: "turn-cold",
+      itemId: "cold-command-a",
+      role: "user",
+      clientUserMessageId: "cold-command-a",
+      text: "Одинаково",
+      messageKey: "message:a",
+      sourceAlias: "source:a",
+      semanticSlot: "user-command",
+      pinEligible: true,
+      occurredAt: "2026-09-11T06:00:00.000Z",
+      attachmentNames: [],
+    }],
+    ["cold-command-b", {
+      provider: "codex",
+      threadId: "thread-1",
+      turnThreadId: "thread-1",
+      turnId: "turn-cold",
+      itemId: "cold-command-b",
+      role: "user",
+      clientUserMessageId: "cold-command-b",
+      text: "Одинаково",
+      messageKey: "message:b",
+      sourceAlias: "source:b",
+      semanticSlot: "user-command",
+      pinEligible: true,
+      occurredAt: "2026-09-11T06:00:01.000Z",
+      attachmentNames: [],
+    }],
+  ]);
+  service.readTurn = async () => null;
+  service.searchMessage = ({ itemId }) => coldMessages.get(itemId) ?? null;
+
+  const result = await service.openTurn({
+    streamId: "stream-1",
+    provider: "codex",
+    taskThreadId: "thread-1",
+    turnThreadId: "thread-1",
+    turnId: "turn-cold",
+    itemId: "cold-command-b",
+    role: "user",
+  });
+
+  assert.equal(result.focusedMessage.itemId, "cold-command-b");
+  assert.equal(result.focusedMessage.clientUserMessageId, "cold-command-b");
+  assert.equal(result.focusedTurn.messages.length, 1);
+  assert.equal(result.focusedTurn.messages[0].itemId, "cold-command-b");
+  assert.equal(calls.some(([name]) => name === "dispatch"), true);
+});
+
+test("Desktop turn open fails closed for missing or conflicting cold message identity", async () => {
+  const { service, calls } = fixture();
+  service.readTurn = async () => null;
+  service.searchMessage = ({ itemId }) => itemId === "cold-command" ? {
+    provider: "codex",
+    threadId: "thread-1",
+    turnThreadId: "thread-other",
+    turnId: "turn-cold",
+    itemId,
+    role: "user",
+    text: "Сообщение",
+    messageKey: "message:cold",
+    sourceAlias: "source:cold",
+    semanticSlot: "user-command",
+    pinEligible: true,
+    attachmentNames: [],
+  } : null;
+  const base = {
+    streamId: "stream-1",
+    provider: "codex",
+    taskThreadId: "thread-1",
+    turnThreadId: "thread-1",
+    turnId: "turn-cold",
+  };
+
+  await assert.rejects(service.openTurn({
+    ...base,
+    itemId: "missing-command",
+    role: "user",
+  }), /не найдено в индексе/u);
+  await assert.rejects(service.openTurn({
+    ...base,
+    itemId: "cold-command",
+    role: "agent",
+  }), /не соответствует указанной identity/u);
+  await assert.rejects(service.openTurn({
+    ...base,
+    itemId: "cold-command",
+    role: "user",
+  }), /не соответствует указанной identity/u);
+  assert.equal(calls.some(([name]) => name === "dispatch"), false);
+});
+
 test("Desktop message intake does not start catalog refresh for a cached task", async () => {
   const { service } = fixture();
   let refreshStarted = false;

@@ -6,6 +6,10 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { codexAssistantResponseProjection } from "../../src/domain/codex-response-annotation.mjs";
 import { mergeCanonicalUserMessages } from "../../src/domain/canonical-user-messages.mjs";
+import {
+  durableMessageMetadata,
+  durableUserCommandItemId,
+} from "../../src/domain/stream-message-pin.mjs";
 import { TASK_EXECUTION_OWNERS } from "../../src/domain/task-execution-owner.mjs";
 import { LocalTaskSyncStore } from "../../src/infrastructure/persistence/task-sync-store.mjs";
 import { mergeDurableTaskHistory } from "../../src/interfaces/desktop/desktop-task-history.mjs";
@@ -109,6 +113,47 @@ test("local task sync fails closed on a corrupt shared database", async () => {
   } finally {
     await rm(path.dirname(filePath), { recursive: true, force: true });
   }
+});
+
+test("legacy task-sync migration verifies receipt-backed command locators and survives restart", async (t) => {
+  const filePath = await storeFile();
+  const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
+  const legacyTask = {
+    provider: "codex",
+    threadId: "review-thread",
+    projectRoot: path.dirname(filePath),
+    history: [{
+      id: "review-turn",
+      status: "completed",
+      completed: true,
+      messages: [{
+        role: "user",
+        itemId: "",
+        clientUserMessageId: "review-command",
+        text: "Synthetic review message",
+      }],
+    }],
+  };
+  await writeFile(filePath, JSON.stringify({ version: 1, tasks: [legacyTask] }), "utf8");
+  let store = new LocalTaskSyncStore({ filePath, databaseFile });
+  t.after(async () => {
+    store.close();
+    await rm(path.dirname(filePath), { recursive: true, force: true });
+  });
+
+  await store.load();
+  await assert.rejects(access(filePath), { code: "ENOENT" });
+  let user = store.historyPage([legacyTask], { limit: 1 }).items[0].turn.messages[0];
+  assert.equal(user.itemId, durableUserCommandItemId("review-command"));
+  assert.equal(user.semanticSlot, "user-command");
+  assert.equal(user.pinEligible, true);
+  store.close();
+
+  store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  user = store.historyPage([legacyTask], { limit: 1 }).items[0].turn.messages[0];
+  assert.equal(user.itemId, durableUserCommandItemId("review-command"));
+  assert.equal(user.pinEligible, true);
 });
 
 test("local task sync persists catalog, runtime owner, status and history", async () => {
@@ -1018,6 +1063,167 @@ test("message search keeps every indexed reply beyond the bounded chat read mode
   store.close();
 });
 
+test("cold search preserves exact receipt-backed user identities without text matching", async (t) => {
+  const filePath = await storeFile();
+  const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
+  const store = new LocalTaskSyncStore({ filePath, databaseFile, historyLimit: 1 });
+  await store.load();
+  t.after(async () => {
+    store.close();
+    await rm(path.dirname(filePath), { recursive: true, force: true });
+  });
+  await store.recordHistory(task, [{
+    id: "turn-cold-users",
+    status: "completed",
+    completed: true,
+    messages: [
+      { itemId: "provider-user-a", role: "user", clientUserMessageId: "cold-command-a", text: "Одинаково" },
+      { itemId: "provider-user-b", role: "user", clientUserMessageId: "cold-command-b", text: "Одинаково" },
+      { itemId: "cold-answer", role: "agent", text: "Готово" },
+    ],
+  }, {
+    id: "turn-hot",
+    status: "completed",
+    completed: true,
+    messages: [
+      { itemId: "", role: "user", clientUserMessageId: "hot-command", text: "Новое" },
+      { itemId: "hot-answer", role: "agent", text: "Готово" },
+    ],
+  }]);
+
+  assert.equal(store.history(task).some((turn) => turn.id === "turn-cold-users"), false);
+  const database = new DatabaseSync(databaseFile);
+  assert.equal(database.prepare(`
+    SELECT COUNT(*) AS count FROM task_read_model_turns
+    WHERE provider = ? AND thread_id = ? AND id = ?
+  `).get(task.provider, task.threadId, "turn-cold-users").count, 0);
+
+  const first = store.searchMessage({
+    provider: task.provider,
+    threadId: task.threadId,
+    turnId: "turn-cold-users",
+    itemId: "provider-user-a",
+  });
+  const second = store.searchMessage({
+    provider: task.provider,
+    threadId: task.threadId,
+    turnId: "turn-cold-users",
+    itemId: "provider-user-b",
+  });
+  assert.equal(first.pinEligible, true);
+  assert.equal(second.pinEligible, true);
+  assert.equal(first.clientUserMessageId, "cold-command-a");
+  assert.equal(second.clientUserMessageId, "cold-command-b");
+  assert.notEqual(first.messageKey, second.messageKey);
+
+  database.prepare(`
+    UPDATE task_message_search_documents
+    SET client_user_message_id = '', message_key = '', source_alias = '',
+        semantic_slot = '', pin_eligible = 0
+    WHERE provider = ? AND thread_id = ? AND turn_id = ? AND item_id = ?
+  `).run(task.provider, task.threadId, "turn-cold-users", "provider-user-a");
+  assert.equal(store.searchMessage({
+    provider: task.provider,
+    threadId: task.threadId,
+    turnId: "turn-cold-users",
+    itemId: "provider-user-a",
+  }).pinEligible, false);
+
+  const evidence = durableMessageMetadata({
+    provider: task.provider,
+    threadId: task.threadId,
+    turn: { id: "turn-cold-users", completed: true },
+    message: {
+      itemId: "provider-user-a",
+      role: "user",
+      clientUserMessageId: "cold-command-a",
+    },
+  });
+  const recovered = store.durableMessageCandidate({
+    provider: task.provider,
+    threadId: task.threadId,
+    turnId: "turn-cold-users",
+    itemId: "provider-user-a",
+    role: "user",
+    clientUserMessageId: "cold-command-a",
+    ...evidence,
+  });
+  assert.equal(recovered.pinEligible, true);
+  assert.equal(recovered.messageKey, evidence.messageKey);
+
+  const mismatched = store.durableMessageCandidate({
+    provider: task.provider,
+    threadId: task.threadId,
+    turnId: "turn-cold-users",
+    itemId: "provider-user-a",
+    role: "user",
+    clientUserMessageId: "cold-command-b",
+    ...evidence,
+  });
+  assert.equal(mismatched.pinEligible, false);
+  assert.equal(store.durableMessageCandidate({
+    provider: task.provider,
+    threadId: task.threadId,
+    turnId: "turn-cold-users",
+    itemId: "provider-user-a",
+    role: "agent",
+    clientUserMessageId: "cold-command-a",
+    ...evidence,
+  }), null);
+
+  database.prepare(`
+    DELETE FROM task_message_search_documents
+    WHERE provider = ? AND thread_id = ? AND turn_id = ? AND item_id = ?
+  `).run(task.provider, task.threadId, "turn-cold-users", "provider-user-a");
+  database.close();
+  assert.equal(store.durableMessageCandidate({
+    provider: task.provider,
+    threadId: task.threadId,
+    turnId: "turn-cold-users",
+    itemId: "provider-user-a",
+    role: "user",
+    clientUserMessageId: "cold-command-a",
+    ...evidence,
+  }), null);
+});
+
+test("startup migration makes an old unpinned receipt-backed history message pinnable", async (t) => {
+  const filePath = await storeFile();
+  const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
+  let store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  t.after(async () => {
+    store.close();
+    await rm(path.dirname(filePath), { recursive: true, force: true });
+  });
+  await store.recordHistory(task, [{
+    id: "turn-legacy-receipt",
+    status: "completed",
+    completed: true,
+    messages: [
+      { role: "user", clientUserMessageId: "legacy-receipt-command", text: "Старое сообщение" },
+      { itemId: "legacy-answer", role: "agent", text: "Ответ" },
+    ],
+  }]);
+  store.close();
+
+  const database = new DatabaseSync(databaseFile);
+  database.prepare(`
+    UPDATE task_read_model_messages SET item_id = ''
+    WHERE provider = ? AND thread_id = ? AND client_user_message_id = ?
+  `).run(task.provider, task.threadId, "legacy-receipt-command");
+  database.close();
+
+  store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  const page = store.historyPage([task], { limit: 1 });
+  const user = page.items[0].turn.messages.find((message) => message.role === "user");
+  assert.equal(user.itemId, durableUserCommandItemId("legacy-receipt-command"));
+  assert.equal(user.clientUserMessageId, "legacy-receipt-command");
+  assert.equal(user.semanticSlot, "user-command");
+  assert.equal(user.pinEligible, true);
+});
+
 test("recordHistory no-op leaves the existing search projection untouched", async () => {
   const filePath = await storeFile();
   const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
@@ -1109,7 +1315,7 @@ test("startup backfills run once per version and commit their marker atomically"
     WHERE key LIKE 'backfill_%_version'
     ORDER BY key
   `).all().map((row) => ({ key: row.key, value: row.value })), [
-    { key: "backfill_task_message_search_version", value: "4" },
+    { key: "backfill_task_message_search_version", value: "5" },
   ]);
   database.exec(`
     CREATE TABLE backfill_write_audit (operation TEXT NOT NULL);
@@ -1253,6 +1459,15 @@ test("local task sync migrates annotation columns in an existing SQLite cache", 
         PRIMARY KEY (provider, thread_id, turn_position, position)
       ) WITHOUT ROWID;
     `);
+    database.prepare(`
+      INSERT INTO task_read_model_messages (
+        provider, thread_id, turn_position, position, item_id,
+        client_user_message_id, role, text, phase, time, attachments_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      "codex", "legacy-thread", 0, 0, "", "legacy-command",
+      "user", "Legacy command", null, null, "[]",
+    );
     database.close();
 
     store = new LocalTaskSyncStore({ filePath, databaseFile });
@@ -1267,6 +1482,10 @@ test("local task sync migrates annotation columns in an existing SQLite cache", 
       .all().map((column) => column.name);
     const searchColumns = migrated.prepare("PRAGMA table_info(task_message_search_documents)")
       .all().map((column) => column.name);
+    const canonicalItemId = migrated.prepare(`
+      SELECT item_id FROM task_read_model_messages
+      WHERE provider = ? AND thread_id = ? AND turn_position = ? AND position = ?
+    `).get("codex", "legacy-thread", 0, 0).item_id;
     migrated.close();
     assert.ok(turnColumns.includes("prompt_annotations_json"));
     assert.ok(turnColumns.includes("prompt_request"));
@@ -1278,6 +1497,11 @@ test("local task sync migrates annotation columns in an existing SQLite cache", 
     assert.ok(messageColumns.includes("agent_thread_id"));
     assert.ok(messageColumns.includes("model"));
     assert.ok(searchColumns.includes("author"));
+    assert.ok(searchColumns.includes("client_user_message_id"));
+    assert.ok(searchColumns.includes("message_key"));
+    assert.ok(searchColumns.includes("source_alias"));
+    assert.ok(searchColumns.includes("semantic_slot"));
+    assert.equal(canonicalItemId, durableUserCommandItemId("legacy-command"));
   } finally {
     store?.close();
     await rm(directory, { recursive: true, force: true });
