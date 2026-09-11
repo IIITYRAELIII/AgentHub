@@ -17,7 +17,7 @@ import { WorkspaceCatalogStore } from "../../src/infrastructure/persistence/work
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
 const COMPOSITION_ROOT = path.join(ROOT, "src", "composition", "agent-hub-composition.mjs");
-const IGNORED_DIRECTORIES = new Set(["node_modules", "build", "dist", ".wrangler"]);
+const IGNORED_DIRECTORIES = new Set(["node_modules", "build", "dist", ".wrangler", "WIP"]);
 const SOURCE_LAYERS = new Set([
   "application",
   "composition",

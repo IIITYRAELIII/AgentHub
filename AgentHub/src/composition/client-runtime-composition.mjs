@@ -1,4 +1,5 @@
 import { recoverRestartOperation } from "../application/restart-operation-mutations.mjs";
+import { createContourCommandMapping } from "../infrastructure/filesystem/test-contour-command-mapping.mjs";
 import { canonicalizeProjectRoots, findContainingProject, samePath } from "../infrastructure/filesystem/config.mjs";
 import { taskGitDiff } from "../infrastructure/filesystem/task-git-diff.mjs";
 import { contextualCallback } from "../interfaces/telegram/callback-context.mjs";
@@ -197,6 +198,7 @@ export async function createClientRuntimeComposition({
 
   const delivery = await createDeliveryOutboxComposition({
     directoryPath: deliveryOutboxDirectory,
+    recordingRoot: config.testContourRecording?.root ?? null,
     retryIntervalMs: config.deliveryRetryIntervalSeconds * 1000,
     runtimeTimers,
     isStopping: () => hostState.stopping,
@@ -227,6 +229,8 @@ export async function createClientRuntimeComposition({
   });
 
   ports.taskState.bind(createTaskStateWiring({
+    contourCommandMapping: config.testContourRecording
+      ? createContourCommandMapping({ root: config.testContourRecording.root }) : null,
     taskCatalogService,
     taskSyncStore,
     selectionStore,

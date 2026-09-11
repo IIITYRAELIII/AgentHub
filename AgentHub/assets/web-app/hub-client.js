@@ -107,6 +107,11 @@ const visibleHistoryLoads = new Set();
 const historyLoadStates = new Map();
 const historyRequestGenerationByTask = new Map();
 const outgoingByTask = new Map();
+window.AgentHubRetainedUploadAttachments = () => [...outgoingByTask.values()]
+  .flatMap((messages) => [...messages.values()])
+  .filter((message) => message.projectionAuthority === "optimistic"
+    && !["accepted", "rejected"].includes(message.deliveryState))
+  .flatMap((message) => message.attachments ?? []);
 const liveProbeByTask = new Map();
 const liveUserMessagesByTask = new Map();
 const liveCardsByTask = new Map();
@@ -616,6 +621,9 @@ function updateOutgoing(taskIdValue, clientUserMessageId, patch) {
   const message = outgoingMessages(resolvedTaskId).get(clientUserMessageId);
   if (!message) return "";
   Object.assign(message, patch);
+  if (patch.projectionAuthority === "canonical" || ["accepted", "rejected"].includes(patch.deliveryState)) {
+    queueMicrotask(() => window.AgentHubPruneComposerFiles?.());
+  }
   return resolvedTaskId;
 }
 
@@ -753,6 +761,7 @@ function optimisticDeferredEntries(taskIdValue, serverEntries = []) {
       createdAt: message.submittedAt ?? message.time,
       delivery: message.delivery,
       deliveryState: message.deliveryState,
+      uploadState: message.uploadState,
       admissionRetryAvailable: message.deliveryState === "unconfirmed" && Boolean(message.retryRequest),
       remoteCommandId: message.remoteCommandId,
       optimistic: !serverClientIds.has(message.clientUserMessageId),
@@ -768,6 +777,19 @@ function renderTaskQueue(taskIdValue, snapshot = lastSnapshot) {
   ));
 }
 
+// Confirming an origin against the message body belongs to one owner, the Hub
+// projection: it parses the transport envelope and compares every origin field.
+// The client would only be able to repeat part of that rule, and a partial copy
+// disagrees with the authority exactly where it matters. So the card checks the
+// one thing it owns independently — that the origin belongs to this message's
+// alias — and trusts the already confirmed projection for the rest.
+function confirmedCardOrigin(origin, clientUserMessageId) {
+  if (!origin || typeof origin !== "object" || Array.isArray(origin)) return null;
+  const requestId = String(origin.requestId ?? "").trim();
+  if (!requestId || String(clientUserMessageId ?? "").trim() !== `mcp:${requestId}`) return null;
+  return origin;
+}
+
 function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
   const projection = deferredInputConversationProjection(deferred, messageReceipts);
   if (!projection) return false;
@@ -779,6 +801,10 @@ function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
   if (!text.trim() && !responseAnnotations.length && !attachments.length) return false;
   optimisticDeferredClientUserMessageIds.delete(projection.clientUserMessageId);
   deferredClientUserMessageIds.delete(projection.clientUserMessageId);
+  // The server entry already carries the authoritative origin of this exact
+  // message. Without it the local card renders as an own message, so the source
+  // and the interstream kind travel together with the author.
+  const deferredOrigin = confirmedCardOrigin(deferred.origin, projection.clientUserMessageId);
   const existing = messages.get(projection.clientUserMessageId);
   if (existing) {
     Object.assign(existing, {
@@ -786,6 +812,11 @@ function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
       projectionState: projection.projectionState,
       providerAccepted: projection.providerAccepted,
       clientProjectionIntent: projection.clientProjectionIntent,
+      // Attribution is always restated, never left over: a canonical update
+      // that no longer confirms an origin must clear the previous source.
+      origin: deferredOrigin ?? null,
+      kind: deferredOrigin ? "interstream" : null,
+      author: (deferredOrigin && String(deferred.author ?? "").trim()) || "Вы",
       ...deliveryPatch(projection.deliveryState),
       ...(!existing.submittedAt && projection.submittedAt
         ? { submittedAt: projection.submittedAt }
@@ -808,7 +839,8 @@ function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
       providerAccepted: projection.providerAccepted,
       clientProjectionIntent: projection.clientProjectionIntent,
       role: "user",
-      author: String(deferred.author ?? "").trim() || "Вы",
+      ...(deferredOrigin ? { origin: deferredOrigin, kind: "interstream" } : {}),
+      author: (deferredOrigin && String(deferred.author ?? "").trim()) || "Вы",
       text,
       responseAnnotations,
       responseAnnotationRequest: String(deferred.responseAnnotationRequest ?? text),
@@ -883,6 +915,9 @@ function applyMessageReceipts(snapshot) {
     const patch = projection.deliveryState ? deliveryPatch(projection.deliveryState) : null;
     if (!patch) continue;
     const restoredText = String(receipt.displayText ?? "");
+    // Same reason as the deferred card: the receipt owns the origin of its exact
+    // message, and losing it here turns a foreign message into an own one.
+    const receiptOrigin = confirmedCardOrigin(receipt.origin, clientUserMessageId);
     const restoredAnnotations = normalizedResponseAnnotations(receipt.responseAnnotations);
     const restoredRequest = String(receipt.responseAnnotationRequest ?? "");
     const restoredAttachments = attachmentViews(receipt.attachments);
@@ -908,7 +943,8 @@ function applyMessageReceipts(snapshot) {
         providerAccepted: projection.providerAccepted,
         clientProjectionIntent: projection.clientProjectionIntent,
         role: "user",
-        author: String(receipt.author ?? "").trim() || "Вы",
+        ...(receiptOrigin ? { origin: receiptOrigin, kind: "interstream" } : {}),
+        author: (receiptOrigin && String(receipt.author ?? "").trim()) || "Вы",
         text: restoredText,
         responseAnnotations: restoredAnnotations,
         responseAnnotationRequest: restoredRequest,
@@ -930,6 +966,9 @@ function applyMessageReceipts(snapshot) {
       projectionState: projection.projectionState,
       providerAccepted: projection.providerAccepted,
       clientProjectionIntent: projection.clientProjectionIntent,
+      origin: receiptOrigin ?? null,
+      kind: receiptOrigin ? "interstream" : null,
+      author: (receiptOrigin && String(receipt.author ?? "").trim()) || "Вы",
       ...(projection.submittedAt ? {
         submittedAt: projection.submittedAt,
         time: projection.submittedAt,
@@ -2137,6 +2176,14 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
     const previousTasks = previousSnapshot?.tasks ?? [];
     updateSendTaskGenerations(previousTasks, snapshot.tasks);
     lastSnapshot = snapshot;
+    for (const session of attachmentSendSessions.values()) {
+      try { assertCurrentSendTaskOperation(session.operation); }
+      catch (error) {
+        session.cancellationError = error;
+        session.controller.abort();
+        session.resume?.();
+      }
+    }
     const representativeTasks = representativeSnapshotTasks(snapshot.tasks);
     agentHub.setExchangeRates(snapshot.exchangeRates ?? null);
     agentHub.setServerStatus(snapshot.server ?? null);
@@ -2679,7 +2726,24 @@ function dataUrlBody(dataUrl) {
   return { type: match[1], body: bytes };
 }
 
-async function uploadAttachment(attachment) {
+const attachmentUploader = window.AgentHubAttachmentUpload.create({
+  request: async (path, init) => {
+    if (vscode && !(await window.__agentHubDirectTransport?.available())) {
+      throw new Error("Локальное соединение для загрузки файлов недоступно. Повтори после подключения Hub.");
+    }
+    await localSessionReady;
+    const signal = AbortSignal.any([...(init?.signal ? [init.signal] : []), AbortSignal.timeout(30_000)]);
+    return hubFetch(path, { ...init, signal, headers: { ...authorizationHeaders(), ...init?.headers } });
+  },
+});
+window.AgentHubAttachmentCapabilities = () => attachmentUploader.capabilities();
+
+async function uploadAttachment(attachment, options) {
+  if (attachment?.blobId) return attachmentUploader.upload(attachment, options);
+  if (Number(attachment?.size) > 20 * 1024 * 1024
+    || String(attachment?.dataUrl ?? "").length > 28 * 1024 * 1024) {
+    throw new Error("Устаревший формат вложения ограничен 20 МБ. Выбери файл снова.");
+  }
   if (vscode) {
     return bridgeCall("upload-attachment", {
       name: attachment.name ?? "attachment.bin",
@@ -2797,7 +2861,7 @@ function enqueueTaskHistoryLoad(id, identity, {
           () => control("task-history", {
             ...pending.identity,
             limit: 20,
-            includeActive: false,
+            includeActive: true,
             refreshSource: pending.refreshSource,
             knownVersion: historyPageByTask.get(id)?.version ?? "",
           }),
@@ -2934,6 +2998,17 @@ agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
   }
 }));
 
+const attachmentSendSessions = new Map();
+agentHub.on("message:upload-resume", ({ clientUserMessageId }) => {
+  attachmentSendSessions.get(clientUserMessageId)?.resume?.();
+});
+agentHub.on("message:upload-cancel", ({ clientUserMessageId }) => {
+  const session = attachmentSendSessions.get(clientUserMessageId);
+  if (!session) return;
+  session.controller.abort();
+  session.resume?.();
+});
+
 function sendUserMessage(request, frozenParams = null) {
   const sendTransaction = window.AgentHubMessageSendTransaction;
   const optimisticId = `local:${request.requestId}`;
@@ -3024,11 +3099,52 @@ function sendUserMessage(request, frozenParams = null) {
         { remote: !vscode },
       );
       if (!paths.length) {
-        for (const attachment of request.attachments ?? []) {
-          assertCurrentSendTaskOperation(sendTaskOperation);
-          const path = await uploadAttachment(attachment);
-          assertCurrentSendTaskOperation(sendTaskOperation);
-          paths.push(path);
+        const session = { controller: new AbortController(), resume: null, operation: sendTaskOperation };
+        const total = requestAttachments.reduce((sum, file) => sum + Number(file.size || 0), 0);
+        let uploaded = 0;
+        const project = (uploadState, delivery) => {
+          updateOutgoing(request.taskId, request.requestId, { uploadState, delivery });
+          renderOutgoingWithoutBlockingSend(request.taskId, { queue: true });
+        };
+        attachmentSendSessions.set(request.requestId, session);
+        try {
+          for (const attachment of requestAttachments) {
+            let path;
+            while (!path) {
+              session.controller.signal.throwIfAborted();
+              assertCurrentSendTaskOperation(sendTaskOperation);
+              try {
+                project("uploading", `Загрузка ${attachment.name}…`);
+                path = await uploadAttachment(attachment, {
+                  signal: session.controller.signal,
+                  progress: (bytes) => project("uploading", `Загрузка файлов: ${Math.floor((uploaded + bytes) / Math.max(1, total) * 100)}%`),
+                });
+                session.controller.signal.throwIfAborted();
+              } catch (error) {
+                if (session.controller.signal.aborted || error?.attachmentUploadTerminal
+                  || error?.agentHubMessagePreparationCancelled || !attachment.blobId) throw error;
+                await new Promise((resolve) => {
+                  session.resume = resolve;
+                  project("paused", `Загрузка приостановлена: ${hubErrorMessage(error)}`);
+                });
+                session.resume = null;
+              }
+            }
+            assertCurrentSendTaskOperation(sendTaskOperation);
+            paths.push(path);
+            uploaded += Number(attachment.size || 0);
+          }
+          session.controller.signal.throwIfAborted();
+        } catch (error) {
+          // No send-message command exists yet: recovery is an exact rejected
+          // preparation, never an unknown provider admission or a new identity.
+          const failure = new Error(session.cancellationError ? hubErrorMessage(session.cancellationError)
+            : session.controller.signal.aborted ? "Отправка отменена. Вложения сохранены для повтора." : hubErrorMessage(error));
+          failure.agentHubMessagePreparationCancelled = true;
+          throw failure;
+        } finally {
+          attachmentSendSessions.delete(request.requestId);
+          updateOutgoing(request.taskId, request.requestId, { uploadState: "" });
         }
         assertCurrentSendTaskOperation(sendTaskOperation);
         updateOutgoing(request.taskId, request.requestId, { uploadedPaths: paths.slice() });

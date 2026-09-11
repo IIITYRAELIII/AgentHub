@@ -198,6 +198,28 @@ export function sameAuditedInterstreamOrigin(left, right) {
   )));
 }
 
+// An envelope that its supposed origin cannot confirm proves nothing. Neither
+// the body nor the attribution may be trusted then, so the projection keeps the
+// ordinary user attribution instead of naming a source it cannot verify. A body
+// without an envelope carries no competing claim and keeps its exact origin.
+export function confirmedInterstreamOrigin(value, {
+  origin = null,
+  clientUserMessageId = "",
+} = {}) {
+  const normalized = normalizeInterstreamOrigin(origin);
+  if (!normalized) return null;
+  // The alias binds the message to its request and is checked first, whether or
+  // not the body still carries an envelope: an already cleaned body proves
+  // nothing about whose request it belongs to.
+  const suppliedClientId = String(clientUserMessageId ?? "").trim();
+  if (suppliedClientId) {
+    const requestId = String(normalized.requestId ?? "").trim();
+    if (!requestId || suppliedClientId !== `mcp:${requestId}`) return null;
+  }
+  if (!interstreamMessageDetails(value)) return normalized;
+  return trustedInterstreamMessageDetails(value, { origin, clientUserMessageId }) ? normalized : null;
+}
+
 export function trustedInterstreamMessageDetails(value, {
   origin = null,
   clientUserMessageId = "",

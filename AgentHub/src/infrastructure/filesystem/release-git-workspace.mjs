@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { assertContourExternalEffects, assertContourGitAvailable } from "../../ports/contour-external-effects.mjs";
 
 import { taskRepositoryKey } from "../../domain/task-git-reference.mjs";
 import { canonicalPath } from "./config.mjs";
@@ -13,7 +14,7 @@ import { releaseTaskNetProjections } from "./release-task-net-projection.mjs";
 const RELEASE_MARKER = "agent-hub-release-clone.json";
 const RELEASE_BRANCH = "PreRelease";
 
-function runGit(args, { cwd, timeoutMs = 120_000 } = {}) {
+function runGit(args, { cwd, timeoutMs = 120_000, rawOutput = false } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn("git", args, { cwd, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
     const stdout = [];
@@ -30,7 +31,8 @@ function runGit(args, { cwd, timeoutMs = 120_000 } = {}) {
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      const output = Buffer.concat(stdout).toString("utf8").trim();
+      const bytes = Buffer.concat(stdout);
+      const output = rawOutput ? bytes : bytes.toString("utf8").trim();
       const errorText = Buffer.concat(stderr).toString("utf8").trim();
       if (code === 0) resolve(output);
       else reject(new Error(errorText || `git ${args[0]} exited with ${code}`));
@@ -355,7 +357,10 @@ export async function assertReleaseCandidateContourSource({ sourceRoot: requeste
 }
 
 export class ReleaseGitWorkspaceService {
-  constructor({ dataDir } = {}) {
+  #contourExternalEffects;
+
+  constructor({ dataDir, contourExternalEffects = null } = {}) {
+    this.#contourExternalEffects = assertContourExternalEffects(contourExternalEffects);
     this.dataDir = canonicalPath(String(dataDir ?? ""));
     this.releaseRepositoriesRoot = path.join(this.dataDir, "release-repositories");
     this.lastReconciliation = {
@@ -363,7 +368,12 @@ export class ReleaseGitWorkspaceService {
     };
   }
 
+  #assertAvailable(operation) {
+    assertContourGitAvailable(this.#contourExternalEffects, "release-git", operation);
+  }
+
   async assertPrimaryInvariant(projectRoot, { phase = "release" } = {}) {
+    this.#assertAvailable("assertPrimaryInvariant");
     const snapshot = await primarySnapshot(projectRoot);
     const failure = primaryInvariantFailure(snapshot, phase);
     if (failure) throw new Error(failure);
@@ -371,6 +381,7 @@ export class ReleaseGitWorkspaceService {
   }
 
   async withAwaitTransition(workspaceId, operation) {
+    this.#assertAvailable("withAwaitTransition");
     if (typeof operation !== "function") throw new TypeError("Await transition operation is required");
     const identity = sha256(String(workspaceId ?? "").trim()).slice(0, 24);
     const lock = path.join(this.dataDir, "locks", `release-await-${identity}`);
@@ -380,6 +391,7 @@ export class ReleaseGitWorkspaceService {
   async inspectMainChanges({
     projectRoot, publishedRevision, approvedLocalMainCommit = null, approvedOriginMainCommit = null,
   } = {}) {
+    this.#assertAvailable("inspectMainChanges");
     const baseline = String(publishedRevision ?? "").trim();
     if (!baseline) throw new Error("main review requires the last published revision");
     const primary = await primarySnapshot(projectRoot);
@@ -518,6 +530,7 @@ export class ReleaseGitWorkspaceService {
   async prepareCandidate({
     planRevision, projectRoot, workspaceId = null, frozenTasks = [], approvedBaseCommit = null, validateBeforeCommit = null,
   } = {}) {
+    this.#assertAvailable("prepareCandidate");
     const revision = String(planRevision ?? "").trim();
     if (!revision) throw new Error("release candidate requires the exact plan revision");
     const tasks = normalizedFrozenTasks(frozenTasks);
@@ -617,18 +630,20 @@ export class ReleaseGitWorkspaceService {
             const patch = await runGit([
               "diff", "--binary", "--full-index", "--find-renames",
               integration.parent, integration.commit, "--", ".", ":(exclude,glob)**/CHANGELOG.md", ":(exclude)CHANGELOG.md",
-            ], { cwd: clone.releaseRoot, timeoutMs: 300_000 });
-            if (!patch) continue;
+            ], { cwd: clone.releaseRoot, timeoutMs: 300_000, rawOutput: true });
+            // A patch is a byte protocol: blank context lines and binary block
+            // terminators must reach git apply exactly as git diff emitted them.
+            if (!patch.length) continue;
             try {
               await runGitWithInput([
                 "apply", "--index", "--whitespace=nowarn", "-",
-              ], `${patch}\n`, { cwd: clone.releaseRoot, timeoutMs: 300_000 });
+              ], patch, { cwd: clone.releaseRoot, timeoutMs: 300_000 });
             } catch {
               await runGit(["read-tree", "--reset", "-u", priorTree], { cwd: clone.releaseRoot });
               try {
                 await runGitWithInput([
                   "apply", "--3way", "--index", "--whitespace=nowarn", "-",
-                ], `${patch}\n`, { cwd: clone.releaseRoot, timeoutMs: 300_000 });
+                ], patch, { cwd: clone.releaseRoot, timeoutMs: 300_000 });
                 continue;
               } catch (error) {
                 const conflicts = String(await gitMaybe(["diff", "--name-only", "--diff-filter=U"], {
@@ -718,6 +733,7 @@ export class ReleaseGitWorkspaceService {
   }
 
   async freezePublicationCandidate({ projectRoot, workspaceId, ...options } = {}) {
+    this.#assertAvailable("freezePublicationCandidate");
     if (!String(workspaceId ?? "").trim()) throw new Error("publication freeze requires its Workspace");
     return this.withAwaitTransition(workspaceId, async () => {
       const initial = await this.assertPrimaryInvariant(projectRoot, { phase: "publication freeze" });
@@ -736,6 +752,7 @@ export class ReleaseGitWorkspaceService {
   }
 
   async frozenCandidate(projectRoot) {
+    this.#assertAvailable("frozenCandidate");
     const primary = await primarySnapshot(projectRoot);
     const layout = this.#layout(primary.root);
     const checkpoint = await readJson(layout.checkpointFile);
@@ -755,6 +772,7 @@ export class ReleaseGitWorkspaceService {
   }
 
   async synchronizePublishedPrimary({ projectRoot, publishedRevision, planRevision = null } = {}) {
+    this.#assertAvailable("synchronizePublishedPrimary");
     const target = String(publishedRevision ?? "").trim();
     const initial = await primarySnapshot(projectRoot);
     try {
@@ -826,6 +844,7 @@ export class ReleaseGitWorkspaceService {
   }
 
   async reconcile({ projectRoots = [] } = {}) {
+    this.#assertAvailable("reconcile");
     const entries = await readdir(this.releaseRepositoriesRoot, { withFileTypes: true }).catch((error) => {
       if (error?.code === "ENOENT") return [];
       throw error;

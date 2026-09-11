@@ -1,3 +1,4 @@
+import { assertCodexRolloutReadAllowed } from "../../infrastructure/filesystem/test-contour-rollout-policy.mjs";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import path from "node:path";
@@ -131,6 +132,7 @@ export async function rolloutObservationGeneration(
   info,
   maximumBytes = CODEX_ROLLOUT_PROVENANCE_BYTES,
 ) {
+  assertCodexRolloutReadAllowed("rolloutObservationGeneration");
   const size = Math.max(0, Number(info?.size) || 0);
   if (!size) return "";
   const length = Math.min(size, Math.max(1, Number(maximumBytes) || CODEX_ROLLOUT_PROVENANCE_BYTES));
@@ -1286,6 +1288,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
     pinCacheState = null,
   } = {},
 ) {
+  if (String(rolloutPath ?? "").trim()) assertCodexRolloutReadAllowed("readCodexRolloutActivityOnCurrentThread");
   const normalized = String(rolloutPath ?? "").trim();
   const shouldPinCache = () => pinCache === true || pinCacheState?.requested === true;
   if (!normalized) {
@@ -1750,6 +1753,9 @@ function codexActivityReadKey(rolloutPath, {
 }
 
 export function readCodexRolloutActivity(rolloutPath, options = {}) {
+  if (String(rolloutPath ?? "").trim()) {
+    try { assertCodexRolloutReadAllowed("readCodexRolloutActivity"); } catch (error) { return Promise.reject(error); }
+  }
   const normalized = String(rolloutPath ?? "").trim();
   const {
     nowMs = Date.now(),

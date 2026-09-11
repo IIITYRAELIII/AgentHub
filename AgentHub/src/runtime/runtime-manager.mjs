@@ -266,6 +266,7 @@ export async function deployRuntime({
   releaseId = newReleaseId(),
   removeRelease,
   onPruneWarning,
+  beforeManifest,
   beforeStableLauncherCommit,
   beforePointerCommit,
   commitStableFile,
@@ -330,6 +331,9 @@ export async function deployRuntime({
       );
       names.sort();
     }
+    // Customize only the unpublished copy. Manifest bytes become immutable
+    // before the release is renamed or any stable launcher/pointer is changed.
+    await beforeManifest?.({ stagingRoot: staging, releaseId });
     const packageVersion = readAgentHubVersion({ packageFile: path.join(sourceRoot, "package.json") });
     const manifest = {
       releaseId,

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { MessageReceiptRegistry } from "../../../src/infrastructure/persistence/message-receipts.mjs";
 import test from "node:test";
+import { createDesktopReadComposition } from "../../../src/composition/desktop-read-composition.mjs";
 
 test("exact receipt display follows queued and active messages without changing wire input", async () => {
   const receipts = new MessageReceiptRegistry();
@@ -33,6 +34,7 @@ import {
 } from "../../../src/interfaces/desktop/desktop-snapshot.mjs";
 import { mergeTaskCatalog } from "../../../src/application/task-catalog-projection.mjs";
 import { messageWithTaskReferences, taskReferenceDescriptor } from "../../../src/domain/task-board-task.mjs";
+import { createInterstreamMessage, interstreamOriginAuthor } from "../../../src/domain/interstream-message.mjs";
 import { restoreDeferredInput } from "../../../src/domain/deferred-input.mjs";
 import {
   createMaintenanceOperation,
@@ -147,7 +149,7 @@ function fixture(overrides = {}) {
     refreshCatalog: null,
     ...overrides,
   };
-  const factory = createDesktopSnapshotFactory({
+  const factory = (overrides.createFactory ?? createDesktopSnapshotFactory)({
     clock: {
       nowMs: () => 7_000,
       nowIso: () => "2026-07-30T10:02:00.000Z",
@@ -296,9 +298,78 @@ function fixture(overrides = {}) {
     },
     monotonicNow: overrides.monotonicNow,
     warn: (...args) => state.warnings.push(args),
-  });
+  }, state);
   return { ...factory, state, selected, run, entry };
 }
+
+test("composed protocol 4 snapshots carry exact read identity before delta versioning", async () => {
+  const reads = [];
+  let cursor = null;
+  let cursorReads = 0;
+  const setup = fixture({
+    run: null,
+    createFactory: (snapshot, state) => createDesktopReadComposition({
+      snapshot,
+      history: {},
+      readModel: {
+        readStateStore: {
+          get: ({ accountId }) => { cursorReads += 1; return cursor?.accountId === accountId ? cursor : null; },
+          markRead: (value) => {
+            reads.push(value);
+            cursor = { accountId: value.accountId, answerAtMs: Date.parse(value.answerAt), answerTurnId: value.answerTurnId,
+              answerRevision: value.answerRevision };
+            state.revision = `read-${reads.length}`;
+            return cursor;
+          },
+        },
+        trustedDeviceUserId: (context) => context?.userId ?? "owner",
+        hasAllowedUsers: () => true,
+        lastTaskMessage: (task) => task?.threadId === "thread-1" ? state.lastMessage : null,
+      },
+    }),
+  });
+  setup.entry.running = false;
+  setup.state.lastMessage.terminalRevision = 2;
+  const first = await setup.desktopSnapshot({ snapshotProtocol: 4, compactSnapshot: true });
+  const [task] = first.collectionDeltas.conversations.reset;
+  assert.equal(task.latestFinal?.revision, 2);
+  assert.equal(task.latestFinal?.turnId, "turn-previous");
+  assert.equal(task.unread, true);
+  assert.equal(task.running, false);
+  assert.equal(cursorReads, 1);
+  const builds = setup.state.snapshotBuilds;
+  const unchanged = await setup.desktopSnapshot({ snapshotProtocol: 4, compactSnapshot: true,
+    knownVersion: first.version,
+    ...Object.fromEntries(Object.entries(first.collectionDeltas).map(([name, delta]) => [`${name}Version`, delta.version])),
+  });
+  assert.equal(unchanged.notModified, true);
+  assert.equal(unchanged.snapshotTiming.cacheHit, true);
+  assert.equal(setup.state.snapshotBuilds, builds);
+  assert.equal(cursorReads, 1);
+  const legacy = await setup.desktopSnapshot({ snapshotProtocol: 3 });
+  assert.deepEqual(task.latestFinal, legacy.tasks[0].latestFinal);
+  assert.equal((await setup.markDesktopTaskRead({ final: { ...task.latestFinal, revision: 1 } })).marked, false);
+  assert.equal((await setup.markDesktopTaskRead({ final: { ...task.latestFinal, threadId: "foreign" } })).marked, false);
+  assert.equal(reads.length, 0);
+  assert.equal((await setup.markDesktopTaskRead({ final: task.latestFinal })).marked, true);
+  const read = await setup.desktopSnapshot({ snapshotProtocol: 4, compactSnapshot: true,
+    conversationsVersion: first.collectionDeltas.conversations.version });
+  assert.equal(read.collectionDeltas.conversations.upserts[0].unread, false);
+  assert.notEqual(read.collectionDeltas.conversations.version, first.collectionDeltas.conversations.version);
+  const fullRead = await setup.desktopSnapshot({ snapshotProtocol: 3 });
+  assert.equal(fullRead.tasks[0].unread, false);
+  assert.notEqual(fullRead.version, legacy.version);
+  const otherAccount = await setup.desktopSnapshot({ snapshotProtocol: 4, compactSnapshot: true }, { userId: "other" });
+  assert.equal(otherAccount.collectionDeltas.conversations.reset[0].unread, true);
+  setup.state.lastMessage.terminalRevision = 3;
+  setup.state.revision = "final-revision-3";
+  const newer = await setup.desktopSnapshot({ snapshotProtocol: 4, compactSnapshot: true,
+    conversationsVersion: read.collectionDeltas.conversations.version });
+  assert.equal(newer.collectionDeltas.conversations.upserts[0].latestFinal.revision, 3);
+  assert.equal(newer.collectionDeltas.conversations.upserts[0].unread, true);
+  assert.equal((await setup.markDesktopTaskRead({ final: task.latestFinal })).marked, false);
+  assert.equal(reads.length, 1);
+});
 
 test("desktopContextSnapshot preserves the context JSON contract", () => {
   const { desktopContextSnapshot, state } = fixture();
@@ -1808,4 +1879,286 @@ test("desktop snapshot coalesces one failing background catalog refresh", async 
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(state.warnings.length, 1);
   assert.match(state.warnings[0].join(" "), /database is locked/u);
+});
+
+test("an unsettled interstream steer names its source on the first projected frame", () => {
+  const origin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-s3",
+    streamName: "S3",
+    provider: "codex",
+    model: "GPT-6 Astra",
+    sourceThreadId: "thread-s3",
+    requestId: "s3-measurements-final-20260911",
+  };
+  const clientUserMessageId = `mcp:${origin.requestId}`;
+  const body = "Замеры готовы, прикладываю сводку.";
+  const envelope = createInterstreamMessage({ ...origin, text: body });
+  const author = interstreamOriginAuthor(origin);
+  const receipts = new MessageReceiptRegistry();
+  const identity = { provider: "codex", threadId: "thread-1", clientUserMessageId };
+  // The accepted receipt already owns the origin; the provider echo does not yet.
+  receipts.reserve(identity, "fingerprint", {
+    pending: true,
+    displayText: envelope,
+    author,
+    origin,
+  });
+  const setup = fixture({ receiptForMessage: (key) => receipts.get(key) });
+  setup.run.clientUserMessageId = clientUserMessageId;
+  setup.run.userMessages = [{
+    itemId: "user-steer",
+    clientUserMessageId,
+    role: "user",
+    text: envelope,
+  }];
+
+  const firstFrame = setup.desktopRunSnapshot(setup.run).userMessages[0];
+  assert.equal(firstFrame.text, body, "первый кадр показал транспортный конверт вместо тела");
+  assert.equal(firstFrame.author, author);
+  assert.equal(firstFrame.kind, "interstream");
+  assert.equal(firstFrame.origin?.streamName, origin.streamName);
+  assert.equal(firstFrame.origin?.requestId, origin.requestId);
+  assert.doesNotMatch(firstFrame.text, /<agent-hub-stream-message>/u);
+
+  // The later provider enrichment must not change what the user already sees.
+  setup.run.userMessages[0].messageOrigin = origin;
+  const enriched = setup.desktopRunSnapshot(setup.run).userMessages[0];
+  assert.equal(enriched.text, firstFrame.text);
+  assert.equal(enriched.author, firstFrame.author);
+  assert.equal(enriched.kind, firstFrame.kind);
+  assert.deepEqual(enriched.origin, firstFrame.origin);
+});
+
+test("a receipt origin cannot be borrowed by another message or forged by its author", () => {
+  const origin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-s3",
+    streamName: "S3",
+    provider: "codex",
+    model: "GPT-6 Astra",
+    sourceThreadId: "thread-s3",
+    requestId: "s3-measurements-final-20260911",
+  };
+  const clientUserMessageId = `mcp:${origin.requestId}`;
+  const envelope = createInterstreamMessage({ ...origin, text: "Замеры готовы." });
+  const author = interstreamOriginAuthor(origin);
+
+  const foreignIdentity = () => {
+    const receipts = new MessageReceiptRegistry();
+    receipts.reserve({ provider: "codex", threadId: "thread-1", clientUserMessageId: "mcp:other-request" },
+      "fingerprint", { pending: true, displayText: envelope, author, origin });
+    const setup = fixture({ receiptForMessage: (key) => receipts.get(key) });
+    setup.run.clientUserMessageId = clientUserMessageId;
+    setup.run.userMessages = [{ itemId: "user-1", clientUserMessageId, role: "user", text: envelope }];
+    return setup.desktopRunSnapshot(setup.run).userMessages[0];
+  };
+  const borrowed = foreignIdentity();
+  assert.equal(borrowed.origin, undefined, "чужой receipt подставил origin");
+  assert.equal(borrowed.kind, undefined);
+  assert.notEqual(borrowed.author, author);
+  assert.match(borrowed.text, /<agent-hub-stream-message>/u, "тело раскрыто без подтверждённого origin");
+
+  const conflicting = () => {
+    const receipts = new MessageReceiptRegistry();
+    // The receipt is exact, but its origin belongs to another request.
+    receipts.reserve({ provider: "codex", threadId: "thread-1", clientUserMessageId },
+      "fingerprint", {
+        pending: true,
+        displayText: envelope,
+        author,
+        origin: { ...origin, requestId: "conflicting-request" },
+      });
+    const setup = fixture({ receiptForMessage: (key) => receipts.get(key) });
+    setup.run.clientUserMessageId = clientUserMessageId;
+    setup.run.userMessages = [{ itemId: "user-1", clientUserMessageId, role: "user", text: envelope }];
+    return setup.desktopRunSnapshot(setup.run).userMessages[0];
+  };
+  const mismatch = conflicting();
+  assert.match(mismatch.text, /<agent-hub-stream-message>/u, "конверт раскрыт при конфликтующем origin");
+  assert.equal(mismatch.origin, undefined, "неподтверждённый origin попал в проекцию");
+  assert.equal(mismatch.kind, undefined, "неподтверждённый конверт получил межпоточный вид");
+  assert.notEqual(mismatch.author, author, "неподтверждённый origin назвал чужого автора");
+
+  // The provider echo may contradict the envelope while the exact receipt holds
+  // the correct origin. A contradiction is never resolved in favour of either
+  // side: the message keeps its ordinary attribution.
+  const conflictingEcho = () => {
+    const receipts = new MessageReceiptRegistry();
+    receipts.reserve({ provider: "codex", threadId: "thread-1", clientUserMessageId },
+      "fingerprint", { pending: true, displayText: envelope, author, origin });
+    const setup = fixture({ receiptForMessage: (key) => receipts.get(key) });
+    setup.run.clientUserMessageId = clientUserMessageId;
+    setup.run.userMessages = [{
+      itemId: "user-1",
+      clientUserMessageId,
+      role: "user",
+      text: envelope,
+      messageOrigin: { ...origin, streamName: "WRONG", requestId: "other-request" },
+    }];
+    return setup.desktopRunSnapshot(setup.run).userMessages[0];
+  };
+  const echo = conflictingEcho();
+  assert.match(echo.text, /<agent-hub-stream-message>/u, "конверт раскрыт при конфликтующем эхе провайдера");
+  assert.equal(echo.origin, undefined, "конфликтующее эхо попало в проекцию");
+  assert.equal(echo.kind, undefined, "конфликтующее эхо получило межпоточный вид");
+  assert.doesNotMatch(String(echo.author ?? ""), /WRONG/u, "проекция назвала автора из конфликтующего эха");
+  assert.notEqual(echo.author, author);
+
+  const spoofed = () => {
+    const receipts = new MessageReceiptRegistry();
+    // An ordinary user message: no receipt origin at all, the body only looks
+    // like an envelope. It must stay literal text authored by the user.
+    receipts.reserve({ provider: "codex", threadId: "thread-1", clientUserMessageId: "client-user" },
+      "fingerprint", { pending: true, displayText: envelope });
+    const setup = fixture({ receiptForMessage: (key) => receipts.get(key) });
+    setup.run.clientUserMessageId = "client-user";
+    setup.run.userMessages = [{
+      itemId: "user-1", clientUserMessageId: "client-user", role: "user", text: envelope,
+    }];
+    return setup.desktopRunSnapshot(setup.run).userMessages[0];
+  };
+  const forged = spoofed();
+  assert.equal(forged.origin, undefined, "подделанный конверт получил origin");
+  assert.equal(forged.kind, undefined);
+  assert.notEqual(forged.author, author);
+  assert.match(forged.text, /<agent-hub-stream-message>/u);
+});
+
+test("a cleaned body still needs its alias to confirm the source", async () => {
+  const origin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-s3",
+    streamName: "S3",
+    provider: "codex",
+    model: "GPT-6 Astra",
+    sourceThreadId: "thread-s3",
+    requestId: "request-one",
+  };
+  const clientUserMessageId = "mcp:request-one";
+  const body = "Замеры готовы, прикладываю сводку.";
+  const author = interstreamOriginAuthor(origin);
+  const conflicting = { ...origin, streamName: "WRONG", requestId: "conflicting-request" };
+
+  // 1. The receipt is exact but its origin belongs to another request, and the
+  //    body is already clean, so no envelope can contradict it.
+  const viaReceipt = () => {
+    const receipts = new MessageReceiptRegistry();
+    receipts.reserve({ provider: "codex", threadId: "thread-1", clientUserMessageId },
+      "fingerprint", { pending: true, displayText: body, author, origin: conflicting });
+    const setup = fixture({ receiptForMessage: (key) => receipts.get(key) });
+    setup.run.clientUserMessageId = clientUserMessageId;
+    setup.run.userMessages = [{ itemId: "user-1", clientUserMessageId, role: "user", text: body }];
+    return setup.desktopRunSnapshot(setup.run);
+  };
+  const receiptFrame = viaReceipt();
+  const receiptMessage = receiptFrame.userMessages[0];
+  assert.equal(receiptMessage.text, body, "чистое тело было переписано");
+  assert.equal(receiptMessage.origin, undefined, "неподтверждённый origin попал в проекцию чистого тела");
+  assert.equal(receiptMessage.kind, undefined);
+  assert.doesNotMatch(String(receiptMessage.author ?? ""), /WRONG/u);
+  assert.equal(receiptFrame.promptOrigin, undefined, "подпись хода взяла неподтверждённый источник");
+  assert.equal(receiptFrame.promptAuthor, undefined);
+
+  // 2. The provider echo carries the conflicting origin over a clean body.
+  const viaEcho = () => {
+    const receipts = new MessageReceiptRegistry();
+    receipts.reserve({ provider: "codex", threadId: "thread-1", clientUserMessageId },
+      "fingerprint", { pending: true, displayText: body, author, origin });
+    const setup = fixture({ receiptForMessage: (key) => receipts.get(key) });
+    setup.run.clientUserMessageId = clientUserMessageId;
+    setup.run.userMessages = [{
+      itemId: "user-1", clientUserMessageId, role: "user", text: body, messageOrigin: conflicting,
+    }];
+    return setup.desktopRunSnapshot(setup.run).userMessages[0];
+  };
+  const echoMessage = viaEcho();
+  assert.equal(echoMessage.text, body);
+  assert.equal(echoMessage.origin, undefined, "конфликтующее эхо прошло на чистом теле");
+  assert.equal(echoMessage.kind, undefined);
+  assert.doesNotMatch(String(echoMessage.author ?? ""), /WRONG/u);
+
+  // 3. The deferred projector must refuse the same conflict on a clean input.
+  const receipts = new MessageReceiptRegistry();
+  const identity = { provider: "codex", threadId: "thread-1", clientUserMessageId };
+  receipts.reserve(identity, "fingerprint", { pending: true, displayText: body });
+  const setup = fixture({ receiptForMessage: (key) => receipts.get(key) });
+  setup.state.queued = [{ ...identity, id: "queue-1", input: body, messageOrigin: conflicting }];
+  const snapshot = await setup.desktopSnapshot();
+  const [deferred] = snapshot.deferredInputs;
+  assert.equal(deferred.text, body, "тело отложенного сообщения было переписано");
+  assert.equal(deferred.origin, undefined, "отложенное сообщение взяло неподтверждённый источник");
+  assert.equal(deferred.author, undefined);
+
+  // 4. The same clean body with an exact alias keeps its source.
+  const benign = () => {
+    const registry = new MessageReceiptRegistry();
+    registry.reserve({ provider: "codex", threadId: "thread-1", clientUserMessageId },
+      "fingerprint", { pending: true, displayText: body, author, origin });
+    const benignSetup = fixture({ receiptForMessage: (key) => registry.get(key) });
+    benignSetup.run.clientUserMessageId = clientUserMessageId;
+    benignSetup.run.userMessages = [{ itemId: "user-1", clientUserMessageId, role: "user", text: body }];
+    return benignSetup.desktopRunSnapshot(benignSetup.run).userMessages[0];
+  };
+  const confirmed = benign();
+  assert.equal(confirmed.text, body);
+  assert.equal(confirmed.author, author, "точная identity потеряла подтверждённый источник");
+  assert.equal(confirmed.kind, "interstream");
+  assert.equal(confirmed.origin?.requestId, origin.requestId);
+});
+
+test("a receipt reaches the client only with an origin its own message confirms", async () => {
+  const origin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-s3",
+    streamName: "S3",
+    provider: "codex",
+    model: "GPT-6 Astra",
+    sourceThreadId: "thread-s3",
+    requestId: "request-one",
+  };
+  const clientUserMessageId = "mcp:request-one";
+  const author = interstreamOriginAuthor(origin);
+  const receiptFor = (result) => [{
+    provider: "codex",
+    threadId: "thread-1",
+    clientUserMessageId,
+    createdAt: "2026-09-11T10:00:00.000Z",
+    fingerprint: "private-fingerprint",
+    result: { accepted: true, ...result },
+  }];
+
+  // The envelope keeps the same requestId but claims a different Stream.
+  const forgedEnvelope = createInterstreamMessage({
+    ...origin, workspaceId: "workspace-other", streamId: "stream-other", streamName: "WRONG",
+    sourceThreadId: "thread-other", text: "Замеры готовы.",
+  });
+  const conflicting = fixture();
+  conflicting.state.receipts = receiptFor({ displayText: forgedEnvelope, author, origin });
+  const [conflictingReceipt] = (await conflicting.desktopSnapshot()).messageReceipts;
+  assert.equal(conflictingReceipt.displayText, forgedEnvelope, "тело квитанции было переписано");
+  assert.equal(conflictingReceipt.origin, undefined, "конфликтующий origin дошёл до клиента");
+  assert.equal(conflictingReceipt.author, undefined, "конфликтующий автор дошёл до клиента");
+
+  // A stored origin whose requestId does not match the alias is refused too.
+  const foreign = fixture();
+  foreign.state.receipts = receiptFor({
+    displayText: "Замеры готовы.", author, origin: { ...origin, requestId: "conflicting-request" },
+  });
+  const [foreignReceipt] = (await foreign.desktopSnapshot()).messageReceipts;
+  assert.equal(foreignReceipt.origin, undefined, "чужой requestId дошёл до клиента");
+  assert.equal(foreignReceipt.author, undefined);
+
+  // The exact origin of this message still reaches the client with its author.
+  const benign = fixture();
+  benign.state.receipts = receiptFor({ displayText: "Замеры готовы.", author, origin });
+  const [benignReceipt] = (await benign.desktopSnapshot()).messageReceipts;
+  assert.equal(benignReceipt.displayText, "Замеры готовы.");
+  assert.equal(benignReceipt.author, author, "подтверждённый автор не дошёл до клиента");
+  assert.equal(benignReceipt.origin?.requestId, origin.requestId);
+  assert.equal(benignReceipt.origin?.streamName, origin.streamName);
 });

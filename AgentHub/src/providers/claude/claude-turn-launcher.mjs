@@ -8,6 +8,7 @@ import {
   resolveClaudeSessionCwd,
 } from "./claude.mjs";
 import { markProviderTurnRequested } from "../../domain/task-runs.mjs";
+import { prepareClaudeRecordingLaunch } from "../prepare-claude-recording-launch.mjs";
 
 export class ClaudeTurnLauncher {
   #d;
@@ -19,6 +20,23 @@ export class ClaudeTurnLauncher {
   async start(run, input, temporaryFiles, { forceSpeechButton = false } = {}) {
     const d = this.#d;
     const turnId = randomUUID();
+    if (d.recordingContourRoot) {
+      // The command and Stream/Thread remain canonical. Only execution paths
+      // cross to the isolated view; no original temporary file is registered
+      // for deletion by this run's completion path.
+      run.turnId = turnId;
+      const launch = await prepareClaudeRecordingLaunch({ root: d.recordingContourRoot, run, input, temporaryFiles });
+      d.taskRuns.reindex(run, { turnId: null });
+      if (launch.temporaryFiles.length) d.turnTemporaryFiles.set(turnId, launch.temporaryFiles);
+      run.claudeTemporaryFiles = [...launch.temporaryFiles];
+      run.claudeForceSpeechButton = forceSpeechButton === true;
+      run.sessionCwd = launch.cwd;
+      markProviderTurnRequested(run, { provider: "claude" });
+      await d.persistHistory(run);
+      const { temporaryFiles: ignored, ...invocation } = launch;
+      await d.runController.start(run, invocation);
+      return;
+    }
     const additionalDirectories = (Array.isArray(input) ? input : [])
       .filter((item) => ["localImage", "localFile"].includes(item?.type) && item.path)
       .map((item) => path.dirname(item.path));

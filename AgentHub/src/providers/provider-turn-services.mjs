@@ -317,7 +317,7 @@ export class CodexTurnService {
         await d.saveState();
         error = unconfirmedTurnStartError(error);
       }
-      await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
+      await Promise.all(temporaryFiles.map((file) => (d.removeFile ?? ((value) => unlink(value).catch(() => {})))(file)));
       await d.finishProgress(run, `Ошибка запуска: ${error.message}`);
       await d.completeRun(run);
       throw error;

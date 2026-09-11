@@ -7,6 +7,10 @@ function normalizedOperation(operation, index) {
     id: String(operation?.id ?? `operation-${index + 1}`),
     label: String(operation?.label ?? "").trim() || `Этап ${index + 1}`,
     state: OPERATION_STATES.has(state) ? state : "pending",
+    // Authoritative server flag for work that runs outside the startup barrier.
+    // It is never inferred from the operation id: only the owner knows whether
+    // an operation still gates readiness.
+    background: operation?.background === true,
     error: state === "failed" ? String(operation?.error ?? "") : "",
   };
 }
@@ -25,10 +29,17 @@ export function createStartupScreenModel(snapshot, nowMs = Date.now()) {
     : [];
   if (!operations.length) return { available: false, ready: Boolean(snapshot?.ready) };
 
-  const runningIndex = operations.findIndex((operation) => operation.state === "running");
-  const pendingIndex = operations.findIndex((operation) => operation.state === "pending");
+  // Optional background work never returns an already usable interface to the
+  // blocking startup screen: it gates neither progress nor failure. Its own
+  // state stays in the stage list as diagnostics.
+  const runningIndex = operations.findIndex((operation) => (
+    operation.state === "running" && !operation.background
+  ));
+  const pendingIndex = operations.findIndex((operation) => (
+    operation.state === "pending" && !operation.background
+  ));
   const currentIndex = runningIndex >= 0 ? runningIndex : pendingIndex;
-  const failed = operations.some((operation) => operation.state === "failed");
+  const failed = operations.some((operation) => operation.state === "failed" && !operation.background);
   const ready = Boolean(snapshot?.ready);
   const finished = currentIndex < 0;
   const activeOperation = currentIndex >= 0 ? operations[currentIndex] : null;
@@ -53,7 +64,12 @@ export function createStartupScreenModel(snapshot, nowMs = Date.now()) {
     stageTotal: operations.length,
     operations,
     completedOperations,
-    failedOperations: operations.filter((operation) => operation.state === "failed"),
+    failedOperations: operations.filter((operation) => (
+      operation.state === "failed" && !operation.background
+    )),
+    backgroundFailedOperations: operations.filter((operation) => (
+      operation.state === "failed" && operation.background
+    )),
     queueOperations,
   };
 }

@@ -197,3 +197,105 @@ test("startup animation runs only while its screen is visible", () => {
   animation.start();
   assert.equal(frames.size, 0);
 });
+
+// Optional work that the server marks as background runs outside the startup
+// barrier. Its state must never return a ready interface to the blocking
+// screen, and it must never hide a real mandatory failure.
+const readyWith = (operations) => ({
+  ready: true,
+  status: "ready",
+  startup: { startedAtMs: 1_000, completedAtMs: 9_000, operations },
+});
+
+test("background work never blocks a ready interface and keeps its error visible", () => {
+  const failedBackground = createStartupScreenModel(readyWith([
+    { id: "web", label: "Web", state: "completed" },
+    { id: "runs", label: "Восстановление ходов", state: "completed" },
+    {
+      id: "provider-metadata",
+      label: "Восстановление метаданных провайдера",
+      state: "failed",
+      background: true,
+      error: "Captured Codex rollouts are excluded from recording execution",
+    },
+  ]), 10_000);
+  assert.equal(failedBackground.failed, false, "фоновый отказ выдан за общий отказ запуска");
+  assert.equal(failedBackground.finished, true);
+  // The first visitor of this startup still sees the screen once and the
+  // controller hides it on its own schedule; the fix only stops a background
+  // state from keeping it open afterwards.
+  assert.equal(shouldShowStartupScreen(failedBackground, { visible: false, lastStartedAtMs: 0 }), true,
+    "первый показ этого запуска не должен пропадать");
+  assert.equal(shouldShowStartupScreen(failedBackground, { visible: true, lastStartedAtMs: 0 }), true,
+    "уже показанный экран обязан дождаться собственного правила скрытия");
+  assert.equal(shouldShowStartupScreen(failedBackground, { visible: false, lastStartedAtMs: 1_000 }), false,
+    "уже виденный запуск снова закрыл готовый интерфейс");
+
+  // The failure itself stays in diagnostics: the stage list and a separate set.
+  const diagnosed = failedBackground.operations.find((item) => item.id === "provider-metadata");
+  assert.equal(diagnosed.state, "failed");
+  assert.match(diagnosed.error, /recording execution/u);
+  assert.deepEqual(failedBackground.backgroundFailedOperations.map((item) => item.id), ["provider-metadata"]);
+  assert.deepEqual(failedBackground.failedOperations, []);
+
+  for (const state of ["pending", "running"]) {
+    const busyBackground = createStartupScreenModel(readyWith([
+      { id: "web", label: "Web", state: "completed" },
+      { id: "provider-metadata", label: "Фоновый ремонт", state, background: true },
+    ]), 10_000);
+    assert.equal(busyBackground.failed, false, `${state}: фоновая работа выдана за отказ`);
+    assert.equal(busyBackground.finished, true, `${state}: фоновая работа выдана за незавершённый запуск`);
+    assert.equal(busyBackground.currentIndex, -1, `${state}: фоновая работа выдана за текущий этап`);
+    assert.equal(shouldShowStartupScreen(busyBackground, { visible: false, lastStartedAtMs: 1_000 }), false,
+      `${state}: уже виденный запуск снова закрыл готовый интерфейс`);
+  }
+});
+
+test("a mandatory failure still blocks even next to background work", () => {
+  const model = createStartupScreenModel(readyWith([
+    { id: "web", label: "Web", state: "completed" },
+    { id: "provider", label: "Инициализация провайдера", state: "failed", error: "Signature check timed out" },
+    { id: "provider-metadata", label: "Фоновый ремонт", state: "failed", background: true, error: "recording" },
+  ]), 10_000);
+  assert.equal(model.failed, true, "обязательный отказ перестал блокировать запуск");
+  assert.deepEqual(model.failedOperations.map((item) => item.id), ["provider"]);
+  assert.deepEqual(model.backgroundFailedOperations.map((item) => item.id), ["provider-metadata"]);
+  assert.equal(shouldShowStartupScreen(model, { visible: false, lastStartedAtMs: 1_000 }), false);
+  assert.equal(shouldShowStartupScreen(model, { visible: true, lastStartedAtMs: 1_000 }), true);
+
+  // An unfinished mandatory stage keeps the screen active as before.
+  const starting = createStartupScreenModel({
+    ready: false,
+    status: "starting",
+    startup: {
+      startedAtMs: 1_000,
+      operations: [
+        { id: "web", label: "Web", state: "running" },
+        { id: "provider-metadata", label: "Фоновый ремонт", state: "failed", background: true, error: "recording" },
+      ],
+    },
+  }, 4_000);
+  assert.equal(starting.finished, false);
+  assert.equal(starting.currentIndex, 0, "текущим этапом стала не обязательная работа");
+  assert.equal(shouldShowStartupScreen(starting, { visible: false, lastStartedAtMs: 0 }), true);
+});
+
+test("a lost connection reports only mandatory failures", () => {
+  const model = createStartupScreenModel(readyWith([
+    { id: "web", label: "Web", state: "completed" },
+    { id: "provider-metadata", label: "Фоновый ремонт", state: "failed", background: true, error: "recording" },
+  ]), 10_000);
+  const disconnected = createStartupDisconnectedModel(model, { restarting: false });
+  assert.equal(disconnected.connectionLost, true);
+  assert.equal(disconnected.failed, false, "потеря связи показала фоновый отказ как отказ запуска");
+  assert.deepEqual(disconnected.failedOperations, []);
+
+  const withMandatory = createStartupScreenModel(readyWith([
+    { id: "provider", label: "Инициализация провайдера", state: "failed", error: "Signature check timed out" },
+    { id: "provider-metadata", label: "Фоновый ремонт", state: "failed", background: true, error: "recording" },
+  ]), 10_000);
+  const disconnectedMandatory = createStartupDisconnectedModel(withMandatory, { restarting: false });
+  assert.equal(disconnectedMandatory.failed, true, "потеря связи скрыла обязательный отказ");
+  assert.deepEqual(disconnectedMandatory.failedOperations.map((item) => item.id), ["provider"]);
+  assert.deepEqual(createStartupDisconnectedModel(withMandatory, { restarting: true }).failedOperations, []);
+});

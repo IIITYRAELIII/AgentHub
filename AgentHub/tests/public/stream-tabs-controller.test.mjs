@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import vm from "node:vm";
 
 import { stressMatrix } from "../helpers/test-profile.mjs";
@@ -27,9 +27,71 @@ function webAssetContentType(pathname) {
   return "application/octet-stream";
 }
 
+// Один процесс браузера на файл. Измерено 2026-09-11 на этой машине:
+// остановка процесса Edge после навигации стоит ~6.4 с, закрытие контекста
+// ~10 мс. Каждый тест получает собственные контексты с изолированным
+// хранилищем и закрывает только их; процесс закрывается один раз после
+// всех тестов файла. Схема повторяет принятую в composer-production.fixture.
+let sharedDomBrowserPromise = null;
+
+function sharedDomBrowser(chromium) {
+  if (!sharedDomBrowserPromise) {
+    const pending = process.platform === "win32"
+      ? chromium.launch({ channel: "msedge", headless: true })
+      : chromium.launch({ headless: true });
+    sharedDomBrowserPromise = pending;
+    void pending.catch(() => {
+      if (sharedDomBrowserPromise === pending) sharedDomBrowserPromise = null;
+    });
+  }
+  return sharedDomBrowserPromise;
+}
+
+after(async () => {
+  const pending = sharedDomBrowserPromise;
+  sharedDomBrowserPromise = null;
+  if (pending) await (await pending).close();
+});
+
 async function launchDomBrowser(chromium) {
-  if (process.platform === "win32") return chromium.launch({ channel: "msedge", headless: true });
-  return chromium.launch({ headless: true });
+  const browser = await sharedDomBrowser(chromium);
+  const contexts = new Set();
+  const creating = new Set();
+  let closed = false;
+  let closing = null;
+  const newContext = async (options) => {
+    if (closed) throw new Error("Stream tabs browser handle is closed");
+    const pending = browser.newContext(options);
+    creating.add(pending);
+    try {
+      const context = await pending;
+      contexts.add(context);
+      context.once("close", () => contexts.delete(context));
+      if (closed) throw new Error("Stream tabs browser handle is closed");
+      return context;
+    } finally {
+      creating.delete(pending);
+    }
+  };
+  return {
+    newContext,
+    async newPage(options) {
+      // Как browser.newPage(): опции контекста и свежий контекст на страницу.
+      return (await newContext(options)).newPage();
+    },
+    close() {
+      if (!closing) {
+        closed = true;
+        closing = (async () => {
+          await Promise.allSettled([...creating]);
+          const results = await Promise.allSettled([...contexts].map(async (context) => context.close()));
+          const failure = results.find((result) => result.status === "rejected");
+          if (failure) throw failure.reason;
+        })();
+      }
+      return closing;
+    },
+  };
 }
 
 async function openStreamTabsDomFixture(page, {
@@ -1558,7 +1620,7 @@ test("composer quick replies render above attached Task references", async () =>
   }
 });
 
-test("Dashboard column headers keep one fixed height when task density differs", async () => {
+test("Dashboard column headers keep equal height across different task densities", { timeout: 20_000 }, async () => {
   const { chromium } = await import("playwright");
   const browser = await launchDomBrowser(chromium);
   const screenshotDirectory = String(process.env.HUB157_QA_SCREENSHOT_DIR ?? "").trim();
@@ -1608,18 +1670,35 @@ test("Dashboard column headers keep one fixed height when task density differs",
       });
       const geometry = await page.locator(".task-board-column-head").evaluateAll((headers) => headers.map((header) => {
         const rect = header.getBoundingClientRect();
+        const column = header.closest("[data-board-destination]");
+        const columnRect = column.getBoundingClientRect();
+        const style = getComputedStyle(column);
+        const borderTop = parseFloat(style.borderTopWidth) || 0;
+        const paddingTop = parseFloat(style.paddingTop) || 0;
+        const contentTop = columnRect.top + borderTop + paddingTop;
         return {
-          column: header.closest("[data-board-destination]")?.dataset.boardDestination,
-          height: Number(rect.height.toFixed(2)),
-          bottom: Number(rect.bottom.toFixed(2)),
-          flex: getComputedStyle(header).flex,
+          column: column.dataset.boardDestination,
+          height: rect.height,
+          borderTop,
+          paddingTop,
+          topFromContent: rect.top - contentTop,
+          bottomFromContent: rect.bottom - contentTop,
         };
       }));
-      assert.ok(geometry.length >= 5, JSON.stringify({ surface, geometry }));
-      assert.equal(new Set(geometry.map(({ height }) => height)).size, 1, JSON.stringify({ surface, geometry }));
-      assert.equal(new Set(geometry.map(({ bottom }) => bottom)).size, 1, JSON.stringify({ surface, geometry }));
-      assert.equal(geometry[0].height, 104, JSON.stringify({ surface, geometry }));
-      assert.ok(geometry.every(({ flex }) => flex === "0 0 104px"), JSON.stringify({ surface, geometry }));
+      const densities = await page.locator(".task-board-column-list").evaluateAll((lists) => (
+        lists.map((list) => list.querySelectorAll("[data-board-task-id]").length)
+      ));
+      const evidence = JSON.stringify({ surface, geometry, densities });
+      assert.ok(geometry.length >= 5, evidence);
+      assert.ok(densities.includes(0) && Math.max(...densities) >= 26, evidence);
+      assert.ok(geometry.every(({ height }) => height > 0), evidence);
+      const spread = (field) => Math.max(...geometry.map((value) => value[field]))
+        - Math.min(...geometry.map((value) => value[field]));
+      assert.ok(spread("height") <= 0.5, evidence);
+      // Backlog has its own border. Compare header alignment inside each
+      // parent's content box, not absolute page coordinates or CSS literals.
+      assert.ok(geometry.every(({ topFromContent }) => Math.abs(topFromContent) <= 0.5), evidence);
+      assert.ok(spread("bottomFromContent") <= 0.5, evidence);
       if (screenshotDirectory) {
         console.log(`HUB157_BOARD_HEADER_GEOMETRY ${surface} ${JSON.stringify(geometry)}`);
         await page.screenshot({
