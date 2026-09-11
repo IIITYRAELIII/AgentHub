@@ -300,6 +300,18 @@ namespace AgentHub.RuntimeHost
             }
             start.EnvironmentVariables.Clear();
             foreach (KeyValuePair<string, string> entry in system) start.EnvironmentVariables[entry.Key] = entry.Value;
+            if (recording)
+            {
+                // Node's Windows ACL/process owners invoke OS utilities by name.
+                // Resolve their search path from Windows, never ambient PATH or homes.
+                string systemDirectory = Environment.GetFolderPath(Environment.SpecialFolder.System);
+                if (String.IsNullOrWhiteSpace(systemDirectory) || !Path.IsPathRooted(systemDirectory))
+                    throw new InvalidOperationException("Windows system directory is unavailable for recording acceptance");
+                string powershellDirectory = Path.Combine(systemDirectory, "WindowsPowerShell", "v1.0");
+                EnsureAcceptanceDirectory(systemDirectory);
+                EnsureAcceptanceDirectory(powershellDirectory);
+                start.EnvironmentVariables["PATH"] = systemDirectory + Path.PathSeparator + powershellDirectory;
+            }
             // ACL ownership is the actual process identity, independent of the
             // isolated profile paths and of caller-provided identity variables.
             using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
