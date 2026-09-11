@@ -4,7 +4,9 @@ import test from "node:test";
 
 import { WorkspaceReleasePreflightService } from "../../src/application/workspace-release-preflight-service.mjs";
 
-function fixture({ outcome = "exact", mutateStatus = (value) => value } = {}) {
+function fixture({
+  outcome = "exact", mutateStatus = (value) => value, transientNotReadyReads = 0,
+} = {}) {
   const projectRoot = path.resolve("D:/repo");
   const devRoot = path.resolve("D:/dev-worktree");
   const contourRoot = path.resolve("D:/test-contour");
@@ -19,6 +21,7 @@ function fixture({ outcome = "exact", mutateStatus = (value) => value } = {}) {
   };
   let refreshRequest = null;
   let statusRequest = null;
+  let statusReads = 0;
   let verified = false;
   const status = mutateStatus({
     running: true,
@@ -116,6 +119,10 @@ function fixture({ outcome = "exact", mutateStatus = (value) => value } = {}) {
     },
     readTestContourStatus: async (request) => {
       statusRequest = request;
+      statusReads += 1;
+      if (statusReads <= transientNotReadyReads) {
+        return { ...status, running: false, status: "not-ready" };
+      }
       return status;
     },
   });
@@ -124,6 +131,7 @@ function fixture({ outcome = "exact", mutateStatus = (value) => value } = {}) {
     operation,
     get refreshRequest() { return refreshRequest; },
     get statusRequest() { return statusRequest; },
+    get statusReads() { return statusReads; },
     get verified() { return verified; },
   };
 }
@@ -143,6 +151,17 @@ test("release preflight requires a fresh candidate and an exact-ready operation 
     expectedOperationId: context.operation.operationId,
     expectedHeadCommit: "dev-head",
   });
+  assert.equal(context.verified, true);
+});
+
+test("release preflight waits for an exact refreshed contour process to become visible", async () => {
+  const context = fixture({ transientNotReadyReads: 1 });
+  const result = await context.service.preflight({
+    workspaceId: "workspace-1",
+    expectedPlanRevision: "plan-1",
+  });
+  assert.equal(result.testContour.headCommit, "dev-head");
+  assert.equal(context.statusReads, 2);
   assert.equal(context.verified, true);
 });
 
