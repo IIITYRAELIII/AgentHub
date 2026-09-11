@@ -1,0 +1,20 @@
+{
+  "id": "bestiary",
+  "name": "Бестиарий",
+  "color": "#17130f",
+  "order": 119,
+  "styles": "theme.css",
+  "backgrounds": [
+    {
+      "id": "bestiary",
+      "name": "Грифон на полях",
+      "asset": "background.png",
+      "preload": true
+    },
+    {
+      "id": "bestiary-quiet",
+      "name": "Чистый пергамент"
+    }
+  ]
+}
+
