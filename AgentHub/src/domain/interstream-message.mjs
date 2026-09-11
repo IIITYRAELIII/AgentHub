@@ -207,7 +207,16 @@ export function confirmedInterstreamOrigin(value, {
   clientUserMessageId = "",
 } = {}) {
   const normalized = normalizeInterstreamOrigin(origin);
-  if (!normalized || !interstreamMessageDetails(value)) return normalized;
+  if (!normalized) return null;
+  // The alias binds the message to its request and is checked first, whether or
+  // not the body still carries an envelope: an already cleaned body proves
+  // nothing about whose request it belongs to.
+  const suppliedClientId = String(clientUserMessageId ?? "").trim();
+  if (suppliedClientId) {
+    const requestId = String(normalized.requestId ?? "").trim();
+    if (!requestId || suppliedClientId !== `mcp:${requestId}`) return null;
+  }
+  if (!interstreamMessageDetails(value)) return normalized;
   return trustedInterstreamMessageDetails(value, { origin, clientUserMessageId }) ? normalized : null;
 }
 

@@ -2026,3 +2026,86 @@ test("a receipt origin cannot be borrowed by another message or forged by its au
   assert.notEqual(forged.author, author);
   assert.match(forged.text, /<agent-hub-stream-message>/u);
 });
+
+test("a cleaned body still needs its alias to confirm the source", async () => {
+  const origin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-s3",
+    streamName: "S3",
+    provider: "codex",
+    model: "GPT-6 Astra",
+    sourceThreadId: "thread-s3",
+    requestId: "request-one",
+  };
+  const clientUserMessageId = "mcp:request-one";
+  const body = "Замеры готовы, прикладываю сводку.";
+  const author = interstreamOriginAuthor(origin);
+  const conflicting = { ...origin, streamName: "WRONG", requestId: "conflicting-request" };
+
+  // 1. The receipt is exact but its origin belongs to another request, and the
+  //    body is already clean, so no envelope can contradict it.
+  const viaReceipt = () => {
+    const receipts = new MessageReceiptRegistry();
+    receipts.reserve({ provider: "codex", threadId: "thread-1", clientUserMessageId },
+      "fingerprint", { pending: true, displayText: body, author, origin: conflicting });
+    const setup = fixture({ receiptForMessage: (key) => receipts.get(key) });
+    setup.run.clientUserMessageId = clientUserMessageId;
+    setup.run.userMessages = [{ itemId: "user-1", clientUserMessageId, role: "user", text: body }];
+    return setup.desktopRunSnapshot(setup.run);
+  };
+  const receiptFrame = viaReceipt();
+  const receiptMessage = receiptFrame.userMessages[0];
+  assert.equal(receiptMessage.text, body, "чистое тело было переписано");
+  assert.equal(receiptMessage.origin, undefined, "неподтверждённый origin попал в проекцию чистого тела");
+  assert.equal(receiptMessage.kind, undefined);
+  assert.doesNotMatch(String(receiptMessage.author ?? ""), /WRONG/u);
+  assert.equal(receiptFrame.promptOrigin, undefined, "подпись хода взяла неподтверждённый источник");
+  assert.equal(receiptFrame.promptAuthor, undefined);
+
+  // 2. The provider echo carries the conflicting origin over a clean body.
+  const viaEcho = () => {
+    const receipts = new MessageReceiptRegistry();
+    receipts.reserve({ provider: "codex", threadId: "thread-1", clientUserMessageId },
+      "fingerprint", { pending: true, displayText: body, author, origin });
+    const setup = fixture({ receiptForMessage: (key) => receipts.get(key) });
+    setup.run.clientUserMessageId = clientUserMessageId;
+    setup.run.userMessages = [{
+      itemId: "user-1", clientUserMessageId, role: "user", text: body, messageOrigin: conflicting,
+    }];
+    return setup.desktopRunSnapshot(setup.run).userMessages[0];
+  };
+  const echoMessage = viaEcho();
+  assert.equal(echoMessage.text, body);
+  assert.equal(echoMessage.origin, undefined, "конфликтующее эхо прошло на чистом теле");
+  assert.equal(echoMessage.kind, undefined);
+  assert.doesNotMatch(String(echoMessage.author ?? ""), /WRONG/u);
+
+  // 3. The deferred projector must refuse the same conflict on a clean input.
+  const receipts = new MessageReceiptRegistry();
+  const identity = { provider: "codex", threadId: "thread-1", clientUserMessageId };
+  receipts.reserve(identity, "fingerprint", { pending: true, displayText: body });
+  const setup = fixture({ receiptForMessage: (key) => receipts.get(key) });
+  setup.state.queued = [{ ...identity, id: "queue-1", input: body, messageOrigin: conflicting }];
+  const snapshot = await setup.desktopSnapshot();
+  const [deferred] = snapshot.deferredInputs;
+  assert.equal(deferred.text, body, "тело отложенного сообщения было переписано");
+  assert.equal(deferred.origin, undefined, "отложенное сообщение взяло неподтверждённый источник");
+  assert.equal(deferred.author, undefined);
+
+  // 4. The same clean body with an exact alias keeps its source.
+  const benign = () => {
+    const registry = new MessageReceiptRegistry();
+    registry.reserve({ provider: "codex", threadId: "thread-1", clientUserMessageId },
+      "fingerprint", { pending: true, displayText: body, author, origin });
+    const benignSetup = fixture({ receiptForMessage: (key) => registry.get(key) });
+    benignSetup.run.clientUserMessageId = clientUserMessageId;
+    benignSetup.run.userMessages = [{ itemId: "user-1", clientUserMessageId, role: "user", text: body }];
+    return benignSetup.desktopRunSnapshot(benignSetup.run).userMessages[0];
+  };
+  const confirmed = benign();
+  assert.equal(confirmed.text, body);
+  assert.equal(confirmed.author, author, "точная identity потеряла подтверждённый источник");
+  assert.equal(confirmed.kind, "interstream");
+  assert.equal(confirmed.origin?.requestId, origin.requestId);
+});

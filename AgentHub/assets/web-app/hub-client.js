@@ -777,15 +777,36 @@ function renderTaskQueue(taskIdValue, snapshot = lastSnapshot) {
   ));
 }
 
-// A card may name another Stream only when its origin is confirmed by the exact
-// alias of this message. A body that still carries an unopened envelope means
-// the server could not confirm the origin either, so the card keeps the ordinary
-// user attribution instead of trusting a contradicting claim.
+// Recognizes a transport envelope structurally, exactly like the server parser:
+// the body must start with the opening tag, close it and carry parsable
+// metadata plus a non-empty payload. A literal mention of the tag inside
+// ordinary text or code is not an envelope and carries no authority.
+function cardEnvelopeMetadata(text) {
+  const source = String(text ?? "").trim();
+  const openTag = "<agent-hub-stream-message>";
+  const closeTag = "</agent-hub-stream-message>";
+  if (!source.startsWith(openTag)) return null;
+  const closeAt = source.indexOf(closeTag, openTag.length);
+  if (closeAt < 0) return null;
+  try {
+    const metadata = JSON.parse(source.slice(openTag.length, closeAt).trim());
+    if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+    return source.slice(closeAt + closeTag.length).trim() ? metadata : null;
+  } catch {
+    return null;
+  }
+}
+
+// A card may name another Stream only when the exact alias of this message
+// confirms the claimed origin. The alias is checked first and independently of
+// the body: an already cleaned body proves nothing about whose request it is.
+// An unopened envelope additionally has to agree with that same origin.
 function confirmedCardOrigin(origin, clientUserMessageId, text) {
   if (!origin || typeof origin !== "object" || Array.isArray(origin)) return null;
   const requestId = String(origin.requestId ?? "").trim();
   if (!requestId || String(clientUserMessageId ?? "").trim() !== `mcp:${requestId}`) return null;
-  return String(text ?? "").includes("<agent-hub-stream-message>") ? null : origin;
+  const envelope = cardEnvelopeMetadata(text);
+  return !envelope || String(envelope.requestId ?? "").trim() === requestId ? origin : null;
 }
 
 function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
