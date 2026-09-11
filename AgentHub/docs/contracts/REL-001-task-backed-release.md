@@ -386,6 +386,11 @@ candidate ready lock/control identity, and previous process exit. The report
 must enumerate checked and excluded scenarios; passing this lifecycle scope
 does not imply coherent production-data or queue/outbox recovery parity.
 
+Test Contour branding is a staging transformation before manifest hashes are
+computed. It cannot mutate an already manifested release. A failed preparation
+leaves stable launchers and the current pointer unchanged; artifact acceptance
+still verifies every manifested byte, including the test interface document.
+
 Explicit recording inputs prepare a fresh writable cohort from immutable capture
 evidence through the existing preparation owner. The acceptance launcher uses a
 v2 marker binding the exact root/profile and SHA256 of provider, preparation,

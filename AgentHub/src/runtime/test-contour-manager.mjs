@@ -842,7 +842,11 @@ export async function prepareTestContourCandidate({
   const deployed = await deploy({
     sourceRoot: candidateSourceRoot,
     runtimeRoot: isolatedRoot,
-    beforePointerCommit: ({ releaseRoot }) => markTestContourWebApp(releaseRoot),
+    beforeManifest: async ({ stagingRoot }) => {
+      await revalidateReleaseSource();
+      if (operation) await assertTestContourOperationOwner(isolatedRoot, operation);
+      await markTestContourWebApp(stagingRoot);
+    },
     // A prepared candidate is not active. The pointer is committed only after
     // its exact manager/runtime pair has reported ready.
     writePointer: async () => {},
