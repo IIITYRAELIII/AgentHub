@@ -3778,6 +3778,7 @@ function renderStreamChatPreview(task) {
         el("div", { class: "activity-list", "data-activity-list": "" }),
       ]),
       el("div", { class: "msg-body", "data-live-body": "" }),
+      el("div", { "data-live-attachments": "", hidden: true }),
     ]);
     populateLiveCard(liveNode, live, task.agentLabel || "Агент", task);
     log.append(liveNode);
@@ -7129,6 +7130,7 @@ function liveCardHasContent(live) {
     || normalizedMessageText(live.reasoning)
     || normalizedMessageText(live.stage)
     || visibleTurnTraceGroups(live.activityGroups).length
+    || (Array.isArray(live.attachments) && live.attachments.length)
   ));
 }
 
@@ -7209,6 +7211,16 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
     } else renderMarkdown(body, visibleText, fileContext);
   });
   body.hidden = !visibleText && liveMessage.responseCitationPresentations.length === 0;
+  const attachmentStrip = node.querySelector("[data-live-attachments]");
+  const liveAttachments = Array.isArray(liveMessage.attachments) ? liveMessage.attachments : [];
+  if (attachmentStrip) {
+    liveCardRenderController.reconcile(node, "attachments", liveAttachments, () => {
+      attachmentStrip.replaceChildren(...(liveAttachments.length
+        ? [renderAttachmentStrip(liveAttachments, { readOnly: true })]
+        : []));
+    });
+    attachmentStrip.hidden = liveAttachments.length === 0;
+  }
   const activityFeed = node.querySelector("[data-activity-feed]");
   liveCardRenderController.reconcile(node, "activity-feed", renderParts.activityFeed, () => {
     activityFeed.open = liveActivityDisclosureOpen({

@@ -491,7 +491,7 @@ function responseItemImageCount(entry) {
       : [];
   return blocks.filter((block) => (
     ["image", "input_image", "output_image"].includes(String(block?.type ?? ""))
-      && String(block?.image_url ?? block?.url ?? "").startsWith("data:image/")
+      && String(block?.image_url ?? block?.image ?? block?.url ?? "").startsWith("data:image/")
   )).length;
 }
 
@@ -868,6 +868,18 @@ function assignPendingCodexUserMessages(metadata, turnId) {
   metadata.pendingUserMessages = [];
 }
 
+function observeCodexGeneratedImageEntry(metadata, entry) {
+  const turnId = codexEntryTurnId(entry);
+  rememberPendingGeneratedImageCall(metadata, turnId, entry);
+  const generatedImageTurnId = generatedImageOwnerTurnId(metadata, turnId, entry);
+  if (!generatedImageTurnId) return;
+  const paths = generatedImagePaths(entry);
+  if (!paths.length) return;
+  rememberCodexImagePaths(metadata, generatedImageTurnId, paths);
+  const callId = String(entry?.payload?.call_id ?? "").trim();
+  consumePendingGeneratedImageCall(metadata, callId, generatedImageTurnId);
+}
+
 function observeCodexEntry(
   activeTurnIds,
   lastSeenAtByTurnId,
@@ -932,20 +944,7 @@ function observeCodexEntry(
     // VS Code has concurrent turns in one thread.
     rememberCodexTurnMessage(metadata, turnId, responseItemMessage);
   }
-  rememberPendingGeneratedImageCall(metadata, turnId, entry);
-  const generatedImageTurnId = generatedImageOwnerTurnId(
-    metadata,
-    turnId,
-    entry,
-  );
-  if (generatedImageTurnId) {
-    const paths = generatedImagePaths(entry);
-    if (paths.length) {
-      rememberCodexImagePaths(metadata, generatedImageTurnId, paths);
-      const callId = String(entry?.payload?.call_id ?? "").trim();
-      consumePendingGeneratedImageCall(metadata, callId, generatedImageTurnId);
-    }
-  }
+  observeCodexGeneratedImageEntry(metadata, entry);
   if (turnId) rememberPendingViewImageCall(metadata, turnId, entry);
   completePendingViewImageCall(metadata, turnId, entry);
   const responseItemUserContent = entry?.type === "response_item"
@@ -1427,6 +1426,12 @@ export async function readCodexRolloutActivityOnCurrentThread(
       && identityCached.sourceObservationGeneration === sourceObservationGeneration,
   );
   const appendOnly = Boolean(cached && sourceExtendsCached);
+  const generatedImageCacheReusable = Boolean(
+    identityCached
+      && info.size === identityCached.size
+      && info.mtimeMs === identityCached.mtimeMs
+      && identityCached.sourceObservationGeneration === sourceObservationGeneration,
+  );
   const activeTurnIds = new Set(appendOnly ? cached.activeTurnIds : []);
   const lastSeenAtByTurnId = new Map(appendOnly ? cached.lastSeenAtByTurnId : []);
   const observationStart = appendOnly
@@ -1446,14 +1451,20 @@ export async function readCodexRolloutActivityOnCurrentThread(
       appendOnly ? cached.responseAnnotationReferences ?? [] : [],
     ),
     userMessages: new Map(appendOnly ? cached.userMessages ?? [] : []),
-    generatedImageSources: new Map(appendOnly ? cached.generatedImageSources ?? [] : []),
+    generatedImageSources: new Map(
+      appendOnly || generatedImageCacheReusable
+        ? (appendOnly ? cached : identityCached).generatedImageSources ?? []
+        : [],
+    ),
     activityGroups: new Map((appendOnly ? cached.activityGroups ?? [] : []).map(([turnId, groups]) => (
       [turnId, structuredClone(groups)]
     ))),
     activityGroupIndexes: new Map(),
     pendingViewImageCalls: new Map(appendOnly ? cached.pendingViewImageCalls ?? [] : []),
     pendingGeneratedImageCalls: new Map(
-      appendOnly ? cached.pendingGeneratedImageCalls ?? [] : [],
+      appendOnly || generatedImageCacheReusable
+        ? (appendOnly ? cached : identityCached).pendingGeneratedImageCalls ?? []
+        : [],
     ),
     pendingUserMessages: appendOnly
       ? (cached.pendingUserMessages ?? []).map((message) => ({ ...message }))
@@ -1468,11 +1479,15 @@ export async function readCodexRolloutActivityOnCurrentThread(
       ? cached.userProjectionIncomplete === true
       : observationStart > 0 || !sourceObservationGeneration,
   };
-  // Cold reads are physically bounded to the configured raw tail. Provenance
-  // is established separately from bounded head/tail samples. Unproven
-  // provider-owned users are not projected, so an incomplete or malformed
-  // session header cannot create replay aliases.
-  const inputStart = appendOnly ? cached.size : observationStart;
+  // Cold history projection remains bounded to the configured raw tail. On the
+  // first read of a source, older bytes are streamed only for generated-image
+  // ownership/path metadata; oversized base64 payloads are sampled, not kept.
+  const scanGeneratedImagesBeforeTail = !appendOnly
+    && !generatedImageCacheReusable
+    && observationStart > 0;
+  const inputStart = appendOnly
+    ? cached.size
+    : scanGeneratedImagesBeforeTail ? 0 : observationStart;
   const input = createReadStream(normalized, {
     ...(inputStart > 0 ? { start: inputStart } : {}),
     end: Math.max(0, info.size - 1),
@@ -1482,7 +1497,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
     : Buffer.alloc(0);
   let pendingStartOffset = appendOnly
     ? Number(cached.trailingStartOffset ?? cached.size - pending.length)
-    : observationStart;
+    : inputStart;
   const sameOccurrenceGeneration = Boolean(
     identityCached
       && identityCached.sourceObservationGeneration === sourceObservationGeneration
@@ -1550,7 +1565,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
   };
   let discardUntilNewline = appendOnly
     ? cached.discardUntilNewline === true
-    : observationStart > 0;
+    : inputStart > 0;
   const observeLine = (rawLine, lineOffset, selected) => {
     const content = rawLine.at(-1) === 0x0d ? rawLine.subarray(0, -1) : rawLine;
     if (!content.length) return;
@@ -1564,7 +1579,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
           entry,
           sourceOccurrenceIdForEntry(entry, lineOffset),
         );
-      }
+      } else if (scanGeneratedImagesBeforeTail) observeCodexGeneratedImageEntry(metadata, entry);
     } catch {
       if (selected) {
         metadata.pendingUserResponseProjection = null;
@@ -1584,7 +1599,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
         const selected = appendOnly || lineOffset >= observationStart;
         if (discardUntilNewline) {
           appendOversizedTail(rawLine);
-          if (oversizedLine?.selected) {
+          if (oversizedLine?.selected || oversizedLine?.captureGeneratedImages) {
             observeOversizedCodexLine(metadata, {
               head: oversizedLine.head.toString("utf8"),
               tail: oversizedLine.tail.toString("utf8"),
@@ -1607,6 +1622,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
             head: pending.subarray(0, oversizedSampleLimit),
             tail: Buffer.alloc(0),
             selected,
+            captureGeneratedImages: scanGeneratedImagesBeforeTail,
           };
         }
         appendOversizedTail(pending);
@@ -1619,7 +1635,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
     input.destroy();
   }
   if (discardUntilNewline && oversizedLine?.tail.toString("utf8").trimEnd().endsWith("}")) {
-    if (oversizedLine.selected) {
+    if (oversizedLine.selected || oversizedLine.captureGeneratedImages) {
       observeOversizedCodexLine(metadata, {
         head: oversizedLine.head.toString("utf8"),
         tail: oversizedLine.tail.toString("utf8"),
@@ -1643,7 +1659,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
           entry,
           sourceOccurrenceIdForEntry(entry, pendingStartOffset),
         );
-      }
+      } else if (scanGeneratedImagesBeforeTail) observeCodexGeneratedImageEntry(metadata, entry);
       trailingBuffer = Buffer.alloc(0);
     } catch {
       // Preserve a line caught in the middle of an append for the next read.
