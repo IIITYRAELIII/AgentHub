@@ -231,6 +231,6 @@ test("offline production audit repairs a subagent migration without provider RPC
   assert.equal(repairs, 1);
   assert.equal(projections, 1);
   assert.ok(checkpoints >= 1);
-  assert.equal(audit.snapshot().version, 17);
+  assert.equal(audit.snapshot().version, 18);
   assert.equal(audit.snapshot().historicalSubagentBackfill.pending, false);
 });

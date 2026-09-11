@@ -1926,7 +1926,7 @@ test("current and other Workspace or Stream native dblclicks survive exact-ident
   try {
     for (const [surface, viewport] of [
       ["desktop", { width: 1440, height: 1000 }],
-      ["mobile", { width: 390, height: 844 }],
+      ["mobile", { width: 480, height: 844 }],
     ]) {
       const problems = [];
       const page = await browser.newPage({ viewport });

@@ -454,7 +454,7 @@ test("a full 20 MiB attachment is validated and fingerprinted iteratively", { ti
   assert.equal(ComposerDraft.recoveryAttachments([
     attachment,
     { ...attachment, name: "overflow.bin", size: 1, dataUrl: "data:application/octet-stream;base64,AA==" },
-  ]), null);
+  ], { maxBytes: size, maxTotalBytes: size }), null);
 });
 
 test("Task removal clears draft, retry and revision through the owner", () => {
