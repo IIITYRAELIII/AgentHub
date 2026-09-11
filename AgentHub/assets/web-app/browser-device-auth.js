@@ -61,6 +61,12 @@
   const REQUEST_TIMEOUT_MS = 15_000;
   const STORAGE_TIMEOUT_MS = 10_000;
   const textEncoder = new TextEncoder();
+  // A reload drops the access secret from the address, so this client is built
+  // even when the server already holds a valid local session for the browser.
+  // That session is its own proof of access: without it a data request would be
+  // pushed into pairing although nothing has actually expired.
+  const LOCAL_SESSION_RECHECK_MS = 60_000;
+  let localSessionActive = false;
   let sessionActive = false;
   let sessionExpiresAt = 0;
   let credential = null;
@@ -257,7 +263,28 @@
     return authentication;
   }
 
+  // Confirms the local session with its owner instead of assuming it survived:
+  // an expired or revoked cookie must fall back to ordinary pairing.
+  async function refreshLocalSession() {
+    if (!await existingLocalSession()) {
+      localSessionActive = false;
+      sessionActive = false;
+      sessionExpiresAt = 0;
+      return false;
+    }
+    localSessionActive = true;
+    sessionActive = true;
+    sessionExpiresAt = Date.now() + LOCAL_SESSION_RECHECK_MS;
+    return true;
+  }
+
   async function ensureSession(force = false, reportProgress = null) {
+    if (!credential && localSessionActive) {
+      if (!force && sessionExpiresAt - Date.now() > 0) return;
+      if (await refreshLocalSession()) return;
+      showPairing();
+      throw new Error("Локальная сессия Agent Hub больше не действует. Откройте ссылку доступа заново.");
+    }
     const remainingMs = sessionExpiresAt - Date.now();
     if (!force && sessionActive && remainingMs > 0) {
       if (remainingMs <= SESSION_REFRESH_MARGIN_MS) {
@@ -399,7 +426,7 @@
     });
     showChecking();
     try {
-      if (await existingLocalSession()) {
+      if (await refreshLocalSession()) {
         hidePairing();
         resolveReady();
         return;
