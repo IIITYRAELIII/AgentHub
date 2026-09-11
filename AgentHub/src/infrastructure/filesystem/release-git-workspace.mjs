@@ -9,6 +9,7 @@ import { taskRepositoryKey } from "../../domain/task-git-reference.mjs";
 import { canonicalPath } from "./config.mjs";
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
 import { freezePreparedPublicationCandidate } from "./freeze-publication-candidate.mjs";
+import { resolveExactOrderPreservingUnion } from "./release-order-preserving-union.mjs";
 import { releaseTaskNetProjections } from "./release-task-net-projection.mjs";
 
 const RELEASE_MARKER = "agent-hub-release-clone.json";
@@ -681,6 +682,11 @@ export class ReleaseGitWorkspaceService {
                 const conflicts = String(await gitMaybe(["diff", "--name-only", "--diff-filter=U"], {
                   cwd: clone.releaseRoot,
                 }) ?? "").split(/\r?\n/u).filter(Boolean);
+                if (integration.netProjection && integration.orderPreserving
+                    && await resolveExactOrderPreservingUnion({
+                      candidateRoot: clone.releaseRoot,
+                      conflicts,
+                    })) continue;
                 throw new Error(
                   `PreRelease delta ${integration.commit} (dev order ${integration.order}) failed for Task `
                   + `${integration.taskId}: ${conflicts.join(", ") || error.message}`,
