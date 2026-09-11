@@ -1889,7 +1889,7 @@ export class TaskBoardStore {
     return this.#mutations.diagnostics();
   }
 
-  cancelPreparedStart(id, { requestId, reassign = false } = {}) {
+  cancelPreparedStart(id, { requestId, reassign = false, expectedRevision = null } = {}) {
     const taskId = String(id);
     const normalizedRequestId = String(requestId ?? "").trim();
     if (!normalizedRequestId) throw new Error("Task launch request id is required");
@@ -1897,6 +1897,9 @@ export class TaskBoardStore {
       database.exec("BEGIN IMMEDIATE");
       try {
       const current = this.#taskRow(database, taskId);
+      if (expectedRevision != null && Number(expectedRevision) !== Number(current.row_revision)) {
+        throw new Error("Task launch cancel revision conflict");
+      }
       if (String(current.start_request_id ?? "") !== normalizedRequestId) {
         throw new Error("Task launch cancel owner does not match the prepared request");
       }
@@ -2040,6 +2043,9 @@ export class TaskBoardStore {
       const current = this.#taskRow(database, taskId);
       if (String(current.workspace_id ?? "") !== String(workspaceId ?? "")) {
         throw new Error("Task is outside the current Workspace");
+      }
+      if (current.status === "starting" && String(current.start_request_id ?? "").trim()) {
+        throw new Error("prepared Task launch must be cancelled before claim");
       }
       const bound = database.prepare(`
         SELECT * FROM hub_task_turn_bindings

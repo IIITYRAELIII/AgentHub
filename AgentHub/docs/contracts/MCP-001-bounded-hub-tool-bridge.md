@@ -119,6 +119,23 @@ origin recovery requires the successful tool, exact `mcp:<request_id>`, stored
 arguments hash and stored content hash; absent pre-migration content hashes fail
 closed and are not reconstructed from message text or ordering.
 
+`hub_task_launch_cancel` is an Architect-only terminal reconciliation, not a
+replay lease. It may change an original start receipt from `pending`,
+`reconciling` or `unknown` to a structured failed/cancelled result only when the
+same caller Workspace, Stream, provider and provider Thread presents the exact
+Task/start-request owner and Task revision, the Task is still `starting`, the
+planned destination Stream is absent and no inter-Stream content hash was ever
+admitted. The original receipt is terminalized before Task launch ownership is
+cleared. A crash between those writes can leave the Task blocked but cannot make
+the original launch replayable; another exact cancellation request may finish
+the cleanup. A different caller, Task state, revision, destination effect,
+admitted content or successful/failed launch is not cancellable.
+
+Before the planned destination Stream exists, `task.starting` is an idempotent
+Workspace event whose payload names that Stream; the event write is awaited
+before Stream/thread/delivery effects. Its rejection leaves the durable prepare
+blocked for explicit cancellation and is not silently converted to success.
+
 ## Queue diagnostics
 
 `hub_active_runs_list` and `hub_parallel_streams_list` expose bounded,

@@ -119,7 +119,7 @@ test("workflow CAS failure preserves the previous status and Git references", as
 test("prepare and cancel start enforce one exact owner and revision CAS", async (t) => {
   const store = await fixture(t);
   const created = store.create({ text: "Concurrent launch" });
-  store.prepareStart(created.id, {
+  const prepared = store.prepareStart(created.id, {
     workspaceId: "workspace-1", streamId: "stream-1", requestId: "owner-1",
     expectedRevision: created.revision,
   });
@@ -130,9 +130,29 @@ test("prepare and cancel start enforce one exact owner and revision CAS", async 
     () => store.cancelPreparedStart(created.id, { requestId: "owner-2" }),
     /owner does not match/u,
   );
-  const cancelled = store.cancelPreparedStart(created.id, { requestId: "owner-1" });
+  assert.throws(
+    () => store.cancelPreparedStart(created.id, {
+      requestId: "owner-1", expectedRevision: prepared.revision + 1,
+    }),
+    /revision conflict/u,
+  );
+  assert.throws(() => store.claim(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-existing", provider: "codex",
+    threadId: "thread-existing", turnId: "turn-existing", operationId: "claim-before-cancel",
+  }), /must be cancelled before claim/u);
+  const cancelled = store.cancelPreparedStart(created.id, {
+    requestId: "owner-1", expectedRevision: prepared.revision,
+  });
   assert.equal(cancelled.status, "open");
   assert.equal(cancelled.startRequestId, null);
+  const claimed = store.claim(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-existing", provider: "codex",
+    threadId: "thread-existing", turnId: "turn-existing", operationId: "claim-after-cancel",
+  });
+  assert.equal(claimed.streamId, "stream-existing");
+  assert.throws(() => store.prepareStart(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", requestId: "owner-1",
+  }), /уже запущена/u);
 });
 
 test("markStarted requires exact prepared owner state and revision", async (t) => {
