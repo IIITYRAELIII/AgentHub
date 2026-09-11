@@ -2,6 +2,12 @@
   "version": 1,
   "contracts": [
     {
+      "id": "MSG-002",
+      "title": "Resumable attachment upload",
+      "document": "MSG-002-resumable-attachments.md",
+      "paths": ["src/domain/attachment-upload-policy.mjs", "src/infrastructure/filesystem/attachment-upload-service.mjs", "src/interfaces/web/chunked-attachment-*.mjs", "src/interfaces/web/mini-app-publisher.mjs", "src/interfaces/web/mini-app-server.mjs", "src/interfaces/desktop/desktop-attachment-service.mjs", "src/interfaces/desktop/desktop-task-board-controller.mjs", "cloudflare-worker/src/worker.mjs", "assets/web-app/attachments/**", "assets/web-app/messages/composer-draft-reconciliation.js"]
+    },
+    {
       "id": "SYS-001",
       "title": "Accepted decisions and ownership",
       "document": "SYS-001-decision-governance.md",

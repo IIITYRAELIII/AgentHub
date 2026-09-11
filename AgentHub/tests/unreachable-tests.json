@@ -13,9 +13,9 @@
     {
       "file": "tests/e2e/terminal-queue-contention.local-control.e2e.test.mjs",
       "profile": "reliability",
-      "reason": "Поднимает настоящий Hub с изолированной SQLite и блокировкой writer. Измерено 2026-09-10 однократно: 113 с, проверка НЕ пройдена — таймаут ожидания «FIFO drain after transient terminal contention» (35 с). Разбор по исходникам и детерминированным репродюсерам (WIP/test-audit-s3-20260910/patch-fake-codex-reply/APPLY.md): причина в harness, а не в runtime и не в SQLite — fake-codex-app-server терял ответ на thread/read, когда save() падал с EPERM на renameSync из-за параллельного readFile state-файла самим тестом (waitFor каждые 25 мс); thread/list без save() отвечал, поэтому health check проходил и процесс не перезапускался. Исправлено патчем harness; после его применения тест требует одного повторного измерения перед возвратом в обязательный набор.",
+      "reason": "Поднимает настоящий Hub с изолированной SQLite и блокировкой writer. Повторный замер S3 2026-09-11 на 99240e5e после исправления harness: PASS, файл 52.09 с, кейс 48.15 с; thread/read timeout, health check и recycling — 0. Ранее: 113 с и FAIL. Один прогон на загруженной машине; разница не является серией benchmark и не доказывает аддитивный вклад таймаутов. Остаётся в явном reliability-профиле: добавление примерно 52 с в обязательный набор отдельно не согласовано.",
       "owner": "runtime/persistence",
-      "openQuestion": true
+      "openQuestion": false
     }
   ],
   "unreachable": [

@@ -80,6 +80,34 @@ async function publishCandidate(candidate) {
   return git(candidate.releaseRoot, "rev-parse", "HEAD");
 }
 
+for (const binaryOnly of [false, true]) test(`PreRelease preserves ${binaryOnly ? "terminal binary patch delimiters" : "binary patch bytes and a trailing blank context line"}`, { timeout: 20000 }, async (context) => {
+  const setup = await fixture(context);
+  await writeFile(path.join(setup.primary, "z-final.txt"), "before\nunchanged\n\n", "utf8");
+  await writeFile(path.join(setup.primary, "binary.bin"), Buffer.from([0, 255, 1, 2, 3]));
+  await commit(setup.primary, "base with trailing blank line and binary");
+  await git(setup.primary, "push", "origin", "main");
+  const taskRoot = path.join(setup.root, "task-HUB-patch-bytes");
+  await git(setup.primary, "worktree", "add", "-b", "HUB-patch-bytes", taskRoot, "main");
+  context.after(() => git(setup.primary, "worktree", "remove", "--force", taskRoot).catch(() => {}));
+  if (!binaryOnly) await writeFile(path.join(taskRoot, "z-final.txt"), "after\nunchanged\n\n", "utf8");
+  const binary = Buffer.from([0, 254, 128, 7, 9, 0]);
+  await writeFile(path.join(taskRoot, "binary.bin"), binary);
+  const resultCommit = await commit(taskRoot, "binary result");
+  const request = { planRevision: "plan-raw-patch", projectRoot: setup.primary,
+    frozenTasks: [{ taskId: "task-patch-bytes", taskRevision: 2, resultCommit }] };
+  const candidate = await setup.service.prepareCandidate(request);
+  assert.equal(await git(candidate.releaseRoot, "rev-parse", `${candidate.preReleaseHead}^{tree}`),
+    await git(taskRoot, "rev-parse", `${resultCommit}^{tree}`));
+  const releasedText = await execFileAsync("git", ["show", `${candidate.preReleaseHead}:z-final.txt`], {
+    cwd: candidate.releaseRoot, windowsHide: true,
+  });
+  assert.equal(releasedText.stdout, `${binaryOnly ? "before" : "after"}\nunchanged\n\n`);
+  assert.deepEqual(await readFile(path.join(candidate.releaseRoot, "binary.bin")), binary);
+  const retry = await setup.service.prepareCandidate(request);
+  assert.equal(retry.reused, true);
+  assert.equal(retry.preReleaseHead, candidate.preReleaseHead);
+});
+
 test("release candidate uses an independent clone and leaves a clean primary attached to main", async (context) => {
   const setup = await fixture(context);
   await taskResult(setup, context, { branch: "dev", file: "dev-only.txt", content: "must-not-release\n" });

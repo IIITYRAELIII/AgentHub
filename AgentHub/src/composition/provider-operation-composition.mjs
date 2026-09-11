@@ -30,6 +30,7 @@ import { CodexTurnService, ProviderCancellationService } from "../providers/prov
 
 export function createProviderOperationComposition({
   claudeContextMaintenance = null,
+  removeRuntimeFile,
   taskRuns,
   selectionStore,
   workspaceCatalogStore,
@@ -149,6 +150,7 @@ export function createProviderOperationComposition({
     rememberSeenTurn: rememberCodexSeenTurn,
     rememberLastMessage: rememberLastTaskMessage,
     temporaryFiles: turnTemporaryFiles,
+    removeFile: removeRuntimeFile,
     speechButtons: turnSpeechButtons,
     logError: (...args) => console.error(...args),
   });
@@ -179,6 +181,7 @@ export function createProviderOperationComposition({
     projectWorkLog: projectClaudeRunToWorkLog,
     finalizeDelivery: finalizeRunDelivery,
     temporaryFiles: turnTemporaryFiles,
+    removeFile: removeRuntimeFile,
     logError: (...args) => console.error(...args),
   });
   const claudeRecoveryService = new ClaudeRecoveryService({
@@ -234,6 +237,7 @@ export function createProviderOperationComposition({
     }),
     speechButtons: turnSpeechButtons,
     temporaryFiles: turnTemporaryFiles,
+    removeFile: removeRuntimeFile,
     turnTokenUsage,
     commandTrace,
   });
@@ -308,6 +312,7 @@ export function createProviderOperationComposition({
     turnTokenUsage,
     speechButtons: turnSpeechButtons,
     temporaryFiles: turnTemporaryFiles,
+    removeFile: removeRuntimeFile,
     taskDiffs,
     logWarn: (...args) => console.warn(...args),
     logError: (...args) => console.error(...args),

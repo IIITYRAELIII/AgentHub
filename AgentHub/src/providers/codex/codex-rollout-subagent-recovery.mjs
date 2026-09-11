@@ -1,3 +1,4 @@
+import { assertCodexRolloutReadAllowed } from "../../infrastructure/filesystem/test-contour-rollout-policy.mjs";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { codexSubagentNotificationDetails } from "../../application/task-history.mjs";
@@ -11,6 +12,7 @@ import { findCodexTurnStartOffsetFromTail } from "./codex-turn-usage.mjs";
 const MAX_LINE_BYTES = 4 * 1024 * 1024;
 
 export async function recoverCodexRolloutSubagentsOnCurrentThread(rolloutPath, candidates) {
+  assertCodexRolloutReadAllowed("recoverCodexRolloutSubagentsOnCurrentThread");
   if (!Array.isArray(candidates) || candidates.length > 1000) throw new Error("Invalid recovery candidates");
   const wanted = new Set(candidates.map((item) => item.sourceOccurrenceId).filter(Boolean));
   const completeTurns = new Set(candidates.filter((item) => !item.sourceOccurrenceId).map((item) => item.turnId));

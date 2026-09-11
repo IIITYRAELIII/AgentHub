@@ -8420,6 +8420,10 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   font-weight: 620;
 }
 
+.msg-head:has(.msg-upload-actions) { flex-wrap: wrap; }
+.msg-upload-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; width: 100%; }
+.msg-upload-actions button { white-space: normal; }
+
 .msg-stage {
   color: var(--accent);
   font-size: 0.72rem;

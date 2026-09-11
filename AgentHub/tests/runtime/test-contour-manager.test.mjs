@@ -762,7 +762,7 @@ test("candidate preparation deploys only into the isolated runtime root", async 
           '<html lang="ru"><head><link rel="stylesheet" href="/test-contour-watermark.css"></head><body></body></html>',
           "utf8",
         );
-        await options.beforePointerCommit({ releaseRoot });
+        await options.beforeManifest({ stagingRoot: releaseRoot });
         assert.match(
           await readFile(path.join(webAppRoot, "index.html"), "utf8"),
           /<div class="test-contour-watermark" aria-hidden="true">ТЕСТ<\/div>/u,

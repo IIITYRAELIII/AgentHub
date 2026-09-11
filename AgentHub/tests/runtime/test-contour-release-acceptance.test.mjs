@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { EventEmitter } from "node:events";
-import { exerciseAcceptanceReplacement, inspectAcceptanceArtifact, prepareAcceptanceRestartTarget, releaseAcceptanceConfig, releaseAcceptanceCoverage, waitForAcceptanceHost } from "../../src/runtime/test-contour-release-acceptance.mjs";
+import { exerciseAcceptanceReplacement, inspectAcceptanceArtifact, prepareAcceptanceRestartTarget, readRecordingAcceptanceTarget, releaseAcceptanceConfig, releaseAcceptanceCoverage, waitForAcceptanceHost } from "../../src/runtime/test-contour-release-acceptance.mjs";
 
 test("spawn errors fail initial readiness immediately and drain its observer", async () => {
   const host = new EventEmitter();
@@ -47,6 +47,31 @@ test("acceptance persistent config uses only owned synthetic provider and Telegr
   assert.equal(config.claudeExecutable, path.join(root, "providers", "disabled-claude.exe"));
   assert.throws(() => releaseAcceptanceConfig({ root, fakeCodexFile: path.join(root, "fake.mjs"), telegramApiBaseUrl: "https://api.telegram.org" }), /loopback/);
   assert.throws(() => releaseAcceptanceConfig({ root, fakeCodexFile: path.join(root, "..", "real.mjs"), telegramApiBaseUrl: "http://127.0.0.1:1234" }), /isolated/);
+});
+
+test("recording acceptance keeps mapped projects and selects no fake provider commands", () => {
+  const root = path.join(os.tmpdir(), "recording-acceptance");
+  const recording = { root: path.join(root, "recording"), projectRoot: path.join(root, "recording", "project-one"),
+    projects: [{ name: "One", path: path.join(root, "recording", "project-one") }] };
+  const config = releaseAcceptanceConfig({ root, recording, telegramApiBaseUrl: "http://127.0.0.1:1234" });
+  assert.deepEqual(config.testContourRecording, { schemaVersion: 1, root: recording.root });
+  assert.deepEqual(config.projects, recording.projects);
+  assert.equal(config.projectRoot, recording.projectRoot);
+  assert.deepEqual(config.codexExecutableArgs, []);
+  assert.equal(config.telegramBotToken, "123:test-contour-token");
+  assert.throws(() => releaseAcceptanceConfig({ root, recording: { ...recording, root: path.join(root, "other") }, telegramApiBaseUrl: "http://127.0.0.1:1234" }), /isolated root/);
+  const coverage = releaseAcceptanceCoverage({ recording: true });
+  assert.equal(coverage.find((row) => row.id === "production-snapshot").status, "pending");
+  assert.equal(coverage.find((row) => row.id === "durable-queue-recovery").status, "excluded");
+});
+
+test("recording restart target reads an existing identity without sending /new or user input", async () => {
+  const selected = { provider: "claude", streamId: "canonical-stream", threadId: "canonical-thread" };
+  const calls = [];
+  const result = await readRecordingAcceptanceTarget({ root: "isolated", probe: async (...args) => { calls.push(args); return { selected }; } });
+  assert.deepEqual(result, { ...selected, source: "captured-selection" });
+  assert.deepEqual(calls.map((call) => call[0]), ["snapshot"]);
+  await assert.rejects(readRecordingAcceptanceTarget({ root: "isolated", probe: async () => ({ selected: { provider: "codex" } }) }), /exact existing restart target/);
 });
 
 function replacementFixture({ observeOverlap = true, requestFails = false, readinessFails = false } = {}) {
