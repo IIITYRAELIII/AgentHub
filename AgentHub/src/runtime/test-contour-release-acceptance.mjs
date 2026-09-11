@@ -13,6 +13,8 @@ import { processIsAlive } from "../infrastructure/process/process-liveness.mjs";
 import { stopProcessTree } from "../infrastructure/process/process-tree.mjs";
 import { writeTextAtomic } from "../infrastructure/persistence/state-store.mjs";
 import { waitForRuntimeReplacement } from "./publication-readiness.mjs";
+import { prepareRecordingContourCohort } from "./test-contour-cohort-preparation.mjs";
+import { recordingContourProfile } from "../infrastructure/filesystem/test-contour-recording-profile.mjs";
 
 const MARKER = ".agent-hub-release-acceptance.json";
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -22,14 +24,18 @@ const normalize = (value) => path.resolve(value).toLowerCase();
 const inside = (value, root) => normalize(value) === normalize(root)
   || normalize(value).startsWith(`${normalize(root)}${path.sep}`);
 
-export function releaseAcceptanceCoverage() {
+export function releaseAcceptanceCoverage({ recording = false } = {}) {
   return [
     { id: "artifact-integrity", status: "pending" },
     { id: "previous-runtime-readiness", status: "pending" },
     { id: "replacement-while-previous-alive", status: "pending" },
     { id: "candidate-runtime-readiness", status: "pending" },
-    { id: "production-snapshot", status: "excluded", reason: "Coherent journal/runtime/command-ledger snapshot and safe remapping are not implemented; this run starts with synthetic empty data." },
-    { id: "durable-queue-recovery", status: "excluded", reason: "No accepted pending command is seeded; readiness alone does not prove FIFO, receipt or outbox recovery." },
+    recording
+      ? { id: "production-snapshot", status: "pending" }
+      : { id: "production-snapshot", status: "excluded", reason: "This synthetic run has no captured cohort; use explicit recording capture and project inputs." },
+    { id: "durable-queue-recovery", status: "excluded", reason: recording
+      ? "Captured queues remain owned by the normal runtime. This lifecycle check neither finishes active commands nor proves FIFO, receipt or outbox recovery."
+      : "No accepted pending command is seeded; readiness alone does not prove FIFO, receipt or outbox recovery." },
     { id: "real-external-transport", status: "excluded", reason: "Telegram is loopback; Worker, DashBot, Sentry and provider account access are disabled." },
     { id: "failure-rollback", status: "excluded", reason: "This command does not deliberately install a failing artifact." },
     { id: "browser-ui", status: "excluded", reason: "Use the separate UI verification gate; this command checks runtime lifecycle." },
@@ -38,20 +44,21 @@ export function releaseAcceptanceCoverage() {
 
 // Persistent config is intentional: the independent RuntimeHost restart does
 // not inherit environment variables from the old Node process.
-export function releaseAcceptanceConfig({ root, telegramApiBaseUrl, fakeCodexFile, nodeExecutable = process.execPath }) {
+export function releaseAcceptanceConfig({ root, telegramApiBaseUrl, fakeCodexFile, nodeExecutable = process.execPath, recording = null }) {
   const url = new URL(telegramApiBaseUrl);
   if (url.protocol !== "http:" || url.hostname !== "127.0.0.1") throw new Error("Acceptance Telegram must be loopback HTTP");
-  if (!inside(fakeCodexFile, root)) throw new Error("Acceptance provider must belong to the isolated root");
+  if (recording ? recording.root !== path.join(root, "recording") : !inside(fakeCodexFile, root)) throw new Error("Acceptance provider must belong to the isolated root");
   return {
     components: { telegram: true, miniApp: false, androidApp: false, sharedDashboardBot: false, codexContextCleanup: false, testContour: false },
-    telegramBotToken: "123:release-acceptance",
+    telegramBotToken: recording ? "123:test-contour-token" : "123:release-acceptance",
     telegramApiBaseUrl: url.toString().replace(/\/$/u, ""),
     allowedUserIds: [42], allowedChatIds: [84], privateChatsOnly: true,
-    provider: "codex", projectRoot: path.join(root, "project"),
-    projects: [{ name: "Release acceptance", path: path.join(root, "project") }],
+    provider: "codex", projectRoot: recording?.projectRoot ?? path.join(root, "project"),
+    projects: recording?.projects ?? [{ name: "Release acceptance", path: path.join(root, "project") }],
+    ...(recording ? { testContourRecording: { schemaVersion: 1, root: recording.root } } : {}),
     dataDir: path.join(root, "data"),
     codexExecutable: nodeExecutable,
-    codexExecutableArgs: [fakeCodexFile, "--accept-all", "--require-test-contour", "--state", path.join(root, "data", "fake-codex-state.json")],
+    codexExecutableArgs: recording ? [] : [fakeCodexFile, "--accept-all", "--require-test-contour", "--state", path.join(root, "data", "fake-codex-state.json")],
     codexExecutableAutoUpdate: false, codexRateLimitPolling: false, claudeRateLimitPolling: false,
     // Never launch an installed real Claude CLI during optional discovery.
     claudeExecutable: path.join(root, "providers", "disabled-claude.exe"), claudeExecutableArgs: [],
@@ -65,6 +72,27 @@ export function releaseAcceptanceConfig({ root, telegramApiBaseUrl, fakeCodexFil
 }
 
 async function readJson(file) { return JSON.parse(await readFile(file, "utf8")); }
+
+export async function recordingAcceptanceMarker({ root, id }) {
+  await recordingContourProfile({ schemaVersion: 1, root: path.join(root, "recording") }, {
+    dataDir: path.join(root, "data"), environment: { AGENT_HUB_TEST_CONTOUR: "1", AGENT_HUB_RUNTIME_ROOT: root },
+  });
+  return { schemaVersion: 2, id, root, profile: "recording", recordingRoot: path.join(root, "recording"),
+    recordingMarkerSha256: hash(await readFile(path.join(root, "recording", "recording-provider.json"))),
+    preparationSha256: hash(await readFile(path.join(root, "contour-preparation.json"))),
+    projectConfigurationSha256: hash(await readFile(path.join(root, "recording", "recording-projects.json"))),
+    configSha256: hash(await readFile(path.join(root, "config.json"))),
+  };
+}
+
+// Unlike synthetic acceptance, a captured cohort already owns its identities.
+// Reading selection cannot create a Thread or replay any captured user input.
+export async function readRecordingAcceptanceTarget({ root, probe = callDesktopControl }) {
+  const snapshot = await probe("snapshot", {}, { runtimeRoot: root, timeoutMs: 10_000 });
+  const selected = snapshot?.selected;
+  if (!selected?.provider || !selected.streamId || !selected.threadId) throw new Error("Recording acceptance has no exact existing restart target");
+  return { provider: selected.provider, streamId: selected.streamId, threadId: selected.threadId, source: "captured-selection" };
+}
 
 async function rejectReparsePath(root, relative = "") {
   const absolute = path.resolve(root, relative);
@@ -229,6 +257,7 @@ export async function acceptReleaseArtifact({ artifactRoot, previousArtifactRoot
   outputRoot = path.join(defaultTestContourRoot(), "release-acceptance"),
   sourceRoot = path.resolve(import.meta.dirname, "..", ".."),
   timeoutMs = 120_000,
+  recordingCohort = null,
 } = {}) {
   if (process.platform !== "win32") throw new Error("Release acceptance currently requires Windows RuntimeHost");
   if (!artifactRoot || !previousArtifactRoot) throw new Error("Both --artifact and --previous-artifact are required");
@@ -239,10 +268,11 @@ export async function acceptReleaseArtifact({ artifactRoot, previousArtifactRoot
   await mkdir(output, { recursive: true });
   await rejectReparsePath(output);
   if (normalize(await realpath(output)) !== normalize(output)) throw new Error("Acceptance output resolves through a junction");
-  const root = await mkdtemp(path.join(output, "run-"));
+  const prepared = recordingCohort ? await prepareRecordingContourCohort({ ...recordingCohort, outputDirectory: output }) : null;
+  const root = prepared?.root ?? await mkdtemp(path.join(output, "run-"));
   const manifestFile = path.join(root, "acceptance-manifest.json");
   const report = { schemaVersion: 1, id: randomUUID(), root, scope: "windows-runtime-replacement", status: "running",
-    productionParity: false, startedAt: new Date().toISOString(), scenarios: releaseAcceptanceCoverage() };
+    productionParity: false, startedAt: new Date().toISOString(), scenarios: releaseAcceptanceCoverage({ recording: !!prepared }) };
   const save = () => writeTextAtomic(manifestFile, `${JSON.stringify(report, null, 2)}\n`);
   const passed = (id, evidence) => Object.assign(report.scenarios.find((item) => item.id === id), { status: "passed", evidence });
   let host = null;
@@ -266,15 +296,23 @@ export async function acceptReleaseArtifact({ artifactRoot, previousArtifactRoot
     if (!candidate.files.some((file) => file.path === "RuntimeHost.release-acceptance-v1.json")
       || JSON.parse(capability || "null")?.schemaVersion !== 1
       || JSON.parse(capability || "null")?.cleanupFence !== 1) throw new Error("Candidate RuntimeHost lacks persistent release-acceptance isolation/cleanup");
+    if (prepared && JSON.parse(capability).recordingProfile !== 1) throw new Error("Candidate RuntimeHost lacks persistent recording isolation");
     for (const directory of ["data", "project", "providers", "home/.codex", "home/.claude", "temp"]) await mkdir(path.join(root, directory), { recursive: true });
     const fakeCodexFile = path.join(root, "providers", "fake-codex-app-server.mjs");
-    await copyFile(path.join(sourceRoot, "e2e", "fake-codex-app-server.mjs"), fakeCodexFile, 1);
-    report.harness = { fakeCodexSha256: hash(await readFile(fakeCodexFile)) };
+    if (!prepared) {
+      await copyFile(path.join(sourceRoot, "e2e", "fake-codex-app-server.mjs"), fakeCodexFile, 1);
+      report.harness = { fakeCodexSha256: hash(await readFile(fakeCodexFile)) };
+    } else {
+      report.harness = { profile: "recording", sourceCaptureId: prepared.manifest.sourceCaptureId,
+        sourceManifestSha256: prepared.manifest.sourceManifestSha256, exclusions: prepared.manifest.exclusions };
+      passed("production-snapshot", report.harness);
+    }
     telegram = new LoopbackTelegramApi();
     await telegram.start();
-    const config = releaseAcceptanceConfig({ root, telegramApiBaseUrl: telegram.baseUrl, fakeCodexFile });
+    const config = releaseAcceptanceConfig({ root, telegramApiBaseUrl: telegram.baseUrl, fakeCodexFile, recording: prepared?.recording });
     await writeFile(path.join(root, "config.json"), `${JSON.stringify(config, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
-    await writeFile(path.join(root, MARKER), `${JSON.stringify({ schemaVersion: 1, id: report.id, root })}\n`, { encoding: "utf8", flag: "wx" });
+    const marker = prepared ? await recordingAcceptanceMarker({ root, id: report.id }) : { schemaVersion: 1, id: report.id, root };
+    await writeFile(path.join(root, MARKER), `${JSON.stringify(marker)}\n`, { encoding: "utf8", flag: "wx" });
     acceptancePrepared = true;
     await writeTextAtomic(path.join(root, "current.json"), `${JSON.stringify({ current: previous.releaseId })}\n`);
     passed("artifact-integrity", report.artifacts);
@@ -286,7 +324,7 @@ export async function acceptReleaseArtifact({ artifactRoot, previousArtifactRoot
     ownedPids.add(before.pid);
     passed("previous-runtime-readiness", before);
     await save();
-    report.restartTarget = await prepareAcceptanceRestartTarget({ root, telegram });
+    report.restartTarget = prepared ? await readRecordingAcceptanceTarget({ root }) : await prepareAcceptanceRestartTarget({ root, telegram });
     await save();
     const replacement = await exerciseAcceptanceReplacement({ root, previous, candidate, timeoutMs });
     ownedPids.add(replacement.after.pid);

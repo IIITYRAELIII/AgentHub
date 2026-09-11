@@ -54,3 +54,11 @@ Historical read coordinates are not command authority: reads retain canonical
 containing-project paths while admission still checks the exact captured binding.
 Mutable recording Thread names have a separate local metadata table and cannot
 rewrite seeded provider/Thread/Stream identity or create a command.
+
+Windows artifact acceptance may prepare its own fresh recording cohort from
+explicit raw capture inputs. Marker v2 persists exact profile/config identities
+across independent RuntimeHost launches; it does not adopt the running rolling
+contour. Existing v1 synthetic acceptance remains a distinct profile. Cleanup
+depends on stable acceptance ownership rather than mutable profile hashes.
+The existing restart barrier still owns pending work: the harness cannot finish
+captured commands or claim queue recovery from readiness alone.

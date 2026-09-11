@@ -386,6 +386,17 @@ candidate ready lock/control identity, and previous process exit. The report
 must enumerate checked and excluded scenarios; passing this lifecycle scope
 does not imply coherent production-data or queue/outbox recovery parity.
 
+Explicit recording inputs prepare a fresh writable cohort from immutable capture
+evidence through the existing preparation owner. The acceptance launcher uses a
+v2 marker binding the exact root/profile and SHA256 of provider, preparation,
+project descriptor and persistent config. Every independent Windows launch
+verifies these identities and reconstructs the same isolated recording homes;
+unknown profiles, partial cohorts or old launcher capabilities fail before Hub
+startup. Cleanup uses stable root ownership, so changed config cannot prevent
+closing its already-owned process job. Recording acceptance reads the existing
+selection and never creates a synthetic Thread, replays user input, drains queues
+by force or turns a waiting restart into successful replacement.
+
 There is one rolling Test Contour. It is always built from `dev`; Agent Hub does
 not deploy a contour per Task branch. The contour status records the exact
 `dev` head it displays. Candidate preparation completes before the current

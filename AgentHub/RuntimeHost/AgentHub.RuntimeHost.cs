@@ -188,12 +188,19 @@ namespace AgentHub.RuntimeHost
             object version;
             object ownerRoot;
             object id;
-            if (!marker.TryGetValue("schemaVersion", out version) || Convert.ToInt32(version) != 1
+            if (!marker.TryGetValue("schemaVersion", out version) || (Convert.ToInt32(version) != 1 && Convert.ToInt32(version) != 2)
                 || !marker.TryGetValue("root", out ownerRoot)
                 || !String.Equals(Path.GetFullPath(Convert.ToString(ownerRoot)), Path.GetFullPath(runtimeRoot), StringComparison.OrdinalIgnoreCase)
                 || !marker.TryGetValue("id", out id) || String.IsNullOrWhiteSpace(Convert.ToString(id)))
             {
                 throw new InvalidOperationException("Release acceptance root identity mismatch");
+            }
+            if (Convert.ToInt32(version) == 2)
+            {
+                EnsureAcceptanceFile(runtimeRoot, markerFile);
+                RequireAcceptanceRoot(marker, "root", runtimeRoot);
+                if (RequiredString(marker, "profile") != "recording") throw new InvalidOperationException("Unknown release acceptance profile");
+                RequireAcceptanceRoot(marker, "recordingRoot", Path.Combine(runtimeRoot, "recording"));
             }
             string productionRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgentHub");
             if (String.Equals(Path.GetFullPath(runtimeRoot), Path.GetFullPath(productionRoot), StringComparison.OrdinalIgnoreCase))
@@ -203,14 +210,91 @@ namespace AgentHub.RuntimeHost
             return marker;
         }
 
+        private static void RequireAcceptanceRoot(Dictionary<string, object> value, string key, string expected)
+        {
+            string actual = RequiredString(value, key);
+            if (!Path.IsPathRooted(actual)
+                || !String.Equals(Path.GetPathRoot(actual), Path.GetPathRoot(expected), StringComparison.OrdinalIgnoreCase)
+                || !String.Equals(Path.GetFullPath(actual), Path.GetFullPath(expected), StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Recording acceptance root identity mismatch: " + key);
+        }
+
+        private static void EnsureAcceptanceDirectory(string directory)
+        {
+            for (DirectoryInfo current = new DirectoryInfo(directory); current != null; current = current.Parent)
+                EnsureDirectoryWithoutReparsePoint(current.FullName, "Recording acceptance directory contains a reparse point or is missing");
+        }
+
+        private static void EnsureAcceptanceFile(string root, string file)
+        {
+            string prefix = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            if (!Path.GetFullPath(file).StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Recording acceptance file escapes its root");
+            EnsureAcceptanceDirectory(Path.GetDirectoryName(file));
+            EnsureRegularFile(file, "Recording acceptance file is missing or contains a reparse point");
+        }
+
+        private static Dictionary<string, object> ReadVerifiedAcceptanceJson(string root, string file, string expectedHash)
+        {
+            if (!Regex.IsMatch(expectedHash, "^[a-f0-9]{64}$", RegexOptions.CultureInvariant)) throw new InvalidOperationException("Invalid recording acceptance hash");
+            EnsureAcceptanceFile(root, file);
+            byte[] bytes = File.ReadAllBytes(file);
+            using (SHA256 sha = SHA256.Create())
+            {
+                string actual = BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
+                if (actual != expectedHash) throw new InvalidOperationException("Recording acceptance hash mismatch: " + Path.GetFileName(file));
+            }
+            JavaScriptSerializer serializer = new JavaScriptSerializer();
+            serializer.MaxJsonLength = Int32.MaxValue;
+            Dictionary<string, object> value = serializer.DeserializeObject(Encoding.UTF8.GetString(bytes)) as Dictionary<string, object>;
+            if (value == null) throw new InvalidOperationException("Invalid recording acceptance JSON object");
+            return value;
+        }
+
+        private static string VerifyRecordingAcceptance(string runtimeRoot, Dictionary<string, object> acceptance)
+        {
+            string recordingRoot = Path.Combine(runtimeRoot, "recording");
+            EnsureAcceptanceDirectory(recordingRoot);
+            string providerHash = RequiredString(acceptance, "recordingMarkerSha256");
+            string projectsHash = RequiredString(acceptance, "projectConfigurationSha256");
+            Dictionary<string, object> provider = ReadVerifiedAcceptanceJson(runtimeRoot, Path.Combine(recordingRoot, "recording-provider.json"), providerHash);
+            Dictionary<string, object> preparation = ReadVerifiedAcceptanceJson(runtimeRoot, Path.Combine(runtimeRoot, "contour-preparation.json"), RequiredString(acceptance, "preparationSha256"));
+            Dictionary<string, object> projects = ReadVerifiedAcceptanceJson(runtimeRoot, Path.Combine(recordingRoot, "recording-projects.json"), projectsHash);
+            Dictionary<string, object> config = ReadVerifiedAcceptanceJson(runtimeRoot, Path.Combine(runtimeRoot, "config.json"), RequiredString(acceptance, "configSha256"));
+            RequireAcceptanceRoot(provider, "root", recordingRoot);
+            RequireAcceptanceRoot(preparation, "root", runtimeRoot);
+            RequireAcceptanceRoot(projects, "root", recordingRoot);
+            RequireAcceptanceRoot(config, "dataDir", Path.Combine(runtimeRoot, "data"));
+            object raw;
+            Dictionary<string, object> profile = config.TryGetValue("testContourRecording", out raw) ? raw as Dictionary<string, object> : null;
+            if (profile == null) throw new InvalidOperationException("Recording acceptance config has no profile");
+            RequireAcceptanceRoot(profile, "root", recordingRoot);
+            if (!profile.TryGetValue("schemaVersion", out raw) || Convert.ToInt32(raw) != 1
+                || !provider.TryGetValue("schemaVersion", out raw) || Convert.ToInt32(raw) != 1
+                || RequiredString(provider, "kind") != "literal-recording-provider" || RequiredString(provider, "externalEffects") != "deny"
+                || !preparation.TryGetValue("schemaVersion", out raw) || Convert.ToInt32(raw) != 1
+                || RequiredString(preparation, "kind") != "owned-contour-preparation" || RequiredString(preparation, "phase") != "prepared"
+                || !preparation.TryGetValue("bootable", out raw) || !(raw is bool) || (bool)raw
+                || RequiredString(preparation, "recordingMarkerSha256") != providerHash || RequiredString(preparation, "configSha256") != projectsHash
+                || !projects.TryGetValue("schemaVersion", out raw) || Convert.ToInt32(raw) != 1
+                || RequiredString(projects, "kind") != "recording-project-configuration" || RequiredString(projects, "markerSha256") != providerHash)
+                throw new InvalidOperationException("Recording acceptance profile identity mismatch");
+            foreach (string database in new[] { "journal.sqlite", "runtime.sqlite", "message-command-ledger.sqlite" })
+                EnsureAcceptanceFile(runtimeRoot, Path.Combine(runtimeRoot, "data", database));
+            return recordingRoot;
+        }
+
         private static void ApplyReleaseAcceptanceEnvironment(string runtimeRoot, ProcessStartInfo start)
         {
-            if (ReadAcceptanceMarker(runtimeRoot) == null) return;
+            Dictionary<string, object> acceptance = ReadAcceptanceMarker(runtimeRoot);
+            if (acceptance == null) return;
             if (File.Exists(Path.Combine(runtimeRoot, ".agent-hub-release-acceptance.closed")))
                 throw new InvalidOperationException("Release acceptance is closed; no later runtime may start");
+            bool recording = Convert.ToInt32(acceptance["schemaVersion"]) == 2;
+            string recordingRoot = recording ? VerifyRecordingAcceptance(runtimeRoot, acceptance) : null;
             Dictionary<string, string> system = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (string key in new[] { "SystemRoot", "WINDIR", "SystemDrive", "PATH", "PATHEXT", "COMSPEC", "OS", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE" })
             {
+                if (recording && (key == "PATH" || key == "SystemDrive")) continue;
                 string value = start.EnvironmentVariables[key];
                 if (value != null) system[key] = value;
             }
@@ -226,20 +310,31 @@ namespace AgentHub.RuntimeHost
                 start.EnvironmentVariables["USERDOMAIN"] = separator >= 0 ? owner.Substring(0, separator) : "";
                 start.EnvironmentVariables["USERNAME"] = separator >= 0 ? owner.Substring(separator + 1) : owner;
             }
-            string home = Path.Combine(runtimeRoot, "home");
-            string temporary = Path.Combine(runtimeRoot, "temp");
+            string home = Path.Combine(recordingRoot ?? runtimeRoot, "home");
+            string temporary = Path.Combine(recordingRoot ?? runtimeRoot, recording ? "tmp" : "temp");
+            if (recording)
+            {
+                foreach (string name in new[] { "home", "appdata", "localappdata", "tmp", "codex-home", "claude-home" })
+                {
+                    string directory = Path.Combine(recordingRoot, name);
+                    if (Directory.Exists(directory)) EnsureAcceptanceDirectory(directory);
+                    Directory.CreateDirectory(directory);
+                    EnsureAcceptanceDirectory(directory);
+                }
+            }
             Directory.CreateDirectory(home);
             Directory.CreateDirectory(temporary);
             start.EnvironmentVariables["USERPROFILE"] = home;
             start.EnvironmentVariables["HOME"] = home;
-            start.EnvironmentVariables["LOCALAPPDATA"] = Path.Combine(home, "AppData", "Local");
-            start.EnvironmentVariables["APPDATA"] = Path.Combine(home, "AppData", "Roaming");
-            start.EnvironmentVariables["CODEX_HOME"] = Path.Combine(home, ".codex");
-            start.EnvironmentVariables["CLAUDE_CONFIG_DIR"] = Path.Combine(home, ".claude");
+            start.EnvironmentVariables["LOCALAPPDATA"] = recording ? Path.Combine(recordingRoot, "localappdata") : Path.Combine(home, "AppData", "Local");
+            start.EnvironmentVariables["APPDATA"] = recording ? Path.Combine(recordingRoot, "appdata") : Path.Combine(home, "AppData", "Roaming");
+            start.EnvironmentVariables["CODEX_HOME"] = recording ? Path.Combine(recordingRoot, "codex-home") : Path.Combine(home, ".codex");
+            start.EnvironmentVariables["CLAUDE_CONFIG_DIR"] = recording ? Path.Combine(recordingRoot, "claude-home") : Path.Combine(home, ".claude");
             start.EnvironmentVariables["TEMP"] = temporary;
             start.EnvironmentVariables["TMP"] = temporary;
             start.EnvironmentVariables["AGENT_HUB_TEST_CONTOUR"] = "1";
-            start.EnvironmentVariables["AGENT_HUB_TEST_CONTOUR_PROFILE"] = "fake-codex";
+            start.EnvironmentVariables["AGENT_HUB_TEST_CONTOUR_PROFILE"] = recording ? "recording" : "fake-codex";
+            if (recording) start.EnvironmentVariables["AGENT_HUB_RECORDING_PROVIDER_ROOT"] = recordingRoot;
         }
 
         private static string AcceptanceObjectName(string root)

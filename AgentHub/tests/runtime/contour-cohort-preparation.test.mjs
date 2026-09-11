@@ -10,6 +10,7 @@ import { captureSqliteCohort, COHORT_FILES } from "../../src/runtime/sqlite-coho
 import { prepareRecordingContourCohort } from "../../src/runtime/test-contour-cohort-preparation.mjs";
 import { createContourCommandMapping } from "../../src/infrastructure/filesystem/test-contour-command-mapping.mjs";
 import { recordingContourProfile } from "../../src/infrastructure/filesystem/test-contour-recording-profile.mjs";
+import { recordingAcceptanceMarker, releaseAcceptanceConfig } from "../../src/runtime/test-contour-release-acceptance.mjs";
 
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 async function fixture(t) {
@@ -82,6 +83,26 @@ test("preparation refuses changed raw bytes without publishing a prepared cohort
   await assert.rejects(prepareRecordingContourCohort(f.options), (error) => { failure = error; return /Captured file changed/.test(error.message); });
   const manifest = JSON.parse(await readFile(failure.manifestFile, "utf8"));
   assert.equal(manifest.phase, "failed"); assert.equal(manifest.bootable, false);
+});
+
+test("Windows recording marker binds the exact fresh cohort and persistent configuration", async (t) => {
+  const f = await fixture(t);
+  const prepared = await prepareRecordingContourCohort(f.options);
+  const config = releaseAcceptanceConfig({ root: prepared.root, recording: prepared.recording, telegramApiBaseUrl: "http://127.0.0.1:1234" });
+  const configBytes = JSON.stringify(config);
+  await writeFile(path.join(prepared.root, "config.json"), configBytes);
+  const marker = await recordingAcceptanceMarker({ root: prepared.root, id: "exact-acceptance" });
+  assert.equal(marker.schemaVersion, 2);
+  assert.equal(marker.profile, "recording");
+  assert.equal(marker.recordingRoot, prepared.recording.root);
+  assert.equal(marker.recordingMarkerSha256, prepared.manifest.recordingMarkerSha256);
+  assert.equal(marker.projectConfigurationSha256, prepared.manifest.configSha256);
+  assert.equal(marker.preparationSha256, digest(await readFile(prepared.manifestFile)));
+  assert.equal(marker.configSha256, digest(configBytes));
+  const original = await readFile(path.join(prepared.recording.root, "recording-projects.json"));
+  await writeFile(path.join(prepared.recording.root, "recording-projects.json"), Buffer.concat([original, Buffer.from(" ")]));
+  await assert.rejects(recordingAcceptanceMarker({ root: prepared.root, id: "changed" }), /configuration changed/);
+  for (const record of f.raw.manifest.databases) assert.equal(digest(await readFile(path.join(f.raw.dataDirectory, record.name))), record.sha256);
 });
 
 test("missing queue evidence and raw-output overlap fail before preparation", async (t) => {
