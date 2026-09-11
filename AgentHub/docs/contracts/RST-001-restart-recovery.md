@@ -95,6 +95,11 @@ owned directories; canonical journal text and command identities are not
 rewritten. SQLite read pins plus unchanged sidecars establish the documented
 capture window, not a cross-store business transaction.
 
+Historical read models may retain a containing project directory different from
+the exact Thread execution directory. Recording read projections preserve those
+canonical fields and validate Thread/Stream membership; they do not grant command
+authority. Admission still requires the exact captured execution binding.
+
 The profile must verify cohort ownership and configuration before starting the
 Hub. Providers are literal local recording adapters in isolated homes. Captured
 external processes, rollout files, Git repositories and media jobs are not

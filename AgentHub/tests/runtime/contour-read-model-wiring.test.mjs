@@ -75,7 +75,7 @@ async function fixture(t) {
   }));
   await writeFile(path.join(recording, "recording-provider.json"), JSON.stringify({
     schemaVersion: 1, kind: "literal-recording-provider", root: recording, externalEffects: "deny",
-    sources: projects.map((project) => ({ source: project.path, kind: "project" })),
+    sources: [path.join(root, "canonical"), ...projects.map((project) => project.path)].map((source) => ({ source, kind: "project" })),
     threads: bindings.map((binding) => ({ provider: binding.provider, id: binding.threadId,
       streamId: binding.streamId, cwd: binding.projectRoot })),
   }));
@@ -195,4 +195,25 @@ test("read projection is opt-in and rejects unseeded identity without changing s
   assert.throws(() => view.services.readHistoryPage([{ ...operational, threadId: "unknown" }], pageOptions), /captured canonical binding/);
   assert.throws(() => prepareContourProjectConfiguration({ mapping: f.mapping, environment: {},
     config: { projectRoot: f.projects[0].path, projects: [{ name: "unknown", path: path.join(f.root, "unmapped") }] } }), /Unmapped/);
+});
+
+test("historical containing-project reads do not become nested Thread execution authority", async (t) => {
+  const f = await fixture(t);
+  const binding = f.bindings[1];
+  const parent = path.dirname(binding.projectRoot);
+  const stored = { ...binding, projectRoot: parent, sessionCwd: parent, title: "Historical root" };
+  const operational = { ...stored, projectRoot: f.mapping.paths.map(parent, "project"), sessionCwd: f.mapping.paths.map(parent, "project") };
+  const original = structuredClone(operational);
+  const view = contourReadModelOptions({ projects: f.operationalProjects, services: {
+    catalogEntries: () => [operational], refreshCatalog: async () => [operational],
+    readHistoryPage: (references) => references,
+  } }, f.mapping);
+  assert.deepEqual(view.services.catalogEntries(), [stored]);
+  assert.deepEqual(await view.services.refreshCatalog(), [stored]);
+  assert.deepEqual(view.services.readHistoryPage([operational]), [stored]);
+  assert.deepEqual(operational, original);
+  assert.throws(() => f.mapping.target(operational), /project differs/);
+  assert.throws(() => f.mapping.readReference({ ...operational, streamId: "foreign" }), /Stream differs/);
+  assert.throws(() => f.mapping.readReference({ ...operational, threadId: "unknown" }), /captured canonical binding/);
+  f.verifyEvidence();
 });

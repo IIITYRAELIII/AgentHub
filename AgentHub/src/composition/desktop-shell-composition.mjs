@@ -311,7 +311,7 @@ export function createDesktopShellComposition({
     fallbackSelection: () => canonicalSelection(selectedTask()),
     fallbackTitle: selectedTaskTitle,
     findProject,
-    catalogEntries: () => contourCommandMapping ? getTaskCatalog().map(canonicalSelection) : getTaskCatalog(),
+    catalogEntries: () => contourCommandMapping ? getTaskCatalog().map((entry) => contourCommandMapping.readReference(entry)) : getTaskCatalog(),
     catalogEntryIsSelected,
     preferences: agentPreferences,
     samePath,

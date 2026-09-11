@@ -4,12 +4,12 @@ export function contourReadModelOptions(options, mapping) {
   if (!mapping) return options;
   const { projects, services } = options;
   const canonicalProject = (project) => ({ ...project, path: mapping.canonicalPath(project.path) });
-  const entries = (values) => values.map((entry) => mapping.target(entry));
+  const entries = (values) => values.map((entry) => mapping.readReference(entry));
   const projected = { ...services };
   if (services.catalogEntries) projected.catalogEntries = () => entries(services.catalogEntries());
   if (services.refreshCatalog) projected.refreshCatalog = async (...args) => entries(await services.refreshCatalog(...args));
   if (services.threadsForStream) projected.threadsForStream = (streamId) => (
-    services.threadsForStream(streamId).map((thread) => mapping.target({ ...thread, streamId }))
+    services.threadsForStream(streamId).map((thread) => mapping.readReference({ ...thread, streamId }))
   );
   if (services.findProject) projected.findProject = (value) => {
     const canonical = mapping.canonicalPath(value);
@@ -27,12 +27,12 @@ export function contourReadModelOptions(options, mapping) {
         settings: stream.settings ? { ...stream.settings,
           ...(stream.settings.project ? { project: mapping.canonicalPath(stream.settings.project) } : {}),
         } : stream.settings,
-        threads: (stream.threads ?? []).map((thread) => mapping.target({ ...thread, streamId: stream.id })),
+        threads: (stream.threads ?? []).map((thread) => mapping.readReference({ ...thread, streamId: stream.id })),
       })),
     }))
   );
   for (const name of ["readCachedHistory", "refreshHistory"]) {
-    if (services[name]) projected[name] = (binding, ...args) => services[name](mapping.target(binding), ...args);
+    if (services[name]) projected[name] = (binding, ...args) => services[name](mapping.readReference(binding), ...args);
   }
   if (services.readHistoryPage) projected.readHistoryPage = (bindings, ...args) => (
     services.readHistoryPage(entries(bindings), ...args)

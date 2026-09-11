@@ -23,6 +23,7 @@ function request(method, params) {
     case "thread/read":
     case "thread/resume": return { thread: provider.thread(params.threadId) };
     case "thread/turns/list": return { data: provider.thread(params.threadId).turns, nextCursor: null };
+    case "thread/name/set": return provider.setThreadName(params);
     case "turn/start": {
       const result = provider.start(params);
       return { result: { turn: result.turn }, afterReply: result.duplicate ? null : () => notify("turn/started", { threadId: params.threadId, turn: result.turn }) };

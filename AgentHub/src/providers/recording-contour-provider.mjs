@@ -36,6 +36,7 @@ export class RecordingContourProvider {
     this.db = new DatabaseSync(databaseFile);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=1000;
       CREATE TABLE IF NOT EXISTS threads(provider TEXT, id TEXT, value_json TEXT NOT NULL, PRIMARY KEY(provider,id));
+      CREATE TABLE IF NOT EXISTS thread_names(provider TEXT, thread_id TEXT, name TEXT NOT NULL, PRIMARY KEY(provider,thread_id));
       CREATE TABLE IF NOT EXISTS turns(provider TEXT, thread_id TEXT, id TEXT, value_json TEXT NOT NULL, PRIMARY KEY(provider,thread_id,id));
       CREATE TABLE IF NOT EXISTS commands(provider TEXT, client_id TEXT, fingerprint TEXT NOT NULL, canonical_json TEXT NOT NULL, execution_json TEXT NOT NULL, thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, PRIMARY KEY(provider,client_id));`);
     try {
@@ -55,9 +56,23 @@ export class RecordingContourProvider {
     const row = this.db.prepare("SELECT value_json FROM threads WHERE provider=? AND id=?").get(this.provider, identity(id, "thread ID"));
     if (!row) throw new Error("Unseeded Thread; recording adapter cannot discover production sessions");
     const thread = JSON.parse(row.value_json);
-    return { ...thread, cwd: this.paths.map(thread.cwd, "project"), turns: this.db.prepare("SELECT value_json FROM turns WHERE provider=? AND thread_id=? ORDER BY rowid").all(this.provider, id).map((row) => JSON.parse(row.value_json)) };
+    const metadata = this.db.prepare("SELECT name FROM thread_names WHERE provider=? AND thread_id=?").get(this.provider, id);
+    return { ...thread, ...(metadata ? { name: metadata.name } : {}), cwd: this.paths.map(thread.cwd, "project"), turns: this.db.prepare("SELECT value_json FROM turns WHERE provider=? AND thread_id=? ORDER BY rowid").all(this.provider, id).map((row) => JSON.parse(row.value_json)) };
   }
   threads() { return this.db.prepare("SELECT id FROM threads WHERE provider=? ORDER BY rowid").all(this.provider).map(({ id }) => this.thread(id)); }
+  setThreadName({ threadId, name }) {
+    identity(threadId, "thread ID");
+    if (typeof name !== "string" || !name.trim() || name.includes("\0")) throw new Error("A nonempty literal Thread name is required");
+    return this.transaction(() => {
+      if (!this.db.prepare("SELECT 1 FROM threads WHERE provider=? AND id=?").get(this.provider, threadId)) throw new Error("Unseeded Thread; recording adapter cannot name production sessions");
+      // Mutable display metadata never changes the canonical seed or a command
+      // fingerprint. Repeating the same name is a no-op, including after reopen.
+      this.db.prepare(`INSERT INTO thread_names(provider,thread_id,name) VALUES(?,?,?)
+        ON CONFLICT(provider,thread_id) DO UPDATE SET name=excluded.name
+        WHERE thread_names.name<>excluded.name`).run(this.provider, threadId, name);
+      return {};
+    });
+  }
   start({ threadId, clientUserMessageId, input, turnId = null }) {
     identity(clientUserMessageId, "clientUserMessageId");
     const thread = this.thread(threadId);

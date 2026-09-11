@@ -156,3 +156,9 @@ Startup orchestration uses `src/application/contour-effect-operations.mjs`.
 Old ignored WIP scripts remain historical evidence and may reference earlier
 module locations. They are not current executable entrypoints. All tracked
 production and test imports use the owning modules.
+
+The first live prepared cohort exposed historical catalog entries whose containing
+project differs from their exact Thread directory. Read projections preserve
+these canonical paths and validate membership separately from strict admission.
+Local thread/name/set stores provider-scoped mutable names separately from seed
+identity; renaming never admits a command or starts a turn.

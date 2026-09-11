@@ -35,7 +35,7 @@ export function createContourCommandMapping({ root, readCommand = () => null }) 
     paths.map(value, kind);
     return value; // Retain original lexical spelling when already canonical.
   }
-  function target(value) {
+  function reference(value, execution) {
     if (!value || typeof value !== "object") throw new Error("Target reference required");
     const result = { ...value };
     if (result.projectRoot != null) result.projectRoot = canonicalPath(result.projectRoot);
@@ -44,12 +44,16 @@ export function createContourCommandMapping({ root, readCommand = () => null }) 
       const thread = threads.get(`${value.provider}\0${value.threadId}`);
       if (!thread) throw new Error("Target Thread is not in the captured canonical binding");
       if (value.streamId && value.streamId !== thread.streamId) throw new Error("Target Stream differs from canonical Thread binding");
-      if (result.projectRoot && path.relative(paths.map(result.projectRoot, "project"), paths.map(thread.cwd, "project"))) throw new Error("Target project differs from canonical Thread binding");
-      if (Object.hasOwn(value, "projectRoot")) result.projectRoot = thread.cwd;
+      if (execution && result.projectRoot && path.relative(paths.map(result.projectRoot, "project"), paths.map(thread.cwd, "project"))) throw new Error("Target project differs from canonical Thread binding");
+      if (execution && Object.hasOwn(value, "projectRoot")) result.projectRoot = thread.cwd;
       // Do not inject absent transport fields: request shape is fingerprinted.
     }
     return result;
   }
+  const target = (value) => reference(value, true);
+  // A historical read model may retain its containing project while the exact
+  // Thread binding names a nested directory. Reading it grants no execution.
+  const readReference = (value) => reference(value, false);
   function canonicalInput(value) {
     if (typeof value === "string") return value;
     if (!Array.isArray(value)) throw new Error("Unclassified contour input");
@@ -82,5 +86,5 @@ export function createContourCommandMapping({ root, readCommand = () => null }) 
     if (!["send-message", "select-task"].includes(request.action)) return request;
     return { ...request, params: target(request.params ?? {}) };
   }
-  return Object.freeze({ paths, target, input, files, canonicalPath, request });
+  return Object.freeze({ paths, target, readReference, input, files, canonicalPath, request });
 }

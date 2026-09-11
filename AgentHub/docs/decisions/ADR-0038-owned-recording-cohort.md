@@ -49,3 +49,8 @@ artifacts and live provider/media behavior are separate acceptance claims.
 No full-parity flag is inferred from startup or a green synthetic scenario.
 Git operations remain unavailable until an owned Git cohort is implemented and
 checked; retained production references cannot be used as a fallback.
+
+Historical read coordinates are not command authority: reads retain canonical
+containing-project paths while admission still checks the exact captured binding.
+Mutable recording Thread names have a separate local metadata table and cannot
+rewrite seeded provider/Thread/Stream identity or create a command.
