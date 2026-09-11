@@ -119,6 +119,30 @@ it must not destroy the cohort to produce an apparently successful clone.
 Ordinary runtime refresh retains the prepared data and uses the same exact
 candidate-readiness and operation-lease rules as the existing contour.
 
+## Windows artifact acceptance with recording data
+
+`test-contour.mjs accept-release --artifact <candidate> --previous-artifact <previous>
+--output-root <isolated-parent> --recording-input <input.json>` consumes existing
+full Windows artifacts and creates a fresh prepared root. The explicit JSON
+input contains `captureManifestFile`, `sourceConfig:{projectRoot,projects}` and
+optional `attachmentRoots`, as for the preparation API above. It never copies
+the live rolling contour or mutates either artifact. The candidate launcher must
+advertise `recordingProfile:1` in its manifest-covered acceptance capability.
+
+The v2 launch marker binds four hashes: recording provider, preparation manifest,
+project descriptor and persistent config. Windows Host validates them on every
+independent launch, fixes literal-provider identity and isolated homes, and
+rejects links or partial profiles. The close fence still closes the owned Job
+after config corruption. Legacy synthetic v1 acceptance remains unchanged.
+
+The harness reads a captured selected Stream/Thread; it sends no `/new` and no
+user input. It requests replacement once and reconciles exact release/PID
+readiness. Active work may keep the normal restart barrier waiting; this is
+retained as incomplete/failed acceptance evidence, never silently drained or
+counted as success. Queue/delivery parity and browser usability remain separate
+checks. Executable Host and preparation tests establish these boundaries;
+only an actual artifact run can establish Windows replacement success.
+
 ## Executed synthetic acceptance
 
 `tests/e2e/agent-hub-server.recording-contour.e2e.test.mjs` builds data through

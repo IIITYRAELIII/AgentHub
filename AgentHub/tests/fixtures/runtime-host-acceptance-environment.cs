@@ -42,6 +42,7 @@ internal static class AcceptanceEnvironmentProbe
         start.EnvironmentVariables["CODEX_EXECUTABLE"] = "unsafe-override";
         start.EnvironmentVariables["SENTRY_DSN"] = "synthetic-dsn";
         start.EnvironmentVariables["NODE_OPTIONS"] = "--require=unsafe.js";
+        start.EnvironmentVariables["AGENT_HUB_RECORDING_PROVIDER_ROOT"] = "unsafe-recording-root";
         start.EnvironmentVariables["USERNAME"] = "synthetic-wrong-owner";
         start.EnvironmentVariables["USERDOMAIN"] = "synthetic-wrong-domain";
         MethodInfo method = typeof(AgentHub.RuntimeHost.Program).GetMethod(
@@ -56,6 +57,14 @@ internal static class AcceptanceEnvironmentProbe
         result["home"] = start.EnvironmentVariables["USERPROFILE"];
         result["codexHome"] = start.EnvironmentVariables["CODEX_HOME"];
         result["profile"] = start.EnvironmentVariables["AGENT_HUB_TEST_CONTOUR_PROFILE"];
+        result["recordingRoot"] = start.EnvironmentVariables["AGENT_HUB_RECORDING_PROVIDER_ROOT"];
+        result["testContour"] = start.EnvironmentVariables["AGENT_HUB_TEST_CONTOUR"];
+        result["appData"] = start.EnvironmentVariables["APPDATA"];
+        result["localAppData"] = start.EnvironmentVariables["LOCALAPPDATA"];
+        result["claudeHome"] = start.EnvironmentVariables["CLAUDE_CONFIG_DIR"];
+        result["temp"] = start.EnvironmentVariables["TEMP"];
+        result["tmp"] = start.EnvironmentVariables["TMP"];
+        result["pathPresent"] = start.EnvironmentVariables["PATH"] != null;
         result["userName"] = start.EnvironmentVariables["USERNAME"];
         result["userDomain"] = start.EnvironmentVariables["USERDOMAIN"];
         using (WindowsIdentity identity = WindowsIdentity.GetCurrent()) result["windowsOwner"] = identity.Name;

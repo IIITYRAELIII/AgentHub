@@ -1,5 +1,6 @@
 import path from "node:path";
 import process from "node:process";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { isMainModule } from "./src/infrastructure/process/main-module.mjs";
@@ -60,6 +61,7 @@ function parseArguments(args) {
     else if (argument === "--artifact" && args[index + 1]) options.artifactRoot = path.resolve(args[++index]);
     else if (argument === "--previous-artifact" && args[index + 1]) options.previousArtifactRoot = path.resolve(args[++index]);
     else if (argument === "--output-root" && args[index + 1]) options.outputRoot = path.resolve(args[++index]);
+    else if (argument === "--recording-input" && args[index + 1]) options.recordingInput = path.resolve(args[++index]);
     else throw new Error(`Unknown Test Contour argument: ${argument}`);
   }
   if (options.releaseCandidate && command !== "verify") {
@@ -67,7 +69,7 @@ function parseArguments(args) {
   }
   if (options.preparedRoot && command !== "adopt-recording") throw new Error("--prepared-root requires adopt-recording");
   if (options.protectedRuntimeRoot && command !== "serve") throw new Error("Protected runtime identity is only accepted by serve");
-  if (command !== "accept-release" && (options.artifactRoot || options.previousArtifactRoot || options.outputRoot)) {
+  if (command !== "accept-release" && (options.artifactRoot || options.previousArtifactRoot || options.outputRoot || options.recordingInput)) {
     throw new Error("Artifact arguments are supported only by accept-release");
   }
   if (command === "accept-release" && args.includes("--root")) {
@@ -101,6 +103,7 @@ export async function main(args = process.argv.slice(2)) {
       artifactRoot: options.artifactRoot,
       previousArtifactRoot: options.previousArtifactRoot,
       ...(options.outputRoot ? { outputRoot: options.outputRoot } : {}),
+      ...(options.recordingInput ? { recordingCohort: JSON.parse(await readFile(options.recordingInput, "utf8")) } : {}),
     });
     print({ status: result.status, scope: result.scope, productionParity: result.productionParity,
       artifacts: result.artifacts, manifestFile: result.manifestFile,
