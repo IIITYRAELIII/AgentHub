@@ -70,7 +70,7 @@ async function fixture(taskLifecycle, releaseServices = {}) {
     provider: {
       taskSyncStore: { searchMessages() {}, messageSearchStatus() {}, markMessageSearchThread() {} },
     },
-    clients: {},
+    clients: { approvalController: {} },
     deferred: {
       api: {},
       ports: {

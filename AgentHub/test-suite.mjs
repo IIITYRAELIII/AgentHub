@@ -19,6 +19,8 @@ export const E2E_FILES = [
   "tests/e2e/agent-hub-server.claude.e2e.test.mjs",
   "tests/e2e/agent-hub-server.local-control.e2e.test.mjs",
   "tests/e2e/agent-hub-server.journal.e2e.test.mjs",
+  "tests/e2e/agent-hub-server.recording-contour.e2e.test.mjs",
+  "tests/e2e/test-contour-recording-refresh.e2e.test.mjs",
   // Измерено 2026-09-10: 1.4 с, 5 из 5 проверок пройдено. Дешёвая проверка
   // владения Thread и восстановления MCP-моста, ранее не выполнялась ни одной
   // группой. Стоимость обычного выпуска практически не меняется.

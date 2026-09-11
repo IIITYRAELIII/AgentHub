@@ -1,3 +1,4 @@
+import { contourRolloutPolicy } from "../infrastructure/filesystem/test-contour-rollout-policy.mjs";
 import path from "node:path";
 
 import { turnEndKey } from "../application/turn-end-notifications.mjs";
@@ -74,6 +75,7 @@ export function createCodexObservabilityComposition({
   streamIdForThread,
   importCodexAssistantAttachments,
 }) {
+  const rolloutPolicy = contourRolloutPolicy(config);
   const rolloutPathsByProviderTaskId = new Map();
   const compactions = new ContextCompactionTracker({
     cleanupTimeoutMs: Math.max(
@@ -130,6 +132,7 @@ export function createCodexObservabilityComposition({
   }
 
   async function knownRolloutPath(providerTaskId, startedAt = "") {
+    if (rolloutPolicy) { rolloutPolicy.exclude("known-rollout-path"); return ""; }
     const key = String(providerTaskId ?? "").trim();
     const known = String(rolloutPathsByProviderTaskId.get(key) ?? "").trim();
     if (known) return known;
@@ -144,6 +147,7 @@ export function createCodexObservabilityComposition({
   }
 
   const resolveTerminalAttachments = createCodexTerminalAttachmentResolver({
+    recordingRoot: config.testContourRecording?.root,
     knownRolloutPath,
     readRolloutActivity: readCodexRolloutActivity,
     importAttachments: importCodexAssistantAttachments,
@@ -203,6 +207,7 @@ export function createCodexObservabilityComposition({
     resolveTerminalAttachments,
   });
   const terminalAudit = new CodexTerminalAudit({
+    recordingRoot: config.testContourRecording?.root,
     listPage: (cursor, limit) => sendRpc("thread/list", {
       cursor,
       limit,

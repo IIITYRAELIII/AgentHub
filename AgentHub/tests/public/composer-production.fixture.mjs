@@ -192,6 +192,8 @@ async function openFixture(page, {
   expectedTaskId = "stream-a",
   recoveryAuthorityAvailable = true,
   holdRecoveryAuthority = false,
+  chunkedUpload = false,
+  attachmentStorageOpenFailure = false,
 } = {}) {
   const diagnostics = [];
   page.on("pageerror", (error) => diagnostics.push(error.message));
@@ -199,8 +201,28 @@ async function openFixture(page, {
     if (message.type() === "error") diagnostics.push(message.text());
   });
   await page.addInitScript(({
-    initialSnapshot, initialDrafts, authorityAvailable, holdAuthority,
+    initialSnapshot, initialDrafts, authorityAvailable, holdAuthority, attachmentOpenFailure,
   }) => {
+    // Opening the attachment database fails. This covers only the open step:
+    // the product treats that rejection as "not durable". The error code is set
+    // to QuotaExceededError for readability and is not produced by a real quota;
+    // a failure during put or transaction commit is a different path.
+    if (attachmentOpenFailure) {
+      const nativeOpen = globalThis.indexedDB.open.bind(globalThis.indexedDB);
+      globalThis.indexedDB.open = (name, ...rest) => {
+        if (name !== "agent-hub-composer-files-v1") return nativeOpen(name, ...rest);
+        const request = {
+          result: null,
+          error: new DOMException("attachment storage is full", "QuotaExceededError"),
+          onsuccess: null,
+          onerror: null,
+          onupgradeneeded: null,
+          onblocked: null,
+        };
+        queueMicrotask(() => request.onerror?.({ target: request }));
+        return request;
+      };
+    }
     if (!authorityAvailable) {
       Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: null });
     } else if (holdAuthority) {
@@ -253,6 +275,12 @@ async function openFixture(page, {
         },
       } });
     }
+    if (!crypto.randomUUID) Object.defineProperty(crypto, "randomUUID", { value: () => {
+      const bytes = crypto.getRandomValues(new Uint8Array(16));
+      bytes[6] = (bytes[6] & 15) | 64; bytes[8] = (bytes[8] & 63) | 128;
+      const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+      return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    } });
     window.__toastHistory = [];
     new MutationObserver(() => {
       const message = String(document.querySelector("[data-toast]")?.textContent ?? "").trim();
@@ -297,7 +325,7 @@ async function openFixture(page, {
     window.__agentHubIpcRuntimeHealth = async () => ({ ok: true });
     window.__agentHubDirectTransport = {
       ready: () => false,
-      available: async () => false,
+      available: async () => true,
       warmup() {},
     };
     window.__agentHubVscode = {
@@ -373,11 +401,69 @@ async function openFixture(page, {
     initialDrafts: persistedDrafts,
     authorityAvailable: recoveryAuthorityAvailable,
     holdAuthority: holdRecoveryAuthority,
+    attachmentOpenFailure: attachmentStorageOpenFailure,
   });
+  const uploads = new Map();
   await page.route("**/*", async (route) => {
     const requestUrl = new URL(route.request().url());
     if (requestUrl.hostname !== "agent-hub.test") {
       await route.abort();
+      return;
+    }
+    if (requestUrl.pathname === "/api/attachment-upload") {
+      if (!chunkedUpload) { await route.fulfill({ status: 404, body: "{}" }); return; }
+      const protocol = "agent-hub-attachment-upload-v1";
+      const policy = { protocol, chunkBytes: 1024 * 1024, maxBytes: 128 * 1024 * 1024, maxTotalBytes: 256 * 1024 * 1024 };
+      const method = route.request().method();
+      const id = requestUrl.searchParams.get("id");
+      let value = policy;
+      let status = 200;
+      if (method === "POST" && !id) {
+        const metadata = route.request().postDataJSON();
+        if (!uploads.has(metadata.uploadId)) uploads.set(metadata.uploadId, { ...metadata, protocol, status: "uploading", received: [] });
+        value = uploads.get(metadata.uploadId);
+      } else if (id) {
+        value = uploads.get(id);
+        if (!value) { status = 404; value = { error: "Upload missing" }; }
+        else if (method === "PUT") {
+          const mode = await page.evaluate(() => localStorage.getItem("fixture:upload-mode"));
+          if (mode === "fail-once") {
+            await page.evaluate(() => localStorage.removeItem("fixture:upload-mode"));
+            await route.fulfill({ status: 503, contentType: "application/json", body: '{"error":"Fixture disconnected"}' });
+            return;
+          }
+          const index = Number(requestUrl.searchParams.get("index"));
+          value.received = value.received.filter((part) => part.index !== index);
+          value.received.push({ index, size: route.request().postDataBuffer().length,
+            sha256: route.request().headers()["x-agent-hub-chunk-sha256"] });
+        } else if (method === "POST") {
+          value.status = "ready"; value.path = `C:\\fixture-upload\\${id}-${value.name}`; value.sha256 = "a".repeat(64);
+        } else if (method === "DELETE") value.status = "cancelled";
+      }
+      await page.evaluate((entry) => {
+        const log = JSON.parse(localStorage.getItem("fixture:upload-log") ?? "[]");
+        log.push(entry); localStorage.setItem("fixture:upload-log", JSON.stringify(log));
+      }, { method, id, index: requestUrl.searchParams.get("index"), value,
+        size: method === "PUT" ? route.request().postDataBuffer().length : 0 });
+      await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(value) });
+      return;
+    }
+    if (requestUrl.pathname === "/api/attachment") {
+      const name = decodeURIComponent(route.request().headers()["x-agent-hub-file-name"]);
+      const size = route.request().postDataBuffer().length;
+      const sequence = await page.evaluate(async ({ name, size }) => {
+        const fixture = window.__agentHubFixture;
+        fixture.uploadSequence += 1;
+        fixture.log.push({ action: "upload-attachment", transport: "http", params: { name, size } });
+        localStorage.setItem("fixture:bridge-log", JSON.stringify(fixture.log));
+        localStorage.setItem("fixture:upload-sequence", String(fixture.uploadSequence));
+        if (localStorage.getItem("fixture:upload-mode") === "hold") await new Promise((resolve) => {
+          fixture.heldUpload = { name };
+          window.__releaseHeldUpload = () => { fixture.heldUpload = null; resolve(); };
+        });
+        return fixture.uploadSequence;
+      }, { name, size });
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ path: `C:\\fixture-upload\\${sequence}-${name}` }) });
       return;
     }
     if (requestUrl.pathname.startsWith("/api/")) {
@@ -457,7 +543,10 @@ async function applyFixtureSnapshot(page, nextSnapshot) {
 
 async function submit(page, { text = "", attachment = null } = {}) {
   if (text) await page.locator("[data-composer-input]").fill(text);
-  if (attachment) await page.locator("[data-file-input]").setInputFiles(attachment);
+  if (attachment) {
+    await page.locator("[data-file-input]").setInputFiles(attachment);
+    await page.waitForFunction(() => document.querySelectorAll("[data-attachments] [data-attachment-index]").length > 0);
+  }
   await page.locator("[data-composer]").evaluate((form) => form.requestSubmit());
 }
 

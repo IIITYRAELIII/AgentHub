@@ -1,3 +1,4 @@
+import { contourRolloutPolicy } from "../../infrastructure/filesystem/test-contour-rollout-policy.mjs";
 import { createHash } from "node:crypto";
 import { open, stat } from "node:fs/promises";
 
@@ -276,6 +277,7 @@ function restoredHistoricalSubagentBackfill(value) {
 
 export class CodexTerminalAudit {
   constructor({
+    recordingRoot = null,
     listPage,
     readThread,
     isTurnActive,
@@ -314,6 +316,7 @@ export class CodexTerminalAudit {
     persistProgress = null,
     maxPositions = 5_000,
   }) {
+    this.rolloutPolicy = recordingRoot ? contourRolloutPolicy({ testContourRecording: { root: recordingRoot } }) : null;
     this.listPage = listPage;
     this.readThread = readThread;
     this.isTurnActive = isTurnActive;
@@ -1150,7 +1153,24 @@ export class CodexTerminalAudit {
     return true;
   }
 
+  async excludeCapturedRollouts() {
+    const status = {
+      ...this.rolloutPolicy.exclude("terminal-audit"),
+      pendingThreads: this.pendingTurns.size,
+      pendingTurns: [...this.pendingTurns.values()].reduce((sum, item) => sum + item.turns.size, 0),
+      historicalFiles: this.historicalSubagentBackfill.queue.length,
+      positions: this.positions.size,
+      cycleComplete: false, backlog: false,
+    };
+    if (JSON.stringify(this.lastRun) !== JSON.stringify(status)) {
+      this.lastRun = status;
+      if (this.persistProgress) await this.persistProgress();
+    }
+    return false;
+  }
+
   async runHistoricalMaintenance({ localOnlyAccounting = false } = {}) {
+    if (this.rolloutPolicy) return this.excludeCapturedRollouts();
     if (this.running || !this.hasPendingHistoricalMaintenance()) return false;
     this.running = true;
     const startedAtMs = this.now();
@@ -1179,6 +1199,7 @@ export class CodexTerminalAudit {
   }
 
   async run() {
+    if (this.rolloutPolicy) return this.excludeCapturedRollouts();
     if (this.running) return false;
     this.running = true;
     const startedAtMs = this.now();

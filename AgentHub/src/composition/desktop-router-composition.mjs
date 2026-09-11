@@ -7,6 +7,7 @@ export function createDesktopRouterComposition({
   receiptFile,
   receiptOptions = {},
   commandTrace = null,
+  canonicalizeRequest = (request) => request,
 }) {
   const {
     handleDesktopControl: dispatchDesktopControl,
@@ -38,7 +39,7 @@ export function createDesktopRouterComposition({
     try {
       return {
         resolved: true,
-        result: await dispatchDesktopControl({ action, params, context }),
+        result: await dispatchDesktopControl(canonicalizeRequest({ action, params, context })),
       };
     } catch (error) {
       return { resolved: false, error: error.message };
@@ -46,7 +47,7 @@ export function createDesktopRouterComposition({
   }
 
   return {
-    handleDesktopControl: (request) => dispatchDesktopControl(request),
+    handleDesktopControl: (request) => dispatchDesktopControl(canonicalizeRequest(request)),
     forgetDesktopControl,
     reconcileRemoteDesktopControl,
   };

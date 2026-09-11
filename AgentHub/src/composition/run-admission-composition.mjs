@@ -1,4 +1,4 @@
-import { unlink } from "node:fs/promises";
+import { createRuntimeFileRemoval } from "../runtime/test-contour-runtime-effects.mjs";
 import {
   deferredInputMatchesRun,
   pendingInputKeyboard,
@@ -78,6 +78,7 @@ export function createRunAdmissionComposition({
   logger = console,
   commandTrace = null,
 }) {
+  const removeRuntimeFile = createRuntimeFileRemoval(config);
   if (typeof stageLaunchAdmission !== "function") {
     throw new TypeError("stageLaunchAdmission is required");
   }
@@ -113,7 +114,7 @@ export function createRunAdmissionComposition({
     turnSpeechButtons.delete(normalizedTurnId);
     const temporaryFiles = turnTemporaryFiles.get(normalizedTurnId) ?? [];
     turnTemporaryFiles.delete(normalizedTurnId);
-    await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
+    await Promise.all(temporaryFiles.map((file) => removeRuntimeFile(file)));
     await taskProgress.clear(run);
     await managedRunLifecycle.complete(run);
     return true;
@@ -234,7 +235,7 @@ export function createRunAdmissionComposition({
   }
 
   async function cleanupDeferredFiles(item) {
-    await Promise.all((item?.temporaryFiles ?? []).map((file) => unlink(file).catch(() => {})));
+    await Promise.all((item?.temporaryFiles ?? []).map((file) => removeRuntimeFile(file)));
   }
 
   function updateDeferredMessage(...args) {

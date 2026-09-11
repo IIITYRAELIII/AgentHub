@@ -6,6 +6,7 @@ import { sentryDiagnostics } from "../infrastructure/diagnostics/sentry-diagnost
 
 export async function createBackgroundWorkComposition({
   backgroundDirectory,
+  contourExternalEffects = null,
   failedUpdatesDirectory,
   maxMediaJobs,
   maxSpeechJobs,
@@ -28,6 +29,7 @@ export async function createBackgroundWorkComposition({
   const backgroundJobs = new PersistentBackgroundJobController({
     captureException: (error, context) => sentryDiagnostics.captureException(error, context),
     store: backgroundJobStore,
+    contourExternalEffects,
     maxMediaJobs,
     maxSpeechJobs,
     isStopping,

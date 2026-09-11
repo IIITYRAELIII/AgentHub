@@ -184,6 +184,7 @@ export function createRuntimeOrchestrationComposition({
   const providerRuntimeWiring = ports.providerRuntime.bind(createProviderRuntimeWiring({
     observation: {
       dataDir: config.dataDir,
+      recordingContourRoot: config.testContourRecording?.root ?? null,
       claudeOutputPollIntervalMs,
       taskRuns,
       isStopping: () => hostState.stopping,

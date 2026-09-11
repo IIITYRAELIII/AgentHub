@@ -1,11 +1,13 @@
 import path from "node:path";
 import process from "node:process";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { isMainModule } from "./src/infrastructure/process/main-module.mjs";
 import { acceptReleaseArtifact } from "./src/runtime/test-contour-release-acceptance.mjs";
 import {
   defaultTestContourRoot,
+  adoptRecordingTestContour,
   cloneProductionDataToTestContour,
   installTestContour,
   openTestContour,
@@ -41,6 +43,7 @@ function parseArguments(args) {
   for (let index = 1; index < args.length; index += 1) {
     const argument = args[index];
     if (argument === "--root" && args[index + 1]) options.root = path.resolve(args[++index]);
+    else if (argument === "--prepared-root" && args[index + 1]) options.preparedRoot = path.resolve(args[++index]);
     else if (argument === "--port" && args[index + 1]) options.port = Number(args[++index]);
     else if (argument === "--allow-uninstalled" || argument === "--component-approved") options.allowUninstalled = true;
     else if (argument === "--require-installed") options.requireInstalled = true;
@@ -51,18 +54,22 @@ function parseArguments(args) {
     else if (argument === "--operation-id" && args[index + 1]) options.operationId = args[++index];
     else if (argument === "--source-branch" && args[index + 1]) options.sourceBranch = args[++index];
     else if (argument === "--source-head" && args[index + 1]) options.sourceHeadCommit = args[++index];
+    else if (argument === "--protected-runtime-root" && args[index + 1]) options.protectedRuntimeRoot = args[++index];
     else if (argument === "--expected-operation" && args[index + 1]) options.expectedOperationId = args[++index];
     else if (argument === "--expected-head" && args[index + 1]) options.expectedHeadCommit = args[++index];
     else if (argument === "--json") options.json = true;
     else if (argument === "--artifact" && args[index + 1]) options.artifactRoot = path.resolve(args[++index]);
     else if (argument === "--previous-artifact" && args[index + 1]) options.previousArtifactRoot = path.resolve(args[++index]);
     else if (argument === "--output-root" && args[index + 1]) options.outputRoot = path.resolve(args[++index]);
+    else if (argument === "--recording-input" && args[index + 1]) options.recordingInput = path.resolve(args[++index]);
     else throw new Error(`Unknown Test Contour argument: ${argument}`);
   }
   if (options.releaseCandidate && command !== "verify") {
     throw new Error("--release-candidate is supported only by Test Contour verify");
   }
-  if (command !== "accept-release" && (options.artifactRoot || options.previousArtifactRoot || options.outputRoot)) {
+  if (options.preparedRoot && command !== "adopt-recording") throw new Error("--prepared-root requires adopt-recording");
+  if (options.protectedRuntimeRoot && command !== "serve") throw new Error("Protected runtime identity is only accepted by serve");
+  if (command !== "accept-release" && (options.artifactRoot || options.previousArtifactRoot || options.outputRoot || options.recordingInput)) {
     throw new Error("Artifact arguments are supported only by accept-release");
   }
   if (command === "accept-release" && args.includes("--root")) {
@@ -96,6 +103,7 @@ export async function main(args = process.argv.slice(2)) {
       artifactRoot: options.artifactRoot,
       previousArtifactRoot: options.previousArtifactRoot,
       ...(options.outputRoot ? { outputRoot: options.outputRoot } : {}),
+      ...(options.recordingInput ? { recordingCohort: JSON.parse(await readFile(options.recordingInput, "utf8")) } : {}),
     });
     print({ status: result.status, scope: result.scope, productionParity: result.productionParity,
       artifacts: result.artifacts, manifestFile: result.manifestFile,
@@ -120,6 +128,7 @@ export async function main(args = process.argv.slice(2)) {
       operationId: options.operationId,
       sourceBranch: options.sourceBranch,
       sourceHeadCommit: options.sourceHeadCommit,
+      protectedRuntimeRoot: options.protectedRuntimeRoot,
       ...(options.model ? { model: options.model } : {}),
       ...(options.port ? { port: options.port } : {}),
     });
@@ -170,6 +179,13 @@ export async function main(args = process.argv.slice(2)) {
     if (options.json) print(state, true);
     else print(`Test Contour готов: ${state.url} (${state.refreshOutcome ?? "started"})`);
     return state;
+  }
+  if (options.command === "adopt-recording") {
+    await requireComponent(options);
+    const result = await adoptRecordingTestContour({ ...common, entryFile, preparedRoot: options.preparedRoot,
+      ...(options.model ? { model: options.model } : {}), ...(options.port ? { port: options.port } : {}) });
+    print(result, options.json);
+    return result;
   }
   if (options.command === "verify") {
     if (options.requireInstalled || !options.allowUninstalled) await requireComponent(options);

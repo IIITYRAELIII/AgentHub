@@ -122,7 +122,7 @@ test("overlapping selected Task paths retain chronological effective dev resolut
   assert.equal((await releaseTaskNetProjections({ tasks: [f.task, other], baseCommit: f.main, git: f.git })).size, 0);
 });
 
-async function reopenPublishedTask(f, { manualIntegration = false } = {}) {
+async function reopenPublishedTask(f, { manualIntegration = false, foreignDev = false } = {}) {
   await f.git(["checkout", "-b", "maintenance", f.main]);
   await f.put("README.md", "published maintenance\npublished context\nbase\n");
   await f.put("fix.txt", "before\n");
@@ -144,7 +144,15 @@ async function reopenPublishedTask(f, { manualIntegration = false } = {}) {
   const approved = await f.git(["rev-parse", "HEAD"]);
   await f.git(["push", "origin", "main"]);
   await f.git(["checkout", "maintenance"]);
-  await f.merge(approved);
+  if (foreignDev) {
+    await f.git(["checkout", "-b", "foreign", approved]);
+    await f.put("foreign.txt", "not selected\n");
+    const foreign = await f.commit("foreign unpublished Task");
+    await f.git(["checkout", "dev"]);
+    await f.merge(foreign);
+    await f.git(["checkout", "maintenance"]);
+    await f.merge("dev");
+  } else await f.merge(approved);
   await f.put("fix.txt", "after\n");
   const resultCommit = await f.commit("reopened maintenance fix");
   await integrate(resultCommit);
@@ -176,6 +184,23 @@ test("published Task ancestry does not authorize manual integration baggage", as
   const reopened = await reopenPublishedTask(f, { manualIntegration: true });
   const proofs = await releaseTaskNetProjections({ tasks: [reopened.task], baseCommit: reopened.approved, git: f.git });
   assert.equal(proofs.size, 0);
+});
+
+test("published automatic integration is not replayed before a later owned delta", async (t) => {
+  const f = await fixture(t);
+  const reopened = await reopenPublishedTask(f, { foreignDev: true });
+  assert.equal((await releaseTaskNetProjections({
+    tasks: [reopened.task], baseCommit: reopened.approved, git: f.git,
+  })).size, 0);
+  const expectedMain = await f.git(["show", `${reopened.approved}:app.txt`]);
+  const service = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data") });
+  const candidate = await service.prepareCandidate({
+    projectRoot: f.primary, approvedBaseCommit: reopened.approved,
+    planRevision: "published-integration", frozenTasks: [reopened.task],
+  });
+  assert.equal(await readFile(path.join(candidate.releaseRoot, "fix.txt"), "utf8"), "after\n");
+  assert.equal(await readFile(path.join(candidate.releaseRoot, "app.txt"), "utf8"), `${expectedMain}\n`);
+  await assert.rejects(readFile(path.join(candidate.releaseRoot, "foreign.txt"), "utf8"), /ENOENT/u);
 });
 
 test("an overlap restores historical paths and rejects dependent projections regardless of Task order", async (t) => {

@@ -398,6 +398,10 @@ export class RuntimeStateStore {
     return this.#messageCommands.records();
   }
 
+  messageCommand(clientUserMessageId) {
+    return this.#messageCommands.get(clientUserMessageId);
+  }
+
   async close() {
     try {
       await this.#writer?.close();

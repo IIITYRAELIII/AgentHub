@@ -16,8 +16,10 @@ export function createTaskStateWiring({
   samePath,
   taskDiffs,
   logger = console,
+  contourCommandMapping = null,
 }) {
   const identity = new TaskIdentityResolver({
+    canonicalProjectRoot: contourCommandMapping?.canonicalPath,
     selectionStore,
     projects,
     findContainingProject,
