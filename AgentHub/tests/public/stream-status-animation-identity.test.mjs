@@ -220,3 +220,88 @@ test("активная полоса переживает обновления с
     await browser.close();
   }
 });
+
+// Зеркало условия из VSCodeExtension/vscode-bootstrap.js: наблюдатель движения
+// возобновляет приостановленные анимации, когда в документ попадает узел с
+// признаком активности. Обновление обязано по-прежнему давать ему такой повод.
+const MOTION_TARGET_SELECTOR = [
+  ".rain",
+  ".motes",
+  '.stream-tab[data-running]',
+  '.stream-tab[data-answer-ready]',
+  '.task-workspace-item[data-running]',
+  '.task-workspace-item[data-unread]',
+].join(",");
+
+test("обновление оставляет наблюдателю движения повод возобновить анимации", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launch(chromium);
+  try {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await openShell(page);
+    await publishSnapshot(page, { tick: 0 });
+    await page.waitForSelector(STREAM_TAB);
+    await page.evaluate((selector) => {
+      window.motionHints = 0;
+      const addsMotion = (record) => {
+        if (record.type === "attributes") return true;
+        return [...record.addedNodes].some((node) => (
+          node?.matches?.(selector) || node?.querySelector?.(selector)
+        ));
+      };
+      new MutationObserver((records) => {
+        if (records.some(addsMotion)) window.motionHints += 1;
+      }).observe(document.body, {
+        attributeFilter: ["data-running", "data-answer-ready", "data-unread"],
+        attributes: true,
+        childList: true,
+        subtree: true,
+      });
+    }, MOTION_TARGET_SELECTOR);
+
+    await publishSnapshot(page, { tick: 1 });
+    await page.waitForTimeout(120);
+    assert.ok(await page.evaluate(() => window.motionHints) > 0,
+      "после обновления наблюдатель движения не получил ни одного повода");
+    await page.close();
+  } finally {
+    await browser.close();
+  }
+});
+
+test("при уменьшении движения обновления не создают и не возобновляют анимации", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launch(chromium);
+  const nodes = { card: WORKSPACE_CARD, tab: STREAM_TAB };
+  try {
+    const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, reducedMotion: "reduce" });
+    const page = await context.newPage();
+    await openShell(page);
+    await publishSnapshot(page, { tick: 0 });
+    await page.waitForSelector(STREAM_TAB);
+    await markRenderedNodes(page, nodes);
+
+    const statusAnimations = () => page.evaluate(() => document.getAnimations()
+      .filter((animation) => String(animation.animationName ?? "").startsWith("stream-"))
+      .map((animation) => animation.playState));
+    assert.deepEqual(await statusAnimations(), [],
+      "при уменьшении движения анимации состояния не должны существовать");
+
+    for (let tick = 1; tick <= 3; tick += 1) {
+      await publishSnapshot(page, { tick });
+      await page.waitForTimeout(160);
+    }
+    assert.deepEqual(await statusAnimations(), [],
+      "обновление создало анимацию состояния вопреки выбору пользователя");
+
+    const kept = await readState(page, nodes);
+    assert.equal(kept.cardKept, true, "карточка Workspace пересоздана при уменьшении движения");
+    assert.equal(kept.tabKept, true, "вкладка Stream пересоздана при уменьшении движения");
+    assert.equal(kept.layerKept, true, "слой статуса вкладки пересоздан при уменьшении движения");
+    assert.equal(kept.cardTime, null, "у карточки появилось время анимации при уменьшении движения");
+    assert.equal(kept.layerTime, null, "у слоя статуса появилось время анимации при уменьшении движения");
+    await context.close();
+  } finally {
+    await browser.close();
+  }
+});
