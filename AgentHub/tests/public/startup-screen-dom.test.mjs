@@ -100,3 +100,75 @@ test("failed startup exposes details and retry/restart controls inside the overl
     await browser.close();
   }
 });
+
+test("a ready interface stays usable while background repair fails", { timeout: 30_000 }, async () => {
+  const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || "playwright");
+  const browser = await chromium.launch(process.platform === "win32"
+    ? { channel: "msedge", headless: true } : { headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1200, height: 900 } });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const health = {
+      ready: true,
+      status: "ready",
+      startup: {
+        startedAtMs: 1000,
+        completedAtMs: 42000,
+        operations: [
+          { id: "web", label: "Web", state: "completed" },
+          { id: "runs", label: "Восстановление активных ходов", state: "completed" },
+          {
+            id: "provider-metadata",
+            label: "Восстановление метаданных провайдера",
+            state: "failed",
+            background: true,
+            error: "Captured Codex rollouts are excluded from recording execution",
+          },
+        ],
+      },
+    };
+    await page.route("**/*", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.hostname !== "startup.test") return route.abort();
+      if (url.pathname === "/") return route.fulfill({
+        contentType: "text/html",
+        body: '<link rel="stylesheet" href="/startup-screen.css">'
+          + '<button id="under" style="position:fixed;left:40px;top:40px">Дашборд</button>'
+          + '<script type="module" src="/startup-screen.js"></script>',
+      });
+      if (url.pathname === "/health") return route.fulfill({ json: health });
+      const name = url.pathname.slice(1);
+      if (!["startup-screen.js", "startup-screen-model.js", "startup-screen.css", "agent-hub-mark.png"].includes(name)) return route.abort();
+      return route.fulfill({
+        contentType: name.endsWith(".js") ? "text/javascript" : name.endsWith(".css") ? "text/css" : "image/png",
+        body: await readFile(new URL(`../../assets/web-app/${name}`, import.meta.url)),
+      });
+    });
+    await page.goto("https://startup.test/");
+    await page.waitForFunction(() => document.querySelector(".hub-startup-screen") !== null);
+    await page.waitForFunction(() => document.querySelector(".hub-startup-screen").hidden === true, null,
+      { timeout: 10_000 });
+
+    // The interface underneath is operable: the click reaches the page, not the overlay.
+    await page.evaluate(() => {
+      window.clicked = [];
+      document.querySelector("#under").addEventListener("click", () => window.clicked.push("under"));
+    });
+    await page.locator("#under").click({ timeout: 5_000 });
+    assert.deepEqual(await page.evaluate(() => window.clicked), ["under"]);
+
+    // A mandatory failure arriving later still blocks the interface.
+    health.ready = false;
+    health.status = "unready";
+    health.startup.operations[1] = {
+      id: "runs", label: "Восстановление активных ходов", state: "failed", error: "database is locked",
+    };
+    await page.waitForFunction(() => document.querySelector(".hub-startup-screen").hidden === false, null,
+      { timeout: 10_000 });
+    assert.match(await page.locator(".hub-startup-errors").innerText(), /database is locked/u);
+    assert.equal(errors.length, 0, errors.join(" | "));
+  } finally {
+    await browser.close();
+  }
+});

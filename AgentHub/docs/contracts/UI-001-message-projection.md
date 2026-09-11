@@ -348,6 +348,15 @@ replaces it with the observation time or uses text/time as entity identity.
 
 ## Operation kinds
 
+A startup operation the server marks as background runs outside the startup
+barrier and does not gate the interface. Its `pending`, `running` or `failed`
+state is not the current stage and is not a startup failure, so it never returns
+an already ready interface to the blocking startup screen. The operation keeps
+its own state and error text in the projected stage list and in server
+diagnostics. Mandatory startup failures, restart and lost-connection states keep
+their existing behaviour, and the flag comes only from the operation owner —
+never from an operation name.
+
 Completed context rotation is projected from the source Thread's retained
 compaction operation, independently of whether the client observed a head change.
 Its system marker is keyed by Stream, provider, source Thread and operation ID,
