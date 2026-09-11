@@ -69,7 +69,7 @@ function sameContourTarget(left, right) {
     && String(left.model ?? "") === String(right.model ?? "");
 }
 
-function exactReadyContourReadback({ refreshed, contour, expectedHeadCommit }) {
+function exactContourIdentityReadback({ refreshed, contour, expectedHeadCommit }) {
   const requested = refreshed?.operation;
   const readback = contour?.readback;
   const observed = readback?.operation;
@@ -87,10 +87,8 @@ function exactReadyContourReadback({ refreshed, contour, expectedHeadCommit }) {
     && observed?.releaseId === requested.releaseId
     && observed?.source?.headCommit === expectedHead
     && sameContourTarget(observed?.target, requested.target)
-    && contour?.running === true
     && canonicalRoot(contour?.root) === canonicalRoot(requested.target?.root)
     && contour?.planned === false
-    && contour?.status === "ready"
     && contour?.operation?.operationId === requested.operationId
     && state?.operationId === requested.operationId
     && state?.releaseId === requested.releaseId
@@ -98,6 +96,32 @@ function exactReadyContourReadback({ refreshed, contour, expectedHeadCommit }) {
     && Number(state?.port) === Number(requested.target?.port)
     && state?.model === requested.target?.model
     && contour?.source?.headCommit === expectedHead;
+}
+
+function exactReadyContourReadback(context) {
+  return exactContourIdentityReadback(context)
+    && context.contour?.running === true
+    && context.contour?.status === "ready";
+}
+
+async function readExactReadyContour({
+  readTestContourStatus, refreshed, expectedHeadCommit,
+}) {
+  const request = {
+    expectedOperationId: refreshed?.operationId ?? null,
+    expectedHeadCommit,
+  };
+  let contour = null;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    contour = await readTestContourStatus(request);
+    const context = { refreshed, contour, expectedHeadCommit };
+    if (exactReadyContourReadback(context)) return contour;
+    if (!exactContourIdentityReadback(context)
+        || contour?.running !== false
+        || contour?.status !== "not-ready") return contour;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return contour;
 }
 
 export class WorkspaceReleasePreflightService {
@@ -247,8 +271,9 @@ export class WorkspaceReleasePreflightService {
       forceFreshCandidate: true,
     });
     const expectedContourHead = contourSource.headCommit ?? null;
-    const contour = await this.readTestContourStatus({
-      expectedOperationId: refreshed?.operationId ?? null,
+    const contour = await readExactReadyContour({
+      readTestContourStatus: this.readTestContourStatus,
+      refreshed,
       expectedHeadCommit: expectedContourHead,
     });
     if (!exactReadyContourReadback({ refreshed, contour, expectedHeadCommit: expectedContourHead })) {
