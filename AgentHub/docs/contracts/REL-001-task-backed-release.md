@@ -438,7 +438,12 @@ corresponding repository `dev` HEAD. Ordinary plan reads do not impose that
 integration requirement. Preflight accepts only an exact `ready` readback for
 the returned operation ID, source head and full target identity; `not_found`,
 `failed`, `refreshing`, `superseded` and identity mismatch all fail closed. The
-preflight does not reconstruct or compare blob manifests.
+post-refresh confirmation has one 10-second deadline across all reads and
+delays. Only a still-live exact runtime with a transient unavailable/not-ready
+health response may be retried; stopped processes and operation, target,
+runtime, port or lock identity mismatches fail immediately with a stable
+diagnostic reason. The preflight does not reconstruct or compare blob
+manifests.
 
 Persisted operations created before the target included `model`, or runtime
 states created before the per-launch health nonce, are never eligible for
