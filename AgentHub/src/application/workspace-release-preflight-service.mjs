@@ -174,7 +174,7 @@ async function readExactReadyContour({
     const assessment = readinessAssessment({ refreshed, contour, expectedHeadCommit });
     lastReason = assessment.reason;
     const elapsedMs = Math.max(0, now() - startedAt);
-    if (assessment.status === "ready" && elapsedMs <= deadlineMs) return contour;
+    if (assessment.status === "ready") return contour;
     if (assessment.status === "failed") {
       throw readinessFailure(assessment.reason, { attempts, elapsedMs, deadlineMs });
     }

@@ -6,7 +6,7 @@ import { WorkspaceReleasePreflightService } from "../../src/application/workspac
 
 function fixture({
   outcome = "exact", mutateStatus = (value) => value, transientNotReadyReads = 0,
-  readinessDeadlineMs = 100, readinessPollIntervalMs = 10,
+  readinessDeadlineMs = 100, readinessPollIntervalMs = 10, statusReadDurations = [],
 } = {}) {
   const projectRoot = path.resolve("D:/repo");
   const devRoot = path.resolve("D:/dev-worktree");
@@ -125,6 +125,7 @@ function fixture({
       statusRequest = request;
       statusRequests.push(request);
       statusReads += 1;
+      clockMs += statusReadDurations[statusReads - 1] ?? 0;
       if (statusReads <= transientNotReadyReads) {
         return {
           ...status,
@@ -239,6 +240,43 @@ test("release preflight applies one deadline to repeated exact health misses", a
   assert.equal(context.statusReads, 3);
   assert.deepEqual(context.statusRequests.map((request) => request.healthTimeoutMs), [25, 15, 5]);
   assert.equal(context.clockMs, 25);
+  assert.equal(context.verified, false);
+});
+
+test("release preflight accepts exact ready from a read admitted before its deadline", async () => {
+  const context = fixture({
+    transientNotReadyReads: 2,
+    readinessDeadlineMs: 1_000,
+    readinessPollIntervalMs: 100,
+    statusReadDurations: [300, 300, 300],
+  });
+  const result = await context.service.preflight({
+    workspaceId: "workspace-1",
+    expectedPlanRevision: "plan-1",
+  });
+  assert.equal(result.testContour.headCommit, "dev-head");
+  assert.equal(context.statusReads, 3);
+  assert.deepEqual(context.statusRequests.map((request) => request.healthTimeoutMs), [1_000, 600, 200]);
+  assert.equal(context.clockMs, 1_100);
+  assert.equal(context.verified, true);
+});
+
+test("release preflight starts no new read after an admitted read exhausts the budget", async () => {
+  const context = fixture({
+    transientNotReadyReads: Number.POSITIVE_INFINITY,
+    readinessDeadlineMs: 1_000,
+    readinessPollIntervalMs: 100,
+    statusReadDurations: [300, 300, 300],
+  });
+  await assert.rejects(
+    () => context.service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-1" }),
+    (error) => error.code === "TEST_CONTOUR_READINESS_DEADLINE"
+      && error.reason === "health-request-failed"
+      && /attempts=3; elapsedMs=1100; deadlineMs=1000/u.test(error.message),
+  );
+  assert.equal(context.statusReads, 3);
+  assert.deepEqual(context.statusRequests.map((request) => request.healthTimeoutMs), [1_000, 600, 200]);
+  assert.equal(context.clockMs, 1_100);
   assert.equal(context.verified, false);
 });
 
