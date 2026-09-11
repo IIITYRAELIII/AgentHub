@@ -686,6 +686,7 @@ export class ReleaseGitWorkspaceService {
                     && await resolveExactOrderPreservingUnion({
                       candidateRoot: clone.releaseRoot,
                       conflicts,
+                      approvedBaseCommit: baseCommit,
                     })) continue;
                 throw new Error(
                   `PreRelease delta ${integration.commit} (dev order ${integration.order}) failed for Task `
