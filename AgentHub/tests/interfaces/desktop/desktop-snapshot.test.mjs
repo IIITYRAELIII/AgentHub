@@ -2109,3 +2109,56 @@ test("a cleaned body still needs its alias to confirm the source", async () => {
   assert.equal(confirmed.kind, "interstream");
   assert.equal(confirmed.origin?.requestId, origin.requestId);
 });
+
+test("a receipt reaches the client only with an origin its own message confirms", async () => {
+  const origin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-s3",
+    streamName: "S3",
+    provider: "codex",
+    model: "GPT-6 Astra",
+    sourceThreadId: "thread-s3",
+    requestId: "request-one",
+  };
+  const clientUserMessageId = "mcp:request-one";
+  const author = interstreamOriginAuthor(origin);
+  const receiptFor = (result) => [{
+    provider: "codex",
+    threadId: "thread-1",
+    clientUserMessageId,
+    createdAt: "2026-09-11T10:00:00.000Z",
+    fingerprint: "private-fingerprint",
+    result: { accepted: true, ...result },
+  }];
+
+  // The envelope keeps the same requestId but claims a different Stream.
+  const forgedEnvelope = createInterstreamMessage({
+    ...origin, workspaceId: "workspace-other", streamId: "stream-other", streamName: "WRONG",
+    sourceThreadId: "thread-other", text: "Замеры готовы.",
+  });
+  const conflicting = fixture();
+  conflicting.state.receipts = receiptFor({ displayText: forgedEnvelope, author, origin });
+  const [conflictingReceipt] = (await conflicting.desktopSnapshot()).messageReceipts;
+  assert.equal(conflictingReceipt.displayText, forgedEnvelope, "тело квитанции было переписано");
+  assert.equal(conflictingReceipt.origin, undefined, "конфликтующий origin дошёл до клиента");
+  assert.equal(conflictingReceipt.author, undefined, "конфликтующий автор дошёл до клиента");
+
+  // A stored origin whose requestId does not match the alias is refused too.
+  const foreign = fixture();
+  foreign.state.receipts = receiptFor({
+    displayText: "Замеры готовы.", author, origin: { ...origin, requestId: "conflicting-request" },
+  });
+  const [foreignReceipt] = (await foreign.desktopSnapshot()).messageReceipts;
+  assert.equal(foreignReceipt.origin, undefined, "чужой requestId дошёл до клиента");
+  assert.equal(foreignReceipt.author, undefined);
+
+  // The exact origin of this message still reaches the client with its author.
+  const benign = fixture();
+  benign.state.receipts = receiptFor({ displayText: "Замеры готовы.", author, origin });
+  const [benignReceipt] = (await benign.desktopSnapshot()).messageReceipts;
+  assert.equal(benignReceipt.displayText, "Замеры готовы.");
+  assert.equal(benignReceipt.author, author, "подтверждённый автор не дошёл до клиента");
+  assert.equal(benignReceipt.origin?.requestId, origin.requestId);
+  assert.equal(benignReceipt.origin?.streamName, origin.streamName);
+});

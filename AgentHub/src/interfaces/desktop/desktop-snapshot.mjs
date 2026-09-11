@@ -208,6 +208,13 @@ export function createDesktopSnapshotFactory({
       const clientUserMessageId = String(receipt?.clientUserMessageId ?? "").trim();
       const result = receipt?.result;
       if (!provider || !threadId || !clientUserMessageId || !result) return [];
+      const receiptOrigin = confirmedInterstreamOrigin(String(result.displayText ?? ""), {
+        origin: result.origin,
+        clientUserMessageId,
+      });
+      const receiptAuthor = receiptOrigin
+        ? interstreamOriginAuthor(receiptOrigin) || String(result.author ?? "").trim()
+        : "";
       return [{
         provider,
         threadId,
@@ -234,10 +241,10 @@ export function createDesktopSnapshotFactory({
         deliveredAt: result.deliveredAt ?? null,
         message: result.message ?? null,
         displayText: String(result.displayText ?? ""),
-        ...(String(result.author ?? "").trim() ? { author: String(result.author).trim() } : {}),
-        ...(normalizeInterstreamOrigin(result.origin)
-          ? { origin: normalizeInterstreamOrigin(result.origin) }
-          : {}),
+        // The receipt leaves this owner already confirmed: a raw stored origin
+        // that its own message cannot confirm never reaches the client, so every
+        // surface downstream shares one trust rule instead of re-deriving it.
+        ...(receiptOrigin ? { author: receiptAuthor, origin: receiptOrigin } : {}),
         responseAnnotations: Array.isArray(result.responseAnnotations)
           ? result.responseAnnotations.map((item) => ({ ...item }))
           : [],

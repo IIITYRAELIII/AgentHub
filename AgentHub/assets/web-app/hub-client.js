@@ -777,36 +777,17 @@ function renderTaskQueue(taskIdValue, snapshot = lastSnapshot) {
   ));
 }
 
-// Recognizes a transport envelope structurally, exactly like the server parser:
-// the body must start with the opening tag, close it and carry parsable
-// metadata plus a non-empty payload. A literal mention of the tag inside
-// ordinary text or code is not an envelope and carries no authority.
-function cardEnvelopeMetadata(text) {
-  const source = String(text ?? "").trim();
-  const openTag = "<agent-hub-stream-message>";
-  const closeTag = "</agent-hub-stream-message>";
-  if (!source.startsWith(openTag)) return null;
-  const closeAt = source.indexOf(closeTag, openTag.length);
-  if (closeAt < 0) return null;
-  try {
-    const metadata = JSON.parse(source.slice(openTag.length, closeAt).trim());
-    if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
-    return source.slice(closeAt + closeTag.length).trim() ? metadata : null;
-  } catch {
-    return null;
-  }
-}
-
-// A card may name another Stream only when the exact alias of this message
-// confirms the claimed origin. The alias is checked first and independently of
-// the body: an already cleaned body proves nothing about whose request it is.
-// An unopened envelope additionally has to agree with that same origin.
-function confirmedCardOrigin(origin, clientUserMessageId, text) {
+// Confirming an origin against the message body belongs to one owner, the Hub
+// projection: it parses the transport envelope and compares every origin field.
+// The client would only be able to repeat part of that rule, and a partial copy
+// disagrees with the authority exactly where it matters. So the card checks the
+// one thing it owns independently — that the origin belongs to this message's
+// alias — and trusts the already confirmed projection for the rest.
+function confirmedCardOrigin(origin, clientUserMessageId) {
   if (!origin || typeof origin !== "object" || Array.isArray(origin)) return null;
   const requestId = String(origin.requestId ?? "").trim();
   if (!requestId || String(clientUserMessageId ?? "").trim() !== `mcp:${requestId}`) return null;
-  const envelope = cardEnvelopeMetadata(text);
-  return !envelope || String(envelope.requestId ?? "").trim() === requestId ? origin : null;
+  return origin;
 }
 
 function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
@@ -823,7 +804,7 @@ function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
   // The server entry already carries the authoritative origin of this exact
   // message. Without it the local card renders as an own message, so the source
   // and the interstream kind travel together with the author.
-  const deferredOrigin = confirmedCardOrigin(deferred.origin, projection.clientUserMessageId, text);
+  const deferredOrigin = confirmedCardOrigin(deferred.origin, projection.clientUserMessageId);
   const existing = messages.get(projection.clientUserMessageId);
   if (existing) {
     Object.assign(existing, {
@@ -831,10 +812,11 @@ function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
       projectionState: projection.projectionState,
       providerAccepted: projection.providerAccepted,
       clientProjectionIntent: projection.clientProjectionIntent,
-      ...(deferredOrigin ? { origin: deferredOrigin, kind: "interstream" } : {}),
-      ...(deferredOrigin && String(deferred.author ?? "").trim()
-        ? { author: String(deferred.author).trim() }
-        : {}),
+      // Attribution is always restated, never left over: a canonical update
+      // that no longer confirms an origin must clear the previous source.
+      origin: deferredOrigin ?? null,
+      kind: deferredOrigin ? "interstream" : null,
+      author: (deferredOrigin && String(deferred.author ?? "").trim()) || "Вы",
       ...deliveryPatch(projection.deliveryState),
       ...(!existing.submittedAt && projection.submittedAt
         ? { submittedAt: projection.submittedAt }
@@ -935,7 +917,7 @@ function applyMessageReceipts(snapshot) {
     const restoredText = String(receipt.displayText ?? "");
     // Same reason as the deferred card: the receipt owns the origin of its exact
     // message, and losing it here turns a foreign message into an own one.
-    const receiptOrigin = confirmedCardOrigin(receipt.origin, clientUserMessageId, restoredText);
+    const receiptOrigin = confirmedCardOrigin(receipt.origin, clientUserMessageId);
     const restoredAnnotations = normalizedResponseAnnotations(receipt.responseAnnotations);
     const restoredRequest = String(receipt.responseAnnotationRequest ?? "");
     const restoredAttachments = attachmentViews(receipt.attachments);
@@ -984,10 +966,9 @@ function applyMessageReceipts(snapshot) {
       projectionState: projection.projectionState,
       providerAccepted: projection.providerAccepted,
       clientProjectionIntent: projection.clientProjectionIntent,
-      ...(receiptOrigin ? { origin: receiptOrigin, kind: "interstream" } : {}),
-      ...(receiptOrigin && String(receipt.author ?? "").trim()
-        ? { author: String(receipt.author).trim() }
-        : {}),
+      origin: receiptOrigin ?? null,
+      kind: receiptOrigin ? "interstream" : null,
+      author: (receiptOrigin && String(receipt.author ?? "").trim()) || "Вы",
       ...(projection.submittedAt ? {
         submittedAt: projection.submittedAt,
         time: projection.submittedAt,

@@ -3920,7 +3920,6 @@ function interstreamCardSandbox() {
   });
   sandbox.window = sandbox;
   vm.runInContext([
-    clientFunctionSource("cardEnvelopeMetadata", "function confirmedCardOrigin"),
     clientFunctionSource("confirmedCardOrigin", "function restoreImmediateIntakeMessage"),
     clientFunctionSource("restoreImmediateIntakeMessage", "function canonicalAcceptedEvidence"),
   ].join(String.fromCharCode(10)), sandbox);
@@ -3988,33 +3987,34 @@ test("a card never names a Stream its own alias does not confirm", () => {
   const card = outgoing.get("mcp:request-one");
   assert.equal(card.text, conflicting.text, "тело сообщения было переписано");
   assert.equal(card.author, "Вы", "карточка назвала источник, который её алиас не подтверждает");
-  assert.equal(card.kind, undefined, "неподтверждённый origin дал межпоточный вид");
-  assert.equal(card.origin, undefined, "неподтверждённый origin попал в карточку");
+  assert.ok(!card.kind, "неподтверждённый origin дал межпоточный вид");
+  assert.ok(!card.origin, "неподтверждённый origin попал в карточку");
 
   // The same entry arriving again must not upgrade the card either.
   assert.equal(sandbox.restoreImmediateIntakeMessage(conflicting, []), true);
   const updated = outgoing.get("mcp:request-one");
   assert.equal(updated.author, "Вы", "обновление подставило неподтверждённый источник");
-  assert.equal(updated.kind, undefined);
-  assert.equal(updated.origin, undefined);
+  assert.ok(!updated.kind);
+  assert.ok(!updated.origin);
 });
 
-test("an unopened envelope in the body keeps the card ordinary", () => {
+test("a canonical update that no longer confirms a source clears the old one", () => {
   const { sandbox, outgoing } = interstreamCardSandbox();
-  // The server could not confirm the envelope, so the body still carries it.
-  const unopened = interstreamDeferred({
-    clientUserMessageId: `mcp:${INTERSTREAM_ORIGIN.requestId}`,
-    text: `<agent-hub-stream-message>{"streamName":"S3"}</agent-hub-stream-message>
-Замеры готовы.`,
-  });
+  const confirmed = interstreamDeferred({ clientUserMessageId: "mcp:request-one",
+    author: "S3 · Astra", origin: { ...INTERSTREAM_ORIGIN, requestId: "request-one" } });
 
-  assert.equal(sandbox.restoreImmediateIntakeMessage(unopened, []), true);
-  const card = outgoing.get(unopened.clientUserMessageId);
-  assert.equal(card.text, unopened.text);
-  assert.equal(card.author, "Вы", "нераскрытый конверт получил межпоточного автора");
-  assert.equal(card.kind, undefined);
-  assert.equal(card.origin, undefined);
+  assert.equal(sandbox.restoreImmediateIntakeMessage(confirmed, []), true);
+  assert.equal(outgoing.get("mcp:request-one").kind, "interstream");
+
+  // The same message arrives again, this time without a confirmable origin.
+  const withdrawn = { ...confirmed, author: "", origin: null };
+  assert.equal(sandbox.restoreImmediateIntakeMessage(withdrawn, []), true);
+  const updated = outgoing.get("mcp:request-one");
+  assert.ok(!updated.origin, "карточка сохранила устаревший источник");
+  assert.ok(!updated.kind, "карточка сохранила устаревший признак межпоточного");
+  assert.equal(updated.author, "Вы", "карточка сохранила устаревшего автора");
 });
+
 test("a literal tag inside a benign body keeps its confirmed source", () => {
   const { sandbox, outgoing } = interstreamCardSandbox();
   // The body only mentions the tag as documentation; identity is exact.
@@ -4063,7 +4063,6 @@ function receiptCardSandbox() {
   });
   sandbox.window = sandbox;
   vm.runInContext([
-    clientFunctionSource("cardEnvelopeMetadata", "function confirmedCardOrigin"),
     clientFunctionSource("confirmedCardOrigin", "function restoreImmediateIntakeMessage"),
     clientFunctionSource("applyMessageReceipts", "function rememberSnapshotCompletion"),
   ].join(String.fromCharCode(10)), sandbox);
@@ -4119,13 +4118,13 @@ test("a receipt card keeps a confirmed source and refuses an unconfirmed one", (
   conflicting.sandbox.applyMessageReceipts(receiptSnapshot(forged));
   const refused = conflicting.outgoing.get("mcp:request-one");
   assert.equal(refused.author, "Вы", "квитанция назвала источник, который её алиас не подтверждает");
-  assert.equal(refused.kind, undefined);
-  assert.equal(refused.origin, undefined);
+  assert.ok(!refused.kind);
+  assert.ok(!refused.origin);
   conflicting.sandbox.applyMessageReceipts(receiptSnapshot(forged));
   const stillRefused = conflicting.outgoing.get("mcp:request-one");
   assert.equal(stillRefused.author, "Вы");
-  assert.equal(stillRefused.kind, undefined);
-  assert.equal(stillRefused.origin, undefined);
+  assert.ok(!stillRefused.kind);
+  assert.ok(!stillRefused.origin);
 });
 test("an ordinary user card is never relabelled as another Stream", () => {
   const { sandbox, outgoing } = interstreamCardSandbox();
@@ -4139,7 +4138,7 @@ test("an ordinary user card is never relabelled as another Stream", () => {
   assert.equal(sandbox.restoreImmediateIntakeMessage(own, []), true);
   const card = outgoing.get("client-own");
   assert.equal(card.author, "Вы");
-  assert.equal(card.kind, undefined, "текст, похожий на конверт, получил межпоточный вид");
-  assert.equal(card.origin, undefined);
+  assert.ok(!card.kind, "текст, похожий на конверт, получил межпоточный вид");
+  assert.ok(!card.origin);
   assert.equal(card.text, own.text, "тело пользовательского сообщения было переписано");
 });
