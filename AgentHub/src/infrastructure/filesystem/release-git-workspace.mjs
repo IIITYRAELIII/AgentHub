@@ -74,6 +74,36 @@ async function gitMaybe(args, options) {
   }
 }
 
+async function pendingTaskIntegrations(tasks, baseCommit, git) {
+  const pending = [];
+  for (const task of tasks) {
+    const integrations = [];
+    for (const integration of task.integrations) {
+      const parents = String(await git(["show", "-s", "--format=%P", integration.commit]))
+        .split(" ").filter(Boolean);
+      if (parents[0] !== integration.parent) {
+        throw new Error(`PreRelease integration parent changed for Task ${task.taskId}`);
+      }
+      let publishedAutomaticMerge = false;
+      let taskSidePublished = false;
+      if (parents.length === 2) {
+        try { await git(["merge-base", "--is-ancestor", parents[1], baseCommit]); taskSidePublished = true; }
+        catch { /* A non-published task-side parent remains part of the pending delta. */ }
+      }
+      if (taskSidePublished) {
+        try {
+          const mergeTree = String(await git(["merge-tree", "--write-tree", ...parents]))
+            .split(/\r?\n/u)[0];
+          publishedAutomaticMerge = mergeTree === await git(["rev-parse", `${integration.commit}^{tree}`]);
+        } catch { /* Retain the effective delta unless Git proves the published merge exactly. */ }
+      }
+      if (!publishedAutomaticMerge) integrations.push(integration);
+    }
+    pending.push({ ...task, integrations });
+  }
+  return pending;
+}
+
 function samePath(left, right) {
   const first = canonicalPath(left);
   const second = canonicalPath(right);
@@ -606,12 +636,14 @@ export class ReleaseGitWorkspaceService {
         };
         try {
           await runGit(["checkout", "--detach", baseCommit], { cwd: clone.releaseRoot });
+          const pendingTasks = await pendingTaskIntegrations(tasks, baseCommit,
+            (args) => runGit(args, { cwd: clone.releaseRoot, timeoutMs: 300_000 }));
           const projections = await releaseTaskNetProjections({
-            tasks, baseCommit,
+            tasks: pendingTasks, baseCommit,
             git: (args) => runGit(args, { cwd: clone.releaseRoot, timeoutMs: 300_000 }),
           });
           netProjectedTaskIds = [...projections.keys()];
-          const integrations = tasks.flatMap((task) => {
+          const integrations = pendingTasks.flatMap((task) => {
             const projection = projections.get(task.taskId);
             const selected = projection ? [{
               ...projection, netProjection: true,
