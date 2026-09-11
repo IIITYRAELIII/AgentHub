@@ -184,9 +184,14 @@ test("recording full Hub shell restores the same paused command across restart",
       const command = ledger(path.join(runtimeRoot, "data", "message-command-ledger.sqlite"));
       assert.equal(command.fingerprint, f.fingerprint);
       assert.equal(command.state, "queued");
-      const provider = new DatabaseSync(path.join(f.prepared.recording.root, "recording-provider.sqlite"), { readOnly: true });
-      try { assert.equal(provider.prepare("SELECT count(*) AS count FROM commands").get().count, 0); }
-      finally { provider.close(); }
+      // A forced Windows process stop can leave the schema and rows in WAL.
+      // Open the owned fixture database writable so SQLite can recover it,
+      // then fence every statement as query-only before asserting its state.
+      const provider = new DatabaseSync(path.join(f.prepared.recording.root, "recording-provider.sqlite"));
+      try {
+        provider.exec("PRAGMA query_only = 1");
+        assert.equal(provider.prepare("SELECT count(*) AS count FROM commands").get().count, 0);
+      } finally { provider.close(); }
     }
     for (const [name, expected] of f.before) assert.equal(await hash(path.join(f.captured.dataDirectory, name)), expected);
   } finally { await stop(); }
