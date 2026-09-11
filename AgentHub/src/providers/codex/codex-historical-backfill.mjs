@@ -1,3 +1,4 @@
+import { assertCodexRolloutReadAllowed } from "../../infrastructure/filesystem/test-contour-rollout-policy.mjs";
 import { Worker } from "node:worker_threads";
 
 function scanRolloutInWorker(workerData, {
@@ -41,6 +42,7 @@ function scanRolloutInWorker(workerData, {
 }
 
 export function scanCodexHistoricalRolloutInWorker(thread, options = {}) {
+  assertCodexRolloutReadAllowed("scanCodexHistoricalRolloutInWorker");
   const transcriptPath = String(thread?.path ?? "").trim();
   const rolloutId = String(thread?.id ?? "").trim();
   if (!transcriptPath) throw new Error("Codex historical rollout path is required");
@@ -53,6 +55,7 @@ export function scanCodexLiveRolloutInWorker(transcriptPath, {
   resumeState = null,
   ...options
 } = {}) {
+  assertCodexRolloutReadAllowed("scanCodexLiveRolloutInWorker");
   const pathname = String(transcriptPath ?? "").trim();
   if (!pathname) throw new Error("Codex live rollout path is required");
   if (!Number.isSafeInteger(startOffset) || startOffset < 0) throw new Error("Codex live rollout startOffset must be a nonnegative safe integer");

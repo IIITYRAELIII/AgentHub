@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { createContourExternalEffects } from "../infrastructure/filesystem/test-contour-external-effects.mjs";
+import { reconcileContourAwareStartupGit, refreshContourAwareExchangeRate } from "../application/contour-effect-operations.mjs";
 import { access, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -375,8 +377,11 @@ export async function createHubInfrastructure({
     pythonExe: config.pythonExe,
   });
   const hubMcpSecret = await ensureLocalWebSecret(path.join(runtimeCommandRoot, "hub-mcp.secret"));
-  const taskGitWorkspaces = new TaskGitWorkspaceService({ dataDir: config.dataDir });
-  const releaseGitWorkspaces = new ReleaseGitWorkspaceService({ dataDir: config.dataDir });
+  const contourExternalEffects = config.testContourRecording
+    ? createContourExternalEffects({ root: config.testContourRecording.root })
+    : null;
+  const taskGitWorkspaces = new TaskGitWorkspaceService({ dataDir: config.dataDir, contourExternalEffects });
+  const releaseGitWorkspaces = new ReleaseGitWorkspaceService({ dataDir: config.dataDir, contourExternalEffects });
   const registeredReleaseProjectRoots = workspaceCatalogStore.hierarchy()
     .filter((workspace) => workspace.settings?.releaseWorkflowEnabled === true)
     .map((workspace) => ({
@@ -387,14 +392,12 @@ export async function createHubInfrastructure({
         : "runtime_default",
     }))
     .filter((workspace) => workspace.projectRoot);
-  const releaseReconciliation = await startupStep("release-git-reconciliation", () => releaseGitWorkspaces.reconcile({
-    projectRoots: registeredReleaseProjectRoots,
-  }));
-  const taskGitReconciliation = await startupStep("task-git-reconciliation", () => taskGitWorkspaces.reconcile({
-    projectRoots: registeredReleaseProjectRoots,
-  }));
+  const { releaseReconciliation, taskGitReconciliation } = await reconcileContourAwareStartupGit({
+    policy: contourExternalEffects, releaseGitWorkspaces, taskGitWorkspaces,
+    projectRoots: registeredReleaseProjectRoots, startupStep,
+  });
   agentHubRuntimeHealth.setDiagnosticSource("taskGit", () => taskGitReconciliation);
-  agentHubRuntimeHealth.setDiagnosticSource("releaseGit", () => releaseGitWorkspaces.diagnostics());
+  agentHubRuntimeHealth.setDiagnosticSource("releaseGit", () => contourExternalEffects ? releaseReconciliation : releaseGitWorkspaces.diagnostics());
   for (const repository of releaseReconciliation.repositories.filter((item) => item.status !== "ready")) {
     console.warn(`Release repository requires manual reconciliation: ${repository.reason}`);
   }
@@ -508,7 +511,8 @@ export async function createHubInfrastructure({
   await usdRubRateStore.load().catch((error) => {
     console.warn(`Cannot load cached exchange rate: ${error.message}`);
   });
-  void usdRubRateStore.refresh().then((rate) => {
+  void refreshContourAwareExchangeRate({ policy: contourExternalEffects, store: usdRubRateStore }).then((rate) => {
+    if (rate.skipped) return;
     console.log(`USD/RUB rate refreshed from CBR: ${rate.usdRub}`);
   }).catch((error) => {
     console.warn(`Cannot refresh USD/RUB rate from CBR; cached value remains active: ${error.message}`);
@@ -571,6 +575,7 @@ export async function createHubInfrastructure({
 
   return {
     trustedDeviceStore,
+    contourExternalEffects,
     codexRolloutContextSanitizer,
     workLogUsageStore,
     workLogUsageIdentityStore,

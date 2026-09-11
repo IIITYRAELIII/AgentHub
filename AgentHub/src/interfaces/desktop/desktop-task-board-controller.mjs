@@ -2,7 +2,7 @@ import { realpath, stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { TaskBoardLaunchService } from "../../application/task-board-launch-service.mjs";
-import { MAX_ATTACHMENT_BYTES } from "../../domain/attachment-files.mjs";
+import { attachmentUploadLimits } from "../../domain/attachment-upload-policy.mjs";
 import { pathInsideOrSame } from "../../infrastructure/filesystem/config.mjs";
 
 export class DesktopTaskBoardController {
@@ -135,7 +135,7 @@ export class DesktopTaskBoardController {
     for (const attachment of attachments) {
       const file = await realpath(path.resolve(String(attachment ?? "")));
       const details = await stat(file);
-      if (!pathInsideOrSame(file, root) || !details.isFile() || details.size < 1 || details.size > MAX_ATTACHMENT_BYTES) {
+      if (!pathInsideOrSame(file, root) || !details.isFile() || details.size < 1 || details.size > attachmentUploadLimits().maxBytes) {
         throw new Error("Вложение недоступно");
       }
       files.push(file);

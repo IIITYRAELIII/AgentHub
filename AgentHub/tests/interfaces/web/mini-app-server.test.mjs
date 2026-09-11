@@ -22,6 +22,41 @@ import { createRuntimeHealth } from "../../../src/application/runtime-health.mjs
 import { createLocalWebviewSession } from "../../../src/interfaces/web/local-webview-session.mjs";
 import { JournalDatabase } from "../../../src/infrastructure/persistence/journal-database.mjs";
 
+test("resumable upload HTTP authenticates, resumes chunks and streams the completed file", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub-http-upload-"));
+  const secret = "u".repeat(43);
+  const server = new MiniAppServer({ port: 0, journalDatabase: memoryJournal(),
+    attachmentDirectory: root, localAccessSecret: secret });
+  try {
+    let address = await server.start();
+    let url = `${address.url}api/attachment-upload`;
+    const headers = { Authorization: `webview ${createLocalWebviewSession(secret).token}` };
+    assert.equal((await fetch(url)).status, 401);
+    const capabilities = await (await fetch(url, { headers })).json();
+    assert.equal(capabilities.protocol, "agent-hub-attachment-upload-v1");
+    const preflight = await fetch(url, { method: "OPTIONS", headers: {
+      Origin: "vscode-webview://agent-hub-test", "Access-Control-Request-Method": "PUT" } });
+    assert.match(preflight.headers.get("access-control-allow-methods"), /PUT, DELETE/u);
+    assert.match(preflight.headers.get("access-control-allow-headers"), /X-Agent-Hub-Chunk-Sha256/u);
+    const uploadId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    const bytes = Buffer.from("resumable attachment");
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    assert.equal((await fetch(url, { method: "POST", headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ uploadId, name: "resume.txt", type: "text/plain", size: bytes.length }) })).status, 200);
+    assert.equal((await fetch(`${url}?id=${uploadId}&index=0`, { method: "PUT",
+      headers: { ...headers, "X-Agent-Hub-Chunk-Sha256": sha256 }, body: bytes })).status, 200);
+    await server.close();
+    address = await server.start();
+    url = `${address.url}api/attachment-upload`;
+    assert.equal((await (await fetch(`${url}?id=${uploadId}`, { headers })).json()).received.length, 1);
+    const completed = await (await fetch(`${url}?id=${uploadId}&complete=1`, { method: "POST", headers })).json();
+    assert.equal(completed.sha256, sha256);
+    const download = await fetch(`${address.url}api/message-attachment/${encodeURIComponent(path.basename(completed.path))}`, { headers });
+    assert.equal(download.headers.get("content-length"), String(bytes.length));
+    assert.equal(await download.text(), bytes.toString());
+  } finally { await server.close(); await rm(root, { recursive: true, force: true }); }
+});
+
 const LIMITS_HTML = '<div data-work-log-rate-limits data-sampled-at="2026-07-30T02:55:14.512Z">'
   + '<span data-rate-limit-caption>Лимиты</span>'
   + '<span data-rate-limit><span data-rate-limit-name>CODEX</span>'

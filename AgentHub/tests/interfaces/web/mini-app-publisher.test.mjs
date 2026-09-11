@@ -697,6 +697,8 @@ test("Mini App publisher materializes a signed remote Task attachment inside the
           id: attachmentId,
           userId: "42",
           commandId,
+          mode: "manifest",
+          page: 0,
         });
         return new Response(png, {
           headers: {

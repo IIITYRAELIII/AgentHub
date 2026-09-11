@@ -447,6 +447,13 @@ The rolling contour is preview evidence, not release proof. Release validation
 still requires the prescribed isolated candidate checks and publication
 pipeline before production side effects.
 
+A prepared recording cohort may exercise recovery under the boundaries in
+RST-001 and ADR-0038. It does not change the single rolling contour, dev source,
+operation lease or exact-readiness rules. Its captured Task Git references are
+evidence only: Task/Release Git operations must fail before Git effects and Task
+CAS until an independently owned Git cohort is available. A locally recorded
+delivery or excluded operation cannot authorize production publication.
+
 Complete/Delete confirmation is a projection of the authoritative server cleanup
 preview. Before the confirmed request the client displays every available Task
 branch, managed worktree and HEAD, dirty/changed/untracked paths, result commit,

@@ -1454,8 +1454,8 @@ const DRAFT_STORAGE_MAX_TASKS = 100;
 const DRAFT_STORAGE_MAX_TEXT = 100_000;
 const DRAFT_RECOVERY_MAX_ATTACHMENTS = 8;
 const DRAFT_RECOVERY_MAX_ATTACHMENT_CHARS = 4_000_000;
-const DRAFT_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
-const DRAFT_ATTACHMENT_MAX_TOTAL_BYTES = 20 * 1024 * 1024;
+const DRAFT_ATTACHMENT_MAX_BYTES = 256 * 1024 * 1024;
+const DRAFT_ATTACHMENT_MAX_TOTAL_BYTES = 512 * 1024 * 1024;
 const DRAFT_RECOVERY_AUTHORITY_DB = "agent-hub-composer-recovery-v1";
 const DRAFT_RECOVERY_AUTHORITY_STORE = "surfaces";
 const composerTaskGenerations = new Map();
@@ -1563,7 +1563,7 @@ function ensureComposerDraftsRestored() {
     composerDraftRestoreInitialization = (async () => {
       await ensureComposerRecoveryAuthority();
       try {
-        restorePersistedDrafts();
+        await restorePersistedDrafts();
         if (state.selectedId) restoreDraft();
       } catch {
         reportComposerRecoveryFailure();
@@ -1640,7 +1640,7 @@ function normalizedDraftAnnotations(value) {
   }).filter((annotation) => annotation.quote);
 }
 
-function restorePersistedDrafts() {
+async function restorePersistedDrafts() {
   let persisted;
   try {
     persisted = JSON.parse(localStorage.getItem(draftStorageKey()) ?? "[]");
@@ -1648,6 +1648,8 @@ function restorePersistedDrafts() {
     return;
   }
   if (!Array.isArray(persisted)) return;
+  await window.AgentHubComposerFiles.hydrate(persisted.slice(0, DRAFT_STORAGE_MAX_TASKS)
+    .flatMap((entry) => Array.isArray(entry?.attachments) ? entry.attachments.slice(0, DRAFT_RECOVERY_MAX_ATTACHMENTS) : []));
   let invalidRecoveryFound = false;
   for (const entry of persisted.slice(0, DRAFT_STORAGE_MAX_TASKS)) {
     const taskId = String(entry?.taskId ?? "").trim();
@@ -1675,7 +1677,7 @@ function restorePersistedDrafts() {
       && Number.isSafeInteger(recoveryEpoch)
       && recoveryEpoch < composerRecoveryAuthorityEpoch;
     if (durablyInvalidated) continue;
-    const recoveredAttachments = rawRecoveryMetadata && authorityMatches
+    const recoveredAttachments = !rawRecoveryMetadata || authorityMatches
       ? normalizedRecoveryAttachments(entry?.attachments)
       : [];
     const attachments = recoveredAttachments ?? [];
@@ -1687,7 +1689,8 @@ function restorePersistedDrafts() {
         taskReferences,
         annotations,
       }) === recoveryFingerprint;
-    const invalidRecovery = rawRecoveryMetadata && !exactRecovery;
+    const invalidRecovery = (rawRecoveryMetadata && !exactRecovery)
+      || (!recoveredAttachments && Boolean(entry?.attachments?.length));
     if (invalidRecovery) {
       invalidRecoveryFound = true;
       recordRecoveryInvalidation(taskId, recoveryRequestId, { clearNonDurableWhenPersisted: false });
@@ -1839,6 +1842,7 @@ function discardPersistedRecovery(requestId) {
 }
 
 function persistDrafts({ requiredRecoveryRequestId = "" } = {}) {
+  queueMicrotask(pruneComposerFiles);
   let requiredRecoveryRepresented = !requiredRecoveryRequestId;
   let everyDraftRepresented = true;
   let recoveryCharacters = 0;
@@ -1855,18 +1859,18 @@ function persistDrafts({ requiredRecoveryRequestId = "" } = {}) {
       const recoveryFingerprint = String(draft?.recoveryFingerprint ?? "");
       const rawAttachments = Array.isArray(draft?.attachments) ? draft.attachments : [];
       const attachmentCharacters = recoveryRequestId ? rawAttachments.reduce((sum, attachment) => (
-        sum + String(attachment?.dataUrl ?? "").length
+        sum + (attachment?.blobId ? 0 : String(attachment?.dataUrl ?? "").length)
       ), 0) : 0;
       const withinSurfaceBound = recoveryCharacters + attachmentCharacters
         <= DRAFT_RECOVERY_MAX_ATTACHMENT_CHARS;
-      const recoveryAttachments = recoveryRequestId && withinSurfaceBound
+      const recoveryAttachments = withinSurfaceBound && rawAttachments.every(window.AgentHubComposerFiles.durable)
         ? window.AgentHubComposerDraftReconciliation.recoveryAttachments(rawAttachments, {
           maxCount: DRAFT_RECOVERY_MAX_ATTACHMENTS,
           maxDataUrlCharacters: DRAFT_RECOVERY_MAX_ATTACHMENT_CHARS - recoveryCharacters,
           maxBytes: DRAFT_ATTACHMENT_MAX_BYTES,
           maxTotalBytes: DRAFT_ATTACHMENT_MAX_TOTAL_BYTES,
         })
-        : recoveryRequestId ? null : [];
+        : null;
       const candidate = {
         taskId,
         text: normalizedDraftText(draft.text),
@@ -1888,11 +1892,12 @@ function persistDrafts({ requiredRecoveryRequestId = "" } = {}) {
           attachments: recoveryAttachments,
         }) === recoveryFingerprint;
       if (exactRecovery) recoveryCharacters += attachmentCharacters;
-      const serializedAttachments = exactRecovery ? recoveryAttachments : [];
+      const serializedAttachments = (!recoveryRequestId || exactRecovery) && recoveryAttachments
+        ? recoveryAttachments.map(window.AgentHubComposerFiles.serialized) : [];
       const exactSerializedPayload = String(draft?.text ?? "") === candidate.text
         && JSON.stringify(draft?.taskReferences ?? []) === JSON.stringify(candidate.taskReferences)
         && JSON.stringify(draft?.annotations ?? []) === JSON.stringify(candidate.annotations)
-        && (rawAttachments.length === 0 || exactRecovery);
+        && rawAttachments.length === serializedAttachments.length;
       if (!exactSerializedPayload) everyDraftRepresented = false;
       if (recoveryRequestId && !exactRecovery) everyDraftRepresented = false;
       if (recoveryRequestId === requiredRecoveryRequestId && exactRecovery) {
@@ -1900,11 +1905,11 @@ function persistDrafts({ requiredRecoveryRequestId = "" } = {}) {
       }
       return {
         ...candidate,
+        attachments: serializedAttachments,
         ...(exactRecovery ? {
           recoveryRequestId,
           recoveryFingerprint,
           recoveryEpoch: composerRecoveryAuthorityEpoch,
-          attachments: recoveryAttachments,
         } : {}),
       };
     })
@@ -5789,6 +5794,33 @@ function renderedMessageAuthor(message, role) {
   return message?.kind === "interstream" ? `Служебное · ${author}` : author;
 }
 
+function pruneComposerFiles() {
+  const attachments = [...drafts.values()].flatMap((draft) => draft.attachments ?? []);
+  attachments.push(...(pendingComposerRequest?.attachments ?? []), ...(window.AgentHubRetainedUploadAttachments?.() ?? []));
+  window.AgentHubComposerFiles.prune(attachments.map((file) => file.blobId).filter(Boolean));
+}
+window.AgentHubPruneComposerFiles = pruneComposerFiles;
+
+function syncMessageUploadActions(head, message) {
+  const state = String(message.uploadState ?? "");
+  let actions = head?.querySelector("[data-message-upload-actions]");
+  if (!state) { actions?.remove(); return; }
+  if (actions?.dataset.uploadState === state) return;
+  actions?.remove();
+  actions = el("span", { "data-message-upload-actions": "", "data-upload-state": state, class: "msg-upload-actions" });
+  for (const action of state === "paused" ? ["resume", "cancel"] : ["cancel"]) {
+    const button = el("button", {
+      type: "button", class: "queue-accept", [`data-upload-${action}`]: "",
+      text: action === "resume" ? "Продолжить загрузку" : "Отменить отправку",
+    });
+    button.addEventListener("click", () => emit(`message:upload-${action}`, {
+      clientUserMessageId: message.clientUserMessageId,
+    }));
+    actions.append(button);
+  }
+  head?.append(actions);
+}
+
 function patchRenderedMessage(node, message) {
   const article = node.matches?.("article.msg, details.msg")
     ? node
@@ -5801,6 +5833,7 @@ function patchRenderedMessage(node, message) {
   const role = message.role === "user" ? "user" : message.role === "system" ? "system" : "agent";
   const author = renderedMessageAuthor(message, role);
   const head = article.querySelector(".msg-head");
+  syncMessageUploadActions(head, message);
   const authorNode = head?.querySelector(".msg-author");
   if (authorNode) authorNode.textContent = author;
   let time = head?.querySelector(".msg-time");
@@ -6363,7 +6396,8 @@ function renderMarkdownCodeBlock(lines, language = "") {
   ]);
 }
 
-function renderMarkdown(target, source, fileContext = currentFileLinkContext(), messageRole = "agent") {
+function renderMarkdown(target, source, fileContext = currentFileLinkContext(), messageRole = "agent", detailsDepth = 0) {
+  const disclosureState = MessageView.captureMarkdownDetailsState(target);
   target.replaceChildren();
   const lines = String(source ?? "").replace(/\r\n?/gu, "\n").split("\n");
   let index = 0;
@@ -6373,13 +6407,25 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
       index += 1;
       continue;
     }
-    const fence = line.match(/^\s*```([\w+-]*)\s*$/u);
+    const fence = MessageView.markdownFenceStart(line);
     if (fence) {
       const code = [];
       index += 1;
-      while (index < lines.length && !/^\s*```\s*$/u.test(lines[index])) code.push(lines[index++]);
+      while (index < lines.length && !MessageView.markdownFenceEnd(lines[index], fence)) code.push(lines[index++]);
       if (index < lines.length) index += 1;
-      target.append(renderMarkdownCodeBlock(code, fence[1]));
+      target.append(renderMarkdownCodeBlock(code, fence.language));
+      continue;
+    }
+    const disclosure = detailsDepth < 32 ? MessageView.markdownDetailsAt(lines, index) : null;
+    if (disclosure) {
+      const summary = el("summary");
+      appendInlineMarkdown(summary, disclosure.summary || "Подробнее", fileContext);
+      const body = el("div", { class: "markdown-details-body" });
+      renderMarkdown(body, disclosure.body, fileContext, messageRole, detailsDepth + 1);
+      const details = el("details", { class: "markdown-details" }, [summary, body]);
+      details.agentHubMarkdownDetailsSource = JSON.stringify([disclosure.summary, disclosure.body]);
+      target.append(details);
+      index = disclosure.nextIndex;
       continue;
     }
     const standaloneCode = MessageView.standaloneInlineCode(line);
@@ -6450,7 +6496,9 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
     const paragraph = [];
     while (index < lines.length
       && lines[index].trim()
-      && !/^\s*(?:```|#{1,6}\s|[-+*]\s+|\d+\.\s+|>\s?)/u.test(lines[index])
+      && !MessageView.markdownFenceStart(lines[index])
+      && !/^\s*(?:#{1,6}\s|[-+*]\s+|\d+\.\s+|>\s?)/u.test(lines[index])
+      && !(paragraph.length && detailsDepth < 32 && MessageView.markdownDetailsAt(lines, index))
       && !markdownTableAt(lines, index)) {
       paragraph.push(lines[index++]);
     }
@@ -6466,6 +6514,7 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
     const technicalRows = renderTechnicalRows(extracted.rows);
     if (technicalRows) target.append(technicalRows);
   }
+  MessageView.restoreMarkdownDetailsState(target, disclosureState);
 }
 
 function activityDisclosureSummary({ label = "Выполненные действия", count = 0, stage = "" } = {}) {
@@ -6782,7 +6831,7 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
   } else renderBody(body);
 
   if (maintenance) article.append(body);
-  else article.append(head);
+  else { article.append(head); if (!readOnly) syncMessageUploadActions(head, message); }
   const trace = turnTraceNode(message.activityGroups);
   const activity = trace ? null : activityFeedNode(message.activities);
   if (trace) article.append(trace);
@@ -7317,6 +7366,18 @@ function renderQueueForTask(taskId, container) {
         class: "queue-optimistic",
         text: String(entry.delivery ?? "").trim() || "Ожидает подтверждения Hub…",
       }));
+      if (entry.uploadState) {
+        for (const action of entry.uploadState === "paused" ? ["resume", "cancel"] : ["cancel"]) {
+          const button = el("button", {
+            type: "button", class: "queue-accept", [`data-upload-${action}`]: "",
+            text: action === "resume" ? "Продолжить загрузку" : "Отменить отправку",
+          });
+          button.addEventListener("click", () => emit(`message:upload-${action}`, {
+            taskId, clientUserMessageId: entry.clientUserMessageId,
+          }));
+          actions.push(button);
+        }
+      }
       if (entry.admissionRetryAvailable) {
         const retry = el("button", {
           type: "button", class: "queue-accept", "data-message-retry-unconfirmed": "",
@@ -7742,7 +7803,7 @@ function normalizedRecoveryAttachments(value) {
   });
 }
 
-/* ---- вложения (превью через data:-URL, blob: закрыт CSP) ---- */
+/* ---- вложения: локальные Blob-превью и опубликованные ссылки ---- */
 
 let attachments = [];
 let taskReferences = [];
@@ -7960,10 +8021,17 @@ async function readAttachmentFiles(files) {
     file && Number.isSafeInteger(file.size) && file.size > 0
   ));
   if (selected.length === 0) return;
+  const operationSequence = (attachmentOperationSequences.get(operation.taskId) ?? 0) + 1;
+  attachmentOperationSequences.set(operation.taskId, operationSequence);
+  let policy;
+  try { policy = await window.AgentHubAttachmentCapabilities(); }
+  catch (error) { showToast(error.message); return; }
+  if (!composerTaskOperationCurrent(operation)
+    || attachmentOperationSequences.get(operation.taskId) !== operationSequence) return;
   const limit = 8;
   const room = Math.max(0, limit - initialDraft.attachments.length);
   const existingBytes = initialDraft.attachments.reduce((sum, item) => sum + (Number(item?.size) || 0), 0);
-  let remainingBytes = Math.max(0, DRAFT_ATTACHMENT_MAX_TOTAL_BYTES - existingBytes);
+  let remainingBytes = Math.max(0, policy.maxTotalBytes - existingBytes);
   let oversized = 0;
   let unsafe = 0;
   const accepted = [];
@@ -7972,7 +8040,7 @@ async function readAttachmentFiles(files) {
       name: file.name,
       type: file.type || "application/octet-stream",
       size: file.size,
-    }, { maxBytes: DRAFT_ATTACHMENT_MAX_BYTES });
+    }, { maxBytes: Math.min(policy.maxBytes, DRAFT_ATTACHMENT_MAX_BYTES) });
     if (!metadata) {
       unsafe += 1;
       continue;
@@ -7987,24 +8055,18 @@ async function readAttachmentFiles(files) {
   if (accepted.length === 0) {
     if (room === 0 || selected.length > room) showToast(`Можно приложить не больше ${limit} файлов.`);
     else if (unsafe) showToast("Имя или тип файла небезопасны для отправки.");
-    else if (oversized) showToast("Общий размер вложений не должен превышать 20 МБ.");
+    else if (oversized) showToast(`Общий лимит вложений: ${Math.floor(policy.maxTotalBytes / 1024 / 1024)} МБ.`);
     return;
   }
-  const operationSequence = (attachmentOperationSequences.get(operation.taskId) ?? 0) + 1;
-  attachmentOperationSequences.set(operation.taskId, operationSequence);
-  const settled = await Promise.allSettled(accepted.map((file) => new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve({
+  const settled = await Promise.allSettled(accepted.map((file) => window.AgentHubComposerFiles.prepare(file, {
       name: file.name,
       type: file.type || "application/octet-stream",
       size: file.size,
-      dataUrl: String(reader.result),
-    });
-    reader.onerror = () => reject(new Error(`Не удалось прочитать файл «${file.name}»`));
-    reader.readAsDataURL(file);
-  })));
+    })));
   const failed = settled.find((result) => result.status === "rejected");
   if (failed) {
+    window.AgentHubComposerFiles.settle(settled.filter((result) => result.status === "fulfilled").map((result) => result.value));
+    pruneComposerFiles();
     showToast(failed.reason?.message ?? "Не удалось прочитать вложение");
     return;
   }
@@ -8012,9 +8074,11 @@ async function readAttachmentFiles(files) {
   const canonical = window.AgentHubComposerDraftReconciliation.recoveryAttachments(loaded, {
     maxCount: limit,
     maxBytes: DRAFT_ATTACHMENT_MAX_BYTES,
-    maxTotalBytes: DRAFT_ATTACHMENT_MAX_TOTAL_BYTES - existingBytes,
+    maxTotalBytes: policy.maxTotalBytes - existingBytes,
   });
   if (!canonical) {
+    window.AgentHubComposerFiles.settle(loaded);
+    pruneComposerFiles();
     showToast("Вложение не прошло проверку целостности.");
     return;
   }
@@ -8026,9 +8090,14 @@ async function readAttachmentFiles(files) {
     }, { userEdited: true });
     if (state.selectedId === operation.taskId) restoreDraft();
   }
+  window.AgentHubComposerFiles.settle(loaded);
+  pruneComposerFiles();
   if (selected.length > room) showToast(`Можно приложить не больше ${limit} файлов.`);
   else if (unsafe) showToast("Часть файлов отклонена: небезопасное имя или тип.");
-  else if (oversized) showToast("Общий размер вложений не должен превышать 20 МБ.");
+  else if (oversized) showToast(`Общий лимит вложений: ${Math.floor(policy.maxTotalBytes / 1024 / 1024)} МБ.`);
+  if (loaded.some((file) => !window.AgentHubComposerFiles.durable(file))) {
+    showToast("Файл доступен до закрытия страницы. Локальное хранилище недоступно; после перезагрузки выбери файл снова.");
+  }
 }
 
 document.querySelector("[data-action='attach']").addEventListener("click", () => fileInput.click());

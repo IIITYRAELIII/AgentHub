@@ -1,4 +1,4 @@
-import { unlink } from "node:fs/promises";
+import { createRuntimeFileRemoval } from "../runtime/test-contour-runtime-effects.mjs";
 import path from "node:path";
 
 import { BugReportTaskCapture } from "../application/bug-report-task-capture.mjs";
@@ -88,6 +88,7 @@ export async function createClientInterfaceComposition({
   taskProgress,
   mcpAdmissionCoordinator,
 }) {
+  const removeRuntimeFile = createRuntimeFileRemoval(config);
   let mediaController;
   const telegramClient = new TelegramClient({
     token,
@@ -215,7 +216,7 @@ export async function createClientInterfaceComposition({
       }
       return result;
     } finally {
-      await Promise.all(files.map((file) => unlink(file).catch(() => {})));
+      await Promise.all(files.map((file) => removeRuntimeFile(file)));
     }
   };
   const telegramMultipart = (method, body, fileField, filePath) => (

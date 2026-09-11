@@ -1,5 +1,5 @@
 import path from "node:path";
-import { unlink } from "node:fs/promises";
+import { createRuntimeFileRemoval } from "../runtime/test-contour-runtime-effects.mjs";
 import {
   pendingInputKeyboard,
 } from "../domain/deferred-input.mjs";
@@ -19,6 +19,7 @@ export function createDesktopRunRouterWiring({
   services,
   desktop,
 }) {
+  const removeRuntimeFile = createRuntimeFileRemoval(config);
   const compactContext = async (params) => (
     services.startManualCompaction(await desktop.messageTarget(params))
   );
@@ -69,7 +70,7 @@ export function createDesktopRunRouterWiring({
       persist: services.saveState,
       persistIntake: services.persistDeferredIntake,
       commandTrace: services.commandTrace,
-      removeFiles: (files) => Promise.all(files.map((file) => unlink(file).catch(() => {}))),
+      removeFiles: (files) => Promise.all(files.map((file) => removeRuntimeFile(file))),
       notify: async (item, { executionOwner, conflictTask }) => {
         const preview = runInputPreview(item.input);
         const runtime = item.provider === "codex"
@@ -135,6 +136,7 @@ export function createDesktopRunRouterWiring({
       },
     },
     messageController: {
+      commandMapping: services.contourCommandMapping ?? null,
       attachmentPaths: services.attachmentPaths,
       describeAttachments: services.describeAttachments,
       resolveTaskReferences: async (values, target) => {
@@ -240,6 +242,7 @@ export function createDesktopRunRouterWiring({
   });
 
   const router = createDesktopRouterComposition({
+    canonicalizeRequest: services.contourCommandMapping?.request,
     handlers: {
       snapshot: desktop.snapshot,
       runtimeHealth: desktop.runtimeHealth,

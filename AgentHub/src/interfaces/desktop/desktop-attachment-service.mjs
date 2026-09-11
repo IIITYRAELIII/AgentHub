@@ -4,10 +4,10 @@ import path from "node:path";
 import {
   attachmentDescriptor,
   attachmentMetadataFromId,
-  MAX_ATTACHMENT_BYTES,
   MAX_MESSAGE_ATTACHMENTS,
 } from "../../domain/attachment-files.mjs";
 import { pathInsideOrSame } from "../../infrastructure/filesystem/config.mjs";
+import { attachmentUploadLimits } from "../../domain/attachment-upload-policy.mjs";
 
 export class DesktopAttachmentService {
   #attachmentRoot;
@@ -20,8 +20,10 @@ export class DesktopAttachmentService {
   #attachmentThumbnails;
   #generatedImageRoot;
   #importer = null;
+  #maxAttachmentBytes;
 
   constructor(options = {}) {
+    this.#maxAttachmentBytes = (options.attachmentUploadPolicy ?? attachmentUploadLimits()).maxBytes;
     this.#attachmentRoot = path.join(path.resolve(options.runtimeCommandRoot), "attachments");
     this.#projectRoot = path.resolve(options.projectRoot);
     this.#projectRoots = (options.projectRoots ?? []).map((value) => path.resolve(value));
@@ -53,8 +55,8 @@ export class DesktopAttachmentService {
         if (error?.code === "ENOENT") throw new Error("Файл вложения недоступен");
         throw error;
       }
-      if (!info.isFile() || info.size <= 0 || info.size > MAX_ATTACHMENT_BYTES) {
-        throw new Error("Файл отсутствует или превышает 20 МБ");
+      if (!info.isFile() || info.size <= 0 || info.size > this.#maxAttachmentBytes) {
+        throw new Error("Файл отсутствует или превышает лимит вложения");
       }
       result.push(file);
     }

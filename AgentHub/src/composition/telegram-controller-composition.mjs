@@ -1,4 +1,4 @@
-import { unlink } from "node:fs/promises";
+import { createRuntimeFileRemoval } from "../runtime/test-contour-runtime-effects.mjs";
 import { TelegramForwardBundleController } from "../interfaces/telegram/telegram-forward-bundle.mjs";
 import { TelegramMessageController } from "../interfaces/telegram/telegram-message-controller.mjs";
 import { TelegramCallbackController } from "../interfaces/telegram/telegram-callback-controller.mjs";
@@ -100,6 +100,7 @@ export function createTelegramControllerComposition({
   performRestart,
   taskBoard,
 }) {
+  const removeRuntimeFile = createRuntimeFileRemoval(config);
   const interactiveJobService = new InteractiveJobService({
     queue: interactiveJobs,
     stopping: isStopping,
@@ -128,7 +129,7 @@ export function createTelegramControllerComposition({
       payload.chatId,
       { dedupeKey },
     ),
-    removeFile: (file) => unlink(file).catch(() => {}),
+    removeFile: (file) => removeRuntimeFile(file),
   });
 
   const telegramSettingsCallbacks = new TelegramSettingsCallbackService({
