@@ -1,0 +1,12 @@
+{
+  "id": "senpo",
+  "name": "Храм Сэмпо",
+  "color": "#160e0c",
+  "order": 117,
+  "styles": "theme.css",
+  "assets": { "brass-frame": "brass-frame.svg" },
+  "backgrounds": [
+    { "id": "senpo", "name": "Ночной храм", "asset": "night-temple.png" },
+    { "id": "senpo-quiet", "name": "Тёмный лак" }
+  ]
+}
