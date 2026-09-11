@@ -10,7 +10,7 @@ import { resolveExactOrderPreservingUnion } from "../../../src/infrastructure/fi
 
 const exec = promisify(execFile);
 
-test("order-preserving conflict accepts only the exact dev union of both index sides", async (t) => {
+test("order-preserving conflict accepts only an exact durable dev merge of both index sides", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-release-union-test-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const git = async (args) => (await exec("git", args, { cwd: root, windowsHide: true })).stdout.trim();
@@ -32,22 +32,27 @@ test("order-preserving conflict accepts only the exact dev union of both index s
   await git(["checkout", "main"]);
   await writeFile(file, "anchor\nmain\nend\n", "utf8");
   await commit("main");
-  await git(["checkout", "-b", "dev"]);
-  await writeFile(file, "anchor\nmain\ntask\nend\n", "utf8");
-  const exact = await commit("exact union");
-  await git(["checkout", "-b", "foreign", "main"]);
-  await writeFile(file, "anchor\nmain\nforeign\ntask\nend\n", "utf8");
-  const foreign = await commit("union with foreign baggage");
+  await git(["checkout", "-b", "dev", task]);
+  await assert.rejects(git(["merge", "--no-commit", "main"]));
+  await writeFile(file, "anchor\nresolved task + main\nend\n", "utf8");
+  await git(["add", "shared.txt"]);
+  await git(["commit", "--no-edit"]);
+  const exact = await git(["rev-parse", "HEAD"]);
+  await git(["checkout", "-b", "foreign"]);
+  await writeFile(file, "anchor\nresolved task + main\nforeign\nend\n", "utf8");
+  const foreign = await commit("foreign baggage after resolution");
   await git(["checkout", "main"]);
   await assert.rejects(git(["merge", "--no-commit", task]));
   assert.match(await git(["diff", "--name-only", "--diff-filter=U"]), /shared\.txt/u);
   assert.equal(await resolveExactOrderPreservingUnion({
-    candidateRoot: root, conflicts: ["shared.txt"], devRef: foreign,
+    candidateRoot: root, conflicts: ["shared.txt"], approvedBaseCommit: await git(["rev-parse", "main"]),
+    devRef: foreign,
   }), false);
   assert.equal(await resolveExactOrderPreservingUnion({
-    candidateRoot: root, conflicts: ["shared.txt"], devRef: exact,
+    candidateRoot: root, conflicts: ["shared.txt"], approvedBaseCommit: await git(["rev-parse", "main"]),
+    devRef: exact,
   }), true);
-  assert.equal(await readFile(file, "utf8"), "anchor\nmain\ntask\nend\n");
+  assert.equal(await readFile(file, "utf8"), "anchor\nresolved task + main\nend\n");
   assert.equal(await git(["diff", "--name-only", "--diff-filter=U"]), "");
   assert.equal(await git(["rev-parse", "HEAD"]), await git(["rev-parse", "main"]));
   assert.notEqual(base, task);

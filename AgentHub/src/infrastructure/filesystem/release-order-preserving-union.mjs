@@ -39,14 +39,15 @@ async function unionBytes(root, temporary, ours, base, theirs) {
 }
 
 export async function resolveExactOrderPreservingUnion({
-  candidateRoot, conflicts = [], devRef = "refs/remotes/workspace/dev",
+  candidateRoot, conflicts = [], approvedBaseCommit, devRef = "refs/remotes/workspace/dev",
 } = {}) {
   const root = path.resolve(String(candidateRoot ?? ""));
+  const approvedBase = String(approvedBaseCommit ?? "").trim();
   const paths = [...new Set(conflicts.map((value) => String(value ?? "").trim()).filter(Boolean))];
-  if (!paths.length) return false;
+  if (!paths.length || !approvedBase) return false;
   const temporary = await mkdtemp(path.join(os.tmpdir(), "agent-hub-release-union-"));
   try {
-    const resolutions = [];
+    const stages = [];
     for (const [index, file] of paths.entries()) {
       let base;
       let ours;
@@ -67,8 +68,42 @@ export async function resolveExactOrderPreservingUnion({
         unionBytes(root, path.join(itemRoot, "ours-first"), ours, base, theirs),
         unionBytes(root, path.join(itemRoot, "theirs-first"), theirs, base, ours),
       ]);
-      if (!accepted.equals(oursFirst) && !accepted.equals(theirsFirst)) return false;
-      resolutions.push({ file, target: resolvedPath(root, file), accepted });
+      stages.push({
+        file, target: resolvedPath(root, file), ours, theirs, accepted,
+        unionExact: accepted.equals(oursFirst) || accepted.equals(theirsFirst),
+      });
+    }
+    let resolutions = stages;
+    if (stages.some((stage) => !stage.unionExact)) {
+      resolutions = null;
+      const history = (await gitBytes(root, [
+        "log", "--first-parent", "--merges", "--format=%H%x00%P", devRef,
+      ])).toString("utf8").trim().split(/\r?\n/u).filter(Boolean);
+      for (const line of history) {
+        const [commit, parentsText = ""] = line.split("\0");
+        const parents = parentsText.split(" ").filter(Boolean);
+        if (parents.length !== 2 || parents[1] !== approvedBase) continue;
+        let exact = true;
+        for (const stage of stages) {
+          try {
+            const [firstParent, secondParent, resolved] = await Promise.all([
+              gitBytes(root, ["show", `${parents[0]}:${stage.file}`]),
+              gitBytes(root, ["show", `${parents[1]}:${stage.file}`]),
+              gitBytes(root, ["show", `${commit}:${stage.file}`]),
+            ]);
+            if (!firstParent.equals(stage.theirs) || !secondParent.equals(stage.ours)
+                || !resolved.equals(stage.accepted)) { exact = false; break; }
+          } catch {
+            exact = false;
+            break;
+          }
+        }
+        if (exact) {
+          resolutions = stages;
+          break;
+        }
+      }
+      if (!resolutions) return false;
     }
     for (const resolution of resolutions) {
       await mkdir(path.dirname(resolution.target), { recursive: true });
