@@ -80,6 +80,7 @@ import {
   mergeCachedTaskHistory,
   mergeDurableTaskHistory,
 } from "../../../src/interfaces/desktop/desktop-task-history.mjs";
+import { durableUserCommandItemId } from "../../../src/domain/stream-message-pin.mjs";
 import {
   mergeActiveTaskHistory,
   mergeCompletedTaskHistory,
@@ -2036,6 +2037,47 @@ test("desktop task history returns the preceding page for a supplied cursor", as
   assert.equal(older.start, 7);
   assert.equal(older.end, 17);
   assert.equal(older.nextBefore, 7);
+});
+
+test("desktop history keeps receipt-backed pin eligibility across full and paged reads", async () => {
+  const { desktopTaskHistory, state } = fixture({
+    run: null,
+    honorHistoryReadLimit: true,
+  });
+  state.history = Array.from({ length: 3 }, (_, index) => ({
+    id: `receipt-turn-${index + 1}`,
+    status: "completed",
+    completed: true,
+    startedAt: `2026-09-0${index + 5}T08:00:00.000Z`,
+    messages: [
+      {
+        itemId: "",
+        clientUserMessageId: `receipt-command-${index + 1}`,
+        role: "user",
+        text: `Сообщение ${index + 1}`,
+      },
+      { itemId: `receipt-answer-${index + 1}`, role: "agent", text: "Ответ" },
+    ],
+  }));
+  const assertPinnableUsers = (result) => {
+    for (const turn of result.items) {
+      const user = turn.messages.find((message) => message.role === "user");
+      assert.equal(user.itemId, durableUserCommandItemId(user.clientUserMessageId));
+      assert.equal(user.semanticSlot, "user-command");
+      assert.equal(user.pinEligible, true);
+    }
+  };
+
+  const full = await desktopTaskHistory({ limit: 3 });
+  assertPinnableUsers(full);
+  const newest = await desktopTaskHistory({ limit: 1 });
+  assertPinnableUsers(newest);
+  const preceding = await desktopTaskHistory({ before: newest.nextBefore, limit: 1 });
+  assertPinnableUsers(preceding);
+  assert.notEqual(
+    newest.items[0].messages[0].messageKey,
+    preceding.items[0].messages[0].messageKey,
+  );
 });
 
 test("desktop task history never assigns turn receipts to unkeyed provider occurrences", async () => {
