@@ -88,11 +88,11 @@ html[data-theme="horadrim"] {
   --shell-tab-active-background: linear-gradient(0deg, #392919, #17140f);
   --shell-tab-active-border: 1px solid transparent;
   --shell-tab-active-shadow: inset 0 -2px 0 #d8ad61;
-  --shell-panel-border: 1px solid #9d783e;
+  --shell-panel-border: 1px solid transparent;
   --shell-panel-border-image: var(--horadrim-archive-frame-asset) 24 / 20px stretch;
   --shell-panel-border-image-width: 20px;
   --shell-panel-radius: 2px;
-  --shell-chat-border: 1px solid #4b3c26;
+  --shell-chat-border: 1px solid transparent;
   --shell-chat-border-image: none;
   --shell-chat-panel-border-image-width: 1px;
   --shell-stream-tabs-background: rgb(17 16 13 / 98%);
@@ -206,9 +206,9 @@ html[data-theme="horadrim"] .turn-trace { background: #14120e; border-radius: 2p
 html[data-theme="horadrim"][data-view="chat"][data-surface] form.composer {
   position: relative;
   background: #161410 url("./stone-grain.svg");
-  border: 1px solid #bd934d;
+  border: 1px solid transparent;
   border-radius: 3px;
-  box-shadow: inset 0 0 0 4px #11100d, inset 0 0 0 5px rgb(181 138 68 / 42%), 0 4px 22px rgb(0 0 0 / 40%);
+  box-shadow: 0 4px 22px rgb(0 0 0 / 40%);
 }
 html[data-theme="horadrim"] form.composer::before {
   content: "";
@@ -219,8 +219,11 @@ html[data-theme="horadrim"] form.composer::before {
   pointer-events: none;
 }
 html[data-theme="horadrim"][data-view="chat"][data-surface] form.composer:focus-within {
-  border-color: #efc77f;
-  box-shadow: inset 0 0 0 4px #11100d, inset 0 0 0 5px #9e783b, 0 0 12px rgb(216 173 97 / 10%);
+  border-color: transparent;
+  box-shadow: 0 0 12px rgb(216 173 97 / 10%);
+}
+html[data-theme="horadrim"] form.composer:focus-within::before {
+  filter: brightness(1.35);
 }
 html[data-theme="horadrim"] .composer-input { background: transparent; box-shadow: none; }
 html[data-theme="horadrim"] .composer-input > textarea { font-size: 15px; }
@@ -236,4 +239,34 @@ html[data-theme="horadrim"] ::selection { background: var(--selection); color: #
   html[data-theme="horadrim"] .msg:not(.msg-system),
   html[data-theme="horadrim"][data-view="chat"][data-surface] .msg-user .msg-user-bubble { padding: .8rem .95rem; }
   html[data-theme="horadrim"] form.composer::before { border-image-width: 18px; }
+}
+
+html[data-background-override="true"][data-background="horadrim-soulstone-vault"] {
+  --hub-background-color: #11100d;
+  --hub-background-image: var(--horadrim-soulstone-vault-image);
+}
+
+html[data-background-override="true"][data-background="horadrim-hall-of-seals"] {
+  --hub-background-color: #11100d;
+  --hub-background-image: var(--horadrim-hall-of-seals-image);
+}
+
+html[data-background-override="true"][data-background="horadrim-horadrim-desk"] {
+  --hub-background-color: #11100d;
+  --hub-background-image: var(--horadrim-horadrim-desk-image);
+}
+
+html[data-background-override="true"][data-background="horadrim-buried-archive"] {
+  --hub-background-color: #11100d;
+  --hub-background-image: var(--horadrim-buried-archive-image);
+}
+
+html[data-background-override="true"][data-background="horadrim-tristram-ashes"] {
+  --hub-background-color: #11100d;
+  --hub-background-image: var(--horadrim-tristram-ashes-image);
+}
+
+html[data-background-override="true"][data-background="horadrim-obsidian-gold"] {
+  --hub-background-color: #11100d;
+  --hub-background-image: var(--horadrim-obsidian-gold-image);
 }
