@@ -7,6 +7,11 @@
   "assets": { "brass-frame": "brass-frame.svg" },
   "backgrounds": [
     { "id": "senpo", "name": "Ночной храм", "asset": "night-temple.png" },
+    { "id": "senpo-red-maples", "name": "Красные клёны", "asset": "red-maples.png", "preload": true },
+    { "id": "senpo-thousand-buddhas", "name": "Зал тысячи Будд", "asset": "thousand-buddhas.png", "preload": true },
+    { "id": "senpo-incense-ash", "name": "Пепел благовоний", "asset": "incense-ash.png", "preload": true },
+    { "id": "senpo-mist-gates", "name": "Врата в тумане", "asset": "mist-gates.png", "preload": true },
+    { "id": "senpo-forbidden-hall", "name": "Запретный зал", "asset": "forbidden-hall.png", "preload": true },
     { "id": "senpo-quiet", "name": "Тёмный лак" }
   ]
 }
