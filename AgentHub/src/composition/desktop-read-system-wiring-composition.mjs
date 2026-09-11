@@ -1,4 +1,5 @@
 import path from "node:path";
+import { contourReadModelOptions } from "../runtime/test-contour-read-model.mjs";
 import {
   deferredEditableText,
   deferredResponseAnnotations,
@@ -19,7 +20,9 @@ export function createDesktopReadSystemWiring({
   maxSpeechJobs,
   state,
   services,
+  contourCommandMapping = null,
 }) {
+  ({ projects, services } = contourReadModelOptions({ projects, services }, contourCommandMapping));
   const system = createDesktopSystemComposition({
     config,
     dependencies: {

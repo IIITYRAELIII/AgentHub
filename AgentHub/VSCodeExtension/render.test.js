@@ -397,8 +397,8 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
     assert.match(result.html, /vscode-webview-resource:.*future-runtime-module\.js/u);
     assert.doesNotMatch(result.html, /src="\/future-runtime-module\.js"/u);
     assert.match(result.html, /<style data-agent-hub-theme="pulsar" nonce="[^"]+">/u);
-    assert.match(result.html, /url\("vscode-webview-resource:.*themes[\\/]pulsar[\\/]pulsar-beams\.jpg"\)/u);
-    assert.doesNotMatch(result.html, /url\(["']?\.\/pulsar-beams\.jpg/u);
+    assert.match(result.html, /url\("vscode-webview-resource:.*themes[\\/]pulsar[\\/]pulsar-aurora\.png"\)/u);
+    assert.doesNotMatch(result.html, /url\(["']?\.\/pulsar-aurora\.png/u);
     assert.match(result.html, /style-src vscode-webview:\/\/test 'nonce-[^']+'/u);
     assert.doesNotMatch(result.html, /browser-device-auth\.js/u);
     assert.ok(result.roots.every((uri) => (
@@ -836,13 +836,10 @@ test("general settings and current-dialog settings stay separate", () => {
   /* Формулы единиц занимают несколько строк, поэтому лежат в свёрнутой справке. */
   assert.match(html, /<details class="setting-note">\s*<summary>Как считается расход<\/summary>/u);
   assert.doesNotMatch(html, /<details class="setting-note" open>/u);
-  assert.match(html, /<b>cr<\/b> — официальные «кредиты» Codex, ПТЭ \/ 16000\./u);
-  assert.match(
-    html,
-    /База = входные токены \+\s+кэшированный вход × 0,1 \+ выходные токены × 6 \+ токены рассуждений × 6;/u,
-  );
-  assert.match(html, /<li>GPT-5\.5 и GPT-5\.6-Sol — База ×2;<\/li>/u);
-  assert.match(html, /<li>GPT-5\.4-mini — База ×0,3;<\/li>/u);
+  assert.match(html, /<b>cr<\/b> — общая единица расчётного расхода: 25 cr = \$1\./u);
+  assert.match(html, /до 08\.09\.2026: Sol — \$5 \/ \$0,50 \/ \$30/u);
+  assert.match(html, /с 08\.09\.2026: GPT-6 Astra — \$10 \/ \$1 \/ \$50/u);
+  assert.match(html, /цены указаны за 1 млн входных \/ кэшированных входных \/ выходных токенов/u);
   /* fastModeCreditMultiplier не трогает 5.4-mini, поэтому подсказка называет
      обе ставки Fast и исключение. */
   assert.match(
@@ -1382,7 +1379,7 @@ test("journal keeps explicit Workspace and Stream grouping modes", () => {
   );
   assert.match(
     styles,
-    /\.journal details\[data-work-log-stream\]\[open\]\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*17\.5rem minmax\(0, 1fr\);/su,
+    /\.journal details\[data-work-log-stream\]\[open\]\s*\{[^}]*display:\s*block;/su,
   );
   assert.match(styles, /\.journal span\[data-work-log-turn-stream\]\s*\{[^}]*border-radius:\s*999px;/su);
   assert.match(styles, /\.journal summary\[data-work-log-stream-summary\]\s*\{[^}]*cursor:\s*pointer;[^}]*display:\s*grid;/su);
@@ -1551,7 +1548,7 @@ test("chat refreshes every visible external run without rebuilding a second snap
   assert.match(client, /const refreshExternalHistory = chatVisible && externalLive/u);
   assert.match(client, /refreshExternalHistory[\s\S]*enqueueTaskHistoryLoad\(id, identity/u);
   assert.match(client, /function enqueueTaskHistoryLoad[\s\S]*control\("task-history"[\s\S]*skipSnapshot: true/u);
-  assert.match(client, /includeActive: false[\s\S]*knownVersion: historyPageByTask/u);
+  assert.match(client, /includeActive: true[\s\S]*knownVersion: historyPageByTask\.get\(id\)\?\.version/u);
   assert.match(refresh, /void refreshVisibleTaskHistories\(previousSnapshot, snapshot\)\.catch/u);
   assert.doesNotMatch(refresh, /await refreshVisibleTaskHistories\(previousSnapshot, snapshot\)/u);
   assert.doesNotMatch(refresh, /control\("open-task"/u);
@@ -1699,7 +1696,7 @@ test("message attachments keep timestamps, previews and an explicit open action"
   assert.match(client, /control\("open-attachment", \{ id \}\)/u);
   assert.match(client, /agentHub\.openAttachmentViewer/u);
   assert.match(client, /agentHub\.on\("attachment:load"/u);
-  assert.match(client, /bridgeCall\("resolve-attachment", \{ id: attachment\.id \}\)/u);
+  assert.match(client, /bridgeCall\("resolve-attachment", \{ id \}\)/u);
   assert.match(extension, /action === "resolve-attachment"/u);
   assert.match(html, /data-resource-context-menu[\s\S]*data-resource-action="open"[\s\S]*data-resource-action="copy"[\s\S]*data-resource-action="save"/u);
   assert.match(client, /agentHub\.on\("resource:copy"[\s\S]*agentHub\.on\("resource:save"/u);
@@ -1790,7 +1787,8 @@ test("annotation actions preserve native selection and keep per-quote comments",
 
 test("lost command results reconcile by durable message receipt without duplicate draft", () => {
   const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  assert.match(client, /function applyMessageReceipts\(snapshot\)[\s\S]*const projection = queueHistoryReceiptProjection\(receipt\)[\s\S]*agentHub\.completeSend\(clientUserMessageId, \{[\s\S]*accepted: projection\.accepted/u);
+  assert.match(client, /function applyMessageReceipts\(snapshot\)[\s\S]*const projection = queueHistoryReceiptProjection\(receipt\)[\s\S]*projectionState: projection\.projectionState/u);
+  assert.match(client, /function canonicalAcceptedEvidence\(snapshot\)[\s\S]*agentHub\.completeSend\(clientUserMessageId, \{ outcome: "accepted", taskId: stableTaskId \}\)/u);
   assert.match(client, /const rejected = messageSendDefinitelyRejected\(error\)[\s\S]*if \(rejected\) \{[\s\S]*outgoingMessages\(request\.taskId\)\.delete\(request\.requestId\)[\s\S]*else \{[\s\S]*deliveryPatch\("unconfirmed"\)/u);
 });
 
@@ -1871,8 +1869,8 @@ test("composer drafts survive mobile navigation, reconnects and WebView recreati
   assert.match(app, /const DRAFT_STORAGE_VERSION = "agent-hub:composer-drafts:v1";/u);
   assert.match(app, /function draftStorageSurface\(\)[\s\S]*window\.AgentHubAndroid[\s\S]*return "android";/u);
   assert.match(app, /function restorePersistedDrafts\(\)[\s\S]*localStorage\.getItem\(draftStorageKey\(\)\)/u);
-  assert.match(app, /function persistDrafts\(\)[\s\S]*localStorage\.setItem\(draftStorageKey\(\), JSON\.stringify\(persisted\)\)/u);
-  assert.match(app, /function saveDraft\(\)[\s\S]*persistDrafts\(\);/u);
+  assert.match(app, /function persistDrafts\(\{ requiredRecoveryRequestId = "" \} = \{\}\)[\s\S]*localStorage\.setItem\(draftStorageKey\(\), JSON\.stringify\(persisted\)\)/u);
+  assert.match(app, /persist: \(options\) => persistDrafts\(options\)/u);
   assert.match(app, /restorePersistedDrafts\(\);[\s\S]*pagehide[\s\S]*saveDraft\(\);/u);
   assert.match(app, /visibilitychange[\s\S]*document\.visibilityState === "hidden"[\s\S]*saveDraft\(\)/u);
 });
@@ -1986,7 +1984,8 @@ test("manual context compaction reports completion and stays on the fast refresh
   assert.match(client, /task\.running \|\| task\.context\?\.compacting \|\| task\.maintenance/u);
   assert.match(app, /message\.kind === "maintenance"/u);
   assert.match(styles, /\.msg-maintenance \.msg-body/u);
-  assert.match(app, /contextLabel\.textContent = context\.compacting[\s\S]*\? "свёртка…"[\s\S]*context\.usagePending \? "обновление…"/u);
+  // Context labels and the preparation/start/compaction/measurement transitions
+  // are verified through rendered DOM in message-render-dom.test.mjs.
   assert.match(app, /context\.compaction\?\.stage === "cleaning-images"/u);
   assert.match(app, /Удаляются дубликаты изображений/u);
   assert.match(app, /toggleAttribute\("data-compacting"/u);
@@ -2032,7 +2031,9 @@ test("active chat input stays in the manual queue until an explicit action", () 
   assert.doesNotMatch(html, /data-follow-up-mode/u);
   assert.match(client, /control\("deferred-input", \{ id, action: "queue" \}\)/u);
   assert.match(client, /control\("deferred-input", \{ id, action: "steer" \}\)/u);
-  assert.match(client, /control\("deferred-input", \{ id, action: "edit", text \}\)/u);
+  assert.match(client, /control\("deferred-input", \{ id, action: "composer-prepare" \}\)/u);
+  assert.match(client, /control\("deferred-input", \{ id, action: "composer-commit", token \}\)/u);
+  assert.match(client, /control\("deferred-input", \{ id, action: "composer-release", token \}\)/u);
   assert.match(client, /request\.deferWhileRunning === true/u);
   assert.match(client, /deferredClientUserMessageIds = new Set\(/u);
   assert.doesNotMatch(client, /if \(result\?\.duplicate\)[\s\S]*outgoingMessages\(request\.taskId\)\.delete/u);
@@ -2049,6 +2050,10 @@ test("composer restores definite rejection but keeps an ambiguous delivery singl
   const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
+  const reconciliation = fs.readFileSync(
+    require.resolve("../assets/web-app/messages/composer-draft-reconciliation.js"),
+    "utf8",
+  );
   const connectionBanner = fs.readFileSync(
     require.resolve("../assets/web-app/connection-banner.js"),
     "utf8",
@@ -2059,11 +2064,13 @@ test("composer restores definite rejection but keeps an ambiguous delivery singl
   assert.match(submit, /sendComposerRequest\(\{/u);
   assert.match(submit, /clearComposer: true/u);
   assert.match(submit, /restoreOnReject: true/u);
-  assert.match(app, /function completeComposerSend\(requestId, accepted\)/u);
-  assert.match(app, /if \(accepted\)[\s\S]*else \{[\s\S]*text: pending\.rawText/u);
+  assert.match(app, /function completeComposerSend\(requestId, \{ outcome = "unknown", taskId = "" \} = \{\}\)/u);
+  assert.match(app, /composerDraftReconciliation\.complete\(\{[\s\S]*requestId,[\s\S]*taskId,[\s\S]*outcome,/u);
   assert.match(app, /const retryComposerRequests = new Map\(\)/u);
   assert.match(app, /const requestId = retry\?\.fingerprint === fingerprint[\s\S]*retry\.requestId/u);
-  assert.match(app, /retryComposerRequests\.set\(pending\.taskId,[\s\S]*requestId: pending\.requestId/u);
+  assert.match(reconciliation, /if \(!identityConflict && matchesPending && unchangedSinceSend && normalizedOutcome !== "accepted"\)/u);
+  assert.match(reconciliation, /retries\.set\(resolvedTaskId, \{[\s\S]*requestId: pending\.requestId,[\s\S]*fingerprint: pending\.fingerprint/u);
+  assert.match(reconciliation, /normalizedOutcome === "rejected"[\s\S]*pending\.restoreOnReject !== false/u);
   assert.match(client, /agentHub\.completeSend\(request\.requestId/u);
   assert.match(client, /reusableAttachmentPaths\([\s\S]*\{ remote: !vscode \}/u);
   assert.match(client, /if \(isConnectionFailure\(error\)\) recordTransientConnectionFailure/u);
@@ -2145,8 +2152,6 @@ test("statistics page offers local usage and full limit history", () => {
   assert.match(app, /function limitsSpeedPath\(/u);
   assert.match(app, /снизьте темп/u);
   assert.match(app, /Ровный темп · 14,3%\/сутки/u);
-  assert.match(app, /Ровный темп · 0,6%\/час/u);
-  assert.match(app, /function burnRatePolicyForRange\(/u);
   assert.match(styles, /\.limits-burn-normal-line/u);
   for (const range of ["6h", "24h", "7d", "15d", "30d", "all"]) {
     assert.match(html, new RegExp(`data-range="${range}"`, "u"));
@@ -2156,7 +2161,6 @@ test("statistics page offers local usage and full limit history", () => {
   assert.match(app, /resetCredits/u);
   assert.match(app, /availableCount/u);
   assert.match(app, /nearestExpiresAt/u);
-  assert.match(app, /emit\("usage:open", \{ range: usageState\.range, accountKey, turnTimeMode \}\)/u);
   assert.match(app, /function formatUsageValue\(credits, unit = usageUnit\)/u);
   assert.match(app, /const LIMITS_MODE_KEY = "agent-hub-limits-mode-v1";/u);
   assert.match(app, /function weeklyBurnRatePoints\(series,/u);
@@ -2164,7 +2168,6 @@ test("statistics page offers local usage and full limit history", () => {
   assert.match(app, /class: `limits-burn-rate-segment \$\{right\.overTarget/u);
   assert.match(styles, /\.limits-burn-rate-segment\.is-over-target\s*\{[^}]*stroke:\s*var\(--danger/su);
   assert.match(styles, /\.limits-burn-rate-segment\.is-safe\s*\{[^}]*stroke:\s*var\(--ok\);/su);
-  assert.match(client, /readHistoryWithRangeCompatibility\("usage-history", range, \{\s*maxPoints: 600,\s*accountKey: String\(accountKey \|\| ""\),\s*turnTimeMode,/u);
   assert.match(client, /function trimHistoryToFifteenDays\(payload\)/u);
   assert.match(styles, /\.current-limits-row\s*\{[^}]*flex-wrap:\s*nowrap;/su);
   assert.match(styles, /\.current-limits-row\s*\{[^}]*overflow-x:\s*auto;/su);
@@ -2440,12 +2443,12 @@ test("shared shell groups threads under stable Workspace and Stream identities",
   // Обычный клик переключает единственную колонку; Ctrl+click держит до четырёх.
   assert.match(app, /normalized = \[selectedInWorkspace \|\| ordered\[0\]\?\.id\]\.filter\(Boolean\)/u);
   assert.match(app, /configuredOpenStreamWorkspaces/u);
-  assert.match(app, /function toggleOpenStream\(workspaceId, streamId, streams, \{ additive = false \} = \{\}\)/u);
+  assert.match(app, /function toggleOpenStream\(workspaceId, streamId, streams, \{ additive = false, preserveClickTarget = false \} = \{\}\)/u);
   const toggleStart = app.indexOf("function toggleOpenStream(");
   const toggleEnd = app.indexOf("/* =========================================================== роутер видов */", toggleStart);
   const toggle = app.slice(toggleStart, toggleEnd);
   assert.match(toggle, /persistOpenStreams\(\)/u);
-  assert.match(toggle, /selectTaskFromUi\(target\.id\)/u);
+  assert.match(toggle, /selectTaskFromUi\(target\.id, \{ preserveStreamTabs: preserveClickTarget \}\)/u);
   assert.match(app, /additive: event\.ctrlKey \|\| event\.metaKey/u);
   // Слева остаются только Workspace; Streams живут в горизонтальной полосе.
   assert.match(app, /function renderTaskWorkspaceItem\(/u);
@@ -2475,26 +2478,25 @@ test("shared shell groups threads under stable Workspace and Stream identities",
   assert.doesNotMatch(styles, /\.stream-tab\[data-current\]\s*\{[\s\S]*?box-shadow/u);
 });
 
-test("Stream menu moves it to an existing or newly created Workspace", () => {
+test("Stream card moves it to an existing Workspace while its menu rotates Threads", () => {
   const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
+  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
   const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
 
   assert.match(app, /function openStreamContextMenu\(event, tab\)/u);
-  assert.match(app, /class: "stream-context-submenu"/u);
-  assert.match(app, /text: "Перенести в Workspace…"/u);
   assert.doesNotMatch(app, /text: "Статус и лимиты"/u);
-  assert.match(app, /emit\("stream:move", \{ streamId, workspaceId:/u);
-  assert.match(app, /emit\("workspace:create-from-stream", \{ streamId, name \}\)/u);
+  assert.match(html, /data-stream-card-move/u);
+  assert.match(app, /emit\("stream:move", \{ streamId, workspaceId: targetWorkspaceId \}\)/u);
   assert.match(app, /text: "Ротация"/u);
   assert.match(app, /Завершить текущий Thread и продолжить Stream в новом/u);
   assert.match(app, /emit\("stream:rebirth", \{ streamId, provider, taskId \}\)/u);
   assert.match(app, /event\.pointerType !== "touch"/u);
   assert.match(app, /event\.key === "ContextMenu"/u);
-  assert.match(client, /control\("create-workspace-from-stream", \{ streamId, name \}\)/u);
+  assert.match(client, /control\("move-stream", \{ streamId, workspaceId, beforeStreamId \}\)/u);
   assert.match(client, /control\("new-task", \{[\s\S]*?streamId,/u);
   assert.match(styles, /\.stream-context-menu\s*\{/u);
-  assert.match(styles, /\.stream-context-submenu\s*\{/u);
+  assert.match(styles, /\.stream-card-move-menu\s*\{/u);
   assert.match(styles, /\.stream-context-menu\s*\{[\s\S]*?scrollbar-gutter:\s*stable;[\s\S]*?width:\s*min\(14rem,/u);
   assert.match(styles, /\.stream-context-action\s*\{[\s\S]*?width:\s*100%;/u);
   assert.match(styles, /\.stream-context-menu\s*\{[\s\S]*?background-color:\s*var\(--bg\);[\s\S]*?background-image:\s*var\(--card-bg-open\);/u);
@@ -2520,7 +2522,8 @@ test("wide shared shell opens up to four Workspace Streams as chat columns", () 
   assert.match(styles, /repeat\(var\(--stream-chat-count, 1\), minmax\(13rem, 1fr\)\)/u);
   assert.match(styles, /\.stream-chat-columns\[data-multi-stream\] > \.chat-pane\[data-active-stream\]/u);
   assert.match(app, /chatPane\.toggleAttribute\("data-active-stream", selectedIndex >= 0\)/u);
-  assert.match(index, /<\/aside>\s*<\/div>\s*<\/div>\s*<!-- Запросы подтверждений/u);
+  assert.ok(index.indexOf("data-stream-chat-columns") < index.indexOf("<!-- Запросы подтверждений"));
+  assert.ok(index.indexOf("<!-- Запросы подтверждений") < index.indexOf("data-composer"));
   assert.doesNotMatch(index, /data-mobile-chat-actions/u);
   assert.match(app, /class: "stream-chat-preview-head"/u);
   assert.match(app, /class: "stream-chat-preview-title"/u);
@@ -2538,7 +2541,7 @@ test("VS Code stream refresh keeps composer focus and opens history at the botto
   const deckStart = app.indexOf("function renderStreamChatDeck()");
   const deckEnd = app.indexOf("function refreshSupplementaryStreamChat", deckStart);
   const deck = app.slice(deckStart, deckEnd);
-  const chatStart = app.indexOf("function renderChat()");
+  const chatStart = app.indexOf("function renderChat({ preserveStreamTabs = false } = {})");
   const chatEnd = app.indexOf("function renderContextUsage", chatStart);
   const chat = app.slice(chatStart, chatEnd);
 

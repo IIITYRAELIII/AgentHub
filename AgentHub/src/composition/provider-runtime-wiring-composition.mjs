@@ -1,6 +1,53 @@
 import { buildClaudePrompt } from "../providers/claude/claude.mjs";
 import { createRunObservationComposition } from "./run-observation-composition.mjs";
 
+export function createCodexTerminalAuditScheduler({
+  codexTerminalAudit,
+  codexTransport,
+  saveState,
+  isStopping,
+  runtimeTimers,
+  terminalAuditIntervalMs = 30_000,
+  terminalAuditCatchUpIntervalMs = 1_000,
+  terminalAuditEnabled = true,
+  logger = console,
+}) {
+  async function auditNow() {
+    if (isStopping()) return false;
+    try {
+      let changed = false;
+      if (codexTransport.running) {
+        changed = await codexTerminalAudit.run();
+      } else if (codexTerminalAudit.hasPendingHistoricalMaintenance?.()) {
+        // Historical migration reads retained rollout files only. It must be
+        // able to checkpoint while the provider transport is reconnecting.
+        changed = await codexTerminalAudit.runHistoricalMaintenance({
+          localOnlyAccounting: true,
+        });
+      }
+      if (changed && !codexTerminalAudit.persistsProgress) await saveState();
+      return changed;
+    } catch (error) {
+      logger.error("Cannot audit Codex terminal turns:", error.message);
+      return false;
+    }
+  }
+
+  function schedule(delayMs = terminalAuditIntervalMs) {
+    if (!terminalAuditEnabled || isStopping()) return false;
+    return runtimeTimers.schedule("codex-terminal-audit", async () => {
+      const progressed = await auditNow();
+      const catchingUp = progressed && codexTransport.running
+        && codexTerminalAudit.lastRun?.backlog === true;
+      schedule(catchingUp
+        ? Math.max(250, Number(terminalAuditCatchUpIntervalMs) || 1_000)
+        : terminalAuditIntervalMs);
+    }, Math.max(0, Number(delayMs) || 0));
+  }
+
+  return { auditNow, schedule };
+}
+
 export function createProviderRuntimeWiring({
   observation,
   managedRunHistory,
@@ -94,23 +141,16 @@ export function createProviderRuntimeWiring({
     return codexTaskSnapshots.read(run, { threadResult, fresh });
   }
 
-  async function auditRecentCodexTerminalTurns() {
-    if (isStopping() || !codexTransport.running) return;
-    try {
-      const changed = await codexTerminalAudit.run();
-      if (changed && !codexTerminalAudit.persistsProgress) await saveState();
-    } catch (error) {
-      logger.error("Cannot audit Codex terminal turns:", error.message);
-    }
-  }
-
-  function scheduleCodexTerminalAudit(delayMs = terminalAuditIntervalMs) {
-    if (!terminalAuditEnabled || isStopping()) return;
-    runtimeTimers.schedule("codex-terminal-audit", async () => {
-      await auditRecentCodexTerminalTurns();
-      scheduleCodexTerminalAudit();
-    }, Math.max(0, Number(delayMs) || 0));
-  }
+  const terminalAuditScheduler = createCodexTerminalAuditScheduler({
+    codexTerminalAudit,
+    codexTransport,
+    saveState,
+    isStopping,
+    runtimeTimers,
+    terminalAuditIntervalMs,
+    terminalAuditEnabled,
+    logger,
+  });
 
   return {
     claudeRunController,
@@ -129,6 +169,6 @@ export function createProviderRuntimeWiring({
     applyCodexObservedSnapshot,
     applyCodexActiveSnapshot,
     readCodexTaskSnapshot,
-    scheduleCodexTerminalAudit,
+    scheduleCodexTerminalAudit: terminalAuditScheduler.schedule,
   };
 }

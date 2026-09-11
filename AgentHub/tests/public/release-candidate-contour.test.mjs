@@ -6,7 +6,7 @@ import {
   RELEASE_CANDIDATE_CONTOUR_LABEL,
 } from "../../publish-changed.mjs";
 
-test("full publication verifies the exact release candidate before deployment", async () => {
+test("full publication verifies the exact release candidate before expensive tests and deployment", async () => {
   const steps = [];
   await publishChanged(["--from", "base", "--skip-restart", "--full-tests"], {
     run: async (step) => steps.push(step),
@@ -27,7 +27,7 @@ test("full publication verifies the exact release candidate before deployment", 
     "--require-installed",
     "--release-candidate",
   ]);
-  assert.ok(labels.indexOf("Полные тесты Agent Hub") < labels.indexOf(RELEASE_CANDIDATE_CONTOUR_LABEL));
+  assert.ok(labels.indexOf(RELEASE_CANDIDATE_CONTOUR_LABEL) < labels.indexOf("Полные тесты Agent Hub"));
   assert.ok(labels.indexOf(RELEASE_CANDIDATE_CONTOUR_LABEL) < labels.indexOf("Развёртывание Mini App Worker"));
   assert.ok(labels.indexOf(RELEASE_CANDIDATE_CONTOUR_LABEL) < labels.indexOf("Сборка runtime-релиза"));
 });

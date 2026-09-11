@@ -37,6 +37,8 @@ export function createRunCompletionComposition({
   beforeCompletion,
   completionAborted,
   afterCompletion,
+  prepareRunAdmission,
+  revokeRunAdmission,
   turnEndNotifications,
   runJournal,
   lastSeenTaskTurnIds,
@@ -85,6 +87,8 @@ export function createRunCompletionComposition({
     beforeCompletion,
     completionAborted,
     afterCompletion,
+    prepareAdmission: prepareRunAdmission,
+    revokeAdmission: revokeRunAdmission,
     commandTrace,
   });
 
@@ -101,12 +105,14 @@ export function createRunCompletionComposition({
     taskRuns,
     persistHistory: persistManagedRunHistory,
     projectTurn: (...args) => runJournal.projectTurn(...args),
+    flushTurnProjections: (...args) => runJournal.flushTurnProjections(...args),
     finalizeRunDelivery,
     rememberLastMessage: (...args) => runJournal.rememberLastMessage(...args),
     rememberSeenTurn: (task, turnId) => {
       setBoundedMapValue(lastSeenTaskTurnIds, taskRunKey(task), turnId, 500);
     },
     saveState,
+    commandTrace,
   });
 
   const codexRunFinalizer = new CodexRunFinalizer({

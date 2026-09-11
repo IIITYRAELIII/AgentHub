@@ -45,19 +45,20 @@ test("Stream Team Lead is an independent persisted boolean", async () => {
   );
 });
 
-test("Stream Team Lead tooltip explains review and Stream numbering in Russian", async () => {
+test("Stream Team Lead tooltip replaces stale paragraphs without duplication", async () => {
   const settings = await roleSettingsApi();
-  const text = settings.teamLeadTooltip.join("\n");
-  assert.match(text, /ревью результата каждой Task.*не проходит ревью.*исполнителю на доработку.*повторно проверь/iu);
-  assert.match(text, /максимальный номер.*S<number>.*прибавь 1.*назови новый S2/iu);
 
-  const children = [];
+  let children = [{ textContent: "Stale tooltip" }];
   const container = {
     ownerDocument: {
-      createElement: () => ({ textContent: "" }),
+      createElement: (tagName) => ({ tagName, textContent: "" }),
     },
-    replaceChildren: (...values) => children.push(...values),
+    replaceChildren: (...values) => { children = values; },
   };
+  assert.ok(settings.teamLeadTooltip.length > 0);
+  assert.equal(settings.renderTeamLeadTooltip(container), true);
+  assert.deepEqual(children.map((item) => item.textContent), [...settings.teamLeadTooltip]);
+  assert.ok(children.every((item) => item.tagName === "p"));
   assert.equal(settings.renderTeamLeadTooltip(container), true);
   assert.deepEqual(children.map((item) => item.textContent), [...settings.teamLeadTooltip]);
 });

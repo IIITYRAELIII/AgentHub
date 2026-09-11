@@ -11,7 +11,7 @@ const repositoryRoot = path.resolve(
   "..",
 );
 
-test("runtime orchestration keeps Codex terminal audit enabled and interactive-idle", async () => {
+test("runtime orchestration keeps Codex terminal audit enabled", async () => {
   const source = await readFile(
     path.join(repositoryRoot, "AgentHub", "src", "composition", "runtime-orchestration-composition.mjs"),
     "utf8",
@@ -32,6 +32,5 @@ test("runtime orchestration keeps Codex terminal audit enabled and interactive-i
   );
   assert.match(application, /taskRuns\.values\(\)\.some\(taskRunIsActive\)/u);
   assert.match(application, /runtimeData\.deferredInputs\.size === 0/u);
-  assert.match(observability, /shouldRunAudit: isHistoricalBackfillIdle/u);
   assert.match(observability, /persistProgress: saveState/u);
 });

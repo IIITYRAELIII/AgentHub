@@ -1,3 +1,4 @@
+import { createContourClaudeAuthority } from "../runtime/test-contour-runtime-effects.mjs";
 import { ClaudeRunController } from "../providers/claude/claude-run-controller.mjs";
 import { ClaudeTurnLauncher } from "../providers/claude/claude-turn-launcher.mjs";
 import { TaskObservationService } from "../application/task-observation-service.mjs";
@@ -7,6 +8,7 @@ import { resolveHubDeveloperInstructions } from "./hub-developer-instructions-co
 
 export function createRunObservationComposition({
   dataDir,
+  recordingContourRoot = null,
   claudeOutputPollIntervalMs,
   taskRuns,
   isStopping,
@@ -56,6 +58,8 @@ export function createRunObservationComposition({
 }) {
   const claudeRunController = new ClaudeRunController({
     dataDir,
+    processAuthority: recordingContourRoot ? createContourClaudeAuthority({ root: recordingContourRoot, dataDir }) : null,
+    onRecoveryUnavailable: (run) => runRecovery.finishInterrupted(run),
     pollIntervalMs: claudeOutputPollIntervalMs,
     isCurrentRun: (run) => taskRuns.forTask(run) === run,
     isStopping,
@@ -91,11 +95,15 @@ export function createRunObservationComposition({
     discardContextCompactionRun,
     savedLastTaskMessage,
     savedLastTaskMessageRecord,
+    interstreamOriginForClientMessage: (clientUserMessageId) => (
+      workspaceCatalogStore.interstreamOriginForClientMessage(clientUserMessageId)
+    ),
     externalPollIntervalMs,
     managedPollIntervalMs,
   });
 
   const claudeTurnLauncher = new ClaudeTurnLauncher({
+    recordingContourRoot,
     taskRuns,
     turnTemporaryFiles,
     taskSnapshots: claudeTaskSnapshots,

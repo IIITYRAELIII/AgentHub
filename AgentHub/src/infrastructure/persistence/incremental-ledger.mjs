@@ -1,5 +1,7 @@
-import { createHash } from "node:crypto";
 import { appendFile, readFile } from "node:fs/promises";
+import { ledgerRecordFingerprint } from "../../domain/ledger-record-fingerprint.mjs";
+
+export { ledgerRecordFingerprint };
 
 export async function applyLedgerDelta(ledger, deltaFile) {
   const value = ledger && typeof ledger === "object" ? ledger : {};
@@ -28,10 +30,6 @@ export async function applyLedgerDelta(ledger, deltaFile) {
     }
   }
   return { value, applied, invalid };
-}
-
-export function ledgerRecordFingerprint(record) {
-  return createHash("sha256").update(JSON.stringify(record)).digest("base64url");
 }
 
 export function ledgerRecordSnapshot(turns = {}) {

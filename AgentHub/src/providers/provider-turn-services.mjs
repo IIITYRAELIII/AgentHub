@@ -1,6 +1,6 @@
 import { unlink } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
-import { buildCodexCollaborationMode } from "./codex/codex-settings.mjs";
+import { buildCodexApplicationContext, buildCodexCollaborationMode } from "./codex/codex-settings.mjs";
 import {
   activeTurnMissing,
   interruptCodexTurnWithRecovery,
@@ -192,11 +192,11 @@ export class CodexTurnService {
             clientUserMessageId: run.clientUserMessageId ?? undefined,
             model: run.modelId,
             effort: run.reasoningId,
+            additionalContext: buildCodexApplicationContext(developerInstructions),
             collaborationMode: buildCodexCollaborationMode({
               mode: run.collaborationMode,
               model: run.modelId,
               reasoningEffort: run.reasoningId,
-              developerInstructions,
             }),
             ...codexTurnSandboxSettings(d.sandboxMode(), run.projectRoot),
           });
@@ -317,7 +317,7 @@ export class CodexTurnService {
         await d.saveState();
         error = unconfirmedTurnStartError(error);
       }
-      await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
+      await Promise.all(temporaryFiles.map((file) => (d.removeFile ?? ((value) => unlink(value).catch(() => {})))(file)));
       await d.finishProgress(run, `Ошибка запуска: ${error.message}`);
       await d.completeRun(run);
       throw error;

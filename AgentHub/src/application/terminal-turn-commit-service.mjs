@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
 
+import { isCodexContextProbeClientId } from "../domain/codex-context-probe.mjs";
+import {
+  consistentInterstreamRecordIdentity,
+  normalizeInterstreamClientUserMessageId,
+} from "../domain/interstream-message.mjs";
+
 function usageIdentity(completion) {
   const value = {
     usage: completion?.usage ?? {},
@@ -18,8 +24,88 @@ function terminalKey(value) {
     .join("\0");
 }
 
+function hasOrdinaryClientIdentity(value) {
+  if (!value || typeof value !== "object") return false;
+  return Object.entries(value).some(([key, entry]) => {
+    if (["clientUserMessageId", "clientId", "client_user_message_id"].includes(key)) {
+      return Boolean(String(entry ?? "").trim()) && !isCodexContextProbeClientId(entry);
+    }
+    if (key === "clientUserMessageIds" && Array.isArray(entry)) {
+      return entry.some((clientId) => (
+        Boolean(String(clientId ?? "").trim()) && !isCodexContextProbeClientId(clientId)
+      ));
+    }
+    return hasOrdinaryClientIdentity(entry);
+  });
+}
+
+function responseAttachments(value) {
+  return Array.isArray(value) ? value.map((item) => structuredClone(item)) : [];
+}
+
+function attachmentKey(value) {
+  return String(value?.id ?? value?.path ?? value?.url ?? "").trim()
+    || JSON.stringify(value ?? null);
+}
+
+function sameAttachments(left, right) {
+  if (left.length !== right.length) return false;
+  return left.every((item, index) => (
+    attachmentKey(item) === attachmentKey(right[index])
+    && (item?.missing === true) === (right[index]?.missing === true)
+  ));
+}
+
+function generatedOutputAttachments(value) {
+  return value.filter((item) => /^codex-generated-/u.test(String(item?.id ?? "")));
+}
+
+function richerAttachments(current, candidate) {
+  if (!candidate.length) return current;
+  if (candidate.length > current.length) return candidate;
+  if (candidate.length < current.length) return current;
+  const sameIdentity = candidate.every((item, index) => (
+    attachmentKey(item) === attachmentKey(current[index])
+  ));
+  if (!sameIdentity) return current;
+  const currentMissing = current.filter((item) => item?.missing === true).length;
+  const candidateMissing = candidate.filter((item) => item?.missing === true).length;
+  return candidateMissing < currentMissing ? candidate : current;
+}
+
 function historySnapshot(run, completion) {
   const source = run ?? {};
+  const rootMessage = (Array.isArray(source.userMessages) ? source.userMessages : [])
+    .find((message) => message?.role === "user") ?? null;
+  const identity = consistentInterstreamRecordIdentity({
+    clientUserMessageIds: [
+      source.clientUserMessageId,
+      completion.clientUserMessageId,
+      rootMessage?.clientUserMessageId,
+    ],
+    origins: [
+      source.messageOrigin,
+      completion.messageOrigin,
+      rootMessage?.origin ?? rootMessage?.messageOrigin,
+    ],
+  });
+  const userMessages = (Array.isArray(source.userMessages) ? source.userMessages : []).map((message) => {
+    const value = structuredClone(message);
+    const messageIdentity = consistentInterstreamRecordIdentity({
+      clientUserMessageIds: [value?.clientUserMessageId],
+      origins: [value?.origin ?? value?.messageOrigin],
+    });
+    if (messageIdentity.conflicted || (message === rootMessage && identity.conflicted)) {
+      delete value.clientUserMessageId;
+      delete value.origin;
+      delete value.messageOrigin;
+      return value;
+    }
+    if (messageIdentity.clientUserMessageId) {
+      value.clientUserMessageId = messageIdentity.clientUserMessageId;
+    }
+    return value;
+  });
   const responseAnnotationReferences = Array.isArray(completion.responseAnnotationReferences)
     && completion.responseAnnotationReferences.length
     ? completion.responseAnnotationReferences
@@ -31,8 +117,10 @@ function historySnapshot(run, completion) {
     projectRoot: completion.projectRoot,
     threadId: completion.threadId,
     turnId: completion.turnId,
+    operationKind: completion.operationKind ?? source.operationKind,
+    contextProbe: completion.contextProbe ?? source.contextProbe,
     taskTitle: completion.taskTitle,
-    promptPreview: String(source.promptPreview ?? completion.prompt ?? ""),
+    promptPreview: String(source.rawPrompt ?? source.promptPreview ?? completion.prompt ?? ""),
     responseText: String(completion.finalAnswer ?? source.responseText ?? ""),
     ...(responseAnnotationReferences?.length
       ? {
@@ -42,9 +130,16 @@ function historySnapshot(run, completion) {
       }
       : {}),
     responseItemId: String(source.responseItemId ?? ""),
-    clientUserMessageId: String(source.clientUserMessageId ?? "") || null,
+    clientUserMessageId: identity.conflicted
+      ? null
+      : normalizeInterstreamClientUserMessageId(
+        identity.clientUserMessageId ?? completion.clientUserMessageId,
+      ),
+    ...(!identity.conflicted && identity.messageOrigin
+      ? { messageOrigin: structuredClone(identity.messageOrigin) }
+      : {}),
     submittedAt: source.submittedAt ?? source.userMessages?.[0]?.submittedAt ?? source.userMessages?.[0]?.time ?? source.startedAt ?? null,
-    userMessages: Array.isArray(source.userMessages) ? structuredClone(source.userMessages) : [],
+    userMessages,
     activities: Array.isArray(source.activities) ? structuredClone(source.activities) : [],
     activityGroups: Array.isArray(source.activityGroups) ? structuredClone(source.activityGroups) : [],
     messageAttachments: Array.isArray(source.messageAttachments)
@@ -78,18 +173,49 @@ export class TerminalTurnCommitService {
     this.terminals = new Map();
   }
 
-  async commit(completion, { run = null, channelIntents = {} } = {}) {
+  async commit(completion, {
+    run = null,
+    channelIntents = {},
+    expectedTerminalRevision = null,
+  } = {}) {
     if (!completion?.provider || !completion?.threadId || !completion?.turnId) {
       throw new Error("terminal completion requires provider, threadId and turnId");
     }
     const finalAnswer = String(completion.finalAnswer ?? "").trim();
+    const durableCompletion = structuredClone(completion);
+    const completionRootMessage = (Array.isArray(durableCompletion.userMessages)
+      ? durableCompletion.userMessages
+      : []).find((message) => message?.role === "user") ?? null;
+    const completionIdentity = consistentInterstreamRecordIdentity({
+      clientUserMessageIds: [
+        durableCompletion.clientUserMessageId,
+        completionRootMessage?.clientUserMessageId,
+      ],
+      origins: [
+        durableCompletion.messageOrigin,
+        completionRootMessage?.origin ?? completionRootMessage?.messageOrigin,
+      ],
+    });
+    if (completionIdentity.conflicted) {
+      delete durableCompletion.clientUserMessageId;
+      delete durableCompletion.messageOrigin;
+      if (completionRootMessage) {
+        delete completionRootMessage.clientUserMessageId;
+        delete completionRootMessage.origin;
+        delete completionRootMessage.messageOrigin;
+      }
+    } else if (completionIdentity.clientUserMessageId) {
+      durableCompletion.clientUserMessageId = completionIdentity.clientUserMessageId;
+    }
     const body = finalAnswer || String(completion.message?.text ?? "").trim();
     const lastMessage = completion.aggregateOnly ? null : {
       text: body,
       updatedAt: completion.completedAt,
       startedAt: completion.startedAt || null,
     };
-    const commandId = String(run?.clientUserMessageId ?? completion.clientUserMessageId ?? "").trim();
+    const commandId = normalizeInterstreamClientUserMessageId(
+      run?.clientUserMessageId ?? completion.clientUserMessageId,
+    ) ?? "";
     const trace = this.commandTrace?.startBestEffortSpan?.({
       commandId,
       stage: "terminal-commit",
@@ -104,16 +230,19 @@ export class TerminalTurnCommitService {
         turnId: completion.turnId,
         status: completion.status,
         finalAnswer,
-      usageIdentity: usageIdentity(completion),
-      lastMessage,
-      payload: {
-        completion: {
-          ...structuredClone(completion),
-          ...(String(run?.id ?? "").trim() ? { runId: String(run.id).trim() } : {}),
+        usageIdentity: usageIdentity(completion),
+        lastMessage,
+        payload: {
+          completion: {
+            ...durableCompletion,
+            ...(String(run?.id ?? "").trim() ? { runId: String(run.id).trim() } : {}),
+          },
+          history: historySnapshot(run, durableCompletion),
         },
-        history: historySnapshot(run, completion),
-      },
-      channels: channelIntents,
+        channels: channelIntents,
+        ...Number.isSafeInteger(expectedTerminalRevision)
+          ? { expectedTerminalRevision }
+          : {},
       });
     } catch (error) {
       trace?.finish({ outcome: "failed", metadata: { errorCode: error?.code ?? null } });
@@ -126,6 +255,145 @@ export class TerminalTurnCommitService {
     this.terminals.set(terminalKey(completion), result.terminal);
     result.commandReconciled = await this.#reconcileTerminal(result.terminal);
     return result;
+  }
+
+  async reclassifyContextProbe(identity, evidence) {
+    const exactIdentity = ["provider", "threadId", "turnId"].every((field) => (
+      String(identity?.[field] ?? "").trim()
+      && String(identity[field]).trim() === String(evidence?.[field] ?? "").trim()
+    ));
+    const operationKind = String(evidence?.operationKind ?? "").trim();
+    if (!exactIdentity || identity.provider !== "codex"
+      || (operationKind && operationKind !== "probe")
+      || (operationKind !== "probe" && evidence?.contextProbe !== true)
+      || evidence?.contextProbe === false) {
+      return { reclassified: false, terminal: null, outbox: null };
+    }
+    if (hasOrdinaryClientIdentity(evidence)) {
+      return { reclassified: false, terminal: null, outbox: null, rejected: "ordinary-client-identity" };
+    }
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const terminal = await this.store.get(identity);
+      if (!terminal) return { reclassified: false, terminal: null, outbox: null };
+      if (hasOrdinaryClientIdentity(terminal.payload)) {
+        return { reclassified: false, terminal, outbox: null, rejected: "ordinary-client-identity" };
+      }
+      const status = ["completed", "failed", "aborted", "cancelled"].includes(evidence.status)
+        ? evidence.status : terminal.status;
+      const result = await this.store.commit({
+        provider: terminal.provider,
+        threadId: terminal.threadId,
+        turnId: terminal.turnId,
+        status,
+        finalAnswer: terminal.finalAnswer,
+        usageIdentity: terminal.usageIdentity,
+        lastMessage: null,
+        payload: {
+          ...structuredClone(terminal.payload),
+          completion: {
+            ...structuredClone(terminal.payload?.completion ?? {}),
+            status,
+            operationKind: "probe",
+            contextProbe: true,
+          },
+          history: {
+            ...structuredClone(terminal.payload?.history ?? {}),
+            operationKind: "probe",
+            contextProbe: true,
+          },
+        },
+        expectedTerminalRevision: terminal.terminalRevision,
+      });
+      if (result.conflict) continue;
+      this.terminals.set(terminalKey(identity), result.terminal);
+      return { ...result, reclassified: result.created === true };
+    }
+    throw new Error(`terminal probe reclassification did not settle for ${terminalKey(identity)}`);
+  }
+
+  async enrichResponseAttachments(identity, {
+    expectedCount = 1,
+    resolveAttachments,
+    maximumAttempts = 4,
+  } = {}) {
+    if (typeof resolveAttachments !== "function") {
+      throw new TypeError("terminal attachment resolver is required");
+    }
+    const targetCount = Math.max(1, Math.floor(Number(expectedCount) || 1));
+    let terminal = await this.get(identity);
+    if (!terminal) return { enriched: false, terminal: null, outbox: null };
+
+    const completionAttachments = responseAttachments(
+      terminal.payload?.completion?.responseAttachments,
+    );
+    const historyAttachments = responseAttachments(
+      terminal.payload?.history?.responseAttachments,
+    );
+    let recovered = richerAttachments(completionAttachments, historyAttachments);
+    let authoritativeRecovery = false;
+    if (recovered.length < targetCount) {
+      const resolved = responseAttachments(await resolveAttachments());
+      authoritativeRecovery = generatedOutputAttachments(resolved).length >= targetCount;
+      recovered = authoritativeRecovery ? resolved : richerAttachments(recovered, resolved);
+    } else if (generatedOutputAttachments(recovered).length < targetCount
+      || generatedOutputAttachments(recovered).length !== recovered.length) {
+      const resolved = responseAttachments(await resolveAttachments());
+      authoritativeRecovery = generatedOutputAttachments(resolved).length >= targetCount;
+      recovered = authoritativeRecovery ? resolved : richerAttachments(recovered, resolved);
+    }
+    if (!recovered.length) return { enriched: false, terminal, outbox: null };
+
+    const attempts = Math.max(1, Math.min(10, Math.floor(Number(maximumAttempts) || 4)));
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      terminal = attempt === 0 ? terminal : await this.get(identity);
+      if (!terminal) return { enriched: false, terminal: null, outbox: null };
+      const currentCompletion = terminal.payload?.completion ?? {};
+      const currentHistory = terminal.payload?.history ?? {};
+      const currentCompletionAttachments = responseAttachments(
+        currentCompletion.responseAttachments,
+      );
+      const currentHistoryAttachments = responseAttachments(
+        currentHistory.responseAttachments,
+      );
+      const currentBest = richerAttachments(
+        currentCompletionAttachments,
+        currentHistoryAttachments,
+      );
+      const currentGenerated = generatedOutputAttachments(currentBest);
+      const desired = authoritativeRecovery && (
+        currentGenerated.length < targetCount || currentGenerated.length !== currentBest.length
+      ) ? recovered : richerAttachments(currentBest, recovered);
+      if (sameAttachments(currentCompletionAttachments, desired)
+        && sameAttachments(currentHistoryAttachments, desired)) {
+        return { enriched: false, terminal, outbox: null };
+      }
+      const result = await this.store.commit({
+        provider: terminal.provider,
+        threadId: terminal.threadId,
+        turnId: terminal.turnId,
+        status: terminal.status,
+        finalAnswer: terminal.finalAnswer,
+        usageIdentity: terminal.usageIdentity,
+        lastMessage: terminal.lastMessage,
+        payload: {
+          ...structuredClone(terminal.payload),
+          completion: {
+            ...structuredClone(currentCompletion),
+            responseAttachments: desired,
+          },
+          history: {
+            ...structuredClone(currentHistory),
+            responseAttachments: desired,
+          },
+        },
+        expectedTerminalRevision: terminal.terminalRevision,
+      });
+      if (result.conflict) continue;
+      this.terminals.set(terminalKey(identity), result.terminal);
+      result.commandReconciled = await this.#reconcileTerminal(result.terminal);
+      return { ...result, enriched: result.created === true };
+    }
+    throw new Error(`terminal attachment enrichment did not settle for ${terminalKey(identity)}`);
   }
 
   async get(identity) {
@@ -185,9 +453,9 @@ export class TerminalTurnCommitService {
     if (!terminal || !this.messageCommands) return false;
     const completion = terminal.payload?.completion ?? {};
     const history = terminal.payload?.history ?? {};
-    const clientUserMessageId = String(
+    const clientUserMessageId = normalizeInterstreamClientUserMessageId(
       history.clientUserMessageId ?? completion.clientUserMessageId ?? "",
-    ).trim();
+    );
     if (!clientUserMessageId) return false;
     const normalizedStatus = String(terminal.status ?? completion.status ?? "completed").trim().toLowerCase();
     const commandState = normalizedStatus === "completed"

@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 import { callDesktopControl } from "./desktop-control.mjs";
+import { publicationRuntimeStatus } from "./src/runtime/runtime-publication-start.mjs";
 import {
   npmStep,
   publicationSteps,
@@ -14,13 +15,16 @@ import {
 import { ensureWrangler } from "./wrangler-runner.mjs";
 import { defaultRuntimeRoot } from "./src/infrastructure/filesystem/runtime-layout.mjs";
 import { prepareCommittedAgentHubReleaseVersion } from "./src/infrastructure/filesystem/release-version.mjs";
-import { assertReleaseCloneForPublication } from "./src/infrastructure/filesystem/release-git-workspace.mjs";
+import { assertReleaseCloneForPublication, ReleaseGitWorkspaceService } from "./src/infrastructure/filesystem/release-git-workspace.mjs";
 import { withPublicationLock } from "./src/infrastructure/process/publication-lock.mjs";
+import { createFrozenReleasePublication, readPublicationReleasePlan } from "./src/infrastructure/process/frozen-release-publication.mjs";
+import { createBootstrapReleasePlanControl } from "./src/infrastructure/process/bootstrap-release-plan-control.mjs";
 import {
   publicationCheckpointStore,
   runPublicationSteps,
 } from "./src/infrastructure/persistence/publication-checkpoint.mjs";
 import { publicationRunStore } from "./src/infrastructure/persistence/publication-run-store.mjs";
+import { completePublication } from "./src/infrastructure/persistence/publication-completion.mjs";
 import {
   assertCleanPublicationTree,
   assertCurrentPublicationRevision,
@@ -125,9 +129,12 @@ function focusedSteps(plan, {
   fullTestCheckpointId = "",
   testContour = false,
   workerChangedFiles = null,
+  quick = false,
+  visualTests = false,
 } = {}) {
   const releaseCandidateContour = plan.fullTests;
   const full = publicationSteps({
+    skipTests: quick && plan.unknown.length > 0,
     skipWorker: plan.unknown.length ? false : !plan.worker,
     fullTestCheckpointId,
     testContour: testContour && !releaseCandidateContour,
@@ -135,23 +142,25 @@ function focusedSteps(plan, {
   });
   if (releaseCandidateContour) {
     const fullTestIndex = full.findIndex((step) => step.label === "Полные тесты Agent Hub");
-    full.splice(fullTestIndex < 0 ? 0 : fullTestIndex + 1, 0, npmStep(
+    full.splice(fullTestIndex < 0 ? 0 : fullTestIndex, 0, npmStep(
       RELEASE_CANDIDATE_CONTOUR_LABEL,
       ["run", "contour:verify", "--", "--require-installed", "--release-candidate"],
     ));
   }
-  if (plan.unknown.length) return full;
+  if (plan.unknown.length) return quick
+    ? [npmStep("Проверка синтаксиса Agent Hub", ["run", "check"]), ...full]
+    : full;
 
   const byLabel = new Map(full.map((step) => [step.label, step]));
   const steps = [];
   if (plan.fullTests) {
-    steps.push(byLabel.get("Полные тесты Agent Hub"));
     steps.push(byLabel.get(RELEASE_CANDIDATE_CONTOUR_LABEL));
+    steps.push(byLabel.get("Полные тесты Agent Hub"));
   } else {
     steps.push(npmStep("Проверка синтаксиса Agent Hub", ["run", "check"]));
-    if (plan.unitTests) {
+    if (!quick && plan.unitTests) {
       steps.push(npmStep("Unit-тесты Agent Hub", ["test"]));
-    } else if (plan.runtime || plan.worker) {
+    } else if (!quick && (plan.runtime || plan.worker)) {
       steps.push({
         label: "Контракт интерфейсов Agent Hub",
         command: process.execPath,
@@ -165,11 +174,12 @@ function focusedSteps(plan, {
         ],
       });
     }
-    if (plan.surfaceTests) {
+    if (!quick && visualTests) steps.push(npmStep("Визуальные матрицы UI Agent Hub", ["run", "test:visual"]));
+    if (!quick && plan.surfaceTests) {
       steps.push(npmStep("Межповерхностные E2E Agent Hub", ["run", "test:e2e"]));
     }
   }
-  if (!plan.fullTests && (plan.vscode || plan.runtime)) {
+  if (!quick && !plan.fullTests && (plan.vscode || plan.runtime)) {
     steps.push(npmStep("Тесты расширения VS Code", ["test", "--prefix", "VSCodeExtension"]));
   }
   if (testContour) steps.push(byLabel.get("Тестовый контур Agent Hub"));
@@ -182,6 +192,15 @@ function focusedSteps(plan, {
   if (plan.runtime) steps.push(byLabel.get("Активация runtime-релиза"));
   if (plan.vscode) steps.push(byLabel.get("Установка расширения VS Code"));
   return steps.filter(Boolean);
+}
+
+export function needsVisualPublicationTests(files) {
+  return files.some((raw) => {
+    const file = raw.replaceAll("\\", "/");
+    return file.startsWith("AgentHub/assets/web-app/") || file.startsWith("AgentHub/VSCodeExtension/")
+      || ["AgentHub/theme-registry.cjs", "AgentHub/client-assets.cjs", "AgentHub/work-log.css",
+        "AgentHub/src/application/work-log-usage-projection.mjs"].includes(file);
+  });
 }
 
 async function contentFingerprint(namespace, files) {
@@ -252,14 +271,27 @@ export function parseChangedArguments(args) {
   let skipRestart = false;
   let fullTests = false;
   let testContour = false;
+  let quick = false;
+  let resume = false;
+  let workspaceId = "";
+  let bootstrapMcpContext = "";
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] === "--skip-restart") skipRestart = true;
     else if (args[index] === "--full-tests") fullTests = true;
     else if (args[index] === "--test-contour") testContour = true;
+    else if (args[index] === "--quick" || args[index] === "--validation=quick") quick = true;
+    else if (args[index] === "--validation=full") fullTests = true;
+    else if (args[index] === "--validation=focused") { /* default validation */ }
+    else if (args[index] === "--resume") resume = true;
+    else if (args[index] === "--workspace" && args[index + 1]) workspaceId = args[++index];
+    else if (args[index] === "--bootstrap-mcp-context" && args[index + 1] && !args[index + 1].startsWith("--")) bootstrapMcpContext = args[++index];
     else if (args[index] === "--from" && args[index + 1]) from = args[++index];
     else throw new Error(`Неизвестный аргумент: ${args[index]}`);
   }
-  return { from, skipRestart, fullTests, testContour };
+  if (quick && fullTests) throw new Error("Choose either quick or full validation");
+  return { from, skipRestart, fullTests, testContour, quick, resume, workspaceId,
+    ...(bootstrapMcpContext ? { bootstrapMcpContext } : {}),
+  };
 }
 
 export async function publishChanged(args = process.argv.slice(2), {
@@ -277,19 +309,99 @@ export async function publishChanged(args = process.argv.slice(2), {
   journal = null,
   runtimeRoot = defaultRuntimeRoot(),
   verifyRestart = restart === callDesktopControl ? waitForRuntimeReplacement : async () => {},
+  readRuntimeStatus = publicationRuntimeStatus,
+  publishGit = null,
+  finalizePublication = null,
+  preparePublication = null,
 } = {}) {
   return exclusive(async () => {
     const options = parseChangedArguments(args);
+    // Finalization can rebuild PreRelease and move this clone before its reply
+    // reaches the publisher. Explicit resume owns the saved run, not that newer
+    // checkout; it must not freeze or deploy the next candidate.
+    const pending = options.resume ? await journal?.read?.() : null;
+    if (pending?.progress?.publicationState) {
+      const identity = pending.identity;
+      if (identity?.worktreeRoot !== REPOSITORY_ROOT || identity?.runtimeRoot !== runtimeRoot) {
+        throw new Error("No matching publication candidate to resume");
+      }
+      if (options.from && options.from !== identity.from) throw new Error("Resume source revision differs from the saved publication");
+      const explicitMode = args.some((arg) => arg === "--full-tests" || arg === "--quick" || arg.startsWith("--validation="));
+      const requestedMode = options.fullTests ? "full" : options.quick ? "quick" : "focused";
+      if ((explicitMode && requestedMode !== identity.validationMode)
+        || (options.workspaceId && options.workspaceId !== identity.workspaceId)
+        || (options.testContour && !identity.testContour)) {
+        throw new Error("Resume options differ from the saved publication");
+      }
+      if (preparePublication) await preparePublication(identity, { completionOnly: true });
+      if (["succeeded", "published"].includes(pending.status)) {
+        const recorded = await readState();
+        if (recorded?.revision !== identity.revision
+          || recorded?.generation !== pending.progress.publicationState.generation) {
+          throw new Error("Recorded publication changed after completion");
+        }
+        if (pending.progress.expectedReleaseId) {
+          await verifyRestart({ runtimeRoot, expectedReleaseId: pending.progress.expectedReleaseId, readStatus: readRuntimeStatus });
+        }
+        return { status: pending.status, revision: identity.revision, files: identity.files,
+          plan: recorded.plan, alreadyCompleted: true, publicationOnly: pending.status === "published" };
+      }
+      if (!["running", "failed", "awaiting_restart", "awaiting_finalization"].includes(pending.status)) {
+        throw new Error("Publication does not have a resumable completion");
+      }
+      if (identity.release && !finalizePublication) throw new Error("Pending Workspace release requires its finalization adapter");
+      await journal.start(identity, []);
+      try {
+        const completion = await completePublication({
+          identity, publicationState: pending.progress.publicationState,
+          journal, checkpoint, needsRestart: Boolean(pending.progress.publicationState.plan?.runtimeRestart),
+          skipRestart: options.skipRestart, readRuntimeStatus, verifyRestart, writeState, finalizePublication,
+          requestRestart: (verification) => restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot, verification),
+        });
+        return { revision: identity.revision, files: identity.files, plan: pending.progress.publicationState.plan, ...completion };
+      } catch (error) {
+        await journal.finish("failed", error);
+        throw error;
+      }
+    }
     await before();
     await prepareVersion();
+    const head = await revision({ cwd: REPOSITORY_ROOT });
+    const saved = await journal?.read?.() ?? await checkpoint?.read?.();
+    const savedIdentity = saved?.identity;
+    const sameCandidate = savedIdentity?.revision === head && savedIdentity?.worktreeRoot === REPOSITORY_ROOT
+      && savedIdentity?.runtimeRoot === runtimeRoot;
+    if (options.resume && !sameCandidate) throw new Error("No matching publication candidate to resume");
+    if (options.resume && options.from && options.from !== savedIdentity.from) {
+      throw new Error("Resume source revision differs from the saved publication");
+    }
+    if (sameCandidate && !options.workspaceId) options.workspaceId = savedIdentity.workspaceId ?? "";
+    const explicitValidation = args.some((arg) => arg === "--full-tests" || arg === "--quick" || arg.startsWith("--validation="));
+    if (sameCandidate && !explicitValidation && savedIdentity.validationMode) {
+      options.fullTests = savedIdentity.validationMode === "full";
+      options.quick = savedIdentity.validationMode === "quick";
+      options.testContour ||= savedIdentity.testContour === true;
+    }
     const state = await readState();
-    const from = options.from || state?.revision;
+    const requestedMode = options.fullTests ? "full" : options.quick ? "quick" : "focused";
+    if (sameCandidate && ["succeeded", "published"].includes(saved.status)
+      && state?.revision === head && savedIdentity.validationMode === requestedMode
+      && savedIdentity.workspaceId === options.workspaceId
+      && savedIdentity.testContour === options.testContour
+      && (!options.from || options.from === savedIdentity.from)) {
+      if (saved.progress?.expectedReleaseId) {
+        await verifyRestart({ runtimeRoot, expectedReleaseId: saved.progress.expectedReleaseId, readStatus: readRuntimeStatus });
+      }
+      return { status: saved.status, revision: head, files: savedIdentity.files ?? [],
+        plan: state.plan, alreadyCompleted: true, publicationOnly: saved.status === "published" };
+    }
+    const from = options.from || (sameCandidate ? savedIdentity.from : null) || state?.revision;
     if (!from) throw new Error("Нет исходной точки публикации. Сначала выполните npm run publish:all или укажите --from <commit>.");
     const files = await diff(from, { cwd: REPOSITORY_ROOT });
     const plan = classifyPublicationChanges(files);
     if (options.fullTests) plan.fullTests = true;
-    if (plan.unknown.length) console.warn(`Неизвестные пути требуют полной публикации: ${plan.unknown.join(", ")}`);
-    const head = await revision({ cwd: REPOSITORY_ROOT });
+    if (plan.unknown.length && !options.quick) plan.fullTests = true;
+    if (plan.unknown.length) console.warn(`Неизвестные пути требуют публикации всех компонентов${options.quick ? " с выбранной quick-проверкой" : " с полными тестами"}: ${plan.unknown.join(", ")}`);
     if (plan.worker) await ensureWorkerDependency();
     const fullTestCheckpointId = createHash("sha256")
       .update(JSON.stringify({ mode: "changed", from }))
@@ -300,52 +412,96 @@ export async function publishChanged(args = process.argv.slice(2), {
       fullTestCheckpointId,
       testContour: options.testContour,
       workerChangedFiles,
+      quick: options.quick,
+      visualTests: needsVisualPublicationTests(files),
     }), files);
+    const identity = {
+      mode: "changed", from, revision: head, worktreeRoot: REPOSITORY_ROOT, runtimeRoot, files,
+      validationMode: plan.fullTests ? "full" : options.quick ? "quick" : "focused",
+      testContour: options.testContour,
+      workspaceId: options.workspaceId,
+      labels: steps.map((step) => step.label),
+    };
+    if (publishGit) {
+      const firstDeployment = steps.findIndex((step) => ["Сборка runtime-релиза", "Развёртывание Mini App Worker", "Активация runtime-релиза", "Установка расширения VS Code"].includes(step.label));
+      steps.splice(firstDeployment < 0 ? steps.length : firstDeployment, 0, {
+        label: "Публикация Git", reusable: false, execute: () => publishGit(identity),
+      });
+      identity.labels = steps.map((step) => step.label);
+    }
+    if (sameCandidate && savedIdentity.release) identity.release = savedIdentity.release;
+    const completionOnly = sameCandidate && Boolean(saved.progress?.publicationState)
+      && savedIdentity.from === identity.from
+      && JSON.stringify(savedIdentity.files) === JSON.stringify(identity.files)
+      && JSON.stringify(savedIdentity.labels) === JSON.stringify(identity.labels)
+      && savedIdentity.validationMode === identity.validationMode
+      && savedIdentity.workspaceId === identity.workspaceId
+      && savedIdentity.testContour === identity.testContour;
+    if (preparePublication) identity.release = await preparePublication(identity, {
+      completionOnly,
+    });
     try {
-      await runPublicationSteps(steps, {
-        run,
+      if (completionOnly) await journal?.start(identity, steps);
+      else await runPublicationSteps(steps, {
+        run: (step) => step.execute ? step.execute() : run(step),
         checkpoint,
         checkpointScope: {
           mode: "changed",
           from,
           runtimeRoot,
+          validationMode: identity.validationMode,
         },
-        identity: {
-          mode: "changed",
-          from,
-          revision: head,
-          worktreeRoot: REPOSITORY_ROOT,
-          runtimeRoot,
-          files,
-          labels: steps.map((step) => step.label),
-        },
+        identity,
         journal,
       });
-      if (plan.runtimeRestart && !options.skipRestart) {
-        const result = await restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot);
-        if (result?.deferred) {
-          console.log(`${result?.message ?? "Перезапуск запрошен"}. Готовность подтвердится после завершения активного хода.`);
-        }
-      }
-      await writeState({ revision: head, publishedAt: new Date().toISOString(), files, plan });
-      if (checkpoint) await checkpoint.clear();
-      await journal?.finish("succeeded");
+      const completion = await completePublication({
+        identity, publicationState: { revision: head, files, plan, validationMode: identity.validationMode },
+        journal, checkpoint, needsRestart: plan.runtimeRestart, skipRestart: options.skipRestart,
+        readRuntimeStatus, verifyRestart, writeState, finalizePublication,
+        requestRestart: (verification) => restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot, verification),
+      });
+      console.log(`\nПубликация: ${completion.status}; ${files.length} изменённых файлов.`);
+      return { files, plan, revision: head, ...completion };
     } catch (error) {
       await journal?.finish("failed", error);
       throw error;
     }
-    console.log(`\nВыборочная публикация завершена: ${files.length} изменённых файлов.`);
-    return { files, plan, revision: head };
   });
 }
 
 const invokedFile = process.argv[1] ? path.resolve(process.argv[1]) : "";
 if (invokedFile === fileURLToPath(import.meta.url)) {
+  const control = createBootstrapReleasePlanControl({
+    contextFile: parseChangedArguments(process.argv.slice(2)).bootstrapMcpContext,
+    control: callDesktopControl, readState: readPublicationState,
+  });
+  const adapter = createFrozenReleasePublication({ repositoryRoot: REPOSITORY_ROOT, runtimeRoot: defaultRuntimeRoot(), control });
   publishChanged(process.argv.slice(2), {
+    preparePublication: adapter.prepare,
+    publishGit: adapter.publishGit,
+    finalizePublication: adapter.finalizePublication,
     checkpoint: publicationCheckpointStore(),
     journal: publicationRunStore(),
     before: async () => {
-      await assertReleaseCloneForPublication({ repositoryRoot: REPOSITORY_ROOT });
+      const marker = await assertReleaseCloneForPublication({ repositoryRoot: REPOSITORY_ROOT });
+      const checkpoint = JSON.parse(await readFile(path.join(REPOSITORY_ROOT, "..", "checkpoint.json"), "utf8"));
+      if (!/^[a-f0-9]{64}$/u.test(checkpoint.manifestHash ?? "")) throw new Error("invalid prepared manifest hash");
+      const manifest = JSON.parse(await readFile(path.join(REPOSITORY_ROOT, "..", "evidence", `${checkpoint.manifestHash}.json`), "utf8"));
+      const workspaceId = parseChangedArguments(process.argv.slice(2)).workspaceId || manifest.workspaceId;
+      const changelogContent = await readFile(path.join(REPOSITORY_ROOT, "CHANGELOG.md")).catch((error) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      const workspace = new ReleaseGitWorkspaceService({ dataDir: path.dirname(marker.managedRoot) });
+      await workspace.freezePublicationCandidate({
+        projectRoot: marker.primaryRoot, workspaceId,
+        expectedPlanRevision: checkpoint.planRevision, expectedPreparedHead: checkpoint.preReleaseHead,
+        changelogContent,
+        validateBeforeCommit: async () => {
+          const plan = await readPublicationReleasePlan(control, workspaceId, defaultRuntimeRoot());
+          if (plan.revision !== checkpoint.planRevision) throw new Error("release plan changed before publication freeze");
+        },
+      });
       await assertCleanPublicationTree({ cwd: REPOSITORY_ROOT });
       await assertCurrentPublicationRevision({ cwd: REPOSITORY_ROOT });
     },

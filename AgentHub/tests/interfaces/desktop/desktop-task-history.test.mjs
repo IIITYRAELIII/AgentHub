@@ -1,13 +1,86 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
+import { ManagedRunHistoryService } from "../../../src/application/managed-run-history-service.mjs";
+import { MessageReceiptRegistry } from "../../../src/infrastructure/persistence/message-receipts.mjs";
+import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+
+test("display column migrates existing messages without rewriting their raw text", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub-display-migration-"));
+  const filePath = path.join(directory, "tasks.json");
+  const task = { provider: "codex", threadId: "thread-1", projectRoot: directory };
+  let store = new LocalTaskSyncStore({ filePath });
+  try {
+    await store.load();
+    await store.recordHistory(task, [{ id: "turn-legacy", messages: [
+      { role: "user", itemId: "old-user", clientUserMessageId: "old-client", text: "Обычное сообщение" },
+    ] }]);
+    store.close();
+    const database = new DatabaseSync(path.join(directory, "journal.sqlite"));
+    try {
+      database.exec("ALTER TABLE task_read_model_messages DROP COLUMN display_text");
+      database.prepare("UPDATE task_read_model_meta SET value = '11' WHERE key = 'schema_version'").run();
+    } finally { database.close(); }
+    store = new LocalTaskSyncStore({ filePath });
+    await store.load();
+    const message = store.history(task)[0].messages[0];
+    assert.equal(message.text, "Обычное сообщение");
+    assert.equal(message.clientUserMessageId, "old-client");
+    assert.equal(message.userDisplay, undefined);
+  } finally {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("receipt display survives terminal persistence, receipt eviction and provider history refresh", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub-user-display-"));
+  const filePath = path.join(directory, "tasks.json");
+  const identity = { provider: "codex", threadId: "thread-1", clientUserMessageId: "client-1" };
+  const receipts = new MessageReceiptRegistry({ limit: 1 });
+  const displayText = "Как продолжать?\nОтвет: Делай";
+  const raw = "Ответ на вопрос агента [call-123]\nИсходный Thread: thread-1\nИсходный ход: turn-original\n\n" + displayText;
+  receipts.reserve(identity, "frozen-fingerprint", { accepted: true, displayText });
+  let store = new LocalTaskSyncStore({ filePath });
+  try {
+    await store.load();
+    const run = { ...identity, projectRoot: directory, turnId: "turn-answer", promptPreview: raw,
+      userMessages: [{ role: "user", itemId: "user-answer", clientUserMessageId: identity.clientUserMessageId, text: raw }], responseText: "Готово" };
+    const service = new ManagedRunHistoryService({ taskSyncStore: store, mergeActiveHistory: mergeActiveTaskHistory,
+      receiptForMessage: (key) => receipts.get(key), nowIso: () => "2026-09-11T08:00:00.000Z", nowMs: () => 123, hubExecutionOwner: "hub" });
+    assert.equal((await service.persist(run, { active: false, status: "completed" })).failed, undefined);
+    const user = store.history(run)[0].messages.find((message) => message.role === "user");
+    assert.equal(user.text, raw);
+    assert.equal(user.userDisplay.text, displayText);
+    receipts.reserve({ ...identity, clientUserMessageId: "next-client" }, "next-fingerprint", { accepted: true });
+    assert.equal(receipts.get(identity), null);
+    store.close();
+    store = new LocalTaskSyncStore({ filePath });
+    await store.load();
+    const providerHistory = store.history(run).map((turn) => ({ ...turn, messages: turn.messages.map(({ userDisplay, ...message }) => message) }));
+    await store.recordHistory(run, providerHistory);
+    const setup = fixture({ run: null, history: store.history(run), receipts: { forMessage: (key) => receipts.get(key) } });
+    const result = await setup.desktopTaskHistory({ provider: "codex", threadId: "thread-1", includeActive: false });
+    const projected = result.items.find((turn) => turn.id === run.turnId).messages.find((message) => message.role === "user");
+    assert.equal(projected.text, displayText);
+    assert.equal(projected.clientUserMessageId, identity.clientUserMessageId);
+    assert.equal(store.history(run)[0].messages.find((message) => message.role === "user").text, raw);
+    setup.state.history[0].messages.find((message) => message.role === "user").userDisplay.threadId = "wrong-thread";
+    const conflicting = await setup.desktopTaskHistory({ provider: "codex", threadId: "thread-1", includeActive: false });
+    assert.equal(conflicting.items[0].messages.find((message) => message.role === "user").text, raw);
+  } finally {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 import {
   createDesktopTaskHistoryFactory,
   mergeCachedTaskHistory,
   mergeDurableTaskHistory,
 } from "../../../src/interfaces/desktop/desktop-task-history.mjs";
+import { durableUserCommandItemId } from "../../../src/domain/stream-message-pin.mjs";
 import {
   mergeActiveTaskHistory,
   mergeCompletedTaskHistory,
@@ -16,8 +89,14 @@ import {
   CODEX_CONTEXT_PROBE_PROMPT,
   CODEX_CONTEXT_PROBE_RESPONSE,
 } from "../../../src/domain/codex-context-probe.mjs";
-import { createInterstreamMessage } from "../../../src/domain/interstream-message.mjs";
+import {
+  createInterstreamMessage,
+  interstreamAuditContentHash,
+} from "../../../src/domain/interstream-message.mjs";
 import { LocalTaskSyncStore } from "../../../src/infrastructure/persistence/task-sync-store.mjs";
+import { TaskViewController } from "../../../src/interfaces/telegram/task-view-controller.mjs";
+import { createTaskViewComposition } from "../../../src/composition/task-view-composition.mjs";
+import { readCodexRolloutActivity, readCodexRolloutActivityOnCurrentThread } from "../../../src/providers/codex/codex-rollout-activity.mjs";
 
 const ANNOTATION_SOURCE = {
   version: 1,
@@ -128,9 +207,9 @@ function fixture(overrides = {}) {
             : history,
         };
       },
-      refresh: async (binding) => {
+      refresh: async (binding, options) => {
         calls.refreshes += 1;
-        return state.refresh(binding);
+        return state.refresh(binding, options);
       },
     },
     runs: {
@@ -287,10 +366,12 @@ test("sparse durable history does not erase an already known interstream author"
     messages: [{ itemId: "turn-1:user", role: "user", text: "Проверь" }],
   }]);
 
-  assert.equal(history[0].messages[0].author, "Agent HUB - Architect (Codex)");
+  assert.equal(history[0].messages.some((message) => (
+    message.author === "Agent HUB - Architect (Codex)"
+  )), true);
 });
 
-test("durable history collapses a persisted interstream root alias", () => {
+test("durable history preserves an unproven interstream provider root occurrence", () => {
   const origin = {
     kind: "interstream",
     workspaceId: "workspace-1",
@@ -301,18 +382,19 @@ test("durable history collapses a persisted interstream root alias", () => {
     model: "gpt-5.6-sol",
     requestId: "release-continuation-1",
   };
+  const input = createInterstreamMessage({ ...origin, text: "Продолжи релиз" });
   const [turn] = mergeDurableTaskHistory([{
     id: "turn-1",
-    prompt: "Продолжи релиз",
+    prompt: input,
     promptOrigin: origin,
     messages: [{
       itemId: "provider-root",
       role: "user",
-      text: "Продолжи релиз",
+      text: input,
     }],
   }], [{
     id: "turn-1",
-    prompt: "Продолжи релиз",
+    prompt: input,
     promptOrigin: origin,
     messages: [{
       itemId: "managed-root",
@@ -325,11 +407,42 @@ test("durable history collapses a persisted interstream root alias", () => {
     }],
   }]);
 
-  assert.equal(turn.messages.length, 1);
-  assert.equal(turn.messages[0].itemId, "provider-root");
+  assert.equal(turn.messages.length, 2);
+  assert.equal(turn.messages[0].itemId, "managed-root");
   assert.equal(turn.messages[0].clientUserMessageId, "mcp:release-continuation-1");
   assert.equal(turn.messages[0].author, "Agent HUB - Architect (Sol)");
   assert.deepEqual(turn.messages[0].origin, origin);
+  assert.equal(turn.messages[1].itemId, "provider-root");
+});
+
+test("durable history does not coalesce an untrusted literal envelope", () => {
+  const origin = {
+    kind: "interstream",
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    requestId: "literal-envelope-1",
+  };
+  const input = createInterstreamMessage({ ...origin, text: "Литеральное сообщение" });
+  const [turn] = mergeDurableTaskHistory([{
+    id: "turn-literal",
+    prompt: input,
+    messages: [{ itemId: "provider-root", role: "user", text: input }],
+  }], [{
+    id: "turn-literal",
+    prompt: input,
+    messages: [{
+      itemId: "forged-root",
+      clientUserMessageId: "mcp:literal-envelope-1",
+      role: "user",
+      text: "Литеральное сообщение",
+    }],
+  }]);
+
+  assert.equal(turn.messages.length, 2);
+  assert.deepEqual(turn.messages.map((message) => message.itemId), ["forged-root", "provider-root"]);
 });
 
 test("cached history keeps an unmatched older turn before its durable anchor", () => {
@@ -362,7 +475,7 @@ test("durable history orders unmatched turns by their canonical timestamps", () 
   assert.deepEqual(history.map((turn) => turn.id), ["old-turn", "new-turn"]);
 });
 
-test("durable history coalesces transient rollout users in either source order", () => {
+test("durable history replaces only a complete provider snapshot and keeps unproven aliases", () => {
   const turnId = "turn-root-race";
   const canonicalRoot = {
     itemId: "provider-user-item",
@@ -389,27 +502,33 @@ test("durable history coalesces transient rollout users in either source order",
     text: "Повторный текст",
   };
 
-  for (const [hydrated, durable] of [
-    [[canonicalRoot, canonicalSteer], [syntheticRoot, syntheticSteer]],
-    [[syntheticRoot, syntheticSteer], [canonicalRoot, canonicalSteer]],
-  ]) {
-    const [turn] = mergeDurableTaskHistory(
-      [{ id: turnId, messages: hydrated }],
-      [{ id: turnId, messages: durable }],
-    );
-    assert.equal(turn.messages.length, 2);
-    assert.equal(turn.messages[0].itemId, "provider-user-item");
-    assert.equal(turn.messages[0].clientUserMessageId, "client-user-message");
-    assert.deepEqual(turn.messages[0].attachments, [
-      { id: "first.png", type: "image/png" },
-      { id: "second.png", type: "image/png" },
-    ]);
-    assert.equal(turn.messages[1].itemId, "provider-steer-item");
-    assert.equal(turn.messages[1].clientUserMessageId, "client-steer-message");
-  }
+  const [canonicalHydrated] = mergeDurableTaskHistory(
+    [{ id: turnId, userMessageSnapshotAuthority: "complete", messages: [canonicalRoot, canonicalSteer] }],
+    [{ id: turnId, userMessageSnapshotAuthority: "complete", messages: [syntheticRoot, syntheticSteer] }],
+  );
+  assert.deepEqual(canonicalHydrated.messages.map((message) => message.itemId), [
+    "provider-user-item",
+    "provider-steer-item",
+  ]);
+  const [repeatedCanonicalHydration] = mergeDurableTaskHistory(
+    [canonicalHydrated],
+    [canonicalHydrated],
+  );
+  assert.deepEqual(repeatedCanonicalHydration.messages, canonicalHydrated.messages);
+
+  const [unkeyedHydrated] = mergeDurableTaskHistory(
+    [{ id: turnId, userMessageSnapshotAuthority: "complete", messages: [syntheticRoot, syntheticSteer] }],
+    [{ id: turnId, userMessageSnapshotAuthority: "complete", messages: [canonicalRoot, canonicalSteer] }],
+  );
+  assert.deepEqual(unkeyedHydrated.messages.map((message) => message.itemId), [
+    "provider-user-item",
+    "provider-steer-item",
+    `${turnId}:rollout-user:0`,
+    `${turnId}:rollout-user:1`,
+  ]);
 });
 
-test("durable history migrates a sparse canonical steer by its source user slot", () => {
+test("durable history preserves a sparse canonical steer without ordinal migration", () => {
   const turnId = "turn-sparse-steer";
   const syntheticRoot = {
     itemId: `${turnId}:rollout-user:0`,
@@ -430,28 +549,24 @@ test("durable history migrates a sparse canonical steer by its source user slot"
     attachmentSources: [{ type: "path", value: "C:/AgentHub/attachments/canonical.png" }],
   };
 
-  for (const [hydrated, durable] of [
-    [[syntheticRoot, canonicalSteer], [syntheticRoot, syntheticSteer]],
-    [[syntheticRoot, syntheticSteer], [syntheticRoot, canonicalSteer]],
-  ]) {
-    const [turn] = mergeDurableTaskHistory(
-      [{ id: turnId, messages: hydrated }],
-      [{ id: turnId, messages: durable }],
-    );
-    assert.deepEqual(turn.messages.map((message) => message.itemId), [
-      `${turnId}:rollout-user:0`,
-      "canonical-steer",
-    ]);
-    assert.equal(
-      turn.messages[1].clientUserMessageId,
-      "b74897d2-0ba2-48e8-a378-cde19f96dbb2",
-    );
-    assert.deepEqual(turn.messages[1].attachments, [{ id: "legacy.png", type: "image/png" }]);
-    assert.deepEqual(turn.messages[1].attachmentSources, [{
-      type: "path",
-      value: "C:/AgentHub/attachments/canonical.png",
-    }]);
-  }
+  const [canonicalHydrated] = mergeDurableTaskHistory(
+    [{ id: turnId, userMessageSnapshotAuthority: "complete", messages: [syntheticRoot, canonicalSteer] }],
+    [{ id: turnId, userMessageSnapshotAuthority: "complete", messages: [syntheticRoot, syntheticSteer] }],
+  );
+  assert.deepEqual(canonicalHydrated.messages.map((message) => message.itemId), [
+    `${turnId}:rollout-user:0`,
+    "canonical-steer",
+  ]);
+  const [unkeyedHydrated] = mergeDurableTaskHistory(
+    [{ id: turnId, userMessageSnapshotAuthority: "complete", messages: [syntheticRoot, syntheticSteer] }],
+    [{ id: turnId, userMessageSnapshotAuthority: "complete", messages: [syntheticRoot, canonicalSteer] }],
+  );
+  assert.deepEqual(unkeyedHydrated.messages.map((message) => message.itemId), [
+    "canonical-steer",
+    `${turnId}:rollout-user:0`,
+    `${turnId}:rollout-user:1`,
+  ]);
+  assert.equal(unkeyedHydrated.messages[0].clientUserMessageId, "b74897d2-0ba2-48e8-a378-cde19f96dbb2");
 });
 
 test("durable history preserves a real steer beside the root message", () => {
@@ -483,12 +598,14 @@ test("durable history preserves a real steer beside the root message", () => {
   assert.deepEqual(turn.messages.map((message) => message.itemId), [
     "root-client",
     "steer-client",
+    `${turnId}:rollout-user:0`,
   ]);
 });
 
-test("provider hydration repairs stale durable turn and message times", () => {
+test("complete provider hydration replaces an unowned stale message without itemId enrichment", () => {
   const history = mergeDurableTaskHistory([{
     id: "turn-new",
+    userMessageSnapshotAuthority: "complete",
     startedAt: "2026-08-09T20:02:33.000Z",
     completedAt: "2026-08-09T20:03:14.000Z",
     messages: [{
@@ -499,6 +616,7 @@ test("provider hydration repairs stale durable turn and message times", () => {
     }],
   }], [{
     id: "turn-new",
+    userMessageSnapshotAuthority: "complete",
     startedAt: "2026-08-09T19:29:18.000Z",
     completedAt: "2026-08-09T20:03:14.000Z",
     messages: [{
@@ -512,7 +630,109 @@ test("provider hydration repairs stale durable turn and message times", () => {
 
   assert.equal(history[0].startedAt, "2026-08-09T20:02:33.000Z");
   assert.equal(history[0].messages[0].time, "2026-08-09T20:02:33.000Z");
-  assert.deepEqual(history[0].messages[0].attachments, [{ id: "screen.png", type: "image/png" }]);
+  assert.equal(history[0].messages[0].attachments, undefined);
+});
+
+test("desktop history replays source-owned incremental occurrences exactly once", () => {
+  const first = {
+    role: "user",
+    text: "Одинаковый текст",
+    sourceOccurrenceId: `codex-rollout:${"5".repeat(64)}`,
+  };
+  const appended = {
+    ...first,
+    sourceOccurrenceId: `codex-rollout:${"6".repeat(64)}`,
+  };
+  let history = [];
+  const hydrate = (messages) => {
+    history = mergeDurableTaskHistory([{
+      id: "turn-incremental-replay",
+      userMessageSnapshotAuthority: "incremental",
+      messages,
+    }], history);
+  };
+
+  hydrate([first]);
+  hydrate([first]);
+  hydrate([first]);
+  assert.equal(history[0].messages.filter((message) => message.role === "user").length, 1);
+  hydrate([first, appended]);
+  hydrate([first, appended]);
+  assert.deepEqual(
+    history[0].messages.filter((message) => message.role === "user")
+      .map((message) => message.sourceOccurrenceId),
+    [first.sourceOccurrenceId, appended.sourceOccurrenceId],
+  );
+});
+
+test("desktop history uses exact steer intake and leaves an untimed steer unknown", async () => {
+  let receipt = { createdAt: "2026-09-09T16:05:45.479Z", result: {} };
+  const { desktopTaskHistory, state } = fixture({
+    run: null,
+    receipts: {
+      forMessage: ({ clientUserMessageId }) => clientUserMessageId === "steer" ? receipt : null,
+      forTurn: () => null,
+    },
+  });
+  state.history = [{
+    id: "turn-timing", status: "completed", completed: true,
+    startedAt: "2026-09-09T15:51:11.165Z", completedAt: "2026-09-09T16:10:00.000Z",
+    messages: [
+      { role: "user", clientUserMessageId: "root", itemId: "root", text: "Root" },
+      { role: "user", clientUserMessageId: "steer", itemId: "steer", text: "Later",
+        time: "2026-09-09T16:05:47.070Z" },
+    ],
+  }];
+  const read = async () => (await desktopTaskHistory({ limit: 1, includeActive: false })).items[0].messages[1];
+  assert.equal((await read()).time, receipt.createdAt);
+  assert.equal((await read()).submittedAt, receipt.createdAt);
+  delete state.history[0].messages[1].time;
+  assert.equal((await read()).time, receipt.createdAt);
+  receipt = null;
+  // Previously observed message time remains valid in the history cache.
+  assert.equal((await read()).time, "2026-09-09T16:05:47.070Z");
+  const cold = fixture({
+    run: null, history: state.history,
+    receipts: { forMessage: () => null, forTurn: () => null },
+  });
+  const coldResult = await cold.desktopTaskHistory({ limit: 1, includeActive: false });
+  assert.equal(coldResult.items[0].messages[1].time, null);
+});
+
+test("desktop history replaces an enriched App Server source occurrence", () => {
+  const sourceOccurrenceId = `codex-app-server:${"b".repeat(64)}`;
+  const initial = {
+    role: "user",
+    text: "Provider projection",
+    sourceOccurrenceId,
+  };
+  const enriched = {
+    role: "user",
+    text: "Accepted projection",
+    sourceOccurrenceId,
+    clientUserMessageId: "desktop-accepted",
+    origin: { streamId: "desktop-owner" },
+  };
+  let history = mergeDurableTaskHistory([{
+    id: "desktop-enrichment-turn",
+    userMessageSnapshotAuthority: "incremental",
+    messages: [initial],
+  }], []);
+  history = mergeDurableTaskHistory([{
+    id: "desktop-enrichment-turn",
+    userMessageSnapshotAuthority: "incremental",
+    messages: [enriched],
+  }], history);
+  history = mergeDurableTaskHistory([{
+    id: "desktop-enrichment-turn",
+    userMessageSnapshotAuthority: "incremental",
+    messages: [initial],
+  }], history);
+
+  const users = history[0].messages.filter((message) => message.role === "user");
+  assert.equal(users.length, 1);
+  assert.equal(users[0].clientUserMessageId, "desktop-accepted");
+  assert.deepEqual(users[0].origin, { streamId: "desktop-owner" });
 });
 
 test("desktop task history resolves selection and merges the active run", async () => {
@@ -559,6 +779,20 @@ test("desktop task history resolves selection and merges the active run", async 
   }]);
   assert.deepEqual(calls.fit, { maxBytes: 3_500_000 });
   assert.match(result.version, /^[A-Za-z0-9_-]{22}$/u);
+});
+
+test("durable probe repair supersedes a warm ordinary cache and accepts late user identity", async () => {
+  const turn = { id: "probe-repair", prompt: CODEX_CONTEXT_PROBE_PROMPT, answer: "Ход завершён.", completed: true, contextProbe: false, messages: [] };
+  const { desktopTaskHistory, state } = fixture({ run: null, history: [turn] });
+  const initial = await desktopTaskHistory({ includeActive: false, limit: 10 });
+  assert.deepEqual(initial.items.map((item) => item.id), [turn.id]);
+  await new Promise((resolve) => setImmediate(resolve));
+  state.history = [{ ...turn, operationKind: "probe", contextProbe: true }];
+  const repaired = await desktopTaskHistory({ includeActive: false, limit: 10 });
+  assert.deepEqual(repaired.items, []);
+  state.history = [{ ...turn, operationKind: "user-turn", clientUserMessageId: "ordinary-command" }];
+  const ordinary = await desktopTaskHistory({ includeActive: false, limit: 10 });
+  assert.deepEqual(ordinary.items.map((item) => item.id), [turn.id]);
 });
 
 test("desktop task history removes an already persisted context probe turn", async () => {
@@ -619,34 +853,36 @@ test("desktop task history hides the reserved probe text without metadata", asyn
   assert.deepEqual(result.items, []);
 });
 
-test("desktop task history keeps reserved probe text with a normal client identity", async () => {
-  const { desktopTaskHistory } = fixture({
-    run: null,
-    history: [{
-      id: "manual-probe-text",
-      prompt: CODEX_CONTEXT_PROBE_PROMPT,
-      answer: CODEX_CONTEXT_PROBE_RESPONSE,
-      completed: true,
-      clientUserMessageId: "client-manual-probe",
-      messages: [{
-        itemId: "manual-user",
-        role: "user",
-        clientUserMessageId: "client-manual-probe",
-        text: CODEX_CONTEXT_PROBE_PROMPT,
-      }, {
-        itemId: "manual-answer",
-        role: "agent",
-        text: CODEX_CONTEXT_PROBE_RESPONSE,
+for (const topLevelIdentity of [true, false]) {
+  test(`desktop task history keeps reserved probe text with user identity (top-level: ${topLevelIdentity})`, async () => {
+    const { desktopTaskHistory } = fixture({
+      run: null,
+      history: [{
+        id: "manual-probe-text",
+        prompt: CODEX_CONTEXT_PROBE_PROMPT,
+        answer: CODEX_CONTEXT_PROBE_RESPONSE,
+        completed: true,
+        ...(topLevelIdentity ? { clientUserMessageId: "client-manual-probe" } : {}),
+        messages: [{
+          itemId: "manual-user",
+          role: "user",
+          clientUserMessageId: "client-manual-probe",
+          text: CODEX_CONTEXT_PROBE_PROMPT,
+        }, {
+          itemId: "manual-answer",
+          role: "agent",
+          text: CODEX_CONTEXT_PROBE_RESPONSE,
+        }],
       }],
-    }],
+    });
+
+    const result = await desktopTaskHistory({ includeActive: false, limit: 10 });
+
+    assert.equal(result.items.length, 1);
+    assert.equal(result.items[0].prompt, CODEX_CONTEXT_PROBE_PROMPT);
+    assert.equal(result.items[0].answer, CODEX_CONTEXT_PROBE_RESPONSE);
   });
-
-  const result = await desktopTaskHistory({ includeActive: false, limit: 10 });
-
-  assert.equal(result.items.length, 1);
-  assert.equal(result.items[0].prompt, CODEX_CONTEXT_PROBE_PROMPT);
-  assert.equal(result.items[0].answer, CODEX_CONTEXT_PROBE_RESPONSE);
-});
+}
 
 test("desktop task history restores a reserved final from explicit journal identity before hydration", async () => {
   const blockedRefresh = new Promise(() => {});
@@ -707,23 +943,24 @@ test("desktop task history preserves the author of an interstream message", asyn
   assert.equal(turn.messages[0].author, "Agent HUB · Themes (Codex)");
 });
 
-test("desktop task history recovers an interstream author before cleaning legacy message text", async () => {
-  const input = createInterstreamMessage({
+test("desktop task history uses durable origin before cleaning interstream message text", async () => {
+  const origin = {
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
     streamId: "stream-architect",
     streamName: "Architect",
     provider: "codex",
-    text: "Проверь доставку.",
-  });
+  };
+  const input = createInterstreamMessage({ ...origin, text: "Проверь доставку." });
   const { desktopTaskHistory, state } = fixture({ run: null });
   state.history = [{
     id: "legacy-interstream",
     prompt: input,
+    promptOrigin: origin,
     answer: "Готово",
     completed: true,
     messages: [
-      { itemId: "legacy-user", role: "user", text: input },
+      { itemId: "legacy-user", role: "user", origin, text: input },
       { itemId: "legacy-agent", role: "agent", text: "Готово" },
     ],
   }];
@@ -737,18 +974,19 @@ test("desktop task history recovers an interstream author before cleaning legacy
 });
 
 test("desktop task history attributes a prompt-only interstream turn", async () => {
-  const input = createInterstreamMessage({
+  const origin = {
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
     streamId: "stream-themes",
     streamName: "Themes",
     provider: "claude",
-    text: "Проверь тему.",
-  });
+  };
+  const input = createInterstreamMessage({ ...origin, text: "Проверь тему." });
   const { desktopTaskHistory, state } = fixture({ run: null });
   state.history = [{
     id: "prompt-only-interstream",
     prompt: input,
+    promptOrigin: origin,
     answer: "Готово",
     completed: true,
     messages: [],
@@ -799,31 +1037,49 @@ test("desktop task history trusts durable interstream origin after the envelope 
 });
 
 test("desktop task history recovers a legacy task assignment from exact MCP audit identity", async () => {
-  const origin = {
+  const envelopeOrigin = {
     kind: "interstream",
     workspaceId: "workspace-1",
-    workspaceName: "Agent HUB",
+    workspaceName: "Original Workspace",
     streamId: "stream-architect",
     streamName: "Architect",
     provider: "codex",
+    model: "gpt-5.6-sol",
     sourceThreadId: "thread-architect",
     requestId: "legacy-assignment-1",
   };
+  const auditOrigin = {
+    ...envelopeOrigin,
+    workspaceName: "Renamed Workspace",
+    streamName: "S4",
+  };
+  delete auditOrigin.model;
   const resolved = [];
+  const input = createInterstreamMessage({ ...envelopeOrigin, text: "Начни работу над Task" });
+  const audit = {
+    ...auditOrigin,
+    toolName: "hub_task_start",
+    argumentsHash: "a".repeat(64),
+    contentHash: interstreamAuditContentHash(input),
+  };
   const { desktopTaskHistory, state } = fixture({
     run: null,
     interstreamOriginForClientMessage: (clientUserMessageId) => {
       resolved.push(clientUserMessageId);
-      return clientUserMessageId === "mcp:legacy-assignment-1" ? origin : null;
+      return clientUserMessageId === "mcp:legacy-assignment-1" ? audit : null;
     },
   });
   state.history = [{
     id: "legacy-assignment",
-    prompt: "Начни работу над Task",
+    prompt: input,
     answer: "Принято",
     completed: true,
     messages: [{
-      itemId: "legacy-assignment-user",
+      itemId: "legacy-provider-root",
+      role: "user",
+      text: input,
+    }, {
+      itemId: "legacy-managed-root",
       clientUserMessageId: "mcp:legacy-assignment-1",
       role: "user",
       text: "Начни работу над Task",
@@ -832,12 +1088,132 @@ test("desktop task history recovers a legacy task assignment from exact MCP audi
 
   const result = await desktopTaskHistory({ includeActive: false, limit: 1 });
 
-  assert.equal(result.items[0].promptAuthor, "Agent HUB - Architect (Codex)");
-  assert.deepEqual(result.items[0].promptOrigin, origin);
-  assert.equal(result.items[0].messages[0].author, "Agent HUB - Architect (Codex)");
+  assert.equal(result.items[0].promptAuthor, "Original Workspace - Architect (Sol)");
+  assert.equal(result.items[0].prompt, "Начни работу над Task");
+  assert.deepEqual(result.items[0].promptOrigin, envelopeOrigin);
+  assert.equal(result.items[0].messages.length, 1);
+  assert.equal(result.items[0].messages[0].itemId, "legacy-provider-root");
+  assert.equal(result.items[0].messages[0].author, "Original Workspace - Architect (Sol)");
+  assert.equal(result.items[0].messages[0].text, "Начни работу над Task");
   assert.equal(result.items[0].messages[0].kind, "interstream");
-  assert.deepEqual(result.items[0].messages[0].origin, origin);
-  assert.deepEqual(resolved, ["mcp:legacy-assignment-1", "mcp:legacy-assignment-1"]);
+  assert.deepEqual(result.items[0].messages[0].origin, envelopeOrigin);
+  assert.deepEqual(resolved, ["mcp:legacy-assignment-1"]);
+});
+
+test("desktop task history keeps a stable-conflicting audited envelope literal", async () => {
+  const origin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    sourceThreadId: "thread-architect",
+    requestId: "conflicting-audit-1",
+  };
+  const input = createInterstreamMessage({ ...origin, text: "Keep literal." });
+  const { desktopTaskHistory, state } = fixture({
+    run: null,
+    interstreamOriginForClientMessage: () => ({
+      ...origin,
+      streamId: "stream-other",
+      toolName: "hub_stream_message_send",
+      argumentsHash: "a".repeat(64),
+      contentHash: interstreamAuditContentHash(input),
+    }),
+  });
+  state.history = [{
+    id: "conflicting-audit",
+    prompt: input,
+    completed: true,
+    messages: [{
+      itemId: "provider-root",
+      clientUserMessageId: "mcp:conflicting-audit-1",
+      role: "user",
+      text: input,
+    }],
+  }];
+
+  const result = await desktopTaskHistory({ includeActive: false, limit: 1 });
+
+  assert.equal(result.items[0].prompt, input);
+  assert.equal(result.items[0].messages[0].text, input);
+  assert.equal(result.items[0].promptOrigin, undefined);
+  assert.equal(result.items[0].messages[0].origin, undefined);
+});
+
+test("desktop task history rejects a conflicting durable message identity", async () => {
+  const origin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    sourceThreadId: "thread-architect",
+    requestId: "durable-a",
+  };
+  const input = createInterstreamMessage({ ...origin, text: "Keep literal." });
+  const { desktopTaskHistory, state } = fixture({ run: null });
+  state.history = [{
+    id: "conflicting-durable",
+    prompt: input,
+    completed: true,
+    messages: [{
+      itemId: "provider-root",
+      clientUserMessageId: "mcp:durable-b",
+      origin,
+      role: "user",
+      text: input,
+    }],
+  }];
+
+  const result = await desktopTaskHistory({ includeActive: false, limit: 1 });
+
+  assert.equal(result.items[0].prompt, input);
+  assert.equal(result.items[0].messages[0].text, input);
+  assert.equal(result.items[0].messages[0].clientUserMessageId, undefined);
+  assert.equal(result.items[0].messages[0].author, undefined);
+  assert.equal(result.items[0].messages[0].origin, undefined);
+});
+
+test("desktop task history keeps an audit-correlated substituted body literal", async () => {
+  const origin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    sourceThreadId: "thread-architect",
+    requestId: "substituted-audit-1",
+  };
+  const admitted = createInterstreamMessage({ ...origin, text: "Admitted body." });
+  const substituted = createInterstreamMessage({ ...origin, text: "Substituted body." });
+  const { desktopTaskHistory, state } = fixture({
+    run: null,
+    interstreamOriginForClientMessage: () => ({
+      ...origin,
+      toolName: "hub_stream_message_send",
+      argumentsHash: "a".repeat(64),
+      contentHash: interstreamAuditContentHash(admitted),
+    }),
+  });
+  state.history = [{
+    id: "substituted-audit",
+    prompt: substituted,
+    completed: true,
+    messages: [{
+      itemId: "provider-root",
+      clientUserMessageId: "mcp:substituted-audit-1",
+      role: "user",
+      text: substituted,
+    }],
+  }];
+
+  const result = await desktopTaskHistory({ includeActive: false, limit: 1 });
+
+  assert.equal(result.items[0].prompt, substituted);
+  assert.equal(result.items[0].messages[0].text, substituted);
+  assert.equal(result.items[0].promptOrigin, undefined);
+  assert.equal(result.items[0].messages[0].origin, undefined);
 });
 
 test("desktop task history leaves ordinary user input unattributed", async () => {
@@ -1663,7 +2039,48 @@ test("desktop task history returns the preceding page for a supplied cursor", as
   assert.equal(older.nextBefore, 7);
 });
 
-test("desktop task history assigns exact turn receipts to synthetic user ordinals", async () => {
+test("desktop history keeps receipt-backed pin eligibility across full and paged reads", async () => {
+  const { desktopTaskHistory, state } = fixture({
+    run: null,
+    honorHistoryReadLimit: true,
+  });
+  state.history = Array.from({ length: 3 }, (_, index) => ({
+    id: `receipt-turn-${index + 1}`,
+    status: "completed",
+    completed: true,
+    startedAt: `2026-09-0${index + 5}T08:00:00.000Z`,
+    messages: [
+      {
+        itemId: "",
+        clientUserMessageId: `receipt-command-${index + 1}`,
+        role: "user",
+        text: `Сообщение ${index + 1}`,
+      },
+      { itemId: `receipt-answer-${index + 1}`, role: "agent", text: "Ответ" },
+    ],
+  }));
+  const assertPinnableUsers = (result) => {
+    for (const turn of result.items) {
+      const user = turn.messages.find((message) => message.role === "user");
+      assert.equal(user.itemId, durableUserCommandItemId(user.clientUserMessageId));
+      assert.equal(user.semanticSlot, "user-command");
+      assert.equal(user.pinEligible, true);
+    }
+  };
+
+  const full = await desktopTaskHistory({ limit: 3 });
+  assertPinnableUsers(full);
+  const newest = await desktopTaskHistory({ limit: 1 });
+  assertPinnableUsers(newest);
+  const preceding = await desktopTaskHistory({ before: newest.nextBefore, limit: 1 });
+  assertPinnableUsers(preceding);
+  assert.notEqual(
+    newest.items[0].messages[0].messageKey,
+    preceding.items[0].messages[0].messageKey,
+  );
+});
+
+test("desktop task history never assigns turn receipts to unkeyed provider occurrences", async () => {
   const { desktopTaskHistory, state } = fixture({
     run: null,
     receipts: {
@@ -1705,19 +2122,13 @@ test("desktop task history assigns exact turn receipts to synthetic user ordinal
 
   const result = await desktopTaskHistory({ limit: 1, includeActive: false });
 
-  assert.equal(result.items[0].messages[0].clientUserMessageId, "root-receipt");
-  assert.deepEqual(result.items[0].messages[0].attachments, [{
-    id: "root.png",
-    type: "image/png",
-  }]);
-  assert.equal(result.items[0].messages[1].clientUserMessageId, "steer-receipt");
-  assert.deepEqual(result.items[0].messages[1].attachments, [{
-    id: "steer.png",
-    type: "image/png",
-  }]);
+  assert.equal(result.items[0].messages[0].clientUserMessageId, undefined);
+  assert.deepEqual(result.items[0].messages[0].attachments, []);
+  assert.equal(result.items[0].messages[1].clientUserMessageId, undefined);
+  assert.deepEqual(result.items[0].messages[1].attachments, []);
 });
 
-test("desktop task history binds the one missing steer after subtracting known receipt identities", async () => {
+test("desktop task history leaves an external occurrence unbound when one receipt remains", async () => {
   const receipts = [{
     clientUserMessageId: "root-receipt",
     result: { attachments: [] },
@@ -1761,12 +2172,9 @@ test("desktop task history binds the one missing steer after subtracting known r
   }];
 
   const result = await desktopTaskHistory({ limit: 1, includeActive: false });
-  assert.equal(result.items[0].messages[1].clientUserMessageId, "steer-receipt");
+  assert.equal(result.items[0].messages[1].clientUserMessageId, undefined);
   assert.equal(result.items[0].messages[1].responseAnnotationRequest, "Уточнение без service markup");
-  assert.deepEqual(result.items[0].messages[1].attachments, [{
-    id: "steer.png",
-    type: "image/png",
-  }]);
+  assert.deepEqual(result.items[0].messages[1].attachments, []);
 });
 
 test("desktop task history keeps turn attachments on the root user only", async () => {
@@ -1801,6 +2209,205 @@ test("desktop task history keeps turn attachments on the root user only", async 
 
   assert.deepEqual(result.items[0].messages[0].attachments, [rootAttachment]);
   assert.deepEqual(result.items[0].messages[1].attachments, []);
+});
+
+test("rollout history preserves authors, trusted bodies and two images after a cold SQLite reload", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-history-projection-"));
+  const filePath = path.join(directory, "tasks.json");
+  const task = { provider: "codex", threadId: "thread-1", projectRoot: directory };
+  let store = new LocalTaskSyncStore({ filePath });
+  const images = ["first.png", "second.png"].map((id) => ({ id, name: "image.png", type: "image/png" }));
+  const origin = {
+    kind: "interstream", workspaceId: "hub", workspaceName: "Agent HUB",
+    streamId: "themes", streamName: "Themes", provider: "codex", model: "gpt-5.6-terra",
+    sourceThreadId: "themes-thread", requestId: "design-review",
+  };
+  const wrapped = createInterstreamMessage({ ...origin, text: "Проверь дизайн" });
+  try {
+    await store.load();
+    const view = new TaskViewController({
+      taskSyncStore: store,
+      findCodexRolloutPath: async () => "rollout.jsonl",
+      readCodexRolloutActivity: async () => ({
+        userMessages: { "turn-projection": [
+          { itemId: "image-user", clientUserMessageId: "image-client", role: "user", text: "Проверь скриншоты",
+            attachmentSources: images.map((image) => ({ type: "path", value: image.id })) },
+          { itemId: "msg-child", role: "agent", kind: "subagent", author: "Субагент (Terra)",
+            agentThreadId: "child-thread", model: "gpt-5.6-terra", text: "Отчёт" },
+          { itemId: "trusted-user", clientUserMessageId: "mcp:design-review", role: "user", origin, text: wrapped },
+          { itemId: "literal-user", clientUserMessageId: "literal-client", role: "user", text: wrapped },
+        ] },
+        finalMessages: { "turn-projection": "Итог" },
+      }),
+      attachmentImporter: async (sources) => {
+        assert.deepEqual(sources.map((source) => source.value), images.map((image) => image.id));
+        return structuredClone(images);
+      },
+    });
+    await view.readHistory(task, { completedOnly: true });
+    store.close();
+    store = new LocalTaskSyncStore({ filePath });
+    await store.load();
+    const { desktopTaskHistory } = fixture({
+      history: store.history(task), run: null,
+      receipts: { forMessage: () => null, forTurn: () => [] },
+    });
+    const result = await desktopTaskHistory({ limit: 1, includeActive: false });
+    const messages = result.items[0].messages;
+    assert.deepEqual(messages.find((message) => message.clientUserMessageId === "image-client").attachments, images);
+    const subagent = messages.find((message) => message.itemId === "msg-child");
+    assert.equal(subagent.role, "agent");
+    assert.equal(subagent.kind, "subagent");
+    assert.equal(subagent.author, "Субагент (Terra)");
+    assert.equal(subagent.agentThreadId, "child-thread");
+    const trusted = messages.find((message) => message.clientUserMessageId === "mcp:design-review");
+    assert.equal(trusted.text, "Проверь дизайн");
+    assert.deepEqual(trusted.origin, origin);
+    const literal = messages.find((message) => message.clientUserMessageId === "literal-client");
+    assert.equal(literal.role, "user");
+    assert.equal(literal.text, wrapped);
+    assert.equal(literal.author, undefined);
+  } finally {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("explicit archival recovery persists a report outside the cold live tail without changing real users", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub-archive-history-"));
+  const filePath = path.join(directory, "tasks.json");
+  const rolloutPath = path.join(directory, "rollout.jsonl");
+  const task = { provider: "codex", threadId: "thread-1", projectRoot: directory };
+  const turnId = "archived-turn";
+  let store = new LocalTaskSyncStore({ filePath });
+  try {
+    await writeFile(rolloutPath, [
+      { type: "session_meta", payload: { id: task.threadId } },
+      { type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
+      { type: "response_item", timestamp: "2026-09-09T11:48:29.467Z", payload: {
+        type: "message", role: "user", id: "child-report",
+        internal_chat_message_metadata_passthrough: { turn_id: turnId }, content: [{ type: "input_text",
+          text: `<subagent_notification>${JSON.stringify({ agent_path: "child", status: { completed: "Отчёт" } })}</subagent_notification>`,
+        }],
+      } },
+    ].map((row) => JSON.stringify(row)).join("\n") + "\n", "utf8");
+    const original = await readCodexRolloutActivityOnCurrentThread(rolloutPath);
+    const sourceOccurrenceId = original.userMessages[turnId][0].sourceOccurrenceId;
+    await appendFile(rolloutPath, JSON.stringify({ type: "padding", text: "x".repeat(17 * 1024 * 1024) }) + "\n");
+    await appendFile(rolloutPath, JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "latest-turn" } }) + "\n");
+    await store.load();
+    await store.recordHistory(task, [{ id: turnId, prompt: "Проверь", answer: "Итог", completed: true, status: "completed", messages: [
+      { itemId: "root", role: "user", clientUserMessageId: "real-client", text: "Отчёт" },
+      { itemId: "child-report", role: "user", text: "Отчёт", sourceOccurrenceId },
+    ] }]);
+    await store.save();
+    const view = createTaskViewComposition({ taskSyncStore: store, findCodexRolloutPath: async () => rolloutPath, readCodexRolloutActivity });
+    await view.readHistory(task, { completedOnly: true });
+    assert.equal(store.history(task)[0].messages.find((message) => message.itemId === "child-report").role, "user");
+    const withoutReport = store.history(task).map((turn) => ({
+      ...turn, messages: turn.messages.filter((message) => message.itemId !== "child-report"),
+    }));
+    await store.recordHistory(task, withoutReport);
+    await store.save();
+    await appendFile(rolloutPath, JSON.stringify({ type: "event_msg", payload: { type: "task_complete", turn_id: turnId, last_agent_message: "Итог" } }) + "\n");
+    const harness = fixture({ history: store.history(task), run: null, refresh: async (binding, options) => {
+      const result = await view.readHistory(binding, { ...options, completedOnly: true });
+      harness.state.history = store.history(task);
+      return result;
+    } });
+    const response = await harness.desktopTaskHistory({ provider: task.provider, threadId: task.threadId, repairSubagentTurnIds: [turnId], includeActive: false });
+    const report = response.items.find((turn) => turn.id === turnId).messages.find((message) => message.itemId === "child-report");
+    assert.equal(report.role, "agent");
+    assert.equal(report.kind, "subagent");
+    assert.equal(report.time, "2026-09-09T11:48:29.467Z");
+    await view.readHistory(task, { completedOnly: true });
+    store.close();
+    store = new LocalTaskSyncStore({ filePath });
+    await store.load();
+    const messages = store.history(task)[0].messages;
+    assert.equal(messages.find((message) => message.itemId === "child-report").role, "agent");
+    assert.equal(messages.find((message) => message.clientUserMessageId === "real-client").role, "user");
+    assert.equal(messages.filter((message) => message.kind === "subagent").length, 1);
+  } finally {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("fresh bounded history repairs only the exact preexisting misclassified subagent occurrence across SQLite reload", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-history-existing-subagent-"));
+  const filePath = path.join(directory, "tasks.json");
+  const task = { provider: "codex", threadId: "thread-1", projectRoot: directory };
+  const turnId = "turn-existing-subagent";
+  const sourceOccurrenceId = `codex-rollout:${"a".repeat(64)}`;
+  const root = { itemId: "root", clientUserMessageId: "root-client", role: "user", text: "Проверь" };
+  const genuineUser = { itemId: "literal", clientUserMessageId: "literal-client", role: "user", text: "Отчёт" };
+  const ghost = { itemId: "msg-child", sourceOccurrenceId, role: "user", text: "Отчёт" };
+  let store = new LocalTaskSyncStore({ filePath });
+  let refreshCount = 0;
+  try {
+    await store.load();
+    await store.recordHistory(task, [{
+      id: turnId, prompt: "Проверь", answer: "Итог", completed: true, status: "completed",
+      userMessageSnapshotAuthority: "incremental", messages: [root, genuineUser, ghost],
+    }]);
+    await store.save();
+    store.close();
+    store = new LocalTaskSyncStore({ filePath });
+    await store.load();
+    assert.equal(store.history(task)[0].messages.find((message) => message.itemId === "msg-child").role, "user");
+    const view = new TaskViewController({
+      taskSyncStore: store,
+      findCodexRolloutPath: async () => "rollout.jsonl",
+      readCodexRolloutActivity: async (_path, options) => {
+        refreshCount += 1;
+        assert.equal(options.tailBytes, 16 * 1024 * 1024);
+        return {
+          userMessageSnapshotAuthorityByTurnId: { [turnId]: "incremental" },
+          userMessages: { [turnId]: [root, genuineUser, {
+            ...ghost, role: "agent", kind: "subagent", agentThreadId: "child-thread",
+            author: "Субагент (Terra)", model: "gpt-5.6-terra",
+          }] },
+          finalMessages: { [turnId]: "Итог" },
+        };
+      },
+    });
+    const harness = fixture({
+      history: store.history(task), run: null,
+      receipts: { forMessage: () => null, forTurn: () => [] },
+      refresh: async () => {
+        const result = await view.readHistory(task, { completedOnly: true });
+        harness.state.history = store.history(task);
+        return result;
+      },
+    });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const result = await harness.desktopTaskHistory({
+        provider: task.provider, threadId: task.threadId, limit: 1, includeActive: false, refreshSource: true,
+      });
+      const messages = result.items[0].messages;
+      assert.deepEqual(messages.filter((message) => message.itemId === "msg-child").map((message) => message.role), ["agent"]);
+      assert.equal(messages.find((message) => message.clientUserMessageId === "literal-client").text, "Отчёт");
+      assert.equal(messages.find((message) => message.role === "agent" && message.kind === "subagent").author, "Субагент (Terra)");
+    }
+    assert.equal(refreshCount, 2);
+    const staleHistory = [{
+      id: turnId, prompt: "Проверь", answer: "Итог", completed: true, status: "completed",
+      userMessageSnapshotAuthority: "incremental", messages: [root, genuineUser, ghost],
+    }];
+    const refreshedHistory = store.history(task);
+    for (const [cached, durable] of [[staleHistory, refreshedHistory], [refreshedHistory, staleHistory]]) {
+      const merged = mergeCachedTaskHistory(cached, durable);
+      assert.deepEqual(merged[0].messages.filter((message) => message.itemId === "msg-child").map((message) => message.role), ["agent"]);
+    }
+    store.close();
+    store = new LocalTaskSyncStore({ filePath });
+    await store.load();
+    assert.deepEqual(store.history(task)[0].messages.filter((message) => message.itemId === "msg-child").map((message) => message.role), ["agent"]);
+  } finally {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("desktop task history restores receipt attachments from an explicit empty message list", async () => {
@@ -1910,6 +2517,7 @@ test("desktop task history hydrates only visible turns and evicts old hydrated t
   const { desktopTaskHistory, state, calls } = fixture({ run: null });
   state.history = Array.from({ length: 42 }, (_, index) => ({
     id: `turn-${index + 1}`,
+    userMessageSnapshotAuthority: "complete",
     prompt: `Вопрос ${index + 1}`,
     answer: `Ответ ${index + 1}`,
     status: "completed",
@@ -1991,7 +2599,7 @@ test("legacy VSC chronology survives initial load hydration reconnect journal an
   }];
   let store = new LocalTaskSyncStore({ filePath, databaseFile });
   await store.load();
-  store.recordHistory(binding, providerHistory);
+  await store.recordHistory(binding, providerHistory);
   let savedCompletion = null;
   const createHistory = () => createDesktopTaskHistoryFactory({
     selection: {

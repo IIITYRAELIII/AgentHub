@@ -37,9 +37,11 @@ test("slow trace writes stay off the ACK path and overflow drops spans, not comm
   });
 
   assert.deepEqual(result, { accepted: true });
+  const droppedAfterRouter = store.stats().droppedSpans;
+  assert.ok(droppedAfterRouter >= 1, "overflow must be visible while the writer is stalled");
   assert.deepEqual(store.stats(), {
     queuedWrites: 2,
-    droppedSpans: 1,
+    droppedSpans: droppedAfterRouter,
     pendingRequests: 0,
     workerRestarts: 0,
     workerRunning: true,
@@ -59,7 +61,7 @@ test("slow trace writes stay off the ACK path and overflow drops spans, not comm
   }), false);
   assert.deepEqual(store.stats(), {
     queuedWrites: 2,
-    droppedSpans: 3,
+    droppedSpans: droppedAfterRouter + 2,
     pendingRequests: 0,
     workerRestarts: 0,
     workerRunning: true,

@@ -1,5 +1,26 @@
+import { createHash } from "node:crypto";
+
 const OPEN_TAG = "<agent-hub-stream-message>";
 const CLOSE_TAG = "</agent-hub-stream-message>";
+const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
+const ORIGIN_FIELDS = [
+  "kind",
+  "workspaceId",
+  "workspaceName",
+  "streamId",
+  "streamName",
+  "provider",
+  "model",
+  "sourceThreadId",
+  "requestId",
+];
+const AUDITED_ORIGIN_FIELDS = [
+  "workspaceId",
+  "streamId",
+  "provider",
+  "sourceThreadId",
+  "requestId",
+];
 
 function cleanText(value, name, maximumLength) {
   const text = String(value ?? "").trim();
@@ -12,6 +33,33 @@ function cleanText(value, name, maximumLength) {
 function optionalText(value, maximumLength) {
   const text = String(value ?? "").trim();
   return text && text.length <= maximumLength && !text.includes("\0") ? text : "";
+}
+
+function auditedInterstreamOrigin(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const origin = {
+    workspaceId: optionalText(value.workspaceId, 300),
+    streamId: optionalText(value.streamId, 300),
+    provider: optionalText(value.provider, 100).toLowerCase(),
+    sourceThreadId: optionalText(value.sourceThreadId, 300),
+    requestId: optionalText(value.requestId, 200),
+  };
+  return AUDITED_ORIGIN_FIELDS.every((field) => origin[field]) ? origin : null;
+}
+
+function auditedInterstreamEvidence(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const origin = auditedInterstreamOrigin(value.origin ?? value);
+  const argumentsHash = optionalText(value.argumentsHash, 64).toLowerCase();
+  const contentHash = optionalText(value.contentHash, 64).toLowerCase();
+  const toolName = optionalText(value.toolName, 100);
+  if (
+    !origin
+    || !SHA256_PATTERN.test(argumentsHash)
+    || !SHA256_PATTERN.test(contentHash)
+    || !toolName
+  ) return null;
+  return { origin, argumentsHash, contentHash, toolName };
 }
 
 export function normalizeInterstreamOrigin(value) {
@@ -36,6 +84,10 @@ export function normalizeInterstreamOrigin(value) {
     ...(sourceThreadId ? { sourceThreadId } : {}),
     ...(requestId ? { requestId } : {}),
   };
+}
+
+export function normalizeInterstreamClientUserMessageId(value) {
+  return optionalText(value, 200) || null;
 }
 
 export function createInterstreamOrigin({
@@ -120,4 +172,127 @@ export function interstreamMessageDetails(value) {
     author: interstreamOriginAuthor(origin),
     text,
   };
+}
+
+export function interstreamAuditContentHash(value, { origin = null } = {}) {
+  const details = interstreamMessageDetails(value);
+  const stableOrigin = auditedInterstreamOrigin(details?.origin ?? origin);
+  const text = String(details?.text ?? value ?? "").trim();
+  if (!stableOrigin || !text || text.length > 100_000 || text.includes("\0")) return "";
+  return createHash("sha256").update(JSON.stringify({ ...stableOrigin, text })).digest("hex");
+}
+
+export function sameInterstreamOrigin(left, right) {
+  const normalizedLeft = normalizeInterstreamOrigin(left);
+  const normalizedRight = normalizeInterstreamOrigin(right);
+  return Boolean(normalizedLeft && normalizedRight && ORIGIN_FIELDS.every((field) => (
+    String(normalizedLeft[field] ?? "") === String(normalizedRight[field] ?? "")
+  )));
+}
+
+export function sameAuditedInterstreamOrigin(left, right) {
+  const normalizedLeft = auditedInterstreamOrigin(left);
+  const normalizedRight = auditedInterstreamOrigin(right);
+  return Boolean(normalizedLeft && normalizedRight && AUDITED_ORIGIN_FIELDS.every((field) => (
+    normalizedLeft[field] === normalizedRight[field]
+  )));
+}
+
+// An envelope that its supposed origin cannot confirm proves nothing. Neither
+// the body nor the attribution may be trusted then, so the projection keeps the
+// ordinary user attribution instead of naming a source it cannot verify. A body
+// without an envelope carries no competing claim and keeps its exact origin.
+export function confirmedInterstreamOrigin(value, {
+  origin = null,
+  clientUserMessageId = "",
+} = {}) {
+  const normalized = normalizeInterstreamOrigin(origin);
+  if (!normalized) return null;
+  // The alias binds the message to its request and is checked first, whether or
+  // not the body still carries an envelope: an already cleaned body proves
+  // nothing about whose request it belongs to.
+  const suppliedClientId = String(clientUserMessageId ?? "").trim();
+  if (suppliedClientId) {
+    const requestId = String(normalized.requestId ?? "").trim();
+    if (!requestId || suppliedClientId !== `mcp:${requestId}`) return null;
+  }
+  if (!interstreamMessageDetails(value)) return normalized;
+  return trustedInterstreamMessageDetails(value, { origin, clientUserMessageId }) ? normalized : null;
+}
+
+export function trustedInterstreamMessageDetails(value, {
+  origin = null,
+  clientUserMessageId = "",
+  audited = false,
+} = {}) {
+  const details = interstreamMessageDetails(value);
+  if (!details) return null;
+  const evidence = audited ? auditedInterstreamEvidence(origin) : null;
+  const expectedOrigin = audited ? evidence?.origin : normalizeInterstreamOrigin(origin);
+  const suppliedClientId = String(clientUserMessageId ?? "").trim();
+  const clientId = normalizeInterstreamClientUserMessageId(clientUserMessageId) ?? "";
+  const originMatches = audited
+    ? sameAuditedInterstreamOrigin(details.origin, expectedOrigin)
+    : sameInterstreamOrigin(details.origin, expectedOrigin);
+  if (!originMatches || (suppliedClientId && !clientId) || (audited && !clientId)) return null;
+  if (clientId || audited) {
+    const requestId = String(details.origin.requestId ?? "").trim();
+    if (!requestId || clientId !== `mcp:${requestId}`) return null;
+  }
+  if (audited && interstreamAuditContentHash(details.text, { origin: details.origin }) !== evidence.contentHash) {
+    return null;
+  }
+  return details;
+}
+
+export function trustedAuditedInterstreamBodyDetails(value, {
+  origin = null,
+  clientUserMessageId = "",
+} = {}) {
+  if (interstreamMessageDetails(value)) return null;
+  const evidence = auditedInterstreamEvidence(origin);
+  const clientId = normalizeInterstreamClientUserMessageId(clientUserMessageId) ?? "";
+  const text = String(value ?? "").trim();
+  if (
+    !evidence
+    || !clientId
+    || clientId !== `mcp:${evidence.origin.requestId}`
+    || interstreamAuditContentHash(text, { origin: evidence.origin }) !== evidence.contentHash
+  ) return null;
+  const normalizedOrigin = normalizeInterstreamOrigin(origin.origin ?? origin);
+  if (!normalizedOrigin) return null;
+  return {
+    ...normalizedOrigin,
+    origin: normalizedOrigin,
+    author: interstreamOriginAuthor(normalizedOrigin),
+    text,
+  };
+}
+
+export function consistentInterstreamRecordIdentity({
+  clientUserMessageIds = [],
+  origins = [],
+} = {}) {
+  const suppliedClientIds = clientUserMessageIds
+    .filter((value) => value != null && String(value).trim())
+    .map((value) => normalizeInterstreamClientUserMessageId(value));
+  const suppliedOrigins = origins
+    .filter((value) => value != null)
+    .map((value) => normalizeInterstreamOrigin(value));
+  const clientUserMessageId = suppliedClientIds[0] ?? null;
+  const messageOrigin = suppliedOrigins[0] ?? null;
+  const conflicted = suppliedClientIds.some((value) => !value || value !== clientUserMessageId)
+    || suppliedOrigins.some((value) => !value || !sameInterstreamOrigin(value, messageOrigin))
+    || Boolean(
+      messageOrigin?.requestId
+      && clientUserMessageId
+      && clientUserMessageId !== `mcp:${messageOrigin.requestId}`,
+    );
+  return conflicted
+    ? { conflicted: true, clientUserMessageId: null, messageOrigin: null }
+    : { conflicted: false, clientUserMessageId, messageOrigin };
+}
+
+export function interstreamDisplayText(value, identity = {}) {
+  return trustedInterstreamMessageDetails(value, identity)?.text ?? String(value ?? "");
 }

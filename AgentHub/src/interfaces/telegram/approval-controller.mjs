@@ -11,6 +11,7 @@ export class ApprovalController {
     currentChatId,
     mcpAdmissionCoordinator = null,
     transportGeneration = null,
+    asyncQuestions = null,
   }) {
     this.approvalProtocol = approvalProtocol;
     this.autoApprove = autoApprove;
@@ -26,6 +27,7 @@ export class ApprovalController {
       ? transportGeneration
       : null;
     this.pending = new Map();
+    this.asyncQuestions = asyncQuestions;
   }
 
   async request(rpcId, kind, params, text, run = null) {
@@ -124,6 +126,13 @@ export class ApprovalController {
   }
 
   async requestUserInput(rpcId, params, run = null) {
+    if (params?.asyncItem) {
+      if (!this.asyncQuestions) throw new Error("Асинхронные вопросы недоступны");
+      return this.asyncQuestions.observe(params.asyncItem, {
+        provider: "codex", threadId: params.threadId, turnId: params.turnId,
+        streamId: run?.streamId ?? params.streamId,
+      });
+    }
     const { createApprovalKey, formatToolRequestUserInput } = this.approvalProtocol;
     const key = createApprovalKey();
     const approval = {
@@ -230,10 +239,14 @@ export class ApprovalController {
             : null,
         }))
         : null,
-    }));
+    })).concat(this.asyncQuestions?.snapshot() ?? []);
   }
 
   async resolveFromDesktop(key, action, submitted = {}) {
+    if (String(key).startsWith("question:")) {
+      if (!this.asyncQuestions) throw new Error("Асинхронные вопросы недоступны");
+      return this.asyncQuestions.resolve(key, action, submitted);
+    }
     const { codexApprovalResponse, codexToolUserInputResponse } = this.approvalProtocol;
     const approval = this.pending.get(String(key ?? ""));
     if (!approval) throw new Error("Запрос подтверждения уже закрыт");

@@ -80,6 +80,34 @@ async function publishCandidate(candidate) {
   return git(candidate.releaseRoot, "rev-parse", "HEAD");
 }
 
+for (const binaryOnly of [false, true]) test(`PreRelease preserves ${binaryOnly ? "terminal binary patch delimiters" : "binary patch bytes and a trailing blank context line"}`, { timeout: 20000 }, async (context) => {
+  const setup = await fixture(context);
+  await writeFile(path.join(setup.primary, "z-final.txt"), "before\nunchanged\n\n", "utf8");
+  await writeFile(path.join(setup.primary, "binary.bin"), Buffer.from([0, 255, 1, 2, 3]));
+  await commit(setup.primary, "base with trailing blank line and binary");
+  await git(setup.primary, "push", "origin", "main");
+  const taskRoot = path.join(setup.root, "task-HUB-patch-bytes");
+  await git(setup.primary, "worktree", "add", "-b", "HUB-patch-bytes", taskRoot, "main");
+  context.after(() => git(setup.primary, "worktree", "remove", "--force", taskRoot).catch(() => {}));
+  if (!binaryOnly) await writeFile(path.join(taskRoot, "z-final.txt"), "after\nunchanged\n\n", "utf8");
+  const binary = Buffer.from([0, 254, 128, 7, 9, 0]);
+  await writeFile(path.join(taskRoot, "binary.bin"), binary);
+  const resultCommit = await commit(taskRoot, "binary result");
+  const request = { planRevision: "plan-raw-patch", projectRoot: setup.primary,
+    frozenTasks: [{ taskId: "task-patch-bytes", taskRevision: 2, resultCommit }] };
+  const candidate = await setup.service.prepareCandidate(request);
+  assert.equal(await git(candidate.releaseRoot, "rev-parse", `${candidate.preReleaseHead}^{tree}`),
+    await git(taskRoot, "rev-parse", `${resultCommit}^{tree}`));
+  const releasedText = await execFileAsync("git", ["show", `${candidate.preReleaseHead}:z-final.txt`], {
+    cwd: candidate.releaseRoot, windowsHide: true,
+  });
+  assert.equal(releasedText.stdout, `${binaryOnly ? "before" : "after"}\nunchanged\n\n`);
+  assert.deepEqual(await readFile(path.join(candidate.releaseRoot, "binary.bin")), binary);
+  const retry = await setup.service.prepareCandidate(request);
+  assert.equal(retry.reused, true);
+  assert.equal(retry.preReleaseHead, candidate.preReleaseHead);
+});
+
 test("release candidate uses an independent clone and leaves a clean primary attached to main", async (context) => {
   const setup = await fixture(context);
   await taskResult(setup, context, { branch: "dev", file: "dev-only.txt", content: "must-not-release\n" });
@@ -93,7 +121,7 @@ test("release candidate uses an independent clone and leaves a clean primary att
   const candidate = await setup.service.prepareCandidate({
     planRevision: "plan-clean",
     projectRoot: setup.primary,
-    frozenTasks: [{ taskId: "task-clean", resultCommit }],
+    frozenTasks: [{ taskId: "task-clean", taskRevision: 3, resultCommit }],
   });
 
   assert.equal(await git(setup.primary, "symbolic-ref", "HEAD"), before.branch);
@@ -104,6 +132,7 @@ test("release candidate uses an independent clone and leaves a clean primary att
   assert.notEqual(candidate.releaseGitCommonDir, candidate.primaryGitCommonDir);
   assert.equal(await git(candidate.releaseRoot, "branch", "--show-current"), "PreRelease");
   assert.equal(await git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:feature.txt`), "feature");
+  assert.equal(JSON.parse(await readFile(candidate.manifestFile, "utf8")).tasks[0].taskRevision, 3);
   await assert.rejects(git(candidate.releaseRoot, "cat-file", "-e", `${candidate.preReleaseHead}:dev-only.txt`));
   assert.equal((await assertReleaseCloneForPublication({ repositoryRoot: candidate.releaseRoot })).kind,
     "agent-hub-owned-release-clone");
@@ -111,6 +140,179 @@ test("release candidate uses an independent clone and leaves a clean primary att
     assertReleaseCloneForPublication({ repositoryRoot: setup.primary }),
     /requires an Agent Hub-owned independent release clone/u,
   );
+});
+
+test("main review discloses every commit since the last successful publication", async (context) => {
+  const setup = await fixture(context);
+  await writeFile(path.join(setup.primary, "AgentHub", "external.mjs"), "export const external = true;\n", "utf8");
+  await git(setup.primary, "add", "AgentHub/external.mjs");
+  await git(setup.primary,
+    "-c", "user.name=External Author",
+    "-c", "user.email=12345+external-user@users.noreply.github.com",
+    "commit", "-m", "external runtime change");
+  const externalCommit = await git(setup.primary, "rev-parse", "HEAD");
+  await git(setup.primary, "push", "origin", "main");
+
+  const pending = await setup.service.inspectMainChanges({
+    projectRoot: setup.primary,
+    publishedRevision: setup.baseCommit,
+  });
+
+  assert.equal(pending.localMain, externalCommit);
+  assert.equal(pending.originMain, externalCommit);
+  assert.equal(pending.approvalRequired, true);
+  assert.equal(pending.commits.length, 1);
+  assert.equal(pending.commits[0].commit, externalCommit);
+  assert.equal(pending.commits[0].author.githubLogin, "external-user");
+  assert.equal(pending.commits[0].committer.githubLogin, "external-user");
+  assert.deepEqual(pending.commits[0].files, ["AgentHub/external.mjs"]);
+  assert.deepEqual(pending.commits[0].impact, ["runtime"]);
+
+  const approved = await setup.service.inspectMainChanges({
+    projectRoot: setup.primary,
+    publishedRevision: setup.baseCommit,
+    approvedLocalMainCommit: externalCommit,
+    approvedOriginMainCommit: externalCommit,
+  });
+  assert.equal(approved.approved, true);
+  assert.equal(approved.approvalRequired, false);
+});
+
+test("release candidate aggregates effective dev deltas instead of replaying conflicting Task snapshots", async (context) => {
+  const setup = await fixture(context);
+  const firstResult = await taskResult(setup, context, {
+    branch: "HUB-effective-1", file: "app.txt", content: "first\n",
+  });
+  const secondResult = await taskResult(setup, context, {
+    branch: "HUB-effective-2", file: "app.txt", content: "second\n",
+  });
+  const devRoot = path.join(setup.root, "dev-effective");
+  await git(setup.primary, "worktree", "add", "-b", "dev-effective", devRoot, "main");
+  context.after(() => git(setup.primary, "worktree", "remove", "--force", devRoot).catch(() => {}));
+  await git(devRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "merge", "--no-ff", "--no-edit", firstResult);
+  const firstIntegration = await git(devRoot, "rev-parse", "HEAD");
+  await assert.rejects(
+    git(devRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "merge", "--no-ff", "--no-edit", secondResult),
+  );
+  await writeFile(path.join(devRoot, "app.txt"), "first + second\n", "utf8");
+  await git(devRoot, "add", "app.txt");
+  await git(devRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--no-edit");
+  const secondIntegration = await git(devRoot, "rev-parse", "HEAD");
+
+  const candidate = await setup.service.prepareCandidate({
+    planRevision: "plan-effective-deltas",
+    projectRoot: setup.primary,
+    frozenTasks: [{
+      taskId: "task-effective-1",
+      taskRevision: 4,
+      resultCommit: firstResult,
+      integrations: [{ commit: firstIntegration, parent: setup.baseCommit, order: 1 }],
+    }, {
+      taskId: "task-effective-2",
+      taskRevision: 6,
+      resultCommit: secondResult,
+      integrations: [{ commit: secondIntegration, parent: firstIntegration, order: 2 }],
+    }],
+  });
+
+  assert.equal(await git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:app.txt`), "first + second");
+  assert.equal((await git(candidate.releaseRoot, "show", "-s", "--format=%P", candidate.preReleaseHead)).split(" ").length, 3);
+});
+
+test("release candidate three-way applies an Await delta over a later non-overlapping main change", async (context) => {
+  const setup = await fixture(context);
+  await writeFile(path.join(setup.primary, "app.txt"), "task-base\nstable\nmain-base\n", "utf8");
+  const taskBase = await commit(setup.primary, "task base");
+  await git(setup.primary, "push", "origin", "main");
+  const taskRoot = path.join(setup.root, "task-three-way");
+  const devRoot = path.join(setup.root, "dev-three-way");
+  await git(setup.primary, "worktree", "add", "-b", "HUB-three-way", taskRoot, taskBase);
+  await git(setup.primary, "worktree", "add", "-b", "dev-three-way", devRoot, taskBase);
+  context.after(() => git(setup.primary, "worktree", "remove", "--force", taskRoot).catch(() => {}));
+  context.after(() => git(setup.primary, "worktree", "remove", "--force", devRoot).catch(() => {}));
+  await writeFile(path.join(taskRoot, "app.txt"), "task-change\nstable\nmain-base\n", "utf8");
+  const resultCommit = await commit(taskRoot, "task change");
+  await git(devRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "--no-edit", resultCommit);
+  const integrationCommit = await git(devRoot, "rev-parse", "HEAD");
+  await writeFile(path.join(setup.primary, "app.txt"), "task-base\nstable\nmain-change\n", "utf8");
+  await commit(setup.primary, "main advances independently");
+  await git(setup.primary, "push", "origin", "main");
+
+  const candidate = await setup.service.prepareCandidate({
+    planRevision: "plan-three-way",
+    projectRoot: setup.primary,
+    frozenTasks: [{
+      taskId: "task-three-way",
+      taskRevision: 8,
+      resultCommit,
+      integrations: [{ commit: integrationCommit, parent: taskBase, order: 1 }],
+    }],
+  });
+
+  assert.equal(await git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:app.txt`),
+    "task-change\nstable\nmain-change");
+});
+
+test("failed PreRelease rebuild preserves the last good branch and checkpoint", async (context) => {
+  const setup = await fixture(context);
+  const firstResult = await taskResult(setup, context, {
+    branch: "HUB-atomic-first", file: "app.txt", content: "first\n",
+  });
+  const secondResult = await taskResult(setup, context, {
+    branch: "HUB-atomic-second", file: "app.txt", content: "second\n",
+  });
+  const first = await setup.service.prepareCandidate({
+    planRevision: "plan-atomic-first",
+    projectRoot: setup.primary,
+    frozenTasks: [{ taskId: "task-first", taskRevision: 2, resultCommit: firstResult }],
+  });
+  const checkpointFile = path.join(setup.dataDir, "release-repositories", path.basename(path.dirname(first.releaseRoot)), "checkpoint.json");
+  const checkpointBefore = JSON.parse(await readFile(checkpointFile, "utf8"));
+
+  await assert.rejects(
+    () => setup.service.prepareCandidate({
+      planRevision: "plan-atomic-conflict",
+      projectRoot: setup.primary,
+      frozenTasks: [
+        { taskId: "task-first", taskRevision: 2, resultCommit: firstResult },
+        { taskId: "task-second", taskRevision: 3, resultCommit: secondResult },
+      ],
+    }),
+    /PreRelease delta/u,
+  );
+
+  assert.equal(await git(first.releaseRoot, "rev-parse", "refs/heads/PreRelease"), first.preReleaseHead);
+  assert.equal(await git(first.releaseRoot, "branch", "--show-current"), "PreRelease");
+  assert.equal(await git(first.releaseRoot, "status", "--porcelain=v1"), "");
+  assert.deepEqual(JSON.parse(await readFile(checkpointFile, "utf8")), checkpointBefore);
+});
+
+test("candidate validation failure cannot replace the last good PreRelease", async (context) => {
+  const setup = await fixture(context);
+  const firstResult = await taskResult(setup, context, { branch: "HUB-cas-first" });
+  const first = await setup.service.prepareCandidate({
+    planRevision: "plan-cas-first",
+    projectRoot: setup.primary,
+    frozenTasks: [{ taskId: "task-first", taskRevision: 2, resultCommit: firstResult }],
+  });
+  const secondResult = await taskResult(setup, context, {
+    branch: "HUB-cas-second", file: "second.txt", content: "second\n",
+  });
+
+  await assert.rejects(
+    () => setup.service.prepareCandidate({
+      planRevision: "plan-cas-stale",
+      projectRoot: setup.primary,
+      frozenTasks: [{ taskId: "task-second", taskRevision: 4, resultCommit: secondResult }],
+      validateBeforeCommit: async () => { throw new Error("release plan revision changed"); },
+    }),
+    /release plan revision changed/u,
+  );
+
+  assert.equal(await git(first.releaseRoot, "rev-parse", "refs/heads/PreRelease"), first.preReleaseHead);
+  assert.equal(await git(first.releaseRoot, "branch", "--show-current"), "PreRelease");
+  assert.equal(await git(first.releaseRoot, "status", "--porcelain=v1"), "");
 });
 
 test("release contour resolves the exact clean main from a real managed clone without a dev checkout", async (context) => {
@@ -122,7 +324,7 @@ test("release contour resolves the exact clean main from a real managed clone wi
   const candidate = await setup.service.prepareCandidate({
     planRevision: "plan-release-contour",
     projectRoot: setup.primary,
-    frozenTasks: [{ taskId: "task-release-contour", resultCommit }],
+    frozenTasks: [{ taskId: "task-release-contour", taskRevision: 2, resultCommit }],
   });
   const releaseHead = await publishCandidate(candidate);
   const sourceRoot = path.join(candidate.releaseRoot, "AgentHub");
@@ -153,7 +355,7 @@ test("release contour fails closed for dirty or non-main managed clone state", a
   const candidate = await setup.service.prepareCandidate({
     planRevision: "plan-release-contour-guard",
     projectRoot: setup.primary,
-    frozenTasks: [{ taskId: "task-release-contour-guard", resultCommit }],
+    frozenTasks: [{ taskId: "task-release-contour-guard", taskRevision: 2, resultCommit }],
   });
   const sourceRoot = path.join(candidate.releaseRoot, "AgentHub");
   await assert.rejects(
@@ -184,7 +386,7 @@ test("an unmarked repository at the managed clone path is never adopted", async 
     setup.service.prepareCandidate({
       planRevision: "plan-unmarked",
       projectRoot: setup.primary,
-      frozenTasks: [{ taskId: "task-unmarked", resultCommit }],
+      frozenTasks: [{ taskId: "task-unmarked", taskRevision: 2, resultCommit }],
     }),
     /unmarked release repository requires explicit migration/u,
   );
@@ -312,7 +514,7 @@ test("dirty primary bytes, retry checkpoint and legacy linked holder remain unto
   const request = {
     planRevision: "plan-dirty-retry",
     projectRoot: setup.primary,
-    frozenTasks: [{ taskId: "task-dirty", resultCommit }],
+    frozenTasks: [{ taskId: "task-dirty", taskRevision: 2, resultCommit }],
   };
 
   const first = await setup.service.prepareCandidate(request);
@@ -329,7 +531,10 @@ test("dirty primary bytes, retry checkpoint and legacy linked holder remain unto
   assert.ok(first.legacyLinkedHolders.some((item) => path.resolve(item.path) === path.resolve(legacyRoot)));
   assert.match(await git(setup.primary, "worktree", "list", "--porcelain"), /legacy-prerelease-holder/u);
   const manifest = JSON.parse(await readFile(first.manifestFile, "utf8"));
-  assert.deepEqual(manifest.tasks, [{ taskId: "task-dirty", resultCommit }]);
+  assert.equal(manifest.schemaVersion, 2);
+  assert.equal(manifest.tasks[0].taskId, "task-dirty");
+  assert.equal(manifest.tasks[0].resultCommit, resultCommit);
+  assert.equal(manifest.tasks[0].integrations.length, 1);
 });
 
 test("post-release fast-forward preserves non-overlapping intentional local bytes", async (context) => {
@@ -338,7 +543,7 @@ test("post-release fast-forward preserves non-overlapping intentional local byte
   const candidate = await setup.service.prepareCandidate({
     planRevision: "plan-sync",
     projectRoot: setup.primary,
-    frozenTasks: [{ taskId: "task-sync", resultCommit }],
+    frozenTasks: [{ taskId: "task-sync", taskRevision: 2, resultCommit }],
   });
   const teamBytes = Buffer.from("team-still-local\r\n", "utf8");
   const accessBytes = Buffer.from("access-still-local\r\n", "utf8");
@@ -370,7 +575,7 @@ test("post-release overlap is diagnostic and leaves primary HEAD and bytes uncha
   const candidate = await setup.service.prepareCandidate({
     planRevision: "plan-conflict",
     projectRoot: setup.primary,
-    frozenTasks: [{ taskId: "task-conflict", resultCommit }],
+    frozenTasks: [{ taskId: "task-conflict", taskRevision: 2, resultCommit }],
   });
   const localBytes = Buffer.from("local-team-must-win\r\n", "utf8");
   await writeFile(path.join(setup.primary, ".team", "participant.json"), localBytes);

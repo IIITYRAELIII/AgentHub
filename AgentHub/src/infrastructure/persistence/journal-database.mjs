@@ -3,10 +3,16 @@ import { mkdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import {
+  buildVirtualJournalProjection,
+  compactVirtualJournalHtml,
+  profileCohortVirtualJournalSummary,
+  virtualJournalDaySections,
+} from "../../domain/journal-virtual-projection.mjs";
 import { applyLedgerDelta } from "./incremental-ledger.mjs";
 import { readJsonWithBackup } from "./state-store.mjs";
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const LEDGER_VERSION = 9;
 const LEGACY_IMPORT_KEY = "work-log-usage-v1";
 const ACCOUNT_USAGE_PROJECTION_VERSION_KEY = "account_usage_projection_version";
@@ -16,13 +22,18 @@ function configure(database) {
   database.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
-    PRAGMA busy_timeout = 5000;
+    PRAGMA busy_timeout = 0;
+  `);
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    database.exec(`
     CREATE TABLE IF NOT EXISTS journal_meta (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       schema_version INTEGER NOT NULL,
       source_version TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      html TEXT NOT NULL
+      html TEXT NOT NULL,
+      summary_json TEXT NOT NULL DEFAULT '{"version":1,"buckets":[]}'
     );
     CREATE TABLE IF NOT EXISTS journal_days (
       date TEXT PRIMARY KEY,
@@ -32,6 +43,24 @@ function configure(database) {
       id TEXT PRIMARY KEY,
       html TEXT NOT NULL
     ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS journal_turn_index (
+      turn_ref TEXT PRIMARY KEY,
+      date TEXT NOT NULL,
+      day_ms INTEGER NOT NULL,
+      workspace_id TEXT NOT NULL,
+      stream_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      completed_at_ms INTEGER NOT NULL,
+      html TEXT NOT NULL
+    ) WITHOUT ROWID;
+    CREATE INDEX IF NOT EXISTS journal_turn_index_scope_idx
+      ON journal_turn_index(workspace_id, stream_id, completed_at_ms DESC, turn_ref);
+    CREATE INDEX IF NOT EXISTS journal_turn_index_workspace_idx
+      ON journal_turn_index(workspace_id, completed_at_ms DESC, turn_ref);
+    CREATE INDEX IF NOT EXISTS journal_turn_index_provider_idx
+      ON journal_turn_index(provider, completed_at_ms DESC, turn_ref);
     CREATE TABLE IF NOT EXISTS journal_records (
       provider TEXT NOT NULL,
       thread_id TEXT NOT NULL,
@@ -71,30 +100,52 @@ function configure(database) {
     INSERT OR IGNORE INTO journal_store_meta (key, value) VALUES ('ledger_version', '9');
     INSERT OR IGNORE INTO journal_store_meta (key, value)
       VALUES ('account_usage_projection_version', '');
-  `);
-  const journalRecordColumns = new Set(database.prepare("PRAGMA table_info(journal_records)")
-    .all().map((row) => row.name));
-  if (!journalRecordColumns.has("observed_at_ms")) {
-    database.exec("ALTER TABLE journal_records ADD COLUMN observed_at_ms INTEGER");
+    `);
+    const journalMetaColumns = new Set(database.prepare("PRAGMA table_info(journal_meta)")
+      .all().map((row) => row.name));
+    const missingVirtualProjectionColumn = !journalMetaColumns.has("summary_json");
+    if (missingVirtualProjectionColumn) {
+      database.exec(`
+        ALTER TABLE journal_meta
+        ADD COLUMN summary_json TEXT NOT NULL DEFAULT '{"version":1,"buckets":[]}'
+      `);
+    }
+    const virtualProjectionMigration = missingVirtualProjectionColumn
+      || Number(database.prepare("SELECT schema_version FROM journal_meta WHERE id = 1")
+        .get()?.schema_version ?? SCHEMA_VERSION) < SCHEMA_VERSION;
+    const journalRecordColumns = new Set(database.prepare("PRAGMA table_info(journal_records)")
+      .all().map((row) => row.name));
+    if (!journalRecordColumns.has("observed_at_ms")) {
+      database.exec("ALTER TABLE journal_records ADD COLUMN observed_at_ms INTEGER");
+    }
+    if (!journalRecordColumns.has("changed_revision")) {
+      database.exec("ALTER TABLE journal_records ADD COLUMN changed_revision INTEGER NOT NULL DEFAULT 0");
+      const migrationRevision = Math.max(1, Number(database.prepare(
+        "SELECT value FROM journal_store_meta WHERE key = 'revision'",
+      ).get()?.value) || 0);
+      database.prepare("UPDATE journal_records SET changed_revision = ?").run(migrationRevision);
+      database.prepare("UPDATE journal_store_meta SET value = ? WHERE key = 'revision'")
+        .run(String(migrationRevision));
+    }
+    database.exec(`
+      UPDATE journal_records
+      SET observed_at_ms = completed_at_ms
+      WHERE observed_at_ms IS NULL;
+      CREATE INDEX IF NOT EXISTS journal_records_observed_idx
+        ON journal_records(observed_at_ms, provider, thread_id, turn_id);
+      CREATE INDEX IF NOT EXISTS journal_records_changed_idx
+        ON journal_records(changed_revision, provider, thread_id, turn_id);
+    `);
+    if (virtualProjectionMigration) migrateStoredVirtualProjection(database);
+    database.exec("COMMIT");
+  } catch (error) {
+    try {
+      database.exec("ROLLBACK");
+    } catch {
+      // Preserve the migration failure when SQLite already rolled back the transaction.
+    }
+    throw error;
   }
-  if (!journalRecordColumns.has("changed_revision")) {
-    database.exec("ALTER TABLE journal_records ADD COLUMN changed_revision INTEGER NOT NULL DEFAULT 0");
-    const migrationRevision = Math.max(1, Number(database.prepare(
-      "SELECT value FROM journal_store_meta WHERE key = 'revision'",
-    ).get()?.value) || 0);
-    database.prepare("UPDATE journal_records SET changed_revision = ?").run(migrationRevision);
-    database.prepare("UPDATE journal_store_meta SET value = ? WHERE key = 'revision'")
-      .run(String(migrationRevision));
-  }
-  database.exec(`
-    UPDATE journal_records
-    SET observed_at_ms = completed_at_ms
-    WHERE observed_at_ms IS NULL;
-    CREATE INDEX IF NOT EXISTS journal_records_observed_idx
-      ON journal_records(observed_at_ms, provider, thread_id, turn_id);
-    CREATE INDEX IF NOT EXISTS journal_records_changed_idx
-      ON journal_records(changed_revision, provider, thread_id, turn_id);
-  `);
 }
 
 function tableExists(database, name) {
@@ -105,8 +156,16 @@ function tableExists(database, name) {
 
 function publicIndex(row, revision = 0) {
   if (!row) return null;
+  let summary = { version: 1, buckets: [] };
+  try {
+    const parsed = JSON.parse(String(row.summary_json ?? ""));
+    if (parsed && typeof parsed === "object" && Array.isArray(parsed.buckets)) summary = parsed;
+  } catch {
+    // A damaged optional projection cannot make the durable journal unreadable.
+  }
   return {
     html: String(row.html ?? ""),
+    summary,
     updatedAt: String(row.updated_at ?? ""),
     version: String(row.source_version ?? ""),
     revision: Number(revision) || 0,
@@ -225,7 +284,86 @@ function projectionVersion(payload) {
     html: payload.html,
     days: payload.days,
     turns: payload.turns,
+    summary: payload.summary,
+    entries: payload.entries,
+    virtualDates: payload.virtualDates,
+    virtualComplete: payload.virtualComplete,
   }));
+}
+
+function upsertVirtualEntries(database, entries) {
+  const insertTurnIndex = database.prepare(`
+    INSERT INTO journal_turn_index
+      (turn_ref, date, day_ms, workspace_id, stream_id, provider, thread_id, turn_id,
+       completed_at_ms, html)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(turn_ref) DO UPDATE SET
+      date = excluded.date,
+      day_ms = excluded.day_ms,
+      workspace_id = excluded.workspace_id,
+      stream_id = excluded.stream_id,
+      provider = excluded.provider,
+      thread_id = excluded.thread_id,
+      turn_id = excluded.turn_id,
+      completed_at_ms = excluded.completed_at_ms,
+      html = excluded.html
+  `);
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const turnRef = String(entry?.turnRef ?? "").trim().slice(0, 1024);
+    const workspaceId = String(entry?.workspaceId ?? "").trim().slice(0, 256);
+    const streamId = String(entry?.streamId ?? "").trim().slice(0, 256);
+    const provider = String(entry?.provider ?? "").trim().slice(0, 32);
+    const threadId = String(entry?.threadId ?? "").trim().slice(0, 256);
+    const turnId = String(entry?.turnId ?? "").trim().slice(0, 256);
+    if (!turnRef || !workspaceId || !streamId || !provider || !threadId || !turnId) continue;
+    insertTurnIndex.run(
+      turnRef,
+      String(entry.date ?? "").trim().slice(0, 10),
+      Math.max(0, Number(entry.dayMs) || 0),
+      workspaceId,
+      streamId,
+      provider,
+      threadId,
+      turnId,
+      Math.max(0, Number(entry.completedAtMs) || 0),
+      String(entry.html ?? ""),
+    );
+  }
+}
+
+function migrateStoredVirtualProjection(database) {
+  const meta = database.prepare(
+    "SELECT html, source_version FROM journal_meta WHERE id = 1",
+  ).get();
+  if (!meta) return;
+  const storedDays = new Map(database.prepare("SELECT date, html FROM journal_days")
+    .all().map((row) => [String(row.date), String(row.html)]));
+  const sections = [];
+  const seenDates = new Set();
+  for (const section of virtualJournalDaySections(meta.html)) {
+    const html = /<div\b[^>]*data-work-log-row/iu.test(section.html)
+      ? section.html
+      : storedDays.get(section.date);
+    if (!html) throw new Error(`Stored journal day cannot be migrated: ${section.date}`);
+    sections.push({ ...section, html });
+    seenDates.add(section.date);
+  }
+  for (const [date, html] of storedDays) {
+    if (!seenDates.has(date)) sections.push({ date, html });
+  }
+  const virtual = buildVirtualJournalProjection(sections);
+  const compactHtml = compactVirtualJournalHtml(meta.html);
+  const migratedVersion = sha256Version(JSON.stringify({
+    sourceVersion: String(meta.source_version ?? ""),
+    virtualProjectionVersion: 1,
+  }));
+  database.exec("DELETE FROM journal_turn_index;");
+  upsertVirtualEntries(database, virtual.entries);
+  database.prepare(`
+    UPDATE journal_meta
+    SET schema_version = ?, source_version = ?, html = ?, summary_json = ?
+    WHERE id = 1
+  `).run(SCHEMA_VERSION, migratedVersion, compactHtml, JSON.stringify(virtual.summary));
 }
 
 function writeProjection(database, payload, {
@@ -236,6 +374,35 @@ function writeProjection(database, payload, {
   const html = String(payload.html ?? "");
   const days = payload.days ?? {};
   const turns = payload.turns ?? {};
+  let summary = payload.summary && typeof payload.summary === "object"
+    ? payload.summary
+    : { version: 1, buckets: [] };
+  const entries = Array.isArray(payload.entries) ? payload.entries : [];
+  const virtualDates = [...new Set((Array.isArray(payload.virtualDates)
+    ? payload.virtualDates
+    : []).map((date) => String(date ?? "").trim().slice(0, 10)).filter(Boolean))];
+  const virtualComplete = payload.virtualComplete !== false;
+  if (!virtualComplete) {
+    let currentSummary = { version: 1, buckets: [] };
+    try {
+      const parsed = JSON.parse(String(database.prepare(
+        "SELECT summary_json FROM journal_meta WHERE id = 1",
+      ).get()?.summary_json ?? ""));
+      if (parsed && typeof parsed === "object" && Array.isArray(parsed.buckets)) {
+        currentSummary = parsed;
+      }
+    } catch {
+      // Corrupt optional totals are replaced only for exact dates present in this projection.
+    }
+    const replacedDates = new Set(virtualDates);
+    summary = {
+      version: 1,
+      buckets: [
+        ...currentSummary.buckets.filter((bucket) => !replacedDates.has(String(bucket?.date ?? ""))),
+        ...(Array.isArray(summary.buckets) ? summary.buckets : []),
+      ],
+    };
+  }
   /* Ленивая оболочка не несёт содержимого: фрагмент дня уже лежит в базе.
      Если проекция пришла без замены для такого дня, стирать его нельзя —
      иначе день откроется пустым и клиент зациклится на его догрузке. */
@@ -252,22 +419,37 @@ function writeProjection(database, payload, {
   } else {
     database.exec("DELETE FROM journal_days; DELETE FROM journal_turns;");
   }
+  if (virtualComplete) {
+    database.exec("DELETE FROM journal_turn_index;");
+  } else if (virtualDates.length) {
+    const placeholders = virtualDates.map(() => "?").join(", ");
+    database.prepare(`DELETE FROM journal_turn_index WHERE date IN (${placeholders})`)
+      .run(...virtualDates);
+  }
   const insertDay = database.prepare(
     "INSERT INTO journal_days (date, html) VALUES (?, ?) ON CONFLICT(date) DO UPDATE SET html = excluded.html",
   );
   for (const [date, dayHtml] of Object.entries(days)) insertDay.run(date, dayHtml);
   const insertTurn = database.prepare("INSERT INTO journal_turns (id, html) VALUES (?, ?)");
   for (const [id, turnHtml] of Object.entries(turns)) insertTurn.run(id, turnHtml);
+  upsertVirtualEntries(database, entries);
   const resolvedVersion = String(version || projectionVersion(payload));
   database.prepare(`
-    INSERT INTO journal_meta (id, schema_version, source_version, updated_at, html)
-    VALUES (1, ?, ?, ?, ?)
+    INSERT INTO journal_meta (id, schema_version, source_version, updated_at, html, summary_json)
+    VALUES (1, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       schema_version = excluded.schema_version,
       source_version = excluded.source_version,
       updated_at = excluded.updated_at,
-      html = excluded.html
-  `).run(SCHEMA_VERSION, resolvedVersion, String(updatedAt), String(payload.html ?? ""));
+      html = excluded.html,
+      summary_json = excluded.summary_json
+  `).run(
+    SCHEMA_VERSION,
+    resolvedVersion,
+    String(updatedAt),
+    String(payload.html ?? ""),
+    JSON.stringify(summary),
+  );
   if (accountUsageProjectionVersion != null) {
     writeStoreMetadataValue(
       database,
@@ -355,9 +537,13 @@ export class JournalDatabase {
   #subscriptionTimer = null;
   #observedRevision = null;
   #pollingRevision = false;
+  #turnPageSnapshotHook;
 
-  constructor(file) {
+  constructor(file, { turnPageSnapshotHook = null } = {}) {
     this.#file = path.resolve(file);
+    this.#turnPageSnapshotHook = typeof turnPageSnapshotHook === "function"
+      ? turnPageSnapshotHook
+      : null;
   }
 
   async #open() {
@@ -461,13 +647,14 @@ export class JournalDatabase {
     };
   }
 
-  async loadLedger() {
+  async loadLedger({ usageHistory = false } = {}) {
     const database = await this.#open();
     const turns = {};
     for (const row of database.prepare(`
-      SELECT provider, thread_id, turn_id, record_json
+      SELECT provider, thread_id, turn_id,
+        ${usageHistory ? "CASE WHEN json_valid(record_json) THEN json_remove(record_json, '$.diff') ELSE record_json END" : "record_json"} AS record_json
       FROM journal_records ORDER BY provider, thread_id, turn_id
-    `).all()) {
+    `).iterate()) {
       try {
         const record = normalizedRecord(JSON.parse(row.record_json),
           ledgerKey({ provider: row.provider, threadId: row.thread_id, turnId: row.turn_id }));
@@ -556,7 +743,57 @@ export class JournalDatabase {
     return result;
   }
 
-  async upsertRecords(records) {
+  async *metadataRecords({ provider }) {
+    const database = await this.#open();
+    for (const row of database.prepare(`
+      SELECT provider, thread_id, turn_id,
+        CASE WHEN json_valid(record_json) THEN json_remove(record_json, '$.diff') END AS record_json
+      FROM journal_records WHERE provider = ? ORDER BY thread_id, turn_id
+    `).iterate(provider)) {
+      try {
+        const record = normalizedRecord(JSON.parse(row.record_json), ledgerKey({
+          provider: row.provider, threadId: row.thread_id, turnId: row.turn_id,
+        }));
+        if (record) yield record;
+      } catch {
+        // Preserve malformed persisted rows for explicit repair, as loadLedger does.
+      }
+    }
+  }
+
+  async changedRecordProjectRoots({ afterRevision = -1, throughRevision }) {
+    return (await this.#open()).prepare(`
+      SELECT DISTINCT project_root AS projectRoot FROM journal_records
+      WHERE changed_revision > ? AND changed_revision <= ?
+    `).all(afterRevision, throughRevision).map((row) => row.projectRoot);
+  }
+
+  async recordRevision({ provider, threadId, turnId }) {
+    return (await this.#open()).prepare(`
+      SELECT changed_revision FROM journal_records WHERE provider = ? AND thread_id = ? AND turn_id = ?
+    `).get(provider, threadId, turnId)?.changed_revision ?? null;
+  }
+
+  async taskTitleMetadata({ provider, threadId }) {
+    // Without an explicit task seek SQLite may choose the WITHOUT ROWID
+    // provider prefix, rereading every provider record for each catalog title.
+    return (await this.#open()).prepare(`
+      SELECT provider, thread_id AS threadId, turn_id AS turnId,
+        project_root AS projectRoot, changed_revision AS changedRevision,
+        CASE WHEN json_valid(record_json) THEN json_extract(record_json, '$.taskTitle') END AS taskTitle
+      FROM journal_records INDEXED BY journal_records_task_idx
+      WHERE provider = ? AND task_thread_id = ?
+    `).all(provider, threadId);
+  }
+
+  async projectionSource() {
+    const value = (await this.#open()).prepare(
+      "SELECT value FROM journal_store_meta WHERE key = 'journal_projection_source'",
+    ).get()?.value;
+    return value ? JSON.parse(value) : null;
+  }
+
+  async upsertRecords(records, { expectedRevision = null } = {}) {
     const values = Array.isArray(records)
       ? records.map((record) => ["", record])
       : Object.entries(records ?? {});
@@ -566,7 +803,13 @@ export class JournalDatabase {
     database.exec("BEGIN IMMEDIATE");
     let revision;
     try {
-      const nextRevision = revisionOf(database) + 1;
+      const currentRevision = revisionOf(database);
+      if (expectedRevision !== null && currentRevision !== Number(expectedRevision)) {
+        const error = new Error("Journal records changed before the metadata update");
+        error.code = "JOURNAL_REVISION_CONFLICT";
+        throw error;
+      }
+      const nextRevision = currentRevision + 1;
       const insert = insertRecordStatement(database);
       for (const row of rows) insertRow(insert, row, nextRevision);
       revision = advanceRevision(database);
@@ -794,12 +1037,31 @@ export class JournalDatabase {
       html: String(payload?.html ?? ""),
       days: payload?.days && typeof payload.days === "object" ? payload.days : {},
       turns: payload?.turns && typeof payload.turns === "object" ? payload.turns : {},
+      summary: payload?.summary && typeof payload.summary === "object"
+        ? payload.summary
+        : { version: 1, buckets: [] },
+      entries: Array.isArray(payload?.entries) ? payload.entries : [],
+      virtualDates: Array.isArray(payload?.virtualDates) ? payload.virtualDates : [],
+      virtualComplete: payload?.virtualComplete !== false,
     };
     database.exec("BEGIN IMMEDIATE");
     let revision;
     let version;
     try {
+      const currentRevision = revisionOf(database);
+      if (options.expectedRevision != null
+        && currentRevision !== Number(options.expectedRevision)) {
+        database.exec("ROLLBACK");
+        return {
+          projected: false,
+          conflict: true,
+          expectedRevision: Number(options.expectedRevision),
+          revision: currentRevision,
+        };
+      }
       version = writeProjection(database, normalized, options);
+      writeStoreMetadataValue(database, "journal_projection_source", options.projectionSource
+        ? JSON.stringify(options.projectionSource) : "");
       revision = advanceRevision(database);
       database.exec("COMMIT");
     } catch (error) {
@@ -864,7 +1126,7 @@ export class JournalDatabase {
   async payload() {
     const database = await this.#open();
     const row = database.prepare(
-      "SELECT source_version, updated_at, html FROM journal_meta WHERE id = 1",
+      "SELECT source_version, updated_at, html, summary_json FROM journal_meta WHERE id = 1",
     ).get();
     return publicIndex(row, revisionOf(database));
   }
@@ -901,6 +1163,13 @@ export class JournalDatabase {
       turns: Object.fromEntries(database.prepare(
         "SELECT id, html FROM journal_turns ORDER BY id",
       ).all().map((row) => [row.id, row.html])),
+      turnEntries: database.prepare(`
+        SELECT turn_ref AS turnRef, date, day_ms AS dayMs, workspace_id AS workspaceId,
+          stream_id AS streamId, provider, thread_id AS threadId, turn_id AS turnId,
+          completed_at_ms AS completedAtMs, html
+        FROM journal_turn_index
+        ORDER BY completed_at_ms DESC, turn_ref
+      `).all(),
     };
   }
 
@@ -982,6 +1251,107 @@ export class JournalDatabase {
       fragments: Object.fromEntries(page.map((row) => [row.key, row.html])),
       nextOffset: rows.length > boundedLimit ? boundedOffset + page.length : null,
     };
+  }
+
+  async turnPage({
+    expectedVersion = "",
+    profileMode = "",
+    workspaceId = "",
+    streamId = "",
+    provider = "",
+    threadId = "",
+    fromMs = 0,
+    toMs = 0,
+    offset = 0,
+    limit = 20,
+  } = {}) {
+    const database = await this.#open();
+    const requestedVersion = String(expectedVersion ?? "").trim().slice(0, 128);
+    const requestedProfileMode = String(profileMode ?? "").trim() === "stream" ? "stream" : "";
+    const workspace = String(workspaceId ?? "").trim().slice(0, 256);
+    const stream = String(streamId ?? "").trim().slice(0, 256);
+    const providerName = String(provider ?? "").trim().slice(0, 32);
+    const thread = String(threadId ?? "").trim().slice(0, 256);
+    const boundedNumber = (value, maximum = Number.MAX_SAFE_INTEGER) => {
+      const number = Number(value);
+      return Number.isSafeInteger(number) && number > 0 ? Math.min(number, maximum) : 0;
+    };
+    const rangeStart = boundedNumber(fromMs);
+    const rangeEnd = boundedNumber(toMs);
+    const boundedOffset = boundedNumber(offset, 1_000_000);
+    const boundedLimit = Math.max(1, Math.min(50, Math.floor(Number(limit) || 20)));
+    const clauses = [];
+    const parameters = [];
+    const constrain = (column, value) => {
+      if (!value) return;
+      clauses.push(`${column} = ?`);
+      parameters.push(value);
+    };
+    constrain("workspace_id", workspace);
+    constrain("stream_id", stream);
+    constrain("provider", providerName);
+    constrain("thread_id", thread);
+    if (rangeStart) {
+      clauses.push("completed_at_ms >= ?");
+      parameters.push(rangeStart);
+    }
+    if (rangeEnd) {
+      clauses.push("completed_at_ms < ?");
+      parameters.push(rangeEnd);
+    }
+    database.exec("BEGIN");
+    try {
+      const meta = database.prepare(
+        "SELECT source_version, summary_json FROM journal_meta WHERE id = 1",
+      ).get();
+      const actualVersion = String(meta?.source_version ?? "");
+      await this.#turnPageSnapshotHook?.({ version: actualVersion });
+      if (requestedVersion && requestedVersion !== actualVersion) {
+        database.exec("COMMIT");
+        return { conflict: true, version: actualVersion, turns: [], nextOffset: null };
+      }
+      const rows = database.prepare(`
+        SELECT turn_ref AS turnRef, date, html
+        FROM journal_turn_index
+        ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""}
+        ORDER BY completed_at_ms DESC, turn_ref
+        LIMIT ? OFFSET ?
+      `).all(
+        ...parameters,
+        boundedLimit + 1,
+        boundedOffset,
+      );
+      const page = rows.slice(0, boundedLimit);
+      let profileSummary = null;
+      if (requestedProfileMode) {
+        try {
+          const parsed = JSON.parse(String(meta?.summary_json ?? ""));
+          if (parsed && Number(parsed.version) === 1 && Array.isArray(parsed.buckets)) {
+            profileSummary = profileCohortVirtualJournalSummary(parsed, {
+              requiredWorkspaceId: workspace,
+              requiredStreamId: stream,
+            });
+          }
+        } catch {
+          profileSummary = { version: 1, buckets: [] };
+        }
+      }
+      database.exec("COMMIT");
+      return {
+        conflict: false,
+        version: actualVersion,
+        turns: page.map((row) => ({ turnRef: row.turnRef, date: row.date, html: row.html })),
+        nextOffset: rows.length > boundedLimit ? boundedOffset + page.length : null,
+        ...(profileSummary ? { profileSummary } : {}),
+      };
+    } catch (error) {
+      try {
+        database.exec("ROLLBACK");
+      } catch {
+        // Preserve the read failure when SQLite already ended the transaction.
+      }
+      throw error;
+    }
   }
 
   close() {

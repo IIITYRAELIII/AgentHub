@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createInterstreamMessage } from "../../src/domain/interstream-message.mjs";
 import { messageWithTaskReferences } from "../../src/domain/task-board-task.mjs";
+import { codexRolloutHistory } from "../../src/interfaces/telegram/task-view-controller.mjs";
+import { parseCodexRolloutActivity } from "../../src/providers/codex/codex-rollout-activity.mjs";
 import {
   codexExplicitFinalTurnAnswer,
   codexFinalTurnAnswer,
@@ -18,11 +21,93 @@ import {
   mergeActiveTaskHistory,
   mergeCompletedTaskHistory,
   visibleTaskHistory,
+  withoutMisclassifiedSubagentUsers,
 } from "../../src/application/task-history.mjs";
 import {
   CODEX_CONTEXT_PROBE_PROMPT,
   CODEX_CONTEXT_PROBE_RESPONSE,
 } from "../../src/domain/codex-context-probe.mjs";
+
+test("subagent occurrence repair fails closed without unique unbound source evidence", () => {
+  const sourceOccurrenceId = `codex-rollout:${"b".repeat(64)}`;
+  const oldUser = { role: "user", itemId: "old-id", text: "Old text", sourceOccurrenceId };
+  const subagent = {
+    role: "agent", kind: "subagent", agentThreadId: "child", itemId: "new-id", text: "New text", sourceOccurrenceId,
+  };
+  assert.deepEqual(withoutMisclassifiedSubagentUsers([oldUser], [subagent]), []);
+  for (const [current, observed] of [
+    [[{ ...oldUser, sourceOccurrenceId: "" }], [subagent]],
+    [[oldUser], [{ ...subagent, sourceOccurrenceId: `codex-rollout:${"c".repeat(64)}` }]],
+    [[{ ...oldUser, sourceOccurrenceId: "provider-controlled" }], [{ ...subagent, sourceOccurrenceId: "provider-controlled" }]],
+    [[{ ...oldUser, clientUserMessageId: "user-client" }], [subagent]],
+    [[{ ...oldUser, origin: { requestId: "retained-origin" } }], [subagent]],
+    [[oldUser], [{ ...subagent, clientUserMessageId: "other-client" }]],
+    [[oldUser], [{ ...subagent, agentThreadId: "" }]],
+    [[oldUser], [{ ...subagent, kind: "" }]],
+    [[oldUser, { ...oldUser }], [subagent]],
+    [[oldUser], [subagent, { ...subagent }]],
+  ]) {
+    assert.deepEqual(withoutMisclassifiedSubagentUsers(current, observed), current);
+  }
+});
+
+test("rollout history retains subagent authors and real users through the catalog adapter", () => {
+  const turnId = "turn-subagent-history";
+  const notification = `<subagent_notification>${JSON.stringify({
+    agent_path: "child-history", model: "gpt-5.6-terra", status: { completed: "Отчёт" },
+  })}</subagent_notification>`;
+  const activity = parseCodexRolloutActivity([
+    { type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
+    { type: "response_item", payload: {
+      type: "message", id: "msg-provider-child", role: "user",
+      content: [{ type: "input_text", text: notification }],
+      internal_chat_message_metadata_passthrough: { turn_id: turnId },
+    } },
+  ].map((entry) => JSON.stringify(entry)).join("\n"));
+  activity.userMessages[turnId].push({
+    itemId: "real-user", role: "user", clientUserMessageId: "real-client", text: "Отчёт",
+  });
+  const [history] = codexRolloutHistory(activity);
+  assert.deepEqual(history.messages.map(({ role, kind, author, text }) => ({ role, kind, author, text })), [
+    { role: "agent", kind: "subagent", author: "Субагент (Terra)", text: "Отчёт" },
+    { role: "user", kind: undefined, author: undefined, text: "Отчёт" },
+  ]);
+  assert.equal(history.messages[0].itemId, "msg-provider-child");
+  assert.equal(history.messages[0].agentThreadId, "child-history");
+  assert.equal(history.messages[1].clientUserMessageId, "real-client");
+  const [notificationOnly] = codexRolloutHistory({
+    userMessages: { [turnId]: [activity.userMessages[turnId][0]] },
+  });
+  assert.equal(notificationOnly.prompt, "");
+  assert.equal(notificationOnly.userMessagesObserved, false);
+  assert.equal(notificationOnly.messages.length, 1);
+});
+
+test("rollout history preserves image sources and strips only trusted interstream wrappers", () => {
+  const origin = {
+    kind: "interstream", workspaceId: "hub", workspaceName: "Agent HUB",
+    streamId: "themes", streamName: "Themes", provider: "codex", model: "gpt-5.6-terra",
+    sourceThreadId: "themes-thread", requestId: "design-review",
+  };
+  const wrapper = createInterstreamMessage({ ...origin, text: "Проверь дизайн" });
+  const images = ["first.png", "second.png"].map((name) => ({ type: "path", value: `attachments/${name}` }));
+  const [history] = codexRolloutHistory({ userMessages: { "turn-images": [
+    { role: "user", itemId: "image-user", clientUserMessageId: "client-image", text: "Проверь", attachmentSources: images },
+    { role: "user", itemId: "trusted", clientUserMessageId: "mcp:design-review", origin, text: wrapper },
+    { role: "user", itemId: "literal", clientUserMessageId: "literal-client", text: wrapper },
+    { role: "user", itemId: "image-only", text: "", attachmentSources: images },
+    { role: "user", itemId: "conflicting", clientUserMessageId: "mcp:design-review", origin,
+      text: createInterstreamMessage({ ...origin, sourceThreadId: "foreign-thread", text: "Keep literal" }) },
+  ] } });
+  assert.deepEqual(history.messages[0].attachmentSources, images);
+  assert.equal(history.messages[1].text, "Проверь дизайн");
+  assert.deepEqual(history.messages[1].origin, origin);
+  assert.equal(history.messages[1].author, "Agent HUB - Themes (Terra)");
+  assert.equal(history.messages[2].text, wrapper);
+  assert.equal(history.messages[2].author, undefined);
+  assert.deepEqual(history.messages[3].attachmentSources, images);
+  assert.ok(history.messages[4].text.startsWith("<agent-hub-stream-message>"));
+});
 
 test("completed history overlay replaces a stale live answer immediately", () => {
   const history = [{
@@ -399,7 +484,7 @@ test("Codex internal prompt envelopes never become user messages", () => {
   ]);
 });
 
-test("inter-Stream messages retain their source author without exposing the envelope", () => {
+test("provider history preserves a literal inter-Stream envelope without durable identity", () => {
   const prompt = [
     "<agent-hub-stream-message>",
     JSON.stringify({
@@ -417,11 +502,12 @@ test("inter-Stream messages retain their source author without exposing the enve
     status: "inProgress",
     items: [{ type: "userMessage", content: [{ type: "text", text: prompt }] }],
   }]);
-  assert.equal(displayUserPrompt(prompt), "Release the ready changes.");
-  assert.equal(exchange.messages[0].author, "Agent Hub - Architect (Codex)");
+  assert.equal(displayUserPrompt(prompt), prompt);
+  assert.equal(exchange.prompt, prompt);
+  assert.equal(exchange.messages[0].author, undefined);
 });
 
-test("legacy inter-Stream messages remain readable without an agent suffix", () => {
+test("legacy envelope shape alone does not assign an inter-Stream author", () => {
   const prompt = [
     "<agent-hub-stream-message>",
     JSON.stringify({
@@ -438,7 +524,8 @@ test("legacy inter-Stream messages remain readable without an agent suffix", () 
     status: "completed",
     items: [{ type: "userMessage", content: [{ type: "text", text: prompt }] }],
   }]);
-  assert.equal(exchange.messages[0].author, "Agent Hub - Architect");
+  assert.equal(exchange.prompt, prompt);
+  assert.equal(exchange.messages[0].author, undefined);
 });
 
 test("Codex abort marker never replaces the user's original prompt", () => {
@@ -525,7 +612,7 @@ test("response annotations never expose inline attachment service markup", () =>
   assert.equal(displayUserPrompt(prompt), "сделал?\n\nДА СКОЛЬКО МОЖНО ДУБЛЕЙ!?!?!?!?!?");
 });
 
-test("exact turn receipts bind only the unmatched provider user remainder", () => {
+test("exact turn receipts never bind an unidentified provider occurrence by count", () => {
   const messages = [{
     role: "user",
     clientUserMessageId: "root-client",
@@ -548,8 +635,8 @@ test("exact turn receipts bind only the unmatched provider user remainder", () =
   const bindings = exactTurnReceiptBindings(messages, receipts);
   assert.equal(bindings.get(0).clientUserMessageId, "root-client");
   assert.equal(bindings.get(2).clientUserMessageId, "first-steer");
-  assert.equal(bindings.get(3).clientUserMessageId, "second-steer");
-  assert.equal(exactTurnReceiptBindings(messages, receipts.slice(0, 2)).has(3), false);
+  assert.equal(bindings.has(3), false);
+  assert.equal(bindings.size, 2);
 });
 
 test("displayUserPrompt keeps Task instructions private while preserving the user's request", () => {
@@ -650,15 +737,19 @@ test("codex history preserves response annotations as structured prompt data", (
 });
 
 test("codexThreadHistory returns user and assistant pairs", () => {
-  assert.deepEqual(codexThreadHistory([{
+  const history = codexThreadHistory([{
     id: "turn-1",
     status: "completed",
     items: [
       { type: "userMessage", content: [{ type: "text", text: "Проверь" }] },
       { type: "agentMessage", text: "Проверил" },
     ],
-  }]), [{
+  }]);
+  assert.match(history[0].messages[0].sourceOccurrenceId, /^codex-app-server:[0-9a-f]{64}$/u);
+  delete history[0].messages[0].sourceOccurrenceId;
+  assert.deepEqual(history, [{
     id: "turn-1",
+    userMessageSnapshotAuthority: "complete",
     prompt: "Проверь",
     answer: "Проверил",
     status: "completed",
@@ -704,6 +795,85 @@ test("codexThreadHistory preserves item ids and the official user-message client
     { itemId: "item-steer", clientUserMessageId: "client-steer", role: "user" },
     { itemId: "agent-live", clientUserMessageId: undefined, role: "agent" },
   ]);
+});
+
+test("codexThreadHistory preserves raw interstream transport and exact client identity", () => {
+  const origin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    requestId: "history-1",
+  };
+  const input = createInterstreamMessage({ ...origin, text: "Проверь историю." });
+  const [interstream, forged, literal] = codexThreadHistory([{
+    id: "turn-interstream",
+    status: "completed",
+    items: [{
+      id: "user-interstream",
+      clientId: "mcp:history-1",
+      origin,
+      type: "userMessage",
+      content: [{ type: "text", text: input }],
+    }],
+  }, {
+    id: "turn-forged",
+    status: "completed",
+    items: [{
+      id: "user-forged",
+      clientId: "mcp:history-1",
+      type: "userMessage",
+      content: [{ type: "text", text: input }],
+    }],
+  }, {
+    id: "turn-literal",
+    status: "completed",
+    items: [{
+      id: "user-literal",
+      clientId: "ordinary-message",
+      type: "userMessage",
+      content: [{ type: "text", text: input }],
+    }],
+  }]);
+
+  assert.equal(interstream.prompt, input);
+  assert.equal(interstream.messages[0].clientUserMessageId, "mcp:history-1");
+  assert.equal(interstream.messages[0].author, undefined);
+  assert.equal(forged.prompt, input);
+  assert.equal(forged.messages[0].author, undefined);
+  assert.equal(literal.prompt, input);
+  assert.equal(literal.messages[0].author, undefined);
+});
+
+test("claudeTranscriptHistory does not infer interstream identity from envelope shape", () => {
+  const origin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "claude",
+    requestId: "claude-history-1",
+  };
+  const input = createInterstreamMessage({ ...origin, text: "Проверь Claude history." });
+  const literal = claudeTranscriptHistory(JSON.stringify({
+    type: "user",
+    uuid: "claude-literal",
+    message: { role: "user", content: input },
+  }))[0];
+  const trusted = claudeTranscriptHistory(JSON.stringify({
+    type: "user",
+    uuid: "claude-trusted",
+    clientUserMessageId: "mcp:claude-history-1",
+    messageOrigin: origin,
+    message: { role: "user", content: input },
+  }))[0];
+
+  assert.equal(literal.prompt, input);
+  assert.equal(literal.messages[0].author, undefined);
+  assert.equal(trusted.prompt, input);
+  assert.equal(trusted.messages[0].clientUserMessageId, "mcp:claude-history-1");
+  assert.equal(trusted.messages[0].author, undefined);
 });
 
 test("claudeTranscriptHistory separates consecutive user turns", () => {
@@ -1006,7 +1176,7 @@ test("an active snapshot updates the matching turn without duplicating it", () =
   assert.equal(history[0].answer, "Ответ формируется");
 });
 
-test("active receipt adopts the rollout user and keeps its screenshot", () => {
+test("active receipt preserves an unidentified provider occurrence beside the exact command", () => {
   const history = [{
     id: "live-turn",
     prompt: "Сообщение со скрином",
@@ -1030,15 +1200,16 @@ test("active receipt adopts the rollout user and keeps its screenshot", () => {
   });
 
   const users = history[0].messages.filter((message) => message.role === "user");
-  assert.equal(users.length, 1);
+  assert.equal(users.length, 2);
   assert.equal(users[0].itemId, "official-user-item");
-  assert.equal(users[0].clientUserMessageId, "client-message-id");
+  assert.equal(users[0].clientUserMessageId, undefined);
   assert.deepEqual(users[0].attachmentSources, [
     { type: "path", value: "C:/Temp/screenshot.png" },
   ]);
-  assert.deepEqual(users[0].attachments, [
+  assert.deepEqual(users[1].attachments, [
     { id: "uploaded-screenshot", type: "image/png" },
   ]);
+  assert.equal(users[1].clientUserMessageId, "client-message-id");
 });
 
 test("active rollout keeps root and image steer as exact separate users", () => {
@@ -1080,6 +1251,10 @@ test("active rollout keeps root and image steer as exact separate users", () => 
     clientUserMessageId: message.clientUserMessageId,
     text: message.text,
   })), [{
+    itemId: "live-turn:user:0",
+    clientUserMessageId: undefined,
+    text: "ну исправляй",
+  }, {
     itemId: "provider-root",
     clientUserMessageId: "root-client",
     text: "ну исправляй",
@@ -1088,7 +1263,7 @@ test("active rollout keeps root and image steer as exact separate users", () => 
     clientUserMessageId: "steer-client",
     text: "почему сообщение в очереди",
   }]);
-  assert.deepEqual(users[1].attachmentSources, [{
+  assert.deepEqual(users[2].attachmentSources, [{
     type: "path",
     value: "C:/AgentHub/attachments/queue.png",
   }]);
@@ -1141,7 +1316,7 @@ test("active inter-Stream steer cannot replace an unidentified root user", () =>
   }]);
 });
 
-test("active inter-Stream root adopts its exact managed identity without a duplicate", () => {
+test("active inter-Stream root preserves its unidentified provider predecessor", () => {
   const origin = {
     kind: "interstream",
     workspaceId: "workspace-1",
@@ -1179,14 +1354,14 @@ test("active inter-Stream root adopts its exact managed identity without a dupli
   });
 
   const users = history[0].messages.filter((message) => message.role === "user");
-  assert.equal(users.length, 1);
+  assert.equal(users.length, 2);
   assert.equal(users[0].itemId, "provider-root");
-  assert.equal(users[0].clientUserMessageId, "mcp:architect-continuation-1");
-  assert.equal(users[0].author, "Agent HUB - Architect (Sol)");
-  assert.deepEqual(users[0].origin, origin);
+  assert.equal(users[1].clientUserMessageId, "mcp:architect-continuation-1");
+  assert.equal(users[1].author, "Agent HUB - Architect (Sol)");
+  assert.deepEqual(users[1].origin, origin);
 });
 
-test("active inter-Stream root reconciles its provider alias by request identity", () => {
+test("active inter-Stream request identity does not adopt an unidentified provider occurrence", () => {
   const origin = {
     kind: "interstream",
     workspaceId: "workspace-1",
@@ -1223,11 +1398,13 @@ test("active inter-Stream root reconciles its provider alias by request identity
   });
 
   const users = history[0].messages.filter((message) => message.role === "user");
-  assert.equal(users.length, 1);
+  assert.equal(users.length, 2);
   assert.equal(users[0].itemId, "provider-root");
-  assert.equal(users[0].clientUserMessageId, "mcp:architect-continuation-without-client-id");
-  assert.equal(users[0].author, "Agent HUB - Architect (Sol)");
-  assert.deepEqual(users[0].origin, origin);
+  assert.equal(users[0].clientUserMessageId, undefined);
+  assert.equal(users[0].author, undefined);
+  assert.equal(users[1].clientUserMessageId, "mcp:architect-continuation-without-client-id");
+  assert.equal(users[1].author, "Agent HUB - Architect (Sol)");
+  assert.deepEqual(users[1].origin, origin);
 });
 
 test("displayUserPrompt unwraps Codex Desktop file metadata", () => {
@@ -1275,7 +1452,7 @@ test("Codex Desktop attachment without request text stays a single attachment me
   }]);
 });
 
-test("official root message replaces its synthetic rollout root by structural identity", () => {
+test("raw provider history preserves an unresolved rollout alias without content guessing", () => {
   const turnId = "turn-with-rollout-root";
   const [exchange] = codexThreadHistory([{
     id: turnId,
@@ -1296,13 +1473,15 @@ test("official root message replaces its synthetic rollout root by structural id
   }]);
 
   const users = exchange.messages.filter((message) => message.role === "user");
-  assert.equal(users.length, 1);
+  assert.equal(users.length, 2);
   assert.equal(users[0].itemId, "official-user-item");
   assert.equal(users[0].clientUserMessageId, "client-message-id");
   assert.deepEqual(users[0].attachmentSources, [{
     type: "path",
     value: "C:/Temp/screenshot.png",
   }]);
+  assert.equal(users[1].itemId, `${turnId}:rollout-user:0`);
+  assert.equal(users[1].clientUserMessageId, undefined);
 });
 
 test("sparse canonical steer does not replace a synthetic root by ordinal", () => {
@@ -1531,4 +1710,140 @@ test("a new active Codex turn never adopts an older interrupted turn", () => {
   assert.equal(history[0].startedAt, "2026-08-09T19:29:18.000Z");
   assert.equal(history[1].id, "019fe81e-b0d7-7f91-8dc9-c473b8e2c9b2");
   assert.equal(history[1].startedAt, "2026-08-09T20:02:33.000Z");
+});
+
+test("Codex App Server keeps source occurrence when client identity appears later", () => {
+  const turn = {
+    id: "turn-app-server-enrichment",
+    status: "inProgress",
+    items: [{
+      id: "provider-user-item",
+      type: "userMessage",
+      content: [{ type: "text", text: "Accepted payload" }],
+      createdAt: "2026-09-05T10:00:00.000Z",
+    }],
+  };
+  const before = codexThreadHistory([turn])[0].messages[0];
+  turn.items[0].clientId = "accepted-app-server-message";
+  const after = codexThreadHistory([turn])[0].messages[0];
+
+  assert.equal(before.sourceOccurrenceId, after.sourceOccurrenceId);
+  assert.equal(after.clientUserMessageId, "accepted-app-server-message");
+});
+
+test("an active provider snapshot preserves accepted authority and its unproven occurrence", () => {
+  const history = [{
+    id: "turn-active",
+    prompt: "Root",
+    status: "inProgress",
+    active: true,
+    completed: false,
+    messages: [
+      {
+        itemId: "owned-root",
+        role: "user",
+        text: "Root",
+        clientUserMessageId: "accepted-root",
+        origin: { streamId: "owned-stream" },
+      },
+      { itemId: "owned-steer", role: "user", text: "Same", clientUserMessageId: "accepted-steer" },
+      { itemId: "external-owned", role: "user", text: "Same" },
+    ],
+  }];
+
+  mergeActiveTaskHistory(history, {
+    active: true,
+    provider: "codex",
+    turnId: "turn-active",
+    prompt: "Same",
+    userMessages: [
+      {
+        itemId: "provider-root",
+        role: "user",
+        text: "Provider root",
+        clientUserMessageId: "accepted-root",
+        origin: { streamId: "provider-stream" },
+      },
+      { itemId: "provider-tail", role: "user", text: "Same" },
+    ],
+  });
+
+  const users = history[0].messages.filter((message) => message.role === "user");
+  assert.deepEqual(users.map((message) => message.clientUserMessageId).filter(Boolean), [
+    "accepted-root",
+    "accepted-steer",
+  ]);
+  assert.equal(history[0].prompt, "Root");
+  assert.equal(users[0].text, "Root");
+  assert.deepEqual(users[0].origin, { streamId: "owned-stream" });
+  assert.equal(users.some((message) => message.itemId === "external-owned"), true);
+  assert.equal(users.some((message) => message.itemId === "provider-tail"), true);
+});
+
+test("active history applies the shared complete-snapshot occurrence contract", () => {
+  const history = [{
+    id: "turn-parity",
+    userMessageSnapshotAuthority: "complete",
+    prompt: "Owned",
+    status: "inProgress",
+    active: true,
+    completed: false,
+    messages: [
+      { role: "user", text: "Owned", clientUserMessageId: "accepted" },
+      { role: "user", text: "Old external", itemId: "collision" },
+    ],
+  }];
+  const observed = {
+    active: true,
+    turnId: "turn-parity",
+    userMessageSnapshotAuthority: "complete",
+    userMessages: [
+      { role: "user", text: "Provider payload", clientUserMessageId: "accepted" },
+      { role: "user", text: "External one", itemId: "collision" },
+      { role: "user", text: "External two", itemId: "collision" },
+    ],
+  };
+
+  mergeActiveTaskHistory(history, observed);
+  const once = structuredClone(history[0].messages);
+  mergeActiveTaskHistory(history, observed);
+
+  assert.deepEqual(history[0].messages, once);
+  assert.deepEqual(history[0].messages.map((message) => message.text), [
+    "Owned",
+    "External one",
+    "External two",
+  ]);
+});
+
+test("active history replays a cumulative incremental source observation once", () => {
+  const history = [];
+  const first = {
+    role: "user",
+    text: "Одинаковый текст",
+    sourceOccurrenceId: `codex-rollout:${"3".repeat(64)}`,
+  };
+  const appended = {
+    ...first,
+    sourceOccurrenceId: `codex-rollout:${"4".repeat(64)}`,
+  };
+  const observe = (userMessages) => mergeActiveTaskHistory(history, {
+    active: true,
+    provider: "codex",
+    turnId: "turn-incremental-replay",
+    userMessageSnapshotAuthority: "incremental",
+    userMessages,
+  });
+
+  observe([first]);
+  observe([first]);
+  observe([first]);
+  assert.equal(history[0].messages.filter((message) => message.role === "user").length, 1);
+  observe([first, appended]);
+  observe([first, appended]);
+  assert.deepEqual(
+    history[0].messages.filter((message) => message.role === "user")
+      .map((message) => message.sourceOccurrenceId),
+    [first.sourceOccurrenceId, appended.sourceOccurrenceId],
+  );
 });

@@ -1,10 +1,41 @@
 import assert from "node:assert/strict";
+import { MessageReceiptRegistry } from "../../../src/infrastructure/persistence/message-receipts.mjs";
 import test from "node:test";
+import { createDesktopReadComposition } from "../../../src/composition/desktop-read-composition.mjs";
+
+test("exact receipt display follows queued and active messages without changing wire input", async () => {
+  const receipts = new MessageReceiptRegistry();
+  const identity = { provider: "codex", threadId: "thread-1", clientUserMessageId: "client-1" };
+  const raw = "Ответ на вопрос агента [call-123]\nИсходный Thread: thread-1\n\nВопрос\nОтвет: Да";
+  const displayText = "Вопрос\nОтвет: Да";
+  receipts.reserve(identity, "fingerprint", { pending: true, displayText });
+  const setup = fixture({ receiptForMessage: (key) => receipts.get(key) });
+  setup.state.queued = [{ ...identity, id: "queue-1", input: raw }];
+  setup.state.pending = [{ ...identity, id: "pending-1", input: raw }];
+  let snapshot = await setup.desktopSnapshot();
+  assert.deepEqual(snapshot.deferredInputs.map((item) => [item.text, item.preview]), [[displayText, displayText], [displayText, displayText]]);
+  assert.equal(setup.state.queued[0].input, raw);
+  setup.run.promptPreview = raw;
+  setup.run.userMessages[0].text = raw;
+  const live = setup.desktopRunSnapshot(setup.run);
+  assert.equal(live.prompt, displayText);
+  assert.equal(live.userMessages[0].text, displayText);
+  assert.equal(setup.run.userMessages[0].text, raw);
+  setup.run.threadId = "other-thread";
+  setup.state.queued[0].threadId = "other-thread";
+  setup.state.pending[0].clientUserMessageId = "different-id";
+  snapshot = await setup.desktopSnapshot();
+  assert.deepEqual(snapshot.deferredInputs.map((item) => item.text), [raw, raw]);
+  assert.equal(setup.desktopRunSnapshot(setup.run).userMessages[0].text, raw);
+});
 import {
   createDesktopSnapshotFactory,
   workspaceBindingForTask,
 } from "../../../src/interfaces/desktop/desktop-snapshot.mjs";
 import { mergeTaskCatalog } from "../../../src/application/task-catalog-projection.mjs";
+import { messageWithTaskReferences, taskReferenceDescriptor } from "../../../src/domain/task-board-task.mjs";
+import { createInterstreamMessage, interstreamOriginAuthor } from "../../../src/domain/interstream-message.mjs";
+import { restoreDeferredInput } from "../../../src/domain/deferred-input.mjs";
 import {
   createMaintenanceOperation,
   MAINTENANCE_OPERATION_KINDS,
@@ -42,7 +73,7 @@ function fixture(overrides = {}) {
     observer: true,
     executionOwner: "hub",
     appServer: "Agent Hub Server",
-    model: "gpt-6-astra",
+    model: "gpt-test",
     reasoning: "high",
     progressStage: "Проверяю",
     promptPreview: "Вопрос",
@@ -118,7 +149,7 @@ function fixture(overrides = {}) {
     refreshCatalog: null,
     ...overrides,
   };
-  const factory = createDesktopSnapshotFactory({
+  const factory = (overrides.createFactory ?? createDesktopSnapshotFactory)({
     clock: {
       nowMs: () => 7_000,
       nowIso: () => "2026-07-30T10:02:00.000Z",
@@ -197,7 +228,7 @@ function fixture(overrides = {}) {
       current: () => ({
         activeProvider: "codex",
         activeProjectRoot: "D:/work",
-        codexModel: "gpt-6-astra",
+        codexModel: "gpt-test",
         claudeModel: "opus",
         codexReasoningEffort: "high",
         claudeReasoningEffort: "medium",
@@ -214,8 +245,8 @@ function fixture(overrides = {}) {
           streams: { "stream-1": [{ label: "релизь", text: "релизь" }] },
           workspaces: {},
         },
-        codexModels: [{ value: "gpt-6-astra", label: "GPT-6-Astra" }],
-        codexModelLabel: () => "GPT-6-Astra",
+        codexModels: [{ value: "gpt-test", label: "GPT Test" }],
+        codexModelLabel: () => "GPT Test",
         claudeModels: ["opus"],
         claudeModelLabels: { opus: "Opus" },
         reasoningEfforts: ["medium", "high"],
@@ -267,9 +298,78 @@ function fixture(overrides = {}) {
     },
     monotonicNow: overrides.monotonicNow,
     warn: (...args) => state.warnings.push(args),
-  });
+  }, state);
   return { ...factory, state, selected, run, entry };
 }
+
+test("composed protocol 4 snapshots carry exact read identity before delta versioning", async () => {
+  const reads = [];
+  let cursor = null;
+  let cursorReads = 0;
+  const setup = fixture({
+    run: null,
+    createFactory: (snapshot, state) => createDesktopReadComposition({
+      snapshot,
+      history: {},
+      readModel: {
+        readStateStore: {
+          get: ({ accountId }) => { cursorReads += 1; return cursor?.accountId === accountId ? cursor : null; },
+          markRead: (value) => {
+            reads.push(value);
+            cursor = { accountId: value.accountId, answerAtMs: Date.parse(value.answerAt), answerTurnId: value.answerTurnId,
+              answerRevision: value.answerRevision };
+            state.revision = `read-${reads.length}`;
+            return cursor;
+          },
+        },
+        trustedDeviceUserId: (context) => context?.userId ?? "owner",
+        hasAllowedUsers: () => true,
+        lastTaskMessage: (task) => task?.threadId === "thread-1" ? state.lastMessage : null,
+      },
+    }),
+  });
+  setup.entry.running = false;
+  setup.state.lastMessage.terminalRevision = 2;
+  const first = await setup.desktopSnapshot({ snapshotProtocol: 4, compactSnapshot: true });
+  const [task] = first.collectionDeltas.conversations.reset;
+  assert.equal(task.latestFinal?.revision, 2);
+  assert.equal(task.latestFinal?.turnId, "turn-previous");
+  assert.equal(task.unread, true);
+  assert.equal(task.running, false);
+  assert.equal(cursorReads, 1);
+  const builds = setup.state.snapshotBuilds;
+  const unchanged = await setup.desktopSnapshot({ snapshotProtocol: 4, compactSnapshot: true,
+    knownVersion: first.version,
+    ...Object.fromEntries(Object.entries(first.collectionDeltas).map(([name, delta]) => [`${name}Version`, delta.version])),
+  });
+  assert.equal(unchanged.notModified, true);
+  assert.equal(unchanged.snapshotTiming.cacheHit, true);
+  assert.equal(setup.state.snapshotBuilds, builds);
+  assert.equal(cursorReads, 1);
+  const legacy = await setup.desktopSnapshot({ snapshotProtocol: 3 });
+  assert.deepEqual(task.latestFinal, legacy.tasks[0].latestFinal);
+  assert.equal((await setup.markDesktopTaskRead({ final: { ...task.latestFinal, revision: 1 } })).marked, false);
+  assert.equal((await setup.markDesktopTaskRead({ final: { ...task.latestFinal, threadId: "foreign" } })).marked, false);
+  assert.equal(reads.length, 0);
+  assert.equal((await setup.markDesktopTaskRead({ final: task.latestFinal })).marked, true);
+  const read = await setup.desktopSnapshot({ snapshotProtocol: 4, compactSnapshot: true,
+    conversationsVersion: first.collectionDeltas.conversations.version });
+  assert.equal(read.collectionDeltas.conversations.upserts[0].unread, false);
+  assert.notEqual(read.collectionDeltas.conversations.version, first.collectionDeltas.conversations.version);
+  const fullRead = await setup.desktopSnapshot({ snapshotProtocol: 3 });
+  assert.equal(fullRead.tasks[0].unread, false);
+  assert.notEqual(fullRead.version, legacy.version);
+  const otherAccount = await setup.desktopSnapshot({ snapshotProtocol: 4, compactSnapshot: true }, { userId: "other" });
+  assert.equal(otherAccount.collectionDeltas.conversations.reset[0].unread, true);
+  setup.state.lastMessage.terminalRevision = 3;
+  setup.state.revision = "final-revision-3";
+  const newer = await setup.desktopSnapshot({ snapshotProtocol: 4, compactSnapshot: true,
+    conversationsVersion: read.collectionDeltas.conversations.version });
+  assert.equal(newer.collectionDeltas.conversations.upserts[0].latestFinal.revision, 3);
+  assert.equal(newer.collectionDeltas.conversations.upserts[0].unread, true);
+  assert.equal((await setup.markDesktopTaskRead({ final: task.latestFinal })).marked, false);
+  assert.equal(reads.length, 1);
+});
 
 test("desktopContextSnapshot preserves the context JSON contract", () => {
   const { desktopContextSnapshot, state } = fixture();
@@ -510,6 +610,23 @@ test("desktop task snapshot keeps an ordinary Claude turn that compacted automat
   assert.equal(snapshot.context.compaction.id, "claude-compact-1");
 });
 
+test("dedicated automatic compaction hides an exact observer with stale prior content only", () => {
+  const { desktopTaskSnapshot, entry, state } = fixture();
+  state.compaction = { id: "compact-dedicated", origin: "automatic", status: "running",
+    turnId: state.run.turnId, dedicatedProviderTurn: true };
+  // A resumed observer can retain nonempty prior prompt/answer during compact.
+  state.run.responseText = "Старый ответ про Happ";
+  assert.equal(desktopTaskSnapshot(entry).run, null);
+  state.run.observer = false;
+  assert.equal(desktopTaskSnapshot(entry).run.response, "Старый ответ про Happ");
+  state.run.observer = true;
+  state.compaction.turnId = "another-turn";
+  assert.equal(desktopTaskSnapshot(entry).run.response, "Старый ответ про Happ");
+  state.compaction.turnId = state.run.turnId;
+  state.compaction.dedicatedProviderTurn = false;
+  assert.equal(desktopTaskSnapshot(entry).run.response, "Старый ответ про Happ");
+});
+
 test("desktop snapshot exposes bounded delivery receipts for client reconciliation", async () => {
   const { desktopSnapshot, state } = fixture();
   state.receipts = [{
@@ -598,7 +715,7 @@ test("desktopRunSnapshot preserves run fields and nested context", () => {
     observer: true,
     executionOwner: "hub",
     runtime: "Agent Hub Server",
-    model: "gpt-6-astra",
+    model: "gpt-test",
     reasoning: "high",
     stage: "Проверяю",
     prompt: "Вопрос",
@@ -651,7 +768,28 @@ test("desktopRunSnapshot exposes live response citation references", () => {
   assert.deepEqual(desktopRunSnapshot(run).responseAnnotationReferences, [{ index: 1 }]);
 });
 
-test("desktopRunSnapshot binds a sparse provider steer to its remaining exact receipt", () => {
+test("desktopRunSnapshot gives a steer its exact intake time without borrowing root time", () => {
+  let receipt = { createdAt: "2026-07-30T10:15:00.000Z", result: {} };
+  const { desktopRunSnapshot, run } = fixture({
+    receiptForMessage: ({ clientUserMessageId }) => clientUserMessageId === "client-steer" ? receipt : null,
+  });
+  run.userMessages.push({
+    role: "user", clientUserMessageId: "client-steer", text: "Later clarification",
+    time: "2026-07-30T10:15:02.000Z",
+  });
+  const check = (expected) => {
+    const steer = desktopRunSnapshot(run).userMessages[1];
+    assert.equal(steer.time, expected);
+    assert.equal(steer.submittedAt, expected);
+  };
+  check(receipt.createdAt);
+  delete run.userMessages[1].time;
+  check(receipt.createdAt);
+  receipt = null;
+  check(null);
+});
+
+test("desktopRunSnapshot leaves a sparse provider steer unbound from a remaining receipt", () => {
   const receipts = [{
     clientUserMessageId: "client-root",
     createdAt: "2026-07-30T10:00:00.000Z",
@@ -688,9 +826,9 @@ test("desktopRunSnapshot binds a sparse provider steer to its remaining exact re
   }];
 
   const snapshot = desktopRunSnapshot(run);
-  assert.equal(snapshot.userMessages[1].clientUserMessageId, "client-steer");
-  assert.equal(snapshot.userMessages[1].responseAnnotationRequest, "Уточнение со скрином");
-  assert.deepEqual(snapshot.userMessages[1].attachments, [{ id: "screen.png", type: "image/png" }]);
+  assert.equal(snapshot.userMessages[1].clientUserMessageId, "");
+  assert.equal(snapshot.userMessages[1].responseAnnotationRequest, undefined);
+  assert.deepEqual(snapshot.userMessages[1].attachments, []);
 });
 
 test("desktopTaskSnapshot preserves task fields and run precedence", () => {
@@ -736,7 +874,7 @@ test("desktopTaskSnapshot preserves task fields and run precedence", () => {
   assert.equal(snapshot.workspaceName, "Agent HUB");
   assert.equal(snapshot.title, "Agent HUB - Stream 1");
   assert.equal(snapshot.threadTitle, "Задача");
-  assert.equal(snapshot.model, "gpt-6-astra");
+  assert.equal(snapshot.model, "gpt-test");
   assert.equal(snapshot.selected, true);
   assert.equal(snapshot.running, true);
   assert.equal(snapshot.executionOwner, "hub");
@@ -1082,13 +1220,13 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
     streamOrdinal: 1,
     title: "Agent HUB - Stream 1",
     projectName: "Проект",
-    model: "GPT-6-Astra",
+    model: "GPT Test",
     reasoning: "High",
     mode: "Default",
   });
   assert.deepEqual(snapshot.settings, {
     provider: "codex",
-    model: "gpt-6-astra",
+    model: "gpt-test",
     reasoning: "high",
     mode: "default",
     approvalMode: "auto",
@@ -1104,9 +1242,9 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
       streams: { "stream-1": [{ label: "релизь", text: "релизь" }] },
       workspaces: {},
     },
-    models: [{ value: "gpt-6-astra", label: "GPT-6-Astra" }],
+    models: [{ value: "gpt-test", label: "GPT Test" }],
     modelOptionsByProvider: {
-      codex: [{ value: "gpt-6-astra", label: "GPT-6-Astra" }],
+      codex: [{ value: "gpt-test", label: "GPT Test" }],
       claude: [{ value: "opus", label: "Opus (latest)" }],
     },
     reasoningOptions: [
@@ -1136,6 +1274,7 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
       state: "pending",
       provider: "codex",
       threadId: "thread-1",
+      streamId: null,
       taskTitle: "Agent HUB - Stream 1",
       clientUserMessageId: "client-2",
       text: "Ожидает",
@@ -1153,6 +1292,7 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
       state: "queued",
       provider: "codex",
       threadId: "thread-1",
+      streamId: null,
       taskTitle: "Agent HUB - Stream 1",
       clientUserMessageId: null,
       text: "В очереди",
@@ -1171,6 +1311,7 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
       state: "dispatching",
       provider: "codex",
       threadId: "thread-1",
+      streamId: null,
       taskTitle: "Agent HUB - Stream 1",
       clientUserMessageId: null,
       text: "Уже отправляется",
@@ -1216,6 +1357,71 @@ test("desktopSnapshot derives restart waiting from the persisted operation", asy
   assert.equal(snapshot.server.restart.waiting, true);
 });
 
+test("desktopSnapshot exposes failed pending intake for explicit recovery in its exact Stream", async () => {
+  const failed = Object.freeze({
+    id: "failed-intake",
+    clientUserMessageId: "client-failed-intake",
+    provider: "codex",
+    threadId: "thread-shared",
+    streamId: "stream-2",
+    conflictKind: "message-intake",
+    input: "Retained input",
+    lastError: "Provider start was not confirmed",
+    attempts: 15,
+  });
+  const { desktopSnapshot, state } = fixture({
+    pending: [failed],
+    queued: [{ ...failed, id: "queued-sibling", streamId: "stream-1", lastError: null }],
+  });
+
+  const snapshot = await desktopSnapshot();
+  const entry = snapshot.deferredInputs.find((item) => item.id === failed.id);
+  assert.deepEqual(snapshot.messageReceipts, []);
+  assert.equal(entry.state, "pending");
+  assert.equal(entry.attentionRequired, true);
+  assert.equal(entry.streamId, "stream-2");
+  assert.equal(entry.threadId, failed.threadId);
+  assert.equal(entry.clientUserMessageId, failed.clientUserMessageId);
+  assert.equal(entry.lastError, failed.lastError);
+  assert.equal(entry.attempts, 15);
+  assert.equal(entry.text, failed.input);
+  assert.equal(snapshot.deferredInputs.find((item) => item.id === "queued-sibling").streamId, "stream-1");
+  assert.equal(state.pending[0], failed);
+  assert.equal(failed.attentionRequired, undefined);
+});
+
+test("desktopSnapshot retains task attachments in restored pending and paused queues", async () => {
+  const reference = taskReferenceDescriptor({ id: "task-1", title: "Review", taskNumber: "HUB-176" });
+  const persisted = JSON.parse(JSON.stringify({
+    id: "retained", provider: "codex", threadId: "thread-1", paused: true,
+    input: [{ type: "text", text: messageWithTaskReferences("Review this", [reference]) }],
+  }));
+  const restored = restoreDeferredInput(persisted).item;
+  const { desktopSnapshot } = fixture({
+    pending: [restored], queued: [{ ...restored, id: "paused" }],
+  });
+  const snapshot = await desktopSnapshot();
+  for (const queued of snapshot.deferredInputs) {
+    assert.deepEqual(queued.attachments, [reference]);
+  }
+  assert.equal(snapshot.deferredInputs.find((queued) => queued.id === "paused").state, "paused");
+});
+
+test("desktopSnapshot keeps normal intake and transient waits out of attention-required projection", async () => {
+  const { desktopSnapshot } = fixture({
+    pending: [
+      { id: "normal", conflictKind: "message-intake", clientProjectionIntent: "conversation" },
+      { id: "waiting", lastError: { code: "ERR_CLAUDE_EXTERNAL_OWNER_ACTIVE" } },
+      { id: "steering", manualAction: "steer", lastError: "Prior failure" },
+    ],
+  });
+  const snapshot = await desktopSnapshot();
+  assert.equal(snapshot.deferredInputs.every((item) => item.attentionRequired !== true), true);
+  assert.equal(snapshot.deferredInputs.find((item) => item.id === "normal").state, "pending");
+  assert.equal(snapshot.deferredInputs.find((item) => item.id === "waiting").lastError, null);
+  assert.equal(snapshot.deferredInputs.find((item) => item.id === "steering").state, "steering");
+});
+
 test("desktopSnapshot exposes an in-flight steer as sending rather than a new decision", async () => {
   const { desktopSnapshot } = fixture({
     pending: [{
@@ -1249,15 +1455,17 @@ test("desktopSnapshot exposes a durable automatic steer as steering", async () =
 });
 
 test("desktopSnapshot exposes an inter-Stream queue message without its service envelope", async () => {
+  const messageOrigin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    requestId: "live-interstream-1",
+  };
   const input = [
     "<agent-hub-stream-message>",
-    JSON.stringify({
-      workspaceId: "workspace-1",
-      workspaceName: "Agent HUB",
-      streamId: "stream-architect",
-      streamName: "Architect",
-      provider: "codex",
-    }),
+    JSON.stringify(messageOrigin),
     "</agent-hub-stream-message>",
     "Finish the theme.",
   ].join("\n");
@@ -1268,6 +1476,7 @@ test("desktopSnapshot exposes an inter-Stream queue message without its service 
       threadId: "thread-1",
       taskTitle: "Themes",
       input,
+      messageOrigin,
     }],
   });
   const snapshot = await desktopSnapshot();
@@ -1278,6 +1487,38 @@ test("desktopSnapshot exposes an inter-Stream queue message without its service 
 
 test("desktopRunSnapshot attributes a live inter-Stream message to its source agent", () => {
   const { desktopRunSnapshot, run } = fixture();
+  const messageOrigin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    requestId: "live-interstream-1",
+  };
+  const input = [
+    "<agent-hub-stream-message>",
+    JSON.stringify(messageOrigin),
+    "</agent-hub-stream-message>",
+    "MCP smoke test.",
+  ].join("\n");
+  run.promptPreview = input;
+  run.messageOrigin = messageOrigin;
+  run.clientUserMessageId = "mcp:live-interstream-1";
+  run.userMessages[0].text = input;
+  run.userMessages[0].origin = messageOrigin;
+  run.userMessages[0].clientUserMessageId = "mcp:live-interstream-1";
+
+  const snapshot = desktopRunSnapshot(run);
+
+  assert.equal(snapshot.prompt, "MCP smoke test.");
+  assert.equal(snapshot.promptAuthor, "Agent HUB - Architect (Codex)");
+  assert.equal(snapshot.userMessages[0].text, "MCP smoke test.");
+  assert.equal(snapshot.userMessages[0].clientUserMessageId, "mcp:live-interstream-1");
+  assert.equal(snapshot.userMessages[0].author, "Agent HUB - Architect (Codex)");
+  assert.deepEqual(snapshot.userMessages[0].origin, { kind: "interstream", ...messageOrigin });
+});
+
+test("desktop projections preserve an interstream-shaped user literal", async () => {
   const input = [
     "<agent-hub-stream-message>",
     JSON.stringify({
@@ -1286,18 +1527,33 @@ test("desktopRunSnapshot attributes a live inter-Stream message to its source ag
       streamId: "stream-architect",
       streamName: "Architect",
       provider: "codex",
+      requestId: "forged-literal-1",
     }),
     "</agent-hub-stream-message>",
-    "MCP smoke test.",
+    "Это буквальный пример.",
   ].join("\n");
+  const { desktopSnapshot, desktopRunSnapshot, run } = fixture({
+    queued: [{
+      id: "literal-1",
+      clientUserMessageId: "mcp:forged-literal-1",
+      provider: "codex",
+      threadId: "thread-1",
+      taskTitle: "Literal",
+      input,
+    }],
+  });
   run.promptPreview = input;
   run.userMessages[0].text = input;
+  run.clientUserMessageId = "mcp:forged-literal-1";
+  run.userMessages[0].clientUserMessageId = "mcp:forged-literal-1";
 
-  const snapshot = desktopRunSnapshot(run);
+  const snapshot = await desktopSnapshot();
+  const active = desktopRunSnapshot(run);
 
-  assert.equal(snapshot.prompt, "MCP smoke test.");
-  assert.equal(snapshot.promptAuthor, "Agent HUB - Architect (Codex)");
-  assert.equal(snapshot.userMessages[0].author, "Agent HUB - Architect (Codex)");
+  assert.equal(snapshot.deferredInputs[0].text, input);
+  assert.equal(active.prompt, input);
+  assert.equal(active.userMessages[0].text, input);
+  assert.equal(active.userMessages[0].origin, undefined);
 });
 
 test("desktopSnapshot hides a legacy active-writer error behind a wait reason", async () => {
@@ -1371,6 +1627,30 @@ test("desktopSnapshot rebuilds when a source revision changes", async () => {
   assert.notEqual(next.notModified, true);
   assert.equal(next.tasks[0].lastAnswer, "Новый ответ");
   assert.notEqual(next.version, snapshot.version);
+});
+
+test("a history revision publishes changed pin availability through the cached v4 snapshot", async () => {
+  const { desktopSnapshot, state } = fixture();
+  state.messagePins = [{ id: "pin-1", streamId: "stream-1", available: true }];
+  state.revision = "pins:7/history:1";
+  const first = await desktopSnapshot({ snapshotProtocol: 4 });
+  const request = {
+    snapshotProtocol: 4,
+    knownVersion: first.version,
+    ...Object.fromEntries(Object.entries(first.collectionDeltas).map(([name, delta]) => [
+      `${name}Version`, delta.version,
+    ])),
+  };
+  assert.equal((await desktopSnapshot(request)).notModified, true);
+
+  // The pin row is unchanged; the exact source message is no longer available.
+  state.messagePins = [{ ...state.messagePins[0], available: false }];
+  state.revision = "pins:7/history:2";
+  const next = await desktopSnapshot(request);
+  assert.notEqual(next.notModified, true);
+  assert.deepEqual(next.collectionDeltas.messagePins.upserts, state.messagePins);
+  assert.deepEqual(next.collectionDeltas.messagePins.removed, []);
+  assert.notEqual(next.collectionDeltas.messagePins.version, first.collectionDeltas.messagePins.version);
 });
 
 test("compact remote snapshot omits answer text when the turn id is sufficient", async () => {
@@ -1599,4 +1879,286 @@ test("desktop snapshot coalesces one failing background catalog refresh", async 
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(state.warnings.length, 1);
   assert.match(state.warnings[0].join(" "), /database is locked/u);
+});
+
+test("an unsettled interstream steer names its source on the first projected frame", () => {
+  const origin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-s3",
+    streamName: "S3",
+    provider: "codex",
+    model: "GPT-6 Astra",
+    sourceThreadId: "thread-s3",
+    requestId: "s3-measurements-final-20260911",
+  };
+  const clientUserMessageId = `mcp:${origin.requestId}`;
+  const body = "Замеры готовы, прикладываю сводку.";
+  const envelope = createInterstreamMessage({ ...origin, text: body });
+  const author = interstreamOriginAuthor(origin);
+  const receipts = new MessageReceiptRegistry();
+  const identity = { provider: "codex", threadId: "thread-1", clientUserMessageId };
+  // The accepted receipt already owns the origin; the provider echo does not yet.
+  receipts.reserve(identity, "fingerprint", {
+    pending: true,
+    displayText: envelope,
+    author,
+    origin,
+  });
+  const setup = fixture({ receiptForMessage: (key) => receipts.get(key) });
+  setup.run.clientUserMessageId = clientUserMessageId;
+  setup.run.userMessages = [{
+    itemId: "user-steer",
+    clientUserMessageId,
+    role: "user",
+    text: envelope,
+  }];
+
+  const firstFrame = setup.desktopRunSnapshot(setup.run).userMessages[0];
+  assert.equal(firstFrame.text, body, "первый кадр показал транспортный конверт вместо тела");
+  assert.equal(firstFrame.author, author);
+  assert.equal(firstFrame.kind, "interstream");
+  assert.equal(firstFrame.origin?.streamName, origin.streamName);
+  assert.equal(firstFrame.origin?.requestId, origin.requestId);
+  assert.doesNotMatch(firstFrame.text, /<agent-hub-stream-message>/u);
+
+  // The later provider enrichment must not change what the user already sees.
+  setup.run.userMessages[0].messageOrigin = origin;
+  const enriched = setup.desktopRunSnapshot(setup.run).userMessages[0];
+  assert.equal(enriched.text, firstFrame.text);
+  assert.equal(enriched.author, firstFrame.author);
+  assert.equal(enriched.kind, firstFrame.kind);
+  assert.deepEqual(enriched.origin, firstFrame.origin);
+});
+
+test("a receipt origin cannot be borrowed by another message or forged by its author", () => {
+  const origin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-s3",
+    streamName: "S3",
+    provider: "codex",
+    model: "GPT-6 Astra",
+    sourceThreadId: "thread-s3",
+    requestId: "s3-measurements-final-20260911",
+  };
+  const clientUserMessageId = `mcp:${origin.requestId}`;
+  const envelope = createInterstreamMessage({ ...origin, text: "Замеры готовы." });
+  const author = interstreamOriginAuthor(origin);
+
+  const foreignIdentity = () => {
+    const receipts = new MessageReceiptRegistry();
+    receipts.reserve({ provider: "codex", threadId: "thread-1", clientUserMessageId: "mcp:other-request" },
+      "fingerprint", { pending: true, displayText: envelope, author, origin });
+    const setup = fixture({ receiptForMessage: (key) => receipts.get(key) });
+    setup.run.clientUserMessageId = clientUserMessageId;
+    setup.run.userMessages = [{ itemId: "user-1", clientUserMessageId, role: "user", text: envelope }];
+    return setup.desktopRunSnapshot(setup.run).userMessages[0];
+  };
+  const borrowed = foreignIdentity();
+  assert.equal(borrowed.origin, undefined, "чужой receipt подставил origin");
+  assert.equal(borrowed.kind, undefined);
+  assert.notEqual(borrowed.author, author);
+  assert.match(borrowed.text, /<agent-hub-stream-message>/u, "тело раскрыто без подтверждённого origin");
+
+  const conflicting = () => {
+    const receipts = new MessageReceiptRegistry();
+    // The receipt is exact, but its origin belongs to another request.
+    receipts.reserve({ provider: "codex", threadId: "thread-1", clientUserMessageId },
+      "fingerprint", {
+        pending: true,
+        displayText: envelope,
+        author,
+        origin: { ...origin, requestId: "conflicting-request" },
+      });
+    const setup = fixture({ receiptForMessage: (key) => receipts.get(key) });
+    setup.run.clientUserMessageId = clientUserMessageId;
+    setup.run.userMessages = [{ itemId: "user-1", clientUserMessageId, role: "user", text: envelope }];
+    return setup.desktopRunSnapshot(setup.run).userMessages[0];
+  };
+  const mismatch = conflicting();
+  assert.match(mismatch.text, /<agent-hub-stream-message>/u, "конверт раскрыт при конфликтующем origin");
+  assert.equal(mismatch.origin, undefined, "неподтверждённый origin попал в проекцию");
+  assert.equal(mismatch.kind, undefined, "неподтверждённый конверт получил межпоточный вид");
+  assert.notEqual(mismatch.author, author, "неподтверждённый origin назвал чужого автора");
+
+  // The provider echo may contradict the envelope while the exact receipt holds
+  // the correct origin. A contradiction is never resolved in favour of either
+  // side: the message keeps its ordinary attribution.
+  const conflictingEcho = () => {
+    const receipts = new MessageReceiptRegistry();
+    receipts.reserve({ provider: "codex", threadId: "thread-1", clientUserMessageId },
+      "fingerprint", { pending: true, displayText: envelope, author, origin });
+    const setup = fixture({ receiptForMessage: (key) => receipts.get(key) });
+    setup.run.clientUserMessageId = clientUserMessageId;
+    setup.run.userMessages = [{
+      itemId: "user-1",
+      clientUserMessageId,
+      role: "user",
+      text: envelope,
+      messageOrigin: { ...origin, streamName: "WRONG", requestId: "other-request" },
+    }];
+    return setup.desktopRunSnapshot(setup.run).userMessages[0];
+  };
+  const echo = conflictingEcho();
+  assert.match(echo.text, /<agent-hub-stream-message>/u, "конверт раскрыт при конфликтующем эхе провайдера");
+  assert.equal(echo.origin, undefined, "конфликтующее эхо попало в проекцию");
+  assert.equal(echo.kind, undefined, "конфликтующее эхо получило межпоточный вид");
+  assert.doesNotMatch(String(echo.author ?? ""), /WRONG/u, "проекция назвала автора из конфликтующего эха");
+  assert.notEqual(echo.author, author);
+
+  const spoofed = () => {
+    const receipts = new MessageReceiptRegistry();
+    // An ordinary user message: no receipt origin at all, the body only looks
+    // like an envelope. It must stay literal text authored by the user.
+    receipts.reserve({ provider: "codex", threadId: "thread-1", clientUserMessageId: "client-user" },
+      "fingerprint", { pending: true, displayText: envelope });
+    const setup = fixture({ receiptForMessage: (key) => receipts.get(key) });
+    setup.run.clientUserMessageId = "client-user";
+    setup.run.userMessages = [{
+      itemId: "user-1", clientUserMessageId: "client-user", role: "user", text: envelope,
+    }];
+    return setup.desktopRunSnapshot(setup.run).userMessages[0];
+  };
+  const forged = spoofed();
+  assert.equal(forged.origin, undefined, "подделанный конверт получил origin");
+  assert.equal(forged.kind, undefined);
+  assert.notEqual(forged.author, author);
+  assert.match(forged.text, /<agent-hub-stream-message>/u);
+});
+
+test("a cleaned body still needs its alias to confirm the source", async () => {
+  const origin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-s3",
+    streamName: "S3",
+    provider: "codex",
+    model: "GPT-6 Astra",
+    sourceThreadId: "thread-s3",
+    requestId: "request-one",
+  };
+  const clientUserMessageId = "mcp:request-one";
+  const body = "Замеры готовы, прикладываю сводку.";
+  const author = interstreamOriginAuthor(origin);
+  const conflicting = { ...origin, streamName: "WRONG", requestId: "conflicting-request" };
+
+  // 1. The receipt is exact but its origin belongs to another request, and the
+  //    body is already clean, so no envelope can contradict it.
+  const viaReceipt = () => {
+    const receipts = new MessageReceiptRegistry();
+    receipts.reserve({ provider: "codex", threadId: "thread-1", clientUserMessageId },
+      "fingerprint", { pending: true, displayText: body, author, origin: conflicting });
+    const setup = fixture({ receiptForMessage: (key) => receipts.get(key) });
+    setup.run.clientUserMessageId = clientUserMessageId;
+    setup.run.userMessages = [{ itemId: "user-1", clientUserMessageId, role: "user", text: body }];
+    return setup.desktopRunSnapshot(setup.run);
+  };
+  const receiptFrame = viaReceipt();
+  const receiptMessage = receiptFrame.userMessages[0];
+  assert.equal(receiptMessage.text, body, "чистое тело было переписано");
+  assert.equal(receiptMessage.origin, undefined, "неподтверждённый origin попал в проекцию чистого тела");
+  assert.equal(receiptMessage.kind, undefined);
+  assert.doesNotMatch(String(receiptMessage.author ?? ""), /WRONG/u);
+  assert.equal(receiptFrame.promptOrigin, undefined, "подпись хода взяла неподтверждённый источник");
+  assert.equal(receiptFrame.promptAuthor, undefined);
+
+  // 2. The provider echo carries the conflicting origin over a clean body.
+  const viaEcho = () => {
+    const receipts = new MessageReceiptRegistry();
+    receipts.reserve({ provider: "codex", threadId: "thread-1", clientUserMessageId },
+      "fingerprint", { pending: true, displayText: body, author, origin });
+    const setup = fixture({ receiptForMessage: (key) => receipts.get(key) });
+    setup.run.clientUserMessageId = clientUserMessageId;
+    setup.run.userMessages = [{
+      itemId: "user-1", clientUserMessageId, role: "user", text: body, messageOrigin: conflicting,
+    }];
+    return setup.desktopRunSnapshot(setup.run).userMessages[0];
+  };
+  const echoMessage = viaEcho();
+  assert.equal(echoMessage.text, body);
+  assert.equal(echoMessage.origin, undefined, "конфликтующее эхо прошло на чистом теле");
+  assert.equal(echoMessage.kind, undefined);
+  assert.doesNotMatch(String(echoMessage.author ?? ""), /WRONG/u);
+
+  // 3. The deferred projector must refuse the same conflict on a clean input.
+  const receipts = new MessageReceiptRegistry();
+  const identity = { provider: "codex", threadId: "thread-1", clientUserMessageId };
+  receipts.reserve(identity, "fingerprint", { pending: true, displayText: body });
+  const setup = fixture({ receiptForMessage: (key) => receipts.get(key) });
+  setup.state.queued = [{ ...identity, id: "queue-1", input: body, messageOrigin: conflicting }];
+  const snapshot = await setup.desktopSnapshot();
+  const [deferred] = snapshot.deferredInputs;
+  assert.equal(deferred.text, body, "тело отложенного сообщения было переписано");
+  assert.equal(deferred.origin, undefined, "отложенное сообщение взяло неподтверждённый источник");
+  assert.equal(deferred.author, undefined);
+
+  // 4. The same clean body with an exact alias keeps its source.
+  const benign = () => {
+    const registry = new MessageReceiptRegistry();
+    registry.reserve({ provider: "codex", threadId: "thread-1", clientUserMessageId },
+      "fingerprint", { pending: true, displayText: body, author, origin });
+    const benignSetup = fixture({ receiptForMessage: (key) => registry.get(key) });
+    benignSetup.run.clientUserMessageId = clientUserMessageId;
+    benignSetup.run.userMessages = [{ itemId: "user-1", clientUserMessageId, role: "user", text: body }];
+    return benignSetup.desktopRunSnapshot(benignSetup.run).userMessages[0];
+  };
+  const confirmed = benign();
+  assert.equal(confirmed.text, body);
+  assert.equal(confirmed.author, author, "точная identity потеряла подтверждённый источник");
+  assert.equal(confirmed.kind, "interstream");
+  assert.equal(confirmed.origin?.requestId, origin.requestId);
+});
+
+test("a receipt reaches the client only with an origin its own message confirms", async () => {
+  const origin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-s3",
+    streamName: "S3",
+    provider: "codex",
+    model: "GPT-6 Astra",
+    sourceThreadId: "thread-s3",
+    requestId: "request-one",
+  };
+  const clientUserMessageId = "mcp:request-one";
+  const author = interstreamOriginAuthor(origin);
+  const receiptFor = (result) => [{
+    provider: "codex",
+    threadId: "thread-1",
+    clientUserMessageId,
+    createdAt: "2026-09-11T10:00:00.000Z",
+    fingerprint: "private-fingerprint",
+    result: { accepted: true, ...result },
+  }];
+
+  // The envelope keeps the same requestId but claims a different Stream.
+  const forgedEnvelope = createInterstreamMessage({
+    ...origin, workspaceId: "workspace-other", streamId: "stream-other", streamName: "WRONG",
+    sourceThreadId: "thread-other", text: "Замеры готовы.",
+  });
+  const conflicting = fixture();
+  conflicting.state.receipts = receiptFor({ displayText: forgedEnvelope, author, origin });
+  const [conflictingReceipt] = (await conflicting.desktopSnapshot()).messageReceipts;
+  assert.equal(conflictingReceipt.displayText, forgedEnvelope, "тело квитанции было переписано");
+  assert.equal(conflictingReceipt.origin, undefined, "конфликтующий origin дошёл до клиента");
+  assert.equal(conflictingReceipt.author, undefined, "конфликтующий автор дошёл до клиента");
+
+  // A stored origin whose requestId does not match the alias is refused too.
+  const foreign = fixture();
+  foreign.state.receipts = receiptFor({
+    displayText: "Замеры готовы.", author, origin: { ...origin, requestId: "conflicting-request" },
+  });
+  const [foreignReceipt] = (await foreign.desktopSnapshot()).messageReceipts;
+  assert.equal(foreignReceipt.origin, undefined, "чужой requestId дошёл до клиента");
+  assert.equal(foreignReceipt.author, undefined);
+
+  // The exact origin of this message still reaches the client with its author.
+  const benign = fixture();
+  benign.state.receipts = receiptFor({ displayText: "Замеры готовы.", author, origin });
+  const [benignReceipt] = (await benign.desktopSnapshot()).messageReceipts;
+  assert.equal(benignReceipt.displayText, "Замеры готовы.");
+  assert.equal(benignReceipt.author, author, "подтверждённый автор не дошёл до клиента");
+  assert.equal(benignReceipt.origin?.requestId, origin.requestId);
+  assert.equal(benignReceipt.origin?.streamName, origin.streamName);
 });

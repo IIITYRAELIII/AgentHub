@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import { JournalDatabase } from "../../../src/infrastructure/persistence/journal-database.mjs";
@@ -43,6 +44,91 @@ function accountPanel() {
     '<div data-work-log-account-panel-head>Расход по аккаунтам</div>',
     "</section>",
     "<!-- work-log-account-panel:end -->",
+  ].join("");
+}
+
+test("metadata upsert CAS preserves a concurrent exact record correction", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "journal-title-cas-"));
+  const journal = new JournalDatabase(path.join(root, "journal.sqlite"));
+  try {
+    const record = {
+      provider: "codex", threadId: "thread", turnId: "turn", projectRoot: root,
+      taskTitle: "Original", body: "Original body",
+    };
+    const first = await journal.upsertRecords([record]);
+    await journal.upsertRecords([{ ...record, body: "Concurrent correction" }]);
+    const revision = await journal.currentRevision();
+    await assert.rejects(journal.upsertRecords([{ ...record, taskTitle: "Updated" }], {
+      expectedRevision: first.revision,
+    }), { code: "JOURNAL_REVISION_CONFLICT" });
+    assert.equal(await journal.currentRevision(), revision);
+    const current = await journal.getRecord(record);
+    assert.equal(current.body, "Concurrent correction");
+    assert.equal(current.taskTitle, "Original");
+    await journal.upsertRecords([{ ...current, taskTitle: "Updated" }], { expectedRevision: revision });
+    assert.equal((await journal.getRecord(record)).body, "Concurrent correction");
+    assert.equal((await journal.getRecord(record)).taskTitle, "Updated");
+  } finally {
+    journal.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("full projection CAS preserves fragments and concurrent ledger writes on revision conflict", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "journal-projection-cas-"));
+  const databaseFile = path.join(root, "journal.sqlite");
+  const database = new JournalDatabase(databaseFile);
+  const concurrent = new JournalDatabase(databaseFile);
+  try {
+    await replaceJournalProjectionFromHtml(database, day("08.09.2026", turn("first", "First")));
+    const before = await database.snapshot();
+    await concurrent.upsertRecords([{
+      provider: "codex", threadId: "thread-1", turnId: "concurrent", body: "Durable fact",
+    }]);
+    const result = await database.replaceProjection({ html: "Stale replacement" }, {
+      expectedRevision: before.revision,
+    });
+    assert.equal(result.projected, false);
+    assert.equal(result.conflict, true);
+    const after = await database.snapshot();
+    assert.equal(after.html, before.html);
+    assert.deepEqual(after.days, before.days);
+    assert.deepEqual(after.turns, before.turns);
+    assert.ok(await concurrent.getRecord({ provider: "codex", threadId: "thread-1", turnId: "concurrent" }));
+    const committed = await database.replaceProjection({ html: "Current replacement" }, {
+      expectedRevision: after.revision,
+    });
+    assert.equal(committed.projected, true);
+  } finally {
+    database.close();
+    concurrent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+function indexedDay(date, {
+  turnRef,
+  turnId,
+  credits,
+  completedAt,
+} = {}) {
+  return [
+    '<details data-work-log-day-section><summary data-work-log-day>',
+    `<strong>${date}</strong></summary>`,
+    '<details data-work-log-workspace data-work-log-workspace-id="workspace-1"',
+    ' data-work-log-workspace-kind="catalog"><summary><strong>Agent HUB</strong></summary>',
+    '<details data-work-log-stream data-work-log-stream-id="stream-1">',
+    '<summary><span data-work-log-stream-title>Architect</span></summary>',
+    '<div data-work-log-row data-work-log-provider="codex" data-work-log-thread-id="thread-1"',
+    ' data-work-log-workspace-id="workspace-1" data-work-log-stream-id="stream-1">',
+    '<div data-work-log-task-content>Задача</div><div data-work-log-turn-list>',
+    '<div data-work-log-turn-entry data-work-log-turn-provider="codex"',
+    ' data-work-log-turn-thread-id="thread-1" data-work-log-turn-depth="0"',
+    ` data-work-log-turn-id="${turnId}" data-work-log-turn-credits="${credits}"`,
+    ` data-work-log-turn-duration-seconds="60" data-work-log-turn-completed-at="${completedAt}">`,
+    `<details data-work-log-turn-details data-lazy-turn-id="${turnRef}">`,
+    `<summary>${turnId}</summary><div data-lazy-turn-content></div></details>`,
+    "</div></div></div></details></details></details>",
   ].join("");
 }
 
@@ -245,17 +331,352 @@ test("direct projection snapshot preserves lazy journal HTTP contract without a 
     assert.match(snapshot.version, /^sha256:/u);
     assert.match(snapshot.html, /data-work-log-account-panel/u);
     assert.match(snapshot.html, /data-lazy-day="01\.07\.2026"/u);
-    for (const date of dates.slice(1)) assert.match(snapshot.html, new RegExp(`<strong>${date.replaceAll(".", "\\.")}</strong>`, "u"));
+    for (const date of dates) {
+      assert.match(snapshot.html, new RegExp(`data-lazy-day="${date.replaceAll(".", "\\.")}"`, "u"));
+    }
     assert.match(snapshot.days["01.07.2026"], /Старый ход/u);
-    assert.deepEqual(Object.keys(snapshot.days), ["01.07.2026"]);
+    assert.deepEqual(Object.keys(snapshot.days), dates);
     assert.match(snapshot.turns[item.reference], /Старый ход body/u);
     assert.match(await database.fragment("turn", item.reference), /Старый ход body/u);
     const dayFragments = await database.fragments("day");
     assert.match(dayFragments["01.07.2026"], /Старый ход/u);
-    assert.deepEqual(Object.keys(dayFragments), ["01.07.2026"]);
+    assert.deepEqual(Object.keys(dayFragments), dates);
     assert.deepEqual(await database.exportPayload(), snapshot);
   } finally {
     database.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("materialized journal summary and turn pages survive SQLite reopen", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-journal-virtual-"));
+  const file = path.join(root, "journal.sqlite");
+  const summary = {
+    version: 1,
+    buckets: [{
+      date: "01.08.2026",
+      workspaceId: "workspace-1",
+      streamId: "stream-1",
+      provider: "codex",
+      turnCount: 2,
+      credits: 30,
+      knownCredits: 2,
+      unknownCredits: 0,
+      durationSeconds: 90,
+      knownDurations: 2,
+      unknownDurations: 0,
+      latestAt: Date.UTC(2026, 7, 1, 12),
+      fileTouches: 2,
+      knownFileTouches: 2,
+    }, {
+      date: "01.08.2026",
+      workspaceId: "workspace-2",
+      streamId: "stream-2",
+      provider: "codex",
+      turnCount: 1,
+      credits: 10,
+      knownCredits: 1,
+      unknownCredits: 0,
+      durationSeconds: 30,
+      knownDurations: 1,
+      unknownDurations: 0,
+      latestAt: Date.UTC(2026, 7, 1, 11),
+      fileTouches: 9,
+      knownFileTouches: 1,
+    }],
+  };
+  const entries = [
+    {
+      turnRef: "turn-ref-new",
+      date: "01.08.2026",
+      dayMs: Date.UTC(2026, 7, 1),
+      workspaceId: "workspace-1",
+      streamId: "stream-1",
+      provider: "codex",
+      threadId: "thread-1",
+      turnId: "turn-new",
+      completedAtMs: Date.UTC(2026, 7, 1, 12),
+      html: '<div data-work-log-turn-entry data-work-log-turn-id="turn-new">Новый</div>',
+    },
+    {
+      turnRef: "turn-ref-old",
+      date: "31.07.2026",
+      dayMs: Date.UTC(2026, 6, 31),
+      workspaceId: "workspace-1",
+      streamId: "stream-1",
+      provider: "codex",
+      threadId: "thread-1",
+      turnId: "turn-old",
+      completedAtMs: Date.UTC(2026, 6, 31, 12),
+      html: '<div data-work-log-turn-entry data-work-log-turn-id="turn-old">Старый</div>',
+    },
+    {
+      turnRef: "turn-ref-other",
+      date: "01.08.2026",
+      dayMs: Date.UTC(2026, 7, 1),
+      workspaceId: "workspace-2",
+      streamId: "stream-2",
+      provider: "claude",
+      threadId: "thread-2",
+      turnId: "turn-other",
+      completedAtMs: Date.UTC(2026, 7, 1, 13),
+      html: '<div data-work-log-turn-entry data-work-log-turn-id="turn-other">Другой</div>',
+    },
+  ];
+  const database = new JournalDatabase(file);
+  try {
+    await database.replaceProjection({ html: "<main>Итоги</main>", summary, entries });
+    assert.deepEqual((await database.payload()).summary, summary);
+    const first = await database.turnPage({ workspaceId: "workspace-1", limit: 1 });
+    assert.deepEqual(first.turns.map((entry) => entry.turnRef), ["turn-ref-new"]);
+    assert.equal(first.nextOffset, 1);
+    const profiled = await database.turnPage({
+      workspaceId: "workspace-1",
+      streamId: "stream-1",
+      profileMode: "stream",
+      limit: 1,
+    });
+    assert.deepEqual(
+      profiled.profileSummary.buckets.map((bucket) => bucket.fileTouches),
+      [2, 9],
+    );
+    const second = await database.turnPage({
+      workspaceId: "workspace-1",
+      fromMs: Date.UTC(2026, 6, 31),
+      toMs: Date.UTC(2026, 7, 1),
+      limit: 50,
+    });
+    assert.deepEqual(second.turns.map((entry) => entry.turnRef), ["turn-ref-old"]);
+    database.close();
+
+    const reopened = new JournalDatabase(file);
+    assert.deepEqual((await reopened.payload()).summary, summary);
+    assert.deepEqual(
+      (await reopened.turnPage({ workspaceId: "workspace-1", streamId: "stream-1" }))
+        .turns.map((entry) => entry.turnRef),
+      ["turn-ref-new", "turn-ref-old"],
+    );
+    assert.deepEqual(
+      (await reopened.turnPage({ provider: "claude" })).turns.map((entry) => entry.turnRef),
+      ["turn-ref-other"],
+    );
+    await reopened.replaceProjection({
+      html: '<details data-lazy-day="01.08.2026"></details>',
+      summary: { version: 1, buckets: [] },
+      entries: [],
+      virtualDates: [],
+      virtualComplete: false,
+    });
+    assert.deepEqual((await reopened.payload()).summary, summary);
+    assert.deepEqual(
+      (await reopened.turnPage({ workspaceId: "workspace-1" })).turns
+        .map((entry) => entry.turnRef),
+      ["turn-ref-new", "turn-ref-old"],
+    );
+    reopened.close();
+  } finally {
+    database.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("turn paging validates and reads one immutable SQLite version", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-journal-page-version-"));
+  const file = path.join(root, "journal.sqlite");
+  const writer = new JournalDatabase(file);
+  let replacement = null;
+  let interleaved = false;
+  const reader = new JournalDatabase(file, {
+    turnPageSnapshotHook: async () => {
+      if (interleaved) return;
+      interleaved = true;
+      replacement = await writer.replaceProjection({
+        html: "<main>B</main>",
+        summary: { version: 1, buckets: [] },
+        entries: [{
+          turnRef: "turn-ref-b",
+          date: "02.08.2026",
+          dayMs: Date.UTC(2026, 7, 2),
+          workspaceId: "workspace-1",
+          streamId: "stream-1",
+          provider: "codex",
+          threadId: "thread-1",
+          turnId: "turn-b",
+          completedAtMs: Date.UTC(2026, 7, 2, 12),
+          html: '<div data-work-log-turn-entry data-work-log-turn-id="turn-b">B</div>',
+        }],
+      });
+    },
+  });
+  try {
+    const first = await writer.replaceProjection({
+      html: "<main>A</main>",
+      summary: { version: 1, buckets: [] },
+      entries: [{
+        turnRef: "turn-ref-a",
+        date: "01.08.2026",
+        dayMs: Date.UTC(2026, 7, 1),
+        workspaceId: "workspace-1",
+        streamId: "stream-1",
+        provider: "codex",
+        threadId: "thread-1",
+        turnId: "turn-a",
+        completedAtMs: Date.UTC(2026, 7, 1, 12),
+        html: '<div data-work-log-turn-entry data-work-log-turn-id="turn-a">A</div>',
+      }],
+    });
+    const page = await reader.turnPage({
+      expectedVersion: first.version,
+      workspaceId: "workspace-1",
+    });
+    assert.equal(page.conflict, false);
+    assert.equal(page.version, first.version);
+    assert.deepEqual(page.turns.map((entry) => entry.turnRef), ["turn-ref-a"]);
+    assert.notEqual(replacement.version, first.version);
+    const stale = await reader.turnPage({
+      expectedVersion: first.version,
+      workspaceId: "workspace-1",
+    });
+    assert.equal(stale.conflict, true);
+    assert.equal(stale.version, replacement.version);
+    assert.deepEqual(stale.turns, []);
+  } finally {
+    reader.close();
+    writer.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("schema v2 upgrades existing day shells into one complete virtual index", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-journal-v2-"));
+  const file = path.join(root, "journal.sqlite");
+  const currentDay = indexedDay("02.08.2026", {
+    turnRef: "ref-current",
+    turnId: "turn-current",
+    credits: 20,
+    completedAt: "2026-08-02T12:00:00.000Z",
+  });
+  const oldDay = indexedDay("01.08.2026", {
+    turnRef: "ref-old",
+    turnId: "turn-old",
+    credits: 10,
+    completedAt: "2026-08-01T12:00:00.000Z",
+  });
+  const legacy = new DatabaseSync(file);
+  legacy.exec(`
+    CREATE TABLE journal_meta (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      schema_version INTEGER NOT NULL,
+      source_version TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      html TEXT NOT NULL
+    );
+    CREATE TABLE journal_days (date TEXT PRIMARY KEY, html TEXT NOT NULL) WITHOUT ROWID;
+    CREATE TABLE journal_turns (id TEXT PRIMARY KEY, html TEXT NOT NULL) WITHOUT ROWID;
+  `);
+  legacy.prepare(`
+    INSERT INTO journal_meta (id, schema_version, source_version, updated_at, html)
+    VALUES (1, 2, 'sha256:legacy', '2026-08-02T12:00:00.000Z', ?)
+  `).run(`${currentDay}<details data-work-log-day-section data-lazy-day="01.08.2026">`
+    + '<summary data-work-log-day><strong>01.08.2026</strong></summary>'
+    + '<div data-lazy-day-content></div></details>');
+  legacy.prepare("INSERT INTO journal_days (date, html) VALUES (?, ?)")
+    .run("01.08.2026", oldDay);
+  legacy.close();
+
+  const database = new JournalDatabase(file);
+  try {
+    const payload = await database.payload();
+    assert.notEqual(payload.version, "sha256:legacy");
+    assert.match(payload.html, /data-lazy-day="02\.08\.2026"/u);
+    assert.doesNotMatch(payload.html, /turn-current|turn-old/u);
+    assert.equal(payload.summary.buckets.length, 2);
+    assert.equal(payload.summary.buckets.reduce((total, bucket) => total + bucket.credits, 0), 30);
+    assert.deepEqual(
+      (await database.turnPage({ workspaceId: "workspace-1" })).turns
+        .map((entry) => entry.turnRef),
+      ["ref-current", "ref-old"],
+    );
+    database.close();
+    const reopened = new JournalDatabase(file);
+    assert.equal((await reopened.payload()).summary.buckets.length, 2);
+    assert.equal((await reopened.turnPage({ workspaceId: "workspace-1" })).turns.length, 2);
+    reopened.close();
+  } finally {
+    database.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("schema v2 migration rolls back DDL data and version after an injected failure", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-journal-v2-rollback-"));
+  const file = path.join(root, "journal.sqlite");
+  const sourceDay = indexedDay("02.08.2026", {
+    turnRef: "ref-current",
+    turnId: "turn-current",
+    credits: 20,
+    completedAt: "2026-08-02T12:00:00.000Z",
+  });
+  const legacy = new DatabaseSync(file);
+  legacy.exec(`
+    CREATE TABLE journal_meta (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      schema_version INTEGER NOT NULL,
+      source_version TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      html TEXT NOT NULL
+    );
+    CREATE TABLE journal_days (date TEXT PRIMARY KEY, html TEXT NOT NULL) WITHOUT ROWID;
+    CREATE TABLE journal_turns (id TEXT PRIMARY KEY, html TEXT NOT NULL) WITHOUT ROWID;
+    INSERT INTO journal_meta
+      (id, schema_version, source_version, updated_at, html)
+    VALUES
+      (1, 2, 'sha256:legacy', '2026-08-02T12:00:00.000Z', '${sourceDay.replaceAll("'", "''")}');
+    CREATE TRIGGER fail_virtual_migration
+    BEFORE UPDATE OF schema_version ON journal_meta
+    WHEN NEW.schema_version = 3
+    BEGIN
+      SELECT RAISE(ABORT, 'injected virtual migration failure');
+    END;
+  `);
+  legacy.close();
+
+  const failed = new JournalDatabase(file);
+  await assert.rejects(failed.payload(), /injected virtual migration failure/u);
+  failed.close();
+  const inspected = new DatabaseSync(file);
+  assert.equal(
+    inspected.prepare("PRAGMA table_info(journal_meta)").all()
+      .some((column) => column.name === "summary_json"),
+    false,
+  );
+  assert.equal(
+    inspected.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'journal_turn_index'")
+      .get(),
+    undefined,
+  );
+  assert.equal(inspected.prepare("SELECT schema_version FROM journal_meta WHERE id = 1").get().schema_version, 2);
+  inspected.exec("DROP TRIGGER fail_virtual_migration");
+  inspected.close();
+
+  const reopened = new JournalDatabase(file);
+  try {
+    assert.equal((await reopened.payload()).summary.buckets.length, 1);
+    assert.deepEqual(
+      (await reopened.turnPage({ workspaceId: "workspace-1" })).turns
+        .map((entry) => entry.turnRef),
+      ["ref-current"],
+    );
+    const upgraded = new DatabaseSync(file, { readOnly: true });
+    assert.equal(upgraded.prepare("SELECT schema_version FROM journal_meta WHERE id = 1").get().schema_version, 3);
+    assert.equal(
+      upgraded.prepare("PRAGMA table_info(journal_meta)").all()
+        .some((column) => column.name === "summary_json"),
+      true,
+    );
+    upgraded.close();
+  } finally {
+    reopened.close();
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -335,6 +756,7 @@ test("index-only projection uses revision CAS and preserves lazy fragments", asy
     assert.equal(replaced.projected, true);
     assert.equal((await database.payload()).version, "sha256:index");
     assert.equal(await database.accountUsageProjectionVersion(), "current-v1");
+    assert.deepEqual((await database.payload()).summary, { version: 1, buckets: [] });
     assert.equal(await database.fragment("day", "01.07.2026"), "<section>День</section>");
     assert.equal(await database.fragment("turn", "turn"), "<article>Ход</article>");
   } finally {

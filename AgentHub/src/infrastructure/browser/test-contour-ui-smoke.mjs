@@ -164,18 +164,8 @@ export async function runTestContourUiSmoke({
     await page.locator('html[data-view="chat"]').waitFor({ state: "attached", timeout: 10_000 });
 
     if (withAgent) {
-      const selectedStream = await selectTestContourCodexStream(page, timeoutMs);
+      await selectTestContourCodexStream(page, timeoutMs);
       await selectTestContourModel(page, model, timeoutMs);
-      const previousUrl = page.url();
-      await selectedStream.click({ button: "right" });
-      const continueInCodex = page.locator(
-        '[data-stream-menu-action="continue-provider"][data-provider="codex"]',
-      );
-      await continueInCodex.waitFor({ state: "visible", timeout: timeoutMs });
-      await continueInCodex.evaluate((button) => button.click());
-      await page.waitForFunction((previous) => (
-        window.location.href !== previous && window.location.hash.includes("/chat/codex/")
-      ), previousUrl, { timeout: timeoutMs });
       const input = page.locator("[data-composer-input]");
       await input.waitFor({ state: "visible", timeout: timeoutMs });
       await input.fill(TEST_CONTOUR_PROBE);

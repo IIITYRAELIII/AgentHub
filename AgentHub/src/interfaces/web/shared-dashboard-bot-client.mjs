@@ -35,6 +35,18 @@ const ATTACHMENT_TRANSPORT_PROTOCOL = "agent-hub-attachment-chunks-v1";
 const ATTACHMENT_TRANSPORT_CHUNK_BYTES = 16 * 1024;
 const ATTACHMENT_TRANSPORT_MANIFEST_MAX_BYTES = 24 * 1024;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
+const ATTACHMENT_ERROR_CODES = new Set([
+  "ABORT_ERR", "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN", "EPIPE",
+  "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_SOCKET", "UND_ERR_ABORTED", "UND_ERR_RESPONSE_CONTENT_LENGTH_MISMATCH",
+]);
+
+function attachmentErrorCode(error) {
+  for (let current = error, depth = 0; current && depth < 5; current = current.cause, depth += 1) {
+    if (ATTACHMENT_ERROR_CODES.has(current.code)) return current.code;
+  }
+  return null;
+}
 
 function retryableCommandError(error) {
   const status = Number(error?.status);
@@ -50,7 +62,27 @@ function persistentRetryableError(error, description) {
   const wrapped = new Error(`${description}: ${String(error?.message ?? error)}`, { cause: error });
   wrapped.name = String(error?.name ?? "Error");
   wrapped.retryable = true;
+  for (const key of ["code", "status", "retryAfterMs", "attachmentTransport"]) {
+    if (error?.[key] !== undefined) wrapped[key] = error[key];
+  }
   return wrapped;
+}
+
+// Одна попытка опроса. Первый отказ фиксируется один раз и останавливает
+// планирование новых команд во всех полосах, не трогая уже начатые: у них
+// остаются собственные дедлайны, а повтор выполняет следующий опрос.
+function pollAttempt() {
+  let failed = false;
+  let error;
+  return {
+    get failed() { return failed; },
+    get error() { return error; },
+    fail(cause) {
+      if (failed) return;
+      failed = true;
+      error = cause;
+    },
+  };
 }
 
 export function signSharedDashboardBotRequest({
@@ -78,6 +110,8 @@ export class SharedDashboardBotClient {
   #retryMs;
   #backoff;
   #attachmentTimeoutMs;
+  #activeAttachmentRequests = 0;
+  #attachmentResponses = new WeakMap();
   #wakeChannel;
   #closed = false;
   #loop = null;
@@ -232,17 +266,51 @@ export class SharedDashboardBotClient {
     return { id, userId, action: "board-task-ingest", params };
   }
 
-  async #attachmentResponse(payload) {
-    const response = await this.#signedFetch("/api/dashboard-bot/attachment/pull", payload, {
-      timeoutMs: this.#attachmentTimeoutMs,
-    });
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      const error = new Error(`Shared Dashboard bot attachment download failed: ${payload?.error ?? `HTTP ${response.status}`}`);
-      error.status = response.status;
-      throw error;
+  async #attachmentResponse(payload, consume) {
+    const started = performance.now();
+    const diagnostic = {
+      mode: payload.mode === "chunk" ? "chunk" : "manifest",
+      page: Number.isSafeInteger(payload.page) ? payload.page : null,
+      index: Number.isSafeInteger(payload.index) ? payload.index : null,
+      phase: "headers", headersMs: null, bodyMs: null, status: null, bytes: 0,
+      activeAtStart: ++this.#activeAttachmentRequests,
+    };
+    try {
+      const response = await this.#signedFetch("/api/dashboard-bot/attachment/pull", payload, {
+        timeoutMs: this.#attachmentTimeoutMs,
+      });
+      diagnostic.headersMs = Math.round(performance.now() - started);
+      diagnostic.status = response.status;
+      diagnostic.phase = "response";
+      this.#attachmentResponses.set(response, diagnostic);
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}));
+        const error = new Error(`Shared Dashboard bot attachment download failed: ${result?.error ?? `HTTP ${response.status}`}`);
+        error.status = response.status;
+        throw error;
+      }
+      return await consume(response);
+    } catch (error) {
+      if (!retryableCommandError(error)) throw error;
+      const details = {
+        ...diagnostic,
+        elapsedMs: Math.round(performance.now() - started),
+        activeAtFailure: this.#activeAttachmentRequests,
+        causeCode: attachmentErrorCode(error),
+      };
+      // Only bounded transport metadata reaches the poll log; dependency messages
+      // may contain signed URLs or request data. Preserve the original cause.
+      const wrapped = new Error(`Shared Dashboard bot attachment transport failed: ${JSON.stringify(details)}`, { cause: error });
+      wrapped.name = String(error?.name ?? "Error");
+      wrapped.code = error?.code ?? error?.cause?.code;
+      wrapped.status = error?.status;
+      wrapped.retryAfterMs = error?.retryAfterMs ?? error?.cause?.retryAfterMs;
+      wrapped.retryable = true;
+      wrapped.attachmentTransport = details;
+      throw wrapped;
+    } finally {
+      this.#activeAttachmentRequests -= 1;
     }
-    return response;
   }
 
   async #storeDownloadedAttachment({ body, command, contentType, expectedHash, id, originalName }) {
@@ -335,86 +403,101 @@ export class SharedDashboardBotClient {
   }
 
   async #downloadAttachmentChunk({ command, descriptor, id, manifest }) {
-    const response = await this.#attachmentResponse({
+    return this.#attachmentResponse({
       id,
       userId: command.userId,
       commandId: command.id,
       mode: "chunk",
       index: descriptor.index,
+    }, async (response) => {
+      const advertisedLength = Number(response.headers.get("Content-Length"));
+      if (
+        response.headers.get("X-Agent-Hub-Attachment-Protocol") !== ATTACHMENT_TRANSPORT_PROTOCOL
+        || response.headers.get("X-Agent-Hub-Attachment-Id") !== id
+        || response.headers.get("X-Agent-Hub-Attachment-Hash") !== manifest.hash
+        || Number(response.headers.get("X-Agent-Hub-Chunk-Index")) !== descriptor.index
+        || Number(response.headers.get("X-Agent-Hub-Chunk-Count")) !== manifest.count
+        || response.headers.get("X-Agent-Hub-Chunk-Hash") !== descriptor.hash
+        || advertisedLength !== descriptor.size
+      ) {
+        throw new Error("Shared Dashboard bot returned invalid attachment chunk metadata");
+      }
+      const body = await this.#readAttachmentBody(response, ATTACHMENT_TRANSPORT_CHUNK_BYTES);
+      if (
+        body.length !== descriptor.size
+        || createHash("sha256").update(body).digest("hex") !== descriptor.hash
+      ) {
+        throw new Error("Shared Dashboard bot returned a damaged attachment chunk");
+      }
+      return body;
     });
-    const advertisedLength = Number(response.headers.get("Content-Length"));
-    if (
-      response.headers.get("X-Agent-Hub-Attachment-Protocol") !== ATTACHMENT_TRANSPORT_PROTOCOL
-      || response.headers.get("X-Agent-Hub-Attachment-Id") !== id
-      || response.headers.get("X-Agent-Hub-Attachment-Hash") !== manifest.hash
-      || Number(response.headers.get("X-Agent-Hub-Chunk-Index")) !== descriptor.index
-      || Number(response.headers.get("X-Agent-Hub-Chunk-Count")) !== manifest.count
-      || response.headers.get("X-Agent-Hub-Chunk-Hash") !== descriptor.hash
-      || advertisedLength !== descriptor.size
-    ) {
-      throw new Error("Shared Dashboard bot returned invalid attachment chunk metadata");
-    }
-    const body = await this.#readAttachmentBody(response, ATTACHMENT_TRANSPORT_CHUNK_BYTES);
-    if (
-      body.length !== descriptor.size
-      || createHash("sha256").update(body).digest("hex") !== descriptor.hash
-    ) {
-      throw new Error("Shared Dashboard bot returned a damaged attachment chunk");
-    }
-    return body;
   }
 
   async #downloadAttachmentChunks({ command, descriptors, id, manifest }) {
     const bodies = new Array(descriptors.length);
     let nextIndex = 0;
+    let failed = false;
+    let firstError;
     const workers = Array.from(
       { length: Math.min(ATTACHMENT_CHUNK_CONCURRENCY, descriptors.length) },
       async () => {
-        for (;;) {
+        while (!failed) {
           const index = nextIndex;
           nextIndex += 1;
           if (index >= descriptors.length) break;
-          bodies[index] = await this.#downloadAttachmentChunk({
-            command,
-            descriptor: descriptors[index],
-            id,
-            manifest,
-          });
+          try {
+            bodies[index] = await this.#downloadAttachmentChunk({
+              command,
+              descriptor: descriptors[index],
+              id,
+              manifest,
+            });
+          } catch (error) {
+            if (!failed) firstError = error;
+            failed = true;
+            throw error;
+          }
         }
       },
     );
-    await Promise.all(workers);
+    // A retry must not outlive this attempt's downloads. Started requests keep
+    // their existing deadlines; no further chunks are scheduled after failure.
+    await Promise.allSettled(workers);
+    if (failed) throw firstError;
     return bodies;
   }
 
   async #downloadRemoteAttachmentOnce(reference, command) {
     if (!this.#attachmentDirectory) throw new Error("Shared Dashboard bot attachment storage is not configured");
     const id = String(reference).toLowerCase().slice(REMOTE_ATTACHMENT_PREFIX.length);
-    const firstResponse = await this.#attachmentResponse({
+    const firstResult = await this.#attachmentResponse({
       id,
       userId: command.userId,
       commandId: command.id,
       mode: "manifest",
       page: 0,
+    }, async (response) => {
+      if (!String(response.headers.get("Content-Type") ?? "").toLowerCase().includes("application/json")) {
+        return { legacyPath: await this.#storeLegacyAttachment(response, { command, id }) };
+      }
+      return { manifest: await this.#attachmentManifestPage(response) };
     });
-    if (!String(firstResponse.headers.get("Content-Type") ?? "").toLowerCase().includes("application/json")) {
-      return this.#storeLegacyAttachment(firstResponse, { command, id });
-    }
+    if (firstResult.legacyPath) return firstResult.legacyPath;
     const first = this.#validateAttachmentManifestPage(
-      await this.#attachmentManifestPage(firstResponse),
+      firstResult.manifest,
       { id, expectedPage: 0 },
     );
     const pages = [first];
     for (let page = 1; page < first.pageCount; page += 1) {
-      const response = await this.#attachmentResponse({
+      const manifest = await this.#attachmentResponse({
         id,
         userId: command.userId,
         commandId: command.id,
         mode: "manifest",
         page,
-      });
+      }, (response) => this.#attachmentManifestPage(response));
       pages.push(this.#validateAttachmentManifestPage(
-        await this.#attachmentManifestPage(response),
+        manifest,
         { id, expected: first, expectedPage: page },
       ));
     }
@@ -443,6 +526,9 @@ export class SharedDashboardBotClient {
   }
 
   async #readAttachmentBody(response, maxBytes = MAX_ATTACHMENT_BYTES) {
+    const diagnostic = this.#attachmentResponses.get(response);
+    const started = performance.now();
+    if (diagnostic) diagnostic.phase = "body";
     if (!response.body) return Buffer.alloc(0);
     const reader = response.body.getReader();
     const chunks = [];
@@ -463,6 +549,7 @@ export class SharedDashboardBotClient {
         if (done) break;
         const chunk = Buffer.from(value);
         length += chunk.length;
+        if (diagnostic) diagnostic.bytes = length;
         if (length > maxBytes) {
           throw new Error("Shared Dashboard bot returned an oversized attachment");
         }
@@ -473,6 +560,7 @@ export class SharedDashboardBotClient {
       void reader.cancel(error).catch(() => {});
       throw error;
     } finally {
+      if (diagnostic) diagnostic.bodyMs = Math.round(performance.now() - started);
       clearTimeout(timeoutTimer);
       reader.releaseLock();
     }
@@ -541,39 +629,55 @@ export class SharedDashboardBotClient {
     return { handled: 1, retryError: null };
   }
 
-  async #handleCommandLane(commands) {
+  async #handleCommandLane(commands, attempt) {
     let handled = 0;
     let retryError = null;
     for (const command of commands) {
-      const result = await this.#handleCommand(command);
-      handled += result.handled;
-      retryError ??= result.retryError;
+      if (attempt.failed) break;
+      try {
+        const result = await this.#handleCommand(command);
+        handled += result.handled;
+        retryError ??= result.retryError;
+      } catch (error) {
+        attempt.fail(error);
+        throw error;
+      }
     }
     return { handled, retryError };
   }
 
-  async #handleCommandPool(commands, concurrency) {
+  async #handleCommandPool(commands, concurrency, attempt) {
     let nextIndex = 0;
     const workers = Array.from(
       { length: Math.min(concurrency, commands.length) },
       async () => {
         let handled = 0;
         let retryError = null;
-        for (;;) {
+        while (!attempt.failed) {
           const index = nextIndex;
           nextIndex += 1;
           if (index >= commands.length) break;
-          const result = await this.#handleCommand(commands[index]);
-          handled += result.handled;
-          retryError ??= result.retryError;
+          try {
+            const result = await this.#handleCommand(commands[index]);
+            handled += result.handled;
+            retryError ??= result.retryError;
+          } catch (error) {
+            attempt.fail(error);
+            throw error;
+          }
         }
         return { handled, retryError };
       },
     );
-    const results = await Promise.all(workers);
-    return results.reduce((total, result) => ({
-      handled: total.handled + result.handled,
-      retryError: total.retryError ?? result.retryError,
+    // Отклонённый пул не должен пережить свою попытку: начатые команды
+    // дорабатывают со своими дедлайнами, новые после отказа не планируются.
+    const settled = await Promise.allSettled(workers);
+    const rejected = settled.find((entry) => entry.status === "rejected");
+    if (attempt.failed) throw attempt.error;
+    if (rejected) throw rejected.reason;
+    return settled.reduce((total, entry) => ({
+      handled: total.handled + entry.value.handled,
+      retryError: total.retryError ?? entry.value.retryError,
     }), { handled: 0, retryError: null });
   }
 
@@ -596,17 +700,23 @@ export class SharedDashboardBotClient {
           ? attachmentCommands
           : textCommands).push(command);
       }
+      const attempt = pollAttempt();
       const lanes = [];
-      if (textCommands.length) lanes.push(this.#handleCommandLane(textCommands));
+      if (textCommands.length) lanes.push(this.#handleCommandLane(textCommands, attempt));
       if (attachmentCommands.length) {
-        lanes.push(this.#handleCommandPool(attachmentCommands, ATTACHMENT_COMMAND_CONCURRENCY));
+        lanes.push(this.#handleCommandPool(attachmentCommands, ATTACHMENT_COMMAND_CONCURRENCY, attempt));
       }
-      const results = await Promise.all(lanes);
+      // Обе полосы дорабатывают внутри этой попытки: ни одна не продолжает
+      // слать запросы после того, как опрос уже отклонён.
+      const settled = await Promise.allSettled(lanes);
+      const rejected = settled.find((entry) => entry.status === "rejected");
+      if (attempt.failed) throw attempt.error;
+      if (rejected) throw rejected.reason;
       let handled = 0;
       let retryError = null;
-      for (const result of results) {
-        handled += result.handled;
-        retryError ??= result.retryError;
+      for (const entry of settled) {
+        handled += entry.value.handled;
+        retryError ??= entry.value.retryError;
       }
       if (retryError) throw retryError;
       return handled;

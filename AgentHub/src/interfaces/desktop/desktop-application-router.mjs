@@ -4,12 +4,12 @@ import { createDesktopControlRouter } from "./desktop-control-router.mjs";
 const MUTATION_ACTIONS = Object.freeze([
   "select-task", "send-message", "new-task", "rotate-stream", "create-stream",
   "update-setting", "rename-task", "archive-task", "cancel-run",
-  "resolve-approval", "deferred-input", "restart-server", "set-autostart",
+  "resolve-approval", "deferred-input", "restart-server", "retry-startup", "set-autostart",
   "update-server-configuration", "update-root-agents", "update-global-pre-turn-instructions", "compact-context", "create-device-pairing",
   "revoke-device", "submit-bug-report",
-  "rename-workspace", "update-workspace-settings", "move-workspace-to-folder", "rename-workspace-folder", "update-workspace-rules", "complete-workspace-release", "create-workspace", "archive-workspace", "restore-workspace", "create-workspace-from-stream", "merge-workspaces", "rename-stream",
+  "rename-workspace", "update-workspace-settings", "move-workspace-to-folder", "rename-workspace-folder", "update-workspace-rules", "complete-workspace-release", "create-workspace", "archive-workspace", "restore-workspace", "delete-archived-workspace", "create-workspace-from-stream", "merge-workspaces", "rename-stream",
   "archive-stream", "update-stream-settings", "update-stream-rules", "move-stream",
-  "board-task-create", "board-task-ingest", "board-task-update", "board-task-attachment-add", "board-task-status", "board-task-move", "board-task-complete", "board-task-remove",
+  "board-task-create", "board-task-ingest", "board-task-update", "board-task-checklist", "board-task-checklist-linked-action", "board-task-attachment-add", "board-task-status", "board-task-move", "board-task-complete", "board-task-remove",
   "board-task-retry-triage", "board-task-start", "board-column-move", "board-column-comment",
   "board-workspace-move", "usage-sync", "usage-sync-invite", "usage-sync-enroll",
   "usage-sync-device-label",
@@ -17,7 +17,7 @@ const MUTATION_ACTIONS = Object.freeze([
 ]);
 
 const CONCURRENT_MUTATION_ACTIONS = Object.freeze([
-  "send-message", "cancel-run", "deferred-input", "restart-server",
+  "send-message", "cancel-run", "deferred-input", "restart-server", "retry-startup",
 ]);
 
 /**
@@ -56,7 +56,7 @@ export function createDesktopApplicationRouter({
     "updateServerConfiguration", "readPreTurnInstructions", "updateGlobalPreTurnInstructions",
     "readRootAgents", "updateRootAgents", "compactContext", "openAttachment",
     "submitBugReport", "reportDiagnostic", "trustedDevices", "createDevicePairing", "revokeDevice",
-    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
+    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskChecklist", "boardTaskChecklistLinkedAction", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
     "boardWorkspaceMove",
     "usageSync", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
@@ -73,6 +73,10 @@ export function createDesktopApplicationRouter({
     handlers: {
       snapshot: handlers.snapshot,
       "runtime-health": handlers.runtimeHealth,
+      "retry-startup": (params) => {
+        if (!handlers.retryStartup) throw new Error("Повтор запуска недоступен в этой версии");
+        return handlers.retryStartup(params);
+      },
       "task-history": handlers.taskHistory,
       "rate-limit-history": handlers.rateLimitHistory,
       "usage-history": handlers.usageHistory,
@@ -126,6 +130,7 @@ export function createDesktopApplicationRouter({
       "create-workspace": (params, context) => dispatch("workspace.create", params, context),
       "archive-workspace": (params, context) => dispatch("workspace.archive", params, context),
       "restore-workspace": (params, context) => dispatch("workspace.restore", params, context),
+      "delete-archived-workspace": (params, context) => dispatch("workspace.delete-archived", params, context),
       "create-workspace-from-stream": (params, context) => dispatch("workspace.create-from-stream", params, context),
       "merge-workspaces": (params, context) => dispatch("workspace.merge", params, context),
       "create-stream": (params, context) => dispatch("stream.create", params, context),
@@ -137,6 +142,8 @@ export function createDesktopApplicationRouter({
       "board-task-create": handlers.boardTaskCreate,
       "board-task-ingest": handlers.boardTaskIngest,
       "board-task-update": handlers.boardTaskUpdate,
+      "board-task-checklist": handlers.boardTaskChecklist,
+      "board-task-checklist-linked-action": handlers.boardTaskChecklistLinkedAction,
       "board-task-attachment-add": handlers.boardTaskAttachmentAdd,
       "board-task-status": handlers.boardTaskStatus,
       "board-task-move": handlers.boardTaskMove,

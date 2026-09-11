@@ -1,4 +1,5 @@
 import { PersistentDeliveryOutbox } from "../infrastructure/persistence/delivery-outbox.mjs";
+import { createRecordingContourDelivery } from "../runtime/test-contour-recording-delivery.mjs";
 
 export async function createDeliveryOutboxComposition({
   directoryPath,
@@ -6,6 +7,7 @@ export async function createDeliveryOutboxComposition({
   runtimeTimers,
   isStopping,
   deliver,
+  recordingRoot = null,
   onUncertain,
   onDelivered,
   onPermanentFailure,
@@ -13,7 +15,7 @@ export async function createDeliveryOutboxComposition({
 }) {
   const deliveryOutbox = new PersistentDeliveryOutbox({
     directoryPath,
-    deliver,
+    deliver: recordingRoot ? await createRecordingContourDelivery({ root: recordingRoot }) : deliver,
     onUncertain,
     onDelivered,
     onPermanentFailure,

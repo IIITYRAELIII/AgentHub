@@ -29,9 +29,13 @@ export function isCodexContextProbeTurn(turn, { allowTextFallback = true } = {})
   if (turn?.contextProbe === true) return true;
   const userMessages = Array.isArray(turn?.userMessages) ? turn.userMessages : [];
   const items = Array.isArray(turn?.items) ? turn.items : [];
+  const messages = Array.isArray(turn?.messages) ? turn.messages : [];
   const clientIds = [
     turn?.clientUserMessageId ?? turn?.clientId,
     ...userMessages.map((message) => message?.clientUserMessageId ?? message?.clientId),
+    ...messages
+      .filter((message) => message?.role === "user")
+      .map((message) => message?.clientUserMessageId ?? message?.clientId),
     ...items
       .filter((item) => item?.type === "userMessage")
       .map((item) => item?.clientUserMessageId ?? item?.clientId),

@@ -93,6 +93,8 @@ export function createProviderCatalogComposition({
   startClaudeTurn,
   steerClaudeTurn = null,
   claudeTaskSnapshots,
+  claudeRuntimeOwner,
+  claudeRunAdmission,
   backfillWorkLogPricingMetadata,
   readCodexThreadTitleHistories,
   rememberCodexRolloutPath,
@@ -116,6 +118,7 @@ export function createProviderCatalogComposition({
   providerTurnTelemetryStore = null,
   terminalCommits = null,
   commandTrace = null,
+  receiptForMessage = () => null,
   persistNow = () => new Date().toISOString(),
   clock = () => Date.now(),
 }) {
@@ -164,7 +167,14 @@ export function createProviderCatalogComposition({
     telemetryStore: providerTurnTelemetryStore,
     terminalCommits,
     commandTrace,
+    receiptForMessage,
   });
+  if (typeof claudeRuntimeOwner?.state !== "function") {
+    throw new TypeError("claudeRuntimeOwner is required");
+  }
+  if (typeof claudeRunAdmission?.consumeLaunch !== "function") {
+    throw new TypeError("claudeRunAdmission is required");
+  }
   const providerTaskActivity = new ProviderTaskActivityService({
     knownCodexRolloutPath,
     codexRunning: codexTransportRunning,
@@ -173,6 +183,7 @@ export function createProviderCatalogComposition({
     readCodexThread,
     capturedCodexExecutionOwner,
     claudeTaskSnapshots,
+    claudeRuntimeState: (snapshot, options) => claudeRuntimeOwner.state(snapshot, options),
     readRolloutActivity: readCodexRolloutActivity,
     selectActiveTurnId: selectExactActiveCodexTurnId,
     resolveActivity: resolveCodexTaskActivity,
@@ -201,18 +212,28 @@ export function createProviderCatalogComposition({
       listClaudeSessionSnapshots,
       buildClaudeTaskCatalogEntries: (snapshots) => claudeCatalogProjection.project(snapshots),
       createClaudeTask: () => claudeProviderTasks.createTask(),
-      launchClaudeTurn: (...args) => startClaudeTurn(...args),
+      launchClaudeTurn: (run, input, temporaryFiles, options = {}) => {
+        const { launchAdmission, ...providerOptions } = options;
+        claudeRunAdmission.consumeLaunch(run, "claude", launchAdmission);
+        return startClaudeTurn(run, input, temporaryFiles, providerOptions);
+      },
       steerClaudeTurn: (...args) => (steerClaudeTurn ?? unsupportedProviderSteer)(...args),
       cancelClaudeProviderRun: (...args) => providerCancellationService.cancelClaude(...args),
-      readClaudeTaskActivity: (target) => providerTaskActivity.readClaude(target),
+      readClaudeTaskActivity: (target, options) => providerTaskActivity.readClaude(target, options),
       readClaudeTaskSnapshot: (...args) => claudeTaskSnapshots.read(...args),
       completeObservedClaudeRun: (...args) => claudeCompletionService.completeObserved(...args),
       completeManagedClaudeRun: (...args) => claudeCompletionService.completeManaged(...args),
       recoverClaudeRun: (...args) => claudeRecoveryService.recover(...args),
     },
   });
+  const currentWorkspaceEntries = currentWorkspaceThreadEntries(workspaceCatalogStore);
+  const visibleStreamIds = new Set(currentWorkspaceEntries.map((entry) => entry.streamId));
+  const initialEntries = catalogEntriesWithoutLiveActivity(taskSyncStore.catalog()).flatMap((entry) => {
+    const binding = workspaceCatalogStore.resolveThread(entry);
+    return binding && visibleStreamIds.has(binding.streamId) ? [{ ...entry, ...binding }] : [];
+  });
   const providerTaskCatalogBuilder = new ProviderTaskCatalogBuilder({
-    durableEntries: () => currentStreamEntries(workspaceCatalogStore.assignCatalogEntries(
+    durableEntries: async () => currentStreamEntries(await workspaceCatalogStore.assignCatalogEntries(
       [
         ...catalogEntriesWithoutLiveActivity(taskSyncStore.catalog()),
         ...currentWorkspaceThreadEntries(workspaceCatalogStore),
@@ -224,8 +245,8 @@ export function createProviderCatalogComposition({
       projectName: runProject(run).name,
     })),
     merge: mergeTaskCatalog,
-    finalize: (entries, context) => finalizeTaskCatalog(
-      currentStreamEntries(workspaceCatalogStore.assignCatalogEntries(entries)),
+    finalize: async (entries, context) => finalizeTaskCatalog(
+      currentStreamEntries(await workspaceCatalogStore.assignCatalogEntries(entries)),
       context,
     ),
     onSourceError: ({ name, reason }) => {
@@ -233,12 +254,7 @@ export function createProviderCatalogComposition({
     },
   });
   const taskCatalogService = new TaskCatalogService({
-    initialEntries: currentStreamEntries(workspaceCatalogStore.assignCatalogEntries(
-      [
-        ...catalogEntriesWithoutLiveActivity(taskSyncStore.catalog()),
-        ...currentWorkspaceThreadEntries(workspaceCatalogStore),
-      ],
-    )),
+    initialEntries: currentStreamEntries([...initialEntries, ...currentWorkspaceEntries]),
     cacheMs: taskCatalogCacheMs,
     build: () => providerTaskCatalogBuilder.build(),
   });

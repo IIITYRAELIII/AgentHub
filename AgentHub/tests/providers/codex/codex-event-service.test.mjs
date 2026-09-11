@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { CodexEventService } from "../../../src/providers/codex/codex-event-service.mjs";
+import { ContextCompactionTracker, isContextCompactionItem } from "../../../src/providers/codex/context-compaction-tracker.mjs";
 import {
   CODEX_CONTEXT_PROBE_PROMPT,
   CODEX_CONTEXT_PROBE_RESPONSE,
@@ -31,6 +32,32 @@ function createService(run, overrides = {}) {
     taskDiffs: { remember: noop }, ...overrides,
   });
 }
+
+test("terminal turn recovers its exact compaction item when the separate completion event was lost", async () => {
+  const tracker = new ContextCompactionTracker();
+  tracker.begin("thread-recover", { turnId: "turn-recover", itemId: "compaction-recover" });
+  const service = createService(null, {
+    isCompactionItem: isContextCompactionItem,
+    getCompaction: (id) => tracker.get(id),
+    beginCompactionCleanup: (id, details) => tracker.mutate(id, () => tracker.complete(id, details)),
+    settleCompactionTurn: (id, details) => tracker.mutate(id, () => tracker.settleProviderTurn(id, details)),
+  });
+  try {
+    await service.handle({ method: "turn/completed", params: {
+      threadId: "thread-recover", turn: { id: "turn-recover", status: "completed",
+        items: [{ id: "compaction-recover", type: "contextCompaction" }] },
+    } });
+    assert.equal(tracker.get("thread-recover").status, "completed");
+    assert.equal(tracker.get("thread-recover").itemId, "compaction-recover");
+    tracker.begin("thread-recover", { turnId: "new-turn", itemId: "new-item" });
+    await service.handle({ method: "turn/completed", params: {
+      threadId: "thread-recover", turn: { id: "turn-recover", status: "completed",
+        items: [{ id: "compaction-recover", type: "contextCompaction" }] },
+    } });
+    assert.equal(tracker.get("thread-recover").status, "running");
+    assert.equal(tracker.get("thread-recover").turnId, "new-turn");
+  } finally { tracker.dispose(); }
+});
 
 test("Codex event service reduces answer deltas into the exact item", async () => {
   const run = { responseText: "", status: "running" };
@@ -64,6 +91,18 @@ test("Codex event service forwards structured user input requests", async () => 
   await service.handle({ id: 17, method: "item/tool/requestUserInput", params });
   assert.deepEqual(requests, [[17, params, run]]);
   assert.equal(activities.at(-1).status, "waiting");
+});
+
+test("typed async questions are persisted through the input owner without claiming a blocking RPC", async () => {
+  const run = { id: "run-a", streamId: "stream-a", threadId: "thread-a", turnId: "turn-a", status: "running" };
+  const requests = [];
+  const service = createService(run, { requestUserInput: async (...args) => { requests.push(args); } });
+  const item = { id: "call-a", type: "agentMessage", phase: "final_answer", text: "",
+    questions: [{ title: "Выберите", options: ["A", "B"] }] };
+  await service.handle({ method: "item/completed", params: { threadId: "thread-a", turnId: "turn-a", item } });
+  assert.equal(requests.length, 1);
+  assert.deepEqual(requests[0], ["call-a", { asyncItem: item, threadId: "thread-a", turnId: "turn-a" }, run]);
+  assert.equal(run.responseText ?? "", "");
 });
 
 test("Codex event service settles MCP admission only on later exact-turn progress", async () => {
@@ -389,6 +428,20 @@ test("Codex event service accepts the first real post-compaction context measure
   await service.handle({ method: "thread/tokenUsage/updated", params });
 
   assert.deepEqual(captured, [[params, { provisionalContext: false }]]);
+});
+
+test("terminal event recovers a question without completing it as an answer", async () => {
+  const captured = [];
+  const run = { status: "running", responseText: "", streamId: "stream-1" };
+  const service = createService(run, { requestUserInput: async (...args) => captured.push(args) });
+  const item = { id: "question-item", type: "agentMessage", phase: "final_answer",
+    text: "Choose", questions: [{ title: "Which route?", options: ["A", "B"] }] };
+  await service.handle({ method: "turn/completed", params: {
+    threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [item] },
+  } });
+  assert.equal(captured.length, 1);
+  assert.deepEqual(captured[0], [item.id, { asyncItem: item, threadId: "thread-1", turnId: "turn-1" }, run]);
+  assert.equal(run.responseText, "");
 });
 
 test("Codex event service contains background state persistence failures", async () => {

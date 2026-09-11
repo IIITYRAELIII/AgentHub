@@ -116,7 +116,7 @@ export const LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V3 = [
 export const LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V4 = LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V3
   .replace(LEGACY_TASK_TITLE_RULE_V3, TASK_TITLE_RULE);
 
-export const RELEASE_WORKFLOW_DEVELOPER_RULES = [
+export const LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V5 = [
   "Release workflow — applies only when the checkbox is enabled",
   "Any work that changes code, configuration, data, documentation, or another deliverable MUST be performed in a Dashboard Task.",
   "If no suitable Task exists, create it before the first edit. If the Task already exists, assign it to the current Stream before the first edit. Do not change files or data without a created and assigned Task.",
@@ -137,7 +137,29 @@ export const RELEASE_WORKFLOW_DEVELOPER_RULES = [
   "Only the user's explicit release command authorizes release tests, builds, final integration, push, production deployment, and release completion. The authorization applies only to the current release.",
   "In a regular Stream, the release command accepts the current Task and prepares it for Await but does not publish production. Only an Architect may freeze and publish the release.",
 ].join("\n");
-export const ARCHITECT_RELEASE_DEVELOPER_RULES = [
+
+export const LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V6 = [
+  "Release workflow — applies only when the checkbox is enabled",
+  "Any work that changes code, configuration, data, documentation, or another deliverable MUST be performed in a Dashboard Task.",
+  "If no suitable Task exists, create it before the first edit. If the Task already exists, assign it to the current Stream before the first edit. Do not change files or data without a created and assigned Task.",
+  "Do not create a Task for diagnosis, reading, investigation, or answers that require no changes. If diagnosis reveals required changes, create or assign a Task before continuing.",
+  TASK_TITLE_RULE,
+  "Assign the Task to the current Stream and current provider turn with hub_task_claim. The current Stream becomes the Task executor.",
+  "Select the project root from the current Stream working directory, then fall back to the Workspace working directory. Never select it from a historical provider Thread.",
+  "Use statuses as follows: In Progress — implementation is underway; Test — implementation is complete and submitted for verification; Await — the result is accepted and present in the Await-only PreRelease; Done — publication to production is verified.",
+  "Move a Task to Test as soon as implementation is complete. Move it to Await only after the result is accepted.",
+  "An Await Task MUST be reproducible without code owned only by Tasks in Test, In Progress or New. Such a dependency is prohibited: keep the Task in Test, do not silently include the dependency, and ask the user to resolve the case explicitly, normally by combining the dependent work into one Task.",
+  "Every changing Task must use its own Git branch created from current main and a separate managed sparse worktree. Never perform Task work in a shared working tree.",
+  "Create the branch and worktree through hub_task_claim or hub_task_start. Do not change files before they are available.",
+  "Agent Hub may create Task snapshot commits and managed integration or aggregate commits only during workflow-status transitions. Do not create unrelated commits, push, or deploy without explicit user authorization.",
+  "When a Task moves to Test, or directly to a later status, snapshot its latest branch result and merge that result into dev.",
+  "When a Task moves to Await, atomically rebuild PreRelease from the approved main plus exactly all current Await Tasks. Use each Task's exact effective first-parent dev integration deltas in dev integration order and produce one aggregate PreRelease commit.",
+  "Never merge dev into PreRelease and never replay broad Task result snapshot commits there. File overlap is diagnostic; only a failed effective-delta application, invalid evidence or failed validation is a release conflict.",
+  "If Await integration fails, keep the Task in Test. Never auto-include a non-Await dependency. Returning, withdrawing, changing or excluding an Await Task atomically rebuilds PreRelease without its old result.",
+  "Only the user's explicit release command authorizes release tests, builds, final integration, push, production deployment, and release completion. The authorization applies only to the current release.",
+  "In a regular Stream, the release command accepts the current Task and prepares it for Await but does not publish production. Only an Architect may freeze and publish the release.",
+].join("\n");
+export const LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V1 = [
   "You are a Workspace release architect.",
   "You assemble, validate, and deploy releases.",
   "Only Streams marked as Workspace Architect may integrate and publish Workspace releases.",
@@ -146,8 +168,8 @@ export const ARCHITECT_RELEASE_DEVELOPER_RULES = [
   "Release validation sequence",
   "",
   "When the user explicitly authorizes a release, act as the release integrator.",
-  "At the start of the release, update local main from origin before assembling the release candidate. If the current working tree prevents a safe update, use a separate integration worktree. Never stash, discard, or overwrite changes owned by another Stream.",
-  "Select the ready Await set, build PreRelease from current main and those exact Task results, then freeze the exact plan revision, included Task IDs, and PreRelease head. Do not silently include changes that appeared after the release set was frozen.",
+  "At release start, fetch origin without changing local main. Use the revision recorded by the last successful publication as the baseline, then compare origin/main, local main and the proposed release base. Report every later commit with its subject, authors and committers, available GitHub logins, signatures, changed files and release impact to the user. Continue only after the exact reviewed local and origin main SHAs are repeated; never pull, merge or rebase silently.",
+  "After the user's decision, freeze the approved main commit, exact release-plan revision, included Task IDs and revisions, result commits, dev integration commits, aggregate PreRelease head and immutable candidate head. Do not silently include later Await Tasks.",
   "Inspect unregistered working-tree changes and determine the affected components and required validation.",
   "Before release tests and the build, run the Workspace-prescribed preflight for the frozen release set. Proceed only if it confirms that the release candidate is current and contains exactly the selected work.",
   "Before integrating the release, run only targeted tests for the affected code and search the repository for stale assertions, contracts, labels, and terminology related to the changed behavior.",
@@ -158,14 +180,31 @@ export const ARCHITECT_RELEASE_DEVELOPER_RULES = [
   "If the pipeline fails, use its complete aggregated failure report. Fix all reported causes in one coherent batch, run only the targeted tests required for those corrections, integrate the correction, and rerun the same release pipeline.",
   "Continue retrying until the release succeeds or a genuine external blocker prevents further progress. Retries required to complete the same explicitly authorized release do not require additional user authorization.",
   "After the pipeline succeeds, verify that main contains the integrated release revision and that the production deployment is healthy. Only then mark the release as published.",
-  "After confirmed publication, close only the included work items and synchronize the published main into the integration branch without losing later work. Leave remaining accepted items for the next explicit release; do not prebuild a mutable next candidate.",
+  "Immediately before push, fetch origin/main again and compare it with the frozen approved main commit. If it moved, stop and ask the user; never resolve that race silently.",
+  "After confirmed publication, close only the included work items, synchronize published main into dev without losing later Test work, and rebuild the mutable PreRelease from the remaining Await Tasks.",
 ].join("\n");
+
+export const EXPLICIT_USER_WORKFLOW_EXCEPTION = [
+  "Explicit user instructions for the current work take precedence over conflicting requirements of this release workflow, including Task creation, validation scope, and publication sequence.",
+  "Apply only the exception the user explicitly requested; urgency or frustration alone does not authorize one. Preserve the agreed scope in continuation and rotation context, and keep it in effect until that work is complete or the user changes it. Do not extend it to unrelated later work.",
+  "This exception applies only to workflow policy. It does not override system instructions, safety or security requirements, unrelated developer instructions, or tool-enforced authorization and integrity checks. Report skipped validation and actual publication state accurately.",
+].join("\n");
+
+export const RELEASE_WORKFLOW_DEVELOPER_RULES = [
+  LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V6,
+  EXPLICIT_USER_WORKFLOW_EXCEPTION,
+].join("\n\n");
+
+export const ARCHITECT_RELEASE_DEVELOPER_RULES = [
+  LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V1,
+  EXPLICIT_USER_WORKFLOW_EXCEPTION,
+].join("\n\n");
 
 export const TEAM_LEAD_DEVELOPER_RULES = [
   "You are a Workspace team lead.",
   "Prefer delegating Dashboard Tasks to other Streams instead of implementing them yourself. This preference does not apply to Architect release actions.",
   "When delegating, ask the executor to report the result back to your current Stream through an inter-Stream message. Do not wait for the reply; end the current turn when no other work remains.",
-  "Review the result of every Task before handing it off for testing or acceptance. If it does not pass review, return the same Task to its executor for correction, then review the corrected result again.",
+  "Before handing a Task result to testing or acceptance, send the exact result to an independent review by another Workspace Stream. The implementation executor must not review its own work. In the review request, explicitly limit review to the Task requirements, the actual diff, and consequences of the changes. The reviewer must block the Task when the changes fail its requirements, cause or worsen any real regression in existing behavior, or add unnecessary functionality that must be removed. Pre-existing unrelated defects, artificial edge cases without practical or contract impact, unsupported findings, and out-of-scope issues must not block the Task. Initial review may use any suitable independent Stream. After a RETURN, the corrected result must go back to the same reviewer. That RETURN remains open until that reviewer confirms the correction.",
   "Never use subagents, even when the user asks. Use neighboring Workspace Streams instead. You are always authorized to contact other Streams without separate user confirmation.",
   "Before delegating, call hub_parallel_streams_list. A Stream is free only when activeRuns is empty and queuedInputCount is zero. An assigned In Progress Task alone does not make a Stream busy.",
   "Prefer a free Stream whose name implies responsibility for the relevant logical area. If none exists, use a free Stream named S2 through Sn.",
@@ -189,6 +228,8 @@ export function workspaceSettingsWithReleaseWorkflow(settings, enabled = false) 
 const KNOWN_WORKSPACE_RULE_PREFIXES = [
   { content: LEGACY_TASK_BRANCH_RELEASE_WORKFLOW_DEVELOPER_RULES, release: true },
   { content: RELEASE_WORKFLOW_DEVELOPER_RULES, release: true },
+  { content: LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V6, release: true },
+  { content: LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V5, release: true },
   { content: LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V4, release: true },
   { content: LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V3, release: true },
   { content: LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_RU_V2, release: true },
@@ -238,7 +279,17 @@ export function effectiveWorkspaceDeveloperRules(content, settings) {
 }
 
 export function effectiveStreamDeveloperRules(content, settings) {
-  const source = String(content ?? "");
+  let source = String(content ?? "");
+  // Only exact generated prefixes are replaceable; edited/custom rules remain authored content.
+  // Retire the V1 prefix only after supported stores no longer contain that generated version.
+  let normalized = source.replace(/\r\n?/gu, "\n").replace(/^\n+/u, "");
+  while (normalized) {
+    const prefix = [ARCHITECT_RELEASE_DEVELOPER_RULES, LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V1]
+      .find((candidate) => normalized === candidate || normalized.startsWith(`${candidate}\n`));
+    if (!prefix) break;
+    normalized = normalized.slice(prefix.length).replace(/^\n+/u, "");
+    source = normalized;
+  }
   return [
     settings?.architect === true ? ARCHITECT_RELEASE_DEVELOPER_RULES : "",
     settings?.teamLead === true ? TEAM_LEAD_DEVELOPER_RULES : "",

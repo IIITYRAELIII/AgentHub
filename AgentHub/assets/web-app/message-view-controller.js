@@ -2,6 +2,8 @@
   "use strict";
 
   const MAX_RESPONSE_ANNOTATION_INDEX = 20;
+  const DEFERRED_USER_MESSAGE_THRESHOLD = 4_000;
+  const DEFERRED_USER_MESSAGE_PREVIEW_CHARS = 1_600;
 
   function normalizedResponseAnnotationReferences(references) {
     const normalized = [];
@@ -207,6 +209,65 @@
     return counts;
   }
 
+  function markdownFenceStart(line) {
+    const match = String(line ?? "").match(/^\s*(`{3,}|~{3,})([\w+-]*)\s*$/u);
+    return match ? { marker: match[1], language: match[2] } : null;
+  }
+
+  function markdownFenceEnd(line, fence) {
+    const marker = String(line ?? "").trim();
+    return marker.length >= fence.marker.length
+      && [...marker].every((character) => character === fence.marker[0]);
+  }
+
+  function markdownDetailsAt(lines, index) {
+    // Recognize only the disclosure structure. Source attributes are never DOM
+    // attributes; every other HTML fragment still goes through text rendering.
+    const opening = String(lines[index] ?? "").match(/^\s*<details(?:\s+[^<>]*)?>\s*(.*)$/iu);
+    if (!opening) return null;
+    let cursor = index;
+    let header = opening[1];
+    if (!header) {
+      cursor += 1;
+      while (cursor < lines.length && !lines[cursor].trim()) cursor += 1;
+      header = String(lines[cursor] ?? "").trim();
+    }
+    const summaryOpening = header.match(/^<summary(?:\s+[^<>]*)?>(.*)$/iu);
+    if (!summaryOpening) return null;
+    const summaryLines = [];
+    let summaryLine = summaryOpening[1];
+    let summaryEnd;
+    while (!(summaryEnd = summaryLine.match(/^(.*?)<\/summary>\s*(.*)$/iu))) {
+      if (/^\s*<\/details>\s*$/iu.test(summaryLine) || cursor + 1 >= lines.length) return null;
+      summaryLines.push(summaryLine);
+      summaryLine = lines[++cursor];
+    }
+    const summary = [...summaryLines, summaryEnd[1]].join("\n").trim();
+    const inlineClose = summaryEnd[2].match(/^(.*?)<\/details>\s*$/iu);
+    if (inlineClose) return { summary, body: inlineClose[1], nextIndex: cursor + 1 };
+    const body = summaryEnd[2] ? [summaryEnd[2]] : [];
+    let depth = 1;
+    let fence = null;
+    for (cursor += 1; cursor < lines.length; cursor += 1) {
+      const line = lines[cursor];
+      if (fence) {
+        if (markdownFenceEnd(line, fence)) fence = null;
+      } else {
+        fence = markdownFenceStart(line);
+        if (!fence) {
+          if (/^\s*<details(?:\s+[^<>]*)?>/iu.test(line)
+            && !/<\/details>\s*$/iu.test(line)) depth += 1;
+          if (/^\s*<\/details>\s*$/iu.test(line)) {
+            depth -= 1;
+            if (depth === 0) return { summary, body: body.join("\n"), nextIndex: cursor + 1 };
+          }
+        }
+      }
+      body.push(line);
+    }
+    return null;
+  }
+
   function standaloneInlineCode(value) {
     const match = String(value ?? "").match(/^\s*`([^`\r\n]+)`\s*$/u);
     return match ? match[1] : null;
@@ -225,6 +286,75 @@
     return expanded
       ? { label: "Свернуть", icon: "caret-up" }
       : { label: "Показать ещё", icon: "caret-down" };
+  }
+
+  function deferredUserMessagePreview(message) {
+    if (message?.role !== "user") return null;
+    const annotations = Array.isArray(message?.responseAnnotations) ? message.responseAnnotations : [];
+    const text = annotations.length
+      ? [
+          ...annotations.flatMap((item, index) => [
+            `Цитата ${index + 1}`,
+            String(item?.text ?? "").trim(),
+            String(item?.annotation ?? "").trim(),
+          ]),
+          String(message?.responseAnnotationRequest ?? message?.text ?? "").trim(),
+        ].filter(Boolean).join("\n")
+      : String(message?.text ?? "");
+    if (text.length < DEFERRED_USER_MESSAGE_THRESHOLD) return null;
+    const head = text.slice(0, DEFERRED_USER_MESSAGE_PREVIEW_CHARS);
+    const newline = head.lastIndexOf("\n");
+    const space = head.lastIndexOf(" ");
+    const boundary = Math.max(newline, space);
+    const preview = head.slice(
+      0,
+      boundary >= Math.floor(DEFERRED_USER_MESSAGE_PREVIEW_CHARS * 0.75) ? boundary : head.length,
+    ).trimEnd();
+    return `${preview}\n…`;
+  }
+
+  function createDeferredDisclosureController(details, content, renderContent) {
+    if (!details || typeof details.addEventListener !== "function") {
+      throw new TypeError("details must support addEventListener");
+    }
+    if (!content || typeof content.replaceChildren !== "function") {
+      throw new TypeError("content must support replaceChildren");
+    }
+    if (typeof renderContent !== "function") throw new TypeError("renderContent must be a function");
+    let render = renderContent;
+    let materialized = false;
+
+    const sync = () => {
+      if (details.open === true) {
+        if (!materialized) {
+          render(content);
+          materialized = true;
+        }
+        return;
+      }
+      if (!materialized) return;
+      content.replaceChildren();
+      materialized = false;
+    };
+    const update = (nextRender) => {
+      if (typeof nextRender !== "function") throw new TypeError("renderContent must be a function");
+      render = nextRender;
+      if (materialized) {
+        content.replaceChildren();
+        materialized = false;
+      }
+      sync();
+    };
+
+    details.addEventListener("toggle", sync);
+    sync();
+    return Object.freeze({
+      get materialized() {
+        return materialized;
+      },
+      sync,
+      update,
+    });
   }
 
   function extractTechnicalTails(value) {
@@ -409,6 +539,23 @@
     return created;
   }
 
+  function captureMarkdownDetailsState(root) {
+    return Array.from(root?.querySelectorAll?.("details.markdown-details") ?? [], (node) => ({
+      source: node.agentHubMarkdownDetailsSource,
+      open: node.open,
+    }));
+  }
+
+  function restoreMarkdownDetailsState(root, previous) {
+    Array.from(root?.querySelectorAll?.("details.markdown-details") ?? []).forEach((node, index) => {
+      // Visual state is scoped to the already-keyed message and exact unchanged
+      // disclosure occurrence. Equal content never establishes message identity.
+      if (previous[index]?.source && previous[index].source === node.agentHubMarkdownDetailsSource) {
+        node.open = previous[index].open;
+      }
+    });
+  }
+
   function reconcileKeyedChildren(container, specs, createNode, updateNode = () => {}) {
     if (!container || typeof container.insertBefore !== "function") {
       throw new TypeError("container must support insertBefore");
@@ -426,7 +573,9 @@
       const signature = String(spec?.signature ?? "");
       let node = existing.get(key);
       if (!node || String(node.dataset?.messageContentSignature ?? "") !== signature) {
+        const disclosureState = captureMarkdownDetailsState(node);
         node = createNode(spec, index);
+        restoreMarkdownDetailsState(node, disclosureState);
       } else {
         updateNode(node, spec, index);
       }
@@ -443,9 +592,13 @@
 
   globalThis.AgentHubMessageView = Object.freeze({
     claimKeyedChildrenOwner,
+    captureMarkdownDetailsState,
+    restoreMarkdownDetailsState,
     codeBlockCopyRequest,
     composerFollowUpMode,
     conversationSurfaceMessages,
+    createDeferredDisclosureController,
+    deferredUserMessagePreview,
     deferredQueueCounts,
     extractTechnicalTails,
     messageTechnicalContent,
@@ -453,6 +606,9 @@
     messageDisclosurePresentation,
     messageContentSignature,
     messageKey,
+    markdownDetailsAt,
+    markdownFenceStart,
+    markdownFenceEnd,
     messageOwnsDeferredQueue,
     messageTailPagination,
     messageTimestampLabel,

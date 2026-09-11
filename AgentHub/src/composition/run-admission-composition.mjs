@@ -1,4 +1,4 @@
-import { unlink } from "node:fs/promises";
+import { createRuntimeFileRemoval } from "../runtime/test-contour-runtime-effects.mjs";
 import {
   deferredInputMatchesRun,
   pendingInputKeyboard,
@@ -73,9 +73,18 @@ export function createRunAdmissionComposition({
   sendMessageTo,
   saveState,
   streamHandoff = null,
+  stageLaunchAdmission,
+  abortLaunchAdmission,
   logger = console,
   commandTrace = null,
 }) {
+  const removeRuntimeFile = createRuntimeFileRemoval(config);
+  if (typeof stageLaunchAdmission !== "function") {
+    throw new TypeError("stageLaunchAdmission is required");
+  }
+  if (typeof abortLaunchAdmission !== "function") {
+    throw new TypeError("abortLaunchAdmission is required");
+  }
   async function resolvedExplicitSkillNames(input, cwd) {
     const candidates = explicitSkillCandidatesFromInput(input);
     if (!candidates.length) return [];
@@ -105,16 +114,16 @@ export function createRunAdmissionComposition({
     turnSpeechButtons.delete(normalizedTurnId);
     const temporaryFiles = turnTemporaryFiles.get(normalizedTurnId) ?? [];
     turnTemporaryFiles.delete(normalizedTurnId);
-    await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
+    await Promise.all(temporaryFiles.map((file) => removeRuntimeFile(file)));
     await taskProgress.clear(run);
     await managedRunLifecycle.complete(run);
     return true;
   }
 
-  async function taskExternalActivity(target) {
+  async function taskExternalActivity(target, options = {}) {
     if (!target?.threadId) return { state: "inactive", executionOwner: null };
     try {
-      return await agentProviders.call(target.provider, "readTaskActivity", target);
+      return await agentProviders.call(target.provider, "readTaskActivity", target, options);
     } catch (error) {
       logger.error(`Cannot check ${target.provider} task activity:`, error.message);
       return { state: "unknown", executionOwner: taskExecutionOwners.EXTERNAL };
@@ -141,36 +150,42 @@ export function createRunAdmissionComposition({
   }
 
   async function launchTurn(run, input, temporaryFiles = [], { forceSpeechButton = false } = {}) {
-    const preparedInput = prependStreamHandoff(input, await streamHandoffPrefix(run));
-    if (run.provider === "codex") {
-      return agentProviders.call(run.provider, "launchTurn", run, preparedInput, temporaryFiles, { forceSpeechButton });
-    }
-    const trace = commandTrace?.startBestEffortSpan?.({
-      commandId: String(run.clientUserMessageId ?? ""),
-      stage: "provider-rpc",
-      transport: "claude-process",
-      metadata: { provider: run.provider, runId: run.id, threadId: run.threadId },
-    });
+    const launchAdmission = stageLaunchAdmission(run);
     try {
-      const result = await agentProviders.call(
-        run.provider,
-        "launchTurn",
-        run,
-        preparedInput,
-        temporaryFiles,
-        { forceSpeechButton },
-      );
-      trace?.finish({ outcome: "succeeded", metadata: { pid: Number(run.pid ?? run.process?.pid) || null } });
-      commandTrace?.recordBestEffort?.({
+      const preparedInput = prependStreamHandoff(input, await streamHandoffPrefix(run));
+      if (run.provider === "codex") {
+        return agentProviders.call(run.provider, "launchTurn", run, preparedInput, temporaryFiles, { forceSpeechButton });
+      }
+      const trace = commandTrace?.startBestEffortSpan?.({
         commandId: String(run.clientUserMessageId ?? ""),
-        stage: "provider-accept",
-        outcome: "succeeded",
+        stage: "provider-rpc",
         transport: "claude-process",
-        metadata: { provider: run.provider, runId: run.id, threadId: run.threadId, pid: Number(run.pid ?? run.process?.pid) || null },
+        metadata: { provider: run.provider, runId: run.id, threadId: run.threadId },
       });
-      return result;
+      try {
+        const result = await agentProviders.call(
+          run.provider,
+          "launchTurn",
+          run,
+          preparedInput,
+          temporaryFiles,
+          { forceSpeechButton, launchAdmission },
+        );
+        trace?.finish({ outcome: "succeeded", metadata: { pid: Number(run.pid ?? run.process?.pid) || null } });
+        commandTrace?.recordBestEffort?.({
+          commandId: String(run.clientUserMessageId ?? ""),
+          stage: "provider-accept",
+          outcome: "succeeded",
+          transport: "claude-process",
+          metadata: { provider: run.provider, runId: run.id, threadId: run.threadId, pid: Number(run.pid ?? run.process?.pid) || null },
+        });
+        return result;
+      } catch (error) {
+        trace?.finish({ outcome: "failed", metadata: { errorCode: error?.code ?? null } });
+        throw error;
+      }
     } catch (error) {
-      trace?.finish({ outcome: "failed", metadata: { errorCode: error?.code ?? null } });
+      abortLaunchAdmission(run, launchAdmission);
       throw error;
     }
   }
@@ -220,7 +235,7 @@ export function createRunAdmissionComposition({
   }
 
   async function cleanupDeferredFiles(item) {
-    await Promise.all((item?.temporaryFiles ?? []).map((file) => unlink(file).catch(() => {})));
+    await Promise.all((item?.temporaryFiles ?? []).map((file) => removeRuntimeFile(file)));
   }
 
   function updateDeferredMessage(...args) {
@@ -271,7 +286,7 @@ export function createRunAdmissionComposition({
       if (!turnId) return null;
       let adopted;
       try {
-        adopted = await managedRunLifecycle.begin(item.input, {
+        adopted = await managedRunLifecycle.adopt(item.input, {
           ...deferredTarget(item),
           clientUserMessageId: item.clientUserMessageId,
           telegramDeliveryRequested: item.telegramDeliveryRequested !== false,

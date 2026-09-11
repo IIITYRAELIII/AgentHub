@@ -24,6 +24,11 @@ publisher`. A path or a version alone is not an executable identity.
   immediately before and after signature verification, then hashing again
   after the bounded version process. Any transition between those observations
   rejects the identity.
+- Those expensive observations are retained by the executable owner for that
+  exact canonical path, source and SHA-256. Unchanged bytes reuse the recorded
+  OpenAI signer and version, including after a Hub restart; a path, size or
+  modification timestamp alone never permits reuse. Signature revocation is
+  not re-evaluated for unchanged bytes (ADR-0026).
 - Selection compares parsed versions, including prerelease identifiers; file
   or directory modification time is never update authority.
 - The update channel never downloads, installs, copies, patches, or executes an
@@ -51,11 +56,24 @@ publisher`. A path or a version alone is not an executable identity.
   turn is active.
   Restart/resume begins only after the previous child emits process `close`, so
   its isolated SQLite state cannot overlap the replacement App Server.
+- An ordinary startup selects the persisted last-known-good or a previously
+  background-prepared candidate. It does not discover all installed versions,
+  invoke Authenticode, run `--version`, or execute a canary. Only initial setup
+  without a usable recorded identity (including a new unmatched explicit pin)
+  performs blocking discovery and compatibility checks.
 - Immediately before every App Server process spawn, the lifecycle re-reads the
-  durable selected identity and re-inspects the installed executable. The exact
-  canonical path, version, SHA-256, and publisher must still match. A mismatch
+  durable selected identity, validates the canonical official install layout,
+  and hashes only the selected file once. These bytes must still match the
+  recorded version and publisher identity. A mismatch
   cannot reach `spawn`; it uses the same bounded verified last-known-good
   rollback when available and otherwise fails closed.
+- A single-flight background check runs on a one-minute cadence after initial
+  startup settles, even if provider startup failed. It discovers installed
+  versions, reuses trust for unchanged bytes and canaries a new identity only
+  while no Codex run is active. A passed identity is persisted as `prepared`,
+  not activated; it is considered at the next safe provider start. Background
+  failure never replaces the active/selected identity or degrades a working
+  provider. Shutdown disables scheduling and fences late background results.
 - A candidate is never activated while a Codex run is active or while active
   run recovery is pending. Discovery may report the candidate, but activation
   remains `deferred-active-runs` until the next safe lifecycle boundary.
@@ -74,6 +92,8 @@ Runtime health exposes the configured policy, selected active identity,
 last-known-good identity, highest trusted candidate, canary result, deferred or
 blocked reason, and last error. It never exposes auth material or executable
 contents.
+Background progress/failure and the prepared identity are separate diagnostics;
+they do not masquerade as a provider initialization failure.
 
 Canary failure also leaves a bounded machine-readable content-free protocol
 timeline and stderr observation counters under

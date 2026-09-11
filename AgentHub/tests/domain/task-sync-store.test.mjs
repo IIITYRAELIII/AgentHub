@@ -1,13 +1,19 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, appendFile, copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { codexAssistantResponseProjection } from "../../src/domain/codex-response-annotation.mjs";
+import { mergeCanonicalUserMessages } from "../../src/domain/canonical-user-messages.mjs";
+import {
+  durableMessageMetadata,
+  durableUserCommandItemId,
+} from "../../src/domain/stream-message-pin.mjs";
 import { TASK_EXECUTION_OWNERS } from "../../src/domain/task-execution-owner.mjs";
 import { LocalTaskSyncStore } from "../../src/infrastructure/persistence/task-sync-store.mjs";
 import { mergeDurableTaskHistory } from "../../src/interfaces/desktop/desktop-task-history.mjs";
+import { readCodexRolloutActivity } from "../../src/providers/codex/codex-rollout-activity.mjs";
 
 const task = {
   provider: "codex",
@@ -51,7 +57,7 @@ test("task read model resolves exact durable pin candidates", async (t) => {
     store.close();
     await rm(path.dirname(filePath), { recursive: true, force: true });
   });
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "turn-pinned",
     status: "completed",
     completed: true,
@@ -109,11 +115,52 @@ test("local task sync fails closed on a corrupt shared database", async () => {
   }
 });
 
+test("legacy task-sync migration verifies receipt-backed command locators and survives restart", async (t) => {
+  const filePath = await storeFile();
+  const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
+  const legacyTask = {
+    provider: "codex",
+    threadId: "review-thread",
+    projectRoot: path.dirname(filePath),
+    history: [{
+      id: "review-turn",
+      status: "completed",
+      completed: true,
+      messages: [{
+        role: "user",
+        itemId: "",
+        clientUserMessageId: "review-command",
+        text: "Synthetic review message",
+      }],
+    }],
+  };
+  await writeFile(filePath, JSON.stringify({ version: 1, tasks: [legacyTask] }), "utf8");
+  let store = new LocalTaskSyncStore({ filePath, databaseFile });
+  t.after(async () => {
+    store.close();
+    await rm(path.dirname(filePath), { recursive: true, force: true });
+  });
+
+  await store.load();
+  await assert.rejects(access(filePath), { code: "ENOENT" });
+  let user = store.historyPage([legacyTask], { limit: 1 }).items[0].turn.messages[0];
+  assert.equal(user.itemId, durableUserCommandItemId("review-command"));
+  assert.equal(user.semanticSlot, "user-command");
+  assert.equal(user.pinEligible, true);
+  store.close();
+
+  store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  user = store.historyPage([legacyTask], { limit: 1 }).items[0].turn.messages[0];
+  assert.equal(user.itemId, durableUserCommandItemId("review-command"));
+  assert.equal(user.pinEligible, true);
+});
+
 test("local task sync persists catalog, runtime owner, status and history", async () => {
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath });
   await store.load();
-  store.recordCatalog([{
+  await store.recordCatalog([{
     ...task,
     running: true,
     executionOwner: TASK_EXECUTION_OWNERS.VSCODE,
@@ -121,8 +168,9 @@ test("local task sync persists catalog, runtime owner, status and history", asyn
     updatedAtMs: 100,
     lastActivityAtMs: 1_000,
   }], 1_000);
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "turn-vsc",
+    userMessageSnapshotAuthority: "complete",
     prompt: "Продолжай",
     answer: "Выполняю",
     status: "inProgress",
@@ -150,6 +198,7 @@ test("local task sync persists catalog, runtime owner, status and history", asyn
     lastActivityAtMs: 1_000,
   }]);
   assert.equal(restored.history(task)[0].answer, "Выполняю");
+  assert.equal(restored.history(task)[0].userMessageSnapshotAuthority, "complete");
   assert.equal(restored.snapshot(task).stage, "Изменяются файлы");
 });
 
@@ -161,7 +210,7 @@ test("history page keeps legacy undated turns in durable provider sequence", asy
   const legacyThread = { ...task, threadId: "legacy-vsc-thread" };
   const modernThread = { ...task, threadId: "modern-codex-thread" };
   try {
-    store.recordHistory(legacyThread, [{
+    await store.recordHistory(legacyThread, [{
       id: "legacy-vsc-1",
       prompt: "Старый VSC-запрос",
       answer: "Старый VSC-ответ",
@@ -180,7 +229,7 @@ test("history page keeps legacy undated turns in durable provider sequence", asy
         { itemId: "legacy-vsc-agent-2", role: "agent", text: "Ещё один старый VSC-ответ" },
       ],
     }]);
-    store.recordHistory(modernThread, [{
+    await store.recordHistory(modernThread, [{
       id: "modern-codex-1",
       prompt: "Современный запрос",
       answer: "Современный ответ",
@@ -223,7 +272,7 @@ test("history refresh preserves exact backfilled chronology without identity heu
   const store = new LocalTaskSyncStore({ filePath });
   await store.load();
   try {
-    store.recordHistory(task, [{
+    await store.recordHistory(task, [{
       id: "legacy-turn",
       prompt: "Старый запрос",
       answer: "Старый ответ",
@@ -236,7 +285,7 @@ test("history refresh preserves exact backfilled chronology without identity heu
       ],
     }]);
 
-    store.recordHistory(task, [{
+    await store.recordHistory(task, [{
       id: "legacy-turn",
       prompt: "Старый запрос",
       answer: "Старый ответ",
@@ -313,7 +362,7 @@ test("Claude transcript attachment turn cannot duplicate its managed terminal co
     ],
   };
 
-  store.recordHistory(claudeTask, [managed, transcript]);
+  await store.recordHistory(claudeTask, [managed, transcript]);
 
   const history = store.history(claudeTask);
   assert.equal(history.length, 1);
@@ -365,7 +414,7 @@ test("Claude transcript plain turn reuses its managed provider user identity", a
     ],
   };
 
-  store.recordHistory(claudeTask, [managed, transcript]);
+  await store.recordHistory(claudeTask, [managed, transcript]);
 
   const history = store.history(claudeTask);
   assert.equal(history.length, 1);
@@ -379,7 +428,7 @@ test("local task sync restores the latest model from the journal projection", as
   const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
   let store = new LocalTaskSyncStore({ filePath, databaseFile });
   await store.load();
-  store.recordCatalog([{ ...task, updatedAtMs: 100 }], 100);
+  await store.recordCatalog([{ ...task, updatedAtMs: 100 }], 100);
   store.close();
 
   const database = new DatabaseSync(databaseFile);
@@ -420,7 +469,7 @@ test("local task sync preserves durable message metadata and attachments", async
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath });
   await store.load();
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "turn-with-image",
     prompt: "Посмотри скриншот",
     answer: "Вижу",
@@ -517,7 +566,7 @@ test("local task sync preserves durable message metadata and attachments", async
   });
   assert.equal(search.results[0].author, "Agent Hub - Architect");
 
-  restored.recordHistory(task, [{
+  await restored.recordHistory(task, [{
     ...entry,
     attachments: [],
     messages: entry.messages.map((message) => ({ ...message, attachments: [] })),
@@ -562,7 +611,7 @@ test("terminal citation coalescing survives SQLite reopen", async () => {
   }]);
   const store = new LocalTaskSyncStore({ filePath });
   await store.load();
-  store.recordHistory(task, [turn]);
+  await store.recordHistory(task, [turn]);
   await store.save();
   store.close();
 
@@ -581,7 +630,7 @@ test("canonical terminal overlay preserves provider citation refs through SQLite
   const turnId = "turn-terminal-overlay";
   const store = new LocalTaskSyncStore({ filePath });
   await store.load();
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: turnId,
     status: "completed",
     completed: true,
@@ -592,7 +641,7 @@ test("canonical terminal overlay preserves provider citation refs through SQLite
       responseAnnotationReferences: [{ index: 1 }],
     }],
   }]);
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: turnId,
     status: "completed",
     completed: true,
@@ -620,7 +669,7 @@ test("terminal citation metadata is not transferred to a wrong or ambiguous iden
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath });
   await store.load();
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "turn-wrong-terminal-identity",
     status: "completed",
     completed: true,
@@ -646,7 +695,7 @@ test("terminal citation metadata is not transferred to a wrong or ambiguous iden
       responseAnnotationReferences: [{ index: 2 }],
     }],
   }]);
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "turn-wrong-terminal-identity",
     status: "completed",
     completed: true,
@@ -688,7 +737,7 @@ test("local task sync preserves interstream origin through SQLite", async () => 
   };
   let store = new LocalTaskSyncStore({ filePath });
   await store.load();
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "turn-interstream",
     prompt: "Проверь доставку",
     promptAuthor: "неверная временная подпись",
@@ -726,7 +775,7 @@ test("SQLite history preserves the provider projection of malformed citation mar
   );
   const store = new LocalTaskSyncStore({ filePath });
   await store.load();
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "turn-malformed-citation",
     prompt: "Проверь",
     answer: projection.text,
@@ -756,7 +805,7 @@ test("local task sync repairs parent finals misattributed as subagents", async (
   const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
   const store = new LocalTaskSyncStore({ filePath, databaseFile });
   await store.load();
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "turn-attribution",
     prompt: "Проверь",
     answer: "Общий итог",
@@ -805,7 +854,7 @@ test("local task sync restores subagent models from their exact journal threads"
   const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
   let store = new LocalTaskSyncStore({ filePath, databaseFile });
   await store.load();
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "turn-parent-model",
     prompt: "Проверь",
     answer: "Готово",
@@ -865,14 +914,14 @@ test("local task sync preserves subagent identity through SQLite", async () => {
   const filePath = await storeFile();
   let store = new LocalTaskSyncStore({ filePath });
   await store.load();
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "turn-parent",
     prompt: "Проверь двумя субагентами",
     answer: "Сверил результаты",
     status: "completed",
     completed: true,
     messages: [{
-      itemId: "turn-parent:subagent:child-terra",
+      itemId: "msg-provider-child-terra",
       role: "agent",
       kind: "subagent",
       agentThreadId: "child-terra",
@@ -886,7 +935,7 @@ test("local task sync preserves subagent identity through SQLite", async () => {
   store = new LocalTaskSyncStore({ filePath });
   await store.load();
   assert.deepEqual(store.history(task)[0].messages[0], {
-    itemId: "turn-parent:subagent:child-terra",
+    itemId: "msg-provider-child-terra",
     role: "agent",
     text: "Независимый отчёт",
     author: "Субагент (Terra)",
@@ -904,7 +953,7 @@ test("local task sync rejects a legacy writer that stores a subagent as user", a
   const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
   let store = new LocalTaskSyncStore({ filePath, databaseFile });
   await store.load();
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "turn-parent",
     prompt: "Проверь",
     answer: "Готово",
@@ -963,7 +1012,7 @@ test("message search keeps every indexed reply beyond the bounded chat read mode
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath, historyLimit: 1 });
   await store.load();
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "turn-old",
     prompt: "Старый вопрос",
     answer: "Старый точный ответ",
@@ -1014,6 +1063,167 @@ test("message search keeps every indexed reply beyond the bounded chat read mode
   store.close();
 });
 
+test("cold search preserves exact receipt-backed user identities without text matching", async (t) => {
+  const filePath = await storeFile();
+  const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
+  const store = new LocalTaskSyncStore({ filePath, databaseFile, historyLimit: 1 });
+  await store.load();
+  t.after(async () => {
+    store.close();
+    await rm(path.dirname(filePath), { recursive: true, force: true });
+  });
+  await store.recordHistory(task, [{
+    id: "turn-cold-users",
+    status: "completed",
+    completed: true,
+    messages: [
+      { itemId: "provider-user-a", role: "user", clientUserMessageId: "cold-command-a", text: "Одинаково" },
+      { itemId: "provider-user-b", role: "user", clientUserMessageId: "cold-command-b", text: "Одинаково" },
+      { itemId: "cold-answer", role: "agent", text: "Готово" },
+    ],
+  }, {
+    id: "turn-hot",
+    status: "completed",
+    completed: true,
+    messages: [
+      { itemId: "", role: "user", clientUserMessageId: "hot-command", text: "Новое" },
+      { itemId: "hot-answer", role: "agent", text: "Готово" },
+    ],
+  }]);
+
+  assert.equal(store.history(task).some((turn) => turn.id === "turn-cold-users"), false);
+  const database = new DatabaseSync(databaseFile);
+  assert.equal(database.prepare(`
+    SELECT COUNT(*) AS count FROM task_read_model_turns
+    WHERE provider = ? AND thread_id = ? AND id = ?
+  `).get(task.provider, task.threadId, "turn-cold-users").count, 0);
+
+  const first = store.searchMessage({
+    provider: task.provider,
+    threadId: task.threadId,
+    turnId: "turn-cold-users",
+    itemId: "provider-user-a",
+  });
+  const second = store.searchMessage({
+    provider: task.provider,
+    threadId: task.threadId,
+    turnId: "turn-cold-users",
+    itemId: "provider-user-b",
+  });
+  assert.equal(first.pinEligible, true);
+  assert.equal(second.pinEligible, true);
+  assert.equal(first.clientUserMessageId, "cold-command-a");
+  assert.equal(second.clientUserMessageId, "cold-command-b");
+  assert.notEqual(first.messageKey, second.messageKey);
+
+  database.prepare(`
+    UPDATE task_message_search_documents
+    SET client_user_message_id = '', message_key = '', source_alias = '',
+        semantic_slot = '', pin_eligible = 0
+    WHERE provider = ? AND thread_id = ? AND turn_id = ? AND item_id = ?
+  `).run(task.provider, task.threadId, "turn-cold-users", "provider-user-a");
+  assert.equal(store.searchMessage({
+    provider: task.provider,
+    threadId: task.threadId,
+    turnId: "turn-cold-users",
+    itemId: "provider-user-a",
+  }).pinEligible, false);
+
+  const evidence = durableMessageMetadata({
+    provider: task.provider,
+    threadId: task.threadId,
+    turn: { id: "turn-cold-users", completed: true },
+    message: {
+      itemId: "provider-user-a",
+      role: "user",
+      clientUserMessageId: "cold-command-a",
+    },
+  });
+  const recovered = store.durableMessageCandidate({
+    provider: task.provider,
+    threadId: task.threadId,
+    turnId: "turn-cold-users",
+    itemId: "provider-user-a",
+    role: "user",
+    clientUserMessageId: "cold-command-a",
+    ...evidence,
+  });
+  assert.equal(recovered.pinEligible, true);
+  assert.equal(recovered.messageKey, evidence.messageKey);
+
+  const mismatched = store.durableMessageCandidate({
+    provider: task.provider,
+    threadId: task.threadId,
+    turnId: "turn-cold-users",
+    itemId: "provider-user-a",
+    role: "user",
+    clientUserMessageId: "cold-command-b",
+    ...evidence,
+  });
+  assert.equal(mismatched.pinEligible, false);
+  assert.equal(store.durableMessageCandidate({
+    provider: task.provider,
+    threadId: task.threadId,
+    turnId: "turn-cold-users",
+    itemId: "provider-user-a",
+    role: "agent",
+    clientUserMessageId: "cold-command-a",
+    ...evidence,
+  }), null);
+
+  database.prepare(`
+    DELETE FROM task_message_search_documents
+    WHERE provider = ? AND thread_id = ? AND turn_id = ? AND item_id = ?
+  `).run(task.provider, task.threadId, "turn-cold-users", "provider-user-a");
+  database.close();
+  assert.equal(store.durableMessageCandidate({
+    provider: task.provider,
+    threadId: task.threadId,
+    turnId: "turn-cold-users",
+    itemId: "provider-user-a",
+    role: "user",
+    clientUserMessageId: "cold-command-a",
+    ...evidence,
+  }), null);
+});
+
+test("startup migration makes an old unpinned receipt-backed history message pinnable", async (t) => {
+  const filePath = await storeFile();
+  const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
+  let store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  t.after(async () => {
+    store.close();
+    await rm(path.dirname(filePath), { recursive: true, force: true });
+  });
+  await store.recordHistory(task, [{
+    id: "turn-legacy-receipt",
+    status: "completed",
+    completed: true,
+    messages: [
+      { role: "user", clientUserMessageId: "legacy-receipt-command", text: "Старое сообщение" },
+      { itemId: "legacy-answer", role: "agent", text: "Ответ" },
+    ],
+  }]);
+  store.close();
+
+  const database = new DatabaseSync(databaseFile);
+  database.prepare(`
+    UPDATE task_read_model_messages SET item_id = ''
+    WHERE provider = ? AND thread_id = ? AND client_user_message_id = ?
+  `).run(task.provider, task.threadId, "legacy-receipt-command");
+  database.close();
+
+  store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  const page = store.historyPage([task], { limit: 1 });
+  const user = page.items[0].turn.messages.find((message) => message.role === "user");
+  assert.equal(user.itemId, durableUserCommandItemId("legacy-receipt-command"));
+  assert.equal(user.clientUserMessageId, "legacy-receipt-command");
+  assert.equal(user.semanticSlot, "user-command");
+  assert.equal(user.pinEligible, true);
+});
+
 test("recordHistory no-op leaves the existing search projection untouched", async () => {
   const filePath = await storeFile();
   const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
@@ -1025,7 +1235,7 @@ test("recordHistory no-op leaves the existing search projection untouched", asyn
     completed: true,
   }];
   await store.load();
-  assert.equal(store.recordHistory(task, history, null, 1_000), true);
+  assert.equal(await store.recordHistory(task, history, null, 1_000), true);
 
   const database = new DatabaseSync(databaseFile);
   database.prepare(`
@@ -1052,7 +1262,7 @@ test("recordHistory no-op leaves the existing search projection untouched", asyn
   );
   database.close();
 
-  assert.equal(store.recordHistory(task, history, null, 1_000), false);
+  assert.equal(await store.recordHistory(task, history, null, 1_000), false);
   assert.equal(store.searchMessages({
     references: [task],
     query: "durable search sentinel",
@@ -1070,8 +1280,8 @@ test("search projection can grow beyond an unchanged bounded history", async () 
     completed: true,
   };
   await store.load();
-  assert.equal(store.recordHistory(task, [latest], null, 1_000), true);
-  assert.equal(store.recordHistory(task, [{
+  assert.equal(await store.recordHistory(task, [latest], null, 1_000), true);
+  assert.equal(await store.recordHistory(task, [{
     id: "older-turn",
     prompt: "Скрытый старый вопрос",
     answer: "Скрытый старый ответ",
@@ -1096,7 +1306,7 @@ test("startup backfills run once per version and commit their marker atomically"
   }];
   let store = new LocalTaskSyncStore({ filePath, databaseFile });
   await store.load();
-  store.recordHistory(task, history, null, 1_000);
+  await store.recordHistory(task, history, null, 1_000);
   store.close();
 
   let database = new DatabaseSync(databaseFile);
@@ -1105,7 +1315,7 @@ test("startup backfills run once per version and commit their marker atomically"
     WHERE key LIKE 'backfill_%_version'
     ORDER BY key
   `).all().map((row) => ({ key: row.key, value: row.value })), [
-    { key: "backfill_task_message_search_version", value: "3" },
+    { key: "backfill_task_message_search_version", value: "5" },
   ]);
   database.exec(`
     CREATE TABLE backfill_write_audit (operation TEXT NOT NULL);
@@ -1197,7 +1407,7 @@ test("message search indexes more than one hundred intermediate messages in one 
     role: "agent",
     text: index === 0 ? "needle at the beginning" : `reply ${index}`,
   }));
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "long-turn",
     answer: "done",
     completed: true,
@@ -1249,6 +1459,15 @@ test("local task sync migrates annotation columns in an existing SQLite cache", 
         PRIMARY KEY (provider, thread_id, turn_position, position)
       ) WITHOUT ROWID;
     `);
+    database.prepare(`
+      INSERT INTO task_read_model_messages (
+        provider, thread_id, turn_position, position, item_id,
+        client_user_message_id, role, text, phase, time, attachments_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      "codex", "legacy-thread", 0, 0, "", "legacy-command",
+      "user", "Legacy command", null, null, "[]",
+    );
     database.close();
 
     store = new LocalTaskSyncStore({ filePath, databaseFile });
@@ -1263,6 +1482,10 @@ test("local task sync migrates annotation columns in an existing SQLite cache", 
       .all().map((column) => column.name);
     const searchColumns = migrated.prepare("PRAGMA table_info(task_message_search_documents)")
       .all().map((column) => column.name);
+    const canonicalItemId = migrated.prepare(`
+      SELECT item_id FROM task_read_model_messages
+      WHERE provider = ? AND thread_id = ? AND turn_position = ? AND position = ?
+    `).get("codex", "legacy-thread", 0, 0).item_id;
     migrated.close();
     assert.ok(turnColumns.includes("prompt_annotations_json"));
     assert.ok(turnColumns.includes("prompt_request"));
@@ -1274,6 +1497,11 @@ test("local task sync migrates annotation columns in an existing SQLite cache", 
     assert.ok(messageColumns.includes("agent_thread_id"));
     assert.ok(messageColumns.includes("model"));
     assert.ok(searchColumns.includes("author"));
+    assert.ok(searchColumns.includes("client_user_message_id"));
+    assert.ok(searchColumns.includes("message_key"));
+    assert.ok(searchColumns.includes("source_alias"));
+    assert.ok(searchColumns.includes("semantic_slot"));
+    assert.equal(canonicalItemId, durableUserCommandItemId("legacy-command"));
   } finally {
     store?.close();
     await rm(directory, { recursive: true, force: true });
@@ -1349,7 +1577,7 @@ test("cached running status expires instead of creating a phantom task", async (
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath });
   await store.load();
-  store.recordCatalog([{
+  await store.recordCatalog([{
     ...task,
     running: true,
     executionOwner: TASK_EXECUTION_OWNERS.VSCODE,
@@ -1364,7 +1592,7 @@ test("managed Telegram snapshot records Agent Hub ownership", async () => {
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath });
   await store.load();
-  store.recordSnapshot(task, {
+  await store.recordSnapshot(task, {
     active: true,
     turnId: "turn-telegram",
     activityAtMs: 5_000,
@@ -1389,7 +1617,7 @@ test("Claude session cwd survives the local task catalog cache", async () => {
     threadId: "claude-session",
     sessionCwd: "C:\\Projects\\Main\\Utilities\\AgentHub",
   };
-  store.recordCatalog([claudeTask], 5_000);
+  await store.recordCatalog([claudeTask], 5_000);
   await store.save();
 
   const restored = new LocalTaskSyncStore({ filePath });
@@ -1408,16 +1636,16 @@ test("unchanged polling snapshots do not dirty the persistent store", async () =
     stage: "Ответ формируется",
     answer: "Без изменений",
   };
-  assert.equal(store.recordSnapshot(task, snapshot, {
+  assert.equal(await store.recordSnapshot(task, snapshot, {
     executionOwner: TASK_EXECUTION_OWNERS.HUB,
     nowMs: 5_000,
   }), true);
   await store.save();
-  assert.equal(store.recordSnapshot(task, snapshot, {
+  assert.equal(await store.recordSnapshot(task, snapshot, {
     executionOwner: TASK_EXECUTION_OWNERS.HUB,
     nowMs: 50_000,
   }), false);
-  assert.equal(store.recordCatalog([{
+  assert.equal(await store.recordCatalog([{
     ...task,
     running: true,
     executionOwner: TASK_EXECUTION_OWNERS.HUB,
@@ -1431,7 +1659,7 @@ test("completed-only history refresh preserves a live cached status", async () =
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath });
   await store.load();
-  store.recordSnapshot(task, {
+  await store.recordSnapshot(task, {
     active: true,
     turnId: "live",
     activityAtMs: 9_000,
@@ -1439,7 +1667,7 @@ test("completed-only history refresh preserves a live cached status", async () =
     executionOwner: TASK_EXECUTION_OWNERS.VSCODE,
     nowMs: 9_000,
   });
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "old",
     prompt: "Старый вопрос",
     answer: "Старый ответ",
@@ -1488,7 +1716,7 @@ test("terminal recovered turns remain terminal when a stale Codex live projectio
       completed: false,
     },
   ];
-  store.recordHistory(task, terminalHistory, {
+  await store.recordHistory(task, terminalHistory, {
     active: true,
     turnId: "turn-49",
     executionOwner: TASK_EXECUTION_OWNERS.VSCODE,
@@ -1506,7 +1734,7 @@ test("terminal recovered turns remain terminal when a stale Codex live projectio
       }
       : turn
   ));
-  store.recordHistory(task, staleProjection, {
+  await store.recordHistory(task, staleProjection, {
     active: true,
     turnId: "turn-47",
     executionOwner: TASK_EXECUTION_OWNERS.VSCODE,
@@ -1553,7 +1781,7 @@ test("cached history reads only the requested newest turns and their messages", 
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath });
   await store.load();
-  store.recordHistory(task, Array.from({ length: 6 }, (_, index) => ({
+  await store.recordHistory(task, Array.from({ length: 6 }, (_, index) => ({
     id: `turn-${index}`,
     prompt: `prompt ${index}`,
     answer: `answer ${index}`,
@@ -1584,8 +1812,8 @@ test("a stale live snapshot cannot reactivate a recovered terminal task", async 
     active: false,
     completed: true,
   };
-  store.recordHistory(task, [recovered], { active: false, turnId: "recovered-turn" }, 10_000);
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [recovered], { active: false, turnId: "recovered-turn" }, 10_000);
+  await store.recordHistory(task, [{
     ...recovered,
     answer: "Старый промежуточный ответ",
     status: "inProgress",
@@ -1611,12 +1839,12 @@ test("a stale live snapshot cannot reactivate a recovered terminal task", async 
   store.close();
 });
 
-test("startup repairs already corrupted terminal rows and synthetic root duplicates", async () => {
+test("startup terminal backfill never erases a provider item based on its id shape", async () => {
   const filePath = await storeFile();
   const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
   let store = new LocalTaskSyncStore({ filePath, databaseFile });
   await store.load();
-  store.recordHistory(task, [
+  await store.recordHistory(task, [
     {
       id: "turn-aborted",
       prompt: "Старый общий prompt",
@@ -1738,11 +1966,12 @@ test("startup repairs already corrupted terminal rows and synthetic root duplica
     { id: "turn-completed", prompt: "Фактический вопрос", status: "completed", active: false, completed: true },
     { id: "turn-current", prompt: "Текущий вопрос", status: "inProgress", active: true, completed: false },
   ]);
-  assert.equal(history[0].messages.length, 1);
+  assert.equal(history[0].messages.length, 2);
   assert.equal(history[0].messages[0].clientUserMessageId, "client-root");
   assert.deepEqual(history[0].messages[0].attachments, [
     { id: "screen.png", name: "screen.png", type: "image/png" },
   ]);
+  assert.equal(history[0].messages[1].itemId, "turn-aborted:rollout-user:0");
   assert.deepEqual(history[1].messages.map((message) => message.itemId), [
     "turn-completed:rollout-user:1",
   ]);
@@ -1758,18 +1987,468 @@ test("startup repairs already corrupted terminal rows and synthetic root duplica
   store.close();
 });
 
+test("startup reprojects a corrupted terminal read model from exact terminal and ledger identities", async () => {
+  const filePath = await storeFile();
+  const directory = path.dirname(filePath);
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const terminalDatabaseFile = path.join(directory, "runtime.sqlite");
+  const messageCommandDatabaseFile = path.join(directory, "message-command-ledger.sqlite");
+  const recoveryTask = { ...task, threadId: "production-corrupted-thread" };
+  const conflictTask = { ...task, threadId: "conflicting-terminal-thread" };
+  const duplicateTask = { ...task, threadId: "duplicate-terminal-thread" };
+  const oversizedTask = { ...task, threadId: "oversized-terminal-thread" };
+  const turnId = "production-corrupted-turn";
+  const runId = "production-run";
+  const conflictTurnId = "conflicting-terminal-turn";
+  const conflictRunId = "conflicting-run";
+  const duplicateTurnId = "duplicate-terminal-turn";
+  const duplicateRunId = "duplicate-run";
+  const oversizedTurnId = "oversized-terminal-turn";
+  const oversizedRunId = "oversized-run";
+  const oversizedClientUserMessageId = "oversized-client";
+  const exactOrigin = {
+    kind: "interstream",
+    workspaceId: "source-workspace",
+    workspaceName: "Source",
+    streamId: "source-stream",
+    streamName: "Review",
+    provider: "codex",
+    requestId: "source-request",
+  };
+  const canonicalUsers = Array.from({ length: 6 }, (_, index) => ({
+    itemId: `owned-${index}`,
+    clientUserMessageId: `accepted-${index}`,
+    role: "user",
+    text: index < 2 ? "Одинаковый текст" : `Сообщение ${index}`,
+    submittedAt: `2026-09-03T20:0${index}:00.000Z`,
+    ...(index === 2 ? { origin: exactOrigin } : {}),
+  }));
+  const authoritativeUsers = [
+    ...canonicalUsers,
+    { itemId: "provider-collision", role: "user", text: "External occurrence one" },
+    { itemId: "provider-collision", role: "user", text: "External occurrence two" },
+    { itemId: `${turnId}:rollout-user:0`, role: "user", text: "External without identity" },
+  ];
+  const invalidEvidence = ["runId", "provider", "threadId", "turnId"].map((field) => ({
+    field,
+    task: { ...task, threadId: `missing-${field}-thread` },
+    turnId: `missing-${field}-turn`,
+    runId: `missing-${field}-run`,
+    clientUserMessageId: `missing-${field}-client`,
+  }));
+  let store = new LocalTaskSyncStore({
+    filePath,
+    databaseFile,
+    terminalDatabaseFile,
+    messageCommandDatabaseFile,
+  });
+  await store.load();
+  await store.recordHistory(recoveryTask, [{
+    id: turnId,
+    prompt: "Повреждённый tail",
+    answer: "Финал",
+    status: "completed",
+    active: false,
+    completed: true,
+    messages: [
+      { itemId: `${turnId}:rollout-user:0`, role: "user", text: "Сообщение 5" },
+      { itemId: "provider-final", role: "agent", text: "Финал" },
+    ],
+  }]);
+  await store.recordHistory(conflictTask, [{
+    id: conflictTurnId,
+    prompt: "Нельзя угадывать",
+    answer: "Финал",
+    status: "completed",
+    active: false,
+    completed: true,
+    messages: [{ itemId: "conflict-tail", role: "user", text: "Tail" }],
+  }]);
+  await store.recordHistory(duplicateTask, [{
+    id: duplicateTurnId,
+    prompt: "Нельзя принимать duplicate identity",
+    answer: "Финал",
+    status: "completed",
+    active: false,
+    completed: true,
+    messages: [{ itemId: "duplicate-tail", role: "user", text: "Tail" }],
+  }]);
+  await store.recordHistory(oversizedTask, [{
+    id: oversizedTurnId,
+    prompt: "Oversized terminal must not repair",
+    answer: "Финал",
+    status: "completed",
+    active: false,
+    completed: true,
+    messages: [{ itemId: "oversized-tail", role: "user", text: "Tail" }],
+  }]);
+  for (const invalid of invalidEvidence) {
+    await store.recordHistory(invalid.task, [{
+      id: invalid.turnId,
+      prompt: `Не применять без ${invalid.field}`,
+      answer: "Финал",
+      status: "completed",
+      active: false,
+      completed: true,
+      messages: [{ itemId: `${invalid.field}-tail`, role: "user", text: "Tail" }],
+    }]);
+  }
+  store.close();
+
+  const searchDatabase = new DatabaseSync(databaseFile);
+  searchDatabase.prepare(`
+    INSERT INTO task_message_search_documents (
+      document_key, provider, thread_id, turn_thread_id, turn_id, item_id,
+      role, message_text, author, annotation_text, attachment_names,
+      occurred_at, occurred_at_ms, source
+    ) VALUES (?, ?, ?, ?, ?, ?, 'agent', 'Journal evidence', '', '', '', NULL, 0, 'journal')
+  `).run(
+    JSON.stringify(["codex", recoveryTask.threadId, turnId, `${turnId}:journal`, "agent", "journal", ""]),
+    "codex",
+    recoveryTask.threadId,
+    recoveryTask.threadId,
+    turnId,
+    `${turnId}:journal`,
+  );
+  searchDatabase.close();
+
+  const terminalDatabase = new DatabaseSync(terminalDatabaseFile);
+  terminalDatabase.exec(`
+    CREATE TABLE provider_turn_terminals (
+      provider TEXT NOT NULL,
+      thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      payload_bytes INTEGER NOT NULL,
+      committed_at TEXT NOT NULL,
+      PRIMARY KEY (provider, thread_id, turn_id)
+    ) WITHOUT ROWID;
+    CREATE INDEX provider_turn_terminals_recovery_idx
+      ON provider_turn_terminals(committed_at DESC, provider, thread_id, turn_id, payload_bytes)
+  `);
+  const insertTerminalRow = terminalDatabase.prepare(`
+    INSERT INTO provider_turn_terminals (
+      provider, thread_id, turn_id, payload_json, payload_bytes, committed_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  const addTerminalRow = (threadId, exactTurnId, payload, committedAt) => {
+    const payloadJson = JSON.stringify(payload);
+    insertTerminalRow.run(
+      "codex",
+      threadId,
+      exactTurnId,
+      payloadJson,
+      Buffer.byteLength(payloadJson, "utf8"),
+      committedAt,
+    );
+  };
+  addTerminalRow(recoveryTask.threadId, turnId, {
+    history: {
+      id: runId,
+      provider: "codex",
+      threadId: recoveryTask.threadId,
+      turnId,
+      promptPreview: "Канонический root",
+      userMessages: authoritativeUsers,
+    },
+  }, "2026-09-03T21:35:11.402Z");
+  addTerminalRow(conflictTask.threadId, conflictTurnId, {
+    history: {
+      id: conflictRunId,
+      provider: "codex",
+      threadId: conflictTask.threadId,
+      turnId: conflictTurnId,
+      promptPreview: "Не применять",
+      userMessages: [
+        { itemId: "conflict-0", clientUserMessageId: "conflict-0", role: "user", text: "Первое" },
+        { itemId: "conflict-1", clientUserMessageId: "conflict-1", role: "user", text: "Второе" },
+      ],
+    },
+  }, "2026-09-03T21:35:12.402Z");
+  addTerminalRow(duplicateTask.threadId, duplicateTurnId, {
+    history: {
+      id: duplicateRunId,
+      provider: "codex",
+      threadId: duplicateTask.threadId,
+      turnId: duplicateTurnId,
+      promptPreview: "Не применять duplicate",
+      userMessages: [
+        { itemId: "duplicate-a", clientUserMessageId: "duplicate-client", role: "user", text: "Первое" },
+        { itemId: "duplicate-b", clientUserMessageId: "duplicate-client", role: "user", text: "Второе" },
+      ],
+    },
+  }, "2026-09-03T21:35:12.902Z");
+  for (const invalid of invalidEvidence) {
+    addTerminalRow(invalid.task.threadId, invalid.turnId, {
+      history: {
+        id: invalid.runId,
+        provider: "codex",
+        threadId: invalid.task.threadId,
+        turnId: invalid.turnId,
+        promptPreview: "Не применять",
+        userMessages: [{
+          itemId: invalid.clientUserMessageId,
+          clientUserMessageId: invalid.clientUserMessageId,
+          role: "user",
+          text: "Недоказанное сообщение",
+        }],
+      },
+    }, "2026-09-03T21:35:13.402Z");
+  }
+  addTerminalRow(oversizedTask.threadId, oversizedTurnId, {
+    history: {
+      id: oversizedRunId,
+      provider: "codex",
+      threadId: oversizedTask.threadId,
+      turnId: oversizedTurnId,
+      promptPreview: "Must be skipped before parse",
+      userMessages: [{
+        itemId: oversizedClientUserMessageId,
+        clientUserMessageId: oversizedClientUserMessageId,
+        role: "user",
+        text: "Oversized authoritative candidate",
+      }],
+    },
+    hostilePadding: "x".repeat(2 * 1024 * 1024),
+  }, "2026-09-03T21:35:13.402Z");
+  terminalDatabase.close();
+
+  const ledgerDatabase = new DatabaseSync(messageCommandDatabaseFile);
+  ledgerDatabase.exec(`
+    CREATE TABLE message_commands (
+      client_user_message_id TEXT PRIMARY KEY,
+      state TEXT NOT NULL,
+      item_json TEXT,
+      receipt_json TEXT,
+      result_json TEXT
+    ) WITHOUT ROWID
+  `);
+  const insertLedger = ledgerDatabase.prepare(`
+    INSERT INTO message_commands (
+      client_user_message_id, state, item_json, receipt_json, result_json
+    ) VALUES (?, 'completed', ?, ?, ?)
+  `);
+  for (const user of canonicalUsers) {
+    const exact = {
+      provider: "codex",
+      threadId: recoveryTask.threadId,
+      turnId,
+      runId,
+      clientUserMessageId: user.clientUserMessageId,
+    };
+    insertLedger.run(
+      user.clientUserMessageId,
+      JSON.stringify(exact),
+      JSON.stringify({ ...exact, result: exact }),
+      JSON.stringify(exact),
+    );
+  }
+  for (const clientUserMessageId of ["conflict-0", "conflict-1"]) {
+    const exact = {
+      provider: "codex",
+      threadId: conflictTask.threadId,
+      turnId: conflictTurnId,
+      runId: conflictRunId,
+      clientUserMessageId,
+    };
+    const result = clientUserMessageId === "conflict-1"
+      ? { ...exact, turnId: "wrong-turn" }
+      : exact;
+    insertLedger.run(
+      clientUserMessageId,
+      JSON.stringify(exact),
+      JSON.stringify({ ...exact, result }),
+      JSON.stringify(result),
+    );
+  }
+  for (const invalid of invalidEvidence) {
+    const exact = {
+      provider: "codex",
+      threadId: invalid.task.threadId,
+      turnId: invalid.turnId,
+      runId: invalid.runId,
+      clientUserMessageId: invalid.clientUserMessageId,
+    };
+    const incomplete = { ...exact };
+    delete incomplete[invalid.field];
+    insertLedger.run(
+      invalid.clientUserMessageId,
+      JSON.stringify(incomplete),
+      JSON.stringify({ ...incomplete, result: incomplete }),
+      JSON.stringify(incomplete),
+    );
+  }
+  const duplicateExact = {
+    provider: "codex",
+    threadId: duplicateTask.threadId,
+    turnId: duplicateTurnId,
+    runId: duplicateRunId,
+    clientUserMessageId: "duplicate-client",
+  };
+  insertLedger.run(
+    "duplicate-client",
+    JSON.stringify(duplicateExact),
+    JSON.stringify({ ...duplicateExact, result: duplicateExact }),
+    JSON.stringify(duplicateExact),
+  );
+  const oversizedExact = {
+    provider: "codex",
+    threadId: oversizedTask.threadId,
+    turnId: oversizedTurnId,
+    runId: oversizedRunId,
+    clientUserMessageId: oversizedClientUserMessageId,
+  };
+  insertLedger.run(
+    oversizedClientUserMessageId,
+    JSON.stringify(oversizedExact),
+    JSON.stringify({ ...oversizedExact, result: oversizedExact }),
+    JSON.stringify(oversizedExact),
+  );
+  ledgerDatabase.close();
+
+  const assertRecovered = (recoveredStore) => {
+    const history = recoveredStore.history(recoveryTask);
+    assert.equal(history.length, 1);
+    assert.equal(history[0].prompt, "Канонический root");
+    assert.equal(history[0].status, "completed");
+    assert.equal(history[0].active, false);
+    assert.equal(history[0].completed, true);
+    assert.equal(history[0].userMessageAuthority, "terminal-ledger");
+    assert.deepEqual(
+      history[0].messages.filter((message) => message.role === "user")
+        .map((message) => message.clientUserMessageId)
+        .filter(Boolean),
+      canonicalUsers.map((message) => message.clientUserMessageId),
+    );
+    assert.deepEqual(
+      history[0].messages.filter((message) => message.role === "user")
+        .map((message) => message.text),
+      authoritativeUsers.map((message) => message.text),
+    );
+    assert.deepEqual(history[0].messages[2].origin, exactOrigin);
+    assert.equal(history[0].messages.filter((message) => message.role === "agent").length, 1);
+    const page = recoveredStore.historyPage([recoveryTask], { limit: 10 });
+    assert.equal(page.items.length, 1);
+    assert.equal(page.items[0].turn.messages.length, 10);
+    const conflict = recoveredStore.history(conflictTask)[0];
+    assert.equal("userMessageAuthority" in conflict, false);
+    assert.equal(conflict.prompt, "Нельзя угадывать");
+    assert.deepEqual(conflict.messages, [{
+      itemId: "conflict-tail",
+      role: "user",
+      text: "Tail",
+      responseAnnotations: [],
+      attachments: [],
+    }]);
+    assert.deepEqual(recoveredStore.history(duplicateTask)[0].messages, [{
+      itemId: "duplicate-tail",
+      role: "user",
+      text: "Tail",
+      responseAnnotations: [],
+      attachments: [],
+    }]);
+    assert.equal(
+      "userMessageAuthority" in recoveredStore.history(duplicateTask)[0],
+      false,
+    );
+    const oversized = recoveredStore.history(oversizedTask)[0];
+    assert.equal("userMessageAuthority" in oversized, false);
+    assert.equal(oversized.prompt, "Oversized terminal must not repair");
+    assert.deepEqual(oversized.messages, [{
+      itemId: "oversized-tail",
+      role: "user",
+      text: "Tail",
+      responseAnnotations: [],
+      attachments: [],
+    }]);
+    for (const invalid of invalidEvidence) {
+      const retained = recoveredStore.history(invalid.task)[0];
+      assert.equal("userMessageAuthority" in retained, false);
+      assert.equal(retained.prompt, `Не применять без ${invalid.field}`);
+      assert.deepEqual(retained.messages, [{
+        itemId: `${invalid.field}-tail`,
+        role: "user",
+        text: "Tail",
+        responseAnnotations: [],
+        attachments: [],
+      }]);
+    }
+    const searchVerification = new DatabaseSync(databaseFile, { readOnly: true });
+    assert.deepEqual(searchVerification.prepare(`
+      SELECT source, COUNT(*) AS count
+      FROM task_message_search_documents
+      WHERE provider = ? AND thread_id = ? AND turn_id = ?
+      GROUP BY source ORDER BY source
+    `).all("codex", recoveryTask.threadId, turnId).map((row) => ({
+      source: row.source,
+      count: Number(row.count),
+    })), [
+      { source: "history", count: 10 },
+      { source: "journal", count: 1 },
+    ]);
+    searchVerification.close();
+  };
+
+  store = new LocalTaskSyncStore({
+    filePath,
+    databaseFile,
+    terminalDatabaseFile,
+    messageCommandDatabaseFile,
+  });
+  await store.load();
+  assertRecovered(store);
+  await store.recordHistory(recoveryTask, [{
+    id: turnId,
+    prompt: "Устаревший terminal provider tail",
+    answer: "Финал после hydration",
+    status: "completed",
+    active: false,
+    completed: true,
+    messages: [
+      { itemId: `${turnId}:rollout-user:0`, role: "user", text: "Сообщение 5" },
+      { itemId: "provider-final", role: "agent", text: "Финал после hydration" },
+    ],
+  }]);
+  assertRecovered(store);
+  store.close();
+
+  store = new LocalTaskSyncStore({
+    filePath,
+    databaseFile,
+    terminalDatabaseFile,
+    messageCommandDatabaseFile,
+  });
+  await store.load();
+  assertRecovered(store);
+  store.close();
+
+  store = new LocalTaskSyncStore({
+    filePath,
+    databaseFile,
+    terminalDatabaseFile,
+    messageCommandDatabaseFile,
+  });
+  await store.load();
+  assertRecovered(store);
+  store.close();
+
+  const verification = new DatabaseSync(messageCommandDatabaseFile, { readOnly: true });
+  assert.equal(verification.prepare("SELECT COUNT(*) AS count FROM message_commands").get().count, 14);
+  verification.close();
+});
+
 test("task sync evicts oldest completed cache entries but never active ones", async () => {
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath, taskLimit: 3 });
   await store.load();
-  store.recordCatalog(Array.from({ length: 4 }, (_, index) => ({
+  await store.recordCatalog(Array.from({ length: 4 }, (_, index) => ({
     ...task,
     threadId: `completed-${index}`,
     title: `Completed ${index}`,
     running: false,
     updatedAtMs: index,
   })), 100);
-  store.recordCatalog([{
+  await store.recordCatalog([{
     ...task,
     threadId: "active",
     title: "Active",
@@ -1787,7 +2466,7 @@ test("task sync removes a promptless compaction echo of the previous answer", as
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath });
   await store.load();
-  store.recordHistory(task, [{
+  await store.recordHistory(task, [{
     id: "user-turn",
     prompt: "Вопрос",
     answer: "Готовый ответ",
@@ -1819,8 +2498,8 @@ test("task sync pages multiple Thread histories directly in SQLite", async () =>
   ];
   for (const reference of references) {
     const currentTask = { ...task, ...reference };
-    store.recordCatalog([currentTask]);
-    store.recordHistory(currentTask, Array.from({ length: 4 }, (_, index) => ({
+    await store.recordCatalog([currentTask]);
+    await store.recordHistory(currentTask, Array.from({ length: 4 }, (_, index) => ({
       id: `${reference.threadId}-turn-${index}`,
       prompt: `Вопрос ${reference.threadId} ${index}`,
       answer: `Ответ ${reference.threadId} ${index}`,
@@ -1834,7 +2513,7 @@ test("task sync pages multiple Thread histories directly in SQLite", async () =>
     })));
   }
   const hiddenTask = { ...task, provider: "codex", threadId: "thread-old" };
-  store.recordHistory(hiddenTask, [
+  await store.recordHistory(hiddenTask, [
     ...store.history(hiddenTask),
     {
       id: "auto-compact-hidden",
@@ -1867,4 +2546,321 @@ test("task sync pages multiple Thread histories directly in SQLite", async () =>
     { provider: "claude", threadId: "thread-current", id: "thread-current-turn-1" },
     { provider: "claude", threadId: "thread-current", id: "thread-current-turn-2" },
   ]);
+});
+
+test("task sync store preserves source occurrence identity across restart", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-source-occurrence-"));
+  const filePath = path.join(root, "task-sync.json");
+  const databaseFile = path.join(root, "journal.sqlite");
+  const task = {
+    provider: "codex",
+    threadId: "source-occurrence-thread",
+    projectRoot: root,
+    projectName: "repo",
+    title: "Source occurrence",
+    updatedAtMs: 1,
+  };
+  const sourceOccurrenceId = `codex-rollout:${"9".repeat(64)}`;
+  const origin = {
+    kind: "interstream",
+    workspaceId: "workspace-1",
+    workspaceName: "Workspace",
+    streamId: "persisted-owner",
+    streamName: "Owner",
+  };
+  let store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  await store.recordCatalog([task], 1);
+  await store.recordHistory(task, [{
+    id: "source-occurrence-turn",
+    userMessageSnapshotAuthority: "incremental",
+    messages: [{ role: "user", text: "External", sourceOccurrenceId }],
+  }]);
+  await store.recordHistory(task, [{
+    id: "source-occurrence-turn",
+    userMessageSnapshotAuthority: "incremental",
+    messages: [{
+      role: "user",
+      text: "Accepted external",
+      sourceOccurrenceId,
+      clientUserMessageId: "accepted-source-occurrence",
+      origin,
+    }],
+  }]);
+  store.close();
+
+  store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  assert.equal(store.history(task)[0].messages.length, 1);
+  assert.equal(store.history(task)[0].messages[0].sourceOccurrenceId, sourceOccurrenceId);
+  assert.equal(
+    store.history(task)[0].messages[0].clientUserMessageId,
+    "accepted-source-occurrence",
+  );
+  assert.deepEqual(store.history(task)[0].messages[0].origin, origin);
+  assert.equal(store.history(task)[0].userMessageSnapshotAuthority, undefined);
+  store.close();
+});
+
+test("task sync store preserves a third identical occurrence after the rollout tail moves", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-moving-tail-persistence-"));
+  const filePath = path.join(root, "task-sync.json");
+  const databaseFile = path.join(root, "journal.sqlite");
+  const rollout = path.join(root, "rollout.jsonl");
+  const task = {
+    provider: "codex",
+    threadId: "moving-tail-thread",
+    projectRoot: root,
+    projectName: "repo",
+    title: "Moving tail",
+    updatedAtMs: 1,
+  };
+  const session = JSON.stringify({
+    type: "session_meta",
+    payload: { id: "persisted-moving-tail", originator: "codex_vscode" },
+  });
+  const prefix = JSON.stringify({
+    type: "event_msg",
+    payload: { type: "agent_message", message: "p".repeat(2_048) },
+  });
+  const identical = JSON.stringify({
+    type: "response_item",
+    payload: {
+      id: "colliding-provider-id",
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "Тот же prompt" }],
+      internal_chat_message_metadata_passthrough: { turn_id: "moving-tail-turn" },
+    },
+  });
+  const between = JSON.stringify({
+    type: "event_msg",
+    payload: { type: "agent_message", message: "b".repeat(80) },
+  });
+  const appendedGap = JSON.stringify({
+    type: "event_msg",
+    payload: { type: "agent_message", message: "n".repeat(40) },
+  });
+  const tailBytes = Buffer.byteLength(`${identical}\n${between}\n${identical}\n`, "utf8") + 32;
+  await writeFile(
+    rollout,
+    `${session}\n${prefix}\n${identical}\n${between}\n${identical}\n`,
+    "utf8",
+  );
+  const readMessages = async () => (
+    (await readCodexRolloutActivity(rollout, { tailBytes, reparseTail: true }))
+      .userMessages["moving-tail-turn"]
+  );
+
+  let store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  await store.recordCatalog([task], 1);
+  let projection = mergeCanonicalUserMessages([], await readMessages());
+  await store.recordHistory(task, [{
+    id: "moving-tail-turn",
+    userMessageSnapshotAuthority: "incremental",
+    messages: projection,
+  }]);
+  assert.equal(store.history(task)[0].messages.length, 2);
+
+  await appendFile(rollout, `${appendedGap}\n${identical}\n`, "utf8");
+  const shiftedMessages = await readMessages();
+  projection = mergeCanonicalUserMessages(projection, shiftedMessages);
+  await store.recordHistory(task, [{
+    id: "moving-tail-turn",
+    userMessageSnapshotAuthority: "incremental",
+    messages: projection,
+  }]);
+  projection = mergeCanonicalUserMessages(projection, await readMessages());
+  await store.recordHistory(task, [{
+    id: "moving-tail-turn",
+    userMessageSnapshotAuthority: "incremental",
+    messages: projection,
+  }]);
+  assert.equal(store.history(task)[0].messages.length, 3);
+  assert.equal(new Set(
+    store.history(task)[0].messages.map((message) => message.sourceOccurrenceId),
+  ).size, 3);
+  store.close();
+
+  const coldRollout = path.join(root, "cold-rollout.jsonl");
+  await copyFile(rollout, coldRollout);
+  const coldMessages = (
+    await readCodexRolloutActivity(coldRollout, { tailBytes, reparseTail: true })
+  ).userMessages["moving-tail-turn"];
+  assert.deepEqual(
+    coldMessages.map((message) => message.sourceOccurrenceId),
+    shiftedMessages.map((message) => message.sourceOccurrenceId),
+    "a cold reader derives the same surviving raw occurrence identities",
+  );
+  store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  projection = mergeCanonicalUserMessages(store.history(task)[0].messages, coldMessages);
+  await store.recordHistory(task, [{
+    id: "moving-tail-turn",
+    userMessageSnapshotAuthority: "incremental",
+    messages: projection,
+  }]);
+  assert.equal(store.history(task)[0].messages.length, 3);
+  assert.equal(new Set(
+    store.history(task)[0].messages.map((message) => message.sourceOccurrenceId),
+  ).size, 3);
+  store.close();
+});
+
+test("terminal identity recovery skips malformed newest rows within hard aggregate bounds", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-recovery-total-bound-"));
+  const filePath = path.join(root, "task-sync.json");
+  const databaseFile = path.join(root, "journal.sqlite");
+  const terminalDatabaseFile = path.join(root, "runtime.sqlite");
+  const messageCommandDatabaseFile = path.join(root, "message-command-ledger.sqlite");
+  const tasks = Array.from({ length: 5 }, (_, index) => ({
+    provider: "codex",
+    threadId: `aggregate-thread-${index}`,
+    projectRoot: root,
+    projectName: "repo",
+    title: `Aggregate ${index}`,
+    updatedAtMs: index + 1,
+    turnId: `aggregate-turn-${index}`,
+    runId: `aggregate-run-${index}`,
+    clientUserMessageId: `aggregate-client-${index}`,
+  }));
+
+  let store = new LocalTaskSyncStore({
+    filePath,
+    databaseFile,
+    terminalDatabaseFile,
+    messageCommandDatabaseFile,
+  });
+  await store.load();
+  await store.recordCatalog(tasks, 1);
+  for (const task of tasks) {
+    await store.recordHistory(task, [{
+      id: task.turnId,
+      prompt: "Corrupted",
+      status: "completed",
+      completed: true,
+      messages: [{ role: "user", text: "Unkeyed tail" }],
+    }]);
+  }
+  store.close();
+
+  const terminalDatabase = new DatabaseSync(terminalDatabaseFile);
+  terminalDatabase.exec(`
+    CREATE TABLE provider_turn_terminals (
+      provider TEXT NOT NULL,
+      thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      payload_bytes INTEGER NOT NULL,
+      committed_at INTEGER NOT NULL
+    );
+    CREATE INDEX provider_turn_terminals_recovery_idx
+      ON provider_turn_terminals(committed_at DESC, provider, thread_id, turn_id, payload_bytes)
+  `);
+  const insertTerminal = terminalDatabase.prepare(`
+    INSERT INTO provider_turn_terminals (
+      provider, thread_id, turn_id, payload_json, payload_bytes, committed_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  for (const [index, task] of tasks.entries()) {
+    const validPayload = JSON.stringify({
+      history: {
+        id: task.runId,
+        provider: "codex",
+        threadId: task.threadId,
+        turnId: task.turnId,
+        userMessages: [{
+          role: "user",
+          text: "Canonical",
+          clientUserMessageId: task.clientUserMessageId,
+        }],
+      },
+      padding: "x".repeat(index < 3 ? 900_000 : 1_450_000),
+    });
+    insertTerminal.run(
+      "codex",
+      task.threadId,
+      task.turnId,
+      index >= 3 ? `{${"x".repeat(1_449_998)}` : validPayload,
+      Buffer.byteLength(index >= 3 ? `{${"x".repeat(1_449_998)}` : validPayload, "utf8"),
+      index + 1,
+    );
+  }
+  terminalDatabase.close();
+
+  const ledgerDatabase = new DatabaseSync(messageCommandDatabaseFile);
+  ledgerDatabase.exec(`
+    CREATE TABLE message_commands (
+      client_user_message_id TEXT PRIMARY KEY,
+      state TEXT NOT NULL,
+      item_json TEXT,
+      receipt_json TEXT,
+      result_json TEXT
+    ) WITHOUT ROWID
+  `);
+  const insertLedger = ledgerDatabase.prepare(`
+    INSERT INTO message_commands (
+      client_user_message_id, state, item_json, receipt_json, result_json
+    ) VALUES (?, 'completed', ?, ?, ?)
+  `);
+  for (const task of tasks) {
+    const exact = {
+      provider: "codex",
+      threadId: task.threadId,
+      turnId: task.turnId,
+      runId: task.runId,
+      clientUserMessageId: task.clientUserMessageId,
+    };
+    insertLedger.run(
+      task.clientUserMessageId,
+      JSON.stringify(exact),
+      JSON.stringify({ ...exact, result: exact }),
+      JSON.stringify(exact),
+    );
+  }
+  ledgerDatabase.close();
+
+  const heartbeatGaps = [];
+  let previousBeat = performance.now();
+  const heartbeat = setInterval(() => {
+    const now = performance.now();
+    heartbeatGaps.push(now - previousBeat);
+    previousBeat = now;
+  }, 5);
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  const startedAt = performance.now();
+  store = new LocalTaskSyncStore({
+    filePath,
+    databaseFile,
+    terminalDatabaseFile,
+    messageCommandDatabaseFile,
+  });
+  await store.load();
+  const elapsedMs = performance.now() - startedAt;
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  clearInterval(heartbeat);
+
+  assert.equal(store.history(tasks[4])[0].userMessageAuthority, undefined);
+  assert.equal(store.history(tasks[3])[0].userMessageAuthority, undefined);
+  assert.equal(store.history(tasks[2])[0].userMessageAuthority, "terminal-ledger");
+  assert.equal(store.history(tasks[1])[0].userMessageAuthority, "terminal-ledger");
+  assert.equal(store.history(tasks[0])[0].userMessageAuthority, "terminal-ledger");
+  assert.ok(elapsedMs < 1_000, `bounded recovery took ${elapsedMs.toFixed(1)}ms`);
+  assert.ok(Math.max(...heartbeatGaps) < 1_000, "bounded recovery must not starve heartbeat for 1s");
+  store.close();
+
+  store = new LocalTaskSyncStore({
+    filePath,
+    databaseFile,
+    terminalDatabaseFile,
+    messageCommandDatabaseFile,
+  });
+  await store.load();
+  assert.deepEqual(
+    tasks.map((item) => store.history(item)[0].userMessageAuthority ?? null),
+    ["terminal-ledger", "terminal-ledger", "terminal-ledger", null, null],
+    "reopen must stay idempotent while malformed newest rows remain present",
+  );
+  store.close();
 });

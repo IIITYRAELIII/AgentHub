@@ -5,6 +5,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { projectWorkLogUsage } from "../../src/application/work-log-usage-projection.mjs";
+import { cosmeticMatrix } from "../helpers/test-profile.mjs";
 
 const require = createRequire(import.meta.url);
 const { loadThemeRegistry } = require("../../theme-registry.cjs");
@@ -229,7 +230,7 @@ test("narrow desktop WebView reflows without page overflow", async () => {
   }
 });
 
-test("every shipped theme supplies provider tone geometry to the shared projection", async () => {
+test("every shipped theme supplies provider tone geometry to the shared projection", cosmeticMatrix(), async () => {
   const registry = loadThemeRegistry(fileURLToPath(WEB_APP_ROOT));
   const browser = await launchBrowser();
   try {

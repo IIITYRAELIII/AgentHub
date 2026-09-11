@@ -5,10 +5,8 @@ import process from "node:process";
 import { canonicalizeProjectRoots, AGENT_HUB_ROOT, loadConfig } from "../infrastructure/filesystem/config.mjs";
 import { stopProcessTree } from "../providers/claude/claude-run-io.mjs";
 import {
-  CODEX_COLLABORATION_MODE_LABELS,
-  CODEX_COLLABORATION_MODES,
-  CODEX_REASONING_EFFORTS,
-  CODEX_REASONING_LABELS,
+  CODEX_COLLABORATION_MODE_LABELS, CODEX_COLLABORATION_MODES,
+  CODEX_REASONING_EFFORTS, CODEX_REASONING_LABELS,
 } from "../providers/codex/codex-settings.mjs";
 import { resolveChatId as resolveNotificationChatId } from "../../send-message.mjs";
 import * as approvalProtocol from "../providers/codex/codex-approvals.mjs";
@@ -18,17 +16,19 @@ import { ensureLocalWebSecret } from "../interfaces/web/local-web-auth.mjs";
 import { agentHubAutostartShortcut } from "../interfaces/web/server-page.mjs";
 import { createHubStaticSettings } from "./hub-static-settings.mjs";
 import { createHubInfrastructure } from "./infrastructure-composition.mjs";
+import { measureStartupBeforeTrace } from "./command-trace-composition.mjs";
 import { createStateComposition } from "./state-composition.mjs";
 import { createAgentHubDeferredPorts } from "./agent-hub-deferred-ports.mjs";
 import { createProviderApplicationComposition } from "./provider-application-composition.mjs";
 import { createClientRuntimeComposition } from "./client-runtime-composition.mjs";
-import { createInteractionShellPhase } from "./interaction-shell-phase-composition.mjs";
+import {
+  configureMcpTaskLauncher, createInteractionShellPhase,
+} from "./interaction-shell-phase-composition.mjs";
 import { createExecutionBootstrapPhase } from "./execution-bootstrap-phase-composition.mjs";
 import { HubSessionState } from "../runtime/hub-session-state.mjs";
 if (process.platform === "win32") dns.setDefaultResultOrder("ipv4first");
-
 const agentHubDeferred = createAgentHubDeferredPorts();
-const config = await loadConfig();
+const { value: config, record: recordConfiguration } = await measureStartupBeforeTrace("configuration", loadConfig);
 const serverStartedAt = new Date().toISOString();
 const serverInstanceId = randomUUID();
 const serverReleaseId = path.basename(AGENT_HUB_ROOT);
@@ -77,10 +77,11 @@ const agentHubAutostartShortcutPath = agentHubAutostartShortcut({ environment: p
 const localWebSecret = config.miniApp.enabled
   ? await ensureLocalWebSecret(path.join(runtimeCommandRoot, "local-web.secret"))
   : "";
-const {
-  trustedDeviceStore,
+const { value: {
+  trustedDeviceStore, taskLifecycle,
+  contourExternalEffects,
   codexRolloutContextSanitizer,
-  workLogUsageStore, workLogUsageIdentityStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, workspaceReleaseService, preTurnInstructions, taskBoard, taskVoiceTranscriber, hubMcpService, hubMcpServer, mcpAdmissionCoordinator,
+  workLogUsageStore, workLogUsageIdentityStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, taskReleasePlanner, workspaceReleaseService, preTurnInstructions, taskBoard, taskVoiceTranscriber, hubMcpService, hubMcpServer, mcpAdmissionCoordinator,
   miniAppServer,
   publicMiniAppServer,
   attachmentDirectory,
@@ -89,16 +90,15 @@ const {
   runtimeStateStore,
   taskReadStateStore,
   turnEndNotifications,
-  runtimeNotificationController,
-  runJournal,
+  runtimeNotificationController, runJournal,
   runtimeCommandServer,
-  rateLimitHistoryStore, providerTurnTelemetryStore, commandTraceService,
+  rateLimitHistoryStore, providerTurnTelemetryStore, commandTrace, commandTraceService,
   sqliteRecovery, acknowledgeSqliteRecovery,
-} = await createHubInfrastructure({
+}, record: recordInfrastructure } = await measureStartupBeforeTrace("infrastructure", () => createHubInfrastructure({
   config,
   agentHubRoot: AGENT_HUB_ROOT,
-  runtimeCommandRoot,
-  localWebSecret,
+  runtimeCommandRoot, localWebSecret,
+  serverInstanceId, serverReleaseId,
   journalDatabaseFile,
   legacyWorkLogLedgerFile,
   legacyWorkLogFile,
@@ -114,7 +114,8 @@ const {
   reconcileRuntimeCommand: agentHubDeferred.api.reconcileRuntimeCommand,
   handleRuntimeCommand: agentHubDeferred.api.handleRuntimeCommand,
   stopProcessTree,
-});
+}));
+for (const record of [recordConfiguration, recordInfrastructure]) record(commandTraceService);
 const initialProvider = config.provider === "codex" ? "codex" : "claude";
 const token = config.token;
 const { taskMetadata, selectionStore, agentPreferences } = createStateComposition({
@@ -262,6 +263,7 @@ const providerApplication = await createProviderApplicationComposition({
   },
   infrastructure: {
     runJournal,
+    contourExternalEffects,
     turnEndNotifications,
     workLogUsageStore, workLogUsageIdentityStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, preTurnInstructions, hubMcpService,
     providerTurnTelemetryStore, commandTraceService, codexRolloutContextSanitizer, runtimeStateStore,
@@ -367,7 +369,7 @@ const {
   projectTurnUsageToWorkLog,
   taskRuns,
   dismissedExternalTasks,
-  deferredInputs,
+  deferredInputs, composerTransfers,
   pendingInputs,
   queuedInputs,
   taskDiffs,
@@ -446,7 +448,7 @@ const clientRuntime = await createClientRuntimeComposition({
     desktopMessageReceipts,
     taskSyncStore, workspaceCatalogStore,
     taskDiffs,
-    deferredInputs,
+    deferredInputs, composerTransfers,
     pendingInputs,
     queuedInputs,
     forwardBundles,
@@ -567,6 +569,8 @@ const interactionShell = createInteractionShellPhase({
   },
   infrastructure: {
     trustedDeviceStore, workLogUsageStore, workspaceCatalogStore, preTurnInstructions, taskBoard, taskVoiceTranscriber,
+    taskReleasePlanner, workspaceReleaseService,
+    taskLifecycle,
     attachmentDirectory,
     usdRubRateStore, runtimeStateStore, taskReadStateStore, rateLimitHistoryStore, commandTraceService, runJournal,
   },
@@ -579,7 +583,10 @@ const {
   taskProgress,
   runCoordinator,
 } = interactionShell;
-hubMcpService.setTaskLauncher((params, context) => interactionShell.taskBoardLauncher.start(params, { source: "mcp", clientId: `mcp:${context.provider}:${context.auditThreadId}` }));
+configureMcpTaskLauncher({
+  hubMcpService,
+  taskBoardLauncher: interactionShell.taskBoardLauncher,
+});
 hubMcpService.setStreamMessenger((params, context) => interactionShell.desktopMessageController.sendMessage(params, context));
 const executionBootstrap = createExecutionBootstrapPhase({
   config,
@@ -612,12 +619,10 @@ const executionBootstrap = createExecutionBootstrapPhase({
     providerTitle,
   },
   infrastructure: {
-    instanceGuard,
-    runtimeCommandServer,
-    runtimeStateStore,
-    taskReadStateStore,
+    instanceGuard, runtimeCommandServer,
+    runtimeStateStore, taskReadStateStore,
     workLogUsageStore, rateLimitHistoryStore, providerTurnTelemetryStore, taskBoard, hubMcpServer, hubMcpService, sqliteRecovery, acknowledgeSqliteRecovery,
-    preTurnInstructions,
+    preTurnInstructions, commandTrace, commandTraceService,
   },
   provider: providerApplication,
   clients: clientRuntime,

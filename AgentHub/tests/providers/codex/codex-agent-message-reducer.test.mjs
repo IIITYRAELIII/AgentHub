@@ -8,6 +8,38 @@ import {
   startCodexAgentMessage,
 } from "../../../src/providers/codex/codex-agent-message-reducer.mjs";
 
+test("async question metadata cannot select a final response or steal a real final", () => {
+  const run = { responseText: "", responseItems: [] };
+  const question = { id: "question", type: "agentMessage", phase: "final_answer",
+    text: "Choose", questions: [{ title: "Profile?", options: ["A", "B"] }] };
+  startCodexAgentMessage(run, { turnId: "turn", item: question });
+  appendCodexAgentMessageDelta(run, { turnId: "turn", itemId: "question", delta: " now" });
+  completeCodexAgentMessage(run, { turnId: "turn", item: question });
+  assert.equal(run.responseText, "");
+  assert.equal(run.responseItemId, null);
+  assert.deepEqual(run.responseItems[0].questions, question.questions);
+  completeCodexAgentMessage(run, { turnId: "turn", item: {
+    id: "answer", type: "agentMessage", phase: "final_answer", text: "Choose",
+  } });
+  completeCodexAgentMessage(run, { turnId: "turn", item: question });
+  assert.equal(run.responseText, "Choose");
+  assert.equal(run.responseItemId, "answer");
+});
+
+test("late question metadata removes the same provisional answer without dropping another item", () => {
+  const run = { responseItems: [] };
+  const item = { id: "question", type: "agentMessage", phase: "final_answer", text: "Choose" };
+  startCodexAgentMessage(run, { turnId: "turn", item });
+  assert.equal(run.responseText, "Choose");
+  completeCodexAgentMessage(run, { turnId: "turn", item: {
+    ...item, questions: [{ title: "Profile?", options: null }],
+  } });
+  assert.equal(run.responseText, "");
+  hydrateCodexAgentMessages(run, [{ ...item, questions: [{ title: "Profile?", options: null }] }], { turnId: "turn" });
+  assert.equal(run.responseText, "");
+  assert.equal(run.responseItemId, null);
+});
+
 test("Codex agent messages remain separated by item identity", () => {
   const run = { responseText: "", responseItems: [] };
   startCodexAgentMessage(run, {

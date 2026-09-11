@@ -1,12 +1,13 @@
 {
   "name": "agent-hub",
   "private": true,
-  "version": "2026.9.8",
+  "version": "2026.9.11",
   "type": "module",
   "engines": {
     "node": ">=22.5.0"
   },
   "scripts": {
+    "trace:report": "node src/composition/command-trace-report-cli.mjs",
     "start": "node agent-hub-main.mjs",
     "send": "node send-message.mjs",
     "render-code": "python render-code-images.py",
@@ -45,6 +46,10 @@
     "test:installer": "python -m unittest install_test.py",
     "test:e2e": "node test-suite.mjs e2e",
     "test:vscode": "node test-suite.mjs vscode",
+    "test:visual": "node test-suite.mjs visual",
+    "test:cosmetic": "node test-suite.mjs cosmetic",
+    "test:stress": "node test-suite.mjs stress",
+    "test:reliability": "node test-suite.mjs reliability",
     "test:core": "npm run check && npm test && npm run test:installer && npm run test:e2e",
     "test:all": "node test-suite.mjs all",
     "doctor": "node doctor.mjs",

@@ -3,7 +3,9 @@ import path from "node:path";
 import { createManagedTaskRun, taskRunKey } from "../domain/task-runs.mjs";
 import { TASK_EXECUTION_OWNERS, taskExecutionRuntimeLabel } from "../domain/task-execution-owner.mjs";
 import {
+  interstreamDisplayText,
   interstreamOriginAuthor,
+  normalizeInterstreamClientUserMessageId,
   normalizeInterstreamOrigin,
 } from "../domain/interstream-message.mjs";
 
@@ -28,7 +30,7 @@ export class ManagedRunLifecycleService {
       "normalizeCodexModel", "modelLabel", "persistTaskDiff", "syncRun",
       "invalidateCatalog", "saveState", "scheduleProgressStart", "clearSelectedDiff",
       "clearApprovals", "pauseObservation", "pauseClaude", "stopTyping",
-      "beforeCompletion", "completionAborted", "afterCompletion",
+      "prepareAdmission", "revokeAdmission", "beforeCompletion", "completionAborted", "afterCompletion",
     ]) requiredFunction(dependencies[name], name);
     if (!dependencies.taskRuns?.add || !dependencies.taskRuns?.remove) {
       throw new TypeError("taskRuns registry is required");
@@ -37,6 +39,14 @@ export class ManagedRunLifecycleService {
   }
 
   async begin(input, target = null) {
+    return this.#begin(input, target, { authorize: true });
+  }
+
+  async adopt(input, target = null) {
+    return this.#begin(input, target, { authorize: false });
+  }
+
+  async #begin(input, target, { authorize }) {
     const d = this.#d;
     const commandId = String(target?.clientUserMessageId ?? "").trim();
     const admissionSpan = d.commandTrace?.startBestEffortSpan?.({
@@ -50,6 +60,13 @@ export class ManagedRunLifecycleService {
     const project = d.findProject(projectRoot);
     const targetThreadId = target?.threadId ?? current.threadId;
     const taskTitle = target?.taskTitle ?? current.taskTitle;
+    const admission = authorize ? await d.prepareAdmission({
+      ...target,
+      provider,
+      projectRoot,
+      threadId: targetThreadId,
+      taskTitle,
+    }) : null;
     if (provider === "claude" && targetThreadId) {
       d.clearClaudeCancellation?.({ provider, threadId: targetThreadId });
     }
@@ -65,6 +82,7 @@ export class ManagedRunLifecycleService {
         ?? (targetThreadId === current.threadId ? preferences.reasoningEffort : preferences.defaultReasoningEffort)
       : preferences.reasoningEffort);
     const messageOrigin = normalizeInterstreamOrigin(target?.messageOrigin);
+    const rawPrompt = runInputPreview(input);
     const run = createManagedTaskRun({
       streamId: target?.streamId ?? current.streamId ?? null,
       provider,
@@ -74,8 +92,9 @@ export class ManagedRunLifecycleService {
       sessionCwd: target?.sessionCwd ?? null,
       threadId: targetThreadId,
       taskTitle,
-      promptPreview: runInputPreview(input),
-      clientUserMessageId: String(target?.clientUserMessageId ?? "").trim() || null,
+      promptPreview: rawPrompt,
+      rawPrompt,
+      clientUserMessageId: normalizeInterstreamClientUserMessageId(target?.clientUserMessageId),
       model: provider === "codex" ? d.modelLabel(modelId) : d.claudeModelLabels?.[modelId],
       modelId,
       reasoning: d.reasoningLabels?.[reasoningId],
@@ -87,6 +106,7 @@ export class ManagedRunLifecycleService {
       clientSource: String(target?.clientSource ?? "telegram").trim() || "telegram",
       ...(messageOrigin ? { messageOrigin } : {}),
     });
+    admission?.commit?.(run);
     run.submittedAt = target?.deferredInput?.createdAt ?? target?.submittedAt ?? run.startedAt;
     if (run.promptPreview) {
       run.userMessages = [{
@@ -94,7 +114,10 @@ export class ManagedRunLifecycleService {
         ...(run.clientUserMessageId
           ? { clientUserMessageId: run.clientUserMessageId }
           : {}),
-        text: run.promptPreview,
+        text: interstreamDisplayText(run.promptPreview, {
+          origin: messageOrigin,
+          clientUserMessageId: run.clientUserMessageId,
+        }),
         ...(messageOrigin ? {
           kind: "interstream",
           origin: structuredClone(messageOrigin),
@@ -106,13 +129,47 @@ export class ManagedRunLifecycleService {
       }];
     }
     d.taskRuns.add(run);
-    d.invalidateCatalog();
-    await d.persistTaskDiff(taskRunKey(run), "");
-    d.clearSelectedDiff(run);
-    run.gitBaseline = null;
-    d.syncRun(run);
-    if (target?.deferredInput) target.deferredInput.dispatchingRunId = run.id;
-    await d.saveState();
+    const deferredInput = target?.deferredInput;
+    const previousDispatchingRunId = deferredInput?.dispatchingRunId;
+    let admissionOperation = "invalidate-catalog";
+    try {
+      d.invalidateCatalog();
+      admissionOperation = "persist-task-diff";
+      await d.persistTaskDiff(taskRunKey(run), "");
+      admissionOperation = "sync-run";
+      d.clearSelectedDiff(run);
+      run.gitBaseline = null;
+      d.syncRun(run);
+      if (deferredInput) deferredInput.dispatchingRunId = run.id;
+      admissionOperation = "save-state";
+      await d.saveState();
+    } catch (error) {
+      admissionSpan?.finish({
+        outcome: "failed",
+        metadata: {
+          operation: admissionOperation,
+          errorCode: String(error?.code ?? "").slice(0, 96) || null,
+          sqliteErrorCode: Number.isInteger(error?.errcode) ? error.errcode : null,
+          runId: run.id,
+        },
+      });
+      if (run.turnId) throw error;
+      run.status = "failed";
+      d.revokeAdmission(run);
+      d.taskRuns.remove(run);
+      if (deferredInput?.dispatchingRunId === run.id) {
+        if (previousDispatchingRunId === undefined) delete deferredInput.dispatchingRunId;
+        else deferredInput.dispatchingRunId = previousDispatchingRunId;
+      }
+      d.syncRun(run, { active: false });
+      d.invalidateCatalog();
+      try {
+        await d.saveState();
+      } catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], "Cannot persist failed run admission rollback", { cause: error });
+      }
+      throw error;
+    }
     admissionSpan?.finish({
       outcome: "succeeded",
       metadata: { runId: run.id, provider: run.provider, threadId: run.threadId },
@@ -129,6 +186,7 @@ export class ManagedRunLifecycleService {
     if (!run || run.admissionReleased === true) return;
     if (run.admissionReleasing) return run.admissionReleasing;
     const d = this.#d;
+    d.revokeAdmission(run);
     run.admissionReleasing = (async () => {
       await this.markCompleted(run);
       d.taskRuns.remove(run);

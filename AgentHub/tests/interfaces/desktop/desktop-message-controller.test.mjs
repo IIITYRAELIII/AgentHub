@@ -1,11 +1,74 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createDesktopMessageController } from "../../../src/interfaces/desktop/desktop-message-controller.mjs";
 import { MessageReceiptRegistry } from "../../../src/infrastructure/persistence/message-receipts.mjs";
 import { RunCoordinator } from "../../../src/application/run-coordinator.mjs";
-import { interstreamMessageDetails } from "../../../src/domain/interstream-message.mjs";
+import {
+  createInterstreamMessage,
+  interstreamMessageDetails,
+} from "../../../src/domain/interstream-message.mjs";
+import { DeferredComposerTransferRegistry } from "../../../src/application/deferred-composer-transfer-registry.mjs";
+
+test("same-id transport retry preserves the accepted attachment through receipt reload and steering", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub-retry-owned-attachment-"));
+  const file = path.join(directory, "48c5435f-a6e6-4559-a3c6-0ab0f09c8d07--aW1hZ2UucG5n.png");
+  const bytes = Buffer.from("exact uploaded image bytes");
+  await writeFile(file, bytes);
+  try {
+    for (const withTransfer of [false, true]) {
+      const receipts = new MessageReceiptRegistry();
+      const submitted = [];
+      const steered = [];
+      let rejectClaim = false;
+      const runCoordinator = {
+        submitClientInput: async (input) => { submitted.push(input); return { accepted: true, deferred: true, queued: true, id: "queue-1" }; },
+        steer: async (input) => { steered.push(input); return { accepted: true, steered: true }; },
+      };
+      const options = {
+        receipts, runCoordinator,
+        attachmentPaths: async (files) => { for (const name of files) await stat(name); return files; },
+        describeAttachments: (files) => files.map((name) => ({ id: path.basename(name), name: "image.png", type: "image/png" })),
+        discardPreparedAttachments: async (files) => { await Promise.all(files.map((name) => unlink(name))); },
+        ...(withTransfer ? { composerTransfers: {
+          resolve: (value) => value, claim: async (value) => {
+            if (rejectClaim) throw new Error("claim rejected");
+            return value;
+          }, consume: async () => true,
+        } } : {}),
+      };
+      const request = { text: "Оформление этой страницы", clientUserMessageId: "image-message", attachments: [file],
+        ...(withTransfer ? { composerTransfer: { id: "draft-1", token: "token-1" } } : {}) };
+      const first = controller(options);
+      const result = await first.sendMessage(request, { source: "direct-http" });
+      await first.sendMessage(request, { source: "vscode-ipc" });
+      assert.deepEqual(await readFile(file), bytes);
+      const restored = new MessageReceiptRegistry();
+      restored.restore([...receipts.receipts.values()]);
+      const afterReload = controller({ ...options, receipts: restored });
+      const repeated = await afterReload.sendMessage(request, { source: "vscode-ipc" });
+      assert.equal(repeated.id, result.id);
+      assert.deepEqual(repeated.attachments, result.attachments);
+      await assert.rejects(afterReload.sendMessage({ ...request, text: "Changed retry" }),
+        (error) => error.code === "MESSAGE_RECEIPT_FINGERPRINT_MISMATCH");
+      assert.deepEqual(await readFile(file), bytes);
+      if (withTransfer) {
+        rejectClaim = true;
+        await assert.rejects(afterReload.sendMessage(request), /claim rejected/u);
+        assert.deepEqual(await readFile(file), bytes);
+        rejectClaim = false;
+      }
+      assert.equal(submitted.length, 1);
+      await afterReload.steerActiveInput({ input: submitted[0].input, target: submitted[0].target,
+        clientUserMessageId: request.clientUserMessageId });
+      assert.equal(steered.length, 1);
+      assert.deepEqual(await readFile(file), bytes);
+    }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
 
 const EXISTING_IMAGE = fileURLToPath(
   new URL("../../../assets/web-app/themes/blackhole/blackhole-blue.jpg", import.meta.url),
@@ -39,6 +102,7 @@ function controller(overrides = {}) {
     provider: "codex",
     projectRoot: "C:\\Project",
     threadId: "thread-1",
+    streamId: "stream-1",
     taskTitle: "Task",
     chatId: 84,
   };
@@ -99,8 +163,294 @@ function controller(overrides = {}) {
     persistReceipts: overrides.persistReceipts ?? (async () => {}),
     runCoordinator,
     durableIntake: overrides.durableIntake ?? false,
+    composerTransfers: overrides.composerTransfers ?? null,
+    discardPreparedAttachments: overrides.discardPreparedAttachments ?? (async () => {}),
   });
 }
+
+test("desktop message consumes an exact deferred composer grant and preserves its origin", async () => {
+  const messageOrigin = {
+    kind: "interstream",
+    workspaceId: "workspace-1", workspaceName: "Agent HUB", streamId: "source-stream",
+    streamName: "Architect", provider: "codex", model: "GPT-5.6-Sol",
+    sourceThreadId: "source-thread", requestId: "source-request",
+  };
+  let launchedInput = null;
+  let launchCount = 0;
+  let consumed = null;
+  const composerTransfers = {
+    resolve: (value, target) => value.id === "deferred-1" && value.token === "transfer-1"
+      && target.threadId === "thread-1"
+      ? { ...value, messageOrigin }
+      : null,
+    claim: async (value, target) => composerTransfers.resolve(value, target),
+    consume: async (value) => { consumed = value; return true; },
+  };
+  const messages = controller({
+    composerTransfers,
+    launchTurn: async (_run, input) => { launchedInput = input; launchCount += 1; },
+  });
+
+  const request = {
+    text: "Изменённый текст",
+    clientUserMessageId: "message-returned",
+    composerTransfer: { id: "deferred-1", token: "transfer-1" },
+  };
+  await messages.sendMessage(request);
+  await messages.sendMessage(request);
+
+  assert.equal(interstreamMessageDetails(launchedInput).text, "Изменённый текст");
+  assert.deepEqual(interstreamMessageDetails(launchedInput).origin, messageOrigin);
+  assert.deepEqual(consumed, {
+    id: "deferred-1", token: "transfer-1", messageOrigin,
+  });
+  assert.equal(launchCount, 1);
+
+  await assert.rejects(messages.sendMessage({
+    text: "Не должен уйти",
+    clientUserMessageId: "message-stale-return",
+    composerTransfer: { id: "deferred-1", token: "wrong" },
+  }), /устарел/u);
+});
+
+test("desktop message reconciles a durable composer grant after process restart without duplicate send or file leak", async () => {
+  const item = {
+    id: "deferred-restart",
+    provider: "codex",
+    threadId: "thread-1",
+    streamId: "stream-1",
+    temporaryFiles: ["original-upload.png"],
+  };
+  const beforeRestart = new DeferredComposerTransferRegistry();
+  await beforeRestart.remember(item, "transfer-restart");
+  const durableGrant = beforeRestart.snapshot();
+  const cleanup = [];
+  const persisted = [];
+  const afterRestart = new DeferredComposerTransferRegistry();
+  await afterRestart.restore(durableGrant);
+  afterRestart.configure({
+    cleanup: async (value) => cleanup.push(...value.temporaryFiles),
+    persist: async () => persisted.push(afterRestart.snapshot()),
+  });
+  const receipts = new MessageReceiptRegistry();
+  let launchCount = 0;
+  let uploadCount = 0;
+  const discarded = [];
+  const messagesBeforeSecondRestart = controller({
+    composerTransfers: afterRestart,
+    receipts,
+    attachmentPaths: async () => [`retry-upload-${++uploadCount}.png`],
+    describeAttachments: () => [{ name: "screen.png", type: "image/png", size: 10, sha256: "same" }],
+    discardPreparedAttachments: async (files) => discarded.push(...files),
+    launchTurn: async () => { launchCount += 1; },
+  });
+  const request = {
+    text: "Изменённый текст",
+    attachments: [{ name: "screen.png" }],
+    clientUserMessageId: "message-after-restart",
+    composerTransfer: { id: item.id, token: "transfer-restart" },
+  };
+
+  const first = await messagesBeforeSecondRestart.sendMessage(request);
+  const consumedGrant = afterRestart.snapshot();
+  assert.equal(consumedGrant[0].claimedBy, request.clientUserMessageId);
+  assert.equal(consumedGrant[0].effectAccepted, true);
+  const reconciledAfterRestart = new DeferredComposerTransferRegistry();
+  await reconciledAfterRestart.restore(consumedGrant, {
+    cleanup: async (value) => cleanup.push(...value.temporaryFiles),
+  });
+  reconciledAfterRestart.configure({
+    cleanup: async (value) => cleanup.push(...value.temporaryFiles),
+    persist: async () => persisted.push(reconciledAfterRestart.snapshot()),
+  });
+  const messagesAfterSecondRestart = controller({
+    composerTransfers: reconciledAfterRestart,
+    receipts,
+    attachmentPaths: async () => [`retry-upload-${++uploadCount}.png`],
+    describeAttachments: () => [{ name: "screen.png", type: "image/png", size: 10, sha256: "same" }],
+    discardPreparedAttachments: async (files) => discarded.push(...files),
+    launchTurn: async () => { launchCount += 1; },
+  });
+  const repeated = await messagesAfterSecondRestart.sendMessage(request);
+
+  assert.equal(first.runId, repeated.runId);
+  assert.equal(launchCount, 1);
+  assert.deepEqual(cleanup, ["original-upload.png"]);
+  assert.deepEqual(discarded, ["retry-upload-2.png"]);
+  assert.equal(persisted.length, 3);
+  assert.deepEqual(persisted.map(([grant]) => ({
+    claimedBy: grant.claimedBy,
+    effectAccepted: grant.effectAccepted,
+    cleanupCompleted: grant.cleanupCompleted,
+  })), [{
+    claimedBy: request.clientUserMessageId,
+    effectAccepted: false,
+    cleanupCompleted: false,
+  }, {
+    claimedBy: request.clientUserMessageId,
+    effectAccepted: true,
+    cleanupCompleted: false,
+  }, {
+    claimedBy: request.clientUserMessageId,
+    effectAccepted: true,
+    cleanupCompleted: true,
+  }]);
+  assert.equal(reconciledAfterRestart.resolve(request.composerTransfer, {
+    provider: "codex", threadId: "thread-1", streamId: "stream-1",
+  }, { clientUserMessageId: "different-message" }), null);
+});
+
+test("desktop message durably claims one transfer before concurrent different-client admission", async () => {
+  let releaseClaim;
+  let claimStarted;
+  const claimGate = new Promise((resolve) => { releaseClaim = resolve; });
+  const claimObserved = new Promise((resolve) => { claimStarted = resolve; });
+  const composerTransfers = new DeferredComposerTransferRegistry();
+  await composerTransfers.remember({
+    id: "deferred-race", provider: "codex", threadId: "thread-1", streamId: "stream-1",
+    temporaryFiles: [],
+  }, "transfer-race");
+  composerTransfers.configure({
+    persist: async () => {
+      claimStarted();
+      await claimGate;
+    },
+  });
+  let launchCount = 0;
+  const messages = controller({
+    composerTransfers,
+    launchTurn: async () => { launchCount += 1; },
+  });
+  const exactRequest = {
+    text: "Один перенос",
+    clientUserMessageId: "client-a",
+    composerTransfer: { id: "deferred-race", token: "transfer-race" },
+  };
+  const first = messages.sendMessage(exactRequest);
+  await claimObserved;
+  const sameIdentityRetry = messages.sendMessage(exactRequest);
+
+  await assert.rejects(messages.sendMessage({
+    text: "Один перенос",
+    clientUserMessageId: "client-b",
+    composerTransfer: { id: "deferred-race", token: "transfer-race" },
+  }), /закреплён/u);
+  assert.equal(launchCount, 0);
+
+  releaseClaim();
+  const [accepted, coalesced] = await Promise.all([first, sameIdentityRetry]);
+  assert.equal(accepted.runId, coalesced.runId);
+  assert.equal(launchCount, 1);
+});
+
+test("desktop message never reaches provider when durable transfer claim persistence fails", async () => {
+  const composerTransfers = new DeferredComposerTransferRegistry();
+  await composerTransfers.remember({
+    id: "deferred-persist", provider: "codex", threadId: "thread-1", streamId: "stream-1",
+    temporaryFiles: [],
+  }, "transfer-persist");
+  composerTransfers.configure({ persist: async () => { throw new Error("disk full"); } });
+  let launchCount = 0;
+  const messages = controller({
+    composerTransfers,
+    launchTurn: async () => { launchCount += 1; },
+  });
+
+  await assert.rejects(messages.sendMessage({
+    text: "Не отправлять без durable claim",
+    clientUserMessageId: "client-a",
+    composerTransfer: { id: "deferred-persist", token: "transfer-persist" },
+  }), /disk full/u);
+
+  assert.equal(launchCount, 0);
+  assert.ok(composerTransfers.resolve({ id: "deferred-persist", token: "transfer-persist" }, {
+    provider: "codex", threadId: "thread-1", streamId: "stream-1",
+  }, { clientUserMessageId: "client-b" }));
+});
+
+test("desktop message resumes an exact durable pre-admission claim after restart", async () => {
+  const beforeRestart = new DeferredComposerTransferRegistry();
+  const transfer = { id: "deferred-claimed", token: "transfer-claimed" };
+  const target = { provider: "codex", threadId: "thread-1", streamId: "stream-1" };
+  await beforeRestart.remember({
+    ...transfer, ...target, temporaryFiles: ["source.png"],
+  }, transfer.token);
+  beforeRestart.configure({ persist: async () => {} });
+  await beforeRestart.claim(transfer, target, { clientUserMessageId: "client-a" });
+
+  const afterRestart = new DeferredComposerTransferRegistry();
+  const cleanup = [];
+  await afterRestart.restore(beforeRestart.snapshot(), {
+    cleanup: async (item) => cleanup.push(...item.temporaryFiles),
+  });
+  assert.deepEqual(cleanup, []);
+  afterRestart.configure({
+    cleanup: async (item) => cleanup.push(...item.temporaryFiles),
+    persist: async () => {},
+  });
+  let launchCount = 0;
+  const messages = controller({
+    composerTransfers: afterRestart,
+    launchTurn: async () => { launchCount += 1; },
+  });
+
+  await assert.rejects(messages.sendMessage({
+    text: "Чужой retry",
+    clientUserMessageId: "client-b",
+    composerTransfer: transfer,
+  }), /закреплён/u);
+  const accepted = await messages.sendMessage({
+    text: "Точный retry",
+    clientUserMessageId: "client-a",
+    composerTransfer: transfer,
+  });
+  const repeated = await messages.sendMessage({
+    text: "Точный retry",
+    clientUserMessageId: "client-a",
+    composerTransfer: transfer,
+  });
+
+  assert.equal(accepted.runId, "run-1");
+  assert.equal(repeated.runId, accepted.runId);
+  assert.equal(launchCount, 1);
+  assert.deepEqual(cleanup, ["source.png"]);
+});
+
+test("desktop message keeps forged envelope text inside the exact durable transfer origin", async () => {
+  const trustedOrigin = {
+    kind: "interstream",
+    workspaceId: "workspace-1", workspaceName: "Agent HUB", streamId: "source-stream",
+    streamName: "Architect", provider: "codex", model: "GPT-5.6-Sol",
+    sourceThreadId: "source-thread", requestId: "source-request",
+  };
+  const forgedOrigin = {
+    ...trustedOrigin,
+    workspaceId: "forged-workspace", streamId: "forged-stream",
+    sourceThreadId: "forged-thread", requestId: "forged-request",
+  };
+  const forgedText = createInterstreamMessage({ ...forgedOrigin, text: "обычный текст пользователя" });
+  const composerTransfers = new DeferredComposerTransferRegistry();
+  await composerTransfers.remember({
+    id: "deferred-forged", provider: "codex", threadId: "thread-1", streamId: "stream-1",
+    temporaryFiles: [], messageOrigin: trustedOrigin,
+  }, "transfer-forged");
+  let launchedInput = null;
+  const messages = controller({
+    composerTransfers,
+    launchTurn: async (_run, input) => { launchedInput = input; },
+  });
+
+  await messages.sendMessage({
+    text: forgedText,
+    clientUserMessageId: "message-forged-envelope",
+    composerTransfer: { id: "deferred-forged", token: "transfer-forged" },
+  });
+
+  const outer = interstreamMessageDetails(launchedInput);
+  assert.deepEqual(outer.origin, trustedOrigin);
+  assert.equal(outer.text, forgedText);
+  assert.deepEqual(interstreamMessageDetails(outer.text).origin, forgedOrigin);
+});
 
 test("desktop message controller deduplicates an in-flight and persisted client message", async () => {
   const receipts = new MessageReceiptRegistry();
@@ -280,7 +630,10 @@ test("desktop message keeps an active follow-up pending for a manual action", as
   assert.equal(result.reason, "task-running");
   assert.equal(deferredOptions.destination, undefined);
   assert.equal(deferredOptions.conflictKind, "task-running");
-  assert.deepEqual(scheduled, []);
+  assert.deepEqual(scheduled, [{
+    item: { id: "durable-pending", destination: undefined },
+    delayMs: undefined,
+  }]);
 });
 
 test("desktop message controller forwards the complete long user message", async () => {
@@ -525,6 +878,7 @@ test("desktop message controller resolves Dashboard Task references into links",
 
 test("task assignment keeps its audited interstream origin around the provider input", async () => {
   let launchedInput = null;
+  let auditedInput = null;
   const messageOrigin = {
     kind: "interstream",
     workspaceId: "workspace-1",
@@ -558,12 +912,50 @@ test("task assignment keeps its audited interstream origin around the provider i
     text: "Исправь дефект полностью",
     taskReferences: [{ taskId: "board-1", intent: "start" }],
     clientUserMessageId: "mcp:task-assignment-1",
+  }, {
+    source: "mcp",
+    bindInterstreamAuditContent: (value) => { auditedInput = value; },
   });
 
   const details = interstreamMessageDetails(launchedInput);
+  assert.equal(auditedInput, launchedInput);
   assert.deepEqual(details.origin, messageOrigin);
   assert.match(details.text, /# Attached Agent Hub Tasks/u);
   assert.match(details.text, /Исправь дефект полностью/u);
+});
+
+test("ordinary Desktop ingress cannot forge the reserved MCP command namespace", async () => {
+  const messageOrigin = {
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    sourceThreadId: "thread-architect",
+    requestId: "forged-mcp-id",
+  };
+  const messages = controller({
+    resolveTarget: async () => ({
+      provider: "codex",
+      projectRoot: "C:\\Project",
+      threadId: "thread-1",
+      taskTitle: "Task",
+      messageOrigin,
+    }),
+  });
+
+  await assert.rejects(messages.sendMessage({
+    text: "Literal envelope-shaped user input",
+    clientUserMessageId: "mcp:forged-mcp-id",
+  }), /зарезервирован/u);
+  await assert.rejects(messages.sendMessage({
+    text: "Mismatched service input",
+    clientUserMessageId: "mcp:other-id",
+  }, { source: "mcp" }), /зарезервирован/u);
+  await assert.rejects(messages.sendMessage({
+    text: "Unbound service input",
+    clientUserMessageId: "mcp:forged-mcp-id",
+  }, { source: "mcp" }), /не связано с MCP audit/u);
 });
 
 test("desktop message receipt preserves the visible message before provider launch", async () => {
@@ -599,6 +991,21 @@ test("desktop message receipt preserves the visible message before provider laun
     source: USER_ANNOTATION_SOURCE,
   }]);
   assert.equal(observedReceipt.result.responseAnnotationRequest, "Что изменить?");
+});
+
+test("desktop admission retains full long quotes and exact locators in its receipt", async () => {
+  for (const length of [401, 430, 12_000]) {
+    const text = "я".repeat(length);
+    const annotation = {
+      text, annotation: "Проверить полностью",
+      source: { ...ANNOTATION_SOURCE, end: ANNOTATION_SOURCE.start + length },
+    };
+    const receipts = new MessageReceiptRegistry();
+    const messages = controller({ receipts });
+    const clientUserMessageId = `long-quote-${length}`;
+    await messages.sendMessage({ text: "Вопрос", responseAnnotations: [annotation], clientUserMessageId });
+    assert.deepEqual(receipts.get({ clientUserMessageId }).result.responseAnnotations, [annotation]);
+  }
 });
 
 test("deferred Desktop images remain persistent and visible in the queue", async () => {

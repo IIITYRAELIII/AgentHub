@@ -313,10 +313,10 @@ export class TelegramDeliveryService {
         this.logger.warn(`Cannot remove completed progress message ${messageId}:`, error.message);
       });
     }
-    await this.removeBindings(
+    await this.#queueBindingWrite(() => this.removeBindings(
       this.dataDir,
       (binding) => binding.chatId === targetChatId && messageIds.includes(binding.messageId),
-    ).catch((error) => {
+    )).catch((error) => {
       this.logger.warn("Cannot remove completed progress bindings:", error.message);
     });
   }

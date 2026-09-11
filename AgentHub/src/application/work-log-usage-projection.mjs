@@ -6,10 +6,15 @@ import {
   IMAGE_GENERATION_ESTIMATE_CREDITS,
   looksLikeImageGenerationPrompt,
 } from "../domain/codex-usage-estimate.mjs";
-import { isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
+import { isCodexContextProbeClientId, isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
 import { isCodexAutoCompactionTurnId } from "../domain/codex-internal-turn.mjs";
 import { isInheritedSubagentTurn } from "../domain/subagent-turn-identity.mjs";
 import { taskDisplayTitle } from "../domain/task-display-title.mjs";
+import {
+  normalizeInterstreamClientUserMessageId,
+  normalizeInterstreamOrigin,
+  sameInterstreamOrigin,
+} from "../domain/interstream-message.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
 import {
   addCreditBreakdown,
@@ -34,7 +39,7 @@ const UNKNOWN_ACCOUNT_UI_KEY = "__unknown_account__";
 
 /* Stable shipped identity of the account-usage projection algorithm. Bump this
    only when the same durable facts must be materialized again after upgrade. */
-export const WORK_LOG_ACCOUNT_USAGE_PROJECTION_VERSION = "2026.9.7.1";
+export const WORK_LOG_ACCOUNT_USAGE_PROJECTION_VERSION = "2026.9.8.1";
 
 export function normalizeWorkLogId(value) {
   const id = String(value ?? "").trim().toLowerCase();
@@ -191,6 +196,7 @@ function recordCreditBreakdown(record) {
       model: record?.model || "gpt-5.6-sol",
       serviceTier: record?.serviceTier,
       estimatedCredits: effectiveEstimatedCredits(record),
+      completedAt: record?.completedAt,
     },
   );
 }
@@ -831,7 +837,6 @@ function syncedUsageRecords(values) {
 
 export function buildWorkLogAccountUsageSummary(turns = {}, {
   accountCatalog = [],
-  includeClaudeUsage = true,
   syncedUsageEvents = [],
   localDeviceId = "",
   localDeviceLabel = "",
@@ -853,10 +858,7 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
       source: "sync",
       deviceId: String(record?.syncDeviceId ?? "").trim(),
     })),
-  ]
-    .filter((entry) => includeClaudeUsage
-      || String(entry.record?.provider ?? "").toLowerCase() !== "claude")
-    .map((entry) => ({
+  ].map((entry) => ({
       ...entry,
       timestamp: Date.parse(entry.record?.completedAt || entry.record?.startedAt || ""),
       credits: recordCredits(entry.record),
@@ -2795,7 +2797,6 @@ export function projectWorkLogUsage(workLogText, turns = {}, {
   const normalizedTurns = normalizedLedger({ version: 8, turns }).ledger.turns;
   const accountPanel = formatAccountUsagePanel(buildWorkLogAccountUsageSummary(normalizedTurns, {
     accountCatalog,
-    includeClaudeUsage,
     syncedUsageEvents,
     localDeviceId,
     localDeviceLabel,
@@ -2824,8 +2825,8 @@ export function projectWorkLogUsage(workLogText, turns = {}, {
   const defaultOpenDate = dayStarts.some((match) => match[1] === currentDate)
     ? currentDate
     : dayStarts[0]?.[1];
-  let projected = text;
-  for (let index = dayStarts.length - 1; index >= 0; index -= 1) {
+  const projected = [text.slice(0, dayStarts[0]?.index ?? text.length)];
+  for (let index = 0; index < dayStarts.length; index += 1) {
     const start = dayStarts[index].index;
     const end = index + 1 < dayStarts.length ? dayStarts[index + 1].index : text.length;
     const section = text.slice(start, end);
@@ -2838,14 +2839,13 @@ export function projectWorkLogUsage(workLogText, turns = {}, {
       includeClaudeUsage,
       workspaceResolver,
     );
-    projected = `${projected.slice(0, start)}${replacement}${projected.slice(end)}`;
+    projected.push(replacement);
   }
-  return insertAccountUsagePanel(projected, accountPanel);
+  return insertAccountUsagePanel(projected.join(""), accountPanel);
 }
 
 export function projectWorkLogAccountUsage(workLogText, turns = {}, {
   accountCatalog = [],
-  includeClaudeUsage = true,
   syncedUsageEvents = [],
   localDeviceId = "",
   localDeviceLabel = "",
@@ -2856,7 +2856,6 @@ export function projectWorkLogAccountUsage(workLogText, turns = {}, {
     String(workLogText ?? ""),
     formatAccountUsagePanel(buildWorkLogAccountUsageSummary(normalizedTurns, {
       accountCatalog,
-      includeClaudeUsage,
       syncedUsageEvents,
       localDeviceId,
       localDeviceLabel,
@@ -2970,6 +2969,8 @@ export function incomingLedgerRecord({
   body,
   text,
   prompt,
+  clientUserMessageId,
+  messageOrigin,
   changedFiles,
   diff,
   skillsUsed,
@@ -2987,6 +2988,12 @@ export function incomingLedgerRecord({
   const accountFields = normalizedAccountFields({ account, accountKey, accountAttribution });
   const normalizedEstimatedCredits = normalizeEstimatedCredits(estimatedCredits);
   const normalizedEstimateKind = String(estimateKind ?? "").trim();
+  const normalizedClientUserMessageId = normalizeInterstreamClientUserMessageId(clientUserMessageId);
+  const suppliedMessageOrigin = normalizeInterstreamOrigin(messageOrigin);
+  const normalizedMessageOrigin = suppliedMessageOrigin?.requestId
+    && normalizedClientUserMessageId !== `mcp:${suppliedMessageOrigin.requestId}`
+    ? null
+    : suppliedMessageOrigin;
   return {
     workLogId,
     projectRoot: normalizeProjectRoot(projectRoot),
@@ -3015,6 +3022,8 @@ export function incomingLedgerRecord({
     title: String(title ?? "").trim(),
     body: String(body ?? text ?? "").trim(),
     prompt: displayUserPrompt(prompt),
+    clientUserMessageId: normalizedClientUserMessageId,
+    ...(normalizedMessageOrigin ? { messageOrigin: normalizedMessageOrigin } : {}),
     changedFiles: Array.isArray(changedFiles)
       ? changedFiles.map((file) => String(file).trim()).filter(Boolean)
       : [],
@@ -3070,6 +3079,25 @@ export function mergeLedgerRecord(existing, incoming) {
     if (incoming.accountPlan) existing.accountPlan = incoming.accountPlan;
     existing.accountAttribution = incoming.accountAttribution;
   }
+  const existingClientUserMessageId = normalizeInterstreamClientUserMessageId(existing.clientUserMessageId);
+  const incomingClientUserMessageId = normalizeInterstreamClientUserMessageId(incoming.clientUserMessageId);
+  if (existing.clientUserMessageId && !existingClientUserMessageId) {
+    existing.clientUserMessageId = null;
+    delete existing.messageOrigin;
+  }
+  if (!existingClientUserMessageId && incomingClientUserMessageId) {
+    existing.clientUserMessageId = incomingClientUserMessageId;
+  }
+  const effectiveClientUserMessageId = normalizeInterstreamClientUserMessageId(existing.clientUserMessageId);
+  if (effectiveClientUserMessageId && !isCodexContextProbeClientId(effectiveClientUserMessageId)) {
+    existing.contextProbe = false;
+  }
+  if (
+    incoming.messageOrigin
+    && incomingClientUserMessageId
+    && incomingClientUserMessageId === effectiveClientUserMessageId
+    && (!existing.messageOrigin || sameInterstreamOrigin(existing.messageOrigin, incoming.messageOrigin))
+  ) existing.messageOrigin = incoming.messageOrigin;
   for (const field of [
     "projectRoot",
     "provider",
@@ -3224,7 +3252,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
   localDeviceId = "",
   localDeviceLabel = "",
   accountKey = "",
-  accountActivity = [],
+  accountActivity = null,
 } = {}) {
   const normalizedRange = range === "all" || Object.hasOwn(USAGE_HISTORY_RANGES, range)
     ? range
@@ -3235,6 +3263,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
   const requestedProvider = String(provider ?? "").trim().toLowerCase();
   const requestedAccountKey = String(accountKey ?? "").trim();
   const normalizedTimeMode = normalizedTurnTimeMode(turnTimeMode);
+  const filterSyncedByAccountActivity = Array.isArray(accountActivity);
   const accountActivityIntervals = new Map((Array.isArray(accountActivity) ? accountActivity : [])
     .map((entry) => [
       String(entry?.accountKey ?? "").trim(),
@@ -3273,8 +3302,9 @@ export function buildWorkLogUsageHistory(turns = {}, {
       const recordAccountKey = String(record.accountKey ?? "").trim();
       if (!recordAccountKey) return false;
       if (requestedAccountKey && recordAccountKey !== requestedAccountKey) return false;
+      if (!filterSyncedByAccountActivity) return true;
       const activity = accountActivityIntervals.get(recordAccountKey);
-      if (!activity) return true;
+      if (!activity) return false;
       const pointMs = turnUsageTimeMs(record, normalizedTimeMode);
       return activity.some((interval) => pointMs >= interval.from && pointMs < interval.to);
     });

@@ -1,8 +1,11 @@
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { gzip } from "node:zlib";
 import { promisify } from "node:util";
 import path from "node:path";
+import { attachmentUploadLimits } from "../../domain/attachment-upload-policy.mjs";
+import { downloadChunkedAttachment, readAttachmentResponse } from "./chunked-attachment-download.mjs";
+import { publishChunkedAttachmentView } from "./chunked-attachment-view.mjs";
 
 import { JournalDatabase } from "../../infrastructure/persistence/journal-database.mjs";
 import {
@@ -68,6 +71,7 @@ const CONTROL_ACTIONS = new Set([
   "status-details",
   "speak-last-answer",
   "restart-server",
+  "retry-startup",
   "compact-context",
   "open-attachment",
   "trusted-devices",
@@ -459,6 +463,17 @@ export class MiniAppPublisher {
     const metadata = attachmentMetadataFromId(path.basename(target));
     if (!metadata) throw new Error("Unsupported attachment identifier");
     const contentType = metadata.type;
+    const info = await stat(target);
+    if (!info.isFile() || info.size < 1 || info.size > attachmentUploadLimits().maxBytes) {
+      throw new Error("Attachment is missing or too large");
+    }
+    if (info.size > MAX_ATTACHMENT_BYTES) {
+      const secret = await this.#secret();
+      return publishChunkedAttachmentView({ file: target, metadata, userId, limits: attachmentUploadLimits(),
+        request: payload => this.#signedControlRequest("/api/control/attachment-upload", payload, secret,
+          { timeoutMs: ATTACHMENT_TIMEOUT_MS }),
+      });
+    }
     const body = await readFile(target);
     if (
       body.length < 1
@@ -550,10 +565,21 @@ export class MiniAppPublisher {
         id,
         userId: command.userId,
         commandId: command.id,
+        mode: "manifest",
+        page: 0,
       },
       secret,
       { timeoutMs: ATTACHMENT_TIMEOUT_MS },
     );
+    if (String(response.headers.get("Content-Type") ?? "").toLowerCase().includes("application/json")) {
+      return downloadChunkedAttachment({
+        firstResponse: response, id, commandId: command.id, directory: this.#attachmentDirectory,
+        maxBytes: attachmentUploadLimits().maxBytes,
+        request: (mode) => this.#signedControlFetch("/api/control/attachment/pull", {
+          id, userId: command.userId, commandId: command.id, ...mode,
+        }, secret, { timeoutMs: ATTACHMENT_TIMEOUT_MS }),
+      });
+    }
     const encodedName = String(response.headers.get("X-Agent-Hub-File-Name") ?? "").trim();
     const advertisedType = String(response.headers.get("Content-Type") ?? "").split(";", 1)[0].trim().toLowerCase();
     const legacyImageExtension = new Map([
@@ -578,7 +604,7 @@ export class MiniAppPublisher {
     ) {
       throw new Error("Mini App Worker returned invalid attachment metadata");
     }
-    const body = Buffer.from(await response.arrayBuffer());
+    const body = await readAttachmentResponse(response, MAX_ATTACHMENT_BYTES, ATTACHMENT_TIMEOUT_MS);
     if (
       body.length < 1
       || body.length > MAX_ATTACHMENT_BYTES
@@ -617,13 +643,11 @@ export class MiniAppPublisher {
     const attachments = command.params.attachments ?? [];
     if (!attachments.length) return command;
     const localAttachments = [];
-    try {
-      for (const reference of attachments) {
-        localAttachments.push(await this.#downloadRemoteAttachment(reference, command, secret));
-      }
-    } catch (error) {
-      await Promise.all(localAttachments.map((file) => unlink(file).catch(() => {})));
-      throw error;
+    for (const reference of attachments) {
+      // These final files belong to this exact command and may already be in
+      // accepted history on a retry. Only the downloader's private partial is
+      // disposable; failure of a later file cannot revoke an earlier one.
+      localAttachments.push(await this.#downloadRemoteAttachment(reference, command, secret));
     }
     return {
       ...command,

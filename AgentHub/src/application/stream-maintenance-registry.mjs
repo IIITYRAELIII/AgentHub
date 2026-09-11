@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 function normalized(value) {
   return String(value ?? "").trim().toLowerCase();
 }
@@ -34,6 +36,10 @@ export class StreamMaintenanceRegistry {
 
   #entryKey(targetOrEntry) {
     const explicitKey = String(targetOrEntry?.key ?? "").trim();
+    if (targetOrEntry?.reservationId) {
+      return this.#entries.get(explicitKey)?.reservationId === targetOrEntry.reservationId
+        ? explicitKey : null;
+    }
     if (explicitKey && this.#entries.has(explicitKey)) return explicitKey;
     for (const alias of streamMaintenanceKeys(targetOrEntry)) {
       const key = this.#aliases.get(alias);
@@ -48,6 +54,8 @@ export class StreamMaintenanceRegistry {
     const key = streamMaintenanceKey(target);
     const entry = {
       key,
+      reservationId: randomUUID(),
+      phase: "preparing",
       reason: String(reason ?? "context-maintenance").trim() || "context-maintenance",
       streamId: String(target?.streamId ?? "").trim() || null,
       threadId: String(target?.threadId ?? "").trim() || null,
@@ -87,9 +95,11 @@ export class StreamMaintenanceRegistry {
     if (!key) return null;
     const current = this.#entries.get(key);
     const reason = String(details.reason ?? "").trim();
+    const phase = String(details.phase ?? "").trim();
     const entry = {
       ...current,
       ...(reason ? { reason } : {}),
+      ...(["preparing", "starting", "running", "measuring"].includes(phase) ? { phase } : {}),
     };
     this.#entries.set(key, entry);
     return entry;

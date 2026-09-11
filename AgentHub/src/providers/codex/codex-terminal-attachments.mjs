@@ -1,3 +1,4 @@
+import { contourRolloutPolicy } from "../../infrastructure/filesystem/test-contour-rollout-policy.mjs";
 export const CODEX_TERMINAL_ATTACHMENT_TAIL_BYTES = 16 * 1024 * 1024;
 export const CODEX_TERMINAL_ATTACHMENT_RETRY_DELAYS_MS = Object.freeze([0, 100, 300, 600, 1_000, 2_000]);
 
@@ -23,11 +24,12 @@ export function codexTerminalAttachmentSources(activity, turnId) {
   return (Array.isArray(activity?.generatedImageSources?.[turnId])
     ? activity.generatedImageSources[turnId]
     : [])
-    .filter((source) => ["generated-path", "display-path"].includes(source?.type))
+    .filter((source) => source?.type === "generated-path")
     .map((source) => ({ ...source }));
 }
 
 export function createCodexTerminalAttachmentResolver({
+  recordingRoot = null,
   knownRolloutPath,
   readRolloutActivity,
   importAttachments,
@@ -35,11 +37,29 @@ export function createCodexTerminalAttachmentResolver({
   wait = delay,
   logger = console,
 }) {
+  const rolloutPolicy = recordingRoot ? contourRolloutPolicy({ testContourRecording: { root: recordingRoot } }) : null;
   return async function resolveCodexTerminalAttachments(run, turnId) {
+    if (rolloutPolicy) {
+      rolloutPolicy.exclude("terminal-attachments");
+      return [];
+    }
     try {
       const normalizedTurnId = String(turnId ?? "").trim();
+      const exactSources = (Array.isArray(run?.generatedImageSources)
+        ? run.generatedImageSources
+        : []).filter((source) => (
+        source?.type === "generated-path" && String(source.value ?? "").trim()
+      ));
+      if (exactSources.length) {
+        if (typeof importAttachments !== "function") return [];
+        const attachments = await importAttachments(exactSources);
+        return Array.isArray(attachments)
+          ? attachments.map((attachment) => ({ ...attachment }))
+          : [];
+      }
       let bestAttachments = [];
-      for (const retryDelayMs of retryDelaysMs) {
+      const delays = run?.historicalRecovery === true ? retryDelaysMs.slice(0, 1) : retryDelaysMs;
+      for (const retryDelayMs of delays) {
         if (retryDelayMs > 0) await wait(retryDelayMs);
         const rolloutPath = String(run?.rolloutPath ?? "").trim()
           || await knownRolloutPath?.(run?.threadId, run?.startedAt);

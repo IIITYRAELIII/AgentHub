@@ -3,6 +3,7 @@ import path from "node:path";
 import { turnEndKey } from "../../application/turn-end-notifications.mjs";
 import { conciseTurnTitle } from "../../application/turn-title.mjs";
 import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
+import { MAINTENANCE_OPERATION_KINDS } from "../../domain/maintenance-operation.mjs";
 import { normalizeServiceTier, normalizeTokenUsage } from "../../domain/token-usage.mjs";
 
 function sameHistoricalUsage(record, usageResult, contextProbe) {
@@ -18,11 +19,26 @@ function sameHistoricalUsage(record, usageResult, contextProbe) {
     && (record.contextProbe === true) === contextProbe;
 }
 
+function exactGeneratedImageSources(...values) {
+  const result = [];
+  const seen = new Set();
+  for (const value of values) {
+    for (const source of Array.isArray(value) ? value : []) {
+      const path = String(source?.value ?? "").trim();
+      if (source?.type !== "generated-path" || !path || seen.has(path)) continue;
+      seen.add(path);
+      result.push({ type: "generated-path", value: path });
+    }
+  }
+  return result;
+}
+
 export class CodexTerminalReconciliationService {
   constructor({
     notifications,
     turnStarts,
     workLogStore,
+    operationStore = null,
     accountingThread,
     subagentParentTurnId,
     readTurnUsage,
@@ -36,6 +52,8 @@ export class CodexTerminalReconciliationService {
     rememberSeenTurn,
     saveState,
     deliverNotification,
+    repairTerminalAttachments = async () => ({ enriched: false }),
+    reclassifyTerminalContextProbe = async () => ({ reclassified: false }),
     resolveTerminalAttachments = async () => [],
     completedGraceMs = 10_000,
     now = Date.now,
@@ -44,6 +62,7 @@ export class CodexTerminalReconciliationService {
     this.notifications = notifications;
     this.turnStarts = turnStarts;
     this.workLogStore = workLogStore;
+    this.operationStore = operationStore;
     this.accountingThread = accountingThread;
     this.subagentParentTurnId = subagentParentTurnId;
     this.readTurnUsage = readTurnUsage;
@@ -57,6 +76,8 @@ export class CodexTerminalReconciliationService {
     this.rememberSeenTurn = rememberSeenTurn;
     this.saveState = saveState;
     this.deliverNotification = deliverNotification;
+    this.repairTerminalAttachments = repairTerminalAttachments;
+    this.reclassifyTerminalContextProbe = reclassifyTerminalContextProbe;
     this.resolveTerminalAttachments = resolveTerminalAttachments;
     this.completedGraceMs = completedGraceMs;
     this.now = now;
@@ -64,7 +85,11 @@ export class CodexTerminalReconciliationService {
     this.reconciling = new Set();
   }
 
-  async reconcile(thread, project, terminal) {
+  async reconcile(thread, project, terminal, {
+    localOnlyAccounting = false,
+    deferProjection = false,
+    onProjectionDeferred = null,
+  } = {}) {
     const terminalContextProbe = isCodexContextProbeTurn(terminal);
     if (terminalContextProbe && terminal?.historical !== true) return true;
     const completedAtMs = Date.parse(String(terminal?.completedAt ?? ""));
@@ -77,19 +102,74 @@ export class CodexTerminalReconciliationService {
       turnId: String(terminal.turnId),
     };
     const key = turnEndKey(identity);
+    const operation = await this.operationStore?.forProviderTurn({
+      kind: MAINTENANCE_OPERATION_KINDS.CONTEXT_COMPACTION,
+      threadId: identity.threadId,
+      providerTurnId: identity.turnId,
+    });
+    // Inline provider compaction shares an ordinary user turn. Only a persisted
+    // Hub request for a dedicated provider turn authorizes internal accounting.
+    const dedicatedCompaction = operation?.kind === MAINTENANCE_OPERATION_KINDS.CONTEXT_COMPACTION
+      && operation.threadId === identity.threadId
+      && operation.providerTurnId === identity.turnId
+      && operation.metadata?.dedicatedProviderTurn === true;
     const subagentThread = Boolean(String(thread?.parentThreadId ?? "").trim());
     const alreadyDelivered = this.notifications.hasDelivered(identity);
     const pendingCompletion = this.notifications.get(identity);
-    if (!subagentThread
+    if (!dedicatedCompaction && terminal?.historical !== true && terminal?.attachmentRepairOnly !== true && !alreadyDelivered && !subagentThread
       && pendingCompletion
       && pendingCompletion.status !== "unknown"
       && pendingCompletion.usageReported) return true;
     if (this.reconciling.has(key)) return false;
     this.reconciling.add(key);
     try {
+      if (terminal?.attachmentRepairOnly === true) {
+        const generatedImageSources = exactGeneratedImageSources(terminal.generatedImageSources);
+        if (!generatedImageSources.length) return true;
+        await this.repairTerminalAttachments(identity, {
+          expectedCount: generatedImageSources.length,
+          resolveAttachments: () => this.resolveTerminalAttachments({
+            threadId: identity.threadId,
+            rolloutPath: thread.path,
+            generatedImageSources,
+          }, identity.turnId),
+        });
+        return true;
+      }
       const usageResult = terminal?.usageResult
         ?? await this.readTurnUsage(thread.path, identity.turnId);
+      const generatedImageSources = exactGeneratedImageSources(
+        terminal?.generatedImageSources,
+        usageResult?.generatedImageSources,
+      );
+      const expectedImageCount = Math.max(
+        generatedImageSources.length,
+        Math.floor(Number(usageResult.imageGenerationCount) || 0),
+      );
+      if (alreadyDelivered && expectedImageCount > 0) {
+        await this.repairTerminalAttachments(identity, {
+          expectedCount: expectedImageCount,
+          resolveAttachments: () => this.resolveTerminalAttachments({
+            threadId: identity.threadId,
+            startedAt: usageResult.startedAt,
+            rolloutPath: thread.path,
+            expectedImageCount,
+            ...(generatedImageSources.length ? { generatedImageSources } : {}),
+          }, identity.turnId),
+        });
+      }
       const contextProbe = terminalContextProbe || isCodexContextProbeTurn(usageResult);
+      if (contextProbe) {
+        const repaired = await this.reclassifyTerminalContextProbe(identity, {
+          ...identity,
+          operationKind: "probe",
+          contextProbe: true,
+          status: usageResult.terminal ? usageResult.status : terminal.status,
+          terminal,
+          usageResult,
+        });
+        if (repaired?.rejected === "ordinary-client-identity") return true;
+      }
       if (terminal?.historical === true) {
         const existingJournalTurn = await this.workLogStore.getTurn(identity);
         if (sameHistoricalUsage(existingJournalTurn, usageResult, contextProbe)) {
@@ -97,7 +177,9 @@ export class CodexTerminalReconciliationService {
           return true;
         }
       }
-      const accountingThread = await this.accountingThread(thread);
+      const accountingThread = await this.accountingThread(thread, {
+        localOnly: localOnlyAccounting,
+      });
       const parentTurnId = accountingThread.isSubagent
         ? await this.subagentParentTurnId(thread, accountingThread)
         : "";
@@ -126,7 +208,7 @@ export class CodexTerminalReconciliationService {
         if (!value || !relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return [];
         return [relative.replaceAll(path.sep, "/")];
       }))];
-      if (accountingThread.isSubagent || terminal?.historical === true) {
+      if (dedicatedCompaction || contextProbe || accountingThread.isSubagent || terminal?.historical === true) {
         await this.#projectHistorical({
           identity,
           thread,
@@ -134,6 +216,7 @@ export class CodexTerminalReconciliationService {
           terminal,
           usageResult,
           contextProbe,
+          dedicatedCompaction,
           accountingThread,
           parentTurnId,
           resolvedStatus,
@@ -142,6 +225,7 @@ export class CodexTerminalReconciliationService {
           changedFiles,
           turnDiff,
           gitBaseline: turnStart?.gitBaseline ?? null,
+          onProjectionDeferred,
         });
         this.turnStarts.delete(key);
         this.logger.log(
@@ -160,6 +244,8 @@ export class CodexTerminalReconciliationService {
           changedFiles,
           turnDiff,
           gitBaseline: turnStart?.gitBaseline ?? null,
+          deferProjection,
+          onProjectionDeferred,
         });
         this.turnStarts.delete(key);
         this.logger.log(`Reconciled delivered Codex terminal turn ${identity.turnId} (${resolvedStatus})`);
@@ -169,6 +255,7 @@ export class CodexTerminalReconciliationService {
         threadId: identity.threadId,
         startedAt: usageResult.startedAt,
         rolloutPath: thread.path,
+        ...(generatedImageSources.length ? { generatedImageSources } : {}),
       }, identity.turnId);
       const completion = this.notifications.recordCompletion({
         ...identity,
@@ -220,6 +307,7 @@ export class CodexTerminalReconciliationService {
     terminal,
     usageResult,
     contextProbe,
+    dedicatedCompaction,
     accountingThread,
     parentTurnId,
     resolvedStatus,
@@ -228,6 +316,7 @@ export class CodexTerminalReconciliationService {
     changedFiles,
     turnDiff,
     gitBaseline,
+    onProjectionDeferred,
   }) {
     const finalAnswer = String(usageResult.finalAnswer ?? "").trim();
     const journal = await this.projectTurn({
@@ -249,7 +338,7 @@ export class CodexTerminalReconciliationService {
       imageGenerationCount: usageResult.imageGenerationCount,
       estimatedCredits: usageResult.estimatedCredits,
       estimateKind: usageResult.estimateKind,
-      operationKind: contextProbe ? "probe" : "user-turn",
+      operationKind: dedicatedCompaction ? "context-compaction" : contextProbe ? "probe" : "user-turn",
       contextProbe,
       limitSamples: usageResult.limitSamples,
       resolveAccount: terminal?.historical !== true || terminal?.resolveCurrentAccount === true,
@@ -266,10 +355,11 @@ export class CodexTerminalReconciliationService {
       toolMetricsKnown: usageResult.toolMetricsKnown,
       message: null,
     }, {
-      title: conciseTurnTitle(finalAnswer, resolvedStatus),
+      title: dedicatedCompaction ? "Свёртка контекста" : conciseTurnTitle(finalAnswer, resolvedStatus),
       body: finalAnswer,
       deferProjection: true,
     });
+    if (journal?.projectionDeferred === true) onProjectionDeferred?.();
     if (journal?.projectionError) {
       this.logger.error(
         `Journal historical projection deferred for turn ${identity.turnId}: ${journal.projectionError}`,
@@ -287,6 +377,8 @@ export class CodexTerminalReconciliationService {
     changedFiles,
     turnDiff,
     gitBaseline,
+    deferProjection,
+    onProjectionDeferred,
   }) {
     const registeredMessage = this.notifications.takePendingMessage(identity);
     const journalTurn = await this.workLogStore.getTurn(identity);
@@ -323,7 +415,9 @@ export class CodexTerminalReconciliationService {
     }, {
       title: correctedTitle,
       body: correctedBody,
+      deferProjection,
     });
+    if (journal?.projectionDeferred) onProjectionDeferred?.();
     if (journal?.projectionError) {
       this.logger.error(
         `Journal correction deferred for turn ${identity.turnId}: ${journal.projectionError}`,

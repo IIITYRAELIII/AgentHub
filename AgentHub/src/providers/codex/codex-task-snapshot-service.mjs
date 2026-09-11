@@ -8,6 +8,10 @@ import { codexTurnAnswer } from "./codex-turn-answers.mjs";
 import { codexThreadHistory } from "../../application/task-history.mjs";
 import { codexThreadWaitingOnApproval } from "./codex-approvals.mjs";
 import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
+import {
+  mergeCanonicalUserMessages,
+  mergedUserMessageSnapshotAuthority,
+} from "../../domain/canonical-user-messages.mjs";
 
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
@@ -26,7 +30,7 @@ export function describeCodexItem(item, completed) {
   if (item.type === "dynamicToolCall") return `${mark} Инструмент ${item.tool ?? ""}${completed ? " завершён" : " выполняется…"}`;
   if (item.type === "webSearch") return `${mark} ${completed ? "Поиск завершён" : "Выполняется поиск…"}`;
   if (item.type === "imageView") return `${mark} ${completed ? "Изображение изучено" : "Изучается изображение…"}`;
-  if (item.type === "reasoning") return completed ? "✓ Анализ завершён." : "Анализирую поток…";
+  if (item.type === "reasoning") return completed ? "Этап анализа завершён; ход продолжается." : "Анализирую поток…";
   if (item.type === "plan") return completed ? "✓ План подготовлен." : "Составляю план…";
   return completed ? "Этап завершён." : "Выполняется следующий этап…";
 }
@@ -68,7 +72,10 @@ export function codexTurnSnapshot(turn, threadStatus = null) {
   const prompt = exchange?.prompt ?? "";
   return {
     answer,
-    finalAnswer: codexFinalTurnAnswer(turn),
+    userMessageSnapshotAuthority: "complete",
+    finalAnswer: turn?.status === "inProgress"
+      ? codexExplicitFinalTurnAnswer(turn)
+      : codexFinalTurnAnswer(turn),
     reasoning: "",
     prompt,
     clientUserMessageId: userMessages[0]?.clientUserMessageId ?? null,
@@ -93,15 +100,37 @@ export function codexTurnSnapshot(turn, threadStatus = null) {
 }
 
 function withRolloutUserIdentity(snapshot, rolloutState) {
-  const userMessages = Array.isArray(rolloutState?.userMessages)
+  const rolloutMessages = Array.isArray(rolloutState?.userMessages)
     ? rolloutState.userMessages.map((message) => ({ ...message }))
     : [];
-  if (!userMessages.length) return snapshot;
-  const rootUser = userMessages.find((message) => message?.role !== "agent");
+  if (!rolloutMessages.length) return snapshot;
+  const currentMessages = Array.isArray(snapshot?.userMessages) ? snapshot.userMessages : [];
+  const currentUsers = currentMessages.filter((message) => message?.role === "user");
+  const currentOther = currentMessages.filter((message) => message?.role !== "user");
+  const observedUsers = rolloutMessages.filter((message) => message?.role === "user");
+  const observedOther = rolloutMessages.filter((message) => message?.role !== "user");
+  const observedAuthority = rolloutState?.userMessageSnapshotAuthority ?? "incremental";
+  const userMessages = [
+    ...mergeCanonicalUserMessages(currentUsers, observedUsers, {
+      currentSnapshotAuthority: snapshot?.userMessageSnapshotAuthority ?? "complete",
+      snapshotAuthority: observedAuthority,
+    }),
+    ...currentOther.map((message) => ({ ...message })),
+    ...observedOther.map((message) => ({ ...message })),
+  ];
+  const rootUser = userMessages.find((message) => message?.role === "user");
   const prompt = String(rootUser?.text ?? "").trim();
-  const clientUserMessageId = String(rootUser?.clientUserMessageId ?? "").trim();
+  const clientUserMessageId = String(
+    userMessages.find((message) => message?.role === "user" && message?.clientUserMessageId)
+      ?.clientUserMessageId ?? "",
+  ).trim();
   return {
     ...snapshot,
+    userMessageSnapshotAuthority: mergedUserMessageSnapshotAuthority(
+      currentUsers,
+      snapshot,
+      { userMessageSnapshotAuthority: observedAuthority },
+    ),
     ...(prompt ? { prompt } : {}),
     clientUserMessageId: clientUserMessageId || snapshot.clientUserMessageId || null,
     userMessages,
@@ -124,6 +153,7 @@ export class CodexTaskSnapshotService {
 
   async read(run, { threadResult = null, fresh = false } = {}) {
     const d = this.#d;
+    if (run.observer !== true && !String(run.turnId ?? "").trim()) return null;
     if (run.observer === true) {
       const rolloutPath = String(
         threadResult?.thread?.path
@@ -174,7 +204,7 @@ export class CodexTaskSnapshotService {
     });
     const turns = (Array.isArray(result.thread?.turns) ? result.thread.turns : [])
       .filter((turn) => !isCodexContextProbeTurn(turn));
-    const exact = run.exactTurnObserver === true;
+    const exact = run.observer !== true || run.exactTurnObserver === true;
     const activity = await d.readRolloutActivity(
       result.thread?.path,
       {
@@ -335,6 +365,9 @@ export class CodexTaskSnapshotService {
     const rootUser = state.userMessages.find((message) => message?.role !== "agent");
     return {
       answer: overrides.active ? state.latestAnswer : state.finalAnswer,
+      userMessageSnapshotAuthority: activity.userMessageSnapshotAuthorityByTurnId?.[state.turnId]
+        ?? activity.userMessageSnapshotAuthority
+        ?? "incremental",
       finalAnswer: state.finalAnswer,
       reasoning: "",
       prompt: rootUser?.text ?? "",

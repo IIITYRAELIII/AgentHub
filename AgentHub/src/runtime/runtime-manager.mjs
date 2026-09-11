@@ -27,8 +27,10 @@ const SOURCE_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const TOP_LEVEL_FILES = new Set([
   "AGENT_HUB_GUIDE.md",
   "package.json",
+  "RuntimeHost.release-acceptance-v1.json",
   "codex-process-ancestry.ps1",
   "codex-rollout-processes.ps1",
+  "claude-session-processes.ps1",
   "requirements.txt",
   "requirements-tts.txt",
   "attachment_thumbnail.py",
@@ -264,6 +266,7 @@ export async function deployRuntime({
   releaseId = newReleaseId(),
   removeRelease,
   onPruneWarning,
+  beforeManifest,
   beforeStableLauncherCommit,
   beforePointerCommit,
   commitStableFile,
@@ -328,6 +331,9 @@ export async function deployRuntime({
       );
       names.sort();
     }
+    // Customize only the unpublished copy. Manifest bytes become immutable
+    // before the release is renamed or any stable launcher/pointer is changed.
+    await beforeManifest?.({ stagingRoot: staging, releaseId });
     const packageVersion = readAgentHubVersion({ packageFile: path.join(sourceRoot, "package.json") });
     const manifest = {
       releaseId,
@@ -546,10 +552,17 @@ export async function rollbackRuntime({ runtimeRoot = defaultRuntimeRoot() } = {
   return { current: pointer.previous, previous: pointer.current };
 }
 
-export async function runtimeStatus({ runtimeRoot = defaultRuntimeRoot() } = {}) {
+export async function runtimeStatus({ runtimeRoot = defaultRuntimeRoot(), requireProcessEvidence = false } = {}) {
   const layout = runtimeLayout(runtimeRoot);
   const pointer = JSON.parse(await readFile(layout.currentFile, "utf8").catch(() => "{}"));
-  const lock = JSON.parse(await readFile(path.join(layout.dataDir, "bot.lock"), "utf8").catch(() => "{}"));
+  const lockText = await readFile(path.join(layout.dataDir, "bot.lock"), "utf8").catch((error) => {
+    if (requireProcessEvidence && error.code !== "ENOENT") throw error;
+    return null;
+  });
+  const lock = JSON.parse(lockText ?? "{}");
+  if (requireProcessEvidence && lockText !== null && (!Number.isSafeInteger(lock.pid) || lock.pid <= 0)) {
+    throw new Error("Agent Hub lock has no valid process identity");
+  }
   const pid = Number.isSafeInteger(lock.pid) ? lock.pid : null;
   const running = pid !== null && processIsAlive(pid);
   const runningRelease = running ? String(lock.releaseId ?? "").trim() || null : null;

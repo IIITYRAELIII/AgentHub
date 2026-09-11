@@ -20,6 +20,8 @@ function timedOut(error) {
 }
 
 export class RuntimeRestartController {
+  #inFlight = null;
+
   constructor({
     getRequest,
     updateOffset,
@@ -56,19 +58,36 @@ export class RuntimeRestartController {
     });
   }
 
-  async perform() {
+  perform() {
+    if (!this.#inFlight) {
+      this.#inFlight = this.#perform().finally(() => { this.#inFlight = null; });
+    }
+    return this.#inFlight;
+  }
+
+  async #perform() {
     const request = this.getRequest();
     if (this.isStopping() || !request) return { status: "ignored" };
     if (this.updateOffset() < Number(request.minimumUpdateOffset ?? 0)) {
       return { status: "waiting-for-update" };
     }
     if (this.hasBlockingWork()) {
-      this.setWaiting(true);
+      try {
+        if (await this.setWaiting(true) === false) return { status: "ignored" };
+      } catch (error) {
+        return this.#abort(error, "waiting", false);
+      }
       return { status: "waiting-for-work" };
     }
 
-    this.setWaiting(false);
     if (!this.beginStopping()) return { status: "ignored" };
+    try {
+      if (await this.setWaiting(false) === false) {
+        throw new Error("Restart operation no longer permits cutover");
+      }
+    } catch (error) {
+      return this.#abort(error, "cutover-state", false);
+    }
     await this.updateMessage("🔄 Перезапускаю Agent Hub…").catch(() => {});
     try {
       const quiesce = await this.resources.quiesce({
@@ -129,8 +148,10 @@ export class RuntimeRestartController {
     this.#capture(error, phase);
     this.logger.error("Cannot prepare runtime restart:", error.message);
     let abortError = null;
+    let restartStateSettled = false;
     try {
       await this.abortRestart(error);
+      restartStateSettled = true;
     } catch (recoveryError) {
       this.#capture(recoveryError, "abort-state");
       abortError = recoveryError;
@@ -145,7 +166,7 @@ export class RuntimeRestartController {
       abortError ??= recoveryError;
       this.logger.error("Cannot resume aborted restart:", recoveryError.message);
     }
-    return { status: "aborted", phase, error, ...(abortError ? { abortError } : {}) };
+    return { status: "aborted", phase, error, restartStateSettled, ...(abortError ? { abortError } : {}) };
   }
 
   #halt(error, phase) {
@@ -161,7 +182,7 @@ export class RuntimeRestartController {
       await this.recoverPrevious(error, { lockReleased });
       const recover = await this.resources.recover({ label: "Restart polling recovery failed" });
       if (failed(recover)) throw lifecycleFailure("recover", recover);
-      return { status: "recovered", phase, error };
+      return { status: "recovered", phase, error, restartStateSettled: true };
     } catch (restoreError) {
       this.#capture(restoreError, "restore-previous");
       this.logger.error("Cannot restore the previous bot after failed restart:", restoreError.message);

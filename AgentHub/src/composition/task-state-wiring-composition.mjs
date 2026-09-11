@@ -16,8 +16,10 @@ export function createTaskStateWiring({
   samePath,
   taskDiffs,
   logger = console,
+  contourCommandMapping = null,
 }) {
   const identity = new TaskIdentityResolver({
+    canonicalProjectRoot: contourCommandMapping?.canonicalPath,
     selectionStore,
     projects,
     findContainingProject,
@@ -35,29 +37,30 @@ export function createTaskStateWiring({
     taskCatalogService.invalidate();
   }
 
-  function syncTaskRun(run, {
+  async function syncTaskRun(run, {
     active = run?.status === "running",
     stage = run?.progressStage,
     answer = run?.responseText,
     activityAtMs = Date.parse(run?.lastMeaningfulProgressAt ?? run?.startedAt ?? "") || Date.now(),
   } = {}) {
     if (!run?.provider || !run?.threadId) return;
-    const changed = taskSyncStore.recordSnapshot(run, {
-      active,
-      turnId: run.turnId,
-      model: run.model,
-      activityAtMs,
-      stage,
-      answer,
-      executionOwner: run.executionOwner,
-    }, {
-      executionOwner: run.executionOwner,
-    });
-    if (changed) {
-      invalidateTaskCatalog();
-      void taskSyncStore.save().catch((error) => {
-        logger.error("Cannot save local task sync:", error.message);
+    try {
+      const changed = await taskSyncStore.recordSnapshot(run, {
+        active,
+        turnId: run.turnId,
+        model: run.model,
+        activityAtMs,
+        stage,
+        answer,
+        executionOwner: run.executionOwner,
+      }, {
+        executionOwner: run.executionOwner,
       });
+      if (changed) {
+        invalidateTaskCatalog();
+      }
+    } catch (error) {
+      logger.error("Cannot save local task sync:", error.message);
     }
   }
 

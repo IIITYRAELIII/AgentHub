@@ -9,6 +9,7 @@ export class CodexAppServerLifecycle {
   #timeoutRestarting = false;
   #timeoutHealthCheck = null;
   #startedWithRollback = false;
+  #startupTimings = {};
 
   constructor(dependencies) {
     this.#d = dependencies;
@@ -25,19 +26,29 @@ export class CodexAppServerLifecycle {
   get running() { return this.transport.running; }
   get pid() { return this.transport.pid; }
 
+  startupTimings() { return { ...this.#startupTimings }; }
+
   async #spawn(args) {
     const d = this.#d;
+    this.#startupTimings = {};
+    let phaseStartedAt = performance.now();
     const selectedCommand = await d.resolveExecutable();
+    this.#startupTimings.selectionMs = Math.round(performance.now() - phaseStartedAt);
+    phaseStartedAt = performance.now();
     const mcp = await d.unavailableMcpOverrides();
+    this.#startupTimings.mcpPreflightMs = Math.round(performance.now() - phaseStartedAt);
     if (mcp.disabled.length > 0) {
       const endpoints = mcp.disabled
         .map((server) => `${server.name} (${server.host}:${server.port})`)
         .join(", ");
       d.logger.log(`Local MCP unavailable; disabled for Agent Hub Server: ${endpoints}`);
     }
+    phaseStartedAt = performance.now();
     const command = typeof d.verifyExecutableForLaunch === "function"
       ? await d.verifyExecutableForLaunch(selectedCommand)
       : selectedCommand;
+    this.#startupTimings.verificationMs = Math.round(performance.now() - phaseStartedAt);
+    phaseStartedAt = performance.now();
     d.logger.error(`Starting Codex: ${command}`);
     const child = (d.spawnProcess ?? spawn)(command, [...d.executableArgs, ...mcp.args, ...args], {
       cwd: d.projectRoot(),
@@ -48,6 +59,7 @@ export class CodexAppServerLifecycle {
       child.once("spawn", resolve);
       child.once("error", reject);
     });
+    this.#startupTimings.spawnMs = Math.round(performance.now() - phaseStartedAt);
     return child;
   }
 
@@ -55,6 +67,7 @@ export class CodexAppServerLifecycle {
     const d = this.#d;
     if (d.isStopping()) return;
     d.logger.error(`Codex app-server stopped (${detail}).`);
+    if (this.#timeoutRestarting) return;
     const runs = d.activeRuns().filter((run) => run.provider === "codex");
     if (!d.providerSelected() && runs.length === 0) return;
     for (const run of runs) d.setStage(run, "Связь с Codex потеряна. Переподключаюсь…");
@@ -63,7 +76,7 @@ export class CodexAppServerLifecycle {
 
   async #handleTimeout({ method, timeoutMs, generation, error }) {
     const d = this.#d;
-    if (d.isStopping() || this.#timeoutRestarting || timeoutMs < d.rpcTimeoutMs) return;
+    if (d.isStopping() || this.#restarting || this.#timeoutRestarting || timeoutMs < d.rpcTimeoutMs) return;
     if (Number.isSafeInteger(generation) && generation !== this.transport.generation) return;
     if (error?.deliveryOutcome === "not-sent") return;
     if (!["thread/read", "thread/list", "thread/turns/list"].includes(method)) return;
@@ -104,6 +117,7 @@ export class CodexAppServerLifecycle {
       );
       try {
         await this.stop();
+        await this.restartAfterCrash({ required: true });
       } finally {
         this.#timeoutRestarting = false;
       }
@@ -146,6 +160,7 @@ export class CodexAppServerLifecycle {
 
   async initialize({ attachSelectedThread = true } = {}) {
     const initializeOnce = async () => {
+      const phaseStartedAt = performance.now();
       const initialized = await this.transport.initialize({
         clientInfo: {
           name: "agent_hub",
@@ -154,6 +169,7 @@ export class CodexAppServerLifecycle {
         },
         capabilities: { experimentalApi: true },
       });
+      if (initialized.newlyInitialized) this.#startupTimings.initializeMs = Math.round(performance.now() - phaseStartedAt);
       if (initialized.newlyInitialized) this.notify("initialized");
       if (attachSelectedThread) await this.#d.attachSelectedThread();
       return initialized;
@@ -185,10 +201,10 @@ export class CodexAppServerLifecycle {
     }
   }
 
-  async restartAfterCrash() {
+  async restartAfterCrash({ required = false } = {}) {
     const d = this.#d;
     const runs = d.activeRuns().filter((run) => run.provider === "codex");
-    if (d.isStopping() || (!d.providerSelected() && runs.length === 0) || this.#restarting) return;
+    if (d.isStopping() || (!required && !d.providerSelected() && runs.length === 0) || this.#restarting) return;
     this.#restarting = true;
     try {
       await this.start();
@@ -199,8 +215,8 @@ export class CodexAppServerLifecycle {
     } catch (error) {
       d.logger.error("Cannot restart Codex app-server:", error.message);
       for (const run of runs) d.setStage(run, `Codex пока недоступен: ${error.message}`);
-      if (!d.isStopping() && (d.providerSelected() || runs.length)) {
-        d.scheduleRetry(() => this.restartAfterCrash(), 5_000);
+      if (!d.isStopping() && (required || d.providerSelected() || runs.length)) {
+        d.scheduleRetry(() => this.restartAfterCrash({ required }), 5_000);
       }
     } finally {
       this.#restarting = false;

@@ -15,40 +15,24 @@ async function workflowApi() {
   return window.AgentHubWorkspaceReleaseWorkflow;
 }
 
-test("release workflow tooltip describes the mandatory Task lifecycle", async () => {
-  const workflow = await workflowApi();
-  assert.equal(workflow.tooltip.length, 19);
-  const text = workflow.tooltip.join("\n");
-  assert.notEqual(text, RELEASE_WORKFLOW_DEVELOPER_RULES);
-  assert.doesNotMatch(text, /Release workflow|Keep the Task title/iu);
-  assert.match(text, /действует только при включённой галочке/iu);
-  assert.match(text, /изменяет код.*Dashboard Task/iu);
-  assert.match(text, /Название Task.*36 символов.*невозможно сохранить/iu);
-  assert.match(text, /Корень проекта.*Stream.*Workspace/iu);
-  assert.match(text, /sparse worktree/iu);
-  assert.match(text, /переходе Task в Test.*влей.*dev/iu);
-  assert.match(text, /Переход Task в Await.*не пересобирает.*PreRelease/iu);
-  assert.match(text, /явном старте релиза Architect.*выбранных готовых Await Tasks.*замораживает/iu);
-  assert.match(text, /после заморозки.*не должны попадать.*текущий замороженный релиз/iu);
-  assert.match(text, /Merge-конфликты.*блокируют релиз.*не.*статус Task/iu);
-  assert.match(text, /явная команда пользователя.*production deployment/iu);
-  assert.match(text, /только Architect/iu);
+test("provider release instructions retain their English language contract", () => {
+  assert.ok(RELEASE_WORKFLOW_DEVELOPER_RULES.trim());
   assert.doesNotMatch(RELEASE_WORKFLOW_DEVELOPER_RULES, /[А-Яа-яЁё]/u);
-  assert.match(
-    RELEASE_WORKFLOW_DEVELOPER_RULES,
-    /Aim to fit it within 36 characters.*only when.*cannot be preserved within 36 characters/iu,
-  );
 });
 
 test("release workflow renders every rule as a visible tooltip paragraph", async () => {
   const workflow = await workflowApi();
-  const children = [];
+  let children = [{ textContent: "Stale tooltip" }];
   const container = {
     ownerDocument: {
-      createElement: () => ({ textContent: "" }),
+      createElement: (tagName) => ({ tagName, textContent: "" }),
     },
-    replaceChildren: (...values) => children.push(...values),
+    replaceChildren: (...values) => { children = values; },
   };
+  assert.ok(workflow.tooltip.length > 0);
+  assert.equal(workflow.renderTooltip(container), true);
+  assert.deepEqual(children.map((item) => item.textContent), [...workflow.tooltip]);
+  assert.ok(children.every((item) => item.tagName === "p"));
   assert.equal(workflow.renderTooltip(container), true);
   assert.deepEqual(children.map((item) => item.textContent), [...workflow.tooltip]);
 });

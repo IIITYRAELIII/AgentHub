@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { AsyncSqliteMutationQueue } from "../../infrastructure/persistence/async-sqlite-mutation-queue.mjs";
 
 import {
   MAINTENANCE_OPERATION_KINDS,
@@ -54,12 +55,13 @@ function persistedCompaction(record) {
     turnId: normalizedThreadId(record.turnId) || null,
     itemId: normalizedThreadId(record.itemId) || null,
     captureRawItem: record.captureRawItem === true,
+    ...(record.dedicatedProviderTurn === true ? { dedicatedProviderTurn: true } : {}),
     startedAt: normalizedThreadId(record.startedAt) || null,
     compactedAt: normalizedThreadId(record.compactedAt) || null,
     completedAt: normalizedThreadId(record.completedAt) || null,
     probeTurnIds: normalizedProbeTurnIds(record.probeTurnIds),
   };
-  for (const name of ["beforePercent", "afterPercent"]) {
+  for (const name of ["beforePercent", "afterPercent", "rotationAfterPercent"]) {
     const percent = boundedPercent(record[name]);
     if (percent !== null) value[name] = percent;
   }
@@ -67,6 +69,10 @@ function persistedCompaction(record) {
     value.measurementStatus = String(record.measurementStatus);
   }
   if (record.rotated !== undefined) value.rotated = record.rotated === true;
+  const rotationThreadId = normalizedThreadId(record.rotationThreadId);
+  const rotationCompletedAt = normalizedTimestamp(record.rotationCompletedAt, null);
+  if (rotationThreadId) value.rotationThreadId = rotationThreadId;
+  if (rotationCompletedAt) value.rotationCompletedAt = rotationCompletedAt;
   return value;
 }
 
@@ -109,6 +115,21 @@ export class ContextCompactionTracker {
     this.timers = new Map();
     this.waiters = new Map();
     this.rawItemWaiters = new Map();
+    this.mutations = new Map();
+  }
+
+  async mutate(threadId, operation) {
+    const key = normalizedThreadId(threadId);
+    let queue = this.mutations.get(key);
+    if (!queue) {
+      queue = new AsyncSqliteMutationQueue();
+      this.mutations.set(key, queue);
+    }
+    try {
+      return await queue.run(operation, { requestId: this.get(key)?.operationId ?? key });
+    } finally {
+      if (!queue.diagnostics().queued && this.mutations.get(key) === queue) this.mutations.delete(key);
+    }
   }
 
   get(threadId) {
@@ -124,7 +145,7 @@ export class ContextCompactionTracker {
     const existing = this.entries.get(key);
     if (!existing || (expectedId && existing.id !== expectedId)) return null;
     const record = { ...existing };
-    for (const name of ["beforePercent", "afterPercent"]) {
+    for (const name of ["beforePercent", "afterPercent", "rotationAfterPercent"]) {
       const value = boundedPercent(details[name]);
       if (value !== null) record[name] = value;
     }
@@ -139,6 +160,10 @@ export class ContextCompactionTracker {
       }
     }
     if (details.rotated !== undefined) record.rotated = details.rotated === true;
+    const rotationThreadId = normalizedThreadId(details.rotationThreadId);
+    const rotationCompletedAt = normalizedTimestamp(details.rotationCompletedAt, null);
+    if (rotationThreadId) record.rotationThreadId = rotationThreadId;
+    if (rotationCompletedAt) record.rotationCompletedAt = rotationCompletedAt;
     const probeTurnId = normalizedThreadId(details.probeTurnId);
     if (probeTurnId) {
       record.probeTurnIds = normalizedProbeTurnIds([
@@ -305,6 +330,7 @@ export class ContextCompactionTracker {
     itemId = null,
     startedAt = null,
     captureRawItem = false,
+    dedicatedProviderTurn = false,
     beforePercent = null,
   } = {}) {
     const key = normalizedThreadId(threadId);
@@ -312,6 +338,10 @@ export class ContextCompactionTracker {
     const now = new Date(this.clock()).toISOString();
     const existing = this.entries.get(key);
     const initialBeforePercent = boundedPercent(beforePercent);
+    const sameObservedOperation = existing && normalizedThreadId(turnId)
+      && normalizedThreadId(existing.turnId) === normalizedThreadId(turnId)
+      && (!itemId || !existing.itemId || existing.itemId === itemId);
+    if (sameObservedOperation && ["completed", "unknown"].includes(existing.status)) return existing;
     const existingBeforePercent = boundedPercent(existing?.beforePercent);
     const record = existing?.status === "running"
       ? {
@@ -333,6 +363,7 @@ export class ContextCompactionTracker {
         turnId: String(turnId ?? "").trim() || null,
         itemId: String(itemId ?? "").trim() || null,
         captureRawItem: Boolean(captureRawItem),
+        ...(dedicatedProviderTurn ? { dedicatedProviderTurn: true } : {}),
         probeTurnIds: normalizedProbeTurnIds(existing?.probeTurnIds),
         ...(initialBeforePercent !== null
           ? { beforePercent: initialBeforePercent }
@@ -370,8 +401,29 @@ export class ContextCompactionTracker {
       || normalizedThreadId(existing.turnId) !== expectedTurnId
     ) return false;
     const providerStatus = String(status ?? "").trim().toLowerCase();
-    if (!providerStatus || ["inprogress", "running"].includes(providerStatus)) return false;
-    return this.fail(key, existing.id);
+    if (!providerStatus || ["inprogress", "in_progress", "running"].includes(providerStatus)) return false;
+    if (["failed", "interrupted", "cancelled", "canceled"].includes(providerStatus)) {
+      return this.fail(key, existing.id);
+    }
+    return this.markUnknown(key, existing.id);
+  }
+
+  markUnknown(threadId, expectedId) {
+    const key = normalizedThreadId(threadId);
+    const current = this.entries.get(key);
+    if (!current || current.operationId !== expectedId || current.status !== "running") return false;
+    const record = this.#persistOperation(key, {
+      ...current, status: "unknown", stage: "reconciling",
+      completedAt: new Date(this.clock()).toISOString(),
+    }, {
+      status: MAINTENANCE_OPERATION_STATUSES.RECONCILING,
+      phase: "reconciling", providerTurnId: current.turnId,
+      outcome: "unknown", blockers: ["authoritative-state-unknown"],
+    });
+    this.cancelTimeout(key);
+    this.store(key, record);
+    this.notifySettled(key, record);
+    return true;
   }
 
   beginCleanup(threadId, {
@@ -387,6 +439,8 @@ export class ContextCompactionTracker {
       turnId,
       itemId,
     });
+    if (turnId && existing?.turnId && turnId !== existing.turnId) return null;
+    if (itemId && existing?.itemId && itemId !== existing.itemId) return null;
     const record = {
       ...existing,
       status: "running",
@@ -418,6 +472,8 @@ export class ContextCompactionTracker {
     const now = new Date(this.clock()).toISOString();
     const existing = this.entries.get(key);
     if (operationId && existing?.operationId !== operationId) return null;
+    if (turnId && existing?.turnId && turnId !== existing.turnId) return null;
+    if (itemId && existing?.itemId && itemId !== existing.itemId) return null;
     const record = {
       ...(existing ?? {
         operationId: String(itemId ?? "").trim() || this.idFactory(),
@@ -432,7 +488,6 @@ export class ContextCompactionTracker {
       itemId: String(itemId ?? existing?.itemId ?? "").trim() || null,
       completedAt: normalizedTimestamp(completedAt, now),
     };
-    this.cancelTimeout(key);
     record.operationId = normalizedThreadId(record.operationId ?? record.id) || this.idFactory();
     record.id = record.operationId;
     const persistedRecord = this.#persistOperation(key, record, {
@@ -442,6 +497,7 @@ export class ContextCompactionTracker {
       outcome: "succeeded",
       blockers: [],
     });
+    this.cancelTimeout(key);
     this.store(key, persistedRecord);
     this.notifySettled(key, persistedRecord);
     return persistedRecord;
@@ -451,7 +507,6 @@ export class ContextCompactionTracker {
     const key = normalizedThreadId(threadId);
     const existing = this.entries.get(key);
     if (!existing || (expectedId && existing.id !== expectedId)) return false;
-    this.cancelTimeout(key);
     const record = {
       ...existing,
       status: "failed",
@@ -465,6 +520,7 @@ export class ContextCompactionTracker {
       outcome: "failed",
       blockers: [],
     });
+    this.cancelTimeout(key);
     this.store(key, persistedRecord);
     this.notifySettled(key, persistedRecord);
     return true;
@@ -540,14 +596,14 @@ export class ContextCompactionTracker {
         phase: patch.phase,
         blockers: patch.blockers,
         outcome: patch.outcome,
-        metadata: { origin: record.origin, itemId: record.itemId },
+        metadata: { origin: record.origin, itemId: record.itemId, dedicatedProviderTurn: record.dedicatedProviderTurn === true },
         createdAt: record.startedAt,
       });
     } else if (![MAINTENANCE_OPERATION_STATUSES.SUCCEEDED, MAINTENANCE_OPERATION_STATUSES.FAILED]
       .includes(operation.status)) {
       operation = this.operationStore.transition(operationId, {
         ...patch,
-        metadata: { origin: record.origin, itemId: record.itemId },
+        metadata: { origin: record.origin, itemId: record.itemId, dedicatedProviderTurn: record.dedicatedProviderTurn === true },
       }, { expectedRevision: operation.revision }).operation;
     }
     return this.#recordFromOperation({ ...record, operationId, id: operationId, streamId }, operation);
@@ -559,20 +615,16 @@ export class ContextCompactionTracker {
       this.timers.delete(key);
       const current = this.entries.get(key);
       if (!current || current.operationId !== expectedId || current.status !== "running") return;
-      const record = this.#persistOperation(key, {
-        ...current,
-        status: "unknown",
-        stage: "reconciling",
-        completedAt: new Date(this.clock()).toISOString(),
-      }, {
-        status: MAINTENANCE_OPERATION_STATUSES.RECONCILING,
-        phase: "reconciling",
-        providerTurnId: current.turnId,
-        outcome: "unknown",
-        blockers: ["authoritative-state-unknown"],
-      });
-      this.store(key, record);
-      this.notifySettled(key, this.entries.get(key));
+      try {
+        this.markUnknown(key, expectedId);
+      } catch {
+        void this.mutate(key, () => this.markUnknown(key, expectedId)).catch((error) => {
+          console.warn(`Cannot persist compaction timeout ${expectedId}: ${error.message}`);
+          if (this.get(key)?.operationId === expectedId && this.isRunning(key)) {
+            this.scheduleTimeout(key, expectedId, this.timeoutMs);
+          }
+        });
+      }
     }, timeoutMs);
     timer?.unref?.();
     this.timers.set(key, timer);

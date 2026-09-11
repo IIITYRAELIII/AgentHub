@@ -8,6 +8,7 @@ export class CommandTraceService {
     clock = Date.now,
     monotonicClock = () => performance.now(),
     createSpanId = randomUUID,
+    metadata = {},
     logger = console,
   }) {
     if (!store) throw new TypeError("store is required");
@@ -15,11 +16,12 @@ export class CommandTraceService {
     this.clock = clock;
     this.monotonicClock = monotonicClock;
     this.createSpanId = createSpanId;
+    this.metadata = { ...metadata };
     this.logger = logger;
   }
 
   record(input) {
-    return this.store.append(normalizeCommandTraceSpan(input, {
+    return this.store.append(normalizeCommandTraceSpan({ ...input, metadata: { ...input?.metadata, ...this.metadata } }, {
       clock: this.clock,
       createSpanId: this.createSpanId,
     }));
@@ -27,7 +29,7 @@ export class CommandTraceService {
 
   recordMany(inputs) {
     if (!Array.isArray(inputs)) throw new TypeError("inputs must be an array");
-    return this.store.appendMany(inputs.map((input) => normalizeCommandTraceSpan(input, {
+    return this.store.appendMany(inputs.map((input) => normalizeCommandTraceSpan({ ...input, metadata: { ...input?.metadata, ...this.metadata } }, {
       clock: this.clock,
       createSpanId: this.createSpanId,
     })));
@@ -36,7 +38,7 @@ export class CommandTraceService {
   recordBestEffort(input) {
     if (!String(input?.commandId ?? "").trim()) return false;
     try {
-      const span = normalizeCommandTraceSpan(input, {
+      const span = normalizeCommandTraceSpan({ ...input, metadata: { ...input?.metadata, ...this.metadata } }, {
         clock: this.clock,
         createSpanId: this.createSpanId,
       });
@@ -66,6 +68,13 @@ export class CommandTraceService {
       this.#report(error);
       return Object.freeze({ spanId: null, startedAtMs: null, finish: () => false });
     }
+    if (input.recordStarted === true) {
+      this.recordBestEffort({
+        commandId: input.commandId, stage: input.stage, transport: input.transport,
+        outcome: "started", observedAtMs: startedAtMs,
+        metadata: { ...input.metadata, operationSpanId: spanId, startedAtMs },
+      });
+    }
     let finished = false;
     return Object.freeze({
       spanId,
@@ -85,7 +94,8 @@ export class CommandTraceService {
             queueDepth: details.queueDepth,
             lockWaitMs: details.lockWaitMs,
             sqliteBusyWaitMs: details.sqliteBusyWaitMs,
-            metadata: { ...input.metadata, ...details.metadata, startedAtMs },
+            metadata: { ...input.metadata, ...details.metadata, startedAtMs,
+              ...(input.recordStarted === true ? { operationSpanId: spanId } : {}) },
           });
         } catch (error) {
           this.#report(error);
@@ -93,6 +103,20 @@ export class CommandTraceService {
         }
       },
     });
+  }
+
+  async measureBestEffort(input, operation) {
+    const span = this.startBestEffortSpan({ ...input, recordStarted: true });
+    try {
+      const result = await operation();
+      span.finish({ outcome: "succeeded" });
+      return result;
+    } catch (error) {
+      // Error messages can contain prompts, paths and credentials. The owning
+      // service retains its existing error reporting; timing records only state.
+      span.finish({ outcome: "failed" });
+      throw error;
+    }
   }
 
   startSpan({ commandId, stage, transport, spanId = this.createSpanId(), metadata = {} }) {

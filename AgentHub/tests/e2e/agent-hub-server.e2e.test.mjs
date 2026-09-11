@@ -23,6 +23,13 @@ const AGENT_HUB_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const BOT_FILE = path.join(AGENT_HUB_ROOT, "agent-hub-main.mjs");
 const FAKE_CODEX_FILE = path.join(AGENT_HUB_ROOT, "e2e", "fake-codex-app-server.mjs");
 const FAKE_CLAUDE_FILE = path.join(AGENT_HUB_ROOT, "e2e", "fake-claude-cli.mjs");
+
+async function readInterprocessLockOwner(lockDirectory) {
+  const entries = await readdir(lockDirectory);
+  const owner = entries.find((entry) => entry === "owner.json" || /^owner-[a-f0-9]{64}\.json$/u.test(entry));
+  if (!owner) throw new Error("lock owner is absent");
+  return readFile(path.join(lockDirectory, owner), "utf8");
+}
 const FAKE_TTS_FILE = path.join(AGENT_HUB_ROOT, "e2e", "fake-tts-worker.mjs");
 function waitForCodexAccepted(telegram, { after, timeoutMs } = {}) {
   return waitFor(
@@ -133,9 +140,8 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
         `${error.message}\nStage: ${description}\nRestart exit: ${bot?.exitCode ?? "running"}`
         + `\nrestart stdout:\n${currentStdout}\nrestart stderr:\n${currentStderr}`
         + `\nlock:\n${await readFile(lockPath, "utf8").catch((readError) => readError.message)}`
-        + `\njournal lock:\n${await readFile(
-          `${journalDatabaseFile}.lock${path.sep}owner.json`,
-          "utf8",
+        + `\njournal lock:\n${await readInterprocessLockOwner(
+          `${journalDatabaseFile}.lock`,
         ).catch((readError) => readError.message)}`,
         { cause: error },
       );
@@ -236,8 +242,11 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   const newThreadMessage = await telegram.waitForText("Создан новый контекст Codex.", { after: mark });
   assert.equal(newThreadMessage.body.reply_markup.is_persistent, true,
     "plain replies must refresh the persistent control keyboard");
-  const secondThreadId = (await readJson(statePath)).threadIds.codex;
+  const secondThreadState = await readJson(statePath);
+  const secondThreadId = secondThreadState.threadIds.codex;
   assert.notEqual(secondThreadId, firstThreadId);
+  assert.equal((await readJson(codexStatePath)).threads
+    .find((thread) => thread.id === secondThreadId)?.name, "New Workspace — Поток 1");
 
   mark = telegram.calls.length;
   telegram.pushMessage("/streams");
@@ -314,11 +323,17 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   await telegram.waitForText("Режим Codex: Plan", { after: mark });
   await waitFor(async () => (await readJson(statePath)).codexCollaborationMode === "plan", "mode switch");
 
+  const beforeRenameState = await readJson(statePath);
   mark = telegram.calls.length;
   telegram.pushMessage("/rename E2E основная");
   await telegram.waitForText("Название закреплено: «E2E основная»", { after: mark });
   const renamedState = await readJson(statePath);
-  assert.equal(renamedState.activeThreadTitle.startsWith("Telegram ·"), true);
+  assert.equal(renamedState.activeThreadTitle, beforeRenameState.activeThreadTitle,
+    "renaming Telegram's selected Thread must retain the shared Desktop fallback title");
+  const renamedProviderThreads = (await readJson(codexStatePath)).threads;
+  assert.equal(renamedProviderThreads.find((thread) => thread.id === firstThreadId)?.name, "E2E основная");
+  assert.equal(renamedProviderThreads.find((thread) => thread.id === secondThreadId)?.name,
+    "New Workspace — Поток 1", "renaming another Thread must preserve the canonical Workspace/Stream name");
   assert.equal(
     renamedState.clientTaskSelections.find(([clientId]) => clientId === `telegram:${CHAT_ID}`)?.[1]?.taskTitle,
     "E2E основная",

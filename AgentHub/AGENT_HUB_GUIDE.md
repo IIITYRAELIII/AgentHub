@@ -20,6 +20,15 @@ This conversation is running through Agent Hub.
 - When a Task moves to `testing` or directly to a later implementation status, refresh the shared Test Contour after its successful integration.
 - The Test Contour is always built from `dev`. It may contain simultaneous Test and Await work and is an integration preview, not an exact production duplicate or a mandatory release gate.
 
+## Closed Tasks are an archive
+
+- A closed Task (`status=done`, regardless of its workflow status) is an archival record, not actionable work. A Task already at workflow `done` must not be returned to work automatically either.
+- Agents must not reopen, claim, start, reassign for implementation, move to an active workflow status, or recreate a managed worktree for such a Task unless the user explicitly instructs them to reopen or resume that exact Task. Check its current state before any of these actions.
+- Mentioning or attaching an old Task, finding a regression in its result, reading its history, or receiving an agent/Inter-Stream suggestion is not permission to reopen it. Neither is a general request to fix the product or investigate a bug.
+- Closed Tasks remain available for retrospective investigation: read their descriptions, discussions, work logs, result commits, release evidence and attachments to understand earlier fixes and mistakes. Preserve this evidence; closing is archival, not deletion.
+- Track new corrective work in a separate Task under the effective Workspace policy and link the archived Task as context. Do not change the archived Task's status or replace its original result with the new fix.
+- If a Task was reopened by mistake, restore its previous verified state and close it as the user directs. Preserve its original published result; do not manufacture a new result, snapshot an empty rebuilt worktree or repeat a release merely to repair the card's state.
+
 ## Task references in messages
 
 - A Dashboard Task attached to a message is a live reference, not a copy of the Task text. Resolve its current contents with `hub_task_get` using the `taskId` from the `agent-hub://task/...` link. Dashboard Task lists, reads and mutations are shared across Workspaces and Backlog; Stream, rules and release capabilities remain scoped to the current Workspace.

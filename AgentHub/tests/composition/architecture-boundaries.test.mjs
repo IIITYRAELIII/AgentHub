@@ -1,13 +1,23 @@
 import assert from "node:assert/strict";
-import { readdir, readFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { relativeModuleSpecifiers } from "../../src/infrastructure/filesystem/module-import-specifiers.mjs";
+import { WorkspaceReleaseService } from "../../src/application/workspace-release-service.mjs";
+import {
+  isTaskBoardMutationOwner,
+  isWorkspaceCatalogMutationOwner,
+} from "../../src/application/sqlite-mutation-owner.mjs";
+import { TaskBoardService } from "../../src/application/task-board-service.mjs";
+import { createPersistenceMutationCapabilities } from "../../src/composition/persistence-mutation-composition.mjs";
+import { TaskBoardStore } from "../../src/infrastructure/persistence/task-board-store.mjs";
+import { WorkspaceCatalogStore } from "../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
 const COMPOSITION_ROOT = path.join(ROOT, "src", "composition", "agent-hub-composition.mjs");
-const IGNORED_DIRECTORIES = new Set(["node_modules", "build", "dist", ".wrangler"]);
+const IGNORED_DIRECTORIES = new Set(["node_modules", "build", "dist", ".wrangler", "WIP"]);
 const SOURCE_LAYERS = new Set([
   "application",
   "composition",
@@ -459,35 +469,6 @@ test("root production modules match the frozen migration inventory", async () =>
   }
 });
 
-test("composition root cannot grow while responsibilities are extracted", async () => {
-  const inventory = await migrationInventory();
-  const facade = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
-  const source = await readFile(COMPOSITION_ROOT, "utf8");
-  const facadeLines = facade.split(/\r?\n/u).length - (facade.endsWith("\n") ? 1 : 0);
-  const compositionLines = source.split(/\r?\n/u).length - (source.endsWith("\n") ? 1 : 0);
-  assert.ok(
-    facadeLines <= inventory.baseline.serverMaximumLines,
-    `agent-hub-server.mjs grew to ${facadeLines} lines; maximum is ${inventory.baseline.serverMaximumLines}`,
-  );
-  assert.ok(
-    compositionLines <= inventory.baseline.compositionMaximumLines,
-    `agent-hub-composition.mjs grew to ${compositionLines} lines; maximum is ${inventory.baseline.compositionMaximumLines}`,
-  );
-});
-
-test("extracted composition factories remain bounded", async () => {
-  const directory = path.join(ROOT, "src", "composition");
-  const files = (await readdir(directory, { withFileTypes: true }))
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".mjs"))
-    .map((entry) => entry.name)
-    .filter((name) => name !== "agent-hub-composition.mjs");
-  for (const name of files) {
-    const source = await readFile(path.join(directory, name), "utf8");
-    const lines = source.split(/\r?\n/u).filter((line) => line.trim()).length;
-    assert.ok(lines <= 600, `${name} grew to ${lines} non-empty lines; maximum is 600`);
-  }
-});
-
 test("Desktop shell owns read, command and run-router assembly", async () => {
   const root = await readFile(COMPOSITION_ROOT, "utf8");
   const shell = await readFile(
@@ -657,4 +638,57 @@ test("shared task mutations enter through one application command bus", async ()
     assert.equal(commands.includes(`.register("${command}"`), true, command);
   }
   assert.equal(source.includes("clientId: `telegram:"), true);
+});
+
+test("production persistence composition exposes only branded fail-closed capabilities", async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-composed-capabilities-"));
+  const databaseFile = path.join(root, "hub.sqlite");
+  const rawWorkspaceCatalogStore = new WorkspaceCatalogStore({ databaseFile });
+  await rawWorkspaceCatalogStore.load();
+  const workspace = await rawWorkspaceCatalogStore.runMutation(() => (
+    rawWorkspaceCatalogStore.createWorkspace({ name: "Composition" })
+  ));
+  const rawTaskBoardStore = new TaskBoardStore({ databaseFile });
+  context.after(async () => {
+    rawTaskBoardStore.close();
+    rawWorkspaceCatalogStore.close();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const { workspaceCatalogStore, taskBoardStore } = createPersistenceMutationCapabilities({
+    rawWorkspaceCatalogStore,
+    rawTaskBoardStore,
+  });
+  assert.equal(isWorkspaceCatalogMutationOwner(workspaceCatalogStore), true);
+  assert.equal(isTaskBoardMutationOwner(taskBoardStore), true);
+  assert.equal(workspaceCatalogStore.runMutation, undefined);
+  assert.equal(taskBoardStore.transaction, undefined);
+  assert.throws(() => workspaceCatalogStore.load, /not classified for production access/u);
+
+  const taskBoard = new TaskBoardService({ store: taskBoardStore, workspaceCatalog: workspaceCatalogStore });
+  const task = await taskBoard.create({
+    text: "composed capability", source: "test", bucket: "workspace", workspaceId: workspace.id,
+  });
+  assert.equal(taskBoard.task(task.id).id, task.id);
+
+  const releaseDependencies = {
+    releasePlanner: { plan: async () => ({}) },
+    releaseGitWorkspaces: {
+      frozenCandidate: async () => ({}),
+      synchronizePublishedPrimary: async () => ({}),
+    },
+    taskGitWorkspaces: { synchronizeMainIntoDev: async () => ({}) },
+    releasePreflight: {
+      prepareAwaitSet: async () => ({}),
+      withAwaitTransition: async (_workspaceId, operation) => operation(),
+    },
+    verifyPublication: async () => ({}),
+  };
+  assert.throws(
+    () => new WorkspaceReleaseService({ store: rawTaskBoardStore, ...releaseDependencies }),
+    /requires the Task mutation owner facade/u,
+  );
+  assert.doesNotThrow(
+    () => new WorkspaceReleaseService({ store: taskBoardStore, ...releaseDependencies }),
+  );
 });

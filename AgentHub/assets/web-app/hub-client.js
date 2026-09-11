@@ -3,6 +3,7 @@
 (() => {
 
 const agentHub = window.AgentHub;
+const commandTrace = window.AgentHubCommandTrace;
 const telegramInitData = String(window.Telegram?.WebApp?.initData ?? "");
 const localSessionReady = window.AgentHubLocalSessionReady ?? Promise.resolve();
 const vscode = window.__agentHubVscode ?? (typeof window.acquireVsCodeApi === "function"
@@ -106,6 +107,11 @@ const visibleHistoryLoads = new Set();
 const historyLoadStates = new Map();
 const historyRequestGenerationByTask = new Map();
 const outgoingByTask = new Map();
+window.AgentHubRetainedUploadAttachments = () => [...outgoingByTask.values()]
+  .flatMap((messages) => [...messages.values()])
+  .filter((message) => message.projectionAuthority === "optimistic"
+    && !["accepted", "rejected"].includes(message.deliveryState))
+  .flatMap((message) => message.attachments ?? []);
 const liveProbeByTask = new Map();
 const liveUserMessagesByTask = new Map();
 const liveCardsByTask = new Map();
@@ -121,6 +127,16 @@ const activeMaintenanceByTask = new Map();
 const batchedMessageRenders = new Map();
 let deferredClientUserMessageIds = new Set();
 let activeRunClientUserMessageIds = new Set();
+let previousCanonicalCompletionKeys = new Set();
+let composerRecoveryReady = false;
+const composerRecoveryBarrier = agentHub.whenComposerRecoveryReady().then(() => {
+  composerRecoveryReady = true;
+  // A snapshot may have arrived through an alternate application path while
+  // recovery was opening. Reconcile it only after restored retry identities
+  // are visible, without letting the completion-key dedupe consume it early.
+  if (lastSnapshot) canonicalAcceptedEvidence(lastSnapshot);
+});
+const sendTaskGenerationById = new Map();
 let messageRenderBatchDepth = 0;
 const MAX_OUTGOING_MESSAGES_PER_TASK = 100;
 const acknowledgedFinalByTask = new Map();
@@ -198,6 +214,67 @@ const runtimeShortLabels = Object.freeze({
 
 function taskId(provider, threadId, streamId = "") {
   return conversationTaskId({ provider, threadId, streamId }, lastSnapshot?.tasks ?? []);
+}
+
+function exactSnapshotTaskId({ provider, threadId, streamId } = {}, tasks = lastSnapshot?.tasks ?? []) {
+  const exactProvider = String(provider ?? "").trim();
+  const exactThreadId = String(threadId ?? "").trim();
+  const exactStreamId = String(streamId ?? "").trim();
+  if (!exactProvider || !exactThreadId) return "";
+  const matches = (Array.isArray(tasks) ? tasks : []).filter((task) => (
+    String(task?.provider ?? "").trim() === exactProvider
+    && String(task?.threadId ?? "").trim() === exactThreadId
+    && (!exactStreamId || String(task?.streamId ?? "").trim() === exactStreamId)
+  ));
+  return matches.length === 1
+    ? conversationTaskId(matches[0], tasks)
+    : "";
+}
+
+function snapshotTaskIdentityMap(tasks) {
+  const values = Array.isArray(tasks) ? tasks : [];
+  return new Map(values.map((task) => [
+    conversationTaskId(task, values),
+    JSON.stringify([
+      String(task?.provider ?? "").trim(),
+      String(task?.threadId ?? "").trim(),
+      String(task?.streamId ?? "").trim(),
+      String(task?.workspaceId ?? "").trim(),
+    ]),
+  ]).filter(([id]) => id));
+}
+
+function updateSendTaskGenerations(previousTasks, nextTasks) {
+  const previous = snapshotTaskIdentityMap(previousTasks);
+  const next = snapshotTaskIdentityMap(nextTasks);
+  for (const id of new Set([...previous.keys(), ...next.keys()])) {
+    if (previous.get(id) === next.get(id)) continue;
+    sendTaskGenerationById.set(id, (sendTaskGenerationById.get(id) ?? 0) + 1);
+  }
+}
+
+function captureSendTaskOperation(taskIdValue, identity = taskIdentity(taskIdValue)) {
+  const id = String(taskIdValue ?? "").trim();
+  const exactIdentity = stableIdentity(identity);
+  if (!id || !exactIdentity.provider || !exactIdentity.threadId || !exactIdentity.streamId) return null;
+  return {
+    taskId: id,
+    identity: exactIdentity,
+    generation: sendTaskGenerationById.get(id) ?? 0,
+  };
+}
+
+function currentSendTaskOperation(operation) {
+  return Boolean(operation)
+    && (sendTaskGenerationById.get(operation.taskId) ?? 0) === operation.generation
+    && sameIdentity(taskIdentity(operation.taskId), operation.identity);
+}
+
+function assertCurrentSendTaskOperation(operation) {
+  if (currentSendTaskOperation(operation)) return;
+  const error = new Error("Диалог изменился во время подготовки сообщения. Отправка отменена.");
+  error.agentHubMessagePreparationCancelled = true;
+  throw error;
 }
 
 function readStoredServerIdentity() {
@@ -343,7 +420,7 @@ function rememberMaintenanceEvent(taskIdValue, message) {
   const stableTaskId = String(taskIdValue ?? "").trim();
   const eventId = String(message?.id ?? "").trim();
   if (!stableTaskId || !eventId) return false;
-  const events = maintenanceEventsByTask.get(stableTaskId) ?? [];
+  const events = [...(maintenanceEventsByTask.get(stableTaskId) ?? [])];
   const previous = JSON.stringify(events);
   const index = events.findIndex((entry) => entry.id === eventId);
   const value = {
@@ -466,7 +543,7 @@ function deliveryPatch(stateName) {
     queued: { deliveryState: "queued", delivery: "В очереди", failed: false },
     relaying: { deliveryState: "relaying", delivery: "Доставляется в Hub…", failed: false },
     delivered: { deliveryState: "delivered", delivery: "", failed: false },
-    unconfirmed: { deliveryState: "unconfirmed", delivery: "Статус приёма уточняется…", failed: false },
+    unconfirmed: { deliveryState: "unconfirmed", delivery: "Приём не подтверждён", failed: false },
     rejected: { deliveryState: "rejected", delivery: "Не принято", failed: true },
   };
   return states[stateName] ?? states.unconfirmed;
@@ -544,6 +621,9 @@ function updateOutgoing(taskIdValue, clientUserMessageId, patch) {
   const message = outgoingMessages(resolvedTaskId).get(clientUserMessageId);
   if (!message) return "";
   Object.assign(message, patch);
+  if (patch.projectionAuthority === "canonical" || ["accepted", "rejected"].includes(patch.deliveryState)) {
+    queueMicrotask(() => window.AgentHubPruneComposerFiles?.());
+  }
   return resolvedTaskId;
 }
 
@@ -578,6 +658,7 @@ function liveUserMessagesSignature(run) {
       String(message?.text ?? "").length,
       String(message?.author ?? ""),
       String(message?.time ?? ""),
+      String(message?.submittedAt ?? ""),
       JSON.stringify(message?.attachments ?? []),
       JSON.stringify(message?.responseAnnotations ?? []),
     ]),
@@ -669,7 +750,7 @@ function optimisticDeferredEntries(taskIdValue, serverEntries = []) {
     ))
     .map((message) => ({
       id: `local:${message.clientUserMessageId}`,
-      state: message.deliveryState === "steering"
+      state: message.deliveryState === "unconfirmed" ? "pending" : message.deliveryState === "steering"
         ? "steering"
         : message.deliveryState === "sending" ? "dispatching" : "queued",
       clientUserMessageId: message.clientUserMessageId,
@@ -680,6 +761,8 @@ function optimisticDeferredEntries(taskIdValue, serverEntries = []) {
       createdAt: message.submittedAt ?? message.time,
       delivery: message.delivery,
       deliveryState: message.deliveryState,
+      uploadState: message.uploadState,
+      admissionRetryAvailable: message.deliveryState === "unconfirmed" && Boolean(message.retryRequest),
       remoteCommandId: message.remoteCommandId,
       optimistic: !serverClientIds.has(message.clientUserMessageId),
     }));
@@ -694,6 +777,19 @@ function renderTaskQueue(taskIdValue, snapshot = lastSnapshot) {
   ));
 }
 
+// Confirming an origin against the message body belongs to one owner, the Hub
+// projection: it parses the transport envelope and compares every origin field.
+// The client would only be able to repeat part of that rule, and a partial copy
+// disagrees with the authority exactly where it matters. So the card checks the
+// one thing it owns independently — that the origin belongs to this message's
+// alias — and trusts the already confirmed projection for the rest.
+function confirmedCardOrigin(origin, clientUserMessageId) {
+  if (!origin || typeof origin !== "object" || Array.isArray(origin)) return null;
+  const requestId = String(origin.requestId ?? "").trim();
+  if (!requestId || String(clientUserMessageId ?? "").trim() !== `mcp:${requestId}`) return null;
+  return origin;
+}
+
 function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
   const projection = deferredInputConversationProjection(deferred, messageReceipts);
   if (!projection) return false;
@@ -705,6 +801,10 @@ function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
   if (!text.trim() && !responseAnnotations.length && !attachments.length) return false;
   optimisticDeferredClientUserMessageIds.delete(projection.clientUserMessageId);
   deferredClientUserMessageIds.delete(projection.clientUserMessageId);
+  // The server entry already carries the authoritative origin of this exact
+  // message. Without it the local card renders as an own message, so the source
+  // and the interstream kind travel together with the author.
+  const deferredOrigin = confirmedCardOrigin(deferred.origin, projection.clientUserMessageId);
   const existing = messages.get(projection.clientUserMessageId);
   if (existing) {
     Object.assign(existing, {
@@ -712,6 +812,11 @@ function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
       projectionState: projection.projectionState,
       providerAccepted: projection.providerAccepted,
       clientProjectionIntent: projection.clientProjectionIntent,
+      // Attribution is always restated, never left over: a canonical update
+      // that no longer confirms an origin must clear the previous source.
+      origin: deferredOrigin ?? null,
+      kind: deferredOrigin ? "interstream" : null,
+      author: (deferredOrigin && String(deferred.author ?? "").trim()) || "Вы",
       ...deliveryPatch(projection.deliveryState),
       ...(!existing.submittedAt && projection.submittedAt
         ? { submittedAt: projection.submittedAt }
@@ -734,7 +839,8 @@ function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
       providerAccepted: projection.providerAccepted,
       clientProjectionIntent: projection.clientProjectionIntent,
       role: "user",
-      author: String(deferred.author ?? "").trim() || "Вы",
+      ...(deferredOrigin ? { origin: deferredOrigin, kind: "interstream" } : {}),
+      author: (deferredOrigin && String(deferred.author ?? "").trim()) || "Вы",
       text,
       responseAnnotations,
       responseAnnotationRequest: String(deferred.responseAnnotationRequest ?? text),
@@ -747,30 +853,71 @@ function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
   return true;
 }
 
+function canonicalAcceptedEvidence(snapshot) {
+  if (!composerRecoveryReady) return false;
+  const tasks = snapshot?.tasks ?? [];
+  const byClientId = new Map();
+  const add = (evidence) => {
+    const clientUserMessageId = String(evidence?.clientUserMessageId ?? "").trim();
+    if (!clientUserMessageId) return;
+    const entry = byClientId.get(clientUserMessageId) ?? { invalid: false, taskIds: new Set() };
+    const stableTaskId = exactSnapshotTaskId(evidence, tasks);
+    if (!stableTaskId) entry.invalid = true;
+    else entry.taskIds.add(stableTaskId);
+    byClientId.set(clientUserMessageId, entry);
+  };
+  for (const receipt of snapshot?.messageReceipts ?? []) add(receipt);
+  for (const deferred of snapshot?.deferredInputs ?? []) add(deferred);
+  for (const task of tasks) {
+    if (!runHasAuthoritativeProviderAcceptance(task?.run)) continue;
+    add({
+      provider: task.provider,
+      threadId: task.threadId,
+      streamId: task.streamId,
+      clientUserMessageId: task.run?.clientUserMessageId,
+    });
+  }
+  const currentKeys = new Set();
+  for (const [clientUserMessageId, entry] of byClientId) {
+    if (entry.invalid || entry.taskIds.size !== 1) continue;
+    const stableTaskId = [...entry.taskIds][0];
+    const key = `${stableTaskId}\0${clientUserMessageId}`;
+    currentKeys.add(key);
+    if (!previousCanonicalCompletionKeys.has(key)) {
+      agentHub.completeSend(clientUserMessageId, { outcome: "accepted", taskId: stableTaskId });
+    }
+  }
+  previousCanonicalCompletionKeys = currentKeys;
+  return true;
+}
+
 function applyMessageReceipts(snapshot) {
   for (const receipt of snapshot?.messageReceipts ?? []) {
     const clientUserMessageId = String(receipt?.clientUserMessageId ?? "").trim();
     const provider = String(receipt?.provider ?? "").trim();
     const threadId = String(receipt?.threadId ?? "").trim();
-    if (!clientUserMessageId || !provider || !threadId) continue;
-    const streamId = String(receipt?.streamId ?? "").trim();
-    const stableTaskId = taskId(provider, threadId, streamId);
+    const stableTaskId = exactSnapshotTaskId(receipt, snapshot?.tasks);
+    if (!clientUserMessageId || !stableTaskId) continue;
+    const matchedTask = snapshot.tasks.find((task) => (
+      conversationTaskId(task, snapshot.tasks) === stableTaskId
+      && task.provider === provider && task.threadId === threadId
+    ));
+    const streamId = String(matchedTask?.streamId ?? "").trim();
     const projection = queueHistoryReceiptProjection(receipt);
     if (!projection.ownsDeferredQueue) {
       optimisticDeferredClientUserMessageIds.delete(clientUserMessageId);
       deferredClientUserMessageIds.delete(clientUserMessageId);
     }
     if (receipt?.cancelled === true) {
-      agentHub.completeSend(clientUserMessageId, { accepted: true });
       outgoingMessages(stableTaskId).delete(clientUserMessageId);
       continue;
     }
     const patch = projection.deliveryState ? deliveryPatch(projection.deliveryState) : null;
     if (!patch) continue;
-    agentHub.completeSend(clientUserMessageId, {
-      accepted: projection.accepted,
-    });
     const restoredText = String(receipt.displayText ?? "");
+    // Same reason as the deferred card: the receipt owns the origin of its exact
+    // message, and losing it here turns a foreign message into an own one.
+    const receiptOrigin = confirmedCardOrigin(receipt.origin, clientUserMessageId);
     const restoredAnnotations = normalizedResponseAnnotations(receipt.responseAnnotations);
     const restoredRequest = String(receipt.responseAnnotationRequest ?? "");
     const restoredAttachments = attachmentViews(receipt.attachments);
@@ -796,7 +943,8 @@ function applyMessageReceipts(snapshot) {
         providerAccepted: projection.providerAccepted,
         clientProjectionIntent: projection.clientProjectionIntent,
         role: "user",
-        author: String(receipt.author ?? "").trim() || "Вы",
+        ...(receiptOrigin ? { origin: receiptOrigin, kind: "interstream" } : {}),
+        author: (receiptOrigin && String(receipt.author ?? "").trim()) || "Вы",
         text: restoredText,
         responseAnnotations: restoredAnnotations,
         responseAnnotationRequest: restoredRequest,
@@ -818,6 +966,9 @@ function applyMessageReceipts(snapshot) {
       projectionState: projection.projectionState,
       providerAccepted: projection.providerAccepted,
       clientProjectionIntent: projection.clientProjectionIntent,
+      origin: receiptOrigin ?? null,
+      kind: receiptOrigin ? "interstream" : null,
+      author: (receiptOrigin && String(receipt.author ?? "").trim()) || "Вы",
       ...(projection.submittedAt ? {
         submittedAt: projection.submittedAt,
         time: projection.submittedAt,
@@ -961,6 +1112,12 @@ function renderTaskMessagesNow(taskIdValue, {
   preserveScroll = false,
   exactNavigation = null,
 } = {}) {
+  return commandTrace.measure("ui-render", "message-projection", () => renderTaskMessagesContent(taskIdValue, {
+    preserveScroll, exactNavigation,
+  }));
+}
+
+function renderTaskMessagesContent(taskIdValue, { preserveScroll, exactNavigation }) {
   const messages = reconciledMessages(taskIdValue);
   if (exactNavigation) {
     agentHub.setMessagesForExactNavigation(taskIdValue, messages, exactNavigation);
@@ -1149,7 +1306,7 @@ function historyAttachmentsNeedSettling(taskIdValue) {
 
 function bridgeCallOnce(action, params = {}) {
   const id = `bridge-${Date.now()}-${++bridgeSequence}`;
-  const bridgeParams = action === "send-message"
+  const bridgeParams = params.clientTiming
     ? {
         ...params,
         clientTiming: {
@@ -1185,7 +1342,15 @@ function bridgeCall(action, params = {}) {
   );
 }
 
-async function hubFetch(input, init, retrySession = true) {
+async function hubFetch(input, init, retrySession = true, traceId) {
+  const pathname = typeof input === "string" ? input.split("?")[0] : "";
+  if (pathname.startsWith("/api/command-trace/")) return hubFetchResponse(input, init, retrySession);
+  const route = ["journal", "attachment", "control", "snapshot", "startup", "workspace", "usage", "rate-limit"]
+    .find((name) => pathname.startsWith(`/api/${name}`)) || "other";
+  return commandTrace.http(`http-${route}`, () => hubFetchResponse(input, init, retrySession), traceId);
+}
+
+async function hubFetchResponse(input, init, retrySession = true) {
   try {
     // Refreshing the session re-issues the HttpOnly cookie that the request below
     // carries automatically as a same-origin request.
@@ -1195,13 +1360,13 @@ async function hubFetch(input, init, retrySession = true) {
       return response;
     }
     await window.AgentHubBrowserDevice.ensureSession(true);
-    return hubFetch(input, init, false);
+    return hubFetchResponse(input, init, false);
   } catch (error) {
     throw markConnectionFailure(error);
   }
 }
 
-async function hubFetchWithin(input, init, timeoutMs) {
+async function hubFetchWithin(input, init, timeoutMs, traceId) {
   const controller = new AbortController();
   const effectiveTimeoutMs = Math.max(1, Number(timeoutMs) || 1);
   let timedOut = false;
@@ -1210,7 +1375,7 @@ async function hubFetchWithin(input, init, timeoutMs) {
     controller.abort();
   }, effectiveTimeoutMs);
   try {
-    return await hubFetch(input, { ...init, signal: controller.signal });
+    return await hubFetch(input, { ...init, signal: controller.signal }, true, traceId);
   } catch (error) {
     if (!timedOut) throw error;
     const timeout = new Error(`Agent Hub не подтвердил команду за ${Math.ceil(effectiveTimeoutMs / 1_000)} с.`);
@@ -1355,7 +1520,7 @@ async function readSnapshot(params = {}) {
   const response = await hubFetch(`/api/snapshot?${query}`, {
     headers: authorizationHeaders(),
     cache: "no-store",
-  });
+  }, true, params.clientTraceId);
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw new Error(String(payload.error ?? `Agent Hub: HTTP ${response.status}`));
@@ -1412,7 +1577,7 @@ async function httpControl(action, params = {}) {
   await localSessionReady;
   const commandId = crypto.randomUUID();
   const payload = await retryConnectionFailure(async () => {
-    const requestParams = action === "send-message"
+    const requestParams = params.clientTiming
       ? {
           ...params,
           clientTiming: {
@@ -1430,7 +1595,7 @@ async function httpControl(action, params = {}) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ action, params: requestParams, commandId }),
-    }, LONG_CONTROL_ACTIONS.has(action) ? LONG_CONTROL_TIMEOUT_MS : DEFAULT_CONTROL_TIMEOUT_MS);
+    }, LONG_CONTROL_ACTIONS.has(action) ? LONG_CONTROL_TIMEOUT_MS : DEFAULT_CONTROL_TIMEOUT_MS, params.clientTraceId);
     const result = await response.json().catch(() => ({}));
     if (!response.ok || result.ok === false) throw httpControlError(response.status, result);
     return result;
@@ -1472,27 +1637,43 @@ function clientTraceSurface() {
 }
 
 function reportClientCommandAck(commandId, clientTiming, outcome) {
-  const timing = {
-    ...clientTiming,
-    clientAckAtMs: Date.now(),
-    clientAckMonotonicMs: performance.now(),
-  };
-  void hubFetch("/api/command-trace/client-ack", {
+  commandTrace.ack(commandId, clientTiming, outcome);
+}
+
+commandTrace.bindReporter(async (batch) => {
+  const response = await hubFetchWithin("/api/command-trace/client-events", {
     method: "POST",
     headers: {
       ...authorizationHeaders(),
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      commandId,
-      timing,
-      outcome,
-      surface: clientTraceSurface(),
-    }),
-  }).catch(() => {});
-}
+    body: JSON.stringify(batch),
+    keepalive: true,
+  }, 5_000);
+  if (!response.ok) throw new Error("Client trace batch rejected");
+});
 
 async function control(action, params = {}) {
+  const commandId = params.clientUserMessageId || params.clientTraceId || commandTrace.currentId() || commandTrace.newId();
+  const started = performance.now();
+  const tracedParams = { ...params, clientTraceId: commandId, clientTiming: params.clientTiming ?? {
+    submittedAtMs: Date.now(), submittedMonotonicMs: started,
+    controlStartedAtMs: Date.now(), controlStartedMonotonicMs: started,
+    surface: clientTraceSurface(),
+  } };
+  return commandTrace.measure("ui-control", action, async () => {
+    try {
+      const result = await controlTransport(action, tracedParams);
+      reportClientCommandAck(commandId, tracedParams.clientTiming, "succeeded");
+      return commandTrace.associate(result, commandId);
+    } catch (error) {
+      reportClientCommandAck(commandId, tracedParams.clientTiming, "failed");
+      throw error;
+    }
+  }, commandId);
+}
+
+async function controlTransport(action, params = {}) {
   const directTransport = window.__agentHubDirectTransport;
   let directAvailable = false;
   if (vscode && directTransport) {
@@ -1714,6 +1895,16 @@ function rotationMaintenanceActive(task) {
 
 function activeMaintenanceMessage(task) {
   const stableTaskId = taskId(task.provider, task.threadId, task.streamId);
+  if (["automatic-post-turn", "automatic-post-turn-rotation"].includes(task.maintenance?.reason)
+    && ["preparing", "starting"].includes(task.maintenance?.phase)) {
+    const id = `maintenance:preparation:${task.maintenance.reservationId ?? stableTaskId}:active`;
+    return {
+      id, itemId: id, provider: task.provider, threadId: task.threadId,
+      role: "system", kind: "maintenance", operationKind: "maintenance",
+      text: task.maintenance.phase === "starting" ? "Запуск обслуживания контекста…" : "Подготовка обслуживания контекста…",
+      time: task.maintenance.startedAt ?? null,
+    };
+  }
   if (rotationMaintenanceActive(task)) {
     return {
       id: `maintenance:rotation:${stableTaskId}:active`,
@@ -1728,7 +1919,7 @@ function activeMaintenanceMessage(task) {
     };
   }
   const compaction = task.context?.compaction;
-  const compactionId = String(compaction?.id ?? "");
+  const compactionId = String(compaction?.operationId ?? compaction?.id ?? "");
   if (!compactionId) return null;
   const status = String(compaction.status ?? "");
   const measurementStatus = String(compaction.measurementStatus ?? "");
@@ -1786,8 +1977,11 @@ function observeContextCompactions(tasks) {
   for (const task of tasks ?? []) {
     const context = task.context;
     const compaction = context?.compaction;
-    const compactionId = String(compaction?.id ?? "");
+    const compactionId = String(compaction?.operationId ?? compaction?.id ?? "");
     if (!compactionId) continue;
+    // The later rotation is projected from this same durable operation below.
+    // Do not replace it with its earlier compaction on every snapshot.
+    if (compaction.status === "completed" && compaction.rotated === true) continue;
     const stableTaskId = taskId(task.provider, task.threadId, task.streamId);
     const eventId = `maintenance:compaction:${compactionId}`;
     const existingEvent = (maintenanceEventsByTask.get(stableTaskId) ?? [])
@@ -1826,8 +2020,9 @@ function observeContextCompactions(tasks) {
       }
       requestedContextCompactions.delete(compactionId);
     }
-    if (["failed", "timeout"].includes(status)) {
+    if (["failed", "timeout", "unknown"].includes(status)) {
       const automatic = compaction.origin === "automatic";
+      const unknown = status !== "failed";
       if (rememberMaintenanceEvent(stableTaskId, {
         id: eventId,
         provider: task.provider,
@@ -1837,10 +2032,12 @@ function observeContextCompactions(tasks) {
         beforePercent,
         afterPercent: null,
         maintenanceType: "compaction",
-        maintenanceStatus: status,
-        text: automatic
-          ? "Автосвёртка контекста не завершилась"
-          : "Свёртка контекста не завершилась",
+        maintenanceStatus: unknown ? "unknown" : "failed",
+        text: unknown
+          ? "Статус свёртки неизвестен"
+          : automatic
+            ? "Автосвёртка контекста не завершилась"
+            : "Свёртка контекста не завершилась",
         time: existingEvent?.time ?? compaction.completedAt ?? new Date().toISOString(),
       })) changed.add(stableTaskId);
     }
@@ -1893,8 +2090,19 @@ function observeContextCompactions(tasks) {
 
 function observeStreamRotations(previousTasks, tasks) {
   const changed = new Set();
+  const persisted = window.AgentHubStreamTabs.persistedStreamRotationMessages(tasks);
+  const persistedSources = new Set(persisted.map((message) => (
+    JSON.stringify([message.streamId, message.provider, message.sourceThreadId])
+  )));
+  for (const message of persisted) {
+    const stableTaskId = taskId(message.provider, message.threadId, message.streamId);
+    if (rememberMaintenanceEvent(stableTaskId, message)) changed.add(stableTaskId);
+  }
   const currentByStream = window.AgentHubStreamTabs.streamHeadTasks(tasks);
   for (const transition of window.AgentHubStreamTabs.streamRotationTransitions(previousTasks, tasks)) {
+    if (persistedSources.has(JSON.stringify([
+      transition.streamId, transition.task.provider, transition.sourceThreadId,
+    ]))) continue;
     pendingStreamRotations.set(transition.streamId, {
       provider: transition.task.provider,
       threadId: transition.task.threadId,
@@ -1906,6 +2114,10 @@ function observeStreamRotations(previousTasks, tasks) {
   for (const [streamId, task] of currentByStream) {
     const pending = pendingStreamRotations.get(streamId);
     if (!pending || String(pending.threadId) !== String(task.threadId)) continue;
+    if (persistedSources.has(JSON.stringify([streamId, pending.provider, pending.sourceThreadId]))) {
+      pendingStreamRotations.delete(streamId);
+      continue;
+    }
     if (rotationMaintenanceActive(task)) continue;
     const beforePercent = contextPercent(pending.beforePercent);
     const afterPercent = task.context?.usagePending
@@ -1947,6 +2159,12 @@ function representativeSnapshotTasks(tasks) {
 }
 
 function applySnapshot(snapshot, { materialized = false } = {}) {
+  return commandTrace.measure("ui-snapshot", "apply-snapshot", () => (
+    applySnapshotContent(snapshot, { materialized })
+  ), commandTrace.objectId(snapshot));
+}
+
+function applySnapshotContent(snapshot, { materialized = false } = {}) {
   if (!snapshot) return;
   if (!materialized) snapshot = window.AgentHubSnapshotTransport.materialize(lastSnapshot, snapshot);
   if (observeServerIdentity(snapshot)) return;
@@ -1956,7 +2174,16 @@ function applySnapshot(snapshot, { materialized = false } = {}) {
     resetConnectionFailures();
     const previousSnapshot = lastSnapshot;
     const previousTasks = previousSnapshot?.tasks ?? [];
+    updateSendTaskGenerations(previousTasks, snapshot.tasks);
     lastSnapshot = snapshot;
+    for (const session of attachmentSendSessions.values()) {
+      try { assertCurrentSendTaskOperation(session.operation); }
+      catch (error) {
+        session.cancellationError = error;
+        session.controller.abort();
+        session.resume?.();
+      }
+    }
     const representativeTasks = representativeSnapshotTasks(snapshot.tasks);
     agentHub.setExchangeRates(snapshot.exchangeRates ?? null);
     agentHub.setServerStatus(snapshot.server ?? null);
@@ -1977,12 +2204,6 @@ function applySnapshot(snapshot, { materialized = false } = {}) {
     const nextActiveRunClientUserMessageIds = new Set(
       activeRunReceipts.map((receipt) => receipt.clientUserMessageId),
     );
-    const newlyAcceptedRunReceipts = activeRunReceipts.filter((receipt) => (
-      !activeRunClientUserMessageIds.has(receipt.clientUserMessageId)
-    ));
-    if (newlyAcceptedRunReceipts.length) {
-      applyMessageReceipts({ messageReceipts: newlyAcceptedRunReceipts });
-    }
     activeRunClientUserMessageIds = nextActiveRunClientUserMessageIds;
     for (const clientUserMessageId of optimisticDeferredClientUserMessageIds) {
       if (
@@ -2038,13 +2259,16 @@ function applySnapshot(snapshot, { materialized = false } = {}) {
       deferredInputs: snapshot.deferredInputs ?? [],
     });
     agentHub.setTasks(tasks);
+    canonicalAcceptedEvidence(snapshot);
     for (const task of tasks.filter((candidate) => candidate.draftStream)) agentHub.setMessages(task.id, []);
     if (maintenanceChanged.has(effectiveSelectedId)) {
       renderTaskMessages(effectiveSelectedId, { preserveScroll: true });
     }
     for (const deferred of snapshot.deferredInputs ?? []) {
       const clientUserMessageId = String(deferred.clientUserMessageId ?? "");
-      if (!clientUserMessageId) continue;
+      const deferredTaskId = taskId(deferred.provider, deferred.threadId, deferred.streamId);
+      if (!clientUserMessageId
+        || deferredTaskId !== exactSnapshotTaskId(deferred, snapshot.tasks)) continue;
       const deferredDeliveryState = queuedCommandDeliveryState(
         deferred,
         snapshot.messageReceipts,
@@ -2054,7 +2278,7 @@ function applySnapshot(snapshot, { materialized = false } = {}) {
         continue;
       }
       patchOutgoing(
-        taskId(deferred.provider, deferred.threadId, deferred.streamId),
+        deferredTaskId,
         clientUserMessageId,
         {
           ...deliveryPatch(deferredDeliveryState),
@@ -2068,7 +2292,9 @@ function applySnapshot(snapshot, { materialized = false } = {}) {
     for (const task of snapshot.tasks ?? []) {
       const clientUserMessageId = String(task.run?.clientUserMessageId ?? "");
       if (!clientUserMessageId || !runHasAuthoritativeProviderAcceptance(task.run)) continue;
-      patchOutgoing(taskId(task.provider, task.threadId, task.streamId), clientUserMessageId, {
+      const runTaskId = exactSnapshotTaskId(task, snapshot.tasks);
+      if (!runTaskId) continue;
+      patchOutgoing(runTaskId, clientUserMessageId, {
         provider: task.provider,
         threadId: task.threadId,
         turnId: String(task.run?.turnId ?? ""),
@@ -2095,16 +2321,11 @@ function applySnapshot(snapshot, { materialized = false } = {}) {
     for (const task of representativeTasks) {
       renderTaskQueue(taskId(task.provider, task.threadId, task.streamId), snapshot);
     }
-    if (selected) {
-      agentHub.setApprovals(selectedTaskId, effectiveSelectedId === serverSelectedId
-        ? (snapshot.pendingApprovals ?? []).map((approval) => ({
-        id: approval.key ?? approval.id,
-        kind: approval.kind ?? "Подтверждение",
-        text: approval.text ?? approval.preview ?? approval.reason ?? "",
-        questions: Array.isArray(approval.questions) ? approval.questions : null,
-        options: window.AgentHubApprovalForm.approvalOptions(approval),
-        }))
-        : []);
+    for (const task of representativeTasks) {
+      const stableTaskId = taskId(task.provider, task.threadId, task.streamId);
+      agentHub.setApprovals(stableTaskId, window.AgentHubApprovalForm.approvalsForTask(
+        snapshot.pendingApprovals, task, { serverSelected: stableTaskId === serverSelectedId },
+      ));
     }
   });
   const settings = snapshot.settings ?? {};
@@ -2178,6 +2399,8 @@ function recordTransientConnectionFailure() {
 
 function historyMessages(history, focusedTurn = null) {
   const messages = [];
+  const userSubmittedAt = (message, turn, isRoot) => message.submittedAt ?? message.time
+    ?? (isRoot ? turn.submittedAt ?? turn.startedAt : null) ?? null;
   const normalizedResponseAnnotationReferences = (references) => {
     const normalize = globalThis.AgentHubMessageView?.normalizedResponseAnnotationReferences;
     return typeof normalize === "function" ? normalize(references) : [];
@@ -2189,6 +2412,7 @@ function historyMessages(history, focusedTurn = null) {
     const itemProvider = String(item?.provider ?? history.provider ?? "");
     const itemThreadId = String(item?.threadId ?? history.threadId ?? "");
     const visible = historicalMessagesForDisplay(item);
+    const rootUserIndex = visible.findIndex((message) => message.role === "user");
     const traceMessageIndex = visible.findLastIndex((message) => (
       message?.role === "agent" && message?.kind !== "subagent"
     ));
@@ -2240,11 +2464,13 @@ function historyMessages(history, focusedTurn = null) {
         ? item.activityGroups
         : [],
       ...(message.role === "user" ? {
-        submittedAt: message.submittedAt ?? message.time ?? item.submittedAt ?? item.startedAt ?? null,
+        submittedAt: userSubmittedAt(message, item, message.turnUserSlot === "root"
+          || (!message.turnUserSlot && messageIndex === rootUserIndex)),
         startedAt: message.startedAt ?? (message.turnUserSlot === "root" ? item.startedAt ?? null : null),
       } : {}),
       time: message.role === "user"
-        ? message.submittedAt ?? message.time ?? item.submittedAt ?? item.startedAt ?? null
+        ? userSubmittedAt(message, item, message.turnUserSlot === "root"
+          || (!message.turnUserSlot && messageIndex === rootUserIndex))
         : message.time ?? item.completedAt ?? null,
       ...(messageIndex === traceMessageIndex ? {
         turnStartedAt: item.startedAt ?? null,
@@ -2305,14 +2531,14 @@ function historyMessages(history, focusedTurn = null) {
           ? focusedTurn.activityGroups
           : [],
         ...(message.role === "user" ? {
-          submittedAt: message.submittedAt ?? message.time ?? focusedTurn.submittedAt ?? focusedTurn.startedAt ?? null,
+          submittedAt: userSubmittedAt(message, focusedTurn, message.turnUserSlot === "root"
+            || (!message.turnUserSlot && index === focusedTurn.messages.findIndex((entry) => entry.role === "user"))),
           startedAt: message.startedAt ?? (message.turnUserSlot === "root" ? focusedTurn.startedAt ?? null : null),
         } : {}),
-        time: message.submittedAt
-          ?? message.time
-          ?? (message.role === "user" ? focusedTurn.submittedAt ?? focusedTurn.startedAt : focusedTurn.completedAt)
-          ?? focusedTurn.startedAt
-          ?? null,
+        time: message.role === "user"
+          ? userSubmittedAt(message, focusedTurn, message.turnUserSlot === "root"
+            || (!message.turnUserSlot && index === focusedTurn.messages.findIndex((entry) => entry.role === "user")))
+          : message.time ?? focusedTurn.completedAt ?? focusedTurn.startedAt ?? null,
         ...(itemId === focusedTraceItemId ? {
           turnStartedAt: focusedTurn.startedAt ?? null,
           turnCompletedAt: focusedTurn.completedAt ?? null,
@@ -2422,6 +2648,7 @@ function applyOpened(result, {
   });
   if (selectTask) rememberSelectedTaskId(id);
   if (!skipSnapshot) applySnapshot(result?.snapshot);
+  if (!skipSnapshot && result?.snapshotDeferred === true) void refresh();
   if (selectTask) agentHub.selectTask(id);
   syncHistoryPagination(id);
   const renderedMessages = renderTaskMessages(id, { preserveScroll, exactNavigation });
@@ -2499,7 +2726,24 @@ function dataUrlBody(dataUrl) {
   return { type: match[1], body: bytes };
 }
 
-async function uploadAttachment(attachment) {
+const attachmentUploader = window.AgentHubAttachmentUpload.create({
+  request: async (path, init) => {
+    if (vscode && !(await window.__agentHubDirectTransport?.available())) {
+      throw new Error("Локальное соединение для загрузки файлов недоступно. Повтори после подключения Hub.");
+    }
+    await localSessionReady;
+    const signal = AbortSignal.any([...(init?.signal ? [init.signal] : []), AbortSignal.timeout(30_000)]);
+    return hubFetch(path, { ...init, signal, headers: { ...authorizationHeaders(), ...init?.headers } });
+  },
+});
+window.AgentHubAttachmentCapabilities = () => attachmentUploader.capabilities();
+
+async function uploadAttachment(attachment, options) {
+  if (attachment?.blobId) return attachmentUploader.upload(attachment, options);
+  if (Number(attachment?.size) > 20 * 1024 * 1024
+    || String(attachment?.dataUrl ?? "").length > 28 * 1024 * 1024) {
+    throw new Error("Устаревший формат вложения ограничен 20 МБ. Выбери файл снова.");
+  }
   if (vscode) {
     return bridgeCall("upload-attachment", {
       name: attachment.name ?? "attachment.bin",
@@ -2527,9 +2771,11 @@ async function uploadAttachment(attachment) {
 
 async function runAction(operation) {
   try {
-    return await operation();
+    return await commandTrace.measure("ui-interaction", "intent-handler", operation);
   } catch (error) {
-    agentHub.toast(hubErrorMessage(error));
+    agentHub.toast(error?.agentHubComposerRecoveryFailed === true
+      ? "Сообщение отклонено. Браузер не сохранил вложения; повтори отправку до перезагрузки страницы."
+      : hubErrorMessage(error));
     return null;
   }
 }
@@ -2615,7 +2861,7 @@ function enqueueTaskHistoryLoad(id, identity, {
           () => control("task-history", {
             ...pending.identity,
             limit: 20,
-            includeActive: false,
+            includeActive: true,
             refreshSource: pending.refreshSource,
             knownVersion: historyPageByTask.get(id)?.version ?? "",
           }),
@@ -2752,12 +2998,24 @@ agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
   }
 }));
 
-agentHub.on("message:send", (request) => {
-  if (request.draftStream) beginNavigation();
+const attachmentSendSessions = new Map();
+agentHub.on("message:upload-resume", ({ clientUserMessageId }) => {
+  attachmentSendSessions.get(clientUserMessageId)?.resume?.();
+});
+agentHub.on("message:upload-cancel", ({ clientUserMessageId }) => {
+  const session = attachmentSendSessions.get(clientUserMessageId);
+  if (!session) return;
+  session.controller.abort();
+  session.resume?.();
+});
+
+function sendUserMessage(request, frozenParams = null) {
   const sendTransaction = window.AgentHubMessageSendTransaction;
   const optimisticId = `local:${request.requestId}`;
   let identity = taskIdentity(request.taskId);
+  let sendTaskOperation = captureSendTaskOperation(request.taskId, identity);
   const previousAttempt = outgoingMessages(request.taskId).get(request.requestId);
+  let submittedParams = frozenParams;
   const requestAttachments = request.attachments ?? [];
   const requestTaskReferences = (request.taskReferences ?? [])
     .map((reference) => window.AgentHubTaskReferences.normalize(reference))
@@ -2772,7 +3030,7 @@ agentHub.on("message:send", (request) => {
     || ((request.annotations ?? []).length
       ? `Аннотации к ответу: ${(request.annotations ?? []).length}`
       : window.AgentHubMessageLifecycle.attachmentOnlyText(visibleAttachments));
-  const submittedAt = new Date().toISOString();
+  const submittedAt = previousAttempt?.submittedAt ?? new Date().toISOString();
   const optimistic = {
     id: optimisticId,
     provider: identity?.provider ?? request.settings?.provider ?? "",
@@ -2805,6 +3063,10 @@ agentHub.on("message:send", (request) => {
   renderOutgoingWithoutBlockingSend(request.taskId, { queue: usesQueueOptimistically });
   return runAction(() => sendTransaction.run({
     send: async () => {
+      if (frozenParams) {
+        assertCurrentSendTaskOperation(sendTaskOperation);
+        return control("send-message", structuredClone(frozenParams));
+      }
       if (request.draftStream) {
         const createdSnapshot = await control("new-task", {
           streamId: request.streamId,
@@ -2827,6 +3089,7 @@ agentHub.on("message:send", (request) => {
           identity,
         );
         if (route.hash) replaceRoute(route.hash);
+        sendTaskOperation = captureSendTaskOperation(request.taskId, identity);
       }
       // Worker attachments are deleted after their command finishes. A retry
       // must upload the image again instead of reusing an expired reference.
@@ -2836,10 +3099,58 @@ agentHub.on("message:send", (request) => {
         { remote: !vscode },
       );
       if (!paths.length) {
-        for (const attachment of request.attachments ?? []) paths.push(await uploadAttachment(attachment));
+        const session = { controller: new AbortController(), resume: null, operation: sendTaskOperation };
+        const total = requestAttachments.reduce((sum, file) => sum + Number(file.size || 0), 0);
+        let uploaded = 0;
+        const project = (uploadState, delivery) => {
+          updateOutgoing(request.taskId, request.requestId, { uploadState, delivery });
+          renderOutgoingWithoutBlockingSend(request.taskId, { queue: true });
+        };
+        attachmentSendSessions.set(request.requestId, session);
+        try {
+          for (const attachment of requestAttachments) {
+            let path;
+            while (!path) {
+              session.controller.signal.throwIfAborted();
+              assertCurrentSendTaskOperation(sendTaskOperation);
+              try {
+                project("uploading", `Загрузка ${attachment.name}…`);
+                path = await uploadAttachment(attachment, {
+                  signal: session.controller.signal,
+                  progress: (bytes) => project("uploading", `Загрузка файлов: ${Math.floor((uploaded + bytes) / Math.max(1, total) * 100)}%`),
+                });
+                session.controller.signal.throwIfAborted();
+              } catch (error) {
+                if (session.controller.signal.aborted || error?.attachmentUploadTerminal
+                  || error?.agentHubMessagePreparationCancelled || !attachment.blobId) throw error;
+                await new Promise((resolve) => {
+                  session.resume = resolve;
+                  project("paused", `Загрузка приостановлена: ${hubErrorMessage(error)}`);
+                });
+                session.resume = null;
+              }
+            }
+            assertCurrentSendTaskOperation(sendTaskOperation);
+            paths.push(path);
+            uploaded += Number(attachment.size || 0);
+          }
+          session.controller.signal.throwIfAborted();
+        } catch (error) {
+          // No send-message command exists yet: recovery is an exact rejected
+          // preparation, never an unknown provider admission or a new identity.
+          const failure = new Error(session.cancellationError ? hubErrorMessage(session.cancellationError)
+            : session.controller.signal.aborted ? "Отправка отменена. Вложения сохранены для повтора." : hubErrorMessage(error));
+          failure.agentHubMessagePreparationCancelled = true;
+          throw failure;
+        } finally {
+          attachmentSendSessions.delete(request.requestId);
+          updateOutgoing(request.taskId, request.requestId, { uploadState: "" });
+        }
+        assertCurrentSendTaskOperation(sendTaskOperation);
         updateOutgoing(request.taskId, request.requestId, { uploadedPaths: paths.slice() });
         renderOutgoingWithoutBlockingSend(request.taskId, { queue: usesQueueOptimistically });
       }
+      assertCurrentSendTaskOperation(sendTaskOperation);
       updateOutgoing(
         request.taskId,
         request.requestId,
@@ -2857,6 +3168,7 @@ agentHub.on("message:send", (request) => {
         clientUserMessageId: request.requestId,
         clientProjectionIntent,
         followUpMode: request.followUpMode,
+        ...(request.composerTransfer ? { composerTransfer: request.composerTransfer } : {}),
         clientTiming: {
           submittedAtMs: request.submittedAtMs,
           submittedMonotonicMs: request.submittedMonotonicMs,
@@ -2872,17 +3184,13 @@ agentHub.on("message:send", (request) => {
           intent: reference.intent,
         }));
       }
-      try {
-        const result = await control("send-message", params);
-        reportClientCommandAck(request.requestId, params.clientTiming, "succeeded");
-        return result;
-      } catch (error) {
-        reportClientCommandAck(request.requestId, params.clientTiming, "failed");
-        throw error;
-      }
+      assertCurrentSendTaskOperation(sendTaskOperation);
+      submittedParams = structuredClone(params);
+      return control("send-message", params);
     },
     receive: (result) => {
       const projection = queueHistoryReceiptProjection(result);
+      const projectionStarted = commandTrace.now();
       if (projection.ownsDeferredQueue) {
         optimisticDeferredClientUserMessageIds.add(request.requestId);
         deferredClientUserMessageIds.add(request.requestId);
@@ -2890,7 +3198,7 @@ agentHub.on("message:send", (request) => {
         optimisticDeferredClientUserMessageIds.delete(request.requestId);
         deferredClientUserMessageIds.delete(request.requestId);
       }
-      agentHub.completeSend(request.requestId, { accepted: projection.accepted });
+      agentHub.completeSend(request.requestId, { outcome: "accepted", taskId: request.taskId });
       updateOutgoing(request.taskId, request.requestId, {
         provider: identity?.provider ?? "",
         threadId: result?.threadId ?? identity?.threadId ?? "",
@@ -2914,6 +3222,7 @@ agentHub.on("message:send", (request) => {
           : deliveryPatch(projection.deliveryState ?? "rejected")),
       });
       renderOutgoingWithoutBlockingSend(request.taskId, { queue: true });
+      commandTrace.afterPaint("ui-render", "message-ack-projection", projectionStarted, request.requestId);
     },
     synchronize: async (result) => {
       if (result?.snapshot) applySnapshot(result.snapshot);
@@ -2943,22 +3252,41 @@ agentHub.on("message:send", (request) => {
       agentHub.toast(result?.message ?? (result?.accepted ? "Сообщение принято" : "Сообщение сохранено"));
     },
     reject: (error) => {
+      if (outgoingMessages(request.taskId).get(request.requestId)?.projectionAuthority === "canonical") return;
       // A remote command may finish after its HTTP result is lost. Preserve
       // its request id for an idempotent retry instead of creating a second
       // optimistic card for the same user action.
-      const rejected = messageSendDefinitelyRejected(error);
-      agentHub.completeSend(request.requestId, { accepted: false });
+      const rejected = messageSendDefinitelyRejected(error)
+        || (!submittedParams && error?.agentHubMessagePreparationCancelled === true);
+      const completion = agentHub.completeSend(request.requestId, {
+        outcome: rejected ? "rejected" : "unknown",
+        taskId: request.taskId,
+      });
+      if (rejected && completion?.durable === false && error && typeof error === "object") {
+        Object.defineProperty(error, "agentHubComposerRecoveryFailed", {
+          configurable: true,
+          enumerable: false,
+          value: true,
+        });
+      }
       if (rejected) {
-        outgoingMessages(request.taskId).delete(request.requestId);
+        if (completion?.restored) outgoingMessages(request.taskId).delete(request.requestId);
+        else updateOutgoing(request.taskId, request.requestId, {
+          ...deliveryPatch("rejected"),
+          projectionState: "failed",
+          providerAccepted: false,
+        });
         optimisticDeferredClientUserMessageIds.delete(request.requestId);
         deferredClientUserMessageIds.delete(request.requestId);
       } else {
-        optimisticDeferredClientUserMessageIds.add(request.requestId);
-        deferredClientUserMessageIds.add(request.requestId);
+        optimisticDeferredClientUserMessageIds.delete(request.requestId);
+        deferredClientUserMessageIds.delete(request.requestId);
         updateOutgoing(request.taskId, request.requestId, {
           ...deliveryPatch("unconfirmed"),
           projectionState: "unknown",
           providerAccepted: false,
+          admissionUnconfirmed: true,
+          retryRequest: submittedParams ? { request, identity, params: submittedParams } : null,
         });
       }
       renderOutgoingWithoutBlockingSend(request.taskId, { queue: true });
@@ -2969,6 +3297,23 @@ agentHub.on("message:send", (request) => {
       agentHub.toast("Сообщение принято. Отображение обновится по квитанции.");
     },
   }));
+}
+
+agentHub.on("message:send", (request) => {
+  if (request.draftStream) beginNavigation();
+  return sendUserMessage(request);
+});
+agentHub.on("message:retry-unconfirmed", ({ taskId: requestTaskId, clientUserMessageId }) => {
+  const message = outgoingMessages(requestTaskId).get(clientUserMessageId);
+  const retained = message?.retryRequest;
+  const current = taskIdentity(requestTaskId);
+  if (!retained || message.deliveryState !== "unconfirmed"
+    || message.projectionAuthority !== "optimistic" || message.projectionState !== "unknown"
+    || retained.request.requestId !== clientUserMessageId
+    || !current || !retained.identity
+    || current.provider !== retained.identity.provider || current.threadId !== retained.identity.threadId
+    || current.streamId !== retained.identity.streamId) return;
+  return sendUserMessage(retained.request, retained.params);
 });
 
 agentHub.on("task:new", ({ title, provider }) => runAction(async () => {
@@ -3059,11 +3404,25 @@ agentHub.on("workspace:folder-rename", ({ fromFolderName, toFolderName }) => run
 }));
 agentHub.on("workspace:archive", ({ workspaceId }) => runAction(async () => {
   applySnapshot(await control("archive-workspace", { workspaceId }));
-  agentHub.toast("Workspace удалён в архив на 3 дня");
+  agentHub.toast("Workspace перемещён в бессрочный архив");
 }));
 agentHub.on("workspace:restore", ({ workspaceId }) => runAction(async () => {
   applySnapshot(await control("restore-workspace", { workspaceId }));
   agentHub.toast("Workspace восстановлен");
+}));
+agentHub.on("workspace:delete-permanently", ({ workspaceId, confirmationName }) => runAction(async () => {
+  try {
+    applySnapshot(await control("delete-archived-workspace", { workspaceId, confirmationName }));
+    agentHub.toast("Workspace удалён окончательно");
+  } catch (error) {
+    document.dispatchEvent(new CustomEvent("agenthub:workspace-delete-rejected", {
+      detail: {
+        workspaceId,
+        error: String(error?.message ?? error),
+      },
+    }));
+    throw error;
+  }
 }));
 agentHub.on("workspace:create", ({
   name, folderName, comment, workingDirectory, taskPrefix, rules, releaseWorkflowEnabled, beforeColumnId,
@@ -3091,7 +3450,7 @@ agentHub.on("workspace:create", ({
   applySnapshot(snapshot);
 }));
 agentHub.on("workspace:update", ({
-  workspaceId, name, comment, workingDirectory, taskPrefix, rules, releaseWorkflowEnabled,
+  workspaceId, name, folderName, comment, workingDirectory, taskPrefix, rules, releaseWorkflowEnabled,
   beforeColumnId,
 }) => runAction(async () => {
   if (!lastSnapshot?.boardLayout) {
@@ -3102,11 +3461,13 @@ agentHub.on("workspace:update", ({
   let snapshot = lastSnapshot;
   const nextSettings = {
     ...(workspace?.settings ?? {}),
+    catalogFolder: String(folderName ?? "").trim(),
     workingDirectory: String(workingDirectory ?? "").trim(),
     taskPrefix: String(taskPrefix ?? "").trim(),
     releaseWorkflowEnabled: releaseWorkflowEnabled === true,
   };
-  const settingsChanged = nextSettings.workingDirectory !== String(workspace?.settings?.workingDirectory ?? "")
+  const settingsChanged = nextSettings.catalogFolder !== String(workspace?.settings?.catalogFolder ?? "")
+    || nextSettings.workingDirectory !== String(workspace?.settings?.workingDirectory ?? "")
     || nextSettings.taskPrefix !== String(workspace?.settings?.taskPrefix ?? "")
     || nextSettings.releaseWorkflowEnabled !== (workspace?.settings?.releaseWorkflowEnabled === true);
   if (settingsChanged) {
@@ -3148,6 +3509,8 @@ document.addEventListener("agenthub:board-action", (event) => {
     const actions = {
       create: "board-task-create",
       update: "board-task-update",
+      checklist: "board-task-checklist",
+      "checklist-linked-task-action": "board-task-checklist-linked-action",
       status: "board-task-status",
       move: "board-task-move",
       complete: "board-task-complete",
@@ -3169,7 +3532,17 @@ document.addEventListener("agenthub:board-action", (event) => {
     const action = actions[detail.type];
     if (!action) return;
     const { type: _type, ...params } = detail;
-    const result = await control(action, params);
+    let result = await control(action, params);
+    if (["complete", "remove"].includes(detail.type) && result.lifecycleResult?.confirmationRequired) {
+      const decision = await window.AgentHubTaskCleanupConfirmation.confirm({
+        confirmation: result.lifecycleResult,
+        action,
+        params,
+        request: control,
+      });
+      if (!decision.confirmed) return;
+      result = decision.result;
+    }
     succeeded = true;
     applySnapshot(result);
     if (detail.type === "start") agentHub.showSelectedTask();
@@ -3181,6 +3554,9 @@ document.addEventListener("agenthub:board-action", (event) => {
       type: detail.type,
       id: detail.id,
       succeeded,
+      requestId: detail.requestId,
+      operation: detail.operation,
+      itemId: detail.itemId,
     });
   });
 });
@@ -3404,17 +3780,16 @@ async function refreshRateLimitHistory(range = rateLimitRefreshRange, { reportEr
 agentHub.on("limits:open", ({ range }) => runAction(
   () => refreshRateLimitHistory(range, { reportError: true }),
 ));
-agentHub.on("usage:open", ({ range, accountKey, turnTimeMode }) => runAction(async () => {
+agentHub.on("usage:open", ({ range, turnTimeMode }) => runAction(async () => {
   try {
     agentHub.setUsageHistory(await readHistoryWithRangeCompatibility("usage-history", range, {
       maxPoints: 600,
-      accountKey: String(accountKey || ""),
       turnTimeMode,
     }));
   } catch (error) {
     agentHub.setUsageHistory({
       range,
-      accountKey: String(accountKey || ""),
+      accountKey: "",
       turnTimeMode,
       error: error?.message || "Не удалось загрузить учётный расход.",
     });
@@ -3591,11 +3966,31 @@ agentHub.on("queue:new", ({ id, taskId: taskIdValue }) => runAction(() => runQue
     return result;
   },
 )));
-agentHub.on("queue:edit", ({ id, text }) => runAction(async () => {
-  const result = await control("deferred-input", { id, action: "edit", text });
-  applySnapshot(await control("snapshot"));
-  agentHub.toast(result?.message ?? "Сообщение в очереди изменено");
-}));
+async function composerAttachmentFromQueue(attachment) {
+  const { blob, name, type } = await attachmentBlob(attachment);
+  return {
+    name: String(name ?? attachment?.name ?? "attachment.bin"),
+    type: String(type ?? blob.type ?? attachment?.type ?? "application/octet-stream"),
+    size: blob.size,
+    dataUrl: await blobDataUrl(blob),
+  };
+}
+
+const queueComposerReturn = window.AgentHubQueueComposerReturn.create({
+  prepare: (id) => control("deferred-input", { id, action: "composer-prepare" }),
+  commit: (id, token) => control("deferred-input", { id, action: "composer-commit", token }),
+  release: (id, token) => control("deferred-input", { id, action: "composer-release", token }),
+  readSnapshot: () => control("snapshot"),
+  itemPresent: (snapshot, id) => (snapshot.deferredInputs ?? []).some((item) => item.id === id),
+  bindingTaskId: (binding) => taskId(binding?.provider, binding?.threadId, binding?.streamId),
+  materializeAttachment: composerAttachmentFromQueue,
+  applyDraft: (...args) => agentHub.applyQueueComposerTransfer(...args),
+  rollbackDraft: (...args) => agentHub.rollbackQueueComposerTransfer(...args),
+  applySnapshot,
+  notify: (message) => agentHub.toast(message),
+});
+
+agentHub.on("queue:edit", (request) => runAction(() => queueComposerReturn.run(request)));
 for (const [event, action, fallback] of [
   ["queue:pause", "pause", "Сообщение приостановлено"],
   ["queue:resume", "resume", "Очередь возобновлена"],
@@ -3711,22 +4106,154 @@ function blobDataUrl(blob) {
   });
 }
 
-async function loadAttachmentImage(attachment, index) {
-  const directDataUrl = String(attachment?.dataUrl ?? "").trim();
-  const directResourceUrl = String(attachment?.url ?? "").trim();
-  const vscodeResource = vscode && !directDataUrl && !directResourceUrl && attachment?.id
-    ? await bridgeCall("resolve-attachment", { id: attachment.id })
-    : null;
-  const resolvedResourceUrl = String(vscodeResource?.url ?? directResourceUrl).trim();
-  const result = directDataUrl
-    ? { dataUrl: directDataUrl, name: attachment?.name }
-    : resolvedResourceUrl
-      ? { dataUrl: resolvedResourceUrl, name: attachment?.name }
-    : await attachmentBlob(attachment).then(async ({ blob, name }) => ({
-      dataUrl: await blobDataUrl(blob),
-      name,
-    }));
-  agentHub.showAttachmentViewer({ ...result, index });
+let attachmentViewerResource = null;
+
+function attachmentViewerAuthority(generation, index) {
+  const authority = agentHub.attachmentViewerLoadAuthority?.({ generation, index });
+  return authority?.owned ? authority : null;
+}
+
+function disposeAttachmentViewerResource({ generation = null, index = null, resource = null } = {}) {
+  const current = attachmentViewerResource;
+  if (!current
+    || (generation != null && current.generation !== generation)
+    || (index != null && current.index !== index)
+    || (resource && current !== resource)) return false;
+  attachmentViewerResource = null;
+  window.clearTimeout(current.timer);
+  current.disposed = true;
+  current.controller.abort();
+  if (current.objectUrl) URL.revokeObjectURL(current.objectUrl);
+  return true;
+}
+
+function beginAttachmentViewerLoad(generation, index) {
+  let authority = attachmentViewerAuthority(generation, index);
+  if (!authority) return null;
+  const existing = attachmentViewerResource;
+  if (existing) {
+    if (existing.generation !== generation || existing.index !== index) return null;
+    disposeAttachmentViewerResource({ generation, index, resource: existing });
+    authority = attachmentViewerAuthority(generation, index);
+    if (!authority) return null;
+  }
+  const controller = new AbortController();
+  const current = {
+    generation,
+    index,
+    controller,
+    timer: null,
+    timedOut: false,
+    disposed: false,
+    objectUrl: "",
+  };
+  current.timer = window.setTimeout(() => {
+    if (attachmentViewerResource !== current || current.disposed) return;
+    current.timedOut = true;
+    controller.abort();
+  }, Math.max(1, authority.remainingMs));
+  attachmentViewerResource = current;
+  return current;
+}
+
+function ownsAttachmentViewerResource(resource) {
+  return Boolean(
+    resource
+    && attachmentViewerResource === resource
+    && !resource.disposed
+    && attachmentViewerAuthority(resource.generation, resource.index),
+  );
+}
+
+document.addEventListener("agenthub:attachment-viewer-dispose", (event) => {
+  const generation = Number(event.detail?.generation);
+  const index = Number(event.detail?.index);
+  disposeAttachmentViewerResource({
+    generation: Number.isSafeInteger(generation) ? generation : null,
+    index: Number.isSafeInteger(index) ? index : null,
+  });
+});
+
+function sameOriginResource(value) {
+  try {
+    return new URL(String(value), window.location.href).origin === window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
+async function loadAttachmentImage(attachment, index, generation) {
+  const viewerResource = beginAttachmentViewerLoad(generation, index);
+  if (!viewerResource) return false;
+  try {
+    const directDataUrl = String(attachment?.dataUrl ?? "").trim();
+    const directResourceUrl = String(attachment?.url ?? "").trim();
+    const id = String(attachment?.id ?? "").trim();
+    const access = directDataUrl || directResourceUrl
+      ? attachment
+      : vscode && id
+        ? await bridgeCall("resolve-attachment", { id })
+        : id
+          ? await control("open-attachment", { id })
+          : null;
+    if (!ownsAttachmentViewerResource(viewerResource)) return false;
+    const resourceUrl = directDataUrl || String(access?.url ?? directResourceUrl).trim();
+    const authenticatedFetch = Boolean(telegramInitData)
+      && (!resourceUrl || sameOriginResource(resourceUrl));
+    if (!resourceUrl && !String(access?.id ?? "").trim()) {
+      throw new Error("Файл изображения недоступен");
+    }
+    await localSessionReady;
+    if (!ownsAttachmentViewerResource(viewerResource)) return false;
+    if (!authenticatedFetch) {
+      window.clearTimeout(viewerResource.timer);
+      viewerResource.timer = null;
+      const shown = agentHub.showAttachmentViewer({
+        dataUrl: resourceUrl,
+        name: access?.name ?? attachment?.name,
+        index,
+        generation,
+      });
+      if (!shown) disposeAttachmentViewerResource({ generation, index, resource: viewerResource });
+      return shown;
+    }
+    const response = await hubFetch(resourceUrl || attachmentAccessUrl(access), {
+      headers: authorizationHeaders(),
+      cache: "no-store",
+      signal: viewerResource.controller.signal,
+    });
+    if (!ownsAttachmentViewerResource(viewerResource)) return false;
+    if (!response.ok) throw new Error(`Файл изображения недоступен: HTTP ${response.status}`);
+    const blob = await response.blob();
+    if (!ownsAttachmentViewerResource(viewerResource)) return false;
+    if (!String(blob.type).toLowerCase().startsWith("image/")) {
+      throw new Error("Сервер вернул не изображение");
+    }
+    window.clearTimeout(viewerResource.timer);
+    viewerResource.timer = null;
+    viewerResource.objectUrl = URL.createObjectURL(blob);
+    const shown = agentHub.showAttachmentViewer({
+      dataUrl: viewerResource.objectUrl,
+      name: access?.name ?? attachment?.name,
+      index,
+      generation,
+      transient: true,
+    });
+    if (!shown) disposeAttachmentViewerResource({ generation, index, resource: viewerResource });
+    return shown;
+  } catch (error) {
+    if (!ownsAttachmentViewerResource(viewerResource)) return false;
+    const message = viewerResource?.timedOut
+      ? "Изображение не загрузилось вовремя"
+      : hubErrorMessage(error);
+    agentHub.failAttachmentViewer({
+      message,
+      index,
+      generation,
+    });
+    disposeAttachmentViewerResource({ generation, index, resource: viewerResource });
+    throw error;
+  }
 }
 
 agentHub.on("attachment:open", ({ attachment, gallery = [], index = 0 }) => runAction(async () => {
@@ -3734,21 +4261,16 @@ agentHub.on("attachment:open", ({ attachment, gallery = [], index = 0 }) => runA
   if (image) {
     const viewerGallery = window.AgentHubResourceInteractions.viewerGallery(
       gallery.length ? gallery : [attachment],
-      vscode,
+      true,
     );
     const viewerAttachment = viewerGallery[index] ?? viewerGallery[0] ?? attachment;
-    agentHub.openAttachmentViewer({
+    const generation = agentHub.openAttachmentViewer({
       gallery: viewerGallery,
       index,
       dataUrl: viewerAttachment?.dataUrl,
       name: viewerAttachment?.name,
     });
-    try {
-      if (!viewerAttachment?.dataUrl) await loadAttachmentImage(viewerAttachment, index);
-    } catch (error) {
-      agentHub.closeAttachmentViewer();
-      throw error;
-    }
+    if (!viewerAttachment?.dataUrl) await loadAttachmentImage(viewerAttachment, index, generation);
     return;
   }
   const id = String(attachment?.id ?? "").trim();
@@ -3773,8 +4295,8 @@ agentHub.on("attachment:thumbnail", ({ attachment, render, fail }) => void (asyn
   }
 })());
 
-agentHub.on("attachment:load", ({ attachment, index }) => runAction(
-  () => loadAttachmentImage(attachment, index),
+agentHub.on("attachment:load", ({ attachment, index, generation }) => runAction(
+  () => loadAttachmentImage(attachment, index, generation),
 ));
 
 function resourceReference(resource) {
@@ -3950,6 +4472,20 @@ agentHub.on("hub:restart", () => runAction(async () => {
   else applySnapshot(await control("snapshot"));
   agentHub.toast(result?.message ?? "Перезапуск Agent Hub запрошен");
 }));
+document.addEventListener("agenthub:startup-recovery", (event) => {
+  const { action, startedAtMs } = event.detail ?? {};
+  if (!["retry-startup", "restart-server"].includes(action)) return;
+  void (async () => {
+    let message;
+    try {
+      const result = await control(action, action === "retry-startup" ? { startedAtMs } : {});
+      message = result?.message ?? "Запрос принят";
+    } catch (error) {
+      message = `Не удалось подтвердить выполнение: ${error.message}. Проверьте состояние Хаба перед повтором.`;
+    }
+    document.dispatchEvent(new CustomEvent("agenthub:startup-recovery-result", { detail: { message } }));
+  })();
+});
 agentHub.on("server:autostart", ({ enabled }) => runAction(async () => {
   const result = await control("set-autostart", { enabled: enabled === true });
   if (result?.snapshot) applySnapshot(result.snapshot);
@@ -4309,6 +4845,7 @@ async function refresh({ reportError = false } = {}) {
   refreshTimer = null;
   refreshing = true;
   try {
+    await composerRecoveryBarrier;
     const previousSnapshot = lastSnapshot;
     await prepareSnapshotTransport();
     let snapshotResult = await control(
@@ -4364,6 +4901,7 @@ agentHub.on("connection:retry", () => void refresh({ reportError: false }));
 void runAction(async () => {
   agentHub.setConnection("connecting");
   try {
+    await composerRecoveryBarrier;
     let routed = false;
     if (streamChatRoute()) {
       // A stable Stream route needs the first snapshot to resolve its current

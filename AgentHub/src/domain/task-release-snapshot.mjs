@@ -96,6 +96,7 @@ export function taskReleasePlan(workspaceId, tasks = []) {
   const ready = candidates.flatMap((task) => task.gitReferences.map((reference) => ({
     id: `${task.id}:${reference.projectRoot}`,
     taskId: task.id,
+    taskNumber: task.taskNumber ?? null,
     taskRevision: task.revision,
     streamId: task.streamId,
     projectRoot: reference.projectRoot,

@@ -21,7 +21,7 @@
   <link rel="stylesheet" href="/task-card-layout.css">
   <link rel="stylesheet" href="/activity-rail-layout.css">
   <link rel="stylesheet" href="/provider-turn-telemetry.css">
-  <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
+  <script src="/telegram-runtime-bootstrap.js"></script>
   <script src="/browser-device-auth.js" defer></script>
   <script src="/messages/disclosure.js" defer></script>
   <script src="/live-card-render-controller.js" defer></script>
@@ -45,6 +45,8 @@
   <script src="/journal-polling-policy.js" defer></script>
   <script src="/statistics-controls.js" defer></script>
   <script src="/attachments/interactions.js" defer></script>
+  <script src="/attachments/composer-files.js" defer></script>
+  <script src="/attachments/upload.js" defer></script>
   <script src="/modal-overlays.js" defer></script>
   <script src="/tooltip-position.js" defer></script>
   <!-- agent-hub-theme-catalog -->
@@ -52,13 +54,17 @@
   <script src="/usage-burn-rate.js" defer></script>
   <script src="/bug-report-flow.js" defer></script>
   <script src="/web-diagnostics.js" defer></script>
+  <script src="/command-trace.js" defer></script>
   <script src="/particle-style-controller.js" defer></script>
   <script src="/side-panel-resizer.js" defer></script>
   <script src="/task-references.js" defer></script>
+  <script src="/queue-composer-transfer.js" defer></script>
+  <script src="/queue-composer-return.js" defer></script>
   <script src="/workspace-release-workflow.js" defer></script>
   <script src="/workspace-release-primary-guard.js" defer></script>
   <script src="/stream-role-settings.js" defer></script>
   <script src="/themed-select-placement.js" defer></script>
+  <script src="/messages/composer-draft-reconciliation.js" defer></script>
   <script src="/app.js" defer></script>
   <script src="/pre-turn-instructions-editor.js" defer></script>
   <script src="/root-agents-editor.js" defer></script>
@@ -471,9 +477,10 @@
           <span class="chat-scroll-label">Вниз</span>
           <span class="chat-scroll-count" hidden>0</span>
         </button>
-        <aside class="dialog-settings" data-dialog-settings hidden aria-label="Настройки диалога">
+        <dialog class="dialog-settings stream-card-modal" data-dialog-settings hidden
+          aria-label="Карточка Stream">
           <header class="dialog-settings-head">
-            <h2>Настройки диалога</h2>
+            <p class="eyebrow">Stream</p>
             <button type="button" class="icon-button dialog-settings-close" data-action="task-settings"
               data-dialog-settings-close title="Закрыть настройки диалога"
               aria-label="Закрыть настройки диалога">
@@ -487,8 +494,12 @@
           </header>
           <div class="dialog-settings-body">
             <section class="settings-section">
-              <h3 class="settings-section-title">Текущая задача</h3>
+              <h3 class="settings-section-title">Параметры</h3>
               <div class="settings-card">
+                <label class="setting-stack stream-card-name-field">
+                  <span class="setting-name">Наименование</span>
+                  <input type="text" maxlength="120" data-dialog-stream-name required>
+                </label>
                 <div class="setting-row dialog-agent-row">
                   <span class="setting-name">Агент</span>
                   <div class="setting-options dialog-agent-options" data-dialog-agent
@@ -570,14 +581,13 @@
                     </span>
                   </span>
                 </div>
-                <div class="quick-messages-settings-row">
-                  <span class="setting-name">Быстрые ответы потока</span>
-                  <span class="quick-messages-settings-control">
-                    <span class="setting-value" data-dialog-stream-quick-messages-count>Не заданы</span>
-                    <button type="button" class="chip-button" data-dialog-stream-quick-messages>
-                      Настроить…
-                    </button>
-                  </span>
+                <div class="quick-messages-editor">
+                  <span class="setting-name">Prompt-шаблоны потока</span>
+                  <span class="setting-value" data-dialog-stream-quick-messages-count>Не заданы</span>
+                  <div class="quick-messages-editor-controls" data-dialog-stream-quick-messages>
+                    <div class="quick-message-editor-rows" data-quick-message-rows></div>
+                    <button type="button" class="chip-button" data-quick-message-add>+ Добавить шаблон</button>
+                  </div>
                 </div>
               </div>
             </section>
@@ -598,8 +608,24 @@
                   data-dialog-stream-rules-save>Сохранить правила Stream</button>
               </div>
             </section>
+            <section class="settings-section stream-card-actions-section">
+              <h3 class="settings-section-title">Действия</h3>
+              <div class="settings-card stream-card-actions">
+                <button type="button" class="chip-button" data-stream-card-pin></button>
+                <button type="button" class="chip-button" data-stream-card-workspace>Открыть карточку Workspace</button>
+                <button type="button" class="chip-button" data-stream-card-rotate>Ротация</button>
+                <button type="button" class="chip-button" data-stream-card-continue-provider></button>
+                <button type="button" class="chip-button" data-stream-card-move
+                  aria-haspopup="menu" aria-expanded="false">Перенести в другой Workspace</button>
+                <button type="button" class="chip-button stream-card-archive" data-stream-card-archive>
+                  Архивировать Stream
+                </button>
+              </div>
+              <div class="stream-card-move-menu" data-stream-card-move-menu popover="auto"
+                role="menu" aria-label="Выбор Workspace для переноса"></div>
+            </section>
           </div>
-      </aside>
+      </dialog>
       </div>
       </div>
 
@@ -608,9 +634,9 @@
 
         <form class="composer" data-composer>
           <div class="annotations" data-annotations hidden aria-label="Аннотации к выделенному тексту"></div>
-          <div class="attachments" data-attachments hidden aria-label="Вложения"></div>
           <div class="composer-quick-messages" data-composer-quick-messages hidden
-            aria-label="Быстрые ответы"></div>
+            aria-label="Prompt-шаблоны"></div>
+          <div class="attachments" data-attachments hidden aria-label="Вложения"></div>
           <div class="composer-main">
             <button type="button" class="icon-button chat-back" data-action="pane-tasks" title="К списку задач">
               <svg data-phosphor-icon="caret-left" viewBox="0 0 256 256" aria-hidden="true">
@@ -765,22 +791,65 @@
 
   <main class="task-board-view" data-task-board>
     <header class="task-board-toolbar">
-      <div class="task-board-status-language" role="group" aria-label="Язык статусов задач">
-        <span>Статусы</span>
-        <div class="task-board-status-language-options">
-          <button type="button" data-task-status-language="en" aria-pressed="true">en</button>
-          <button type="button" data-task-status-language="ru" aria-pressed="false">ru</button>
+      <h2 class="eyebrow task-board-catalog-title">Workspaces</h2>
+      <div class="task-board-toolbar-actions">
+        <button type="button" class="task-board-filter-toggle" data-task-board-filter-toggle
+          aria-expanded="false" aria-controls="task-board-filter-controls">Фильтры</button>
+        <div class="task-board-filter-controls" id="task-board-filter-controls" data-task-board-filter-controls hidden>
+          <button
+            type="button"
+            class="task-board-completed-toggle"
+            data-task-board-completed-toggle
+            aria-pressed="false"
+          >Закрытые</button>
         </div>
+        <button type="button" class="refresh view-settings" data-task-board-settings-toggle
+          popovertarget="task-board-settings" title="Настройки доски" aria-label="Настройки доски">
+          <svg data-phosphor-icon="sliders-horizontal" viewBox="0 0 256 256" aria-hidden="true">
+            <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16">
+              <circle cx="104" cy="80" r="24"></circle>
+              <circle cx="168" cy="176" r="24"></circle>
+              <path d="M128 80h88M40 80h40M192 176h24M40 176h104"></path>
+            </g>
+          </svg>
+        </button>
       </div>
-      <button
-        type="button"
-        class="task-board-completed-toggle"
-        data-task-board-completed-toggle
-        aria-pressed="false"
-      >Закрытые</button>
     </header>
+    <aside class="task-board-sidebar" aria-label="Workspace">
+      <nav class="task-board-scope-strip" data-task-board-scopes aria-label="Workspace и заметки"></nav>
+    </aside>
     <div class="task-board-columns" data-task-board-columns aria-live="polite"></div>
   </main>
+
+  <div class="task-board-settings" id="task-board-settings" popover="auto" role="group" aria-label="Настройки доски">
+    <div class="task-board-setting">
+      <strong>Вид доски</strong>
+      <div class="task-board-status-language-options task-board-view-options" role="group" aria-label="Вид доски">
+        <button type="button" data-task-board-view="statuses" aria-pressed="true">По статусам</button>
+        <button type="button" data-task-board-view="workspaces" aria-pressed="false">По воркспейсам</button>
+      </div>
+    </div>
+    <div class="task-board-setting">
+      <strong>Открывать задачу</strong>
+      <div class="task-board-status-language-options" role="group" aria-label="Открывать задачу">
+        <button type="button" data-task-open-mode="modal" aria-pressed="false">В окне</button>
+        <button type="button" data-task-open-mode="side" aria-pressed="false">Справа</button>
+        <button type="button" data-task-open-mode="both" aria-pressed="true">Справа + окно</button>
+      </div>
+      <p>«Справа + окно»: клик — справа, двойной клик — в окне. На узком экране всегда открывается окно.</p>
+    </div>
+    <label class="task-board-grouping-setting" data-task-board-grouping-setting>
+      <input type="checkbox" data-task-board-grouping-toggle checked>
+      <span>Группировать по воркспейсам</span>
+    </label>
+    <div class="task-board-status-language" role="group" aria-label="Язык статусов задач">
+      <span>Язык статусов</span>
+      <div class="task-board-status-language-options">
+        <button type="button" data-task-status-language="en" aria-pressed="true">en</button>
+        <button type="button" data-task-status-language="ru" aria-pressed="false">ru</button>
+      </div>
+    </div>
+  </div>
 
   <dialog class="context-usage-modal" data-context-usage-modal aria-labelledby="context-usage-title">
     <header>
@@ -858,6 +927,17 @@
       </button>
     </header>
     <section class="task-card-content">
+      <section class="task-card-preview" aria-label="Детали задачи">
+        <div class="task-card-preview-meta">
+          <strong data-task-preview-number></strong>
+          <button type="button" class="board-task-quiet" data-task-card-edit-toggle>Изменить</button>
+        </div>
+        <h3 data-task-preview-title></h3>
+        <div class="task-card-preview-description">
+          <strong>Описание</strong>
+          <p data-task-preview-description></p>
+        </div>
+      </section>
       <form class="task-card-editor" data-task-card-editor>
         <label>
           <span>Заголовок</span>
@@ -876,10 +956,26 @@
         <span>Статус</span>
         <select data-task-card-status aria-label="Статус задачи"></select>
       </label>
+      <section class="task-card-checklist" aria-label="Чек-лист задачи">
+        <header>
+          <strong>Чек-лист</strong>
+          <output data-task-checklist-progress>0 из 0</output>
+        </header>
+        <form data-task-checklist-add>
+          <input type="text" maxlength="1000" placeholder="Новый пункт" aria-label="Новый пункт чек-листа" required>
+          <button type="submit" class="board-task-primary">Добавить</button>
+        </form>
+        <ol data-task-checklist-items></ol>
+      </section>
+      <section class="task-card-checklist-parent" data-task-checklist-parent hidden>
+        <header><strong>Родительская Task</strong></header>
+        <p data-task-checklist-parent-item></p>
+        <div data-task-checklist-parent-card></div>
+      </section>
       <section class="task-card-release-details" aria-label="Исполнение и изменения">
         <div class="task-card-detail-row">
           <span>Исполнитель</span>
-          <strong data-task-card-executor>Не назначен</strong>
+          <button type="button" class="task-card-executor" data-task-card-executor disabled>Не назначен</button>
         </div>
         <div class="task-card-changed-files" data-task-card-changed-files>
           <span>Изменённые файлы</span>
@@ -1038,14 +1134,13 @@
             <output data-workspace-card-rules-count>0 / 32 КиБ</output>
           </span>
         </label>
-        <div class="quick-messages-settings-row workspace-card-quick-messages">
-          <span class="setting-name">Быстрые ответы Workspace</span>
-          <span class="quick-messages-settings-control">
-            <span class="setting-value" data-workspace-card-quick-messages-count>Не заданы</span>
-            <button type="button" class="chip-button" data-workspace-card-quick-messages>
-              Настроить…
-            </button>
-          </span>
+        <div class="quick-messages-editor workspace-card-quick-messages">
+          <span class="setting-name">Prompt-шаблоны Workspace</span>
+          <span class="setting-value" data-workspace-card-quick-messages-count>Не заданы</span>
+          <div class="quick-messages-editor-controls" data-workspace-card-quick-messages>
+            <div class="quick-message-editor-rows" data-quick-message-rows></div>
+            <button type="button" class="chip-button" data-quick-message-add>+ Добавить шаблон</button>
+          </div>
         </div>
         <div class="workspace-release-workflow-setting">
           <label class="setting-switch workspace-release-workflow-switch">
@@ -1065,6 +1160,14 @@
           <span>Порядковый номер в Дашборде</span>
           <input type="number" min="1" step="1" data-workspace-card-order required>
         </label>
+        <section class="settings-section workspace-card-actions-section">
+          <h3 class="settings-section-title">Действия</h3>
+          <div class="settings-card workspace-card-actions">
+            <button type="button" class="workspace-card-archive" data-workspace-card-archive>
+              Архивировать
+            </button>
+          </div>
+        </section>
       </section>
       <footer>
         <button type="button" class="board-task-quiet" data-workspace-card-cancel>Отмена</button>
@@ -1088,7 +1191,7 @@
         </svg>
       </button>
     </header>
-    <p class="workspace-archive-note">Workspace хранятся здесь три дня без копирования чатов и Streams, затем удаляются автоматически.</p>
+    <p class="workspace-archive-note">Workspace хранятся бессрочно, пока вы явно не восстановите или окончательно не удалите их.</p>
     <div class="workspace-archive-list" data-workspace-archive-list></div>
     <p class="workspace-archive-empty" data-workspace-archive-empty>Архив пуст.</p>
   </dialog>
@@ -1154,21 +1257,21 @@
               <summary>Как считается расход</summary>
               <div class="setting-note-body">
                 <p>
-                  <b>ПТЭ</b> — приведённые токен-эквиваленты. База = входные токены +
-                  кэшированный вход × 0,1 + выходные токены × 6 + токены рассуждений × 6;
+                  Для каждого хода тариф выбирается по модели и времени его завершения.
+                  Старая история не пересчитывается по новым ценам.
                 </p>
                 <ul class="setting-note-list">
-                  <li>GPT-5.4 и GPT-5.6-Terra — База;</li>
-                  <li>GPT-5.5 и GPT-5.6-Sol — База ×2;</li>
-                  <li>GPT-5.4-mini — База ×0,3;</li>
-                  <li>GPT-5.6-Luna — База ×0,4;</li>
+                  <li>до 08.09.2026: Sol — $5 / $0,50 / $30, Terra — $2,50 / $0,25 / $15, Luna — $1 / $0,10 / $6;</li>
+                  <li>с 08.09.2026: GPT-6 Astra — $10 / $1 / $50, Sol — $4 / $0,40 / $20, Terra — $2 / $0,20 / $12, Luna — $0,20 / $0,02 / $1,20;</li>
+                  <li>цены указаны за 1 млн входных / кэшированных входных / выходных токенов; reasoning входит в выход;</li>
                   <li>
                     режим Fast дополнительно увеличивает расход в 2,5 раза для GPT-5.5 и всех
                     GPT-5.6 и в 2 раза для GPT-5.4; на GPT-5.4-mini не влияет;
                   </li>
                   <li>Codex Spark в общем расходе не учитывается — у него отдельный лимит.</li>
                 </ul>
-                <p><b>cr</b> — официальные «кредиты» Codex, ПТЭ / 16000.</p>
+                <p><b>ПТЭ</b> — приведённые токен-эквиваленты, cr × 16000.</p>
+                <p><b>cr</b> — общая единица расчётного расхода: 25 cr = $1.</p>
                 <p><b>$</b> — эквивалентная цена токенов по ключу API, cr / 25.</p>
                 <p><b>₽</b> — <span data-exchange-rate-hint>доллары по официальному курсу ЦБ РФ.</span></p>
                 <p class="setting-note-aside">
@@ -1184,9 +1287,16 @@
             <span class="switch-track" aria-hidden="true"></span>
           </label>
           <label class="setting-switch">
+            <input type="checkbox" data-journal-stream-group-toggle checked>
+            <span class="switch-text">Группировать ходы по потокам
+              <span class="switch-note">Во всех режимах, кроме «Потоки».</span>
+            </span>
+            <span class="switch-track" aria-hidden="true"></span>
+          </label>
+          <label class="setting-switch">
             <input type="checkbox" data-toggle="includeClaudeUsage">
             <span class="switch-text">Учитывать расход Claude
-              <span class="switch-note">В итогах журнала и на графике расхода.</span>
+              <span class="switch-note">В итогах журнала и на графике расхода. На расход по аккаунтам не влияет.</span>
             </span>
             <span class="switch-track" aria-hidden="true"></span>
           </label>
@@ -1312,14 +1422,6 @@
                 <button type="button" class="limits-range" data-limits-mode="usage" aria-pressed="true">Расход</button>
                 <button type="button" class="limits-range" data-limits-mode="speed" aria-pressed="false">Скорость</button>
               </div>
-              <label class="setting-switch chart-rail-switch limits-speed-window-setting"
-                data-limits-speed-window-setting hidden>
-                <input type="checkbox" data-limits-speed-full-window checked>
-                <span class="switch-text">Ждать полный интервал
-                  <span class="switch-note">Отключите, чтобы показывать предварительный темп сразу после сброса лимита.</span>
-                </span>
-                <span class="switch-track" aria-hidden="true"></span>
-              </label>
             </div>
             <div class="chart-rail-group">
               <span class="chart-rail-label">Период</span>
@@ -1356,9 +1458,10 @@
                     aria-live="polite"></div>
                   <ul class="limits-legend" data-limits-legend></ul>
                   <p class="statistics-note limits-speed-note" data-limits-speed-note hidden>
-                    На диапазонах 6 и 24 часа скорость считается по последнему часу, на длинных —
-                    по последним суткам. Пунктир показывает допустимый темп, горизонтальная линия —
-                    ровный расход 100% за неделю. Реальный сброс начинает новый участок графика.
+                    Основная линия показывает текущий темп, длинный пунктир — средний за 24 часа,
+                    мелкий пунктир — допустимый темп по остатку и времени до сброса. Он не меняет
+                    масштаб: значения выше шкалы прижимаются к верхней границе. Горизонтальная линия
+                    показывает ровный расход 100% за неделю.
                   </p>
                   <div class="limits-credits" data-limits-credits hidden></div>
                 </div>
@@ -1506,6 +1609,13 @@
                 Определяет, в какую точку графика попадёт расход завершённого хода.
               </span>
             </div>
+            <label class="setting-switch">
+              <input type="checkbox" data-toggle="includeClaudeUsage">
+              <span class="switch-text">Учитывать расход Claude
+                <span class="switch-note">В статистике и итогах журнала. На расход по аккаунтам не влияет.</span>
+              </span>
+              <span class="switch-track" aria-hidden="true"></span>
+            </label>
           </div>
         </section>
         <section class="statistics-card statistics-sync-card" data-statistics-sync-card
@@ -1770,14 +1880,13 @@
       <section class="settings-section">
         <h3 class="settings-section-title">Диалоги</h3>
         <div class="settings-card">
-          <div class="quick-messages-settings-row">
-            <span class="setting-name">Глобальные ответы</span>
-            <span class="quick-messages-settings-control">
-              <span class="setting-value" data-settings-global-quick-messages-count>Не заданы</span>
-              <button type="button" class="chip-button" data-settings-global-quick-messages>
-                Настроить…
-              </button>
-            </span>
+          <div class="quick-messages-editor quick-messages-settings-row">
+            <span class="setting-name">Глобальные prompt-шаблоны</span>
+            <span class="setting-value" data-settings-global-quick-messages-count>Не заданы</span>
+            <div class="quick-messages-editor-controls" data-settings-global-quick-messages>
+              <div class="quick-message-editor-rows" data-quick-message-rows></div>
+              <button type="button" class="chip-button" data-quick-message-add>+ Добавить шаблон</button>
+            </div>
           </div>
         </div>
       </section>
@@ -1881,7 +1990,7 @@
       </svg>
     </button>
     <div class="attachment-viewer-stage">
-      <div class="attachment-viewer-loading" data-attachment-viewer-loading>Загрузка…</div>
+      <div class="attachment-viewer-loading" data-attachment-viewer-loading role="status" aria-live="polite">Загрузка…</div>
       <img data-attachment-viewer-image alt="" hidden>
     </div>
     <button type="button" class="attachment-viewer-arrow is-next" data-attachment-viewer-next

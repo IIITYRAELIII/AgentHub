@@ -5,7 +5,7 @@ import { createDesktopApplicationRouter } from "../../../src/interfaces/desktop/
 function router(calls, { omit = [] } = {}) {
   const handler = async (params) => ({ params });
   const handlers = Object.fromEntries([
-    "snapshot", "runtimeHealth", "taskHistory", "rateLimitHistory", "usageHistory", "search", "workspaceMessageSearch", "markTaskRead",
+    "snapshot", "runtimeHealth", "retryStartup", "taskHistory", "rateLimitHistory", "usageHistory", "search", "workspaceMessageSearch", "markTaskRead",
     "openTask", "openTurn", "workspaceMessageOpen", "sendMessage", "taskDiff", "deferredInput",
     "statusDetails", "speakLastAnswer", "restartServer", "setAutostart",
     "updateServerConfiguration", "readPreTurnInstructions", "updateGlobalPreTurnInstructions",
@@ -13,7 +13,7 @@ function router(calls, { omit = [] } = {}) {
     "trustedDevices", "createDevicePairing", "revokeDevice",
     "messagePinSet", "messagePinsClear",
     "renameWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "renameStream", "moveStream",
-    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
+    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskChecklist", "boardTaskChecklistLinkedAction", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
     "boardWorkspaceMove", "usageSync", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
   ].map((name) => [name, handler]));
@@ -36,6 +36,15 @@ test("Desktop application router requires the Task workflow status handler", () 
     () => router([], { omit: ["boardTaskStatus"] }),
     /boardTaskStatus is required/u,
   );
+});
+
+test("Desktop application router forwards the exact startup generation for recovery", async () => {
+  const control = router([]);
+  const result = await control.handleDesktopControl({
+    action: "retry-startup", params: { startedAtMs: 1234 },
+    context: { source: "desktop-control", userId: "7" },
+  });
+  assert.equal(result.params.startedAtMs, 1234);
 });
 
 test("Desktop application router addresses mutations explicitly", async () => {
@@ -184,7 +193,7 @@ test("Desktop application router exposes runtime health without a Web server", a
   assert.deepEqual(result.params, { maxResponseBytes: 3_500_000 });
 });
 
-test("Desktop application router archives and restores a Workspace by stable id", async () => {
+test("Desktop application router archives, restores, and exactly deletes a Workspace", async () => {
   const calls = [];
   const control = router(calls);
   for (const action of ["archive-workspace", "restore-workspace"]) {
@@ -194,10 +203,17 @@ test("Desktop application router archives and restores a Workspace by stable id"
       context: { source: "desktop", userId: "7" },
     });
   }
+  await control.handleDesktopControl({
+    action: "delete-archived-workspace",
+    params: { workspaceId: "workspace-1", confirmationName: "Exact name" },
+    context: { source: "desktop", userId: "7" },
+  });
   assert.deepEqual(calls.map(([type, payload]) => [type, payload.workspaceId]), [
     ["workspace.archive", "workspace-1"],
     ["workspace.restore", "workspace-1"],
+    ["workspace.delete-archived", "workspace-1"],
   ]);
+  assert.equal(calls[2][1].confirmationName, "Exact name");
 });
 
 test("Desktop application router renames a Workspace folder atomically", async () => {
@@ -259,6 +275,28 @@ test("Desktop application router saves Task presentation fields", async () => {
   });
 });
 
+test("Desktop application router exposes the checklist mutation boundary", async () => {
+  const control = router([]);
+  const params = {
+    id: "board-1", operation: "add", text: "Проверить", expectedRevision: 1, requestId: "check-1",
+  };
+  const result = await control.handleDesktopControl({ action: "board-task-checklist", params });
+  assert.deepEqual(result.params, { ...params, maxResponseBytes: 3_500_000 });
+});
+
+test("Desktop application router exposes the exact linked Task action boundary", async () => {
+  const control = router([]);
+  const params = {
+    id: "parent", itemId: "item-1", linkedTaskId: "child", action: "done_and_close",
+    expectedTaskRevision: 7, expectedLinkedTaskRevision: 3, requestId: "linked-action-1",
+  };
+  const result = await control.handleDesktopControl({
+    action: "board-task-checklist-linked-action",
+    params,
+  });
+  assert.deepEqual(result.params, { ...params, maxResponseBytes: 3_500_000 });
+});
+
 test("Desktop application router marks read outside the command ledger", async () => {
   const calls = [];
   const control = router(calls);
@@ -304,7 +342,7 @@ test("Desktop application router accepts a message beside a blocked mutation", a
     "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport", "reportDiagnostic",
     "trustedDevices", "createDevicePairing", "revokeDevice",
     "messagePinSet", "messagePinsClear",
-    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
+    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskChecklist", "boardTaskChecklistLinkedAction", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
     "boardWorkspaceMove", "usageSync", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
   ].map((name) => [name, async () => ({ accepted: true, name })]));
@@ -336,7 +374,7 @@ test("Desktop application router accepts a restart beside a blocked mutation", a
     "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport", "reportDiagnostic",
     "trustedDevices", "createDevicePairing", "revokeDevice",
     "messagePinSet", "messagePinsClear",
-    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
+    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskChecklist", "boardTaskChecklistLinkedAction", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
     "boardWorkspaceMove", "usageSync", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
   ].map((name) => [name, async () => ({ accepted: true, name })]));

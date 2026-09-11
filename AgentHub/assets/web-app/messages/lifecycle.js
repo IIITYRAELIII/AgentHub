@@ -338,15 +338,6 @@ function turnRootUserKey(message) {
   return `${provider}\0${threadId}\0${turnId}\0root-user`;
 }
 
-function isTurnRootUser(messages, index) {
-  const message = messages[index];
-  const explicitSlot = String(message?.turnUserSlot ?? "").trim();
-  if (explicitSlot === "steer") return false;
-  const key = turnRootUserKey(message);
-  if (!key) return false;
-  return !messages.slice(0, index).some((candidate) => turnRootUserKey(candidate) === key);
-}
-
 function liveTurnUserSlot(message, index, {
   prompt = "",
   clientUserMessageId = "",
@@ -798,16 +789,21 @@ function reconcile(serverMessages, outgoingMessages) {
   }
   const matchedIds = new Set();
   const server = Array.isArray(serverMessages) ? serverMessages : [];
-  const matches = server.map((message, index) => {
+  const seenTurnUsers = new Set();
+  const matches = server.map((message) => {
     const serverClientIdentity = clientIdentityKey(message);
     const serverItemIdentity = identityKey(message);
     const client = clientOutgoing.get(serverClientIdentity);
     const exact = exactOutgoing.get(serverItemIdentity);
-    const rootMessage = isTurnRootUser(server, index);
+    const rootKey = turnRootUserKey(message);
+    const rootMessage = rootKey && !seenTurnUsers.has(rootKey)
+      && String(message?.turnUserSlot ?? "").trim() !== "steer";
+    // Every earlier user, including a steer, excludes another root fallback.
+    if (rootKey) seenTurnUsers.add(rootKey);
     // UI-001 migration guard for root items whose legacy App Server revision
     // omitted/replaced client_id. Remove with the rootOutgoing guard above.
     const root = rootMessage
-      ? rootOutgoing.get(turnRootUserKey(message))
+      ? rootOutgoing.get(rootKey)
       : null;
     // Reconciliation confirms only authoritative identities. Display content,
     // timestamps and turn-role proximity can coincide across real submissions.
@@ -1053,13 +1049,14 @@ function mergeLiveUserMessages(messages, {
         responseAnnotations: message.responseAnnotations.map((item) => ({ ...item })),
         responseAnnotationRequest: String(message.responseAnnotationRequest ?? ""),
       } : {}),
-      ...(role === "user" && turnUserSlot === "root" ? {
-        submittedAt: message.submittedAt ?? submittedAt ?? message.time ?? time ?? null,
-        startedAt: message.startedAt ?? startedAt ?? null,
+      ...(role === "user" ? {
+        submittedAt: message.submittedAt
+          ?? (turnUserSlot === "root" ? submittedAt ?? message.time ?? time : message.time) ?? null,
+        ...(turnUserSlot === "root" ? { startedAt: message.startedAt ?? startedAt ?? null } : {}),
       } : {}),
       time: role === "user" && turnUserSlot === "root"
         ? message.submittedAt ?? submittedAt ?? message.time ?? time ?? null
-        : message.time ?? time ?? null,
+        : role === "user" ? message.submittedAt ?? message.time ?? null : message.time ?? time ?? null,
       attachments: Array.isArray(message.attachments) && message.attachments.length
         ? message.attachments.map((attachment) => ({ ...attachment }))
         : role === "user" && turnUserSlot === "root"
@@ -1100,6 +1097,10 @@ function mergeLiveUserMessages(messages, {
         ? existing.author
         : candidate.author,
       time: candidate.time ?? existing.time ?? null,
+      ...(role === "user" && turnUserSlot === "steer" && existing.submittedAt ? {
+        submittedAt: existing.submittedAt,
+        time: existing.submittedAt,
+      } : {}),
       attachments: candidate.attachments.length
         ? candidate.attachments
         : existing.attachments ?? [],
@@ -1201,6 +1202,7 @@ function queueHistoryReceiptProjection(receipt) {
   const immediateIntake = !providerAccepted
     && !terminal
     && !requiresQueue
+    && receipt?.accepted !== false
     && (
       projectionIntent === "conversation"
       || (
@@ -1270,12 +1272,22 @@ function deferredInputDeliveryState(deferredInput, messageReceipts = []) {
   return state === "queued" ? "queued" : "deferred";
 }
 
+function queuedCommandRequiresAttention(deferredInput) {
+  const state = String(deferredInput?.state ?? "").trim();
+  return state === "attention-required"
+    || deferredInput?.attentionRequired === true
+    || (state === "pending" && Boolean(deferredInput?.lastError));
+}
+
 function queuedCommandUsesQueue(deferredInput, messageReceipts = []) {
   const state = String(deferredInput?.state ?? "").trim();
-  if (["paused", "attention-required", "unknown"].includes(state)) return true;
+  if (queuedCommandRequiresAttention(deferredInput) || ["paused", "unknown"].includes(state)) return true;
   if (String(deferredInput?.waitReason ?? "").trim() === "provider-start-unconfirmed") return true;
   const receipt = deferredInputReceipt(deferredInput, messageReceipts);
   if (receipt) return queueHistoryReceiptProjection(receipt).ownsDeferredQueue;
+  const conflictKind = String(deferredInput?.conflictKind ?? "").trim();
+  if (conflictKind && conflictKind !== "message-intake"
+    && ["pending", "queued", "dispatching", "steering"].includes(state)) return true;
   const projectionIntent = clientProjectionIntent(deferredInput?.clientProjectionIntent);
   if (projectionIntent === "conversation") return false;
   if (projectionIntent === "queue") return true;
@@ -1293,6 +1305,7 @@ function queuedCommandUsesQueue(deferredInput, messageReceipts = []) {
 
 function queuedCommandDeliveryState(deferredInput, messageReceipts = []) {
   if (!queuedCommandUsesQueue(deferredInput, messageReceipts)) return null;
+  if (queuedCommandRequiresAttention(deferredInput)) return "deferred";
   const state = String(deferredInput?.state ?? "").trim();
   if (state === "dispatching") return "sending";
   if (state === "steering") return "steering";

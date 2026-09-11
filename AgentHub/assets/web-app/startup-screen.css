@@ -585,3 +585,40 @@ html[data-hub-startup-screen] body::-webkit-scrollbar,
     transition-duration: 0.001ms !important;
   }
 }
+.hub-startup-recovery {
+  padding: 16px 32px;
+  position: relative;
+  z-index: 3;
+  flex: 0 0 auto;
+}
+
+.hub-startup-errors {
+  color: #f4a0a9;
+  overflow-wrap: anywhere;
+  max-height: 120px;
+  overflow: auto;
+}
+
+.hub-startup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.hub-startup-actions button {
+  padding: 10px 16px;
+  border: 1px solid #5b9ec8;
+  border-radius: 8px;
+  background: #102534;
+  color: #e0f3ff;
+  cursor: pointer;
+}
+
+.hub-startup-actions button:disabled {
+  opacity: .5;
+  cursor: default;
+}
+
+.hub-startup-action-status {
+  color: #a9c4d8;
+}

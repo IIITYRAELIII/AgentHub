@@ -81,9 +81,13 @@ export function buildCodexDeveloperInstructions({
   return sections.join("\n\n");
 }
 
-export function buildCodexCollaborationMode({
-  mode, model, reasoningEffort, developerInstructions = null,
-}) {
+export function buildCodexApplicationContext(developerInstructions) {
+  return {
+    "agent-hub": { kind: "application", value: String(developerInstructions ?? "") },
+  };
+}
+
+export function buildCodexCollaborationMode({ mode, model, reasoningEffort }) {
   if (!CODEX_COLLABORATION_MODES.includes(mode)) throw new Error("unknown Codex collaboration mode");
   if (!CODEX_REASONING_EFFORTS.includes(reasoningEffort)) throw new Error("unknown Codex reasoning effort");
   if (!String(model ?? "").trim()) throw new Error("Codex model is required");
@@ -93,9 +97,7 @@ export function buildCodexCollaborationMode({
     settings: {
       model,
       reasoning_effort: reasoningEffort,
-      developer_instructions: String(developerInstructions ?? "").trim()
-        ? String(developerInstructions)
-        : null,
+      developer_instructions: null,
     },
   };
 }

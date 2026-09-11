@@ -134,7 +134,9 @@ export class CodexRunFinalizer {
       operationKind: "user-turn",
       contextProbe: false,
       prompt: run.promptPreview,
+      rawPrompt: run.rawPrompt ?? run.promptPreview,
       clientUserMessageId: run.clientUserMessageId ?? null,
+      messageOrigin: run.messageOrigin ?? null,
       userMessages: run.userMessages,
       finalAnswer: String(answer ?? "").trim(),
       responseAnnotationReferences,
@@ -155,37 +157,56 @@ export class CodexRunFinalizer {
       estimatedCredits: completion.estimatedCredits,
       model: completion.model,
       serviceTier: completion.serviceTier,
+      completedAt: completion.completedAt,
     };
     const shouldDeliver = deliver ?? (run.telegramDeliveryRequested !== false);
     const message = [visibleAnswer, this.formatUsage(resolvedTracker)].filter(Boolean).join("\n\n");
     const telegramRequested = shouldDeliver && Number.isSafeInteger(completion.chatId);
-    const committed = await this.commitTerminal(completion, {
-      run,
-      channelIntents: {
-        telegram: {
-          requested: telegramRequested,
-          run: {
-            id: run.id ?? null,
-            streamId: run.streamId ?? null,
-            provider: "codex",
-            projectRoot: run.projectRoot,
-            threadId: run.threadId,
-            turnId: completedTurnId,
-            taskTitle: completion.taskTitle,
-            chatId: completion.chatId,
-            modelId: run.modelId ?? null,
-            serviceTier: run.serviceTier ?? null,
-            finishedProgressMessageIds: [...(run.finishedProgressMessageIds ?? [])],
+    let committed;
+    try {
+      committed = await this.commitTerminal(completion, {
+        run,
+        channelIntents: {
+          telegram: {
+            requested: telegramRequested,
+            run: {
+              id: run.id ?? null,
+              streamId: run.streamId ?? null,
+              provider: "codex",
+              projectRoot: run.projectRoot,
+              threadId: run.threadId,
+              turnId: completedTurnId,
+              taskTitle: completion.taskTitle,
+              chatId: completion.chatId,
+              modelId: run.modelId ?? null,
+              serviceTier: run.serviceTier ?? null,
+              finishedProgressMessageIds: [...(run.finishedProgressMessageIds ?? [])],
+            },
+            answer: visibleAnswer,
+            message,
+            speechText: visibleAnswer,
+            forceSpeechButton,
+            silent,
+            description,
           },
-          answer: visibleAnswer,
-          message,
-          speechText: visibleAnswer,
-          forceSpeechButton,
-          silent,
-          description,
         },
-      },
-    });
+      });
+    } catch (error) {
+      // The exact provider terminal is replayable by the existing observation
+      // and audit owners. Keep the run eligible for that replay if durability
+      // is temporarily unavailable; a one-shot event must not strand the lane
+      // forever in the intermediate `finishing` state.
+      if (run.status === "finishing") {
+        run.status = "running";
+        await this.saveState().catch((saveError) => {
+          this.logger.error(
+            `Cannot persist replayable terminal state for ${completedTurnId}:`,
+            saveError.message,
+          );
+        });
+      }
+      throw error;
+    }
     run.responseText = String(
       committed.terminal?.finalAnswer ?? completion.finalAnswer ?? answer ?? "",
     ).trim();
@@ -198,7 +219,9 @@ export class CodexRunFinalizer {
     run.terminalRevision = Number(committed.terminal?.terminalRevision) || null;
     await this.markRunCompleted(run);
     this.turnStarts.delete(startKey);
-    await this.saveState();
+    // The durable terminal owns delivery retries. Release admission and start
+    // reserved post-turn maintenance before optional outbox materialization.
+    await this.completeRun(run);
     let deliveryResult = null;
     try {
       deliveryResult = await this.deliverTerminal(committed.outbox);
@@ -207,8 +230,6 @@ export class CodexRunFinalizer {
         `Terminal revision ${committed.terminal.terminalRevision} remains pending for ${completedTurnId}:`,
         error.message,
       );
-    } finally {
-      await this.completeRun(run);
     }
     return deliveryResult?.telegram ?? deliveryResult;
   }

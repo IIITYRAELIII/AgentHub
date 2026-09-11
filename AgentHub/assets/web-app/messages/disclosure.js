@@ -7,7 +7,6 @@
   const TURN_TRACE_ACTIVITY_GROUP_ID = "trace:activities";
   const RESPONSE_ANNOTATION_SOURCE_VERSION = 1;
   const RESPONSE_ANNOTATION_MAX_OFFSET = 1_000_000;
-  const RESPONSE_ANNOTATION_MAX_SPAN = 400;
   const RESPONSE_ANNOTATION_MAX_SURFACE_INDEX = 199;
   const RESPONSE_ANNOTATION_SURFACES = new Set(["message-body", "trace-reasoning", "reasoning"]);
   const RESPONSE_ANNOTATION_SOURCE_ROLES = new Set(["agent", "user"]);
@@ -24,24 +23,35 @@
     turnId,
     itemId,
     role = "agent",
+    clientUserMessageId = "",
   } = {}) {
+    if (clientUserMessageId) {
+      const values = [provider, threadId, clientUserMessageId].map((value) => String(value ?? "").trim());
+      return role === "user" && values.every(Boolean) ? `client\u001f${values.join("\u001f")}\u001fuser` : "";
+    }
     const values = [provider, threadId, turnId, itemId, role].map((value) => String(value ?? "").trim());
     return values.every(Boolean) ? `provider\u001f${values.join("\u001f")}` : "";
   }
 
-  function responseAnnotationSourceIdentity(message) {
+  function responseAnnotationSourceIdentity(message, source = null) {
     const provider = cleanSourceIdentity(message?.provider, 20).toLowerCase();
     const threadId = cleanSourceIdentity(message?.threadId);
-    const turnId = cleanSourceIdentity(message?.turnId);
-    const itemId = cleanSourceIdentity(message?.itemId);
     const inputRole = String(message?.role ?? "").trim().toLowerCase();
     const role = ["agent", "assistant"].includes(inputRole) ? "agent" : inputRole === "user" ? "user" : "";
-    const messageKey = responseAnnotationSourceMessageKey({ provider, threadId, turnId, itemId, role });
-    return messageKey ? { provider, threadId, turnId, itemId, role, messageKey } : null;
+    const useClientIdentity = role === "user" && Boolean(source ? source.clientUserMessageId : message?.clientUserMessageId);
+    const clientUserMessageId = useClientIdentity ? cleanSourceIdentity(message?.clientUserMessageId) : "";
+    if (useClientIdentity && !clientUserMessageId) return null;
+    const turnId = useClientIdentity ? "" : cleanSourceIdentity(message?.turnId);
+    const itemId = useClientIdentity ? "" : cleanSourceIdentity(message?.itemId);
+    const messageKey = responseAnnotationSourceMessageKey({ provider, threadId, turnId, itemId, role, clientUserMessageId });
+    return messageKey ? {
+      provider, threadId, turnId, itemId, role, messageKey,
+      ...(clientUserMessageId ? { clientUserMessageId } : {}),
+    } : null;
   }
 
-  function responseAnnotationSourceContent(message) {
-    const identity = responseAnnotationSourceIdentity(message);
+  function responseAnnotationSourceContent(message, source = null) {
+    const identity = responseAnnotationSourceIdentity(message, source);
     if (!identity) return "";
     return JSON.stringify({
       version: RESPONSE_ANNOTATION_SOURCE_VERSION,
@@ -62,6 +72,8 @@
     const turnId = cleanSourceIdentity(value.turnId);
     const itemId = cleanSourceIdentity(value.itemId);
     const role = String(value.role ?? "").trim().toLowerCase();
+    const clientUserMessageId = cleanSourceIdentity(value.clientUserMessageId);
+    if (value.clientUserMessageId && (!clientUserMessageId || role !== "user" || turnId || itemId)) return null;
     const surfaceKind = String(value.surfaceKind ?? "").trim();
     const surfaceIndex = Number(value.surfaceIndex);
     const start = Number(value.start);
@@ -69,15 +81,14 @@
     const contentHash = String(value.contentHash ?? "").trim().toLowerCase();
     const surfaceHash = String(value.surfaceHash ?? "").trim().toLowerCase();
     const selectionHash = String(value.selectionHash ?? "").trim().toLowerCase();
-    const messageKey = responseAnnotationSourceMessageKey({ provider, threadId, turnId, itemId, role });
-    if (!provider || !threadId || !turnId || !itemId || !RESPONSE_ANNOTATION_SOURCE_ROLES.has(role)
+    const messageKey = responseAnnotationSourceMessageKey({ provider, threadId, turnId, itemId, role, clientUserMessageId });
+    if (!provider || !threadId || (!clientUserMessageId && (!turnId || !itemId)) || !RESPONSE_ANNOTATION_SOURCE_ROLES.has(role)
       || String(value.messageKey ?? "") !== messageKey
       || !RESPONSE_ANNOTATION_SURFACES.has(surfaceKind)
       || !Number.isSafeInteger(surfaceIndex) || surfaceIndex < 0
       || surfaceIndex > RESPONSE_ANNOTATION_MAX_SURFACE_INDEX
       || !Number.isSafeInteger(start) || !Number.isSafeInteger(end)
       || start < 0 || end <= start || end > RESPONSE_ANNOTATION_MAX_OFFSET
-      || end - start > RESPONSE_ANNOTATION_MAX_SPAN
       || !SHA256.test(contentHash) || !SHA256.test(surfaceHash) || !SHA256.test(selectionHash)) return null;
     return {
       version: RESPONSE_ANNOTATION_SOURCE_VERSION,
@@ -87,6 +98,7 @@
       itemId,
       role,
       messageKey,
+      ...(clientUserMessageId ? { clientUserMessageId } : {}),
       surfaceKind,
       surfaceIndex,
       start,
@@ -101,10 +113,11 @@
     const normalized = normalizedResponseAnnotationSource(source);
     if (!normalized) return null;
     const values = Array.isArray(messages) ? messages : [];
-    const index = values.findIndex((message) => (
-      responseAnnotationSourceIdentity(message)?.messageKey === normalized.messageKey
+    const matches = values.flatMap((message, index) => (
+      responseAnnotationSourceIdentity(message, normalized)?.messageKey === normalized.messageKey
+        ? [{ message, index }] : []
     ));
-    return index >= 0 ? { message: values[index], index } : null;
+    return matches.length === 1 ? matches[0] : null;
   }
 
   function responseAnnotationSourceMessages(messages, liveMessage = null) {
@@ -156,8 +169,7 @@
     const trailing = selected.match(/\s*$/u)?.[0].length ?? 0;
     const trimmedStart = start + leading;
     const trimmedEnd = end - trailing;
-    if (trimmedEnd <= trimmedStart || trimmedEnd > RESPONSE_ANNOTATION_MAX_OFFSET
-      || trimmedEnd - trimmedStart > RESPONSE_ANNOTATION_MAX_SPAN) return null;
+    if (trimmedEnd <= trimmedStart || trimmedEnd > RESPONSE_ANNOTATION_MAX_OFFSET) return null;
     return { start: trimmedStart, end: trimmedEnd };
   }
 

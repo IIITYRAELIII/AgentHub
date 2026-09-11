@@ -3,7 +3,6 @@ import {
   taskCatalogTitleSignature,
 } from "../domain/task-catalog-titles.mjs";
 import {
-  preserveUnknownActivityOnSourceFailure,
   taskOrderingActivityAtMs,
 } from "../application/task-catalog-projection.mjs";
 import { catalogEntryIsSelected } from "../domain/task-catalog-identity.mjs";
@@ -25,12 +24,14 @@ export function createTaskCatalogFinalizationComposition({
   selectionStore,
   taskSyncStore,
   saveState,
+  logger = console,
 }) {
   let synchronizedTitleSignature = "";
   let titlesSynchronizedAt = 0;
+  let titleProjectionPending = false;
 
-  async function finalize(mergedEntries, { sourceResults = [] } = {}) {
-    let nextCatalog = preserveUnknownActivityOnSourceFailure(mergedEntries, sourceResults);
+  async function finalize(mergedEntries) {
+    let nextCatalog = mergedEntries;
     for (const entry of nextCatalog) {
       entry.displayTitle = taskDisplayTitle(entry);
       taskRuns.bindStream?.(entry);
@@ -42,25 +43,37 @@ export function createTaskCatalogFinalizationComposition({
     }
     nextCatalog = statusTaskEntries(nextCatalog, nextCatalog.length);
     const nextTitleSignature = taskCatalogTitleSignature(nextCatalog);
-    const shouldSynchronizeTitles = nextTitleSignature !== synchronizedTitleSignature
+    const shouldSynchronizeTitles = titleProjectionPending || nextTitleSignature !== synchronizedTitleSignature
       || Date.now() - titlesSynchronizedAt >= titleReconcileIntervalMs;
     if (shouldSynchronizeTitles) {
+      let projectionDeferred = false;
       for (const project of projects) {
-        await workLogUsageStore.synchronizeTaskTitlesAndProject({
-          titles: nextCatalog
-            .filter((entry) => samePath(entry.projectRoot, project.path))
-            .map((entry) => ({
-              provider: entry.provider,
-              threadId: entry.threadId,
-              taskTitle: entry.title,
-            })),
-          projectRoot: project.path,
-          journalDatabaseFile,
-          projectionProjectRoots,
-        });
+        try {
+          await workLogUsageStore.synchronizeTaskTitlesAndProject({
+            titles: nextCatalog
+              .filter((entry) => samePath(entry.projectRoot, project.path))
+              .map((entry) => ({
+                provider: entry.provider,
+                threadId: entry.threadId,
+                taskTitle: entry.title,
+              })),
+            projectRoot: project.path,
+            journalDatabaseFile,
+            projectionProjectRoots,
+          });
+        } catch (error) {
+          if (error?.code !== "JOURNAL_PROJECTION_CONFLICT") throw error;
+          projectionDeferred = true;
+          logger.warn("Journal title projection deferred after a revision conflict; task catalog refresh continues.");
+        }
       }
-      synchronizedTitleSignature = nextTitleSignature;
-      titlesSynchronizedAt = Date.now();
+      // A derived journal conflict must not discard the current provider catalog.
+      // Keep reconciliation dirty so its existing owner retries the same titles.
+      titleProjectionPending = projectionDeferred;
+      if (!projectionDeferred) {
+        synchronizedTitleSignature = nextTitleSignature;
+        titlesSynchronizedAt = Date.now();
+      }
     }
 
     let titleChanged = false;
@@ -80,7 +93,7 @@ export function createTaskCatalogFinalizationComposition({
       selectionStore.setTitle(current.displayTitle);
       titleChanged = true;
     }
-    taskSyncStore.recordCatalog(nextCatalog);
+    await taskSyncStore.recordCatalog(nextCatalog);
     await taskSyncStore.save();
     if (titleChanged) await saveState();
     return nextCatalog;

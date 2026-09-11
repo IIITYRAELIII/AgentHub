@@ -8,6 +8,7 @@ import {
   StreamContextMaintenanceService,
 } from "../../src/application/stream-context-maintenance-service.mjs";
 import { StreamMaintenanceRegistry } from "../../src/application/stream-maintenance-registry.mjs";
+import { CodexContextMaintenanceService } from "../../src/providers/codex/codex-context-maintenance-service.mjs";
 
 function fixture({
   beforePercent = 80,
@@ -98,7 +99,7 @@ function fixture({
       events.push(["probe-idle", ...args, registry.isActive(source)]);
       return args[1] === source.turnId ? sourceIdle : probeIdle;
     },
-    rotate: async () => ({ thread: { id: "thread-new" } }),
+    rotate: async () => ({ compactionId: "manual-1", thread: { id: "thread-new" } }),
     rotateCompacted: async (...args) => {
       events.push([
         "rotate",
@@ -167,6 +168,92 @@ function fixture({
   });
   return { clientSelections, deferredInputs, events, registry, service, source };
 }
+
+test("hung post-turn rollout read releases maintenance and wakes the original queued input", async () => {
+  const state = fixture({ beforePercent: 90 });
+  const queued = { id: "queued-after-terminal", streamId: state.source.streamId,
+    provider: state.source.provider, threadId: state.source.threadId,
+    clientUserMessageId: "original-client-id", prompt: "next message" };
+  state.deferredInputs.put(queued, "queued");
+  const originalInput = structuredClone(state.deferredInputs.get(queued.id));
+  let finishRead;
+  let reads = 0;
+  const blocked = new Promise((resolve) => { finishRead = resolve; });
+  const provider = new CodexContextMaintenanceService({
+    knownRolloutPath: async () => "rollout.jsonl",
+    readRolloutActivity: () => { reads += 1; return blocked; },
+  });
+  // Use the real provider deadline and the production post-turn timeout.
+  state.service.provider.waitForContextProbeIdle = provider.waitForContextProbeIdle.bind(provider);
+  const errors = [];
+  state.service.logger = { error: (...args) => errors.push(args) };
+  assert.equal(state.service.reserveAfterTurn(state.source), true);
+  const other = { ...state.source, streamId: "other-stream", threadId: "other-thread" };
+  const otherReservation = state.registry.begin(other);
+  const result = await state.service.maintainAfterTurn(state.source);
+  assert.equal(result.compacted, false);
+  assert.match(result.error, /rollout-activity/);
+  assert.equal(errors.length, 1);
+  assert.equal(state.registry.isActive(state.source), false);
+  assert.equal(state.registry.isActive(other), true);
+  assert.deepEqual(state.deferredInputs.get(queued.id), originalInput);
+  assert.equal(state.events.filter(([name, id]) => name === "wake" && id === queued.id).length, 1);
+  assert.equal(state.events.some(([name]) => name === "compact" || name === "rotate"), false);
+  finishRead({ running: false });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(reads, 1);
+  assert.equal(state.events.some(([name]) => name === "compact" || name === "rotate"), false);
+  state.registry.end(otherReservation);
+});
+
+test("cancelling preparation wakes once and late idle read cannot start work or release a replacement", async () => {
+  const state = fixture();
+  state.deferredInputs.put({ id: "queued-cancel", streamId: state.source.streamId,
+    provider: state.source.provider, threadId: state.source.threadId, prompt: "next" }, "queued");
+  let finishIdle;
+  state.service.provider.waitForContextProbeIdle = () => new Promise((resolve) => { finishIdle = resolve; });
+  assert.equal(state.service.reserveAfterTurn(state.source), true);
+  const old = state.registry.entry(state.source);
+  assert.equal(old.phase, "preparing");
+  const maintaining = state.service.maintainAfterTurn(state.source);
+  assert.equal(state.service.cancelPreparing(state.source).accepted, true);
+  assert.equal(state.service.cancelPreparing(state.source), null);
+  const current = state.registry.begin({ ...state.source, turnId: "turn-next" }, "automatic-post-turn");
+  finishIdle(true);
+  assert.equal((await maintaining).cancelled, true);
+  assert.equal(state.registry.entry(state.source), current);
+  assert.equal(state.events.some(([name]) => name === "compact"), false);
+  assert.deepEqual(state.events.filter(([name]) => name === "wake"), [["wake", "queued-cancel"]]);
+});
+
+test("provider start owns maintenance before awaiting acceptance and cannot be cancelled as preparation", async () => {
+  const state = fixture();
+  let finishStart;
+  state.service.provider.start = () => new Promise((resolve) => { finishStart = resolve; });
+  state.service.reserveAfterTurn(state.source);
+  const maintaining = state.service.maintainAfterTurn(state.source);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(state.registry.entry(state.source).phase, "starting");
+  assert.equal(state.service.cancelPreparing(state.source).accepted, false);
+  assert.equal(state.registry.isActive(state.source), true);
+  finishStart({ accepted: false, message: "Provider rejected compaction" });
+  assert.equal((await maintaining).reason, "Provider rejected compaction");
+  assert.equal(state.registry.isActive(state.source), false);
+});
+
+test("provider compaction failure releases its reservation and wakes the original input", async () => {
+  const state = fixture();
+  state.service.logger = { error() {} };
+  state.service.provider.compactions.waitForSettlement = async () => ({ status: "failed" });
+  state.deferredInputs.put({ id: "queued-failure", streamId: state.source.streamId,
+    provider: state.source.provider, threadId: state.source.threadId, prompt: "next" }, "queued");
+  state.service.reserveAfterTurn(state.source);
+  const result = await state.service.maintainAfterTurn(state.source);
+  assert.equal(result.compacted, false);
+  assert.equal(state.registry.isActive(state.source), false);
+  assert.deepEqual(state.events.filter(([name]) => name === "wake"), [["wake", "queued-failure"]]);
+  assert.equal(state.events.some(([name]) => name === "probe" || name === "rotate"), false);
+});
 
 function claudeFixture({ measuresContextItself = true, settlementStatus = "completed" } = {}) {
   const events = [];
@@ -541,6 +628,78 @@ test("a failed post-rotation probe keeps the new Thread and releases the queue",
   assert.equal(state.deferredInputs.get("queued-after-failed-probe").threadId, "thread-new");
   assert.equal(state.events.some(([name, id]) => name === "wake" && id === "queued-after-failed-probe"), true);
   assert.equal(state.registry.isActive(state.source), false);
+  const rotation = state.events.find(([name, , , details]) => name === "annotate" && details.rotated);
+  assert.equal(rotation[2], "manual-1");
+  assert.equal(rotation[3].rotationThreadId, "thread-new");
+  assert.ok(Number.isFinite(Date.parse(rotation[3].rotationCompletedAt)));
+  assert.equal(state.events.some(([name, , , details]) => (
+    name === "annotate" && details.rotationAfterPercent !== undefined
+  )), false);
+  assert.ok(state.events.findIndex(([name]) => name === "save") > state.events.indexOf(rotation));
+});
+
+for (const mode of ["manual", "automatic", "observed"]) {
+  test(`${mode} rotation records its exact target only after binding and saves before releasing maintenance`, async () => {
+    const state = fixture({
+      afterPercent: 28,
+      observedCompaction: mode === "observed",
+      observedAfterPercent: 28,
+    });
+    let bind;
+    state.service.workspaceCatalog.bindThread = () => new Promise((resolve) => { bind = resolve; });
+    const snapshots = [];
+    let finishSave;
+    state.service.saveState = () => {
+      snapshots.push({
+        active: state.registry.isActive(state.source),
+        annotations: structuredClone(state.events.filter(([name]) => name === "annotate")),
+      });
+      return snapshots.length === 1 ? new Promise((resolve) => { finishSave = resolve; }) : Promise.resolve();
+    };
+    if (mode !== "manual") assert.equal(state.service.reserveAfterTurn(state.source), true);
+    const result = mode === "manual"
+      ? state.service.rotate(state.source)
+      : state.service.maintainAfterTurn(state.source);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(typeof bind, "function");
+    assert.equal(state.events.some(([name, , , details]) => name === "annotate" && details.rotated), false);
+    bind();
+    await new Promise((resolve) => setImmediate(resolve));
+    const rotation = snapshots[0].annotations.find(([, , , details]) => details.rotated);
+    assert.equal(rotation[2], mode === "manual" ? "manual-1" : mode === "observed" ? "compact-observed" : "compact-1");
+    assert.equal(rotation[3].rotationThreadId, "thread-new");
+    assert.ok(Number.isFinite(Date.parse(rotation[3].rotationCompletedAt)));
+    assert.equal(state.registry.isActive(state.source), true);
+    assert.equal(state.events.some(([name, target]) => name === "probe" && target.threadId === "thread-new"), false);
+    finishSave();
+    await result;
+    assert.equal(snapshots.length, 2);
+    assert.equal(snapshots.every((snapshot) => snapshot.active), true);
+    assert.equal(snapshots[1].annotations.at(-1)[3].rotationAfterPercent, 6);
+    assert.equal(state.registry.isActive(state.source), false);
+  });
+
+  test(`${mode} failed binding cannot report a completed rotation`, async () => {
+    const state = fixture({ afterPercent: 28, observedCompaction: mode === "observed", observedAfterPercent: 28 });
+    state.service.workspaceCatalog.bindThread = async () => { throw new Error("binding failed"); };
+    state.service.logger = { error() {} };
+    if (mode === "manual") {
+      await assert.rejects(state.service.rotate(state.source), /binding failed/);
+    } else {
+      state.service.reserveAfterTurn(state.source);
+      assert.equal((await state.service.maintainAfterTurn(state.source)).error, "binding failed");
+    }
+    assert.equal(state.events.some(([name, , , details]) => name === "annotate" && details.rotated), false);
+    assert.equal(state.events.some(([name]) => name === "save"), false);
+    assert.equal(state.registry.isActive(state.source), false);
+  });
+}
+
+test("manual rotation without a returned compaction identity never annotates another operation", async () => {
+  const state = fixture({ observedCompaction: true, observedAfterPercent: 28 });
+  state.service.provider.rotate = async () => ({ thread: { id: "thread-new" } });
+  await state.service.rotate(state.source);
+  assert.equal(state.events.some(([name]) => name === "annotate"), false);
 });
 
 test("a mid-turn compaction rotates only after completion and transfers that whole turn", async () => {

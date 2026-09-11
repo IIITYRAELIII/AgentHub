@@ -1,3 +1,4 @@
+import { receiptUserDisplay, userDisplayText } from "../../domain/user-message-display.mjs";
 import { createHash } from "node:crypto";
 import {
   displayUserPrompt,
@@ -6,8 +7,15 @@ import {
   isEmptyTurnCompletionPlaceholder,
   userTaskReferencePromptDetails,
   withoutCodexInspectionAttachments,
+  withoutMisclassifiedSubagentUsers,
 } from "../../application/task-history.mjs";
 import { normalizedResponseAnnotations } from "../../domain/response-annotation-source.mjs";
+import {
+  canonicalizeUserMessages,
+  mergedUserMessageSnapshotAuthority,
+  mergeCanonicalUserMessages,
+  userMessageSnapshotAuthority,
+} from "../../domain/canonical-user-messages.mjs";
 import {
   CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX,
   isCodexContextProbeTurn,
@@ -17,9 +25,13 @@ import {
   isCodexAutoCompactionTurnId,
 } from "../../domain/codex-internal-turn.mjs";
 import {
-  interstreamMessageDetails,
+  consistentInterstreamRecordIdentity,
   interstreamOriginAuthor,
+  normalizeInterstreamClientUserMessageId,
   normalizeInterstreamOrigin,
+  sameAuditedInterstreamOrigin,
+  trustedAuditedInterstreamBodyDetails,
+  trustedInterstreamMessageDetails,
 } from "../../domain/interstream-message.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { taskRunIsActive } from "../../domain/task-runs.mjs";
@@ -27,6 +39,59 @@ import { withDurableMessageMetadata } from "../../domain/stream-message-pin.mjs"
 
 const MAX_CACHED_HISTORIES = 12;
 const MAX_CACHED_TURNS_PER_HISTORY = 40;
+
+function coalesceInterstreamRootAlias(messages, turn) {
+  const values = Array.isArray(messages) ? messages : [];
+  const turnOrigin = normalizeInterstreamOrigin(turn?.promptOrigin);
+  const requestId = String(turnOrigin?.requestId ?? "").trim();
+  const clientUserMessageId = requestId ? `mcp:${requestId}` : "";
+  const promptInterstream = trustedInterstreamMessageDetails(turn?.prompt, {
+    origin: turnOrigin,
+    clientUserMessageId,
+  });
+  if (!requestId || !promptInterstream) return values;
+
+  const canonical = values.flatMap((message, index) => {
+    const origin = normalizeInterstreamOrigin(message?.origin ?? message?.messageOrigin);
+    const messageClientUserMessageId = String(message?.clientUserMessageId ?? "").trim();
+    return message?.role === "user"
+      && sameAuditedInterstreamOrigin(origin, turnOrigin)
+      && messageClientUserMessageId === clientUserMessageId
+      ? [{ index, message }]
+      : [];
+  });
+  if (canonical.length !== 1) return values;
+
+  const aliases = values.flatMap((message, index) => {
+    if (
+      message?.role !== "user"
+      || index === canonical[0].index
+      || String(message?.clientUserMessageId ?? "").trim()
+      || normalizeInterstreamOrigin(message?.origin ?? message?.messageOrigin)
+    ) return [];
+    const interstream = trustedInterstreamMessageDetails(message?.text, {
+      origin: turnOrigin,
+      clientUserMessageId,
+    });
+    return interstream ? [{ index, message }] : [];
+  });
+  if (aliases.length !== 1) return values;
+
+  const alias = aliases[0];
+  const official = canonical[0];
+  const merged = {
+    ...structuredClone(alias.message),
+    ...structuredClone(official.message),
+    itemId: String(alias.message?.itemId ?? official.message?.itemId ?? ""),
+    clientUserMessageId,
+    origin: turnOrigin,
+  };
+  const first = Math.min(alias.index, official.index);
+  const second = Math.max(alias.index, official.index);
+  values[first] = merged;
+  values.splice(second, 1);
+  return values;
+}
 
 function historyItemTimestamp(item) {
   const startedAt = Date.parse(String(item?.startedAt ?? ""));
@@ -95,108 +160,6 @@ export function visibleTaskHistoryMessageCount(history) {
   }, 0);
 }
 
-function userMessageEntries(messages) {
-  let ordinal = 0;
-  return (Array.isArray(messages) ? messages : []).flatMap((message, index) => {
-    if (message?.role !== "user") return [];
-    const entry = { index, ordinal, message };
-    ordinal += 1;
-    return [entry];
-  });
-}
-
-function syntheticUserOrdinal(message, turnId) {
-  if (message?.role !== "user" || message?.clientUserMessageId) return null;
-  const match = new RegExp(`^${turnId}:rollout-user:(\\d+)$`, "u")
-    .exec(String(message?.itemId ?? ""));
-  return match ? Number(match[1]) : null;
-}
-
-function normalizedUserText(message) {
-  return displayUserPrompt(message?.text) || String(message?.text ?? "").trim();
-}
-
-function uniqueMessageValues(values, keyFor) {
-  const known = new Set();
-  return values.filter((value) => {
-    const key = keyFor(value);
-    if (!key || known.has(key)) return false;
-    known.add(key);
-    return true;
-  });
-}
-
-function mergeSyntheticUserCopy(synthetic, canonical) {
-  const attachments = uniqueMessageValues([
-    ...(Array.isArray(canonical?.attachments) ? canonical.attachments : []),
-    ...(Array.isArray(synthetic?.attachments) ? synthetic.attachments : []),
-  ], (item) => String(item?.id ?? item?.path ?? item?.url ?? "").toLowerCase());
-  const attachmentSources = uniqueMessageValues([
-    ...(Array.isArray(canonical?.attachmentSources) ? canonical.attachmentSources : []),
-    ...(Array.isArray(synthetic?.attachmentSources) ? synthetic.attachmentSources : []),
-  ], (item) => `${String(item?.type ?? "")}\0${String(item?.value ?? "").toLowerCase()}`);
-  return {
-    ...structuredClone(synthetic),
-    ...structuredClone(canonical),
-    time: canonical?.time ?? synthetic?.time ?? null,
-    ...(attachments.length ? { attachments } : {}),
-    ...(attachmentSources.length ? { attachmentSources } : {}),
-  };
-}
-
-function syntheticMigrationPair(left, right, turnId, ordinal) {
-  const leftSynthetic = syntheticUserOrdinal(left, turnId) === ordinal;
-  const rightSynthetic = syntheticUserOrdinal(right, turnId) === ordinal;
-  if (leftSynthetic === rightSynthetic) return null;
-  const synthetic = leftSynthetic ? left : right;
-  const canonical = leftSynthetic ? right : left;
-  if (!String(canonical?.clientUserMessageId ?? "").trim()) return null;
-  const syntheticText = normalizedUserText(synthetic);
-  if (!syntheticText || syntheticText !== normalizedUserText(canonical)) return null;
-  return { synthetic, canonical };
-}
-
-function coalesceInterstreamRootAlias(messages, turn) {
-  const values = Array.isArray(messages) ? messages : [];
-  const turnOrigin = normalizeInterstreamOrigin(turn?.promptOrigin)
-    ?? interstreamMessageDetails(turn?.prompt)?.origin;
-  const requestId = String(turnOrigin?.requestId ?? "").trim();
-  const prompt = displayUserPrompt(turn?.prompt) || String(turn?.prompt ?? "").trim();
-  if (!requestId || !prompt) return values;
-
-  const canonical = values.flatMap((message, index) => {
-    const origin = normalizeInterstreamOrigin(message?.origin);
-    return message?.role === "user"
-      && origin?.requestId === requestId
-      && String(message?.clientUserMessageId ?? "").trim() === `mcp:${requestId}`
-      && normalizedUserText(message) === prompt
-      ? [{ index, message }]
-      : [];
-  });
-  if (canonical.length !== 1) return values;
-
-  const aliases = values.flatMap((message, index) => (
-    message?.role === "user"
-    && index !== canonical[0].index
-    && !String(message?.clientUserMessageId ?? "").trim()
-    && !normalizeInterstreamOrigin(message?.origin)
-    && normalizedUserText(message) === prompt
-      ? [{ index, message }]
-      : []
-  ));
-  if (aliases.length !== 1) return values;
-
-  const alias = aliases[0];
-  const official = canonical[0];
-  const merged = mergeSyntheticUserCopy(alias.message, official.message);
-  if (alias.message?.itemId) merged.itemId = alias.message.itemId;
-  const first = Math.min(alias.index, official.index);
-  const second = Math.max(alias.index, official.index);
-  values[first] = merged;
-  values.splice(second, 1);
-  return values;
-}
-
 function exactTerminalAgentCandidate(message, turnId, canonicalItemId) {
   if (message?.role !== "agent" || message?.kind === "subagent") return false;
   if (String(message?.agentThreadId ?? "").trim()) return false;
@@ -217,28 +180,31 @@ function exactTerminalAgentCandidate(message, turnId, canonicalItemId) {
 }
 
 // Builds the bounded Desktop/Mini App history read-model for one task.
-function mergeDurableMessages(hydratedMessages, durableMessages, turnId, turn) {
-  const values = structuredClone(Array.isArray(hydratedMessages) ? hydratedMessages : []);
-  const hydratedUsers = new Map(userMessageEntries(values).map((entry) => [entry.ordinal, entry]));
-  const durableValues = Array.isArray(durableMessages) ? durableMessages : [];
-  const durableOrdinals = new Map(userMessageEntries(durableValues)
-    .map((entry) => [entry.index, entry.ordinal]));
-  for (const [durableIndex, durable] of durableValues.entries()) {
+function mergeDurableMessages(hydratedMessages, durableMessages, turnId, hydratedTurn, durableTurn) {
+  const durableValues = withoutMisclassifiedSubagentUsers(durableMessages, hydratedMessages);
+  const hydratedValues = withoutMisclassifiedSubagentUsers(hydratedMessages, durableMessages);
+  const hydratedUsers = canonicalizeUserMessages(
+    hydratedValues.filter((message) => message?.role === "user"),
+  );
+  const durableUsers = canonicalizeUserMessages(
+    durableValues.filter((message) => message?.role === "user"),
+  );
+  const users = durableTurn?.userMessageAuthority === "terminal-ledger"
+    ? durableUsers.map((message) => structuredClone(message))
+    : mergeCanonicalUserMessages(
+      durableUsers,
+      hydratedUsers,
+      {
+        currentSnapshotAuthority: userMessageSnapshotAuthority(durableTurn),
+        snapshotAuthority: userMessageSnapshotAuthority(hydratedTurn),
+      },
+    );
+  const values = structuredClone(hydratedValues.filter((message) => message?.role !== "user"));
+  for (const durable of durableValues.filter((message) => message?.role !== "user")) {
     const itemId = String(durable?.itemId ?? "").trim();
-    const clientId = String(durable?.clientUserMessageId ?? "").trim();
     let index = values.findIndex((message) => (
-      (itemId && String(message?.itemId ?? "").trim() === itemId)
-      || (clientId && String(message?.clientUserMessageId ?? "").trim() === clientId)
+      itemId && String(message?.itemId ?? "").trim() === itemId
     ));
-    let migrationPair = null;
-    if (index < 0 && durable?.role === "user") {
-      const ordinal = durableOrdinals.get(durableIndex);
-      const hydrated = hydratedUsers.get(ordinal);
-      migrationPair = hydrated
-        ? syntheticMigrationPair(hydrated.message, durable, turnId, ordinal)
-        : null;
-      if (migrationPair) index = hydrated.index;
-    }
     if (index < 0 && durable?.role === "agent") {
       const exactSyntheticFinalId = [
         `${turnId}:agent:live`,
@@ -257,10 +223,6 @@ function mergeDurableMessages(hydratedMessages, durableMessages, turnId, turn) {
       continue;
     }
     const current = values[index];
-    if (migrationPair) {
-      values[index] = mergeSyntheticUserCopy(migrationPair.synthetic, migrationPair.canonical);
-      continue;
-    }
     const author = String(durable?.author ?? "").trim()
       || String(current?.author ?? "").trim();
     const responseAnnotationReferences = Array.isArray(durable?.responseAnnotationReferences)
@@ -283,14 +245,23 @@ function mergeDurableMessages(hydratedMessages, durableMessages, turnId, turn) {
         : current.attachmentSources,
     };
   }
-  return coalesceInterstreamRootAlias(values, turn);
+  return [...users, ...values];
 }
 
 export function mergeDurableTaskHistory(hydratedHistory, durableHistory) {
   const values = structuredClone(Array.isArray(hydratedHistory) ? hydratedHistory : [])
     .map((item) => ({
       ...item,
-      messages: coalesceInterstreamRootAlias(item?.messages, item),
+      messages: [
+        ...canonicalizeUserMessages(
+          (Array.isArray(item?.messages) ? item.messages : [])
+            .filter((message) => message?.role === "user"),
+          { turnId: item?.id },
+        ),
+        ...(Array.isArray(item?.messages) ? item.messages : [])
+          .filter((message) => message?.role !== "user")
+          .map((message) => structuredClone(message)),
+      ],
     }));
   for (const durable of Array.isArray(durableHistory) ? durableHistory : []) {
     const id = String(durable?.id ?? "").trim();
@@ -299,7 +270,16 @@ export function mergeDurableTaskHistory(hydratedHistory, durableHistory) {
       : -1;
     if (index < 0) {
       const item = structuredClone(durable);
-      item.messages = coalesceInterstreamRootAlias(item?.messages, item);
+      item.messages = [
+        ...canonicalizeUserMessages(
+          (Array.isArray(item?.messages) ? item.messages : [])
+            .filter((message) => message?.role === "user"),
+          { turnId: item?.id },
+        ),
+        ...(Array.isArray(item?.messages) ? item.messages : [])
+          .filter((message) => message?.role !== "user")
+          .map((message) => structuredClone(message)),
+      ];
       values.push(item);
       continue;
     }
@@ -316,7 +296,19 @@ export function mergeDurableTaskHistory(hydratedHistory, durableHistory) {
         ? structuredClone(durable.activityGroups)
         : current.activityGroups,
     };
-    merged.messages = mergeDurableMessages(current.messages, durable?.messages, id, merged);
+    merged.messages = mergeDurableMessages(
+      current.messages,
+      durable?.messages,
+      id,
+      current,
+      durable,
+    );
+    merged.userMessageSnapshotAuthority = mergedUserMessageSnapshotAuthority(
+      (Array.isArray(durable?.messages) ? durable.messages : [])
+        .filter((message) => message?.role === "user"),
+      durable,
+      current,
+    );
     values[index] = merged;
   }
   return sortTaskHistoryChronologically(values);
@@ -439,20 +431,26 @@ export function createDesktopTaskHistoryFactory({
     }
   }
 
-  function scheduleRefresh(binding, { force = false } = {}) {
+  function scheduleRefresh(binding, { force = false, repairSubagentTurnIds = [] } = {}) {
     if (typeof historyReader.refresh !== "function") return null;
     const key = `${binding.provider}:${binding.threadId}`;
-    if (refreshes.has(key)) return refreshes.get(key);
+    if (refreshes.has(key)) {
+      const pending = refreshes.get(key);
+      return repairSubagentTurnIds.length
+        ? pending.then(() => scheduleRefresh(binding, { force: true, repairSubagentTurnIds }))
+        : pending;
+    }
     if (!force && Date.now() - (refreshedAt.get(key) ?? 0) < refreshIntervalMs) return null;
     refreshedAt.set(key, Date.now());
     const operation = Promise.resolve()
       .then(async () => {
-        const refreshed = await historyReader.refresh(binding);
+        const refreshed = await historyReader.refresh(binding, { repairSubagentTurnIds });
         if (Array.isArray(refreshed?.history)) {
           cacheHistory(
             providerHistories,
             key,
-            visibleProviderHistory(binding.provider, refreshed.history).slice(-MAX_CACHED_TURNS_PER_HISTORY),
+            visibleProviderHistory(binding.provider, refreshed.history)
+              .slice(-MAX_CACHED_TURNS_PER_HISTORY),
             { replace: true },
           );
         }
@@ -522,8 +520,13 @@ export function createDesktopTaskHistoryFactory({
     const currentThreadBinding = threadBindings.find((threadBinding) => (
       threadBinding.provider === binding.provider && threadBinding.threadId === binding.threadId
     )) ?? binding;
-    if (params.refreshSource === true) {
-      sourceRefreshFailed = await scheduleRefresh(currentThreadBinding, { force: true }) === false;
+    const repairSubagentTurnIds = params.repairSubagentTurnIds ?? [];
+    if (!Array.isArray(repairSubagentTurnIds) || repairSubagentTurnIds.length > 20
+      || repairSubagentTurnIds.some((id) => typeof id !== "string" || !id.trim() || id.length > 200)) {
+      throw new Error("Invalid subagent recovery turn IDs");
+    }
+    if (params.refreshSource === true || repairSubagentTurnIds.length) {
+      sourceRefreshFailed = await scheduleRefresh(currentThreadBinding, { force: true, repairSubagentTurnIds }) === false;
     }
     const pagedHistory = typeof historyReader.readPage === "function"
       ? await historyReader.readPage(threadBindings, {
@@ -556,6 +559,7 @@ export function createDesktopTaskHistoryFactory({
           cached.hydrated.filter((turn) => String(turn?.id ?? "").trim() === id),
           [item],
         )[0];
+        if (!visibleProviderHistory(source.provider, [item]).length) continue;
         history.push(item);
         historySources.set(item, { key, provider: source.provider, threadId: source.threadId });
       }
@@ -568,15 +572,15 @@ export function createDesktopTaskHistoryFactory({
       // merged. Limiting the durable source here makes its page look like the
       // complete history and loses the cursor for older turns.
       const cached = await historyReader.read(threadBinding);
-      const durableHistory = visibleProviderHistory(threadBinding.provider, cached.history);
       let threadHistory = mergeCachedTaskHistory(
         readCachedHistory(providerHistories, key),
-        durableHistory,
+        cached.history,
       );
       threadHistory = mergeCachedTaskHistory(
         readCachedHistory(hydratedHistories, key),
         threadHistory,
       );
+      threadHistory = visibleProviderHistory(threadBinding.provider, threadHistory);
       if (currentThread) scheduleRefresh(threadBinding);
       for (const item of threadHistory) {
         history.push(item);
@@ -612,6 +616,9 @@ export function createDesktopTaskHistoryFactory({
         answer: running.responseText,
         clientUserMessageId: running.clientUserMessageId,
         userMessages: running.userMessages,
+        ...(running.userMessageSnapshotAuthority
+          ? { userMessageSnapshotAuthority: running.userMessageSnapshotAuthority }
+          : {}),
         responseItemId: running.responseItemId,
         ...(Array.isArray(running.responseAnnotationReferences)
           && running.responseAnnotationReferences.length
@@ -733,13 +740,52 @@ export function createDesktopTaskHistoryFactory({
         const source = pageSources[index];
         const itemProvider = source?.provider ?? provider;
         const itemThreadId = source?.threadId ?? selectedThreadId;
-        const promptInterstream = interstreamMessageDetails(item.prompt);
-        const promptClientUserMessageId = String((Array.isArray(item.messages) ? item.messages : [])
-          .find((message) => String(message?.role ?? "") === "user")
-          ?.clientUserMessageId ?? "").trim();
-        const promptOrigin = normalizeInterstreamOrigin(item.promptOrigin)
-          ?? promptInterstream?.origin
-          ?? normalizeInterstreamOrigin(interstreamOriginForClientMessage(promptClientUserMessageId));
+        const auditedOrigins = new Map();
+        const auditedOriginForClientMessage = (clientUserMessageId) => {
+          const clientId = String(clientUserMessageId ?? "").trim();
+          if (!clientId) return null;
+          if (!auditedOrigins.has(clientId)) {
+            auditedOrigins.set(clientId, interstreamOriginForClientMessage(clientId));
+          }
+          return auditedOrigins.get(clientId);
+        };
+        const promptClientIds = [...new Set((Array.isArray(item.messages) ? item.messages : [])
+          .flatMap((message) => {
+            const clientUserMessageId = String(message?.clientUserMessageId ?? "").trim();
+            return String(message?.role ?? "") === "user" && clientUserMessageId
+              ? [clientUserMessageId]
+              : [];
+          }))];
+        const durablePromptOrigin = normalizeInterstreamOrigin(item.promptOrigin);
+        const durablePromptClientUserMessageId = durablePromptOrigin?.requestId
+          && promptClientIds.includes(`mcp:${durablePromptOrigin.requestId}`)
+          ? `mcp:${durablePromptOrigin.requestId}`
+          : "";
+        const auditedPromptIdentities = durablePromptOrigin ? [] : promptClientIds.flatMap(
+          (clientUserMessageId) => {
+            const origin = auditedOriginForClientMessage(clientUserMessageId);
+            const details = origin && (trustedInterstreamMessageDetails(item.prompt, {
+              origin,
+              clientUserMessageId,
+              audited: true,
+            }) ?? trustedAuditedInterstreamBodyDetails(item.prompt, {
+              origin,
+              clientUserMessageId,
+            }));
+            return details ? [{ clientUserMessageId, origin: details.origin, details }] : [];
+          },
+        );
+        const auditedPromptIdentity = auditedPromptIdentities.length === 1
+          ? auditedPromptIdentities[0]
+          : null;
+        const promptClientUserMessageId = durablePromptClientUserMessageId
+          || auditedPromptIdentity?.clientUserMessageId
+          || "";
+        const promptOrigin = durablePromptOrigin ?? auditedPromptIdentity?.origin ?? null;
+        const promptInterstream = auditedPromptIdentity?.details ?? trustedInterstreamMessageDetails(item.prompt, {
+          origin: promptOrigin,
+          clientUserMessageId: promptClientUserMessageId,
+        });
         const promptAuthor = interstreamOriginAuthor(promptOrigin)
           || String(item.promptAuthor ?? "").trim();
         const projectedTurn = {
@@ -749,7 +795,7 @@ export function createDesktopTaskHistoryFactory({
           // infer it from the current response envelope.
           provider: itemProvider,
           threadId: itemThreadId,
-          prompt: displayUserPrompt(item.prompt),
+          prompt: displayUserPrompt(promptInterstream?.text ?? item.prompt),
           ...(promptAuthor ? { promptAuthor } : {}),
           ...(promptOrigin ? { promptOrigin } : {}),
           promptAnnotations: normalizedResponseAnnotations(item.promptAnnotations),
@@ -768,7 +814,41 @@ export function createDesktopTaskHistoryFactory({
             ? { activityGroups: item.activityGroups }
             : {}),
           messages: (() => {
-            const sourceMessages = Array.isArray(item.messages) ? item.messages : [];
+            const sourceMessages = coalesceInterstreamRootAlias(
+              (Array.isArray(item.messages) ? item.messages : []).map((message) => {
+                const identity = consistentInterstreamRecordIdentity({
+                  clientUserMessageIds: [message?.clientUserMessageId],
+                  origins: [message?.origin ?? message?.messageOrigin],
+                });
+                if (identity.conflicted) {
+                  const value = { ...message };
+                  delete value.clientUserMessageId;
+                  delete value.origin;
+                  delete value.messageOrigin;
+                  return value;
+                }
+                const clientUserMessageId = identity.clientUserMessageId ?? "";
+                if (identity.messageOrigin) {
+                  return {
+                    ...message,
+                    ...(clientUserMessageId ? { clientUserMessageId } : {}),
+                    origin: identity.messageOrigin,
+                  };
+                }
+                const auditedOrigin = auditedOriginForClientMessage(clientUserMessageId);
+                const details = auditedOrigin && (trustedInterstreamMessageDetails(message?.text, {
+                  origin: auditedOrigin,
+                  clientUserMessageId,
+                  audited: true,
+                }) ?? trustedAuditedInterstreamBodyDetails(message?.text, {
+                  origin: auditedOrigin,
+                  clientUserMessageId,
+                }));
+                if (details) return { ...message, origin: details.origin };
+                return message;
+              }),
+              { prompt: item.prompt, promptOrigin },
+            );
             const rootUserIndex = sourceMessages.findIndex((message) => (
               String(message?.role ?? "") === "user"
             ));
@@ -799,6 +879,9 @@ export function createDesktopTaskHistoryFactory({
                   ?? receipt?.clientUserMessageId
                   ?? "",
               ).trim();
+              const identityClientUserMessageId = normalizeInterstreamClientUserMessageId(
+                message.clientUserMessageId,
+              ) ?? "";
               const messageAttachments = Array.isArray(message.attachments)
                 ? message.attachments
                 : [];
@@ -811,6 +894,11 @@ export function createDesktopTaskHistoryFactory({
                 ? item.attachments
                 : [];
               const sourceText = String(message?.text ?? "");
+              const displayIdentity = { provider: itemProvider, threadId: itemThreadId, clientUserMessageId };
+              const displayText = role === "user"
+                ? receiptUserDisplay(receipt, displayIdentity)?.text
+                  ?? userDisplayText(message.userDisplay, displayIdentity) ?? sourceText
+                : sourceText;
               const promptTaskReferences = role === "user"
                 ? userTaskReferencePromptDetails(sourceText)?.references ?? []
                 : [];
@@ -822,17 +910,31 @@ export function createDesktopTaskHistoryFactory({
                     ? itemAttachments
                     : promptTaskReferences)
                 .map((attachment) => ({ ...attachment }));
-              const interstream = role === "user" ? interstreamMessageDetails(sourceText) : null;
-              const origin = role === "user"
-                ? normalizeInterstreamOrigin(message?.origin)
-                  ?? interstream?.origin
-                  ?? normalizeInterstreamOrigin(interstreamOriginForClientMessage(clientUserMessageId))
+              const durableOrigin = role === "user"
+                ? normalizeInterstreamOrigin(message?.origin ?? message?.messageOrigin)
                 : null;
+              const auditedOrigin = role === "user" && identityClientUserMessageId
+                ? auditedOriginForClientMessage(identityClientUserMessageId)
+                : null;
+              const identityOrigin = role === "user" ? durableOrigin ?? auditedOrigin : null;
+              const interstream = role === "user" ? trustedInterstreamMessageDetails(displayText, {
+                origin: identityOrigin,
+                clientUserMessageId: identityClientUserMessageId,
+                audited: !durableOrigin && Boolean(auditedOrigin),
+              }) ?? (!durableOrigin && auditedOrigin
+                ? trustedAuditedInterstreamBodyDetails(displayText, {
+                  origin: auditedOrigin,
+                  clientUserMessageId: identityClientUserMessageId,
+                })
+                : null) : null;
+              const origin = interstream?.origin ?? durableOrigin;
               const author = interstreamOriginAuthor(origin) || String(message?.author ?? "").trim();
               const messageKind = origin
                 ? "interstream"
                 : String(message?.kind ?? "").trim();
-              const text = role === "user" ? displayUserPrompt(sourceText) : sourceText;
+              const text = role === "user"
+                ? displayUserPrompt(interstream?.text ?? displayText)
+                : sourceText;
               const responseAnnotations = role === "user" && Array.isArray(
                 receipt?.result?.responseAnnotations ?? message.responseAnnotations,
               )
@@ -846,8 +948,9 @@ export function createDesktopTaskHistoryFactory({
                 : attachments.some((attachment) => (
                   String(attachment?.type ?? "").toLowerCase().startsWith("image/")
                 )) ? "Изображение" : "Вложение");
-              const rootSubmittedAt = role === "user" && messageIndex === rootUserIndex
-                ? message.submittedAt ?? receipt?.createdAt ?? message.time ?? item.submittedAt ?? item.startedAt ?? null
+              const userSubmittedAt = role === "user"
+                ? message.submittedAt ?? receipt?.createdAt ?? message.time
+                  ?? (messageIndex === rootUserIndex ? item.submittedAt ?? item.startedAt : null) ?? null
                 : null;
               const rootStartedAt = role === "user" && messageIndex === rootUserIndex
                 ? message.startedAt ?? item.startedAt ?? null
@@ -855,6 +958,9 @@ export function createDesktopTaskHistoryFactory({
               return [{
                 itemId: String(message.itemId ?? ""),
                 ...(clientUserMessageId ? { clientUserMessageId } : {}),
+                ...(String(message.sourceOccurrenceId ?? "").trim()
+                  ? { sourceOccurrenceId: String(message.sourceOccurrenceId).trim() }
+                  : {}),
                 role,
                 text: role === "agent" ? visibleText.slice(0, maxAnswerChars) : visibleText,
                 ...(author ? { author } : {}),
@@ -883,14 +989,14 @@ export function createDesktopTaskHistoryFactory({
                   }
                   : {}),
                 ...(message.phase ? { phase: String(message.phase) } : {}),
-                ...(rootSubmittedAt
-                  ? { submittedAt: rootSubmittedAt }
+                ...(userSubmittedAt
+                  ? { submittedAt: userSubmittedAt }
                   : {}),
                 ...(rootStartedAt
                   ? { startedAt: rootStartedAt }
                   : {}),
-                time: role === "user" && messageIndex === rootUserIndex
-                  ? rootSubmittedAt
+                time: role === "user"
+                  ? userSubmittedAt
                   : message.time
                     ?? (role === "user" ? item.startedAt : item.completedAt)
                     ?? receipt?.createdAt
