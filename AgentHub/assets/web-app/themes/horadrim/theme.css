@@ -1,0 +1,239 @@
+/* Архив Хорадримов — самостоятельный пакет, общая геометрия Hub. */
+html[data-theme="horadrim"] {
+  color-scheme: dark;
+  --font-body: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-display: Georgia, "Times New Roman", serif;
+  --font-title: var(--font-body);
+  --font-numeric: var(--font-body);
+  --display-weight: 500;
+  --display-spacing: .08em;
+  --display-transform: none;
+  --display-shadow: none;
+  --title-weight: 600;
+  --label-spacing: .1em;
+  --section-heading-color: #d0b488;
+  --radius-lg: 4px;
+  --radius-md: 3px;
+  --radius-sm: 2px;
+  --radius-chip: 3px;
+  --rail-width: 1px;
+  --bg: #11100d;
+  --surface-1: #161410;
+  --surface-2: #201c16;
+  --surface-3: #30271c;
+  --sunken: #0d0c0a;
+  --line: #4b3c26;
+  --line-strong: #977440;
+  --card-bg: #191815;
+  --card-bg-open: #282219;
+  --card-texture: var(--horadrim-stone-grain-asset);
+  --card-border: #5f492b;
+  --card-border-open: #bd934d;
+  --card-shadow: inset 0 1px 0 rgb(235 203 142 / 6%), 0 4px 14px rgb(0 0 0 / 25%);
+  --plate-bg: #161410;
+  --plate-texture: none;
+  --plate-shadow: none;
+  --turn-shadow: inset 0 1px 0 rgb(235 203 142 / 6%), 0 4px 14px rgb(0 0 0 / 30%);
+  --text: #e9e2d7;
+  --text-soft: #d9c9b0;
+  --text-muted: #bba689;
+  --text-faint: #a59074;
+  --accent: #d8ad61;
+  --accent-soft: rgb(216 173 97 / 11%);
+  --accent-line: rgb(216 173 97 / 50%);
+  --accent-glow: none;
+  --selection: rgb(216 173 97 / 26%);
+  --brand-gradient: #241e15;
+  --brand-shadow: none;
+  --provider-none: #bba689;
+  --provider-codex: #d8ad61;
+  --provider-claude: #d9bd96;
+  --provider-tone-lightness: .77;
+  --provider-tone-chroma: .08;
+  --provider-tone-alpha: .12;
+  --ok: #b0bc96;
+  --pending: #e2b75f;
+  --danger: #dd8a74;
+  --dot-input: #d8ad61;
+  --dot-cache: #bba689;
+  --dot-output: #e9e2d7;
+  --dot-think: #c38961;
+  --space-base: #11100d;
+  --space-glow-a: transparent;
+  --space-glow-b: transparent;
+  --space-star: transparent;
+  --star-opacity: 0;
+  --decor-opacity: 1;
+  --dialog-chrome: #15130f;
+  --dialog-raised: #1c1913;
+  --dialog-bubble-agent: #191815;
+  --dialog-bubble-user: #2a1712;
+  --dialog-agent-1: #d8ad61;
+  --dialog-agent-2: #d9bd96;
+  --dialog-agent-3: #c9ae87;
+  --comparison-local: #e9e2d7;
+  --comparison-deviation: #c38961;
+  --comparison-cost: #d8ad61;
+  --shell-header-background: linear-gradient(180deg, #1c1812, #0e0d0a);
+  --shell-header-border: 1px solid #866333;
+  --shell-header-rule: none;
+  --shell-header-rule-opacity: 0;
+  --shell-header-shadow: inset 0 -3px 0 rgb(216 173 97 / 5%);
+  --shell-control-background: #1a1711;
+  --shell-control-border: 1px solid #6a502c;
+  --shell-control-shadow: inset 0 1px 0 rgb(216 173 97 / 7%);
+  --shell-view-switch-background: transparent;
+  --shell-view-switch-border: 0;
+  --shell-view-switch-shadow: none;
+  --shell-tab-active-background: linear-gradient(0deg, #392919, #17140f);
+  --shell-tab-active-border: 1px solid transparent;
+  --shell-tab-active-shadow: inset 0 -2px 0 #d8ad61;
+  --shell-panel-border: 1px solid #9d783e;
+  --shell-panel-border-image: var(--horadrim-archive-frame-asset) 24 / 20px stretch;
+  --shell-panel-border-image-width: 20px;
+  --shell-panel-radius: 2px;
+  --shell-chat-border: 1px solid #4b3c26;
+  --shell-chat-border-image: none;
+  --shell-chat-panel-border-image-width: 1px;
+  --shell-stream-tabs-background: rgb(17 16 13 / 98%);
+  --shell-stream-tabs-border: 0;
+  --shell-stream-tabs-border-bottom: 1px solid #4b3c26;
+  --shell-stream-tab-background: transparent;
+  --shell-stream-tab-border: 1px solid transparent;
+  --shell-stream-tab-hover-background: #30271c;
+  --shell-stream-tab-active-background: linear-gradient(0deg, #392919, #17140f);
+  --shell-stream-card-background: #171511;
+  --shell-stream-card-border: 1px solid #493b27;
+  --shell-stream-card-shadow: inset 0 1px 0 rgb(216 173 97 / 4%);
+}
+html[data-theme="horadrim"] body { background: var(--bg); }
+html[data-theme="horadrim"] body::before { content: none; }
+html[data-theme="horadrim"] body::after {
+  background: url("./archive-library.png") center / cover no-repeat;
+}
+html[data-background-override="true"][data-background="horadrim-quiet"] {
+  --hub-background-color: #11100d;
+  --hub-background-image: none;
+}
+html[data-theme="horadrim"] .task-rail,
+html[data-theme="horadrim"] .activity-rail {
+  background: linear-gradient(180deg, rgb(17 16 13 / 97%) 0%, rgb(17 16 13 / 93%) 60%, rgb(17 16 13 / 65%) 100%);
+}
+html[data-theme="horadrim"] .task-rail {
+  background: linear-gradient(180deg, rgb(17 16 13 / 97%), rgb(17 16 13 / 89%)), url("./archive-seal.svg") center 82% / 130px 165px no-repeat;
+}
+html[data-theme="horadrim"] .chat { background: transparent; }
+html[data-theme="horadrim"] .chat-head { background: rgb(17 16 13 / 97%); }
+html[data-theme="horadrim"] .task-workspace-item {
+  background: transparent;
+  border-color: transparent transparent rgb(151 116 64 / 17%);
+  border-radius: 2px;
+  box-shadow: none;
+}
+html[data-theme="horadrim"] .task-workspace-item:hover { background: #2c2418; }
+html[data-theme="horadrim"] .task-workspace-item[data-selected],
+html[data-theme="horadrim"] .activity-stream-item[data-current] {
+  background: linear-gradient(90deg, #3b2a17, #1c1710);
+  border-color: #977440;
+  box-shadow: inset 2px 0 0 #d8ad61;
+}
+html[data-theme="horadrim"] .board-task-card {
+  background: #191815;
+  background-image: url("./stone-grain.svg");
+  border: 1px solid #5f492b;
+  border-radius: 3px;
+  box-shadow: var(--card-shadow);
+}
+html[data-theme="horadrim"] .msg:not(.msg-system) {
+  position: relative;
+  background: #191815;
+  border: 1px solid #8d6a36;
+  border-radius: 2px;
+  padding: 1rem 1.2rem;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+html[data-theme="horadrim"] .msg-user:not(.msg-system) {
+  background: #2a1712;
+  border-color: #77452e;
+}
+html[data-theme="horadrim"][data-view="chat"][data-surface] .chat-log .msg.msg-agent:not(.msg-live),
+html[data-theme="horadrim"][data-view="chat"][data-surface] .chat-scroll > .msg.msg-live {
+  background-image: url("./stone-grain.svg");
+}
+html[data-theme="horadrim"][data-view="chat"][data-surface] .msg-user .msg-user-bubble {
+  position: relative;
+  background: #2a1712 url("./stone-grain.svg");
+  border: 1px solid #77452e;
+  border-radius: 2px;
+  box-shadow: var(--turn-shadow);
+  padding: 1rem 1.2rem;
+}
+/* Наложенные девятисекционные рамки не участвуют в геометрии или вводе. */
+html[data-theme="horadrim"][data-view="chat"][data-surface] .chat .msg-agent::after,
+html[data-theme="horadrim"][data-view="chat"][data-surface] .chat .msg-live::after,
+html[data-theme="horadrim"] .msg-user-bubble::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 1px solid transparent;
+  border-image: url("./archive-frame.svg") 24 / 16px stretch;
+  pointer-events: none;
+}
+html[data-theme="horadrim"] .msg-user-bubble::after {
+  border-image-source: url("./user-frame.svg");
+}
+html[data-theme="horadrim"] .msg-body,
+html[data-theme="horadrim"] .msg-reasoning { font-size: 15px; line-height: 1.6; }
+html[data-theme="horadrim"] .msg-head { margin-bottom: .65rem; }
+html[data-theme="horadrim"] .msg-author { color: #d8ad61; }
+html[data-theme="horadrim"] .msg-body blockquote,
+html[data-theme="horadrim"] .msg-reasoning blockquote,
+html[data-theme="horadrim"] .msg-annotation-content,
+html[data-theme="horadrim"] .annotation,
+html[data-theme="horadrim"] .msg-response-citation {
+  background: linear-gradient(180deg, #100f0c, #19150f);
+  border: 1px solid #5e482c;
+  border-left: 3px double #bd934d;
+  border-radius: 2px;
+  padding: .65rem .9rem;
+  color: #d9c9b0;
+  box-shadow: inset 0 2px 6px rgb(0 0 0 / 35%);
+}
+html[data-theme="horadrim"] .msg-annotation-content[data-response-annotation-source]:hover,
+html[data-theme="horadrim"] .msg-response-citation:not(.is-fallback):hover { background: #282016; }
+html[data-theme="horadrim"] .turn-trace { background: #14120e; border-radius: 2px; }
+html[data-theme="horadrim"][data-view="chat"][data-surface] form.composer {
+  position: relative;
+  background: #161410 url("./stone-grain.svg");
+  border: 1px solid #bd934d;
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 4px #11100d, inset 0 0 0 5px rgb(181 138 68 / 42%), 0 4px 22px rgb(0 0 0 / 40%);
+}
+html[data-theme="horadrim"] form.composer::before {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  border: 1px solid transparent;
+  border-image: url("./archive-frame.svg") 24 / 24px stretch;
+  pointer-events: none;
+}
+html[data-theme="horadrim"][data-view="chat"][data-surface] form.composer:focus-within {
+  border-color: #efc77f;
+  box-shadow: inset 0 0 0 4px #11100d, inset 0 0 0 5px #9e783b, 0 0 12px rgb(216 173 97 / 10%);
+}
+html[data-theme="horadrim"] .composer-input { background: transparent; box-shadow: none; }
+html[data-theme="horadrim"] .composer-input > textarea { font-size: 15px; }
+html[data-theme="horadrim"] .composer-send {
+  color: #f0cd90;
+  background: linear-gradient(135deg, #3c2b18, #17130e);
+  border: 1px solid #b58a44;
+  border-radius: 3px;
+}
+html[data-theme="horadrim"] .settings-panel { background: #1b1711; }
+html[data-theme="horadrim"] ::selection { background: var(--selection); color: #fff4df; }
+@media (max-width: 700px) {
+  html[data-theme="horadrim"] .msg:not(.msg-system),
+  html[data-theme="horadrim"][data-view="chat"][data-surface] .msg-user .msg-user-bubble { padding: .8rem .95rem; }
+  html[data-theme="horadrim"] form.composer::before { border-image-width: 18px; }
+}

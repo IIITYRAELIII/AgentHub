@@ -1,0 +1,23 @@
+{
+  "id": "horadrim",
+  "name": "Архив Хорадримов",
+  "color": "#11100d",
+  "order": 118,
+  "styles": "theme.css",
+  "assets": {
+    "archive-frame": "archive-frame.svg",
+    "stone-grain": "stone-grain.svg"
+  },
+  "backgrounds": [
+    {
+      "id": "horadrim",
+      "name": "Библиотека Хорадримов",
+      "asset": "archive-library.png"
+    },
+    {
+      "id": "horadrim-quiet",
+      "name": "Тёмный архив"
+    }
+  ]
+}
+
