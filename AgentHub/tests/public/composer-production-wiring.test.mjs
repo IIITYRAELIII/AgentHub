@@ -685,13 +685,16 @@ test("production over-limit recovery stays exact in memory and blocks managed re
   }
 });
 
-test("production attachment recovery beyond durable byte quota blocks managed reload", {
+test("production attachment recovery blocks managed reload when the attachment store cannot open", {
   timeout: 90_000,
 }, async () => {
   const browser = await launchBrowser();
   const page = await browser.newPage();
   try {
-    await openFixture(page);
+    // Size alone no longer decides durability: ordinary files are kept as Blobs
+    // since the chunked upload change. Here the attachment database fails to
+    // open, and the product treats that as a non-durable attachment.
+    await openFixture(page, { attachmentStorageOpenFailure: true });
     await submit(page, {
       text: "large attachment",
       attachment: {
@@ -711,6 +714,7 @@ test("production attachment recovery beyond durable byte quota blocks managed re
       localStorage.getItem("agent-hub:composer-drafts:v1:vscode") ?? "[]",
     ));
     assert.equal("recoveryRequestId" in persisted[0], false);
+    assert.equal(persisted[0].text, "large attachment");
     assert.equal(await page.evaluate(() => window.AgentHub.prepareForRuntimeReload()), false);
     assert.equal(await page.locator("[data-attachment-index]").count(), 1);
   } finally {

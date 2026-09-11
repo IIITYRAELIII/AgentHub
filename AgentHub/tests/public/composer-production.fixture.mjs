@@ -193,6 +193,7 @@ async function openFixture(page, {
   recoveryAuthorityAvailable = true,
   holdRecoveryAuthority = false,
   chunkedUpload = false,
+  attachmentStorageOpenFailure = false,
 } = {}) {
   const diagnostics = [];
   page.on("pageerror", (error) => diagnostics.push(error.message));
@@ -200,8 +201,28 @@ async function openFixture(page, {
     if (message.type() === "error") diagnostics.push(message.text());
   });
   await page.addInitScript(({
-    initialSnapshot, initialDrafts, authorityAvailable, holdAuthority,
+    initialSnapshot, initialDrafts, authorityAvailable, holdAuthority, attachmentOpenFailure,
   }) => {
+    // Opening the attachment database fails. This covers only the open step:
+    // the product treats that rejection as "not durable". The error code is set
+    // to QuotaExceededError for readability and is not produced by a real quota;
+    // a failure during put or transaction commit is a different path.
+    if (attachmentOpenFailure) {
+      const nativeOpen = globalThis.indexedDB.open.bind(globalThis.indexedDB);
+      globalThis.indexedDB.open = (name, ...rest) => {
+        if (name !== "agent-hub-composer-files-v1") return nativeOpen(name, ...rest);
+        const request = {
+          result: null,
+          error: new DOMException("attachment storage is full", "QuotaExceededError"),
+          onsuccess: null,
+          onerror: null,
+          onupgradeneeded: null,
+          onblocked: null,
+        };
+        queueMicrotask(() => request.onerror?.({ target: request }));
+        return request;
+      };
+    }
     if (!authorityAvailable) {
       Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: null });
     } else if (holdAuthority) {
@@ -380,6 +401,7 @@ async function openFixture(page, {
     initialDrafts: persistedDrafts,
     authorityAvailable: recoveryAuthorityAvailable,
     holdAuthority: holdRecoveryAuthority,
+    attachmentOpenFailure: attachmentStorageOpenFailure,
   });
   const uploads = new Map();
   await page.route("**/*", async (route) => {
