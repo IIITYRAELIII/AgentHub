@@ -1,3 +1,4 @@
+import { contourRolloutPolicy } from "../../infrastructure/filesystem/test-contour-rollout-policy.mjs";
 export const CODEX_TERMINAL_ATTACHMENT_TAIL_BYTES = 16 * 1024 * 1024;
 export const CODEX_TERMINAL_ATTACHMENT_RETRY_DELAYS_MS = Object.freeze([0, 100, 300, 600, 1_000, 2_000]);
 
@@ -28,6 +29,7 @@ export function codexTerminalAttachmentSources(activity, turnId) {
 }
 
 export function createCodexTerminalAttachmentResolver({
+  recordingRoot = null,
   knownRolloutPath,
   readRolloutActivity,
   importAttachments,
@@ -35,7 +37,12 @@ export function createCodexTerminalAttachmentResolver({
   wait = delay,
   logger = console,
 }) {
+  const rolloutPolicy = recordingRoot ? contourRolloutPolicy({ testContourRecording: { root: recordingRoot } }) : null;
   return async function resolveCodexTerminalAttachments(run, turnId) {
+    if (rolloutPolicy) {
+      rolloutPolicy.exclude("terminal-attachments");
+      return [];
+    }
     try {
       const normalizedTurnId = String(turnId ?? "").trim();
       const exactSources = (Array.isArray(run?.generatedImageSources)

@@ -1,0 +1,103 @@
+import { createHash } from "node:crypto";
+import { lstatSync, readFileSync } from "node:fs";
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { createContourOperationalPaths } from "../domain/test-contour-operational-paths.mjs";
+
+function stable(value) {
+  if (Array.isArray(value)) return value.map(stable);
+  if (value && typeof value === "object") return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stable(value[key])]));
+  return value;
+}
+const fingerprint = (value) => createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
+function identity(value, name) { if (typeof value !== "string" || !value || value.length > 500) throw new Error(`${name} is required`); return value; }
+function noLinks(file, missing = false) {
+  let current = file;
+  for (;;) {
+    try { if (lstatSync(current).isSymbolicLink()) throw new Error("Recording provider paths cannot contain links or junctions"); }
+    catch (error) { if (!(missing && current === file && error.code === "ENOENT")) throw error; }
+    const parent = path.dirname(current); if (parent === current) return; current = parent;
+  }
+}
+
+export class RecordingContourProvider {
+  constructor({ root, provider }) {
+    if (!root || !path.isAbsolute(root) || !["codex", "claude"].includes(provider)) throw new Error("Explicit recording root and provider are required");
+    this.root = path.resolve(root);
+    noLinks(this.root);
+    const configFile = path.join(this.root, "recording-provider.json");
+    noLinks(configFile);
+    const config = JSON.parse(readFileSync(configFile, "utf8"));
+    if (config.schemaVersion !== 1 || config.kind !== "literal-recording-provider" || config.root !== this.root || config.externalEffects !== "deny") throw new Error("Invalid recording provider root marker");
+    this.paths = createContourOperationalPaths({ root: this.root, sources: config.sources });
+    this.provider = provider;
+    const databaseFile = path.join(this.root, "recording-provider.sqlite");
+    for (const suffix of ["", "-wal", "-shm"]) noLinks(`${databaseFile}${suffix}`, true);
+    this.db = new DatabaseSync(databaseFile);
+    this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=1000;
+      CREATE TABLE IF NOT EXISTS threads(provider TEXT, id TEXT, value_json TEXT NOT NULL, PRIMARY KEY(provider,id));
+      CREATE TABLE IF NOT EXISTS turns(provider TEXT, thread_id TEXT, id TEXT, value_json TEXT NOT NULL, PRIMARY KEY(provider,thread_id,id));
+      CREATE TABLE IF NOT EXISTS commands(provider TEXT, client_id TEXT, fingerprint TEXT NOT NULL, canonical_json TEXT NOT NULL, execution_json TEXT NOT NULL, thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, PRIMARY KEY(provider,client_id));`);
+    try {
+      for (const thread of config.threads ?? []) {
+        if (thread.provider !== provider) continue;
+        identity(thread.id, "thread ID");
+        this.paths.map(thread.cwd, "project");
+        const stored = this.db.prepare("SELECT value_json FROM threads WHERE provider=? AND id=?").get(provider, thread.id);
+        if (stored && fingerprint(JSON.parse(stored.value_json)) !== fingerprint(thread)) throw new Error("Seeded Thread identity changed");
+        this.db.prepare("INSERT OR IGNORE INTO threads VALUES(?,?,?)").run(provider, thread.id, JSON.stringify(thread));
+      }
+    } catch (error) { this.db.close(); throw error; }
+  }
+  close() { this.db.close(); }
+  transaction(operation) { this.db.exec("BEGIN IMMEDIATE"); try { const value = operation(); this.db.exec("COMMIT"); return value; } catch (error) { this.db.exec("ROLLBACK"); throw error; } }
+  thread(id) {
+    const row = this.db.prepare("SELECT value_json FROM threads WHERE provider=? AND id=?").get(this.provider, identity(id, "thread ID"));
+    if (!row) throw new Error("Unseeded Thread; recording adapter cannot discover production sessions");
+    const thread = JSON.parse(row.value_json);
+    return { ...thread, cwd: this.paths.map(thread.cwd, "project"), turns: this.db.prepare("SELECT value_json FROM turns WHERE provider=? AND thread_id=? ORDER BY rowid").all(this.provider, id).map((row) => JSON.parse(row.value_json)) };
+  }
+  threads() { return this.db.prepare("SELECT id FROM threads WHERE provider=? ORDER BY rowid").all(this.provider).map(({ id }) => this.thread(id)); }
+  start({ threadId, clientUserMessageId, input, turnId = null }) {
+    identity(clientUserMessageId, "clientUserMessageId");
+    const thread = this.thread(threadId);
+    const originalThread = JSON.parse(this.db.prepare("SELECT value_json FROM threads WHERE provider=? AND id=?").get(this.provider, threadId).value_json);
+    const canonical = { provider: this.provider, streamId: originalThread.streamId, threadId, clientUserMessageId, input, turnId, projectRoot: originalThread.cwd };
+    const execution = this.paths.executionView(canonical);
+    const requestHash = fingerprint(canonical);
+    return this.transaction(() => {
+      const prior = this.db.prepare("SELECT * FROM commands WHERE provider=? AND client_id=?").get(this.provider, clientUserMessageId);
+      if (prior) {
+        if (prior.fingerprint !== requestHash) throw new Error("Command identity reused with changed literal input or target");
+        return { duplicate: true, turn: this.thread(threadId).turns.find((turn) => turn.id === prior.turn_id) };
+      }
+      if (this.thread(threadId).turns.some((turn) => turn.status === "inProgress")) throw new Error("Thread already has an active recorded turn");
+      const id = turnId === null ? `contour-${fingerprint([this.provider, threadId, clientUserMessageId])}` : identity(turnId, "turn ID");
+      const turn = { id, status: "inProgress", clientUserMessageId,
+        items: [{ id: `${id}:user:${fingerprint(clientUserMessageId)}`, type: "userMessage", clientUserMessageId, clientId: clientUserMessageId,
+          content: typeof input === "string" ? [{ type: "text", text: input }] : structuredClone(input) }] };
+      this.db.prepare("INSERT INTO turns VALUES(?,?,?,?)").run(this.provider, threadId, id, JSON.stringify(turn));
+      this.db.prepare("INSERT INTO commands VALUES(?,?,?,?,?,?,?)").run(this.provider, clientUserMessageId, requestHash, JSON.stringify(canonical), JSON.stringify(execution), threadId, id);
+      return { duplicate: false, turn };
+    });
+  }
+  finish({ threadId, turnId, status, answer }) {
+    if (!["completed", "failed", "interrupted"].includes(status) || typeof answer !== "string") throw new Error("Explicit scenario terminal status and literal answer are required");
+    return this.transaction(() => {
+      const turn = this.thread(threadId).turns.find((turn) => turn.id === turnId);
+      if (!turn) throw new Error("Unknown recorded turn");
+      if (turn.status !== "inProgress") {
+        if (turn.status !== status || turn.items.at(-1)?.text !== answer) throw new Error("Recorded terminal is absorbing");
+        return turn;
+      }
+      turn.status = status;
+      turn.items.push({ id: `${turnId}:final`, type: "agentMessage", phase: "final_answer", text: answer });
+      this.db.prepare("UPDATE turns SET value_json=? WHERE provider=? AND thread_id=? AND id=?").run(JSON.stringify(turn), this.provider, threadId, turnId);
+      return turn;
+    });
+  }
+  command(clientUserMessageId) {
+    const record = this.db.prepare("SELECT canonical_json,execution_json,turn_id FROM commands WHERE provider=? AND client_id=?").get(this.provider, clientUserMessageId);
+    return record ? { canonical: JSON.parse(record.canonical_json), execution: JSON.parse(record.execution_json), turnId: record.turn_id } : null;
+  }
+}

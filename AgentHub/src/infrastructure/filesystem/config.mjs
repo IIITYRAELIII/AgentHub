@@ -1,3 +1,5 @@
+import { assertRecordingContourConfiguration } from "./test-contour-recording-environment.mjs";
+import { recordingContourProfile } from "./test-contour-recording-profile.mjs";
 import { access, readFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { isIP } from "node:net";
@@ -693,6 +695,8 @@ export async function loadConfig() {
       : requireIntegerArray(raw.allowedChatIds, "allowedChatIds")
     : new Set();
   const dataDir = path.resolve(configDirectory, raw.dataDir ?? "data");
+  const testContourRecording = await recordingContourProfile(raw.testContourRecording, { dataDir });
+  if (testContourRecording) assertRecordingContourConfiguration(raw, { telegramEnabled });
   const defaultTtsVenv = path.join(defaultRuntimeRoot(), "tts-venv");
   const provider = String(process.env.AI_PROVIDER ?? raw.provider ?? "codex").trim().toLowerCase();
   if (provider !== "codex" && provider !== "claude") {
@@ -738,6 +742,7 @@ export async function loadConfig() {
 
   return {
     configPath,
+    testContourRecording,
     components,
     telegramEnabled,
     token,
@@ -752,16 +757,18 @@ export async function loadConfig() {
       process.env.TELEGRAM_API_BASE_URL ?? raw.telegramApiBaseUrl ?? "https://api.telegram.org",
       "telegramApiBaseUrl",
     ),
-    codexExecutable: String(process.env.CODEX_EXECUTABLE ?? raw.codexExecutable ?? "").trim(),
-    codexExecutableAutoUpdate: booleanSetting(
+    codexExecutable: testContourRecording ? process.execPath : String(process.env.CODEX_EXECUTABLE ?? raw.codexExecutable ?? "").trim(),
+    codexExecutableAutoUpdate: testContourRecording ? false : booleanSetting(
       process.env.CODEX_EXECUTABLE_AUTO_UPDATE ?? raw.codexExecutableAutoUpdate,
       true,
       "codexExecutableAutoUpdate",
     ),
-    codexExecutableVersionPin: codexExecutableVersionPin(
+    codexExecutableVersionPin: testContourRecording ? null : codexExecutableVersionPin(
       process.env.CODEX_EXECUTABLE_VERSION_PIN ?? raw.codexExecutableVersionPin,
     ),
-    codexExecutableArgs: stringArray(raw.codexExecutableArgs, "codexExecutableArgs"),
+    codexExecutableArgs: testContourRecording
+      ? [path.join(AGENT_HUB_ROOT, "src", "providers", "recording-contour-codex-cli.mjs"), "--recording-root", testContourRecording.root]
+      : stringArray(raw.codexExecutableArgs, "codexExecutableArgs"),
     codexRpcTimeoutSeconds: positiveInteger(
       process.env.CODEX_RPC_TIMEOUT_SECONDS ?? raw.codexRpcTimeoutSeconds,
       30,
@@ -772,7 +779,7 @@ export async function loadConfig() {
     codexCollaborationMode,
     codexSandboxMode,
     codexModels: loadCodexModels(raw),
-    codexRateLimitPolling: raw.codexRateLimitPolling !== false,
+    codexRateLimitPolling: testContourRecording ? false : raw.codexRateLimitPolling !== false,
     codexRolloutContext: codexRolloutContextSettings(raw.codexRolloutContext, {
       enabled: false,
     }),
@@ -785,9 +792,11 @@ export async function loadConfig() {
       enabled: components.sharedDashboardBot,
       configDirectory,
     }),
-    claudeExecutable: String(process.env.CLAUDE_EXECUTABLE ?? raw.claudeExecutable ?? "claude").trim(),
-    claudeExecutableArgs: stringArray(raw.claudeExecutableArgs, "claudeExecutableArgs"),
-    claudeRateLimitPolling: raw.claudeRateLimitPolling !== false,
+    claudeExecutable: testContourRecording ? process.execPath : String(process.env.CLAUDE_EXECUTABLE ?? raw.claudeExecutable ?? "claude").trim(),
+    claudeExecutableArgs: testContourRecording
+      ? [path.join(AGENT_HUB_ROOT, "src", "providers", "recording-contour-claude-cli.mjs"), "--recording-root", testContourRecording.root]
+      : stringArray(raw.claudeExecutableArgs, "claudeExecutableArgs"),
+    claudeRateLimitPolling: testContourRecording ? false : raw.claudeRateLimitPolling !== false,
     claudeModel: String(process.env.CLAUDE_MODEL ?? raw.claudeModel ?? "").trim(),
     claudePermissionMode,
     claudeReasoningEffort: String(

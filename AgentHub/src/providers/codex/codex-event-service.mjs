@@ -404,7 +404,7 @@ export class CodexEventService {
         d.speechButtons.delete(eventTurnId);
         const temporaryFiles = d.temporaryFiles.get(eventTurnId) ?? [];
         d.temporaryFiles.delete(eventTurnId);
-        await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
+        await Promise.all(temporaryFiles.map((file) => (d.removeFile ?? ((value) => unlink(value).catch(() => {})))(file)));
         if (!contextProbe) {
           d.logWarn?.(`Completed Codex turn ${eventTurnId ?? "unknown"} has no registered task run`);
         }
@@ -418,7 +418,7 @@ export class CodexEventService {
         d.speechButtons.delete(completedTurnId);
         const temporaryFiles = d.temporaryFiles.get(completedTurnId) ?? [];
         d.temporaryFiles.delete(completedTurnId);
-        await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
+        await Promise.all(temporaryFiles.map((file) => (d.removeFile ?? ((value) => unlink(value).catch(() => {})))(file)));
         await d.finishObserved(run, {
           ...d.turnSnapshot(params.turn), turnId: completedTurnId,
           executionOwner: run.executionOwner, tokenTracker: tracker,

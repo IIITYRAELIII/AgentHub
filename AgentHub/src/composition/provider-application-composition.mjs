@@ -21,6 +21,7 @@ import { createCodexContextMaintenanceComposition } from "./codex-context-mainte
 import { createCodexObservabilityComposition } from "./codex-observability-composition.mjs";
 import { createJournalBackfillComposition } from "./journal-backfill-composition.mjs";
 import { createProviderCatalogComposition } from "./provider-catalog-composition.mjs";
+import { createRuntimeFileRemoval } from "../runtime/test-contour-runtime-effects.mjs";
 import { createProviderOperationComposition } from "./provider-operation-composition.mjs";
 import { createHubThreadNamingService } from "../application/hub-thread-naming-service.mjs";
 import { createProviderProcessComposition } from "./provider-process-composition.mjs";
@@ -119,6 +120,7 @@ export async function createProviderApplicationComposition({
     providerTurnTelemetryStore,
     runtimeStateStore,
     commandTraceService,
+    contourExternalEffects,
   } = infrastructure;
   const {
     findProject,
@@ -134,6 +136,7 @@ export async function createProviderApplicationComposition({
   } = taskServices;
   const runtimeTimers = new RuntimeTimerCoordinator();
   const usageSyncAuto = new UsageSyncAutoService({
+    externalEffects: contourExternalEffects,
     timers: runtimeTimers,
     remoteConfigStore: workLogUsageRemoteConfigStore,
     identityStore: workLogUsageIdentityStore,
@@ -349,6 +352,7 @@ export async function createProviderApplicationComposition({
 
   const backgroundWork = await createBackgroundWorkComposition({
     backgroundDirectory: backgroundJobsDirectory,
+    contourExternalEffects,
     failedUpdatesDirectory,
     maxMediaJobs: maximumMediaJobs,
     maxSpeechJobs: maximumSpeechJobs,
@@ -429,6 +433,7 @@ export async function createProviderApplicationComposition({
     delay,
   });
   const providerOperations = createProviderOperationComposition({
+    removeRuntimeFile: createRuntimeFileRemoval(config),
     nameCreatedThread: hubThreadNaming.nameCreatedThread,
     claudeContextMaintenance,
     taskRuns: runtimeData.taskRuns,
