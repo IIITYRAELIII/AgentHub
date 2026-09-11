@@ -1,0 +1,234 @@
+/* Храм Сэмпо: ночной махагон, потемневшая латунь и киноварь.
+   Геометрия shell и проекция сообщений принадлежат общему интерфейсу. */
+html[data-theme="senpo"] {
+  color-scheme: dark;
+  --font-body: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-display: var(--font-body);
+  --font-title: var(--font-body);
+  --font-numeric: var(--font-body);
+  --display-weight: 600;
+  --display-spacing: 0.035em;
+  --display-transform: none;
+  --display-shadow: none;
+  --title-weight: 600;
+  --label-spacing: 0.09em;
+  --section-heading-color: #c3a780;
+  --radius-lg: 7px;
+  --radius-md: 5px;
+  --radius-sm: 3px;
+  --radius-chip: 3px;
+  --rail-width: 1px;
+  --bg: #160e0c;
+  --surface-1: #1c1310;
+  --surface-2: #281b15;
+  --surface-3: #36231b;
+  --sunken: #110b09;
+  --line: #4a3427;
+  --line-strong: #79553a;
+  --card-bg: #241913;
+  --card-bg-open: #302019;
+  --card-texture: none;
+  --card-border: #513b2c;
+  --card-border-open: #aa7d4e;
+  --card-shadow: inset 0 1px 0 rgb(225 188 138 / 4%), 0 4px 14px rgb(0 0 0 / 18%);
+  --plate-bg: #201511;
+  --plate-texture: none;
+  --plate-shadow: none;
+  --turn-shadow: inset 0 1px 0 rgb(228 186 134 / 5%), 0 4px 16px rgb(0 0 0 / 18%);
+  --senpo-lacquer: linear-gradient(160deg, rgb(193 135 83 / 4%), transparent 65%);
+  --text: #e8ddce;
+  --text-soft: #d2c0a8;
+  --text-muted: #b39b82;
+  --text-faint: #a58b73;
+  --accent: #d0a36c;
+  --accent-soft: rgb(208 163 108 / 11%);
+  --accent-line: rgb(208 163 108 / 48%);
+  --accent-glow: none;
+  --selection: rgb(208 163 108 / 27%);
+  --senpo-vermilion: #cf6350;
+  --brand-gradient: #281b15;
+  --brand-shadow: none;
+  --provider-none: #b39b82;
+  --provider-codex: #d0a36c;
+  --provider-claude: #dfac90;
+  --provider-tone-lightness: 0.76;
+  --provider-tone-chroma: 0.07;
+  --provider-tone-alpha: 0.13;
+  --ok: #a9ba91;
+  --pending: #dfb76b;
+  --danger: #e18570;
+  --dot-input: #d0a36c;
+  --dot-cache: #b6aa90;
+  --dot-output: #e0cbb0;
+  --dot-think: #d38a6c;
+  --space-base: #160e0c;
+  --space-glow-a: transparent;
+  --space-glow-b: transparent;
+  --space-star: transparent;
+  --star-opacity: 0;
+  --decor-opacity: 1;
+  --dialog-chrome: #1c1310;
+  --dialog-raised: #201511;
+  --dialog-bubble-agent: #231812;
+  --dialog-bubble-user: #351815;
+  --dialog-agent-1: #d0a36c;
+  --dialog-agent-2: #dcbaa0;
+  --dialog-agent-3: #cba184;
+  --comparison-local: #e0cbb0;
+  --comparison-deviation: #d38a6c;
+  --comparison-cost: #d0a36c;
+  --shell-header-background: linear-gradient(180deg, #211610, #140d0b);
+  --shell-header-border: 1px solid #5a402b;
+  --shell-header-rule: none;
+  --shell-header-rule-opacity: 0;
+  --shell-header-shadow: inset 0 -1px 0 rgb(208 163 108 / 7%);
+  --shell-control-background: #211610;
+  --shell-control-border: 1px solid #65472f;
+  --shell-control-shadow: inset 0 1px 0 rgb(208 163 108 / 5%);
+  --shell-view-switch-background: transparent;
+  --shell-view-switch-border: 0;
+  --shell-view-switch-shadow: none;
+  --shell-tab-active-background: #301813;
+  --shell-tab-active-border: 1px solid transparent;
+  --shell-tab-active-shadow: inset 0 -2px 0 var(--senpo-vermilion);
+  --shell-panel-border: 1px solid #654931;
+  --shell-panel-border-image: var(--senpo-brass-frame-asset, url("./brass-frame.svg")) 24 / 16px stretch;
+  --shell-panel-border-image-width: 16px;
+  --shell-panel-radius: 3px;
+  --shell-chat-border: 1px solid rgb(101 73 49 / 65%);
+  --shell-chat-border-image: none;
+  --shell-chat-panel-border-image-width: 1px;
+  --shell-stream-tabs-background: rgb(25 16 12 / 97%);
+  --shell-stream-tabs-border: 0;
+  --shell-stream-tabs-border-bottom: 1px solid #4a3427;
+  --shell-stream-tab-background: transparent;
+  --shell-stream-tab-border: 1px solid transparent;
+  --shell-stream-tab-hover-background: #35221a;
+  --shell-stream-tab-active-background: #321a15;
+  --shell-stream-card-background: #241812;
+  --shell-stream-card-border: 1px solid #483125;
+  --shell-stream-card-shadow: inset 0 1px 0 rgb(208 163 108 / 4%);
+}
+
+html[data-theme="senpo"] body { background: var(--bg); }
+html[data-theme="senpo"] body::before { content: none; }
+html[data-theme="senpo"] body::after {
+  background: url("./night-temple.png") center / cover no-repeat;
+}
+html[data-background-override="true"][data-background="senpo-quiet"] {
+  --hub-background-color: #160e0c;
+  --hub-background-image: none;
+}
+
+/* Плотная верхняя часть панелей сохраняет контраст; ниже виден храм. */
+html[data-theme="senpo"] .task-rail,
+html[data-theme="senpo"] .activity-rail {
+  background: linear-gradient(180deg, rgb(22 14 11 / 98%) 0%, rgb(22 14 11 / 94%) 40%, rgb(22 14 11 / 65%) 100%);
+  box-shadow: inset 0 0 24px rgb(0 0 0 / 20%);
+}
+html[data-theme="senpo"] .chat { background: transparent; }
+html[data-theme="senpo"] .chat-head { background: rgb(25 16 12 / 97%); }
+html[data-theme="senpo"] .task-workspace-item {
+  background: rgb(26 16 12 / 72%);
+  border-color: transparent transparent rgb(113 78 47 / 25%);
+  border-radius: 3px;
+  box-shadow: none;
+}
+html[data-theme="senpo"] .task-workspace-item:hover,
+html[data-theme="senpo"] .activity-stream-item:hover { background: #35221a; }
+html[data-theme="senpo"] .task-workspace-item[data-selected],
+html[data-theme="senpo"] .activity-stream-item[data-current] {
+  background: linear-gradient(90deg, #3a1c16, #261511);
+  border-color: #704331;
+  box-shadow: inset 2px 0 0 var(--senpo-vermilion);
+}
+html[data-theme="senpo"] .board-task-card {
+  background: #241913;
+  background-image: var(--senpo-lacquer);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  box-shadow: var(--turn-shadow);
+}
+html[data-theme="senpo"] .msg:not(.msg-system) {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: #231812;
+  border: 1px solid #493327;
+  border-radius: 6px;
+  padding: 0.85rem 1rem;
+}
+html[data-theme="senpo"] .msg-user:not(.msg-system) {
+  background: #351815;
+  border-color: #65372c;
+}
+html[data-theme="senpo"][data-view="chat"][data-surface] .msg-user .msg-user-bubble {
+  background: var(--dialog-bubble-user);
+  background-image: var(--senpo-lacquer);
+  border: 1px solid #65372c;
+  border-radius: 6px;
+  box-shadow: var(--turn-shadow);
+}
+html[data-theme="senpo"][data-view="chat"][data-surface] .chat-log .msg.msg-agent:not(.msg-live),
+html[data-theme="senpo"][data-view="chat"][data-surface] .chat-scroll > .msg.msg-live {
+  background-image: var(--senpo-lacquer);
+}
+html[data-theme="senpo"] .msg-body,
+html[data-theme="senpo"] .msg-reasoning { font-size: 15px; line-height: 1.6; }
+html[data-theme="senpo"] .msg-head { margin-bottom: 0.65rem; }
+html[data-theme="senpo"] .msg-author { color: var(--accent); }
+html[data-theme="senpo"] .msg-body blockquote,
+html[data-theme="senpo"] .msg-reasoning blockquote,
+html[data-theme="senpo"] .msg-annotation-content,
+html[data-theme="senpo"] .annotation,
+html[data-theme="senpo"] .msg-response-citation {
+  background: linear-gradient(180deg, #1a100c, #21140f);
+  border-left: 2px solid #b18553;
+  border-radius: 0 4px 4px 0;
+  box-shadow: inset 0 2px 5px rgb(0 0 0 / 24%);
+  color: var(--text-soft);
+  padding: 0.6rem 0.85rem;
+}
+html[data-theme="senpo"] .msg-annotation-content[data-response-annotation-source]:hover,
+html[data-theme="senpo"] .msg-annotation-content[data-response-annotation-source]:focus-visible,
+html[data-theme="senpo"] .msg-response-citation:not(.is-fallback):hover,
+html[data-theme="senpo"] .msg-response-citation:not(.is-fallback):focus-visible {
+  background: #302015;
+}
+html[data-theme="senpo"] .turn-trace { background: #1c120e; border-radius: 4px; }
+
+html[data-theme="senpo"][data-view="chat"][data-surface] form.composer {
+  position: relative;
+  background: linear-gradient(160deg, #281b13, #180f0b 72%);
+  border: 1px solid #a37a49;
+  border-radius: 5px;
+  box-shadow: inset 0 0 0 3px #180f0b, inset 0 0 0 4px rgb(169 124 72 / 28%), 0 5px 20px rgb(0 0 0 / 30%);
+}
+html[data-theme="senpo"][data-view="chat"][data-surface] form.composer:focus-within {
+  border-color: #d0a36c;
+  box-shadow: inset 0 0 0 3px #180f0b, inset 0 0 0 4px rgb(208 163 108 / 45%), 0 0 15px rgb(184 125 54 / 8%);
+}
+html[data-theme="senpo"] form.composer::before {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  border: 1px solid transparent;
+  border-image: url("./brass-frame.svg") 24 / 16px stretch;
+  pointer-events: none;
+}
+html[data-theme="senpo"] .composer-input { background: transparent; box-shadow: none; }
+html[data-theme="senpo"] .composer-input > textarea { font-size: 15px; }
+html[data-theme="senpo"] .composer-send {
+  color: #f4e3c8;
+  background: linear-gradient(145deg, #986b3c, #664323);
+  border: 1px solid #bb8c55;
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 2px rgb(26 15 9 / 25%);
+}
+html[data-theme="senpo"] .settings-panel { background: #211610; }
+html[data-theme="senpo"] ::selection { background: var(--selection); color: #fff3e0; }
+
+@media (max-width: 700px) {
+  html[data-background="senpo"] { --hub-background-position: 18% center; }
+  html[data-theme="senpo"] .msg:not(.msg-system) { padding: 0.7rem 0.8rem; }
+  html[data-theme="senpo"] form.composer::before { border-image-width: 11px; }
+}
