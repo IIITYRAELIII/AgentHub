@@ -20,6 +20,7 @@ import {
   readyTestContourHealth,
   startTestContour,
   TEST_CONTOUR_SPARK_MODEL,
+  testContourSmokeAgentPolicy,
   testContourPaths,
   verifyTestContour,
 } from "../../src/runtime/test-contour-manager.mjs";
@@ -671,6 +672,42 @@ test("verify preserves the requested root and custom port through refresh and sm
     assert.equal(calls[0].options.port, port);
     assert.equal(calls[0].options.sourceKind, "dev");
     assert.equal(calls[1].options.url, `http://127.0.0.1:${port}/`);
+  } finally {
+    await Promise.all([
+      rm(root, { recursive: true, force: true }),
+      rm(`${root}-operation.lock`, { recursive: true, force: true }),
+      rm(sourceRoot, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("verify reports the recording agent probe as skipped and leaves its journal untouched", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-recording-verify-root-"));
+  const sourceRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-recording-verify-source-"));
+  let smokeOptions = null;
+  try {
+    assert.deepEqual(testContourSmokeAgentPolicy({ withAgent: true }), {
+      withAgent: true,
+      agentProbeSkipped: null,
+    });
+    const result = await verifyTestContour({
+      root,
+      sourceRoot,
+      withAgent: true,
+      startContour: async () => ({
+        url: "http://127.0.0.1:18879/",
+        model: TEST_CONTOUR_SPARK_MODEL,
+        startedAt: new Date().toISOString(),
+      }),
+      readRecordingConfiguration: async () => ({ root: path.join(root, "recording") }),
+      smokeRunner: async (options) => {
+        smokeOptions = options;
+        return { ok: true, withAgent: options.withAgent };
+      },
+    });
+    assert.equal(smokeOptions.withAgent, false);
+    assert.equal(result.journal, null);
+    assert.equal(result.agentProbeSkipped, "recording-contour-external-effects-denied");
   } finally {
     await Promise.all([
       rm(root, { recursive: true, force: true }),

@@ -1854,6 +1854,16 @@ export async function openTestContour({ root = defaultTestContourRoot(), spawnIm
   return { opened: true, url };
 }
 
+export function testContourSmokeAgentPolicy({ withAgent = true, recording = null } = {}) {
+  if (withAgent && recording) {
+    return {
+      withAgent: false,
+      agentProbeSkipped: "recording-contour-external-effects-denied",
+    };
+  }
+  return { withAgent: Boolean(withAgent), agentProbeSkipped: null };
+}
+
 async function verifyTestContourUnlocked({
   root = defaultTestContourRoot(),
   entryFile,
@@ -1864,6 +1874,7 @@ async function verifyTestContourUnlocked({
   port = TEST_CONTOUR_PORT,
   startContour = startTestContourUnlocked,
   smokeRunner = null,
+  readRecordingConfiguration = readTestContourRecordingConfiguration,
 } = {}) {
   const paths = testContourPaths(root);
   const state = await startContour({
@@ -1875,6 +1886,8 @@ async function verifyTestContourUnlocked({
     sourceKind,
     port,
   });
+  const recording = await readRecordingConfiguration(root);
+  const smokePolicy = testContourSmokeAgentPolicy({ withAgent, recording });
   const {
     runTestContourUiSmoke,
     TEST_CONTOUR_PROBE,
@@ -1888,13 +1901,13 @@ async function verifyTestContourUnlocked({
     url: state.url,
     automationRoot: paths.automationRoot,
     artifactsDirectory: paths.artifactsDirectory,
-    withAgent,
+    withAgent: smokePolicy.withAgent,
     model: state.model,
     probeResponse,
 
   });
   let journal = null;
-  if (withAgent) {
+  if (smokePolicy.withAgent) {
     journal = await waitFor(async () => {
       const database = new JournalDatabase(path.join(paths.dataDir, "journal.sqlite"));
       try {
@@ -1918,7 +1931,12 @@ async function verifyTestContourUnlocked({
     }, "Test Contour journal confirmation", 30_000);
 
   }
-  return { state, smoke, journal };
+  return {
+    state,
+    smoke,
+    journal,
+    ...(smokePolicy.agentProbeSkipped ? { agentProbeSkipped: smokePolicy.agentProbeSkipped } : {}),
+  };
 }
 
 export async function verifyTestContour(options = {}) {
