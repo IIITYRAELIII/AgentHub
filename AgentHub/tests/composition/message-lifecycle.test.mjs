@@ -3566,6 +3566,7 @@ test("pre-turn live cleanup never crosses provider Thread identity", () => {
 test("terminal live promotion keeps the complete activity trace", () => {
   const activities = [{ id: "tool-1", type: "command" }];
   const activityGroups = [{ id: "group-1", reasoning: "Проверяю.", activities }];
+  const attachments = [{ id: "generated-one.png", type: "image/png" }];
   const message = lifecycle.completedLiveAgentMessage({
     provider: "codex",
     threadId: "thread-1",
@@ -3576,6 +3577,7 @@ test("terminal live promotion keeps the complete activity trace", () => {
     responsePhase: "final_answer",
     activities,
     activityGroups,
+    attachments,
     turnStartedAt: "2026-08-24T01:00:00.000Z",
   }, {
     lastAnswer: "",
@@ -3588,6 +3590,50 @@ test("terminal live promotion keeps the complete activity trace", () => {
   assert.equal(message.turnCompletedAt, "2026-08-24T01:01:00.000Z");
   assert.deepEqual(message.activities, activities);
   assert.deepEqual(message.activityGroups, activityGroups);
+  assert.deepEqual(JSON.parse(JSON.stringify(message.attachments)), attachments);
+  assert.notEqual(message.attachments[0], attachments[0]);
+});
+
+test("live snapshot projects generated response attachments into the current card", () => {
+  const taskId = "stream:imagegen-live";
+  const liveCardsByTask = new Map();
+  const sandbox = vm.createContext({
+    activeTaskRun: lifecycle.activeTaskRun,
+    isUserRunningProjection: () => true,
+    promoteLiveCompletion: () => false,
+    rememberSnapshotCompletion: () => false,
+    clearInternalContextProbe: () => {},
+    activeRunSubmissionTiming: () => ({ submittedAt: null, startedAt: null }),
+    attachmentViews: (values) => (Array.isArray(values) ? values : [])
+      .map((attachment) => ({ ...attachment, projected: true })),
+    liveUserMessagesSignature: () => "signature",
+    mergeLiveMaintenance: (live) => live,
+    activeStageLabel: (stage) => stage,
+    liveCardsByTask,
+    liveProbeByTask: new Map(),
+    liveUserMessagesByTask: new Map(),
+    maintenanceEventsByTask: new Map(),
+    renderTaskMessages: () => {},
+  });
+  const source = clientFunctionSource("updateLiveMessage", "function authorizationHeaders");
+  vm.runInContext(`${source}; globalThis.updateLive = updateLiveMessage;`, sandbox);
+
+  const live = sandbox.updateLive(taskId, {
+    provider: "codex",
+    threadId: "thread-imagegen-live",
+    running: true,
+    run: {
+      turnId: "turn-imagegen-live",
+      responseAttachments: [{ id: "generated-one.png", type: "image/png" }],
+    },
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(live.attachments)), [{
+    id: "generated-one.png",
+    type: "image/png",
+    projected: true,
+  }]);
+  assert.equal(liveCardsByTask.get(taskId), live);
 });
 
 test("terminal catch-up reads local history before waiting for provider hydration", () => {
