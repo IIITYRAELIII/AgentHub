@@ -1,0 +1,19 @@
+{
+  "id": "skellige",
+  "name": "Скеллиге",
+  "color": "#080f15",
+  "order": 121,
+  "styles": "theme.css",
+  "backgrounds": [
+    {
+      "id": "skellige",
+      "name": "Ночная гавань",
+      "asset": "background.png",
+      "preload": true
+    },
+    {
+      "id": "skellige-quiet",
+      "name": "Тихое море"
+    }
+  ]
+}
