@@ -564,6 +564,18 @@ export class TaskGitWorkspaceService {
     }, options);
   }
 
+  async withTaskLocks(taskIds, operation, { guardTaskId = null, ...options } = {}) {
+    this.#assertAvailable("withTaskLocks");
+    const ids = [...new Set((taskIds ?? []).map(normalizedTaskId))].sort();
+    if (!ids.length) throw new Error("Task Git lock set is required");
+    const guardedTaskId = normalizedTaskId(guardTaskId ?? ids[0]);
+    if (!ids.includes(guardedTaskId)) throw new Error("Task Git guard owner must be in the lock set");
+    return withInterprocessLocks(ids.map((taskId) => this.#taskLock(taskId)), async (lease) => {
+      for (const taskId of ids) await this.#assertNoProcessTreeGuard(taskId);
+      return operation(this.#guardedLease(guardedTaskId, lease));
+    }, options);
+  }
+
   async withTaskRecoveryLock(taskId, operation, options = {}) {
     this.#assertAvailable("withTaskRecoveryLock");
     return withInterprocessLocks(

@@ -37,6 +37,16 @@ readback:
 - `unknown` is an explicit terminal receipt state when authoritative readback is
   unavailable or an effect completed but its receipt could not be committed.
 
+The local Await cutover uses the same canonical `hub_task_status_update` receipt.
+When its projector source is a separate Task, the receipt includes that source
+Task's exact ID, Test revision, result commit and projector hash. Both Task locks
+are held while the source authority is rechecked and the target transition
+begins. Current source/target Task, Workspace/Stream, repository and source-result
+identity are fenced atomically by the transition transaction. A later pending reconciliation
+preserves the transition's immutable source evidence in its outcome; terminal
+reconciliation reproduces those durable arguments and does not consult a newer
+source Task state or replay the target lifecycle.
+
 Receipt creation is atomic `INSERT OR IGNORE` under the exact identity. Success
 stores a bounded structural result projection rather than arbitrary response
 content, so a result larger than 1 MiB cannot turn an already-applied effect into

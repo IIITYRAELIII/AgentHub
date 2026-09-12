@@ -1,9 +1,16 @@
 import { createHash } from "node:crypto";
+import path from "node:path";
 
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
 
 function requiredMethod(value, name) {
   if (typeof value?.[name] !== "function") throw new TypeError(`${name} is required`);
+}
+
+function samePath(left, right) {
+  const a = path.resolve(String(left ?? ""));
+  const b = path.resolve(String(right ?? ""));
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
 function confirmation(task, action, preview) {
@@ -114,18 +121,98 @@ export class TaskLifecycleService {
     );
   }
 
+  async updateWorkflowStatusFromSource(options = {}, {
+    taskId: sourceTaskId,
+    expectedRevision: expectedSourceRevision,
+    expectedCommit: expectedSourceCommit,
+    expectedProjectorSha256,
+    verifySource,
+  } = {}) {
+    const target = this.#task(options.taskId);
+    const source = this.#task(sourceTaskId);
+    const workspace = target.workspaceId ? this.workspaceCatalog.workspace(target.workspaceId) : null;
+    if (workspace?.settings?.releaseWorkflowEnabled !== true || !this.releasePreflight) {
+      throw new Error("Cross-Task cutover requires an enabled release workflow");
+    }
+    if (source.id === target.id || source.workspaceId !== target.workspaceId) {
+      throw new Error("Cross-Task cutover source and target identity does not match");
+    }
+    requiredMethod(this.taskGitWorkspaces, "withTaskLocks");
+    requiredMethod({ verifySource }, "verifySource");
+    const projectRoot = path.resolve(String(options.projectRoot || this.#projectRoot(target) || ""));
+    if (!projectRoot || !samePath(this.#projectRoot(source), projectRoot)) {
+      throw new Error("Cross-Task cutover source and target repository does not match");
+    }
+    return this.releasePreflight.withAwaitTransition(workspace.id, () => (
+      this.taskGitWorkspaces.withTaskLocks(
+        [source.id, target.id],
+        async (lease) => {
+          const lockedSource = this.#task(source.id);
+          const lockedTarget = this.#task(target.id);
+          const lockedWorkspace = lockedTarget.workspaceId
+            ? this.workspaceCatalog.workspace(lockedTarget.workspaceId)
+            : null;
+          const lockedStream = lockedTarget.streamId
+            ? this.workspaceCatalog.stream(lockedTarget.streamId)
+            : null;
+          const revision = Number(expectedSourceRevision);
+          const commit = String(expectedSourceCommit ?? "").trim().toLowerCase();
+          const projectorSha256 = String(expectedProjectorSha256 ?? "").trim().toLowerCase();
+          if (!Number.isInteger(revision) || revision < 1
+              || lockedSource.revision !== revision
+              || lockedSource.workflowStatus !== "testing"
+              || lockedSource.workspaceId !== lockedTarget.workspaceId
+              || lockedTarget.workspaceId !== workspace.id
+              || (lockedTarget.streamId && lockedStream?.workspaceId !== workspace.id)
+              || lockedWorkspace?.settings?.releaseWorkflowEnabled !== true
+              || !samePath(this.#projectRoot(lockedSource), projectRoot)
+              || !samePath(taskProjectRoot({ workspace: lockedWorkspace, stream: lockedStream }), projectRoot)) {
+            throw new Error("Cross-Task cutover source Task revision, status or repository changed");
+          }
+          const references = (lockedSource.gitReferences ?? [])
+            .filter((reference) => samePath(reference?.projectRoot, projectRoot));
+          if (references.length !== 1
+              || String(references[0].resultCommit ?? "").trim().toLowerCase() !== commit) {
+            throw new Error("Cross-Task cutover source is not the unique authoritative Task result");
+          }
+          const inspected = await verifySource();
+          if (String(inspected?.headCommit ?? "").trim().toLowerCase() !== commit
+              || String(inspected?.projectorSha256 ?? "").trim().toLowerCase() !== projectorSha256) {
+            throw new Error("Cross-Task cutover source checkout changed while locked");
+          }
+          return this.#updateWorkflowStatusWithLease({
+            ...options,
+            projectRoot,
+            operationEvidence: {
+              cutoverSource: {
+                taskId: lockedSource.id,
+                revision,
+                workflowStatus: lockedSource.workflowStatus,
+                resultCommit: commit,
+                projectorSha256,
+                projectRoot,
+              },
+            },
+          }, { releaseWorkflow: true, lease });
+        },
+        { guardTaskId: target.id },
+      )
+    ));
+  }
+
   async #updateWorkflowStatusLocked({
     taskId, status, operationId, binding = {}, projectRoot = null,
-    expectedRevision = null, expectedWorkflowStatus = null,
+    expectedRevision = null, expectedWorkflowStatus = null, operationEvidence = null,
   } = {}, { releaseWorkflow = false } = {}) {
     return this.#withLock(taskId, (lease = {}) => this.#updateWorkflowStatusWithLease({
       taskId, status, operationId, binding, projectRoot, expectedRevision, expectedWorkflowStatus,
+      operationEvidence,
     }, { releaseWorkflow, lease }), { git: releaseWorkflow });
   }
 
   async #updateWorkflowStatusWithLease({
     taskId, status, operationId, binding = {}, projectRoot = null,
-    expectedRevision = null, expectedWorkflowStatus = null,
+    expectedRevision = null, expectedWorkflowStatus = null, operationEvidence = null,
   } = {}, { releaseWorkflow = false, lease = {} } = {}) {
       const task = this.#task(taskId);
       const workflowStatus = String(status ?? "").trim();
@@ -151,6 +238,23 @@ export class TaskLifecycleService {
         kind: "workflow",
         targetWorkflowStatus: workflowStatus,
         expectedRevision: task.revision,
+        evidence: operationEvidence,
+        ...(releaseWorkflow && affectsAwait ? {
+          releaseContext: {
+            workspaceId: task.workspaceId,
+            streamId: task.streamId,
+            projectRoot: selectedProjectRoot,
+            ...(operationEvidence?.cutoverSource ? {
+              source: {
+                taskId: operationEvidence.cutoverSource.taskId,
+                revision: operationEvidence.cutoverSource.revision,
+                workflowStatus: operationEvidence.cutoverSource.workflowStatus,
+                resultCommit: operationEvidence.cutoverSource.resultCommit,
+                projectRoot: operationEvidence.cutoverSource.projectRoot,
+              },
+            } : {}),
+          },
+        } : {}),
       }), operationId);
       let committed = false;
       try {
@@ -161,7 +265,7 @@ export class TaskLifecycleService {
             gitReferences: [],
             replaceGitReferences: false,
             ...binding,
-            evidence: { outcome: "not_required" },
+            evidence: { ...(operationEvidence ?? {}), outcome: "not_required" },
           }), operationId);
           committed = true;
           if (!affectsAwait) return current;
@@ -216,6 +320,7 @@ export class TaskLifecycleService {
           }],
           ...binding,
           evidence: {
+            ...(operationEvidence ?? {}),
             outcome: integration.outcome,
             resultCommit: snapshot.headCommit,
             devHeadCommit: integration.dev?.headCommit ?? null,
@@ -291,6 +396,7 @@ export class TaskLifecycleService {
       status: transition.targetWorkflowStatus,
       operationId,
       projectRoot,
+      operationEvidence: transition.evidence,
     }, { releaseWorkflow: true, lease });
     return { result, recovery };
   }

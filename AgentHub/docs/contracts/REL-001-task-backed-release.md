@@ -651,6 +651,20 @@ production stores, then requires that commit to be the unique immutable Task
 result for the canonical repository. It binds both source identities and the
 expected Task revision and status in the canonical MCP arguments hash, and
 invokes the ordinary `hub_task_status_update` owner.
+When a selected dependency must enter Await before the Task that owns the
+accepted projector, the cutover may name that separate source Task. Source and
+target must belong to the same Workspace and canonical repository. The source
+Task ID, Test revision, unique result commit and resolver hash are bound into the
+receipt; the Await owner acquires both Task locks in deterministic order and
+rechecks the source Task and clean checkout inside those locks immediately
+before the target lifecycle transition. The current target Workspace/Stream and
+both effective repository roots are re-read under those locks. The same SQLite
+transaction that begins the lifecycle transition then fences the exact current
+target and source Task revisions/statuses, Workspace and Stream ownership, both
+repository roots, the source result reference and the enabled release workflow,
+so a settings or source-authority write cannot pass between readback and
+transition. The target Task remains the only Task whose result, status and
+release membership change.
 The same Task, repository and Await locks, lifecycle transition, immutable result,
 dev integration, complete plan rebuild, rollback and unknown-receipt rules apply.
 The one-shot composition skips startup reconciliation of unrelated receipts and
@@ -661,6 +675,12 @@ operator reconciliation must reproduce the complete original cutover arguments
 hash. The expected revision and status must equal the durable prior Task, the
 source commit must be its unique result for the canonical repository and must
 equal the recorded lifecycle result, and the resolver SHA-256 remains mandatory.
+For a cross-Task cutover, durable lifecycle evidence additionally binds the
+original source Task ID and revision. Terminal reconciliation uses that recorded
+authority even if the source Task later advances; altered, missing or mixed
+source identity remains unknown and performs no Git or lifecycle replay. A
+pending recovery resumes with the exact immutable source evidence from its
+existing transition and preserves that evidence in the terminal outcome.
 Missing, altered or mixed cutover identity stays unknown; terminal reconciliation
 performs no Git or lifecycle replay.
 

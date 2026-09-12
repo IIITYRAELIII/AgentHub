@@ -58,6 +58,10 @@ export function parseTaskAwaitCutoverArguments(argv) {
     expectedSourceCommit: required(input, "expected-source-commit").toLowerCase(),
     expectedProjectorSha256: required(input, "expected-projector-sha256").toLowerCase(),
     expectedTaskRevision: Number(required(input, "expected-task-revision")),
+    sourceTaskId: String(input["source-task"] ?? "").trim() || null,
+    expectedSourceTaskRevision: input["expected-source-task-revision"] == null
+      ? null
+      : Number(input["expected-source-task-revision"]),
     confirm: input.confirm === true,
   };
   if (!Number.isInteger(parsed.expectedTaskRevision) || parsed.expectedTaskRevision < 1) {
@@ -65,6 +69,11 @@ export function parseTaskAwaitCutoverArguments(argv) {
   }
   if (!shaPattern.test(parsed.expectedSourceCommit)) throw new Error("invalid expected source commit");
   if (!/^[a-f0-9]{64}$/u.test(parsed.expectedProjectorSha256)) throw new Error("invalid expected projector SHA-256");
+  if ((parsed.sourceTaskId == null) !== (parsed.expectedSourceTaskRevision == null)
+      || (parsed.sourceTaskId && (!Number.isInteger(parsed.expectedSourceTaskRevision)
+        || parsed.expectedSourceTaskRevision < 1))) {
+    throw new Error("--source-task and --expected-source-task-revision must be provided together");
+  }
   if (!parsed.confirm) throw new Error("--confirm-cutover is required");
   return parsed;
 }
@@ -195,11 +204,12 @@ export async function executeTaskAwaitCutover(input, {
     const matchingReferences = (before.gitReferences ?? []).filter((reference) => (
       samePath(reference.projectRoot, input.repositoryRoot)
     ));
-    if (matchingReferences.length !== 1
-        || String(matchingReferences[0].resultCommit ?? "").toLowerCase() !== source.headCommit) {
+    const crossTask = input.sourceTaskId && input.sourceTaskId !== input.taskId;
+    if (!crossTask && (matchingReferences.length !== 1
+        || String(matchingReferences[0].resultCommit ?? "").toLowerCase() !== source.headCommit)) {
       throw new Error("Task Await cutover source is not the unique authoritative Task result");
     }
-    const result = await runtime.service.call("hub_task_status_update", {
+    const mutation = {
       context_token: token,
       request_id: input.requestId,
       task_id: input.taskId,
@@ -208,7 +218,23 @@ export async function executeTaskAwaitCutover(input, {
       expected_workflow_status: "testing",
       cutover_source_commit: source.headCommit,
       cutover_projector_sha256: source.projectorSha256,
-    });
+      ...(crossTask ? {
+        cutover_source_task_id: input.sourceTaskId,
+        cutover_source_task_revision: input.expectedSourceTaskRevision,
+      } : {}),
+    };
+    const result = crossTask
+      ? await runtime.service.callTaskStatusCutover(mutation, {
+        verifySource: async () => {
+          const verified = await inspectSource(input);
+          if (verified.headCommit !== source.headCommit
+              || verified.projectorSha256 !== source.projectorSha256) {
+            throw new Error("Task Await cutover source checkout changed");
+          }
+          return verified;
+        },
+      })
+      : await runtime.service.call("hub_task_status_update", mutation);
     return { source, before: { id: before.id, revision: before.revision, workflowStatus: before.workflowStatus }, result };
   } finally {
     runtime.close();

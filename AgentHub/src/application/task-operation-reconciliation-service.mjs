@@ -30,24 +30,38 @@ function canonicalValue(value) {
 
 function cutoverArguments({
   expectedTaskRevision, expectedWorkflowStatus, cutoverSourceCommit, cutoverProjectorSha256,
+  cutoverSourceTaskId, cutoverSourceTaskRevision,
 } = {}) {
-  const values = [expectedTaskRevision, expectedWorkflowStatus, cutoverSourceCommit, cutoverProjectorSha256];
+  const values = [
+    expectedTaskRevision, expectedWorkflowStatus, cutoverSourceCommit, cutoverProjectorSha256,
+    cutoverSourceTaskId, cutoverSourceTaskRevision,
+  ];
   if (values.every((value) => value == null || String(value).trim() === "")) return null;
   const revision = Number(expectedTaskRevision);
   const workflowStatus = String(expectedWorkflowStatus ?? "").trim();
   const sourceCommit = String(cutoverSourceCommit ?? "").trim().toLowerCase();
   const projectorSha256 = String(cutoverProjectorSha256 ?? "").trim().toLowerCase();
+  const sourceTaskId = String(cutoverSourceTaskId ?? "").trim();
+  const sourceTaskRevision = cutoverSourceTaskRevision == null ? null : Number(cutoverSourceTaskRevision);
+  const hasCrossTaskIdentity = Boolean(sourceTaskId) || sourceTaskRevision != null;
   if (!Number.isInteger(revision) || revision < 1
       || !WORKFLOW_STATUSES.has(workflowStatus)
       || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(sourceCommit)
       || !/^[0-9a-f]{64}$/u.test(projectorSha256)) {
     throw new Error("invalid cutover operation identity");
   }
+  if (hasCrossTaskIdentity && (!sourceTaskId || !Number.isInteger(sourceTaskRevision) || sourceTaskRevision < 1)) {
+    throw new Error("invalid cross-Task cutover operation identity");
+  }
   return {
     expected_task_revision: revision,
     expected_workflow_status: workflowStatus,
     cutover_source_commit: sourceCommit,
     cutover_projector_sha256: projectorSha256,
+    ...(hasCrossTaskIdentity ? {
+      cutover_source_task_id: sourceTaskId,
+      cutover_source_task_revision: sourceTaskRevision,
+    } : {}),
   };
 }
 
@@ -67,10 +81,19 @@ function exactCutoverEvidence({ cutover, task, transition, outcome, projectRoot,
       || Number(priorTask.revision) !== cutover.expected_task_revision
       || priorTask.workflowStatus !== cutover.expected_workflow_status
       || targetWorkflowStatus !== "awaiting_implementation") return false;
+  if (transition && transition.expectedRevision !== cutover.expected_task_revision) return false;
+  if (cutover.cutover_source_task_id) {
+    const evidence = outcome?.result?.evidence?.cutoverSource ?? transition?.evidence?.cutoverSource;
+    return evidence?.taskId === cutover.cutover_source_task_id
+      && Number(evidence?.revision) === cutover.cutover_source_task_revision
+      && evidence?.workflowStatus === "testing"
+      && String(evidence?.resultCommit ?? "").trim().toLowerCase() === cutover.cutover_source_commit
+      && String(evidence?.projectorSha256 ?? "").trim().toLowerCase() === cutover.cutover_projector_sha256
+      && samePath(evidence?.projectRoot, projectRoot);
+  }
   const references = normalizedTaskGitReferences(priorTask.gitReferences)
     .filter((reference) => samePath(reference.projectRoot, projectRoot));
   if (references.length !== 1 || references[0].resultCommit !== cutover.cutover_source_commit) return false;
-  if (transition && transition.expectedRevision !== cutover.expected_task_revision) return false;
   const evidenceCommit = String(outcome?.result?.evidence?.resultCommit ?? "").trim().toLowerCase();
   return !outcome || evidenceCommit === cutover.cutover_source_commit;
 }

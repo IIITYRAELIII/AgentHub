@@ -1089,6 +1089,8 @@ test("Architect reconciliation forwards one exact unknown operation and requires
     expectedWorkflowStatus: undefined,
     cutoverSourceCommit: undefined,
     cutoverProjectorSha256: undefined,
+    cutoverSourceTaskId: undefined,
+    cutoverSourceTaskRevision: undefined,
     confirmed: true,
   }]);
   const schema = service.tools().find((tool) => tool.name === "hub_task_operation_reconcile").inputSchema;
@@ -1118,6 +1120,8 @@ test("Architect reconciliation forwards one exact unknown operation and requires
     expectedWorkflowStatus: "testing",
     cutoverSourceCommit: "a".repeat(40),
     cutoverProjectorSha256: "b".repeat(64),
+    cutoverSourceTaskId: undefined,
+    cutoverSourceTaskRevision: undefined,
     confirmed: true,
   });
   await assert.rejects(service.call("hub_task_operation_reconcile", {

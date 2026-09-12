@@ -101,6 +101,8 @@ try {
     expectedWorkflowStatus: input["expected-workflow-status"],
     cutoverSourceCommit: input["cutover-source-commit"],
     cutoverProjectorSha256: input["cutover-projector-sha256"],
+    cutoverSourceTaskId: input["cutover-source-task"],
+    cutoverSourceTaskRevision: input["cutover-source-task-revision"],
     confirmed: input.confirm === true,
   });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

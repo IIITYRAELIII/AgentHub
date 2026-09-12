@@ -207,6 +207,67 @@ test("failed Await rebuild rolls back the committed Task status and exact Git re
   assert.deepEqual(task.gitReferences, [previousReference]);
 });
 
+test("cross-Task cutover rejects missing, mismatched or ambiguous source authority before target mutation", async () => {
+  const projectRoot = process.platform === "win32" ? "C:\\repo" : "/repo";
+  const commit = "a".repeat(40);
+  for (const gitReferences of [
+    [],
+    [{ projectRoot, branch: "HUB-216", resultCommit: "b".repeat(40) }],
+    [
+      { projectRoot, branch: "HUB-216", resultCommit: commit },
+      { projectRoot, branch: "HUB-216-copy", resultCommit: commit },
+    ],
+  ]) {
+    let begins = 0;
+    const tasks = new Map([
+      ["source", {
+        id: "source", title: "Source", taskNumber: "HUB-216", revision: 9,
+        workspaceId: "workspace-1", streamId: "stream-1", workflowStatus: "testing", gitReferences,
+      }],
+      ["target", {
+        id: "target", title: "Target", taskNumber: "HUB-203", revision: 6,
+        workspaceId: "workspace-1", streamId: "stream-1", workflowStatus: "testing",
+        gitReferences: [{ projectRoot, branch: "HUB-203", resultCommit: "c".repeat(40) }],
+      }],
+    ]);
+    const lease = { signal: null, async assertOwned() {} };
+    const taskBoard = {
+      task: (id) => tasks.get(id) ?? null,
+      beginLifecycleTransition: () => { begins += 1; },
+      commitWorkflowTransition: () => { throw new Error("unexpected commit"); },
+      failLifecycleTransition: () => true,
+      rollbackWorkflowOutcome: () => {},
+      finalizeCleanupTransition: () => {},
+    };
+    const taskGitWorkspaces = {
+      withTaskLock: async () => { throw new Error("unexpected single Task lock"); },
+      withTaskLocks: async (_ids, operation) => operation(lease),
+      prepareOwned: async () => { throw new Error("unexpected Git preparation"); },
+      snapshotAndMergeOwned: async () => { throw new Error("unexpected Git snapshot"); },
+      cleanupOwned: async () => {},
+      cleanupPreview: async () => ({}),
+    };
+    const service = new TaskLifecycleService({
+      taskBoard,
+      taskGitWorkspaces,
+      workspaceCatalog: {
+        workspace: () => ({ id: "workspace-1", settings: { workingDirectory: projectRoot, releaseWorkflowEnabled: true } }),
+        stream: () => ({ id: "stream-1", workspaceId: "workspace-1", settings: {} }),
+      },
+      releasePreflight: { withAwaitTransition: (_id, operation) => operation(), prepareAwaitSet: async () => ({}) },
+    });
+    await assert.rejects(service.updateWorkflowStatusFromSource({
+      taskId: "target", status: "awaiting_implementation", operationId: `cutover-${gitReferences.length}`,
+      projectRoot, expectedRevision: 6, expectedWorkflowStatus: "testing",
+    }, {
+      taskId: "source", expectedRevision: 9, expectedCommit: commit,
+      expectedProjectorSha256: "d".repeat(64),
+      verifySource: async () => ({ headCommit: commit, projectorSha256: "d".repeat(64) }),
+    }), /unique authoritative Task result/u);
+    assert.equal(begins, 0);
+  }
+});
+
 test("unknown workflow recovery retains the repository lease through Git continuation", async () => {
   const projectRoot = "D:/project";
   const task = {
