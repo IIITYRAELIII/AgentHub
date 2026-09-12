@@ -97,6 +97,10 @@ try {
     guardId: input.guard,
     proofKind: "system-restart-after-guard",
     proofSummary: input.summary,
+    expectedTaskRevision: input["expected-task-revision"],
+    expectedWorkflowStatus: input["expected-workflow-status"],
+    cutoverSourceCommit: input["cutover-source-commit"],
+    cutoverProjectorSha256: input["cutover-projector-sha256"],
     confirmed: input.confirm === true,
   });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

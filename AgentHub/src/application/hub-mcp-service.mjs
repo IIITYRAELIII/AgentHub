@@ -688,6 +688,10 @@ export class HubMcpService {
         guard_id: { type: "string", description: "Required only while the exact lifecycle remains pending Git." },
         proof_kind: { type: "string", enum: ["system-restart-after-guard"], description: "Required only while the exact lifecycle remains pending Git." },
         proof_summary: { type: "string", description: "Required only while the exact lifecycle remains pending Git." },
+        expected_task_revision: { type: "integer", minimum: 1, description: "Required only to reproduce an original local cutover receipt." },
+        expected_workflow_status: { type: "string", enum: ["new", "in_progress", "testing", "awaiting_implementation", "done"], description: "Required only to reproduce an original local cutover receipt." },
+        cutover_source_commit: { type: "string", description: "Required only to reproduce an original local cutover receipt." },
+        cutover_projector_sha256: { type: "string", description: "Required only to reproduce an original local cutover receipt." },
         confirm_reconcile: { type: "boolean", description: "Must be true because this settles the original unknown receipt and may recover a guarded process boundary." },
       }, ["task_id", "operation_request_id", "project_root", "confirm_reconcile"]),
       tool("hub_task_legacy_git_adopt", "Architect-only migration for a legacy Await Task with no Git reference. It verifies terminal Stream evidence and exact non-changelog patch equivalence to a named commit already in local main before recording immutable Task evidence.", {
@@ -859,6 +863,10 @@ export class HubMcpService {
           guardId: args.guard_id,
           proofKind: args.proof_kind,
           proofSummary: args.proof_summary,
+          expectedTaskRevision: args.expected_task_revision,
+          expectedWorkflowStatus: args.expected_workflow_status,
+          cutoverSourceCommit: args.cutover_source_commit,
+          cutoverProjectorSha256: args.cutover_projector_sha256,
           confirmed: args.confirm_reconcile,
         });
       case "hub_task_legacy_git_adopt":

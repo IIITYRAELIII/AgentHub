@@ -4,6 +4,15 @@ import test from "node:test";
 
 import { TaskOperationReconciliationService } from "../../src/application/task-operation-reconciliation-service.mjs";
 
+function hashArguments(value) {
+  const canonical = (item) => {
+    if (Array.isArray(item)) return item.map(canonical);
+    if (!item || typeof item !== "object") return item;
+    return Object.fromEntries(Object.keys(item).sort().map((key) => [key, canonical(item[key])]));
+  };
+  return createHash("sha256").update(JSON.stringify(canonical(value)), "utf8").digest("hex");
+}
+
 function fixture() {
   const projectRoot = process.platform === "win32" ? "C:\\repo" : "/repo";
   const workspace = { id: "workspace-1", settings: { releaseWorkflowEnabled: true, workingDirectory: projectRoot } };
@@ -14,9 +23,9 @@ function fixture() {
   };
   const receipt = {
     requestId: "original-request", workspaceId: workspace.id, toolName: "hub_task_status_update",
-    argumentsHash: createHash("sha256").update(JSON.stringify({
+    argumentsHash: hashArguments({
       request_id: "original-request", status: "awaiting_implementation", task_id: "task-1",
-    }), "utf8").digest("hex"),
+    }),
     status: "unknown", operationStatus: "pending", receiptState: "unknown",
   };
   let transition = {
@@ -115,6 +124,7 @@ function fixture() {
       transition = null;
     },
     crashAfterRollback() {
+      const priorTask = { ...task, gitReferences: [...task.gitReferences] };
       const committed = { ...task, workflowStatus: "awaiting_implementation", revision: 16 };
       task.workflowStatus = "testing";
       task.revision = 17;
@@ -122,6 +132,7 @@ function fixture() {
         operationId: receipt.requestId, taskId: task.id, kind: "workflow",
         result: {
           task: committed,
+          priorTask,
           restoredTask: { ...task, gitReferences: [...task.gitReferences] },
           evidence: {
             resultCommit: "a".repeat(40),
@@ -141,9 +152,27 @@ function fixture() {
     targetWorkflow(status, currentStatus) {
       transition = { ...transition, targetWorkflowStatus: status };
       task.workflowStatus = currentStatus;
-      receipt.argumentsHash = createHash("sha256").update(JSON.stringify({
+      receipt.argumentsHash = hashArguments({
         request_id: receipt.requestId, status, task_id: task.id,
-      }), "utf8").digest("hex");
+      });
+    },
+    useCutoverReceipt() {
+      const identity = {
+        expectedTaskRevision: task.revision,
+        expectedWorkflowStatus: task.workflowStatus,
+        cutoverSourceCommit: task.gitReferences[0].resultCommit,
+        cutoverProjectorSha256: "d".repeat(64),
+      };
+      receipt.argumentsHash = hashArguments({
+        request_id: receipt.requestId,
+        status: "awaiting_implementation",
+        task_id: task.id,
+        expected_task_revision: identity.expectedTaskRevision,
+        expected_workflow_status: identity.expectedWorkflowStatus,
+        cutover_source_commit: identity.cutoverSourceCommit,
+        cutover_projector_sha256: identity.cutoverProjectorSha256,
+      });
+      return identity;
     },
     corruptOutcome(mutator) {
       mutator(outcome);
@@ -233,6 +262,55 @@ test("operator reconciliation settles an exact rollback after a crash before rec
   assert.equal(value.receipt.receiptState, "failed");
   assert.equal(value.lifecycleCalls(), 0);
   assert.match(value.settlements[0].value.error.message, /PreRelease rebuild failed/u);
+});
+
+test("operator reconciliation settles an exact extended cutover rollback without replay", async () => {
+  const value = fixture();
+  const cutover = value.useCutoverReceipt();
+  value.crashAfterRollback();
+  const result = await value.service.reconcileUnknownWorkflow({ ...input(value), ...cutover });
+  assert.equal(result.outcome, "failed");
+  assert.equal(result.reconciliation.durableState, "workflow_rollback");
+  assert.equal(value.receipt.receiptState, "failed");
+  assert.equal(value.lifecycleCalls(), 0);
+  assert.equal(value.settlements.length, 1);
+});
+
+test("operator reconciliation rejects missing, tampered or mixed cutover receipt evidence", async () => {
+  const variants = [
+    (cutover) => { delete cutover.cutoverProjectorSha256; },
+    (cutover) => { cutover.expectedTaskRevision += 1; },
+    (cutover) => { cutover.expectedWorkflowStatus = "in_progress"; },
+    (cutover) => { cutover.cutoverSourceCommit = "b".repeat(40); },
+    (cutover) => { cutover.cutoverProjectorSha256 = "e".repeat(64); },
+  ];
+  for (const mutate of variants) {
+    const value = fixture();
+    const cutover = value.useCutoverReceipt();
+    value.crashAfterRollback();
+    mutate(cutover);
+    await assert.rejects(
+      value.service.reconcileUnknownWorkflow({ ...input(value), ...cutover }),
+      /(invalid cutover operation identity|identity.*CAS does not match)/u,
+    );
+    assert.equal(value.receipt.receiptState, "unknown");
+    assert.equal(value.lifecycleCalls(), 0);
+    assert.deepEqual(value.settlements, []);
+  }
+
+  const mixed = fixture();
+  const cutover = mixed.useCutoverReceipt();
+  mixed.crashAfterRollback();
+  mixed.corruptOutcome((outcome) => {
+    outcome.result.priorTask.gitReferences[0].resultCommit = "b".repeat(40);
+  });
+  await assert.rejects(
+    mixed.service.reconcileUnknownWorkflow({ ...input(mixed), ...cutover }),
+    /identity.*CAS does not match/u,
+  );
+  assert.equal(mixed.receipt.receiptState, "unknown");
+  assert.equal(mixed.lifecycleCalls(), 0);
+  assert.deepEqual(mixed.settlements, []);
 });
 
 test("operator reconciliation settles an exact failed transition after a crash before receipt CAS", async () => {

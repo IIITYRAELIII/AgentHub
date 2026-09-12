@@ -1085,6 +1085,10 @@ test("Architect reconciliation forwards one exact unknown operation and requires
     guardId: "guard-1",
     proofKind: "system-restart-after-guard",
     proofSummary: "Windows boot postdates the exact guard",
+    expectedTaskRevision: undefined,
+    expectedWorkflowStatus: undefined,
+    cutoverSourceCommit: undefined,
+    cutoverProjectorSha256: undefined,
     confirmed: true,
   }]);
   const schema = service.tools().find((tool) => tool.name === "hub_task_operation_reconcile").inputSchema;
@@ -1095,6 +1099,10 @@ test("Architect reconciliation forwards one exact unknown operation and requires
   delete terminalArgs.guard_id;
   delete terminalArgs.proof_kind;
   delete terminalArgs.proof_summary;
+  terminalArgs.expected_task_revision = 19;
+  terminalArgs.expected_workflow_status = "testing";
+  terminalArgs.cutover_source_commit = "a".repeat(40);
+  terminalArgs.cutover_projector_sha256 = "b".repeat(64);
   assert.deepEqual(await service.call("hub_task_operation_reconcile", terminalArgs), {
     resolved: true, outcome: "succeeded",
   });
@@ -1106,6 +1114,10 @@ test("Architect reconciliation forwards one exact unknown operation and requires
     guardId: undefined,
     proofKind: undefined,
     proofSummary: undefined,
+    expectedTaskRevision: 19,
+    expectedWorkflowStatus: "testing",
+    cutoverSourceCommit: "a".repeat(40),
+    cutoverProjectorSha256: "b".repeat(64),
     confirmed: true,
   });
   await assert.rejects(service.call("hub_task_operation_reconcile", {

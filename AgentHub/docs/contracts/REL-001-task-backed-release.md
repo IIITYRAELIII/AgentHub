@@ -646,6 +646,13 @@ dev integration, complete plan rebuild, rollback and unknown-receipt rules apply
 The one-shot composition skips startup reconciliation of unrelated receipts and
 does not patch `PreRelease`, refs or SQLite directly. Its request ID is subject to
 the same no-blind-retry rule as the installed MCP operation.
+If that extended receipt becomes unknown after a durable terminal outcome, its
+operator reconciliation must reproduce the complete original cutover arguments
+hash. The expected revision and status must equal the durable prior Task, the
+source commit must be its unique result for the canonical repository and must
+equal the recorded lifecycle result, and the resolver SHA-256 remains mandatory.
+Missing, altered or mixed cutover identity stays unknown; terminal reconciliation
+performs no Git or lifecycle replay.
 
 ## Legacy cutover
 

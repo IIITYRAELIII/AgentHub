@@ -22,12 +22,57 @@ function samePath(left, right) {
 
 const WORKFLOW_STATUSES = new Set(["new", "in_progress", "testing", "awaiting_implementation", "done"]);
 
-function workflowArgumentsHash({ operationId, taskId, status }) {
-  return createHash("sha256").update(JSON.stringify({
+function canonicalValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalValue(value[key])]));
+}
+
+function cutoverArguments({
+  expectedTaskRevision, expectedWorkflowStatus, cutoverSourceCommit, cutoverProjectorSha256,
+} = {}) {
+  const values = [expectedTaskRevision, expectedWorkflowStatus, cutoverSourceCommit, cutoverProjectorSha256];
+  if (values.every((value) => value == null || String(value).trim() === "")) return null;
+  const revision = Number(expectedTaskRevision);
+  const workflowStatus = String(expectedWorkflowStatus ?? "").trim();
+  const sourceCommit = String(cutoverSourceCommit ?? "").trim().toLowerCase();
+  const projectorSha256 = String(cutoverProjectorSha256 ?? "").trim().toLowerCase();
+  if (!Number.isInteger(revision) || revision < 1
+      || !WORKFLOW_STATUSES.has(workflowStatus)
+      || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(sourceCommit)
+      || !/^[0-9a-f]{64}$/u.test(projectorSha256)) {
+    throw new Error("invalid cutover operation identity");
+  }
+  return {
+    expected_task_revision: revision,
+    expected_workflow_status: workflowStatus,
+    cutover_source_commit: sourceCommit,
+    cutover_projector_sha256: projectorSha256,
+  };
+}
+
+function workflowArgumentsHash({ operationId, taskId, status, cutover = null }) {
+  return createHash("sha256").update(JSON.stringify(canonicalValue({
     request_id: operationId,
     status,
     task_id: taskId,
-  }), "utf8").digest("hex");
+    ...(cutover ?? {}),
+  })), "utf8").digest("hex");
+}
+
+function exactCutoverEvidence({ cutover, task, transition, outcome, projectRoot, targetWorkflowStatus }) {
+  if (!cutover) return true;
+  const priorTask = outcome?.result?.priorTask ?? (transition ? task : null);
+  if (!priorTask
+      || Number(priorTask.revision) !== cutover.expected_task_revision
+      || priorTask.workflowStatus !== cutover.expected_workflow_status
+      || targetWorkflowStatus !== "awaiting_implementation") return false;
+  const references = normalizedTaskGitReferences(priorTask.gitReferences)
+    .filter((reference) => samePath(reference.projectRoot, projectRoot));
+  if (references.length !== 1 || references[0].resultCommit !== cutover.cutover_source_commit) return false;
+  if (transition && transition.expectedRevision !== cutover.expected_task_revision) return false;
+  const evidenceCommit = String(outcome?.result?.evidence?.resultCommit ?? "").trim().toLowerCase();
+  return !outcome || evidenceCommit === cutover.cutover_source_commit;
 }
 
 function sameTaskState(current, expected) {
@@ -71,7 +116,8 @@ export class TaskOperationReconciliationService {
     this.taskLifecycle = taskLifecycle;
   }
 
-  #identity({ workspaceId, taskId, operationRequestId, projectRoot, guardId } = {}) {
+  #identity(options = {}) {
+    const { workspaceId, taskId, operationRequestId, projectRoot, guardId } = options;
     const workspace = this.workspaceCatalog.workspace(requiredText(workspaceId, "workspace id", 200));
     if (!workspace) throw new Error("Unknown operation reconciliation Workspace was not found");
     const task = this.taskBoard.task(requiredText(taskId, "task id", 200));
@@ -88,6 +134,7 @@ export class TaskOperationReconciliationService {
     const targetWorkflowStatus = transition?.targetWorkflowStatus
       ?? outcome?.result?.task?.workflowStatus
       ?? null;
+    const cutover = cutoverArguments(options);
     const validTarget = WORKFLOW_STATUSES.has(targetWorkflowStatus);
     const taskRoot = taskProjectRoot({
       workspace,
@@ -98,7 +145,7 @@ export class TaskOperationReconciliationService {
       && receipt.toolName === "hub_task_status_update"
       && validTarget
       && receipt.argumentsHash === workflowArgumentsHash({
-        operationId, taskId: task.id, status: targetWorkflowStatus,
+        operationId, taskId: task.id, status: targetWorkflowStatus, cutover,
       })
       && receipt.operationStatus === "pending"
       && receipt.receiptState === "unknown";
@@ -113,7 +160,11 @@ export class TaskOperationReconciliationService {
       && outcome.taskId === task.id
       && outcome.kind === "workflow"
     );
-    if (!receiptMatches || !transitionMatches || !outcomeMatches || !taskRoot || !samePath(taskRoot, root)) {
+    const cutoverMatches = exactCutoverEvidence({
+      cutover, task, transition, outcome, projectRoot: root, targetWorkflowStatus,
+    });
+    if (!receiptMatches || !transitionMatches || !outcomeMatches || !cutoverMatches
+        || !taskRoot || !samePath(taskRoot, root)) {
       throw new Error("Unknown workflow operation identity, lifecycle state, project root or Task CAS does not match");
     }
     let state = null;

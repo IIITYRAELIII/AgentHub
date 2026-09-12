@@ -202,6 +202,8 @@ test("production cutover composer writes the canonical receipt and leaves unrela
   const taskGitWorkspaces = {
     releaseEvidence: async () => [],
     withTaskLock: async (_taskId, operation) => operation(lease),
+    withTaskRecoveryLock: async (_taskId, operation) => operation(lease),
+    withTaskRepositoryRecoveryLock: async (_taskId, _projectRoot, _taskLease, operation) => operation(lease),
     prepareOwned: async () => ({ projectRoot: repositoryRoot }),
     snapshotAndMergeOwned: async () => ({
       snapshot: {
@@ -257,4 +259,126 @@ test("production cutover composer writes the canonical receipt and leaves unrela
   assert.equal(receipt.toolName, "hub_task_status_update");
   assert.equal(readTasks.task(created.id).workflowStatus, "awaiting_implementation");
   assert.equal(readTasks.lifecycleOutcome(input.requestId).result.task.workflowStatus, "awaiting_implementation");
+});
+
+test("production cutover rollback reopens and settles its exact extended receipt without replay", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-await-cutover-rollback-"));
+  const repositoryRoot = path.join(root, "repository");
+  const databaseFile = path.join(root, "journal.sqlite");
+  const rawCatalog = new WorkspaceCatalogStore({ databaseFile });
+  await rawCatalog.load();
+  const rawTasks = new TaskBoardStore({ databaseFile });
+  let runtime = null;
+  t.after(async () => {
+    runtime?.close();
+    rawTasks.close();
+    rawCatalog.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  const workspace = await rawCatalog.runMutation(() => rawCatalog.createWorkspace({
+    name: "Agent HUB",
+    settings: { releaseWorkflowEnabled: true, workingDirectory: repositoryRoot },
+  }));
+  const stream = await rawCatalog.runMutation(() => rawCatalog.createStream({
+    workspaceId: workspace.id, name: "Architect", settings: { architect: true },
+  }));
+  await rawCatalog.runMutation(() => rawCatalog.bindThread({
+    streamId: stream.id, provider: "codex", threadId: "thread-cutover-rollback", projectRoot: repositoryRoot,
+  }));
+  const created = rawTasks.create({
+    text: "Release cutover rollback", bucket: "workspace", workspaceId: workspace.id, taskPrefix: "HUB",
+  });
+  rawTasks.claim(created.id, {
+    workspaceId: workspace.id, streamId: stream.id, provider: "codex",
+    threadId: "thread-cutover-rollback", turnId: "turn-cutover-rollback", operationId: "claim-cutover-rollback",
+  });
+  const referenced = rawTasks.recordTaskGitReference({
+    taskId: created.id,
+    projectRoot: repositoryRoot,
+    branch: "HUB-217",
+    resultSnapshot: { repoRoot: repositoryRoot, tree: sha },
+  });
+  const testing = rawTasks.setWorkflowStatus(referenced.id, "testing");
+  rawTasks.close();
+  rawCatalog.close();
+
+  let snapshotCalls = 0;
+  const lease = { signal: null, async assertOwned() {} };
+  const taskGitWorkspaces = {
+    releaseEvidence: async () => [],
+    withTaskLock: async (_taskId, operation) => operation(lease),
+    withTaskRecoveryLock: async (_taskId, operation) => operation(lease),
+    withTaskRepositoryRecoveryLock: async (_taskId, _projectRoot, _taskLease, operation) => operation(lease),
+    prepareOwned: async () => ({ projectRoot: repositoryRoot }),
+    snapshotAndMergeOwned: async () => {
+      snapshotCalls += 1;
+      return {
+        snapshot: {
+          branch: "HUB-217", projectRoot: repositoryRoot,
+          repositoryRoot, baseCommit: "e".repeat(40), headCommit: sha,
+        },
+        integration: {
+          outcome: "integrated", resultProved: true, integrated: true,
+          dev: { branch: "dev", headCommit: "f".repeat(40) },
+        },
+      };
+    },
+    cleanupOwned: async () => {},
+    cleanupPreview: async () => ({ workspaces: [], gitReferences: [], deleting: [] }),
+  };
+  const releasePreflight = {
+    preflight: async () => ({}),
+    withAwaitTransition: async (_workspaceId, operation) => operation(),
+    prepareAwaitSet: async () => { throw new Error("injected PreRelease rebuild failure"); },
+  };
+  const openRuntime = () => openTaskAwaitCutoverRuntime({
+    config: { dataDir: root, projectRoot: repositoryRoot, taskBoard: { autoPlaceConfidence: 0.82 } },
+    taskGitWorkspaces,
+    releasePreflight,
+  });
+  const requestId = "exact-await-cutover-rollback";
+  const input = {
+    workspaceId: workspace.id,
+    streamId: stream.id,
+    provider: "codex",
+    threadId: "thread-cutover-rollback",
+    taskId: created.id,
+    requestId,
+    repositoryRoot,
+    expectedSourceCommit: sha,
+    expectedProjectorSha256: projectorSha,
+    expectedTaskRevision: testing.revision,
+    confirm: true,
+  };
+  await assert.rejects(executeTaskAwaitCutover(input, {
+    inspectSource: async () => ({ headCommit: sha, projectorSha256: projectorSha }),
+    openRuntime,
+  }), /injected PreRelease rebuild failure/u);
+
+  runtime = await openRuntime();
+  const token = runtime.service.contextToken({
+    provider: input.provider, threadId: input.threadId, streamId: input.streamId,
+  });
+  const before = runtime.taskBoard.task(input.taskId);
+  assert.equal(before.workflowStatus, "testing");
+  assert.equal(runtime.workspaceCatalog.mcpOperation(requestId).receiptState, "unknown");
+  assert.equal(runtime.taskBoard.lifecycleTransition(requestId), null);
+  assert.equal(runtime.taskBoard.lifecycleOutcome(requestId).result.rollback.completed, true);
+  const reconciled = await runtime.service.call("hub_task_operation_reconcile", {
+    context_token: token,
+    request_id: "reconcile-cutover-rollback",
+    task_id: input.taskId,
+    operation_request_id: requestId,
+    project_root: repositoryRoot,
+    expected_task_revision: input.expectedTaskRevision,
+    expected_workflow_status: "testing",
+    cutover_source_commit: sha,
+    cutover_projector_sha256: projectorSha,
+    confirm_reconcile: true,
+  });
+  assert.equal(reconciled.outcome, "failed");
+  assert.equal(reconciled.reconciliation.durableState, "workflow_rollback");
+  assert.equal(runtime.workspaceCatalog.mcpOperation(requestId).receiptState, "failed");
+  assert.equal(runtime.taskBoard.task(input.taskId).workflowStatus, "testing");
+  assert.equal(snapshotCalls, 1);
 });
