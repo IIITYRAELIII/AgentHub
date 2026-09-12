@@ -383,7 +383,23 @@ test("durable process-tree guard rejects replacement admission until operator pr
   };
   let descendantPid = null;
   let replacementMutation = false;
-  const service = new TaskGitWorkspaceService({ dataDir });
+  let bootTime = new Date("2000-01-01T00:00:00.000Z");
+  let removeFailure = true;
+  const service = new TaskGitWorkspaceService({
+    dataDir,
+    readSystemBootIdentity: () => ({
+      source: "Win32_OperatingSystem.LastBootUpTime",
+      executablePath: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      bootTime: bootTime.toISOString(),
+    }),
+    removeProcessGuard: async (file) => {
+      if (removeFailure) {
+        removeFailure = false;
+        throw new Error("injected crash after recovery evidence write");
+      }
+      return unlink(file);
+    },
+  });
   context.after(async () => {
     if (descendantPid) try { process.kill(descendantPid, "SIGKILL"); } catch {}
     await rm(dataDir, { recursive: true, force: true });
@@ -412,15 +428,94 @@ test("durable process-tree guard rejects replacement admission until operator pr
   await wait(500);
   assert.equal(await readFile(staleMutation, "utf8"), "stale mutation attempted");
 
+  const guardDirectory = path.join(dataDir, "task-process-tree-guards", taskId);
+  const guard = JSON.parse(await readFile(path.join(guardDirectory, (await readdir(guardDirectory))[0]), "utf8"));
+  await assert.rejects(service.recoverProcessTreeGuard(taskId, {
+    repositoryRoot: root,
+    guardId: guard.guardId,
+    proof: {
+      kind: "system-restart-after-guard",
+      confirmed: true,
+      summary: "boot still predates the guard",
+    },
+  }), /system boot does not postdate/u);
+
   process.kill(descendantPid, "SIGKILL");
   descendantPid = null;
   await wait(100);
-  await service.recoverProcessTreeGuard(taskId, {
+  bootTime = new Date("2100-01-01T00:00:00.000Z");
+  await assert.rejects(service.recoverProcessTreeGuard(taskId, {
     repositoryRoot: root,
-    operatorProof: "confirmed-no-descendants",
+    guardId: "wrong-guard",
+    proof: {
+      kind: "system-restart-after-guard",
+      confirmed: true,
+      summary: "mismatched guard",
+    },
+  }), /guard identity does not match/u);
+  await assert.rejects(service.recoverProcessTreeGuard(taskId, {
+    repositoryRoot: root,
+    guardId: guard.guardId,
+    proof: {
+      kind: "system-restart-after-guard",
+      confirmed: true,
+      summary: "test fixture boot boundary",
+    },
+  }), /injected crash after recovery evidence write/u);
+  const recoveryDirectory = path.join(dataDir, "task-process-tree-recoveries", taskId);
+  const writtenRecovery = JSON.parse(await readFile(
+    path.join(recoveryDirectory, (await readdir(recoveryDirectory))[0]), "utf8",
+  ));
+  bootTime = new Date("2101-01-01T00:00:00.000Z");
+  const recovered = await service.recoverProcessTreeGuard(taskId, {
+    repositoryRoot: root,
+    guardId: guard.guardId,
+    proof: {
+      kind: "system-restart-after-guard",
+      confirmed: true,
+      summary: "different retry summary must not replace evidence",
+    },
   });
+  assert.equal(recovered.reused, true);
+  assert.deepEqual(recovered.proof, writtenRecovery.proof);
+  const replayedRecovery = await service.recoverProcessTreeGuard(taskId, {
+    repositoryRoot: root,
+    guardId: guard.guardId,
+    proof: {
+      kind: "system-restart-after-guard",
+      confirmed: true,
+      summary: "same exact test fixture boot boundary",
+    },
+  });
+  assert.equal(replayedRecovery.reused, true);
+  assert.deepEqual(replayedRecovery.proof, writtenRecovery.proof);
+  assert.equal(replayedRecovery.proof.source, "Win32_OperatingSystem.LastBootUpTime");
   await service.withTaskLock(taskId, async () => { replacementMutation = true; });
   assert.equal(replacementMutation, true);
+});
+
+test("repository recovery lease is reused by nested Task Git preparation", async (context) => {
+  const { root } = await repositoryWithOrigin(context);
+  const dataDir = path.join(root, "..", `${path.basename(root)}-recovery-lock-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const service = new TaskGitWorkspaceService({ dataDir });
+  const taskId = "16161616-1616-4616-8616-161616161616";
+  let repositoryLease = null;
+
+  const workspace = await service.withTaskRecoveryLock(taskId, (taskLease) => (
+    service.withTaskRepositoryRecoveryLock(taskId, root, taskLease, async (lease) => {
+      repositoryLease = lease;
+      return service.prepareOwned({
+        taskId,
+        taskNumber: "HUB-216",
+        projectRoot: root,
+        lease,
+      });
+    })
+  ));
+
+  assert.equal(workspace.taskId, taskId);
+  assert.ok(repositoryLease?.repositoryLockKeys?.size > 0);
 });
 
 test("legacy adoption records only an exact equivalent commit already in main", async (context) => {

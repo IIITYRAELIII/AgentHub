@@ -240,6 +240,7 @@ function fixture(overrides = {}) {
         streamCardWidthMode: "fixed",
         streamCardFixedWidth: 237,
         streamCardGapEnabled: true,
+        quickMessageActionMode: "send",
         quickMessages: {
           global: [{ label: "Пинг", text: "пинг" }],
           streams: { "stream-1": [{ label: "релизь", text: "релизь" }] },
@@ -1245,6 +1246,7 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
     streamCardWidthMode: "fixed",
     streamCardFixedWidth: 237,
     streamCardGapEnabled: true,
+    quickMessageActionMode: "send",
     pinnedWorkspaceStreams: {},
     quickMessages: {
       global: [{ label: "Пинг", text: "пинг" }],

@@ -15,6 +15,26 @@ their next managed preparation renames the branch.
 be made there. Provider turn identity remains journal metadata and is not a
 source of file ownership.
 
+Task launch persists its request owner, planned destination and row-revision CAS
+before creating a Stream, Thread or delivery. While a new destination is not yet
+a catalog member, the awaited `task.starting` event is Workspace-scoped, carries
+the destination in its payload and deduplicates by Task/request identity. A
+rejected event therefore leaves an exact prepared launch without producing the
+downstream effects. Startup never launches it automatically; the original MCP
+receipt becomes `unknown` rather than a replay lease. An Architect may explicitly
+cancel it only with exact caller, Task owner and revision evidence plus proof that
+the planned Stream and admitted delivery content do not exist. Cancellation
+first wins a durable per-Task `prepared -> cancelling` CAS against the launch
+runner's `prepared -> admitted(attemptId)` CAS. Only the admitted attempt may
+enter Stream, Thread or delivery effects. An already admitted launch makes
+cancellation fail; a successful cancellation fence makes every old or concurrent
+runner fail admission before effects. Cancellation then terminalizes the
+original receipt before clearing launch ownership. These SQLite CAS transitions
+arbitrate across connections/processes without a global or timeout lock. Claiming a
+still-`starting` Task is rejected; after cancellation the Task can follow the
+normal existing-Stream start or claim path without the old request taking it
+back.
+
 Each managed Task worktree enables sparse checkout at the Git boundary before
 it is returned. When the selected project root is a strict descendant of the
 source worktree, cone mode uses that exact repository-relative subtree as its
@@ -44,7 +64,18 @@ entry; an ordinary package without that metadata uses its canonical path name.
 For a local `file:`/link entry, the resolved target must remain inside the
 managed project after `realpath`, and its physical name and version come from
 the target lock entry and target `package.json`, not the link's alias path. npm
-metadata entries are not package roots. This makes
+metadata entries are not package roots. Prisma-generated `.prisma` service
+state is accepted only beside an installed lock-backed package whose resolved
+source, installed-lock and physical identity is genuinely `@prisma/client` at
+the same `node_modules` level; an npm alias merely occupying that path does not
+qualify. Its root contains only the local `client` directory;
+the bounded generated tree contains no hidden entries, nested `node_modules`,
+links, junctions or special files, remains inside the canonical managed project
+after `realpath`, and contributes deterministic structural evidence to the
+installed-state marker. Unknown hidden service entries still fail closed.
+Containment compares resolved candidates with canonical physical project and
+package roots, so an equivalent Windows long-name/8.3 alias is not mistaken for
+an escape while a different physical target remains rejected. This makes
 repeated preparation idempotent without accepting extra packages, impostors,
 or stale or malformed package metadata, while a changed lockfile requires a
 fresh install. Installation or validation failure fails Task worktree
@@ -61,7 +92,21 @@ durable ownership assertion fence every npm operation. npm runs through the
 Task lifecycle process-tree guard, so lease loss, cancellation or timeout must
 stop and prove completion of the entire descendant tree before preparation can
 return. An unproven stop leaves the persistent guard in place and blocks the
-next owner until the existing operator-proof recovery. Ownership is rechecked
+next owner until operator reconciliation. Recovery joins the exact unknown MCP
+request, pending lifecycle transition, Task revision, repository and guard ID
+under the Await, Task and repository locks. The repository lease remains held
+from durable classification through guard recovery, resumed Git work, lifecycle
+terminalization and the original receipt CAS; nested Git steps reuse that exact
+lease instead of releasing and reacquiring it. A caller confirmation is not process
+evidence. A guard without a captured process identity is recoverable only when
+`Win32_OperatingSystem.LastBootUpTime` postdates guard creation; this bounded
+recovery deliberately provides no weaker non-reboot proof. Verified recovery
+evidence is persisted before removing the guard, so a crash can reuse only the
+same guard identity. Reconciliation first classifies durable state: exact
+pending Git work resumes, while an exact workflow outcome, rollback or failed
+transition only settles the original receipt without replay. A mismatched or
+mixed state remains unknown. It never reopens an unknown receipt or replays the
+effect under a new request ID. Ownership is rechecked
 after external and validation awaits and immediately before and after marker
 promotion; losing it prevents a falsely prepared result.
 
@@ -438,7 +483,16 @@ corresponding repository `dev` HEAD. Ordinary plan reads do not impose that
 integration requirement. Preflight accepts only an exact `ready` readback for
 the returned operation ID, source head and full target identity; `not_found`,
 `failed`, `refreshing`, `superseded` and identity mismatch all fail closed. The
-preflight does not reconstruct or compare blob manifests.
+post-refresh confirmation has one 10-second attempt budget. The budget gates
+the start of each read and bounds its HTTP health request by the time remaining
+when that read begins. A read admitted within the budget may finish synchronous
+local diagnostics afterward: exact-ready is accepted, while a non-ready result
+cannot start another read after the budget. This is not a hard interruption
+bound for local file or SQLite diagnostics. Only a still-live exact runtime with
+a transient unavailable/not-ready health response may be retried; stopped
+processes and operation, target, runtime, port or lock identity mismatches fail
+immediately with a stable diagnostic reason. The preflight does not reconstruct
+or compare blob manifests.
 
 Persisted operations created before the target included `model`, or runtime
 states created before the per-launch health nonce, are never eligible for

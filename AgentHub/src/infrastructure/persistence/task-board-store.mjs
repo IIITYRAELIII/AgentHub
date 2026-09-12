@@ -80,6 +80,8 @@ function configure(database) {
       start_request_id TEXT,
       start_stream_name TEXT,
       start_destination_stream_id TEXT,
+      start_effect_state TEXT,
+      start_effect_owner_id TEXT,
       row_revision INTEGER NOT NULL DEFAULT 1
     );
     CREATE TABLE IF NOT EXISTS hub_workspace_deletion_fences (
@@ -358,6 +360,22 @@ function configure(database) {
   if (!taskColumns.some((column) => column.name === "start_destination_stream_id")) {
     database.exec("ALTER TABLE hub_board_tasks ADD COLUMN start_destination_stream_id TEXT");
   }
+  if (!taskColumns.some((column) => column.name === "start_effect_state")) {
+    database.exec("ALTER TABLE hub_board_tasks ADD COLUMN start_effect_state TEXT");
+  }
+  if (!taskColumns.some((column) => column.name === "start_effect_owner_id")) {
+    database.exec("ALTER TABLE hub_board_tasks ADD COLUMN start_effect_owner_id TEXT");
+  }
+  database.exec(`
+    UPDATE hub_board_tasks
+    SET start_effect_state = CASE
+      WHEN start_request_id IS NULL THEN NULL
+      WHEN status = 'starting' THEN 'prepared'
+      WHEN status = 'started' AND start_destination_stream_id IS NOT stream_id THEN 'prepared'
+      ELSE 'completed'
+    END
+    WHERE start_effect_state IS NULL
+  `);
   if (!taskColumns.some((column) => column.name === "workflow_status")) {
     database.exec("ALTER TABLE hub_board_tasks ADD COLUMN workflow_status TEXT NOT NULL DEFAULT 'new'");
     database.exec(`
@@ -487,6 +505,8 @@ function configure(database) {
         OR NEW.completed_at_ms IS NOT OLD.completed_at_ms OR NEW.start_request_id IS NOT OLD.start_request_id
         OR NEW.start_stream_name IS NOT OLD.start_stream_name
         OR NEW.start_destination_stream_id IS NOT OLD.start_destination_stream_id
+        OR NEW.start_effect_state IS NOT OLD.start_effect_state
+        OR NEW.start_effect_owner_id IS NOT OLD.start_effect_owner_id
       )
       BEGIN
         UPDATE hub_board_tasks SET row_revision = OLD.row_revision + 1 WHERE id = OLD.id;
@@ -696,6 +716,8 @@ function taskFromRow(row) {
     startRequestId: row.start_request_id ?? null,
     startStreamName: row.start_stream_name ?? null,
     startDestinationStreamId: row.start_destination_stream_id ?? null,
+    startEffectState: row.start_effect_state ?? null,
+    startEffectOwnerId: row.start_effect_owner_id ?? null,
     boardOrder: Number(row.board_order) || 0,
   };
 }
@@ -1850,7 +1872,8 @@ export class TaskBoardStore {
       } else if (reassign) {
         changed = database.prepare(`
           UPDATE hub_board_tasks
-          SET start_request_id = ?, start_stream_name = ?, start_destination_stream_id = ?, updated_at_ms = ?
+          SET start_request_id = ?, start_stream_name = ?, start_destination_stream_id = ?,
+            start_effect_state = 'prepared', start_effect_owner_id = NULL, updated_at_ms = ?
           WHERE id = ? AND row_revision = ? AND status = 'started'
         `).run(
           normalizedRequestId, String(streamName ?? "").trim() || null, String(streamId),
@@ -1862,7 +1885,7 @@ export class TaskBoardStore {
           UPDATE hub_board_tasks
           SET bucket = 'workspace', status = 'starting', workspace_id = ?, stream_id = ?,
             placement_source = 'manual', start_request_id = ?, start_stream_name = ?,
-            start_destination_stream_id = ?,
+            start_destination_stream_id = ?, start_effect_state = 'prepared', start_effect_owner_id = NULL,
             completed_at_ms = NULL, updated_at_ms = ?
           WHERE id = ? AND row_revision = ? AND start_request_id IS NULL
         `).run(
@@ -1881,6 +1904,125 @@ export class TaskBoardStore {
     });
   }
 
+  admitPreparedStart(id, { requestId, attemptId, expectedRevision } = {}) {
+    const taskId = String(id);
+    const normalizedRequestId = String(requestId ?? "").trim();
+    const normalizedAttemptId = String(attemptId ?? "").trim();
+    if (!normalizedRequestId) throw new Error("Task launch request id is required");
+    if (!normalizedAttemptId) throw new Error("Task launch attempt id is required");
+    return this.#withDatabase((database) => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const current = this.#taskRow(database, taskId);
+        if (Number(expectedRevision) !== Number(current.row_revision)) {
+          throw new Error("Task launch effect admission revision conflict");
+        }
+        if (String(current.start_request_id ?? "") !== normalizedRequestId) {
+          throw new Error("Task launch effect admission owner does not match the prepared request");
+        }
+        if (
+          current.start_effect_state === "admitted"
+          && current.start_effect_owner_id === normalizedAttemptId
+        ) {
+          database.exec("COMMIT");
+          return taskFromRow(current);
+        }
+        if (current.start_effect_state !== "prepared") {
+          throw new Error("Task launch effects are not available for admission");
+        }
+        const changed = database.prepare(`
+          UPDATE hub_board_tasks
+          SET start_effect_state = 'admitted', start_effect_owner_id = ?, updated_at_ms = ?
+          WHERE id = ? AND row_revision = ? AND start_request_id = ? AND start_effect_state = 'prepared'
+        `).run(
+          normalizedAttemptId, this.now(), taskId, Number(expectedRevision), normalizedRequestId,
+        );
+        if (!Number(changed.changes)) throw new Error("Task launch effect admission CAS failed");
+        const task = taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId));
+        database.exec("COMMIT");
+        return task;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
+  fencePreparedStartCancellation(id, { requestId, cancellationRequestId, expectedRevision } = {}) {
+    const taskId = String(id);
+    const normalizedRequestId = String(requestId ?? "").trim();
+    const normalizedCancellationId = String(cancellationRequestId ?? "").trim();
+    if (!normalizedRequestId) throw new Error("Task launch request id is required");
+    if (!normalizedCancellationId) throw new Error("Task launch cancellation request id is required");
+    return this.#withDatabase((database) => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const current = this.#taskRow(database, taskId);
+        if (Number(expectedRevision) !== Number(current.row_revision)) {
+          throw new Error("Task launch cancel revision conflict");
+        }
+        if (String(current.start_request_id ?? "") !== normalizedRequestId) {
+          throw new Error("Task launch cancel owner does not match the prepared request");
+        }
+        if (current.start_effect_state === "cancelling") {
+          database.exec("COMMIT");
+          return taskFromRow(current);
+        }
+        if (current.start_effect_state !== "prepared") {
+          throw new Error("Task launch effects were already admitted");
+        }
+        const changed = database.prepare(`
+          UPDATE hub_board_tasks
+          SET start_effect_state = 'cancelling', start_effect_owner_id = ?, updated_at_ms = ?
+          WHERE id = ? AND row_revision = ? AND start_request_id = ? AND start_effect_state = 'prepared'
+        `).run(
+          normalizedCancellationId, this.now(), taskId, Number(expectedRevision), normalizedRequestId,
+        );
+        if (!Number(changed.changes)) throw new Error("Task launch cancellation fence CAS failed");
+        const task = taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId));
+        database.exec("COMMIT");
+        return task;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
+  completePreparedStartCancellation(id, { requestId, expectedRevision } = {}) {
+    const taskId = String(id);
+    const normalizedRequestId = String(requestId ?? "").trim();
+    if (!normalizedRequestId) throw new Error("Task launch request id is required");
+    return this.#withDatabase((database) => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const current = this.#taskRow(database, taskId);
+        if (Number(expectedRevision) !== Number(current.row_revision)) {
+          throw new Error("Task launch cancel completion revision conflict");
+        }
+        if (
+          String(current.start_request_id ?? "") !== normalizedRequestId
+          || current.start_effect_state !== "cancelling"
+        ) throw new Error("Task launch cancellation fence is not owned by the prepared request");
+        const changed = database.prepare(`
+          UPDATE hub_board_tasks
+          SET status = 'open', stream_id = NULL, start_request_id = NULL, start_stream_name = NULL,
+            start_destination_stream_id = NULL, start_effect_state = NULL, start_effect_owner_id = NULL,
+            updated_at_ms = ?
+          WHERE id = ? AND status = 'starting' AND row_revision = ?
+            AND start_request_id = ? AND start_effect_state = 'cancelling'
+        `).run(this.now(), taskId, Number(expectedRevision), normalizedRequestId);
+        if (!Number(changed.changes)) throw new Error("Task launch cancel completion CAS failed");
+        const task = taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId));
+        database.exec("COMMIT");
+        return task;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
   runMutation(operation, options = {}) {
     return this.#mutations.run(operation, options);
   }
@@ -1889,7 +2031,9 @@ export class TaskBoardStore {
     return this.#mutations.diagnostics();
   }
 
-  cancelPreparedStart(id, { requestId, reassign = false } = {}) {
+  cancelPreparedStart(id, {
+    requestId, reassign = false, expectedRevision = null, attemptId = null,
+  } = {}) {
     const taskId = String(id);
     const normalizedRequestId = String(requestId ?? "").trim();
     if (!normalizedRequestId) throw new Error("Task launch request id is required");
@@ -1897,21 +2041,29 @@ export class TaskBoardStore {
       database.exec("BEGIN IMMEDIATE");
       try {
       const current = this.#taskRow(database, taskId);
+      if (expectedRevision != null && Number(expectedRevision) !== Number(current.row_revision)) {
+        throw new Error("Task launch cancel revision conflict");
+      }
       if (String(current.start_request_id ?? "") !== normalizedRequestId) {
         throw new Error("Task launch cancel owner does not match the prepared request");
       }
+      if (
+        String(current.start_effect_state ?? "") !== "admitted"
+        || String(current.start_effect_owner_id ?? "") !== String(attemptId ?? "").trim()
+      ) throw new Error("Task launch rollback does not own effect admission");
       let changed;
       if (reassign) {
         changed = database.prepare(`
           UPDATE hub_board_tasks
-          SET start_request_id = NULL, start_stream_name = NULL, start_destination_stream_id = NULL, updated_at_ms = ?
+          SET start_request_id = NULL, start_stream_name = NULL, start_destination_stream_id = NULL,
+            start_effect_state = NULL, start_effect_owner_id = NULL, updated_at_ms = ?
           WHERE id = ? AND status = 'started' AND start_request_id = ? AND row_revision = ?
         `).run(this.now(), taskId, normalizedRequestId, current.row_revision);
       } else {
         changed = database.prepare(`
           UPDATE hub_board_tasks
           SET status = 'open', stream_id = NULL, start_request_id = NULL, start_stream_name = NULL,
-            start_destination_stream_id = NULL,
+            start_destination_stream_id = NULL, start_effect_state = NULL, start_effect_owner_id = NULL,
             updated_at_ms = ?
           WHERE id = ? AND status = 'starting' AND start_request_id = ? AND row_revision = ?
         `).run(this.now(), taskId, normalizedRequestId, current.row_revision);
@@ -1928,7 +2080,9 @@ export class TaskBoardStore {
     });
   }
 
-  markStarted(id, { workspaceId, streamId, requestId = null, expectedRevision = null } = {}) {
+  markStarted(id, {
+    workspaceId, streamId, requestId = null, expectedRevision = null, attemptId = null,
+  } = {}) {
     const timestamp = this.now();
     return this.#withDatabase((database) => {
       database.exec("BEGIN IMMEDIATE");
@@ -1939,6 +2093,10 @@ export class TaskBoardStore {
       if (String(current.start_request_id ?? "") !== normalizedRequestId) {
         throw new Error("Task launch request does not match the prepared Task");
       }
+      if (
+        current.start_effect_state !== "admitted"
+        || String(current.start_effect_owner_id ?? "") !== String(attemptId ?? "").trim()
+      ) throw new Error("Task launch completion does not own effect admission");
       if (!Number.isInteger(Number(expectedRevision)) || Number(current.row_revision) !== Number(expectedRevision)) {
         throw new Error("Task launch completion revision CAS failed");
       }
@@ -1955,12 +2113,15 @@ export class TaskBoardStore {
         SET bucket = 'workspace', status = 'started', workspace_id = ?, stream_id = ?,
           workflow_status = 'in_progress', placement_source = 'manual',
           started_at_ms = COALESCE(started_at_ms, ?),
-          completed_at_ms = NULL, updated_at_ms = ?
+          completed_at_ms = NULL, start_effect_state = 'completed', start_effect_owner_id = NULL,
+          updated_at_ms = ?
         WHERE id = ? AND row_revision = ? AND start_request_id = ?
           AND status IN ('starting', 'started') AND workspace_id = ? AND start_destination_stream_id = ?
+          AND start_effect_state = 'admitted' AND start_effect_owner_id = ?
       `).run(
         String(workspaceId), String(streamId), timestamp, timestamp, String(id),
         Number(expectedRevision), normalizedRequestId, String(workspaceId), String(streamId),
+        String(attemptId ?? "").trim(),
       );
       if (!Number(changed.changes)) throw new Error("Task launch completion CAS changed no rows");
       const task = this.#taskWithRelease(
@@ -2040,6 +2201,9 @@ export class TaskBoardStore {
       const current = this.#taskRow(database, taskId);
       if (String(current.workspace_id ?? "") !== String(workspaceId ?? "")) {
         throw new Error("Task is outside the current Workspace");
+      }
+      if (current.status === "starting" && String(current.start_request_id ?? "").trim()) {
+        throw new Error("prepared Task launch must be cancelled before claim");
       }
       const bound = database.prepare(`
         SELECT * FROM hub_task_turn_bindings

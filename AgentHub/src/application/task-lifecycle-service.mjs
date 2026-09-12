@@ -115,7 +115,14 @@ export class TaskLifecycleService {
   }
 
   async #updateWorkflowStatusLocked({ taskId, status, operationId, binding = {}, projectRoot = null } = {}, { releaseWorkflow = false } = {}) {
-    return this.#withLock(taskId, async (lease = {}) => {
+    return this.#withLock(taskId, (lease = {}) => this.#updateWorkflowStatusWithLease({
+      taskId, status, operationId, binding, projectRoot,
+    }, { releaseWorkflow, lease }), { git: releaseWorkflow });
+  }
+
+  async #updateWorkflowStatusWithLease({
+    taskId, status, operationId, binding = {}, projectRoot = null,
+  } = {}, { releaseWorkflow = false, lease = {} } = {}) {
       const task = this.#task(taskId);
       const workflowStatus = String(status ?? "").trim();
       const snapshotsResult = releaseWorkflow && ["testing", "awaiting_implementation", "done"].includes(workflowStatus);
@@ -226,7 +233,61 @@ export class TaskLifecycleService {
         }
         throw error;
       }
-    }, { git: releaseWorkflow });
+  }
+
+  withUnknownWorkflowReconciliationLock({ taskId, projectRoot } = {}, operation) {
+    const task = this.#task(taskId);
+    const workspace = task.workspaceId ? this.workspaceCatalog.workspace(task.workspaceId) : null;
+    if (workspace?.settings?.releaseWorkflowEnabled !== true || !this.releasePreflight) {
+      throw new Error("Unknown workflow reconciliation requires an enabled release workflow");
+    }
+    requiredMethod(this.taskGitWorkspaces, "withTaskRecoveryLock");
+    requiredMethod(this.taskGitWorkspaces, "withTaskRepositoryRecoveryLock");
+    return this.releasePreflight.withAwaitTransition(workspace.id, () => (
+      this.taskGitWorkspaces.withTaskRecoveryLock(task.id, (taskLease) => (
+        this.taskGitWorkspaces.withTaskRepositoryRecoveryLock(
+          task.id, projectRoot, taskLease, operation,
+        )
+      ))
+    ));
+  }
+
+  async reconcileUnknownWorkflowStatusOwned({
+    taskId, operationId, projectRoot, guardId, proof, lease,
+  } = {}) {
+    await this.#assertOwned(lease);
+    const current = this.#task(taskId);
+    const transition = this.taskBoard.lifecycleTransition?.(operationId);
+    if (
+      transition?.operationId !== operationId
+      || transition.taskId !== current.id
+      || transition.kind !== "workflow"
+      || transition.phase !== "pending_git"
+      || transition.targetWorkflowStatus !== "awaiting_implementation"
+      || transition.expectedRevision !== current.revision
+      || current.workflowStatus !== "testing"
+    ) {
+      throw new Error("Unknown workflow reconciliation identity or Task CAS does not match");
+    }
+    const recovery = await this.taskGitWorkspaces.recoverProcessTreeGuard(current.id, {
+      repositoryRoot: projectRoot,
+      guardId,
+      proof,
+      lease,
+    });
+    const result = await this.#updateWorkflowStatusWithLease({
+      taskId: current.id,
+      status: transition.targetWorkflowStatus,
+      operationId,
+      projectRoot,
+    }, { releaseWorkflow: true, lease });
+    return { result, recovery };
+  }
+
+  reconcileUnknownWorkflowStatus(options = {}) {
+    return this.withUnknownWorkflowReconciliationLock(options, (lease) => (
+      this.reconcileUnknownWorkflowStatusOwned({ ...options, lease })
+    ));
   }
 
   async #cleanupPreview(task, action) {

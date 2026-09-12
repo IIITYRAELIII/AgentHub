@@ -6,6 +6,7 @@ import { WorkspaceReleasePreflightService } from "../../src/application/workspac
 
 function fixture({
   outcome = "exact", mutateStatus = (value) => value, transientNotReadyReads = 0,
+  readinessDeadlineMs = 100, readinessPollIntervalMs = 10, statusReadDurations = [],
 } = {}) {
   const projectRoot = path.resolve("D:/repo");
   const devRoot = path.resolve("D:/dev-worktree");
@@ -21,7 +22,9 @@ function fixture({
   };
   let refreshRequest = null;
   let statusRequest = null;
+  const statusRequests = [];
   let statusReads = 0;
+  let clockMs = 0;
   let verified = false;
   const status = mutateStatus({
     running: true,
@@ -38,6 +41,7 @@ function fixture({
       model: target.model,
     },
     readback: { outcome, operation, current: operation },
+    readiness: { ready: true, retryable: false, reason: "ready" },
   });
   const service = new WorkspaceReleasePreflightService({
     releasePlanner: {
@@ -119,19 +123,33 @@ function fixture({
     },
     readTestContourStatus: async (request) => {
       statusRequest = request;
+      statusRequests.push(request);
       statusReads += 1;
+      clockMs += statusReadDurations[statusReads - 1] ?? 0;
       if (statusReads <= transientNotReadyReads) {
-        return { ...status, running: false, status: "not-ready" };
+        return {
+          ...status,
+          running: false,
+          health: null,
+          status: "not-ready",
+          readiness: { ready: false, retryable: true, reason: "health-request-failed" },
+        };
       }
       return status;
     },
+    readinessDeadlineMs,
+    readinessPollIntervalMs,
+    now: () => clockMs,
+    delay: async (milliseconds) => { clockMs += milliseconds; },
   });
   return {
     service,
     operation,
     get refreshRequest() { return refreshRequest; },
     get statusRequest() { return statusRequest; },
+    get statusRequests() { return statusRequests; },
     get statusReads() { return statusReads; },
+    get clockMs() { return clockMs; },
     get verified() { return verified; },
   };
 }
@@ -150,6 +168,7 @@ test("release preflight requires a fresh candidate and an exact-ready operation 
   assert.deepEqual(context.statusRequest, {
     expectedOperationId: context.operation.operationId,
     expectedHeadCommit: "dev-head",
+    healthTimeoutMs: 100,
   });
   assert.equal(context.verified, true);
 });
@@ -162,7 +181,103 @@ test("release preflight waits for an exact refreshed contour process to become v
   });
   assert.equal(result.testContour.headCommit, "dev-head");
   assert.equal(context.statusReads, 2);
+  assert.equal(context.clockMs, 10);
   assert.equal(context.verified, true);
+});
+
+test("release preflight fails immediately for an exact operation served by a mismatched runtime", async () => {
+  const context = fixture({
+    mutateStatus: (status) => ({
+      ...status,
+      running: false,
+      health: null,
+      status: "not-ready",
+      readiness: { ready: false, retryable: false, reason: "health-operation-mismatch" },
+    }),
+  });
+  await assert.rejects(
+    () => context.service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-1" }),
+    (error) => error.code === "TEST_CONTOUR_READINESS_FAILED"
+      && error.reason === "health-operation-mismatch",
+  );
+  assert.equal(context.statusReads, 1);
+  assert.equal(context.clockMs, 0);
+  assert.equal(context.verified, false);
+});
+
+test("release preflight fails immediately when the exact refreshed runtime is stopped", async () => {
+  const context = fixture({
+    mutateStatus: (status) => ({
+      ...status,
+      running: false,
+      health: null,
+      status: "stopped",
+      readiness: { ready: false, retryable: false, reason: "runtime-stopped" },
+    }),
+  });
+  await assert.rejects(
+    () => context.service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-1" }),
+    (error) => error.code === "TEST_CONTOUR_READINESS_FAILED"
+      && error.reason === "runtime-stopped",
+  );
+  assert.equal(context.statusReads, 1);
+  assert.equal(context.clockMs, 0);
+  assert.equal(context.verified, false);
+});
+
+test("release preflight applies one deadline to repeated exact health misses", async () => {
+  const context = fixture({
+    transientNotReadyReads: Number.POSITIVE_INFINITY,
+    readinessDeadlineMs: 25,
+    readinessPollIntervalMs: 10,
+  });
+  await assert.rejects(
+    () => context.service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-1" }),
+    (error) => error.code === "TEST_CONTOUR_READINESS_DEADLINE"
+      && error.reason === "health-request-failed"
+      && /attempts=3; elapsedMs=25; deadlineMs=25/u.test(error.message),
+  );
+  assert.equal(context.statusReads, 3);
+  assert.deepEqual(context.statusRequests.map((request) => request.healthTimeoutMs), [25, 15, 5]);
+  assert.equal(context.clockMs, 25);
+  assert.equal(context.verified, false);
+});
+
+test("release preflight accepts exact ready from a read admitted before its deadline", async () => {
+  const context = fixture({
+    transientNotReadyReads: 2,
+    readinessDeadlineMs: 1_000,
+    readinessPollIntervalMs: 100,
+    statusReadDurations: [300, 300, 300],
+  });
+  const result = await context.service.preflight({
+    workspaceId: "workspace-1",
+    expectedPlanRevision: "plan-1",
+  });
+  assert.equal(result.testContour.headCommit, "dev-head");
+  assert.equal(context.statusReads, 3);
+  assert.deepEqual(context.statusRequests.map((request) => request.healthTimeoutMs), [1_000, 600, 200]);
+  assert.equal(context.clockMs, 1_100);
+  assert.equal(context.verified, true);
+});
+
+test("release preflight starts no new read after an admitted read exhausts the budget", async () => {
+  const context = fixture({
+    transientNotReadyReads: Number.POSITIVE_INFINITY,
+    readinessDeadlineMs: 1_000,
+    readinessPollIntervalMs: 100,
+    statusReadDurations: [300, 300, 300],
+  });
+  await assert.rejects(
+    () => context.service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-1" }),
+    (error) => error.code === "TEST_CONTOUR_READINESS_DEADLINE"
+      && error.reason === "health-request-failed"
+      && /attempts=3; elapsedMs=1100; deadlineMs=1000/u.test(error.message),
+  );
+  assert.equal(context.statusReads, 3);
+  assert.deepEqual(context.statusRequests.map((request) => request.healthTimeoutMs), [1_000, 600, 200]);
+  assert.equal(context.clockMs, 1_100);
+  assert.equal(context.verified, false);
 });
 
 for (const outcome of ["superseded", "not_found", "failed", "refreshing"]) {

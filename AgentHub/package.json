@@ -1,7 +1,7 @@
 {
   "name": "agent-hub",
   "private": true,
-  "version": "2026.9.11",
+  "version": "2026.9.12",
   "type": "module",
   "engines": {
     "node": ">=22.5.0"
@@ -37,6 +37,7 @@
     "work-log:claude-backfill": "node claude-work-log-backfill-cli.mjs",
     "work-log:title-backfill": "node work-log-title-backfill-cli.mjs",
     "workspace:migrate": "node src/interfaces/cli/workspace-layout-migrate.mjs",
+    "task:reconcile-operation": "node task-operation-reconcile.mjs",
     "contracts:check": "node --no-warnings --experimental-vm-modules syntax-check.mjs --contracts-only",
     "contracts:affected": "node contract-registry-cli.mjs affected",
     "rate-limits:backfill": "node rate-limit-backfill.mjs",

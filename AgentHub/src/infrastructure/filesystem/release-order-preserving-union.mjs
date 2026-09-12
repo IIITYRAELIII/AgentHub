@@ -22,6 +22,25 @@ async function gitBytes(cwd, args) {
   }
 }
 
+async function historicalBaseMatchesApprovedPaths(root, historicalBase, approvedBase, stages) {
+  if (historicalBase === approvedBase) return true;
+  try {
+    await execFileAsync("git", ["merge-base", "--is-ancestor", historicalBase, approvedBase], {
+      cwd: root, windowsHide: true, encoding: "buffer", maxBuffer: 64 * 1024 * 1024,
+    });
+    for (const stage of stages) {
+      const [historical, approved] = await Promise.all([
+        gitBytes(root, ["show", `${historicalBase}:${stage.file}`]),
+        gitBytes(root, ["show", `${approvedBase}:${stage.file}`]),
+      ]);
+      if (!historical.equals(approved)) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function resolvedPath(root, relative) {
   const target = path.resolve(root, String(relative).replaceAll("/", path.sep));
   const child = path.relative(path.resolve(root), target);
@@ -82,7 +101,9 @@ export async function resolveExactOrderPreservingUnion({
       for (const line of history) {
         const [commit, parentsText = ""] = line.split("\0");
         const parents = parentsText.split(" ").filter(Boolean);
-        if (parents.length !== 2 || parents[1] !== approvedBase) continue;
+        if (parents.length !== 2 || !await historicalBaseMatchesApprovedPaths(
+          root, parents[1], approvedBase, stages,
+        )) continue;
         let exact = true;
         for (const stage of stages) {
           try {

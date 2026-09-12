@@ -922,11 +922,19 @@ function observeCodexEntry(
   const turnId = codexEntryTurnId(entry) || (lifecycle ? LEGACY_TURN_ID : "");
   const terminalLifecycle = entry?.type === "event_msg"
     && ["task_complete", "turn_aborted"].includes(entry.payload?.type);
+  if (lifecycle && turnId && turnId !== LEGACY_TURN_ID) {
+    if (terminalLifecycle) metadata.terminatedTurnIds?.add(turnId);
+    else metadata.terminatedTurnIds?.delete(turnId);
+  }
   if (
     metadata.inferActiveTurns === true
     && turnId
     && turnId !== LEGACY_TURN_ID
     && !terminalLifecycle
+    // Codex flushes trailing item_completed records for tools that were still
+    // running when the turn ended. Inference must not resurrect a turn whose
+    // own terminal lifecycle event was already read in this pass.
+    && !metadata.terminatedTurnIds?.has(turnId)
   ) {
     activeTurnIds.add(turnId);
   }
@@ -1461,6 +1469,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
   const metadata = {
     requireSourceProvenance: true,
     inferActiveTurns: !appendOnly && observationStart > 0,
+    terminatedTurnIds: new Set(),
     latestTurnId: appendOnly ? String(cached.latestTurnId ?? "") : "",
     parentThreadId: appendOnly ? String(cached.parentThreadId ?? "") : "",
     vscodeTurnIds: new Set(appendOnly ? cached.vscodeTurnIds ?? [] : []),

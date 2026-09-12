@@ -1,13 +1,32 @@
 import { createHash } from "node:crypto";
 import { readFile, readdir, lstat } from "node:fs/promises";
+import { isBuiltin } from "node:module";
 import path from "node:path";
 
 const SAFE_BUILTINS = new Set([
   "assert", "assert/strict", "test", "path", "path/posix", "path/win32", "url",
   "crypto", "buffer", "util", "events", "string_decoder", "timers", "timers/promises",
 ]);
+const DECLARABLE_BUILTINS = new Set(["fs", "fs/promises", "module", "vm"]);
+const DECLARABLE_GLOBALS = new Set(["global", "globalThis", "process"]);
+const DECLARATION_FIELDS = new Set(["browser", "builtins", "globals", "inputs", "packages"]);
 const INPUT_LIMIT = 128 * 1024 * 1024;
 const FILE_LIMIT = 10_000;
+
+function validDeclaration(declaration) {
+  if (!declaration || typeof declaration !== "object" || Array.isArray(declaration)) return false;
+  if (Object.keys(declaration).some((field) => !DECLARATION_FIELDS.has(field))) return false;
+  if (declaration.browser !== undefined && typeof declaration.browser !== "boolean") return false;
+  for (const [field, allowed] of [["builtins", DECLARABLE_BUILTINS], ["globals", DECLARABLE_GLOBALS]]) {
+    if (declaration[field] !== undefined
+      && (!Array.isArray(declaration[field]) || declaration[field].some((value) => typeof value !== "string" || !allowed.has(value)))) return false;
+  }
+  for (const field of ["inputs", "packages"]) {
+    if (declaration[field] !== undefined
+      && (!Array.isArray(declaration[field]) || declaration[field].some((value) => typeof value !== "string" || !value))) return false;
+  }
+  return true;
+}
 
 // This is a cache eligibility check, not a JavaScript dependency analyser.
 // Computed imports, external IO and undeclared fixtures cannot establish reuse.
@@ -20,6 +39,7 @@ export async function fingerprintTestInputs(file, {
   toolchain = { node: process.version, platform: process.platform, arch: process.arch, versions: process.versions, execArgv: process.execArgv },
   browserFile = "",
 } = {}) {
+  if (declaration && !validDeclaration(declaration)) return null;
   const hash = createHash("sha256").update("test-inputs-v4\0");
   hash.update(JSON.stringify(toolchain)).update("\0");
   // Values (including secrets) never leave this digest or appear in a checkpoint.
@@ -61,7 +81,11 @@ export async function fingerprintTestInputs(file, {
     if (!/\.[cm]?js$/u.test(absolute)) return;
     const text = content.toString("utf8");
     if (/\b(?:eval|Function)\s*\(|\bimport\s*\(\s*(?!["'])|\brequire\s*\(\s*(?!["'])|\b(?:require|import)\s*\/\*/u.test(text)) cacheable = false;
-    if (!declaration && /\b(?:process|globalThis|global|fetch)\b/u.test(text)) cacheable = false;
+    const declaredGlobals = new Set(declaration?.globals ?? []);
+    for (const name of DECLARABLE_GLOBALS) {
+      if (new RegExp(`\\b${name}\\b`, "u").test(text) && !declaredGlobals.has(name)) cacheable = false;
+    }
+    if (/(?<![\w$.])fetch\b/u.test(text)) cacheable = false;
     for (const match of text.matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s*)["']([^"']+)["']/gu)) {
       const specifier = match[1];
       if (specifier.startsWith(".")) {
@@ -75,8 +99,12 @@ export async function fingerprintTestInputs(file, {
         if (!resolved) cacheable = false;
       } else {
         const builtin = specifier.replace(/^node:/u, "");
-        if (SAFE_BUILTINS.has(builtin)) continue;
-        if (declaration && ["fs", "fs/promises", "vm"].includes(builtin)) continue;
+        if (isBuiltin(specifier)) {
+          if (SAFE_BUILTINS.has(builtin)) continue;
+          if (declaration?.builtins?.includes(builtin)) continue;
+          cacheable = false;
+          continue;
+        }
         if (declaration?.packages?.includes(specifier)) continue;
         cacheable = false;
       }

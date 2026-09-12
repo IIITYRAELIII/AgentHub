@@ -81,6 +81,28 @@ test("chat scroll controller follows the bottom until the reader moves away", as
   assert.equal(button.hidden, true);
 });
 
+test("chat scroll controller releases an exact history window before returning to bottom", async () => {
+  const { ChatScrollController } = await scrollApi();
+  const scroll = Object.assign(new FakeTarget(), {
+    scrollHeight: 1_000,
+    clientHeight: 200,
+    scrollTop: 400,
+  });
+  const button = fakeScrollButton();
+  const events = [];
+  new ChatScrollController(scroll, button, {
+    onReturnBottom: () => events.push("release-focus"),
+    reducedMotion: () => true,
+    requestAnimationFrame: (callback) => { callback(0); return 1; },
+    cancelAnimationFrame: () => {},
+    ResizeObserver: null,
+  });
+
+  button.dispatch("click");
+  assert.deepEqual(events, ["release-focus"]);
+  assert.equal(scroll.scrollTop, 1_000);
+});
+
 test("chat scroll controller restores distance from bottom after DOM replacement", async () => {
   const { ChatScrollController } = await scrollApi();
   const scroll = Object.assign(new FakeTarget(), {
