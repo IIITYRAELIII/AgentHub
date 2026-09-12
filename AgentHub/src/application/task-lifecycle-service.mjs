@@ -114,17 +114,28 @@ export class TaskLifecycleService {
     );
   }
 
-  async #updateWorkflowStatusLocked({ taskId, status, operationId, binding = {}, projectRoot = null } = {}, { releaseWorkflow = false } = {}) {
+  async #updateWorkflowStatusLocked({
+    taskId, status, operationId, binding = {}, projectRoot = null,
+    expectedRevision = null, expectedWorkflowStatus = null,
+  } = {}, { releaseWorkflow = false } = {}) {
     return this.#withLock(taskId, (lease = {}) => this.#updateWorkflowStatusWithLease({
-      taskId, status, operationId, binding, projectRoot,
+      taskId, status, operationId, binding, projectRoot, expectedRevision, expectedWorkflowStatus,
     }, { releaseWorkflow, lease }), { git: releaseWorkflow });
   }
 
   async #updateWorkflowStatusWithLease({
     taskId, status, operationId, binding = {}, projectRoot = null,
+    expectedRevision = null, expectedWorkflowStatus = null,
   } = {}, { releaseWorkflow = false, lease = {} } = {}) {
       const task = this.#task(taskId);
       const workflowStatus = String(status ?? "").trim();
+      if (expectedRevision != null && task.revision !== Number(expectedRevision)) {
+        throw new Error("Task workflow cutover revision changed");
+      }
+      if (expectedWorkflowStatus != null
+          && task.workflowStatus !== String(expectedWorkflowStatus).trim()) {
+        throw new Error("Task workflow cutover status changed");
+      }
       const snapshotsResult = releaseWorkflow && ["testing", "awaiting_implementation", "done"].includes(workflowStatus);
       const workspace = task.workspaceId ? this.workspaceCatalog.workspace(task.workspaceId) : null;
       const affectsAwait = workspace?.settings?.releaseWorkflowEnabled === true

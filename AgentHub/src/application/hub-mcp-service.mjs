@@ -438,6 +438,7 @@ export class HubMcpService {
     workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releasePlanner, releasePreflight, releaseCompleter,
     taskGitWorkspaces = null, taskLifecycle = null,
     taskOperationReconciliation = null,
+    reconcilePendingOnStartup = true,
   } = {}) {
     for (const name of [
       "resolveThread", "workspace", "hierarchy", "developerRulesForStream",
@@ -482,7 +483,9 @@ export class HubMcpService {
           taskLifecycle: this.taskLifecycle,
         })
         : null);
-    this.#startupReconciliation = this.reconcilePendingMcpOperations();
+    this.#startupReconciliation = reconcilePendingOnStartup === false
+      ? Promise.resolve({ reconciled: 0, skipped: true })
+      : this.reconcilePendingMcpOperations();
   }
 
   async reconcilePendingMcpOperations() {
@@ -673,6 +676,10 @@ export class HubMcpService {
       tool("hub_task_status_update", "Change workflow status only after exact Git result evidence is integrated. Test/Await/Done fail closed when no result or integration fails.", {
         task_id: { type: "string" },
         status: { type: "string", enum: ["new", "in_progress", "testing", "awaiting_implementation", "done"] },
+        expected_task_revision: { type: "integer", minimum: 1, description: "Optional exact Task revision CAS for a local cutover." },
+        expected_workflow_status: { type: "string", enum: ["new", "in_progress", "testing", "awaiting_implementation", "done"], description: "Optional exact current workflow status CAS for a local cutover." },
+        cutover_source_commit: { type: "string", description: "Optional clean checkout commit recorded by a local cutover." },
+        cutover_projector_sha256: { type: "string", description: "Optional verified release-projector hash recorded by a local cutover." },
       }, ["task_id", "status"]),
       tool("hub_task_operation_reconcile", "Architect-only reconciliation of one exact unknown Task workflow operation. A pending Git operation requires trusted process-tree proof; an already terminal lifecycle settles its original receipt without Git replay or invented guard evidence.", {
         task_id: { type: "string" },
@@ -1229,7 +1236,11 @@ export class HubMcpService {
     return active[0];
   }
 
-  async #updateTaskWorkflowStatus(context, { task_id: taskId, status, request_id: operationId } = {}) {
+  async #updateTaskWorkflowStatus(context, {
+    task_id: taskId, status, request_id: operationId,
+    expected_task_revision: expectedRevision = null,
+    expected_workflow_status: expectedWorkflowStatus = null,
+  } = {}) {
     const task = this.#task(context, taskId);
     const workflowStatus = requiredText(status, "task workflow status", 40);
     let binding = {};
@@ -1255,6 +1266,8 @@ export class HubMcpService {
         String(task.streamId ?? "").trim() || context.streamId,
         task.workspaceId,
       ),
+      expectedRevision,
+      expectedWorkflowStatus,
     });
     if (!result?.task) return compactTask(result);
     const { task: updated, ...evidence } = result;

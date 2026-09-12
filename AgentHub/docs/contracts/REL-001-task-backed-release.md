@@ -634,6 +634,19 @@ is not part of durable publication identity or logs. Delete the local context
 after the first update; retire this compatibility bridge when the old wiring is
 outside the supported migration range.
 
+An accepted release-projector correction that is not yet installed may bootstrap
+one exact `Test -> Await` transition from its clean Task checkout. The local
+cutover verifies the exact source commit and resolver SHA-256 before opening the
+production stores, then requires that commit to be the unique immutable Task
+result for the canonical repository. It binds both source identities and the
+expected Task revision and status in the canonical MCP arguments hash, and
+invokes the ordinary `hub_task_status_update` owner.
+The same Task, repository and Await locks, lifecycle transition, immutable result,
+dev integration, complete plan rebuild, rollback and unknown-receipt rules apply.
+The one-shot composition skips startup reconciliation of unrelated receipts and
+does not patch `PreRelease`, refs or SQLite directly. Its request ID is subject to
+the same no-blind-retry rule as the installed MCP operation.
+
 ## Legacy cutover
 
 A legacy open Await Task that predates Task Git references may be adopted only
