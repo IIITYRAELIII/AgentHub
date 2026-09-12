@@ -16,18 +16,88 @@ export function publicationStateFile(environment = process.env) {
 
 export async function readPublicationState(file = publicationStateFile()) {
   try {
-    return JSON.parse(await readFile(file, "utf8"));
+    return normalizePublicationState(JSON.parse(await readFile(file, "utf8")));
   } catch (error) {
     if (error?.code === "ENOENT") return null;
     throw error;
   }
 }
 
+function canonicalRoot(value) {
+  const resolved = path.resolve(String(value ?? "").trim());
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+function stable(value) {
+  return JSON.stringify(value, Object.keys(value ?? {}).sort());
+}
+
+function repositoryRootOf(value) {
+  return String(value?.root ?? value?.projectRoot ?? "").trim();
+}
+
+function repositoryRevisionOf(value) {
+  return String(value?.revision ?? value?.publishedRevision ?? "").trim();
+}
+
+function normalizedRepositoryEvidence(entry) {
+  const root = repositoryRootOf(entry);
+  const revision = repositoryRevisionOf(entry);
+  if (!root || !revision) throw new Error("publication repository evidence requires root and revision");
+  return { ...entry, root, revision };
+}
+
+export function publicationStateRepositories(value = {}) {
+  const entries = Array.isArray(value?.repositories) ? value.repositories : [];
+  const repositories = new Map();
+  for (const raw of entries) {
+    const entry = normalizedRepositoryEvidence(raw);
+    const key = canonicalRoot(entry.root);
+    const existing = repositories.get(key);
+    if (existing && stable(existing) !== stable(entry)) {
+      throw new Error(`conflicting duplicate publication evidence for ${entry.root}`);
+    }
+    repositories.set(key, entry);
+  }
+  if (!repositories.size && repositoryRootOf(value) && repositoryRevisionOf(value)) {
+    const entry = normalizedRepositoryEvidence(value);
+    repositories.set(canonicalRoot(entry.root), entry);
+  }
+  const legacyReleaseRoot = String(value?.release?.primaryRoot ?? value?.primaryRoot ?? "").trim();
+  if (!repositories.size && legacyReleaseRoot && repositoryRevisionOf(value)) {
+    const entry = normalizedRepositoryEvidence({
+      root: legacyReleaseRoot,
+      revision: repositoryRevisionOf(value),
+      planRevision: value?.release?.planRevision ?? value?.planRevision,
+      manifestHash: value?.release?.manifestHash ?? value?.manifestHash,
+      baseCommit: value?.release?.baseCommit ?? value?.baseCommit,
+      preReleaseHead: value?.release?.preReleaseHead ?? value?.preReleaseHead,
+      adoptedFrom: "legacy-publication-record",
+    });
+    repositories.set(canonicalRoot(entry.root), entry);
+  }
+  return [...repositories.values()].sort((left, right) => canonicalRoot(left.root).localeCompare(canonicalRoot(right.root)));
+}
+
+export function normalizePublicationState(value = null) {
+  if (!value) return null;
+  const repositories = publicationStateRepositories(value);
+  return repositories.length ? { ...value, repositories } : value;
+}
+
 export async function writePublicationState(value, file = publicationStateFile()) {
   await mkdir(path.dirname(file), { recursive: true });
+  const current = await readPublicationState(file);
+  const incomingRepositories = publicationStateRepositories(value);
+  const retained = new Map((current?.repositories ?? []).map((entry) => [canonicalRoot(entry.root), entry]));
+  for (const entry of incomingRepositories) retained.set(canonicalRoot(entry.root), entry);
   const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
   await writeFile(temporary, `${JSON.stringify({
+    ...(current ?? {}),
     ...value,
+    ...(retained.size ? { repositories: [...retained.values()].sort((left, right) => (
+      canonicalRoot(left.root).localeCompare(canonicalRoot(right.root))
+    )) } : {}),
     generation: String(value?.generation ?? "").trim() || randomUUID(),
   }, null, 2)}\n`, "utf8");
   await rename(temporary, file);

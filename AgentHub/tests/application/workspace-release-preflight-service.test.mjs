@@ -4,6 +4,21 @@ import test from "node:test";
 
 import { WorkspaceReleasePreflightService } from "../../src/application/workspace-release-preflight-service.mjs";
 
+function exactProductionValidation({ workspaceId = "workspace-1", planRevision = "plan-1", repositories }) {
+  return {
+    status: "ready",
+    workspaceId,
+    planRevision,
+    repositories: repositories.map((repository) => ({
+      projectRoot: repository.projectRoot,
+      headCommit: repository.headCommit,
+      resultCommits: [...repository.resultCommits],
+      taskIds: [...repository.taskIds],
+    })),
+    check: { kind: "repository-owned-qa", id: "qa-check-1" },
+  };
+}
+
 function fixture({ planRevision = "plan-1", contourHead = "dev-head", rejectDev = null, rejectPrimary = null } = {}) {
   const calls = [];
   const locks = [];
@@ -98,7 +113,7 @@ function fixture({ planRevision = "plan-1", contourHead = "dev-head", rejectDev 
     }),
     resolveTestContourSource: async (repositories) => {
       calls.push(["resolve-contour", repositories]);
-      return { ...repositories[0], sourceRoot: path.resolve("D:/dev-worktree/AgentHub") };
+      return { kind: "agent-hub-test-contour", ...repositories[0], sourceRoot: path.resolve("D:/dev-worktree/AgentHub") };
     },
     refreshTestContour: async (request) => {
       calls.push(["refresh-contour", request]);
@@ -340,7 +355,10 @@ test("release preflight requires repository-scoped top-level approvals for multi
     }),
     refreshTestContour: async () => assert.fail("multi-repository non-AgentHub preflight must not run AgentHub Test Contour"),
     readTestContourStatus: async () => assert.fail("multi-repository non-AgentHub preflight must not read AgentHub Test Contour"),
-    validateProductionCandidate: async () => ({ status: "ready", kind: "external", evidence: "fixture" }),
+    validateProductionCandidate: async ({ workspaceId, planRevision, repositories }) => ({
+      ...exactProductionValidation({ workspaceId, planRevision, repositories }),
+      kind: "external",
+    }),
   });
 
   await assert.rejects(
@@ -365,6 +383,136 @@ test("release preflight requires repository-scoped top-level approvals for multi
   assert.equal(result.productionValidation.kind, "external");
   assert.deepEqual(result.mainAudits.map((audit) => audit.publishedRevision), ["published-a", "published-b"]);
   assert.equal(result.releaseCandidates.length, 2);
+});
+
+test("release preflight rejects stale external production validation evidence", async () => {
+  const repo = path.resolve("D:/android-repo");
+  const plan = {
+    revision: "plan-android",
+    ready: [{ taskId: "task-android", taskRevision: 2, projectRoot: repo, resultCommit: "result-android" }],
+    blocked: [],
+    conflicts: [],
+  };
+  const service = new WorkspaceReleasePreflightService({
+    releasePlanner: { plan: async () => plan },
+    taskGitWorkspaces: {
+      prepareDev: async (projectRoot) => ({
+        repositoryRoot: projectRoot, projectRoot, branch: "dev", headCommit: "dev-current",
+      }),
+      verifyReleaseResultsInDev: async ({ projectRoot, resultCommits }) => ({
+        repositoryRoot: projectRoot, projectRoot, branch: "dev", headCommit: "dev-current", resultCommits,
+      }),
+      releaseIntegrationEvidence: async ({ projectRoot, tasks }) => ({
+        repositoryRoot: projectRoot, projectRoot, branch: "dev", headCommit: "dev-current", tasks,
+      }),
+    },
+    releaseGitWorkspaces: {
+      withAwaitTransition: async (_workspaceId, operation) => operation(),
+      assertPrimaryInvariant: async (projectRoot) => ({ projectRoot, branch: "refs/heads/main", headCommit: "main" }),
+      inspectMainChanges: async (request) => ({ projectRoot: request.projectRoot, publishedRevision: request.publishedRevision, localMain: "main", originMain: "main", commits: [], approvalRequired: false }),
+      prepareCandidate: async () => ({ preReleaseHead: "candidate" }),
+    },
+    readPublicationState: async () => ({ repositories: [{ root: repo, revision: "published" }] }),
+    resolveTestContourSource: async () => ({ kind: "external-validation-required", repositories: [{ projectRoot: repo }] }),
+    refreshTestContour: async () => assert.fail("external validation must not refresh AgentHub contour"),
+    readTestContourStatus: async () => assert.fail("external validation must not read AgentHub contour"),
+    validateProductionCandidate: async ({ workspaceId, planRevision, repositories }) => ({
+      ...exactProductionValidation({ workspaceId, planRevision, repositories }),
+      repositories: [{ ...repositories[0], headCommit: "dev-stale" }],
+    }),
+  });
+
+  await assert.rejects(
+    () => service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-android" }),
+    /stale/u,
+  );
+});
+
+test("release preflight requires external validation for repositories not covered by AgentHub contour", async () => {
+  const repoHub = path.resolve("D:/agent-hub");
+  const repoAndroid = path.resolve("D:/android");
+  const plan = {
+    revision: "plan-mixed",
+    ready: [
+      { taskId: "task-hub", taskRevision: 2, projectRoot: repoHub, resultCommit: "result-hub" },
+      { taskId: "task-android", taskRevision: 3, projectRoot: repoAndroid, resultCommit: "result-android" },
+    ],
+    blocked: [],
+    conflicts: [],
+  };
+  const repositories = new Map();
+  const calls = [];
+  const service = new WorkspaceReleasePreflightService({
+    releasePlanner: { plan: async () => plan },
+    taskGitWorkspaces: {
+      prepareDev: async (projectRoot) => {
+        const prepared = {
+          repositoryRoot: projectRoot,
+          projectRoot: path.join(projectRoot, "dev"),
+          branch: "dev",
+          headCommit: projectRoot === repoHub ? "dev-hub" : "dev-android",
+        };
+        repositories.set(projectRoot, prepared);
+        return prepared;
+      },
+      verifyReleaseResultsInDev: async ({ projectRoot, resultCommits }) => ({
+        ...repositories.get(projectRoot), resultCommits,
+      }),
+      releaseIntegrationEvidence: async ({ projectRoot, tasks }) => ({
+        ...repositories.get(projectRoot),
+        tasks: tasks.map((task) => ({ ...task, integrations: [{ commit: `integration-${task.taskId}`, parent: "parent", order: 1 }] })),
+      }),
+    },
+    releaseGitWorkspaces: {
+      withAwaitTransition: async (_workspaceId, operation) => operation(),
+      assertPrimaryInvariant: async (projectRoot) => ({ projectRoot, branch: "refs/heads/main", headCommit: "main" }),
+      inspectMainChanges: async (request) => ({ projectRoot: request.projectRoot, publishedRevision: request.publishedRevision, localMain: "main", originMain: "main", commits: [], approvalRequired: false }),
+      prepareCandidate: async (request) => ({ repositoryRoot: request.projectRoot, preReleaseHead: `candidate-${path.basename(request.projectRoot)}` }),
+    },
+    readPublicationState: async () => ({
+      repositories: [{ root: repoHub, revision: "published-hub" }, { root: repoAndroid, revision: "published-android" }],
+    }),
+    resolveTestContourSource: async (prepared) => ({ kind: "agent-hub-test-contour", ...prepared[0], sourceRoot: path.join(prepared[0].worktreeRoot, "AgentHub") }),
+    refreshTestContour: async () => ({
+      operationId: "mixed-contour",
+      refreshOutcome: "refreshed",
+      operation: {
+        operationId: "mixed-contour",
+        status: "ready",
+        phase: "ready",
+        releaseId: "release-mixed",
+        source: { headCommit: "dev-hub" },
+        target: { root: "D:/contour", contourId: "contour", port: 88, model: "codex" },
+      },
+    }),
+    readTestContourStatus: async () => ({
+      running: true,
+      status: "ready",
+      planned: false,
+      root: "D:/contour",
+      source: { headCommit: "dev-hub" },
+      operation: {
+        operationId: "mixed-contour", status: "ready", phase: "ready", releaseId: "release-mixed",
+        source: { headCommit: "dev-hub" }, target: { root: "D:/contour", contourId: "contour", port: 88, model: "codex" },
+      },
+      state: { operationId: "mixed-contour", releaseId: "release-mixed", contourId: "contour", port: 88, model: "codex" },
+      readback: { outcome: "exact", operation: {
+        operationId: "mixed-contour", status: "ready", phase: "ready", releaseId: "release-mixed",
+        source: { headCommit: "dev-hub" }, target: { root: "D:/contour", contourId: "contour", port: 88, model: "codex" },
+      } },
+    }),
+    validateProductionCandidate: async ({ workspaceId, planRevision, repositories: requested }) => {
+      calls.push(requested.map((repository) => repository.projectRoot));
+      return exactProductionValidation({ workspaceId, planRevision, repositories: requested });
+    },
+  });
+
+  const result = await service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-mixed" });
+
+  assert.deepEqual(calls, [[repoAndroid]]);
+  assert.equal(result.status, "ready");
+  assert.equal(result.testContour.headCommit, "dev-hub");
+  assert.equal(result.productionValidation.repositories[0].projectRoot, repoAndroid);
 });
 
 test("release preflight rejects a refreshed contour that does not display dev HEAD", async () => {
@@ -443,4 +591,38 @@ test("release preflight holds the Await lock and rejects a stale plan before pub
     /revision changed during release candidate preparation/u,
   );
   assert.deepEqual(locks, ["workspace-1"]);
+});
+
+test("release preflight reconciliation reads exact frozen checkpoint without replay", async () => {
+  const { projectRoot, service } = fixture();
+  service.releaseGitWorkspaces.frozenCandidate = async (requestedProjectRoot) => ({
+    repositoryRoot: requestedProjectRoot,
+    releaseRoot: path.resolve("D:/release-clone"),
+    checkpointFile: path.resolve("D:/release-clone/checkpoint.json"),
+    planRevision: "plan-1",
+    manifestHash: "manifest-hash",
+    baseCommit: "main-head",
+    preReleaseHead: "prerelease-head",
+  });
+
+  const result = await service.reconcilePreflight({
+    workspaceId: "workspace-1",
+    expectedPlanRevision: "plan-1",
+    expectedRepositories: [{ projectRoot, revision: "prerelease-head" }],
+    originalRequestId: "architect-bwm12-release-preflight-20260912-v1",
+    errorClass: "serialization_error",
+  });
+
+  assert.equal(result.status, "reconciled");
+  assert.equal(result.replayed, false);
+  assert.equal(result.releaseCandidates[0].preReleaseHead, "prerelease-head");
+
+  await assert.rejects(
+    () => service.reconcilePreflight({
+      workspaceId: "workspace-1",
+      expectedPlanRevision: "plan-1",
+      expectedRepositories: [{ projectRoot, revision: "stale-head" }],
+    }),
+    /stale/u,
+  );
 });

@@ -708,6 +708,21 @@ export class HubMcpService {
           },
         },
       }, ["expected_plan_revision"]),
+      tool("hub_release_preflight_reconcile", "Read back an interrupted release preflight from exact frozen candidate evidence without replaying effects.", {
+        workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
+        original_request_id: { type: "string" },
+        error_class: { type: "string", description: "For example: serialization_error." },
+        expected_plan_revision: { type: "string" },
+        expected_repositories: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: { projectRoot: { type: "string" }, revision: { type: "string" } },
+            required: ["projectRoot", "revision"],
+          },
+        },
+      }, ["original_request_id", "expected_plan_revision", "expected_repositories"]),
       tool("hub_release_complete", "Complete a release only after clean main revisions and explicit deployment verification.", {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
         expected_repositories: {
@@ -847,6 +862,9 @@ export class HubMcpService {
       case "hub_release_preflight":
         if (!this.#isArchitect(context)) throw new Error("release preflight requires an Architect Stream");
         return this.#preflightRelease(context, args);
+      case "hub_release_preflight_reconcile":
+        if (!this.#isArchitect(context)) throw new Error("release preflight reconciliation requires an Architect Stream");
+        return this.#reconcileReleasePreflight(context, args);
       case "hub_release_complete":
         if (!this.#isArchitect(context)) throw new Error("release completion requires an Architect Stream");
         return this.#completeRelease(context, args);
@@ -1972,6 +1990,20 @@ export class HubMcpService {
       expectedPlanRevision: optionalText(args.expected_plan_revision, 128),
       conflictsResolved: args.conflicts_resolved === true,
       approvedRepositories: Array.isArray(args.approved_repositories) ? args.approved_repositories : [],
+    });
+  }
+
+  async #reconcileReleasePreflight(context, args) {
+    const workspaceId = this.#workspace(context, args.workspace_id).id;
+    if (typeof this.releasePreflight.reconcilePreflight !== "function") {
+      throw new Error("release preflight reconciliation is unavailable");
+    }
+    return this.releasePreflight.reconcilePreflight({
+      workspaceId,
+      expectedPlanRevision: optionalText(args.expected_plan_revision, 128),
+      expectedRepositories: Array.isArray(args.expected_repositories) ? args.expected_repositories : [],
+      originalRequestId: optionalText(args.original_request_id, 200),
+      errorClass: optionalText(args.error_class, 100),
     });
   }
 }

@@ -229,6 +229,11 @@ async function disclosedCommit(root, commit, { localMain, originMain }) {
   };
 }
 
+async function revisionList(root, args) {
+  const output = String(await runGit(["rev-list", "--reverse", "--topo-order", ...args], { cwd: root }));
+  return output.split(/\r?\n/u).filter(Boolean);
+}
+
 function normalizedFrozenTasks(tasks = []) {
   const unique = new Map();
   for (const task of tasks) {
@@ -444,14 +449,28 @@ export class ReleaseGitWorkspaceService {
       }
       const localMain = primary.mainCommit;
       const originMain = await runGit(["rev-parse", "refs/remotes/origin/main^{commit}"], { cwd: clone.releaseRoot });
-      for (const target of [localMain, originMain]) {
-        if (await gitMaybe(["merge-base", "--is-ancestor", baseline, target], { cwd: clone.releaseRoot }) === null) {
-          throw new Error(`last published revision ${baseline} is not an ancestor of main ${target}`);
-        }
+      const localContainsPublished = await gitMaybe(["merge-base", "--is-ancestor", baseline, localMain], {
+        cwd: clone.releaseRoot,
+      }) !== null;
+      const publishedContainsLocal = await gitMaybe(["merge-base", "--is-ancestor", localMain, baseline], {
+        cwd: clone.releaseRoot,
+      }) !== null;
+      if (!localContainsPublished && !publishedContainsLocal) {
+        throw new Error(`last published revision ${baseline} is unrelated to local main ${localMain}`);
       }
-      const commitIds = String(await runGit([
-        "rev-list", "--reverse", "--topo-order", localMain, originMain, `^${baseline}`,
-      ], { cwd: clone.releaseRoot })).split(/\r?\n/u).filter(Boolean);
+      const originContainsPublished = await gitMaybe(["merge-base", "--is-ancestor", baseline, originMain], {
+        cwd: clone.releaseRoot,
+      }) !== null;
+      if (!originContainsPublished) {
+        throw new Error(`last published revision ${baseline} is not an ancestor of origin/main ${originMain}`);
+      }
+      const commitIds = new Set([
+        ...(localContainsPublished ? await revisionList(clone.releaseRoot, [localMain, `^${baseline}`]) : []),
+        ...await revisionList(clone.releaseRoot, [originMain, `^${baseline}`]),
+        ...(!localContainsPublished && publishedContainsLocal
+          ? await revisionList(clone.releaseRoot, [baseline, `^${localMain}`])
+          : []),
+      ]);
       const commits = [];
       for (const commit of commitIds) commits.push(await disclosedCommit(clone.releaseRoot, commit, {
         localMain,
@@ -467,8 +486,11 @@ export class ReleaseGitWorkspaceService {
         commits,
         changed: commits.length > 0,
         diverged: localMain !== originMain,
+        localContainsPublished,
+        publishedContainsLocal,
+        originContainsPublished,
         approved,
-        approvalRequired: commits.length > 0 && !approved,
+        approvalRequired: (commits.length > 0 || localMain !== originMain) && !approved,
       };
       const finalPrimary = await primarySnapshot(primary.root);
       await this.assertPrimaryInvariant(finalPrimary.root, { phase: "main review" });

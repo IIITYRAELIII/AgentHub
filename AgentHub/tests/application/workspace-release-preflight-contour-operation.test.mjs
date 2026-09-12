@@ -105,6 +105,7 @@ function fixture({
       repositories: [{ root: projectRoot, revision: "published-head" }],
     }),
     resolveTestContourSource: async () => ({
+      kind: "agent-hub-test-contour",
       projectRoot,
       sourceRoot: path.join(devRoot, "AgentHub"),
       branch: "dev",

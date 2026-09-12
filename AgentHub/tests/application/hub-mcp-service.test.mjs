@@ -356,6 +356,12 @@ async function fixture(context, { releaseWorkflowEnabled = false, taskGitWorkspa
         preflightCalls.push(options);
         return { ...options, testContour: { running: true, headCommit: "dev-head" } };
       },
+      reconcilePreflight: async (options) => ({
+        ...options,
+        status: "reconciled",
+        replayed: false,
+        releaseCandidates: [{ projectRoot: options.expectedRepositories[0]?.projectRoot, preReleaseHead: options.expectedRepositories[0]?.revision }],
+      }),
     },
     releaseCompleter: {
       completeRelease: async (options) => {
@@ -1011,6 +1017,16 @@ test("HubMcpService exposes cursor events and publication-gated release completi
       approvedOriginMainCommit: "origin-main",
     }],
   });
+  const reconciled = await service.call("hub_release_preflight_reconcile", {
+    context_token: token,
+    original_request_id: "architect-bwm12-release-preflight-20260912-v1",
+    error_class: "serialization_error",
+    expected_plan_revision: "plan-1",
+    expected_repositories: [{ projectRoot: "D:/repo", revision: "pre-release-head" }],
+  });
+  assert.equal(reconciled.status, "reconciled");
+  assert.equal(reconciled.replayed, false);
+  assert.equal(reconciled.originalRequestId, "architect-bwm12-release-preflight-20260912-v1");
   const release = await service.call("hub_release_complete", {
     context_token: token, request_id: "release-1",
     expected_repositories: [{ projectRoot: "D:/repo", revision: "abc" }], expected_plan_revision: "plan-1",

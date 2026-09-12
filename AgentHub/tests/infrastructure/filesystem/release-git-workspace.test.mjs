@@ -222,6 +222,62 @@ test("main review preserves an old dirty primary while auditing newer origin mai
   assert.deepEqual(await readFile(path.join(setup.primary, "1C_ACCESS", "access.json")), before.access);
 });
 
+test("main review accepts a preserved old primary when the published revision is newer origin main", async (context) => {
+  const setup = await fixture(context);
+  const localCommit = await git(setup.primary, "rev-parse", "HEAD");
+  const remoteWriter = path.join(setup.root, "bookworm-origin-writer");
+  await git(setup.root, "clone", setup.origin, remoteWriter);
+  context.after(() => rm(remoteWriter, { recursive: true, force: true }));
+  await writeFile(path.join(remoteWriter, "app.txt"), "published newer origin\n", "utf8");
+  const publishedRevision = await commit(remoteWriter, "published revision newer than primary");
+  await git(remoteWriter, "push", "origin", "main");
+  await writeFile(path.join(setup.primary, "app.txt"), "old primary dirty bytes\n", "utf8");
+  await writeFile(path.join(setup.primary, "1C_ACCESS", "access.json"), "dirty access bytes\n", "utf8");
+  const before = {
+    head: await git(setup.primary, "rev-parse", "HEAD"),
+    branch: await git(setup.primary, "symbolic-ref", "HEAD"),
+    status: await git(setup.primary, "status", "--porcelain=v1"),
+    app: await readFile(path.join(setup.primary, "app.txt")),
+    access: await readFile(path.join(setup.primary, "1C_ACCESS", "access.json")),
+  };
+
+  const pending = await setup.service.inspectMainChanges({
+    projectRoot: setup.primary,
+    publishedRevision,
+  });
+
+  assert.equal(pending.localMain, localCommit);
+  assert.equal(pending.originMain, publishedRevision);
+  assert.equal(pending.diverged, true);
+  assert.equal(pending.localContainsPublished, false);
+  assert.equal(pending.publishedContainsLocal, true);
+  assert.equal(pending.originContainsPublished, true);
+  assert.equal(pending.approvalRequired, true);
+  assert.ok(pending.commits.some((item) => item.commit === publishedRevision && item.inLocalMain === false));
+
+  const stale = await setup.service.inspectMainChanges({
+    projectRoot: setup.primary,
+    publishedRevision,
+    approvedLocalMainCommit: publishedRevision,
+    approvedOriginMainCommit: publishedRevision,
+  });
+  assert.equal(stale.approvalRequired, true);
+
+  const approved = await setup.service.inspectMainChanges({
+    projectRoot: setup.primary,
+    publishedRevision,
+    approvedLocalMainCommit: localCommit,
+    approvedOriginMainCommit: publishedRevision,
+  });
+  assert.equal(approved.approved, true);
+  assert.equal(approved.approvalRequired, false);
+  assert.equal(await git(setup.primary, "rev-parse", "HEAD"), before.head);
+  assert.equal(await git(setup.primary, "symbolic-ref", "HEAD"), before.branch);
+  assert.equal(await git(setup.primary, "status", "--porcelain=v1"), before.status);
+  assert.deepEqual(await readFile(path.join(setup.primary, "app.txt")), before.app);
+  assert.deepEqual(await readFile(path.join(setup.primary, "1C_ACCESS", "access.json")), before.access);
+});
+
 test("release candidate aggregates effective dev deltas instead of replaying conflicting Task snapshots", async (context) => {
   const setup = await fixture(context);
   const firstResult = await taskResult(setup, context, {

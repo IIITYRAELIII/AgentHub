@@ -37,6 +37,13 @@ readback:
 - `unknown` is an explicit terminal receipt state when authoritative readback is
   unavailable or an effect completed but its receipt could not be committed.
 
+`hub_release_preflight_reconcile` is a read-only release-specific readback path,
+not a replay of `hub_release_preflight`. It requires the original request id plus
+the exact expected plan and repository revisions, and may only report existing
+frozen candidate checkpoint evidence owned by the release Git boundary. It cannot
+create a candidate, repeat validation, finalize an unknown MCP receipt, or infer
+success from transport text.
+
 Receipt creation is atomic `INSERT OR IGNORE` under the exact identity. Success
 stores a bounded structural result projection rather than arbitrary response
 content, so a result larger than 1 MiB cannot turn an already-applied effect into

@@ -291,6 +291,15 @@ values before candidate publication. A second fetch immediately before push is
 a compare-and-set guard; movement of `origin/main` stops publication for another
 user decision.
 
+If the preflight response is interrupted after candidate preparation, recovery is
+readback-only. The Architect may reconcile the original request only by naming
+the exact original request, plan revision and repository revisions; Agent Hub
+then reads the existing frozen candidate checkpoints and manifests through the
+release Git owner. Missing, stale or mismatched checkpoints keep the original
+outcome unknown. Reconciliation never reruns preflight, reuses a generic replay
+lease, or manufactures Test Contour, validation, main-review or publication
+evidence.
+
 The Architect adds one consolidated `CHANGELOG.md` entry when it exists, then
 freezes the exact main base, release-plan revision, included Task IDs and row
 revisions, Task results, owning dev integrations, aggregate `PreRelease` head,

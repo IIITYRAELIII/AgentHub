@@ -180,6 +180,40 @@ function exactReadyContourReadback(context) {
     && context.contour?.status === "ready";
 }
 
+function sameRepositoryIdentity(left, right) {
+  return canonicalRoot(left?.projectRoot) === canonicalRoot(right?.projectRoot)
+    && String(left?.headCommit ?? "") === String(right?.headCommit ?? "")
+    && JSON.stringify([...(left?.resultCommits ?? [])].sort()) === JSON.stringify([...(right?.resultCommits ?? [])].sort())
+    && JSON.stringify([...(left?.taskIds ?? [])].sort()) === JSON.stringify([...(right?.taskIds ?? [])].sort());
+}
+
+function assertExactProductionValidation({
+  validation, workspaceId, planRevision, repositories,
+}) {
+  if (validation?.status !== "ready") {
+    throw new Error(validation?.reason || "repository production validation did not return ready evidence");
+  }
+  if (String(validation.workspaceId ?? "") !== String(workspaceId)
+    || String(validation.planRevision ?? "") !== String(planRevision)) {
+    throw new Error("repository production validation evidence does not match Workspace release plan");
+  }
+  const checked = Array.isArray(validation.repositories) ? validation.repositories : [];
+  if (checked.length !== repositories.length) {
+    throw new Error("repository production validation evidence does not cover every external repository");
+  }
+  for (const repository of repositories) {
+    const evidence = checked.find((candidate) => canonicalRoot(candidate?.projectRoot) === canonicalRoot(repository.projectRoot));
+    if (!sameRepositoryIdentity(evidence, repository)) {
+      throw new Error(`repository production validation evidence is stale for ${repository.projectRoot}`);
+    }
+  }
+  if (!validation.check || !String(validation.check.id ?? validation.check.checkId ?? "").trim()
+      || !String(validation.check.kind ?? "").trim()) {
+    throw new Error("repository production validation requires exact check evidence");
+  }
+  return validation;
+}
+
 async function readExactReadyContour({
   readTestContourStatus, refreshed, expectedHeadCommit,
 }) {
@@ -297,6 +331,50 @@ export class WorkspaceReleasePreflightService {
     }));
   }
 
+  async reconcilePreflight({
+    workspaceId, expectedPlanRevision, expectedRepositories = [], originalRequestId = null,
+    errorClass = null,
+  } = {}) {
+    if (typeof this.releaseGitWorkspaces.frozenCandidate !== "function") {
+      throw new Error("release preflight reconciliation requires frozen candidate readback support");
+    }
+    const plan = await this.releasePlanner.plan(workspaceId);
+    const requestedPlanRevision = requiredPlanRevision(expectedPlanRevision);
+    if (plan.revision !== requestedPlanRevision) {
+      throw new Error("release plan revision changed; preflight outcome remains unknown");
+    }
+    const selectedRepositories = readyRepositories(plan.ready);
+    const expected = new Map();
+    for (const item of expectedRepositories) {
+      const projectRoot = repositoryRootOf(item);
+      const revision = repositoryRevisionOf(item);
+      if (!projectRoot || !revision) throw new Error("preflight reconciliation requires exact repository revisions");
+      expected.set(canonicalRoot(projectRoot), { projectRoot, revision });
+    }
+    if (expected.size !== selectedRepositories.length) {
+      throw new Error("preflight reconciliation evidence does not cover the selected repositories");
+    }
+    const releaseCandidates = [];
+    for (const repository of selectedRepositories) {
+      const expectedRepository = expected.get(canonicalRoot(repository.projectRoot));
+      if (!expectedRepository) throw new Error(`preflight reconciliation is missing ${repository.projectRoot}`);
+      const candidate = await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot);
+      if (candidate.planRevision !== plan.revision || candidate.preReleaseHead !== expectedRepository.revision) {
+        throw new Error(`preflight reconciliation checkpoint is stale for ${repository.projectRoot}`);
+      }
+      releaseCandidates.push(candidate);
+    }
+    return {
+      workspaceId: String(workspaceId),
+      planRevision: plan.revision,
+      status: "reconciled",
+      originalRequestId: String(originalRequestId ?? "").trim() || null,
+      errorClass: String(errorClass ?? "").trim() || "unknown",
+      replayed: false,
+      releaseCandidates,
+    };
+  }
+
   async #preflightLocked({
     workspaceId, expectedPlanRevision, conflictsResolved,
     approvedLocalMainCommit, approvedOriginMainCommit, approvedRepositories,
@@ -356,19 +434,31 @@ export class WorkspaceReleasePreflightService {
     }
 
     const contourSource = await this.resolveTestContourSource(preparedRepositories);
+    const contourRepositoryRoot = contourSource?.kind === "agent-hub-test-contour" ? contourSource.projectRoot : null;
+    const externalRepositories = contourSource?.kind === "agent-hub-test-contour"
+      ? preparedRepositories.filter((repository) => canonicalRoot(repository.projectRoot) !== canonicalRoot(contourRepositoryRoot))
+      : preparedRepositories;
     let productionValidation = null;
     let contour = null;
-    if (contourSource?.kind === "external-validation-required") {
-      productionValidation = await this.validateProductionCandidate({
+    if (externalRepositories.length) {
+      productionValidation = assertExactProductionValidation({
         workspaceId,
         planRevision: plan.revision,
-        source: contourSource,
-        repositories: preparedRepositories,
+        repositories: externalRepositories,
+        validation: await this.validateProductionCandidate({
+          workspaceId,
+          planRevision: plan.revision,
+          source: {
+            kind: "external-validation-required",
+            reason: contourSource?.reason,
+            repositories: externalRepositories,
+            ...(contourRepositoryRoot ? { contourRepositoryRoot } : {}),
+          },
+          repositories: externalRepositories,
+        }),
       });
-      if (productionValidation?.status !== "ready") {
-        throw new Error(productionValidation?.reason || "repository production validation did not return ready evidence");
-      }
-    } else {
+    }
+    if (contourSource?.kind === "agent-hub-test-contour") {
       const refreshed = await this.refreshTestContour({
         sourceRoot: contourSource.sourceRoot,
         forceFreshCandidate: true,
@@ -385,6 +475,18 @@ export class WorkspaceReleasePreflightService {
             + "it does not match dev HEAD or the exact operation target",
         );
       }
+    } else if (!externalRepositories.length) {
+      productionValidation = assertExactProductionValidation({
+        workspaceId,
+        planRevision: plan.revision,
+        repositories: preparedRepositories,
+        validation: await this.validateProductionCandidate({
+          workspaceId,
+          planRevision: plan.revision,
+          source: contourSource,
+          repositories: preparedRepositories,
+        }),
+      });
     }
 
     const repositories = [];
@@ -403,7 +505,7 @@ export class WorkspaceReleasePreflightService {
         taskIds: repository.taskIds,
       });
     }
-    if (!productionValidation) {
+    if (contour) {
       const contourRepository = repositories.find((repository) => (
         canonicalRoot(repository.projectRoot) === canonicalRoot(contourSource.projectRoot)
       ));
@@ -449,12 +551,13 @@ export class WorkspaceReleasePreflightService {
       primaryRepositories,
       repositories,
       releaseCandidates,
-      ...(productionValidation ? { productionValidation } : { testContour: {
+      ...(productionValidation ? { productionValidation } : {}),
+      ...(contour ? { testContour: {
         root: contour.root,
         running: true,
         branch: contour.source?.branch ?? null,
         headCommit: contour.source.headCommit,
-      } }),
+      } } : {}),
     };
   }
 }
