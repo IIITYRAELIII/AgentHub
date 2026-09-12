@@ -515,7 +515,7 @@ test("release preflight rejects stale external production validation evidence", 
   );
 });
 
-test("release preflight composes real frozen candidate readback with the repository validation adapter", async (t) => {
+async function realExternalValidationFixture(t, { afterValidation = null } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-preflight-real-adapter-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const origin = path.join(root, "origin.git");
@@ -535,6 +535,7 @@ test("release preflight composes real frozen candidate readback with the reposit
   await writeFile(path.join(taskRoot, "app.txt"), "candidate\n", "utf8");
   const resultCommit = await commit(taskRoot, "task result");
   const releaseGitWorkspaces = new ReleaseGitWorkspaceService({ dataDir });
+  let validationCalls = 0;
   const plan = {
     revision: "plan-real-adapter",
     ready: [{ taskId: "task-real", taskRevision: 2, projectRoot: primary, resultCommit }],
@@ -570,20 +571,30 @@ test("release preflight composes real frozen candidate readback with the reposit
     resolveTestContourSource: async () => ({ kind: "external-validation-required", reason: "fixture external QA" }),
     refreshTestContour: async () => assert.fail("external fixture must not refresh AgentHub contour"),
     readTestContourStatus: async () => assert.fail("external fixture must not read AgentHub contour"),
-    validateProductionCandidate: createRepositoryProductionValidationAdapter({
-      dataDir: path.join(dataDir, "validation"),
-      policies: [{
-        enabled: true,
-        projectRoot: primary,
-        check: {
-          kind: "fixture-qa",
-          id: "real-frozen-candidate",
-          commands: [{ command: "git", args: ["rev-parse", "HEAD"] }],
-          artifacts: ["app.txt"],
-        },
-      }],
-    }),
+    validateProductionCandidate: async (request) => {
+      const result = await createRepositoryProductionValidationAdapter({
+        dataDir: path.join(dataDir, "validation"),
+        policies: [{
+          enabled: true,
+          projectRoot: primary,
+          check: {
+            kind: "fixture-qa",
+            id: "real-frozen-candidate",
+            commands: [{ command: "git", args: ["rev-parse", "HEAD"] }],
+            artifacts: ["app.txt"],
+          },
+        }],
+      })(request);
+      validationCalls += 1;
+      await afterValidation?.({ root, primary, dataDir, releaseGitWorkspaces, result, validationCalls, base, resultCommit });
+      return result;
+    },
   });
+  return { root, primary, dataDir, base, resultCommit, releaseGitWorkspaces, service };
+}
+
+test("release preflight composes real frozen candidate readback with the repository validation adapter", async (t) => {
+  const { primary, service } = await realExternalValidationFixture(t);
 
   const result = await service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-real-adapter" });
 
@@ -593,6 +604,34 @@ test("release preflight composes real frozen candidate readback with the reposit
   assert.equal(typeof result.productionValidation.evidence[0].evidenceHash, "string");
   assert.equal(await git(primary, "symbolic-ref", "HEAD"), "refs/heads/main");
   assert.equal(await git(primary, "status", "--porcelain=v1"), "");
+});
+
+test("release preflight rejects source candidate movement after external validation", async (t) => {
+  const context = await realExternalValidationFixture(t, {
+    afterValidation: async ({ releaseGitWorkspaces, primary, base }) => {
+      const candidate = await releaseGitWorkspaces.frozenCandidate(primary);
+      await git(candidate.releaseRoot, "checkout", "--detach", base);
+    },
+  });
+
+  await assert.rejects(
+    () => context.service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-real-adapter" }),
+    /frozen candidate|release checkpoint clone/u,
+  );
+  assert.equal(await git(context.primary, "symbolic-ref", "HEAD"), "refs/heads/main");
+});
+
+test("release preflight rejects primary movement after external validation", async (t) => {
+  const context = await realExternalValidationFixture(t, {
+    afterValidation: async ({ primary }) => {
+      await git(primary, "checkout", "--detach", "HEAD");
+    },
+  });
+
+  await assert.rejects(
+    () => context.service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-real-adapter" }),
+    /primary Workspace invariant/u,
+  );
 });
 
 test("release preflight requires external validation for repositories not covered by AgentHub contour", async () => {

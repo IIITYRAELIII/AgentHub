@@ -216,6 +216,15 @@ function sameFrozenTasks(left = [], right = []) {
   return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
 }
 
+function sameFrozenCandidateIdentity(left = {}, right = {}) {
+  return String(left.preReleaseHead ?? "") === String(right.preReleaseHead ?? "")
+    && String(left.tree ?? "") === String(right.tree ?? "")
+    && String(left.manifestHash ?? "") === String(right.manifestHash ?? "")
+    && String(left.baseCommit ?? "") === String(right.baseCommit ?? "")
+    && String(left.planRevision ?? "") === String(right.planRevision ?? "")
+    && sameFrozenTasks(left.manifest?.tasks ?? [], right.manifest?.tasks ?? []);
+}
+
 function assertExactProductionValidation({
   validation, workspaceId, planRevision, repositories,
 }) {
@@ -633,6 +642,15 @@ export class WorkspaceReleasePreflightService {
       const afterValidation = await this.releasePlanner.plan(workspaceId);
       if (afterValidation.revision !== plan.revision) {
         throw new Error("release plan revision changed during repository production validation");
+      }
+      for (const repository of validationRepositories) {
+        await this.releaseGitWorkspaces.assertPrimaryInvariant(repository.projectRoot, {
+          phase: "repository production validation completion",
+        });
+        const afterCandidate = await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot);
+        if (!sameFrozenCandidateIdentity(afterCandidate, repository.frozenCandidate)) {
+          throw new Error(`release validation frozen candidate changed after QA for ${repository.projectRoot}`);
+        }
       }
     }
 

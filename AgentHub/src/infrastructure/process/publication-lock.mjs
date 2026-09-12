@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import os from "node:os";
 import path from "node:path";
 
 import { withInterprocessLocks } from "./interprocess-lock.mjs";
 
 const PUBLICATION_SESSION_ENV = "AGENT_HUB_PUBLICATION_SESSION";
+const publicationSessionStorage = new AsyncLocalStorage();
 
 export function publicationLockTarget(environment = process.env) {
   const root = environment.LOCALAPPDATA
@@ -20,12 +22,14 @@ export async function withPublicationLock(operation, {
   timeoutMs = 4 * 60 * 60_000,
   sessionFactory = randomUUID,
 } = {}) {
-  if (String(environment[PUBLICATION_SESSION_ENV] ?? "").trim()) return operation();
+  const activeSession = publicationSessionStorage.getStore();
+  if (activeSession && String(environment[PUBLICATION_SESSION_ENV] ?? "") === activeSession) return operation();
   return lock([lockTarget], async () => {
     const previous = environment[PUBLICATION_SESSION_ENV];
-    environment[PUBLICATION_SESSION_ENV] = sessionFactory();
+    const session = sessionFactory();
+    environment[PUBLICATION_SESSION_ENV] = session;
     try {
-      return await operation();
+      return await publicationSessionStorage.run(session, operation);
     } finally {
       if (previous === undefined) delete environment[PUBLICATION_SESSION_ENV];
       else environment[PUBLICATION_SESSION_ENV] = previous;

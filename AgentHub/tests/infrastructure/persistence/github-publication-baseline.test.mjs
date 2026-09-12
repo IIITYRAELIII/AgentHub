@@ -186,6 +186,64 @@ test("GitHub release baseline refuses draft, unpublished, moved and stale eviden
   );
 });
 
+test("GitHub baseline adoption serializes freshness read/check/write under the default publication lock", async (t) => {
+  const setup = await fixture(t);
+  const oldCommit = "a".repeat(40);
+  const newCommit = "b".repeat(40);
+  const oldRequest = {
+    projectRoot: setup.repo,
+    owner: "SidorukSV",
+    repo: "bookworm",
+    tag: "v5.1.52.148",
+    releaseId: "old",
+    targetCommit: oldCommit,
+  };
+  const newRequest = { ...oldRequest, releaseId: "new", targetCommit: newCommit };
+  const previousLocalAppData = process.env.LOCALAPPDATA;
+  process.env.LOCALAPPDATA = setup.root;
+  let releaseOldRead;
+  const oldReadStarted = new Promise((resolve) => {
+    releaseOldRead = resolve;
+  });
+  let unblockOldRead;
+  const oldReadBlocked = new Promise((resolve) => {
+    unblockOldRead = resolve;
+  });
+  let oldReadCount = 0;
+  let newCompleted = false;
+  try {
+    const old = enableGithubReleaseBaseline(oldRequest, {
+      githubApi: githubApi({ commit: oldCommit, id: "old", publishedAt: "2026-09-01T00:00:00Z" }),
+      readState: async () => {
+        oldReadCount += 1;
+        releaseOldRead();
+        await oldReadBlocked;
+        return readPublicationState(setup.stateFile);
+      },
+      writeState: (state) => writePublicationState(state, setup.stateFile),
+    });
+    await oldReadStarted;
+    const newer = enableGithubReleaseBaseline(newRequest, {
+      githubApi: githubApi({ commit: newCommit, id: "new", publishedAt: "2026-09-02T00:00:00Z" }),
+      readState: () => readPublicationState(setup.stateFile),
+      writeState: (state) => writePublicationState(state, setup.stateFile),
+    }).then((result) => {
+      newCompleted = true;
+      return result;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(newCompleted, false);
+    unblockOldRead();
+    await Promise.all([old, newer]);
+    assert.equal(oldReadCount, 1);
+    const state = await readPublicationState(setup.stateFile);
+    assert.equal(state.repositories.find((entry) => entry.root === setup.repo).revision, newCommit);
+  } finally {
+    if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = previousLocalAppData;
+  }
+});
+
 test("GitHub release baseline refuses wrong repository and moved tag evidence", async (t) => {
   const setup = await fixture(t);
   await assert.rejects(

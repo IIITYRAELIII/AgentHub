@@ -28,12 +28,39 @@ test("publication lock serializes deployments from concurrent worktrees", async 
 });
 
 test("nested publication steps reuse the owning publication session", async () => {
-  const environment = { AGENT_HUB_PUBLICATION_SESSION: "parent" };
+  const environment = {};
   let lockCalls = 0;
-  const result = await withPublicationLock(async () => "done", {
+  const result = await withPublicationLock(async () => withPublicationLock(async () => "done", {
     environment,
-    lock: async () => { lockCalls += 1; },
+    lock: async () => { lockCalls += 1; throw new Error("nested call must not acquire another lock"); },
+  }), {
+    environment,
+    lock: async (_paths, operation) => {
+      lockCalls += 1;
+      return operation();
+    },
   });
   assert.equal(result, "done");
-  assert.equal(lockCalls, 0);
+  assert.equal(lockCalls, 1);
+});
+
+test("same-process publication operations do not reuse another operation's environment token", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-publication-reentrant-"));
+  let active = 0;
+  let maximum = 0;
+  try {
+    await Promise.all(Array.from({ length: 2 }, () => withPublicationLock(async () => {
+      active += 1;
+      maximum = Math.max(maximum, active);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      active -= 1;
+    }, {
+      environment: process.env,
+      lockTarget: path.join(root, "publication"),
+      timeoutMs: 1_000,
+    })));
+    assert.equal(maximum, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
