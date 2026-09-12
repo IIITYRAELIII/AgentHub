@@ -53,49 +53,67 @@ async function openProductionUi(page) {
   await page.waitForFunction(() => typeof window.AgentHub === "object");
 }
 
-function navigationTask() {
+function navigationTask({
+  streamId = "stream-1",
+  threadId = "thread-current",
+  selected = streamId === "stream-1",
+  running = false,
+} = {}) {
   return {
     provider: "codex",
-    threadId: "thread-current",
-    streamId: "stream-1",
+    threadId,
+    streamId,
     workspaceId: "workspace-1",
     workspaceName: "Agent Hub",
-    streamName: "Диалоги",
-    title: "Диалоги",
-    displayTitle: "Диалоги",
-    selected: true,
+    streamName: streamId === "stream-1" ? "Диалоги" : "Архитектор",
+    title: streamId === "stream-1" ? "Диалоги" : "Архитектор",
+    displayTitle: streamId === "stream-1" ? "Диалоги" : "Архитектор",
+    selected,
+    running,
+    ...(running ? { run: { executionOwner: "vscode" } } : {}),
     lastAnswerAt: "2026-09-08T07:00:00.000Z",
   };
 }
 
-function navigationSnapshot() {
+function navigationSnapshot({ version = "snapshot-1", pinAvailable = true, pinPresent = true, running = false } = {}) {
+  const pin = {
+    id: "pin-target",
+    streamId: "stream-1",
+    messageKey: "message:v1:target",
+    provider: "codex",
+    taskThreadId: "thread-current",
+    turnThreadId: "thread-current",
+    turnId: "turn-target",
+    itemId: "answer-target",
+    role: "agent",
+    preview: "Точное сообщение из другой страницы истории",
+    author: "Codex",
+    time: "2026-09-08T06:30:00.000Z",
+    available: pinAvailable,
+  };
   return {
-    version: "snapshot-1",
-    tasks: [navigationTask()],
+    version,
+    tasks: [
+      navigationTask({ running }),
+      navigationTask({ streamId: "stream-2", threadId: "thread-other", selected: false }),
+    ],
     workspaces: [{
       id: "workspace-1",
       name: "Agent Hub",
-      streams: [{
-        id: "stream-1",
-        name: "Диалоги",
-        threads: [{ provider: "codex", threadId: "thread-current" }],
-      }],
+      streams: [
+        {
+          id: "stream-1",
+          name: "Диалоги",
+          threads: [{ provider: "codex", threadId: "thread-current" }],
+        },
+        {
+          id: "stream-2",
+          name: "Архитектор",
+          threads: [{ provider: "codex", threadId: "thread-other" }],
+        },
+      ],
     }],
-    messagePins: [{
-      id: "pin-target",
-      streamId: "stream-1",
-      messageKey: "message:v1:target",
-      provider: "codex",
-      taskThreadId: "thread-current",
-      turnThreadId: "thread-current",
-      turnId: "turn-target",
-      itemId: "answer-target",
-      role: "agent",
-      preview: "Точное сообщение из другой страницы истории",
-      author: "Codex",
-      time: "2026-09-08T06:30:00.000Z",
-      available: true,
-    }],
+    messagePins: pinPresent ? [pin] : [],
     settings: {},
     selected: {
       provider: "codex",
@@ -105,47 +123,73 @@ function navigationSnapshot() {
   };
 }
 
-function navigationHistory({ focused = false } = {}) {
-  const start = focused ? 30 : 80;
+function navigationHistory({ streamId = "stream-1", threadId = "thread-current" } = {}) {
+  const start = 80;
   const items = Array.from({ length: 20 }, (_, offset) => {
     const index = start + offset;
-    const target = focused && offset === 9;
     return {
-      id: target ? "turn-target" : `turn-${index}`,
+      id: `${streamId}-turn-${index}`,
       provider: "codex",
-      threadId: "thread-current",
+      threadId,
       completed: true,
       status: "completed",
       terminalRevision: 1,
       startedAt: `2026-09-08T06:${String(index % 60).padStart(2, "0")}:00.000Z`,
       completedAt: `2026-09-08T06:${String(index % 60).padStart(2, "0")}:30.000Z`,
       messages: [{
-        itemId: target ? "answer-target" : `answer-${index}`,
-        messageKey: target ? "message:v1:target" : `message:v1:${index}`,
+        itemId: `${streamId}-answer-${index}`,
+        messageKey: `message:v1:${streamId}:${index}`,
         pinEligible: true,
         role: "agent",
-        text: `${target ? "Точное закреплённое сообщение" : `Ответ ${index}`}\n\n${"Контекст строки. ".repeat(18)}`,
+        text: `Ответ ${streamId} ${index}\n\n${"Контекст строки. ".repeat(18)}`,
       }],
     };
   });
   return {
     provider: "codex",
-    threadId: "thread-current",
-    streamId: "stream-1",
+    threadId,
+    streamId,
     start,
     end: start + items.length,
     total: 100,
     messageTotal: 100,
     nextBefore: String(start),
-    version: focused ? "history-focused" : "history-current",
+    version: `history-current:${streamId}`,
     items,
   };
 }
 
-async function openProductionNavigationUi(page, { surface = "web" } = {}) {
-  const snapshot = navigationSnapshot();
+function navigationFocusedTurn() {
+  return {
+    provider: "codex",
+    taskThreadId: "thread-current",
+    turnThreadId: "thread-current",
+    turnId: "turn-target",
+    status: "completed",
+    startedAt: "2026-09-08T06:30:00.000Z",
+    completedAt: "2026-09-08T06:30:30.000Z",
+    messages: [{
+      itemId: "answer-target",
+      messageKey: "message:v1:target",
+      pinEligible: true,
+      role: "agent",
+      text: `Точное закреплённое сообщение\n\n${"Контекст строки. ".repeat(18)}`,
+      time: "2026-09-08T06:30:30.000Z",
+    }],
+    focusItemId: "answer-target",
+  };
+}
+
+async function openProductionNavigationUi(page, { surface = "web", delayInitialHistory = false } = {}) {
+  let snapshot = navigationSnapshot();
   const actions = [];
+  const requests = [];
   const pageErrors = [];
+  let initialHistoryDelayed = false;
+  let releaseInitialHistory;
+  let markInitialHistoryStarted;
+  const initialHistoryGate = new Promise((resolve) => { releaseInitialHistory = resolve; });
+  const initialHistoryStarted = new Promise((resolve) => { markInitialHistoryStarted = resolve; });
   page.on("pageerror", (error) => pageErrors.push(error.message));
   await page.addInitScript(() => {
     let uuidSequence = 0;
@@ -172,24 +216,42 @@ async function openProductionNavigationUi(page, { surface = "web" } = {}) {
     }
     if (url.pathname === "/api/control") {
       const body = request.postDataJSON();
+      const params = body.params ?? {};
       actions.push(body.action);
+      requests.push(body);
       let result = {};
       if (body.action === "open-task") {
-        result = { snapshot, history: navigationHistory() };
+        const other = params.streamId === "stream-2";
+        result = {
+          snapshot,
+          history: navigationHistory(other
+            ? { streamId: "stream-2", threadId: "thread-other" }
+            : undefined),
+        };
       } else if (body.action === "open-turn") {
         result = {
           snapshot,
-          history: navigationHistory({ focused: true }),
-          focusedMessage: { turnId: "turn-target", itemId: "answer-target" },
+          history: navigationHistory(),
+          focusedTurn: navigationFocusedTurn(),
+          focusedMessage: { turnId: "turn-target", itemId: "answer-target", role: "agent" },
         };
       } else if (body.action === "task-history") {
-        result = {
-          provider: "codex",
-          threadId: "thread-current",
-          streamId: "stream-1",
-          notModified: true,
-          version: "history-current",
-        };
+        if (delayInitialHistory && params.streamId === "stream-1" && !initialHistoryDelayed) {
+          initialHistoryDelayed = true;
+          markInitialHistoryStarted();
+          await initialHistoryGate;
+        }
+        result = delayInitialHistory
+          ? navigationHistory(params.streamId === "stream-2"
+            ? { streamId: "stream-2", threadId: "thread-other" }
+            : undefined)
+          : {
+            provider: "codex",
+            threadId: params.threadId,
+            streamId: params.streamId,
+            notModified: true,
+            version: `history-current:${params.streamId}`,
+          };
       } else if (body.action === "rate-limit-history") {
         result = { points: [] };
       } else {
@@ -265,7 +327,28 @@ async function openProductionNavigationUi(page, { surface = "web" } = {}) {
     new MutationObserver(() => requestAnimationFrame(() => sample("mutation-frame")))
       .observe(log, { childList: true });
   }, surface);
-  return actions;
+  if (delayInitialHistory) {
+    try {
+      await Promise.race([
+        initialHistoryStarted,
+        new Promise((_, reject) => setTimeout(
+          () => reject(new Error(`initial task-history did not start: ${JSON.stringify(requests)}`)),
+          5_000,
+        )),
+      ]);
+    } catch (error) {
+      releaseInitialHistory();
+      throw error;
+    }
+  }
+  return {
+    actions,
+    requests,
+    releaseInitialHistory: () => releaseInitialHistory(),
+    setSnapshot(next) {
+      snapshot = next;
+    },
+  };
 }
 
 async function seed(page, { mobile = false } = {}) {
@@ -371,7 +454,7 @@ test("production pin navigation replaces a history window without a second scrol
         viewport: surface.viewport,
         deviceScaleFactor: surface.deviceScaleFactor ?? 1,
       });
-      const actions = await openProductionNavigationUi(page, { surface: surface.surface });
+      const { actions } = await openProductionNavigationUi(page, { surface: surface.surface });
       const scroll = page.locator("[data-chat-scroll]");
       await scroll.evaluate((node) => {
         node.scrollTop = Math.round((node.scrollHeight - node.clientHeight) * 0.35);
@@ -441,6 +524,120 @@ test("production pin navigation replaces a history window without a second scrol
       ["auto"],
     );
     await reducedPage.close();
+  } finally {
+    await browser.close();
+  }
+});
+
+test("production pin navigation survives stale and fresh history until an explicit return", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch(process.platform === "win32"
+    ? { channel: "msedge", headless: true }
+    : { headless: true });
+  const surfaces = [
+    { surface: "web", viewport: { width: 1280, height: 800 } },
+    { surface: "vscode", viewport: { width: 720, height: 900 } },
+    { surface: "mobile", viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 },
+  ].filter((scenario) => !process.env.AGENT_HUB_TEST_SURFACE
+    || process.env.AGENT_HUB_TEST_SURFACE === scenario.surface);
+  const targetPosition = (page) => page.evaluate(() => {
+    const scroll = document.querySelector("[data-chat-scroll]");
+    const target = document.querySelector("[data-chat-log] [data-item-id='answer-target']");
+    return {
+      scrollTop: scroll.scrollTop,
+      top: target?.getBoundingClientRect().top ?? null,
+    };
+  });
+  const returnToStreamWith = async (page, controller, snapshot) => {
+    controller.setSnapshot(snapshot);
+    await page.locator(".stream-tabs-track [data-stream-tab-id='stream-2']").evaluate((button) => button.click());
+    await page.locator("[data-chat-log] [data-item-id='stream-2-answer-99']").waitFor();
+    const response = page.waitForResponse((candidate) => {
+      if (!candidate.url().endsWith("/api/control")) return false;
+      const body = candidate.request().postDataJSON();
+      return body?.action === "open-task" && body?.params?.streamId === "stream-1";
+    });
+    await page.locator(".stream-tabs-track [data-stream-tab-id='stream-1']").evaluate((button) => button.click());
+    await response;
+  };
+  try {
+    for (const scenario of surfaces) {
+      const page = await browser.newPage({
+        viewport: scenario.viewport,
+        deviceScaleFactor: scenario.deviceScaleFactor ?? 1,
+      });
+      page.setDefaultTimeout(5_000);
+      const controller = await openProductionNavigationUi(page, {
+        surface: scenario.surface,
+        delayInitialHistory: true,
+      });
+
+      await page.locator("[data-message-pin-current]").evaluate((button) => button.click());
+      const target = page.locator("[data-chat-log] [data-item-id='answer-target']");
+      await target.waitFor({ state: "visible" });
+      await page.waitForFunction(() => document.activeElement?.dataset?.itemId === "answer-target");
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(
+        () => requestAnimationFrame(resolve),
+      )));
+      const focusedPosition = await targetPosition(page);
+
+      const staleHistoryResponse = page.waitForResponse((candidate) => {
+        if (!candidate.url().endsWith("/api/control")) return false;
+        const body = candidate.request().postDataJSON();
+        return body?.action === "task-history" && body?.params?.streamId === "stream-1";
+      });
+      controller.releaseInitialHistory();
+      await staleHistoryResponse;
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(
+        () => requestAnimationFrame(resolve),
+      )));
+      assert.equal(await target.isVisible(), true);
+      const afterStale = await targetPosition(page);
+      assert.ok(Math.abs(afterStale.scrollTop - focusedPosition.scrollTop) <= 2);
+      assert.ok(Math.abs(afterStale.top - focusedPosition.top) <= 2);
+
+      const freshHistoryResponse = page.waitForResponse((candidate) => {
+        if (!candidate.url().endsWith("/api/control")) return false;
+        const body = candidate.request().postDataJSON();
+        return body?.action === "task-history" && body?.params?.streamId === "stream-1";
+      });
+      try {
+        await Promise.all([
+          freshHistoryResponse,
+          returnToStreamWith(page, controller, navigationSnapshot({ version: "snapshot-2" })),
+        ]);
+      } catch (error) {
+        throw new Error(`${error.message}; requests=${JSON.stringify(controller.requests)}`);
+      }
+      await page.waitForTimeout(80);
+      assert.equal(await target.isVisible(), true);
+
+      await page.locator("[data-message-pin-current]").evaluate((button) => button.click());
+      await page.waitForFunction(() => document.activeElement?.dataset?.itemId === "answer-target");
+      assert.equal(await target.getAttribute("data-pin-highlight"), "");
+
+      const returnBottom = page.locator("[data-chat-scroll-down]");
+      await returnBottom.evaluate((button) => button.click());
+      await page.waitForFunction(() => !document.querySelector("[data-chat-log] [data-item-id='answer-target']"));
+      assert.equal(await page.locator("[data-chat-log] [data-item-id='stream-1-answer-99']").isVisible(), true);
+
+      await page.locator("[data-message-pin-current]").evaluate((button) => button.click());
+      await target.waitFor({ state: "visible" });
+      await returnToStreamWith(page, controller, navigationSnapshot({
+        version: "snapshot-3",
+        pinAvailable: false,
+      }));
+      await page.waitForFunction(() => !document.querySelector("[data-chat-log] [data-item-id='answer-target']"));
+      assert.equal(await page.locator("[data-message-pin-current]").isDisabled(), true);
+
+      await returnToStreamWith(page, controller, navigationSnapshot({ version: "snapshot-4" }));
+      await page.locator("[data-message-pin-current]").evaluate((button) => button.click());
+      await target.waitFor({ state: "visible" });
+      await returnToStreamWith(page, controller, navigationSnapshot({ version: "snapshot-5", pinPresent: false }));
+      await page.waitForFunction(() => !document.querySelector("[data-chat-log] [data-item-id='answer-target']"));
+      assert.equal(await page.locator("[data-message-pin-shelf]").isHidden(), true);
+      await page.close();
+    }
   } finally {
     await browser.close();
   }
