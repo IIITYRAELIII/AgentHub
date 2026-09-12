@@ -45,6 +45,7 @@ import { verifyWorkspaceReleasePublication } from "../infrastructure/persistence
 import { SingleInstanceGuard } from "../infrastructure/process/instance-lock.mjs";
 import { captureProcess } from "../infrastructure/process/process-capture.mjs";
 import { RuntimeCommandServer } from "../infrastructure/process/runtime-command.mjs";
+import { createRepositoryProductionValidationAdapter } from "../infrastructure/process/repository-production-validation.mjs";
 import {
   copyWindowsFileObject,
   revealWindowsFile,
@@ -422,6 +423,9 @@ export async function createHubInfrastructure({
     }),
     readTestContourStatus,
     readPublicationState,
+    validateProductionCandidate: createRepositoryProductionValidationAdapter({
+      policies: config.releaseValidation?.repositories ?? [],
+    }),
   });
   const taskLifecycle = new TaskLifecycleService({
     taskBoard,

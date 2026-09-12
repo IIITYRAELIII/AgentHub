@@ -14,6 +14,9 @@ function exactProductionValidation({ workspaceId = "workspace-1", planRevision =
       headCommit: repository.headCommit,
       resultCommits: [...repository.resultCommits],
       taskIds: [...repository.taskIds],
+      frozenTasks: [...repository.frozenTasks],
+      candidateCommit: repository.frozenCandidate?.preReleaseHead ?? null,
+      candidateTree: repository.frozenCandidate?.tree ?? null,
     })),
     check: { kind: "repository-owned-qa", id: "qa-check-1" },
   };
@@ -425,7 +428,7 @@ test("release preflight rejects stale external production validation evidence", 
       withAwaitTransition: async (_workspaceId, operation) => operation(),
       assertPrimaryInvariant: async (projectRoot) => ({ projectRoot, branch: "refs/heads/main", headCommit: "main" }),
       inspectMainChanges: async (request) => ({ projectRoot: request.projectRoot, publishedRevision: request.publishedRevision, localMain: "main", originMain: "main", commits: [], approvalRequired: false }),
-      prepareCandidate: async () => ({ preReleaseHead: "candidate" }),
+      prepareCandidate: async (request) => ({ repositoryRoot: request.projectRoot, preReleaseHead: "candidate" }),
     },
     readPublicationState: async () => ({ repositories: [{ root: repo, revision: "published" }] }),
     resolveTestContourSource: async () => ({ kind: "external-validation-required", repositories: [{ projectRoot: repo }] }),
@@ -437,6 +440,15 @@ test("release preflight rejects stale external production validation evidence", 
     }),
   });
 
+  await assert.rejects(
+    () => service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-android" }),
+    /stale/u,
+  );
+
+  service.validateProductionCandidate = async ({ workspaceId, planRevision, repositories }) => ({
+    ...exactProductionValidation({ workspaceId, planRevision, repositories }),
+    repositories: [{ ...exactProductionValidation({ workspaceId, planRevision, repositories }).repositories[0], candidateCommit: "candidate-old" }],
+  });
   await assert.rejects(
     () => service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-android" }),
     /stale/u,
@@ -517,14 +529,17 @@ test("release preflight requires external validation for repositories not covere
       } },
     }),
     validateProductionCandidate: async ({ workspaceId, planRevision, repositories: requested }) => {
-      calls.push(requested.map((repository) => repository.projectRoot));
+      calls.push(requested.map((repository) => ({
+        projectRoot: repository.projectRoot,
+        candidate: repository.frozenCandidate?.preReleaseHead,
+      })));
       return exactProductionValidation({ workspaceId, planRevision, repositories: requested });
     },
   });
 
   const result = await service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-mixed" });
 
-  assert.deepEqual(calls, [[repoAndroid]]);
+  assert.deepEqual(calls, [[{ projectRoot: repoAndroid, candidate: "candidate-android" }]]);
   assert.equal(result.status, "ready");
   assert.equal(result.testContour.headCommit, "dev-hub");
   assert.equal(result.productionValidation.repositories[0].projectRoot, repoAndroid);

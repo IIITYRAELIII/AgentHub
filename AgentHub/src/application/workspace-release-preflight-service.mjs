@@ -181,10 +181,22 @@ function exactReadyContourReadback(context) {
 }
 
 function sameRepositoryIdentity(left, right) {
-  return canonicalRoot(left?.projectRoot) === canonicalRoot(right?.projectRoot)
+  const candidateMatches = right?.frozenCandidate
+    ? String(left?.candidateCommit ?? "") === String(right.frozenCandidate.preReleaseHead ?? "")
+      && (right.frozenCandidate.tree == null || String(left?.candidateTree ?? "") === String(right.frozenCandidate.tree))
+    : true;
+  return candidateMatches
+    && canonicalRoot(left?.projectRoot) === canonicalRoot(right?.projectRoot)
     && String(left?.headCommit ?? "") === String(right?.headCommit ?? "")
     && JSON.stringify([...(left?.resultCommits ?? [])].sort()) === JSON.stringify([...(right?.resultCommits ?? [])].sort())
-    && JSON.stringify([...(left?.taskIds ?? [])].sort()) === JSON.stringify([...(right?.taskIds ?? [])].sort());
+    && JSON.stringify([...(left?.taskIds ?? [])].sort()) === JSON.stringify([...(right?.taskIds ?? [])].sort())
+    && sameFrozenTasks(left?.frozenTasks ?? [], right?.frozenTasks ?? []);
+}
+
+function candidateForRepository(releaseCandidates, repository) {
+  return releaseCandidates.find((candidate) => (
+    canonicalRoot(candidate?.repositoryRoot) === canonicalRoot(repository.projectRoot)
+  )) ?? null;
 }
 
 function sameFrozenTasks(left = [], right = []) {
@@ -496,6 +508,7 @@ export class WorkspaceReleasePreflightService {
         headCommit: dev.headCommit,
         resultCommits: repository.resultCommits,
         taskIds: repository.taskIds,
+        frozenTasks: repository.frozenTasks,
       });
     }
 
@@ -506,24 +519,6 @@ export class WorkspaceReleasePreflightService {
       : preparedRepositories;
     let productionValidation = null;
     let contour = null;
-    if (externalRepositories.length) {
-      productionValidation = assertExactProductionValidation({
-        workspaceId,
-        planRevision: plan.revision,
-        repositories: externalRepositories,
-        validation: await this.validateProductionCandidate({
-          workspaceId,
-          planRevision: plan.revision,
-          source: {
-            kind: "external-validation-required",
-            reason: contourSource?.reason,
-            repositories: externalRepositories,
-            ...(contourRepositoryRoot ? { contourRepositoryRoot } : {}),
-          },
-          repositories: externalRepositories,
-        }),
-      });
-    }
     if (contourSource?.kind === "agent-hub-test-contour") {
       const refreshed = await this.refreshTestContour({
         sourceRoot: contourSource.sourceRoot,
@@ -538,21 +533,9 @@ export class WorkspaceReleasePreflightService {
       if (!exactReadyContourReadback({ refreshed, contour, expectedHeadCommit: expectedContourHead })) {
         throw new Error(
           `refreshed Test Contour readback is not exact-ready: ${contour?.readback?.outcome ?? "missing"}; `
-            + "it does not match dev HEAD or the exact operation target",
+          + "it does not match dev HEAD or the exact operation target",
         );
       }
-    } else if (!externalRepositories.length) {
-      productionValidation = assertExactProductionValidation({
-        workspaceId,
-        planRevision: plan.revision,
-        repositories: preparedRepositories,
-        validation: await this.validateProductionCandidate({
-          workspaceId,
-          planRevision: plan.revision,
-          source: contourSource,
-          repositories: preparedRepositories,
-        }),
-      });
     }
 
     const repositories = [];
@@ -569,6 +552,7 @@ export class WorkspaceReleasePreflightService {
         headCommit: dev.headCommit,
         resultCommits: dev.resultCommits,
         taskIds: repository.taskIds,
+        frozenTasks: repository.frozenTasks,
       });
     }
     if (contour) {
@@ -606,6 +590,33 @@ export class WorkspaceReleasePreflightService {
     const current = await this.releasePlanner.plan(workspaceId);
     if (current.revision !== plan.revision) {
       throw new Error("release plan revision changed during release candidate preparation");
+    }
+    if (externalRepositories.length) {
+      const validationRepositories = externalRepositories.map((repository) => {
+        const frozenCandidate = candidateForRepository(releaseCandidates, repository);
+        if (!frozenCandidate) throw new Error(`release validation is missing frozen candidate for ${repository.projectRoot}`);
+        return { ...repository, frozenCandidate };
+      });
+      productionValidation = assertExactProductionValidation({
+        workspaceId,
+        planRevision: plan.revision,
+        repositories: validationRepositories,
+        validation: await this.validateProductionCandidate({
+          workspaceId,
+          planRevision: plan.revision,
+          source: {
+            kind: "external-validation-required",
+            reason: contourSource?.reason,
+            repositories: validationRepositories,
+            ...(contourRepositoryRoot ? { contourRepositoryRoot } : {}),
+          },
+          repositories: validationRepositories,
+        }),
+      });
+      const afterValidation = await this.releasePlanner.plan(workspaceId);
+      if (afterValidation.revision !== plan.revision) {
+        throw new Error("release plan revision changed during repository production validation");
+      }
     }
 
     return {

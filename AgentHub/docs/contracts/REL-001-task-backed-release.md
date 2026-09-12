@@ -312,24 +312,32 @@ manufactures Test Contour, validation, main-review or publication evidence.
 
 For repositories without an Agent Hub Test Contour, release preflight requires a
 repository-owned production validation adapter. The minimal supported adapter
-contract for Bookworm-style Android repositories is: run the approved QA checks
-against the exact frozen candidate in isolation, then persist bounded
-server-owned evidence naming repository identity, plan revision, Task IDs and
-revisions, Task result commits, candidate commit and tree, relevant build input
-identity, check commands, outcomes and artifact digests. The preflight adapter
-accepts only an exact match to the selected repository and plan. Historical QA
-reports, mutable build outputs, tree equality, developer-authored reports, or a
-ready string are not production validation evidence unless an explicit adapter
-proves the full input-equivalence boundary.
+contract for Bookworm-style Android repositories is enabled only by explicit
+`releaseValidation.repositories[]` policy. The default unconfigured state fails
+closed with an operator action. A configured adapter runs the approved QA checks
+against the exact frozen candidate in isolation after `PreRelease` preparation,
+then returns bounded server-owned evidence naming repository identity, plan
+revision, Task IDs and revisions, Task result commits, candidate commit, relevant
+build input identity, check commands, outcomes and artifact digests. The
+preflight adapter accepts only an exact match to the selected repository, plan,
+candidate and Task result evidence. Historical QA reports, mutable build outputs,
+tree equality, developer-authored reports, or a ready string are not production
+validation evidence unless an explicit adapter proves the full input-equivalence
+boundary.
 
 Repository-scoped publication baseline adoption from an external publisher
 requires an explicit supported authority for that repository. For a GitHub
 release/tag source, the adapter must verify the repository remote identity,
 publisher API response, immutable release/tag identity, tag target commit, and
 staleness/moved-tag conditions before writing bounded publication evidence for
-that repository. An unscoped local JSON file, an arbitrary supplied SHA, a
-foreign remote, or a moved tag fails closed. Activation of such an adapter is a
-separate operator decision; existing unscoped state is not rewritten in place.
+that repository through the publication-state owner while retaining other
+repositories. The supported operator surface is `npm run release:policy --
+github-baseline preview|enable --project-root <root> --owner <owner> --repo
+<repo> --tag <tag> --release-id <id> --target-commit <sha>`; preview has no write
+effect, enable writes only the verified repository-scoped record. An unscoped
+local JSON file, an arbitrary supplied SHA, a foreign remote, a moved tag or an
+Actions run head SHA fails closed. Activation of such an adapter is a separate
+operator decision; existing unscoped state is not rewritten in place.
 
 The Architect adds one consolidated `CHANGELOG.md` entry when it exists, then
 freezes the exact main base, release-plan revision, included Task IDs and row
