@@ -19,6 +19,21 @@ function exactProductionValidation({ workspaceId = "workspace-1", planRevision =
   };
 }
 
+function originalReceipt(overrides = {}) {
+  return {
+    requestId: "architect-bwm12-release-preflight-20260912-v1",
+    workspaceId: "workspace-1",
+    streamId: "architect",
+    provider: "codex",
+    threadId: "thread-architect",
+    toolName: "hub_release_preflight",
+    argumentsHash: "preflight-args",
+    expectedArgumentsHash: "preflight-args",
+    status: "unknown",
+    ...overrides,
+  };
+}
+
 function fixture({ planRevision = "plan-1", contourHead = "dev-head", rejectDev = null, rejectPrimary = null } = {}) {
   const calls = [];
   const locks = [];
@@ -599,8 +614,16 @@ test("release preflight reconciliation reads exact frozen checkpoint without rep
     repositoryRoot: requestedProjectRoot,
     releaseRoot: path.resolve("D:/release-clone"),
     checkpointFile: path.resolve("D:/release-clone/checkpoint.json"),
+    checkpointPhase: "prepared",
     planRevision: "plan-1",
     manifestHash: "manifest-hash",
+    manifest: {
+      manifestHash: "manifest-hash",
+      planRevision: "plan-1",
+      baseCommit: "main-head",
+      taskIds: ["task-1"],
+    },
+    preflightRequestId: "architect-bwm12-release-preflight-20260912-v1",
     baseCommit: "main-head",
     preReleaseHead: "prerelease-head",
   });
@@ -611,6 +634,7 @@ test("release preflight reconciliation reads exact frozen checkpoint without rep
     expectedRepositories: [{ projectRoot, revision: "prerelease-head" }],
     originalRequestId: "architect-bwm12-release-preflight-20260912-v1",
     errorClass: "serialization_error",
+    originalReceipt: originalReceipt(),
   });
 
   assert.equal(result.status, "reconciled");
@@ -622,7 +646,95 @@ test("release preflight reconciliation reads exact frozen checkpoint without rep
       workspaceId: "workspace-1",
       expectedPlanRevision: "plan-1",
       expectedRepositories: [{ projectRoot, revision: "stale-head" }],
+      originalRequestId: "architect-bwm12-release-preflight-20260912-v1",
+      originalReceipt: originalReceipt(),
     }),
     /stale/u,
   );
+});
+
+test("release preflight reconciliation rejects missing or foreign original MCP receipts", async () => {
+  const { projectRoot, service } = fixture();
+  service.releaseGitWorkspaces.frozenCandidate = async () => ({
+    checkpointPhase: "prepared",
+    planRevision: "plan-1",
+    manifestHash: "manifest-hash",
+    manifest: { manifestHash: "manifest-hash", planRevision: "plan-1", baseCommit: "main-head" },
+    preflightRequestId: "architect-bwm12-release-preflight-20260912-v1",
+    baseCommit: "main-head",
+    preReleaseHead: "prerelease-head",
+  });
+  const request = {
+    workspaceId: "workspace-1",
+    expectedPlanRevision: "plan-1",
+    expectedRepositories: [{ projectRoot, revision: "prerelease-head" }],
+    originalRequestId: "architect-bwm12-release-preflight-20260912-v1",
+  };
+
+  await assert.rejects(() => service.reconcilePreflight(request), /receipt was not found/u);
+  await assert.rejects(
+    () => service.reconcilePreflight({ ...request, originalReceipt: originalReceipt({ toolName: "hub_task_claim" }) }),
+    /not a release preflight/u,
+  );
+  await assert.rejects(
+    () => service.reconcilePreflight({ ...request, originalReceipt: originalReceipt({ workspaceId: "workspace-2" }) }),
+    /another Workspace/u,
+  );
+  await assert.rejects(
+    () => service.reconcilePreflight({ ...request, originalReceipt: originalReceipt({ expectedArgumentsHash: "other" }) }),
+    /arguments do not match/u,
+  );
+});
+
+test("release preflight reconciliation keeps old unbound checkpoints as snapshot-only", async () => {
+  const { projectRoot, service } = fixture();
+  service.releaseGitWorkspaces.frozenCandidate = async () => ({
+    checkpointPhase: "prepared",
+    planRevision: "plan-1",
+    manifestHash: "manifest-hash",
+    manifest: { manifestHash: "manifest-hash", planRevision: "plan-1", baseCommit: "main-head" },
+    preflightRequestId: "",
+    baseCommit: "main-head",
+    preReleaseHead: "prerelease-head",
+  });
+
+  const result = await service.reconcilePreflight({
+    workspaceId: "workspace-1",
+    expectedPlanRevision: "plan-1",
+    expectedRepositories: [{ projectRoot, revision: "prerelease-head" }],
+    originalRequestId: "architect-bwm12-release-preflight-20260912-v1",
+    originalReceipt: originalReceipt(),
+  });
+
+  assert.equal(result.status, "candidate_snapshot_only");
+  assert.equal(result.originalOutcome, "unknown");
+  assert.equal(result.replayed, false);
+});
+
+test("release preflight reconciliation rejects plan movement during readback", async () => {
+  const { projectRoot, service } = fixture();
+  let reads = 0;
+  service.releasePlanner.plan = async () => ({
+    revision: reads++ === 0 ? "plan-1" : "plan-2",
+    ready: [{ taskId: "task-1", taskRevision: 7, projectRoot, resultCommit: "task-result" }],
+    blocked: [],
+    conflicts: [],
+  });
+  service.releaseGitWorkspaces.frozenCandidate = async () => ({
+    checkpointPhase: "prepared",
+    planRevision: "plan-1",
+    manifestHash: "manifest-hash",
+    manifest: { manifestHash: "manifest-hash", planRevision: "plan-1", baseCommit: "main-head" },
+    preflightRequestId: "architect-bwm12-release-preflight-20260912-v1",
+    baseCommit: "main-head",
+    preReleaseHead: "prerelease-head",
+  });
+
+  await assert.rejects(() => service.reconcilePreflight({
+    workspaceId: "workspace-1",
+    expectedPlanRevision: "plan-1",
+    expectedRepositories: [{ projectRoot, revision: "prerelease-head" }],
+    originalRequestId: "architect-bwm12-release-preflight-20260912-v1",
+    originalReceipt: originalReceipt(),
+  }), /plan revision changed during preflight readback/u);
 });

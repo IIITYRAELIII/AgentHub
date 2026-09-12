@@ -142,6 +142,34 @@ test("release candidate uses an independent clone and leaves a clean primary att
   );
 });
 
+test("frozen candidate readback validates prepared manifest identity and request binding", async (context) => {
+  const setup = await fixture(context);
+  const resultCommit = await taskResult(setup, context);
+  const candidate = await setup.service.prepareCandidate({
+    planRevision: "plan-readback",
+    workspaceId: "workspace-1",
+    preflightRequestId: "preflight-readback-1",
+    projectRoot: setup.primary,
+    frozenTasks: [{ taskId: "task-readback", taskRevision: 3, resultCommit }],
+  });
+
+  const readback = await setup.service.frozenCandidate(setup.primary);
+
+  assert.equal(readback.checkpointPhase, "prepared");
+  assert.equal(readback.planRevision, "plan-readback");
+  assert.equal(readback.preReleaseHead, candidate.preReleaseHead);
+  assert.equal(readback.preflightRequestId, "preflight-readback-1");
+  assert.equal(readback.manifest.workspaceId, "workspace-1");
+  assert.equal(readback.manifest.preflightRequestId, "preflight-readback-1");
+  assert.deepEqual(readback.manifest.taskIds, ["task-readback"]);
+
+  await writeFile(candidate.manifestFile, "{}\n", "utf8");
+  await assert.rejects(
+    () => setup.service.frozenCandidate(setup.primary),
+    /manifest digest changed/u,
+  );
+});
+
 test("main review discloses every commit since the last successful publication", async (context) => {
   const setup = await fixture(context);
   await writeFile(path.join(setup.primary, "AgentHub", "external.mjs"), "export const external = true;\n", "utf8");

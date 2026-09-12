@@ -236,7 +236,7 @@ export async function publishAll(args = process.argv.slice(2), {
   restart = callDesktopControl,
   before = async () => {},
   exclusive = withPublicationLock,
-  record = async () => writePublicationState({
+  record = async (publicationState) => writePublicationState(publicationState ?? {
     revision: await currentRevision({ cwd: REPOSITORY_ROOT }),
     publishedAt: new Date().toISOString(),
     mode: "full",

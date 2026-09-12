@@ -132,6 +132,7 @@ async function fixture(context, { releaseWorkflowEnabled = false, taskGitWorkspa
   workspaceCatalog.markMcpOperationUnknown = (requestId, error) => {
     Object.assign(operations.get(requestId), { status: "unknown", error: error.message });
   };
+  workspaceCatalog.mcpOperation = (requestId) => operations.get(requestId) ?? null;
   workspaceCatalog.mcpOperations = () => [...operations.values()];
   const workspaceMutations = new AsyncSqliteMutationQueue();
   workspaceCatalog.runMutation = (operation, options) => workspaceMutations.run(operation, options);
@@ -996,7 +997,7 @@ test("HubMcpService sends attributed messages to another current-Workspace Strea
 });
 
 test("HubMcpService exposes cursor events and publication-gated release completion", async (context) => {
-  const { service, token, preflightCalls, releaseCalls } = await fixture(context);
+  const { service, token, operations, preflightCalls, releaseCalls } = await fixture(context);
   const events = await service.call("hub_events_list", { context_token: token, after_sequence: 4 });
   assert.equal(events.events[0].sequence, 5);
   assert.equal(events.nextSequence, 5);
@@ -1016,10 +1017,25 @@ test("HubMcpService exposes cursor events and publication-gated release completi
       approvedLocalMainCommit: "local-main",
       approvedOriginMainCommit: "origin-main",
     }],
+    requestId: "preflight-1",
+  });
+  await service.call("hub_release_preflight", {
+    context_token: token,
+    request_id: "architect-bwm12-release-preflight-20260912-v1",
+    expected_plan_revision: "plan-1",
+  });
+  Object.assign(operations.get("architect-bwm12-release-preflight-20260912-v1"), {
+    status: "unknown",
+    result: null,
+    error: "serialization error",
   });
   const reconciled = await service.call("hub_release_preflight_reconcile", {
     context_token: token,
     original_request_id: "architect-bwm12-release-preflight-20260912-v1",
+    original_preflight_arguments: {
+      request_id: "architect-bwm12-release-preflight-20260912-v1",
+      expected_plan_revision: "plan-1",
+    },
     error_class: "serialization_error",
     expected_plan_revision: "plan-1",
     expected_repositories: [{ projectRoot: "D:/repo", revision: "pre-release-head" }],

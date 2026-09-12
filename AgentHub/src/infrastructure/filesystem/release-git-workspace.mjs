@@ -581,7 +581,8 @@ export class ReleaseGitWorkspaceService {
   }
 
   async prepareCandidate({
-    planRevision, projectRoot, workspaceId = null, frozenTasks = [], approvedBaseCommit = null, validateBeforeCommit = null,
+    planRevision, projectRoot, workspaceId = null, preflightRequestId = null,
+    frozenTasks = [], approvedBaseCommit = null, validateBeforeCommit = null,
   } = {}) {
     this.#assertAvailable("prepareCandidate");
     const revision = String(planRevision ?? "").trim();
@@ -623,6 +624,7 @@ export class ReleaseGitWorkspaceService {
         schemaVersion: 2,
         projectionPolicy: "task-net-ancestry-v2",
         ...(workspaceId ? { workspaceId: String(workspaceId) } : {}),
+        ...(preflightRequestId ? { preflightRequestId: String(preflightRequestId) } : {}),
         planRevision: revision,
         primaryRoot: initial.root,
         primaryGitCommonDir: initial.commonDir,
@@ -741,6 +743,7 @@ export class ReleaseGitWorkspaceService {
             phase: "prepared",
             netProjectedTaskIds,
             planRevision: revision,
+            ...(preflightRequestId ? { preflightRequestId: String(preflightRequestId) } : {}),
             manifestHash,
             manifestFile,
             baseCommit,
@@ -821,12 +824,49 @@ export class ReleaseGitWorkspaceService {
         || !checkpoint?.baseCommit || !checkpoint?.preReleaseHead) {
       throw new Error(`release checkpoint is incomplete: ${layout.checkpointFile}`);
     }
+    const manifestFile = path.join(layout.evidenceRoot, `${checkpoint.manifestHash}.json`);
+    if (checkpoint.manifestFile && !samePath(checkpoint.manifestFile, manifestFile)) {
+      throw new Error("release checkpoint manifest path does not match its digest");
+    }
+    const manifestBytes = await readFile(manifestFile);
+    if (sha256(manifestBytes) !== checkpoint.manifestHash) {
+      throw new Error("release checkpoint manifest digest changed");
+    }
+    const manifest = JSON.parse(manifestBytes.toString("utf8"));
+    const marker = await assertReleaseCloneForPublication({ repositoryRoot: layout.releaseRoot });
+    const branchHead = await runGit(["rev-parse", `refs/heads/${RELEASE_BRANCH}^{commit}`], { cwd: marker.releaseRoot });
+    if (branchHead !== String(checkpoint.preReleaseHead)) {
+      throw new Error("release checkpoint PreRelease branch no longer matches its prepared head");
+    }
+    if (manifest.schemaVersion !== 2
+        || manifest.planRevision !== checkpoint.planRevision
+        || manifest.baseCommit !== checkpoint.baseCommit
+        || !samePath(manifest.primaryRoot, primary.root)
+        || !samePath(manifest.releaseRoot, marker.releaseRoot)
+        || !samePath(manifest.primaryGitCommonDir, primary.commonDir)
+        || !samePath(manifest.releaseGitCommonDir, marker.releaseGitCommonDir)) {
+      throw new Error("release checkpoint manifest identity does not match the managed repository");
+    }
     return {
       repositoryRoot: primary.root,
       releaseRoot: layout.releaseRoot,
       checkpointFile: layout.checkpointFile,
+      checkpointPhase: String(checkpoint.phase ?? ""),
       planRevision: String(checkpoint.planRevision),
       manifestHash: String(checkpoint.manifestHash),
+      manifestFile,
+      manifest: {
+        manifestHash: String(checkpoint.manifestHash),
+        schemaVersion: manifest.schemaVersion,
+        workspaceId: manifest.workspaceId ?? null,
+        preflightRequestId: manifest.preflightRequestId ?? checkpoint.preflightRequestId ?? null,
+        planRevision: String(manifest.planRevision ?? ""),
+        primaryRoot: manifest.primaryRoot,
+        releaseRoot: manifest.releaseRoot,
+        baseCommit: String(manifest.baseCommit ?? ""),
+        taskIds: (Array.isArray(manifest.tasks) ? manifest.tasks : []).map((task) => String(task.taskId)).sort(),
+      },
+      preflightRequestId: String(checkpoint.preflightRequestId ?? manifest.preflightRequestId ?? ""),
       baseCommit: String(checkpoint.baseCommit),
       preReleaseHead: String(checkpoint.preReleaseHead),
     };

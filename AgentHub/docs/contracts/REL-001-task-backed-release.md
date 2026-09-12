@@ -293,12 +293,39 @@ user decision.
 
 If the preflight response is interrupted after candidate preparation, recovery is
 readback-only. The Architect may reconcile the original request only by naming
-the exact original request, plan revision and repository revisions; Agent Hub
-then reads the existing frozen candidate checkpoints and manifests through the
-release Git owner. Missing, stale or mismatched checkpoints keep the original
-outcome unknown. Reconciliation never reruns preflight, reuses a generic replay
-lease, or manufactures Test Contour, validation, main-review or publication
-evidence.
+the exact original request, original preflight arguments, plan revision and
+repository revisions. Agent Hub first binds that request to the authoritative
+MCP operation receipt by tool, Workspace, caller Stream/provider/thread and
+immutable arguments hash, then reads the existing frozen candidate checkpoints
+and manifests through the release Git owner. A prepared checkpoint proves the
+original preflight outcome only when its validated manifest/checkpoint identity
+is causally bound to that same request. A valid checkpoint without that binding
+may be reported only as a `candidate_snapshot_only` diagnostic while the
+original outcome remains unknown. Missing, stale, moved-plan, tampered-manifest
+or mismatched checkpoints keep the original outcome unknown. Reconciliation
+never reruns preflight, reuses a generic replay lease, finalizes the old receipt
+or manufactures Test Contour, validation, main-review or publication evidence.
+
+For repositories without an Agent Hub Test Contour, release preflight requires a
+repository-owned production validation adapter. The minimal supported adapter
+contract for Bookworm-style Android repositories is: run the approved QA checks
+against the exact frozen candidate in isolation, then persist bounded
+server-owned evidence naming repository identity, plan revision, Task IDs and
+revisions, Task result commits, candidate commit and tree, relevant build input
+identity, check commands, outcomes and artifact digests. The preflight adapter
+accepts only an exact match to the selected repository and plan. Historical QA
+reports, mutable build outputs, tree equality, developer-authored reports, or a
+ready string are not production validation evidence unless an explicit adapter
+proves the full input-equivalence boundary.
+
+Repository-scoped publication baseline adoption from an external publisher
+requires an explicit supported authority for that repository. For a GitHub
+release/tag source, the adapter must verify the repository remote identity,
+publisher API response, immutable release/tag identity, tag target commit, and
+staleness/moved-tag conditions before writing bounded publication evidence for
+that repository. An unscoped local JSON file, an arbitrary supplied SHA, a
+foreign remote, or a moved tag fails closed. Activation of such an adapter is a
+separate operator decision; existing unscoped state is not rewritten in place.
 
 The Architect adds one consolidated `CHANGELOG.md` entry when it exists, then
 freezes the exact main base, release-plan revision, included Task IDs and row

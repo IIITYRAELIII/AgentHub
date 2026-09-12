@@ -39,10 +39,15 @@ readback:
 
 `hub_release_preflight_reconcile` is a read-only release-specific readback path,
 not a replay of `hub_release_preflight`. It requires the original request id plus
-the exact expected plan and repository revisions, and may only report existing
-frozen candidate checkpoint evidence owned by the release Git boundary. It cannot
-create a candidate, repeat validation, finalize an unknown MCP receipt, or infer
-success from transport text.
+the exact original preflight arguments, expected plan and repository revisions.
+It must find the original `hub_release_preflight` receipt and bind tool,
+Workspace, caller Stream/provider/thread and immutable arguments hash before any
+release checkpoint readback. It may only report existing frozen candidate
+checkpoint evidence owned by the release Git boundary. A checkpoint not
+causally bound to the original request is at most a candidate snapshot; it is
+not a reconciled original outcome. The tool cannot create a candidate, repeat
+validation, finalize an unknown MCP receipt, or infer success from transport
+text.
 
 Receipt creation is atomic `INSERT OR IGNORE` under the exact identity. Success
 stores a bounded structural result projection rather than arbitrary response

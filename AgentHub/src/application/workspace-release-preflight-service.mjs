@@ -214,6 +214,31 @@ function assertExactProductionValidation({
   return validation;
 }
 
+function assertOriginalPreflightReceipt(receipt, {
+  workspaceId, originalRequestId, expectedArgumentsHash = null,
+} = {}) {
+  const requestId = String(originalRequestId ?? "").trim();
+  if (!receipt) throw new Error("original release preflight MCP receipt was not found");
+  if (String(receipt.requestId ?? "") !== requestId) {
+    throw new Error("original release preflight MCP receipt does not match the requested id");
+  }
+  if (String(receipt.toolName ?? "") !== "hub_release_preflight") {
+    throw new Error("original MCP receipt is not a release preflight");
+  }
+  if (String(receipt.workspaceId ?? "") !== String(workspaceId)) {
+    throw new Error("original release preflight MCP receipt belongs to another Workspace");
+  }
+  const status = String(receipt.status ?? "").trim();
+  if (!["pending", "reconciling", "unknown"].includes(status)) {
+    throw new Error("original release preflight MCP receipt is already terminal");
+  }
+  const expectedHash = String(expectedArgumentsHash ?? "").trim();
+  if (expectedHash && String(receipt.argumentsHash ?? "") !== expectedHash) {
+    throw new Error("original release preflight MCP receipt arguments do not match");
+  }
+  return { ...receipt, status };
+}
+
 async function readExactReadyContour({
   readTestContourStatus, refreshed, expectedHeadCommit,
 }) {
@@ -320,6 +345,7 @@ export class WorkspaceReleasePreflightService {
     workspaceId, expectedPlanRevision, conflictsResolved = false,
     approvedLocalMainCommit = null, approvedOriginMainCommit = null,
     approvedRepositories = [],
+    requestId = null,
   } = {}) {
     return this.withAwaitTransition(workspaceId, () => this.#preflightLocked({
       workspaceId,
@@ -328,16 +354,22 @@ export class WorkspaceReleasePreflightService {
       approvedLocalMainCommit,
       approvedOriginMainCommit,
       approvedRepositories,
+      requestId,
     }));
   }
 
   async reconcilePreflight({
     workspaceId, expectedPlanRevision, expectedRepositories = [], originalRequestId = null,
-    errorClass = null,
+    errorClass = null, originalReceipt = null,
   } = {}) {
     if (typeof this.releaseGitWorkspaces.frozenCandidate !== "function") {
       throw new Error("release preflight reconciliation requires frozen candidate readback support");
     }
+    const receipt = assertOriginalPreflightReceipt(originalReceipt, {
+      workspaceId,
+      originalRequestId,
+      expectedArgumentsHash: originalReceipt?.expectedArgumentsHash,
+    });
     const plan = await this.releasePlanner.plan(workspaceId);
     const requestedPlanRevision = requiredPlanRevision(expectedPlanRevision);
     if (plan.revision !== requestedPlanRevision) {
@@ -362,13 +394,41 @@ export class WorkspaceReleasePreflightService {
       if (candidate.planRevision !== plan.revision || candidate.preReleaseHead !== expectedRepository.revision) {
         throw new Error(`preflight reconciliation checkpoint is stale for ${repository.projectRoot}`);
       }
+      if (candidate.checkpointPhase !== "prepared") {
+        throw new Error(`preflight reconciliation requires a prepared checkpoint for ${repository.projectRoot}`);
+      }
+      if (candidate.manifest?.planRevision !== plan.revision
+          || candidate.manifest?.baseCommit !== candidate.baseCommit
+          || candidate.manifestHash !== candidate.manifest?.manifestHash) {
+        throw new Error(`preflight reconciliation manifest is stale for ${repository.projectRoot}`);
+      }
       releaseCandidates.push(candidate);
+    }
+    const current = await this.releasePlanner.plan(workspaceId);
+    if (current.revision !== plan.revision) {
+      throw new Error("release plan revision changed during preflight readback; outcome remains unknown");
+    }
+    const causallyBound = releaseCandidates.every((candidate) => (
+      String(candidate.preflightRequestId ?? "") === receipt.requestId
+    ));
+    if (!causallyBound) {
+      return {
+        workspaceId: String(workspaceId),
+        planRevision: plan.revision,
+        status: "candidate_snapshot_only",
+        originalRequestId: receipt.requestId,
+        errorClass: String(errorClass ?? "").trim() || "unknown",
+        originalOutcome: "unknown",
+        replayed: false,
+        reason: "prepared checkpoint is not causally bound to the original MCP request",
+        releaseCandidates,
+      };
     }
     return {
       workspaceId: String(workspaceId),
       planRevision: plan.revision,
       status: "reconciled",
-      originalRequestId: String(originalRequestId ?? "").trim() || null,
+      originalRequestId: receipt.requestId,
       errorClass: String(errorClass ?? "").trim() || "unknown",
       replayed: false,
       releaseCandidates,
@@ -377,7 +437,7 @@ export class WorkspaceReleasePreflightService {
 
   async #preflightLocked({
     workspaceId, expectedPlanRevision, conflictsResolved,
-    approvedLocalMainCommit, approvedOriginMainCommit, approvedRepositories,
+    approvedLocalMainCommit, approvedOriginMainCommit, approvedRepositories, requestId,
   }) {
     const plan = await this.releasePlanner.plan(workspaceId);
     const requestedPlanRevision = requiredPlanRevision(expectedPlanRevision);
@@ -523,6 +583,7 @@ export class WorkspaceReleasePreflightService {
       releaseCandidates.push(await this.releaseGitWorkspaces.prepareCandidate({
         planRevision: plan.revision,
         workspaceId,
+        preflightRequestId: requestId,
         projectRoot: repository.projectRoot,
         frozenTasks: evidence.tasks,
         approvedBaseCommit: mainAudits.find((audit) => (
