@@ -148,7 +148,7 @@ test("shipped Desktop DOM renders every durable ImageGen output and a missing pl
         itemId: "turn-image:agent:final",
         turnId: "turn-image",
         role: "agent",
-        text: "Три варианта",
+        text: "Шесть вариантов",
         attachments: [
           { id: "codex-generated-one.png", name: "Изображение", type: "image/png" },
           { id: "codex-generated-two.png", name: "Изображение", type: "image/png" },
@@ -158,6 +158,9 @@ test("shipped Desktop DOM renders every durable ImageGen output and a missing pl
             type: "image/png",
             missing: true,
           },
+          { id: "codex-generated-four.png", name: "Изображение", type: "image/png" },
+          { id: "codex-generated-five.png", name: "Изображение", type: "image/png" },
+          { id: "codex-generated-six.png", name: "Изображение", type: "image/png" },
         ],
       }]);
       window.AgentHub.setLive(taskId, {
@@ -189,7 +192,7 @@ test("shipped Desktop DOM renders every durable ImageGen output and a missing pl
 
     assert.deepEqual(result, {
       messageCount: 1,
-      attachmentCount: 3,
+      attachmentCount: 6,
       missingCount: 1,
       missingDisabled: true,
       missingLabel: "Файл недоступен",

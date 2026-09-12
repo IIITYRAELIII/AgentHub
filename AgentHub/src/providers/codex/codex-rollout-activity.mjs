@@ -551,22 +551,28 @@ function generatedImagePaths(entry) {
   return generatedImagePathsFromText(text);
 }
 
-function canonicalGeneratedImagePath(value) {
+function generatedImagePathIdentity(value) {
   const candidate = String(value ?? "").trim();
   if (!candidate) return "";
-  return /^(?:[A-Za-z]:[\\/]|\\\\)/u.test(candidate)
+  const normalized = /^(?:[A-Za-z]:[\\/]|\\\\)/u.test(candidate)
     ? path.win32.normalize(candidate)
     : path.normalize(candidate);
+  return /^[A-Za-z]:/u.test(normalized)
+    ? `${normalized[0].toLowerCase()}${normalized.slice(1)}`
+    : normalized;
 }
 
 function rememberCodexImagePaths(metadata, turnId, paths, type = "generated-path") {
   if (!turnId || !paths.length) return;
   const current = metadata.generatedImageSources.get(turnId) ?? [];
-  const known = new Set(current.map((item) => `${item.type}:${item.value}`));
+  const known = new Set(current.map((item) => (
+    `${item.type}:${generatedImagePathIdentity(item.value)}`
+  )));
   for (const rawValue of paths) {
-    const value = canonicalGeneratedImagePath(rawValue);
-    if (!value) continue;
-    const key = `${type}:${value}`;
+    const value = String(rawValue ?? "").trim();
+    const identity = generatedImagePathIdentity(value);
+    if (!value || !identity) continue;
+    const key = `${type}:${identity}`;
     if (!known.has(key)) {
       current.push({ type, value });
       known.add(key);

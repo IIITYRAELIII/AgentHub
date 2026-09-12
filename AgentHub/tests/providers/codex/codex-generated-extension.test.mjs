@@ -83,9 +83,13 @@ test('six generated images remain complete and unique across batch yield, comple
     },
   });
   const options = { maximumLineBytes: 2048, tailBytes: 128_000 };
+  const firstBatchAliases = [
+    imagePaths[0].replace(/^C:/u, 'c:').replaceAll('\\', '/'),
+    ...imagePaths.slice(1, 3),
+  ];
   await writeFile(file, jsonl([
     ...imageEvents.slice(0, 3),
-    batchOutput(imagePaths.slice(0, 3), 'functions.exec:133'),
+    batchOutput(firstBatchAliases, 'functions.exec:133'),
   ]));
   try {
     const live = await readCodexRolloutActivityOnCurrentThread(file, options);
@@ -107,7 +111,7 @@ test('six generated images remain complete and unique across batch yield, comple
     assert.deepEqual(coldReparse.generatedImageSources, { [exactTurnId]: exactExpected });
     assert.deepEqual(parseCodexRolloutActivity(jsonl([
       ...imageEvents,
-      batchOutput(imagePaths.slice(0, 3), 'functions.exec:133'),
+      batchOutput(firstBatchAliases, 'functions.exec:133'),
       batchOutput(imagePaths.slice(3), 'functions.wait:133'),
     ])).generatedImageSources, { [exactTurnId]: exactExpected });
   } finally { await unlink(file); }
