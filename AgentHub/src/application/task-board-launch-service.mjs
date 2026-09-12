@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
 
@@ -26,6 +26,7 @@ export class TaskBoardLaunchService {
     activeRuns = () => [], deferredInputs = () => [], recordEvent = null, logger = console,
   } = {}) {
     requiredMethod(taskBoard, "task");
+    requiredMethod(taskBoard, "admitPreparedStart");
     requiredMethod(taskBoard, "markStarted");
     requiredMethod(workspaceCatalog, "workspace");
     requiredMethod(workspaceCatalog, "stream");
@@ -113,6 +114,7 @@ export class TaskBoardLaunchService {
     }
     const streamId = requestedStreamId || plannedStreamId(task.id, launchRequestId);
     const streamName = requestedStreamId ? null : (requestedStreamName || taskDisplayText(task)).slice(0, 80);
+    const attemptId = randomUUID();
     const prepared = await this.#mutation(() => this.taskBoard.prepareStart({
       id: task.id,
       workspaceId: workspace.id,
@@ -121,6 +123,12 @@ export class TaskBoardLaunchService {
       requestId: launchRequestId,
       reassign,
       expectedRevision: task.revision,
+    }), launchRequestId);
+    const admitted = await this.#mutation(() => this.taskBoard.admitPreparedStart({
+      id: prepared.id,
+      requestId: launchRequestId,
+      attemptId,
+      expectedRevision: prepared.revision,
     }), launchRequestId);
     let stream = this.workspaceCatalog.stream(streamId);
     if (!stream) {
@@ -131,14 +139,22 @@ export class TaskBoardLaunchService {
         stream = await this.workspaceCatalog.createStream({
           id: streamId,
           workspaceId: workspace.id,
-          name: prepared.startStreamName || streamName,
+          name: admitted.startStreamName || streamName,
           settings: params.settings ?? {},
         });
       } catch (error) {
-        await this.#mutation(
-          () => this.taskBoard.cancelPreparedStart({ id: task.id, requestId: launchRequestId, reassign }),
-          launchRequestId,
-        );
+        if (!this.workspaceCatalog.stream(streamId)) {
+          await this.#mutation(
+            () => this.taskBoard.cancelPreparedStart({
+              id: task.id,
+              requestId: launchRequestId,
+              reassign,
+              attemptId,
+              expectedRevision: admitted.revision,
+            }),
+            launchRequestId,
+          );
+        }
         throw error;
       }
     }
@@ -168,22 +184,23 @@ export class TaskBoardLaunchService {
     }
     const delivery = await this.sendMessage({
       text: String(params.message ?? ""),
-      displayText: `Task: ${taskDisplayTitle(prepared)}`,
-      taskReferences: [{ taskId: prepared.id, intent: "start" }],
+      displayText: `Task: ${taskDisplayTitle(admitted)}`,
+      taskReferences: [{ taskId: admitted.id, intent: "start" }],
       streamId: target.streamId,
       provider: target.provider,
       threadId: target.threadId,
       projectRoot: target.projectRoot,
       clientUserMessageId: String(params.clientUserMessageId ?? context?.commandId ?? "").trim()
-        || `board-task:${prepared.id}:${launchRequestId}`,
+        || `board-task:${admitted.id}:${launchRequestId}`,
       followUpMode: String(params.followUpMode ?? "").trim(),
     }, context);
     const started = await this.#mutation(() => this.taskBoard.markStarted({
-      id: prepared.id,
+      id: admitted.id,
       workspaceId: workspace.id,
       streamId: target.streamId,
       requestId: launchRequestId,
-      ...(prepared.revision == null ? {} : { expectedRevision: prepared.revision }),
+      attemptId,
+      ...(admitted.revision == null ? {} : { expectedRevision: admitted.revision }),
     }), launchRequestId);
     return {
       task: started,

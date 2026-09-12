@@ -15,6 +15,26 @@ their next managed preparation renames the branch.
 be made there. Provider turn identity remains journal metadata and is not a
 source of file ownership.
 
+Task launch persists its request owner, planned destination and row-revision CAS
+before creating a Stream, Thread or delivery. While a new destination is not yet
+a catalog member, the awaited `task.starting` event is Workspace-scoped, carries
+the destination in its payload and deduplicates by Task/request identity. A
+rejected event therefore leaves an exact prepared launch without producing the
+downstream effects. Startup never launches it automatically; the original MCP
+receipt becomes `unknown` rather than a replay lease. An Architect may explicitly
+cancel it only with exact caller, Task owner and revision evidence plus proof that
+the planned Stream and admitted delivery content do not exist. Cancellation
+first wins a durable per-Task `prepared -> cancelling` CAS against the launch
+runner's `prepared -> admitted(attemptId)` CAS. Only the admitted attempt may
+enter Stream, Thread or delivery effects. An already admitted launch makes
+cancellation fail; a successful cancellation fence makes every old or concurrent
+runner fail admission before effects. Cancellation then terminalizes the
+original receipt before clearing launch ownership. These SQLite CAS transitions
+arbitrate across connections/processes without a global or timeout lock. Claiming a
+still-`starting` Task is rejected; after cancellation the Task can follow the
+normal existing-Stream start or claim path without the old request taking it
+back.
+
 Each managed Task worktree enables sparse checkout at the Git boundary before
 it is returned. When the selected project root is a strict descendant of the
 source worktree, cone mode uses that exact repository-relative subtree as its

@@ -240,6 +240,8 @@ const approvalsBox = document.querySelector("[data-approvals]");
 const queueBox = document.querySelector("[data-queue]");
 
 const settingsPanel = document.querySelector("[data-settings-panel]");
+const quickMessageActionModeSelect = document.querySelector("[data-quick-message-action-mode]");
+const quickMessageActionModeNote = document.querySelector("[data-quick-message-action-mode-note]");
 const settingsGlobalQuickMessages = document.querySelector("[data-settings-global-quick-messages]");
 const settingsGlobalQuickMessagesCount = document.querySelector("[data-settings-global-quick-messages-count]");
 const bugReportToggle = document.querySelector("[data-bug-report-toggle]");
@@ -2481,13 +2483,86 @@ function quickMessagesForScope(scope, scopeId = "") {
 
 function quickMessagesCountText(entries) {
   const count = window.AgentHubStreamTabs.normalizeQuickMessages({ global: entries }).global.length;
-  return count ? window.AgentHubStreamTabs.quickMessagesCountLabel(count) : "Не заданы";
+  return window.AgentHubStreamTabs.quickMessagesCountLabel(count);
+}
+
+const quickMessageEditorStates = new Map();
+const quickMessageEditorBindings = new WeakMap();
+const quickMessageMutations = new Map();
+const quickMessagePendingMutationIds = new Set();
+let quickMessageEditorNextId = 0;
+let quickMessageMutationNextId = 0;
+
+function quickMessageOwnerKey(scope, scopeId = "") {
+  const normalizedScope = scope === "global" ? "global" : scope === "workspace" ? "workspace" : "stream";
+  const normalizedId = normalizedScope === "global" ? "" : String(scopeId ?? "").trim();
+  return `${normalizedScope}\0${normalizedId}`;
+}
+
+function quickMessageEditorItem(entry, id = "") {
+  return {
+    id: id || `prompt-template-${++quickMessageEditorNextId}`,
+    title: String(entry?.title ?? entry?.label ?? entry?.text ?? ""),
+    text: String(entry?.text ?? ""),
+  };
+}
+
+function quickMessageEditorSignature(entries) {
+  return JSON.stringify((Array.isArray(entries) ? entries : []).map((entry) => ({
+    title: String(entry?.title ?? entry?.label ?? entry?.text ?? "").trim(),
+    text: String(entry?.text ?? "").trim(),
+  })).filter((entry) => entry.title || entry.text));
+}
+
+function quickMessageEditorState(container, ownerKey, entries = []) {
+  quickMessageEditorBindings.set(container, ownerKey);
+  let editorState = quickMessageEditorStates.get(ownerKey);
+  if (!editorState) {
+    const items = (Array.isArray(entries) ? entries : []).map((entry) => quickMessageEditorItem(entry));
+    editorState = {
+      items,
+      openId: items[0]?.id ?? "",
+      projectedSignature: quickMessageEditorSignature(entries),
+      keepDraft: false,
+      error: "",
+      disabled: false,
+    };
+    quickMessageEditorStates.set(ownerKey, editorState);
+  }
+  return editorState;
+}
+
+function boundQuickMessageEditorState(container) {
+  const ownerKey = quickMessageEditorBindings.get(container);
+  return ownerKey ? quickMessageEditorStates.get(ownerKey) : null;
+}
+
+function reconcileQuickMessageEditorState(editorState, entries) {
+  const values = Array.isArray(entries) ? entries : [];
+  const signature = quickMessageEditorSignature(values);
+  if (editorState.keepDraft || signature === editorState.projectedSignature) return;
+  const unused = new Set(editorState.items);
+  editorState.items = values.map((entry, index) => {
+    const normalized = quickMessageEditorItem(entry, "candidate");
+    const exact = [...unused].find((item) => (
+      item.title.trim() === normalized.title.trim() && item.text.trim() === normalized.text.trim()
+    ));
+    const positional = unused.has(editorState.items[index]) ? editorState.items[index] : null;
+    const previous = exact ?? positional;
+    if (previous) unused.delete(previous);
+    return quickMessageEditorItem(entry, previous?.id);
+  });
+  editorState.projectedSignature = signature;
+  if (!editorState.items.some((item) => item.id === editorState.openId)) {
+    editorState.openId = editorState.items[0]?.id ?? "";
+  }
 }
 
 function quickMessageEditorEntries(container) {
-  return [...(container?.querySelectorAll("[data-quick-message-row]") ?? [])].map((row) => ({
-    title: String(row.querySelector("[data-quick-message-title]")?.value ?? "").trim(),
-    text: String(row.querySelector("[data-quick-message-text]")?.value ?? "").trim(),
+  const editorState = boundQuickMessageEditorState(container);
+  return (editorState?.items ?? []).map(({ title, text }) => ({
+    title: String(title).trim(),
+    text: String(text).trim(),
   }));
 }
 
@@ -2495,58 +2570,196 @@ function validQuickMessageEditorEntries(container) {
   return quickMessageEditorEntries(container).filter((entry) => entry.title || entry.text);
 }
 
-function quickMessageEditorRow(entry, index, count, disabled) {
-  return el("div", { class: "quick-message-editor-row", "data-quick-message-row": String(index) }, [
-    el("input", {
-      type: "text",
-      maxlength: "64",
-      value: entry?.title ?? entry?.label ?? entry?.text ?? "",
-      placeholder: "Заголовок",
-      "aria-label": `Заголовок Prompt-шаблона ${index + 1}`,
-      "data-quick-message-title": "",
-      disabled,
-    }),
-    el("textarea", {
-      rows: "2",
-      maxlength: "4000",
-      text: entry?.text ?? "",
-      placeholder: "Текст",
-      "aria-label": `Текст Prompt-шаблона ${index + 1}`,
-      "data-quick-message-text": "",
-      disabled,
-    }),
-    el("span", { class: "quick-message-editor-actions" }, [
+function quickMessageEditorIcon(name, className = "") {
+  return window.AgentHubStreamTabs.createPhosphorIcon(document, name, className);
+}
+
+function quickMessageEditorActionButton({ action, icon, label = "", title, disabled = false, className = "" }) {
+  return el("button", {
+    type: "button",
+    class: `quick-message-editor-action ${className}`.trim(),
+    title,
+    "aria-label": title,
+    "data-quick-message-action": action,
+    disabled,
+  }, [
+    quickMessageEditorIcon(icon, "quick-message-editor-action-icon"),
+    label ? el("span", { text: label }) : null,
+  ].filter(Boolean));
+}
+
+function quickMessageEditorRow(entry, index, count, openId, disabled) {
+  const expanded = entry.id === openId;
+  const panelId = `${entry.id}-panel`;
+  const title = entry.title.trim() || "Без названия";
+  const preview = entry.text.trim() || "Пустой шаблон";
+  return el("div", {
+    class: `quick-message-editor-row${expanded ? " is-open" : ""}`,
+    "data-quick-message-row": entry.id,
+    "data-quick-message-index": String(index),
+  }, [
+    el("div", { class: "quick-message-editor-summary-row" }, [
       el("button", {
-        type: "button", class: "chip-button compact", text: "↑", title: "Поднять",
-        "aria-label": `Поднять Prompt-шаблон ${index + 1}`,
-        "data-quick-message-action": "up", disabled: disabled || index === 0,
+        type: "button",
+        class: "quick-message-editor-summary",
+        "data-quick-message-action": "toggle",
+        "aria-expanded": String(expanded),
+        "aria-controls": panelId,
+        disabled,
+      }, [
+        el("span", { class: "quick-message-editor-number", text: String(index + 1).padStart(2, "0") }),
+        el("span", { class: "quick-message-editor-title", text: title }),
+        el("span", { class: "quick-message-editor-preview", text: preview }),
+      ]),
+      el("div", { class: "quick-message-editor-order", "aria-label": `Порядок шаблона ${index + 1}` }, [
+        quickMessageEditorActionButton({
+          action: "up", icon: "arrow-up", title: `Переместить шаблон ${index + 1} выше`,
+          disabled: disabled || index === 0,
+        }),
+        quickMessageEditorActionButton({
+          action: "down", icon: "arrow-down", title: `Переместить шаблон ${index + 1} ниже`,
+          disabled: disabled || index === count - 1,
+        }),
+      ]),
+      quickMessageEditorActionButton({
+        action: "toggle",
+        icon: expanded ? "caret-down" : "caret-right",
+        title: expanded ? `Свернуть шаблон ${index + 1}` : `Развернуть шаблон ${index + 1}`,
+        disabled,
+        className: "toggle",
       }),
-      el("button", {
-        type: "button", class: "chip-button compact", text: "↓", title: "Опустить",
-        "aria-label": `Опустить Prompt-шаблон ${index + 1}`,
-        "data-quick-message-action": "down", disabled: disabled || index === count - 1,
+    ]),
+    el("div", {
+      class: "quick-message-editor-details",
+      id: panelId,
+      hidden: !expanded,
+    }, [
+      el("input", {
+        type: "text",
+        maxlength: "64",
+        value: entry.title,
+        placeholder: "Название шаблона",
+        "aria-label": `Название prompt-шаблона ${index + 1}`,
+        "data-quick-message-title": "",
+        disabled,
       }),
-      el("button", {
-        type: "button", class: "chip-button compact danger", text: "×", title: "Удалить",
-        "aria-label": `Удалить Prompt-шаблон ${index + 1}`,
-        "data-quick-message-action": "delete", disabled,
+      el("textarea", {
+        rows: "5",
+        maxlength: "4000",
+        text: entry.text,
+        placeholder: "Текст промпта…",
+        "aria-label": `Текст prompt-шаблона ${index + 1}`,
+        "data-quick-message-text": "",
+        disabled,
       }),
+      el("div", { class: "quick-message-editor-footer" }, [
+        el("div", { class: "quick-message-editor-footer-order" }, [
+          quickMessageEditorActionButton({
+            action: "up", icon: "arrow-up", label: "выше", title: `Переместить шаблон ${index + 1} выше`,
+            disabled: disabled || index === 0,
+          }),
+          quickMessageEditorActionButton({
+            action: "down", icon: "arrow-down", label: "ниже", title: `Переместить шаблон ${index + 1} ниже`,
+            disabled: disabled || index === count - 1,
+          }),
+          quickMessageEditorActionButton({
+            action: "duplicate", icon: "copy", label: "Дублировать", title: `Дублировать шаблон ${index + 1}`,
+            disabled: disabled || count >= 20,
+          }),
+        ]),
+        quickMessageEditorActionButton({
+          action: "delete", icon: "trash", label: "Удалить", title: `Удалить шаблон ${index + 1}`,
+          disabled, className: "danger",
+        }),
+      ]),
     ]),
   ]);
 }
 
-function renderQuickMessagesEditor(container, entries, disabled = false) {
-  if (!container) return;
-  const values = Array.isArray(entries) ? entries : [];
-  const rows = container.querySelector("[data-quick-message-rows]");
-  rows?.replaceChildren(...values.map((entry, index) => (
-    quickMessageEditorRow(entry, index, values.length, disabled)
-  )));
-  const add = container.querySelector("[data-quick-message-add]");
-  if (add) add.disabled = disabled || values.length >= 20;
+function quickMessageEditorFocus(container) {
+  const active = document.activeElement;
+  const row = active?.closest?.("[data-quick-message-row]");
+  if (!row || !container.contains(active)) return null;
+  return {
+    id: row.dataset.quickMessageRow,
+    action: active.dataset.quickMessageAction ?? "",
+    field: active.hasAttribute("data-quick-message-title")
+      ? "title"
+      : active.hasAttribute("data-quick-message-text") ? "text" : "",
+    start: active.selectionStart,
+    end: active.selectionEnd,
+  };
 }
 
-function saveQuickMessagesForScope(scope, scopeId, entries, { rerender = true } = {}) {
+function restoreQuickMessageEditorFocus(container, focus) {
+  if (!focus?.id) return;
+  const row = [...container.querySelectorAll("[data-quick-message-row]")]
+    .find((candidate) => candidate.dataset.quickMessageRow === focus.id);
+  const target = focus.field
+    ? row?.querySelector(`[data-quick-message-${focus.field}]`)
+    : row?.querySelector(`[data-quick-message-action="${focus.action}"]`);
+  if (!target || target.disabled) return;
+  target.focus({ preventScroll: true });
+  if (focus.field && Number.isInteger(focus.start) && Number.isInteger(focus.end)) {
+    target.setSelectionRange?.(focus.start, focus.end);
+  }
+}
+
+function setQuickMessageEditorCount(container, count) {
+  const output = container?.closest(".quick-messages-editor")?.querySelector(".setting-value");
+  if (output) output.textContent = window.AgentHubStreamTabs.quickMessagesCountLabel(count);
+}
+
+function paintQuickMessagesEditor(container, disabled = false, requestedFocus = null) {
+  const editorState = boundQuickMessageEditorState(container);
+  if (!container || !editorState) return;
+  const preservedFocus = requestedFocus ?? quickMessageEditorFocus(container);
+  editorState.disabled = disabled;
+  if (editorState.items.length && !editorState.items.some((item) => item.id === editorState.openId)) {
+    editorState.openId = editorState.items[0].id;
+  }
+  const rows = container.querySelector("[data-quick-message-rows]");
+  rows?.replaceChildren(...editorState.items.map((entry, index) => (
+    quickMessageEditorRow(entry, index, editorState.items.length, editorState.openId, disabled)
+  )));
+  const error = container.querySelector("[data-quick-message-error]");
+  if (error) {
+    error.textContent = editorState.error;
+    error.hidden = !editorState.error;
+  }
+  const add = container.querySelector("[data-quick-message-add]");
+  if (add) {
+    add.disabled = disabled || editorState.items.length >= 20;
+    add.replaceChildren(
+      quickMessageEditorIcon("plus", "quick-message-editor-add-icon"),
+      el("span", { text: "Добавить шаблон" }),
+    );
+  }
+  container.setAttribute("aria-busy", String(disabled));
+  restoreQuickMessageEditorFocus(container, preservedFocus);
+}
+
+function renderQuickMessagesEditor(container, scope, scopeId, entries, disabled = false) {
+  if (!container) return;
+  const ownerKey = quickMessageOwnerKey(scope, scopeId);
+  const editorState = quickMessageEditorState(container, ownerKey, entries);
+  reconcileQuickMessageEditorState(editorState, entries);
+  setQuickMessageEditorCount(container, editorState.items.length);
+  paintQuickMessagesEditor(container, disabled);
+}
+
+function saveQuickMessagesForScope(scope, scopeId, entries, { rerender = true, container = null } = {}) {
+  const ownerKey = quickMessageOwnerKey(scope, scopeId);
+  if (container && quickMessageEditorBindings.get(container) !== ownerKey) return;
+  const editorState = container ? boundQuickMessageEditorState(container) : quickMessageEditorStates.get(ownerKey);
+  const mutationId = `quick-messages-${++quickMessageMutationNextId}`;
+  const backup = window.AgentHubStreamTabs.normalizeQuickMessages(state.selection.quickMessages);
+  if (editorState) {
+    editorState.error = "";
+    editorState.keepDraft = false;
+    editorState.pendingMutationId = mutationId;
+    editorState.projectedSignature = quickMessageEditorSignature(entries);
+  }
   const quickMessages = window.AgentHubStreamTabs.setQuickMessagesForScope(
     state.selection,
     scope,
@@ -2554,41 +2767,88 @@ function saveQuickMessagesForScope(scope, scopeId, entries, { rerender = true } 
     entries,
   );
   state.selection = { ...state.selection, quickMessages };
+  quickMessageMutations.set(mutationId, { ownerKey, backup, rejected: false });
   renderComposerQuickMessages();
   if (rerender) renderQuickMessageSettingsControls();
-  emit("selection:set", { key: "quickMessages", value: quickMessages });
+  emit("selection:set", { key: "quickMessages", value: quickMessages, mutationId });
 }
 
 function handleQuickMessageEditorClick(event, container, scope, scopeId) {
+  const ownerKey = quickMessageOwnerKey(scope, scopeId);
+  if (quickMessageEditorBindings.get(container) !== ownerKey) return;
+  const editorState = boundQuickMessageEditorState(container);
+  if (!editorState || editorState.disabled) return;
   const add = event.target.closest("[data-quick-message-add]");
   if (add) {
-    const entries = quickMessageEditorEntries(container);
-    if (entries.length >= 20) return;
-    renderQuickMessagesEditor(container, [...entries, { title: "", text: "" }]);
-    container.querySelector("[data-quick-message-row]:last-child [data-quick-message-title]")?.focus();
+    if (editorState.items.length >= 20) return;
+    const item = quickMessageEditorItem({ title: "", text: "" });
+    editorState.items.push(item);
+    editorState.openId = item.id;
+    setQuickMessageEditorCount(container, editorState.items.length);
+    paintQuickMessagesEditor(container, false, { id: item.id, field: "title" });
     return;
   }
   const action = event.target.closest("[data-quick-message-action]");
   const row = action?.closest("[data-quick-message-row]");
   if (!action || !row) return;
-  const entries = quickMessageEditorEntries(container);
-  const index = Number(row.dataset.quickMessageRow);
-  if (!Number.isSafeInteger(index) || index < 0 || index >= entries.length) return;
-  if (action.dataset.quickMessageAction === "delete") entries.splice(index, 1);
-  else {
-    const nextIndex = action.dataset.quickMessageAction === "up" ? index - 1 : index + 1;
-    if (nextIndex < 0 || nextIndex >= entries.length) return;
-    [entries[index], entries[nextIndex]] = [entries[nextIndex], entries[index]];
+  const index = editorState.items.findIndex((item) => item.id === row.dataset.quickMessageRow);
+  if (index < 0) return;
+  const kind = action.dataset.quickMessageAction;
+  if (kind === "toggle") {
+    editorState.openId = editorState.items[index].id;
+    paintQuickMessagesEditor(container, false, { id: editorState.openId, action: "toggle" });
+    return;
   }
-  saveQuickMessagesForScope(scope, scopeId, entries);
+  let focus = { id: editorState.items[index].id, action: kind };
+  if (kind === "delete") {
+    editorState.items.splice(index, 1);
+    editorState.openId = editorState.items[Math.min(index, editorState.items.length - 1)]?.id ?? "";
+    focus = editorState.openId ? { id: editorState.openId, action: "toggle" } : null;
+  } else if (kind === "duplicate") {
+    if (editorState.items.length >= 20) return;
+    const original = editorState.items[index];
+    const copy = quickMessageEditorItem({
+      title: `${original.title.trim() || "Без названия"} (копия)`,
+      text: original.text,
+    });
+    editorState.items.splice(index + 1, 0, copy);
+    editorState.openId = copy.id;
+    focus = { id: copy.id, field: "title" };
+  } else {
+    const nextIndex = kind === "up" ? index - 1 : index + 1;
+    if (nextIndex < 0 || nextIndex >= editorState.items.length) return;
+    [editorState.items[index], editorState.items[nextIndex]] = [
+      editorState.items[nextIndex], editorState.items[index],
+    ];
+  }
+  setQuickMessageEditorCount(container, editorState.items.length);
+  paintQuickMessagesEditor(container, false, focus);
+  saveQuickMessagesForScope(scope, scopeId, validQuickMessageEditorEntries(container), {
+    container,
+    rerender: false,
+  });
+}
+
+function handleQuickMessageEditorInput(event, container) {
+  const field = event.target.closest("[data-quick-message-title], [data-quick-message-text]");
+  const row = field?.closest("[data-quick-message-row]");
+  const editorState = boundQuickMessageEditorState(container);
+  const item = editorState?.items.find((candidate) => candidate.id === row?.dataset.quickMessageRow);
+  if (!field || !item) return;
+  if (field.hasAttribute("data-quick-message-title")) item.title = field.value;
+  else item.text = field.value;
+  editorState.error = "";
+  const summary = row.querySelector(".quick-message-editor-title");
+  const preview = row.querySelector(".quick-message-editor-preview");
+  if (summary) summary.textContent = item.title.trim() || "Без названия";
+  if (preview) preview.textContent = item.text.trim() || "Пустой шаблон";
 }
 
 function handleQuickMessageEditorChange(container, scope, scopeId) {
+  if (quickMessageEditorBindings.get(container) !== quickMessageOwnerKey(scope, scopeId)) return;
   const entries = validQuickMessageEditorEntries(container);
-  saveQuickMessagesForScope(scope, scopeId, entries, { rerender: false });
-  const count = entries.length;
-  const output = container.querySelector(".setting-value");
-  if (output) output.textContent = count ? window.AgentHubStreamTabs.quickMessagesCountLabel(count) : "Не заданы";
+  saveQuickMessagesForScope(scope, scopeId, entries, { rerender: false, container });
+  setQuickMessageEditorCount(container, boundQuickMessageEditorState(container)?.items.length ?? entries.length);
 }
 
 function renderGlobalQuickMessagesSettings() {
@@ -2599,6 +2859,8 @@ function renderGlobalQuickMessagesSettings() {
   }
   renderQuickMessagesEditor(
     settingsGlobalQuickMessages,
+    "global",
+    "",
     entries,
     pending,
   );
@@ -2616,6 +2878,8 @@ function renderWorkspaceCardQuickMessages(workspaceId = workspaceCardId) {
   }
   renderQuickMessagesEditor(
     workspaceCardQuickMessages,
+    "workspace",
+    id,
     createMode ? [] : quickMessagesForScope("workspace", id),
     pending || createMode,
   );
@@ -2632,6 +2896,8 @@ function renderStreamQuickMessagesSettings() {
   }
   renderQuickMessagesEditor(
     dialogStreamQuickMessages,
+    "stream",
+    streamId,
     streamId ? quickMessagesForScope("stream", streamId) : [],
     state.pendingSelections.has("quickMessages") || !streamId,
   );
@@ -2643,13 +2909,64 @@ function renderQuickMessageSettingsControls() {
   renderStreamQuickMessagesSettings();
 }
 
+function rejectQuickMessagesSelection(mutationId = "") {
+  const mutation = quickMessageMutations.get(String(mutationId ?? ""));
+  if (!mutation) return;
+  state.selection = { ...state.selection, quickMessages: mutation.backup };
+  const editorState = quickMessageEditorStates.get(mutation.ownerKey);
+  if (editorState?.pendingMutationId === mutationId) {
+    editorState.keepDraft = true;
+    editorState.error = "Не удалось сохранить. Черновик оставлен в редакторе.";
+  }
+  mutation.rejected = true;
+  renderComposerQuickMessages();
+  renderQuickMessageSettingsControls();
+}
+
+function settleQuickMessagesSelection(mutationId = "") {
+  const key = String(mutationId ?? "");
+  const mutation = quickMessageMutations.get(key);
+  if (!mutation) return;
+  const editorState = quickMessageEditorStates.get(mutation.ownerKey);
+  if (editorState?.pendingMutationId === key) {
+    if (!mutation.rejected) {
+      editorState.keepDraft = false;
+      editorState.error = "";
+    }
+    editorState.pendingMutationId = "";
+  }
+  quickMessageMutations.delete(key);
+}
+
 function quickMessageScopeLabel(scope) {
   return ({ global: "G", workspace: "W", stream: "S" })[scope] ?? "S";
+}
+
+function quickMessageActionMode() {
+  return state.selection.quickMessageActionMode === "send" ? "send" : "insert";
+}
+
+function quickMessageAction(mode, inverted = false) {
+  const primary = mode === "send" ? "send" : "insert";
+  return inverted ? (primary === "send" ? "insert" : "send") : primary;
+}
+
+function quickMessageActionCopy(mode) {
+  return mode === "send"
+    ? {
+        note: "Ctrl + нажатие — вставить в поле.",
+        title: "Отправить сразу. Ctrl + нажатие — вставить в поле.",
+      }
+    : {
+        note: "Ctrl + нажатие — отправить.",
+        title: "Вставить в поле. Ctrl + нажатие — отправить.",
+      };
 }
 
 function renderComposerQuickMessages() {
   if (!composerQuickMessages) return;
   const entries = quickMessageEntriesForCurrentTask();
+  const actionCopy = quickMessageActionCopy(quickMessageActionMode());
   composerQuickMessages.hidden = entries.length === 0;
   composerQuickMessages.replaceChildren(...entries.map((entry, index) => {
     const button = el("button", {
@@ -2657,7 +2974,8 @@ function renderComposerQuickMessages() {
       class: "composer-quick-message",
       "data-quick-message-index": String(index),
       "data-quick-message-scope": entry.scope,
-      title: entry.text,
+      title: `${entry.title}. ${actionCopy.title}`,
+      "aria-label": `${entry.title}. ${actionCopy.title}`,
       disabled: Boolean(pendingComposerRequest),
     }, [
       el("span", { class: "composer-quick-message-scope", text: quickMessageScopeLabel(entry.scope) }),
@@ -2666,6 +2984,17 @@ function renderComposerQuickMessages() {
     button.__agentHubQuickMessage = entry;
     return button;
   }));
+}
+
+function renderQuickMessageActionModeSetting() {
+  const mode = quickMessageActionMode();
+  const pending = state.pendingSelections.has("quickMessageActionMode");
+  if (quickMessageActionModeSelect) {
+    quickMessageActionModeSelect.value = mode;
+    quickMessageActionModeSelect.disabled = pending;
+    quickMessageActionModeSelect.setAttribute("aria-busy", String(pending));
+  }
+  if (quickMessageActionModeNote) quickMessageActionModeNote.textContent = quickMessageActionCopy(mode).note;
 }
 
 function reconcileOpenStreams(workspaceId, streams) {
@@ -3697,6 +4026,9 @@ function bindChatScrollDown(scroll, button) {
   if (!scroll || !button || chatScrollControllers.has(scroll)) return;
   chatScrollControllers.set(scroll, new ChatScrollController(scroll, button, {
     onNearTop: scroll === chatScroll ? () => requestOlderHistory() : null,
+    onReturnBottom: scroll === chatScroll
+      ? () => emit("history:return-bottom", { taskId: state.selectedId })
+      : null,
   }));
 }
 
@@ -5399,6 +5731,8 @@ function openAttachmentViewer({ dataUrl = "", name = "Изображение", g
     if (typeof attachmentViewer.showModal === "function") attachmentViewer.showModal();
     else attachmentViewer.setAttribute("open", "");
   }
+  modalOverlays?.activateOverlay(attachmentViewer, attachmentViewerReturnFocus);
+  modalOverlays?.activateOverlay(attachmentViewerStage, attachmentViewerReturnFocus);
   syncAttachmentViewerControls();
   root.dataset.overlay = "attachment";
   attachmentViewer.focus({ preventScroll: true });
@@ -5478,6 +5812,8 @@ function moveAttachmentViewer(direction) {
 
 function closeAttachmentViewer() {
   if (!attachmentViewerOpen) return false;
+  modalOverlays?.deactivateOverlay(attachmentViewerStage);
+  modalOverlays?.deactivateOverlay(attachmentViewer);
   disposeAttachmentViewerResource();
   attachmentViewerOpen = false;
   attachmentViewerGeneration += 1;
@@ -5520,16 +5856,14 @@ function navigateBack() {
 attachmentViewerClose.addEventListener("click", closeAttachmentViewer);
 attachmentViewerPrevious.addEventListener("click", () => moveAttachmentViewer(-1));
 attachmentViewerNext.addEventListener("click", () => moveAttachmentViewer(1));
-attachmentViewer.addEventListener("click", (event) => {
-  if (resourceInteractions.shouldDismissViewer(
-    event.target,
-    attachmentViewer,
-    attachmentViewerStage,
-  )) closeAttachmentViewer();
+modalOverlays?.installDismissibleOverlay({
+  dialog: attachmentViewer,
+  content: attachmentViewerStage,
+  close: closeAttachmentViewer,
 });
-attachmentViewer.addEventListener("cancel", (event) => {
-  event.preventDefault();
-  closeAttachmentViewer();
+modalOverlays?.installScrimDismiss({
+  scrim: attachmentViewerStage,
+  close: closeAttachmentViewer,
 });
 window.addEventListener("keydown", (event) => {
   if (!attachmentViewerOpen) return;
@@ -7614,7 +7948,7 @@ composerQuickMessages?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-quick-message-index]");
   if (!button || button.disabled) return;
   const entry = button.__agentHubQuickMessage;
-  if (event.ctrlKey) submitQuickMessage(entry);
+  if (quickMessageAction(quickMessageActionMode(), event.ctrlKey) === "send") submitQuickMessage(entry);
   else insertQuickMessage(entry);
 });
 
@@ -8661,6 +8995,8 @@ const queueComposerTransfer = window.AgentHubQueueComposerTransfer.create({
 
 /* ============================================= панель настроек и селекторы */
 
+let settingsPanelReturnFocus = null;
+
 function setDialogSettingsOpen(open) {
   const task = currentTask();
   if (!open && task?.draftStream) {
@@ -8692,9 +9028,11 @@ function toggleDialogSettings() {
 }
 
 function openPanel() {
+  if (settingsPanel.hidden) settingsPanelReturnFocus = document.activeElement;
   renderGlobalQuickMessagesSettings();
   settingsPanel.hidden = false;
   panelScrim.hidden = false;
+  modalOverlays?.activateOverlay(panelScrim, settingsPanelReturnFocus);
   if (limitsState.status === "idle") requestLimits(limitsState.range);
   emit("devices:refresh");
   requestAnimationFrame(() => {
@@ -8808,6 +9146,9 @@ document.addEventListener("contextmenu", (event) => {
 workspaceCardQuickMessages?.addEventListener("click", (event) => {
   if (!workspaceCardId) return;
   handleQuickMessageEditorClick(event, workspaceCardQuickMessages, "workspace", workspaceCardId);
+});
+workspaceCardQuickMessages?.addEventListener("input", (event) => {
+  handleQuickMessageEditorInput(event, workspaceCardQuickMessages);
 });
 workspaceCardQuickMessages?.addEventListener("change", () => {
   if (!workspaceCardId) return;
@@ -9060,12 +9401,16 @@ function trustedDeviceRow(device, revoked) {
 }
 
 function closePanel() {
+  const returnFocus = settingsPanelReturnFocus;
+  settingsPanelReturnFocus = null;
+  modalOverlays?.deactivateOverlay(panelScrim);
   settingsPanel.classList.remove("open");
   panelScrim.classList.remove("open");
   window.setTimeout(() => {
     settingsPanel.hidden = true;
     panelScrim.hidden = true;
   }, 220);
+  if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
 }
 
 for (const opener of document.querySelectorAll("[data-panel-open='settings']")) {
@@ -9074,10 +9419,11 @@ for (const opener of document.querySelectorAll("[data-panel-open='settings']")) 
 for (const closer of document.querySelectorAll("[data-panel-close]")) {
   closer.addEventListener("click", closePanel);
 }
-panelScrim.addEventListener("click", closePanel);
+modalOverlays?.installScrimDismiss({ scrim: panelScrim, close: closePanel });
 
 function renderOptions() {
   renderDialogSettings();
+  renderQuickMessageActionModeSetting();
   renderGlobalQuickMessagesSettings();
   renderTurnTimeModeOptions();
   renderComparisonViewModeOptions();
@@ -9293,7 +9639,20 @@ settingsPanel?.addEventListener("click", (event) => {
   handleQuickMessageEditorClick(event, settingsGlobalQuickMessages, "global", "");
 });
 
+settingsPanel?.addEventListener("input", (event) => {
+  handleQuickMessageEditorInput(event, settingsGlobalQuickMessages);
+});
+
 settingsPanel?.addEventListener("change", (event) => {
+  const actionMode = event.target.closest("[data-quick-message-action-mode]");
+  if (actionMode) {
+    const value = actionMode.value === "send" ? "send" : "insert";
+    state.selection = { ...state.selection, quickMessageActionMode: value };
+    renderQuickMessageActionModeSetting();
+    renderComposerQuickMessages();
+    emit("selection:set", { key: "quickMessageActionMode", value });
+    return;
+  }
   if (!event.target.closest("[data-quick-message-title], [data-quick-message-text]")) return;
   handleQuickMessageEditorChange(settingsGlobalQuickMessages, "global", "");
 });
@@ -9357,6 +9716,10 @@ dialogSettings.addEventListener("click", (event) => {
   const chip = event.target.closest("[data-select-group]");
   if (!chip) return;
   selectDialogSetting(chip.dataset.selectGroup, chip.dataset.selectValue);
+});
+
+dialogSettings.addEventListener("input", (event) => {
+  handleQuickMessageEditorInput(event, dialogStreamQuickMessages);
 });
 
 dialogSettings.addEventListener("change", (event) => {
@@ -9843,9 +10206,11 @@ document.querySelector("[data-server-config-discard]")
 
 let dialogResolve = null;
 let dialogActiveInput = dialogInput;
+let dialogReturnFocus = null;
 
 function askText({ title, value = "", multiline = false }) {
   return new Promise((resolve) => {
+    if (dialog.hidden) dialogReturnFocus = document.activeElement;
     dialogResolve = resolve;
     dialogTitle.textContent = title;
     dialogActiveInput = multiline ? dialogTextarea : dialogInput;
@@ -9854,16 +10219,21 @@ function askText({ title, value = "", multiline = false }) {
     dialogActiveInput.value = value;
     dialog.hidden = false;
     dialogScrim.hidden = false;
+    modalOverlays?.activateOverlay(dialogScrim, dialogReturnFocus);
     requestAnimationFrame(() => dialogActiveInput.focus());
   });
 }
 
 function closeDialog(result) {
+  const returnFocus = dialogReturnFocus;
+  dialogReturnFocus = null;
+  modalOverlays?.deactivateOverlay(dialogScrim);
   dialog.hidden = true;
   dialogScrim.hidden = true;
   const resolve = dialogResolve;
   dialogResolve = null;
   resolve?.(result);
+  if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
 }
 
 dialogForm.addEventListener("submit", (event) => {
@@ -10024,9 +10394,6 @@ async function handleAction(action, trigger) {
   if (overflow) overflow.open = false;
 }
 
-contextUsageModal?.addEventListener("click", (event) => {
-  if (modalOverlays?.isDialogBackdropClick(event, contextUsageModal)) closeContextUsage();
-});
 document.addEventListener("pointerdown", (event) => {
   if (!contextUsageModal?.open) return;
   if (contextUsageModal.contains(event.target) || contextUsageButton?.contains(event.target)) return;
@@ -10490,7 +10857,7 @@ const AgentHub = {
   /** Текущий выбор: { model, reasoning, mode, project, autoApprove,
    *  includeClaudeUsage, activityRecentMinutes, streamOrderMode,
    *  streamCardWidthMode, streamCardFixedWidth, streamCardGapEnabled,
-   *  pinnedWorkspaceStreams, quickMessages }. */
+   *  pinnedWorkspaceStreams, quickMessages, quickMessageActionMode }. */
   setSelection(selection) {
     const incoming = { ...(selection ?? {}) };
     for (const key of state.pendingSelections) {
@@ -10519,12 +10886,23 @@ const AgentHub = {
     else renderComposerQuickMessages();
     if (claudeUsageChanged && journalHtml) void renderJournal();
   },
-  setSelectionPending(key, pending) {
+  setSelectionPending(key, pending, mutationId = "") {
     const normalizedKey = String(key ?? "").trim();
     if (!normalizedKey) return;
-    if (pending) state.pendingSelections.add(normalizedKey);
+    const normalizedMutationId = String(mutationId ?? "").trim();
+    if (normalizedKey === "quickMessages" && normalizedMutationId) {
+      if (pending) quickMessagePendingMutationIds.add(normalizedMutationId);
+      else quickMessagePendingMutationIds.delete(normalizedMutationId);
+      if (quickMessagePendingMutationIds.size) state.pendingSelections.add(normalizedKey);
+      else state.pendingSelections.delete(normalizedKey);
+    } else if (pending) state.pendingSelections.add(normalizedKey);
     else state.pendingSelections.delete(normalizedKey);
+    if (normalizedKey === "quickMessages" && !pending) settleQuickMessagesSelection(mutationId);
     renderOptions();
+    if (normalizedKey === "quickMessages") renderWorkspaceCardQuickMessages();
+  },
+  rejectSelection(key, mutationId = "") {
+    if (String(key ?? "") === "quickMessages") rejectQuickMessagesSelection(mutationId);
   },
   /** Сводка статуса/лимитов для панели: { rows: [{ name, value }] }. */
   setStatus(status) {
