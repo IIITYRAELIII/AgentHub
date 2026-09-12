@@ -180,33 +180,45 @@ that root. Git defines the base, result, operation, blobs and patch. Provider
 receipts, final text, timestamps and shared dirty trees are never ownership
 fallbacks.
 
-`TaskGitWorkspaceService` is the single owner of published/current `main` to
-managed `dev` synchronization. Under the repository's existing dev lock it
-fetches one explicit `refs/heads/main:refs/remotes/origin/main` refspec with
-tags and recursive submodule fetch disabled, resolves the exact current main
-commit, verifies that the managed dev worktree is clean, and then incorporates
-that commit before new Task preparation, Task integration, and release
-preflight. Remote tag settings cannot widen this fetch: local `main`, remote
-`dev`, protective branches, and every tag ref remain unchanged. It never checks
-out or updates the registered primary worktree and never creates or pushes
-`origin/dev`. A new Task still starts from the exact main commit returned by
-that locked operation, not from rolling Test content.
+The exact local `refs/heads/main` commit is the accepted repository baseline.
+Fetching or moving `refs/remotes/origin/main` is observation only and never
+changes Task, dev, plan or preflight authority. A new Task atomically verifies
+local main and creates its immutable base ref at that exact commit; it never
+starts from rolling dev content or a newer remote-tracking tip. Existing Task
+base refs remain unchanged. Missing local main fails closed rather than choosing
+`HEAD`, dev, publication state or a remote fallback.
 
-If `main` and `dev` diverge, the owner creates a local merge commit whose result
-must contain both the former dev head and current main as ancestors. A conflict
-is collected, aborted, and reported only after the dev head and clean worktree
-are proven restored. Dirty dev or a published-revision mismatch is
-`manual_required`; an abort that cannot prove restoration throws. No Task
-preparation or integration is reported as successful in either case.
+Ordinary Task preparation, integration and release evidence only recover and
+inspect managed `dev`; they do not fetch or synchronize main. Existing dev must
+be clean and contain the accepted local baseline. Explicit post-publication
+main-to-dev synchronization requires the exact durable published revision and
+also requires local main to equal it. If those exact inputs diverge, or the merge
+conflicts, the operation fails or reports `manual_required` only after proving
+the old dev head and clean worktree were restored. The owner never checks out or
+updates the registered primary worktree, creates `origin/dev`, or treats a
+remote ref movement as acceptance. See ADR-0040.
 
 The one-time bootstrap for an already-diverged managed `dev` is itself a Task
 result: under the same Task and dev locks, the snapshot owner accepts a pending
 Task-worktree merge only when its exact `MERGE_HEAD` is the current managed dev
-head. The resulting two-parent Task snapshot contains current `main` and the
-previous dev line. Integration recognizes those two proven ancestors and merges
-the Task result directly instead of first replaying the conflicting main-to-dev
-merge. Until the owner snapshots and integrates that result, neither `dev` nor
-the registered primary checkout is changed.
+head. The accepted Task result must contain one unique first-parent merge whose
+second parent is the exact current `main`. When ordinary main-to-dev integration
+conflicts, the owner constructs an unreachable bootstrap commit `B` with exact
+ordered parents `[oldDev, main]`. Its automatic merge bytes come only from those
+parents; each conflicting code path is replaced only when the Task-local proof
+matches the index's dev/main mode, type and object identities and the accepted
+Task result exactly. `CHANGELOG.md` may use the accepted Task snapshot only as
+the excluded release-history path in this same atomic integration. A second
+unreachable commit `C=[B, TaskResult]` must reproduce the complete accepted Task
+tree, including Task-only files that are absent from `B`.
+
+Only one compare-and-swap publishes `dev` from `oldDev` to `C`; neither `B` nor
+partial index state becomes a visible dev head. Durable transaction evidence
+written before that CAS distinguishes no effect from the exact committed effect:
+recovery restores the worktree to `C` only when the ref and ordered parents still
+match, and otherwise fails closed. Interruptions before the CAS restore the exact
+old dev head, index and worktree. The registered primary checkout is never
+changed. See ADR-0039.
 
 A successful Test integration records only the deterministic Task branch and
 its accepted immutable result commit on the Task. The base ref and changed-file
@@ -287,23 +299,38 @@ later delta that depends on the omitted ancestor fails instead of importing it.
 
 A Task with repeated integrations may use a net delta from its latest shared
 main ancestor to its accepted result only after bounded Git ancestry proof.
+The frozen evidence carries the exact canonical Task base; that base must
+already be an ancestor of the approved release main. Its unique merge base with
+the accepted result must occur in the result's bounded first-parent history, so
+an approved sibling Task base need not itself be an ancestor of a rewritten
+accepted result. A missing or unpublished Task base cannot borrow authority
+from a merge base inferred only from the result graph.
 Unpublished commits must belong to that Task's first-parent lineage or its
 exact canonical integrations; intervening merge wrappers must reproduce the
-automatic parent merge exactly. Unknown or foreign unpublished contributions
-cannot become release content through a Task's merge of dev. Net projection is
-not used where its affected paths overlap another selected Task's effective
-delta: those Tasks retain chronological effective-delta composition and its
-existing conflict evidence. Unavailable or over-budget proof selects that same
-existing composition, never an unchecked result snapshot. This permits a later
-Task resolution against published main to replace its obsolete intermediate
-conflicts without widening ownership. See ADR-0034.
+automatic parent merge exactly. Every repeated integration has a unique commit,
+order and selected Task owner, and the last integration under the canonical
+`(order, commit)` comparator merges the exact accepted Task result. Unknown or
+foreign unpublished contributions cannot become release content through a
+Task's merge of dev.
+
+The net delta is placed at that last integration order only when no raw
+integration of another selected Task strictly between the first and last Task
+integration touches any path changed by any of the Task's integrations. The
+comparison disables rename detection so that both source and destination paths
+remain part of the conservative identity, and it includes a path changed and
+later reverted out of the final net delta. Overlaps entirely before or after
+the interval do not invalidate the fold because it does not cross them. A
+missing, ambiguous, shared, tied, crossing, unavailable or over-budget proof
+retains chronological effective-delta composition and its existing conflict
+evidence, never an unchecked result snapshot. This permits a later Task
+resolution against published main to replace obsolete intermediate conflicts
+without widening ownership. See ADR-0034.
 
 For a reopened Task, an earlier integration's result already contained in the
 approved main base is accepted only when that integration's automatic merge
 tree is still verified. Ownership is proved before overlap detection; proven
-Tasks use their pending net paths, while unproven Tasks retain all effective
-replay paths. Removing a projection restores its historical paths and overlap
-detection repeats until stable, independently of Task ordering.
+Tasks use their pending net paths at the final owned order, while unproven Tasks
+retain all effective replay paths.
 
 If chronological replay of a reopened Task conflicts because its stale parent
 does not contain bytes already present in the approved base, Agent Hub may use
@@ -316,6 +343,16 @@ non-exact or ambiguous evidence leaves the release blocked. Only those exact
 accepted conflict paths are staged; this proof does not admit a Task snapshot
 or change integration order.
 
+A raw historical integration may instead resolve one stale conflict path from
+Git's direct merge of the exact approved main and that integration's exact Task
+side. The integration must be automatic and uniquely owned by the selected
+Task. Index stage two must equal approved main by mode, type and object; the
+direct merge must report no conflict for the path; and its resulting entry must
+equal index stage three, the integration entry and current accepted dev entry.
+Only that entry is staged. A different parent, owner, base, path conflict,
+mode/type/object or dev state rejects the proof; later Task results and bootstrap
+merges cannot retroactively authorize an older integration.
+
 At explicit release start, Architect reads and selects the exact ready Await
 set. Before choosing the base, Agent Hub fetches without pull/merge/rebase and
 reports every local unpublished or remote main change since the last published
@@ -325,6 +362,84 @@ chooses the exact local and origin main commits, and the preflight rechecks both
 values before candidate publication. A second fetch immediately before push is
 a compare-and-set guard; movement of `origin/main` stops publication for another
 user decision.
+
+When the approved origin commit differs from accepted local main, approval of
+the audit is not adoption. Before any contour or candidate side effect,
+preflight also requires an immutable content-addressed adoption receipt for one
+selected frozen Task result plus ancestry of that exact origin commit in current
+managed dev. The receipt binds Task ID, canonical repository and key, immutable
+Task base, accepted local-main baseline, exact adopted SHA, Task branch and
+snapshot commit/tree, unique bounded first-parent merge proof and its exact
+parents/tree, operator request ID and Git blob hash. Ordinary prepare, claim,
+Test, integration, plan and preflight paths can verify this authority but never
+create it. The supported operator surface is `npm run release:policy --
+task-upstream-adoption preview|enable --project-root <root> --task-id <id>
+--branch <branch> --task-base <sha> --accepted-local-main <sha>
+--adopted-commit <sha> --snapshot-commit <sha> --request-id <id>`; preview has
+no write effect, while enable atomically verifies the pinned local main, Task
+base and Task branch before creating one immutable Git ref to the receipt blob.
+Graph shape or later preflight approval cannot retroactively create authority.
+A remote-only commit, broad dev merge, missing/mismatched receipt or changed
+snapshot fails closed. If origin advances after a pinned Task adoption, the new
+tip requires a new audit and a separately authorized Task adoption.
+
+If the preflight response is interrupted after candidate preparation, recovery is
+readback-only. The Architect may reconcile the original request only by naming
+the exact original request, original preflight arguments, plan revision and
+repository revisions. Agent Hub first binds that request to the authoritative
+MCP operation receipt by tool, Workspace, caller Stream/provider/thread and
+immutable arguments hash, then reads the existing frozen candidate checkpoints
+and manifests through the release Git owner. A prepared checkpoint is only
+candidate snapshot evidence, even when it is causally bound to the same request:
+failures can still occur after the checkpoint before the final preflight guard.
+The original request may be reported as reconciled only from a separate
+authoritative final-phase outcome that covers candidate preparation, final
+primary/release invariant checks and all required validation. Without that final
+evidence, the response is only `candidate_snapshot_only` and the original
+outcome remains unknown. Missing, stale, moved-plan, tampered-manifest,
+contradictory manifest/checkpoint request identity, wrong Workspace or stale Task
+revision/result evidence keep the original outcome unknown. Reconciliation never
+reruns preflight, reuses a generic replay lease, finalizes the old receipt or
+manufactures Test Contour, validation, main-review or publication evidence.
+
+For repositories without an Agent Hub Test Contour, release preflight requires a
+repository-owned production validation adapter. The minimal supported adapter
+contract for Bookworm-style Android repositories is enabled only by explicit
+`releaseValidation.repositories[]` policy. The default unconfigured state fails
+closed with an operator action. A configured adapter runs the approved QA checks
+against the exact frozen candidate in isolation after `PreRelease` preparation,
+then persists bounded server-owned evidence naming repository identity, plan
+revision, Task IDs and revisions, Task result commits, candidate commit and tree,
+immutable manifest identity, relevant build input identity, check commands,
+outcomes and artifact digests. The
+preflight adapter accepts only an exact match to the selected repository, plan,
+candidate and Task result evidence. Historical QA reports, mutable build outputs,
+tree equality, developer-authored reports, or a ready string are not production
+validation evidence unless an explicit adapter proves the full input-equivalence
+boundary.
+
+Repository-scoped publication baseline adoption from an external publisher
+requires an explicit supported authority for that repository. For a GitHub
+release/tag source, the adapter must verify the repository remote identity,
+publisher API response, immutable release/tag identity, tag target commit, and
+staleness/moved-tag conditions before writing bounded publication evidence for
+that repository through the publication-state owner while retaining other
+repositories. The supported operator surface is `npm run release:policy --
+github-baseline preview|enable --project-root <root> --owner <owner> --repo
+<repo> --tag <tag> --release-id <id> --target-commit <sha>`; preview has no write
+effect, enable writes only the verified repository-scoped record. An unscoped
+local JSON file, an arbitrary supplied SHA, a foreign remote, a moved tag or an
+Actions run head SHA fails closed. Activation of such an adapter is a separate
+operator decision; existing unscoped state is not rewritten in place.
+
+Every publication-state writer acquires or re-enters the canonical publication
+lock before reserving its per-file write turn. A writer outside the current
+owner therefore cannot occupy the write queue while waiting for that owner and
+block a nested owner write. The write turn still serializes same-file updates,
+and a rejected write releases its turn so later writers can continue. Duplicate
+repository evidence is compared recursively across the complete persisted
+record, including nested publisher and receipt fields; two records that differ
+below the first object level are conflicting rather than silently coalesced.
 
 The Architect adds one consolidated `CHANGELOG.md` entry when it exists, then
 freezes the exact main base, release-plan revision, included Task IDs and row

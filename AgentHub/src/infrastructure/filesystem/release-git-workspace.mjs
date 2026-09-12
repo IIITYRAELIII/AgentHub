@@ -10,6 +10,7 @@ import { canonicalPath } from "./config.mjs";
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
 import { freezePreparedPublicationCandidate } from "./freeze-publication-candidate.mjs";
 import {
+  resolveExactDirectTaskSideMerge,
   resolveExactOrderPreservingUnion,
   resolveExactTaskBaseMerge,
 } from "./release-order-preserving-union.mjs";
@@ -232,14 +233,23 @@ async function disclosedCommit(root, commit, { localMain, originMain }) {
   };
 }
 
+async function revisionList(root, args) {
+  const output = String(await runGit(["rev-list", "--reverse", "--topo-order", ...args], { cwd: root }));
+  return output.split(/\r?\n/u).filter(Boolean);
+}
+
 function normalizedFrozenTasks(tasks = []) {
   const unique = new Map();
   for (const task of tasks) {
     const taskId = String(task?.taskId ?? "").trim();
     const taskRevision = Number(task?.taskRevision);
+    const baseCommit = String(task?.baseCommit ?? "").trim();
     const resultCommit = String(task?.resultCommit ?? "").trim();
     if (!taskId || !Number.isInteger(taskRevision) || taskRevision < 1 || !resultCommit) {
       throw new Error("release candidate requires exact Task IDs, revisions and result commits");
+    }
+    if (baseCommit && !/^[0-9a-f]{40}$/u.test(baseCommit)) {
+      throw new Error(`release Task ${taskId} has an invalid base commit`);
     }
     const integrations = (Array.isArray(task?.integrations) ? task.integrations : []).map((integration) => ({
       commit: String(integration?.commit ?? "").trim(),
@@ -249,7 +259,9 @@ function normalizedFrozenTasks(tasks = []) {
     if (integrations.some((integration) => (
       !integration.commit || !integration.parent || !Number.isInteger(integration.order) || integration.order < 0
     ))) throw new Error(`release Task ${taskId} has invalid dev integration evidence`);
-    const normalized = { taskId, taskRevision, resultCommit, integrations };
+    const normalized = {
+      taskId, taskRevision, ...(baseCommit ? { baseCommit } : {}), resultCommit, integrations,
+    };
     const existing = unique.get(taskId);
     if (existing && stableManifest(existing) !== stableManifest(normalized)) {
       throw new Error(`release Task ${taskId} has multiple result commits or integration histories`);
@@ -447,14 +459,28 @@ export class ReleaseGitWorkspaceService {
       }
       const localMain = primary.mainCommit;
       const originMain = await runGit(["rev-parse", "refs/remotes/origin/main^{commit}"], { cwd: clone.releaseRoot });
-      for (const target of [localMain, originMain]) {
-        if (await gitMaybe(["merge-base", "--is-ancestor", baseline, target], { cwd: clone.releaseRoot }) === null) {
-          throw new Error(`last published revision ${baseline} is not an ancestor of main ${target}`);
-        }
+      const localContainsPublished = await gitMaybe(["merge-base", "--is-ancestor", baseline, localMain], {
+        cwd: clone.releaseRoot,
+      }) !== null;
+      const publishedContainsLocal = await gitMaybe(["merge-base", "--is-ancestor", localMain, baseline], {
+        cwd: clone.releaseRoot,
+      }) !== null;
+      if (!localContainsPublished && !publishedContainsLocal) {
+        throw new Error(`last published revision ${baseline} is unrelated to local main ${localMain}`);
       }
-      const commitIds = String(await runGit([
-        "rev-list", "--reverse", "--topo-order", localMain, originMain, `^${baseline}`,
-      ], { cwd: clone.releaseRoot })).split(/\r?\n/u).filter(Boolean);
+      const originContainsPublished = await gitMaybe(["merge-base", "--is-ancestor", baseline, originMain], {
+        cwd: clone.releaseRoot,
+      }) !== null;
+      if (!originContainsPublished) {
+        throw new Error(`last published revision ${baseline} is not an ancestor of origin/main ${originMain}`);
+      }
+      const commitIds = new Set([
+        ...(localContainsPublished ? await revisionList(clone.releaseRoot, [localMain, `^${baseline}`]) : []),
+        ...await revisionList(clone.releaseRoot, [originMain, `^${baseline}`]),
+        ...(!localContainsPublished && publishedContainsLocal
+          ? await revisionList(clone.releaseRoot, [baseline, `^${localMain}`])
+          : []),
+      ]);
       const commits = [];
       for (const commit of commitIds) commits.push(await disclosedCommit(clone.releaseRoot, commit, {
         localMain,
@@ -470,8 +496,11 @@ export class ReleaseGitWorkspaceService {
         commits,
         changed: commits.length > 0,
         diverged: localMain !== originMain,
+        localContainsPublished,
+        publishedContainsLocal,
+        originContainsPublished,
         approved,
-        approvalRequired: commits.length > 0 && !approved,
+        approvalRequired: (commits.length > 0 || localMain !== originMain) && !approved,
       };
       const finalPrimary = await primarySnapshot(primary.root);
       await this.assertPrimaryInvariant(finalPrimary.root, { phase: "main review" });
@@ -562,7 +591,8 @@ export class ReleaseGitWorkspaceService {
   }
 
   async prepareCandidate({
-    planRevision, projectRoot, workspaceId = null, frozenTasks = [], approvedBaseCommit = null, validateBeforeCommit = null,
+    planRevision, projectRoot, workspaceId = null, preflightRequestId = null,
+    frozenTasks = [], approvedBaseCommit = null, validateBeforeCommit = null,
   } = {}) {
     this.#assertAvailable("prepareCandidate");
     const revision = String(planRevision ?? "").trim();
@@ -604,6 +634,7 @@ export class ReleaseGitWorkspaceService {
         schemaVersion: 2,
         projectionPolicy: "task-net-ancestry-v2",
         ...(workspaceId ? { workspaceId: String(workspaceId) } : {}),
+        ...(preflightRequestId ? { preflightRequestId: String(preflightRequestId) } : {}),
         planRevision: revision,
         primaryRoot: initial.root,
         primaryGitCommonDir: initial.commonDir,
@@ -646,6 +677,14 @@ export class ReleaseGitWorkspaceService {
             tasks: pendingTasks, baseCommit,
             git: (args) => runGit(args, { cwd: clone.releaseRoot, timeoutMs: 300_000 }),
           });
+          const integrationOwners = new Map();
+          for (const task of pendingTasks) {
+            for (const integration of task.integrations) {
+              const owners = integrationOwners.get(integration.commit) ?? new Set();
+              owners.add(task.taskId);
+              integrationOwners.set(integration.commit, owners);
+            }
+          }
           netProjectedTaskIds = [...projections.keys()];
           const integrations = pendingTasks.flatMap((task) => {
             const projection = projections.get(task.taskId);
@@ -654,7 +693,8 @@ export class ReleaseGitWorkspaceService {
               order: Math.max(...task.integrations.map((item) => item.order)),
             }] : task.integrations;
             return selected.map((integration) => ({
-              ...integration, taskId: task.taskId, taskResultCommit: task.resultCommit,
+              ...integration, taskId: task.taskId, taskBaseCommit: task.baseCommit,
+              taskResultCommit: task.resultCommit,
             }));
           }).sort((left, right) => left.order - right.order || left.commit.localeCompare(right.commit));
           for (const integration of integrations) {
@@ -693,6 +733,16 @@ export class ReleaseGitWorkspaceService {
                       conflicts,
                       approvedBaseCommit: baseCommit,
                     })) continue;
+                if (!integration.netProjection && await resolveExactDirectTaskSideMerge({
+                  candidateRoot: clone.releaseRoot,
+                  conflicts,
+                  approvedBaseCommit: baseCommit,
+                  integrationCommit: integration.commit,
+                  integrationTaskCommit: actualParents[1],
+                  taskBaseCommit: integration.taskBaseCommit,
+                  taskResultCommit: integration.taskResultCommit,
+                  uniqueSelectedOwner: integrationOwners.get(integration.commit)?.size === 1,
+                })) continue;
                 if (await resolveExactTaskBaseMerge({
                   candidateRoot: clone.releaseRoot,
                   conflicts,
@@ -731,6 +781,7 @@ export class ReleaseGitWorkspaceService {
             phase: "prepared",
             netProjectedTaskIds,
             planRevision: revision,
+            ...(preflightRequestId ? { preflightRequestId: String(preflightRequestId) } : {}),
             manifestHash,
             manifestFile,
             baseCommit,
@@ -811,14 +862,83 @@ export class ReleaseGitWorkspaceService {
         || !checkpoint?.baseCommit || !checkpoint?.preReleaseHead) {
       throw new Error(`release checkpoint is incomplete: ${layout.checkpointFile}`);
     }
+    const manifestFile = path.join(layout.evidenceRoot, `${checkpoint.manifestHash}.json`);
+    if (checkpoint.manifestFile && !samePath(checkpoint.manifestFile, manifestFile)) {
+      throw new Error("release checkpoint manifest path does not match its digest");
+    }
+    const manifestBytes = await readFile(manifestFile);
+    if (sha256(manifestBytes) !== checkpoint.manifestHash) {
+      throw new Error("release checkpoint manifest digest changed");
+    }
+    const manifest = JSON.parse(manifestBytes.toString("utf8"));
+    const marker = await assertReleaseCloneForPublication({ repositoryRoot: layout.releaseRoot });
+    const branchHead = await runGit(["rev-parse", `refs/heads/${RELEASE_BRANCH}^{commit}`], { cwd: marker.releaseRoot });
+    if (branchHead !== String(checkpoint.preReleaseHead)) {
+      throw new Error("release checkpoint PreRelease branch no longer matches its prepared head");
+    }
+    const primaryFailure = primaryInvariantFailure(primary, "preflight frozen candidate readback");
+    if (primaryFailure) throw new Error(primaryFailure);
+    const [releaseBranch, releaseHead, releaseTree, releaseDirty] = await Promise.all([
+      gitMaybe(["symbolic-ref", "--short", "HEAD"], { cwd: marker.releaseRoot }),
+      runGit(["rev-parse", "HEAD^{commit}"], { cwd: marker.releaseRoot }),
+      runGit(["rev-parse", "HEAD^{tree}"], { cwd: marker.releaseRoot }),
+      runGit(["status", "--porcelain=v1", "--untracked-files=all"], { cwd: marker.releaseRoot }),
+    ]);
+    if (releaseBranch !== RELEASE_BRANCH || releaseHead !== branchHead || releaseDirty) {
+      throw new Error("release checkpoint clone is not an exact clean PreRelease checkout");
+    }
+    if (manifest.schemaVersion !== 2
+        || manifest.planRevision !== checkpoint.planRevision
+        || manifest.baseCommit !== checkpoint.baseCommit
+        || !samePath(manifest.primaryRoot, primary.root)
+        || !samePath(manifest.releaseRoot, marker.releaseRoot)
+        || !samePath(manifest.primaryGitCommonDir, primary.commonDir)
+        || !samePath(manifest.releaseGitCommonDir, marker.releaseGitCommonDir)) {
+      throw new Error("release checkpoint manifest identity does not match the managed repository");
+    }
+    const checkpointRequestId = String(checkpoint.preflightRequestId ?? "");
+    const manifestRequestId = String(manifest.preflightRequestId ?? "");
+    if (checkpointRequestId && !manifestRequestId) {
+      throw new Error("release checkpoint request identity is missing from the immutable manifest");
+    }
+    if (checkpointRequestId && manifestRequestId && checkpointRequestId !== manifestRequestId) {
+      throw new Error("release checkpoint request identity disagrees with the immutable manifest");
+    }
+    const checkpointWorkspaceId = String(checkpoint.workspaceId ?? "");
+    const manifestWorkspaceId = String(manifest.workspaceId ?? "");
+    if (checkpointWorkspaceId && manifestWorkspaceId && checkpointWorkspaceId !== manifestWorkspaceId) {
+      throw new Error("release checkpoint Workspace identity disagrees with the immutable manifest");
+    }
+    const manifestTasks = normalizedFrozenTasks(manifest.tasks ?? []);
     return {
       repositoryRoot: primary.root,
       releaseRoot: layout.releaseRoot,
       checkpointFile: layout.checkpointFile,
+      checkpointPhase: String(checkpoint.phase ?? ""),
       planRevision: String(checkpoint.planRevision),
       manifestHash: String(checkpoint.manifestHash),
+      manifestFile,
+      manifest: {
+        manifestHash: String(checkpoint.manifestHash),
+        schemaVersion: manifest.schemaVersion,
+        workspaceId: manifest.workspaceId ?? null,
+        preflightRequestId: manifest.preflightRequestId ?? null,
+        planRevision: String(manifest.planRevision ?? ""),
+        primaryRoot: manifest.primaryRoot,
+        releaseRoot: manifest.releaseRoot,
+        baseCommit: String(manifest.baseCommit ?? ""),
+        tasks: manifestTasks.map((task) => ({
+          taskId: task.taskId,
+          taskRevision: task.taskRevision,
+          ...(task.baseCommit ? { baseCommit: task.baseCommit } : {}),
+          resultCommit: task.resultCommit,
+        })),
+        taskIds: manifestTasks.map((task) => task.taskId).sort(),
+      },
+      preflightRequestId: manifestRequestId,
       baseCommit: String(checkpoint.baseCommit),
       preReleaseHead: String(checkpoint.preReleaseHead),
+      tree: releaseTree,
     };
   }
 

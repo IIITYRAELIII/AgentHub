@@ -44,7 +44,12 @@ export async function fingerprintTestInputs(file, {
   hash.update(JSON.stringify(toolchain)).update("\0");
   // Values (including secrets) never leave this digest or appear in a checkpoint.
   const stableEnvironment = Object.entries(environment)
-    .filter(([name]) => !["AGENT_HUB_FULL_TEST_CHECKPOINT_ID", "AGENT_HUB_TEST_RUN_ID", "AGENT_HUB_PUBLICATION_SESSION"].includes(name))
+    .filter(([name]) => ![
+      "AGENT_HUB_FULL_TEST_CHECKPOINT_ID",
+      "AGENT_HUB_TEST_RUN_ID",
+      "AGENT_HUB_PUBLICATION_SESSION",
+      "AGENT_HUB_PUBLICATION_STAGE_DELEGATION",
+    ].includes(name))
     .sort(([a], [b]) => a.localeCompare(b));
   hash.update(JSON.stringify(stableEnvironment)).update("\0");
   hash.update(JSON.stringify(declaration)).update("\0");

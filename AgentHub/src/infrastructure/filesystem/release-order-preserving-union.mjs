@@ -85,6 +85,15 @@ function sameEntry(left, right) {
     && left.type === right.type && left.object === right.object);
 }
 
+function mergeTreeNameOnly(value) {
+  const records = bytes(value).toString("utf8").split("\0");
+  const tree = records.shift() ?? "";
+  if (!/^[a-f0-9]{40,64}$/iu.test(tree)) return null;
+  const separator = records.indexOf("");
+  const conflicts = separator === -1 ? records.filter(Boolean) : records.slice(0, separator);
+  return { tree, conflicts: new Set(conflicts) };
+}
+
 async function isAncestor(root, ancestor, descendant) {
   try {
     await execFileAsync("git", ["merge-base", "--is-ancestor", ancestor, descendant], {
@@ -278,5 +287,66 @@ export async function resolveExactTaskBaseMerge({
   for (const stage of stages) {
     await gitBytes(root, ["checkout", proofs[0], "--", stage.file]);
   }
+  return (await gitBytes(root, ["diff", "--name-only", "--diff-filter=U", "-z"])).length === 0;
+}
+
+// A historical automatic Task integration can contain bytes that were later
+// published independently in main. Resolve only a path that Git itself merges
+// cleanly from the exact approved main and exact integration Task-side parent.
+export async function resolveExactDirectTaskSideMerge({
+  candidateRoot, conflicts = [], approvedBaseCommit, integrationCommit,
+  integrationTaskCommit, taskBaseCommit, taskResultCommit, uniqueSelectedOwner = false,
+  devRef = "refs/remotes/workspace/dev",
+} = {}) {
+  const root = path.resolve(String(candidateRoot ?? ""));
+  const paths = [...new Set(conflicts.map((value) => String(value ?? "").trim()).filter(Boolean))];
+  if (!paths.length || uniqueSelectedOwner !== true) return false;
+  const [approvedBase, integration, taskSide, taskBase, taskResult, dev] = await Promise.all([
+    exactCommit(root, approvedBaseCommit),
+    exactCommit(root, integrationCommit),
+    exactCommit(root, integrationTaskCommit),
+    exactCommit(root, taskBaseCommit),
+    exactCommit(root, taskResultCommit),
+    exactRefCommit(root, devRef),
+  ]);
+  if (!approvedBase || !integration || !taskSide || !taskBase || !taskResult || !dev
+      || !await isAncestor(root, integration, dev)
+      || !await isAncestor(root, taskBase, approvedBase)) return false;
+  let taskLineage;
+  try {
+    taskLineage = (await gitBytes(root, [
+      "rev-list", "--first-parent", `--max-count=${MAX_TASK_MERGE_PROOFS + 1}`,
+      taskResult, `^${taskBase}`,
+    ])).toString("utf8").trim().split(/\r?\n/u).filter(Boolean);
+  } catch {
+    return false;
+  }
+  if (taskLineage.length > MAX_TASK_MERGE_PROOFS || !taskLineage.includes(taskSide)) return false;
+  const parents = (await gitBytes(root, ["show", "-s", "--format=%P", integration]))
+    .toString("utf8").trim().split(" ").filter(Boolean);
+  if (parents.length !== 2 || parents[1] !== taskSide) return false;
+  const automaticTree = (await gitBytes(root, ["merge-tree", "--write-tree", ...parents]))
+    .toString("utf8").trim().split(/\r?\n/u)[0];
+  if (automaticTree !== (await gitBytes(root, ["rev-parse", `${integration}^{tree}`]))
+    .toString("utf8").trim()) return false;
+  const direct = mergeTreeNameOnly(await gitBytes(root, [
+    "merge-tree", "--write-tree", "--name-only", "-z", approvedBase, taskSide,
+  ]));
+  if (!direct) return false;
+  for (const file of paths) {
+    resolvedPath(root, file);
+    if (direct.conflicts.has(file)) return false;
+    const [ours, approved, theirs, merged, acceptedIntegration, acceptedDev] = await Promise.all([
+      exactIndexStageEntry(root, 2, file),
+      exactTreeEntry(root, approvedBase, file),
+      exactIndexStageEntry(root, 3, file),
+      exactTreeEntry(root, direct.tree, file),
+      exactTreeEntry(root, integration, file),
+      exactTreeEntry(root, dev, file),
+    ]);
+    if (!sameEntry(ours, approved) || !sameEntry(merged, theirs)
+        || !sameEntry(merged, acceptedIntegration) || !sameEntry(merged, acceptedDev)) return false;
+  }
+  for (const file of paths) await gitBytes(root, ["checkout", direct.tree, "--", file]);
   return (await gitBytes(root, ["diff", "--name-only", "--diff-filter=U", "-z"])).length === 0;
 }

@@ -36,6 +36,20 @@ export const FULL_TEST_BUDGET = Object.freeze({
 });
 const RESTART_REQUEST_TIMEOUT_MS = 30_000;
 
+export function publicationRepositories(identity, revision) {
+  if (identity?.release) {
+    return [{
+      root: identity.release.primaryRoot,
+      revision,
+      planRevision: identity.release.planRevision,
+      manifestHash: identity.release.manifestHash,
+      baseCommit: identity.release.baseCommit,
+      preReleaseHead: identity.release.preReleaseHead,
+    }];
+  }
+  return [{ root: identity?.worktreeRoot ?? REPOSITORY_ROOT, revision }];
+}
+
 export function npmStep(label, args) {
   const npmCli = String(process.env.npm_execpath ?? "").trim();
   if (npmCli) {
@@ -222,7 +236,7 @@ export async function publishAll(args = process.argv.slice(2), {
   restart = callDesktopControl,
   before = async () => {},
   exclusive = withPublicationLock,
-  record = async () => writePublicationState({
+  record = async (publicationState) => writePublicationState(publicationState ?? {
     revision: await currentRevision({ cwd: REPOSITORY_ROOT }),
     publishedAt: new Date().toISOString(),
     mode: "full",
@@ -259,7 +273,12 @@ export async function publishAll(args = process.argv.slice(2), {
         journal,
       });
       const completion = await completePublication({
-        identity, publicationState: { revision: head, mode: "full", validationMode: identity.validationMode },
+        identity, publicationState: {
+          revision: head,
+          repositories: publicationRepositories(identity, head),
+          mode: "full",
+          validationMode: identity.validationMode,
+        },
         journal, checkpoint, needsRestart: true, skipRestart: options.skipRestart,
         readRuntimeStatus, verifyRestart, writeState: record,
         requestRestart: (verification) => restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot, verification),

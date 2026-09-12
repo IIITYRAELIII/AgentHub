@@ -21,6 +21,7 @@ import {
   assertCleanPublicationTree,
   assertCurrentPublicationRevision,
   parseWorkingTreeStatus,
+  readPublicationState,
 } from "../../src/infrastructure/persistence/publication-state.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -150,6 +151,46 @@ test("publication requests the server's safe deferred restart last", async () =>
     "restart-server",
     "record-publication",
   ]);
+});
+
+test("full publication default writer records supplied repository-scoped publication state", async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "agent-hub-publication-state-"));
+  const previousLocalAppData = process.env.LOCALAPPDATA;
+  let savedCheckpoint = null;
+  try {
+    process.env.LOCALAPPDATA = temporary;
+    await publishAll(["--skip-tests", "--skip-worker", "--skip-restart"], {
+      run: async () => {},
+      revision: async () => "published-head",
+      checkpoint: {
+        read: async () => savedCheckpoint,
+        write: async (value) => {
+          savedCheckpoint = structuredClone(value);
+        },
+        clear: async () => { savedCheckpoint = null; },
+      },
+      readRuntimeStatus: async () => ({
+        current: "release-new",
+        running: true,
+        ready: true,
+        runningRelease: "release-new",
+      }),
+      verifyRestart: async () => {},
+    });
+
+    const state = await readPublicationState(path.join(temporary, "AgentHub", "publication-state.json"));
+    assert.equal(state.revision, "published-head");
+    assert.equal(state.mode, "full");
+    assert.equal(state.validationMode, "quick");
+    assert.equal(state.repositories.length, 1);
+    assert.equal(path.resolve(state.repositories[0].root), path.resolve(ROOT, ".."));
+    assert.equal(state.repositories[0].revision, "published-head");
+    assert.match(state.generation, /^[0-9a-f-]{36}$/u);
+  } finally {
+    if (previousLocalAppData == null) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = previousLocalAppData;
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
 });
 
 test("publication restart tolerates a stalled outgoing runtime", async () => {

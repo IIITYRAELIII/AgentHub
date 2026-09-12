@@ -24,6 +24,8 @@ export const TASK_DEV_BRANCH = "dev";
 const TASK_BASE_REF_PREFIX = "refs/agent-hub/task-bases/";
 const TASK_LEGACY_ADOPTION_REF_PREFIX = "refs/agent-hub/legacy-adoptions/";
 const TASK_RESULT_REF_PREFIX = "refs/agent-hub/task-results/";
+const TASK_UPSTREAM_ADOPTION_REF_PREFIX = "refs/agent-hub/upstream-adoptions/";
+const MAX_UPSTREAM_ADOPTION_PROOFS = 512;
 
 export function stopTaskProcessTree(child, { spawnProcess = spawn, timeoutMs = 5_000 } = {}) {
   if (!child?.pid || process.platform !== "win32") {
@@ -243,8 +245,44 @@ function exactCommitId(value, label) {
   return commit;
 }
 
+function exactTreeEntry(value, label) {
+  const match = /^(\d{6})\s+(\w+)\s+([0-9a-f]{40})\t([\s\S]+)$/u.exec(String(value ?? ""));
+  if (!match) throw new Error(`${label} must be one exact Git tree entry`);
+  return { mode: match[1], type: match[2], object: match[3], path: match[4] };
+}
+
+function sameTreeEntry(left, right) {
+  return left?.mode === right?.mode && left?.type === right?.type && left?.object === right?.object;
+}
+
+function isChangelogPath(value) {
+  return String(value ?? "").replaceAll("\\", "/").split("/").at(-1) === "CHANGELOG.md";
+}
+
 function taskResultRef(taskId, repoKey) {
   return `${TASK_RESULT_REF_PREFIX}${normalizedTaskId(taskId)}/${repoKey}`;
+}
+
+function taskUpstreamAdoptionPrefix(taskId, repoKey) {
+  return `${TASK_UPSTREAM_ADOPTION_REF_PREFIX}${normalizedTaskId(taskId)}/${repoKey}/`;
+}
+
+function taskUpstreamAdoptionRef(taskId, repoKey, snapshotCommit, adoptedCommit) {
+  return `${taskUpstreamAdoptionPrefix(taskId, repoKey)}${snapshotCommit}/${adoptedCommit}`;
+}
+
+async function taskUpstreamAdoptionRefs(repoRoot, taskId, repoKey) {
+  return String(await runGit([
+    "for-each-ref", "--format=%(refname)", taskUpstreamAdoptionPrefix(taskId, repoKey),
+  ], { cwd: repoRoot })).split(/\r?\n/u).filter(Boolean);
+}
+
+function exactRequestId(value) {
+  const requestId = String(value ?? "").trim();
+  if (!requestId || requestId.length > 128 || /[\r\n\0]/u.test(requestId)) {
+    throw new Error("explicit upstream adoption request id is invalid");
+  }
+  return requestId;
 }
 
 function parseWorktrees(value) {
@@ -337,16 +375,12 @@ async function branchExists(repositoryRootValue, branch) {
   }) !== null;
 }
 
-async function preferredMainCommit(repositoryRootValue) {
-  for (const ref of ["refs/remotes/origin/main", "refs/heads/main", "HEAD"]) {
-    const commit = await gitMaybe(["rev-parse", "--verify", `${ref}^{commit}`], { cwd: repositoryRootValue });
-    if (commit) return commit;
-  }
-  throw new Error(`Cannot resolve main in ${repositoryRootValue}`);
-}
-
 async function localMainCommit(repositoryRootValue) {
-  return runGit(["rev-parse", "--verify", "refs/heads/main^{commit}"], { cwd: repositoryRootValue });
+  try {
+    return await runGit(["rev-parse", "--verify", "refs/heads/main^{commit}"], { cwd: repositoryRootValue });
+  } catch {
+    throw new Error(`accepted local refs/heads/main is missing in ${repositoryRootValue}`);
+  }
 }
 
 async function singleParentCommit(repositoryRootValue, commit) {
@@ -468,6 +502,330 @@ export class TaskGitWorkspaceService {
   #processRecoveryFile(taskId, guardId) {
     const key = createHash("sha256").update(String(guardId ?? ""), "utf8").digest("hex");
     return path.join(this.dataDir, "task-process-tree-recoveries", normalizedTaskId(taskId), `${key}.json`);
+  }
+
+  #devBootstrapRecoveryFile(repositoryRootValue) {
+    return path.join(
+      this.dataDir,
+      "task-dev-bootstrap-recoveries",
+      `${taskRepositoryKey(repositoryRootValue)}.json`,
+    );
+  }
+
+  async #treeEntryAt(repoRoot, commit, relativePath, lease) {
+    const output = await this.#runOwned([
+      "ls-tree", "-z", exactCommitId(commit, "tree entry commit"), "--", relativePath,
+    ], { cwd: repoRoot, lease });
+    if (!output) return null;
+    return exactTreeEntry(output.replace(/\0$/u, ""), `tree entry for ${relativePath}`);
+  }
+
+  async #unmergedEntries(devRoot, relativePath, lease) {
+    const output = await this.#runOwned(["ls-files", "-u", "-z", "--", relativePath], {
+      cwd: devRoot, lease,
+    });
+    const entries = new Map();
+    for (const record of output.split("\0").filter(Boolean)) {
+      const match = /^(\d{6})\s+([0-9a-f]{40})\s+([123])\t([\s\S]+)$/u.exec(record);
+      if (!match || match[4] !== relativePath) {
+        throw new Error(`Task dev bootstrap has invalid conflict identity for ${relativePath}`);
+      }
+      const type = await this.#runOwned(["cat-file", "-t", match[2]], { cwd: devRoot, lease });
+      entries.set(Number(match[3]), { mode: match[1], type, object: match[2], path: match[4] });
+    }
+    return entries;
+  }
+
+  async #resolveSnapshotBootstrapConflicts({ repoRoot, devRoot, snapshot, mainCommit, conflicts, lease }) {
+    const baseCommit = exactCommitId(snapshot.baseCommit, "Task snapshot base");
+    const snapshotCommit = exactCommitId(snapshot.headCommit, "Task snapshot result");
+    const candidates = String(await this.#runOwned([
+      "rev-list", "--first-parent", "--merges", "--max-count=513", snapshotCommit, `^${baseCommit}`,
+    ], { cwd: repoRoot, lease })).split(/\r?\n/u).filter(Boolean);
+    if (candidates.length > 512) {
+      throw new Error("Task dev bootstrap proof exceeds the bounded first-parent history");
+    }
+    const conflictEntries = new Map();
+    for (const relativePath of conflicts) {
+      const stages = await this.#unmergedEntries(devRoot, relativePath, lease);
+      if (!stages.get(2) || !stages.get(3)) {
+        throw new Error(`Task dev bootstrap requires exact two-sided conflict entries for ${relativePath}`);
+      }
+      conflictEntries.set(relativePath, stages);
+    }
+    const proofs = [];
+    for (const candidate of candidates) {
+      const parts = String(await this.#runOwned([
+        "rev-list", "--parents", "-n", "1", candidate,
+      ], { cwd: repoRoot, lease })).split(/\s+/u).filter(Boolean);
+      if (parts.length !== 3 || parts[2] !== mainCommit) continue;
+      let exact = true;
+      for (const relativePath of conflicts) {
+        const stages = conflictEntries.get(relativePath);
+        const firstParentEntry = await this.#treeEntryAt(repoRoot, parts[1], relativePath, lease);
+        const mainEntry = await this.#treeEntryAt(repoRoot, mainCommit, relativePath, lease);
+        const proofEntry = await this.#treeEntryAt(repoRoot, candidate, relativePath, lease);
+        const snapshotEntry = await this.#treeEntryAt(repoRoot, snapshotCommit, relativePath, lease);
+        const changelog = isChangelogPath(relativePath);
+        const acceptedEntry = changelog || (
+          proofEntry?.type === "blob" && sameTreeEntry(proofEntry, snapshotEntry)
+        );
+        const parentsProved = changelog || (
+          sameTreeEntry(stages.get(2), firstParentEntry)
+          && sameTreeEntry(stages.get(3), mainEntry)
+        );
+        if (!acceptedEntry || !parentsProved) {
+          exact = false;
+          break;
+        }
+      }
+      if (exact) proofs.push({ commit: candidate, firstParent: parts[1] });
+    }
+    if (proofs.length !== 1) {
+      throw new Error(`Task dev bootstrap requires one exact first-parent main proof; found ${proofs.length}`);
+    }
+    const proof = proofs[0];
+    for (const relativePath of conflicts) {
+      const source = isChangelogPath(relativePath) ? snapshotCommit : proof.commit;
+      await this.#runOwned(["checkout", source, "--", relativePath], { cwd: devRoot, lease });
+      await this.#runOwned(["add", "--", relativePath], { cwd: devRoot, lease });
+    }
+    const unresolved = String(await this.#runOwned([
+      "diff", "--name-only", "--diff-filter=U",
+    ], { cwd: devRoot, lease })).split(/\r?\n/u).filter(Boolean);
+    if (unresolved.length) {
+      throw new Error(`Task dev bootstrap left unresolved conflicts: ${unresolved.join(", ")}`);
+    }
+    return proof;
+  }
+
+  async #recoverDevBootstrapTransaction(repoRoot, devRoot, lease) {
+    const file = this.#devBootstrapRecoveryFile(repoRoot);
+    const record = await readFile(file, "utf8").then(JSON.parse, (error) => {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    });
+    if (!record) return null;
+    const exact = record.version === 1
+      && samePath(record.repositoryRoot, repoRoot)
+      && samePath(record.devRoot, devRoot)
+      && record.devBranch === this.devBranch
+      && [record.oldDevCommit, record.mainCommit, record.snapshotCommit,
+        record.bootstrapProofCommit, record.bootstrapCommit, record.bootstrapTree,
+        record.integrationCommit, record.resultTree]
+        .every((value) => /^[0-9a-f]{40}$/u.test(String(value ?? "")));
+    if (!exact) throw new Error("Task dev bootstrap recovery identity is invalid");
+    const [bootstrapLine, integrationLine, bootstrapTree, integrationTree, snapshotTree, proofLine] = [
+      await this.#runOwned(["rev-list", "--parents", "-n", "1", record.bootstrapCommit], {
+        cwd: repoRoot, lease,
+      }),
+      await this.#runOwned(["rev-list", "--parents", "-n", "1", record.integrationCommit], {
+        cwd: repoRoot, lease,
+      }),
+      await this.#runOwned(["rev-parse", `${record.bootstrapCommit}^{tree}`], { cwd: repoRoot, lease }),
+      await this.#runOwned(["rev-parse", `${record.integrationCommit}^{tree}`], { cwd: repoRoot, lease }),
+      await this.#runOwned(["rev-parse", `${record.snapshotCommit}^{tree}`], { cwd: repoRoot, lease }),
+      await this.#runOwned(["rev-list", "--parents", "-n", "1", record.bootstrapProofCommit], {
+        cwd: repoRoot, lease,
+      }),
+    ];
+    const bootstrapParents = bootstrapLine.split(/\s+/u).filter(Boolean);
+    const integrationParents = integrationLine.split(/\s+/u).filter(Boolean);
+    const proofParents = proofLine.split(/\s+/u).filter(Boolean);
+    const proofFirstParentLine = String(await this.#runOwned([
+      "rev-list", "--first-parent", record.snapshotCommit,
+    ], { cwd: repoRoot, lease })).split(/\r?\n/u).filter(Boolean);
+    if (bootstrapParents.length !== 3
+      || bootstrapParents[1] !== record.oldDevCommit
+      || bootstrapParents[2] !== record.mainCommit
+      || integrationParents.length !== 3
+      || integrationParents[1] !== record.bootstrapCommit
+      || integrationParents[2] !== record.snapshotCommit
+      || proofParents.length !== 3
+      || proofParents[2] !== record.mainCommit
+      || !proofFirstParentLine.includes(record.bootstrapProofCommit)
+      || bootstrapTree !== record.bootstrapTree
+      || integrationTree !== record.resultTree
+      || snapshotTree !== record.resultTree) {
+      throw new Error("Task dev bootstrap recovery commit identity changed");
+    }
+    const current = await this.#runOwned([
+      "rev-parse", `refs/heads/${this.devBranch}^{commit}`,
+    ], { cwd: repoRoot, lease });
+    if (current === record.oldDevCommit) {
+      await unlink(file);
+      return { recovered: false, record };
+    }
+    if (current !== record.integrationCommit) {
+      throw new Error(`Task dev bootstrap recovery found unexpected dev ${current}`);
+    }
+    await this.#runOwned(["reset", "--hard", record.integrationCommit], { cwd: devRoot, lease });
+    const status = await this.#runOwned([
+      "status", "--porcelain=v1", "-z", "--untracked-files=all",
+    ], { cwd: devRoot, lease });
+    if (status) throw new Error("Task dev bootstrap recovery did not restore a clean worktree");
+    await unlink(file);
+    return { recovered: true, record };
+  }
+
+  async #bootstrapSnapshotIntoDevOwned({
+    repoRoot, devRoot, devHeadBefore, mainCommit, snapshot, statusBefore,
+    adoptionReceipt = null, lease,
+  }) {
+    let mergeActive = false;
+    let conflicts = [];
+    const restore = async () => {
+      if (mergeActive) {
+        await this.#runOwned(["merge", "--abort"], { cwd: devRoot, lease });
+        mergeActive = false;
+      }
+      await this.#recoverDevBootstrapTransaction(repoRoot, devRoot, lease);
+      const [headCommit, status] = await Promise.all([
+        runGit(["rev-parse", "HEAD^{commit}"], { cwd: devRoot }),
+        runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: devRoot }),
+      ]);
+      if (headCommit !== devHeadBefore || status !== statusBefore) {
+        throw new Error(`Task dev bootstrap could not restore managed dev ${devHeadBefore}`);
+      }
+    };
+    try {
+      try {
+        await this.#runOwned([
+          "-c", "user.name=Agent Hub",
+          "-c", "user.email=agent-hub@local.invalid",
+          "merge", "--no-ff", "--no-commit", mainCommit,
+        ], { cwd: devRoot, timeoutMs: 300_000, lease });
+        mergeActive = true;
+      } catch (error) {
+        if (error?.processTreeStopped === false) throw error;
+        const mergeHead = path.resolve(await runGit(["rev-parse", "--git-path", "MERGE_HEAD"], { cwd: devRoot }));
+        mergeActive = await access(mergeHead).then(() => true, () => false);
+        if (!mergeActive) throw error;
+        conflicts = String(await this.#runOwned([
+          "diff", "--name-only", "--diff-filter=U", "-z",
+        ], { cwd: devRoot, lease })).split("\0").filter(Boolean);
+        if (!conflicts.length) throw error;
+      }
+      const proof = await this.#resolveSnapshotBootstrapConflicts({
+        repoRoot, devRoot, snapshot, mainCommit, conflicts, lease,
+      });
+      const bootstrapTree = await this.#runOwned(["write-tree"], { cwd: devRoot, lease });
+      const bootstrapCommit = await this.#runOwned([
+        "-c", "user.name=Agent Hub",
+        "-c", "user.email=agent-hub@local.invalid",
+        "commit-tree", bootstrapTree, "-p", devHeadBefore, "-p", mainCommit,
+      ], {
+        cwd: devRoot,
+        lease,
+        input: "merge(agent-hub): incorporate reviewed main ancestry\n",
+      });
+      await this.#runOwned(["merge", "--abort"], { cwd: devRoot, lease });
+      mergeActive = false;
+      const mergeTreeOutput = await this.#runOwned([
+        "merge-tree", "--write-tree", bootstrapCommit, snapshot.headCommit,
+      ], { cwd: repoRoot, timeoutMs: 300_000, lease });
+      const resultTree = exactCommitId(mergeTreeOutput.split(/\s+/u)[0], "Task integration tree");
+      const snapshotTree = await this.#runOwned(["rev-parse", `${snapshot.headCommit}^{tree}`], {
+        cwd: repoRoot, lease,
+      });
+      if (resultTree !== snapshotTree) {
+        throw new Error("Task dev bootstrap result does not match the accepted Task snapshot tree");
+      }
+      const integrationCommit = await this.#runOwned([
+        "-c", "user.name=Agent Hub",
+        "-c", "user.email=agent-hub@local.invalid",
+        "commit-tree", resultTree, "-p", bootstrapCommit, "-p", snapshot.headCommit,
+      ], {
+        cwd: repoRoot,
+        lease,
+        input: "merge(agent-hub): integrate reviewed Task snapshot\n",
+      });
+      const currentDevCommit = await this.#runOwned(["rev-parse", `refs/heads/${this.devBranch}^{commit}`], {
+        cwd: repoRoot, lease,
+      });
+      if (currentDevCommit !== devHeadBefore) {
+        throw new Error(`Task dev bootstrap dev changed from ${devHeadBefore} to ${currentDevCommit}`);
+      }
+      await this.#revalidateExplicitUpstreamAdoption(adoptionReceipt, lease);
+      const recoveryFile = this.#devBootstrapRecoveryFile(repoRoot);
+      const recovery = {
+        version: 1,
+        repositoryRoot: repoRoot,
+        devRoot,
+        devBranch: this.devBranch,
+        oldDevCommit: devHeadBefore,
+        mainCommit,
+        snapshotCommit: snapshot.headCommit,
+        bootstrapProofCommit: proof.commit,
+        bootstrapCommit,
+        bootstrapTree,
+        integrationCommit,
+        resultTree,
+        createdAt: new Date().toISOString(),
+      };
+      await mkdir(path.dirname(recoveryFile), { recursive: true });
+      await writeFile(recoveryFile, `${JSON.stringify(recovery, null, 2)}\n`, {
+        encoding: "utf8", flag: "wx", mode: 0o600,
+      });
+      await this.#runOwned([
+        "update-ref", `refs/heads/${this.devBranch}`, integrationCommit, devHeadBefore,
+      ], { cwd: repoRoot, lease });
+      await this.#runOwned(["reset", "--hard", integrationCommit], { cwd: devRoot, lease });
+      const finalStatus = await this.#runOwned([
+        "status", "--porcelain=v1", "-z", "--untracked-files=all",
+      ], { cwd: devRoot, lease });
+      if (finalStatus) throw new Error("Task dev bootstrap published a dirty managed dev worktree");
+      await unlink(recoveryFile);
+      return {
+        status: "bootstrap_merged",
+        integrated: true,
+        snapshotIntegrated: true,
+        repositoryRoot: repoRoot,
+        projectRoot: devRoot,
+        branch: this.devBranch,
+        mainCommit,
+        devHeadBefore,
+        bootstrapCommit,
+        headCommit: integrationCommit,
+        conflicts,
+      };
+    } catch (error) {
+      if (error?.processTreeStopped === false) throw error;
+      if (mergeActive) {
+        await this.#runOwned(["merge", "--abort"], { cwd: devRoot, lease });
+        mergeActive = false;
+      }
+      const recovered = await this.#recoverDevBootstrapTransaction(repoRoot, devRoot, lease);
+      if (recovered?.recovered) {
+        return {
+          status: "bootstrap_merged",
+          integrated: true,
+          snapshotIntegrated: true,
+          recovered: true,
+          repositoryRoot: repoRoot,
+          projectRoot: devRoot,
+          branch: this.devBranch,
+          mainCommit,
+          devHeadBefore,
+          bootstrapCommit: recovered.record.bootstrapCommit,
+          headCommit: recovered.record.integrationCommit,
+          conflicts,
+        };
+      }
+      await restore();
+      return {
+        status: conflicts.length ? "conflict" : "manual_required",
+        integrated: false,
+        repositoryRoot: repoRoot,
+        projectRoot: devRoot,
+        branch: this.devBranch,
+        mainCommit,
+        devHeadBefore,
+        headCommit: devHeadBefore,
+        conflicts,
+        reason: error.message,
+      };
+    }
   }
 
   async #processGuards(taskId) {
@@ -763,6 +1121,7 @@ export class TaskGitWorkspaceService {
 
   async #assertRecoverableDev(repoRoot, devRoot, { lease = null } = {}) {
     await requiredGuardLease(lease).assertOwned();
+    await this.#recoverDevBootstrapTransaction(repoRoot, devRoot, lease);
     const blockFile = await this.#integrationBlockFile(repoRoot);
     const priorBlock = await readFile(blockFile, "utf8").then(JSON.parse, () => null);
     if (priorBlock?.processTreeStopUnproven === true) {
@@ -892,26 +1251,9 @@ export class TaskGitWorkspaceService {
     await this.#runOwned(["branch", "-m", branch], { cwd: root, lease });
   }
 
-  async #refreshPreferredMainCommit(repoRoot, lease) {
+  async #prepareDevOwned(projectRoot, repoRoot, lease, { allowUnadoptedLocalMain = false } = {}) {
     await requiredGuardLease(lease).assertOwned();
-    const origin = await gitMaybe(["remote", "get-url", "origin"], { cwd: repoRoot });
-    if (origin) {
-      await this.#runOwned([
-        "-c", "remote.origin.tagOpt=--no-tags",
-        "-c", "fetch.recurseSubmodules=false",
-        "fetch", "--no-tags", "--no-recurse-submodules",
-        "origin", "+refs/heads/main:refs/remotes/origin/main",
-      ], { cwd: repoRoot, timeoutMs: 300_000, lease });
-      return this.#runOwned([
-        "rev-parse", "--verify", "refs/remotes/origin/main^{commit}",
-      ], { cwd: repoRoot, lease });
-    }
-    return preferredMainCommit(repoRoot);
-  }
-
-  async #prepareDevOwned(projectRoot, repoRoot, lease) {
-    await requiredGuardLease(lease).assertOwned();
-    const mainCommit = await preferredMainCommit(repoRoot);
+    const mainCommit = await localMainCommit(repoRoot);
     const repoKey = taskRepositoryKey(repoRoot);
     const { root: devRoot } = await this.#ensureBranchWorktree({
       repositoryRoot: repoRoot,
@@ -923,20 +1265,315 @@ export class TaskGitWorkspaceService {
     });
     await this.#assertRecoverableDev(repoRoot, devRoot, { lease });
     await lease.assertOwned();
+    const headCommit = await this.#runOwned(["rev-parse", "HEAD^{commit}"], { cwd: devRoot, lease });
+    const containsAcceptedMain = await gitMaybe([
+      "merge-base", "--is-ancestor", mainCommit, headCommit,
+    ], { cwd: devRoot }) !== null;
+    if (!containsAcceptedMain && !allowUnadoptedLocalMain) {
+      throw new Error(
+        `managed dev ${headCommit} does not contain accepted local main ${mainCommit}; explicit adoption required`,
+      );
+    }
     return {
       repositoryRoot: repoRoot,
       projectRoot: devRoot,
       branch: this.devBranch,
-      headCommit: await this.#runOwned(["rev-parse", "HEAD^{commit}"], { cwd: devRoot, lease }),
+      mainCommit,
+      acceptedMainIntegrated: containsAcceptedMain,
+      headCommit,
     };
   }
 
+  async #snapshotUpstreamAdoptionProof({
+    taskId, taskNumber = null, repoRoot, branch = null, baseCommit, snapshotCommit,
+    localMain, adoptedCommit = null, devCommit = null, lease,
+  }) {
+    const id = normalizedTaskId(taskId);
+    const repoKey = taskRepositoryKey(repoRoot);
+    const exactBase = exactCommitId(baseCommit, "Task base commit");
+    const exactSnapshot = exactCommitId(snapshotCommit, "Task snapshot commit");
+    const acceptedLocalMain = exactCommitId(localMain, "accepted local main");
+    const expectedAdopted = adoptedCommit == null
+      ? null
+      : exactCommitId(adoptedCommit, "adopted upstream commit");
+    const expectedBranch = String(branch ?? "").trim() || taskBranchName(id, repoRoot, taskNumber);
+    const branchRef = `refs/heads/${expectedBranch}`;
+    const observedMain = await this.#runOwned([
+      "rev-parse", "--verify", "refs/heads/main^{commit}",
+    ], { cwd: repoRoot, lease });
+    const observedBase = await this.#runOwned([
+      "rev-parse", "--verify", `${taskBaseRef(id, repoKey)}^{commit}`,
+    ], { cwd: repoRoot, lease });
+    const observedSnapshot = await this.#runOwned([
+      "rev-parse", "--verify", `${branchRef}^{commit}`,
+    ], { cwd: repoRoot, lease });
+    if (observedMain !== acceptedLocalMain) {
+      throw new Error(`accepted local main changed from ${acceptedLocalMain} to ${observedMain}`);
+    }
+    if (observedBase !== exactBase) throw new Error("explicit upstream adoption Task base changed");
+    if (observedSnapshot !== exactSnapshot) throw new Error("explicit upstream adoption Task snapshot changed");
+    const history = String(await this.#runOwned([
+      "rev-list", "--first-parent", "--merges",
+      `--max-count=${MAX_UPSTREAM_ADOPTION_PROOFS + 1}`, exactSnapshot, `^${exactBase}`,
+    ], { cwd: repoRoot, lease })).split(/\r?\n/u).filter(Boolean);
+    if (history.length > MAX_UPSTREAM_ADOPTION_PROOFS) {
+      throw new Error("explicit upstream adoption proof exceeds the bounded first-parent history");
+    }
+    const proofs = [];
+    for (const commit of history) {
+      const parents = String(await this.#runOwned([
+        "rev-list", "--parents", "-n", "1", commit,
+      ], { cwd: repoRoot, lease })).split(/\s+/u).filter(Boolean);
+      if (parents.length < 3) continue;
+      for (let index = 2; index < parents.length; index += 1) {
+        const candidate = parents[index];
+        if (candidate === acceptedLocalMain) continue;
+        const extendsAcceptedMain = await gitMaybe([
+          "merge-base", "--is-ancestor", acceptedLocalMain, candidate,
+        ], { cwd: repoRoot }) !== null;
+        if (!extendsAcceptedMain) continue;
+        if (expectedAdopted && candidate !== expectedAdopted) continue;
+        if (!expectedAdopted && devCommit && await gitMaybe([
+          "merge-base", "--is-ancestor", candidate, devCommit,
+        ], { cwd: repoRoot }) !== null) continue;
+        if (parents.length !== 3 || index !== 2) {
+          throw new Error(`Task snapshot has invalid explicit upstream adoption at ${commit}`);
+        }
+        proofs.push({ commit, firstParent: parents[1], candidate });
+      }
+    }
+    if (proofs.length !== 1) {
+      throw new Error(proofs.length
+        ? `Task snapshot has ambiguous explicit upstream adoption: ${proofs
+          .map(({ commit, candidate }) => `${commit}:${candidate}`).join(", ")}`
+        : "Task snapshot has no explicit upstream adoption proof");
+    }
+    const proof = proofs[0];
+    if (expectedAdopted && proof.candidate !== expectedAdopted) {
+      throw new Error(`Task snapshot adoption ${proof.candidate} does not match approved upstream ${expectedAdopted}`);
+    }
+    const snapshotTree = await this.#runOwned([
+      "rev-parse", `${exactSnapshot}^{tree}`,
+    ], { cwd: repoRoot, lease });
+    const proofTree = await this.#runOwned([
+      "rev-parse", `${proof.commit}^{tree}`,
+    ], { cwd: repoRoot, lease });
+    return {
+      taskId: id,
+      repositoryRoot: repoRoot,
+      repositoryKey: repoKey,
+      branch: expectedBranch,
+      branchRef,
+      taskBaseCommit: exactBase,
+      acceptedLocalMainCommit: acceptedLocalMain,
+      adoptedCommit: proof.candidate,
+      snapshotCommit: exactSnapshot,
+      snapshotTree,
+      proofCommit: proof.commit,
+      proofParents: [proof.firstParent, proof.candidate],
+      proofTree,
+    };
+  }
+
+  #upstreamAdoptionRecord(proof, requestId) {
+    return {
+      version: 1,
+      kind: "task-upstream-adoption",
+      requestId: exactRequestId(requestId),
+      taskId: proof.taskId,
+      repositoryRoot: proof.repositoryRoot,
+      repositoryKey: proof.repositoryKey,
+      branch: proof.branch,
+      taskBaseCommit: proof.taskBaseCommit,
+      acceptedLocalMainCommit: proof.acceptedLocalMainCommit,
+      adoptedCommit: proof.adoptedCommit,
+      snapshotCommit: proof.snapshotCommit,
+      snapshotTree: proof.snapshotTree,
+      proofCommit: proof.proofCommit,
+      proofParents: proof.proofParents,
+      proofTree: proof.proofTree,
+    };
+  }
+
+  async #previewExplicitUpstreamAdoptionOwned(input, { lease, write = false } = {}) {
+    const repoRoot = await repositoryRoot(input.projectRoot);
+    const proof = await this.#snapshotUpstreamAdoptionProof({
+      taskId: input.taskId,
+      taskNumber: input.taskNumber,
+      repoRoot,
+      branch: input.branch,
+      baseCommit: input.taskBaseCommit,
+      snapshotCommit: input.snapshotCommit,
+      localMain: input.acceptedLocalMainCommit,
+      adoptedCommit: input.adoptedCommit,
+      lease,
+    });
+    const record = this.#upstreamAdoptionRecord(proof, input.requestId);
+    const content = `${JSON.stringify(record)}\n`;
+    const recordHash = await this.#runOwned([
+      "hash-object", ...(write ? ["-w"] : []), "--stdin",
+    ], { cwd: repoRoot, input: content, lease });
+    const recordRef = taskUpstreamAdoptionRef(
+      proof.taskId, proof.repositoryKey, proof.snapshotCommit, proof.adoptedCommit,
+    );
+    if (write) {
+      const existing = await gitMaybe(["rev-parse", "--verify", recordRef], { cwd: repoRoot });
+      if (existing && existing !== recordHash) {
+        throw new Error(`explicit upstream adoption receipt ${recordRef} already has different content`);
+      }
+      if (!existing) {
+        await this.#runOwned(["update-ref", "--stdin"], {
+          cwd: repoRoot,
+          input: `start\nverify refs/heads/main ${proof.acceptedLocalMainCommit}\nverify ${taskBaseRef(proof.taskId, proof.repositoryKey)} ${proof.taskBaseCommit}\nverify ${proof.branchRef} ${proof.snapshotCommit}\ncreate ${recordRef} ${recordHash}\nprepare\ncommit\n`,
+          lease,
+        });
+      }
+    }
+    return { status: write ? "adopted" : "preview", recordRef, recordHash, record };
+  }
+
+  async previewExplicitUpstreamAdoption(input = {}) {
+    this.#assertAvailable("previewExplicitUpstreamAdoption");
+    return this.withTaskLock(input.taskId, (lease) => this.#previewExplicitUpstreamAdoptionOwned(input, { lease }));
+  }
+
+  async recordExplicitUpstreamAdoption(input = {}) {
+    this.#assertAvailable("recordExplicitUpstreamAdoption");
+    return this.withTaskLock(input.taskId, (lease) => this.#previewExplicitUpstreamAdoptionOwned(input, {
+      lease, write: true,
+    }));
+  }
+
+  async #requireExplicitUpstreamAdoption({
+    taskId, taskNumber = null, repoRoot, branch = null, baseCommit, snapshotCommit,
+    localMain, adoptedCommit, lease,
+  }) {
+    const proof = await this.#snapshotUpstreamAdoptionProof({
+      taskId, taskNumber, repoRoot, branch, baseCommit, snapshotCommit,
+      localMain, adoptedCommit, lease,
+    });
+    const recordRef = taskUpstreamAdoptionRef(
+      proof.taskId, proof.repositoryKey, proof.snapshotCommit, proof.adoptedCommit,
+    );
+    const recordHash = await this.#runOwned(["rev-parse", "--verify", recordRef], {
+      cwd: repoRoot, lease,
+    }).catch(() => {
+      throw new Error(`approved upstream ${proof.adoptedCommit} requires a durable explicit adoption receipt`);
+    });
+    const type = await this.#runOwned(["cat-file", "-t", recordHash], { cwd: repoRoot, lease });
+    if (type !== "blob") throw new Error("explicit upstream adoption receipt is not a Git blob");
+    const content = await this.#runOwned(["cat-file", "-p", recordHash], { cwd: repoRoot, lease });
+    let record;
+    try {
+      record = JSON.parse(content);
+    } catch {
+      throw new Error("explicit upstream adoption receipt is invalid JSON");
+    }
+    const expected = this.#upstreamAdoptionRecord(proof, record?.requestId);
+    if (JSON.stringify(record) !== JSON.stringify(expected)) {
+      throw new Error("explicit upstream adoption receipt identity changed");
+    }
+    const verifiedHash = await this.#runOwned(["hash-object", "--stdin"], {
+      cwd: repoRoot, input: `${JSON.stringify(record)}\n`, lease,
+    });
+    if (verifiedHash !== recordHash) throw new Error("explicit upstream adoption receipt hash changed");
+    return { recordRef, recordHash, record };
+  }
+
+  async #revalidateExplicitUpstreamAdoption(receipt, lease) {
+    if (!receipt) return null;
+    const record = receipt.record;
+    const verified = await this.#requireExplicitUpstreamAdoption({
+      taskId: record.taskId,
+      repoRoot: record.repositoryRoot,
+      branch: record.branch,
+      baseCommit: record.taskBaseCommit,
+      snapshotCommit: record.snapshotCommit,
+      localMain: record.acceptedLocalMainCommit,
+      adoptedCommit: record.adoptedCommit,
+      lease,
+    });
+    if (verified.recordRef !== receipt.recordRef || verified.recordHash !== receipt.recordHash) {
+      throw new Error("explicit upstream adoption receipt changed before dev publication");
+    }
+    return verified;
+  }
+
+  async #recordedUpstreamAdoptionForSnapshot({ taskId, repoRoot, snapshotCommit, localMain, lease }) {
+    const id = normalizedTaskId(taskId);
+    const repoKey = taskRepositoryKey(repoRoot);
+    const exactSnapshot = exactCommitId(snapshotCommit, "Task snapshot commit");
+    const prefix = `${taskUpstreamAdoptionPrefix(id, repoKey)}${exactSnapshot}/`;
+    const records = String(await this.#runOwned([
+      "for-each-ref", "--format=%(refname)%00%(objectname)", prefix,
+    ], { cwd: repoRoot, lease })).split(/\r?\n/u).filter(Boolean);
+    if (!records.length) return null;
+    if (records.length !== 1) throw new Error("Task snapshot has ambiguous durable upstream adoption receipts");
+    const [recordRef, recordHash] = records[0].split("\0");
+    let record;
+    try {
+      record = JSON.parse(await this.#runOwned(["cat-file", "-p", recordHash], { cwd: repoRoot, lease }));
+    } catch {
+      throw new Error("explicit upstream adoption receipt is invalid");
+    }
+    if (record?.taskId !== id || record.repositoryKey !== repoKey || record.snapshotCommit !== exactSnapshot) {
+      throw new Error("explicit upstream adoption receipt snapshot identity changed");
+    }
+    const currentLocalMain = exactCommitId(localMain, "accepted local main");
+    if (record.acceptedLocalMainCommit !== currentLocalMain) {
+      throw new Error(
+        `accepted local main changed from ${record.acceptedLocalMainCommit} to ${currentLocalMain}`,
+      );
+    }
+    const verified = await this.#requireExplicitUpstreamAdoption({
+      taskId: id,
+      repoRoot,
+      branch: record.branch,
+      baseCommit: record.taskBaseCommit,
+      snapshotCommit: exactSnapshot,
+      localMain: record.acceptedLocalMainCommit,
+      adoptedCommit: record.adoptedCommit,
+      lease,
+    });
+    if (verified.recordRef !== recordRef || verified.recordHash !== recordHash) {
+      throw new Error("explicit upstream adoption receipt ref identity changed");
+    }
+    return verified;
+  }
+
+  async #snapshotAdoptedMainCommit({ snapshot, repoRoot, localMain, devCommit, lease }) {
+    try {
+      const proof = await this.#snapshotUpstreamAdoptionProof({
+        taskId: snapshot.taskId,
+        taskNumber: snapshot.taskNumber,
+        repoRoot,
+        branch: snapshot.branch,
+        baseCommit: snapshot.baseCommit,
+        snapshotCommit: snapshot.headCommit,
+        localMain,
+        devCommit,
+        lease,
+      });
+      return { mainCommit: proof.adoptedCommit, proof };
+    } catch (error) {
+      if (/has no explicit upstream adoption proof/u.test(error.message)) {
+        return { mainCommit: localMain, proof: null };
+      }
+      throw error;
+    }
+  }
+
   async #synchronizeMainIntoDevOwned({
-    repoRoot, expectedMainCommit = null, observedMainCommit = null, lease,
+    repoRoot, expectedMainCommit = null, observedMainCommit = null, snapshotResolution = null,
+    adoptionReceipt = null, lease,
   }) {
     await requiredGuardLease(lease).assertOwned();
     const repoKey = taskRepositoryKey(repoRoot);
-    const mainCommit = observedMainCommit ?? await this.#refreshPreferredMainCommit(repoRoot, lease);
+    const requestedMain = String(observedMainCommit ?? expectedMainCommit ?? "").trim();
+    if (!requestedMain) throw new Error("explicit main to dev synchronization requires an exact accepted revision");
+    const mainCommit = await this.#runOwned([
+      "rev-parse", "--verify", `${exactCommitId(requestedMain, "accepted main revision")}^{commit}`,
+    ], { cwd: repoRoot, lease });
     const expected = String(expectedMainCommit ?? "").trim().toLowerCase();
     if (expected && mainCommit !== expected) {
       return {
@@ -992,8 +1629,21 @@ export class TaskGitWorkspaceService {
     const fastForward = await gitMaybe(["merge-base", "--is-ancestor", devHeadBefore, mainCommit], {
       cwd: devRoot,
     }) !== null;
+    if (snapshotResolution && !fastForward) {
+      return this.#bootstrapSnapshotIntoDevOwned({
+        repoRoot,
+        devRoot,
+        devHeadBefore,
+        mainCommit,
+        snapshot: snapshotResolution,
+        statusBefore,
+        adoptionReceipt,
+        lease,
+      });
+    }
     try {
       await lease.assertOwned();
+      await this.#revalidateExplicitUpstreamAdoption(adoptionReceipt, lease);
       await this.#runOwned([
         "-c", "user.name=Agent Hub",
         "-c", "user.email=agent-hub@local.invalid",
@@ -1059,25 +1709,30 @@ export class TaskGitWorkspaceService {
 
   async prepareDev(projectRoot) {
     this.#assertAvailable("prepareDev");
-    const synchronization = await this.synchronizeMainIntoDev({ projectRoot });
-    if (!synchronization.integrated) {
-      const conflicts = synchronization.conflicts?.length
-        ? `; conflicts: ${synchronization.conflicts.join(", ")}`
-        : "";
-      throw new Error(`main to dev synchronization requires manual resolution: ${synchronization.reason}${conflicts}`);
-    }
-    return synchronization;
+    const repoRoot = await repositoryRoot(projectRoot);
+    await this.#assertRepositoryProcessTreeClear(repoRoot);
+    return this.#withDevLock(repoRoot, null, (lease) => this.#prepareDevOwned(projectRoot, repoRoot, lease));
   }
 
   async synchronizeMainIntoDev({ projectRoot, publishedRevision = null } = {}) {
     this.#assertAvailable("synchronizeMainIntoDev");
+    const expectedMainCommit = exactCommitId(publishedRevision, "published revision");
     const repoRoot = await repositoryRoot(projectRoot);
     await this.#assertRepositoryProcessTreeClear(repoRoot);
-    return this.#withDevLock(repoRoot, null, (lease) => this.#synchronizeMainIntoDevOwned({
-      repoRoot,
-      expectedMainCommit: publishedRevision,
-      lease,
-    }));
+    return this.#withDevLock(repoRoot, null, async (lease) => {
+      const currentLocalMain = await localMainCommit(repoRoot);
+      if (currentLocalMain !== expectedMainCommit) {
+        throw new Error(
+          `published revision ${expectedMainCommit} is not the accepted local main ${currentLocalMain}`,
+        );
+      }
+      return this.#synchronizeMainIntoDevOwned({
+        repoRoot,
+        expectedMainCommit,
+        observedMainCommit: expectedMainCommit,
+        lease,
+      });
+    });
   }
 
   async prepare(params = {}) {
@@ -1100,17 +1755,19 @@ export class TaskGitWorkspaceService {
       const branch = taskBranchName(id, repoRoot, taskNumber);
       const baseRef = taskBaseRef(id, repoKey);
       let baseCommit = await gitMaybe(["rev-parse", "--verify", `${baseRef}^{commit}`], { cwd: repoRoot });
-      let dev;
       if (!baseCommit) {
-        dev = await this.#synchronizeMainIntoDevOwned({ repoRoot, lease: ownedLease });
-        if (!dev.integrated) {
-          const conflicts = dev.conflicts?.length ? `; conflicts: ${dev.conflicts.join(", ")}` : "";
-          throw new Error(`main to dev synchronization requires manual resolution: ${dev.reason}${conflicts}`);
+        baseCommit = await localMainCommit(repoRoot);
+        await this.#runOwned(["update-ref", "--stdin"], {
+          cwd: repoRoot,
+          input: `start\nverify refs/heads/main ${baseCommit}\ncreate ${baseRef} ${baseCommit}\nprepare\ncommit\n`,
+          lease: ownedLease,
+        });
+        const pinned = await this.#runOwned(["rev-parse", "--verify", `${baseRef}^{commit}`], {
+          cwd: repoRoot, lease: ownedLease,
+        });
+        if (pinned !== baseCommit) {
+          throw new Error("Task base ref did not preserve the accepted local main identity");
         }
-        baseCommit = dev.mainCommit;
-        await this.#runOwned(["update-ref", baseRef, baseCommit], { cwd: repoRoot, lease: ownedLease });
-      } else {
-        dev = await this.#prepareDevOwned(projectRoot, repoRoot, ownedLease);
       }
       const taskRootPath = path.join(this.taskWorktreesRoot, id, repoKey);
       await this.#alignExistingTaskBranch({
@@ -1236,30 +1893,65 @@ export class TaskGitWorkspaceService {
     await this.#assertNoProcessTreeGuard(snapshot.taskId);
     await this.#assertRepositoryProcessTreeClear(snapshot.repositoryRoot);
     return this.#withDevLock(snapshot.repositoryRoot, lease, async (ownedLease) => {
-      let dev = await this.#prepareDevOwned(snapshot.repositoryRoot, snapshot.repositoryRoot, ownedLease);
+      let dev = await this.#prepareDevOwned(
+        snapshot.repositoryRoot,
+        snapshot.repositoryRoot,
+        ownedLease,
+        { allowUnadoptedLocalMain: true },
+      );
       let devHeadBefore = dev.headCommit;
       let statusBefore = await runGit([
         "status", "--porcelain=v1", "-z", "--untracked-files=all",
       ], { cwd: dev.projectRoot });
-      const mainCommit = await this.#refreshPreferredMainCommit(snapshot.repositoryRoot, ownedLease);
+      const localMain = dev.mainCommit;
+      let adoptionReceipt = await this.#recordedUpstreamAdoptionForSnapshot({
+        taskId: snapshot.taskId,
+        repoRoot: snapshot.repositoryRoot,
+        snapshotCommit: snapshot.headCommit,
+        localMain,
+        lease: ownedLease,
+      });
+      let mainCommit = adoptionReceipt?.record.adoptedCommit ?? null;
+      if (!mainCommit) {
+        const adoptedMain = await this.#snapshotAdoptedMainCommit({
+          snapshot,
+          repoRoot: snapshot.repositoryRoot,
+          localMain,
+          devCommit: devHeadBefore,
+          lease: ownedLease,
+        });
+        mainCommit = adoptedMain.mainCommit;
+        adoptionReceipt = mainCommit === localMain ? null : await this.#requireExplicitUpstreamAdoption({
+          taskId: snapshot.taskId,
+          taskNumber: snapshot.taskNumber,
+          repoRoot: snapshot.repositoryRoot,
+          branch: snapshot.branch,
+          baseCommit: snapshot.baseCommit,
+          snapshotCommit: snapshot.headCommit,
+          localMain,
+          adoptedCommit: mainCommit,
+          lease: ownedLease,
+        });
+      }
       const snapshotContainsMain = await gitMaybe([
         "merge-base", "--is-ancestor", mainCommit, snapshot.headCommit,
       ], { cwd: dev.projectRoot }) !== null;
       const snapshotContainsDev = await gitMaybe([
         "merge-base", "--is-ancestor", devHeadBefore, snapshot.headCommit,
       ], { cwd: dev.projectRoot }) !== null;
-      if (snapshotContainsMain && snapshotContainsDev) {
-        dev = {
-          ...dev,
-          status: "bootstrap_ready",
-          mainCommit,
-          devHeadBefore,
-          headCommit: devHeadBefore,
-        };
-      } else {
+      if (!dev.acceptedMainIntegrated && (!snapshotContainsMain || !snapshotContainsDev)) {
+        throw new Error(
+          `managed dev ${devHeadBefore} does not contain accepted local main ${localMain}; `
+          + "Task result does not prove the exact main/dev bootstrap",
+        );
+      }
+      if ((!dev.acceptedMainIntegrated || mainCommit !== localMain)
+          && snapshotContainsMain && snapshotContainsDev) {
         dev = await this.#synchronizeMainIntoDevOwned({
           repoRoot: snapshot.repositoryRoot,
           observedMainCommit: mainCommit,
+          snapshotResolution: snapshot,
+          adoptionReceipt,
           lease: ownedLease,
         });
         if (!dev.integrated) {
@@ -1267,6 +1959,14 @@ export class TaskGitWorkspaceService {
             integrated: false,
             conflicts: dev.conflicts ?? [],
             error: `main to dev synchronization requires manual resolution: ${dev.reason}`,
+            dev,
+          };
+        }
+        if (dev.snapshotIntegrated) {
+          return {
+            integrated: true,
+            alreadyIntegrated: false,
+            bootstrapCommit: dev.bootstrapCommit,
             dev,
           };
         }
@@ -1297,6 +1997,7 @@ export class TaskGitWorkspaceService {
       }
       try {
         await ownedLease.assertOwned();
+        await this.#revalidateExplicitUpstreamAdoption(adoptionReceipt, ownedLease);
         await this.#runOwned([
           "-c", "user.name=Agent Hub",
           "-c", "user.email=agent-hub@local.invalid",
@@ -1500,7 +2201,7 @@ export class TaskGitWorkspaceService {
         throw new Error(`Task result commit ${evidence.resultCommit} is not integrated into dev ${dev.headCommit}`);
       }
       if (!integrations.length) {
-        const mainCommit = await preferredMainCommit(evidence.projectRoot);
+        const mainCommit = await localMainCommit(evidence.projectRoot);
         const includedInMain = await gitMaybe([
           "merge-base", "--is-ancestor", evidence.resultCommit, mainCommit,
         ], { cwd: dev.projectRoot }) !== null;
@@ -1511,6 +2212,7 @@ export class TaskGitWorkspaceService {
       resolvedTasks.push({
         taskId: String(task.taskId),
         taskRevision,
+        baseCommit: evidence.baseCommit,
         resultCommit: evidence.resultCommit,
         integrations,
         lineage,
@@ -1676,6 +2378,65 @@ export class TaskGitWorkspaceService {
     return { ...dev, resultCommits: verified };
   }
 
+  async assertExplicitUpstreamAdoption({
+    projectRoot, acceptedLocalMainCommit, approvedUpstreamCommit, frozenTasks = [],
+  } = {}) {
+    this.#assertAvailable("assertExplicitUpstreamAdoption");
+    const repoRoot = await repositoryRoot(projectRoot);
+    const localMain = await localMainCommit(repoRoot);
+    const acceptedLocal = exactCommitId(acceptedLocalMainCommit, "accepted local main");
+    const approvedUpstream = exactCommitId(approvedUpstreamCommit, "approved upstream main");
+    if (localMain !== acceptedLocal) {
+      throw new Error(`accepted local main changed from ${acceptedLocal} to ${localMain}`);
+    }
+    if (approvedUpstream === localMain) {
+      return { projectRoot: repoRoot, localMain, approvedUpstream, adoptedByResultCommit: null };
+    }
+    await runGit(["rev-parse", "--verify", `${approvedUpstream}^{commit}`], { cwd: repoRoot });
+    await runGit(["merge-base", "--is-ancestor", localMain, approvedUpstream], { cwd: repoRoot });
+    const dev = await this.prepareDev(repoRoot);
+    const adoptedInDev = await gitMaybe([
+      "merge-base", "--is-ancestor", approvedUpstream, dev.headCommit,
+    ], { cwd: dev.projectRoot }) !== null;
+    const adoptedResults = [];
+    for (const task of frozenTasks) {
+      const exactResult = await runGit([
+        "rev-parse", "--verify", `${exactCommitId(task?.resultCommit, "Task result commit")}^{commit}`,
+      ], { cwd: repoRoot });
+      try {
+        const receipt = await this.withTaskLock(task.taskId, async (lease) => this.#requireExplicitUpstreamAdoption({
+          taskId: task.taskId,
+          taskNumber: task.taskNumber,
+          repoRoot,
+          branch: task.branch,
+          baseCommit: await this.#runOwned([
+            "rev-parse", "--verify", `${taskBaseRef(task.taskId, taskRepositoryKey(repoRoot))}^{commit}`,
+          ], { cwd: repoRoot, lease }),
+          snapshotCommit: exactResult,
+          localMain,
+          adoptedCommit: approvedUpstream,
+          lease,
+        }));
+        adoptedResults.push({ resultCommit: exactResult, receipt });
+      } catch {}
+    }
+    if (!adoptedInDev || adoptedResults.length === 0) {
+      throw new Error(
+        `approved upstream ${approvedUpstream} requires explicit adoption by a selected Task result and managed dev`,
+      );
+    }
+    return {
+      projectRoot: repoRoot,
+      localMain,
+      approvedUpstream,
+      adoptedByResultCommit: adoptedResults.sort((left, right) => (
+        left.resultCommit.localeCompare(right.resultCommit)
+      ))[0].resultCommit,
+      adoptionReceipt: adoptedResults[0].receipt,
+      devHeadCommit: dev.headCommit,
+    };
+  }
+
   async describe(taskId) {
     this.#assertAvailable("describe");
     const id = normalizedTaskId(taskId);
@@ -1735,13 +2496,19 @@ export class TaskGitWorkspaceService {
         publicationGeneration: publishedRevision ? durableGeneration : null,
       });
     }
-    const deleting = workspaces.flatMap((workspace) => [
-      { kind: "worktree", path: workspace.projectRoot },
-      { kind: "branch", name: workspace.branch, repositoryRoot: workspace.repositoryRoot },
-      { kind: "base_ref", name: taskBaseRef(id, workspace.repositoryKey), repositoryRoot: workspace.repositoryRoot },
-      { kind: "result_ref", name: taskResultRef(id, workspace.repositoryKey), repositoryRoot: workspace.repositoryRoot },
-      { kind: "adoption_ref", name: taskLegacyAdoptionRef(id, workspace.repositoryKey), repositoryRoot: workspace.repositoryRoot },
-    ]);
+    const deleting = [];
+    for (const workspace of workspaces) {
+      deleting.push(
+        { kind: "worktree", path: workspace.projectRoot },
+        { kind: "branch", name: workspace.branch, repositoryRoot: workspace.repositoryRoot },
+        { kind: "base_ref", name: taskBaseRef(id, workspace.repositoryKey), repositoryRoot: workspace.repositoryRoot },
+        { kind: "result_ref", name: taskResultRef(id, workspace.repositoryKey), repositoryRoot: workspace.repositoryRoot },
+        { kind: "adoption_ref", name: taskLegacyAdoptionRef(id, workspace.repositoryKey), repositoryRoot: workspace.repositoryRoot },
+      );
+      for (const name of await taskUpstreamAdoptionRefs(
+        workspace.repositoryRoot, id, workspace.repositoryKey,
+      )) deleting.push({ kind: "upstream_adoption_ref", name, repositoryRoot: workspace.repositoryRoot });
+    }
     for (const reference of references) {
       const repoKey = taskRepositoryKey(reference.projectRoot);
       if (reference.branch) deleting.push({ kind: "branch", name: reference.branch, repositoryRoot: reference.projectRoot });
@@ -1750,6 +2517,9 @@ export class TaskGitWorkspaceService {
         { kind: "result_ref", name: taskResultRef(id, repoKey), repositoryRoot: reference.projectRoot },
         { kind: "adoption_ref", name: taskLegacyAdoptionRef(id, repoKey), repositoryRoot: reference.projectRoot },
       );
+      for (const name of await taskUpstreamAdoptionRefs(reference.projectRoot, id, repoKey)) {
+        deleting.push({ kind: "upstream_adoption_ref", name, repositoryRoot: reference.projectRoot });
+      }
     }
     const uniqueDeleting = [...new Map(deleting.map((item) => [
       `${item.kind}\0${item.repositoryRoot ?? ""}\0${item.path ?? item.name ?? ""}`, item,
@@ -1817,6 +2587,9 @@ export class TaskGitWorkspaceService {
       await this.#runOwned(["update-ref", "-d", taskBaseRef(id, workspace.repositoryKey)], { cwd: repoRoot, lease });
       await this.#runOwned(["update-ref", "-d", taskResultRef(id, workspace.repositoryKey)], { cwd: repoRoot, lease });
       await this.#runOwned(["update-ref", "-d", taskLegacyAdoptionRef(id, workspace.repositoryKey)], { cwd: repoRoot, lease });
+      for (const name of await taskUpstreamAdoptionRefs(repoRoot, id, workspace.repositoryKey)) {
+        await this.#runOwned(["update-ref", "-d", name], { cwd: repoRoot, lease });
+      }
       cleanedRepositories.add(repoKey);
     }
     for (const reference of gitReferences) {
@@ -1831,6 +2604,9 @@ export class TaskGitWorkspaceService {
       await this.#runOwned(["update-ref", "-d", taskBaseRef(id, repoKey)], { cwd: repoRoot, lease });
       await this.#runOwned(["update-ref", "-d", taskResultRef(id, repoKey)], { cwd: repoRoot, lease });
       await this.#runOwned(["update-ref", "-d", taskLegacyAdoptionRef(id, repoKey)], { cwd: repoRoot, lease });
+      for (const name of await taskUpstreamAdoptionRefs(repoRoot, id, repoKey)) {
+        await this.#runOwned(["update-ref", "-d", name], { cwd: repoRoot, lease });
+      }
     }
     await lease.assertOwned();
     await rm(root, { recursive: true, force: true });

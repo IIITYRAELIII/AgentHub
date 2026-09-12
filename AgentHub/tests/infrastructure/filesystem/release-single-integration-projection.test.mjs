@@ -61,8 +61,8 @@ test("one exact automatic integration keeps its order without first-parent bagga
   await git(["checkout", "main"]);
   await git(["push", "origin", "main"]);
   const tasks = [
-    { taskId: "selected", taskRevision: 2, resultCommit: selectedResult, integrations: selectedIntegrations },
-    { taskId: "task", taskRevision: 1, resultCommit: taskResult, integrations: [taskIntegration] },
+    { taskId: "selected", taskRevision: 2, baseCommit: base, resultCommit: selectedResult, integrations: selectedIntegrations },
+    { taskId: "task", taskRevision: 1, baseCommit: base, resultCommit: taskResult, integrations: [taskIntegration] },
   ];
   const proofs = await releaseTaskNetProjections({ tasks, baseCommit: base, git });
   assert.equal(proofs.get("task")?.orderPreserving, true);

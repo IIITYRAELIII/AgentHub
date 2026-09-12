@@ -156,6 +156,82 @@ test("release candidate uses an independent clone and leaves a clean primary att
   );
 });
 
+test("frozen candidate readback validates prepared manifest identity and request binding", async (context) => {
+  const setup = await fixture(context);
+  const resultCommit = await taskResult(setup, context);
+  const candidate = await setup.service.prepareCandidate({
+    planRevision: "plan-readback",
+    workspaceId: "workspace-1",
+    preflightRequestId: "preflight-readback-1",
+    projectRoot: setup.primary,
+    frozenTasks: [{
+      taskId: "task-readback", taskRevision: 3, baseCommit: setup.baseCommit, resultCommit,
+    }],
+  });
+
+  const readback = await setup.service.frozenCandidate(setup.primary);
+
+  assert.equal(readback.checkpointPhase, "prepared");
+  assert.equal(readback.planRevision, "plan-readback");
+  assert.equal(readback.preReleaseHead, candidate.preReleaseHead);
+  assert.equal(readback.preflightRequestId, "preflight-readback-1");
+  assert.equal(readback.manifest.workspaceId, "workspace-1");
+  assert.equal(readback.manifest.preflightRequestId, "preflight-readback-1");
+  assert.deepEqual(readback.manifest.taskIds, ["task-readback"]);
+  assert.deepEqual(readback.manifest.tasks, [{
+    taskId: "task-readback",
+    taskRevision: 3,
+    baseCommit: setup.baseCommit,
+    resultCommit,
+  }]);
+
+  const checkpointBefore = JSON.parse(await readFile(readback.checkpointFile, "utf8"));
+  await writeFile(readback.checkpointFile, `${JSON.stringify({
+    ...checkpointBefore,
+    preflightRequestId: "different-request",
+  }, null, 2)}\n`, "utf8");
+  await assert.rejects(
+    () => setup.service.frozenCandidate(setup.primary),
+    /request identity disagrees/u,
+  );
+  await writeFile(readback.checkpointFile, `${JSON.stringify(checkpointBefore, null, 2)}\n`, "utf8");
+
+  await writeFile(candidate.manifestFile, "{}\n", "utf8");
+  await assert.rejects(
+    () => setup.service.frozenCandidate(setup.primary),
+    /manifest digest changed/u,
+  );
+});
+
+test("request-bound prepared checkpoint is not usable after the final primary guard fails", async (context) => {
+  const setup = await fixture(context);
+  const resultCommit = await taskResult(setup, context, {
+    branch: "HUB-final-guard",
+    file: "guard.txt",
+    content: "guard\n",
+  });
+
+  await assert.rejects(
+    () => setup.service.prepareCandidate({
+      planRevision: "plan-final-guard",
+      workspaceId: "workspace-probe",
+      preflightRequestId: "request-probe",
+      projectRoot: setup.primary,
+      frozenTasks: [{ taskId: "task-guard", taskRevision: 4, resultCommit }],
+      validateBeforeCommit: async () => {
+        await git(setup.primary, "checkout", "--detach", setup.baseCommit);
+      },
+    }),
+    /HEAD must remain attached to refs\/heads\/main/u,
+  );
+
+  assert.equal(await git(setup.primary, "rev-parse", "HEAD"), setup.baseCommit);
+  await assert.rejects(
+    () => setup.service.frozenCandidate(setup.primary),
+    /HEAD must remain attached to refs\/heads\/main/u,
+  );
+});
+
 test("main review discloses every commit since the last successful publication", async (context) => {
   const setup = await fixture(context);
   await writeFile(path.join(setup.primary, "AgentHub", "external.mjs"), "export const external = true;\n", "utf8");
@@ -190,6 +266,106 @@ test("main review discloses every commit since the last successful publication",
   });
   assert.equal(approved.approved, true);
   assert.equal(approved.approvalRequired, false);
+});
+
+test("main review preserves an old dirty primary while auditing newer origin main", async (context) => {
+  const setup = await fixture(context);
+  await writeFile(path.join(setup.primary, "local-only.txt"), "local\n", "utf8");
+  const localCommit = await commit(setup.primary, "local main preserved");
+  const remoteWriter = path.join(setup.root, "remote-writer");
+  await git(setup.root, "clone", setup.origin, remoteWriter);
+  context.after(() => rm(remoteWriter, { recursive: true, force: true }));
+  await writeFile(path.join(remoteWriter, "remote-only.txt"), "remote\n", "utf8");
+  const originCommit = await commit(remoteWriter, "origin main advanced");
+  await git(remoteWriter, "push", "origin", "main");
+  const dirtyBytes = Buffer.from("local synthetic access remains dirty\n", "utf8");
+  await writeFile(path.join(setup.primary, "1C_ACCESS", "access.json"), dirtyBytes);
+  const before = {
+    head: await git(setup.primary, "rev-parse", "HEAD"),
+    branch: await git(setup.primary, "symbolic-ref", "HEAD"),
+    status: await git(setup.primary, "status", "--porcelain=v1"),
+    access: await readFile(path.join(setup.primary, "1C_ACCESS", "access.json")),
+  };
+
+  const pending = await setup.service.inspectMainChanges({
+    projectRoot: setup.primary,
+    publishedRevision: setup.baseCommit,
+  });
+
+  assert.equal(pending.localMain, localCommit);
+  assert.equal(pending.originMain, originCommit);
+  assert.equal(pending.diverged, true);
+  assert.equal(pending.approvalRequired, true);
+  assert.deepEqual(pending.commits.map((item) => item.commit).sort(), [localCommit, originCommit].sort());
+
+  const approved = await setup.service.inspectMainChanges({
+    projectRoot: setup.primary,
+    publishedRevision: setup.baseCommit,
+    approvedLocalMainCommit: localCommit,
+    approvedOriginMainCommit: originCommit,
+  });
+  assert.equal(approved.approved, true);
+  assert.equal(approved.approvalRequired, false);
+  assert.equal(await git(setup.primary, "rev-parse", "HEAD"), before.head);
+  assert.equal(await git(setup.primary, "symbolic-ref", "HEAD"), before.branch);
+  assert.equal(await git(setup.primary, "status", "--porcelain=v1"), before.status);
+  assert.deepEqual(await readFile(path.join(setup.primary, "1C_ACCESS", "access.json")), before.access);
+});
+
+test("main review accepts a preserved old primary when the published revision is newer origin main", async (context) => {
+  const setup = await fixture(context);
+  const localCommit = await git(setup.primary, "rev-parse", "HEAD");
+  const remoteWriter = path.join(setup.root, "bookworm-origin-writer");
+  await git(setup.root, "clone", setup.origin, remoteWriter);
+  context.after(() => rm(remoteWriter, { recursive: true, force: true }));
+  await writeFile(path.join(remoteWriter, "app.txt"), "published newer origin\n", "utf8");
+  const publishedRevision = await commit(remoteWriter, "published revision newer than primary");
+  await git(remoteWriter, "push", "origin", "main");
+  await writeFile(path.join(setup.primary, "app.txt"), "old primary dirty bytes\n", "utf8");
+  await writeFile(path.join(setup.primary, "1C_ACCESS", "access.json"), "dirty access bytes\n", "utf8");
+  const before = {
+    head: await git(setup.primary, "rev-parse", "HEAD"),
+    branch: await git(setup.primary, "symbolic-ref", "HEAD"),
+    status: await git(setup.primary, "status", "--porcelain=v1"),
+    app: await readFile(path.join(setup.primary, "app.txt")),
+    access: await readFile(path.join(setup.primary, "1C_ACCESS", "access.json")),
+  };
+
+  const pending = await setup.service.inspectMainChanges({
+    projectRoot: setup.primary,
+    publishedRevision,
+  });
+
+  assert.equal(pending.localMain, localCommit);
+  assert.equal(pending.originMain, publishedRevision);
+  assert.equal(pending.diverged, true);
+  assert.equal(pending.localContainsPublished, false);
+  assert.equal(pending.publishedContainsLocal, true);
+  assert.equal(pending.originContainsPublished, true);
+  assert.equal(pending.approvalRequired, true);
+  assert.ok(pending.commits.some((item) => item.commit === publishedRevision && item.inLocalMain === false));
+
+  const stale = await setup.service.inspectMainChanges({
+    projectRoot: setup.primary,
+    publishedRevision,
+    approvedLocalMainCommit: publishedRevision,
+    approvedOriginMainCommit: publishedRevision,
+  });
+  assert.equal(stale.approvalRequired, true);
+
+  const approved = await setup.service.inspectMainChanges({
+    projectRoot: setup.primary,
+    publishedRevision,
+    approvedLocalMainCommit: localCommit,
+    approvedOriginMainCommit: publishedRevision,
+  });
+  assert.equal(approved.approved, true);
+  assert.equal(approved.approvalRequired, false);
+  assert.equal(await git(setup.primary, "rev-parse", "HEAD"), before.head);
+  assert.equal(await git(setup.primary, "symbolic-ref", "HEAD"), before.branch);
+  assert.equal(await git(setup.primary, "status", "--porcelain=v1"), before.status);
+  assert.deepEqual(await readFile(path.join(setup.primary, "app.txt")), before.app);
+  assert.deepEqual(await readFile(path.join(setup.primary, "1C_ACCESS", "access.json")), before.access);
 });
 
 test("release candidate aggregates effective dev deltas instead of replaying conflicting Task snapshots", async (context) => {
@@ -639,12 +815,14 @@ async function dependencyFixture(setup, context, { selectDependency }) {
   const dependencyTask = {
     taskId: "task-dependency",
     taskRevision: 2,
+    baseCommit: setup.baseCommit,
     resultCommit: dependencyResult,
     integrations: [{ commit: dependencyIntegration, parent: setup.baseCommit, order: 1 }],
   };
   const dependentTask = {
     taskId: "task-dependent",
     taskRevision: 3,
+    baseCommit: dependencyResult,
     resultCommit: dependentResult,
     integrations: [{ commit: dependentIntegration, parent: dependencyIntegration, order: 2 }],
   };
@@ -687,6 +865,7 @@ test("real nested Task evidence projects the selected dependency once before its
   const dependent = await registeredTaskBranch(setup, context, {
     taskId: dependentId,
     startCommit: dependencyResult,
+    baseCommit: dependencyResult,
   });
   await writeFile(path.join(dependent.taskRoot, "dependent.txt"), "dependent\n", "utf8");
   const dependentResult = await commit(dependent.taskRoot, "selected dependent");
