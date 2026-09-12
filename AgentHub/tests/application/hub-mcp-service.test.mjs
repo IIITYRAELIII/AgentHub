@@ -996,10 +996,20 @@ test("HubMcpService exposes cursor events and publication-gated release completi
   assert.equal(events.nextSequence, 5);
   const preflight = await service.call("hub_release_preflight", {
     context_token: token, request_id: "preflight-1", expected_plan_revision: "plan-1",
+    approved_repositories: [{
+      projectRoot: "D:/repo",
+      approvedLocalMainCommit: "local-main",
+      approvedOriginMainCommit: "origin-main",
+    }],
   });
   assert.equal(preflight.testContour.headCommit, "dev-head");
   assert.deepEqual(preflightCalls[0], {
     workspaceId: "workspace-1", expectedPlanRevision: "plan-1", conflictsResolved: false,
+    approvedRepositories: [{
+      projectRoot: "D:/repo",
+      approvedLocalMainCommit: "local-main",
+      approvedOriginMainCommit: "origin-main",
+    }],
   });
   const release = await service.call("hub_release_complete", {
     context_token: token, request_id: "release-1",

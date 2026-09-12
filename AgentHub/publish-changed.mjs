@@ -7,6 +7,7 @@ import { callDesktopControl } from "./desktop-control.mjs";
 import { publicationRuntimeStatus } from "./src/runtime/runtime-publication-start.mjs";
 import {
   npmStep,
+  publicationRepositories,
   publicationSteps,
   restartRuntimeAndVerify,
   runStep,
@@ -455,7 +456,13 @@ export async function publishChanged(args = process.argv.slice(2), {
         journal,
       });
       const completion = await completePublication({
-        identity, publicationState: { revision: head, files, plan, validationMode: identity.validationMode },
+        identity, publicationState: {
+          revision: head,
+          repositories: publicationRepositories(identity, head),
+          files,
+          plan,
+          validationMode: identity.validationMode,
+        },
         journal, checkpoint, needsRestart: plan.runtimeRestart, skipRestart: options.skipRestart,
         readRuntimeStatus, verifyRestart, writeState, finalizePublication,
         requestRestart: (verification) => restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot, verification),

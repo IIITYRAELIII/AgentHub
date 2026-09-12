@@ -93,7 +93,9 @@ function fixture({ planRevision = "plan-1", contourHead = "dev-head", rejectDev 
         };
       },
     },
-    readPublicationState: async () => ({ revision: "published-head" }),
+    readPublicationState: async () => ({
+      repositories: [{ root: projectRoot, revision: "published-head" }],
+    }),
     resolveTestContourSource: async (repositories) => {
       calls.push(["resolve-contour", repositories]);
       return { ...repositories[0], sourceRoot: path.resolve("D:/dev-worktree/AgentHub") };
@@ -210,6 +212,159 @@ test("release preflight returns every post-publication main commit before side e
   assert.equal(result.status, "main_review_required");
   assert.equal(result.mainAudits[0].commits[0].commit, "external-commit");
   assert.deepEqual(calls.map(([name]) => name), ["plan", "inspect-main"]);
+});
+
+test("release preflight rejects an unscoped global publication baseline", async () => {
+  const { calls, service } = fixture();
+  service.readPublicationState = async () => ({ revision: "foreign-agent-hub-sha" });
+
+  await assert.rejects(
+    () => service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-1" }),
+    /repository-scoped publication evidence/u,
+  );
+  assert.deepEqual(calls.map(([name]) => name), ["plan"]);
+});
+
+test("release preflight binds approved main commits to the selected repository", async () => {
+  const { calls, projectRoot, service } = fixture();
+  service.releaseGitWorkspaces.inspectMainChanges = async (request) => {
+    calls.push(["inspect-main", request]);
+    return {
+      projectRoot: request.projectRoot,
+      publishedRevision: request.publishedRevision,
+      localMain: "local-main",
+      originMain: "origin-main",
+      commits: [{ commit: "external-commit", subject: "external" }],
+      changed: true,
+      diverged: true,
+      approved: request.approvedLocalMainCommit === "local-main"
+        && request.approvedOriginMainCommit === "origin-main",
+      approvalRequired: request.approvedLocalMainCommit !== "local-main"
+        || request.approvedOriginMainCommit !== "origin-main",
+    };
+  };
+
+  const stale = await service.preflight({
+    workspaceId: "workspace-1",
+    expectedPlanRevision: "plan-1",
+    approvedRepositories: [{
+      projectRoot,
+      approvedLocalMainCommit: "old-local",
+      approvedOriginMainCommit: "origin-main",
+    }],
+  });
+  assert.equal(stale.status, "main_review_required");
+  assert.equal(stale.mainAudits[0].approvalRequired, true);
+
+  await assert.rejects(
+    () => service.preflight({
+      workspaceId: "workspace-1",
+      expectedPlanRevision: "plan-1",
+      approvedRepositories: [{
+        projectRoot: path.resolve("D:/other-repo"),
+        approvedLocalMainCommit: "local-main",
+        approvedOriginMainCommit: "origin-main",
+      }],
+    }),
+    /unrelated repository/u,
+  );
+
+  const approved = await service.preflight({
+    workspaceId: "workspace-1",
+    expectedPlanRevision: "plan-1",
+    approvedRepositories: [{
+      projectRoot,
+      approvedLocalMainCommit: "local-main",
+      approvedOriginMainCommit: "origin-main",
+    }],
+  });
+  assert.equal(approved.status, "ready");
+  assert.equal(approved.mainAudits[0].approved, true);
+});
+
+test("release preflight requires repository-scoped top-level approvals for multi-repository plans", async () => {
+  const repoA = path.resolve("D:/repo-a");
+  const repoB = path.resolve("D:/repo-b");
+  const plan = {
+    revision: "plan-1",
+    ready: [
+      { taskId: "task-a", taskRevision: 2, projectRoot: repoA, resultCommit: "result-a" },
+      { taskId: "task-b", taskRevision: 3, projectRoot: repoB, resultCommit: "result-b" },
+    ],
+    blocked: [],
+    conflicts: [],
+  };
+  const service = new WorkspaceReleasePreflightService({
+    releasePlanner: { plan: async () => plan },
+    taskGitWorkspaces: {
+      prepareDev: async (projectRoot) => ({ repositoryRoot: projectRoot, projectRoot, branch: "dev", headCommit: `dev-${path.basename(projectRoot)}` }),
+      verifyReleaseResultsInDev: async ({ projectRoot, resultCommits }) => ({
+        repositoryRoot: projectRoot, projectRoot, branch: "dev", headCommit: `dev-${path.basename(projectRoot)}`,
+        resultCommits,
+      }),
+      releaseIntegrationEvidence: async ({ projectRoot, tasks }) => ({
+        repositoryRoot: projectRoot,
+        projectRoot,
+        branch: "dev",
+        headCommit: `dev-${path.basename(projectRoot)}`,
+        tasks: tasks.map((task, order) => ({
+          taskId: task.taskId,
+          taskRevision: task.taskRevision,
+          resultCommit: task.resultCommit,
+          integrations: [{ commit: `integration-${task.taskId}`, parent: "parent", order }],
+        })),
+      }),
+    },
+    releaseGitWorkspaces: {
+      withAwaitTransition: async (_workspaceId, operation) => operation(),
+      assertPrimaryInvariant: async (projectRoot) => ({ projectRoot, branch: "refs/heads/main", headCommit: `main-${path.basename(projectRoot)}` }),
+      inspectMainChanges: async (request) => ({
+        projectRoot: request.projectRoot,
+        publishedRevision: request.publishedRevision,
+        localMain: `local-${path.basename(request.projectRoot)}`,
+        originMain: `origin-${path.basename(request.projectRoot)}`,
+        commits: [{ commit: `commit-${path.basename(request.projectRoot)}` }],
+        approvalRequired: false,
+      }),
+      prepareCandidate: async (request) => ({ repositoryRoot: request.projectRoot, preReleaseHead: `pre-${path.basename(request.projectRoot)}` }),
+    },
+    readPublicationState: async () => ({
+      repositories: [
+        { root: repoA, revision: "published-a" },
+        { root: repoB, revision: "published-b" },
+      ],
+    }),
+    resolveTestContourSource: async () => ({
+      kind: "external-validation-required",
+      reason: "non-AgentHub validation required",
+    }),
+    refreshTestContour: async () => assert.fail("multi-repository non-AgentHub preflight must not run AgentHub Test Contour"),
+    readTestContourStatus: async () => assert.fail("multi-repository non-AgentHub preflight must not read AgentHub Test Contour"),
+    validateProductionCandidate: async () => ({ status: "ready", kind: "external", evidence: "fixture" }),
+  });
+
+  await assert.rejects(
+    () => service.preflight({
+      workspaceId: "workspace-1",
+      expectedPlanRevision: "plan-1",
+      approvedLocalMainCommit: "local-repo-a",
+      approvedOriginMainCommit: "origin-repo-a",
+    }),
+    /top-level approved release main commits/u,
+  );
+
+  const result = await service.preflight({
+    workspaceId: "workspace-1",
+    expectedPlanRevision: "plan-1",
+    approvedRepositories: [
+      { projectRoot: repoA, approvedLocalMainCommit: "local-repo-a", approvedOriginMainCommit: "origin-repo-a" },
+      { projectRoot: repoB, approvedLocalMainCommit: "local-repo-b", approvedOriginMainCommit: "origin-repo-b" },
+    ],
+  });
+  assert.equal(result.status, "ready");
+  assert.equal(result.productionValidation.kind, "external");
+  assert.deepEqual(result.mainAudits.map((audit) => audit.publishedRevision), ["published-a", "published-b"]);
+  assert.equal(result.releaseCandidates.length, 2);
 });
 
 test("release preflight rejects a refreshed contour that does not display dev HEAD", async () => {

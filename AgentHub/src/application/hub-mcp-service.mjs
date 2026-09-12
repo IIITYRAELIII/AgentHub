@@ -693,6 +693,20 @@ export class HubMcpService {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
         expected_plan_revision: { type: "string", description: "Exact revision returned by hub_release_plan_get." },
         conflicts_resolved: { type: "boolean", description: "True only after the Architect explicitly resolves every reported overlap." },
+        approved_repositories: {
+          type: "array",
+          description: "Repository-scoped approved main commits returned by the previous preflight audit.",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              projectRoot: { type: "string" },
+              approvedLocalMainCommit: { type: "string" },
+              approvedOriginMainCommit: { type: "string" },
+            },
+            required: ["projectRoot", "approvedLocalMainCommit", "approvedOriginMainCommit"],
+          },
+        },
       }, ["expected_plan_revision"]),
       tool("hub_release_complete", "Complete a release only after clean main revisions and explicit deployment verification.", {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
@@ -1957,6 +1971,7 @@ export class HubMcpService {
       workspaceId,
       expectedPlanRevision: optionalText(args.expected_plan_revision, 128),
       conflictsResolved: args.conflicts_resolved === true,
+      approvedRepositories: Array.isArray(args.approved_repositories) ? args.approved_repositories : [],
     });
   }
 }
