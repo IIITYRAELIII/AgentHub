@@ -138,6 +138,13 @@ function fixture() {
     crashAfterFailedTransition() {
       transition = { ...transition, phase: "failed", error: "Task snapshot failed" };
     },
+    targetWorkflow(status, currentStatus) {
+      transition = { ...transition, targetWorkflowStatus: status };
+      task.workflowStatus = currentStatus;
+      receipt.argumentsHash = createHash("sha256").update(JSON.stringify({
+        request_id: receipt.requestId, status, task_id: task.id,
+      }), "utf8").digest("hex");
+    },
     corruptOutcome(mutator) {
       mutator(outcome);
     },
@@ -250,6 +257,24 @@ test("operator reconciliation settles an exact failed transition without a proce
   assert.equal(result.outcome, "failed");
   assert.equal(result.reconciliation.guardId, null);
   assert.equal(result.reconciliation.proof, null);
+  assert.equal(value.receipt.receiptState, "failed");
+  assert.equal(value.lifecycleCalls(), 0);
+});
+
+test("operator reconciliation settles an exact failed transition into Test without a process guard", async () => {
+  const value = fixture();
+  value.targetWorkflow("testing", "in_progress");
+  value.crashAfterFailedTransition();
+  const terminalInput = input(value);
+  delete terminalInput.guardId;
+  delete terminalInput.proofKind;
+  delete terminalInput.proofSummary;
+  terminalInput.confirmed = false;
+  const result = await value.service.reconcileUnknownWorkflow(terminalInput);
+  assert.equal(result.outcome, "failed");
+  assert.equal(result.reconciliation.guardId, null);
+  assert.equal(value.task.workflowStatus, "in_progress");
+  assert.equal(value.task.revision, 15);
   assert.equal(value.receipt.receiptState, "failed");
   assert.equal(value.lifecycleCalls(), 0);
 });

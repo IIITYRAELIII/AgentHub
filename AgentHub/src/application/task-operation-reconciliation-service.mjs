@@ -20,10 +20,12 @@ function samePath(left, right) {
   return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
-function workflowArgumentsHash({ operationId, taskId }) {
+const WORKFLOW_STATUSES = new Set(["new", "in_progress", "testing", "awaiting_implementation", "done"]);
+
+function workflowArgumentsHash({ operationId, taskId, status }) {
   return createHash("sha256").update(JSON.stringify({
     request_id: operationId,
-    status: "awaiting_implementation",
+    status,
     task_id: taskId,
   }), "utf8").digest("hex");
 }
@@ -45,8 +47,8 @@ function sameTaskState(current, expected) {
   return JSON.stringify(state(current)) === JSON.stringify(state(expected));
 }
 
-function exactCommittedEvidence(committed, evidence, projectRoot) {
-  if (!committed || committed.workflowStatus !== "awaiting_implementation") return false;
+function exactCommittedEvidence(committed, evidence, projectRoot, targetWorkflowStatus) {
+  if (!committed || committed.workflowStatus !== targetWorkflowStatus) return false;
   const resultCommit = String(evidence?.resultCommit ?? "").trim().toLowerCase();
   const reference = normalizedTaskGitReferences(committed.gitReferences)
     .find((item) => samePath(item.projectRoot, projectRoot));
@@ -83,6 +85,10 @@ export class TaskOperationReconciliationService {
     const root = path.resolve(requiredText(projectRoot, "project root"));
     const guardText = String(guardId ?? "").trim();
     const exactGuardId = guardText ? requiredText(guardText, "guard id", 200) : null;
+    const targetWorkflowStatus = transition?.targetWorkflowStatus
+      ?? outcome?.result?.task?.workflowStatus
+      ?? null;
+    const validTarget = WORKFLOW_STATUSES.has(targetWorkflowStatus);
     const taskRoot = taskProjectRoot({
       workspace,
       stream: task.streamId ? this.workspaceCatalog.stream(task.streamId) : null,
@@ -90,14 +96,17 @@ export class TaskOperationReconciliationService {
     const receiptMatches = receipt
       && receipt.workspaceId === workspace.id
       && receipt.toolName === "hub_task_status_update"
-      && receipt.argumentsHash === workflowArgumentsHash({ operationId, taskId: task.id })
+      && validTarget
+      && receipt.argumentsHash === workflowArgumentsHash({
+        operationId, taskId: task.id, status: targetWorkflowStatus,
+      })
       && receipt.operationStatus === "pending"
       && receipt.receiptState === "unknown";
     const transitionMatches = !transition || (
       transition.operationId === operationId
       && transition.taskId === task.id
       && transition.kind === "workflow"
-      && transition.targetWorkflowStatus === "awaiting_implementation"
+      && transition.targetWorkflowStatus === targetWorkflowStatus
     );
     const outcomeMatches = !outcome || (
       outcome.operationId === operationId
@@ -112,17 +121,20 @@ export class TaskOperationReconciliationService {
       if (outcome.result?.rollback?.completed === true) {
         if (
           sameTaskState(task, outcome.result?.restoredTask)
-          && exactCommittedEvidence(outcome.result?.task, outcome.result?.evidence, root)
+          && exactCommittedEvidence(
+            outcome.result?.task, outcome.result?.evidence, root, targetWorkflowStatus,
+          )
         ) state = "rolled_back";
       } else {
         const committed = outcome.result?.task;
         if (
           sameTaskState(task, committed)
-          && exactCommittedEvidence(committed, outcome.result?.evidence, root)
+          && exactCommittedEvidence(committed, outcome.result?.evidence, root, targetWorkflowStatus)
         ) state = "succeeded";
       }
     } else if (transition && !outcome) {
-      const unchanged = transition.expectedRevision === task.revision && task.workflowStatus === "testing";
+      const unchanged = transition.expectedRevision === task.revision
+        && task.workflowStatus !== targetWorkflowStatus;
       if (transition.phase === "pending_git" && unchanged) state = "pending";
       if (transition.phase === "failed" && unchanged) state = "failed";
     }
@@ -136,6 +148,7 @@ export class TaskOperationReconciliationService {
       transition,
       outcome,
       state,
+      targetWorkflowStatus,
       operationId,
       projectRoot: root,
       guardId: exactGuardId,
