@@ -69,6 +69,38 @@ test("workflow transition atomically CAS-commits status and exact Git references
   assert.equal(committed.revision, current.revision + 1);
 });
 
+test("workflow transition readback exposes the exact immutable prior Task", async (t) => {
+  const store = await fixture(t);
+  const created = store.create({
+    text: "Same-status transition evidence", workspaceId: "workspace-1", bucket: "workspace",
+  });
+  store.claim(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", provider: "codex", threadId: "thread-1",
+    turnId: "turn-1", operationId: "claim-same-status-evidence",
+  });
+  const prior = store.recordTaskGitReference({
+    taskId: created.id,
+    projectRoot: "D:/repo",
+    branch: "HUB-216",
+    resultSnapshot: { repoRoot: "D:/repo", tree: "a".repeat(40) },
+  });
+  store.beginLifecycleTransition(created.id, {
+    operationId: "same-status-evidence",
+    kind: "workflow",
+    targetWorkflowStatus: prior.workflowStatus,
+    expectedRevision: prior.revision,
+  });
+
+  const transition = store.lifecycleTransition("same-status-evidence");
+  assert.equal(transition.expectedRevision, prior.revision);
+  assert.equal(transition.priorTask.id, prior.id);
+  assert.equal(transition.priorTask.revision, prior.revision);
+  assert.equal(transition.priorTask.workflowStatus, prior.workflowStatus);
+  assert.equal(transition.priorTask.workspaceId, "workspace-1");
+  assert.equal(transition.priorTask.streamId, "stream-1");
+  assert.deepEqual(transition.priorTask.gitReferences, prior.gitReferences);
+});
+
 test("workflow outcome rollback restores the exact prior status and Git references", async (t) => {
   const store = await fixture(t);
   const created = store.create({ text: "Await rollback" });

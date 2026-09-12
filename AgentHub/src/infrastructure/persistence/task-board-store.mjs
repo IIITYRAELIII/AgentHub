@@ -2488,6 +2488,10 @@ export class TaskBoardStore {
         phase: row.phase,
         targetWorkflowStatus: row.target_workflow_status ?? null,
         expectedRevision: Number(row.expected_task_revision),
+        priorTask: (() => {
+          const priorState = JSON.parse(row.prior_state_json);
+          return priorState?.task ?? priorState;
+        })(),
         error: row.error_text,
         evidence: JSON.parse(row.evidence_json ?? "{}"),
       } : null;

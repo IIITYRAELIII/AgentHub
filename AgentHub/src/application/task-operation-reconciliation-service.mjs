@@ -207,10 +207,11 @@ export class TaskOperationReconciliationService {
         ) state = "succeeded";
       }
     } else if (transition && !outcome) {
-      const unchanged = transition.expectedRevision === task.revision
-        && task.workflowStatus !== targetWorkflowStatus;
-      if (transition.phase === "pending_git" && unchanged) state = "pending";
-      if (transition.phase === "failed" && unchanged) state = "failed";
+      const revisionUnchanged = transition.expectedRevision === task.revision;
+      const pendingUnchanged = revisionUnchanged && task.workflowStatus !== targetWorkflowStatus;
+      const failedUnchanged = revisionUnchanged && sameTaskState(task, transition.priorTask);
+      if (transition.phase === "pending_git" && pendingUnchanged) state = "pending";
+      if (transition.phase === "failed" && failedUnchanged) state = "failed";
     }
     if (!state) {
       throw new Error("Unknown workflow operation has no exact recoverable or terminal durable state");

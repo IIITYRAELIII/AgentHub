@@ -31,6 +31,7 @@ function fixture() {
   let transition = {
     operationId: receipt.requestId, taskId: task.id, kind: "workflow", phase: "pending_git",
     targetWorkflowStatus: "awaiting_implementation", expectedRevision: 15,
+    priorTask: { ...task, gitReferences: task.gitReferences.map((reference) => ({ ...reference })) },
   };
   let outcome = null;
   const settlements = [];
@@ -150,8 +151,12 @@ function fixture() {
       transition = { ...transition, phase: "failed", error: "Task snapshot failed" };
     },
     targetWorkflow(status, currentStatus) {
-      transition = { ...transition, targetWorkflowStatus: status };
       task.workflowStatus = currentStatus;
+      transition = {
+        ...transition,
+        targetWorkflowStatus: status,
+        priorTask: { ...task, gitReferences: task.gitReferences.map((reference) => ({ ...reference })) },
+      };
       receipt.argumentsHash = hashArguments({
         request_id: receipt.requestId, status, task_id: task.id,
       });
@@ -176,6 +181,9 @@ function fixture() {
     },
     corruptOutcome(mutator) {
       mutator(outcome);
+    },
+    omitTransitionPriorTask() {
+      transition = { ...transition, priorTask: null };
     },
   };
 }
@@ -355,6 +363,52 @@ test("operator reconciliation settles an exact failed transition into Test witho
   assert.equal(value.task.revision, 15);
   assert.equal(value.receipt.receiptState, "failed");
   assert.equal(value.lifecycleCalls(), 0);
+});
+
+test("operator reconciliation settles an exact failed same-status Test refresh without replay", async () => {
+  const value = fixture();
+  value.targetWorkflow("testing", "testing");
+  value.crashAfterFailedTransition();
+  const terminalInput = input(value);
+  delete terminalInput.guardId;
+  delete terminalInput.proofKind;
+  delete terminalInput.proofSummary;
+  terminalInput.confirmed = false;
+  const result = await value.service.reconcileUnknownWorkflow(terminalInput);
+  assert.equal(result.outcome, "failed");
+  assert.equal(result.reconciliation.durableState, "failed_transition");
+  assert.equal(value.task.workflowStatus, "testing");
+  assert.equal(value.task.revision, 15);
+  assert.equal(value.receipt.receiptState, "failed");
+  assert.equal(value.lifecycleCalls(), 0);
+});
+
+test("operator reconciliation rejects failed same-status refresh after Task drift", async () => {
+  const value = fixture();
+  value.targetWorkflow("testing", "testing");
+  value.crashAfterFailedTransition();
+  value.task.gitReferences[0].resultCommit = "b".repeat(40);
+  await assert.rejects(
+    value.service.reconcileUnknownWorkflow(input(value)),
+    /no exact recoverable or terminal durable state/u,
+  );
+  assert.equal(value.receipt.receiptState, "unknown");
+  assert.equal(value.lifecycleCalls(), 0);
+  assert.deepEqual(value.settlements, []);
+});
+
+test("operator reconciliation rejects failed same-status refresh without immutable prior Task", async () => {
+  const value = fixture();
+  value.targetWorkflow("testing", "testing");
+  value.crashAfterFailedTransition();
+  value.omitTransitionPriorTask();
+  await assert.rejects(
+    value.service.reconcileUnknownWorkflow(input(value)),
+    /no exact recoverable or terminal durable state/u,
+  );
+  assert.equal(value.receipt.receiptState, "unknown");
+  assert.equal(value.lifecycleCalls(), 0);
+  assert.deepEqual(value.settlements, []);
 });
 
 test("operator reconciliation keeps a pending lifecycle blocked without the exact process guard", async () => {
