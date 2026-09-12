@@ -729,6 +729,47 @@ test("crash-after-begin receipt becomes explicit unknown instead of blind replay
   assert.match(receipt.error, /readback unavailable/u);
 });
 
+test("operator reconciliation terminalizes only the exact unknown receipt by CAS", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const stream = store.createStream({ workspaceId: workspace.id, name: "Architect" });
+  const operation = {
+    requestId: "unknown-workflow", workspaceId: workspace.id, streamId: stream.id,
+    provider: "codex", threadId: "thread-1", toolName: "hub_task_status_update", argumentsHash: "hash-workflow",
+  };
+  store.beginMcpOperation(operation);
+  store.markMcpOperationUnknown(operation.requestId, new Error("process tree unproven"));
+  const settled = store.completeUnknownMcpOperation(operation.requestId, {
+    workspaceId: workspace.id,
+    toolName: operation.toolName,
+    result: { task: { id: "task-1" } },
+    reconciliation: { guardId: "guard-1", proof: { kind: "system-restart-after-guard" } },
+  });
+  assert.equal(settled.status, "succeeded");
+  assert.equal(settled.receiptState, "succeeded");
+  assert.equal(settled.result.task.id, "task-1");
+  assert.equal(settled.result.operatorReconciliation.guardId, "guard-1");
+  assert.throws(() => store.completeUnknownMcpOperation(operation.requestId, {
+    workspaceId: workspace.id,
+    toolName: operation.toolName,
+    result: {},
+    reconciliation: {},
+  }), /receipt state does not match/u);
+
+  const failedOperation = { ...operation, requestId: "unknown-workflow-failed" };
+  store.beginMcpOperation(failedOperation);
+  store.markMcpOperationUnknown(failedOperation.requestId, new Error("process tree unproven"));
+  const failed = store.failUnknownMcpOperation(failedOperation.requestId, {
+    workspaceId: workspace.id,
+    toolName: failedOperation.toolName,
+    error: new Error("authoritative failure"),
+    reconciliation: { detail: "x".repeat(70 * 1024) },
+  });
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.result.receiptCompacted, true);
+  assert.equal(failed.result.outcome, "failed");
+});
+
 test("MCP audit resolves only exact successful interstream message provenance", async (t) => {
   const store = await fixture(t);
   const workspace = store.createWorkspace({ name: "Agent HUB" });

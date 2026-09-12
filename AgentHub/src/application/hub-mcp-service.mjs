@@ -19,6 +19,7 @@ import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { taskRunIsActive } from "../domain/task-runs.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
 import { TaskLifecycleService } from "./task-lifecycle-service.mjs";
+import { TaskOperationReconciliationService } from "./task-operation-reconciliation-service.mjs";
 import { createWorkspaceCatalogMutationOwner } from "./sqlite-mutation-owner.mjs";
 
 const CONTEXT_TOKEN_VERSION = 1;
@@ -30,6 +31,7 @@ const MUTATING_TOOLS = new Set([
   "hub_task_create", "hub_task_update", "hub_task_checklist_update", "hub_task_move", "hub_task_start", "hub_task_reassign", "hub_task_claim", "hub_task_status_update", "hub_task_legacy_git_adopt", "hub_task_complete", "hub_task_delete",
   "hub_task_attachment_add", "hub_workspace_rules_update", "hub_stream_rules_update",
   "hub_stream_message_send",
+  "hub_task_operation_reconcile",
   "hub_release_preflight", "hub_release_complete",
 ]);
 
@@ -435,6 +437,7 @@ export class HubMcpService {
   constructor({
     workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releasePlanner, releasePreflight, releaseCompleter,
     taskGitWorkspaces = null, taskLifecycle = null,
+    taskOperationReconciliation = null,
   } = {}) {
     for (const name of [
       "resolveThread", "workspace", "hierarchy", "developerRulesForStream",
@@ -467,6 +470,18 @@ export class HubMcpService {
     this.taskLifecycle = taskLifecycle ?? new TaskLifecycleService({
       taskBoard, workspaceCatalog: this.workspaceCatalog, taskGitWorkspaces, releasePreflight,
     });
+    this.taskOperationReconciliation = taskOperationReconciliation
+      ?? (["mcpOperation", "completeUnknownMcpOperation", "failUnknownMcpOperation"]
+        .every((name) => typeof this.workspaceCatalog?.[name] === "function")
+        && ["task", "lifecycleTransition", "lifecycleOutcome"]
+          .every((name) => typeof taskBoard?.[name] === "function")
+        && typeof this.taskLifecycle?.reconcileUnknownWorkflowStatus === "function"
+        ? new TaskOperationReconciliationService({
+          workspaceCatalog: this.workspaceCatalog,
+          taskBoard,
+          taskLifecycle: this.taskLifecycle,
+        })
+        : null);
     this.#startupReconciliation = this.reconcilePendingMcpOperations();
   }
 
@@ -653,6 +668,15 @@ export class HubMcpService {
         task_id: { type: "string" },
         status: { type: "string", enum: ["new", "in_progress", "testing", "awaiting_implementation", "done"] },
       }, ["task_id", "status"]),
+      tool("hub_task_operation_reconcile", "Architect-only recovery of one exact unknown Task workflow operation after a trusted process-tree proof. It resumes the original request and terminalizes its original receipt without replaying under a new identity.", {
+        task_id: { type: "string" },
+        operation_request_id: { type: "string" },
+        project_root: { type: "string" },
+        guard_id: { type: "string" },
+        proof_kind: { type: "string", enum: ["system-restart-after-guard"] },
+        proof_summary: { type: "string" },
+        confirm_reconcile: { type: "boolean", description: "Must be true because this recovers a guarded process boundary and settles the original receipt." },
+      }, ["task_id", "operation_request_id", "project_root", "guard_id", "proof_kind", "proof_summary", "confirm_reconcile"]),
       tool("hub_task_legacy_git_adopt", "Architect-only migration for a legacy Await Task with no Git reference. It verifies terminal Stream evidence and exact non-changelog patch equivalence to a named commit already in local main before recording immutable Task evidence.", {
         task_id: { type: "string" },
         expected_task_revision: { type: "integer", minimum: 1 },
@@ -808,6 +832,20 @@ export class HubMcpService {
         return this.#claimTask(context, args);
       case "hub_task_status_update":
         return this.#updateTaskWorkflowStatus(context, args);
+      case "hub_task_operation_reconcile":
+        if (!this.#isArchitect(context)) throw new Error("Task operation reconciliation requires an Architect Stream");
+        if (args.confirm_reconcile !== true) throw new Error("Task operation reconciliation requires explicit confirmation");
+        if (!this.taskOperationReconciliation) throw new Error("Task operation reconciliation is unavailable");
+        return this.taskOperationReconciliation.reconcileUnknownWorkflow({
+          workspaceId: context.workspaceId,
+          taskId: args.task_id,
+          operationRequestId: args.operation_request_id,
+          projectRoot: args.project_root,
+          guardId: args.guard_id,
+          proofKind: args.proof_kind,
+          proofSummary: args.proof_summary,
+          confirmed: true,
+        });
       case "hub_task_legacy_git_adopt":
         if (!this.#isArchitect(context)) throw new Error("legacy Git adoption requires an Architect Stream");
         return this.#adoptLegacyTaskGit(context, args);

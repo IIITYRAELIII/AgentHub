@@ -61,7 +61,21 @@ durable ownership assertion fence every npm operation. npm runs through the
 Task lifecycle process-tree guard, so lease loss, cancellation or timeout must
 stop and prove completion of the entire descendant tree before preparation can
 return. An unproven stop leaves the persistent guard in place and blocks the
-next owner until the existing operator-proof recovery. Ownership is rechecked
+next owner until operator reconciliation. Recovery joins the exact unknown MCP
+request, pending lifecycle transition, Task revision, repository and guard ID
+under the Await, Task and repository locks. The repository lease remains held
+from durable classification through guard recovery, resumed Git work, lifecycle
+terminalization and the original receipt CAS; nested Git steps reuse that exact
+lease instead of releasing and reacquiring it. A caller confirmation is not process
+evidence. A guard without a captured process identity is recoverable only when
+`Win32_OperatingSystem.LastBootUpTime` postdates guard creation; this bounded
+recovery deliberately provides no weaker non-reboot proof. Verified recovery
+evidence is persisted before removing the guard, so a crash can reuse only the
+same guard identity. Reconciliation first classifies durable state: exact
+pending Git work resumes, while an exact workflow outcome, rollback or failed
+transition only settles the original receipt without replay. A mismatched or
+mixed state remains unknown. It never reopens an unknown receipt or replays the
+effect under a new request ID. Ownership is rechecked
 after external and validation awaits and immediately before and after marker
 promotion; losing it prevents a falsely prepared result.
 
