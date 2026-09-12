@@ -65,8 +65,10 @@ For a local `file:`/link entry, the resolved target must remain inside the
 managed project after `realpath`, and its physical name and version come from
 the target lock entry and target `package.json`, not the link's alias path. npm
 metadata entries are not package roots. Prisma-generated `.prisma` service
-state is accepted only beside an installed lock-backed `@prisma/client` at the
-same `node_modules` level. Its root contains only the local `client` directory;
+state is accepted only beside an installed lock-backed package whose resolved
+source, installed-lock and physical identity is genuinely `@prisma/client` at
+the same `node_modules` level; an npm alias merely occupying that path does not
+qualify. Its root contains only the local `client` directory;
 the bounded generated tree contains no hidden entries, nested `node_modules`,
 links, junctions or special files, remains inside the canonical managed project
 after `realpath`, and contributes deterministic structural evidence to the

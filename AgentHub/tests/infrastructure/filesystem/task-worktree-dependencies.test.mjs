@@ -229,6 +229,51 @@ test("lock-backed local Prisma generated artifacts participate in dependency reu
   assert.equal(calls, 2);
 });
 
+test("Prisma generated artifacts require the genuine client identity, not an npm alias pathname", async (context) => {
+  const aliasRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-prisma-alias-"));
+  context.after(() => rmTree(aliasRoot));
+  await writeNpmProject(aliasRoot, {
+    dependencies: { "@prisma/client": "npm:not-prisma@1.0.0" },
+    packageEntries: {
+      "node_modules/@prisma/client": {
+        name: "not-prisma",
+        version: "1.0.0",
+        resolved: "https://registry.example.invalid/not-prisma.tgz",
+        integrity: "sha512-fixture",
+      },
+    },
+  });
+  let aliasCalls = 0;
+  await assert.rejects(() => prepareTaskWorktreeDependencies({
+    projectRoot: aliasRoot,
+    lockfiles: [path.join(aliasRoot, "package-lock.json")],
+    runNpm: async (_args, { cwd }) => {
+      aliasCalls += 1;
+      await materializeLockedState(cwd);
+      await writeFile(path.join(cwd, "node_modules", "@prisma", "client", "package.json"),
+        "{\"name\":\"not-prisma\",\"version\":\"1.0.0\"}\n", "utf8");
+      const generatedRoot = path.join(cwd, "node_modules", ".prisma", "client");
+      await mkdir(generatedRoot, { recursive: true });
+      await writeFile(path.join(generatedRoot, "unrelated.js"), "export const unrelated = true;\n", "utf8");
+    },
+  }), /does not match its lockfile/u);
+  assert.equal(aliasCalls, 1);
+
+  const genuineRoot = await prismaProject(context);
+  let genuineCalls = 0;
+  const genuineInput = {
+    projectRoot: genuineRoot,
+    lockfiles: [path.join(genuineRoot, "package-lock.json")],
+    runNpm: async (_args, { cwd }) => {
+      genuineCalls += 1;
+      await materializePrismaGeneratedState(cwd);
+    },
+  };
+  assert.equal((await prepareTaskWorktreeDependencies(genuineInput))[0].prepared, true);
+  assert.equal((await prepareTaskWorktreeDependencies(genuineInput))[0].prepared, false);
+  assert.equal(genuineCalls, 1);
+});
+
 test("Prisma service state rejects missing lock identity and hidden generated entries", async (context) => {
   const unbackedRoot = await npmProject(context);
   await assert.rejects(() => prepareTaskWorktreeDependencies({

@@ -344,6 +344,10 @@ function canonicalPackageName(packagePath) {
   return segments[0].startsWith("@") ? `${segments[0]}/${segments[1]}` : segments[0];
 }
 
+function resolvedPackageName(packagePath, entry) {
+  return entry?.expectedPackageName ?? entry?.name ?? canonicalPackageName(packagePath);
+}
+
 async function physicalPackageRoots({ projectRoot, packageRoot, expectedPackages, installedPackages, limits }) {
   const roots = new Map();
   const generatedArtifacts = [];
@@ -404,7 +408,11 @@ async function physicalPackageRoots({ projectRoot, packageRoot, expectedPackages
   };
   const scanGeneratedPrisma = async ({ directory, prefix }) => {
     const clientPackagePath = `${prefix}/@prisma/client`;
-    if (!expectedPackages.has(clientPackagePath) || !installedPackages.has(clientPackagePath)) return false;
+    const expectedClient = expectedPackages.get(clientPackagePath);
+    const installedClient = installedPackages.get(clientPackagePath);
+    if (!expectedClient || !installedClient
+      || resolvedPackageName(clientPackagePath, expectedClient) !== "@prisma/client"
+      || resolvedPackageName(clientPackagePath, installedClient) !== "@prisma/client") return false;
     const prismaDirectory = path.join(directory, ".prisma");
     if (!await localDirectory(prismaDirectory)) return false;
     const prismaEntries = await sortedEntries(prismaDirectory);
@@ -518,7 +526,7 @@ async function installedPackageMetadata({ projectRoot, packageDirectory, package
       expectedEntry: packageJsonEntry,
     });
     const packageJson = JSON.parse(packageJsonContent.toString("utf8"));
-    const expectedName = expected.expectedPackageName ?? expected.name ?? canonicalPackageName(packagePath);
+    const expectedName = resolvedPackageName(packagePath, expected);
     const expectedVersion = expected.expectedPackageVersion ?? expected.version;
     if (packageJson.name !== expectedName
       || (expectedVersion != null && packageJson.version !== expectedVersion)) {
