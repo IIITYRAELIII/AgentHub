@@ -119,7 +119,7 @@ export async function withPublicationLock(operation, {
 } = {}) {
   const resolvedLockTarget = path.resolve(lockTarget);
   const activeLease = publicationSessionStorage.getStore();
-  if (activeLease?.lockTarget === resolvedLockTarget) return operation();
+  if (activeLease?.active === true && activeLease.lockTarget === resolvedLockTarget) return operation();
   if (await assertDelegatedPublicationStage(environment, lockTarget)) {
     const result = await operation();
     await assertDelegatedPublicationStage(environment, lockTarget);
@@ -132,12 +132,15 @@ export async function withPublicationLock(operation, {
     environment[PUBLICATION_SESSION_ENV] = session;
     const delegation = await delegationFromOwner({ lockTarget, ownerId, session });
     if (delegation) environment[PUBLICATION_STAGE_DELEGATION_ENV] = delegation;
+    const lease = {
+      active: true,
+      session,
+      lockTarget: resolvedLockTarget,
+    };
     try {
-      return await publicationSessionStorage.run({
-        session,
-        lockTarget: resolvedLockTarget,
-      }, operation);
+      return await publicationSessionStorage.run(lease, operation);
     } finally {
+      lease.active = false;
       if (previous === undefined) delete environment[PUBLICATION_SESSION_ENV];
       else environment[PUBLICATION_SESSION_ENV] = previous;
       if (previousDelegation === undefined) delete environment[PUBLICATION_STAGE_DELEGATION_ENV];
