@@ -11,8 +11,7 @@ import { loadConfig } from "./src/infrastructure/filesystem/config.mjs";
 import { ReleaseGitWorkspaceService } from "./src/infrastructure/filesystem/release-git-workspace.mjs";
 import { TaskGitWorkspaceService } from "./src/infrastructure/filesystem/task-git-workspace.mjs";
 import { readPublicationState } from "./src/infrastructure/persistence/publication-state.mjs";
-import { TaskBoardStore } from "./src/infrastructure/persistence/task-board-store.mjs";
-import { WorkspaceCatalogStore } from "./src/infrastructure/persistence/workspace-catalog-store.mjs";
+import { openTaskOperationReconciliationStores } from "./src/interfaces/cli/task-operation-reconciliation-runtime.mjs";
 import { readTestContourStatus, startTestContour } from "./src/runtime/test-contour-manager.mjs";
 
 function options(argv) {
@@ -47,10 +46,11 @@ const input = options(process.argv.slice(2));
 if (input.confirm !== true) throw new Error("Pass --confirm-system-restart after verifying that the current OS boot postdates the guard");
 const config = await loadConfig();
 const databaseFile = path.join(config.dataDir, "journal.sqlite");
-const rawWorkspaceCatalogStore = new WorkspaceCatalogStore({ databaseFile });
-const rawTaskBoardStore = new TaskBoardStore({ databaseFile });
+const {
+  workspaceCatalogStore: rawWorkspaceCatalogStore,
+  taskBoardStore: rawTaskBoardStore,
+} = await openTaskOperationReconciliationStores({ databaseFile });
 try {
-  await rawWorkspaceCatalogStore.load();
   const { workspaceCatalogStore, taskBoardStore } = createPersistenceMutationCapabilities({
     rawWorkspaceCatalogStore,
     rawTaskBoardStore,
