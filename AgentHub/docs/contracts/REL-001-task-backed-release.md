@@ -64,7 +64,16 @@ entry; an ordinary package without that metadata uses its canonical path name.
 For a local `file:`/link entry, the resolved target must remain inside the
 managed project after `realpath`, and its physical name and version come from
 the target lock entry and target `package.json`, not the link's alias path. npm
-metadata entries are not package roots. This makes
+metadata entries are not package roots. Prisma-generated `.prisma` service
+state is accepted only beside an installed lock-backed `@prisma/client` at the
+same `node_modules` level. Its root contains only the local `client` directory;
+the bounded generated tree contains no hidden entries, nested `node_modules`,
+links, junctions or special files, remains inside the canonical managed project
+after `realpath`, and contributes deterministic structural evidence to the
+installed-state marker. Unknown hidden service entries still fail closed.
+Containment compares resolved candidates with canonical physical project and
+package roots, so an equivalent Windows long-name/8.3 alias is not mistaken for
+an escape while a different physical target remains rejected. This makes
 repeated preparation idempotent without accepting extra packages, impostors,
 or stale or malformed package metadata, while a changed lockfile requires a
 fresh install. Installation or validation failure fails Task worktree

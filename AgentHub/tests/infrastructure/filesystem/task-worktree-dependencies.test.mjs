@@ -4,6 +4,7 @@ import {
   mkdtemp,
   open as fsOpen,
   readFile,
+  realpath,
   rename as fsRename,
   rm,
   symlink,
@@ -17,6 +18,10 @@ import test from "node:test";
 import { prepareTaskWorktreeDependencies } from "../../../src/infrastructure/filesystem/task-worktree-dependencies.mjs";
 
 const NPM_CI_ARGS = ["ci", "--include=dev", "--include=optional", "--no-audit", "--no-fund"];
+
+function rmTree(target) {
+  return rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+}
 
 async function writeNpmProject(root, {
   name = "task-fixture",
@@ -34,7 +39,7 @@ async function writeNpmProject(root, {
 
 async function npmProject(context) {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-dependencies-"));
-  context.after(() => rm(root, { recursive: true, force: true }));
+  context.after(() => rmTree(root));
   await writeNpmProject(root, {
     devDependencies: { playwright: "1.62.1" },
     packageEntries: {
@@ -43,6 +48,23 @@ async function npmProject(context) {
         resolved: "https://registry.example.invalid/playwright-1.62.1.tgz",
         integrity: "sha512-fixture",
         dev: true,
+      },
+    },
+  });
+  return root;
+}
+
+async function prismaProject(context) {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-prisma-"));
+  context.after(() => rmTree(root));
+  await writeNpmProject(root, {
+    dependencies: { "@prisma/client": "6.19.3" },
+    packageEntries: {
+      "node_modules/@prisma/client": {
+        version: "6.19.3",
+        resolved: "https://registry.example.invalid/prisma-client-6.19.3.tgz",
+        integrity: "sha512-prisma-client-fixture",
+        hasInstallScript: true,
       },
     },
   });
@@ -60,7 +82,7 @@ async function materializeLockedState(packageRoot, { omit = [] } = {}) {
   const lock = JSON.parse(await readFile(path.join(packageRoot, "package-lock.json"), "utf8"));
   const omitted = new Set(omit);
   const installedPackages = {};
-  await rm(path.join(packageRoot, "node_modules"), { recursive: true, force: true });
+  await rmTree(path.join(packageRoot, "node_modules"));
   await mkdir(path.join(packageRoot, "node_modules"), { recursive: true });
   for (const [packagePath, entry] of Object.entries(lock.packages)) {
     if (!packagePath.startsWith("node_modules/") || omitted.has(packagePath)) continue;
@@ -76,6 +98,15 @@ async function materializeLockedState(packageRoot, { omit = [] } = {}) {
     lockfileVersion: 3,
     packages: installedPackages,
   }, null, 2)}\n`, "utf8");
+}
+
+async function materializePrismaGeneratedState(packageRoot, { hiddenEntry = false } = {}) {
+  await materializeLockedState(packageRoot);
+  const clientRoot = path.join(packageRoot, "node_modules", ".prisma", "client");
+  await mkdir(path.join(clientRoot, "runtime"), { recursive: true });
+  await writeFile(path.join(clientRoot, "index.js"), "export const generated = true;\n", "utf8");
+  await writeFile(path.join(clientRoot, "runtime", "library.js"), "export const runtime = true;\n", "utf8");
+  if (hiddenEntry) await writeFile(path.join(clientRoot, ".foreign"), "unexpected\n", "utf8");
 }
 
 test("lock and installed metadata jointly gate dependency reuse", async (context) => {
@@ -131,6 +162,151 @@ test("lock and installed metadata jointly gate dependency reuse", async (context
   await writeFile(path.join(projectRoot, "package-lock.json"), `${JSON.stringify(changedLock, null, 2)}\n`, "utf8");
   assert.equal((await prepareTaskWorktreeDependencies(input))[0].prepared, true);
   assert.equal(calls.length, 6);
+});
+
+test("a Windows 8.3 project-root alias does not create a false containment escape", {
+  skip: process.platform !== "win32" ? "Windows-specific 8.3 path behavior" : false,
+}, async (context) => {
+  const projectRoot = await npmProject(context);
+  const resolvedRoot = await realpath(projectRoot);
+  if (projectRoot.toLowerCase() === resolvedRoot.toLowerCase()) {
+    context.skip("temporary directory has no distinct Windows 8.3 alias");
+    return;
+  }
+  let calls = 0;
+  const input = {
+    projectRoot,
+    lockfiles: [path.join(projectRoot, "package-lock.json")],
+    runNpm: async (_args, { cwd }) => {
+      calls += 1;
+      await materializeLockedState(cwd);
+    },
+  };
+
+  assert.equal((await prepareTaskWorktreeDependencies(input))[0].prepared, true);
+  assert.equal((await prepareTaskWorktreeDependencies(input))[0].prepared, false);
+  assert.equal(calls, 1);
+});
+
+test("a project-root link is rejected before invoking npm", async (context) => {
+  const physicalRoot = await npmProject(context);
+  const linkedRoot = `${physicalRoot}-linked`;
+  context.after(() => rmTree(linkedRoot));
+  await symlink(physicalRoot, linkedRoot, process.platform === "win32" ? "junction" : "dir");
+  let invoked = false;
+
+  await assert.rejects(() => prepareTaskWorktreeDependencies({
+    projectRoot: linkedRoot,
+    lockfiles: [path.join(linkedRoot, "package-lock.json")],
+    runNpm: async () => {
+      invoked = true;
+    },
+  }), /project root must use a local directory/u);
+  assert.equal(invoked, false);
+});
+
+test("lock-backed local Prisma generated artifacts participate in dependency reuse", async (context) => {
+  const projectRoot = await prismaProject(context);
+  let calls = 0;
+  const input = {
+    projectRoot,
+    lockfiles: [path.join(projectRoot, "package-lock.json")],
+    runNpm: async (_args, { cwd }) => {
+      calls += 1;
+      await materializePrismaGeneratedState(cwd);
+    },
+  };
+
+  assert.equal((await prepareTaskWorktreeDependencies(input))[0].prepared, true);
+  assert.equal((await prepareTaskWorktreeDependencies(input))[0].prepared, false);
+  assert.equal(calls, 1);
+
+  const installedLockPath = path.join(projectRoot, "node_modules", ".package-lock.json");
+  const installedLock = JSON.parse(await readFile(installedLockPath, "utf8"));
+  installedLock.packages["node_modules/@prisma/client"].integrity = "sha512-stale";
+  await writeFile(installedLockPath, `${JSON.stringify(installedLock, null, 2)}\n`, "utf8");
+  assert.equal((await prepareTaskWorktreeDependencies(input))[0].prepared, true);
+  assert.equal(calls, 2);
+});
+
+test("Prisma service state rejects missing lock identity and hidden generated entries", async (context) => {
+  const unbackedRoot = await npmProject(context);
+  await assert.rejects(() => prepareTaskWorktreeDependencies({
+    projectRoot: unbackedRoot,
+    lockfiles: [path.join(unbackedRoot, "package-lock.json")],
+    runNpm: async (_args, { cwd }) => {
+      await materializeLockedState(cwd);
+      const clientRoot = path.join(cwd, "node_modules", ".prisma", "client");
+      await mkdir(clientRoot, { recursive: true });
+      await writeFile(path.join(clientRoot, "index.js"), "unexpected\n", "utf8");
+    },
+  }), /does not match its lockfile/u);
+
+  const hiddenRoot = await prismaProject(context);
+  await assert.rejects(() => prepareTaskWorktreeDependencies({
+    projectRoot: hiddenRoot,
+    lockfiles: [path.join(hiddenRoot, "package-lock.json")],
+    runNpm: async (_args, { cwd }) => materializePrismaGeneratedState(cwd, { hiddenEntry: true }),
+  }), /does not match its lockfile/u);
+
+  const unknownRoot = await npmProject(context);
+  await assert.rejects(() => prepareTaskWorktreeDependencies({
+    projectRoot: unknownRoot,
+    lockfiles: [path.join(unknownRoot, "package-lock.json")],
+    runNpm: async (_args, { cwd }) => {
+      await materializeLockedState(cwd);
+      await mkdir(path.join(cwd, "node_modules", ".foreign"));
+    },
+  }), /does not match its lockfile/u);
+});
+
+test("Prisma generated artifacts reject links that escape the managed project", async (context) => {
+  const projectRoot = await prismaProject(context);
+  const externalRoot = `${projectRoot}-external`;
+  context.after(() => rmTree(externalRoot));
+  await mkdir(externalRoot);
+
+  await assert.rejects(() => prepareTaskWorktreeDependencies({
+    projectRoot,
+    lockfiles: [path.join(projectRoot, "package-lock.json")],
+    runNpm: async (_args, { cwd }) => {
+      await materializeLockedState(cwd);
+      await symlink(
+        externalRoot,
+        path.join(cwd, "node_modules", ".prisma"),
+        process.platform === "win32" ? "junction" : "dir",
+      );
+    },
+  }), /must use a local directory/u);
+});
+
+test("a valid Prisma tree recovers from a matching cached pre-fix failure", async (context) => {
+  const projectRoot = await prismaProject(context);
+  const markerPath = path.join(projectRoot, "node_modules", ".agent-hub-task-dependencies.json");
+  const failurePath = path.join(projectRoot, "node_modules", ".agent-hub-task-dependencies-failure.json");
+  let calls = 0;
+  const input = {
+    projectRoot,
+    lockfiles: [path.join(projectRoot, "package-lock.json")],
+    runNpm: async (_args, { cwd }) => {
+      calls += 1;
+      await materializePrismaGeneratedState(cwd);
+    },
+  };
+  await prepareTaskWorktreeDependencies(input);
+  const marker = JSON.parse(await readFile(markerPath, "utf8"));
+  await rm(markerPath);
+  await writeFile(failurePath, `${JSON.stringify({
+    policy: marker.policy,
+    lockfileSha256: marker.lockfileSha256,
+    code: "TASK_DEPENDENCY_POST_INSTALL_INVALID",
+    state: "lock-state-mismatch",
+  })}\n`, "utf8");
+
+  assert.equal((await prepareTaskWorktreeDependencies(input))[0].prepared, true);
+  assert.equal(calls, 2);
+  await assert.rejects(() => readFile(failurePath, "utf8"), /ENOENT/u);
+  assert.equal((await prepareTaskWorktreeDependencies(input))[0].prepared, false);
 });
 
 test("unexpected unscoped and scoped physical package roots invalidate reuse", async (context) => {
@@ -421,7 +597,7 @@ test("post-install overflow is recorded and cannot loop npm ci", async (context)
   await rm(failurePath);
   await assert.rejects(() => prepareTaskWorktreeDependencies(input), /maxEntriesPerDirectory=1/u);
   assert.equal(calls, 2);
-  await rm(path.join(projectRoot, "node_modules"), { recursive: true, force: true });
+  await rmTree(path.join(projectRoot, "node_modules"));
   await assert.rejects(() => prepareTaskWorktreeDependencies(input), /maxEntriesPerDirectory=1/u);
   assert.equal(calls, 3);
 });
@@ -554,7 +730,7 @@ test("opened-handle bounds stop an oversized lock swap before reading", async (c
 
 test("a local file link uses its target package identity", async (context) => {
   const projectRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-link-"));
-  context.after(() => rm(projectRoot, { recursive: true, force: true }));
+  context.after(() => rmTree(projectRoot));
   const packageRoot = path.join(projectRoot, "app");
   const targetRoot = path.join(projectRoot, "bar");
   await mkdir(targetRoot, { recursive: true });
@@ -573,7 +749,7 @@ test("a local file link uses its target package identity", async (context) => {
     lockfiles: [path.join(packageRoot, "package-lock.json")],
     runNpm: async (_args, { cwd }) => {
       calls += 1;
-      await rm(path.join(cwd, "node_modules"), { recursive: true, force: true });
+      await rmTree(path.join(cwd, "node_modules"));
       await mkdir(path.join(cwd, "node_modules"), { recursive: true });
       await symlink(targetRoot, path.join(cwd, "node_modules", "foo"), process.platform === "win32" ? "junction" : "dir");
       await writeFile(path.join(cwd, "node_modules", ".package-lock.json"), `${JSON.stringify({
@@ -591,8 +767,8 @@ test("a local file link uses its target package identity", async (context) => {
 test("a local file link target cannot escape the managed project", async (context) => {
   const projectRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-link-root-"));
   const externalRoot = `${projectRoot}-external`;
-  context.after(() => rm(projectRoot, { recursive: true, force: true }));
-  context.after(() => rm(externalRoot, { recursive: true, force: true }));
+  context.after(() => rmTree(projectRoot));
+  context.after(() => rmTree(externalRoot));
   await mkdir(externalRoot, { recursive: true });
   await writeFile(path.join(externalRoot, "package.json"), "{\"name\":\"outside\",\"version\":\"1.0.0\"}\n", "utf8");
   const relativeTarget = `../${path.basename(externalRoot)}`;
@@ -644,7 +820,7 @@ test("a non-link alias uses the package name recorded by the lock", async (conte
 test("dependency preparation rejects a node_modules link before invoking npm", async (context) => {
   const projectRoot = await npmProject(context);
   const external = path.join(projectRoot, "..", `${path.basename(projectRoot)}-external`);
-  context.after(() => rm(external, { recursive: true, force: true }));
+  context.after(() => rmTree(external));
   await mkdir(external);
   await symlink(external, path.join(projectRoot, "node_modules"), process.platform === "win32" ? "junction" : "dir");
   let invoked = false;
