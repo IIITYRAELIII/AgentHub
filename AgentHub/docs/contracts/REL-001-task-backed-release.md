@@ -295,6 +295,17 @@ Tasks use their pending net paths, while unproven Tasks retain all effective
 replay paths. Removing a projection restores its historical paths and overlap
 detection repeats until stable, independently of Task ordering.
 
+If chronological replay of a reopened Task conflicts because its stale parent
+does not contain bytes already present in the approved base, Agent Hub may use
+one Task-local base merge as resolution evidence. The merge must be the unique
+bounded member of the Task result's first-parent lineage shared with the replayed
+integration, its second parent must equal the exact approved base, and every
+conflicting path must match the index base side plus the same accepted mode,
+object type and blob in the merge, Task result, integration and current `dev`. Missing, foreign,
+non-exact or ambiguous evidence leaves the release blocked. Only those exact
+accepted conflict paths are staged; this proof does not admit a Task snapshot
+or change integration order.
+
 At explicit release start, Architect reads and selects the exact ready Await
 set. Before choosing the base, Agent Hub fetches without pull/merge/rebase and
 reports every local unpublished or remote main change since the last published

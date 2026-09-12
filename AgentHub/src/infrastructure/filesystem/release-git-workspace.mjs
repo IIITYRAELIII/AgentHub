@@ -9,7 +9,10 @@ import { taskRepositoryKey } from "../../domain/task-git-reference.mjs";
 import { canonicalPath } from "./config.mjs";
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
 import { freezePreparedPublicationCandidate } from "./freeze-publication-candidate.mjs";
-import { resolveExactOrderPreservingUnion } from "./release-order-preserving-union.mjs";
+import {
+  resolveExactOrderPreservingUnion,
+  resolveExactTaskBaseMerge,
+} from "./release-order-preserving-union.mjs";
 import { releaseTaskNetProjections } from "./release-task-net-projection.mjs";
 
 const RELEASE_MARKER = "agent-hub-release-clone.json";
@@ -650,7 +653,9 @@ export class ReleaseGitWorkspaceService {
               ...projection, netProjection: true,
               order: Math.max(...task.integrations.map((item) => item.order)),
             }] : task.integrations;
-            return selected.map((integration) => ({ ...integration, taskId: task.taskId }));
+            return selected.map((integration) => ({
+              ...integration, taskId: task.taskId, taskResultCommit: task.resultCommit,
+            }));
           }).sort((left, right) => left.order - right.order || left.commit.localeCompare(right.commit));
           for (const integration of integrations) {
             const priorTree = await runGit(["write-tree"], { cwd: clone.releaseRoot });
@@ -688,6 +693,13 @@ export class ReleaseGitWorkspaceService {
                       conflicts,
                       approvedBaseCommit: baseCommit,
                     })) continue;
+                if (await resolveExactTaskBaseMerge({
+                  candidateRoot: clone.releaseRoot,
+                  conflicts,
+                  approvedBaseCommit: baseCommit,
+                  taskResultCommit: integration.taskResultCommit,
+                  integrationCommit: integration.commit,
+                })) continue;
                 throw new Error(
                   `PreRelease delta ${integration.commit} (dev order ${integration.order}) failed for Task `
                   + `${integration.taskId}: ${conflicts.join(", ") || error.message}`,

@@ -211,3 +211,80 @@ test("an overlap restores historical paths and rejects dependent projections reg
     assert.equal((await releaseTaskNetProjections({ tasks, baseCommit: reopened.approved, git: f.git })).size, 0);
   }
 });
+
+test("release candidate resolves stale reopened replay through the exact Task base merge", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub-release-stale-replay-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const primary = path.join(root, "primary");
+  const rawGit = async (cwd, args) => (await exec("git", args, { cwd, windowsHide: true })).stdout.trim();
+  await rawGit(root, ["init", "--bare", "--initial-branch=main", "origin.git"]);
+  await rawGit(root, ["clone", "origin.git", primary]);
+  const git = (args) => rawGit(primary, args);
+  const put = (name, content) => writeFile(path.join(primary, name), content, "utf8");
+  const commit = async (message) => {
+    await git(["add", "-A"]);
+    await git(["commit", "-m", message]);
+    return git(["rev-parse", "HEAD"]);
+  };
+  await git(["config", "user.name", "Test"]);
+  await git(["config", "user.email", "test@example.invalid"]);
+  await git(["config", "core.autocrlf", "false"]);
+  await put("shared.txt", "setting=base\n");
+  await put("CHANGELOG.md", "published\n");
+  await put(".gitattributes", "* text eol=lf\n");
+  const base = await commit("base");
+  await git(["branch", "dev"]);
+  await git(["checkout", "-b", "task"]);
+  await put("owned.txt", "first revision\n");
+  const firstResult = await commit("first Task revision");
+  await git(["checkout", "dev"]);
+  const firstParent = await git(["rev-parse", "HEAD"]);
+  await git(["merge", "--no-ff", "--no-edit", firstResult]);
+  const firstIntegration = await git(["rev-parse", "HEAD"]);
+  await git(["checkout", "main"]);
+  await put("shared.txt", "setting=approved-main\n");
+  const approved = await commit("approved main changes same setting");
+  await git(["push", "origin", "main"]);
+  await git(["checkout", "task"]);
+  await put("shared.txt", "setting=task\n");
+  await commit("reopened Task changes same setting");
+  await assert.rejects(git(["merge", "--no-ff", "--no-commit", approved]));
+  await put("shared.txt", "setting=task+approved-main\n");
+  await git(["add", "shared.txt"]);
+  await git(["commit", "--no-edit"]);
+  const taskBaseMerge = await git(["rev-parse", "HEAD"]);
+  await git(["checkout", "dev"]);
+  await put("foreign.txt", "unselected dev context\n");
+  const integrationParent = await commit("unselected dev context");
+  await git(["checkout", "task"]);
+  await git(["merge", "--no-ff", "--no-edit", integrationParent]);
+  const resultCommit = await git(["rev-parse", "HEAD"]);
+  await git(["checkout", "dev"]);
+  await git(["merge", "--no-ff", "--no-edit", resultCommit]);
+  const integrationCommit = await git(["rev-parse", "HEAD"]);
+  await git(["checkout", "main"]);
+  const task = {
+    taskId: "reopened-task",
+    taskRevision: 3,
+    resultCommit,
+    integrations: [
+      { parent: firstParent, commit: firstIntegration, order: 1 },
+      { parent: integrationParent, commit: integrationCommit, order: 2 },
+    ],
+  };
+  assert.equal((await releaseTaskNetProjections({ tasks: [task], baseCommit: approved, git })).size, 0);
+  const service = new ReleaseGitWorkspaceService({ dataDir: path.join(root, "data") });
+  const candidate = await service.prepareCandidate({
+    projectRoot: primary,
+    approvedBaseCommit: approved,
+    planRevision: "task-base-merge-fallback",
+    frozenTasks: [task],
+  });
+  assert.equal(await readFile(path.join(candidate.releaseRoot, "shared.txt"), "utf8"),
+    "setting=task+approved-main\n");
+  assert.equal(await readFile(path.join(candidate.releaseRoot, "owned.txt"), "utf8"), "first revision\n");
+  await assert.rejects(readFile(path.join(candidate.releaseRoot, "foreign.txt"), "utf8"), /ENOENT/u);
+  assert.equal(await git(["rev-parse", "HEAD"]), approved);
+  assert.equal(await git(["status", "--porcelain"]), "");
+  assert.notEqual(base, taskBaseMerge);
+});
