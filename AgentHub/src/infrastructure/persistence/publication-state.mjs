@@ -4,8 +4,10 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { withPublicationLock } from "../process/publication-lock.mjs";
 
 const execFileAsync = promisify(execFile);
+const writeTails = new Map();
 
 export function publicationStateFile(environment = process.env) {
   const root = environment.LOCALAPPDATA
@@ -85,7 +87,19 @@ export function normalizePublicationState(value = null) {
   return repositories.length ? { ...value, repositories } : value;
 }
 
-export async function writePublicationState(value, file = publicationStateFile()) {
+async function withPublicationStateWriteTurn(file, operation) {
+  const key = path.resolve(file);
+  const previous = writeTails.get(key)?.catch(() => {}) ?? Promise.resolve();
+  const current = previous.then(operation);
+  writeTails.set(key, current);
+  try {
+    return await current;
+  } finally {
+    if (writeTails.get(key) === current) writeTails.delete(key);
+  }
+}
+
+async function writePublicationStateUnlocked(value, file) {
   await mkdir(path.dirname(file), { recursive: true });
   const current = await readPublicationState(file);
   const incomingRepositories = publicationStateRepositories(value);
@@ -98,9 +112,16 @@ export async function writePublicationState(value, file = publicationStateFile()
     ...(retained.size ? { repositories: [...retained.values()].sort((left, right) => (
       canonicalRoot(left.root).localeCompare(canonicalRoot(right.root))
     )) } : {}),
-    generation: String(value?.generation ?? "").trim() || randomUUID(),
+    generation: String(value?.generation ?? current?.generation ?? "").trim() || randomUUID(),
   }, null, 2)}\n`, "utf8");
   await rename(temporary, file);
+}
+
+export async function writePublicationState(value, file = publicationStateFile()) {
+  return withPublicationStateWriteTurn(file, () => withPublicationLock(
+    () => writePublicationStateUnlocked(value, file),
+    { environment: process.env },
+  ));
 }
 
 export async function gitOutput(args, { cwd } = {}) {

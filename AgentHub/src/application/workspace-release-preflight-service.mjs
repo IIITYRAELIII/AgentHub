@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import path from "node:path";
 
 function requiredMethod(value, name) {
@@ -15,7 +16,14 @@ function requiredPlanRevision(value) {
 }
 
 function canonicalRoot(value) {
-  const resolved = path.resolve(String(value ?? "").trim());
+  const source = String(value ?? "").trim();
+  let resolved = path.resolve(source);
+  try {
+    resolved = realpathSync.native(resolved);
+  } catch {
+    // Some tests use synthetic roots. Fall back to path resolution when the
+    // repository is not materialized on disk.
+  }
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
@@ -592,11 +600,20 @@ export class WorkspaceReleasePreflightService {
       throw new Error("release plan revision changed during release candidate preparation");
     }
     if (externalRepositories.length) {
-      const validationRepositories = externalRepositories.map((repository) => {
-        const frozenCandidate = candidateForRepository(releaseCandidates, repository);
-        if (!frozenCandidate) throw new Error(`release validation is missing frozen candidate for ${repository.projectRoot}`);
-        return { ...repository, frozenCandidate };
-      });
+      if (typeof this.releaseGitWorkspaces.frozenCandidate !== "function") {
+        throw new Error("repository production validation requires frozen candidate readback support");
+      }
+      const validationRepositories = [];
+      for (const repository of externalRepositories) {
+        const preparedCandidate = candidateForRepository(releaseCandidates, repository);
+        if (!preparedCandidate) throw new Error(`release validation is missing prepared candidate for ${repository.projectRoot}`);
+        const frozenCandidate = await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot);
+        if (String(frozenCandidate.preReleaseHead ?? "") !== String(preparedCandidate.preReleaseHead ?? "")
+            || String(frozenCandidate.manifestHash ?? "") !== String(preparedCandidate.manifestHash ?? "")) {
+          throw new Error(`release validation frozen candidate readback is stale for ${repository.projectRoot}`);
+        }
+        validationRepositories.push({ ...repository, frozenCandidate });
+      }
       productionValidation = assertExactProductionValidation({
         workspaceId,
         planRevision: plan.revision,

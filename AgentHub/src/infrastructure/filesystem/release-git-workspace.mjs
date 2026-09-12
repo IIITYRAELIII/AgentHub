@@ -840,9 +840,10 @@ export class ReleaseGitWorkspaceService {
     }
     const primaryFailure = primaryInvariantFailure(primary, "preflight frozen candidate readback");
     if (primaryFailure) throw new Error(primaryFailure);
-    const [releaseBranch, releaseHead, releaseDirty] = await Promise.all([
+    const [releaseBranch, releaseHead, releaseTree, releaseDirty] = await Promise.all([
       runGit(["symbolic-ref", "--short", "HEAD"], { cwd: marker.releaseRoot }),
       runGit(["rev-parse", "HEAD^{commit}"], { cwd: marker.releaseRoot }),
+      runGit(["rev-parse", "HEAD^{tree}"], { cwd: marker.releaseRoot }),
       runGit(["status", "--porcelain=v1", "--untracked-files=all"], { cwd: marker.releaseRoot }),
     ]);
     if (releaseBranch !== RELEASE_BRANCH || releaseHead !== branchHead || releaseDirty) {
@@ -898,6 +899,7 @@ export class ReleaseGitWorkspaceService {
       preflightRequestId: manifestRequestId,
       baseCommit: String(checkpoint.baseCommit),
       preReleaseHead: String(checkpoint.preReleaseHead),
+      tree: releaseTree,
     };
   }
 

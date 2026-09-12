@@ -32,14 +32,18 @@ async function fixture(t) {
   return { root, repo, stateFile: path.join(root, "publication-state.json") };
 }
 
-function githubApi({ commit = published, owner = "SidorukSV", repo = "bookworm", tag = "v5.1.52.148", id = "384471803" } = {}) {
+function githubApi({
+  commit = published, owner = "SidorukSV", repo = "bookworm", tag = "v5.1.52.148", id = "384471803",
+  draft = false, publishedAt = "2026-09-08T05:43:47Z",
+} = {}) {
   return async (pathname) => {
     if (pathname === `/repos/${owner}/${repo}/releases/tags/${tag}`) {
       return {
         id,
         tag_name: tag,
+        draft,
         html_url: `https://github.com/${owner}/${repo}/releases/tag/${tag}`,
-        published_at: "2026-09-08T05:43:47Z",
+        published_at: publishedAt,
       };
     }
     if (pathname === `/repos/${owner}/${repo}/git/ref/tags/${tag}`) {
@@ -82,6 +86,7 @@ test("GitHub release baseline enable writes repository-scoped state and retains 
     targetCommit: published,
   }, {
     githubApi: githubApi(),
+    readState: () => readPublicationState(setup.stateFile),
     writeState: (state) => writePublicationState(state, setup.stateFile),
   });
 
@@ -91,6 +96,94 @@ test("GitHub release baseline enable writes repository-scoped state and retains 
   assert.equal(state.repositories.find((entry) => entry.root === setup.repo).revision, published);
   assert.equal(state.repositories.find((entry) => entry.root === otherRoot).revision, "b".repeat(40));
   assert.equal(state.repositories.find((entry) => entry.root === setup.repo).publisher.kind, "github-release");
+});
+
+test("GitHub release baseline adoption preserves Agent Hub global publication authority", async (t) => {
+  const setup = await fixture(t);
+  const hubRoot = path.join(setup.root, "hub");
+  const hubRevision = "1".repeat(40);
+  const hubGeneration = "hub-generation";
+  await writePublicationState({
+    revision: hubRevision,
+    publishedAt: "2026-09-12T00:00:00Z",
+    mode: "full",
+    generation: hubGeneration,
+    repositories: [{ root: hubRoot, revision: hubRevision, planRevision: "hub-plan" }],
+  }, setup.stateFile);
+
+  await enableGithubReleaseBaseline({
+    projectRoot: setup.repo,
+    owner: "SidorukSV",
+    repo: "bookworm",
+    tag: "v5.1.52.148",
+    releaseId: "384471803",
+    targetCommit: published,
+  }, {
+    githubApi: githubApi(),
+    readState: () => readPublicationState(setup.stateFile),
+    writeState: (state) => writePublicationState(state, setup.stateFile),
+  });
+
+  const state = await readPublicationState(setup.stateFile);
+  assert.equal(state.revision, hubRevision);
+  assert.equal(state.generation, hubGeneration);
+  assert.equal(state.mode, "full");
+  assert.equal(state.repositories.find((entry) => entry.root === hubRoot).revision, hubRevision);
+  assert.equal(state.repositories.find((entry) => entry.root === setup.repo).revision, published);
+});
+
+test("GitHub release baseline refuses draft, unpublished, moved and stale evidence", async (t) => {
+  const setup = await fixture(t);
+  const request = {
+    projectRoot: setup.repo,
+    owner: "SidorukSV",
+    repo: "bookworm",
+    tag: "v5.1.52.148",
+    releaseId: "384471803",
+    targetCommit: published,
+  };
+
+  await assert.rejects(
+    () => previewGithubReleaseBaseline(request, { githubApi: githubApi({ draft: true }) }),
+    /published release/u,
+  );
+  await assert.rejects(
+    () => previewGithubReleaseBaseline(request, { githubApi: githubApi({ publishedAt: null }) }),
+    /published release/u,
+  );
+
+  let refReads = 0;
+  await assert.rejects(
+    () => enableGithubReleaseBaseline(request, {
+      githubApi: async (pathname) => {
+        if (pathname.endsWith("/git/ref/tags/v5.1.52.148")) {
+          refReads += 1;
+          return { object: { type: "commit", sha: refReads === 1 ? published : "d".repeat(40) } };
+        }
+        return githubApi()(pathname);
+      },
+      readState: () => readPublicationState(setup.stateFile),
+      writeState: (state) => writePublicationState(state, setup.stateFile),
+    }),
+    /tag moved|changed before the guarded write/u,
+  );
+
+  await writePublicationState({
+    repositories: [{
+      root: setup.repo,
+      revision: "e".repeat(40),
+      publishedAt: "2026-09-09T00:00:00Z",
+      publisher: { kind: "github-release", releasePublishedAt: "2026-09-09T00:00:00Z" },
+    }],
+  }, setup.stateFile);
+  await assert.rejects(
+    () => enableGithubReleaseBaseline(request, {
+      githubApi: githubApi(),
+      readState: () => readPublicationState(setup.stateFile),
+      writeState: (state) => writePublicationState(state, setup.stateFile),
+    }),
+    /stale/u,
+  );
 });
 
 test("GitHub release baseline refuses wrong repository and moved tag evidence", async (t) => {

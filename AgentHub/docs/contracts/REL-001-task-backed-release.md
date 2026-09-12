@@ -316,9 +316,10 @@ contract for Bookworm-style Android repositories is enabled only by explicit
 `releaseValidation.repositories[]` policy. The default unconfigured state fails
 closed with an operator action. A configured adapter runs the approved QA checks
 against the exact frozen candidate in isolation after `PreRelease` preparation,
-then returns bounded server-owned evidence naming repository identity, plan
-revision, Task IDs and revisions, Task result commits, candidate commit, relevant
-build input identity, check commands, outcomes and artifact digests. The
+then persists bounded server-owned evidence naming repository identity, plan
+revision, Task IDs and revisions, Task result commits, candidate commit and tree,
+immutable manifest identity, relevant build input identity, check commands,
+outcomes and artifact digests. The
 preflight adapter accepts only an exact match to the selected repository, plan,
 candidate and Task result evidence. Historical QA reports, mutable build outputs,
 tree equality, developer-authored reports, or a ready string are not production

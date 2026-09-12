@@ -1,5 +1,6 @@
 import path from "node:path";
-import { gitOutput, writePublicationState } from "./publication-state.mjs";
+import { gitOutput, readPublicationState, writePublicationState } from "./publication-state.mjs";
+import { withPublicationLock } from "../process/publication-lock.mjs";
 
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/iu;
 
@@ -59,6 +60,17 @@ function releaseTagRefPath(tag) {
   return `/repos/{owner}/{repo}/git/ref/tags/${encodeURIComponent(tag).replaceAll("%2F", "/")}`;
 }
 
+function canonicalRoot(value) {
+  const resolved = path.resolve(String(value ?? "").trim());
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+function repositoryPublishedAt(entry = {}) {
+  const value = String(entry?.publishedAt ?? entry?.publisher?.releasePublishedAt ?? "").trim();
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? time : null;
+}
+
 export async function verifyGithubReleaseBaseline(input = {}, {
   git = gitOutput,
   githubApi = defaultGithubApi,
@@ -85,6 +97,9 @@ export async function verifyGithubReleaseBaseline(input = {}, {
   if (String(release?.tag_name ?? "") !== request.releaseTag) {
     throw new Error("GitHub release tag does not match requested baseline");
   }
+  if (release?.draft === true || !String(release?.published_at ?? "").trim()) {
+    throw new Error("GitHub publication baseline requires an already published release");
+  }
   if (String(tagRef?.object?.type ?? "") !== "commit") {
     throw new Error("GitHub release tag must resolve directly to a commit");
   }
@@ -96,6 +111,8 @@ export async function verifyGithubReleaseBaseline(input = {}, {
     status: "verified",
     root: request.projectRoot,
     revision: request.expectedTargetCommit,
+    publishedAt: release.published_at,
+    mode: "adopted-github-release",
     publisher: {
       kind: "github-release",
       owner: request.owner,
@@ -121,15 +138,30 @@ export async function previewGithubReleaseBaseline(input = {}, dependencies = {}
 }
 
 export async function enableGithubReleaseBaseline(input = {}, {
+  lock = withPublicationLock,
+  readState = readPublicationState,
   writeState = writePublicationState,
   ...dependencies
 } = {}) {
-  const evidence = await verifyGithubReleaseBaseline(input, dependencies);
-  await writeState({
-    revision: evidence.revision,
-    publishedAt: evidence.publisher.releasePublishedAt ?? new Date().toISOString(),
-    mode: "adopted-github-release",
-    repositories: [evidence],
+  const previewEvidence = await verifyGithubReleaseBaseline(input, dependencies);
+  const evidence = await lock(async () => {
+    const verified = await verifyGithubReleaseBaseline(input, dependencies);
+    if (JSON.stringify(verified) !== JSON.stringify(previewEvidence)) {
+      throw new Error("GitHub publication baseline changed before the guarded write");
+    }
+    const current = await readState();
+    const existing = (current?.repositories ?? []).find((entry) => (
+      canonicalRoot(entry.root) === canonicalRoot(verified.root)
+    ));
+    if (existing && String(existing.revision ?? "") !== verified.revision) {
+      const existingPublishedAt = repositoryPublishedAt(existing);
+      const incomingPublishedAt = repositoryPublishedAt(verified);
+      if (existingPublishedAt == null || incomingPublishedAt == null || existingPublishedAt >= incomingPublishedAt) {
+        throw new Error("GitHub publication baseline is stale for the selected repository");
+      }
+    }
+    await writeState({ repositories: [verified] });
+    return verified;
   });
   return {
     status: "adopted",

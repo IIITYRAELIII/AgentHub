@@ -1,8 +1,26 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 
 import { WorkspaceReleasePreflightService } from "../../src/application/workspace-release-preflight-service.mjs";
+import { ReleaseGitWorkspaceService } from "../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { createRepositoryProductionValidationAdapter } from "../../src/infrastructure/process/repository-production-validation.mjs";
+
+const execFileAsync = promisify(execFile);
+
+async function git(cwd, ...args) {
+  return String((await execFileAsync("git", args, { cwd, windowsHide: true })).stdout).trim();
+}
+
+async function commit(cwd, message) {
+  await git(cwd, "add", "-A");
+  await git(cwd, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", message);
+  return git(cwd, "rev-parse", "HEAD");
+}
 
 function exactProductionValidation({ workspaceId = "workspace-1", planRevision = "plan-1", repositories }) {
   return {
@@ -359,7 +377,33 @@ test("release preflight requires repository-scoped top-level approvals for multi
         commits: [{ commit: `commit-${path.basename(request.projectRoot)}` }],
         approvalRequired: false,
       }),
-      prepareCandidate: async (request) => ({ repositoryRoot: request.projectRoot, preReleaseHead: `pre-${path.basename(request.projectRoot)}` }),
+      prepareCandidate: async (request) => ({
+        repositoryRoot: request.projectRoot,
+        preReleaseHead: `pre-${path.basename(request.projectRoot)}`,
+        manifestHash: `manifest-${path.basename(request.projectRoot)}`,
+      }),
+      frozenCandidate: async (projectRoot) => ({
+        repositoryRoot: projectRoot,
+        releaseRoot: path.join(projectRoot, "release"),
+        checkpointPhase: "prepared",
+        planRevision: "plan-1",
+        baseCommit: `origin-${path.basename(projectRoot)}`,
+        preReleaseHead: `pre-${path.basename(projectRoot)}`,
+        tree: `tree-${path.basename(projectRoot)}`,
+        manifestHash: `manifest-${path.basename(projectRoot)}`,
+        manifest: {
+          workspaceId: "workspace-1",
+          planRevision: "plan-1",
+          baseCommit: `origin-${path.basename(projectRoot)}`,
+          tasks: plan.ready
+            .filter((task) => path.resolve(task.projectRoot) === path.resolve(projectRoot))
+            .map((task) => ({
+              taskId: task.taskId,
+              taskRevision: task.taskRevision,
+              resultCommit: task.resultCommit,
+            })),
+        },
+      }),
     },
     readPublicationState: async () => ({
       repositories: [
@@ -428,7 +472,23 @@ test("release preflight rejects stale external production validation evidence", 
       withAwaitTransition: async (_workspaceId, operation) => operation(),
       assertPrimaryInvariant: async (projectRoot) => ({ projectRoot, branch: "refs/heads/main", headCommit: "main" }),
       inspectMainChanges: async (request) => ({ projectRoot: request.projectRoot, publishedRevision: request.publishedRevision, localMain: "main", originMain: "main", commits: [], approvalRequired: false }),
-      prepareCandidate: async (request) => ({ repositoryRoot: request.projectRoot, preReleaseHead: "candidate" }),
+      prepareCandidate: async (request) => ({ repositoryRoot: request.projectRoot, preReleaseHead: "candidate", manifestHash: "manifest-android" }),
+      frozenCandidate: async (projectRoot) => ({
+        repositoryRoot: projectRoot,
+        releaseRoot: path.join(projectRoot, "release"),
+        checkpointPhase: "prepared",
+        planRevision: "plan-android",
+        baseCommit: "main",
+        preReleaseHead: "candidate",
+        tree: "tree-android",
+        manifestHash: "manifest-android",
+        manifest: {
+          workspaceId: "workspace-1",
+          planRevision: "plan-android",
+          baseCommit: "main",
+          tasks: [{ taskId: "task-android", taskRevision: 2, resultCommit: "result-android" }],
+        },
+      }),
     },
     readPublicationState: async () => ({ repositories: [{ root: repo, revision: "published" }] }),
     resolveTestContourSource: async () => ({ kind: "external-validation-required", repositories: [{ projectRoot: repo }] }),
@@ -453,6 +513,86 @@ test("release preflight rejects stale external production validation evidence", 
     () => service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-android" }),
     /stale/u,
   );
+});
+
+test("release preflight composes real frozen candidate readback with the repository validation adapter", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub-preflight-real-adapter-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const origin = path.join(root, "origin.git");
+  const primary = path.join(root, "primary");
+  const dataDir = path.join(root, "data");
+  await git(root, "init", "--bare", "--initial-branch=main", origin);
+  await git(root, "clone", origin, primary);
+  await git(primary, "config", "core.autocrlf", "false");
+  await mkdir(path.join(primary, "AgentHub"), { recursive: true });
+  await writeFile(path.join(primary, "AgentHub", "package.json"), "{}\n", "utf8");
+  await writeFile(path.join(primary, "app.txt"), "base\n", "utf8");
+  const base = await commit(primary, "base");
+  await git(primary, "push", "-u", "origin", "main");
+  const taskRoot = path.join(root, "task");
+  await git(primary, "worktree", "add", "-b", "HUB-real-adapter", taskRoot, "main");
+  t.after(() => git(primary, "worktree", "remove", "--force", taskRoot).catch(() => {}));
+  await writeFile(path.join(taskRoot, "app.txt"), "candidate\n", "utf8");
+  const resultCommit = await commit(taskRoot, "task result");
+  const releaseGitWorkspaces = new ReleaseGitWorkspaceService({ dataDir });
+  const plan = {
+    revision: "plan-real-adapter",
+    ready: [{ taskId: "task-real", taskRevision: 2, projectRoot: primary, resultCommit }],
+    blocked: [],
+    conflicts: [],
+  };
+  const service = new WorkspaceReleasePreflightService({
+    releasePlanner: { plan: async () => plan },
+    taskGitWorkspaces: {
+      prepareDev: async (projectRoot) => ({
+        repositoryRoot: projectRoot,
+        projectRoot,
+        branch: "dev",
+        headCommit: resultCommit,
+      }),
+      verifyReleaseResultsInDev: async ({ projectRoot, resultCommits }) => ({
+        repositoryRoot: projectRoot,
+        projectRoot,
+        branch: "dev",
+        headCommit: resultCommit,
+        resultCommits,
+      }),
+      releaseIntegrationEvidence: async ({ projectRoot, tasks }) => ({
+        repositoryRoot: projectRoot,
+        projectRoot,
+        branch: "dev",
+        headCommit: resultCommit,
+        tasks: tasks.map((task) => ({ ...task, integrations: [] })),
+      }),
+    },
+    releaseGitWorkspaces,
+    readPublicationState: async () => ({ repositories: [{ root: primary, revision: base }] }),
+    resolveTestContourSource: async () => ({ kind: "external-validation-required", reason: "fixture external QA" }),
+    refreshTestContour: async () => assert.fail("external fixture must not refresh AgentHub contour"),
+    readTestContourStatus: async () => assert.fail("external fixture must not read AgentHub contour"),
+    validateProductionCandidate: createRepositoryProductionValidationAdapter({
+      dataDir: path.join(dataDir, "validation"),
+      policies: [{
+        enabled: true,
+        projectRoot: primary,
+        check: {
+          kind: "fixture-qa",
+          id: "real-frozen-candidate",
+          commands: [{ command: "git", args: ["rev-parse", "HEAD"] }],
+          artifacts: ["app.txt"],
+        },
+      }],
+    }),
+  });
+
+  const result = await service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-real-adapter" });
+
+  assert.equal(result.status, "ready");
+  assert.equal(result.productionValidation.repositories[0].candidateCommit, result.releaseCandidates[0].preReleaseHead);
+  assert.equal(result.productionValidation.evidence[0].manifestHash, result.releaseCandidates[0].manifestHash);
+  assert.equal(typeof result.productionValidation.evidence[0].evidenceHash, "string");
+  assert.equal(await git(primary, "symbolic-ref", "HEAD"), "refs/heads/main");
+  assert.equal(await git(primary, "status", "--porcelain=v1"), "");
 });
 
 test("release preflight requires external validation for repositories not covered by AgentHub contour", async () => {
@@ -494,7 +634,33 @@ test("release preflight requires external validation for repositories not covere
       withAwaitTransition: async (_workspaceId, operation) => operation(),
       assertPrimaryInvariant: async (projectRoot) => ({ projectRoot, branch: "refs/heads/main", headCommit: "main" }),
       inspectMainChanges: async (request) => ({ projectRoot: request.projectRoot, publishedRevision: request.publishedRevision, localMain: "main", originMain: "main", commits: [], approvalRequired: false }),
-      prepareCandidate: async (request) => ({ repositoryRoot: request.projectRoot, preReleaseHead: `candidate-${path.basename(request.projectRoot)}` }),
+      prepareCandidate: async (request) => ({
+        repositoryRoot: request.projectRoot,
+        preReleaseHead: `candidate-${path.basename(request.projectRoot)}`,
+        manifestHash: `manifest-${path.basename(request.projectRoot)}`,
+      }),
+      frozenCandidate: async (projectRoot) => ({
+        repositoryRoot: projectRoot,
+        releaseRoot: path.join(projectRoot, "release"),
+        checkpointPhase: "prepared",
+        planRevision: "plan-mixed",
+        baseCommit: "main",
+        preReleaseHead: `candidate-${path.basename(projectRoot)}`,
+        tree: `tree-${path.basename(projectRoot)}`,
+        manifestHash: `manifest-${path.basename(projectRoot)}`,
+        manifest: {
+          workspaceId: "workspace-1",
+          planRevision: "plan-mixed",
+          baseCommit: "main",
+          tasks: plan.ready
+            .filter((task) => path.resolve(task.projectRoot) === path.resolve(projectRoot))
+            .map((task) => ({
+              taskId: task.taskId,
+              taskRevision: task.taskRevision,
+              resultCommit: task.resultCommit,
+            })),
+        },
+      }),
     },
     readPublicationState: async () => ({
       repositories: [{ root: repoHub, revision: "published-hub" }, { root: repoAndroid, revision: "published-android" }],

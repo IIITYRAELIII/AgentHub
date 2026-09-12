@@ -425,6 +425,7 @@ export async function createHubInfrastructure({
     readPublicationState,
     validateProductionCandidate: createRepositoryProductionValidationAdapter({
       policies: config.releaseValidation?.repositories ?? [],
+      dataDir: path.join(config.dataDir, "release-validation"),
     }),
   });
   const taskLifecycle = new TaskLifecycleService({

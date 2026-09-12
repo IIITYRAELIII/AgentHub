@@ -36,6 +36,19 @@ test("repository-scoped publication writes retain independent repository evidenc
   assert.equal(state.revision, "b".repeat(40));
 });
 
+test("concurrent repository-scoped publication writes retain every root", async (t) => {
+  const file = await fixture(t);
+  const roots = Array.from({ length: 5 }, (_item, index) => path.resolve(`D:/repo-${index}`));
+
+  await Promise.all(roots.map((root, index) => writePublicationState({
+    repositories: [{ root, revision: String(index).repeat(40).slice(0, 40), planRevision: `plan-${index}` }],
+  }, file)));
+
+  const state = await readPublicationState(file);
+  assert.equal(state.repositories.length, roots.length);
+  assert.deepEqual(state.repositories.map((entry) => entry.root).sort(), roots.sort());
+});
+
 test("legacy publication record adoption requires bounded repository identity", async (t) => {
   const file = await fixture(t);
   const repo = path.resolve("D:/bookworm");
