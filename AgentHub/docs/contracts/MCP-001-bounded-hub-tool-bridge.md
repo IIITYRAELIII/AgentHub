@@ -126,14 +126,22 @@ same caller Workspace, Stream, provider and provider Thread presents the exact
 Task/start-request owner and Task revision, the Task is still `starting`, the
 planned destination Stream is absent and no inter-Stream content hash was ever
 admitted. The original receipt is terminalized before Task launch ownership is
-cleared. A crash between those writes can leave the Task blocked but cannot make
+cleared. Before either write, cancellation must win the Task-row
+`prepared -> cancelling` CAS against the launcher's
+`prepared -> admitted(attemptId)` effect admission. A successful fence prevents
+that runner and concurrent retries from entering Stream/thread/delivery effects;
+an already admitted runner makes cancellation fail without changing the original
+receipt. The fence is per Task/request, durable across database connections and
+processes, and has no timeout lease. A crash between receipt terminalization and
+Task cleanup can leave the Task blocked but cannot make
 the original launch replayable; another exact cancellation request may finish
 the cleanup. A different caller, Task state, revision, destination effect,
 admitted content or successful/failed launch is not cancellable.
 
 Before the planned destination Stream exists, `task.starting` is an idempotent
 Workspace event whose payload names that Stream; the event write is awaited
-before Stream/thread/delivery effects. Its rejection leaves the durable prepare
+before the durable effect-admission CAS and Stream/thread/delivery effects. Its
+rejection leaves the durable prepare
 blocked for explicit cancellation and is not silently converted to success.
 
 ## Queue diagnostics

@@ -33,6 +33,16 @@ planned destination Stream is absent and no inter-Stream content hash has been
 admitted. Terminalize the original receipt as a structured failed/cancelled
 outcome before clearing Task launch ownership with its request and revision CAS.
 
+The absence checks are not an effect fence by themselves. Persist a per-Task
+launch state machine in the Task row: `prepared`, `admitted`, `cancelling`,
+and `completed`. Each launcher invocation has an opaque attempt ID. Immediately
+before its first Stream/provider effect it must win the exact
+`prepared -> admitted(attemptId)` revision CAS. Exact cancellation must first
+win the competing `prepared -> cancelling(cancelRequestId)` CAS, then recheck
+the absence evidence, terminalize the original receipt, and finally clear the
+Task owner. A cancellation that observes `admitted` is rejected; it cannot infer
+from a momentarily absent Stream that an already admitted runner has stopped.
+
 The original arguments hash remains immutable receipt evidence and is returned
 by cancellation diagnostics, but it is never decoded into a launch. Provider
 turn identity is not a receipt field: a later turn in the same exact provider
@@ -45,6 +55,13 @@ owner. After cancellation, normal start/claim into an existing Stream may assign
 the Task; the terminal original MCP receipt prevents its request from executing
 again through the supported bridge.
 
+The Task-row CAS is the cross-connection and cross-process arbitration boundary;
+it is not an in-memory or global lock and has no timeout lease. The production
+runtime also has one `bot.lock` owner, so activation must replace/restart that
+owner rather than run old and new launch protocols concurrently. Corrected
+runners sharing the database cannot both admit effects because their attempt IDs
+compete on the same durable row.
+
 ## Consequences
 
 An event rejection leaves durable evidence and produces no downstream launch
@@ -56,3 +73,11 @@ but before Task cleanup, the Task remains blocked for a later cancellation; the
 old launch stays non-replayable. Corrupt, ambiguous, cross-Workspace or otherwise
 unproven state remains blocked. No missing arguments or content are reconstructed
 from logs, Task rows or ordering.
+
+For a legacy `starting` row created before this state machine existed, startup
+migration classifies the still-unlaunched owner as `prepared`. Recovery after
+the required runtime restart is sequentially safe because the old process has
+exited before cancellation is available. The public pending-cancel contract is
+also safe for a live corrected runner: if cancellation wins the fence, that
+runner fails admission before create/dispatch/send; if admission wins, cancel
+fails without terminalizing the launch receipt.

@@ -13,6 +13,12 @@ import { createInterstreamMessage } from "../../src/domain/interstream-message.m
 import { TaskBoardStore } from "../../src/infrastructure/persistence/task-board-store.mjs";
 import { WorkspaceCatalogStore } from "../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((complete) => { resolve = complete; });
+  return { promise, resolve };
+}
+
 async function stores(databaseFile) {
   const workspaceCatalog = new WorkspaceCatalogStore({ databaseFile });
   await workspaceCatalog.load();
@@ -38,7 +44,9 @@ function hub({ workspaceCatalog, taskBoard, attachmentDirectory }) {
   });
 }
 
-async function launchStores(databaseFile, { rejectStartingEvent = false } = {}) {
+async function launchStores(databaseFile, {
+  rejectStartingEvent = false, startingEventBarrier = null,
+} = {}) {
   const rawWorkspaceCatalog = new WorkspaceCatalogStore({ databaseFile });
   await rawWorkspaceCatalog.load();
   const rawTaskStore = new TaskBoardStore({ databaseFile });
@@ -58,7 +66,14 @@ async function launchStores(databaseFile, { rejectStartingEvent = false } = {}) 
   const taskBoard = new TaskBoardService({
     store: taskStore,
     workspaceCatalog,
-    recordEvent: (event) => workspaceCatalog.recordWorkspaceEvent(event),
+    recordEvent: async (event) => {
+      const recorded = await workspaceCatalog.recordWorkspaceEvent(event);
+      if (startingEventBarrier && event.type === "task.starting") {
+        startingEventBarrier.entered.resolve();
+        await startingEventBarrier.release.promise;
+      }
+      return recorded;
+    },
     logger: { warn() {}, error() {} },
   });
   return { rawWorkspaceCatalog, rawTaskStore, workspaceCatalog, taskBoard };
@@ -100,6 +115,218 @@ function attachRealLauncher(service, current, evidence) {
   });
   service.setTaskLauncher((params, context) => launcher.start(params, context));
 }
+
+test("exact cancel fences an in-flight launch before Stream and provider effects", async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-launch-cancel-race-"));
+  const databaseFile = path.join(root, "hub.sqlite");
+  const attachmentDirectory = path.join(root, "attachments");
+  await mkdir(attachmentDirectory);
+  const barrier = { entered: deferred(), release: deferred() };
+  const current = await launchStores(databaseFile, { startingEventBarrier: barrier });
+  context.after(async () => {
+    barrier.release.resolve();
+    current.rawTaskStore.close();
+    current.rawWorkspaceCatalog.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  const workspace = await current.workspaceCatalog.createWorkspace({ name: "Agent HUB" });
+  const architect = await current.workspaceCatalog.createStream({
+    workspaceId: workspace.id, name: "Architect", settings: { architect: true },
+  });
+  await current.workspaceCatalog.bindThread({
+    streamId: architect.id, provider: "codex", threadId: "thread-architect-race", projectRoot: root,
+  });
+  const task = await current.taskBoard.create({
+    text: "Cancel in-flight launch", source: "hub", bucket: "workspace", workspaceId: workspace.id,
+  });
+  const evidence = { projectRoot: root, threadCreates: [], selects: [], deliveries: [] };
+  const service = hub({ ...current, attachmentDirectory });
+  attachRealLauncher(service, current, evidence);
+  const token = service.contextToken({ provider: "codex", threadId: "thread-architect-race" });
+  const input = {
+    context_token: token,
+    request_id: "original-in-flight-launch",
+    task_id: task.id,
+    workspace_id: workspace.id,
+    new_stream_name: "Must not exist",
+    provider: "codex",
+    message: "Must not be delivered.",
+    confirm_launch: true,
+  };
+  const original = service.call("hub_task_start", input);
+  await barrier.entered.promise;
+  const prepared = current.taskBoard.task(task.id);
+  assert.equal(prepared.startEffectState, "prepared");
+  const retry = service.call("hub_task_start", input);
+
+  const cancelled = await service.call("hub_task_launch_cancel", {
+    context_token: token,
+    request_id: "cancel-in-flight-launch",
+    task_id: task.id,
+    launch_request_id: input.request_id,
+    expected_task_revision: prepared.revision,
+    confirm_cancel: true,
+  });
+  assert.equal(cancelled.task.status, "open");
+  assert.equal(cancelled.cancelledLaunch.receiptStatus, "failed");
+  assert.equal(current.workspaceCatalog.stream(prepared.startDestinationStreamId), null);
+  assert.deepEqual(evidence.threadCreates, []);
+  assert.deepEqual(evidence.deliveries, []);
+
+  barrier.release.resolve();
+  await assert.rejects(original, /admission revision conflict|not available for admission/u);
+  await assert.rejects(retry, /admission revision conflict|not available for admission/u);
+  assert.equal(current.workspaceCatalog.stream(prepared.startDestinationStreamId), null);
+  assert.equal(current.workspaceCatalog.threadsForStream(prepared.startDestinationStreamId).length, 0);
+  assert.deepEqual(evidence.threadCreates, []);
+  assert.deepEqual(evidence.deliveries, []);
+  assert.equal(current.taskBoard.task(task.id).status, "open");
+  const terminal = current.rawWorkspaceCatalog.mcpOperation(input.request_id);
+  assert.equal(terminal.status, "failed");
+  assert.equal(terminal.result.cancelled, true);
+});
+
+test("exact cancel rejects after a launch attempt durably admits effects", async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-launch-admission-race-"));
+  const databaseFile = path.join(root, "hub.sqlite");
+  const attachmentDirectory = path.join(root, "attachments");
+  await mkdir(attachmentDirectory);
+  const current = await launchStores(databaseFile);
+  const barrier = { entered: deferred(), release: deferred() };
+  context.after(async () => {
+    barrier.release.resolve();
+    current.rawTaskStore.close();
+    current.rawWorkspaceCatalog.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  const workspace = await current.workspaceCatalog.createWorkspace({ name: "Agent HUB" });
+  const architect = await current.workspaceCatalog.createStream({
+    workspaceId: workspace.id, name: "Architect", settings: { architect: true },
+  });
+  await current.workspaceCatalog.bindThread({
+    streamId: architect.id, provider: "codex", threadId: "thread-architect-admitted", projectRoot: root,
+  });
+  const task = await current.taskBoard.create({
+    text: "Admitted launch", source: "hub", bucket: "workspace", workspaceId: workspace.id,
+  });
+  const admit = current.taskBoard.admitPreparedStart.bind(current.taskBoard);
+  current.taskBoard.admitPreparedStart = async (params) => {
+    const admitted = await admit(params);
+    barrier.entered.resolve();
+    await barrier.release.promise;
+    return admitted;
+  };
+  const evidence = { projectRoot: root, threadCreates: [], selects: [], deliveries: [] };
+  const service = hub({ ...current, attachmentDirectory });
+  attachRealLauncher(service, current, evidence);
+  const token = service.contextToken({ provider: "codex", threadId: "thread-architect-admitted" });
+  const input = {
+    context_token: token,
+    request_id: "original-admitted-launch",
+    task_id: task.id,
+    workspace_id: workspace.id,
+    new_stream_name: "Admitted destination",
+    provider: "codex",
+    message: "Deliver after admission.",
+    confirm_launch: true,
+  };
+  const original = service.call("hub_task_start", input);
+  await barrier.entered.promise;
+  const admitted = current.taskBoard.task(task.id);
+  assert.equal(admitted.startEffectState, "admitted");
+  assert.equal(current.workspaceCatalog.stream(admitted.startDestinationStreamId), null);
+
+  await assert.rejects(service.call("hub_task_launch_cancel", {
+    context_token: token,
+    request_id: "cancel-after-admission",
+    task_id: task.id,
+    launch_request_id: input.request_id,
+    expected_task_revision: admitted.revision,
+    confirm_cancel: true,
+  }), /already admitted/u);
+  assert.equal(current.rawWorkspaceCatalog.mcpOperation(input.request_id).status, "pending");
+  assert.deepEqual(evidence.threadCreates, []);
+  assert.deepEqual(evidence.deliveries, []);
+
+  barrier.release.resolve();
+  const launched = await original;
+  assert.equal(launched.task.status, "started");
+  assert.equal(evidence.threadCreates.length, 1);
+  assert.deepEqual(evidence.deliveries, [`mcp:${input.request_id}`]);
+  assert.equal(current.rawWorkspaceCatalog.mcpOperation(input.request_id).status, "succeeded");
+});
+
+test("exact cancel resumes after receipt terminalization but before Task fence cleanup", async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-launch-cancel-crash-"));
+  const databaseFile = path.join(root, "hub.sqlite");
+  const attachmentDirectory = path.join(root, "attachments");
+  await mkdir(attachmentDirectory);
+  let current = await launchStores(databaseFile);
+  context.after(async () => {
+    current?.rawTaskStore.close();
+    current?.rawWorkspaceCatalog.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  const workspace = await current.workspaceCatalog.createWorkspace({ name: "Agent HUB" });
+  const architect = await current.workspaceCatalog.createStream({
+    workspaceId: workspace.id, name: "Architect", settings: { architect: true },
+  });
+  await current.workspaceCatalog.bindThread({
+    streamId: architect.id, provider: "codex", threadId: "thread-cancel-crash", projectRoot: root,
+  });
+  const created = await current.taskBoard.create({
+    text: "Cancel crash recovery", source: "hub", bucket: "workspace", workspaceId: workspace.id,
+  });
+  const requestId = "launch-before-cancel-crash";
+  await current.workspaceCatalog.beginMcpOperation({
+    requestId,
+    workspaceId: workspace.id,
+    streamId: architect.id,
+    provider: "codex",
+    threadId: "thread-cancel-crash",
+    toolName: "hub_task_start",
+    argumentsHash: "a".repeat(64),
+  });
+  const prepared = await current.taskBoard.prepareStart({
+    id: created.id,
+    workspaceId: workspace.id,
+    streamId: "planned-cancel-crash",
+    streamName: "Never created",
+    requestId,
+    expectedRevision: created.revision,
+  });
+  const fenced = await current.taskBoard.fencePreparedStartCancellation({
+    id: created.id,
+    requestId,
+    cancellationRequestId: "first-cancel-crashed",
+    expectedRevision: prepared.revision,
+  });
+  await current.workspaceCatalog.cancelMcpOperation(requestId, {
+    taskId: created.id,
+    cancellationRequestId: "first-cancel-crashed",
+  });
+  assert.equal(fenced.startEffectState, "cancelling");
+  current.rawTaskStore.close();
+  current.rawWorkspaceCatalog.close();
+
+  current = await launchStores(databaseFile);
+  const service = hub({ ...current, attachmentDirectory });
+  const token = service.contextToken({ provider: "codex", threadId: "thread-cancel-crash" });
+  const retained = current.taskBoard.task(created.id);
+  assert.equal(retained.startEffectState, "cancelling");
+  assert.equal(current.rawWorkspaceCatalog.mcpOperation(requestId).status, "failed");
+  const recovered = await service.call("hub_task_launch_cancel", {
+    context_token: token,
+    request_id: "second-cancel-finishes-cleanup",
+    task_id: created.id,
+    launch_request_id: requestId,
+    expected_task_revision: retained.revision,
+    confirm_cancel: true,
+  });
+  assert.equal(recovered.task.status, "open");
+  assert.equal(current.taskBoard.task(created.id).startRequestId, null);
+  assert.equal(current.rawWorkspaceCatalog.mcpOperation(requestId).result.cancellationRequestId, "first-cancel-crashed");
+});
 
 test("real launch recovery cancels an unknown prepared owner before existing-Stream start", async (context) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-launch-recovery-"));

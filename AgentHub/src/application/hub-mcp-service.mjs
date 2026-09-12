@@ -1503,6 +1503,7 @@ export class HubMcpService {
     if (confirmCancel !== true) throw new Error("confirm_cancel must be true");
     const task = this.#task(context, taskId);
     const normalizedLaunchRequestId = requiredText(launchRequestId, "launch request id", 200);
+    const normalizedCancellationRequestId = requiredText(cancellationRequestId, "request id", 200);
     const revision = Number(expectedTaskRevision);
     if (!Number.isSafeInteger(revision) || revision < 1 || revision !== Number(task.revision)) {
       throw new Error("Task revision changed before launch cancellation");
@@ -1535,15 +1536,29 @@ export class HubMcpService {
       throw new Error("original Task launch receipt is not cancellable");
     }
     requiredMethod(this.workspaceCatalog, "cancelMcpOperation");
-    requiredMethod(this.taskBoard, "cancelPreparedStart");
-    const terminalReceipt = await this.workspaceCatalog.cancelMcpOperation(normalizedLaunchRequestId, {
-      taskId: task.id,
-      cancellationRequestId: requiredText(cancellationRequestId, "request id", 200),
-    });
-    const cancelled = await this.taskBoard.cancelPreparedStart({
+    requiredMethod(this.taskBoard, "fencePreparedStartCancellation");
+    requiredMethod(this.taskBoard, "completePreparedStartCancellation");
+    const fenced = await this.taskBoard.fencePreparedStartCancellation({
       id: task.id,
       requestId: normalizedLaunchRequestId,
+      cancellationRequestId: normalizedCancellationRequestId,
       expectedRevision: revision,
+    });
+    if (this.workspaceCatalog.stream(destinationStreamId)) {
+      throw new Error("launch cancellation fence found a destination Stream effect");
+    }
+    const fencedReceipt = this.workspaceCatalog.mcpOperation(normalizedLaunchRequestId);
+    if (fencedReceipt?.interstreamContentHash) {
+      throw new Error("launch cancellation fence found an admitted delivery effect");
+    }
+    const terminalReceipt = await this.workspaceCatalog.cancelMcpOperation(normalizedLaunchRequestId, {
+      taskId: task.id,
+      cancellationRequestId: normalizedCancellationRequestId,
+    });
+    const cancelled = await this.taskBoard.completePreparedStartCancellation({
+      id: task.id,
+      requestId: normalizedLaunchRequestId,
+      expectedRevision: fenced.revision,
     });
     return {
       task: compactTask(cancelled),

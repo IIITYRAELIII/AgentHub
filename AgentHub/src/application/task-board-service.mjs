@@ -300,11 +300,15 @@ export class TaskBoardService {
     });
   }
 
-  markStarted({ id, workspaceId, streamId, requestId = null, expectedRevision = null } = {}) {
+  markStarted({
+    id, workspaceId, streamId, requestId = null, expectedRevision = null, attemptId = null,
+  } = {}) {
     const stream = this.workspaceCatalog.stream(streamId);
     if (!stream || stream.workspaceId !== workspaceId) throw new Error("Stream не найден в выбранном Workspace");
     return this.#withEvent(
-      this.store.markStarted(id, { workspaceId, streamId, requestId, expectedRevision }),
+      this.store.markStarted(id, {
+        workspaceId, streamId, requestId, expectedRevision, attemptId,
+      }),
       "task.started",
     );
   }
@@ -453,9 +457,37 @@ export class TaskBoardService {
     });
   }
 
-  cancelPreparedStart({ id, requestId, reassign = false, expectedRevision = null } = {}) {
+  admitPreparedStart({ id, requestId, attemptId, expectedRevision } = {}) {
+    requiredMethod(this.store, "admitPreparedStart");
+    return this.store.admitPreparedStart(id, {
+      requestId, attemptId, expectedRevision,
+    });
+  }
+
+  fencePreparedStartCancellation({
+    id, requestId, cancellationRequestId, expectedRevision,
+  } = {}) {
+    requiredMethod(this.store, "fencePreparedStartCancellation");
+    return this.store.fencePreparedStartCancellation(id, {
+      requestId, cancellationRequestId, expectedRevision,
+    });
+  }
+
+  completePreparedStartCancellation({ id, requestId, expectedRevision } = {}) {
+    requiredMethod(this.store, "completePreparedStartCancellation");
     return this.#withEvent(
-      this.store.cancelPreparedStart(id, { requestId, reassign, expectedRevision }),
+      this.store.completePreparedStartCancellation(id, { requestId, expectedRevision }),
+      "task.start-cancelled",
+    );
+  }
+
+  cancelPreparedStart({
+    id, requestId, reassign = false, expectedRevision = null, attemptId = null,
+  } = {}) {
+    return this.#withEvent(
+      this.store.cancelPreparedStart(id, {
+        requestId, reassign, expectedRevision, attemptId,
+      }),
       "task.start-cancelled",
     );
   }
