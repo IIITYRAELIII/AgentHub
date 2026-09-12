@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 import { stressMatrix } from "../helpers/test-profile.mjs";
@@ -27,14 +28,77 @@ function webAssetContentType(pathname) {
   return "application/octet-stream";
 }
 
+// Один процесс браузера на файл. Измерено 2026-09-11 на этой машине:
+// остановка процесса Edge после навигации стоит ~6.4 с, закрытие контекста
+// ~10 мс. Каждый тест получает собственные контексты с изолированным
+// хранилищем и закрывает только их; процесс закрывается один раз после
+// всех тестов файла. Схема повторяет принятую в composer-production.fixture.
+let sharedDomBrowserPromise = null;
+
+function sharedDomBrowser(chromium) {
+  if (!sharedDomBrowserPromise) {
+    const pending = process.platform === "win32"
+      ? chromium.launch({ channel: "msedge", headless: true })
+      : chromium.launch({ headless: true });
+    sharedDomBrowserPromise = pending;
+    void pending.catch(() => {
+      if (sharedDomBrowserPromise === pending) sharedDomBrowserPromise = null;
+    });
+  }
+  return sharedDomBrowserPromise;
+}
+
+after(async () => {
+  const pending = sharedDomBrowserPromise;
+  sharedDomBrowserPromise = null;
+  if (pending) await (await pending).close();
+});
+
 async function launchDomBrowser(chromium) {
-  if (process.platform === "win32") return chromium.launch({ channel: "msedge", headless: true });
-  return chromium.launch({ headless: true });
+  const browser = await sharedDomBrowser(chromium);
+  const contexts = new Set();
+  const creating = new Set();
+  let closed = false;
+  let closing = null;
+  const newContext = async (options) => {
+    if (closed) throw new Error("Stream tabs browser handle is closed");
+    const pending = browser.newContext(options);
+    creating.add(pending);
+    try {
+      const context = await pending;
+      contexts.add(context);
+      context.once("close", () => contexts.delete(context));
+      if (closed) throw new Error("Stream tabs browser handle is closed");
+      return context;
+    } finally {
+      creating.delete(pending);
+    }
+  };
+  return {
+    newContext,
+    async newPage(options) {
+      // Как browser.newPage(): опции контекста и свежий контекст на страницу.
+      return (await newContext(options)).newPage();
+    },
+    close() {
+      if (!closing) {
+        closed = true;
+        closing = (async () => {
+          await Promise.allSettled([...creating]);
+          const results = await Promise.allSettled([...contexts].map(async (context) => context.close()));
+          const failure = results.find((result) => result.status === "rejected");
+          if (failure) throw failure.reason;
+        })();
+      }
+      return closing;
+    },
+  };
 }
 
 async function openStreamTabsDomFixture(page, {
   includeHubClient = false,
   control = null,
+  initialSettings = {},
 } = {}) {
   const initialSnapshot = {
     apiVersion: 3,
@@ -56,6 +120,7 @@ async function openStreamTabsDomFixture(page, {
       reasoningOptionsByProvider: {},
       modeOptions: [],
       quickMessages: { global: [], workspaces: {}, streams: {} },
+      ...initialSettings,
     },
   };
   await page.route("**/*", async (route) => {
@@ -118,6 +183,34 @@ async function openStreamTabsDomFixture(page, {
   if (includeHubClient) {
     await page.waitForFunction(() => document.querySelector("[data-connection-label]")?.textContent !== "");
   }
+}
+
+// Редактор шаблонов теперь один и живёт в общей форме: прежние места открывают
+// её с нужной областью, поэтому и проверки идут через неё.
+const PROMPT_TEMPLATES_ENTRY = {
+  global: "[data-settings-global-quick-messages-entry]",
+  workspace: "[data-workspace-card-quick-messages-entry]",
+  stream: "[data-dialog-stream-quick-messages-entry]",
+};
+
+// На узких поверхностях карточка Stream в этой фикстуре не разложена и её узлы
+// имеют нулевой размер — так было и со встроенным редактором. Там вход
+// открывают событием, а настоящую кликабельность проверяют отдельные тесты.
+async function openPromptTemplatesForm(page, scope, { synthetic = false } = {}) {
+  const entry = page.locator(PROMPT_TEMPLATES_ENTRY[scope]);
+  if (synthetic) await entry.dispatchEvent("click");
+  else await entry.click();
+  await page.waitForFunction(() => document.querySelector("[data-prompt-templates-modal]")?.open === true);
+  return page.locator("[data-prompt-templates-editor]");
+}
+
+async function closePromptTemplatesForm(page, { synthetic = false } = {}) {
+  const open = await page.evaluate(() => document.querySelector("[data-prompt-templates-modal]")?.open === true);
+  if (!open) return;
+  const done = page.locator("[data-prompt-templates-done]");
+  if (synthetic) await done.dispatchEvent("click");
+  else await done.click();
+  await page.waitForFunction(() => document.querySelector("[data-prompt-templates-modal]")?.open !== true);
 }
 
 async function startPermanentDeleteConflictBackend() {
@@ -653,6 +746,8 @@ test("every production Phosphor icon creates a real namespaced SVG", async () =>
     createElementNS: (namespaceURI, localName) => new FakeSvgNode(namespaceURI, localName),
   };
   for (const name of [
+    "arrow-down",
+    "arrow-up",
     "arrow-clockwise",
     "arrows-down-up",
     "caret-down",
@@ -1209,7 +1304,10 @@ test("Workspace and Stream cards expose behavioral editing and quick reply contr
     )), true);
     assert.equal(await page.locator("[data-workspace-card-form] input").first().getAttribute("data-workspace-card-name"), "");
     assert.equal(await page.locator("[data-workspace-card-folder]").inputValue(), "Team");
-    await page.locator('[data-workspace-card-quick-messages] [data-quick-message-title]').fill("Workspace edited");
+    const workspaceTemplates = await openPromptTemplatesForm(page, "workspace");
+    await workspaceTemplates.locator("[data-quick-message-title]").fill("Workspace edited");
+    await workspaceTemplates.locator("[data-quick-message-title]").dispatchEvent("change");
+    await closePromptTemplatesForm(page);
     await page.locator("[data-workspace-card-comment]").focus();
     await page.locator("[data-workspace-card-folder]").evaluate((node) => {
       node.value = "Other";
@@ -1367,6 +1465,32 @@ test("Workspace and Stream cards expose behavioral editing and quick reply contr
     assert.equal(await comment.inputValue(), commentBeforeQuickSend);
     await page.evaluate((requestId) => window.AgentHub.completeSend(requestId, { accepted: true }), quickSend.requestId);
 
+    await page.evaluate(() => window.AgentHub.setSelection({ quickMessageActionMode: "send" }));
+    await composer.fill("Existing draft");
+    const sendsBeforePrimarySend = await page.evaluate(() => window.__hub157Intents.filter((item) => (
+      item.type === "message:send"
+    )).length);
+    await workspaceReply.click();
+    const primarySend = await page.evaluate(() => window.__hub157Intents.filter((item) => item.type === "message:send").at(-1));
+    assert.equal(primarySend.text, "WORKSPACE");
+    assert.equal(await composer.inputValue(), "Existing draft");
+    assert.equal(await page.evaluate(() => window.__hub157Intents.filter((item) => (
+      item.type === "message:send"
+    )).length), sendsBeforePrimarySend + 1);
+    await page.evaluate((requestId) => window.AgentHub.completeSend(requestId, { accepted: true }), primarySend.requestId);
+    await composer.focus();
+    await composer.evaluate((node) => node.setSelectionRange(8, 8));
+    await workspaceReply.click({ modifiers: ["Control"] });
+    assert.equal(await composer.inputValue(), "ExistingWORKSPACE draft");
+    assert.match(await workspaceReply.getAttribute("title"), /Отправить сразу.*Ctrl.*вставить/u);
+
+    await page.evaluate(() => window.AgentHub.setSelection({ quickMessageActionMode: "invalid" }));
+    await composer.fill("");
+    await workspaceReply.click();
+    assert.equal(await composer.inputValue(), "WORKSPACE");
+    assert.match(await workspaceReply.getAttribute("aria-label"), /Вставить в поле.*Ctrl.*отправить/u);
+    await composer.fill(composerBeforeQuickSend);
+
     const sendsBeforeKeyboard = await page.evaluate(() => window.__hub157Intents.filter((item) => item.type === "message:send").length);
     await comment.press("Control+Enter");
     assert.equal((await comment.inputValue()).includes("\n"), true);
@@ -1510,17 +1634,36 @@ test("composer quick replies render above attached Task references", async () =>
       visualOrder: true,
     });
     assert.equal(await page.locator("[data-composer-quick-messages]").getAttribute("aria-label"), "Prompt-шаблоны");
-    assert.equal(await page.locator("[data-settings-global-quick-messages]").evaluate((node) => (
+    assert.equal(await page.locator("[data-settings-global-quick-messages-entry]").evaluate((node) => (
       node.closest(".quick-messages-settings-row")?.querySelector(".setting-name")?.textContent
     )), "Глобальные prompt-шаблоны");
     assert.equal(await page.locator("[data-settings-global-quick-messages-count]").textContent(), "1 шаблон");
     await page.locator('[data-panel-open="settings"]').click();
-    const globalEditor = page.locator("[data-settings-global-quick-messages]");
+    const actionMode = page.locator("[data-quick-message-action-mode]");
+    const actionModeNote = page.locator("[data-quick-message-action-mode-note]");
+    assert.equal(await actionMode.inputValue(), "insert");
+    assert.equal(await actionModeNote.textContent(), "Ctrl + нажатие — отправить.");
+    await actionMode.evaluate((node) => {
+      node.value = "send";
+      node.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    assert.equal(await actionModeNote.textContent(), "Ctrl + нажатие — вставить в поле.");
+    assert.equal(await page.evaluate(() => window.__hub157Intents.some((item) => (
+      item.type === "selection:set"
+      && item.key === "quickMessageActionMode"
+      && item.value === "send"
+    ))), true);
+    await actionMode.evaluate((node) => {
+      node.value = "insert";
+      node.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const globalEditor = await openPromptTemplatesForm(page, "global");
     assert.equal(await globalEditor.isVisible(), true);
     assert.equal(await globalEditor.locator("[data-quick-message-row]").count(), 1);
     assert.equal(await globalEditor.locator("[data-quick-message-title]").inputValue(), "Принято");
     assert.equal(await globalEditor.locator("[data-quick-message-text]").inputValue(), "Принято");
-    assert.equal(await globalEditor.locator("[data-quick-message-add]").textContent(), "+ Добавить шаблон");
+    assert.equal(await globalEditor.locator("[data-quick-message-add]").textContent(), "Добавить шаблон");
+    assert.equal(await globalEditor.locator('[data-quick-message-add] svg[data-phosphor-icon="plus"]').count(), 1);
     await globalEditor.locator("[data-quick-message-add]").click();
     assert.equal(await globalEditor.locator("[data-quick-message-row]").count(), 2);
     await globalEditor.locator("[data-quick-message-title]").nth(1).fill("Продолжай");
@@ -1533,32 +1676,676 @@ test("composer quick replies render above attached Task references", async () =>
       && item.value.global[1]?.text === "Продолжай работу"
     ))), true);
     assert.equal(await page.locator("[data-text-dialog]").isHidden(), true);
+    await closePromptTemplatesForm(page);
     await page.locator("[data-panel-close]").click();
 
     const workspace = page.locator('[data-workspace-select="workspace-1"]');
     await workspace.dblclick();
     assert.equal(await page.getByText("Prompt-шаблоны Workspace", { exact: true }).isVisible(), true);
-    assert.equal(await page.locator("[data-workspace-card-quick-messages] [data-quick-message-add]").textContent(), "+ Добавить шаблон");
     assert.equal(await page.locator("[data-workspace-card-quick-messages-count]").textContent(), "1 шаблон");
-    assert.equal(await page.locator(
-      "[data-workspace-card-quick-messages] [data-quick-message-title]",
-    ).getAttribute("aria-label"), "Заголовок Prompt-шаблона 1");
+    const workspaceEditor = await openPromptTemplatesForm(page, "workspace");
+    assert.equal(await workspaceEditor.locator("[data-quick-message-add]").textContent(), "Добавить шаблон");
+    assert.equal(await workspaceEditor.locator(
+      "[data-quick-message-title]",
+    ).getAttribute("aria-label"), "Название prompt-шаблона 1");
+    await page.keyboard.press("Escape");
     await page.keyboard.press("Escape");
 
     const stream = page.locator('.stream-tabs-track [data-stream-tab-id="stream-1"]');
     await stream.dblclick();
     assert.equal(await page.getByText("Prompt-шаблоны потока", { exact: true }).isVisible(), true);
-    assert.equal(await page.locator("[data-dialog-stream-quick-messages] [data-quick-message-add]").textContent(), "+ Добавить шаблон");
     assert.equal(await page.locator("[data-dialog-stream-quick-messages-count]").textContent(), "1 шаблон");
-    assert.equal(await page.locator(
-      "[data-dialog-stream-quick-messages] [data-quick-message-title]",
-    ).getAttribute("aria-label"), "Заголовок Prompt-шаблона 1");
+    const streamEditor = await openPromptTemplatesForm(page, "stream");
+    assert.equal(await streamEditor.locator("[data-quick-message-add]").textContent(), "Добавить шаблон");
+    assert.equal(await streamEditor.locator(
+      "[data-quick-message-title]",
+    ).getAttribute("aria-label"), "Название prompt-шаблона 1");
   } finally {
     await browser.close();
   }
 });
 
-test("Dashboard column headers keep one fixed height when task density differs", async () => {
+test("shared prompt template editor preserves accordion identity and scope behavior", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  try {
+    const page = await browser.newPage({ viewport: { width: 980, height: 760 } });
+    await openStreamTabsDomFixture(page);
+    await page.evaluate(() => {
+      window.__promptEditorIntents = [];
+      document.addEventListener("agenthub:intent", (event) => {
+        window.__promptEditorIntents.push(structuredClone(event.detail));
+      });
+      window.AgentHub.setWorkspaces([{ id: "workspace-1", name: "Agent HUB", settings: {} }]);
+      window.AgentHub.setSelection({
+        quickMessages: {
+          global: [
+            { title: "A", text: "Alpha body" },
+            { title: "B", text: "Beta body" },
+            { title: "C", text: "Gamma body" },
+          ],
+          workspaces: { "workspace-1": [{ title: "Workspace", text: "Workspace body" }] },
+          streams: { "stream-1": [{ title: "Stream", text: "Stream body" }] },
+        },
+      });
+      window.AgentHub.setTasks([{
+        id: "task-1", selected: true, workspaceId: "workspace-1", workspaceName: "Agent HUB",
+        streamId: "stream-1", streamName: "Dialog", streamOrdinal: 1, provider: "codex",
+        agentLabel: "Codex", status: "ready", statusLabel: "Готов", running: false,
+        unread: false, streamSettings: {},
+      }]);
+    });
+    await page.locator('[data-panel-open="settings"]').click();
+    const editor = await openPromptTemplatesForm(page, "global");
+    const rows = editor.locator("[data-quick-message-row]");
+    assert.equal(await rows.count(), 3);
+    assert.equal(await editor.locator(".quick-message-editor-details:not([hidden])").count(), 1);
+    assert.equal(await page.locator("[data-settings-global-quick-messages-count]").textContent(), "3 шаблона");
+    assert.deepEqual(await rows.first().locator(".quick-message-editor-order svg").evaluateAll(
+      (nodes) => nodes.map((node) => node.dataset.phosphorIcon),
+    ), ["arrow-up", "arrow-down"]);
+    assert.equal(await rows.first().locator(".quick-message-editor-action.toggle svg").getAttribute("data-phosphor-icon"), "caret-down");
+    assert.equal(await rows.nth(1).locator(".quick-message-editor-action.toggle svg").getAttribute("data-phosphor-icon"), "caret-right");
+    assert.deepEqual(await rows.first().locator(".quick-message-editor-footer-order svg").evaluateAll(
+      (nodes) => nodes.map((node) => node.dataset.phosphorIcon),
+    ), ["arrow-up", "arrow-down", "copy"]);
+    assert.equal(await rows.first().locator('svg[data-phosphor-icon="arrow-up"] path').first().getAttribute("d")
+      === await rows.first().locator('svg[data-phosphor-icon="caret-down"] path').getAttribute("d"), false);
+    const initialIds = await rows.evaluateAll((nodes) => nodes.map((node) => node.dataset.quickMessageRow));
+
+    await rows.nth(1).locator(".quick-message-editor-summary").click();
+    assert.equal(await rows.nth(1).locator(".quick-message-editor-summary").getAttribute("aria-expanded"), "true");
+    await rows.nth(1).locator('.quick-message-editor-order [data-quick-message-action="up"]').click();
+    assert.deepEqual(await editor.locator(".quick-message-editor-title").allTextContents(), ["B", "A", "C"]);
+    assert.equal(await rows.first().getAttribute("data-quick-message-row"), initialIds[1]);
+    assert.equal(await rows.first().locator(".quick-message-editor-summary").getAttribute("aria-expanded"), "true");
+
+    const title = rows.first().locator("[data-quick-message-title]");
+    await title.fill("B edited");
+    await title.evaluate((node) => {
+      node.focus();
+      node.setSelectionRange(2, 2);
+      window.AgentHub.setSelection({ activityRecentMinutes: 31 });
+    });
+    assert.deepEqual(await page.evaluate(() => ({
+      id: document.activeElement?.closest("[data-quick-message-row]")?.dataset.quickMessageRow,
+      field: document.activeElement?.hasAttribute("data-quick-message-title"),
+      start: document.activeElement?.selectionStart,
+    })), { id: initialIds[1], field: true, start: 2 });
+
+    await rows.first().locator('.quick-message-editor-footer [data-quick-message-action="duplicate"]').click();
+    assert.deepEqual(await editor.locator(".quick-message-editor-title").allTextContents(), [
+      "B edited", "B edited (копия)", "A", "C",
+    ]);
+    assert.equal(await rows.nth(1).locator(".quick-message-editor-summary").getAttribute("aria-expanded"), "true");
+    assert.equal(await rows.nth(1).locator("[data-quick-message-title]").evaluate((node) => document.activeElement === node), true);
+    await rows.nth(1).locator('[data-quick-message-action="delete"]').click();
+    assert.equal(await rows.nth(1).locator(".quick-message-editor-title").textContent(), "A");
+    assert.equal(await rows.nth(1).locator(".quick-message-editor-summary").getAttribute("aria-expanded"), "true");
+
+    await rows.last().locator(".quick-message-editor-summary").focus();
+    await page.keyboard.press("Space");
+    assert.equal(await rows.last().locator(".quick-message-editor-summary").getAttribute("aria-expanded"), "true");
+    await rows.last().locator('[data-quick-message-action="delete"]').click();
+    assert.equal(await rows.last().locator(".quick-message-editor-title").textContent(), "A");
+    assert.equal(await rows.last().locator(".quick-message-editor-summary").getAttribute("aria-expanded"), "true");
+    assert.equal(await rows.first().locator('.quick-message-editor-order [data-quick-message-action="up"]').isDisabled(), true);
+    assert.equal(await rows.last().locator('.quick-message-editor-order [data-quick-message-action="down"]').isDisabled(), true);
+
+    await editor.locator("[data-quick-message-add]").click();
+    assert.equal(await rows.count(), 3);
+    assert.equal(await rows.last().locator("[data-quick-message-title]").evaluate((node) => document.activeElement === node), true);
+    assert.equal(await page.locator("[data-settings-global-quick-messages-count]").textContent(), "3 шаблона");
+    assert.equal(await editor.locator('svg[data-phosphor-icon="copy"]').count() > 0, true);
+    assert.equal(await editor.locator('svg[data-phosphor-icon="trash"]').count() > 0, true);
+    assert.equal(await editor.locator("svg path").evaluateAll((paths) => paths.every((node) => node.getAttribute("fill") === "currentColor")), true);
+
+    const lastQuickMessages = await page.evaluate(() => window.__promptEditorIntents
+      .filter((intent) => intent.type === "selection:set" && intent.key === "quickMessages").at(-1)?.value);
+    assert.deepEqual(lastQuickMessages.workspaces["workspace-1"], [{ title: "Workspace", text: "Workspace body" }]);
+    assert.deepEqual(lastQuickMessages.streams["stream-1"], [{ title: "Stream", text: "Stream body" }]);
+
+    await page.evaluate(() => window.AgentHub.setSelection({
+      quickMessages: {
+        global: Array.from({ length: 20 }, (_, index) => ({
+          title: index === 0 ? "Очень длинное название prompt-шаблона, которое обязано сжиматься" : `Template ${index + 1}`,
+          text: index === 0 ? "Очень длинный preview ".repeat(20) : `Body ${index + 1}`,
+        })),
+        workspaces: { "workspace-1": [{ title: "Workspace", text: "Workspace body" }] },
+        streams: { "stream-1": [{ title: "Stream", text: "Stream body" }] },
+      },
+    }));
+    // Добавленная строка ещё не записана, поэтому входящий снимок её не
+    // подменяет: показывается расхождение, а решение принимает человек.
+    assert.equal(await rows.count(), 3);
+    assert.equal(await page.locator("[data-prompt-templates-conflict]").isVisible(), true);
+    await page.locator("[data-prompt-templates-reload]").click();
+    assert.equal(await rows.count(), 20);
+    assert.equal(await editor.locator("[data-quick-message-add]").isDisabled(), true);
+    const overflow = await editor.evaluate((node) => ({
+      editor: node.scrollWidth - node.clientWidth,
+      row: node.querySelector("[data-quick-message-row]").scrollWidth
+        - node.querySelector("[data-quick-message-row]").clientWidth,
+    }));
+    assert.ok(overflow.editor <= 1, JSON.stringify(overflow));
+    assert.ok(overflow.row <= 1, JSON.stringify(overflow));
+  } finally {
+    await browser.close();
+  }
+});
+
+test("prompt template editor keeps rejected drafts and persists a successful retry", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  let serverQuickMessages = {
+    global: [{ title: "Confirmed", text: "Confirmed body" }], workspaces: {}, streams: {},
+  };
+  let rejectNext = true;
+  let observeRejectedUpdate;
+  const rejectedUpdateObserved = new Promise((resolve) => { observeRejectedUpdate = resolve; });
+  let releaseRejectedUpdate;
+  const rejectedUpdateGate = new Promise((resolve) => { releaseRejectedUpdate = resolve; });
+  let observeSuccessfulUpdate;
+  const successfulUpdateObserved = new Promise((resolve) => { observeSuccessfulUpdate = resolve; });
+  const snapshot = () => ({
+    apiVersion: 3,
+    version: `prompt-editor-${JSON.stringify(serverQuickMessages).length}`,
+    server: { status: "online" },
+    tasks: [], workspaces: [], archivedWorkspaces: [], boardTasks: [],
+    boardLayout: { columnOrder: [] }, deferredInputs: [], messageReceipts: [], pendingApprovals: [],
+    settings: {
+      provider: "codex", models: [], modelOptionsByProvider: {}, reasoningOptions: [],
+      reasoningOptionsByProvider: {}, modeOptions: [], quickMessages: serverQuickMessages,
+    },
+  });
+  try {
+    const page = await browser.newPage({ viewport: { width: 900, height: 720 } });
+    await openStreamTabsDomFixture(page, {
+      includeHubClient: true,
+      initialSettings: { quickMessages: serverQuickMessages },
+      control: async (request) => {
+        if (request.action !== "update-setting" || request.params?.name !== "quickMessages") {
+          return { status: 200, body: { ok: true, result: snapshot() } };
+        }
+        if (rejectNext) {
+          rejectNext = false;
+          observeRejectedUpdate();
+          await rejectedUpdateGate;
+          return { status: 400, body: { ok: false, error: "Synthetic persistence rejection" } };
+        }
+        const next = JSON.parse(request.params.value);
+        serverQuickMessages.global = next.global;
+        serverQuickMessages.workspaces = next.workspaces;
+        serverQuickMessages.streams = next.streams;
+        observeSuccessfulUpdate();
+        return { status: 200, body: { ok: true, result: snapshot() } };
+      },
+    });
+    await page.evaluate(() => {
+      window.AgentHub.setWorkspaces([{ id: "workspace-1", name: "Agent HUB", settings: {} }]);
+      window.AgentHub.setTasks([{
+        id: "task-1", selected: true, workspaceId: "workspace-1", workspaceName: "Agent HUB",
+        streamId: "stream-1", streamName: "Dialog", streamOrdinal: 1, provider: "codex",
+        agentLabel: "Codex", status: "ready", statusLabel: "Готов", running: false,
+        unread: false, streamSettings: {},
+      }]);
+    });
+    await page.locator('[data-panel-open="settings"]').click();
+    const editor = await openPromptTemplatesForm(page, "global");
+    const title = editor.locator("[data-quick-message-title]");
+    await title.evaluate((node) => {
+      node.value = "Local draft";
+      node.dispatchEvent(new Event("input", { bubbles: true }));
+      node.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await rejectedUpdateObserved;
+    assert.equal(await editor.getAttribute("aria-busy"), "true");
+    assert.equal(await title.isDisabled(), true);
+    assert.equal(await editor.locator("[data-quick-message-add]").isDisabled(), true);
+    releaseRejectedUpdate();
+    await page.waitForTimeout(500);
+    const rejectedState = await page.evaluate(() => ({
+      rejectApi: typeof window.AgentHub.rejectSelection,
+      busy: document.querySelector("[data-prompt-templates-editor]")?.getAttribute("aria-busy"),
+      error: document.querySelector("[data-prompt-templates-editor] [data-quick-message-error]")?.textContent,
+      errorHidden: document.querySelector("[data-prompt-templates-editor] [data-quick-message-error]")?.hidden,
+      toast: document.querySelector("[data-toast]")?.textContent,
+    }));
+    assert.deepEqual(rejectedState, {
+      rejectApi: "function", busy: "false",
+      error: "Не удалось сохранить. Черновик оставлен в редакторе.", errorHidden: false,
+      toast: "Synthetic persistence rejection",
+    });
+    assert.equal(await title.inputValue(), "Local draft");
+    assert.equal(await editor.locator("[data-quick-message-error]").isVisible(), true);
+    assert.equal(await page.locator('[data-composer-quick-messages] [data-quick-message-index="0"]').textContent(), "GConfirmed");
+
+    await title.evaluate((node) => {
+      node.value = "Persisted retry";
+      node.dispatchEvent(new Event("input", { bubbles: true }));
+      node.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await successfulUpdateObserved;
+    await editor.locator("[data-quick-message-error]").waitFor({ state: "hidden" });
+    await page.reload({ waitUntil: "load" });
+    await page.locator('[data-panel-open="settings"]').click();
+    const reopened = await openPromptTemplatesForm(page, "global");
+    assert.equal(await reopened.locator("[data-quick-message-title]").inputValue(), "Persisted retry");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("prompt template drafts stay isolated by owner across rejected and pending transport", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  const surfaces = [
+    ["web", { width: 1280, height: 800 }],
+    ["webview", { width: 520, height: 720 }],
+    ["mobile", { width: 390, height: 844 }],
+  ];
+  const workspaces = [
+    { id: "workspace-a", name: "Workspace A", settings: {} },
+    { id: "workspace-b", name: "Workspace B", settings: {} },
+  ];
+  const tasks = [
+    {
+      id: "stream-a", threadId: "thread-a", workspaceId: "workspace-a", workspaceName: "Workspace A",
+      streamId: "stream-a", streamName: "Stream A", streamOrdinal: 1, provider: "codex",
+      agentLabel: "Codex", status: "ready", statusLabel: "Готов", running: false, unread: false,
+      streamSettings: {},
+    },
+    {
+      id: "stream-b", threadId: "thread-b", workspaceId: "workspace-b", workspaceName: "Workspace B",
+      streamId: "stream-b", streamName: "Stream B", streamOrdinal: 1, provider: "codex",
+      agentLabel: "Codex", status: "ready", statusLabel: "Готов", running: false, unread: false,
+      streamSettings: {},
+    },
+  ];
+  const editTitle = (title, value) => title.evaluate((node, nextValue) => {
+    node.value = nextValue;
+    node.dispatchEvent(new Event("input", { bubbles: true }));
+    node.dispatchEvent(new Event("change", { bubbles: true }));
+  }, value);
+  try {
+    for (const [surface, viewport] of surfaces) {
+      for (const scope of ["workspace", "stream"]) {
+        let serverQuickMessages = {
+          global: [],
+          workspaces: {
+            "workspace-a": [{ title: "Workspace A confirmed", text: "Workspace A body" }],
+            "workspace-b": [{ title: "Workspace B confirmed", text: "Workspace B body" }],
+          },
+          streams: {
+            "stream-a": [{ title: "Stream A confirmed", text: "Stream A body" }],
+            "stream-b": [{ title: "Stream B confirmed", text: "Stream B body" }],
+          },
+        };
+        let updateCount = 0;
+        let observeFirstUpdate;
+        let releaseFirstUpdate;
+        let observeSecondUpdate;
+        let observeThirdUpdate;
+        const firstUpdateObserved = new Promise((resolve) => { observeFirstUpdate = resolve; });
+        const firstUpdateGate = new Promise((resolve) => { releaseFirstUpdate = resolve; });
+        const secondUpdateObserved = new Promise((resolve) => { observeSecondUpdate = resolve; });
+        const thirdUpdateObserved = new Promise((resolve) => { observeThirdUpdate = resolve; });
+        const snapshot = () => ({
+          apiVersion: 3,
+          version: `prompt-owner-${scope}-${surface}-${updateCount}`,
+          server: { status: "online" },
+          tasks: tasks.map((task) => ({
+            ...task,
+            selected: task.streamId === (updateCount >= 3 ? "stream-a" : "stream-b"),
+          })),
+          workspaces,
+          archivedWorkspaces: [], boardTasks: [], boardLayout: { columnOrder: [] },
+          deferredInputs: [], messageReceipts: [], pendingApprovals: [],
+          settings: {
+            provider: "codex", models: [], modelOptionsByProvider: {}, reasoningOptions: [],
+            reasoningOptionsByProvider: {}, modeOptions: [], quickMessages: serverQuickMessages,
+          },
+        });
+        const page = await browser.newPage({ viewport });
+        await openStreamTabsDomFixture(page, {
+          includeHubClient: true,
+          initialSettings: { quickMessages: serverQuickMessages },
+          control: async (request) => {
+            if (request.action !== "update-setting" || request.params?.name !== "quickMessages") {
+              return { status: 200, body: { ok: true, result: snapshot() } };
+            }
+            updateCount += 1;
+            if (updateCount === 1) {
+              observeFirstUpdate();
+              await firstUpdateGate;
+              return { status: 400, body: { ok: false, error: "Synthetic owner rejection" } };
+            }
+            serverQuickMessages = JSON.parse(request.params.value);
+            if (updateCount === 2) observeSecondUpdate();
+            if (updateCount === 3) observeThirdUpdate();
+            return { status: 200, body: { ok: true, result: snapshot() } };
+          },
+        });
+        await page.evaluate(({ workspaceRows, taskRows }) => {
+          window.AgentHub.setWorkspaces(workspaceRows);
+          window.AgentHub.setTasks(taskRows.map((task, index) => ({ ...task, selected: index === 0 })));
+        }, { workspaceRows: workspaces, taskRows: tasks });
+
+        const editorSelector = "[data-prompt-templates-editor]";
+        const editor = page.locator(editorSelector);
+        const title = () => editor.locator("[data-quick-message-title]");
+        const openWorkspace = async (workspaceId) => {
+          await page.locator(`[data-workspace-select="${workspaceId}"]`).evaluate((node) => {
+            node.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+            node.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, detail: 2 }));
+          });
+        };
+        const openOwner = async (owner) => {
+          await closePromptTemplatesForm(page, { synthetic: true });
+          if (scope === "workspace") {
+            await openWorkspace(`workspace-${owner}`);
+          } else {
+            await page.evaluate((taskId) => {
+              window.AgentHub.selectTask(taskId);
+              window.AgentHub.openDialogSettings();
+            }, `stream-${owner}`);
+          }
+          await openPromptTemplatesForm(page, scope, { synthetic: true });
+        };
+
+        await openOwner("a");
+        await editTitle(title(), `${scope} A rejected draft`);
+        await firstUpdateObserved;
+        assert.equal(await editor.getAttribute("aria-busy"), "true", `${scope}/${surface} A pending`);
+
+        await openOwner("b");
+        assert.equal(await title().inputValue(), `${scope === "workspace" ? "Workspace" : "Stream"} B confirmed`, `${scope}/${surface} B owner`);
+        assert.equal(await title().isDisabled(), true, `${scope}/${surface} B pending lock`);
+        assert.equal(await editor.locator("[data-quick-message-error]").isHidden(), true, `${scope}/${surface} B no A error`);
+
+        releaseFirstUpdate();
+        await page.waitForFunction((selector) => (
+          document.querySelector(selector)?.getAttribute("aria-busy") === "false"
+        ), editorSelector);
+        assert.equal(await title().inputValue(), `${scope === "workspace" ? "Workspace" : "Stream"} B confirmed`, `${scope}/${surface} B after A reject`);
+        await editTitle(title(), `${scope} B persisted`);
+        await secondUpdateObserved;
+        await page.waitForFunction((selector) => (
+          document.querySelector(selector)?.getAttribute("aria-busy") === "false"
+        ), editorSelector);
+
+        await openOwner("a");
+        assert.equal(await title().inputValue(), `${scope} A rejected draft`, `${scope}/${surface} restores A draft`);
+        assert.deepEqual(await editor.locator("[data-quick-message-error]").evaluate((node) => ({
+          hidden: node.hidden,
+          text: node.textContent,
+        })), {
+          hidden: false,
+          text: "Не удалось сохранить. Черновик оставлен в редакторе.",
+        }, `${scope}/${surface} restores A error`);
+        await editTitle(title(), `${scope} A retry`);
+        await thirdUpdateObserved;
+        await page.waitForFunction((selector) => (
+          document.querySelector(selector)?.getAttribute("aria-busy") === "false"
+        ), editorSelector);
+        assert.equal(await editor.locator("[data-quick-message-error]").isHidden(), true, `${scope}/${surface} clears A only`);
+
+        await openOwner("b");
+        assert.equal(await title().inputValue(), `${scope} B persisted`, `${scope}/${surface} preserves B save`);
+        assert.equal(await editor.locator("[data-quick-message-error]").isHidden(), true, `${scope}/${surface} B remains healthy`);
+        const storedScope = scope === "workspace" ? serverQuickMessages.workspaces : serverQuickMessages.streams;
+        assert.equal(storedScope[`${scope}-a`]?.[0]?.title, `${scope} A retry`, `${scope}/${surface} persisted A`);
+        assert.equal(storedScope[`${scope}-b`]?.[0]?.title, `${scope} B persisted`, `${scope}/${surface} persisted B`);
+        await page.close();
+      }
+    }
+  } finally {
+    await browser.close();
+  }
+});
+
+test("prompt template action mode uses the canonical selection transport", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  const commands = [];
+  let releaseUpdate;
+  let observeUpdate;
+  const updateGate = new Promise((resolve) => { releaseUpdate = resolve; });
+  const updateObserved = new Promise((resolve) => { observeUpdate = resolve; });
+  const snapshot = (mode) => ({
+    apiVersion: 3,
+    version: `prompt-mode-${mode}`,
+    server: { status: "online" },
+    tasks: [],
+    workspaces: [],
+    archivedWorkspaces: [],
+    boardTasks: [],
+    boardLayout: { columnOrder: [] },
+    deferredInputs: [],
+    messageReceipts: [],
+    pendingApprovals: [],
+    settings: {
+      provider: "codex",
+      models: [],
+      modelOptionsByProvider: {},
+      reasoningOptions: [],
+      reasoningOptionsByProvider: {},
+      modeOptions: [],
+      quickMessages: { global: [], workspaces: {}, streams: {} },
+      quickMessageActionMode: mode,
+    },
+  });
+  try {
+    const page = await browser.newPage();
+    await openStreamTabsDomFixture(page, {
+      includeHubClient: true,
+      initialSettings: { quickMessageActionMode: "insert" },
+      control: async (request) => {
+        commands.push(structuredClone(request));
+        if (request.action === "update-setting") {
+          observeUpdate();
+          await updateGate;
+        }
+        return { status: 200, body: { ok: true, result: snapshot(request.params?.value ?? "insert") } };
+      },
+    });
+    await page.locator('[data-panel-open="settings"]').click();
+    await page.locator("[data-quick-message-action-mode]").evaluate((node) => {
+      node.value = "send";
+      node.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await updateObserved;
+    assert.equal(await page.locator("[data-quick-message-action-mode]").isDisabled(), true);
+    assert.equal(await page.locator("[data-quick-message-action-mode]").getAttribute("aria-busy"), "true");
+    releaseUpdate();
+    await page.waitForFunction(() => document.querySelector("[data-quick-message-action-mode]")?.getAttribute("aria-busy") === "false");
+    const update = commands.find((request) => request.action === "update-setting");
+    assert.equal(update.params.name, "quickMessageActionMode");
+    assert.equal(update.params.value, "send");
+    assert.equal(await page.locator("[data-quick-message-action-mode]").inputValue(), "send");
+    assert.equal(await page.locator("[data-quick-message-action-mode-note]").textContent(), "Ctrl + нажатие — вставить в поле.");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("prompt template action setting stays compact on Web, narrow WebView and Mobile Web", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  const captureDirectory = String(process.env.AGENT_HUB_PROMPT_MODE_CAPTURE_DIR ?? "").trim();
+  if (captureDirectory) await mkdir(captureDirectory, { recursive: true });
+  try {
+    for (const [surface, viewport, vscode] of [
+      ["web", { width: 1280, height: 800 }, false],
+      ["vscode-webview", { width: 520, height: 720 }, true],
+      ["mobile-web", { width: 390, height: 844 }, false],
+    ]) {
+      const page = await browser.newPage({ viewport });
+      if (vscode) await page.addInitScript(() => { window.__agentHubVscode = { postMessage() {} }; });
+      await openStreamTabsDomFixture(page);
+      await page.evaluate(() => window.AgentHub.setSelection({
+        quickMessageActionMode: "send",
+        quickMessages: {
+          global: [{ title: "Продолжить работу", text: "Продолжай с текущего места" }],
+          workspaces: {},
+          streams: {},
+        },
+      }));
+      await page.locator('[data-panel-open="settings"]').click();
+      const layout = await page.locator(".prompt-template-action-row").evaluate((row) => {
+        const panel = row.closest("[data-settings-panel]");
+        const select = row.querySelector(".themed-select") ?? row.querySelector("select");
+        const note = row.querySelector("[data-quick-message-action-mode-note]");
+        const rowRect = row.getBoundingClientRect();
+        const panelRect = panel.getBoundingClientRect();
+        const selectRect = select.getBoundingClientRect();
+        return {
+          rowOverflow: row.scrollWidth - row.clientWidth,
+          panelOverflow: panel.scrollWidth - panel.clientWidth,
+          insidePanel: rowRect.left >= panelRect.left && rowRect.right <= panelRect.right,
+          controlInside: selectRect.left >= rowRect.left && selectRect.right <= rowRect.right,
+          noteVisible: note.getBoundingClientRect().height > 0,
+        };
+      });
+      assert.ok(layout.rowOverflow <= 1, `${surface}: ${JSON.stringify(layout)}`);
+      assert.ok(layout.panelOverflow <= 1, `${surface}: ${JSON.stringify(layout)}`);
+      assert.equal(layout.insidePanel, true, surface);
+      assert.equal(layout.controlInside, true, surface);
+      assert.equal(layout.noteVisible, true, surface);
+      if (captureDirectory) {
+        await page.locator("[data-settings-panel]").screenshot({
+          path: path.join(captureDirectory, `prompt-template-action-${surface}.png`),
+        });
+      }
+      await page.close();
+    }
+  } finally {
+    await browser.close();
+  }
+});
+
+test("shared prompt template editor stays responsive across every scope and surface", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  const captureDirectory = String(process.env.AGENT_HUB_PROMPT_EDITOR_CAPTURE_DIR ?? "").trim();
+  if (captureDirectory) await mkdir(captureDirectory, { recursive: true });
+  const entries = [
+    {
+      title: "Релиз",
+      text: "Собери релиз-ноты по задачам спринта: что добавили, что починили и на что обратить внимание.",
+    },
+    {
+      title: "Очень длинное название шаблона для проверки узкой панели",
+      text: "Продолжай работу по текущему плану, сохраняя все принятые ограничения и проверяя результат.",
+    },
+    { title: "Дайджест", text: "" },
+  ];
+  try {
+    for (const [surface, viewport, vscode, theme] of [
+      ["web", { width: 1280, height: 820 }, false, "orange"],
+      ["vscode-webview", { width: 520, height: 760 }, true, "orbit"],
+      ["mobile-web", { width: 390, height: 844 }, false, "orange"],
+    ]) {
+      const page = await browser.newPage({ viewport });
+      if (vscode) await page.addInitScript(() => { window.__agentHubVscode = { postMessage() {} }; });
+      await openStreamTabsDomFixture(page);
+      if (theme === "orange") {
+        await page.addStyleTag({ path: fileURLToPath(new URL("../../assets/web-app/themes/orange/theme.css", import.meta.url)) });
+        await page.evaluate(() => { document.documentElement.dataset.theme = "orange"; });
+      }
+      await page.evaluate((promptEntries) => {
+        window.AgentHub.setWorkspaces([{ id: "workspace-1", name: "Agent HUB", settings: {} }]);
+        window.AgentHub.setSelection({
+          quickMessages: {
+            global: promptEntries,
+            workspaces: { "workspace-1": promptEntries },
+            streams: { "stream-1": promptEntries },
+          },
+        });
+        window.AgentHub.setTasks([{
+          id: "task-1", selected: true, workspaceId: "workspace-1", workspaceName: "Agent HUB",
+          streamId: "stream-1", streamName: "Architect", streamOrdinal: 1, provider: "codex",
+          agentLabel: "Codex", status: "ready", statusLabel: "Готов", running: false,
+          unread: false, streamSettings: {},
+        }]);
+      }, entries);
+
+      const verifyEditor = async (scope, editor) => {
+        const metrics = await editor.evaluate((node) => {
+          const card = node.closest(".prompt-template-editor-card");
+          const first = node.querySelector("[data-quick-message-row]");
+          const compactButtons = [...node.querySelectorAll(".quick-message-editor-order button")];
+          const fields = card.closest(".prompt-templates-fields");
+          const cardBox = card.getBoundingClientRect();
+          const fieldsBox = fields.getBoundingClientRect();
+          return {
+            cardOverflow: card.scrollWidth - card.clientWidth,
+            cardHeight: cardBox.height,
+            cardWidth: cardBox.width,
+            fieldsOverflow: fields.scrollWidth - fields.clientWidth,
+            cardInsideFields: cardBox.left >= fieldsBox.left - 1 && cardBox.right <= fieldsBox.right + 1,
+            rowOverflow: first.scrollWidth - first.clientWidth,
+            openCount: node.querySelectorAll(".quick-message-editor-details:not([hidden])").length,
+            touchTargets: compactButtons.map((button) => button.getBoundingClientRect().height),
+            firstUpDisabled: node.querySelector('.quick-message-editor-order [data-quick-message-action="up"]').disabled,
+            lastDownDisabled: [...node.querySelectorAll("[data-quick-message-row]")].at(-1)
+              .querySelector('.quick-message-editor-order [data-quick-message-action="down"]').disabled,
+          };
+        });
+        assert.ok(metrics.cardOverflow <= 1, `${surface}/${scope}: ${JSON.stringify(metrics)}`);
+        assert.ok(metrics.cardHeight > 100, `${surface}/${scope}: ${JSON.stringify(metrics)}`);
+        assert.ok(metrics.cardWidth <= 621, `${surface}/${scope}: ${JSON.stringify(metrics)}`);
+        assert.ok(metrics.fieldsOverflow <= 1, `${surface}/${scope}: ${JSON.stringify(metrics)}`);
+        assert.equal(metrics.cardInsideFields, true, `${surface}/${scope}: ${JSON.stringify(metrics)}`);
+        assert.ok(metrics.rowOverflow <= 1, `${surface}/${scope}: ${JSON.stringify(metrics)}`);
+        assert.equal(metrics.openCount, 1, `${surface}/${scope}`);
+        assert.equal(metrics.firstUpDisabled, true, `${surface}/${scope}`);
+        assert.equal(metrics.lastDownDisabled, true, `${surface}/${scope}`);
+        if (surface === "mobile-web") {
+          assert.equal(metrics.touchTargets.every((height) => height >= 44), true, `${surface}/${scope}`);
+        }
+        if (captureDirectory) {
+          await editor.evaluate((node) => {
+            const card = node.closest(".prompt-template-editor-card");
+            const scrollContainer = card?.closest(".prompt-templates-fields");
+            if (scrollContainer) {
+              scrollContainer.scrollTop = Math.max(0, card.offsetTop - scrollContainer.offsetTop);
+              return;
+            }
+            card?.scrollIntoView({ block: "center", inline: "nearest" });
+          });
+          const screenshotTarget = page.locator("[data-prompt-templates-modal]");
+          await screenshotTarget.screenshot({
+            path: path.join(captureDirectory, `prompt-template-editor-${scope}-${surface}.png`),
+          });
+        }
+      };
+
+      await page.locator('[data-panel-open="settings"]').click();
+      await verifyEditor("global", await openPromptTemplatesForm(page, "global"));
+      await closePromptTemplatesForm(page);
+      await page.locator("[data-panel-close]").click();
+
+      await page.locator('[data-workspace-select="workspace-1"]').dispatchEvent("click", { detail: 1 });
+      await page.locator('[data-workspace-select="workspace-1"]').dispatchEvent("dblclick", { detail: 2 });
+      await page.waitForFunction(() => document.querySelector("[data-workspace-card-modal]")?.open === true);
+      await verifyEditor("workspace", await openPromptTemplatesForm(page, "workspace"));
+      await closePromptTemplatesForm(page);
+      await page.locator("[data-workspace-card-close]").click();
+
+      const streamTab = page.locator('.stream-tabs-track [data-stream-tab-id="stream-1"]');
+      await streamTab.dispatchEvent("click", { detail: 1 });
+      await streamTab.dispatchEvent("dblclick", { detail: 2 });
+      await page.waitForFunction(() => document.querySelector("[data-dialog-settings]")?.open === true);
+      await verifyEditor("stream", await openPromptTemplatesForm(page, "stream"));
+      await page.close();
+    }
+  } finally {
+    await browser.close();
+  }
+});
+
+test("Dashboard column headers keep equal height across different task densities", { timeout: 20_000 }, async () => {
   const { chromium } = await import("playwright");
   const browser = await launchDomBrowser(chromium);
   const screenshotDirectory = String(process.env.HUB157_QA_SCREENSHOT_DIR ?? "").trim();
@@ -1608,18 +2395,35 @@ test("Dashboard column headers keep one fixed height when task density differs",
       });
       const geometry = await page.locator(".task-board-column-head").evaluateAll((headers) => headers.map((header) => {
         const rect = header.getBoundingClientRect();
+        const column = header.closest("[data-board-destination]");
+        const columnRect = column.getBoundingClientRect();
+        const style = getComputedStyle(column);
+        const borderTop = parseFloat(style.borderTopWidth) || 0;
+        const paddingTop = parseFloat(style.paddingTop) || 0;
+        const contentTop = columnRect.top + borderTop + paddingTop;
         return {
-          column: header.closest("[data-board-destination]")?.dataset.boardDestination,
-          height: Number(rect.height.toFixed(2)),
-          bottom: Number(rect.bottom.toFixed(2)),
-          flex: getComputedStyle(header).flex,
+          column: column.dataset.boardDestination,
+          height: rect.height,
+          borderTop,
+          paddingTop,
+          topFromContent: rect.top - contentTop,
+          bottomFromContent: rect.bottom - contentTop,
         };
       }));
-      assert.ok(geometry.length >= 5, JSON.stringify({ surface, geometry }));
-      assert.equal(new Set(geometry.map(({ height }) => height)).size, 1, JSON.stringify({ surface, geometry }));
-      assert.equal(new Set(geometry.map(({ bottom }) => bottom)).size, 1, JSON.stringify({ surface, geometry }));
-      assert.equal(geometry[0].height, 104, JSON.stringify({ surface, geometry }));
-      assert.ok(geometry.every(({ flex }) => flex === "0 0 104px"), JSON.stringify({ surface, geometry }));
+      const densities = await page.locator(".task-board-column-list").evaluateAll((lists) => (
+        lists.map((list) => list.querySelectorAll("[data-board-task-id]").length)
+      ));
+      const evidence = JSON.stringify({ surface, geometry, densities });
+      assert.ok(geometry.length >= 5, evidence);
+      assert.ok(densities.includes(0) && Math.max(...densities) >= 26, evidence);
+      assert.ok(geometry.every(({ height }) => height > 0), evidence);
+      const spread = (field) => Math.max(...geometry.map((value) => value[field]))
+        - Math.min(...geometry.map((value) => value[field]));
+      assert.ok(spread("height") <= 0.5, evidence);
+      // Backlog has its own border. Compare header alignment inside each
+      // parent's content box, not absolute page coordinates or CSS literals.
+      assert.ok(geometry.every(({ topFromContent }) => Math.abs(topFromContent) <= 0.5), evidence);
+      assert.ok(spread("bottomFromContent") <= 0.5, evidence);
       if (screenshotDirectory) {
         console.log(`HUB157_BOARD_HEADER_GEOMETRY ${surface} ${JSON.stringify(geometry)}`);
         await page.screenshot({
@@ -1847,7 +2651,7 @@ test("current and other Workspace or Stream native dblclicks survive exact-ident
   try {
     for (const [surface, viewport] of [
       ["desktop", { width: 1440, height: 1000 }],
-      ["mobile", { width: 390, height: 844 }],
+      ["mobile", { width: 480, height: 844 }],
     ]) {
       const problems = [];
       const page = await browser.newPage({ viewport });
@@ -2025,8 +2829,8 @@ test("current and other Workspace or Stream native dblclicks survive exact-ident
           ], `${surface}/${scenario.name}/${region}: native event sequence`);
           assert.equal(new Set(trace.map(({ logicalId }) => logicalId)).size, 1);
           if (scenario.forceFirstClickRerender) {
-            assert.equal(new Set(trace.map(({ rowNodeId }) => rowNodeId)).size, 2,
-              `${surface}/${scenario.name}: the same logical Workspace is legitimately replaced`);
+            assert.equal(new Set(trace.map(({ rowNodeId }) => rowNodeId)).size, 1,
+              `${surface}/${scenario.name}: the same logical Workspace keeps its node through a rerender`);
           }
           if (screenshotDirectory && scenario.name === "selected-workspace" && attempt === 0) {
             console.log(`HUB157_DBLCLICK_TRACE ${surface} ${JSON.stringify(trace)}`);
@@ -2302,7 +3106,8 @@ test("Workspace and Stream cards survive logical-identity rerenders while stale 
         replaced: replacement !== known,
       };
     });
-    assert.deepEqual(rerenderedStreamResult, { open: true, replaced: true });
+    // Обновление сохраняет узел вкладки, поэтому состояние статуса не сбрасывается.
+    assert.deepEqual(rerenderedStreamResult, { open: true, replaced: false });
     await page.keyboard.press("Escape");
 
     const staleStreamResult = await page.evaluate(() => {

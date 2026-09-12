@@ -8,6 +8,7 @@ export async function releaseTaskNetProjections({ tasks, baseCommit, git }) {
   const parents = new Map();
   const approved = new Map();
   const automatic = new Map();
+  const integrationOwners = new Map();
   const getParents = async (commit) => {
     if (!parents.has(commit)) parents.set(commit, (await git(["show", "-s", "--format=%P", commit])).split(" ").filter(Boolean));
     return parents.get(commit);
@@ -37,6 +38,9 @@ export async function releaseTaskNetProjections({ tasks, baseCommit, git }) {
   for (const task of tasks) {
     const changed = new Set();
     for (const integration of task.integrations) {
+      const owners = integrationOwners.get(integration.commit) ?? new Set();
+      owners.add(task.taskId);
+      integrationOwners.set(integration.commit, owners);
       if ((await getParents(integration.commit))[0] !== integration.parent) {
         throw new Error(`PreRelease integration parent changed for Task ${task.taskId}`);
       }
@@ -48,7 +52,7 @@ export async function releaseTaskNetProjections({ tasks, baseCommit, git }) {
   }
 
   for (const task of tasks) {
-    if (task.integrations.length < 2) continue;
+    if (!task.integrations.length) continue;
     try {
       const bases = (await git(["merge-base", "--all", baseCommit, task.resultCommit])).split(/\r?\n/u);
       if (bases.length !== 1) continue;
@@ -60,6 +64,11 @@ export async function releaseTaskNetProjections({ tasks, baseCommit, git }) {
         "rev-list", "--first-parent", task.resultCommit, `^${baseCommit}`, `^${earliest.parent}`,
       ])).split(/\r?\n/u).filter(Boolean));
       const integrations = new Set(task.integrations.map((item) => item.commit));
+      const orderPreserving = task.integrations.length === 1;
+      if (orderPreserving && (
+        (await getParents(task.integrations[0].commit))[1] !== task.resultCommit
+        || integrationOwners.get(task.integrations[0].commit)?.size !== 1
+      )) continue;
       let proven = true;
       for (const integration of task.integrations) {
         const values = await getParents(integration.commit);
@@ -73,7 +82,9 @@ export async function releaseTaskNetProjections({ tasks, baseCommit, git }) {
         if (values.length !== 2 || (!integrations.has(commit) && !await isApproved(values[1]))
             || !await isAutomatic(commit)) { proven = false; break; }
       }
-      if (proven) proofs.set(task.taskId, { parent: bases[0], commit: task.resultCommit, paths });
+      if (proven) proofs.set(task.taskId, {
+        parent: bases[0], commit: task.resultCommit, paths, orderPreserving,
+      });
     } catch { /* A failed or unsupported proof falls back to the existing fenced replay. */ }
   }
   // A reopened Task may have published integrations whose old paths no longer
@@ -82,6 +93,11 @@ export async function releaseTaskNetProjections({ tasks, baseCommit, git }) {
   while (proofs.size) {
     const rejected = [];
     for (const [taskId, proof] of proofs) {
+      // A projection for one exact automatic integration stays at that
+      // integration's original order. Its ownership proof above binds the
+      // second parent to the selected Task result, so overlap cannot reorder
+      // another owner's delta or import first-parent baggage.
+      if (proof.orderPreserving) continue;
       if (tasks.some((other) => {
         if (other.taskId === taskId) return false;
         const paths = proofs.has(other.taskId)

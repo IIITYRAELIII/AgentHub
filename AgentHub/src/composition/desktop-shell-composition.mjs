@@ -1,4 +1,5 @@
 import { createDesktopReadSystemWiring } from "./desktop-read-system-wiring-composition.mjs";
+import { createContourCommandMapping } from "../infrastructure/filesystem/test-contour-command-mapping.mjs";
 import { createDesktopCommandWiring } from "./desktop-command-wiring-composition.mjs";
 import { createDesktopRunRouterWiring } from "./desktop-run-router-wiring-composition.mjs";
 import { createDesktopTaskCreationPreparation } from "./desktop-task-creation-composition.mjs";
@@ -144,7 +145,13 @@ export function createDesktopShellComposition({
     resolveMessage: (identity) => taskSyncStore.durableMessageCandidate(identity),
   });
 
+  const contourCommandMapping = config.testContourRecording
+    ? createContourCommandMapping({ root: config.testContourRecording.root,
+      readCommand: (id) => runtimeStateStore.messageCommand(id) })
+    : null;
+
   const desktopReadSystem = createDesktopReadSystemWiring({
+    contourCommandMapping,
     config,
     models,
     projects,
@@ -298,12 +305,13 @@ export function createDesktopShellComposition({
     saveState,
   });
 
+  const canonicalSelection = (value) => contourCommandMapping ? contourCommandMapping.target(value) : value;
   const telegramSelection = new ClientTaskSelectionService({
     sessionState: hostState,
-    fallbackSelection: selectedTask,
+    fallbackSelection: () => canonicalSelection(selectedTask()),
     fallbackTitle: selectedTaskTitle,
     findProject,
-    catalogEntries: getTaskCatalog,
+    catalogEntries: () => contourCommandMapping ? getTaskCatalog().map((entry) => contourCommandMapping.readReference(entry)) : getTaskCatalog(),
     catalogEntryIsSelected,
     preferences: agentPreferences,
     samePath,
@@ -314,7 +322,7 @@ export function createDesktopShellComposition({
   const telegramSelectedTurnTarget = (...args) => telegramSelection.turnTarget(...args);
   const telegramCurrentUiContextToken = (...args) => telegramSelection.currentUiContextToken(...args);
   const telegramUiCallback = (...args) => telegramSelection.uiCallback(...args);
-  const selectTelegramTaskFromBinding = (...args) => telegramSelection.select(...args);
+  const selectTelegramTaskFromBinding = (binding, ...args) => telegramSelection.select(canonicalSelection(binding), ...args);
   const clearTelegramTaskSelection = (...args) => telegramSelection.clear(...args);
   const telegramSelectionNotificationOptions = (options = {}) => ({
     ...options,
@@ -450,6 +458,8 @@ export function createDesktopShellComposition({
       setPinnedWorkspaceStreams: (value) => agentPreferences.setPinnedWorkspaceStreams(value),
       getQuickMessages: () => agentPreferences.quickMessages,
       setQuickMessages: (value) => agentPreferences.setQuickMessages(value),
+      getQuickMessageActionMode: () => agentPreferences.quickMessageActionMode,
+      setQuickMessageActionMode: (value) => agentPreferences.setQuickMessageActionMode(value),
       projectUsage: (includeClaudeUsage) => workLogUsageStore.project(null, {
         includeClaudeUsage,
         projectRoot: config.projectRoot,
@@ -490,6 +500,7 @@ export function createDesktopShellComposition({
     },
     services: {
       startManualCompaction: (target) => streamContextMaintenance.compact(target),
+      contourCommandMapping,
       deferredInputs, composerTransfers,
       saveState,
       persistDeferredIntake: (item, destination, fallbackReceipt = null) => runtimeStateStore.saveDeferredIntake({

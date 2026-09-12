@@ -988,7 +988,13 @@ test("prepare, start and rollback enforce one checklist Workspace transition inv
     workspaceId: "workspace-1", streamId: "same", requestId: "same-workspace", provider: "codex", threadId: "thread-same",
   });
   assert.equal(prepared.status, "starting");
-  const rolledBack = await store.cancelPreparedStart(child.id, { requestId: "same-workspace" });
+  const fenced = await store.fencePreparedStartCancellation(child.id, {
+    requestId: "same-workspace", cancellationRequestId: "cancel-same-workspace",
+    expectedRevision: prepared.revision,
+  });
+  const rolledBack = await store.completePreparedStartCancellation(child.id, {
+    requestId: "same-workspace", expectedRevision: fenced.revision,
+  });
   assert.equal(rolledBack.status, "open");
   assert.equal(rolledBack.workspaceId, "workspace-1");
   assert.equal(rolledBack.streamId, null);
@@ -997,9 +1003,13 @@ test("prepare, start and rollback enforce one checklist Workspace transition inv
   const unlinkedPrepared = await store.prepareStart(child.id, {
     workspaceId: "workspace-2", streamId: "foreign", requestId: "unlinked-start", provider: "codex", threadId: "thread-foreign",
   });
+  const unlinkedAdmitted = await store.admitPreparedStart(child.id, {
+    requestId: "unlinked-start", attemptId: "attempt-unlinked-start",
+    expectedRevision: unlinkedPrepared.revision,
+  });
   const started = await store.markStarted(child.id, {
     workspaceId: "workspace-2", streamId: "foreign", requestId: "unlinked-start",
-    expectedRevision: unlinkedPrepared.revision,
+    attemptId: "attempt-unlinked-start", expectedRevision: unlinkedAdmitted.revision,
   });
   assert.equal(started.status, "started");
   assert.equal(started.workspaceId, "workspace-2");

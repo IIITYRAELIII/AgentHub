@@ -28,6 +28,7 @@ export function createDesktopMessageController({
   commandTrace = null,
   composerTransfers = null,
   discardPreparedAttachments = async () => {},
+  commandMapping = null,
 }) {
   if (!runCoordinator?.submitClientInput || !runCoordinator?.steer) {
     throw new TypeError("runCoordinator is required");
@@ -55,6 +56,7 @@ export function createDesktopMessageController({
     let target;
     try {
       target = await resolveTarget(params, context);
+      if (commandMapping) target = commandMapping.target(target);
       await composerTransfers?.ready?.();
     } catch (error) {
       preparation?.finish({ outcome: "failed", metadata: { errorCode: error?.code ?? null } });
@@ -119,9 +121,11 @@ export function createDesktopMessageController({
       }
       await context.bindInterstreamAuditContent(referencedInput);
     }
-    const input = attachments.length
-      ? messageInputWithAttachments(referencedInput, attachments, descriptors)
+    const commandAttachments = commandMapping ? commandMapping.files(attachments, clientUserMessageId) : attachments;
+    let input = attachments.length
+      ? messageInputWithAttachments(referencedInput, commandAttachments, descriptors)
       : referencedInput;
+    if (commandMapping) input = commandMapping.input(input, clientUserMessageId);
     const messageAuthor = interstreamOriginAuthor(messageOrigin);
     const receiptIdentity = {
       provider: target.provider,
@@ -225,7 +229,7 @@ export function createDesktopMessageController({
       try {
         result = await submit({
           input,
-          attachments,
+          attachments: commandAttachments,
           target,
           clientUserMessageId,
           clientProjectionIntent,

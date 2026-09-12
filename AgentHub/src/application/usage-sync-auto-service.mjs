@@ -1,3 +1,5 @@
+import { assertContourExternalEffects } from "../ports/contour-external-effects.mjs";
+
 const TIMER_NAME = "work-log-usage-sync";
 const USG001_HISTORY_RESEND_VERSION = 1;
 const USAGE_FACT_SCHEMA_VERSION = 2;
@@ -84,6 +86,7 @@ export class UsageSyncAutoService {
     antiEntropyIntervalMs = DEFAULT_ANTI_ENTROPY_INTERVAL_MS,
     accountBackfill = null,
     suggestedDeviceLabel = null,
+    externalEffects = null,
     isStopping = () => false,
     now = () => new Date(),
     logger = console,
@@ -120,9 +123,11 @@ export class UsageSyncAutoService {
     this.now = typeof now === "function" ? now : () => new Date();
     this.logger = logger;
     this.syncInFlight = null;
+    this.externalEffects = assertContourExternalEffects(externalEffects);
   }
 
   schedule(delayMs = this.intervalMs) {
+    if (this.externalEffects) return this.externalEffects.exclude("usage-sync", "schedule");
     if (this.isStopping()) return;
     this.timers.schedule(TIMER_NAME, () => {
       void this.sync().catch((error) => {
@@ -140,6 +145,7 @@ export class UsageSyncAutoService {
   }
 
   sync() {
+    if (this.externalEffects) return Promise.resolve(this.externalEffects.exclude("usage-sync", "sync"));
     if (this.syncInFlight) return this.syncInFlight;
     this.syncInFlight = this.#syncOnce().finally(() => {
       this.syncInFlight = null;
@@ -149,6 +155,7 @@ export class UsageSyncAutoService {
   }
 
   async createEnrollmentCode({ ttlSeconds = 10_800 } = {}) {
+    if (this.externalEffects) return this.externalEffects.exclude("usage-sync", "create-enrollment-code");
     const remoteConfig = await this.remoteConfigStore.load();
     const serverUrl = String(remoteConfig?.serverUrl ?? "").trim();
     if (!serverUrl || !remoteConfig?.enrolledAt) {
@@ -159,6 +166,7 @@ export class UsageSyncAutoService {
   }
 
   async enroll({ serverUrl = "", code = "" } = {}) {
+    if (this.externalEffects) return this.externalEffects.exclude("usage-sync", "enroll");
     const normalizedServerUrl = String(serverUrl ?? "").trim()
       || String((await this.remoteConfigStore.load())?.serverUrl ?? "").trim();
     if (!normalizedServerUrl) throw new Error("Usage sync server URL is required");
@@ -427,6 +435,10 @@ export class UsageSyncAutoService {
   }
 
   async #suggestDeviceLabel() {
+    if (this.externalEffects) {
+      this.externalEffects.exclude("usage-sync", "account-label-suggestion");
+      return "";
+    }
     if (!this.suggestedDeviceLabel) return "";
     try {
       return String(await this.suggestedDeviceLabel() ?? "").trim();

@@ -1,3 +1,4 @@
+import { createContourAwareDiffCapture } from "../runtime/test-contour-runtime-effects.mjs";
 import { createRunAdmissionComposition } from "./run-admission-composition.mjs";
 import { createRunPresentationComposition } from "./run-presentation-composition.mjs";
 
@@ -7,10 +8,11 @@ export function createRunShellComposition({
   diff,
   ports,
 }) {
+  const captureDiff = createContourAwareDiffCapture(admission.config, diff.capture);
   async function refreshTaskDiff(run) {
     if (!run) return "";
     if (run.rolloutChangeTrackingKnown !== true) {
-      const captured = await diff.capture(run.gitBaseline, diff.dataDir, run.id);
+      const captured = await captureDiff(run.gitBaseline, diff.dataDir, run.id);
       if (captured !== null) run.latestDiff = captured;
     }
     await diff.persist(diff.taskKey(run), run.latestDiff ?? "");

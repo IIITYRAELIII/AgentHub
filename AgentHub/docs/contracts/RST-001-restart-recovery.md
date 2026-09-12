@@ -86,6 +86,41 @@ a user turn and does not alter the restart/compaction operation schema.
   An unavailable control plane requires the installed local launcher; a browser
   cannot start a process on an offline host.
 
+## Isolated recording recovery
+
+An explicitly prepared recording contour uses the same command, receipt, queue,
+terminal and delivery identities as its captured cohort (ADR-0038). Its raw
+capture is immutable evidence. Only declared operational paths are mapped into
+owned directories; canonical journal text and command identities are not
+rewritten. SQLite read pins plus unchanged sidecars establish the documented
+capture window, not a cross-store business transaction.
+
+Historical read models may retain a containing project directory different from
+the exact Thread execution directory. Recording read projections preserve those
+canonical fields and validate Thread/Stream membership; they do not grant command
+authority. Admission still requires the exact captured execution binding.
+
+The profile must verify cohort ownership and configuration before starting the
+Hub. Providers are literal local recording adapters in isolated homes. Captured
+external processes, rollout files, Git repositories and media jobs are not
+execution authority. Excluded operations retain their evidence and explicitly
+report exclusion; they must not report successful remote work. Recording
+delivery receipts retain their original idempotency identity across restart.
+
+Recovery checks must separately report queue/terminal/delivery behavior, source
+immutability, exact replacement identity and excluded effects. Synthetic shell
+recovery alone does not prove production-data parity or installed RuntimeHost
+replacement. The legacy destructive clone path cannot refresh a prepared cohort.
+
+Explicit adoption into the canonical Test Contour root retains the old data and
+profile under the existing contour operation lease. Staging and exact candidate
+preparation precede stop. The root identity and lock remain stable. Interrupted
+component replacement recovers without deleting either cohort; an already-ready
+exact candidate is finalized without discarding its writes. Unknown postlaunch
+readiness fails closed and cannot authorize an automatic rollback.
+Recovery may stop or roll back only the still-current adoption operation with
+its exact root/contour target; a newer independent operation remains untouched.
+
 ## Optional startup enrichment
 
 A ready replacement may resume the exact pending publication completion
@@ -94,6 +129,11 @@ uses the canonical publication lock, without inheriting the previous publisher's
 lock-bypass session. It does not build, deploy, push Git or request another
 restart. Installed release, ready instance and control snapshot must agree
 before completion; a mismatch remains pending/failed evidence, never success.
+An explicit `awaiting_finalization` result schedules the same background owner
+again after a bounded delay and within one bounded attempt budget. Canonical
+completion or budget exhaustion with an explicit diagnostic stops that cycle.
+Duplicate readiness notifications do not create another owner or repeat
+completed publication stages.
 The publication journal and Task finalization store retain their own existing
 authority; this hook creates no second restart operation.
 

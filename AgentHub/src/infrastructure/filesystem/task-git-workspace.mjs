@@ -1,12 +1,17 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { access, mkdir, readFile, readdir, rm, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { assertContourExternalEffects, assertContourGitAvailable } from "../../ports/contour-external-effects.mjs";
 import process from "node:process";
 
 import { canonicalPath } from "./config.mjs";
 import { prepareTaskWorktreeDependencies } from "./task-worktree-dependencies.mjs";
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
+import {
+  isTrustedWindowsPowerShellPath,
+  readTrustedSystemBootIdentity,
+} from "../process/system-boot-identity.mjs";
 import { readPublicationState } from "../persistence/publication-state.mjs";
 import {
   normalizedTaskId,
@@ -154,13 +159,16 @@ function requiredGuardLease(lease) {
   return lease;
 }
 
-function combinedLease(primary, secondary) {
+function combinedLease(primary, secondary, { repositoryKey = null } = {}) {
   requiredGuardLease(primary);
   if (typeof secondary?.assertOwned !== "function") throw new Error("Task Git dev lock lease is required");
   const signals = [primary.signal, secondary.signal].filter(Boolean);
+  const repositoryLockKeys = new Set(primary.repositoryLockKeys ?? []);
+  if (repositoryKey) repositoryLockKeys.add(repositoryKey);
   return {
     ...primary,
     ownerId: `${primary.ownerId}|${secondary.ownerId}`,
+    repositoryLockKeys,
     signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0] ?? null,
     async assertOwned() {
       await primary.assertOwned();
@@ -386,13 +394,19 @@ async function commitDirtyWorktree(worktreeRoot, message, { lease = null } = {})
 }
 
 export class TaskGitWorkspaceService {
+  #contourExternalEffects;
+
   constructor({
     dataDir,
     devBranch = TASK_DEV_BRANCH,
     prepareDependencies = prepareTaskWorktreeDependencies,
     readPublication = readPublicationState,
     runCommand = runTaskGitCommand,
+    readSystemBootIdentity = readTrustedSystemBootIdentity,
+    removeProcessGuard = unlink,
+    contourExternalEffects = null,
   } = {}) {
+    this.#contourExternalEffects = assertContourExternalEffects(contourExternalEffects);
     this.dataDir = canonicalPath(String(dataDir ?? ""));
     this.taskWorktreesRoot = path.join(this.dataDir, "task-worktrees");
     this.devWorktreesRoot = path.join(this.dataDir, "dev-worktrees");
@@ -400,6 +414,12 @@ export class TaskGitWorkspaceService {
     this.prepareDependencies = prepareDependencies;
     this.readPublication = readPublication;
     this.runCommand = runCommand;
+    this.readSystemBootIdentity = readSystemBootIdentity;
+    this.removeProcessGuard = removeProcessGuard;
+  }
+
+  #assertAvailable(operation) {
+    assertContourGitAvailable(this.#contourExternalEffects, "task-git", operation);
   }
 
   async #runOwned(args, { lease = null, guardCommand = null, ...options } = {}) {
@@ -443,6 +463,11 @@ export class TaskGitWorkspaceService {
 
   #processGuardDirectory(taskId) {
     return path.join(this.dataDir, "task-process-tree-guards", normalizedTaskId(taskId));
+  }
+
+  #processRecoveryFile(taskId, guardId) {
+    const key = createHash("sha256").update(String(guardId ?? ""), "utf8").digest("hex");
+    return path.join(this.dataDir, "task-process-tree-recoveries", normalizedTaskId(taskId), `${key}.json`);
   }
 
   async #processGuards(taskId) {
@@ -532,10 +557,26 @@ export class TaskGitWorkspaceService {
   }
 
   async withTaskLock(taskId, operation, options = {}) {
+    this.#assertAvailable("withTaskLock");
     return withInterprocessLocks([this.#taskLock(taskId)], async (lease) => {
       await this.#assertNoProcessTreeGuard(taskId);
       return operation(this.#guardedLease(taskId, lease));
     }, options);
+  }
+
+  async withTaskRecoveryLock(taskId, operation, options = {}) {
+    this.#assertAvailable("withTaskRecoveryLock");
+    return withInterprocessLocks(
+      [this.#taskLock(taskId)],
+      (lease) => operation(this.#guardedLease(taskId, lease)),
+      options,
+    );
+  }
+
+  async withTaskRepositoryRecoveryLock(taskId, repositoryRoot, taskLease, operation) {
+    this.#assertAvailable("withTaskRepositoryRecoveryLock");
+    await requiredGuardLease(taskLease).assertOwned();
+    return this.#withDevLock(canonicalPath(repositoryRoot), taskLease, operation);
   }
 
   #guardedLease(scopeId, lease) {
@@ -554,29 +595,154 @@ export class TaskGitWorkspaceService {
 
   async #withDevLock(repoRoot, outerLease, operation) {
     const repoKey = taskRepositoryKey(repoRoot);
+    if (outerLease?.repositoryLockKeys?.has?.(repoKey)) {
+      await outerLease.assertOwned();
+      return operation(outerLease);
+    }
     const devLock = path.join(this.dataDir, "locks", `task-git-dev-${repoKey}`);
     return withInterprocessLocks([devLock], async (devLease) => {
       const lease = outerLease
-        ? combinedLease(outerLease, devLease)
+        ? combinedLease(outerLease, devLease, { repositoryKey: repoKey })
         : this.#guardedLease(`repository-${repoKey}`, devLease);
+      if (!outerLease) lease.repositoryLockKeys = new Set([repoKey]);
       return operation(lease);
     });
   }
 
-  async recoverProcessTreeGuard(taskId, { repositoryRoot: root, operatorProof } = {}) {
-    if (operatorProof !== "confirmed-no-descendants") {
-      throw new Error("Task Git process-tree guard recovery requires explicit operator proof");
-    }
-    const file = path.join(
-      this.#processGuardDirectory(taskId),
-      `${taskRepositoryKey(canonicalPath(root))}.json`,
-    );
-    const guard = await readFile(file, "utf8").then(JSON.parse, () => null);
-    if (!guard?.guardId || !samePath(guard.repositoryRoot, root)) {
-      throw new Error("Task Git process-tree guard does not match the proved repository");
-    }
-    await unlink(file);
-    return { recovered: true, guard };
+  async recoverProcessTreeGuard(taskId, {
+    repositoryRoot: root, guardId, proof, lease = null,
+  } = {}) {
+    this.#assertAvailable("recoverProcessTreeGuard");
+    const repositoryRoot = canonicalPath(root);
+    const recover = async (ownedLease) => this.#withDevLock(repositoryRoot, ownedLease, async (combined) => {
+      await combined.assertOwned();
+      const file = path.join(
+        this.#processGuardDirectory(taskId),
+        `${taskRepositoryKey(repositoryRoot)}.json`,
+      );
+      const recoveryFile = this.#processRecoveryFile(taskId, guardId);
+      const guard = await readFile(file, "utf8").then(JSON.parse, (error) => {
+        if (error?.code === "ENOENT") return null;
+        throw error;
+      });
+      const priorRecovery = await readFile(recoveryFile, "utf8").then(JSON.parse, (error) => {
+        if (error?.code === "ENOENT") return null;
+        throw error;
+      });
+      const exactPriorRecovery = () => {
+        const guardCreatedAtMs = Date.parse(String(priorRecovery?.proof?.guardCreatedAt ?? ""));
+        const storedGuardCreatedAtMs = Date.parse(String(priorRecovery?.guard?.createdAt ?? ""));
+        const bootTimeMs = Date.parse(String(priorRecovery?.proof?.systemBootTime ?? ""));
+        const verifiedAtMs = Date.parse(String(priorRecovery?.proof?.verifiedAt ?? ""));
+        const executablePath = String(priorRecovery?.proof?.executablePath ?? "").trim();
+        const summary = String(priorRecovery?.proof?.summary ?? "").trim();
+        const exactGuard = priorRecovery?.guard && (
+          !guard || JSON.stringify(priorRecovery.guard) === JSON.stringify(guard)
+        );
+        return priorRecovery?.version === 1
+          && priorRecovery.guardId === String(guardId ?? "").trim()
+          && priorRecovery.taskId === normalizedTaskId(taskId)
+          && samePath(priorRecovery.repositoryRoot, repositoryRoot)
+          && exactGuard
+          && priorRecovery.proof?.kind === "system-restart-after-guard"
+          && priorRecovery.proof?.source === "Win32_OperatingSystem.LastBootUpTime"
+          && Number.isFinite(guardCreatedAtMs)
+          && Number.isFinite(storedGuardCreatedAtMs)
+          && guardCreatedAtMs === storedGuardCreatedAtMs
+          && Number.isFinite(bootTimeMs)
+          && bootTimeMs > guardCreatedAtMs
+          && Number.isFinite(verifiedAtMs)
+          && summary.length > 0
+          && summary.length <= 1_000
+          && !summary.includes("\0")
+          && isTrustedWindowsPowerShellPath(executablePath);
+      };
+      const finish = (recovery, reused) => ({
+          recovered: true,
+          reused,
+          guard: recovery.guard,
+          proof: recovery.proof,
+      });
+      if (!guard) {
+        if (!exactPriorRecovery()) {
+          throw new Error("Task Git process-tree recovery evidence does not match the recovery request");
+        }
+        return finish(priorRecovery, true);
+      }
+      if (
+        !guard?.guardId
+        || guard.guardId !== String(guardId ?? "").trim()
+        || guard.taskId !== normalizedTaskId(taskId)
+        || !samePath(guard.repositoryRoot, repositoryRoot)
+      ) {
+        throw new Error("Task Git process-tree guard identity does not match the recovery request");
+      }
+      if (priorRecovery) {
+        if (!exactPriorRecovery()) {
+          throw new Error("Task Git process-tree recovery evidence identity changed");
+        }
+        await combined.assertOwned();
+        await this.removeProcessGuard(file);
+        return finish(priorRecovery, true);
+      }
+      if (proof?.kind !== "system-restart-after-guard" || proof?.confirmed !== true) {
+        throw new Error("Task Git guard recovery requires a trusted system restart after guard creation");
+      }
+      const summary = String(proof?.summary ?? "").trim();
+      if (!summary || summary.length > 1_000 || summary.includes("\0")) {
+        throw new Error("Task Git guard recovery requires bounded operator evidence");
+      }
+      const guardCreatedAtMs = Date.parse(String(guard.createdAt ?? ""));
+      const bootIdentity = await this.readSystemBootIdentity();
+      const bootTimeMs = Date.parse(String(bootIdentity?.bootTime ?? ""));
+      if (!Number.isFinite(guardCreatedAtMs) || !Number.isFinite(bootTimeMs) || bootTimeMs <= guardCreatedAtMs) {
+        throw new Error("Task Git guard recovery rejected: system boot does not postdate the guarded process tree");
+      }
+      if (bootIdentity?.source !== "Win32_OperatingSystem.LastBootUpTime") {
+        throw new Error("Task Git guard recovery rejected: trusted Windows boot identity is unavailable");
+      }
+      const executablePath = String(bootIdentity?.executablePath ?? "").trim();
+      if (!isTrustedWindowsPowerShellPath(executablePath)) {
+        throw new Error("Task Git guard recovery rejected: trusted Windows boot executable identity is unavailable");
+      }
+      await combined.assertOwned();
+      const recovery = {
+        version: 1,
+        taskId: normalizedTaskId(taskId),
+        guardId: guard.guardId,
+        repositoryRoot,
+        guard,
+        proof: {
+          kind: proof.kind,
+          source: bootIdentity.source,
+          executablePath,
+          summary,
+          guardCreatedAt: new Date(guardCreatedAtMs).toISOString(),
+          systemBootTime: new Date(bootTimeMs).toISOString(),
+          verifiedAt: new Date().toISOString(),
+        },
+      };
+      await mkdir(path.dirname(recoveryFile), { recursive: true });
+      try {
+        await writeFile(recoveryFile, `${JSON.stringify(recovery, null, 2)}\n`, {
+          encoding: "utf8", flag: "wx", mode: 0o600,
+        });
+      } catch (error) {
+        if (error?.code !== "EEXIST") throw error;
+        if (!exactPriorRecovery()) {
+          throw new Error("Task Git process-tree recovery evidence identity changed");
+        }
+        await combined.assertOwned();
+        await this.removeProcessGuard(file);
+        return finish(priorRecovery, true);
+      }
+      await combined.assertOwned();
+      await this.removeProcessGuard(file);
+      return finish(recovery, false);
+    });
+    return lease
+      ? recover(lease)
+      : this.withTaskRecoveryLock(taskId, recover);
   }
 
   async #integrationBlockFile(repoRoot) {
@@ -880,6 +1046,7 @@ export class TaskGitWorkspaceService {
   }
 
   async prepareDev(projectRoot) {
+    this.#assertAvailable("prepareDev");
     const synchronization = await this.synchronizeMainIntoDev({ projectRoot });
     if (!synchronization.integrated) {
       const conflicts = synchronization.conflicts?.length
@@ -891,6 +1058,7 @@ export class TaskGitWorkspaceService {
   }
 
   async synchronizeMainIntoDev({ projectRoot, publishedRevision = null } = {}) {
+    this.#assertAvailable("synchronizeMainIntoDev");
     const repoRoot = await repositoryRoot(projectRoot);
     await this.#assertRepositoryProcessTreeClear(repoRoot);
     return this.#withDevLock(repoRoot, null, (lease) => this.#synchronizeMainIntoDevOwned({
@@ -901,10 +1069,12 @@ export class TaskGitWorkspaceService {
   }
 
   async prepare(params = {}) {
+    this.#assertAvailable("prepare");
     return this.withTaskLock(params.taskId, (lease) => this.prepareOwned({ ...params, lease }));
   }
 
   async prepareOwned({ taskId, taskNumber = null, projectRoot, lease = null } = {}) {
+    this.#assertAvailable("prepareOwned");
     const id = normalizedTaskId(taskId);
     await requiredGuardLease(lease).assertOwned();
     await this.#assertNoProcessTreeGuard(id);
@@ -992,6 +1162,7 @@ export class TaskGitWorkspaceService {
   }
 
   async managedRepositoryRoot(projectRoot, { taskId, taskNumber = null } = {}) {
+    this.#assertAvailable("managedRepositoryRoot");
     const expectedTaskId = String(taskId ?? "").trim();
     if (!expectedTaskId) return null;
     const id = normalizedTaskId(expectedTaskId);
@@ -1013,10 +1184,12 @@ export class TaskGitWorkspaceService {
   }
 
   async snapshot(params = {}) {
+    this.#assertAvailable("snapshot");
     return this.withTaskLock(params.taskId, (lease) => this.snapshotOwned({ ...params, lease }));
   }
 
   async snapshotOwned({ taskId, taskNumber = null, projectRoot, turnId = null, summary = "", lease = null } = {}) {
+    this.#assertAvailable("snapshotOwned");
     await requiredGuardLease(lease).assertOwned();
     await this.#assertNoProcessTreeGuard(taskId);
     const workspace = await this.prepareOwned({ taskId, taskNumber, projectRoot, lease });
@@ -1041,10 +1214,12 @@ export class TaskGitWorkspaceService {
   }
 
   async mergeIntoDev(snapshot) {
+    this.#assertAvailable("mergeIntoDev");
     return this.withTaskLock(snapshot.taskId, (lease) => this.mergeIntoDevOwned(snapshot, { lease }));
   }
 
   async mergeIntoDevOwned(snapshot, { lease = null } = {}) {
+    this.#assertAvailable("mergeIntoDevOwned");
     await requiredGuardLease(lease).assertOwned();
     await this.#assertNoProcessTreeGuard(snapshot.taskId);
     await this.#assertRepositoryProcessTreeClear(snapshot.repositoryRoot);
@@ -1174,6 +1349,7 @@ export class TaskGitWorkspaceService {
   }
 
   async reconcile({ projectRoots = [] } = {}) {
+    this.#assertAvailable("reconcile");
     const repositories = [];
     for (const registration of projectRoots) {
       const projectRoot = typeof registration === "string" ? registration : registration?.projectRoot;
@@ -1202,10 +1378,12 @@ export class TaskGitWorkspaceService {
   }
 
   async snapshotAndMerge(params = {}) {
+    this.#assertAvailable("snapshotAndMerge");
     return this.withTaskLock(params.taskId, (lease) => this.snapshotAndMergeOwned({ ...params, lease }));
   }
 
   async snapshotAndMergeOwned(params = {}) {
+    this.#assertAvailable("snapshotAndMergeOwned");
     await requiredGuardLease(params.lease).assertOwned();
     await this.#assertNoProcessTreeGuard(params.taskId);
     const snapshot = await this.snapshotOwned(params);
@@ -1244,6 +1422,7 @@ export class TaskGitWorkspaceService {
   }
 
   async releaseEvidence({ taskId, taskNumber = null, projectRoot, branch, resultCommit } = {}) {
+    this.#assertAvailable("releaseEvidence");
     const id = normalizedTaskId(taskId);
     const repoRoot = await repositoryRoot(projectRoot);
     const expectedBranch = taskBranchName(id, repoRoot, taskNumber);
@@ -1277,6 +1456,7 @@ export class TaskGitWorkspaceService {
   }
 
   async releaseIntegrationEvidence({ projectRoot, tasks = [] } = {}) {
+    this.#assertAvailable("releaseIntegrationEvidence");
     const dev = await this.prepareDev(projectRoot);
     const firstParentHistory = String(await runGit([
       "log", "--first-parent", "--reverse", "--format=%H%x00%P", dev.headCommit,
@@ -1342,6 +1522,7 @@ export class TaskGitWorkspaceService {
   }
 
   async adoptLegacyResult(params = {}) {
+    this.#assertAvailable("adoptLegacyResult");
     return this.withTaskLock(params.taskId, (lease) => this.#adoptLegacyResultOwned({ ...params, lease }));
   }
 
@@ -1442,6 +1623,7 @@ export class TaskGitWorkspaceService {
   }
 
   async verifyReleaseResultsInDev({ projectRoot, resultCommits = [] } = {}) {
+    this.#assertAvailable("verifyReleaseResultsInDev");
     const dev = await this.prepareDev(projectRoot);
     const commits = [...new Set(resultCommits.map((value) => String(value ?? "").trim()).filter(Boolean))].sort();
     if (!commits.length) throw new Error("release preflight requires Task result commits");
@@ -1462,6 +1644,7 @@ export class TaskGitWorkspaceService {
   }
 
   async describe(taskId) {
+    this.#assertAvailable("describe");
     const id = normalizedTaskId(taskId);
     const root = path.join(this.taskWorktreesRoot, id);
     const entries = await readdir(root, { withFileTypes: true }).catch((error) => {
@@ -1492,6 +1675,7 @@ export class TaskGitWorkspaceService {
   }
 
   async cleanupPreview(taskId, { gitReferences = [] } = {}) {
+    this.#assertAvailable("cleanupPreview");
     const id = normalizedTaskId(taskId);
     const workspaces = await this.describe(id);
     const references = [];
@@ -1548,12 +1732,14 @@ export class TaskGitWorkspaceService {
   }
 
   async cleanup(taskId, options = {}) {
+    this.#assertAvailable("cleanup");
     return this.withTaskLock(taskId, (lease) => this.cleanupOwned(taskId, { ...options, lease }));
   }
 
   async cleanupOwned(taskId, {
     allowDirty = false, requirePublished = false, gitReferences = [], expectedPreview = null, lease = null,
   } = {}) {
+    this.#assertAvailable("cleanupOwned");
     await requiredGuardLease(lease).assertOwned();
     const id = normalizedTaskId(taskId);
     await this.#assertNoProcessTreeGuard(id);

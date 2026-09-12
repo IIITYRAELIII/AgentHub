@@ -272,6 +272,13 @@ export class DesktopTaskService {
       itemId,
     }) : null;
     if (itemId && !indexedMessage) throw new Error("Сообщение не найдено в индексе");
+    const requestedRole = String(params.role ?? "").trim();
+    if (indexedMessage && (
+      (requestedRole && indexedMessage.role !== requestedRole)
+      || (indexedMessage.turnThreadId && indexedMessage.turnThreadId !== turnThread)
+    )) {
+      throw new Error("Сообщение не соответствует указанной identity");
+    }
     const record = await this.readTurn({
       provider: targetProvider,
       threadId: turnThread,

@@ -1,4 +1,4 @@
-import { receiptUserDisplay, userDisplayText } from "../../domain/user-message-display.mjs";
+import { receiptUserDisplay, receiptUserOrigin, userDisplayText } from "../../domain/user-message-display.mjs";
 import { createHash } from "node:crypto";
 import {
   displayUserPrompt,
@@ -8,6 +8,7 @@ import {
 import { isClaudeCompactionRun } from "../../domain/claude-context-maintenance.mjs";
 import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 import {
+  confirmedInterstreamOrigin,
   interstreamOriginAuthor,
   normalizeInterstreamOrigin,
   trustedInterstreamMessageDetails,
@@ -77,7 +78,8 @@ function deferredMessageProjection(item, deferred, receipts) {
   };
   const textInterstream = trustedInterstreamMessageDetails(rawText, identity);
   const previewInterstream = trustedInterstreamMessageDetails(rawPreview, identity);
-  const origin = normalizeInterstreamOrigin(item.messageOrigin);
+  const origin = confirmedInterstreamOrigin(rawText, identity)
+    && confirmedInterstreamOrigin(rawPreview, identity);
   return {
     text: displayUserPrompt(textInterstream?.text ?? rawText),
     preview: displayUserPrompt(previewInterstream?.text ?? rawPreview),
@@ -206,6 +208,13 @@ export function createDesktopSnapshotFactory({
       const clientUserMessageId = String(receipt?.clientUserMessageId ?? "").trim();
       const result = receipt?.result;
       if (!provider || !threadId || !clientUserMessageId || !result) return [];
+      const receiptOrigin = confirmedInterstreamOrigin(String(result.displayText ?? ""), {
+        origin: result.origin,
+        clientUserMessageId,
+      });
+      const receiptAuthor = receiptOrigin
+        ? interstreamOriginAuthor(receiptOrigin) || String(result.author ?? "").trim()
+        : "";
       return [{
         provider,
         threadId,
@@ -232,10 +241,10 @@ export function createDesktopSnapshotFactory({
         deliveredAt: result.deliveredAt ?? null,
         message: result.message ?? null,
         displayText: String(result.displayText ?? ""),
-        ...(String(result.author ?? "").trim() ? { author: String(result.author).trim() } : {}),
-        ...(normalizeInterstreamOrigin(result.origin)
-          ? { origin: normalizeInterstreamOrigin(result.origin) }
-          : {}),
+        // The receipt leaves this owner already confirmed: a raw stored origin
+        // that its own message cannot confirm never reaches the client, so every
+        // surface downstream shares one trust rule instead of re-deriving it.
+        ...(receiptOrigin ? { author: receiptAuthor, origin: receiptOrigin } : {}),
         responseAnnotations: Array.isArray(result.responseAnnotations)
           ? result.responseAnnotations.map((item) => ({ ...item }))
           : [],
@@ -292,7 +301,10 @@ export function createDesktopSnapshotFactory({
       origin: run.messageOrigin,
       clientUserMessageId: run.clientUserMessageId,
     });
-    const promptOrigin = normalizeInterstreamOrigin(run.messageOrigin);
+    const promptOrigin = confirmedInterstreamOrigin(promptDisplay, {
+      origin: run.messageOrigin,
+      clientUserMessageId: run.clientUserMessageId,
+    });
     const responseItem = (Array.isArray(run.responseItems) ? run.responseItems : [])
       .find((item) => String(item?.id ?? "") === String(run.responseItemId ?? ""));
     const compactActivity = (activity) => {
@@ -355,10 +367,15 @@ export function createDesktopSnapshotFactory({
             ?? turnReceipt?.clientUserMessageId
             ?? "",
         ).trim();
-        const directOrigin = message?.origin
-          ?? message?.messageOrigin;
         const displayIdentity = { provider: run.provider, threadId: run.threadId, clientUserMessageId };
         const displayReceipt = role === "user" ? receipts.forMessage?.(displayIdentity) ?? turnReceipt : null;
+        // The provider echo carries the origin only after the run enrichment
+        // settles. Until then the exact receipt of this message is the
+        // authoritative source, so the first frame already names its author and
+        // renders the body instead of the raw transport envelope.
+        const directOrigin = message?.origin
+          ?? message?.messageOrigin
+          ?? (role === "user" ? receiptUserOrigin(displayReceipt, displayIdentity) : null);
         const displayText = role === "user"
           ? receiptUserDisplay(displayReceipt, displayIdentity)?.text
             ?? userDisplayText(message.userDisplay, displayIdentity) ?? rawText
@@ -367,7 +384,9 @@ export function createDesktopSnapshotFactory({
           origin: directOrigin,
           clientUserMessageId,
         }) : null;
-        const origin = normalizeInterstreamOrigin(directOrigin);
+        const origin = role === "user"
+          ? confirmedInterstreamOrigin(displayText, { origin: directOrigin, clientUserMessageId })
+          : normalizeInterstreamOrigin(directOrigin);
         const text = role === "user"
           ? displayUserPrompt(interstream?.text ?? displayText)
           : rawText.trim();
@@ -406,7 +425,9 @@ export function createDesktopSnapshotFactory({
             : {}),
           role,
           text,
-          ...(message?.kind ? { kind: String(message.kind) } : {}),
+          ...(message?.kind || origin
+            ? { kind: message?.kind ? String(message.kind) : "interstream" }
+            : {}),
           ...(message?.agentThreadId ? { agentThreadId: String(message.agentThreadId) } : {}),
           ...(message?.model ? { model: String(message.model) } : {}),
           ...((interstreamOriginAuthor(origin) || String(message.author ?? "").trim())
@@ -439,6 +460,9 @@ export function createDesktopSnapshotFactory({
       }),
       progress: String(run.progressReasoning ?? ""),
       response: String(run.responseText ?? ""),
+      responseAttachments: Array.isArray(run.responseAttachments)
+        ? run.responseAttachments.map((attachment) => ({ ...attachment }))
+        : [],
       ...((run.responseAnnotationReferences ?? responseItem?.responseAnnotationReferences)?.length
         ? {
           responseAnnotationReferences: structuredClone(
@@ -527,7 +551,7 @@ export function createDesktopSnapshotFactory({
       }, { allowTextFallback: false }));
   }
 
-  function desktopTaskSnapshot(entry, { accountId = "", compactSnapshot = false } = {}) {
+  function desktopTaskSnapshot(entry, { accountId = "", compactSnapshot = false, computeUnread = true } = {}) {
     const displayTitle = taskDisplayTitle(entry);
     const task = {
       streamId: entry.streamId ?? null,
@@ -562,7 +586,8 @@ export function createDesktopSnapshotFactory({
       ? null
       : run;
     const unread = Boolean(
-      accountId
+      computeUnread
+      && accountId
       && lastMessage?.updatedAt
       && readState?.hasUnread?.({
         accountId,
@@ -623,6 +648,7 @@ export function createDesktopSnapshotFactory({
     knownVersion = "",
     compactSnapshot = false,
     snapshotProtocol = 3,
+    projectTask = null,
     conversationsVersion = "",
     workspacesVersion = "",
     boardTasksVersion = "",
@@ -695,7 +721,10 @@ export function createDesktopSnapshotFactory({
         running: false,
       }]);
     }
-    const taskSnapshots = entries.map((entry) => desktopTaskSnapshot(entry, { accountId, compactSnapshot }));
+    const taskSnapshots = entries.map((entry) => {
+      const task = desktopTaskSnapshot(entry, { accountId, compactSnapshot, computeUnread: !projectTask });
+      return projectTask ? projectTask(task) : task;
+    });
     snapshotTiming.taskProjectionMs = Math.round((monotonicNow() - phaseStartedAt) * 10) / 10;
     const selectedTaskSnapshot = taskSnapshots.find((task) => task.selected) ?? null;
     phaseStartedAt = monotonicNow();
@@ -803,6 +832,7 @@ export function createDesktopSnapshotFactory({
         streamCardGapEnabled: current.streamCardGapEnabled === true,
         pinnedWorkspaceStreams: current.pinnedWorkspaceStreams ?? {},
         quickMessages: current.quickMessages ?? { global: [], streams: {}, workspaces: {} },
+        quickMessageActionMode: current.quickMessageActionMode === "send" ? "send" : "insert",
         models: activeProvider === "codex"
           ? current.codexModels.map((model) => ({ value: model.value, label: model.label }))
           : claudeOptions,

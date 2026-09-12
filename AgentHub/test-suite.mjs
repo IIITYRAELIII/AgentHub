@@ -19,6 +19,8 @@ export const E2E_FILES = [
   "tests/e2e/agent-hub-server.claude.e2e.test.mjs",
   "tests/e2e/agent-hub-server.local-control.e2e.test.mjs",
   "tests/e2e/agent-hub-server.journal.e2e.test.mjs",
+  "tests/e2e/agent-hub-server.recording-contour.e2e.test.mjs",
+  "tests/e2e/test-contour-recording-refresh.e2e.test.mjs",
   // Измерено 2026-09-10: 1.4 с, 5 из 5 проверок пройдено. Дешёвая проверка
   // владения Thread и восстановления MCP-моста, ранее не выполнялась ни одной
   // группой. Стоимость обычного выпуска практически не меняется.
@@ -109,7 +111,7 @@ export async function runWindowsTestFile(file, {
 async function declaredFingerprint(file, cwd) {
   const manifest = JSON.parse(await readFile(path.join(ROOT, "tests/test-cache-inputs.json"), "utf8"));
   const key = path.relative(ROOT, path.resolve(cwd, file)).split(path.sep).join("/");
-  const declaration = manifest.files[key] ?? null;
+  const declaration = manifest.version === 2 ? manifest.files[key] ?? null : null;
   let browserFile = "";
   if (declaration?.browser) {
     if (process.platform === "win32") {

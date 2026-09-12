@@ -27,7 +27,7 @@ export function createRuntimeRestartWiring({
 
   function restartBlockingWorkCount() {
     return restartBlockingRuns().length
-      + backgroundJobs.size
+      + (backgroundJobs.activeSize ?? backgroundJobs.size)
       + streamMaintenance.activeCount();
   }
 

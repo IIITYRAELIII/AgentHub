@@ -313,7 +313,7 @@ test("production startup restores recovery before applying accepted snapshot evi
   }
 });
 
-test("production index/app/hub-client preserves exact mixed-attachment retry across reload", async () => {
+test("production index/app/hub-client preserves exact mixed-attachment retry across reload", { timeout: 15000 }, async () => {
   const browser = await launchBrowser();
   const page = await browser.newPage();
   const errors = [];
@@ -327,23 +327,25 @@ test("production index/app/hub-client preserves exact mixed-attachment retry acr
     await page.waitForFunction(() => (
       document.querySelector("[data-composer-input]")?.value === "Сохрани exact retry"
       && document.querySelectorAll("[data-attachments] [data-attachment-index]").length === 1
-    ));
+    ), null, { timeout: 5000 });
     const firstSend = (await bridgeCalls(page, "send-message")).at(-1);
     const firstUpload = (await bridgeCalls(page, "upload-attachment")).at(-1);
     assert.ok(firstSend?.params?.clientUserMessageId);
-    assert.equal(firstUpload.params.dataUrl, "data:image/png;base64,AQID");
+    assert.equal(firstUpload.params.size, 3);
     const persisted = await page.evaluate(() => JSON.parse(
       localStorage.getItem("agent-hub:composer-drafts:v1:vscode") ?? "[]",
     ));
     assert.equal(persisted[0].recoveryRequestId, firstSend.params.clientUserMessageId);
-    assert.equal(persisted[0].attachments[0].dataUrl, "data:image/png;base64,AQID");
+    assert.equal(persisted[0].attachments[0].dataUrl, undefined);
+    assert.equal(persisted[0].attachments[0].blobId, persisted[0].attachments[0].uploadId);
+    assert.equal(persisted[0].attachments[0].chunkHashes.length, 1);
     assert.equal(JSON.stringify(persisted).includes("fixture-upload"), false);
 
     await page.reload({ waitUntil: "load" });
     await page.waitForFunction(() => (
       document.querySelector("[data-composer-input]")?.value === "Сохрани exact retry"
       && document.querySelectorAll("[data-attachments] [data-attachment-index]").length === 1
-    ));
+    ), null, { timeout: 5000 });
     assert.equal((await bridgeCalls(page, "send-message")).length, 1);
     await page.evaluate(() => localStorage.setItem("fixture:send-mode", "accept"));
     await page.locator("[data-composer]").evaluate((form) => form.requestSubmit());
@@ -492,14 +494,14 @@ test("production attachment add and remove invalidate old recovery before late a
     await addPage.waitForFunction(() => document.querySelector("[data-composer-input]")?.value === "attachment add survives");
     const addRequestId = (await bridgeCalls(addPage, "send-message")).at(-1).params.clientUserMessageId;
     await addPage.evaluate(() => {
-      const readAsDataUrl = FileReader.prototype.readAsDataURL;
-      FileReader.prototype.readAsDataURL = function holdFileRead(file) {
-        window.__heldFileRead = { reader: this, file };
-      };
+      const original = window.AgentHubComposerFiles;
+      window.AgentHubComposerFiles = { ...original, prepare: (file, metadata) => new Promise((resolve, reject) => {
+        window.__heldFileRead = { file, metadata, resolve, reject };
+      }) };
       window.__releaseFileRead = () => {
         const held = window.__heldFileRead;
-        FileReader.prototype.readAsDataURL = readAsDataUrl;
-        readAsDataUrl.call(held.reader, held.file);
+        window.AgentHubComposerFiles = original;
+        original.prepare(held.file, held.metadata).then(held.resolve, held.reject);
       };
     });
     await addPage.locator("[data-file-input]").setInputFiles({
@@ -683,13 +685,16 @@ test("production over-limit recovery stays exact in memory and blocks managed re
   }
 });
 
-test("production attachment recovery beyond durable byte quota blocks managed reload", {
+test("production attachment recovery blocks managed reload when the attachment store cannot open", {
   timeout: 90_000,
 }, async () => {
   const browser = await launchBrowser();
   const page = await browser.newPage();
   try {
-    await openFixture(page);
+    // Size alone no longer decides durability: ordinary files are kept as Blobs
+    // since the chunked upload change. Here the attachment database fails to
+    // open, and the product treats that as a non-durable attachment.
+    await openFixture(page, { attachmentStorageOpenFailure: true });
     await submit(page, {
       text: "large attachment",
       attachment: {
@@ -709,6 +714,7 @@ test("production attachment recovery beyond durable byte quota blocks managed re
       localStorage.getItem("agent-hub:composer-drafts:v1:vscode") ?? "[]",
     ));
     assert.equal("recoveryRequestId" in persisted[0], false);
+    assert.equal(persisted[0].text, "large attachment");
     assert.equal(await page.evaluate(() => window.AgentHub.prepareForRuntimeReload()), false);
     assert.equal(await page.locator("[data-attachment-index]").count(), 1);
   } finally {
@@ -802,7 +808,7 @@ test("production receipt without streamId completes only one exact provider Thre
   }
 });
 
-test("production accepted send invalidates a held FileReader draft operation", {
+test("production accepted send invalidates a held Blob preparation draft operation", {
   timeout: 120_000,
 }, async () => {
   const browser = await launchBrowser();
@@ -810,14 +816,14 @@ test("production accepted send invalidates a held FileReader draft operation", {
   try {
     await openFixture(page);
     await page.evaluate(() => {
-      const original = FileReader.prototype.readAsDataURL;
-      FileReader.prototype.readAsDataURL = function hold(file) {
-        window.__heldSendRead = { reader: this, file };
-      };
+      const original = window.AgentHubComposerFiles;
+      window.AgentHubComposerFiles = { ...original, prepare: (file, metadata) => new Promise((resolve, reject) => {
+        window.__heldSendRead = { file, metadata, resolve, reject };
+      }) };
       window.__releaseSendRead = () => {
         const held = window.__heldSendRead;
-        FileReader.prototype.readAsDataURL = original;
-        original.call(held.reader, held.file);
+        window.AgentHubComposerFiles = original;
+        original.prepare(held.file, held.metadata).then(held.resolve, held.reject);
       };
       localStorage.setItem("fixture:send-mode", "accept");
     });
@@ -850,14 +856,14 @@ test("production attachment reads are Task-scoped, generation-fenced and latest-
     const overlap = await browser.newPage();
     await openFixture(overlap);
     await overlap.evaluate(() => {
-      const original = FileReader.prototype.readAsDataURL;
+      const original = window.AgentHubComposerFiles;
       window.__heldReads = [];
-      FileReader.prototype.readAsDataURL = function hold(file) {
-        window.__heldReads.push({ reader: this, file });
-      };
+      window.AgentHubComposerFiles = { ...original, prepare: (file, metadata) => new Promise((resolve, reject) => {
+        window.__heldReads.push({ file, metadata, resolve, reject });
+      }) };
       window.__releaseRead = (index) => {
         const held = window.__heldReads[index];
-        original.call(held.reader, held.file);
+        original.prepare(held.file, held.metadata).then(held.resolve, held.reject);
       };
     });
     await overlap.locator("[data-file-input]").setInputFiles({
@@ -878,14 +884,14 @@ test("production attachment reads are Task-scoped, generation-fenced and latest-
     const removed = await browser.newPage();
     await openFixture(removed);
     await removed.evaluate(() => {
-      const original = FileReader.prototype.readAsDataURL;
-      FileReader.prototype.readAsDataURL = function hold(file) {
-        window.__removedTaskRead = { reader: this, file };
+      const original = window.AgentHubComposerFiles;
+      window.AgentHubComposerFiles = { ...original, prepare: (file, metadata) => new Promise((resolve, reject) => {
+        window.__removedTaskRead = { file, metadata, resolve, reject };
+      }) };
+      window.__releaseRemovedTaskRead = () => {
+        const held = window.__removedTaskRead;
+        original.prepare(held.file, held.metadata).then(held.resolve, held.reject);
       };
-      window.__releaseRemovedTaskRead = () => original.call(
-        window.__removedTaskRead.reader,
-        window.__removedTaskRead.file,
-      );
     });
     await removed.locator("[data-file-input]").setInputFiles({
       name: "stale.png", mimeType: "image/png", buffer: Buffer.from([3]),
@@ -934,8 +940,12 @@ test("production refused attachment selections preserve the exact retry identity
   const browser = await launchBrowser();
   try {
     const scenarios = [
-      async (page) => page.locator("[data-file-input]").setInputFiles({
-        name: "too-large.bin", mimeType: "application/octet-stream", buffer: Buffer.alloc(20 * 1024 * 1024 + 1),
+      async (page) => page.evaluate(() => {
+        const file = new File([new Uint8Array([1])], "too-large.bin", { type: "application/octet-stream" });
+        Object.defineProperty(file, "size", { value: 128 * 1024 * 1024 + 1 });
+        const input = document.querySelector("[data-file-input]");
+        Object.defineProperty(input, "files", { configurable: true, value: [file] });
+        input.dispatchEvent(new Event("change", { bubbles: true }));
       }),
       async (page) => page.locator("[data-file-input]").setInputFiles({
         name: "empty.bin", mimeType: "application/octet-stream", buffer: Buffer.alloc(0),
@@ -1385,7 +1395,7 @@ test("production overlapping and duplicate annotation operations do not advance 
   }
 });
 
-test("production mixed FileReader failure preserves recovery revision and exact retry", {
+test("production mixed Blob preparation failure preserves recovery revision and exact retry", {
   timeout: 120_000,
 }, async () => {
   const browser = await launchBrowser();
@@ -1396,14 +1406,13 @@ test("production mixed FileReader failure preserves recovery revision and exact 
     await page.waitForFunction(() => document.querySelector("[data-composer-input]")?.value === "reader failure retry");
     const originalId = (await bridgeCalls(page, "send-message")).at(-1).params.clientUserMessageId;
     await page.evaluate(() => {
-      const original = FileReader.prototype.readAsDataURL;
-      FileReader.prototype.readAsDataURL = function controlledRead(file) {
+      const original = window.AgentHubComposerFiles;
+      window.AgentHubComposerFiles = { ...original, prepare: async (file, metadata) => {
         if (file.name === "broken.png") {
-          setTimeout(() => this.onerror?.(new ProgressEvent("error")), 0);
-          return;
+          throw new Error("Не удалось прочитать broken.png");
         }
-        original.call(this, file);
-      };
+        return original.prepare(file, metadata);
+      } };
     });
     await page.locator("[data-file-input]").setInputFiles([
       { name: "good.png", mimeType: "image/png", buffer: Buffer.from([1, 2, 3]) },
@@ -1585,7 +1594,7 @@ test("production Task deletion durably fences same-identity cold recreation", {
   }
 });
 
-test("production attachment boundary rejects unsafe names and accepts exact 20 MiB without crash", {
+test("production attachment boundary rejects unsafe names and accepts more than 20 MiB in parts", {
   timeout: 180_000,
 }, async () => {
   const browser = await launchBrowser();
@@ -1626,7 +1635,7 @@ test("production attachment boundary rejects unsafe names and accepts exact 20 M
     await unsafePage.close();
 
     const maximum = await browser.newPage();
-    const diagnostics = await openFixture(maximum);
+    const diagnostics = await openFixture(maximum, { chunkedUpload: true });
     await maximum.evaluate(() => {
       const transfer = new DataTransfer();
       transfer.items.add(new File(
@@ -1649,15 +1658,15 @@ test("production attachment boundary rejects unsafe names and accepts exact 20 M
       input.dispatchEvent(new Event("change", { bubbles: true }));
       localStorage.setItem("fixture:send-mode", "accept");
     });
-    await maximum.waitForTimeout(50);
-    assert.equal(await maximum.locator("[data-attachment-index]").count(), 1);
+    await maximum.waitForFunction(() => document.querySelectorAll("[data-attachment-index]").length === 2);
+    assert.equal(await maximum.locator("[data-attachment-index]").count(), 2);
     await maximum.locator("[data-composer]").evaluate((form) => form.requestSubmit());
     await maximum.waitForFunction(() => {
       const log = JSON.parse(localStorage.getItem("fixture:bridge-log") ?? "[]");
       return log.some((entry) => entry.action === "send-message");
     }, null, { timeout: 60_000 });
-    const upload = (await bridgeCalls(maximum, "upload-attachment")).at(-1);
-    assert.ok(upload.params.dataUrlLength > 20 * 1024 * 1024);
+    const uploads = await maximum.evaluate(() => JSON.parse(localStorage.getItem("fixture:upload-log") ?? "[]"));
+    assert.equal(uploads.filter(item => item.method === "PUT").length, 21);
     assert.equal(diagnostics.some((message) => /RangeError|Maximum call stack/iu.test(message)), false);
   } finally {
     await browser.close();

@@ -1,3 +1,4 @@
+import { assertCodexRolloutReadAllowed } from "../../infrastructure/filesystem/test-contour-rollout-policy.mjs";
 import { createReadStream } from "node:fs";
 import { open, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -154,6 +155,7 @@ export async function readCodexRolloutSession(transcriptPath, {
   maxLineBytes = DEFAULT_ROLLOUT_SESSION_LINE_BYTES,
   maxDurationMs = DEFAULT_ROLLOUT_SESSION_SCAN_MS,
 } = {}) {
+  assertCodexRolloutReadAllowed("readCodexRolloutSession");
   const byteLimit = Math.max(1, Number(maxBytes) || DEFAULT_ROLLOUT_SESSION_SCAN_BYTES);
   const lineLimit = Math.max(1, Number(maxLines) || DEFAULT_ROLLOUT_SESSION_SCAN_LINES);
   const lineByteLimit = Math.max(1, Number(maxLineBytes) || DEFAULT_ROLLOUT_SESSION_LINE_BYTES);
@@ -772,6 +774,7 @@ export async function readCodexRolloutTail(transcriptPath, {
   openImpl = open,
   maxBytes = DEFAULT_ROLLOUT_TAIL_BYTES,
 } = {}) {
+  assertCodexRolloutReadAllowed("readCodexRolloutTail");
   const handle = await openImpl(transcriptPath, "r");
   try {
     const info = await handle.stat();
@@ -794,6 +797,7 @@ export async function findCodexTurnStartOffsetFromTail(transcriptPath, turnId, {
   openImpl = open,
   chunkBytes = DEFAULT_TURN_START_SEARCH_BYTES,
 } = {}) {
+  assertCodexRolloutReadAllowed("findCodexTurnStartOffsetFromTail");
   const requestedTurnId = String(turnId ?? "").trim();
   if (!requestedTurnId) throw new Error("Codex turn id is required");
   const handle = await openImpl(transcriptPath, "r");
@@ -876,6 +880,7 @@ export async function readCodexRecentTerminalTurns(transcriptPath, {
   readTailImpl = readCodexRolloutTail,
   maxBytes = DEFAULT_TERMINAL_TAIL_BYTES,
 } = {}) {
+  assertCodexRolloutReadAllowed("readCodexRecentTerminalTurns");
   return codexRecentTerminalTurnsFromJsonl(
     await readTailImpl(transcriptPath, { maxBytes }),
   );
@@ -941,6 +946,7 @@ export async function scanCodexTerminalEventsFromOffset(transcriptPath, {
   initialActiveTurns = [],
   createReadStreamImpl = createReadStream,
 } = {}) {
+  assertCodexRolloutReadAllowed("scanCodexTerminalEventsFromOffset");
   const terminals = new Map();
   const activeTurns = new Map((initialActiveTurns ?? []).flatMap((turn) => {
     const turnId = String(turn?.turnId ?? "").trim();
@@ -1025,6 +1031,7 @@ export async function scanCodexTerminalEventsFromOffset(transcriptPath, {
 export async function scanCodexTurnJsonl(transcriptPath, turnId, {
   createReadStreamImpl = createReadStream,
 } = {}) {
+  assertCodexRolloutReadAllowed("scanCodexTurnJsonl");
   const accumulator = createTurnAccumulator(turnId);
   const input = createReadStreamImpl(transcriptPath, { encoding: "utf8" });
   const lines = createInterface({ input, crlfDelay: Infinity });
@@ -1154,6 +1161,7 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
   resumeState = null,
   createReadStreamImpl = createReadStream,
 } = {}) {
+  assertCodexRolloutReadAllowed("scanCodexHistoricalRollout");
   const restoredTurns = (resumeState?.turns ?? [])
     .map(restoreHistoricalTurn)
     .filter(Boolean);
@@ -1455,6 +1463,7 @@ export async function readCodexSubagentSpawn(transcriptPath, childThreadId, {
   readTailImpl = readCodexRolloutTail,
   maxBytes = DEFAULT_ROLLOUT_TAIL_BYTES,
 } = {}) {
+  assertCodexRolloutReadAllowed("readCodexSubagentSpawn");
   return codexSubagentSpawnFromJsonl(
     await readTailImpl(transcriptPath, { maxBytes }),
     childThreadId,
@@ -1465,6 +1474,7 @@ export async function scanCodexTurnPricingMetadata(transcriptPath, turnIds, {
   createReadStreamImpl = createReadStream,
   signal,
 } = {}) {
+  assertCodexRolloutReadAllowed("scanCodexTurnPricingMetadata");
   const requested = new Set(
     [...(turnIds ?? [])].map((value) => String(value ?? "").trim()).filter(Boolean),
   );
@@ -1555,6 +1565,7 @@ export async function discoverCodexRollouts({
   sessionCache = readSession === readCodexRolloutSession ? rolloutSessionCache : null,
   sessionCacheLimit = DEFAULT_ROLLOUT_SESSION_CACHE_LIMIT,
 } = {}) {
+  assertCodexRolloutReadAllowed("discoverCodexRollouts");
   const files = [];
   const visit = async (directory) => {
     let entries;
@@ -1593,6 +1604,7 @@ export async function discoverCodexRollouts({
 }
 
 export async function discoverCodexSubagentRollouts(options = {}) {
+  assertCodexRolloutReadAllowed("discoverCodexSubagentRollouts");
   return (await discoverCodexRollouts(options))
     .filter((session) => session.parentThreadId);
 }
@@ -1610,6 +1622,7 @@ export async function findCodexRolloutPath(threadId, startedAt, {
   codexHome = process.env.CODEX_HOME || path.join(homedir(), ".codex"),
   readdirImpl = readdir,
 } = {}) {
+  assertCodexRolloutReadAllowed("findCodexRolloutPath");
   const normalizedThreadId = String(threadId ?? "").trim();
   const timestamp = Date.parse(String(startedAt ?? ""));
   if (!normalizedThreadId) return "";
@@ -1671,6 +1684,7 @@ export async function scanCodexTurnJsonlIncrementally(transcriptPath, turnId, {
   retryDelayMs = 40,
   signal,
 } = {}) {
+  assertCodexRolloutReadAllowed("scanCodexTurnJsonlIncrementally");
   signal?.throwIfAborted();
   const accumulator = createTurnAccumulator(turnId);
   let position;
@@ -1712,6 +1726,7 @@ export async function readCodexTurnUsage(transcriptPath, turnId, {
   retryDelayMs = 40,
   signal,
 } = {}) {
+  assertCodexRolloutReadAllowed("readCodexTurnUsage");
   if (!readFileImpl && !readTailImpl && !scanImpl) {
     return scanIncrementalImpl(transcriptPath, turnId, { attempts, retryDelayMs, ...(signal ? { signal } : {}) });
   }

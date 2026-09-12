@@ -163,8 +163,8 @@
   function recoveryAttachments(values, {
     maxCount = 8,
     maxDataUrlCharacters = Number.POSITIVE_INFINITY,
-    maxBytes = DEFAULT_MAX_ATTACHMENT_BYTES,
-    maxTotalBytes = DEFAULT_MAX_ATTACHMENT_BYTES,
+    maxBytes = 256 * 1024 * 1024,
+    maxTotalBytes = 512 * 1024 * 1024,
   } = {}) {
     if (!Array.isArray(values) || values.length > maxCount) return null;
     let characters = 0;
@@ -174,6 +174,15 @@
       const metadata = safeAttachmentMetadata(attachment, { maxBytes });
       if (!metadata) return null;
       const { name, type, size } = metadata;
+      bytes += size;
+      if (bytes > maxTotalBytes) return null;
+      if (attachment?.blobId) {
+        const file = window.AgentHubComposerFiles?.resolve(attachment);
+        if (!file) return null;
+        result.push({ ...window.AgentHubComposerFiles.serialized(file), dataUrl: file.dataUrl });
+        continue;
+      }
+      if (size > DEFAULT_MAX_ATTACHMENT_BYTES) return null;
       const dataUrl = String(attachment?.dataUrl ?? "");
       characters += dataUrl.length;
       if (characters > maxDataUrlCharacters) return null;
@@ -181,8 +190,6 @@
       if (!dataUrl.startsWith(prefix)) return null;
       const body = dataUrl.slice(prefix.length);
       if (canonicalBase64Size(body) !== size) return null;
-      bytes += size;
-      if (bytes > maxTotalBytes) return null;
       result.push({
         name,
         type,
@@ -222,7 +229,7 @@
     }
     if (referenceJson.length > 16_384 || annotationJson.length > 500_000) return "";
     const hash = createSha256();
-    fingerprintField(hash, "version", "2");
+    fingerprintField(hash, "version", canonicalAttachments.some((item) => item.blobId) ? "3" : "2");
     fingerprintField(hash, "task", requestId(taskId));
     fingerprintField(hash, "text", String(rawText ?? text ?? ""));
     fingerprintField(hash, "references", referenceJson);
@@ -231,7 +238,8 @@
       fingerprintField(hash, "attachment-name", attachment.name);
       fingerprintField(hash, "attachment-type", attachment.type);
       fingerprintField(hash, "attachment-size", attachment.size);
-      fingerprintField(hash, "attachment-data", attachment.dataUrl);
+      fingerprintField(hash, "attachment-data", attachment.blobId
+        ? JSON.stringify(window.AgentHubComposerFiles.serialized(attachment)) : attachment.dataUrl);
     }
     return `sha256:${hash.digestHex()}`;
   }

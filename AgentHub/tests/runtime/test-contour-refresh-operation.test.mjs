@@ -17,9 +17,11 @@ import {
   transitionTestContourOperation,
 } from "../../src/runtime/test-contour-operation-state.mjs";
 import {
+  readTestContourStatus,
   readyTestContourHealth,
   startTestContour,
   TEST_CONTOUR_SPARK_MODEL,
+  testContourSmokeAgentPolicy,
   testContourPaths,
   verifyTestContour,
 } from "../../src/runtime/test-contour-manager.mjs";
@@ -578,6 +580,53 @@ test("readiness rejects a healthy server from another contour identity", async (
   }
 });
 
+test("status distinguishes an exact operation health mismatch from a stopped runtime", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-readiness-reason-"));
+  const server = await healthServer();
+  try {
+    const paths = await writeRunningContour(root, server, { headCommit: "head-readiness" });
+    const state = JSON.parse(await readFile(paths.stateFile, "utf8"));
+    server.testContourIdentity = {
+      ...server.testContourIdentity,
+      operationId: "foreign-operation",
+    };
+
+    const mismatch = await readTestContourStatus({
+      root,
+      expectedOperationId: state.operationId,
+      expectedHeadCommit: "head-readiness",
+    });
+    assert.equal(mismatch.readback.outcome, "exact");
+    assert.equal(mismatch.running, false);
+    assert.equal(mismatch.status, "not-ready");
+    assert.deepEqual(mismatch.readiness, {
+      ready: false,
+      retryable: false,
+      reason: "health-operation-mismatch",
+    });
+
+    await rm(paths.stateFile, { force: true });
+    const stopped = await readTestContourStatus({
+      root,
+      expectedOperationId: state.operationId,
+      expectedHeadCommit: "head-readiness",
+    });
+    assert.equal(stopped.readback.outcome, "exact");
+    assert.equal(stopped.status, "stopped");
+    assert.deepEqual(stopped.readiness, {
+      ready: false,
+      retryable: false,
+      reason: "state-missing",
+    });
+  } finally {
+    await closeServer(server);
+    await Promise.all([
+      rm(root, { recursive: true, force: true }),
+      rm(`${root}-operation.lock`, { recursive: true, force: true }),
+    ]);
+  }
+});
+
 test("foreign healthy process cannot satisfy readiness with a forged root-local lock", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-foreign-health-"));
   const spawnHealth = (identity) => {
@@ -671,6 +720,42 @@ test("verify preserves the requested root and custom port through refresh and sm
     assert.equal(calls[0].options.port, port);
     assert.equal(calls[0].options.sourceKind, "dev");
     assert.equal(calls[1].options.url, `http://127.0.0.1:${port}/`);
+  } finally {
+    await Promise.all([
+      rm(root, { recursive: true, force: true }),
+      rm(`${root}-operation.lock`, { recursive: true, force: true }),
+      rm(sourceRoot, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("verify reports the recording agent probe as skipped and leaves its journal untouched", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-recording-verify-root-"));
+  const sourceRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-recording-verify-source-"));
+  let smokeOptions = null;
+  try {
+    assert.deepEqual(testContourSmokeAgentPolicy({ withAgent: true }), {
+      withAgent: true,
+      agentProbeSkipped: null,
+    });
+    const result = await verifyTestContour({
+      root,
+      sourceRoot,
+      withAgent: true,
+      startContour: async () => ({
+        url: "http://127.0.0.1:18879/",
+        model: TEST_CONTOUR_SPARK_MODEL,
+        startedAt: new Date().toISOString(),
+      }),
+      readRecordingConfiguration: async () => ({ root: path.join(root, "recording") }),
+      smokeRunner: async (options) => {
+        smokeOptions = options;
+        return { ok: true, withAgent: options.withAgent };
+      },
+    });
+    assert.equal(smokeOptions.withAgent, false);
+    assert.equal(result.journal, null);
+    assert.equal(result.agentProbeSkipped, "recording-contour-external-effects-denied");
   } finally {
     await Promise.all([
       rm(root, { recursive: true, force: true }),

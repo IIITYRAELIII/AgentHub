@@ -15,9 +15,13 @@ export class TaskIdentityResolver {
     contextualCallback,
     samePath,
     contextNonce = randomUUID(),
+    canonicalProjectRoot = null,
   }) {
     this.selectionStore = selectionStore;
-    this.projects = projects;
+    this.canonicalProjectRoot = canonicalProjectRoot ?? ((value) => value);
+    this.projects = canonicalProjectRoot
+      ? projects.map((project) => ({ ...project, path: canonicalProjectRoot(project.path) }))
+      : projects;
     this.findContainingProject = findContainingProject;
     this.catalogEntries = catalogEntries;
     this.catalogEntryIsSelected = catalogEntryIsSelected;
@@ -31,7 +35,7 @@ export class TaskIdentityResolver {
   }
 
   findProject(projectRoot) {
-    return this.findContainingProject(this.projects, projectRoot);
+    return this.findContainingProject(this.projects, this.canonicalProjectRoot(projectRoot));
   }
 
   activeProject() {
@@ -42,7 +46,7 @@ export class TaskIdentityResolver {
     return {
       streamId: this.selectionStore.streamId,
       provider: this.selectionStore.activeProvider,
-      projectRoot: this.selectionStore.activeProjectRoot,
+      projectRoot: this.canonicalProjectRoot(this.selectionStore.activeProjectRoot),
       threadId: this.selectionStore.threadId,
     };
   }

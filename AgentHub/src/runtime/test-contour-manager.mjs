@@ -1,4 +1,8 @@
+import { prepareRecordingContourEnvironment, recordingContourEnvironment } from "../infrastructure/filesystem/test-contour-recording-environment.mjs";
 import { randomUUID } from "node:crypto";
+import { prepareTestContourRecordingConfiguration, readTestContourRecordingConfiguration } from "../infrastructure/filesystem/test-contour-recording-configuration.mjs";
+import { recordingContourProfile } from "../infrastructure/filesystem/test-contour-recording-profile.mjs";
+import { activateContourAdoption, readContourAdoption, rollbackContourAdoption, snapshotContourAdoptionControl, stageContourAdoption, writeContourAdoption } from "./test-contour-cohort-adoption.mjs";
 import { spawn } from "node:child_process";
 import { closeSync, existsSync, openSync } from "node:fs";
 import {
@@ -11,6 +15,7 @@ import {
 } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import process from "node:process";
 import { DatabaseSync } from "node:sqlite";
 
@@ -73,6 +78,7 @@ export const TEST_CONTOUR_COMPONENT = "testContour";
 export const TEST_CONTOUR_DEV_SOURCE = "dev";
 export const TEST_CONTOUR_RELEASE_CANDIDATE_SOURCE = "release-candidate";
 export const TEST_CONTOUR_PORT = 8877;
+export const RECORDING_COHORT_MANAGER_VERSION = 1;
 export const TEST_CONTOUR_WEB_HOST = "localhost";
 export const PLAYWRIGHT_CORE_VERSION = "1.62.1";
 const MARKER_FILE = ".agent-hub-test-contour.json";
@@ -497,6 +503,7 @@ function runProcess(command, args, { cwd, env = {}, stdio = "inherit" } = {}) {
 export async function installTestContour({
   root = defaultTestContourRoot(),
   run = runProcess,
+  recordingSourceConfig = null,
 } = {}) {
   const isolatedRoot = assertIsolatedTestContourRoot(root);
   const paths = testContourPaths(isolatedRoot);
@@ -506,6 +513,7 @@ export async function installTestContour({
     mkdir(paths.artifactsDirectory, { recursive: true }),
   ]);
   const marker = await ensureMarker(isolatedRoot);
+  if (recordingSourceConfig) await prepareTestContourRecordingConfiguration({ root: isolatedRoot, sourceConfig: recordingSourceConfig });
   await writeFile(
     path.join(paths.projectRoot, "README.md"),
     "# Agent Hub Test\n\nИзолированная рабочая область для проверок Agent Hub.\n",
@@ -550,6 +558,8 @@ export function testContourConfig({
   port = TEST_CONTOUR_PORT,
   model = TEST_CONTOUR_MODEL,
   realCodexExecutable = "codex",
+  recording = null,
+  sourceRoot = path.resolve(import.meta.dirname, "../.."),
 } = {}) {
   requireTestContourModel(model);
   const parsedTelegramUrl = new URL(String(telegramApiBaseUrl));
@@ -571,8 +581,9 @@ export function testContourConfig({
     allowedChatIds: [CHAT_ID],
     privateChatsOnly: true,
     provider: "codex",
-    projectRoot: paths.projectRoot,
-    projects: [{ name: "Test Contour", path: paths.projectRoot }],
+    projectRoot: recording?.projectRoot ?? paths.projectRoot,
+    projects: recording?.projects ?? [{ name: "Test Contour", path: paths.projectRoot }],
+    ...(recording ? { testContourRecording: { schemaVersion: 1, root: recording.root } } : {}),
     dataDir: paths.dataDir,
     showProjectButton: false,
     showTaskProject: false,
@@ -589,7 +600,11 @@ export function testContourConfig({
     codexCollaborationMode: "default",
     codexModels: TEST_CONTOUR_MODELS.map((item) => ({ ...item })),
     codexExecutable: process.execPath,
-    codexExecutableArgs: [
+    codexExecutableAutoUpdate: false,
+    codexExecutableArgs: recording ? [
+      path.join(sourceRoot, "src", "providers", "recording-contour-codex-cli.mjs"),
+      "--recording-root", recording.root,
+    ] : [
       paths.codexMultiplexerExecutable,
       "--real-executable",
       realCodexExecutable,
@@ -634,6 +649,7 @@ export function testContourEnvironment({
   port,
   runtimeNonce,
   environment = process.env,
+  recording = null,
 } = {}) {
   const normalizedReleaseId = String(releaseId ?? "").trim();
   const normalizedContourId = String(contourId ?? "").trim();
@@ -647,7 +663,7 @@ export function testContourEnvironment({
       || !Number.isInteger(normalizedPort) || normalizedPort <= 0) {
     throw new Error("Test Contour runtime identity requires contourId, port and nonce");
   }
-  const result = { ...environment };
+  const result = recording ? recordingContourEnvironment(recording.root, environment) : { ...environment };
   for (const key of [
     "TELEGRAM_BOT_TOKEN",
     "TELEGRAM_API_BASE_URL",
@@ -657,7 +673,9 @@ export function testContourEnvironment({
     "AGENT_HUB_PROFILE",
     "CODEX_EXECUTABLE",
     "CODEX_EXECUTABLE_ARGS",
+    "AGENT_HUB_RECORDING_PROVIDER_ROOT",
   ]) delete result[key];
+  if (recording) delete result.CODEX_PROJECT_ROOT;
   return {
     ...result,
     AGENT_HUB_CONFIG: paths.configFile,
@@ -673,8 +691,8 @@ export function testContourEnvironment({
     TELEGRAM_API_BASE_URL: telegramApiBaseUrl,
     AI_PROVIDER: "codex",
     CODEX_MODEL: model,
-    CODEX_HOME: paths.codexHome,
-    CODEX_PROJECT_ROOT: paths.projectRoot,
+    CODEX_HOME: recording ? result.CODEX_HOME : paths.codexHome,
+    ...(recording ? { AGENT_HUB_RECORDING_PROVIDER_ROOT: recording.root } : { CODEX_PROJECT_ROOT: paths.projectRoot }),
     CODEX_SANDBOX_MODE: "workspace-write",
     SENTRY_DSN: "",
     SENTRY_ENVIRONMENT: "test-contour",
@@ -824,7 +842,11 @@ export async function prepareTestContourCandidate({
   const deployed = await deploy({
     sourceRoot: candidateSourceRoot,
     runtimeRoot: isolatedRoot,
-    beforePointerCommit: ({ releaseRoot }) => markTestContourWebApp(releaseRoot),
+    beforeManifest: async ({ stagingRoot }) => {
+      await revalidateReleaseSource();
+      if (operation) await assertTestContourOperationOwner(isolatedRoot, operation);
+      await markTestContourWebApp(stagingRoot);
+    },
     // A prepared candidate is not active. The pointer is committed only after
     // its exact manager/runtime pair has reported ready.
     writePointer: async () => {},
@@ -928,33 +950,74 @@ async function waitFor(operation, description, timeoutMs = 120_000) {
   throw new Error(`Timeout waiting for ${description}: ${lastError?.message ?? "not ready"}`);
 }
 
-export async function readyTestContourHealth(port, {
+function unavailableHealth(reason, { retryable = true } = {}) {
+  return {
+    health: null,
+    readiness: { ready: false, retryable, reason },
+  };
+}
+
+async function inspectReadyTestContourHealth(port, {
   root = defaultTestContourRoot(),
   requireFakeQueue = false,
   expectedIdentity = null,
+  timeoutMs = 2_000,
 } = {}) {
   const baseUrl = `http://127.0.0.1:${port}`;
-  const response = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(2_000) });
-  if (!response.ok) return null;
-  const body = await response.json();
-  if (body?.ok !== true || body?.live !== true || body?.ready !== true) return null;
+  let response;
+  try {
+    response = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(Math.max(1, timeoutMs)) });
+  } catch {
+    return unavailableHealth("health-request-failed");
+  }
+  if (!response.ok) return unavailableHealth("health-http-status");
+  let body;
+  try {
+    body = await response.json();
+  } catch {
+    return unavailableHealth("health-invalid-response");
+  }
+  if (body?.ok !== true || body?.live !== true || body?.ready !== true) {
+    return unavailableHealth("health-not-ready");
+  }
   if (expectedIdentity) {
     const served = body?.testContourRuntime;
     const lock = await readJson(path.join(testContourPaths(root).dataDir, "bot.lock"));
-    if (!served
-        || served.contourId !== expectedIdentity.contourId
-        || served.releaseId !== expectedIdentity.releaseId
-        || (served.operationId ?? null) !== (expectedIdentity.operationId ?? null)
-        || served.model !== expectedIdentity.model
-        || served.runtimeNonce !== expectedIdentity.runtimeNonce
-        || Number(served.pid) !== Number(expectedIdentity.runtimePid)
-        || Number(served.expectedPort) !== Number(expectedIdentity.port)
-        || Number(served.actualPort) !== Number(port)
-        || Number(lock?.pid) !== Number(expectedIdentity.runtimePid)
-        || lock?.releaseId !== expectedIdentity.releaseId
-        || lock?.ready !== true) return null;
+    if (!served) return unavailableHealth("health-runtime-identity-missing", { retryable: false });
+    if (served.contourId !== expectedIdentity.contourId) {
+      return unavailableHealth("health-contour-mismatch", { retryable: false });
+    }
+    if (served.releaseId !== expectedIdentity.releaseId) {
+      return unavailableHealth("health-release-mismatch", { retryable: false });
+    }
+    if ((served.operationId ?? null) !== (expectedIdentity.operationId ?? null)) {
+      return unavailableHealth("health-operation-mismatch", { retryable: false });
+    }
+    if (served.model !== expectedIdentity.model) {
+      return unavailableHealth("health-model-mismatch", { retryable: false });
+    }
+    if (served.runtimeNonce !== expectedIdentity.runtimeNonce) {
+      return unavailableHealth("health-runtime-nonce-mismatch", { retryable: false });
+    }
+    if (Number(served.pid) !== Number(expectedIdentity.runtimePid)) {
+      return unavailableHealth("health-runtime-pid-mismatch", { retryable: false });
+    }
+    if (Number(served.expectedPort) !== Number(expectedIdentity.port)
+        || Number(served.actualPort) !== Number(port)) {
+      return unavailableHealth("health-port-mismatch", { retryable: false });
+    }
+    if (!lock) return unavailableHealth("health-lock-missing");
+    if (Number(lock.pid) !== Number(expectedIdentity.runtimePid)) {
+      return unavailableHealth("health-lock-pid-mismatch", { retryable: false });
+    }
+    if (lock.releaseId !== expectedIdentity.releaseId) {
+      return unavailableHealth("health-lock-release-mismatch", { retryable: false });
+    }
+    if (lock.ready !== true) return unavailableHealth("health-lock-not-ready");
   }
-  if (!requireFakeQueue) return body;
+  if (!requireFakeQueue) {
+    return { health: body, readiness: { ready: true, retryable: false, reason: "ready" } };
+  }
   const paths = testContourPaths(root);
   const fakeState = await readJson(paths.fakeCodexStateFile, {});
   const recovery = fakeState?.hubRecovery ?? { status: "missing" };
@@ -962,13 +1025,26 @@ export async function readyTestContourHealth(port, {
   if (recovery.status !== "ready" || queue.status !== "ready") {
     throw new Error(`Fake Codex queue recovery is ${queue.status}: ${JSON.stringify({ recovery, queue })}`);
   }
-  return {
+  const health = {
     ...body,
     testContour: {
       fakeCodexRecovery: recovery,
       fakeCodexQueue: queue,
     },
   };
+  return { health, readiness: { ready: true, retryable: false, reason: "ready" } };
+}
+
+export async function readyTestContourHealth(port, options = {}) {
+  return (await inspectReadyTestContourHealth(port, options)).health;
+}
+
+async function requireRecordingBoot(paths, recording) {
+  if (!recording) return;
+  await recordingContourProfile({ schemaVersion: 1, root: recording.root }, {
+    dataDir: paths.dataDir,
+    environment: { AGENT_HUB_TEST_CONTOUR: "1", AGENT_HUB_RUNTIME_ROOT: paths.root },
+  });
 }
 
 export async function serveTestContour({
@@ -979,17 +1055,34 @@ export async function serveTestContour({
   operationId = null,
   sourceBranch = null,
   sourceHeadCommit = null,
+  protectedRuntimeRoot = null,
   spawnImpl = spawn,
 } = {}) {
-  const isolatedRoot = assertIsolatedTestContourRoot(root);
+  // The recording manager has owned HOME/LOCALAPPDATA. Its parent supplies the
+  // original protected root before environment isolation, bound to this launch.
+  const recordingManagerRoot = process.env.AGENT_HUB_RECORDING_MANAGER_ROOT;
+  if (protectedRuntimeRoot || recordingManagerRoot) {
+    if (!path.isAbsolute(String(protectedRuntimeRoot ?? ""))
+        || !samePath(recordingManagerRoot ?? "", root)
+        || !samePath(process.env.AGENT_HUB_RECORDING_MANAGER_PRODUCTION_ROOT ?? "", protectedRuntimeRoot)) {
+      throw new Error("Recording manager protected runtime identity is missing or mismatched");
+    }
+  }
+  const isolatedRoot = assertIsolatedTestContourRoot(root, {
+    ...(protectedRuntimeRoot ? { productionRoot: protectedRuntimeRoot } : {}),
+  });
   const marker = await requireMarker(isolatedRoot);
   const paths = testContourPaths(isolatedRoot);
+  const recording = await readTestContourRecordingConfiguration(isolatedRoot);
+  if (protectedRuntimeRoot && !recording) throw new Error("Recording manager launch requires a prepared recording profile");
+  await requireRecordingBoot(paths, recording);
   const { releaseId, releaseRoot } = await currentRelease(isolatedRoot, requestedReleaseId);
-  await Promise.all([
+  if (!recording) await Promise.all([
     access(paths.fakeCodexExecutable),
     access(paths.codexMultiplexerExecutable),
   ]);
-  const realCodexExecutable = await resolveCodexExecutable();
+  if (recording) await prepareRecordingContourEnvironment(recording.root);
+  const realCodexExecutable = recording ? null : await resolveCodexExecutable();
   const telegram = new LoopbackTelegramApi({ userId: USER_ID, chatId: CHAT_ID });
   await telegram.start();
   await writeJson(paths.configFile, testContourConfig({
@@ -998,8 +1091,10 @@ export async function serveTestContour({
     port,
     model,
     realCodexExecutable,
+    recording,
+    sourceRoot: releaseRoot,
   }));
-  await rm(paths.stateFile, { force: true });
+  if (!recording) await rm(paths.stateFile, { force: true });
   const runtimeNonce = randomUUID();
   const runtime = spawnImpl(process.execPath, [path.join(releaseRoot, "agent-hub-main.mjs")], {
     cwd: releaseRoot,
@@ -1012,6 +1107,7 @@ export async function serveTestContour({
       operationId,
       port,
       runtimeNonce,
+      recording,
     }),
     stdio: "inherit",
     windowsHide: true,
@@ -1023,7 +1119,7 @@ export async function serveTestContour({
       if (runtimeExit) throw new Error(`candidate exited with ${runtimeExit.signal ?? runtimeExit.code}`);
       return readyTestContourHealth(port, {
         root: isolatedRoot,
-        requireFakeQueue: model === TEST_CONTOUR_FAKE_MODEL,
+        requireFakeQueue: !recording && model === TEST_CONTOUR_FAKE_MODEL,
         expectedIdentity: {
           contourId: marker.id,
           releaseId,
@@ -1091,6 +1187,7 @@ export async function readTestContourStatus({
   root = defaultTestContourRoot(),
   expectedOperationId = null,
   expectedHeadCommit = null,
+  healthTimeoutMs = 2_000,
 } = {}) {
   const paths = testContourPaths(root);
   const [state, source, operationDocument] = await Promise.all([
@@ -1106,7 +1203,10 @@ export async function readTestContourStatus({
     ? { ...source, ...state.source }
     : source;
   const planned = operationDocument.current?.status === "running";
-  if (!state || !processIsAlive(state.managerPid) || !processIsAlive(state.runtimePid)) {
+  const managerAlive = Boolean(state) && processIsAlive(state.managerPid);
+  const runtimeAlive = Boolean(state) && processIsAlive(state.runtimePid);
+  if (!state || !managerAlive || !runtimeAlive) {
+    const reason = !state ? "state-missing" : (!managerAlive ? "manager-stopped" : "runtime-stopped");
     return {
       running: false,
       root: paths.root,
@@ -1116,11 +1216,14 @@ export async function readTestContourStatus({
       planned,
       operation: operationReadback.current,
       readback: operationReadback,
+      readiness: { ready: false, retryable: false, reason },
     };
   }
-  const health = await readyTestContourHealth(state.port, {
+  const recording = await readTestContourRecordingConfiguration(root);
+  await requireRecordingBoot(paths, recording);
+  const inspection = await inspectReadyTestContourHealth(state.port, {
     root: paths.root,
-    requireFakeQueue: state.model === TEST_CONTOUR_FAKE_MODEL,
+    requireFakeQueue: !recording && state.model === TEST_CONTOUR_FAKE_MODEL,
     expectedIdentity: state.contourId && state.releaseId ? {
       contourId: state.contourId,
       releaseId: state.releaseId,
@@ -1130,7 +1233,9 @@ export async function readTestContourStatus({
       runtimeNonce: state.runtimeNonce,
       runtimePid: state.runtimePid,
     } : null,
-  }).catch(() => null);
+    timeoutMs: healthTimeoutMs,
+  }).catch(() => unavailableHealth("health-check-failed"));
+  const health = inspection.health;
   return {
     running: Boolean(health),
     root: paths.root,
@@ -1141,6 +1246,7 @@ export async function readTestContourStatus({
     planned,
     operation: operationReadback.current,
     readback: operationReadback,
+    readiness: inspection.readiness,
   };
 }
 
@@ -1278,6 +1384,11 @@ async function cloneProductionDataToTestContourUnlocked({
 } = {}) {
   const isolatedRoot = assertIsolatedTestContourRoot(root, { productionRoot });
   await requireMarker(isolatedRoot);
+  if (await readTestContourRecordingConfiguration(isolatedRoot)) {
+    throw Object.assign(new Error("Recording cohorts require fresh coherent preparation; legacy clone/reset is forbidden"), {
+      code: "CONTOUR_RECORDING_REFRESH_REQUIRES_COHORT",
+    });
+  }
   await stopTestContourUnlocked({ root: isolatedRoot });
   const paths = testContourPaths(isolatedRoot);
   const production = runtimeLayout(productionRoot);
@@ -1343,14 +1454,22 @@ async function launchTestContourCandidate({
 } = {}) {
   const paths = testContourPaths(root);
   const candidateSourceRoot = candidate.sourceRoot;
-  await prepareTestContourCodexProviders({ root, sourceRoot: candidateSourceRoot });
-  await prepareTestContourCodexHome(paths);
-  await alignTestContourStreamModel({
-    databaseFile: path.join(paths.dataDir, "journal.sqlite"),
-    model,
-  });
-  await reconcileTestContourFakeCodexState({ root, model });
-  await rm(paths.stateFile, { force: true });
+  const recording = await readTestContourRecordingConfiguration(root);
+  await requireRecordingBoot(paths, recording);
+  if (recording) entryFile = await recordingManagerEntry(candidateSourceRoot);
+  if (!recording) {
+    await prepareTestContourCodexProviders({ root, sourceRoot: candidateSourceRoot });
+    await prepareTestContourCodexHome(paths);
+    await alignTestContourStreamModel({
+      databaseFile: path.join(paths.dataDir, "journal.sqlite"),
+      model,
+    });
+    await reconcileTestContourFakeCodexState({ root, model });
+    await rm(paths.stateFile, { force: true });
+  }
+  const managerEnvironment = recording ? await prepareRecordingContourEnvironment(recording.root) : null;
+  const protectedRuntimeRoot = defaultRuntimeRoot();
+  if (recording) assertIsolatedTestContourRoot(root, { productionRoot: protectedRuntimeRoot, sourceRoot: candidateSourceRoot });
   const stdout = openSync(paths.stdoutFile, "a");
   const stderr = openSync(paths.stderrFile, "a");
   let manager;
@@ -1370,8 +1489,13 @@ async function launchTestContourCandidate({
     if (operation?.operationId) args.push("--operation-id", operation.operationId);
     if (candidate.branch) args.push("--source-branch", candidate.branch);
     if (candidate.headCommit) args.push("--source-head", candidate.headCommit);
+    if (recording) args.push("--protected-runtime-root", protectedRuntimeRoot);
     manager = spawnManager(process.execPath, args, {
       cwd: candidateSourceRoot,
+      ...(managerEnvironment ? { env: { ...managerEnvironment,
+        AGENT_HUB_RECORDING_MANAGER_ROOT: root,
+        AGENT_HUB_RECORDING_MANAGER_PRODUCTION_ROOT: protectedRuntimeRoot,
+      } } : {}),
       detached: true,
       stdio: ["ignore", stdout, stderr],
       windowsHide: true,
@@ -1391,6 +1515,14 @@ async function launchTestContourCandidate({
     }
     return null;
   }, "Test Contour background startup");
+}
+
+async function recordingManagerEntry(sourceRoot) {
+  const entry = path.join(sourceRoot, "test-contour.mjs");
+  await access(entry);
+  const manager = await import(pathToFileURL(path.join(sourceRoot, "src/runtime/test-contour-manager.mjs")).href);
+  if (manager.RECORDING_COHORT_MANAGER_VERSION !== RECORDING_COHORT_MANAGER_VERSION) throw new Error("Candidate manager does not support the prepared recording cohort");
+  return entry;
 }
 
 async function recoverInterruptedTestContourRefresh(root) {
@@ -1452,7 +1584,10 @@ async function refreshTestContourUnlocked({
   stopRuntime = stopTestContourUnlocked,
   launchCandidate = launchTestContourCandidate,
   beforeCutover = async () => {},
+  adoption = null,
 } = {}) {
+  const recording = await readTestContourRecordingConfiguration(root);
+  if (recording) await requireRecordingBoot(testContourPaths(root), recording);
   await recoverInterruptedTestContourRefresh(root);
   const marker = await ensureMarker(root);
   const source = await resolveTestContourSource({
@@ -1509,6 +1644,7 @@ async function refreshTestContourUnlocked({
       model,
       validateReleaseSource,
     });
+    if (recording || adoption) await recordingManagerEntry(candidate.sourceRoot);
     const previousReleaseId = currentStatus.state?.releaseId
       ?? String((await readJson(runtimeLayout(root).currentFile, {}))?.current ?? "").trim()
       ?? null;
@@ -1522,6 +1658,10 @@ async function refreshTestContourUnlocked({
       },
     });
     await beforeCutover({ candidate, operation: visibleTestContourOperation(currentOperation), currentStatus });
+    if (adoption) {
+      await writeContourAdoption(root, adoption, { operationId: operation.operationId, releaseId: candidate.releaseId });
+      await snapshotContourAdoptionControl(root, adoption);
+    }
     await assertTestContourOperationOwner(root, operation);
     currentOperation = await transitionTestContourOperation(root, {
       operationId: operation.operationId,
@@ -1530,6 +1670,7 @@ async function refreshTestContourUnlocked({
     });
     await stopRuntime({ root });
     await assertTestContourOperationOwner(root, operation);
+    if (adoption) await activateContourAdoption(root, adoption);
     currentOperation = await transitionTestContourOperation(root, {
       operationId: operation.operationId,
       ownerToken: operation.ownerToken,
@@ -1583,6 +1724,7 @@ async function refreshTestContourUnlocked({
         runtime: { managerPid: state.managerPid, runtimePid: state.runtimePid },
       },
     });
+    if (adoption) await writeContourAdoption(root, adoption, { phase: "committed" });
     return {
       ...state,
       source: published.source,
@@ -1591,6 +1733,12 @@ async function refreshTestContourUnlocked({
       refreshOutcome: "refreshed",
     };
   } catch (error) {
+    // A launched candidate may already have changed its owned cohort. Preserve
+    // both generations on ambiguous failure; never silently discard that data.
+    if (adoption?.phase === "switching") {
+      await assertTestContourOperationOwner(root, operation);
+      await rollbackContourAdoption(root, adoption);
+    }
     await transitionTestContourOperation(root, {
       operationId: operation.operationId,
       ownerToken: operation.ownerToken,
@@ -1600,6 +1748,62 @@ async function refreshTestContourUnlocked({
     }).catch(() => null);
     throw error;
   }
+}
+
+async function recoverContourAdoptionUnlocked(root) {
+  const adoption = await readContourAdoption(root);
+  if (!adoption || ["staged", "committed", "rolled-back"].includes(adoption.phase)) return adoption;
+  // The lease serializes current callers, but an older installed manager may
+  // have completed a later refresh without understanding this adoption journal.
+  // A stale A must never stop or rename the live state of independent B.
+  const operationDocument = await readTestContourOperationDocument(root);
+  const current = operationDocument.current;
+  const marker = await requireMarker(root);
+  if (!adoption.operationId || current?.operationId !== adoption.operationId
+      || !current.target?.root || !samePath(current.target.root, root)
+      || !adoption.contourId || current.target.contourId !== adoption.contourId
+      || marker.id !== adoption.contourId) {
+    throw new Error("Recording adoption requires manual reconciliation: its operation identity was superseded; no process or cohort changed");
+  }
+  if (["stopping", "switching", "rolling-back"].includes(adoption.phase)) {
+    if (!["prepared", "stopping", "failed"].includes(current.phase)) throw new Error("Recording adoption requires manual reconciliation: prelaunch journal conflicts with current operation phase");
+    await stopTestContourUnlocked({ root });
+    const afterStop = await readTestContourOperationDocument(root);
+    if (afterStop.current?.operationId !== adoption.operationId
+        || afterStop.current?.ownerToken !== current.ownerToken
+        || !samePath(afterStop.current?.target?.root ?? "", root)
+        || afterStop.current?.target?.contourId !== adoption.contourId
+        || !["prepared", "stopping", "failed"].includes(afterStop.current?.phase)) throw new Error("Recording adoption operation changed before rollback; both cohorts retained");
+    return rollbackContourAdoption(root, adoption);
+  }
+  if (adoption.phase === "activated") {
+    await recoverInterruptedTestContourRefresh(root);
+    const document = await readTestContourOperationDocument(root);
+    const status = await readTestContourStatus({ root });
+    if (document.current?.operationId === adoption.operationId && document.current.status === "ready"
+        && status.status === "ready" && status.state?.operationId === adoption.operationId
+        && status.state?.releaseId === adoption.releaseId) {
+      return writeContourAdoption(root, adoption, { phase: "committed" });
+    }
+  }
+  throw new Error("Recording adoption requires manual reconciliation; old and candidate cohorts are preserved");
+}
+
+// One canonical root and the same operation lease as refresh. This is an
+// explicit migration, never an implicit clone/reset or a per-Task contour.
+export async function adoptRecordingTestContour({ root = defaultTestContourRoot(), preparedRoot,
+  sourceRoot = path.resolve(import.meta.dirname, "..", ".."), entryFile,
+  port = TEST_CONTOUR_PORT, model = TEST_CONTOUR_MODEL, ...dependencies } = {}) {
+  if (!preparedRoot || !path.isAbsolute(preparedRoot)) throw new Error("An explicit prepared cohort root is required");
+  if (dependencies.sourceKind && dependencies.sourceKind !== TEST_CONTOUR_DEV_SOURCE) throw new Error("Recording adoption accepts only dev");
+  const isolatedRoot = assertIsolatedTestContourRoot(root, { sourceRoot });
+  return withTestContourOperationLock(isolatedRoot, async () => {
+    await requireMarker(isolatedRoot);
+    await recoverContourAdoptionUnlocked(isolatedRoot);
+    const adoption = await stageContourAdoption({ root: isolatedRoot, preparedRoot });
+    return refreshTestContourUnlocked({ ...dependencies, root: isolatedRoot, sourceRoot, entryFile, port, model,
+      sourceKind: TEST_CONTOUR_DEV_SOURCE, forceFreshCandidate: true, adoption });
+  });
 }
 
 async function startTestContourUnlocked({
@@ -1613,6 +1817,7 @@ async function startTestContourUnlocked({
   ...dependencies
 } = {}) {
   const isolatedRoot = assertIsolatedTestContourRoot(root, { sourceRoot });
+  await recoverContourAdoptionUnlocked(isolatedRoot);
   if (refresh) {
     return refreshTestContourUnlocked({
       root: isolatedRoot,
@@ -1703,6 +1908,16 @@ export async function openTestContour({ root = defaultTestContourRoot(), spawnIm
   return { opened: true, url };
 }
 
+export function testContourSmokeAgentPolicy({ withAgent = true, recording = null } = {}) {
+  if (withAgent && recording) {
+    return {
+      withAgent: false,
+      agentProbeSkipped: "recording-contour-external-effects-denied",
+    };
+  }
+  return { withAgent: Boolean(withAgent), agentProbeSkipped: null };
+}
+
 async function verifyTestContourUnlocked({
   root = defaultTestContourRoot(),
   entryFile,
@@ -1713,6 +1928,7 @@ async function verifyTestContourUnlocked({
   port = TEST_CONTOUR_PORT,
   startContour = startTestContourUnlocked,
   smokeRunner = null,
+  readRecordingConfiguration = readTestContourRecordingConfiguration,
 } = {}) {
   const paths = testContourPaths(root);
   const state = await startContour({
@@ -1724,6 +1940,8 @@ async function verifyTestContourUnlocked({
     sourceKind,
     port,
   });
+  const recording = await readRecordingConfiguration(root);
+  const smokePolicy = testContourSmokeAgentPolicy({ withAgent, recording });
   const {
     runTestContourUiSmoke,
     TEST_CONTOUR_PROBE,
@@ -1737,13 +1955,13 @@ async function verifyTestContourUnlocked({
     url: state.url,
     automationRoot: paths.automationRoot,
     artifactsDirectory: paths.artifactsDirectory,
-    withAgent,
+    withAgent: smokePolicy.withAgent,
     model: state.model,
     probeResponse,
 
   });
   let journal = null;
-  if (withAgent) {
+  if (smokePolicy.withAgent) {
     journal = await waitFor(async () => {
       const database = new JournalDatabase(path.join(paths.dataDir, "journal.sqlite"));
       try {
@@ -1767,7 +1985,12 @@ async function verifyTestContourUnlocked({
     }, "Test Contour journal confirmation", 30_000);
 
   }
-  return { state, smoke, journal };
+  return {
+    state,
+    smoke,
+    journal,
+    ...(smokePolicy.agentProbeSkipped ? { agentProbeSkipped: smokePolicy.agentProbeSkipped } : {}),
+  };
 }
 
 export async function verifyTestContour(options = {}) {
