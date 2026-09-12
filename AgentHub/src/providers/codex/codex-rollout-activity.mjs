@@ -509,7 +509,12 @@ function generatedImagePathsFromJsonSample(sample) {
   const paths = [];
   const pattern = /Generated images are saved to[\s\S]*?\sas\s+((?:[A-Za-z]:)?(?:\\\\|\\\/|\/)(?:\\.|[^"\\\r\n])*?\.(?:png|jpe?g|webp|gif|bmp))/giu;
   for (const match of String(sample ?? "").matchAll(pattern)) {
-    const value = String(decodedJsonString(match[1]) ?? "").trim();
+    const decoded = String(decodedJsonString(match[1]) ?? "");
+    const hasNestedRootEscaping = /^[A-Za-z]:\\\\/u.test(decoded)
+      || decoded.startsWith("\\\\\\\\");
+    const value = String(
+      hasNestedRootEscaping ? decodedJsonString(decoded) || decoded : decoded,
+    ).trim();
     if (value) paths.push(value);
   }
   return [...new Set(paths)];
@@ -546,12 +551,28 @@ function generatedImagePaths(entry) {
   return generatedImagePathsFromText(text);
 }
 
+function generatedImagePathIdentity(value) {
+  const candidate = String(value ?? "").trim();
+  if (!candidate) return "";
+  const normalized = /^(?:[A-Za-z]:[\\/]|\\\\)/u.test(candidate)
+    ? path.win32.normalize(candidate)
+    : path.normalize(candidate);
+  return /^[A-Za-z]:/u.test(normalized)
+    ? `${normalized[0].toLowerCase()}${normalized.slice(1)}`
+    : normalized;
+}
+
 function rememberCodexImagePaths(metadata, turnId, paths, type = "generated-path") {
   if (!turnId || !paths.length) return;
   const current = metadata.generatedImageSources.get(turnId) ?? [];
-  const known = new Set(current.map((item) => `${item.type}:${item.value}`));
-  for (const value of paths) {
-    const key = `${type}:${value}`;
+  const known = new Set(current.map((item) => (
+    `${item.type}:${generatedImagePathIdentity(item.value)}`
+  )));
+  for (const rawValue of paths) {
+    const value = String(rawValue ?? "").trim();
+    const identity = generatedImagePathIdentity(value);
+    if (!value || !identity) continue;
+    const key = `${type}:${identity}`;
     if (!known.has(key)) {
       current.push({ type, value });
       known.add(key);

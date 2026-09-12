@@ -5214,6 +5214,164 @@ html[data-view="dashboard"] .task-board-view.is-workspace-view {
   text-align: center;
 }
 
+/* Общая форма prompt-шаблонов повторяет карточку Workspace: шапка, прокрутка
+   полей и строка действий. Сам редактор внутри — прежний, поэтому его
+   собственные стили здесь не переопределяются. */
+.prompt-templates-modal {
+  /* Форму открывают и поверх панели настроек, поэтому фон непрозрачный: тот же
+     рецепт, что у самой панели, а не полупрозрачный --surface-1. */
+  background:
+    radial-gradient(120% 60% at 90% -20%, var(--space-glow-a), transparent 60%),
+    var(--space-base);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  color: var(--text);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-height: min(90dvh, 52rem);
+  max-width: 40rem;
+  overflow: hidden;
+  padding: 0;
+  width: calc(100% - 2rem);
+}
+
+.prompt-templates-modal::backdrop {
+  backdrop-filter: blur(3px);
+  background: rgba(2, 5, 10, 0.76);
+}
+
+.prompt-templates-modal > header,
+.prompt-templates-modal > footer {
+  align-items: center;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+  padding: 0.85rem 1rem;
+}
+
+.prompt-templates-modal > header {
+  border-bottom: 1px solid var(--line);
+}
+
+.prompt-templates-modal > footer {
+  border-top: 1px solid var(--line);
+  justify-content: flex-end;
+}
+
+.prompt-templates-modal > footer button {
+  min-height: 2.15rem;
+}
+
+.prompt-templates-modal h2,
+.prompt-templates-modal p {
+  margin: 0;
+}
+
+.prompt-templates-modal h2 {
+  font-size: 0.95rem;
+  margin-top: 0.2rem;
+}
+
+.prompt-templates-fields {
+  display: grid;
+  gap: 0.7rem;
+  overflow-y: auto;
+  padding: 1rem;
+}
+
+/* Внутри формы карточка редактора занимает всю ширину: ограничение меры нужно
+   было соседству с другими настройками, а здесь она одна. */
+.prompt-templates-card {
+  max-width: none;
+}
+
+/* Область действия видна с одного взгляда: выбранная подсвечена, рядом стоит
+   число шаблонов именно этой области. Кнопки переносятся, а не сжимаются. */
+.prompt-templates-scopes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.prompt-templates-scope {
+  align-items: baseline;
+  display: inline-flex;
+  gap: 0.4rem;
+  max-width: 100%;
+}
+
+.prompt-templates-scope-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.prompt-templates-scope-count {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+}
+
+.prompt-templates-scope[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.prompt-templates-scope[aria-pressed="true"] .prompt-templates-scope-count {
+  color: inherit;
+}
+
+.prompt-templates-scope[data-prompt-templates-diverged] {
+  border-color: color-mix(in srgb, var(--danger, #ff7b7b) 60%, transparent);
+}
+
+.prompt-templates-scope:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.prompt-templates-note {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+/* Расхождение показывается прямо в форме: черновик остаётся на месте, а выбор
+   между ним и сохранёнными значениями делает человек. */
+.prompt-templates-conflict {
+  align-items: start;
+  background: color-mix(in srgb, var(--danger, #ff7b7b) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger, #ff7b7b) 45%, transparent);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: space-between;
+  padding: 0.6rem 0.7rem;
+}
+
+.prompt-templates-conflict[hidden] {
+  display: none;
+}
+
+.prompt-templates-conflict p {
+  flex: 1 1 14rem;
+  font-size: 0.8rem;
+}
+
+/* Вход в общую форму на месте прежнего редактора. */
+.prompt-template-entry-controls {
+  display: flex;
+  padding: 0.6rem 0.75rem 0.75rem;
+}
+
+/* На узкой карточке подпись переносится, но кнопка не сжимается в ноль: у чипа
+   по умолчанию текст в одну строку, и во flex-строке он схлопывался. */
+.prompt-template-entry-open {
+  flex: 0 1 auto;
+  max-width: 100%;
+  white-space: normal;
+}
+
 .workspace-card-modal::backdrop {
   background: rgba(2, 5, 10, 0.76);
   backdrop-filter: blur(3px);

@@ -184,6 +184,13 @@ export const LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V1 = [
   "After confirmed publication, close only the included work items, synchronize published main into dev without losing later Test work, and rebuild the mutable PreRelease from the remaining Await Tasks.",
 ].join("\n");
 
+// Версия 2 добавляет единую служебную Task выпуска. Прежние составные префиксы
+// остаются в списке снятия, чтобы уже выданные правила мигрировали без потерь.
+export const ARCHITECT_RELEASE_DEVELOPER_RULES_BODY_V2 = [
+  LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V1,
+  "Keep the service preparation of one release in a single Task named `Релиз [версия]`: CalVer selection, the consolidated CHANGELOG entry and the small corrections that release requires belong to that Task. Do not create a separate Task per release operation. This covers the service steps of one release and never absorbs independent work on release mechanisms, which keeps its own Tasks.",
+].join("\n");
+
 export const EXPLICIT_USER_WORKFLOW_EXCEPTION = [
   "Explicit user instructions for the current work take precedence over conflicting requirements of this release workflow, including Task creation, validation scope, and publication sequence.",
   "Apply only the exception the user explicitly requested; urgency or frustration alone does not authorize one. Preserve the agreed scope in continuation and rotation context, and keep it in effect until that work is complete or the user changes it. Do not extend it to unrelated later work.",
@@ -195,8 +202,13 @@ export const RELEASE_WORKFLOW_DEVELOPER_RULES = [
   EXPLICIT_USER_WORKFLOW_EXCEPTION,
 ].join("\n\n");
 
-export const ARCHITECT_RELEASE_DEVELOPER_RULES = [
+export const LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V2 = [
   LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V1,
+  EXPLICIT_USER_WORKFLOW_EXCEPTION,
+].join("\n\n");
+
+export const ARCHITECT_RELEASE_DEVELOPER_RULES = [
+  ARCHITECT_RELEASE_DEVELOPER_RULES_BODY_V2,
   EXPLICIT_USER_WORKFLOW_EXCEPTION,
 ].join("\n\n");
 
@@ -284,7 +296,7 @@ export function effectiveStreamDeveloperRules(content, settings) {
   // Retire the V1 prefix only after supported stores no longer contain that generated version.
   let normalized = source.replace(/\r\n?/gu, "\n").replace(/^\n+/u, "");
   while (normalized) {
-    const prefix = [ARCHITECT_RELEASE_DEVELOPER_RULES, LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V1]
+    const prefix = [ARCHITECT_RELEASE_DEVELOPER_RULES, LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V2, LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V1]
       .find((candidate) => normalized === candidate || normalized.startsWith(`${candidate}\n`));
     if (!prefix) break;
     normalized = normalized.slice(prefix.length).replace(/^\n+/u, "");

@@ -312,7 +312,15 @@ manifest hash and standalone candidate head. Later Await Tasks are not silently
 added. Only a Stream with `settings.architect=true` may record verified release
 completion.
 
-Prepared Await materialization precedes publication freeze. Freeze binds the
+Prepared Await materialization precedes publication freeze. Await acceptance
+materializes a ready `PreRelease`: its aggregate head, manifest hash and base
+commit are checkpointed as the accepted composition. Freeze reuses that exact
+checkpointed result while `{planRevision, manifestHash, baseCommit}` and the
+branch head still match, and re-resolves neither the `dev` first-parent lineage
+nor the effective merge deltas. Unchanged inputs therefore produce no second
+reconstruction and no recomposition of the selected set. Any change of plan
+revision, Task revision, Git reference or approved `main` invalidates that
+checkpoint and requires an explicit rebuild before freeze. Freeze binds the
 consolidated root CHANGELOG to the exact prepared aggregate and plan, using the
 same release repository owner and lock. It may change only that CHANGELOG,
 records durable freeze intent before promoting the clone's main reference,
@@ -371,6 +379,14 @@ recording and canonical completion under the publication lock, without build,
 deploy, push or restart; startup readiness does not wait for that work.
 Only completed Workspace finalization yields `succeeded`. A low-level publisher
 without a Workspace adapter yields `published` and does not claim Task closure.
+
+After readiness, durable `awaiting_finalization` is continued by the single
+owner of the original publication operation without new user input. An explicit
+`retry_required` repeats only the persisted Workspace finalization under the
+same publication lock; retries are bounded by a shared budget and end with an
+explicit reason once it is exhausted. Repeated readiness/resume events are
+idempotent and create neither a second owner nor a second terminal. Already
+successful tests, build, Git publication and deploy are never repeated.
 
 Validation is explicit and persisted: full, focused by affected surface, or a
 user-authorized quick mode without the test gate. All modes retain publication
