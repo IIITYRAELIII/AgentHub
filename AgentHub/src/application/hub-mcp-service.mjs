@@ -693,7 +693,40 @@ export class HubMcpService {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
         expected_plan_revision: { type: "string", description: "Exact revision returned by hub_release_plan_get." },
         conflicts_resolved: { type: "boolean", description: "True only after the Architect explicitly resolves every reported overlap." },
+        approved_repositories: {
+          type: "array",
+          description: "Repository-scoped approved main commits returned by the previous preflight audit.",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              projectRoot: { type: "string" },
+              approvedLocalMainCommit: { type: "string" },
+              approvedOriginMainCommit: { type: "string" },
+            },
+            required: ["projectRoot", "approvedLocalMainCommit", "approvedOriginMainCommit"],
+          },
+        },
       }, ["expected_plan_revision"]),
+      tool("hub_release_preflight_reconcile", "Read back an interrupted release preflight from exact frozen candidate evidence without replaying effects.", {
+        workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
+        original_request_id: { type: "string" },
+        original_preflight_arguments: {
+          type: "object",
+          description: "Exact original hub_release_preflight arguments except context_token. request_id may be omitted and is filled from original_request_id.",
+        },
+        error_class: { type: "string", description: "For example: serialization_error." },
+        expected_plan_revision: { type: "string" },
+        expected_repositories: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: { projectRoot: { type: "string" }, revision: { type: "string" } },
+            required: ["projectRoot", "revision"],
+          },
+        },
+      }, ["original_request_id", "original_preflight_arguments", "expected_plan_revision", "expected_repositories"]),
       tool("hub_release_complete", "Complete a release only after clean main revisions and explicit deployment verification.", {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
         expected_repositories: {
@@ -833,6 +866,9 @@ export class HubMcpService {
       case "hub_release_preflight":
         if (!this.#isArchitect(context)) throw new Error("release preflight requires an Architect Stream");
         return this.#preflightRelease(context, args);
+      case "hub_release_preflight_reconcile":
+        if (!this.#isArchitect(context)) throw new Error("release preflight reconciliation requires an Architect Stream");
+        return this.#reconcileReleasePreflight(context, args);
       case "hub_release_complete":
         if (!this.#isArchitect(context)) throw new Error("release completion requires an Architect Stream");
         return this.#completeRelease(context, args);
@@ -1957,6 +1993,58 @@ export class HubMcpService {
       workspaceId,
       expectedPlanRevision: optionalText(args.expected_plan_revision, 128),
       conflictsResolved: args.conflicts_resolved === true,
+      approvedRepositories: Array.isArray(args.approved_repositories) ? args.approved_repositories : [],
+      requestId: requiredText(args.request_id, "request id", 200),
+    });
+  }
+
+  async #reconcileReleasePreflight(context, args) {
+    const workspaceId = this.#workspace(context, args.workspace_id).id;
+    if (typeof this.releasePreflight.reconcilePreflight !== "function") {
+      throw new Error("release preflight reconciliation is unavailable");
+    }
+    const originalRequestId = optionalText(args.original_request_id, 200);
+    const originalReceipt = this.workspaceCatalog.mcpOperation?.(originalRequestId);
+    if (!originalReceipt) throw new Error("original release preflight MCP receipt was not found");
+    if (originalReceipt.toolName !== "hub_release_preflight") {
+      throw new Error("original MCP receipt is not a release preflight");
+    }
+    const exactCaller = originalReceipt.workspaceId === workspaceId
+      && originalReceipt.streamId === context.streamId
+      && originalReceipt.provider === context.provider
+      && originalReceipt.threadId === context.auditThreadId;
+    if (!exactCaller) throw new Error("original release preflight MCP receipt belongs to another caller");
+    const originalArguments = args.original_preflight_arguments;
+    if (!originalArguments || typeof originalArguments !== "object" || Array.isArray(originalArguments)) {
+      throw new Error("release preflight reconciliation requires exact original preflight arguments");
+    }
+    if (originalArguments.request_id != null && String(originalArguments.request_id) !== originalRequestId) {
+      throw new Error("original preflight arguments request_id does not match the receipt");
+    }
+    const originalWorkspaceId = originalArguments.workspace_id == null
+      ? workspaceId
+      : this.#workspace(context, originalArguments.workspace_id).id;
+    if (originalWorkspaceId !== workspaceId) {
+      throw new Error("original preflight arguments target another Workspace");
+    }
+    if (String(originalArguments.expected_plan_revision ?? "") !== String(args.expected_plan_revision ?? "")) {
+      throw new Error("original preflight arguments plan revision does not match");
+    }
+    const expectedArgumentsHash = argumentsHash({
+      ...originalArguments,
+      request_id: originalRequestId,
+      context_token: args.context_token,
+    });
+    if (originalReceipt.argumentsHash !== expectedArgumentsHash) {
+      throw new Error("original release preflight MCP receipt arguments do not match");
+    }
+    return this.releasePreflight.reconcilePreflight({
+      workspaceId,
+      expectedPlanRevision: optionalText(args.expected_plan_revision, 128),
+      expectedRepositories: Array.isArray(args.expected_repositories) ? args.expected_repositories : [],
+      originalRequestId,
+      errorClass: optionalText(args.error_class, 100),
+      originalReceipt: { ...originalReceipt, expectedArgumentsHash },
     });
   }
 }

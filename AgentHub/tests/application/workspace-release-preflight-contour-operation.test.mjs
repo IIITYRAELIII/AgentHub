@@ -101,8 +101,11 @@ function fixture({
         primaryPreserved: true,
       }),
     },
-    readPublicationState: async () => ({ revision: "published-head" }),
+    readPublicationState: async () => ({
+      repositories: [{ root: projectRoot, revision: "published-head" }],
+    }),
     resolveTestContourSource: async () => ({
+      kind: "agent-hub-test-contour",
       projectRoot,
       sourceRoot: path.join(devRoot, "AgentHub"),
       branch: "dev",

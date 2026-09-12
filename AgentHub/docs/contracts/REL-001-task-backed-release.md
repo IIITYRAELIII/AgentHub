@@ -291,6 +291,55 @@ values before candidate publication. A second fetch immediately before push is
 a compare-and-set guard; movement of `origin/main` stops publication for another
 user decision.
 
+If the preflight response is interrupted after candidate preparation, recovery is
+readback-only. The Architect may reconcile the original request only by naming
+the exact original request, original preflight arguments, plan revision and
+repository revisions. Agent Hub first binds that request to the authoritative
+MCP operation receipt by tool, Workspace, caller Stream/provider/thread and
+immutable arguments hash, then reads the existing frozen candidate checkpoints
+and manifests through the release Git owner. A prepared checkpoint is only
+candidate snapshot evidence, even when it is causally bound to the same request:
+failures can still occur after the checkpoint before the final preflight guard.
+The original request may be reported as reconciled only from a separate
+authoritative final-phase outcome that covers candidate preparation, final
+primary/release invariant checks and all required validation. Without that final
+evidence, the response is only `candidate_snapshot_only` and the original
+outcome remains unknown. Missing, stale, moved-plan, tampered-manifest,
+contradictory manifest/checkpoint request identity, wrong Workspace or stale Task
+revision/result evidence keep the original outcome unknown. Reconciliation never
+reruns preflight, reuses a generic replay lease, finalizes the old receipt or
+manufactures Test Contour, validation, main-review or publication evidence.
+
+For repositories without an Agent Hub Test Contour, release preflight requires a
+repository-owned production validation adapter. The minimal supported adapter
+contract for Bookworm-style Android repositories is enabled only by explicit
+`releaseValidation.repositories[]` policy. The default unconfigured state fails
+closed with an operator action. A configured adapter runs the approved QA checks
+against the exact frozen candidate in isolation after `PreRelease` preparation,
+then persists bounded server-owned evidence naming repository identity, plan
+revision, Task IDs and revisions, Task result commits, candidate commit and tree,
+immutable manifest identity, relevant build input identity, check commands,
+outcomes and artifact digests. The
+preflight adapter accepts only an exact match to the selected repository, plan,
+candidate and Task result evidence. Historical QA reports, mutable build outputs,
+tree equality, developer-authored reports, or a ready string are not production
+validation evidence unless an explicit adapter proves the full input-equivalence
+boundary.
+
+Repository-scoped publication baseline adoption from an external publisher
+requires an explicit supported authority for that repository. For a GitHub
+release/tag source, the adapter must verify the repository remote identity,
+publisher API response, immutable release/tag identity, tag target commit, and
+staleness/moved-tag conditions before writing bounded publication evidence for
+that repository through the publication-state owner while retaining other
+repositories. The supported operator surface is `npm run release:policy --
+github-baseline preview|enable --project-root <root> --owner <owner> --repo
+<repo> --tag <tag> --release-id <id> --target-commit <sha>`; preview has no write
+effect, enable writes only the verified repository-scoped record. An unscoped
+local JSON file, an arbitrary supplied SHA, a foreign remote, a moved tag or an
+Actions run head SHA fails closed. Activation of such an adapter is a separate
+operator decision; existing unscoped state is not rewritten in place.
+
 The Architect adds one consolidated `CHANGELOG.md` entry when it exists, then
 freezes the exact main base, release-plan revision, included Task IDs and row
 revisions, Task results, owning dev integrations, aggregate `PreRelease` head,
