@@ -25,6 +25,14 @@ async function fixture(t) {
   return store;
 }
 
+function admit(store, prepared, requestId, attemptId = `attempt-${requestId}`) {
+  return store.admitPreparedStart(prepared.id, {
+    requestId,
+    attemptId,
+    expectedRevision: prepared.revision,
+  });
+}
+
 test("Task store revision changes on writes but not reads", async (t) => {
   const store = await fixture(t);
   const initial = store.revision;
@@ -119,7 +127,7 @@ test("workflow CAS failure preserves the previous status and Git references", as
 test("prepare and cancel start enforce one exact owner and revision CAS", async (t) => {
   const store = await fixture(t);
   const created = store.create({ text: "Concurrent launch" });
-  store.prepareStart(created.id, {
+  const prepared = store.prepareStart(created.id, {
     workspaceId: "workspace-1", streamId: "stream-1", requestId: "owner-1",
     expectedRevision: created.revision,
   });
@@ -127,12 +135,40 @@ test("prepare and cancel start enforce one exact owner and revision CAS", async 
     workspaceId: "workspace-1", streamId: "stream-2", requestId: "owner-2",
   }), /already pending/u);
   assert.throws(
-    () => store.cancelPreparedStart(created.id, { requestId: "owner-2" }),
+    () => store.fencePreparedStartCancellation(created.id, {
+      requestId: "owner-2", cancellationRequestId: "cancel-owner-2",
+      expectedRevision: prepared.revision,
+    }),
     /owner does not match/u,
   );
-  const cancelled = store.cancelPreparedStart(created.id, { requestId: "owner-1" });
+  assert.throws(
+    () => store.fencePreparedStartCancellation(created.id, {
+      requestId: "owner-1", cancellationRequestId: "cancel-stale",
+      expectedRevision: prepared.revision + 1,
+    }),
+    /revision conflict/u,
+  );
+  assert.throws(() => store.claim(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-existing", provider: "codex",
+    threadId: "thread-existing", turnId: "turn-existing", operationId: "claim-before-cancel",
+  }), /must be cancelled before claim/u);
+  const fenced = store.fencePreparedStartCancellation(created.id, {
+    requestId: "owner-1", cancellationRequestId: "cancel-owner-1",
+    expectedRevision: prepared.revision,
+  });
+  const cancelled = store.completePreparedStartCancellation(created.id, {
+    requestId: "owner-1", expectedRevision: fenced.revision,
+  });
   assert.equal(cancelled.status, "open");
   assert.equal(cancelled.startRequestId, null);
+  const claimed = store.claim(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-existing", provider: "codex",
+    threadId: "thread-existing", turnId: "turn-existing", operationId: "claim-after-cancel",
+  });
+  assert.equal(claimed.streamId, "stream-existing");
+  assert.throws(() => store.prepareStart(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", requestId: "owner-1",
+  }), /уже запущена/u);
 });
 
 test("markStarted requires exact prepared owner state and revision", async (t) => {
@@ -142,19 +178,90 @@ test("markStarted requires exact prepared owner state and revision", async (t) =
     workspaceId: "workspace-1", streamId: "stream-1", requestId: "exact-launch",
     expectedRevision: created.revision,
   });
+  const admitted = admit(store, prepared, "exact-launch");
   assert.throws(() => store.markStarted(created.id, {
     workspaceId: "workspace-1", streamId: "stream-1", requestId: "wrong-owner",
-    expectedRevision: prepared.revision,
+    attemptId: "attempt-exact-launch", expectedRevision: admitted.revision,
   }), /does not match/u);
   assert.throws(() => store.markStarted(created.id, {
     workspaceId: "workspace-1", streamId: "stream-1", requestId: "exact-launch",
-    expectedRevision: prepared.revision - 1,
+    attemptId: "wrong-attempt", expectedRevision: admitted.revision,
+  }), /does not own effect admission/u);
+  assert.throws(() => store.markStarted(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", requestId: "exact-launch",
+    attemptId: "attempt-exact-launch", expectedRevision: admitted.revision - 1,
   }), /revision CAS/u);
   const started = store.markStarted(created.id, {
     workspaceId: "workspace-1", streamId: "stream-1", requestId: "exact-launch",
-    expectedRevision: prepared.revision,
+    attemptId: "attempt-exact-launch", expectedRevision: admitted.revision,
   });
   assert.equal(started.status, "started");
+});
+
+test("launch admission and cancellation fence serialize across SQLite connections", async (t) => {
+  const first = await fixture(t);
+  const second = new TaskBoardStore({ databaseFile: first.databaseFile });
+  try {
+  const cancelledTask = first.create({ text: "Cancel wins" });
+  const preparedForCancel = first.prepareStart(cancelledTask.id, {
+    workspaceId: "workspace-1", streamId: "stream-cancel",
+    requestId: "cancel-wins", expectedRevision: cancelledTask.revision,
+  });
+  const fenced = second.fencePreparedStartCancellation(cancelledTask.id, {
+    requestId: "cancel-wins", cancellationRequestId: "cancel-attempt",
+    expectedRevision: preparedForCancel.revision,
+  });
+  assert.throws(() => first.admitPreparedStart(cancelledTask.id, {
+    requestId: "cancel-wins", attemptId: "late-launch",
+    expectedRevision: preparedForCancel.revision,
+  }), /revision conflict|not available for admission/u);
+  const cancelled = second.completePreparedStartCancellation(cancelledTask.id, {
+    requestId: "cancel-wins", expectedRevision: fenced.revision,
+  });
+  assert.equal(cancelled.status, "open");
+
+  const launchedTask = first.create({ text: "Launch wins" });
+  const preparedForLaunch = first.prepareStart(launchedTask.id, {
+    workspaceId: "workspace-1", streamId: "stream-launch",
+    requestId: "launch-wins", expectedRevision: launchedTask.revision,
+  });
+  const admitted = first.admitPreparedStart(launchedTask.id, {
+    requestId: "launch-wins", attemptId: "winning-launch",
+    expectedRevision: preparedForLaunch.revision,
+  });
+  assert.equal(admitted.startEffectState, "admitted");
+  assert.throws(() => second.fencePreparedStartCancellation(launchedTask.id, {
+    requestId: "launch-wins", cancellationRequestId: "late-cancel",
+    expectedRevision: admitted.revision,
+  }), /already admitted/u);
+  } finally {
+    second.close();
+  }
+});
+
+test("startup migration classifies a legacy unlaunched owner as prepared", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-launch-state-migration-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let store = new TaskBoardStore({ databaseFile });
+  const created = store.create({ text: "Legacy prepared launch" });
+  const prepared = store.prepareStart(created.id, {
+    workspaceId: "workspace-1", streamId: "planned-legacy", requestId: "legacy-request",
+    expectedRevision: created.revision,
+  });
+  store.close();
+  const legacy = new DatabaseSync(databaseFile);
+  legacy.prepare(
+    "UPDATE hub_board_tasks SET start_effect_state = NULL, start_effect_owner_id = NULL WHERE id = ?",
+  ).run(created.id);
+  legacy.close();
+
+  store = new TaskBoardStore({ databaseFile });
+  const migrated = store.task(created.id);
+  assert.ok(migrated.revision >= prepared.revision);
+  assert.equal(migrated.startEffectState, "prepared");
+  assert.equal(migrated.startEffectOwnerId, null);
+  store.close();
 });
 
 test("Task mutation queue retries the owning transaction without blocking timers", async (t) => {
@@ -230,9 +337,10 @@ test("legacy Git adoption is CAS-guarded and keeps an immutable audit", async (t
   const prepared = store.prepareStart(created.id, {
     workspaceId: "workspace-1", streamId: "stream-1", requestId: "legacy-start",
   });
+  const admitted = admit(store, prepared, "legacy-start");
   store.markStarted(created.id, {
     workspaceId: "workspace-1", streamId: "stream-1", requestId: "legacy-start",
-    expectedRevision: prepared.revision,
+    attemptId: "attempt-legacy-start", expectedRevision: admitted.revision,
   });
   const awaiting = store.setWorkflowStatus(created.id, "awaiting_implementation");
   const projectRoot = path.resolve("D:/repo");
@@ -304,9 +412,10 @@ test("restarting a closed Task clears its completion timestamp", async (t) => {
   const prepared = store.prepareStart(task.id, {
     workspaceId: "workspace-1", streamId: "stream-1", requestId: "restart-closed",
   });
+  const admitted = admit(store, prepared, "restart-closed");
   const restarted = store.markStarted(task.id, {
     workspaceId: "workspace-1", streamId: "stream-1", requestId: "restart-closed",
-    expectedRevision: prepared.revision,
+    attemptId: "attempt-restart-closed", expectedRevision: admitted.revision,
   });
 
   assert.equal(completed.status, "done");
@@ -325,9 +434,10 @@ test("generic Task statuses remain directly editable", async (t) => {
   const prepared = store.prepareStart(created.id, {
     workspaceId: "workspace-1", streamId: "stream-1", requestId: "editable-start",
   });
+  const admitted = admit(store, prepared, "editable-start");
   const started = store.markStarted(created.id, {
     workspaceId: "workspace-1", streamId: "stream-1", requestId: "editable-start",
-    expectedRevision: prepared.revision,
+    attemptId: "attempt-editable-start", expectedRevision: admitted.revision,
   });
   assert.equal(started.workflowStatus, "in_progress");
   assert.equal(store.setWorkflowStatus(created.id, "testing").workflowStatus, "testing");
@@ -354,9 +464,10 @@ test("durable reassignment keeps the old executor until the new launch succeeds"
   const initialPrepared = store.prepareStart(created.id, {
     workspaceId: "workspace-1", streamId: "stream-old", requestId: "initial-start",
   });
+  const initialAdmitted = admit(store, initialPrepared, "initial-start");
   store.markStarted(created.id, {
     workspaceId: "workspace-1", streamId: "stream-old", requestId: "initial-start",
-    expectedRevision: initialPrepared.revision,
+    attemptId: "attempt-initial-start", expectedRevision: initialAdmitted.revision,
   });
 
   const prepared = store.prepareStart(created.id, {
@@ -365,16 +476,21 @@ test("durable reassignment keeps the old executor until the new launch succeeds"
   assert.equal(prepared.status, "started");
   assert.equal(prepared.streamId, "stream-old");
 
-  const cancelled = store.cancelPreparedStart(created.id, { requestId: "reassign-1", reassign: true });
+  const admittedReassign = admit(store, prepared, "reassign-1");
+  const cancelled = store.cancelPreparedStart(created.id, {
+    requestId: "reassign-1", reassign: true,
+    attemptId: "attempt-reassign-1", expectedRevision: admittedReassign.revision,
+  });
   assert.equal(cancelled.status, "started");
   assert.equal(cancelled.streamId, "stream-old");
 
   const secondPrepared = store.prepareStart(created.id, {
     workspaceId: "workspace-1", streamId: "stream-new", requestId: "reassign-2", reassign: true,
   });
+  const secondAdmitted = admit(store, secondPrepared, "reassign-2");
   const reassigned = store.markStarted(created.id, {
     workspaceId: "workspace-1", streamId: "stream-new", requestId: "reassign-2",
-    expectedRevision: secondPrepared.revision,
+    attemptId: "attempt-reassign-2", expectedRevision: secondAdmitted.revision,
   });
   assert.equal(reassigned.status, "started");
   assert.equal(reassigned.streamId, "stream-new");
@@ -1257,9 +1373,10 @@ test("Completed cutover ignores retired Task state recreated by a previous runti
   const initialPrepared = initial.prepareStart(created.id, {
     workspaceId: "workspace-1", streamId: "stream-live", requestId: "cutover-start",
   });
+  const initialAdmitted = admit(initial, initialPrepared, "cutover-start");
   const expected = initial.markStarted(created.id, {
     workspaceId: "workspace-1", streamId: "stream-live", requestId: "cutover-start",
-    expectedRevision: initialPrepared.revision,
+    attemptId: "attempt-cutover-start", expectedRevision: initialAdmitted.revision,
   });
   initial.close();
 

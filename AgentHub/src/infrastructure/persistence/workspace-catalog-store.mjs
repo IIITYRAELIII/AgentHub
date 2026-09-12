@@ -926,6 +926,41 @@ export class WorkspaceCatalogStore {
     ).get(id));
   }
 
+  cancelMcpOperation(requestId, { taskId, cancellationRequestId } = {}) {
+    const id = safeIdentifier(requestId, "MCP request id");
+    const task = safeIdentifier(taskId, "Task id");
+    const cancellation = safeIdentifier(cancellationRequestId, "cancellation request id");
+    const operation = this.mcpOperation(id);
+    const previous = operation?.result;
+    if (
+      operation?.status === "failed"
+      && previous?.cancelled === true
+      && previous?.taskId === task
+    ) return operation;
+    if (!operation || operation.toolName !== "hub_task_start") {
+      throw new Error("MCP operation is not a Task launch");
+    }
+    if (operation.interstreamContentHash) {
+      throw new Error("MCP Task launch has admitted interstream content");
+    }
+    if (!["pending", "reconciling", "unknown"].includes(operation.status)) {
+      throw new Error("MCP Task launch is not cancellable");
+    }
+    const resultJson = compactMcpOperationResult({
+      cancelled: true,
+      taskId: task,
+      cancellationRequestId: cancellation,
+    });
+    const updated = this.#database.prepare(`
+      UPDATE hub_mcp_operations
+      SET status = 'failed', receipt_state = 'failed', result_json = ?,
+        error_text = 'Task launch cancelled by exact reconciliation', completed_at_ms = ?
+      WHERE request_id = ? AND receipt_state IN ('pending', 'reconciling', 'unknown')
+    `).run(resultJson, this.#nowMs(), id);
+    if (!Number(updated.changes)) throw new Error("MCP Task launch cancellation CAS failed");
+    return this.mcpOperation(id);
+  }
+
   beginMcpOperationReconciliation(requestId) {
     const id = safeIdentifier(requestId, "MCP request id");
     const updated = this.#database.prepare(`

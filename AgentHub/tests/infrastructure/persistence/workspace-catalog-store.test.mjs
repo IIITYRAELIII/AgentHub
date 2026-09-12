@@ -801,6 +801,10 @@ test("MCP audit resolves only exact successful interstream message provenance", 
   });
   const contentHash = interstreamAuditContentHash(rawMessage);
   store.bindMcpOperationInterstreamContentHash(operation.requestId, contentHash);
+  assert.throws(
+    () => store.bindMcpOperationInterstreamContentHash(operation.requestId, "b".repeat(64)),
+    /does not match the original admission/u,
+  );
   store.completeMcpOperation(operation.requestId, { task: { id: "task-1" } });
 
   assert.deepEqual(store.interstreamOriginForClientMessage("mcp:assignment-1"), {
@@ -828,6 +832,56 @@ test("MCP audit resolves only exact successful interstream message provenance", 
   });
   assert.equal(store.interstreamOriginForClientMessage("assignment-1"), null);
   assert.equal(store.interstreamOriginForClientMessage("mcp:missing"), null);
+});
+
+test("exact Task launch cancellation terminalizes an unknown receipt without a replay lease", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const stream = store.createStream({ workspaceId: workspace.id, name: "Architect" });
+  const operation = {
+    requestId: "stuck-launch",
+    workspaceId: workspace.id,
+    streamId: stream.id,
+    provider: "codex",
+    threadId: "thread-architect",
+    toolName: "hub_task_start",
+    argumentsHash: "a".repeat(64),
+  };
+  store.beginMcpOperation(operation);
+  store.beginMcpOperationReconciliation(operation.requestId);
+  store.markMcpOperationUnknown(operation.requestId, new Error("startup cannot replay a prepared launch"));
+
+  const cancelled = store.cancelMcpOperation(operation.requestId, {
+    taskId: "task-1",
+    cancellationRequestId: "cancel-stuck-launch",
+  });
+  assert.equal(cancelled.status, "failed");
+  assert.deepEqual(cancelled.result, {
+    cancelled: true,
+    taskId: "task-1",
+    cancellationRequestId: "cancel-stuck-launch",
+  });
+  assert.match(cancelled.error, /cancelled by exact reconciliation/u);
+  assert.deepEqual(store.cancelMcpOperation(operation.requestId, {
+    taskId: "task-1",
+    cancellationRequestId: "later-cancel-retry",
+  }), cancelled);
+  assert.throws(
+    () => store.cancelMcpOperation(operation.requestId, {
+      taskId: "task-2",
+      cancellationRequestId: "wrong-task-cancel",
+    }),
+    /not cancellable/u,
+  );
+  assert.equal(store.beginMcpOperation(operation).status, "failed");
+
+  const admitted = { ...operation, requestId: "admitted-launch" };
+  store.beginMcpOperation(admitted);
+  store.bindMcpOperationInterstreamContentHash(admitted.requestId, "b".repeat(64));
+  assert.throws(() => store.cancelMcpOperation(admitted.requestId, {
+    taskId: "task-2",
+    cancellationRequestId: "cancel-admitted-launch",
+  }), /admitted interstream content/u);
 });
 
 test.skip("retired release registry same-Stream overlap model", async (t) => {

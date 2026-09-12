@@ -18,6 +18,7 @@ test("Desktop settings service rejects a stale task-scoped mutation", async () =
     getStreamCardGapEnabled: () => false, setStreamCardGapEnabled: noop,
     getPinnedWorkspaceStreams: () => ({}), setPinnedWorkspaceStreams: noop,
     getQuickMessages: () => ({ streams: {}, workspaces: {} }), setQuickMessages: noop,
+    getQuickMessageActionMode: () => "insert", setQuickMessageActionMode: noop,
     projectUsage: async () => {}, findProjectIndex: () => 0, switchProject: async () => ({}), snapshot: async () => ({}),
     reasoningEfforts: ["high"], collaborationModes: ["default"],
   });
@@ -41,6 +42,7 @@ test("Desktop settings service rejects a stale project mutation before switching
     getStreamCardGapEnabled: () => false, setStreamCardGapEnabled: noop,
     getPinnedWorkspaceStreams: () => ({}), setPinnedWorkspaceStreams: noop,
     getQuickMessages: () => ({ streams: {}, workspaces: {} }), setQuickMessages: noop,
+    getQuickMessageActionMode: () => "insert", setQuickMessageActionMode: noop,
     projectUsage: async () => {}, findProjectIndex: () => 0, switchProject: async () => { switched = true; return {}; }, snapshot: async () => ({}),
     reasoningEfforts: ["high"], collaborationModes: ["default"],
   });
@@ -72,6 +74,7 @@ test("Desktop settings service persists the shared recent activity period", asyn
     getStreamCardGapEnabled: () => false, setStreamCardGapEnabled: noop,
     getPinnedWorkspaceStreams: () => ({}), setPinnedWorkspaceStreams: noop,
     getQuickMessages: () => ({ streams: {}, workspaces: {} }), setQuickMessages: noop,
+    getQuickMessageActionMode: () => "insert", setQuickMessageActionMode: noop,
     projectUsage: async () => {}, findProjectIndex: () => 0, switchProject: async () => ({}),
     snapshot: async () => ({ settings: { activityRecentMinutes: current } }),
     reasoningEfforts: ["high"], collaborationModes: ["default"],
@@ -110,6 +113,7 @@ test("Desktop settings service commits Claude usage only after projection", asyn
     getStreamCardGapEnabled: () => false, setStreamCardGapEnabled: noop,
     getPinnedWorkspaceStreams: () => ({}), setPinnedWorkspaceStreams: noop,
     getQuickMessages: () => ({ streams: {}, workspaces: {} }), setQuickMessages: noop,
+    getQuickMessageActionMode: () => "insert", setQuickMessageActionMode: noop,
     projectUsage: async (value) => {
       assert.equal(value, true);
       await projected;
@@ -140,6 +144,7 @@ test("Desktop settings service persists shared Stream card settings", async () =
     streamCardGapEnabled: false,
     pinnedWorkspaceStreams: {},
     quickMessages: { global: [], streams: {}, workspaces: {} },
+    quickMessageActionMode: "insert",
   };
   let saveCount = 0;
   const noop = () => {};
@@ -163,6 +168,8 @@ test("Desktop settings service persists shared Stream card settings", async () =
     setPinnedWorkspaceStreams: (value) => { current.pinnedWorkspaceStreams = value; },
     getQuickMessages: () => current.quickMessages,
     setQuickMessages: (value) => { current.quickMessages = value; },
+    getQuickMessageActionMode: () => current.quickMessageActionMode,
+    setQuickMessageActionMode: (value) => { current.quickMessageActionMode = value; },
     projectUsage: async () => {}, findProjectIndex: () => 0, switchProject: async () => ({}),
     snapshot: async () => ({ settings: { ...current } }),
     reasoningEfforts: ["high"], collaborationModes: ["default"],
@@ -176,6 +183,7 @@ test("Desktop settings service persists shared Stream card settings", async () =
     name: "pinnedWorkspaceStreams",
     value: JSON.stringify({ "workspace-1": ["stream-1"] }),
   });
+  await service.update({ name: "quickMessageActionMode", value: "send" });
   await service.update({
     name: "quickMessages",
     value: JSON.stringify({
@@ -196,12 +204,17 @@ test("Desktop settings service persists shared Stream card settings", async () =
       streams: { "stream-1": ["релизь"] },
       workspaces: { "workspace-1": ["проверь"] },
     },
+    quickMessageActionMode: "send",
   });
-  assert.equal(saveCount, 6);
+  assert.equal(saveCount, 7);
   assert.equal(result.settings.streamCardGapEnabled, true);
   await assert.rejects(
     service.update({ name: "streamCardFixedWidth", value: "451" }),
     /Неизвестная ширина/u,
+  );
+  await assert.rejects(
+    service.update({ name: "quickMessageActionMode", value: "unknown" }),
+    /Неизвестный режим prompt-шаблонов/u,
   );
 });
 
@@ -229,6 +242,7 @@ test("Desktop settings service creates a new Codex Thread when a model crosses b
     getStreamCardGapEnabled: () => false, setStreamCardGapEnabled: noop,
     getPinnedWorkspaceStreams: () => ({}), setPinnedWorkspaceStreams: noop,
     getQuickMessages: () => ({ streams: {}, workspaces: {} }), setQuickMessages: noop,
+    getQuickMessageActionMode: () => "insert", setQuickMessageActionMode: noop,
     projectUsage: async () => {}, findProjectIndex: () => 0, switchProject: async () => ({}),
     snapshot: async () => ({ settings: { model: currentModel } }),
     reasoningEfforts: ["high"], collaborationModes: ["default"],
@@ -260,6 +274,7 @@ test("Desktop settings service saves the changed model in the selected stream", 
     getStreamCardGapEnabled: () => false, setStreamCardGapEnabled: noop,
     getPinnedWorkspaceStreams: () => ({}), setPinnedWorkspaceStreams: noop,
     getQuickMessages: () => ({ streams: {}, workspaces: {} }), setQuickMessages: noop,
+    getQuickMessageActionMode: () => "insert", setQuickMessageActionMode: noop,
     projectUsage: async () => {}, findProjectIndex: () => 0, switchProject: async () => ({}),
     snapshot: async () => ({}), reasoningEfforts: ["high"], collaborationModes: ["default"],
 
@@ -291,6 +306,7 @@ test("Desktop settings service does not touch stream settings for shared prefere
     getStreamCardGapEnabled: () => false, setStreamCardGapEnabled: noop,
     getPinnedWorkspaceStreams: () => ({}), setPinnedWorkspaceStreams: noop,
     getQuickMessages: () => ({ streams: {}, workspaces: {} }), setQuickMessages: noop,
+    getQuickMessageActionMode: () => "insert", setQuickMessageActionMode: noop,
     projectUsage: async () => {}, findProjectIndex: () => 0, switchProject: async () => ({}),
     snapshot: async () => ({}), reasoningEfforts: ["high"], collaborationModes: ["default"],
 

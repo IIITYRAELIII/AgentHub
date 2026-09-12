@@ -28,7 +28,7 @@ const STREAM_HISTORY_CURSOR_VERSION = 1;
 const DEFAULT_HISTORY_ACTIVITY_LIMIT = 40;
 const DEFERRED_INPUT_STALLED_AFTER_MS = 60_000;
 const MUTATING_TOOLS = new Set([
-  "hub_task_create", "hub_task_update", "hub_task_checklist_update", "hub_task_move", "hub_task_start", "hub_task_reassign", "hub_task_claim", "hub_task_status_update", "hub_task_legacy_git_adopt", "hub_task_complete", "hub_task_delete",
+  "hub_task_create", "hub_task_update", "hub_task_checklist_update", "hub_task_move", "hub_task_start", "hub_task_reassign", "hub_task_launch_cancel", "hub_task_claim", "hub_task_status_update", "hub_task_legacy_git_adopt", "hub_task_complete", "hub_task_delete",
   "hub_task_attachment_add", "hub_workspace_rules_update", "hub_stream_rules_update",
   "hub_stream_message_send",
   "hub_task_operation_reconcile",
@@ -661,6 +661,12 @@ export class HubMcpService {
         message: { type: "string", description: "Optional assignment message delivered together with the Task reference." },
         confirm_launch: { type: "boolean", description: "Must be true because this starts or queues another agent turn." },
       }, ["task_id", "confirm_launch"]),
+      tool("hub_task_launch_cancel", "Architect-only exact reconciliation that cancels an unlaunched new-Stream Task start before another assignment.", {
+        task_id: { type: "string" },
+        launch_request_id: { type: "string", description: "Original hub_task_start request_id retained by the prepared Task." },
+        expected_task_revision: { type: "integer", minimum: 1 },
+        confirm_cancel: { type: "boolean", description: "Must be true because this terminalizes the original launch receipt." },
+      }, ["task_id", "launch_request_id", "expected_task_revision", "confirm_cancel"]),
       tool("hub_task_claim", "Bind a Dashboard Task to the exact current provider turn, assign its dedicated Git branch/worktree, and make the current Stream its executor. Continue repository work only in the returned gitWorkspace.projectRoot.", {
         task_id: { type: "string" },
       }, ["task_id"]),
@@ -828,6 +834,8 @@ export class HubMcpService {
         return this.#startTask(context, args);
       case "hub_task_reassign":
         return this.#startTask(context, args, { reassign: true });
+      case "hub_task_launch_cancel":
+        return this.#cancelTaskLaunch(context, args);
       case "hub_task_claim":
         return this.#claimTask(context, args);
       case "hub_task_status_update":
@@ -1519,6 +1527,87 @@ export class HubMcpService {
         projectRoot: gitWorkspace.projectRoot,
         baseCommit: gitWorkspace.baseCommit,
       } : null,
+    };
+  }
+
+  async #cancelTaskLaunch(context, {
+    task_id: taskId,
+    launch_request_id: launchRequestId,
+    expected_task_revision: expectedTaskRevision,
+    confirm_cancel: confirmCancel = false,
+    request_id: cancellationRequestId,
+  } = {}) {
+    if (!this.#isArchitect(context)) throw new Error("only an Architect Stream can cancel a prepared Task launch");
+    if (confirmCancel !== true) throw new Error("confirm_cancel must be true");
+    const task = this.#task(context, taskId);
+    const normalizedLaunchRequestId = requiredText(launchRequestId, "launch request id", 200);
+    const normalizedCancellationRequestId = requiredText(cancellationRequestId, "request id", 200);
+    const revision = Number(expectedTaskRevision);
+    if (!Number.isSafeInteger(revision) || revision < 1 || revision !== Number(task.revision)) {
+      throw new Error("Task revision changed before launch cancellation");
+    }
+    if (
+      task.workspaceId !== context.workspaceId
+      || task.status !== "starting"
+      || task.startRequestId !== normalizedLaunchRequestId
+    ) throw new Error("Task does not retain the exact prepared launch owner");
+    const destinationStreamId = requiredText(task.startDestinationStreamId, "planned destination Stream id", 300);
+    if (this.workspaceCatalog.stream(destinationStreamId)) {
+      throw new Error("launch cancellation cannot prove that no destination Stream effect exists");
+    }
+    const original = this.workspaceCatalog.mcpOperation?.(normalizedLaunchRequestId);
+    if (!original || original.toolName !== "hub_task_start") {
+      throw new Error("original Task launch receipt was not found");
+    }
+    const exactCaller = original.workspaceId === context.workspaceId
+      && original.streamId === context.streamId
+      && original.provider === context.provider
+      && original.threadId === context.auditThreadId;
+    if (!exactCaller) throw new Error("original Task launch receipt belongs to another caller");
+    if (original.interstreamContentHash) {
+      throw new Error("launch cancellation cannot disprove an admitted delivery effect");
+    }
+    const alreadyCancelled = original.status === "failed"
+      && original.result?.cancelled === true
+      && original.result?.taskId === task.id;
+    if (!["pending", "reconciling", "unknown"].includes(original.status) && !alreadyCancelled) {
+      throw new Error("original Task launch receipt is not cancellable");
+    }
+    requiredMethod(this.workspaceCatalog, "cancelMcpOperation");
+    requiredMethod(this.taskBoard, "fencePreparedStartCancellation");
+    requiredMethod(this.taskBoard, "completePreparedStartCancellation");
+    const fenced = await this.taskBoard.fencePreparedStartCancellation({
+      id: task.id,
+      requestId: normalizedLaunchRequestId,
+      cancellationRequestId: normalizedCancellationRequestId,
+      expectedRevision: revision,
+    });
+    if (this.workspaceCatalog.stream(destinationStreamId)) {
+      throw new Error("launch cancellation fence found a destination Stream effect");
+    }
+    const fencedReceipt = this.workspaceCatalog.mcpOperation(normalizedLaunchRequestId);
+    if (fencedReceipt?.interstreamContentHash) {
+      throw new Error("launch cancellation fence found an admitted delivery effect");
+    }
+    const terminalReceipt = await this.workspaceCatalog.cancelMcpOperation(normalizedLaunchRequestId, {
+      taskId: task.id,
+      cancellationRequestId: normalizedCancellationRequestId,
+    });
+    const cancelled = await this.taskBoard.completePreparedStartCancellation({
+      id: task.id,
+      requestId: normalizedLaunchRequestId,
+      expectedRevision: fenced.revision,
+    });
+    return {
+      task: compactTask(cancelled),
+      cancelledLaunch: {
+        requestId: normalizedLaunchRequestId,
+        receiptStatus: terminalReceipt.status,
+        argumentsHash: original.argumentsHash,
+        destinationStreamId,
+        destinationAbsent: true,
+        admittedContentAbsent: true,
+      },
     };
   }
 

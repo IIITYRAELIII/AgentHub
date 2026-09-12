@@ -458,6 +458,8 @@ export function createDesktopShellComposition({
       setPinnedWorkspaceStreams: (value) => agentPreferences.setPinnedWorkspaceStreams(value),
       getQuickMessages: () => agentPreferences.quickMessages,
       setQuickMessages: (value) => agentPreferences.setQuickMessages(value),
+      getQuickMessageActionMode: () => agentPreferences.quickMessageActionMode,
+      setQuickMessageActionMode: (value) => agentPreferences.setQuickMessageActionMode(value),
       projectUsage: (includeClaudeUsage) => workLogUsageStore.project(null, {
         includeClaudeUsage,
         projectRoot: config.projectRoot,

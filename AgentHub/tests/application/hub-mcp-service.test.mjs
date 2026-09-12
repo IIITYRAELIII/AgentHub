@@ -194,6 +194,10 @@ async function fixture(context, {
     markStarted: ({ id, workspaceId, streamId }) => Object.assign(tasks.get(id), {
       status: "started", workflowStatus: "in_progress", workspaceId, streamId,
     }),
+    fencePreparedStartCancellation: ({ id }) => tasks.get(id),
+    completePreparedStartCancellation: ({ id }) => Object.assign(tasks.get(id), {
+      status: "open", streamId: null, startRequestId: null,
+    }),
     claim: ({ id, streamId, turnId, operationId, operationKind, gitBaseline }) => {
       taskClaimCalls.push({ id, turnId, operationId, operationKind });
       return Object.assign(tasks.get(id), {
