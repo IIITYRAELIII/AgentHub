@@ -160,14 +160,30 @@ test("shipped Desktop DOM renders every durable ImageGen output and a missing pl
           },
         ],
       }]);
+      window.AgentHub.setLive(taskId, {
+        provider: "codex",
+        threadId: "thread-image-live",
+        turnId: "turn-image-live",
+        role: "agent",
+        author: "Codex",
+        text: "",
+        stage: "",
+        attachments: [
+          { id: "codex-generated-live-one.png", name: "Live one", type: "image/png" },
+          { id: "codex-generated-live-two.png", name: "Live two", type: "image/png" },
+        ],
+      });
       const message = document.querySelector('.msg-agent[data-turn-id="turn-image"]');
       const attachments = [...message.querySelectorAll(".attachment-image")];
+      const live = document.querySelector("[data-chat-live]");
       return {
         messageCount: document.querySelectorAll('.msg-agent[data-turn-id="turn-image"]').length,
         attachmentCount: attachments.length,
         missingCount: attachments.filter((node) => node.classList.contains("attachment-missing")).length,
         missingDisabled: attachments.find((node) => node.classList.contains("attachment-missing"))?.disabled,
         missingLabel: message.querySelector(".attachment-missing-label")?.textContent,
+        liveHidden: live.hidden,
+        liveAttachmentCount: live.querySelectorAll(".attachment-image").length,
       };
     });
 
@@ -177,6 +193,8 @@ test("shipped Desktop DOM renders every durable ImageGen output and a missing pl
       missingCount: 1,
       missingDisabled: true,
       missingLabel: "Файл недоступен",
+      liveHidden: false,
+      liveAttachmentCount: 2,
     });
   } finally {
     await browser.close();

@@ -129,6 +129,11 @@ uses the canonical publication lock, without inheriting the previous publisher's
 lock-bypass session. It does not build, deploy, push Git or request another
 restart. Installed release, ready instance and control snapshot must agree
 before completion; a mismatch remains pending/failed evidence, never success.
+An explicit `awaiting_finalization` result schedules the same background owner
+again after a bounded delay and within one bounded attempt budget. Canonical
+completion or budget exhaustion with an explicit diagnostic stops that cycle.
+Duplicate readiness notifications do not create another owner or repeat
+completed publication stages.
 The publication journal and Task finalization store retain their own existing
 authority; this hook creates no second restart operation.
 

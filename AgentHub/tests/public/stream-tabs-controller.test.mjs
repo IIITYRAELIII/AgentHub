@@ -2788,8 +2788,8 @@ test("current and other Workspace or Stream native dblclicks survive exact-ident
           ], `${surface}/${scenario.name}/${region}: native event sequence`);
           assert.equal(new Set(trace.map(({ logicalId }) => logicalId)).size, 1);
           if (scenario.forceFirstClickRerender) {
-            assert.equal(new Set(trace.map(({ rowNodeId }) => rowNodeId)).size, 2,
-              `${surface}/${scenario.name}: the same logical Workspace is legitimately replaced`);
+            assert.equal(new Set(trace.map(({ rowNodeId }) => rowNodeId)).size, 1,
+              `${surface}/${scenario.name}: the same logical Workspace keeps its node through a rerender`);
           }
           if (screenshotDirectory && scenario.name === "selected-workspace" && attempt === 0) {
             console.log(`HUB157_DBLCLICK_TRACE ${surface} ${JSON.stringify(trace)}`);
@@ -3065,7 +3065,8 @@ test("Workspace and Stream cards survive logical-identity rerenders while stale 
         replaced: replacement !== known,
       };
     });
-    assert.deepEqual(rerenderedStreamResult, { open: true, replaced: true });
+    // Обновление сохраняет узел вкладки, поэтому состояние статуса не сбрасывается.
+    assert.deepEqual(rerenderedStreamResult, { open: true, replaced: false });
     await page.keyboard.press("Escape");
 
     const staleStreamResult = await page.evaluate(() => {

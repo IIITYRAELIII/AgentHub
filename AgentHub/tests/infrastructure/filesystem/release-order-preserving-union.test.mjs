@@ -31,7 +31,7 @@ test("order-preserving conflict accepts only an exact durable dev merge of both 
   const task = await commit("task");
   await git(["checkout", "main"]);
   await writeFile(file, "anchor\nmain\nend\n", "utf8");
-  await commit("main");
+  const historicalMain = await commit("main");
   await git(["checkout", "-b", "dev", task]);
   await assert.rejects(git(["merge", "--no-commit", "main"]));
   await writeFile(file, "anchor\nresolved task + main\nend\n", "utf8");
@@ -42,18 +42,29 @@ test("order-preserving conflict accepts only an exact durable dev merge of both 
   await writeFile(file, "anchor\nresolved task + main\nforeign\nend\n", "utf8");
   const foreign = await commit("foreign baggage after resolution");
   await git(["checkout", "main"]);
+  await writeFile(path.join(root, "unrelated.txt"), "new approved base\n", "utf8");
+  const approvedMain = await commit("advance approved base outside the conflict path");
   await assert.rejects(git(["merge", "--no-commit", task]));
   assert.match(await git(["diff", "--name-only", "--diff-filter=U"]), /shared\.txt/u);
   assert.equal(await resolveExactOrderPreservingUnion({
-    candidateRoot: root, conflicts: ["shared.txt"], approvedBaseCommit: await git(["rev-parse", "main"]),
+    candidateRoot: root, conflicts: ["shared.txt"], approvedBaseCommit: approvedMain,
     devRef: foreign,
   }), false);
   assert.equal(await resolveExactOrderPreservingUnion({
-    candidateRoot: root, conflicts: ["shared.txt"], approvedBaseCommit: await git(["rev-parse", "main"]),
+    candidateRoot: root, conflicts: ["shared.txt"], approvedBaseCommit: approvedMain,
     devRef: exact,
   }), true);
   assert.equal(await readFile(file, "utf8"), "anchor\nresolved task + main\nend\n");
   assert.equal(await git(["diff", "--name-only", "--diff-filter=U"]), "");
   assert.equal(await git(["rev-parse", "HEAD"]), await git(["rev-parse", "main"]));
+  await git(["reset", "--hard", approvedMain]);
+  await writeFile(file, "anchor\nchanged approved base\nend\n", "utf8");
+  const changedApprovedMain = await commit("advance approved base on conflict path");
+  await assert.rejects(git(["merge", "--no-commit", task]));
+  assert.equal(await resolveExactOrderPreservingUnion({
+    candidateRoot: root, conflicts: ["shared.txt"], approvedBaseCommit: changedApprovedMain,
+    devRef: exact,
+  }), false);
   assert.notEqual(base, task);
+  assert.notEqual(historicalMain, approvedMain);
 });

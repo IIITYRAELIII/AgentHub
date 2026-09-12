@@ -1,19 +1,60 @@
 {
-  "version": 1,
+  "version": 2,
   "files": {
     "tests/public/composer-production-wiring.test.mjs": {
       "inputs": ["assets/web-app", "work-log.css"],
       "packages": ["playwright", "playwright-core"],
+      "builtins": ["fs/promises", "vm"],
+      "globals": ["globalThis", "process"],
       "browser": true
     },
     "tests/public/card-layout-dom.test.mjs": {
       "inputs": ["assets/web-app", "work-log.css"],
       "packages": ["playwright", "playwright-core"],
+      "builtins": ["fs/promises"],
+      "globals": ["process"],
       "browser": true
     },
     "tests/public/long-response-quotes.test.mjs": {
       "inputs": ["assets/web-app", "work-log.css"],
       "packages": ["playwright", "playwright-core"],
+      "builtins": ["fs/promises", "vm"],
+      "globals": ["globalThis", "process"],
+      "browser": true
+    },
+    "tests/public/dashboard-layout-dom.test.mjs": {
+      "inputs": ["assets/web-app", "work-log.css"],
+      "packages": ["playwright", "playwright-core"],
+      "builtins": ["fs/promises"],
+      "globals": ["process"],
+      "browser": true
+    },
+    "tests/public/task-checklist-dom.test.mjs": {
+      "inputs": ["assets/web-app", "work-log.css"],
+      "packages": ["playwright", "playwright-core"],
+      "builtins": ["fs/promises"],
+      "globals": ["process"],
+      "browser": true
+    },
+    "tests/public/journal-virtual-ui.test.mjs": {
+      "inputs": ["assets/web-app", "work-log.css"],
+      "packages": ["playwright", "playwright-core"],
+      "builtins": ["fs/promises"],
+      "globals": ["process"],
+      "browser": true
+    },
+    "tests/public/browser-device-auth.test.mjs": {
+      "inputs": ["assets/web-app/browser-device-auth.js"],
+      "packages": ["playwright"],
+      "builtins": ["fs/promises"],
+      "globals": ["process"],
+      "browser": true
+    },
+    "tests/public/journal-account-provider-column.test.mjs": {
+      "inputs": ["assets/web-app/styles.css", "assets/web-app/themes"],
+      "packages": ["playwright-core"],
+      "builtins": ["fs", "fs/promises", "module"],
+      "globals": ["process"],
       "browser": true
     }
   }

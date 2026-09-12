@@ -1257,6 +1257,79 @@ function el(tag, props = {}, children = []) {
   return node;
 }
 
+/* Анимации состояния живут на псевдоэлементах карточки, поэтому новый узел
+   начинает их заново. Списки пересобираются целиком, и при частых обновлениях
+   полоса активности не успевает пройти свой цикл. Узел с тем же ключом
+   переиспользуется, а его анимации продолжаются с накопленного времени. */
+const STREAM_STATUS_LAYER_SELECTOR = ".stream-tab-status-layer";
+const STREAM_STATUS_ANIMATION_PREFIX = "stream-";
+let reusableWorkspaceCards = new Map();
+let reusableStreamTabs = new Map();
+let adoptedCardAnimations = [];
+
+function statusAnimationKey(animation) {
+  return `${animation.animationName} ${animation.effect?.pseudoElement ?? ""}`;
+}
+
+function statusAnimationTimes(node) {
+  const times = new Map();
+  for (const animation of node.getAnimations?.({ subtree: true }) ?? []) {
+    if (!String(animation.animationName ?? "").startsWith(STREAM_STATUS_ANIMATION_PREFIX)) continue;
+    const time = Number(animation.currentTime);
+    if (Number.isFinite(time)) times.set(statusAnimationKey(animation), time);
+  }
+  return times;
+}
+
+function indexRenderedCards(container, selector, attribute) {
+  const index = new Map();
+  for (const node of container?.querySelectorAll(selector) ?? []) {
+    const key = node.getAttribute(attribute);
+    if (key && !index.has(key)) index.set(key, { node, times: statusAnimationTimes(node) });
+  }
+  return index;
+}
+
+function adoptRenderedCard(index, key, next) {
+  const previous = index.get(key);
+  if (!previous || previous.node.tagName !== next.tagName) return next;
+  index.delete(key);
+  const node = previous.node;
+  /* Наблюдатель видимости помечает карточку своим атрибутом, и рендер им не
+     владеет: при обновлении он сохраняется. */
+  for (const attribute of [...node.attributes]) {
+    if (attribute.name === "data-stream-offscreen") continue;
+    if (!next.hasAttribute(attribute.name)) node.removeAttribute(attribute.name);
+  }
+  for (const attribute of next.attributes) {
+    if (node.getAttribute(attribute.name) !== attribute.value) {
+      node.setAttribute(attribute.name, attribute.value);
+    }
+  }
+  /* У вкладки Stream анимацию несёт собственный слой статуса, поэтому он
+     переносится в обновлённое содержимое вместо заново созданного. */
+  const keptLayer = node.querySelector(STREAM_STATUS_LAYER_SELECTOR);
+  const nextLayer = next.querySelector(STREAM_STATUS_LAYER_SELECTOR);
+  if (keptLayer && nextLayer) nextLayer.replaceWith(keptLayer);
+  node.replaceChildren(...next.childNodes);
+  if (previous.times.size) adoptedCardAnimations.push(previous);
+  return node;
+}
+
+/* Возврат узла в документ перезапускает его анимации, поэтому уже пройденное
+   время восстанавливается сразу после вставки. */
+function resumeAdoptedCardAnimations() {
+  for (const { node, times } of adoptedCardAnimations) {
+    if (!node.isConnected) continue;
+    for (const animation of node.getAnimations?.({ subtree: true }) ?? []) {
+      const time = times.get(statusAnimationKey(animation));
+      if (time === undefined) continue;
+      try { animation.currentTime = time; } catch { /* анимация уже недоступна */ }
+    }
+  }
+  adoptedCardAnimations = [];
+}
+
 function sameData(left, right) {
   if (left === right) return true;
   try {
@@ -3401,6 +3474,7 @@ function renderTasksContent() {
       .toLowerCase().includes(filter);
     return local || state.searchResults.has(task.id);
   });
+  reusableWorkspaceCards = indexRenderedCards(taskList, ".task-workspace-item", "data-workspace-id");
   taskList.replaceChildren();
   let visibleCount = visible.length;
   const { workspaceTasks, unassignedTasks } = window.AgentHubStreamTabs.taskListSections(visible);
@@ -3454,6 +3528,8 @@ function renderTasksContent() {
   }
   taskCount.hidden = !hasTasks;
   taskCount.textContent = String(visibleCount);
+  reusableWorkspaceCards = new Map();
+  resumeAdoptedCardAnimations();
   renderActivityRail();
 }
 
@@ -3563,7 +3639,7 @@ function renderTaskWorkspaceItem({ id, name, kind, tasks }, { folderMember = fal
   const unread = tasks.some((task) => task.unread);
   const running = tasks.some((task) => task.running);
   const maintenance = tasks.map(streamMaintenanceKind).find(Boolean) ?? "";
-  return el("li", {
+  return adoptRenderedCard(reusableWorkspaceCards, id, el("li", {
     class: "task-workspace-item",
     "data-workspace-id": id,
     "data-workspace-kind": kind,
@@ -3588,7 +3664,7 @@ function renderTaskWorkspaceItem({ id, name, kind, tasks }, { folderMember = fal
       text: formatRelativeTime(lastActivity),
       title: lastActivity ? new Date(lastActivity).toLocaleString("ru-RU") : "",
     }),
-  ]);
+  ]));
 }
 
 function representativeStreamTask(stream) {
@@ -3857,6 +3933,7 @@ function renderStreamTabs() {
     return;
   }
   const workspaceId = workspaceKey(selected);
+  reusableStreamTabs = indexRenderedCards(streamTabs, ".stream-tab", "data-stream-tab-id");
   const overflowMenuOpen = window.AgentHubStreamTabs.preserveStreamOverflowMenuOpen(
     streamTabs.dataset.workspaceId,
     workspaceId,
@@ -3952,14 +4029,14 @@ function renderStreamTabs() {
         title: task?.lastActivity ? new Date(task.lastActivity).toLocaleString("ru-RU") : "",
       }),
     ];
-    const button = el("button", {
+    const button = adoptRenderedCard(reusableStreamTabs, stream.id, el("button", {
       ...attributes,
       class: "stream-tab",
       draggable: window.AgentHubStreamTabs.streamsAreDraggable(streamOrderMode, surface) ? "true" : null,
     }, [
       el("span", { class: "stream-tab-status-layer", "aria-hidden": "true" }),
       el("span", { class: "stream-tab-card" }, content()),
-    ]);
+    ]));
     overflowItems.push(el("button", {
       ...attributes,
       class: "stream-overflow-item",
@@ -3999,6 +4076,8 @@ function renderStreamTabs() {
   }, [overflowButton, overflowMenu]);
   streamTabs.dataset.workspaceId = workspaceId;
   streamTabs.replaceChildren(leftControls, track, overflow);
+  reusableStreamTabs = new Map();
+  resumeAdoptedCardAnimations();
   streamTabs.hidden = false;
   scheduleStreamTabsOverflow();
 }
@@ -4110,6 +4189,7 @@ function renderStreamChatPreview(task) {
         el("div", { class: "activity-list", "data-activity-list": "" }),
       ]),
       el("div", { class: "msg-body", "data-live-body": "" }),
+      el("div", { "data-live-attachments": "", hidden: true }),
     ]);
     populateLiveCard(liveNode, live, task.agentLabel || "Агент", task);
     log.append(liveNode);
@@ -7463,6 +7543,7 @@ function liveCardHasContent(live) {
     || normalizedMessageText(live.reasoning)
     || normalizedMessageText(live.stage)
     || visibleTurnTraceGroups(live.activityGroups).length
+    || (Array.isArray(live.attachments) && live.attachments.length)
   ));
 }
 
@@ -7543,6 +7624,16 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
     } else renderMarkdown(body, visibleText, fileContext);
   });
   body.hidden = !visibleText && liveMessage.responseCitationPresentations.length === 0;
+  const attachmentStrip = node.querySelector("[data-live-attachments]");
+  const liveAttachments = Array.isArray(liveMessage.attachments) ? liveMessage.attachments : [];
+  if (attachmentStrip) {
+    liveCardRenderController.reconcile(node, "attachments", liveAttachments, () => {
+      attachmentStrip.replaceChildren(...(liveAttachments.length
+        ? [renderAttachmentStrip(liveAttachments, { readOnly: true })]
+        : []));
+    });
+    attachmentStrip.hidden = liveAttachments.length === 0;
+  }
   const activityFeed = node.querySelector("[data-activity-feed]");
   liveCardRenderController.reconcile(node, "activity-feed", renderParts.activityFeed, () => {
     activityFeed.open = liveActivityDisclosureOpen({

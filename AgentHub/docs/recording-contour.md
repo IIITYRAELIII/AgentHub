@@ -118,6 +118,10 @@ legacy `clone-data` path refuses a prepared recording root before stop/reset;
 it must not destroy the cohort to produce an apparently successful clone.
 Ordinary runtime refresh retains the prepared data and uses the same exact
 candidate-readiness and operation-lease rules as the existing contour.
+Release-candidate smoke verifies the shell, authentication and navigation in a
+recording contour without changing its provider model or sending an agent prompt;
+the result reports that agent probe as explicitly skipped. Ordinary fake contours
+retain the complete agent probe and journal confirmation.
 
 ## Windows artifact acceptance with recording data
 
