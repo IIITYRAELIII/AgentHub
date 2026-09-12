@@ -297,14 +297,18 @@ the exact original request, original preflight arguments, plan revision and
 repository revisions. Agent Hub first binds that request to the authoritative
 MCP operation receipt by tool, Workspace, caller Stream/provider/thread and
 immutable arguments hash, then reads the existing frozen candidate checkpoints
-and manifests through the release Git owner. A prepared checkpoint proves the
-original preflight outcome only when its validated manifest/checkpoint identity
-is causally bound to that same request. A valid checkpoint without that binding
-may be reported only as a `candidate_snapshot_only` diagnostic while the
-original outcome remains unknown. Missing, stale, moved-plan, tampered-manifest
-or mismatched checkpoints keep the original outcome unknown. Reconciliation
-never reruns preflight, reuses a generic replay lease, finalizes the old receipt
-or manufactures Test Contour, validation, main-review or publication evidence.
+and manifests through the release Git owner. A prepared checkpoint is only
+candidate snapshot evidence, even when it is causally bound to the same request:
+failures can still occur after the checkpoint before the final preflight guard.
+The original request may be reported as reconciled only from a separate
+authoritative final-phase outcome that covers candidate preparation, final
+primary/release invariant checks and all required validation. Without that final
+evidence, the response is only `candidate_snapshot_only` and the original
+outcome remains unknown. Missing, stale, moved-plan, tampered-manifest,
+contradictory manifest/checkpoint request identity, wrong Workspace or stale Task
+revision/result evidence keep the original outcome unknown. Reconciliation never
+reruns preflight, reuses a generic replay lease, finalizes the old receipt or
+manufactures Test Contour, validation, main-review or publication evidence.
 
 For repositories without an Agent Hub Test Contour, release preflight requires a
 repository-owned production validation adapter. The minimal supported adapter

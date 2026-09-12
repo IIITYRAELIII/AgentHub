@@ -838,6 +838,16 @@ export class ReleaseGitWorkspaceService {
     if (branchHead !== String(checkpoint.preReleaseHead)) {
       throw new Error("release checkpoint PreRelease branch no longer matches its prepared head");
     }
+    const primaryFailure = primaryInvariantFailure(primary, "preflight frozen candidate readback");
+    if (primaryFailure) throw new Error(primaryFailure);
+    const [releaseBranch, releaseHead, releaseDirty] = await Promise.all([
+      runGit(["symbolic-ref", "--short", "HEAD"], { cwd: marker.releaseRoot }),
+      runGit(["rev-parse", "HEAD^{commit}"], { cwd: marker.releaseRoot }),
+      runGit(["status", "--porcelain=v1", "--untracked-files=all"], { cwd: marker.releaseRoot }),
+    ]);
+    if (releaseBranch !== RELEASE_BRANCH || releaseHead !== branchHead || releaseDirty) {
+      throw new Error("release checkpoint clone is not an exact clean PreRelease checkout");
+    }
     if (manifest.schemaVersion !== 2
         || manifest.planRevision !== checkpoint.planRevision
         || manifest.baseCommit !== checkpoint.baseCommit
@@ -847,6 +857,20 @@ export class ReleaseGitWorkspaceService {
         || !samePath(manifest.releaseGitCommonDir, marker.releaseGitCommonDir)) {
       throw new Error("release checkpoint manifest identity does not match the managed repository");
     }
+    const checkpointRequestId = String(checkpoint.preflightRequestId ?? "");
+    const manifestRequestId = String(manifest.preflightRequestId ?? "");
+    if (checkpointRequestId && !manifestRequestId) {
+      throw new Error("release checkpoint request identity is missing from the immutable manifest");
+    }
+    if (checkpointRequestId && manifestRequestId && checkpointRequestId !== manifestRequestId) {
+      throw new Error("release checkpoint request identity disagrees with the immutable manifest");
+    }
+    const checkpointWorkspaceId = String(checkpoint.workspaceId ?? "");
+    const manifestWorkspaceId = String(manifest.workspaceId ?? "");
+    if (checkpointWorkspaceId && manifestWorkspaceId && checkpointWorkspaceId !== manifestWorkspaceId) {
+      throw new Error("release checkpoint Workspace identity disagrees with the immutable manifest");
+    }
+    const manifestTasks = normalizedFrozenTasks(manifest.tasks ?? []);
     return {
       repositoryRoot: primary.root,
       releaseRoot: layout.releaseRoot,
@@ -859,14 +883,19 @@ export class ReleaseGitWorkspaceService {
         manifestHash: String(checkpoint.manifestHash),
         schemaVersion: manifest.schemaVersion,
         workspaceId: manifest.workspaceId ?? null,
-        preflightRequestId: manifest.preflightRequestId ?? checkpoint.preflightRequestId ?? null,
+        preflightRequestId: manifest.preflightRequestId ?? null,
         planRevision: String(manifest.planRevision ?? ""),
         primaryRoot: manifest.primaryRoot,
         releaseRoot: manifest.releaseRoot,
         baseCommit: String(manifest.baseCommit ?? ""),
-        taskIds: (Array.isArray(manifest.tasks) ? manifest.tasks : []).map((task) => String(task.taskId)).sort(),
+        tasks: manifestTasks.map((task) => ({
+          taskId: task.taskId,
+          taskRevision: task.taskRevision,
+          resultCommit: task.resultCommit,
+        })),
+        taskIds: manifestTasks.map((task) => task.taskId).sort(),
       },
-      preflightRequestId: String(checkpoint.preflightRequestId ?? manifest.preflightRequestId ?? ""),
+      preflightRequestId: manifestRequestId,
       baseCommit: String(checkpoint.baseCommit),
       preReleaseHead: String(checkpoint.preReleaseHead),
     };

@@ -162,11 +162,56 @@ test("frozen candidate readback validates prepared manifest identity and request
   assert.equal(readback.manifest.workspaceId, "workspace-1");
   assert.equal(readback.manifest.preflightRequestId, "preflight-readback-1");
   assert.deepEqual(readback.manifest.taskIds, ["task-readback"]);
+  assert.deepEqual(readback.manifest.tasks, [{
+    taskId: "task-readback",
+    taskRevision: 3,
+    resultCommit,
+  }]);
+
+  const checkpointBefore = JSON.parse(await readFile(readback.checkpointFile, "utf8"));
+  await writeFile(readback.checkpointFile, `${JSON.stringify({
+    ...checkpointBefore,
+    preflightRequestId: "different-request",
+  }, null, 2)}\n`, "utf8");
+  await assert.rejects(
+    () => setup.service.frozenCandidate(setup.primary),
+    /request identity disagrees/u,
+  );
+  await writeFile(readback.checkpointFile, `${JSON.stringify(checkpointBefore, null, 2)}\n`, "utf8");
 
   await writeFile(candidate.manifestFile, "{}\n", "utf8");
   await assert.rejects(
     () => setup.service.frozenCandidate(setup.primary),
     /manifest digest changed/u,
+  );
+});
+
+test("request-bound prepared checkpoint is not usable after the final primary guard fails", async (context) => {
+  const setup = await fixture(context);
+  const resultCommit = await taskResult(setup, context, {
+    branch: "HUB-final-guard",
+    file: "guard.txt",
+    content: "guard\n",
+  });
+
+  await assert.rejects(
+    () => setup.service.prepareCandidate({
+      planRevision: "plan-final-guard",
+      workspaceId: "workspace-probe",
+      preflightRequestId: "request-probe",
+      projectRoot: setup.primary,
+      frozenTasks: [{ taskId: "task-guard", taskRevision: 4, resultCommit }],
+      validateBeforeCommit: async () => {
+        await git(setup.primary, "checkout", "--detach", setup.baseCommit);
+      },
+    }),
+    /HEAD must remain attached to refs\/heads\/main/u,
+  );
+
+  assert.equal(await git(setup.primary, "rev-parse", "HEAD"), setup.baseCommit);
+  await assert.rejects(
+    () => setup.service.frozenCandidate(setup.primary),
+    /HEAD must remain attached to refs\/heads\/main/u,
   );
 });
 

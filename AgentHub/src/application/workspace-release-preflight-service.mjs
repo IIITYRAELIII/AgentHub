@@ -187,6 +187,15 @@ function sameRepositoryIdentity(left, right) {
     && JSON.stringify([...(left?.taskIds ?? [])].sort()) === JSON.stringify([...(right?.taskIds ?? [])].sort());
 }
 
+function sameFrozenTasks(left = [], right = []) {
+  const normalize = (items) => items.map((item) => ({
+    taskId: String(item?.taskId ?? ""),
+    taskRevision: Number(item?.taskRevision),
+    resultCommit: String(item?.resultCommit ?? ""),
+  })).sort((a, b) => a.taskId.localeCompare(b.taskId));
+  return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
+}
+
 function assertExactProductionValidation({
   validation, workspaceId, planRevision, repositories,
 }) {
@@ -402,6 +411,12 @@ export class WorkspaceReleasePreflightService {
           || candidate.manifestHash !== candidate.manifest?.manifestHash) {
         throw new Error(`preflight reconciliation manifest is stale for ${repository.projectRoot}`);
       }
+      if (String(candidate.manifest?.workspaceId ?? "") !== String(workspaceId)) {
+        throw new Error(`preflight reconciliation manifest belongs to another Workspace for ${repository.projectRoot}`);
+      }
+      if (!sameFrozenTasks(candidate.manifest?.tasks ?? [], repository.frozenTasks)) {
+        throw new Error(`preflight reconciliation manifest Task evidence is stale for ${repository.projectRoot}`);
+      }
       releaseCandidates.push(candidate);
     }
     const current = await this.releasePlanner.plan(workspaceId);
@@ -411,26 +426,17 @@ export class WorkspaceReleasePreflightService {
     const causallyBound = releaseCandidates.every((candidate) => (
       String(candidate.preflightRequestId ?? "") === receipt.requestId
     ));
-    if (!causallyBound) {
-      return {
-        workspaceId: String(workspaceId),
-        planRevision: plan.revision,
-        status: "candidate_snapshot_only",
-        originalRequestId: receipt.requestId,
-        errorClass: String(errorClass ?? "").trim() || "unknown",
-        originalOutcome: "unknown",
-        replayed: false,
-        reason: "prepared checkpoint is not causally bound to the original MCP request",
-        releaseCandidates,
-      };
-    }
     return {
       workspaceId: String(workspaceId),
       planRevision: plan.revision,
-      status: "reconciled",
+      status: "candidate_snapshot_only",
       originalRequestId: receipt.requestId,
       errorClass: String(errorClass ?? "").trim() || "unknown",
+      originalOutcome: "unknown",
       replayed: false,
+      reason: causallyBound
+        ? "prepared checkpoint is not final preflight outcome evidence"
+        : "prepared checkpoint is not causally bound to the original MCP request",
       releaseCandidates,
     };
   }

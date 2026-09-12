@@ -359,7 +359,8 @@ async function fixture(context, { releaseWorkflowEnabled = false, taskGitWorkspa
       },
       reconcilePreflight: async (options) => ({
         ...options,
-        status: "reconciled",
+        status: "candidate_snapshot_only",
+        originalOutcome: "unknown",
         replayed: false,
         releaseCandidates: [{ projectRoot: options.expectedRepositories[0]?.projectRoot, preReleaseHead: options.expectedRepositories[0]?.revision }],
       }),
@@ -1040,7 +1041,8 @@ test("HubMcpService exposes cursor events and publication-gated release completi
     expected_plan_revision: "plan-1",
     expected_repositories: [{ projectRoot: "D:/repo", revision: "pre-release-head" }],
   });
-  assert.equal(reconciled.status, "reconciled");
+  assert.equal(reconciled.status, "candidate_snapshot_only");
+  assert.equal(reconciled.originalOutcome, "unknown");
   assert.equal(reconciled.replayed, false);
   assert.equal(reconciled.originalRequestId, "architect-bwm12-release-preflight-20260912-v1");
   const release = await service.call("hub_release_complete", {
@@ -1051,6 +1053,54 @@ test("HubMcpService exposes cursor events and publication-gated release completi
   assert.equal(release.workspaceId, "workspace-1");
   assert.equal(release.expectedRepositories[0].revision, "abc");
   assert.equal(releaseCalls[0].conflictsResolved, true);
+});
+
+test("HubMcpService rejects release preflight reconcile without exact original receipt binding", async (context) => {
+  const { service, token, operations } = await fixture(context);
+  await service.call("hub_release_preflight", {
+    context_token: token,
+    request_id: "preflight-binding-1",
+    expected_plan_revision: "plan-1",
+  });
+  const original = operations.get("preflight-binding-1");
+  Object.assign(original, { status: "unknown", result: null, error: "serialization error" });
+  const request = {
+    context_token: token,
+    original_request_id: "preflight-binding-1",
+    original_preflight_arguments: {
+      request_id: "preflight-binding-1",
+      expected_plan_revision: "plan-1",
+    },
+    error_class: "serialization_error",
+    expected_plan_revision: "plan-1",
+    expected_repositories: [{ projectRoot: "D:/repo", revision: "pre-release-head" }],
+  };
+
+  await assert.rejects(
+    () => service.call("hub_release_preflight_reconcile", { ...request, original_request_id: "missing-preflight" }),
+    /receipt was not found/u,
+  );
+  Object.assign(original, { toolName: "hub_task_claim" });
+  await assert.rejects(
+    () => service.call("hub_release_preflight_reconcile", request),
+    /not a release preflight/u,
+  );
+  Object.assign(original, { toolName: "hub_release_preflight", streamId: "stream-2" });
+  await assert.rejects(
+    () => service.call("hub_release_preflight_reconcile", request),
+    /another caller/u,
+  );
+  Object.assign(original, { streamId: "stream-1" });
+  await assert.rejects(
+    () => service.call("hub_release_preflight_reconcile", {
+      ...request,
+      original_preflight_arguments: {
+        request_id: "preflight-binding-1",
+        expected_plan_revision: "plan-stale",
+      },
+    }),
+    /plan revision does not match/u,
+  );
 });
 
 test("HubMcpService restricts release preflight to Architect Streams", async (context) => {

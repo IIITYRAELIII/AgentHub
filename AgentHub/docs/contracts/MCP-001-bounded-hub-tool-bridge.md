@@ -43,11 +43,14 @@ the exact original preflight arguments, expected plan and repository revisions.
 It must find the original `hub_release_preflight` receipt and bind tool,
 Workspace, caller Stream/provider/thread and immutable arguments hash before any
 release checkpoint readback. It may only report existing frozen candidate
-checkpoint evidence owned by the release Git boundary. A checkpoint not
-causally bound to the original request is at most a candidate snapshot; it is
-not a reconciled original outcome. The tool cannot create a candidate, repeat
-validation, finalize an unknown MCP receipt, or infer success from transport
-text.
+checkpoint evidence owned by the release Git boundary. A prepared checkpoint is
+at most a candidate snapshot, whether or not it is causally bound to the original
+request; it is not a reconciled original outcome without separate authoritative
+final-phase evidence. Contradictory checkpoint/manifest request identity, wrong
+Workspace, stale Task revision/result evidence or failed primary/release
+invariant readback keep the original outcome unknown. The tool cannot create a
+candidate, repeat validation, finalize an unknown MCP receipt, or infer success
+from transport text.
 
 Receipt creation is atomic `INSERT OR IGNORE` under the exact identity. Success
 stores a bounded structural result projection rather than arbitrary response

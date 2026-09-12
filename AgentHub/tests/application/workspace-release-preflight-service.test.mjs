@@ -619,9 +619,11 @@ test("release preflight reconciliation reads exact frozen checkpoint without rep
     manifestHash: "manifest-hash",
     manifest: {
       manifestHash: "manifest-hash",
+      workspaceId: "workspace-1",
       planRevision: "plan-1",
       baseCommit: "main-head",
       taskIds: ["task-1"],
+      tasks: [{ taskId: "task-1", taskRevision: 7, resultCommit: "task-result" }],
     },
     preflightRequestId: "architect-bwm12-release-preflight-20260912-v1",
     baseCommit: "main-head",
@@ -637,7 +639,9 @@ test("release preflight reconciliation reads exact frozen checkpoint without rep
     originalReceipt: originalReceipt(),
   });
 
-  assert.equal(result.status, "reconciled");
+  assert.equal(result.status, "candidate_snapshot_only");
+  assert.equal(result.originalOutcome, "unknown");
+  assert.equal(result.reason, "prepared checkpoint is not final preflight outcome evidence");
   assert.equal(result.replayed, false);
   assert.equal(result.releaseCandidates[0].preReleaseHead, "prerelease-head");
 
@@ -659,7 +663,13 @@ test("release preflight reconciliation rejects missing or foreign original MCP r
     checkpointPhase: "prepared",
     planRevision: "plan-1",
     manifestHash: "manifest-hash",
-    manifest: { manifestHash: "manifest-hash", planRevision: "plan-1", baseCommit: "main-head" },
+    manifest: {
+      manifestHash: "manifest-hash",
+      workspaceId: "workspace-1",
+      planRevision: "plan-1",
+      baseCommit: "main-head",
+      tasks: [{ taskId: "task-1", taskRevision: 7, resultCommit: "task-result" }],
+    },
     preflightRequestId: "architect-bwm12-release-preflight-20260912-v1",
     baseCommit: "main-head",
     preReleaseHead: "prerelease-head",
@@ -692,7 +702,13 @@ test("release preflight reconciliation keeps old unbound checkpoints as snapshot
     checkpointPhase: "prepared",
     planRevision: "plan-1",
     manifestHash: "manifest-hash",
-    manifest: { manifestHash: "manifest-hash", planRevision: "plan-1", baseCommit: "main-head" },
+    manifest: {
+      manifestHash: "manifest-hash",
+      workspaceId: "workspace-1",
+      planRevision: "plan-1",
+      baseCommit: "main-head",
+      tasks: [{ taskId: "task-1", taskRevision: 7, resultCommit: "task-result" }],
+    },
     preflightRequestId: "",
     baseCommit: "main-head",
     preReleaseHead: "prerelease-head",
@@ -711,6 +727,33 @@ test("release preflight reconciliation keeps old unbound checkpoints as snapshot
   assert.equal(result.replayed, false);
 });
 
+test("release preflight reconciliation rejects stale manifest Task evidence", async () => {
+  const { projectRoot, service } = fixture();
+  service.releaseGitWorkspaces.frozenCandidate = async () => ({
+    checkpointPhase: "prepared",
+    planRevision: "plan-1",
+    manifestHash: "manifest-hash",
+    manifest: {
+      manifestHash: "manifest-hash",
+      workspaceId: "workspace-1",
+      planRevision: "plan-1",
+      baseCommit: "main-head",
+      tasks: [{ taskId: "task-1", taskRevision: 6, resultCommit: "task-result" }],
+    },
+    preflightRequestId: "architect-bwm12-release-preflight-20260912-v1",
+    baseCommit: "main-head",
+    preReleaseHead: "prerelease-head",
+  });
+
+  await assert.rejects(() => service.reconcilePreflight({
+    workspaceId: "workspace-1",
+    expectedPlanRevision: "plan-1",
+    expectedRepositories: [{ projectRoot, revision: "prerelease-head" }],
+    originalRequestId: "architect-bwm12-release-preflight-20260912-v1",
+    originalReceipt: originalReceipt(),
+  }), /Task evidence is stale/u);
+});
+
 test("release preflight reconciliation rejects plan movement during readback", async () => {
   const { projectRoot, service } = fixture();
   let reads = 0;
@@ -724,7 +767,13 @@ test("release preflight reconciliation rejects plan movement during readback", a
     checkpointPhase: "prepared",
     planRevision: "plan-1",
     manifestHash: "manifest-hash",
-    manifest: { manifestHash: "manifest-hash", planRevision: "plan-1", baseCommit: "main-head" },
+    manifest: {
+      manifestHash: "manifest-hash",
+      workspaceId: "workspace-1",
+      planRevision: "plan-1",
+      baseCommit: "main-head",
+      tasks: [{ taskId: "task-1", taskRevision: 7, resultCommit: "task-result" }],
+    },
     preflightRequestId: "architect-bwm12-release-preflight-20260912-v1",
     baseCommit: "main-head",
     preReleaseHead: "prerelease-head",
