@@ -8,7 +8,8 @@
 // --source selects the Agent Hub source tree whose modules are measured, so the
 // same scenario runs against a baseline checkout and the candidate.
 import { execFileSync } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -25,6 +26,8 @@ const FACTS = Number(argument("facts", 36_397));
 const LIVE = Number(argument("live", 6));
 const BODY_BYTES = Number(argument("body-bytes", 4096));
 const BARRIER_MS = Number(argument("barrier-ms", 1500));
+// An extracted archive has no Git identity of its own; pass it explicitly.
+const SOURCE_COMMIT = argument("source-commit", null);
 
 const load = (relative) => import(pathToFileURL(path.join(source, "src", relative)).href);
 const [
@@ -49,17 +52,43 @@ const stats = (values) => {
   const at = (q) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
   return { count: sorted.length, p50: round(at(0.5)), max: round(sorted.at(-1)), total: round(sorted.reduce((a, b) => a + b, 0)) };
 };
+// Git discovery walks up into any enclosing checkout, so a commit is reported
+// only when the source is the AgentHub directory of its own repository.
 const commitOf = (root) => {
-  try { return execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(); }
-  catch { return null; }
+  try {
+    const top = execFileSync("git", ["-C", root, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+    if (path.resolve(top, "AgentHub").toLowerCase() !== path.resolve(root).toLowerCase()) return null;
+    return execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  } catch { return null; }
 };
+// Content identity of the measured modules, independent of checkout line endings.
+async function sourceDigest(root) {
+  const base = path.join(root, "src");
+  const files = (await readdir(base, { recursive: true, withFileTypes: true }))
+    .filter((entry) => entry.isFile())
+    .map((entry) => path.relative(base, path.join(entry.parentPath ?? entry.path, entry.name)).split(path.sep).join("/"))
+    .sort();
+  const hash = createHash("sha256");
+  for (const file of files) {
+    hash.update(`${file}\0`);
+    hash.update((await readFile(path.join(base, file), "utf8")).replaceAll("\r\n", "\n"));
+    hash.update("\0");
+  }
+  return `sha256:${hash.digest("hex")}`;
+}
 
 const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-hub220-bench-"));
 const databaseFile = path.join(root, "journal.sqlite");
 const projectRoots = ["alpha", "beta", "gamma"].map((name) => path.join(root, name));
 const accounts = ["chatgpt:owner", "chatgpt:team", "chatgpt:second"];
 const body = "Retained answer text. ".repeat(Math.max(1, Math.ceil(BODY_BYTES / 22))).slice(0, BODY_BYTES);
-const report = { source, sourceCommit: commitOf(source), records: RECORDS, facts: FACTS, live: LIVE, bodyBytes: BODY_BYTES };
+const discoveredCommit = SOURCE_COMMIT ? null : commitOf(source);
+const report = {
+  source, sourceCommit: SOURCE_COMMIT ?? discoveredCommit,
+  sourceCommitOrigin: SOURCE_COMMIT ? "argument" : discoveredCommit ? "git" : null,
+  sourceDigest: await sourceDigest(source),
+  records: RECORDS, facts: FACTS, live: LIVE, bodyBytes: BODY_BYTES,
+};
 
 let journal; let worker; let usage; let writer; let barrier = null; let writerLoop = null; let writing = false;
 try {
@@ -174,7 +203,6 @@ try {
     if (index === 0) duplicate = committed.outbox;
     await delay(60);
   }
-  const duplicateResult = await service.deliverOutbox(duplicate).catch(() => false);
   const live = await Promise.all(deliveries);
   const snapshotResult = await snapshot;
   const firstPassMs = performance.now() - scenarioStart;
@@ -183,6 +211,18 @@ try {
   await service.retryPending();
   const recoveryMs = performance.now() - recoveryStart;
   const scenarioMs = performance.now() - scenarioStart;
+  const pendingAfterRecovery = (await terminal.pending()).length;
+
+  // Replaying the failed-then-recovered outbox must change nothing. It runs
+  // after recovery so it cannot itself rescue the pending revision.
+  const replayRevision = await journal.currentRevision();
+  const replayRecords = (await journal.ledgerStatus()).records;
+  const duplicateResult = await service.deliverOutbox(duplicate).catch((error) => ({ error: error.message }));
+  const duplicateReplay = {
+    result: duplicateResult,
+    revisionDelta: await journal.currentRevision() - replayRevision,
+    recordDelta: (await journal.ledgerStatus()).records - replayRecords,
+  };
 
   // Deterministic lock barrier: a second connection owns the write lock while a
   // real terminal is recorded and projected, then releases it.
@@ -229,9 +269,11 @@ try {
       recordCount: calls.find((call) => call.recordCount)?.recordCount, eventCount: calls.find((call) => call.eventCount)?.eventCount,
     },
     delivery: {
-      liveCommitToSettleMs: stats(live.map((item) => item.ackMs)), deliveredOnFirstPass: live.filter((item) => item.delivered).length,
+      liveCommitToSettleMs: stats(live.map((item) => item.ackMs)),
+      // A settled delivery is either a projection result or an error object.
+      deliveredOnFirstPass: live.filter((item) => item.delivered?.projection === true).length,
       firstPassValues: live.map((item) => item.delivered),
-      pendingAfterFirstPass, duplicateDelivered: duplicateResult,
+      pendingAfterFirstPass, pendingAfterRecovery, duplicateReplay,
     },
     snapshot: { totalMs: round(snapshotResult.totalMs), workerMs: round(snapshotResult.value.durationMs ?? NaN), events: snapshotResult.value.events.length },
     sqlite: {
@@ -249,6 +291,8 @@ try {
       factsPreserved: factsBefore.size === factsAfter.size && [...factsBefore].every((id) => factsAfter.has(id)),
       factCount: factsAfter.size, expectedFacts: FACTS, exactFacts: factsAfter.size === FACTS,
       exactRecords: Object.keys(ledger.turns).length === RECORDS + LIVE + 1,
+      pendingRecoveredOnRetry: pendingAfterFirstPass > 0 && pendingAfterRecovery === 0,
+      duplicateReplayNoEffect: duplicateReplay.revisionDelta === 0 && duplicateReplay.recordDelta === 0,
       secondCursorSnapshotEvents: secondSnapshot.events.length,
     },
   });
