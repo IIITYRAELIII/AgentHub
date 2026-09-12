@@ -39,6 +39,9 @@ async function fixture(context) {
   await git(root, "init", "--bare", "--initial-branch=main", origin);
   await git(root, "clone", origin, primary);
   await git(primary, "config", "core.autocrlf", "false");
+  // core.autocrlf наследуется из системной конфигурации Windows; нормализация
+  // делает рабочее дерево клона релиза детерминированным на всех платформах.
+  await writeFile(path.join(primary, ".gitattributes"), "* text eol=lf\n", "utf8");
   await mkdir(path.join(primary, ".team"));
   await mkdir(path.join(primary, "1C_ACCESS"));
   await mkdir(path.join(primary, "AgentHub"));
@@ -567,4 +570,118 @@ test("post-release overlap is diagnostic and leaves primary HEAD and bytes uncha
   assert.equal(await git(setup.primary, "rev-parse", "HEAD"), beforeHead);
   assert.equal(await git(setup.primary, "status", "--porcelain=v1"), beforeStatus);
   assert.deepEqual(await readFile(path.join(setup.primary, ".team", "participant.json")), localBytes);
+});
+
+// HUB-204: выбранная зависимость входит ровно один раз, невыбранная не входит.
+async function dependencyFixture(setup, context, { selectDependency }) {
+  const depRoot = path.join(setup.root, "task-dependency");
+  await git(setup.primary, "worktree", "add", "-b", "HUB-dependency", depRoot, "main");
+  context.after(() => git(setup.primary, "worktree", "remove", "--force", depRoot).catch(() => {}));
+  await writeFile(path.join(depRoot, "dependency.txt"), "dependency\n", "utf8");
+  const dependencyResult = await commit(depRoot, "dependency");
+
+  // Задача Б ветвится от результата А, поэтому содержит её коммит в своей истории.
+  const dependentRoot = path.join(setup.root, "task-dependent");
+  await git(setup.primary, "worktree", "add", "-b", "HUB-dependent", dependentRoot, dependencyResult);
+  context.after(() => git(setup.primary, "worktree", "remove", "--force", dependentRoot).catch(() => {}));
+  await writeFile(path.join(dependentRoot, "dependent.txt"), "dependent\n", "utf8");
+  const dependentResult = await commit(dependentRoot, "dependent");
+
+  const devRoot = path.join(setup.root, "dev-dependency");
+  await git(setup.primary, "worktree", "add", "-b", "dev-dependency", devRoot, "main");
+  context.after(() => git(setup.primary, "worktree", "remove", "--force", devRoot).catch(() => {}));
+  await git(devRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "--no-edit", dependencyResult);
+  const dependencyIntegration = await git(devRoot, "rev-parse", "HEAD");
+  await git(devRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "--no-edit", dependentResult);
+  const dependentIntegration = await git(devRoot, "rev-parse", "HEAD");
+
+  const dependencyTask = {
+    taskId: "task-dependency",
+    taskRevision: 2,
+    resultCommit: dependencyResult,
+    integrations: [{ commit: dependencyIntegration, parent: setup.baseCommit, order: 1 }],
+  };
+  const dependentTask = {
+    taskId: "task-dependent",
+    taskRevision: 3,
+    resultCommit: dependentResult,
+    integrations: [{ commit: dependentIntegration, parent: dependencyIntegration, order: 2 }],
+  };
+  return { frozenTasks: selectDependency ? [dependencyTask, dependentTask] : [dependentTask] };
+}
+
+test("selected dependency and its dependent Task are each included exactly once", async (context) => {
+  const setup = await fixture(context);
+  const scenario = await dependencyFixture(setup, context, { selectDependency: true });
+
+  const candidate = await setup.service.prepareCandidate({
+    planRevision: "plan-dependency-selected",
+    projectRoot: setup.primary,
+    frozenTasks: scenario.frozenTasks,
+  });
+
+  assert.equal(await git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:dependency.txt`), "dependency");
+  assert.equal(await git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:dependent.txt`), "dependent");
+  const names = (await git(candidate.releaseRoot, "diff", "--name-only",
+    setup.baseCommit, candidate.preReleaseHead)).split("\n").filter(Boolean).sort();
+  assert.deepEqual(names, ["dependency.txt", "dependent.txt"]);
+});
+
+test("an unselected dependency never reaches the release through its dependent Task", async (context) => {
+  const setup = await fixture(context);
+  const scenario = await dependencyFixture(setup, context, { selectDependency: false });
+
+  const candidate = await setup.service.prepareCandidate({
+    planRevision: "plan-dependency-excluded",
+    projectRoot: setup.primary,
+    frozenTasks: scenario.frozenTasks,
+  });
+
+  assert.equal(await git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:dependent.txt`), "dependent");
+  await assert.rejects(git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:dependency.txt`));
+  const names = (await git(candidate.releaseRoot, "diff", "--name-only",
+    setup.baseCommit, candidate.preReleaseHead)).split("\n").filter(Boolean);
+  assert.deepEqual(names, ["dependent.txt"]);
+});
+
+test("repeated publication freeze reuses the accepted PreRelease without rebuilding or losing composition", async (context) => {
+  const setup = await fixture(context);
+  const scenario = await dependencyFixture(setup, context, { selectDependency: true });
+
+  const accepted = await setup.service.prepareCandidate({
+    planRevision: "plan-reuse",
+    projectRoot: setup.primary,
+    workspaceId: "workspace",
+    frozenTasks: scenario.frozenTasks,
+  });
+  const changelogContent = Buffer.from("consolidated\n");
+  await writeFile(path.join(accepted.releaseRoot, "CHANGELOG.md"), changelogContent);
+  const freeze = (options = {}) => setup.service.freezePublicationCandidate({
+    projectRoot: setup.primary,
+    workspaceId: "workspace",
+    expectedPlanRevision: "plan-reuse",
+    expectedPreparedHead: accepted.preReleaseHead,
+    changelogContent,
+    ...options,
+  });
+
+  const frozen = await freeze();
+  const refrozen = await freeze({
+    validateBeforeCommit: () => assert.fail("a repeated freeze must not revalidate or rebuild the accepted release"),
+  });
+
+  assert.equal(frozen.phase, "frozen");
+  assert.equal(frozen.reused, false);
+  assert.equal(refrozen.reused, true);
+  assert.equal(refrozen.preReleaseHead, frozen.preReleaseHead);
+  assert.equal(refrozen.manifestHash, frozen.manifestHash);
+  assert.equal(await git(accepted.releaseRoot, "rev-parse", "PreRelease"), frozen.preReleaseHead);
+  assert.equal(await git(accepted.releaseRoot, "rev-parse", "main"), frozen.preReleaseHead);
+  assert.equal(await git(accepted.releaseRoot, "show", `${refrozen.preReleaseHead}:dependency.txt`), "dependency");
+  assert.equal(await git(accepted.releaseRoot, "show", `${refrozen.preReleaseHead}:dependent.txt`), "dependent");
+  const names = (await git(accepted.releaseRoot, "diff", "--name-only",
+    setup.baseCommit, refrozen.preReleaseHead)).split("\n").filter(Boolean).sort();
+  assert.deepEqual(names, ["CHANGELOG.md", "dependency.txt", "dependent.txt"]);
 });
