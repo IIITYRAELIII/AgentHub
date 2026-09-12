@@ -14,9 +14,21 @@ function deferred() {
   return { promise, resolve };
 }
 
+async function removeFixtureRoot(root) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await rm(root, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (!["ENOTEMPTY", "EPERM", "EBUSY"].includes(error?.code) || attempt === 4) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
+    }
+  }
+}
+
 async function fixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-publication-resume-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => removeFixtureRoot(root));
   const journal = publicationRunStore({ runtimeRoot: root });
   const checkpoint = publicationCheckpointStore(path.join(root, "publication-checkpoint.json"));
   const identity = { runtimeRoot: root, worktreeRoot: path.join(root, "clone"), revision: "a".repeat(40), release: { workspaceId: "workspace" } };

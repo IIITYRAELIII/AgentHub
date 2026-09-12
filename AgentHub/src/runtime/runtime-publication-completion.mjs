@@ -3,7 +3,7 @@ import { publicationRunStore } from "../infrastructure/persistence/publication-r
 import { publicationCheckpointStore } from "../infrastructure/persistence/publication-checkpoint.mjs";
 import { writePublicationState } from "../infrastructure/persistence/publication-state.mjs";
 import { resumePendingPublicationCompletion } from "../infrastructure/persistence/publication-completion.mjs";
-import { withPublicationLock } from "../infrastructure/process/publication-lock.mjs";
+import { clearInheritedPublicationOwnership, withPublicationLock } from "../infrastructure/process/publication-lock.mjs";
 import { createFrozenReleasePublication } from "../infrastructure/process/frozen-release-publication.mjs";
 import { publicationRuntimeStatus } from "./runtime-publication-start.mjs";
 import { waitForRuntimeReplacement } from "./publication-readiness.mjs";
@@ -30,7 +30,7 @@ export async function resumeRuntimePublicationCompletion({
   // A replacement may inherit the publisher's session. It is a different lock
   // owner and must wait for that live publisher, never bypass its lease.
   const lockEnvironment = { ...environment };
-  delete lockEnvironment.AGENT_HUB_PUBLICATION_SESSION;
+  clearInheritedPublicationOwnership(lockEnvironment);
   return lock(async () => {
     const saved = await journal.read();
     if (!isPending(saved, runtimeRoot)) return { status: "not_pending" };
