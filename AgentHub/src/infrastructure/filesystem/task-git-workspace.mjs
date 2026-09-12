@@ -1464,7 +1464,6 @@ export class TaskGitWorkspaceService {
       const [commit, parentsText = ""] = line.split("\0");
       return { commit, parents: parentsText.split(" ").filter(Boolean), order };
     });
-    const claimedIntegrations = new Map();
     const resolvedTasks = [];
     for (const task of tasks) {
       const taskRevision = Number(task.taskRevision);
@@ -1497,23 +1496,45 @@ export class TaskGitWorkspaceService {
           throw new Error(`Task ${task.taskId} has no exact first-parent integration in dev`);
         }
       }
-      for (const integration of integrations) {
-        const owner = claimedIntegrations.get(integration.commit);
-        if (owner && owner !== task.taskId) {
-          throw new Error(`dev integration ${integration.commit} is ambiguously owned by Tasks ${owner} and ${task.taskId}`);
-        }
-        claimedIntegrations.set(integration.commit, task.taskId);
-      }
       resolvedTasks.push({
         taskId: String(task.taskId),
         taskRevision,
         resultCommit: evidence.resultCommit,
         integrations,
+        lineage,
       });
+    }
+    const integrationClaims = new Map();
+    for (const task of resolvedTasks) {
+      for (const integration of task.integrations) {
+        const claims = integrationClaims.get(integration.commit) ?? [];
+        claims.push(task);
+        integrationClaims.set(integration.commit, claims);
+      }
+    }
+    const integrationOwners = new Map();
+    for (const [integrationCommit, claims] of integrationClaims) {
+      if (claims.length === 1) {
+        integrationOwners.set(integrationCommit, claims[0].taskId);
+        continue;
+      }
+      const nestedOwners = claims.filter((candidate) => claims.every((claimant) => (
+        claimant.taskId === candidate.taskId || claimant.lineage.has(candidate.resultCommit)
+      )));
+      if (nestedOwners.length !== 1) {
+        throw new Error(`dev integration ${integrationCommit} is ambiguously owned by Tasks ${claims
+          .map((claim) => claim.taskId).join(" and ")}`);
+      }
+      integrationOwners.set(integrationCommit, nestedOwners[0].taskId);
     }
     return {
       ...dev,
-      tasks: resolvedTasks.sort((left, right) => (
+      tasks: resolvedTasks.map(({ lineage, ...task }) => ({
+        ...task,
+        integrations: task.integrations.filter((integration) => (
+          integrationOwners.get(integration.commit) === task.taskId
+        )),
+      })).sort((left, right) => (
         (left.integrations[0]?.order ?? Number.MAX_SAFE_INTEGER)
         - (right.integrations[0]?.order ?? Number.MAX_SAFE_INTEGER)
         || left.taskId.localeCompare(right.taskId)

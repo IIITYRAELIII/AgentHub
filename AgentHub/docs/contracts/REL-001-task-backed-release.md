@@ -275,6 +275,16 @@ edits, and writing one aggregate commit. `dev` is never merged into
 `PreRelease`; Test-only work cannot enter a release through a broad Task
 snapshot.
 
+When selected Tasks have nested first-parent result histories, an integration
+claimed by more than one selected lineage belongs only to the unique selected
+Task whose exact result is a first-parent ancestor of every other claimant's
+result. This selected Task identity permits its accepted net delta to be
+projected exactly once before dependent Task deltas. Incomparable claimants,
+duplicate owners, or evidence outside the selected Task results remains
+ambiguous and blocks the release. An unselected ancestor does not establish
+this ownership: only the selected Task's effective integrations remain, and a
+later delta that depends on the omitted ancestor fails instead of importing it.
+
 A Task with repeated integrations may use a net delta from its latest shared
 main ancestor to its accepted result only after bounded Git ancestry proof.
 Unpublished commits must belong to that Task's first-parent lineage or its

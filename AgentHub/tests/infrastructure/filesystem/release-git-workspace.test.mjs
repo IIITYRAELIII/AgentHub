@@ -12,7 +12,8 @@ import {
   ReleaseGitWorkspaceService,
 } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import { canonicalPath } from "../../../src/infrastructure/filesystem/config.mjs";
-import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
+import { TaskGitWorkspaceService } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
+import { taskBranchName, taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
 import {
   resolveTestContourSource,
   TEST_CONTOUR_RELEASE_CANDIDATE_SOURCE,
@@ -81,6 +82,16 @@ async function publishCandidate(candidate) {
   await git(candidate.releaseRoot, "merge", "--ff-only", candidate.preReleaseHead);
   await git(candidate.releaseRoot, "push", "origin", "main");
   return git(candidate.releaseRoot, "rev-parse", "HEAD");
+}
+
+async function registeredTaskBranch(setup, context, { taskId, startCommit, baseCommit = setup.baseCommit }) {
+  const branch = taskBranchName(taskId, setup.primary);
+  const taskRoot = path.join(setup.root, `task-${taskId}`);
+  await git(setup.primary, "worktree", "add", "-b", branch, taskRoot, startCommit);
+  context.after(() => git(setup.primary, "worktree", "remove", "--force", taskRoot).catch(() => {}));
+  await git(setup.primary, "update-ref",
+    `refs/agent-hub/task-bases/${taskId}/${taskRepositoryKey(setup.primary)}`, baseCommit);
+  return { branch, taskRoot };
 }
 
 for (const binaryOnly of [false, true]) test(`PreRelease preserves ${binaryOnly ? "terminal binary patch delimiters" : "binary patch bytes and a trailing blank context line"}`, { timeout: 20000 }, async (context) => {
@@ -655,6 +666,131 @@ test("selected dependency and its dependent Task are each included exactly once"
   const names = (await git(candidate.releaseRoot, "diff", "--name-only",
     setup.baseCommit, candidate.preReleaseHead)).split("\n").filter(Boolean).sort();
   assert.deepEqual(names, ["dependency.txt", "dependent.txt"]);
+});
+
+test("real nested Task evidence projects the selected dependency once before its dependent changes", async (context) => {
+  const setup = await fixture(context);
+  await writeFile(path.join(setup.primary, "projection.txt"), "slot=base\n", "utf8");
+  setup.baseCommit = await commit(setup.primary, "projection base");
+  await git(setup.primary, "push", "origin", "main");
+
+  const dependencyId = "20000000-0000-0000-0000-000000000003";
+  const dependentId = "20000000-0000-0000-0000-000000000004";
+  const releaseOwnerId = "20000000-0000-0000-0000-000000000016";
+  const dependency = await registeredTaskBranch(setup, context, {
+    taskId: dependencyId,
+    startCommit: setup.baseCommit,
+  });
+  await writeFile(path.join(dependency.taskRoot, "projection.txt"), "slot=dependency\n", "utf8");
+  const dependencyResult = await commit(dependency.taskRoot, "selected dependency");
+
+  const dependent = await registeredTaskBranch(setup, context, {
+    taskId: dependentId,
+    startCommit: dependencyResult,
+  });
+  await writeFile(path.join(dependent.taskRoot, "dependent.txt"), "dependent\n", "utf8");
+  const dependentResult = await commit(dependent.taskRoot, "selected dependent");
+
+  const taskGit = new TaskGitWorkspaceService({ dataDir: setup.dataDir });
+  const dev = await taskGit.prepareDev(setup.primary);
+  await writeFile(path.join(dev.projectRoot, "projection.txt"), "slot=dependency\n", "utf8");
+  await writeFile(path.join(dev.projectRoot, "foreign.txt"), "must-not-release\n", "utf8");
+  await commit(dev.projectRoot, "equivalent dependency with foreign context");
+  await git(dev.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "--no-edit", dependencyResult);
+  const dependencyIntegration = await git(dev.projectRoot, "rev-parse", "HEAD");
+  assert.equal(await git(dev.projectRoot, "diff", `${dependencyIntegration}^1`, dependencyIntegration), "");
+  await git(dev.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "--no-edit", dependentResult);
+
+  const releaseOwnerBase = await git(dev.projectRoot, "rev-parse", "HEAD");
+  const releaseOwner = await registeredTaskBranch(setup, context, {
+    taskId: releaseOwnerId,
+    startCommit: releaseOwnerBase,
+    baseCommit: releaseOwnerBase,
+  });
+  await writeFile(path.join(releaseOwner.taskRoot, "projection.txt"), "slot=release-owner\n", "utf8");
+  await writeFile(path.join(releaseOwner.taskRoot, "release-owner.txt"), "release-owner\n", "utf8");
+  const releaseOwnerResult = await commit(releaseOwner.taskRoot, "dependent release owner");
+  await git(dev.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "--no-edit", releaseOwnerResult);
+
+  const tasks = [
+    { taskId: dependencyId, taskRevision: 3, projectRoot: setup.primary,
+      branch: dependency.branch, resultCommit: dependencyResult },
+    { taskId: dependentId, taskRevision: 4, projectRoot: setup.primary,
+      branch: dependent.branch, resultCommit: dependentResult },
+    { taskId: releaseOwnerId, taskRevision: 16, projectRoot: setup.primary,
+      branch: releaseOwner.branch, resultCommit: releaseOwnerResult },
+  ];
+  const evidence = await taskGit.releaseIntegrationEvidence({ projectRoot: setup.primary, tasks });
+  const selectedDependency = evidence.tasks.find((task) => task.taskId === dependencyId);
+  const selectedDependent = evidence.tasks.find((task) => task.taskId === dependentId);
+  assert.deepEqual(selectedDependency.integrations.map((item) => item.commit), [dependencyIntegration]);
+  assert.equal(selectedDependent.integrations.some((item) => item.commit === dependencyIntegration), false);
+
+  const candidate = await setup.service.prepareCandidate({
+    planRevision: "plan-real-nested-evidence",
+    projectRoot: setup.primary,
+    frozenTasks: evidence.tasks,
+  });
+  assert.deepEqual(candidate.netProjectedTaskIds, [dependencyId]);
+  assert.equal(await git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:projection.txt`),
+    "slot=release-owner");
+  assert.equal(await git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:dependent.txt`), "dependent");
+  assert.equal(await git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:release-owner.txt`),
+    "release-owner");
+  await assert.rejects(git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:foreign.txt`));
+  const names = (await git(candidate.releaseRoot, "diff", "--name-only",
+    setup.baseCommit, candidate.preReleaseHead)).split("\n").filter(Boolean).sort();
+  assert.deepEqual(names, ["dependent.txt", "projection.txt", "release-owner.txt"]);
+
+  const withoutDependency = await taskGit.releaseIntegrationEvidence({
+    projectRoot: setup.primary,
+    tasks: tasks.filter((task) => task.taskId !== dependencyId),
+  });
+  await assert.rejects(setup.service.prepareCandidate({
+    planRevision: "plan-real-nested-evidence-without-dependency",
+    projectRoot: setup.primary,
+    frozenTasks: withoutDependency.tasks,
+  }), new RegExp(`failed for Task ${releaseOwnerId}`, "u"));
+});
+
+test("incomparable selected Tasks cannot claim one shared dev integration", async (context) => {
+  const setup = await fixture(context);
+  const sharedRoot = path.join(setup.root, "task-shared-lineage");
+  await git(setup.primary, "worktree", "add", "-b", "shared-lineage", sharedRoot, setup.baseCommit);
+  context.after(() => git(setup.primary, "worktree", "remove", "--force", sharedRoot).catch(() => {}));
+  await writeFile(path.join(sharedRoot, "shared.txt"), "shared\n", "utf8");
+  const sharedCommit = await commit(sharedRoot, "shared ancestor");
+
+  const leftId = "30000000-0000-0000-0000-000000000001";
+  const rightId = "30000000-0000-0000-0000-000000000002";
+  const left = await registeredTaskBranch(setup, context, { taskId: leftId, startCommit: sharedCommit });
+  const right = await registeredTaskBranch(setup, context, { taskId: rightId, startCommit: sharedCommit });
+  await writeFile(path.join(left.taskRoot, "left.txt"), "left\n", "utf8");
+  await writeFile(path.join(right.taskRoot, "right.txt"), "right\n", "utf8");
+  const leftResult = await commit(left.taskRoot, "left result");
+  const rightResult = await commit(right.taskRoot, "right result");
+
+  const taskGit = new TaskGitWorkspaceService({ dataDir: setup.dataDir });
+  const dev = await taskGit.prepareDev(setup.primary);
+  await git(dev.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "--no-edit", sharedCommit);
+  await git(dev.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "--no-edit", leftResult);
+  await git(dev.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "--no-edit", rightResult);
+
+  await assert.rejects(taskGit.releaseIntegrationEvidence({
+    projectRoot: setup.primary,
+    tasks: [
+      { taskId: leftId, taskRevision: 1, projectRoot: setup.primary,
+        branch: left.branch, resultCommit: leftResult },
+      { taskId: rightId, taskRevision: 1, projectRoot: setup.primary,
+        branch: right.branch, resultCommit: rightResult },
+    ],
+  }), /ambiguously owned/u);
 });
 
 test("an unselected dependency never reaches the release through its dependent Task", async (context) => {
