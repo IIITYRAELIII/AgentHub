@@ -148,6 +148,9 @@ function completedLiveAgentMessage(previous, selected) {
     author: previous.author,
     phase: "final",
     text: answer,
+    attachments: Array.isArray(previous.attachments)
+      ? previous.attachments.map((attachment) => ({ ...attachment }))
+      : [],
     responseAnnotationReferences: Array.isArray(previous.responseAnnotationReferences)
       ? previous.responseAnnotationReferences.map((reference) => ({ ...reference }))
       : [],

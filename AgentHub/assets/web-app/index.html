@@ -464,6 +464,7 @@
               <div class="activity-list" data-activity-list></div>
             </details>
             <div class="msg-body" data-live-body></div>
+            <div data-live-attachments hidden></div>
           </article>
           <div class="queue" data-queue hidden aria-label="Очередь сообщений"></div>
         </div>
@@ -581,11 +582,15 @@
                     </span>
                   </span>
                 </div>
-                <div class="quick-messages-editor">
+              </div>
+              <div class="quick-messages-editor prompt-template-editor-card">
+                <header class="quick-message-editor-header">
                   <span class="setting-name">Prompt-шаблоны потока</span>
-                  <span class="setting-value" data-dialog-stream-quick-messages-count>Не заданы</span>
-                  <button type="button" class="chip-button quick-messages-editor-open"
-                    data-prompt-templates-open="stream" data-dialog-stream-quick-messages>Настроить шаблоны</button>
+                  <span class="setting-value" data-dialog-stream-quick-messages-count>0 шаблонов</span>
+                </header>
+                <div class="prompt-template-entry-controls">
+                  <button type="button" class="chip-button prompt-template-entry-open"
+                    data-prompt-templates-open="stream" data-dialog-stream-quick-messages-entry>Настроить шаблоны</button>
                 </div>
               </div>
             </section>
@@ -1132,11 +1137,15 @@
             <output data-workspace-card-rules-count>0 / 32 КиБ</output>
           </span>
         </label>
-        <div class="quick-messages-editor workspace-card-quick-messages">
-          <span class="setting-name">Prompt-шаблоны Workspace</span>
-          <span class="setting-value" data-workspace-card-quick-messages-count>Не заданы</span>
-          <button type="button" class="chip-button quick-messages-editor-open"
-            data-prompt-templates-open="workspace" data-workspace-card-quick-messages>Настроить шаблоны</button>
+        <div class="quick-messages-editor prompt-template-editor-card workspace-card-quick-messages">
+          <header class="quick-message-editor-header">
+            <span class="setting-name">Prompt-шаблоны Workspace</span>
+            <span class="setting-value" data-workspace-card-quick-messages-count>0 шаблонов</span>
+          </header>
+          <div class="prompt-template-entry-controls">
+            <button type="button" class="chip-button prompt-template-entry-open"
+              data-prompt-templates-open="workspace" data-workspace-card-quick-messages-entry>Настроить шаблоны</button>
+          </div>
         </div>
         <div class="workspace-release-workflow-setting">
           <label class="setting-switch workspace-release-workflow-switch">
@@ -1193,12 +1202,11 @@
   </dialog>
 
   <dialog class="prompt-templates-modal" data-prompt-templates-modal aria-labelledby="prompt-templates-title">
-    <form data-prompt-templates-form>
-      <header>
-        <div>
-          <p class="eyebrow">Prompt-шаблоны</p>
-          <h2 id="prompt-templates-title">Управление шаблонами</h2>
-        </div>
+    <header>
+      <div>
+        <p class="eyebrow">Prompt-шаблоны</p>
+        <h2 id="prompt-templates-title">Управление шаблонами</h2>
+      </div>
         <button type="button" class="icon-button" data-prompt-templates-close aria-label="Закрыть">
           <svg data-phosphor-icon="x" viewBox="0 0 256 256" aria-hidden="true">
             <line x1="200" y1="56" x2="56" y2="200" fill="none" stroke="currentColor"
@@ -1207,28 +1215,26 @@
               stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
           </svg>
         </button>
-      </header>
-      <section class="prompt-templates-fields">
-        <div class="prompt-templates-scopes" role="group" aria-label="Область действия"
-          data-prompt-templates-scopes></div>
-        <p class="prompt-templates-note" data-prompt-templates-note></p>
-        <div class="prompt-templates-conflict" data-prompt-templates-conflict hidden role="status">
-          <p data-prompt-templates-conflict-text></p>
-          <button type="button" class="chip-button" data-prompt-templates-reload>Взять сохранённые</button>
-        </div>
-        <div class="prompt-templates-editor" data-prompt-templates-editor>
+    </header>
+    <section class="prompt-templates-fields">
+      <div class="prompt-templates-scopes" role="group" aria-label="Область действия"
+        data-prompt-templates-scopes></div>
+      <p class="prompt-templates-note" data-prompt-templates-note></p>
+      <div class="prompt-templates-conflict" data-prompt-templates-conflict hidden role="status">
+        <p data-prompt-templates-conflict-text></p>
+        <button type="button" class="chip-button" data-prompt-templates-reload>Взять сохранённые</button>
+      </div>
+      <div class="quick-messages-editor prompt-template-editor-card prompt-templates-card">
+        <div class="quick-messages-editor-controls" data-prompt-templates-editor>
           <div class="quick-message-editor-rows" data-quick-message-rows></div>
-          <button type="button" class="chip-button" data-quick-message-add>+ Добавить шаблон</button>
+          <div class="quick-message-editor-error" data-quick-message-error role="status" hidden></div>
+          <button type="button" class="quick-message-editor-add" data-quick-message-add></button>
         </div>
-        <p class="prompt-templates-empty" data-prompt-templates-empty hidden>
-          В этой области шаблонов пока нет.
-        </p>
-      </section>
-      <footer>
-        <button type="button" class="board-task-quiet" data-prompt-templates-cancel>Отмена</button>
-        <button type="submit" class="board-task-primary" data-prompt-templates-save>Сохранить</button>
-      </footer>
-    </form>
+      </div>
+    </section>
+    <footer>
+      <button type="button" class="board-task-primary" data-prompt-templates-done>Готово</button>
+    </footer>
   </dialog>
 
   <!-- ================================================= Отдельное представление: журнал === -->
@@ -1915,11 +1921,25 @@
       <section class="settings-section">
         <h3 class="settings-section-title">Диалоги</h3>
         <div class="settings-card">
-          <div class="quick-messages-editor quick-messages-settings-row">
+          <label class="setting-row setting-field prompt-template-action-row">
+            <span class="prompt-template-action-copy">
+              <span class="setting-name">Нажатие на prompt-шаблон</span>
+              <span class="switch-note" data-quick-message-action-mode-note>Ctrl + нажатие — отправить.</span>
+            </span>
+            <select data-quick-message-action-mode aria-label="Нажатие на prompt-шаблон">
+              <option value="insert">Вставлять в поле</option>
+              <option value="send">Отправлять сразу</option>
+            </select>
+          </label>
+        </div>
+        <div class="quick-messages-editor prompt-template-editor-card quick-messages-settings-row">
+          <header class="quick-message-editor-header">
             <span class="setting-name">Глобальные prompt-шаблоны</span>
-            <span class="setting-value" data-settings-global-quick-messages-count>Не заданы</span>
-            <button type="button" class="chip-button quick-messages-editor-open"
-              data-prompt-templates-open="global" data-settings-global-quick-messages>Настроить шаблоны</button>
+            <span class="setting-value" data-settings-global-quick-messages-count>0 шаблонов</span>
+          </header>
+          <div class="prompt-template-entry-controls">
+            <button type="button" class="chip-button prompt-template-entry-open"
+              data-prompt-templates-open="global" data-settings-global-quick-messages-entry>Настроить шаблоны</button>
           </div>
         </div>
       </section>

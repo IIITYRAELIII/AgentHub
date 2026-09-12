@@ -24,6 +24,7 @@
       this.duration = Number(options.animationDurationMs) || DEFAULT_ANIMATION_DURATION_MS;
       this.topThreshold = Number(options.topThresholdPx) || DEFAULT_TOP_THRESHOLD_PX;
       this.onNearTop = typeof options.onNearTop === "function" ? options.onNearTop : null;
+      this.onReturnBottom = typeof options.onReturnBottom === "function" ? options.onReturnBottom : null;
       this.requestFrame = options.requestAnimationFrame ?? window.requestAnimationFrame.bind(window);
       this.cancelFrame = options.cancelAnimationFrame ?? window.cancelAnimationFrame.bind(window);
       this.reducedMotion = options.reducedMotion ?? (() => (
@@ -50,7 +51,10 @@
           this.noteUserIntent();
         }
       });
-      if (this.button) this.bind(this.button, "click", () => this.scrollToBottom({ animate: true }));
+      if (this.button) this.bind(this.button, "click", () => {
+        this.onReturnBottom?.();
+        this.scrollToBottom({ animate: true });
+      });
       this.resizeObserver = typeof this.ResizeObserver === "function"
         ? new this.ResizeObserver(() => this.handleResize())
         : null;

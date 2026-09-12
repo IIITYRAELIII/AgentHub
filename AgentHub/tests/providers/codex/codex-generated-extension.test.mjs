@@ -38,12 +38,16 @@ test('failed, unrelated and unowned Extension events cannot become generated att
 test('bounded oversized reader and historical scanner recover new Extension format without retaining base64', async () => {
   const file = path.join(temporaryRoot, 'oversized.jsonl');
   const rows = structuredClone(events);
-  for (const e of rows) e.payload.item.result = 'a'.repeat(300_000);
-  await writeFile(file, jsonl(rows));
+  for (const e of rows) e.payload.item.result = 'a'.repeat(400_000);
+  const terminal = { timestamp: '2026-09-10T20:34:40Z', type: 'event_msg', payload: { type: 'task_complete', turn_id: turnId } };
+  await writeFile(file, jsonl([...rows, terminal]));
   try {
-    const result = await readCodexRolloutActivityOnCurrentThread(file, { maximumLineBytes: 2048, tailBytes: 2 * 1024 * 1024 });
+    const options = { maximumLineBytes: 2048, tailBytes: 450_000 };
+    const result = await readCodexRolloutActivityOnCurrentThread(file, options);
     assert.deepEqual(result.generatedImageSources, { [turnId]: expected });
     assert.equal(JSON.stringify(result).includes('aaaaaa'), false);
+    const reparsed = await readCodexRolloutActivityOnCurrentThread(file, { ...options, reparseTail: true });
+    assert.deepEqual(reparsed.generatedImageSources, { [turnId]: expected });
     const historical = await scanCodexHistoricalRollout(file);
     assert.deepEqual(historical.attachmentCandidates.find(e => e.turnId === turnId)?.generatedImageSources, expected);
   } finally { await unlink(file); }

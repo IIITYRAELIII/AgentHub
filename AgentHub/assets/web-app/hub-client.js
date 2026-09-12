@@ -99,7 +99,9 @@ const CONNECTION_OFFLINE_FAILURES = 3;
 const CONNECTION_OFFLINE_GRACE_MS = 6_000;
 const CONNECTION_LATENCY_PROBE_INTERVAL_MS = 5_000;
 const historyByTask = new Map();
+const historyWindowByTask = new Map();
 const historyPageByTask = new Map();
+const focusedHistoryWindowByTask = new Map();
 const historyCatchUpDeadlines = new Map();
 const historyCatchUpTurnIds = new Map();
 const historyAttachmentSettleDeadlines = new Map();
@@ -486,6 +488,10 @@ function beginHistoryRequest(id, identity) {
 function currentHistoryRequest(request) {
   return historyRequestGenerationByTask.get(request.id) === request.generation
     && sameIdentity(taskIdentity(request.id), request.identity);
+}
+
+function invalidateHistoryRequests(id) {
+  historyRequestGenerationByTask.set(id, (historyRequestGenerationByTask.get(id) ?? 0) + 1);
 }
 
 function beginNavigation(identity = null) {
@@ -1233,6 +1239,7 @@ function updateLiveMessage(taskIdValue, selected) {
     stage: activeStageLabel(run.stage),
     reasoning: run.progress || "",
     text: response,
+    attachments: attachmentViews(run.responseAttachments),
     activities: run.activities ?? [],
     activityGroups: run.activityGroups ?? [],
     responsePhase: run.responsePhase ?? "",
@@ -2188,6 +2195,7 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
     agentHub.setExchangeRates(snapshot.exchangeRates ?? null);
     agentHub.setServerStatus(snapshot.server ?? null);
     agentHub.setWorkspaces(snapshot.workspaces ?? [], snapshot.boardLayout?.columnOrder ?? []);
+    const focusedHistoryChanged = reconcileFocusedHistoryWindows(snapshot.messagePins ?? []);
     agentHub.setMessagePins(snapshot.messagePins ?? []);
     agentHub.setArchivedWorkspaces(snapshot.archivedWorkspaces ?? []);
     const maintenanceChanged = new Set([
@@ -2321,6 +2329,7 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
     for (const task of representativeTasks) {
       renderTaskQueue(taskId(task.provider, task.threadId, task.streamId), snapshot);
     }
+    for (const id of focusedHistoryChanged) renderTaskMessages(id, { preserveScroll: true });
     for (const task of representativeTasks) {
       const stableTaskId = taskId(task.provider, task.threadId, task.streamId);
       agentHub.setApprovals(stableTaskId, window.AgentHubApprovalForm.approvalsForTask(
@@ -2608,6 +2617,66 @@ function prependOlderHistory(previous, older) {
   return projectCanonicalMessages([...uniqueOlder, ...previous]);
 }
 
+function focusedHistoryMessages(focusedTurn) {
+  if (!focusedTurn) return [];
+  return historyMessages({
+    provider: focusedTurn.provider,
+    threadId: focusedTurnTaskThreadId(focusedTurn),
+    start: 0,
+    items: [],
+  }, focusedTurn);
+}
+
+function displayedHistory(id, base = historyWindowByTask.get(id) ?? []) {
+  const focused = focusedHistoryWindowByTask.get(id);
+  return focused ? mergeNewestHistory(base, focused.messages) : base;
+}
+
+function setHistoryWindow(id, messages) {
+  const base = projectCanonicalMessages(messages);
+  historyWindowByTask.set(id, base);
+  historyByTask.set(id, displayedHistory(id, base));
+}
+
+function setFocusedHistoryWindow(id, result, exactNavigation) {
+  if (!result?.focusedTurn || !exactNavigation) return;
+  focusedHistoryWindowByTask.set(id, {
+    streamId: String(result.history?.streamId ?? exactNavigation.streamId ?? ""),
+    pinId: String(exactNavigation.pinId ?? ""),
+    messageKey: String(exactNavigation.messageKey ?? ""),
+    turnId: String(exactNavigation.turnId ?? ""),
+    itemId: String(exactNavigation.itemId ?? ""),
+    role: String(exactNavigation.role ?? ""),
+    messages: focusedHistoryMessages(result.focusedTurn),
+  });
+}
+
+function clearFocusedHistoryWindow(id) {
+  if (!focusedHistoryWindowByTask.delete(id)) return false;
+  historyByTask.set(id, historyWindowByTask.get(id) ?? []);
+  return true;
+}
+
+function pinMatchesFocusedHistory(pin, focused) {
+  if (!pin || pin.available !== true) return false;
+  if (focused.pinId && String(pin.id ?? "") !== focused.pinId) return false;
+  return String(pin.streamId ?? "") === focused.streamId
+    && String(pin.turnId ?? "") === focused.turnId
+    && String(pin.itemId ?? "") === focused.itemId
+    && (!focused.role || String(pin.role ?? "") === focused.role)
+    && (!focused.messageKey || String(pin.messageKey ?? "") === focused.messageKey);
+}
+
+function reconcileFocusedHistoryWindows(pins) {
+  if (!Array.isArray(pins)) return [];
+  const changed = [];
+  for (const [id, focused] of focusedHistoryWindowByTask) {
+    if (pins.some((pin) => pinMatchesFocusedHistory(pin, focused))) continue;
+    if (clearFocusedHistoryWindow(id)) changed.push(id);
+  }
+  return changed;
+}
+
 function applyOpened(result, {
   preserveScroll = false,
   skipSnapshot = false,
@@ -2625,27 +2694,31 @@ function applyOpened(result, {
     if (page) page.version = history.version;
     return;
   }
-  const newest = historyMessages(history, result.focusedTurn);
+  const retainsPinnedFocus = Boolean(result.focusedTurn && exactNavigation?.pinId);
+  const newest = historyMessages(history, retainsPinnedFocus ? null : result.focusedTurn);
   const previousPage = historyPageByTask.get(id);
   const preserveOlder = !result.focusedTurn
     && previousPage
     && Number(previousPage.start) < Number(history.start);
-  historyByTask.set(
-    id,
-    preserveOlder
-      ? mergeNewestHistory(historyByTask.get(id) ?? [], newest)
-      : newest,
-  );
+  if (retainsPinnedFocus) setFocusedHistoryWindow(id, result, exactNavigation);
+  const previousWindow = historyWindowByTask.get(id);
+  setHistoryWindow(id, retainsPinnedFocus && previousWindow
+    ? previousWindow
+    : preserveOlder
+      ? mergeNewestHistory(previousWindow ?? [], newest)
+      : newest);
   clearDurablyCompletedLiveCard(id);
-  historyPageByTask.set(id, {
-    start: preserveOlder ? previousPage.start : history.start,
-    end: history.end,
-    total: history.total,
-    messageTotal: history.messageTotal,
-    nextBefore: preserveOlder ? previousPage.nextBefore : history.nextBefore,
-    loading: false,
-    version: history.version ?? "",
-  });
+  if (!retainsPinnedFocus || !previousPage) {
+    historyPageByTask.set(id, {
+      start: preserveOlder ? previousPage.start : history.start,
+      end: history.end,
+      total: history.total,
+      messageTotal: history.messageTotal,
+      nextBefore: preserveOlder ? previousPage.nextBefore : history.nextBefore,
+      loading: false,
+      version: history.version ?? "",
+    });
+  }
   if (selectTask) rememberSelectedTaskId(id);
   if (!skipSnapshot) applySnapshot(result?.snapshot);
   if (!skipSnapshot && result?.snapshotDeferred === true) void refresh();
@@ -2769,10 +2842,11 @@ async function uploadAttachment(attachment, options) {
   return payload.path;
 }
 
-async function runAction(operation) {
+async function runAction(operation, onError = null) {
   try {
     return await commandTrace.measure("ui-interaction", "intent-handler", operation);
   } catch (error) {
+    onError?.(error);
     agentHub.toast(error?.agentHubComposerRecoveryFailed === true
       ? "Сообщение отклонено. Браузер не сохранил вложения; повтори отправку до перезагрузки страницы."
       : hubErrorMessage(error));
@@ -2975,9 +3049,9 @@ agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
     // A task switch can finish while the remote command was in flight.  Its
     // old result must not alter the pagination and scroll of the new task.
     if (historyPageByTask.get(id) !== page) return;
-    historyByTask.set(
+    setHistoryWindow(
       id,
-      prependOlderHistory(historyByTask.get(id) ?? [], historyMessages(history)),
+      prependOlderHistory(historyWindowByTask.get(id) ?? [], historyMessages(history)),
     );
     const nextBefore = Number(history.nextBefore);
     Object.assign(page, {
@@ -3357,6 +3431,8 @@ agentHub.on("message-pins:clear", ({ mutationId, ...params }) => runAction(async
   }
 }));
 agentHub.on("message-pin:open", ({ pin }) => runAction(async () => {
+  const id = taskId(pin.provider, pin.taskThreadId, pin.streamId);
+  invalidateHistoryRequests(id);
   const result = await control("open-turn", {
     streamId: pin.streamId,
     provider: pin.provider,
@@ -3369,11 +3445,20 @@ agentHub.on("message-pin:open", ({ pin }) => runAction(async () => {
   });
   applyOpened(result, {
     exactNavigation: {
+      streamId: pin.streamId,
+      pinId: pin.id,
+      messageKey: pin.messageKey,
       turnId: result?.focusedMessage?.turnId ?? pin.turnId,
       itemId: result?.focusedMessage?.itemId ?? pin.itemId,
+      role: result?.focusedMessage?.role ?? pin.role,
     },
   });
 }));
+
+agentHub.on("history:return-bottom", ({ taskId: id }) => {
+  if (!clearFocusedHistoryWindow(id)) return;
+  renderTaskMessages(id);
+});
 
 agentHub.on("task:rename", ({ id, title }) => runAction(async () => {
   const targetId = id || selectedTaskId;
@@ -3839,7 +3924,7 @@ agentHub.on("comparison:open", ({ range, seriesId, accountKey, turnTimeMode }) =
     usage,
   });
 }));
-agentHub.on("selection:set", async ({ key, value }) => {
+agentHub.on("selection:set", async ({ key, value, mutationId = "" }) => {
   const names = {
     model: "model",
     reasoning: "reasoning",
@@ -3854,12 +3939,14 @@ agentHub.on("selection:set", async ({ key, value }) => {
     streamCardGapEnabled: "streamCardGapEnabled",
     pinnedWorkspaceStreams: "pinnedWorkspaceStreams",
     quickMessages: "quickMessages",
+    quickMessageActionMode: "quickMessageActionMode",
   };
   const name = names[key];
   if (!name) return;
   const tracksProjection = key === "includeClaudeUsage";
-  const tracksPending = tracksProjection || ["pinnedWorkspaceStreams", "quickMessages"].includes(key);
-  if (tracksPending) agentHub.setSelectionPending(key, true);
+  const tracksPending = tracksProjection
+    || ["pinnedWorkspaceStreams", "quickMessages", "quickMessageActionMode"].includes(key);
+  if (tracksPending) agentHub.setSelectionPending(key, true, mutationId);
   const taskIdentity = ["provider", "project", "model", "reasoning", "mode"].includes(name)
     ? exactSelectedTaskParams()
     : {};
@@ -3878,9 +3965,10 @@ agentHub.on("selection:set", async ({ key, value }) => {
         requestUsageHistory(usageState.range, { force: true });
         await loadJournal({ force: true });
       }
-    });
+      return true;
+    }, () => agentHub.rejectSelection?.(key, mutationId));
   } finally {
-    if (tracksPending) agentHub.setSelectionPending(key, false);
+    if (tracksPending) agentHub.setSelectionPending(key, false, mutationId);
   }
 });
 agentHub.on("approval:respond", ({ id, decision, answers }) => runAction(async () => {

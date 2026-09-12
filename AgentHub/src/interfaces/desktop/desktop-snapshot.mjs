@@ -460,6 +460,9 @@ export function createDesktopSnapshotFactory({
       }),
       progress: String(run.progressReasoning ?? ""),
       response: String(run.responseText ?? ""),
+      responseAttachments: Array.isArray(run.responseAttachments)
+        ? run.responseAttachments.map((attachment) => ({ ...attachment }))
+        : [],
       ...((run.responseAnnotationReferences ?? responseItem?.responseAnnotationReferences)?.length
         ? {
           responseAnnotationReferences: structuredClone(
@@ -829,6 +832,7 @@ export function createDesktopSnapshotFactory({
         streamCardGapEnabled: current.streamCardGapEnabled === true,
         pinnedWorkspaceStreams: current.pinnedWorkspaceStreams ?? {},
         quickMessages: current.quickMessages ?? { global: [], streams: {}, workspaces: {} },
+        quickMessageActionMode: current.quickMessageActionMode === "send" ? "send" : "insert",
         models: activeProvider === "codex"
           ? current.codexModels.map((model) => ({ value: model.value, label: model.label }))
           : claudeOptions,

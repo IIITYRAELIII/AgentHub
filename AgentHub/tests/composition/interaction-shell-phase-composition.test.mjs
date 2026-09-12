@@ -89,6 +89,7 @@ function mcpTaskLaunchFixture() {
       workspaceId,
       streamId: null,
       boardOrder: 1,
+      revision: 1,
     }],
     ["task-reassign", {
       id: "task-reassign",
@@ -101,6 +102,8 @@ function mcpTaskLaunchFixture() {
       workspaceId,
       streamId: "stream-old",
       boardOrder: 2,
+      revision: 1,
+      startEffectState: "completed",
     }],
   ]);
   const operations = new Map();
@@ -175,24 +178,49 @@ function mcpTaskLaunchFixture() {
       Object.assign(task, reassign ? {
         startRequestId: requestId,
         startStreamName: streamName,
+        startDestinationStreamId: streamId,
+        startEffectState: "prepared",
+        revision: task.revision + 1,
       } : {
         status: "starting",
         workspaceId: taskWorkspaceId,
         streamId,
         startRequestId: requestId,
         startStreamName: streamName,
+        startDestinationStreamId: streamId,
+        startEffectState: "prepared",
+        revision: task.revision + 1,
+      });
+      return { ...task };
+    },
+    admitPreparedStart: ({ id, requestId, attemptId, expectedRevision }) => {
+      const task = tasks.get(id);
+      assert.equal(task.startRequestId, requestId);
+      assert.equal(task.revision, expectedRevision);
+      assert.equal(task.startEffectState, "prepared");
+      Object.assign(task, {
+        startEffectState: "admitted",
+        startEffectOwnerId: attemptId,
+        revision: task.revision + 1,
       });
       return { ...task };
     },
     cancelPreparedStart: () => { throw new Error("not used"); },
-    markStarted: ({ id, workspaceId: taskWorkspaceId, streamId, requestId }) => {
+    markStarted: ({
+      id, workspaceId: taskWorkspaceId, streamId, requestId, attemptId, expectedRevision,
+    }) => {
       const task = tasks.get(id);
       assert.equal(task.startRequestId, requestId);
+      assert.equal(task.startEffectOwnerId, attemptId);
+      assert.equal(task.revision, expectedRevision);
       Object.assign(task, {
         status: "started",
         workflowStatus: "in_progress",
         workspaceId: taskWorkspaceId,
         streamId,
+        startEffectState: "completed",
+        startEffectOwnerId: null,
+        revision: task.revision + 1,
       });
       return { ...task };
     },
