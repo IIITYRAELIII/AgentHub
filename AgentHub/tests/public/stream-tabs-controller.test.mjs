@@ -1271,7 +1271,9 @@ test("Workspace and Stream cards expose behavioral editing and quick reply contr
     )), true);
     assert.equal(await page.locator("[data-workspace-card-form] input").first().getAttribute("data-workspace-card-name"), "");
     assert.equal(await page.locator("[data-workspace-card-folder]").inputValue(), "Team");
-    await page.locator('[data-workspace-card-quick-messages] [data-quick-message-title]').fill("Workspace edited");
+    await page.locator("[data-workspace-card-quick-messages]").click();
+    await page.locator("[data-prompt-templates-editor] [data-quick-message-title]").first().fill("Workspace edited");
+    await page.locator("[data-prompt-templates-save]").click();
     await page.locator("[data-workspace-card-comment]").focus();
     await page.locator("[data-workspace-card-folder]").evaluate((node) => {
       node.value = "Other";
@@ -1577,17 +1579,20 @@ test("composer quick replies render above attached Task references", async () =>
     )), "Глобальные prompt-шаблоны");
     assert.equal(await page.locator("[data-settings-global-quick-messages-count]").textContent(), "1 шаблон");
     await page.locator('[data-panel-open="settings"]').click();
-    const globalEditor = page.locator("[data-settings-global-quick-messages]");
-    assert.equal(await globalEditor.isVisible(), true);
-    assert.equal(await globalEditor.locator("[data-quick-message-row]").count(), 1);
-    assert.equal(await globalEditor.locator("[data-quick-message-title]").inputValue(), "Принято");
-    assert.equal(await globalEditor.locator("[data-quick-message-text]").inputValue(), "Принято");
-    assert.equal(await globalEditor.locator("[data-quick-message-add]").textContent(), "+ Добавить шаблон");
-    await globalEditor.locator("[data-quick-message-add]").click();
-    assert.equal(await globalEditor.locator("[data-quick-message-row]").count(), 2);
-    await globalEditor.locator("[data-quick-message-title]").nth(1).fill("Продолжай");
-    await globalEditor.locator("[data-quick-message-text]").nth(1).fill("Продолжай работу");
-    await globalEditor.locator("[data-quick-message-text]").nth(1).dispatchEvent("change");
+    const globalEntry = page.locator("[data-settings-global-quick-messages]");
+    assert.equal(await globalEntry.isVisible(), true);
+    assert.equal(await globalEntry.textContent(), "Настроить шаблоны");
+    await globalEntry.click();
+    const templatesEditor = page.locator("[data-prompt-templates-editor]");
+    assert.equal(await templatesEditor.locator("[data-quick-message-row]").count(), 1);
+    assert.equal(await templatesEditor.locator("[data-quick-message-title]").inputValue(), "Принято");
+    assert.equal(await templatesEditor.locator("[data-quick-message-text]").inputValue(), "Принято");
+    assert.equal(await templatesEditor.locator("[data-quick-message-add]").textContent(), "+ Добавить шаблон");
+    await templatesEditor.locator("[data-quick-message-add]").click();
+    assert.equal(await templatesEditor.locator("[data-quick-message-row]").count(), 2);
+    await templatesEditor.locator("[data-quick-message-title]").nth(1).fill("Продолжай");
+    await templatesEditor.locator("[data-quick-message-text]").nth(1).fill("Продолжай работу");
+    await page.locator("[data-prompt-templates-save]").click();
     assert.equal(await page.evaluate(() => window.__hub157Intents.some((item) => (
       item.type === "selection:set"
       && item.key === "quickMessages"
@@ -1600,20 +1605,23 @@ test("composer quick replies render above attached Task references", async () =>
     const workspace = page.locator('[data-workspace-select="workspace-1"]');
     await workspace.dblclick();
     assert.equal(await page.getByText("Prompt-шаблоны Workspace", { exact: true }).isVisible(), true);
-    assert.equal(await page.locator("[data-workspace-card-quick-messages] [data-quick-message-add]").textContent(), "+ Добавить шаблон");
+    assert.equal(await page.locator("[data-workspace-card-quick-messages]").textContent(), "Настроить шаблоны");
     assert.equal(await page.locator("[data-workspace-card-quick-messages-count]").textContent(), "1 шаблон");
+    await page.locator("[data-workspace-card-quick-messages]").click();
     assert.equal(await page.locator(
-      "[data-workspace-card-quick-messages] [data-quick-message-title]",
+      "[data-prompt-templates-editor] [data-quick-message-title]",
     ).getAttribute("aria-label"), "Заголовок Prompt-шаблона 1");
+    await page.keyboard.press("Escape");
     await page.keyboard.press("Escape");
 
     const stream = page.locator('.stream-tabs-track [data-stream-tab-id="stream-1"]');
     await stream.dblclick();
     assert.equal(await page.getByText("Prompt-шаблоны потока", { exact: true }).isVisible(), true);
-    assert.equal(await page.locator("[data-dialog-stream-quick-messages] [data-quick-message-add]").textContent(), "+ Добавить шаблон");
+    assert.equal(await page.locator("[data-dialog-stream-quick-messages]").textContent(), "Настроить шаблоны");
     assert.equal(await page.locator("[data-dialog-stream-quick-messages-count]").textContent(), "1 шаблон");
+    await page.locator("[data-dialog-stream-quick-messages]").click();
     assert.equal(await page.locator(
-      "[data-dialog-stream-quick-messages] [data-quick-message-title]",
+      "[data-prompt-templates-editor] [data-quick-message-title]",
     ).getAttribute("aria-label"), "Заголовок Prompt-шаблона 1");
   } finally {
     await browser.close();

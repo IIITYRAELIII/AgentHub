@@ -2689,7 +2689,8 @@ html[data-surface="mobile"] .dialog-settings-head .eyebrow,
 html[data-surface="mobile"] .workspace-card-modal .eyebrow,
 html[data-surface="mobile"] .workspace-archive-modal .eyebrow,
 html[data-surface="mobile"] .task-card-modal .eyebrow,
-html[data-surface="mobile"] .task-start-modal .eyebrow {
+html[data-surface="mobile"] .task-start-modal .eyebrow,
+html[data-surface="mobile"] .prompt-templates-modal .eyebrow {
   display: block;
 }
 
@@ -5212,6 +5213,171 @@ html[data-view="dashboard"] .task-board-view.is-workspace-view {
   color: var(--text-faint);
   padding: 1.5rem 1rem 1.8rem;
   text-align: center;
+}
+
+/* Общая форма prompt-шаблонов повторяет карточку Workspace: шапка, прокрутка
+   полей и строка действий. Одна рамка, один способ сохранить и отменить. */
+.prompt-templates-modal {
+  /* Форму открывают и поверх панели настроек, поэтому фон непрозрачный: тот
+     же рецепт, что у самой панели, а не полупрозрачный --surface-1. */
+  background:
+    radial-gradient(120% 60% at 90% -20%, var(--space-glow-a), transparent 60%),
+    var(--space-base);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  color: var(--text);
+  max-height: min(90dvh, 52rem);
+  max-width: 38rem;
+  overflow: hidden;
+  padding: 0;
+  width: calc(100% - 2rem);
+}
+
+.prompt-templates-modal::backdrop {
+  backdrop-filter: blur(3px);
+  background: rgba(2, 5, 10, 0.76);
+}
+
+.prompt-templates-modal form {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-height: inherit;
+}
+
+.prompt-templates-modal header,
+.prompt-templates-modal footer {
+  align-items: center;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+  padding: 0.85rem 1rem;
+}
+
+.prompt-templates-modal header {
+  border-bottom: 1px solid var(--line);
+}
+
+.prompt-templates-modal footer {
+  border-top: 1px solid var(--line);
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.prompt-templates-modal footer button {
+  min-height: 2.15rem;
+}
+
+.prompt-templates-modal h2,
+.prompt-templates-modal p {
+  margin: 0;
+}
+
+.prompt-templates-modal h2 {
+  font-size: 0.95rem;
+  margin-top: 0.2rem;
+}
+
+.prompt-templates-fields {
+  display: grid;
+  gap: 0.7rem;
+  overflow-y: auto;
+  padding: 1rem;
+}
+
+/* Область действия видна с одного взгляда: выбранная подсвечена, рядом стоит
+   число шаблонов именно этой области. Переносятся, а не сжимаются. */
+.prompt-templates-scopes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.prompt-templates-scope {
+  align-items: baseline;
+  display: inline-flex;
+  gap: 0.4rem;
+  max-width: 100%;
+}
+
+.prompt-templates-scope-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.prompt-templates-scope-count {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+}
+
+.prompt-templates-scope[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.prompt-templates-scope[aria-pressed="true"] .prompt-templates-scope-count {
+  color: inherit;
+}
+
+.prompt-templates-scope:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.prompt-templates-note {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+/* Расхождение показывается прямо в форме: черновик остаётся на месте,
+   сохранение выключено, пока пользователь не решит, что оставить. */
+.prompt-templates-conflict {
+  align-items: start;
+  background: color-mix(in srgb, var(--danger, #ff7b7b) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger, #ff7b7b) 45%, transparent);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: space-between;
+  padding: 0.6rem 0.7rem;
+}
+
+.prompt-templates-conflict[hidden] {
+  display: none;
+}
+
+.prompt-templates-conflict p {
+  flex: 1 1 14rem;
+  font-size: 0.8rem;
+}
+
+.prompt-templates-scope[data-prompt-templates-edited] .prompt-templates-scope-count::after {
+  content: "•";
+  margin-left: 0.2rem;
+}
+
+.prompt-templates-scope[data-prompt-templates-conflict-scope] {
+  border-color: color-mix(in srgb, var(--danger, #ff7b7b) 60%, transparent);
+}
+
+.prompt-templates-editor {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.prompt-templates-editor > [data-quick-message-add] {
+  justify-self: start;
+}
+
+.prompt-templates-editor .quick-message-editor-rows:empty {
+  display: none;
+}
+
+.prompt-templates-empty {
+  color: var(--text-faint);
+  font-size: 0.85rem;
 }
 
 .workspace-card-modal::backdrop {
@@ -8012,19 +8178,7 @@ html[data-surface="mobile"]
   justify-self: end;
 }
 
-.quick-messages-editor-controls {
-  display: contents;
-}
-
-.quick-messages-editor .quick-message-editor-rows {
-  grid-column: 1 / -1;
-}
-
-.quick-messages-editor .quick-message-editor-rows:empty {
-  display: none;
-}
-
-.quick-messages-editor [data-quick-message-add] {
+.quick-messages-editor .quick-messages-editor-open {
   grid-column: 1 / -1;
   justify-self: start;
 }
@@ -8034,11 +8188,22 @@ html[data-surface="mobile"]
   gap: 0.5rem;
 }
 
+/* Заголовок, текст и кнопки порядка стоят в одну строку, пока хватает
+   ширины. Дальше они переносятся по одному, а не растягивают контейнер:
+   собственная минимальная ширина строки равна ширине трёх кнопок. */
 .quick-message-editor-row {
   align-items: start;
-  display: grid;
+  display: flex;
+  flex-wrap: wrap;
   gap: 0.45rem;
-  grid-template-columns: minmax(7rem, 0.7fr) minmax(10rem, 1.3fr) auto;
+}
+
+.quick-message-editor-row > input {
+  flex: 1 1 7rem;
+}
+
+.quick-message-editor-row > textarea {
+  flex: 100 1 11rem;
 }
 
 .quick-message-editor-row input,
@@ -8049,6 +8214,7 @@ html[data-surface="mobile"]
   border-radius: var(--radius-sm);
   color: var(--text);
   font: inherit;
+  min-width: 0;
   padding: 0.45rem 0.55rem;
   width: 100%;
 }
@@ -8058,9 +8224,12 @@ html[data-surface="mobile"]
   resize: vertical;
 }
 
+/* На перенесённой строке кнопки остаются у правого края, как и в один ряд. */
 .quick-message-editor-actions {
   display: flex;
+  flex: 0 0 auto;
   gap: 0.25rem;
+  margin-left: auto;
 }
 
 .quick-message-editor-actions .compact {
@@ -11333,10 +11502,6 @@ html[data-surface="mobile"][data-theme] .dialog-settings {
   max-width: 24rem;
   width: 100%;
   z-index: 20;
-}
-
-html[data-surface="mobile"] .quick-message-editor-row {
-  grid-template-columns: minmax(0, 1fr);
 }
 
 html[data-surface="mobile"][data-pane="tasks"] .chat {
