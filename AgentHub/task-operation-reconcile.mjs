@@ -43,7 +43,6 @@ async function resolveTestContourSource(repositories) {
 }
 
 const input = options(process.argv.slice(2));
-if (input.confirm !== true) throw new Error("Pass --confirm-system-restart after verifying that the current OS boot postdates the guard");
 const config = await loadConfig();
 const databaseFile = path.join(config.dataDir, "journal.sqlite");
 const {
@@ -98,7 +97,7 @@ try {
     guardId: input.guard,
     proofKind: "system-restart-after-guard",
     proofSummary: input.summary,
-    confirmed: true,
+    confirmed: input.confirm === true,
   });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   if (!result.resolved) process.exitCode = 2;

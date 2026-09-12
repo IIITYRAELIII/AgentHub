@@ -1087,6 +1087,27 @@ test("Architect reconciliation forwards one exact unknown operation and requires
     proofSummary: "Windows boot postdates the exact guard",
     confirmed: true,
   }]);
+  const schema = service.tools().find((tool) => tool.name === "hub_task_operation_reconcile").inputSchema;
+  assert.deepEqual(schema.required, [
+    "context_token", "request_id", "task_id", "operation_request_id", "project_root", "confirm_reconcile",
+  ]);
+  const terminalArgs = { ...args, request_id: "reconcile-command-terminal" };
+  delete terminalArgs.guard_id;
+  delete terminalArgs.proof_kind;
+  delete terminalArgs.proof_summary;
+  assert.deepEqual(await service.call("hub_task_operation_reconcile", terminalArgs), {
+    resolved: true, outcome: "succeeded",
+  });
+  assert.deepEqual(calls[1], {
+    workspaceId: "workspace-1",
+    taskId: "task-current",
+    operationRequestId: "original-status-request",
+    projectRoot: "D:/VSC_Tyrael/Utilities",
+    guardId: undefined,
+    proofKind: undefined,
+    proofSummary: undefined,
+    confirmed: true,
+  });
   await assert.rejects(service.call("hub_task_operation_reconcile", {
     ...args, request_id: "reconcile-command-unconfirmed", confirm_reconcile: false,
   }), /requires explicit confirmation/u);
@@ -1095,7 +1116,7 @@ test("Architect reconciliation forwards one exact unknown operation and requires
     context_token: service.contextToken({ provider: "codex", threadId: "thread-2" }),
     request_id: "reconcile-command-non-architect",
   }), /requires an Architect Stream/u);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
 });
 
 test("HubMcpService binds the current turn to its dedicated Task worktree", async (context) => {

@@ -674,15 +674,15 @@ export class HubMcpService {
         task_id: { type: "string" },
         status: { type: "string", enum: ["new", "in_progress", "testing", "awaiting_implementation", "done"] },
       }, ["task_id", "status"]),
-      tool("hub_task_operation_reconcile", "Architect-only recovery of one exact unknown Task workflow operation after a trusted process-tree proof. It resumes the original request and terminalizes its original receipt without replaying under a new identity.", {
+      tool("hub_task_operation_reconcile", "Architect-only reconciliation of one exact unknown Task workflow operation. A pending Git operation requires trusted process-tree proof; an already terminal lifecycle settles its original receipt without Git replay or invented guard evidence.", {
         task_id: { type: "string" },
         operation_request_id: { type: "string" },
         project_root: { type: "string" },
-        guard_id: { type: "string" },
-        proof_kind: { type: "string", enum: ["system-restart-after-guard"] },
-        proof_summary: { type: "string" },
-        confirm_reconcile: { type: "boolean", description: "Must be true because this recovers a guarded process boundary and settles the original receipt." },
-      }, ["task_id", "operation_request_id", "project_root", "guard_id", "proof_kind", "proof_summary", "confirm_reconcile"]),
+        guard_id: { type: "string", description: "Required only while the exact lifecycle remains pending Git." },
+        proof_kind: { type: "string", enum: ["system-restart-after-guard"], description: "Required only while the exact lifecycle remains pending Git." },
+        proof_summary: { type: "string", description: "Required only while the exact lifecycle remains pending Git." },
+        confirm_reconcile: { type: "boolean", description: "Must be true because this settles the original unknown receipt and may recover a guarded process boundary." },
+      }, ["task_id", "operation_request_id", "project_root", "confirm_reconcile"]),
       tool("hub_task_legacy_git_adopt", "Architect-only migration for a legacy Await Task with no Git reference. It verifies terminal Stream evidence and exact non-changelog patch equivalence to a named commit already in local main before recording immutable Task evidence.", {
         task_id: { type: "string" },
         expected_task_revision: { type: "integer", minimum: 1 },
@@ -852,7 +852,7 @@ export class HubMcpService {
           guardId: args.guard_id,
           proofKind: args.proof_kind,
           proofSummary: args.proof_summary,
-          confirmed: true,
+          confirmed: args.confirm_reconcile,
         });
       case "hub_task_legacy_git_adopt":
         if (!this.#isArchitect(context)) throw new Error("legacy Git adoption requires an Architect Stream");

@@ -81,6 +81,8 @@ export class TaskOperationReconciliationService {
     const transition = this.taskBoard.lifecycleTransition(operationId);
     const outcome = this.taskBoard.lifecycleOutcome(operationId);
     const root = path.resolve(requiredText(projectRoot, "project root"));
+    const guardText = String(guardId ?? "").trim();
+    const exactGuardId = guardText ? requiredText(guardText, "guard id", 200) : null;
     const taskRoot = taskProjectRoot({
       workspace,
       stream: task.streamId ? this.workspaceCatalog.stream(task.streamId) : null,
@@ -136,7 +138,7 @@ export class TaskOperationReconciliationService {
       state,
       operationId,
       projectRoot: root,
-      guardId: requiredText(guardId, "guard id", 200),
+      guardId: exactGuardId,
     };
   }
 
@@ -191,6 +193,9 @@ export class TaskOperationReconciliationService {
     }, async (lease) => {
       let identity = this.#identity(options);
       if (identity.state !== "pending") return this.#settle(identity);
+      if (!identity.guardId) {
+        throw new Error("Pending workflow reconciliation requires the exact process-tree guard id");
+      }
       const proof = {
         kind: requiredText(options.proofKind, "proof kind", 100),
         confirmed: options.confirmed === true,

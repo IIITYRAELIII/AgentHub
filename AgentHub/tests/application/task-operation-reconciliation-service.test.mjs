@@ -238,6 +238,35 @@ test("operator reconciliation settles an exact failed transition after a crash b
   assert.match(value.settlements[0].value.error.message, /Task snapshot failed/u);
 });
 
+test("operator reconciliation settles an exact failed transition without a process guard", async () => {
+  const value = fixture();
+  value.crashAfterFailedTransition();
+  const terminalInput = input(value);
+  delete terminalInput.guardId;
+  delete terminalInput.proofKind;
+  delete terminalInput.proofSummary;
+  terminalInput.confirmed = false;
+  const result = await value.service.reconcileUnknownWorkflow(terminalInput);
+  assert.equal(result.outcome, "failed");
+  assert.equal(result.reconciliation.guardId, null);
+  assert.equal(result.reconciliation.proof, null);
+  assert.equal(value.receipt.receiptState, "failed");
+  assert.equal(value.lifecycleCalls(), 0);
+});
+
+test("operator reconciliation keeps a pending lifecycle blocked without the exact process guard", async () => {
+  const value = fixture();
+  const pendingInput = input(value);
+  delete pendingInput.guardId;
+  await assert.rejects(
+    value.service.reconcileUnknownWorkflow(pendingInput),
+    /requires the exact process-tree guard id/u,
+  );
+  assert.equal(value.receipt.receiptState, "unknown");
+  assert.equal(value.lifecycleCalls(), 0);
+  assert.deepEqual(value.settlements, []);
+});
+
 test("operator reconciliation preserves unknown for mixed Task, Git reference or evidence state", async () => {
   for (const corrupt of [
     (outcome) => { outcome.result.task.workspaceId = "workspace-2"; },
