@@ -10376,21 +10376,27 @@ const PROVIDER_LOGIN_STATUS = Object.freeze({
 /* Вход идёт штатным способом провайдера: Hub только запускает его и показывает
    состояние. Повторное нажатие отменяет незавершённый вход, поэтому кнопка
    остаётся доступной и во время ожидания. */
+/* Ссылку входа знает только локальный клиент, запустивший вход: в общий снапшот
+   она не попадает. */
+const providerLoginUrls = new Map();
+
 function renderServerAccounts(accounts) {
   if (!serverAccounts) return;
   const list = Array.isArray(accounts) ? accounts : [];
   serverAccounts.replaceChildren(...(list.length ? list.map((account) => {
     const pending = account.status === "pending";
+    if (!pending) providerLoginUrls.delete(account.provider);
+    const authUrl = pending ? providerLoginUrls.get(account.provider) ?? null : null;
     const start = el("button", {
       type: "button",
       class: "chip-button",
       text: pending ? "Войти заново" : "Войти",
     });
     start.addEventListener("click", () => emit("server:provider-login", { provider: account.provider }));
-    const open = pending && account.authUrl
+    const open = authUrl
       ? el("button", { type: "button", class: "chip-button ghost", text: "Открыть страницу входа" })
       : null;
-    open?.addEventListener("click", () => emit("server:provider-login-open", { authUrl: account.authUrl }));
+    open?.addEventListener("click", () => emit("server:provider-login-open", { authUrl }));
     const cancel = pending
       ? el("button", { type: "button", class: "chip-button ghost", text: "Отменить" })
       : null;
@@ -11428,6 +11434,12 @@ const AgentHub = {
   setServerStatus(payload) {
     lastServerPayload = payload ?? {};
     if (root.dataset.view === "server") renderServerStatus(lastServerPayload);
+  },
+  /** Ссылка входа из локального ответа на запуск входа; снапшот её не содержит. */
+  setProviderLoginUrl(provider, authUrl) {
+    if (/^https:\/\//u.test(String(authUrl ?? ""))) providerLoginUrls.set(provider, authUrl);
+    else providerLoginUrls.delete(provider);
+    if (root.dataset.view === "server" && lastServerPayload) renderServerStatus(lastServerPayload);
   },
   openAttachmentViewer,
   attachmentViewerLoadAuthority,

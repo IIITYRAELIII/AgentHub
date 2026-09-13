@@ -22,10 +22,12 @@ export function createRuntimeTimersComposition({
   rateLimitTelemetry,
   usageSyncAuto = null,
   testContourJournalSync = null,
+  providerLogin = null,
 }) {
   function stopRuntimeTimers() {
     stopTyping();
     contextCompactions.dispose();
+    providerLogin?.dispose?.();
     usageSyncAuto?.stop?.();
     testContourJournalSync?.stop?.();
     runtimeTimers.clearAll();
