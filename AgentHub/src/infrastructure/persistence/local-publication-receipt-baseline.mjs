@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { parseGitHubRemote } from "./github-publication-baseline.mjs";
 import {
-  gitOutput, publicationStateFile, readPublicationState, writePublicationState,
+  gitOutput, publicationStateFile, publicationStateRepositories, readPublicationState, writePublicationState,
 } from "./publication-state.mjs";
 import { publicationRunPaths } from "./publication-run-store.mjs";
 import { withPublicationLock } from "../process/publication-lock.mjs";
@@ -235,7 +235,7 @@ export async function verifyLocalPublicationReceiptBaseline(input = {}, {
   }
 
   const repository = expectedRepositoryEvidence({ request, receipt, release, originMain, originIdentity });
-  const existing = (Array.isArray(state.repositories) ? state.repositories : []).find((entry) => (
+  const existing = publicationStateRepositories(state).find((entry) => (
     repositoryRootOf(entry) && canonicalRoot(repositoryRootOf(entry)) === canonicalRoot(request.projectRoot)
   ));
   if (existing && stable(existing) !== stable(repository)) {

@@ -308,4 +308,27 @@ test("local publisher receipt fences concurrent state drift and conflicting scop
       /conflicting repository-scoped/u,
     );
   });
+
+  for (const [name, entries] of [
+    ["exact then conflicting duplicate", (exact) => [exact, { ...exact, revision: "c".repeat(40) }]],
+    ["conflicting then exact duplicate", (exact) => [{ ...exact, revision: "c".repeat(40) }, exact]],
+    ["nested-field-only duplicate conflict", (exact) => [
+      exact,
+      { ...exact, publisher: { ...exact.publisher, runId: "another-publisher-run" } },
+    ]],
+  ]) {
+    await t.test(name, async (subtest) => {
+      const setup = await fixture(subtest);
+      const { repository } = await previewLocalPublicationReceiptBaseline(setup.request, setup.dependencies);
+      const raw = `${JSON.stringify({ ...setup.state, repositories: entries(repository) }, null, 2)}\n`;
+      await writeFile(setup.stateFile, raw, "utf8");
+      for (const operation of [previewLocalPublicationReceiptBaseline, enableLocalPublicationReceiptBaseline]) {
+        await assert.rejects(
+          () => operation(setup.request, setup.dependencies),
+          /conflicting duplicate publication evidence/u,
+        );
+        assert.equal(await readFile(setup.stateFile, "utf8"), raw);
+      }
+    });
+  }
 });
