@@ -85,9 +85,20 @@ export class ServerControlController {
     const login = await this.#requireProviderLogin().start(params?.provider);
     return {
       accepted: true,
-      message: login.authUrl
-        ? "Завершите вход в открывшемся браузере"
-        : "Вход запущен: завершите его в открывшемся браузере",
+      message: login.provider === "claude"
+        ? "Claude Code открывает браузер: если вход не завершится сам, вставьте код со страницы входа"
+        : "Завершите вход в открывшемся браузере",
+      login,
+      snapshot: await this.desktopSnapshot(),
+    };
+  }
+
+  /** Forwards the manual Claude code; the response never echoes it. */
+  async submitProviderLoginCode(params) {
+    const login = await this.#requireProviderLogin().submitCode(params?.provider, params?.code, params?.attemptId);
+    return {
+      accepted: true,
+      message: "Код передан Claude Code: дождитесь завершения входа",
       login,
       snapshot: await this.desktopSnapshot(),
     };

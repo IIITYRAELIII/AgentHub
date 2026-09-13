@@ -7,15 +7,21 @@
  * so a successful sign-in applies to new requests without restarting Hub, and
  * running turns keep their existing process.
  *
- * The Codex sign-in link is returned only to the local caller that started the
- * flow; snapshots carry state without it. Claude opens the browser itself with
- * its localhost callback. The link it prints is the manual-code fallback, which
- * needs the code typed back into the CLI, so Hub does not surface it.
+ * Sign-in links are returned only to the local caller that started the flow;
+ * snapshots carry state without them. Claude opens the browser itself with its
+ * localhost callback. Its printed link is the manual flow: the page shows a
+ * `code#state` value that `claude auth login` reads line by line from stdin, so
+ * Hub forwards that value to the stdin of the exact running attempt and keeps
+ * nothing of it.
  */
 export const PROVIDER_LOGIN_PROVIDERS = Object.freeze(["codex", "claude"]);
 
 const DEFAULT_TIMEOUT_MS = 10 * 60_000;
+const DEFAULT_CLAUDE_URL_WAIT_MS = 10_000;
 const MAX_ERROR_LENGTH = 300;
+const MAX_OUTPUT_SCAN_CHARS = 64 * 1024;
+const MAX_MANUAL_CODE_LENGTH = 4_096;
+const INVALID_CODE_ERROR = "Claude Code не принял код: скопируйте его со страницы входа целиком";
 
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
@@ -27,10 +33,29 @@ function boundedError(value) {
   return text.length > MAX_ERROR_LENGTH ? `${text.slice(0, MAX_ERROR_LENGTH - 1)}…` : text;
 }
 
+function firstHttpsUrl(text) {
+  const match = /https:\/\/[^\s"'<>]+/u.exec(String(text ?? ""));
+  return match ? match[0] : "";
+}
+
 function normalizedProvider(value) {
   const provider = String(value ?? "").trim().toLowerCase();
   if (!PROVIDER_LOGIN_PROVIDERS.includes(provider)) throw new Error("Неизвестный провайдер входа");
   return provider;
+}
+
+/**
+ * The value `claude auth login` accepts on stdin: `code#state`. Errors never
+ * quote the value.
+ */
+export function manualClaudeLoginCode(value) {
+  const text = String(value ?? "").trim();
+  const parts = text.split("#");
+  if (!text || text.length > MAX_MANUAL_CODE_LENGTH || /\s/u.test(text)
+    || parts.length !== 2 || !parts[0] || !parts[1]) {
+    throw new Error("Код должен иметь вид code#state: скопируйте его со страницы входа целиком");
+  }
+  return text;
 }
 
 export class ProviderLoginService {
@@ -38,6 +63,7 @@ export class ProviderLoginService {
   #states = new Map();
   #queues = new Map();
   #attempt = 0;
+  #disposed = false;
 
   constructor({
     sendRpc,
@@ -49,6 +75,7 @@ export class ProviderLoginService {
     timers = { setTimeout, clearTimeout },
     clock = () => Date.now(),
     timeoutMs = DEFAULT_TIMEOUT_MS,
+    claudeUrlWaitMs = DEFAULT_CLAUDE_URL_WAIT_MS,
     logger = console,
   } = {}) {
     this.#d = {
@@ -61,12 +88,13 @@ export class ProviderLoginService {
       timers,
       clock,
       timeoutMs,
+      claudeUrlWaitMs: Math.max(0, Number(claudeUrlWaitMs) || 0),
       logger,
     };
     for (const provider of PROVIDER_LOGIN_PROVIDERS) this.#states.set(provider, { provider, status: "idle" });
   }
 
-  /** Sign-in state for snapshots: never the sign-in link or provider identifiers. */
+  /** Sign-in state for snapshots: never the sign-in link, code or provider identifiers. */
   snapshot() {
     return PROVIDER_LOGIN_PROVIDERS.map((provider) => this.#publicEntry(provider));
   }
@@ -77,21 +105,30 @@ export class ProviderLoginService {
 
   /**
    * Starts a sign-in; an unfinished sign-in of the same provider is cancelled
-   * first. Start, cancel and timeout of one provider run strictly one at a time.
+   * first. Start, code, cancel and timeout of one provider run strictly one at a
+   * time.
    */
   start(providerName) {
     const provider = normalizedProvider(providerName);
     return this.#serialize(provider, async () => {
+      this.#assertNotDisposed();
       await this.#cancelPending(provider, "superseded");
+      this.#assertNotDisposed();
       const attempt = ++this.#attempt;
       const state = { provider, status: "pending", attempt, startedAt: new Date(this.#d.clock()).toISOString() };
       this.#states.set(provider, state);
       try {
         if (provider === "codex") await this.#startCodex(state);
-        else this.#startClaude(state);
+        else await this.#startClaude(state);
       } catch (error) {
         if (this.#isCurrent(state)) this.#finish(state, "failed", error);
         throw error;
+      }
+      if (this.#disposed) {
+        // Shutdown already finished this attempt before its start completed:
+        // cancel the provider-side sign-in it has just created.
+        await this.#cancelStartedAfterDispose(state);
+        this.#assertNotDisposed();
       }
       if (this.#isCurrent(state)) {
         state.timer = this.#d.timers.setTimeout(() => {
@@ -101,8 +138,32 @@ export class ProviderLoginService {
       }
       return {
         ...this.#publicEntry(provider),
-        authUrl: this.#isCurrent(state) && provider === "codex" ? state.authUrl : null,
+        authUrl: this.#isCurrent(state) ? state.authUrl || null : null,
       };
+    });
+  }
+
+  /** Forwards the manual `code#state` to the stdin of the exact running Claude sign-in. */
+  submitCode(providerName, code, attemptId) {
+    const provider = normalizedProvider(providerName);
+    return this.#serialize(provider, async () => {
+      this.#assertNotDisposed();
+      if (provider !== "claude") throw new Error("Код входа вводится только для Claude");
+      const state = this.#states.get(provider);
+      const worker = state.worker;
+      const stdin = worker?.stdin;
+      if (!this.#isCurrent(state) || !stdin || stdin.destroyed || stdin.writableEnded) {
+        throw new Error("Нет входа Claude, ожидающего код");
+      }
+      if (String(attemptId ?? "") !== String(state.attempt)) {
+        throw new Error("Код относится к другой попытке входа: запустите вход заново");
+      }
+      const line = `${manualClaudeLoginCode(code)}\n`;
+      state.error = "";
+      await new Promise((resolve, reject) => {
+        stdin.write(line, (error) => (error ? reject(new Error("Не удалось передать код Claude Code")) : resolve()));
+      });
+      return this.#publicEntry(provider);
     });
   }
 
@@ -140,6 +201,9 @@ export class ProviderLoginService {
    * provider turns belong to other owners and are left alone.
    */
   dispose() {
+    // Terminal fence: queued and in-flight operations check it inside their
+    // serialized operation, so nothing can leave a pending sign-in after shutdown.
+    this.#disposed = true;
     for (const provider of PROVIDER_LOGIN_PROVIDERS) {
       const state = this.#states.get(provider);
       if (state.status !== "pending") continue;
@@ -163,9 +227,33 @@ export class ProviderLoginService {
     }
   }
 
+  #assertNotDisposed() {
+    if (this.#disposed) throw new Error("Agent Hub останавливается: вход недоступен");
+  }
+
+  async #cancelStartedAfterDispose(state) {
+    const worker = state.worker;
+    if (state.status === "pending") this.#finish(state, "cancelled");
+    if (state.provider === "codex" && state.loginId) {
+      try {
+        await this.#d.sendRpc("account/login/cancel", { loginId: state.loginId }, { timeoutMs: 2_000 });
+      } catch {
+        // Hub is stopping; the App Server closes with it.
+      }
+    }
+    if (worker) {
+      try {
+        const stopped = await this.#d.stopProcessTree(worker.pid);
+        if (!stopped) worker.kill?.();
+      } catch {
+        worker.kill?.();
+      }
+    }
+  }
+
   #serialize(provider, operation) {
     const previous = this.#queues.get(provider) ?? Promise.resolve();
-    const next = previous.then(operation, operation);
+    const next = previous.then(() => operation(), () => operation());
     this.#queues.set(provider, next.catch(() => {}));
     return next;
   }
@@ -175,6 +263,7 @@ export class ProviderLoginService {
     return {
       provider,
       status: state.status,
+      attemptId: state.attempt ? String(state.attempt) : null,
       startedAt: state.startedAt ?? null,
       finishedAt: state.finishedAt ?? null,
       error: state.error || null,
@@ -190,19 +279,39 @@ export class ProviderLoginService {
     state.authUrl = authUrl;
   }
 
-  #startClaude(state) {
+  async #startClaude(state) {
     const invocation = this.#d.resolveClaudeInvocation();
     const worker = this.#d.spawnProcess(invocation.command, [...(invocation.prefixArgs ?? []), "auth", "login"], {
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
     });
     state.worker = worker;
-    // The CLI output is not needed, but its pipes must be drained.
-    worker.stdout?.resume?.();
-    worker.stderr?.resume?.();
+    let urlSeen = null;
+    const urlReady = new Promise((resolve) => { urlSeen = resolve; });
+    let scanned = 0;
+    // The output is read only for the printed sign-in link and the CLI's
+    // invalid-code notice; reading also keeps the pipes drained.
+    const onOutput = (chunk) => {
+      if (state.worker !== worker || scanned >= MAX_OUTPUT_SCAN_CHARS) return;
+      const text = String(chunk ?? "");
+      scanned += text.length;
+      if (!state.authUrl) {
+        const url = firstHttpsUrl(text);
+        if (url) {
+          state.authUrl = url;
+          urlSeen();
+        }
+      }
+      if (text.includes("Invalid code.")) state.error = INVALID_CODE_ERROR;
+    };
+    worker.stdout?.setEncoding?.("utf8");
+    worker.stderr?.setEncoding?.("utf8");
+    worker.stdout?.on("data", onOutput);
+    worker.stderr?.on("data", onOutput);
     const release = () => {
       // An exited child's PID may be reused: detach it before any further await.
       if (state.worker === worker) state.worker = null;
+      urlSeen();
     };
     worker.on("error", (error) => {
       release();
@@ -227,6 +336,17 @@ export class ProviderLoginService {
         if (this.#isCurrent(state)) this.#finish(state, "failed", error);
       });
     });
+    if (this.#d.claudeUrlWaitMs > 0 && !state.authUrl) {
+      let timer = null;
+      await Promise.race([
+        urlReady,
+        new Promise((resolve) => {
+          timer = setTimeout(resolve, this.#d.claudeUrlWaitMs);
+          timer.unref?.();
+        }),
+      ]);
+      clearTimeout(timer);
+    }
   }
 
   #isCurrent(state) {

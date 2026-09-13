@@ -265,6 +265,7 @@ export function createDesktopRunRouterWiring({
       setAutostart: services.setAutostart,
       updateServerConfiguration: services.updateServerConfiguration,
       startProviderLogin: services.startProviderLogin,
+      submitProviderLoginCode: services.submitProviderLoginCode,
       cancelProviderLogin: services.cancelProviderLogin,
       readPreTurnInstructions: services.readPreTurnInstructions,
       updateGlobalPreTurnInstructions: services.updateGlobalPreTurnInstructions,

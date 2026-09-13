@@ -1,13 +1,21 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
-import { ProviderLoginService } from "../../src/application/provider-login-service.mjs";
+import { manualClaudeLoginCode, ProviderLoginService } from "../../src/application/provider-login-service.mjs";
+
+const CODE = "Kc0de-AbC_123#sTaTe-456_xyz";
 
 function fakeWorker(pid) {
   const worker = new EventEmitter();
   worker.pid = pid;
-  worker.stdout = Object.assign(new EventEmitter(), { resumed: false, resume() { this.resumed = true; } });
-  worker.stderr = Object.assign(new EventEmitter(), { resumed: false, resume() { this.resumed = true; } });
+  worker.stdout = new EventEmitter();
+  worker.stderr = new EventEmitter();
+  worker.stdin = {
+    writes: [],
+    destroyed: false,
+    writableEnded: false,
+    write(chunk, callback) { this.writes.push(chunk); callback?.(); return true; },
+  };
   worker.kills = 0;
   worker.kill = () => { worker.kills += 1; };
   return worker;
@@ -20,7 +28,7 @@ function deferred() {
 }
 
 function createService(overrides = {}) {
-  const calls = { rpc: [], spawned: [], stopped: [], changed: [], timers: [] };
+  const calls = { rpc: [], spawned: [], stopped: [], changed: [], timers: [], errors: [] };
   let loginCounter = 0;
   const service = new ProviderLoginService({
     sendRpc: async (method, params) => {
@@ -45,7 +53,8 @@ function createService(overrides = {}) {
       clearTimeout: (timer) => { if (timer) timer.cleared = true; },
     },
     clock: () => Date.parse("2026-09-13T12:00:00.000Z"),
-    logger: { error() {} },
+    claudeUrlWaitMs: 0,
+    logger: { error: (...args) => calls.errors.push(args.join(" ")) },
     ...overrides,
   });
   return { service, calls };
@@ -75,10 +84,8 @@ test("Codex sign-in uses the App Server managed login and settles on its exact c
 
 test("a completion that arrives before the start response binds its login id is ignored", async () => {
   const release = deferred();
-  const rpc = [];
   const { service } = createService({
-    sendRpc: async (method, params) => {
-      rpc.push([method, params]);
+    sendRpc: async (method) => {
       if (method !== "account/login/start") return {};
       await release.promise;
       return { loginId: "login-late", authUrl: "https://auth.example/late" };
@@ -170,21 +177,88 @@ test("failed Codex completion and account updates are reported without throwing"
   assert.deepEqual(calls.changed, ["codex"]);
 });
 
-test("Claude sign-in runs the official CLI, drains its output and confirms the account", async () => {
-  const { service, calls } = createService();
+test("Claude sign-in runs the official CLI and returns its printed link only to the local starter", async () => {
+  const printed = "https://claude.com/cai/oauth/authorize?code=true&state=abc";
+  const { service, calls } = createService({
+    claudeUrlWaitMs: 5_000,
+    spawnProcess: (command, args, options) => {
+      const worker = fakeWorker(100);
+      calls.spawned.push({ command, args, options, worker });
+      setImmediate(() => worker.stdout.emit("data",
+        `Opening browser to sign in…\nIf the browser didn't open, visit: ${printed}\nPaste code here if prompted > `));
+      return worker;
+    },
+  });
   const entry = await service.start("claude");
   assert.equal(entry.status, "pending");
-  assert.equal(entry.authUrl, null, "the printed manual-code link is not surfaced");
-  const { command, args, options, worker } = calls.spawned[0];
+  assert.equal(entry.authUrl, printed);
+  assert.equal(entry.attemptId, "1");
+  const { command, args, options } = calls.spawned[0];
   assert.equal(command, "claude.exe");
   assert.deepEqual(args, ["--x", "auth", "login"]);
   assert.equal(options.windowsHide, true);
-  assert.equal(worker.stdout.resumed && worker.stderr.resumed, true);
+  assert.deepEqual(options.stdio, ["pipe", "pipe", "pipe"]);
+  assert.equal(JSON.stringify(service.snapshot()).includes("claude.com"), false);
+
+  calls.spawned[0].worker.emit("close", 0);
+  await settle();
+  assert.equal(service.entry("claude").status, "succeeded");
+  assert.deepEqual(calls.changed, ["claude"]);
+});
+
+test("a start without a printed link returns after the bounded wait instead of hanging", async () => {
+  const { service } = createService({ claudeUrlWaitMs: 20 });
+  const entry = await service.start("claude");
+  assert.equal(entry.status, "pending");
+  assert.equal(entry.authUrl, null);
+});
+
+test("the manual code goes once, verbatim, to the stdin of the exact running Claude attempt", async () => {
+  const { service, calls } = createService();
+  const started = await service.start("claude");
+  const { worker } = calls.spawned[0];
+
+  for (const bad of ["", "   ", "no-hash", "#state", "code#", "a#b#c", "code #state", "x".repeat(4097)]) {
+    await assert.rejects(service.submitCode("claude", bad, started.attemptId), /code#state/u);
+  }
+  await assert.rejects(service.submitCode("claude", CODE, "999"), /другой попытке/u);
+  await assert.rejects(service.submitCode("codex", CODE, started.attemptId), /только для Claude/u);
+  assert.deepEqual(worker.stdin.writes, [], "rejected codes never reach the CLI");
+
+  const submitted = await service.submitCode("claude", `  ${CODE}\n`, started.attemptId);
+  assert.equal(submitted.status, "pending");
+  assert.deepEqual(worker.stdin.writes, [`${CODE}\n`]);
+
+  worker.stderr.emit("data", "Invalid code. Please make sure the full code was copied.\n");
+  assert.match(service.entry("claude").error, /не принял код/u);
+  await service.submitCode("claude", CODE, started.attemptId);
+  assert.equal(service.entry("claude").error, null, "a new code clears the previous notice");
 
   worker.emit("close", 0);
   await settle();
   assert.equal(service.entry("claude").status, "succeeded");
-  assert.deepEqual(calls.changed, ["claude"]);
+  await assert.rejects(service.submitCode("claude", CODE, started.attemptId), /ожидающего код/u);
+
+  const everything = JSON.stringify([service.snapshot(), service.entry("claude"), calls.errors]);
+  assert.equal(everything.includes("Kc0de"), false, "the code is kept nowhere");
+  assert.equal(everything.includes("sTaTe"), false);
+});
+
+test("a code for a replaced, cancelled or exited attempt is refused", async () => {
+  const { service, calls } = createService();
+  const first = await service.start("claude");
+  const second = await service.start("claude");
+  await assert.rejects(service.submitCode("claude", CODE, first.attemptId), /другой попытке/u);
+  assert.deepEqual(calls.spawned[0].worker.stdin.writes, []);
+
+  await service.cancel("claude");
+  await assert.rejects(service.submitCode("claude", CODE, second.attemptId), /ожидающего код/u);
+  assert.deepEqual(calls.spawned[1].worker.stdin.writes, []);
+
+  const third = await service.start("claude");
+  calls.spawned[2].worker.emit("close", 1);
+  await assert.rejects(service.submitCode("claude", CODE, third.attemptId), /ожидающего код/u);
+  assert.equal(manualClaudeLoginCode(` ${CODE} `), CODE);
 });
 
 test("Claude sign-in fails when the CLI exits badly or does not confirm the account", async () => {
@@ -244,6 +318,43 @@ test("dispose closes only pending sign-ins of this service", async () => {
   service.dispose();
   await settle();
   assert.deepEqual(calls.stopped, [100], "a second dispose has nothing left to stop");
+});
+
+test("dispose fences in-flight and queued operations: no pending sign-in survives shutdown", async () => {
+  const release = deferred();
+  const rpc = [];
+  const timers = [];
+  const spawned = [];
+  const { service } = createService({
+    sendRpc: async (method, params) => {
+      rpc.push([method, params.loginId ?? null]);
+      if (method !== "account/login/start") return {};
+      await release.promise;
+      return { loginId: "login-1", authUrl: "https://auth.example/1" };
+    },
+    spawnProcess: () => { spawned.push(true); return fakeWorker(900); },
+    timers: {
+      setTimeout: (callback) => { timers.push(callback); return {}; },
+      clearTimeout: () => {},
+    },
+  });
+  const first = service.start("codex");
+  const second = service.start("codex");
+  await settle();
+  service.dispose();
+  const claude = service.start("claude");
+  const code = service.submitCode("claude", CODE, "1");
+  release.resolve();
+  await assert.rejects(first, /останавливается/u);
+  await assert.rejects(second, /останавливается/u);
+  await assert.rejects(claude, /останавливается/u);
+  await assert.rejects(code, /останавливается/u);
+  assert.deepEqual(rpc, [["account/login/start", null], ["account/login/cancel", "login-1"]]);
+  assert.equal(timers.length, 0, "no sign-in timeout may be armed after dispose");
+  assert.equal(spawned.length, 0, "no sign-in CLI may start after dispose");
+  assert.deepEqual(service.snapshot().map((entry) => entry.status), ["cancelled", "idle"]);
+  assert.equal((await service.cancel("codex")).status, "cancelled");
+  assert.equal(rpc.length, 2);
 });
 
 test("unknown providers and malformed Codex responses are rejected", async () => {

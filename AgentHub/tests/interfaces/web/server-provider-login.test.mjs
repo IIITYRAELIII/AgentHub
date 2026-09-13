@@ -3,6 +3,8 @@ import test from "node:test";
 import { createDesktopApplicationRouter } from "../../../src/interfaces/desktop/desktop-application-router.mjs";
 import { ServerControlController } from "../../../src/interfaces/web/server-control-controller.mjs";
 
+const CODE = "Kc0de-AbC_123#sTaTe-456_xyz";
+
 function createController(overrides = {}) {
   return new ServerControlController({
     config: { projectRoot: "C:/work", configPath: "C:/runtime/config.json", components: {}, miniApp: {} },
@@ -18,44 +20,48 @@ test("server snapshot, which also reaches remote clients, exposes only sign-in s
   const controller = createController({
     providerLogin: {
       snapshot: () => [
-        { provider: "codex", status: "pending", authUrl: "https://auth.example/1", startedAt: "s", finishedAt: null, error: null, loginId: "hidden" },
-        { provider: "claude", status: "failed", authUrl: null, startedAt: "s", finishedAt: "f", error: "denied" },
+        { provider: "codex", status: "pending", attemptId: "4", authUrl: "https://auth.example/1", startedAt: "s", finishedAt: null, error: null, loginId: "hidden" },
+        { provider: "claude", status: "failed", attemptId: "3", authUrl: null, startedAt: "s", finishedAt: "f", error: "denied", code: CODE },
       ],
     },
   });
   const snapshot = await controller.snapshot();
   assert.deepEqual(snapshot.accounts, [
-    { provider: "codex", status: "pending", startedAt: "s", finishedAt: null, error: null },
-    { provider: "claude", status: "failed", startedAt: "s", finishedAt: "f", error: "denied" },
+    { provider: "codex", status: "pending", attemptId: "4", startedAt: "s", finishedAt: null, error: null },
+    { provider: "claude", status: "failed", attemptId: "3", startedAt: "s", finishedAt: "f", error: "denied" },
   ]);
-  assert.equal(JSON.stringify(snapshot).includes("auth.example"), false);
-  assert.equal(JSON.stringify(snapshot).includes("hidden"), false);
+  const serialized = JSON.stringify(snapshot);
+  for (const secret of ["auth.example", "hidden", "Kc0de", "sTaTe"]) assert.equal(serialized.includes(secret), false);
 });
 
-test("server controller starts and cancels provider sign-in with a refreshed snapshot", async () => {
+test("server controller starts, submits a code and cancels without echoing the code", async () => {
   const calls = [];
   const controller = createController({
     providerLogin: {
       snapshot: () => [],
-      start: async (provider) => { calls.push(["start", provider]); return { provider, status: "pending", authUrl: "https://auth.example/1" }; },
+      start: async (provider) => { calls.push(["start", provider]); return { provider, status: "pending", attemptId: "1", authUrl: "https://auth.example/1" }; },
+      submitCode: async (provider, code, attemptId) => { calls.push(["code", provider, code, attemptId]); return { provider, status: "pending", attemptId }; },
       cancel: async (provider) => { calls.push(["cancel", provider]); return { provider, status: "cancelled", authUrl: null }; },
     },
   });
   const started = await controller.startProviderLogin({ provider: "codex" });
   assert.equal(started.login.authUrl, "https://auth.example/1");
   assert.deepEqual(started.snapshot, { refreshed: true });
+  const submitted = await controller.submitProviderLoginCode({ provider: "claude", code: CODE, attemptId: "1" });
+  assert.equal(JSON.stringify(submitted).includes("Kc0de"), false);
   const cancelled = await controller.cancelProviderLogin({ provider: "codex" });
   assert.equal(cancelled.login.status, "cancelled");
-  assert.deepEqual(calls, [["start", "codex"], ["cancel", "codex"]]);
+  assert.deepEqual(calls, [["start", "codex"], ["code", "claude", CODE, "1"], ["cancel", "codex"]]);
 });
 
 test("server controller without a sign-in service reports it instead of failing silently", async () => {
   const controller = createController();
   assert.deepEqual((await controller.snapshot()).accounts, []);
   await assert.rejects(controller.startProviderLogin({ provider: "codex" }), /недоступен/u);
+  await assert.rejects(controller.submitProviderLoginCode({ provider: "claude", code: CODE }), /недоступен/u);
 });
 
-test("provider sign-in is available only to the local Hub", async () => {
+test("provider sign-in and its code are available only to the local Hub", async () => {
   const calls = [];
   const handlers = new Proxy({}, {
     get: (_target, name) => async (params) => {
@@ -67,18 +73,22 @@ test("provider sign-in is available only to the local Hub", async () => {
     handlers,
     commands: { dispatch: async () => ({ accepted: true }), settingTarget: () => ({}) },
   });
-  for (const action of ["start-provider-login", "cancel-provider-login"]) {
+  for (const action of ["start-provider-login", "submit-provider-login-code", "cancel-provider-login"]) {
     for (const source of ["trusted-device", "telegram-mini-app", "shared-dashboard-bot", ""]) {
       await assert.rejects(
-        () => control.handleDesktopControl({ action, params: { provider: "codex" }, context: { source, userId: "7" } }),
+        () => control.handleDesktopControl({ action, params: { provider: "claude", code: CODE }, context: { source, userId: "7" } }),
         /только локальному Agent Hub/u,
       );
     }
     assert.ok(await control.handleDesktopControl({
       action,
-      params: { provider: "claude" },
-      context: { source: "desktop-control", userId: "7" },
+      params: { provider: "claude", code: CODE },
+      context: { source: "desktop-control", userId: "7", commandId: "cmd-1" },
     }));
   }
-  assert.deepEqual(calls, [["startProviderLogin", "claude"], ["cancelProviderLogin", "claude"]]);
+  assert.deepEqual(calls, [
+    ["startProviderLogin", "claude"],
+    ["submitProviderLoginCode", "claude"],
+    ["cancelProviderLogin", "claude"],
+  ]);
 });

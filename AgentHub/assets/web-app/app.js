@@ -10364,48 +10364,79 @@ function renderServerStatus(payload = {}) {
   syncServerConfigActions();
 }
 
-const PROVIDER_LOGIN_LABELS = Object.freeze({ codex: "Codex", claude: "Claude" });
-const PROVIDER_LOGIN_STATUS = Object.freeze({
-  idle: "Вход не запускался",
-  pending: "Ожидает входа в браузере",
-  succeeded: "Вход выполнен",
-  cancelled: "Вход отменён",
-  failed: "Ошибка входа",
-});
-
 /* Вход идёт штатным способом провайдера: Hub только запускает его и показывает
    состояние. Повторное нажатие отменяет незавершённый вход, поэтому кнопка
    остаётся доступной и во время ожидания. */
 /* Ссылку входа знает только локальный клиент, запустивший вход: в общий снапшот
    она не попадает. */
-const providerLoginUrls = new Map();
+const providerLoginLocal = new Map();
+/* Черновик кода живёт только в памяти страницы, чтобы снапшот не стирал ввод. */
+const providerLoginCodeDrafts = new Map();
+let providerLoginRenderKey = "";
 
 function renderServerAccounts(accounts) {
-  if (!serverAccounts) return;
+  const panel = window.AgentHubProviderLoginPanel;
+  if (!serverAccounts || !panel) return;
   const list = Array.isArray(accounts) ? accounts : [];
-  serverAccounts.replaceChildren(...(list.length ? list.map((account) => {
-    const pending = account.status === "pending";
-    if (!pending) providerLoginUrls.delete(account.provider);
-    const authUrl = pending ? providerLoginUrls.get(account.provider) ?? null : null;
-    const start = el("button", {
-      type: "button",
-      class: "chip-button",
-      text: pending ? "Войти заново" : "Войти",
-    });
-    start.addEventListener("click", () => emit("server:provider-login", { provider: account.provider }));
-    const open = authUrl
+  const views = list.map((account) => {
+    if (account?.status !== "pending") {
+      providerLoginLocal.delete(account?.provider);
+      providerLoginCodeDrafts.delete(account?.provider);
+    }
+    return panel.accountView(account, providerLoginLocal.get(account?.provider));
+  });
+  const key = panel.renderKey(views);
+  if (key === providerLoginRenderKey && serverAccounts.childElementCount) return;
+  providerLoginRenderKey = key;
+  serverAccounts.replaceChildren(...(views.length ? views.map((view) => {
+    const start = el("button", { type: "button", class: "chip-button", text: view.startText });
+    start.addEventListener("click", () => emit("server:provider-login", { provider: view.provider }));
+    const open = view.authUrl
       ? el("button", { type: "button", class: "chip-button ghost", text: "Открыть страницу входа" })
       : null;
-    open?.addEventListener("click", () => emit("server:provider-login-open", { authUrl }));
-    const cancel = pending
+    open?.addEventListener("click", () => emit("server:provider-login-open", { authUrl: view.authUrl }));
+    const cancel = view.canCancel
       ? el("button", { type: "button", class: "chip-button ghost", text: "Отменить" })
       : null;
-    cancel?.addEventListener("click", () => emit("server:provider-login-cancel", { provider: account.provider }));
-    return el("div", { class: "server-component server-account", "data-status": account.status }, [
-      el("span", { class: "server-component-name", text: PROVIDER_LOGIN_LABELS[account.provider] ?? account.provider }),
-      el("span", { class: "server-component-status", text: PROVIDER_LOGIN_STATUS[account.status] ?? account.status }),
-      account.status === "failed" && account.error ? el("small", { text: account.error }) : null,
+    cancel?.addEventListener("click", () => {
+      providerLoginCodeDrafts.delete(view.provider);
+      emit("server:provider-login-cancel", { provider: view.provider });
+    });
+    let codeRow = null;
+    if (view.acceptsCode) {
+      const input = el("input", { type: "text", class: "server-account-code" });
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      input.placeholder = "code#state";
+      input.setAttribute("aria-label", "Код со страницы входа Claude");
+      input.value = providerLoginCodeDrafts.get(view.provider) ?? "";
+      const send = el("button", { type: "button", class: "chip-button", text: "Отправить код" });
+      const sync = () => {
+        if (input.value) providerLoginCodeDrafts.set(view.provider, input.value);
+        else providerLoginCodeDrafts.delete(view.provider);
+        send.disabled = !panel.codeSubmission(view, input.value);
+      };
+      input.addEventListener("input", sync);
+      sync();
+      send.addEventListener("click", () => {
+        const submission = panel.codeSubmission(view, input.value);
+        if (!submission) return;
+        providerLoginCodeDrafts.delete(view.provider);
+        input.value = "";
+        sync();
+        emit("server:provider-login-code", submission);
+      });
+      codeRow = el("div", { class: "server-account-code-row" }, [
+        el("small", { text: view.codeHint }),
+        el("div", { class: "server-account-actions" }, [input, send]),
+      ]);
+    }
+    return el("div", { class: "server-component server-account", "data-status": view.status }, [
+      el("span", { class: "server-component-name", text: view.label }),
+      el("span", { class: "server-component-status", text: view.statusText }),
+      view.error ? el("small", { text: view.error }) : null,
       el("div", { class: "server-account-actions" }, [start, open, cancel].filter(Boolean)),
+      codeRow,
     ].filter(Boolean));
   }) : [el("span", { class: "setting-empty", text: "Вход недоступен в этой версии Hub" })]));
 }
@@ -11435,10 +11466,12 @@ const AgentHub = {
     lastServerPayload = payload ?? {};
     if (root.dataset.view === "server") renderServerStatus(lastServerPayload);
   },
-  /** Ссылка входа из локального ответа на запуск входа; снапшот её не содержит. */
-  setProviderLoginUrl(provider, authUrl) {
-    if (/^https:\/\//u.test(String(authUrl ?? ""))) providerLoginUrls.set(provider, authUrl);
-    else providerLoginUrls.delete(provider);
+  /** Попытка и ссылка входа из локального ответа на запуск; снапшот их не содержит. */
+  setProviderLoginUrl(provider, { attemptId = null, authUrl = null } = {}) {
+    providerLoginCodeDrafts.delete(provider);
+    if (attemptId) providerLoginLocal.set(provider, { attemptId: String(attemptId), authUrl });
+    else providerLoginLocal.delete(provider);
+    providerLoginRenderKey = "";
     if (root.dataset.view === "server" && lastServerPayload) renderServerStatus(lastServerPayload);
   },
   openAttachmentViewer,
