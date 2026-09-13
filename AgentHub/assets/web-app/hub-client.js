@@ -1239,6 +1239,7 @@ function updateLiveMessage(taskIdValue, selected) {
     stage: activeStageLabel(run.stage),
     reasoning: run.progress || "",
     text: response,
+    attachments: attachmentViews(run.responseAttachments),
     activities: run.activities ?? [],
     activityGroups: run.activityGroups ?? [],
     responsePhase: run.responsePhase ?? "",

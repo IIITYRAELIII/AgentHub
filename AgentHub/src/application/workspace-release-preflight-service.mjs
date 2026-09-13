@@ -188,6 +188,45 @@ function exactReadyContourReadback(context) {
     && context.contour?.status === "ready";
 }
 
+function readinessAssessment(context) {
+  const outcome = String(context.contour?.readback?.outcome ?? "missing");
+  if (!exactContourIdentityReadback(context)) {
+    return {
+      status: "failed",
+      reason: outcome === "exact" ? "contour-identity-mismatch" : `operation-readback-${outcome}`,
+    };
+  }
+  if (exactReadyContourReadback(context)) return { status: "ready", reason: "ready" };
+  const observed = context.contour?.readiness;
+  if (context.contour?.status === "not-ready"
+      && context.contour?.running === false
+      && observed?.ready === false
+      && observed?.retryable === true) {
+    return { status: "retry", reason: String(observed.reason ?? "health-not-ready") };
+  }
+  return {
+    status: "failed",
+    reason: String(observed?.reason ?? `contour-${context.contour?.status ?? "missing"}`),
+  };
+}
+
+function readinessFailure(reason, { attempts, elapsedMs, deadlineMs, deadline = false } = {}) {
+  const readbackOutcome = reason.startsWith("operation-readback-")
+    ? reason.slice("operation-readback-".length)
+    : null;
+  const summary = readbackOutcome
+    ? `refreshed Test Contour readback is not exact-ready: ${readbackOutcome}`
+    : reason === "contour-identity-mismatch"
+      ? "refreshed Test Contour readback is not exact-ready: exact; it does not match dev HEAD or the exact operation target"
+      : `refreshed Test Contour readiness ${deadline ? "deadline exceeded" : "failed"}: ${reason}`;
+  const error = new Error(
+    `${summary}; reason=${reason}; attempts=${attempts}; elapsedMs=${elapsedMs}; deadlineMs=${deadlineMs}`,
+  );
+  error.code = deadline ? "TEST_CONTOUR_READINESS_DEADLINE" : "TEST_CONTOUR_READINESS_FAILED";
+  error.reason = reason;
+  return error;
+}
+
 function sameRepositoryIdentity(left, right) {
   const candidateMatches = right?.frozenCandidate
     ? String(left?.candidateCommit ?? "") === String(right.frozenCandidate.preReleaseHead ?? "")
@@ -279,22 +318,49 @@ function assertOriginalPreflightReceipt(receipt, {
 
 async function readExactReadyContour({
   readTestContourStatus, refreshed, expectedHeadCommit,
+  deadlineMs, pollIntervalMs, now, delay,
 }) {
   const request = {
     expectedOperationId: refreshed?.operationId ?? null,
     expectedHeadCommit,
   };
-  let contour = null;
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    contour = await readTestContourStatus(request);
-    const context = { refreshed, contour, expectedHeadCommit };
-    if (exactReadyContourReadback(context)) return contour;
-    if (!exactContourIdentityReadback(context)
-        || contour?.running !== false
-        || contour?.status !== "not-ready") return contour;
-    await new Promise((resolve) => setTimeout(resolve, 25));
+  const startedAt = now();
+  const deadlineAt = startedAt + deadlineMs;
+  let attempts = 0;
+  let lastReason = "health-not-ready";
+  while (attempts === 0 || now() < deadlineAt) {
+    const remainingMs = Math.max(1, deadlineAt - now());
+    let contour;
+    try {
+      contour = await readTestContourStatus({
+        ...request,
+        healthTimeoutMs: Math.min(2_000, remainingMs),
+      });
+    } catch {
+      throw readinessFailure("readback-error", {
+        attempts: attempts + 1,
+        elapsedMs: Math.max(0, now() - startedAt),
+        deadlineMs,
+      });
+    }
+    attempts += 1;
+    const assessment = readinessAssessment({ refreshed, contour, expectedHeadCommit });
+    lastReason = assessment.reason;
+    const elapsedMs = Math.max(0, now() - startedAt);
+    if (assessment.status === "ready") return contour;
+    if (assessment.status === "failed") {
+      throw readinessFailure(assessment.reason, { attempts, elapsedMs, deadlineMs });
+    }
+    const remainingAfterReadMs = deadlineAt - now();
+    if (remainingAfterReadMs <= 0) break;
+    await delay(Math.min(pollIntervalMs, remainingAfterReadMs));
   }
-  return contour;
+  throw readinessFailure(lastReason, {
+    attempts,
+    elapsedMs: Math.max(0, now() - startedAt),
+    deadlineMs,
+    deadline: true,
+  });
 }
 
 async function defaultProductionValidation(source) {
@@ -306,9 +372,14 @@ export class WorkspaceReleasePreflightService {
     releasePlanner, taskGitWorkspaces, releaseGitWorkspaces,
     resolveTestContourSource, refreshTestContour, readTestContourStatus, readPublicationState,
     validateProductionCandidate = defaultProductionValidation,
+    readinessDeadlineMs = 10_000,
+    readinessPollIntervalMs = 100,
+    now = () => Date.now(),
+    delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   } = {}) {
     requiredMethod(releasePlanner, "plan");
     requiredMethod(taskGitWorkspaces, "prepareDev");
+    requiredMethod(taskGitWorkspaces, "assertExplicitUpstreamAdoption");
     requiredMethod(taskGitWorkspaces, "verifyReleaseResultsInDev");
     requiredMethod(taskGitWorkspaces, "releaseIntegrationEvidence");
     requiredMethod(releaseGitWorkspaces, "assertPrimaryInvariant");
@@ -320,6 +391,14 @@ export class WorkspaceReleasePreflightService {
     requiredFunction(readTestContourStatus, "readTestContourStatus");
     requiredFunction(readPublicationState, "readPublicationState");
     requiredFunction(validateProductionCandidate, "validateProductionCandidate");
+    requiredFunction(now, "now");
+    requiredFunction(delay, "delay");
+    if (!Number.isFinite(readinessDeadlineMs) || readinessDeadlineMs <= 0) {
+      throw new TypeError("readinessDeadlineMs must be a positive number");
+    }
+    if (!Number.isFinite(readinessPollIntervalMs) || readinessPollIntervalMs <= 0) {
+      throw new TypeError("readinessPollIntervalMs must be a positive number");
+    }
     this.releasePlanner = releasePlanner;
     this.taskGitWorkspaces = taskGitWorkspaces;
     this.releaseGitWorkspaces = releaseGitWorkspaces;
@@ -328,6 +407,10 @@ export class WorkspaceReleasePreflightService {
     this.readTestContourStatus = readTestContourStatus;
     this.readPublicationState = readPublicationState;
     this.validateProductionCandidate = validateProductionCandidate;
+    this.readinessDeadlineMs = readinessDeadlineMs;
+    this.readinessPollIntervalMs = readinessPollIntervalMs;
+    this.now = now;
+    this.delay = delay;
   }
 
   withAwaitTransition(workspaceId, operation) {
@@ -509,6 +592,17 @@ export class WorkspaceReleasePreflightService {
         mainAudits,
       };
     }
+    for (const repository of selectedRepositories) {
+      const audit = mainAudits.find((entry) => (
+        canonicalRoot(entry.projectRoot) === canonicalRoot(repository.projectRoot)
+      ));
+      await this.taskGitWorkspaces.assertExplicitUpstreamAdoption({
+        projectRoot: repository.projectRoot,
+        acceptedLocalMainCommit: audit.localMain,
+        approvedUpstreamCommit: audit.originMain,
+        frozenTasks: repository.frozenTasks,
+      });
+    }
     const primaryRepositories = [];
     for (const repository of selectedRepositories) {
       primaryRepositories.push(await this.releaseGitWorkspaces.assertPrimaryInvariant(repository.projectRoot, {
@@ -546,6 +640,10 @@ export class WorkspaceReleasePreflightService {
         readTestContourStatus: this.readTestContourStatus,
         refreshed,
         expectedHeadCommit: expectedContourHead,
+        deadlineMs: this.readinessDeadlineMs,
+        pollIntervalMs: this.readinessPollIntervalMs,
+        now: this.now,
+        delay: this.delay,
       });
       if (!exactReadyContourReadback({ refreshed, contour, expectedHeadCommit: expectedContourHead })) {
         throw new Error(

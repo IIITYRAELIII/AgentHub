@@ -2569,6 +2569,13 @@
       dismissTaskCard();
     }
   });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !event.defaultPrevented && taskCardIsDocked()
+      && !document.querySelector("dialog:modal")) {
+      event.preventDefault();
+      dismissTaskCard();
+    }
+  });
   function dismissTaskCard() {
     if (state.taskCardModalRequested && dashboardHasDetailPanel()) {
       state.taskCardModalRequested = false;

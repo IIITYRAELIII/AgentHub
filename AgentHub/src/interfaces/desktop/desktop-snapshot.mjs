@@ -460,6 +460,9 @@ export function createDesktopSnapshotFactory({
       }),
       progress: String(run.progressReasoning ?? ""),
       response: String(run.responseText ?? ""),
+      responseAttachments: Array.isArray(run.responseAttachments)
+        ? run.responseAttachments.map((attachment) => ({ ...attachment }))
+        : [],
       ...((run.responseAnnotationReferences ?? responseItem?.responseAnnotationReferences)?.length
         ? {
           responseAnnotationReferences: structuredClone(

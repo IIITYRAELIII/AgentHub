@@ -21,6 +21,7 @@ import {
 } from "../../domain/task-release-snapshot.mjs";
 import { normalizedTaskGitReferences, taskBranchName } from "../../domain/task-git-reference.mjs";
 import { normalizedTaskNumber, normalizedWorkspaceTaskPrefix, taskNumberParts } from "../../domain/task-number.mjs";
+import { taskProjectRoot } from "../../domain/task-project-root.mjs";
 import {
   assertTaskChecklistWorkspaceReassignmentAllowed,
   assertTaskChecklistWorkspaceTransitionAllowed,
@@ -35,6 +36,21 @@ import {
 } from "./task-checklist-repository.mjs";
 
 const NOTES_COLUMN_ID = "notes";
+
+function sameResolvedPath(left, right) {
+  const a = path.resolve(String(left ?? ""));
+  const b = path.resolve(String(right ?? ""));
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+function parsedSettings(value) {
+  try {
+    const parsed = JSON.parse(String(value ?? "{}"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
 
 function gitBaselineJson(value) {
   const repositories = Array.isArray(value?.repositories) ? value.repositories : [value];
@@ -2344,7 +2360,8 @@ export class TaskBoardStore {
   }
 
   beginLifecycleTransition(id, {
-    operationId, kind = "workflow", targetWorkflowStatus = null, expectedRevision,
+    operationId, kind = "workflow", targetWorkflowStatus = null, expectedRevision, evidence = null,
+    releaseContext = null,
   } = {}) {
     const taskId = String(id ?? "").trim();
     const operation = String(operationId ?? "").trim();
@@ -2371,6 +2388,64 @@ export class TaskBoardStore {
           database.exec("COMMIT");
           return { task: this.#taskWithRelease(database, current), replayed: true, phase: existing.phase };
         }
+        if (releaseContext) {
+          const workspaceId = String(releaseContext.workspaceId ?? "").trim();
+          const streamId = String(releaseContext.streamId ?? "").trim();
+          const rootText = String(releaseContext.projectRoot ?? "").trim();
+          const expectedRoot = rootText ? path.resolve(rootText) : null;
+          const workspace = database.prepare(
+            "SELECT id, settings_json FROM hub_workspaces WHERE id = ?",
+          ).get(workspaceId);
+          const stream = streamId ? database.prepare(
+            "SELECT id, workspace_id, settings_json FROM hub_streams WHERE id = ?",
+          ).get(streamId) : null;
+          const currentRoot = workspace ? taskProjectRoot({
+            workspace: { id: workspace.id, settings: parsedSettings(workspace.settings_json) },
+            stream: stream ? { id: stream.id, settings: parsedSettings(stream.settings_json) } : null,
+          }) : null;
+          const sourceContext = releaseContext.source ?? null;
+          const sourceTaskId = String(sourceContext?.taskId ?? "").trim();
+          const sourceTask = sourceContext ? database.prepare(
+            "SELECT * FROM hub_board_tasks WHERE id = ?",
+          ).get(sourceTaskId) : null;
+          const sourceStream = sourceTask?.stream_id ? database.prepare(
+            "SELECT id, workspace_id, settings_json FROM hub_streams WHERE id = ?",
+          ).get(sourceTask.stream_id) : null;
+          const sourceRoot = sourceTask && workspace ? taskProjectRoot({
+            workspace: { id: workspace.id, settings: parsedSettings(workspace.settings_json) },
+            stream: sourceStream ? { id: sourceStream.id, settings: parsedSettings(sourceStream.settings_json) } : null,
+          }) : null;
+          const sourceReferences = sourceTask ? database.prepare(`
+            SELECT project_root, result_commit FROM hub_task_git_references WHERE task_id = ?
+          `).all(sourceTaskId).filter((reference) => sameResolvedPath(reference.project_root, expectedRoot)) : [];
+          const sourceMatches = !sourceContext || (
+            sourceTask
+            && sourceTaskId !== taskId
+            && Number(sourceTask.row_revision) === Number(sourceContext.revision)
+            && sourceTask.workflow_status === String(sourceContext.workflowStatus ?? "")
+            && sourceTask.workflow_status === "testing"
+            && String(sourceTask.workspace_id ?? "") === workspaceId
+            && sourceStream
+            && String(sourceStream.workspace_id ?? "") === workspaceId
+            && sourceRoot
+            && sameResolvedPath(sourceRoot, expectedRoot)
+            && sameResolvedPath(sourceContext.projectRoot, expectedRoot)
+            && sourceReferences.length === 1
+            && String(sourceReferences[0].result_commit ?? "").trim().toLowerCase()
+              === String(sourceContext.resultCommit ?? "").trim().toLowerCase()
+          );
+          if (String(current.workspace_id ?? "") !== workspaceId
+              || String(current.stream_id ?? "") !== streamId
+              || !workspace
+              || (streamId && (!stream || String(stream.workspace_id ?? "") !== workspaceId))
+              || parsedSettings(workspace.settings_json).releaseWorkflowEnabled !== true
+              || !expectedRoot
+              || !currentRoot
+              || !sourceMatches
+              || !sameResolvedPath(currentRoot, expectedRoot)) {
+            throw new Error("Task release context changed during lifecycle transition");
+          }
+        }
         const active = database.prepare(`
           SELECT operation_id FROM hub_task_lifecycle_transitions
           WHERE task_id = ? AND phase IN ('pending_git', 'cleanup')
@@ -2379,8 +2454,8 @@ export class TaskBoardStore {
         database.prepare(`
           INSERT INTO hub_task_lifecycle_transitions (
             operation_id, task_id, kind, phase, target_workflow_status,
-            expected_task_revision, prior_state_json, created_at_ms, updated_at_ms
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            expected_task_revision, prior_state_json, evidence_json, created_at_ms, updated_at_ms
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           operation, taskId, normalizedKind, normalizedKind === "workflow" ? "pending_git" : "cleanup",
           target, revision, JSON.stringify({
@@ -2389,7 +2464,7 @@ export class TaskBoardStore {
               SELECT provider, provider_thread_id, turn_id, operation_id, requested_workflow_status
               FROM hub_task_turn_bindings WHERE task_id = ?
             `).all(taskId),
-          }), timestamp, timestamp,
+          }), JSON.stringify(evidence ?? {}), timestamp, timestamp,
         );
         database.exec("COMMIT");
         return { task: this.#taskWithRelease(database, current), replayed: false, phase: normalizedKind === "workflow" ? "pending_git" : "cleanup" };
@@ -2413,7 +2488,12 @@ export class TaskBoardStore {
         phase: row.phase,
         targetWorkflowStatus: row.target_workflow_status ?? null,
         expectedRevision: Number(row.expected_task_revision),
+        priorTask: (() => {
+          const priorState = JSON.parse(row.prior_state_json);
+          return priorState?.task ?? priorState;
+        })(),
         error: row.error_text,
+        evidence: JSON.parse(row.evidence_json ?? "{}"),
       } : null;
     });
   }

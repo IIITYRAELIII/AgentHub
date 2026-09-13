@@ -12,7 +12,8 @@ import {
   ReleaseGitWorkspaceService,
 } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import { canonicalPath } from "../../../src/infrastructure/filesystem/config.mjs";
-import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
+import { TaskGitWorkspaceService } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
+import { taskBranchName, taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
 import {
   resolveTestContourSource,
   TEST_CONTOUR_RELEASE_CANDIDATE_SOURCE,
@@ -39,6 +40,9 @@ async function fixture(context) {
   await git(root, "init", "--bare", "--initial-branch=main", origin);
   await git(root, "clone", origin, primary);
   await git(primary, "config", "core.autocrlf", "false");
+  // core.autocrlf наследуется из системной конфигурации Windows; нормализация
+  // делает рабочее дерево клона релиза детерминированным на всех платформах.
+  await writeFile(path.join(primary, ".gitattributes"), "* text eol=lf\n", "utf8");
   await mkdir(path.join(primary, ".team"));
   await mkdir(path.join(primary, "1C_ACCESS"));
   await mkdir(path.join(primary, "AgentHub"));
@@ -78,6 +82,16 @@ async function publishCandidate(candidate) {
   await git(candidate.releaseRoot, "merge", "--ff-only", candidate.preReleaseHead);
   await git(candidate.releaseRoot, "push", "origin", "main");
   return git(candidate.releaseRoot, "rev-parse", "HEAD");
+}
+
+async function registeredTaskBranch(setup, context, { taskId, startCommit, baseCommit = setup.baseCommit }) {
+  const branch = taskBranchName(taskId, setup.primary);
+  const taskRoot = path.join(setup.root, `task-${taskId}`);
+  await git(setup.primary, "worktree", "add", "-b", branch, taskRoot, startCommit);
+  context.after(() => git(setup.primary, "worktree", "remove", "--force", taskRoot).catch(() => {}));
+  await git(setup.primary, "update-ref",
+    `refs/agent-hub/task-bases/${taskId}/${taskRepositoryKey(setup.primary)}`, baseCommit);
+  return { branch, taskRoot };
 }
 
 for (const binaryOnly of [false, true]) test(`PreRelease preserves ${binaryOnly ? "terminal binary patch delimiters" : "binary patch bytes and a trailing blank context line"}`, { timeout: 20000 }, async (context) => {
@@ -150,7 +164,9 @@ test("frozen candidate readback validates prepared manifest identity and request
     workspaceId: "workspace-1",
     preflightRequestId: "preflight-readback-1",
     projectRoot: setup.primary,
-    frozenTasks: [{ taskId: "task-readback", taskRevision: 3, resultCommit }],
+    frozenTasks: [{
+      taskId: "task-readback", taskRevision: 3, baseCommit: setup.baseCommit, resultCommit,
+    }],
   });
 
   const readback = await setup.service.frozenCandidate(setup.primary);
@@ -165,6 +181,7 @@ test("frozen candidate readback validates prepared manifest identity and request
   assert.deepEqual(readback.manifest.tasks, [{
     taskId: "task-readback",
     taskRevision: 3,
+    baseCommit: setup.baseCommit,
     resultCommit,
   }]);
 
@@ -768,4 +785,246 @@ test("post-release overlap is diagnostic and leaves primary HEAD and bytes uncha
   assert.equal(await git(setup.primary, "rev-parse", "HEAD"), beforeHead);
   assert.equal(await git(setup.primary, "status", "--porcelain=v1"), beforeStatus);
   assert.deepEqual(await readFile(path.join(setup.primary, ".team", "participant.json")), localBytes);
+});
+
+// HUB-204: выбранная зависимость входит ровно один раз, невыбранная не входит.
+async function dependencyFixture(setup, context, { selectDependency }) {
+  const depRoot = path.join(setup.root, "task-dependency");
+  await git(setup.primary, "worktree", "add", "-b", "HUB-dependency", depRoot, "main");
+  context.after(() => git(setup.primary, "worktree", "remove", "--force", depRoot).catch(() => {}));
+  await writeFile(path.join(depRoot, "dependency.txt"), "dependency\n", "utf8");
+  const dependencyResult = await commit(depRoot, "dependency");
+
+  // Задача Б ветвится от результата А, поэтому содержит её коммит в своей истории.
+  const dependentRoot = path.join(setup.root, "task-dependent");
+  await git(setup.primary, "worktree", "add", "-b", "HUB-dependent", dependentRoot, dependencyResult);
+  context.after(() => git(setup.primary, "worktree", "remove", "--force", dependentRoot).catch(() => {}));
+  await writeFile(path.join(dependentRoot, "dependent.txt"), "dependent\n", "utf8");
+  const dependentResult = await commit(dependentRoot, "dependent");
+
+  const devRoot = path.join(setup.root, "dev-dependency");
+  await git(setup.primary, "worktree", "add", "-b", "dev-dependency", devRoot, "main");
+  context.after(() => git(setup.primary, "worktree", "remove", "--force", devRoot).catch(() => {}));
+  await git(devRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "--no-edit", dependencyResult);
+  const dependencyIntegration = await git(devRoot, "rev-parse", "HEAD");
+  await git(devRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "--no-edit", dependentResult);
+  const dependentIntegration = await git(devRoot, "rev-parse", "HEAD");
+
+  const dependencyTask = {
+    taskId: "task-dependency",
+    taskRevision: 2,
+    baseCommit: setup.baseCommit,
+    resultCommit: dependencyResult,
+    integrations: [{ commit: dependencyIntegration, parent: setup.baseCommit, order: 1 }],
+  };
+  const dependentTask = {
+    taskId: "task-dependent",
+    taskRevision: 3,
+    baseCommit: dependencyResult,
+    resultCommit: dependentResult,
+    integrations: [{ commit: dependentIntegration, parent: dependencyIntegration, order: 2 }],
+  };
+  return { frozenTasks: selectDependency ? [dependencyTask, dependentTask] : [dependentTask] };
+}
+
+test("selected dependency and its dependent Task are each included exactly once", async (context) => {
+  const setup = await fixture(context);
+  const scenario = await dependencyFixture(setup, context, { selectDependency: true });
+
+  const candidate = await setup.service.prepareCandidate({
+    planRevision: "plan-dependency-selected",
+    projectRoot: setup.primary,
+    frozenTasks: scenario.frozenTasks,
+  });
+
+  assert.equal(await git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:dependency.txt`), "dependency");
+  assert.equal(await git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:dependent.txt`), "dependent");
+  const names = (await git(candidate.releaseRoot, "diff", "--name-only",
+    setup.baseCommit, candidate.preReleaseHead)).split("\n").filter(Boolean).sort();
+  assert.deepEqual(names, ["dependency.txt", "dependent.txt"]);
+});
+
+test("real nested Task evidence projects the selected dependency once before its dependent changes", async (context) => {
+  const setup = await fixture(context);
+  await writeFile(path.join(setup.primary, "projection.txt"), "slot=base\n", "utf8");
+  setup.baseCommit = await commit(setup.primary, "projection base");
+  await git(setup.primary, "push", "origin", "main");
+
+  const dependencyId = "20000000-0000-0000-0000-000000000003";
+  const dependentId = "20000000-0000-0000-0000-000000000004";
+  const releaseOwnerId = "20000000-0000-0000-0000-000000000016";
+  const dependency = await registeredTaskBranch(setup, context, {
+    taskId: dependencyId,
+    startCommit: setup.baseCommit,
+  });
+  await writeFile(path.join(dependency.taskRoot, "projection.txt"), "slot=dependency\n", "utf8");
+  const dependencyResult = await commit(dependency.taskRoot, "selected dependency");
+
+  const dependent = await registeredTaskBranch(setup, context, {
+    taskId: dependentId,
+    startCommit: dependencyResult,
+    baseCommit: dependencyResult,
+  });
+  await writeFile(path.join(dependent.taskRoot, "dependent.txt"), "dependent\n", "utf8");
+  const dependentResult = await commit(dependent.taskRoot, "selected dependent");
+
+  const taskGit = new TaskGitWorkspaceService({ dataDir: setup.dataDir });
+  const dev = await taskGit.prepareDev(setup.primary);
+  await writeFile(path.join(dev.projectRoot, "projection.txt"), "slot=dependency\n", "utf8");
+  await writeFile(path.join(dev.projectRoot, "foreign.txt"), "must-not-release\n", "utf8");
+  await commit(dev.projectRoot, "equivalent dependency with foreign context");
+  await git(dev.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "--no-edit", dependencyResult);
+  const dependencyIntegration = await git(dev.projectRoot, "rev-parse", "HEAD");
+  assert.equal(await git(dev.projectRoot, "diff", `${dependencyIntegration}^1`, dependencyIntegration), "");
+  await git(dev.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "--no-edit", dependentResult);
+
+  const releaseOwnerBase = await git(dev.projectRoot, "rev-parse", "HEAD");
+  const releaseOwner = await registeredTaskBranch(setup, context, {
+    taskId: releaseOwnerId,
+    startCommit: releaseOwnerBase,
+    baseCommit: releaseOwnerBase,
+  });
+  await writeFile(path.join(releaseOwner.taskRoot, "projection.txt"), "slot=release-owner\n", "utf8");
+  await writeFile(path.join(releaseOwner.taskRoot, "release-owner.txt"), "release-owner\n", "utf8");
+  const releaseOwnerResult = await commit(releaseOwner.taskRoot, "dependent release owner");
+  await git(dev.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "--no-edit", releaseOwnerResult);
+
+  const tasks = [
+    { taskId: dependencyId, taskRevision: 3, projectRoot: setup.primary,
+      branch: dependency.branch, resultCommit: dependencyResult },
+    { taskId: dependentId, taskRevision: 4, projectRoot: setup.primary,
+      branch: dependent.branch, resultCommit: dependentResult },
+    { taskId: releaseOwnerId, taskRevision: 16, projectRoot: setup.primary,
+      branch: releaseOwner.branch, resultCommit: releaseOwnerResult },
+  ];
+  const evidence = await taskGit.releaseIntegrationEvidence({ projectRoot: setup.primary, tasks });
+  const selectedDependency = evidence.tasks.find((task) => task.taskId === dependencyId);
+  const selectedDependent = evidence.tasks.find((task) => task.taskId === dependentId);
+  assert.deepEqual(selectedDependency.integrations.map((item) => item.commit), [dependencyIntegration]);
+  assert.equal(selectedDependent.integrations.some((item) => item.commit === dependencyIntegration), false);
+
+  const candidate = await setup.service.prepareCandidate({
+    planRevision: "plan-real-nested-evidence",
+    projectRoot: setup.primary,
+    frozenTasks: evidence.tasks,
+  });
+  assert.deepEqual(candidate.netProjectedTaskIds, [dependencyId]);
+  assert.equal(await git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:projection.txt`),
+    "slot=release-owner");
+  assert.equal(await git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:dependent.txt`), "dependent");
+  assert.equal(await git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:release-owner.txt`),
+    "release-owner");
+  await assert.rejects(git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:foreign.txt`));
+  const names = (await git(candidate.releaseRoot, "diff", "--name-only",
+    setup.baseCommit, candidate.preReleaseHead)).split("\n").filter(Boolean).sort();
+  assert.deepEqual(names, ["dependent.txt", "projection.txt", "release-owner.txt"]);
+
+  const withoutDependency = await taskGit.releaseIntegrationEvidence({
+    projectRoot: setup.primary,
+    tasks: tasks.filter((task) => task.taskId !== dependencyId),
+  });
+  await assert.rejects(setup.service.prepareCandidate({
+    planRevision: "plan-real-nested-evidence-without-dependency",
+    projectRoot: setup.primary,
+    frozenTasks: withoutDependency.tasks,
+  }), new RegExp(`failed for Task ${releaseOwnerId}`, "u"));
+});
+
+test("incomparable selected Tasks cannot claim one shared dev integration", async (context) => {
+  const setup = await fixture(context);
+  const sharedRoot = path.join(setup.root, "task-shared-lineage");
+  await git(setup.primary, "worktree", "add", "-b", "shared-lineage", sharedRoot, setup.baseCommit);
+  context.after(() => git(setup.primary, "worktree", "remove", "--force", sharedRoot).catch(() => {}));
+  await writeFile(path.join(sharedRoot, "shared.txt"), "shared\n", "utf8");
+  const sharedCommit = await commit(sharedRoot, "shared ancestor");
+
+  const leftId = "30000000-0000-0000-0000-000000000001";
+  const rightId = "30000000-0000-0000-0000-000000000002";
+  const left = await registeredTaskBranch(setup, context, { taskId: leftId, startCommit: sharedCommit });
+  const right = await registeredTaskBranch(setup, context, { taskId: rightId, startCommit: sharedCommit });
+  await writeFile(path.join(left.taskRoot, "left.txt"), "left\n", "utf8");
+  await writeFile(path.join(right.taskRoot, "right.txt"), "right\n", "utf8");
+  const leftResult = await commit(left.taskRoot, "left result");
+  const rightResult = await commit(right.taskRoot, "right result");
+
+  const taskGit = new TaskGitWorkspaceService({ dataDir: setup.dataDir });
+  const dev = await taskGit.prepareDev(setup.primary);
+  await git(dev.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "--no-edit", sharedCommit);
+  await git(dev.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "--no-edit", leftResult);
+  await git(dev.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "--no-edit", rightResult);
+
+  await assert.rejects(taskGit.releaseIntegrationEvidence({
+    projectRoot: setup.primary,
+    tasks: [
+      { taskId: leftId, taskRevision: 1, projectRoot: setup.primary,
+        branch: left.branch, resultCommit: leftResult },
+      { taskId: rightId, taskRevision: 1, projectRoot: setup.primary,
+        branch: right.branch, resultCommit: rightResult },
+    ],
+  }), /ambiguously owned/u);
+});
+
+test("an unselected dependency never reaches the release through its dependent Task", async (context) => {
+  const setup = await fixture(context);
+  const scenario = await dependencyFixture(setup, context, { selectDependency: false });
+
+  const candidate = await setup.service.prepareCandidate({
+    planRevision: "plan-dependency-excluded",
+    projectRoot: setup.primary,
+    frozenTasks: scenario.frozenTasks,
+  });
+
+  assert.equal(await git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:dependent.txt`), "dependent");
+  await assert.rejects(git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:dependency.txt`));
+  const names = (await git(candidate.releaseRoot, "diff", "--name-only",
+    setup.baseCommit, candidate.preReleaseHead)).split("\n").filter(Boolean);
+  assert.deepEqual(names, ["dependent.txt"]);
+});
+
+test("repeated publication freeze reuses the accepted PreRelease without rebuilding or losing composition", async (context) => {
+  const setup = await fixture(context);
+  const scenario = await dependencyFixture(setup, context, { selectDependency: true });
+
+  const accepted = await setup.service.prepareCandidate({
+    planRevision: "plan-reuse",
+    projectRoot: setup.primary,
+    workspaceId: "workspace",
+    frozenTasks: scenario.frozenTasks,
+  });
+  const changelogContent = Buffer.from("consolidated\n");
+  await writeFile(path.join(accepted.releaseRoot, "CHANGELOG.md"), changelogContent);
+  const freeze = (options = {}) => setup.service.freezePublicationCandidate({
+    projectRoot: setup.primary,
+    workspaceId: "workspace",
+    expectedPlanRevision: "plan-reuse",
+    expectedPreparedHead: accepted.preReleaseHead,
+    changelogContent,
+    ...options,
+  });
+
+  const frozen = await freeze();
+  const refrozen = await freeze({
+    validateBeforeCommit: () => assert.fail("a repeated freeze must not revalidate or rebuild the accepted release"),
+  });
+
+  assert.equal(frozen.phase, "frozen");
+  assert.equal(frozen.reused, false);
+  assert.equal(refrozen.reused, true);
+  assert.equal(refrozen.preReleaseHead, frozen.preReleaseHead);
+  assert.equal(refrozen.manifestHash, frozen.manifestHash);
+  assert.equal(await git(accepted.releaseRoot, "rev-parse", "PreRelease"), frozen.preReleaseHead);
+  assert.equal(await git(accepted.releaseRoot, "rev-parse", "main"), frozen.preReleaseHead);
+  assert.equal(await git(accepted.releaseRoot, "show", `${refrozen.preReleaseHead}:dependency.txt`), "dependency");
+  assert.equal(await git(accepted.releaseRoot, "show", `${refrozen.preReleaseHead}:dependent.txt`), "dependent");
+  const names = (await git(accepted.releaseRoot, "diff", "--name-only",
+    setup.baseCommit, refrozen.preReleaseHead)).split("\n").filter(Boolean).sort();
+  assert.deepEqual(names, ["CHANGELOG.md", "dependency.txt", "dependent.txt"]);
 });

@@ -206,3 +206,154 @@ test("failed Await rebuild rolls back the committed Task status and exact Git re
   assert.equal(task.workflowStatus, "testing");
   assert.deepEqual(task.gitReferences, [previousReference]);
 });
+
+test("cross-Task cutover rejects missing, mismatched or ambiguous source authority before target mutation", async () => {
+  const projectRoot = process.platform === "win32" ? "C:\\repo" : "/repo";
+  const commit = "a".repeat(40);
+  for (const gitReferences of [
+    [],
+    [{ projectRoot, branch: "HUB-216", resultCommit: "b".repeat(40) }],
+    [
+      { projectRoot, branch: "HUB-216", resultCommit: commit },
+      { projectRoot, branch: "HUB-216-copy", resultCommit: commit },
+    ],
+  ]) {
+    let begins = 0;
+    const tasks = new Map([
+      ["source", {
+        id: "source", title: "Source", taskNumber: "HUB-216", revision: 9,
+        workspaceId: "workspace-1", streamId: "stream-1", workflowStatus: "testing", gitReferences,
+      }],
+      ["target", {
+        id: "target", title: "Target", taskNumber: "HUB-203", revision: 6,
+        workspaceId: "workspace-1", streamId: "stream-1", workflowStatus: "testing",
+        gitReferences: [{ projectRoot, branch: "HUB-203", resultCommit: "c".repeat(40) }],
+      }],
+    ]);
+    const lease = { signal: null, async assertOwned() {} };
+    const taskBoard = {
+      task: (id) => tasks.get(id) ?? null,
+      beginLifecycleTransition: () => { begins += 1; },
+      commitWorkflowTransition: () => { throw new Error("unexpected commit"); },
+      failLifecycleTransition: () => true,
+      rollbackWorkflowOutcome: () => {},
+      finalizeCleanupTransition: () => {},
+    };
+    const taskGitWorkspaces = {
+      withTaskLock: async () => { throw new Error("unexpected single Task lock"); },
+      withTaskLocks: async (_ids, operation) => operation(lease),
+      prepareOwned: async () => { throw new Error("unexpected Git preparation"); },
+      snapshotAndMergeOwned: async () => { throw new Error("unexpected Git snapshot"); },
+      cleanupOwned: async () => {},
+      cleanupPreview: async () => ({}),
+    };
+    const service = new TaskLifecycleService({
+      taskBoard,
+      taskGitWorkspaces,
+      workspaceCatalog: {
+        workspace: () => ({ id: "workspace-1", settings: { workingDirectory: projectRoot, releaseWorkflowEnabled: true } }),
+        stream: () => ({ id: "stream-1", workspaceId: "workspace-1", settings: {} }),
+      },
+      releasePreflight: { withAwaitTransition: (_id, operation) => operation(), prepareAwaitSet: async () => ({}) },
+    });
+    await assert.rejects(service.updateWorkflowStatusFromSource({
+      taskId: "target", status: "awaiting_implementation", operationId: `cutover-${gitReferences.length}`,
+      projectRoot, expectedRevision: 6, expectedWorkflowStatus: "testing",
+    }, {
+      taskId: "source", expectedRevision: 9, expectedCommit: commit,
+      expectedProjectorSha256: "d".repeat(64),
+      verifySource: async () => ({ headCommit: commit, projectorSha256: "d".repeat(64) }),
+    }), /unique authoritative Task result/u);
+    assert.equal(begins, 0);
+  }
+});
+
+test("unknown workflow recovery retains the repository lease through Git continuation", async () => {
+  const projectRoot = "D:/project";
+  const task = {
+    id: "task-recovery", title: "Recovery", taskNumber: "HUB-216", revision: 15,
+    status: "started", workspaceId: "workspace-1", streamId: "stream-1",
+    workflowStatus: "testing", gitReferences: [{
+      projectRoot, branch: "HUB-216", resultCommit: "a".repeat(40),
+    }],
+  };
+  const transition = {
+    operationId: "unknown-request", taskId: task.id, kind: "workflow", phase: "pending_git",
+    targetWorkflowStatus: "awaiting_implementation", expectedRevision: 15,
+  };
+  const calls = [];
+  const taskLease = { async assertOwned() {}, signal: null };
+  const repositoryLease = { async assertOwned() {}, signal: null, repositoryLockKeys: new Set(["owned-repository"]) };
+  const taskBoard = {
+    task: () => task,
+    lifecycleTransition: () => transition,
+    beginLifecycleTransition: () => { calls.push("begin"); return { replayed: true }; },
+    commitWorkflowTransition: () => {
+      calls.push("commit");
+      task.workflowStatus = "awaiting_implementation";
+      task.revision = 16;
+      return structuredClone(task);
+    },
+    rollbackWorkflowOutcome: () => task,
+    failLifecycleTransition: () => true,
+    finalizeCleanupTransition: () => ({ task }),
+  };
+  const taskGitWorkspaces = {
+    withTaskLock: () => { throw new Error("recovery must not reacquire the Task lock"); },
+    withTaskRecoveryLock: (_taskId, operation) => operation(taskLease),
+    withTaskRepositoryRecoveryLock: (_taskId, root, ownedTaskLease, operation) => {
+      assert.equal(root, projectRoot);
+      assert.equal(ownedTaskLease, taskLease);
+      calls.push("repository-lock");
+      return operation(repositoryLease);
+    },
+    recoverProcessTreeGuard: async (_taskId, options) => {
+      calls.push("recover");
+      assert.equal(options.lease, repositoryLease);
+      return { recovered: true, reused: false, proof: {} };
+    },
+    prepareOwned: async ({ lease }) => {
+      calls.push("prepare");
+      assert.equal(lease, repositoryLease);
+      return { projectRoot: "D:/managed/task", branch: "HUB-216" };
+    },
+    snapshotAndMergeOwned: async ({ lease }) => {
+      calls.push("snapshot");
+      assert.equal(lease, repositoryLease);
+      return {
+        snapshot: {
+          branch: "HUB-216", projectRoot: "D:/managed/task", repositoryRoot: projectRoot,
+          baseCommit: "0".repeat(40), headCommit: "a".repeat(40),
+        },
+        integration: {
+          outcome: "merged", integrated: true, resultProved: true,
+          dev: { branch: "dev", headCommit: "b".repeat(40) },
+        },
+      };
+    },
+    cleanupOwned: async () => ({}),
+    cleanupPreview: async () => ({ workspaces: [], gitReferences: [], dirty: false, unpublished: [], deleting: [] }),
+  };
+  const service = new TaskLifecycleService({
+    taskBoard,
+    taskGitWorkspaces,
+    workspaceCatalog: {
+      workspace: () => ({ id: "workspace-1", settings: { workingDirectory: projectRoot, releaseWorkflowEnabled: true } }),
+      stream: () => ({ id: "stream-1", workspaceId: "workspace-1", settings: {} }),
+    },
+    releasePreflight: {
+      withAwaitTransition: (_workspaceId, operation) => operation(),
+      prepareAwaitSet: async () => { calls.push("rebuild"); return { headCommit: "c".repeat(40) }; },
+    },
+  });
+
+  const result = await service.reconcileUnknownWorkflowStatus({
+    taskId: task.id,
+    operationId: transition.operationId,
+    projectRoot,
+    guardId: "guard-1",
+    proof: { kind: "system-restart-after-guard", confirmed: true, summary: "boot proof" },
+  });
+  assert.equal(result.result.task.workflowStatus, "awaiting_implementation");
+  assert.deepEqual(calls, ["repository-lock", "recover", "begin", "prepare", "snapshot", "commit", "rebuild"]);
+});

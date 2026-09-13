@@ -179,6 +179,84 @@ async function startLockHolder({ runtimeRoot, readyFile, releaseFile }) {
   throw new Error("lock holder did not acquire publication lock");
 }
 
+test("readiness resumes durable finalization without input and coalesces duplicate resume signals", async (t) => {
+  const { root, journal, checkpoint } = await fixture(t);
+  const queued = [];
+  const events = [];
+  const finalizationCommandIds = [];
+  let finalizations = 0;
+  const resume = () => resumeRuntimePublicationCompletion({
+    runtimeRoot: root,
+    journal,
+    checkpoint,
+    lock: async (operation) => operation(),
+    readRuntimeStatus: async () => ({
+      current: "release-1", runningRelease: "release-1", running: true, ready: true, pid: 123,
+    }),
+    verifyRestart: async () => events.push("verified"),
+    createAdapter: () => ({
+      finalizePublication: async ({ finalizationCommandId }) => {
+        finalizations += 1;
+        finalizationCommandIds.push(finalizationCommandId);
+        events.push(`finalized:${finalizations}`);
+        return { status: finalizations === 1 ? "retry_required" : "completed" };
+      },
+    }),
+  });
+  const markReady = publicationAwareReadiness({
+    markReady: async () => events.push("ready"),
+    resume,
+    retryDelayMs: 25,
+    maxFinalizationAttempts: 2,
+    schedule: (operation, delayMs) => queued.push({ operation, delayMs }),
+  });
+  await Promise.all([markReady(), markReady()]);
+  assert.deepEqual(events, ["ready", "ready"]);
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0].delayMs, 0);
+  await queued.shift().operation();
+  assert.equal((await journal.read()).status, "awaiting_finalization");
+  assert.deepEqual(events, ["ready", "ready", "verified", "finalized:1"]);
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0].delayMs, 25);
+  await markReady();
+  assert.equal(queued.length, 1);
+  await queued.shift().operation();
+  assert.equal((await journal.read()).status, "succeeded");
+  assert.equal(await checkpoint.read(), null);
+  assert.deepEqual(events, [
+    "ready", "ready", "verified", "finalized:1", "ready", "verified", "finalized:2",
+  ]);
+  assert.equal(finalizationCommandIds.length, 2);
+  assert.notEqual(finalizationCommandIds[0], finalizationCommandIds[1]);
+  await markReady();
+  assert.equal(queued.length, 0);
+  assert.equal(finalizations, 2);
+
+  const blockedQueue = [];
+  const errors = [];
+  let blockedAttempts = 0;
+  const blocked = publicationAwareReadiness({
+    markReady: async () => {},
+    maxFinalizationAttempts: 2,
+    retryDelayMs: 25,
+    schedule: (operation, delayMs) => blockedQueue.push({ operation, delayMs }),
+    resume: async () => {
+      blockedAttempts += 1;
+      return { status: "awaiting_finalization" };
+    },
+    onError: (error) => errors.push(error.message),
+  });
+  await blocked();
+  await blockedQueue.shift().operation();
+  await blockedQueue.shift().operation();
+  assert.equal(blockedAttempts, 2);
+  assert.equal(blockedQueue.length, 0);
+  assert.deepEqual(errors, [
+    "Publication completion remains awaiting_finalization after 2 automatic attempts",
+  ]);
+});
+
 test("readiness schedules completion once after ready without waiting for completion", async () => {
   const ready = deferred();
   const completion = deferred();

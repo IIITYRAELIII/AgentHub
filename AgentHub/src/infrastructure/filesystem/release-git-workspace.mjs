@@ -9,7 +9,11 @@ import { taskRepositoryKey } from "../../domain/task-git-reference.mjs";
 import { canonicalPath } from "./config.mjs";
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
 import { freezePreparedPublicationCandidate } from "./freeze-publication-candidate.mjs";
-import { resolveExactOrderPreservingUnion } from "./release-order-preserving-union.mjs";
+import {
+  resolveExactDirectTaskSideMerge,
+  resolveExactOrderPreservingUnion,
+  resolveExactTaskBaseMerge,
+} from "./release-order-preserving-union.mjs";
 import { releaseTaskNetProjections } from "./release-task-net-projection.mjs";
 
 const RELEASE_MARKER = "agent-hub-release-clone.json";
@@ -239,9 +243,13 @@ function normalizedFrozenTasks(tasks = []) {
   for (const task of tasks) {
     const taskId = String(task?.taskId ?? "").trim();
     const taskRevision = Number(task?.taskRevision);
+    const baseCommit = String(task?.baseCommit ?? "").trim();
     const resultCommit = String(task?.resultCommit ?? "").trim();
     if (!taskId || !Number.isInteger(taskRevision) || taskRevision < 1 || !resultCommit) {
       throw new Error("release candidate requires exact Task IDs, revisions and result commits");
+    }
+    if (baseCommit && !/^[0-9a-f]{40}$/u.test(baseCommit)) {
+      throw new Error(`release Task ${taskId} has an invalid base commit`);
     }
     const integrations = (Array.isArray(task?.integrations) ? task.integrations : []).map((integration) => ({
       commit: String(integration?.commit ?? "").trim(),
@@ -251,7 +259,9 @@ function normalizedFrozenTasks(tasks = []) {
     if (integrations.some((integration) => (
       !integration.commit || !integration.parent || !Number.isInteger(integration.order) || integration.order < 0
     ))) throw new Error(`release Task ${taskId} has invalid dev integration evidence`);
-    const normalized = { taskId, taskRevision, resultCommit, integrations };
+    const normalized = {
+      taskId, taskRevision, ...(baseCommit ? { baseCommit } : {}), resultCommit, integrations,
+    };
     const existing = unique.get(taskId);
     if (existing && stableManifest(existing) !== stableManifest(normalized)) {
       throw new Error(`release Task ${taskId} has multiple result commits or integration histories`);
@@ -667,6 +677,14 @@ export class ReleaseGitWorkspaceService {
             tasks: pendingTasks, baseCommit,
             git: (args) => runGit(args, { cwd: clone.releaseRoot, timeoutMs: 300_000 }),
           });
+          const integrationOwners = new Map();
+          for (const task of pendingTasks) {
+            for (const integration of task.integrations) {
+              const owners = integrationOwners.get(integration.commit) ?? new Set();
+              owners.add(task.taskId);
+              integrationOwners.set(integration.commit, owners);
+            }
+          }
           netProjectedTaskIds = [...projections.keys()];
           const integrations = pendingTasks.flatMap((task) => {
             const projection = projections.get(task.taskId);
@@ -674,7 +692,10 @@ export class ReleaseGitWorkspaceService {
               ...projection, netProjection: true,
               order: Math.max(...task.integrations.map((item) => item.order)),
             }] : task.integrations;
-            return selected.map((integration) => ({ ...integration, taskId: task.taskId }));
+            return selected.map((integration) => ({
+              ...integration, taskId: task.taskId, taskBaseCommit: task.baseCommit,
+              taskResultCommit: task.resultCommit,
+            }));
           }).sort((left, right) => left.order - right.order || left.commit.localeCompare(right.commit));
           for (const integration of integrations) {
             const priorTree = await runGit(["write-tree"], { cwd: clone.releaseRoot });
@@ -712,6 +733,23 @@ export class ReleaseGitWorkspaceService {
                       conflicts,
                       approvedBaseCommit: baseCommit,
                     })) continue;
+                if (!integration.netProjection && await resolveExactDirectTaskSideMerge({
+                  candidateRoot: clone.releaseRoot,
+                  conflicts,
+                  approvedBaseCommit: baseCommit,
+                  integrationCommit: integration.commit,
+                  integrationTaskCommit: actualParents[1],
+                  taskBaseCommit: integration.taskBaseCommit,
+                  taskResultCommit: integration.taskResultCommit,
+                  uniqueSelectedOwner: integrationOwners.get(integration.commit)?.size === 1,
+                })) continue;
+                if (await resolveExactTaskBaseMerge({
+                  candidateRoot: clone.releaseRoot,
+                  conflicts,
+                  approvedBaseCommit: baseCommit,
+                  taskResultCommit: integration.taskResultCommit,
+                  integrationCommit: integration.commit,
+                })) continue;
                 throw new Error(
                   `PreRelease delta ${integration.commit} (dev order ${integration.order}) failed for Task `
                   + `${integration.taskId}: ${conflicts.join(", ") || error.message}`,
@@ -892,6 +930,7 @@ export class ReleaseGitWorkspaceService {
         tasks: manifestTasks.map((task) => ({
           taskId: task.taskId,
           taskRevision: task.taskRevision,
+          ...(task.baseCommit ? { baseCommit: task.baseCommit } : {}),
           resultCommit: task.resultCommit,
         })),
         taskIds: manifestTasks.map((task) => task.taskId).sort(),

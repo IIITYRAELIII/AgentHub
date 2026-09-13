@@ -628,6 +628,37 @@ test("DeferredInputController restores ordinary FIFO when a steer misses its tur
   assert.deepEqual(started, ["user", "themes"]);
 });
 
+test("DeferredInputController converts one provider-rejected steer into the same queued item", async () => {
+  let steerCalls = 0;
+  const state = fixture({
+    occupancy: async () => ({
+      occupied: true,
+      waitReason: "task-running",
+      run: { id: "run-1", turnId: "turn-1" },
+    }),
+    steer: async () => { steerCalls += 1; return null; },
+  });
+  const item = {
+    id: "provider-rejected",
+    streamId: "stream-1",
+    provider: "codex",
+    threadId: "thread-1",
+    clientUserMessageId: "message-provider-rejected",
+    conflictKind: "message-steer",
+    steerTargetRunId: "run-1",
+    steerTargetTurnId: "turn-1",
+  };
+  state.queuedInputs.set(item.id, item);
+
+  await state.controller.process(item.id);
+
+  assert.equal(steerCalls, 1);
+  assert.equal(state.queuedInputs.size, 1);
+  assert.equal(state.queuedInputs.get(item.id), item);
+  assert.equal(item.conflictKind, "message-intake");
+  assert.equal(item.dispatchingAt, undefined);
+});
+
 test("DeferredInputController steers the exact active turn ahead of later-turn FIFO", async () => {
   const steered = [];
   const state = fixture({

@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { testFingerprint, runWindowsTestFile, runTestSuite } from "../../test-suite.mjs";
+import { withPublicationLock } from "../../src/infrastructure/process/publication-lock.mjs";
 
 test("test checkpoint fingerprints only transitive module dependencies", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-fingerprint-"));
@@ -41,6 +42,57 @@ test("test execution never retries an assertion or an unclassified OS error", as
   }
 });
 
+test("test child processes never inherit publication mutation ownership", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-publication-env-"));
+  try {
+    await writeFile(path.join(root, "environment.test.mjs"), [
+      "import assert from 'node:assert/strict';",
+      "import test from 'node:test';",
+      "test('isolated publication environment', () => {",
+      "  assert.equal(process.env.AGENT_HUB_PUBLICATION_SESSION, undefined);",
+      "  assert.equal(process.env.AGENT_HUB_PUBLICATION_STAGE_DELEGATION, undefined);",
+      "});",
+      "",
+    ].join("\n"), "utf8");
+    await runWindowsTestFile("environment.test.mjs", {
+      cwd: root,
+      env: {
+        AGENT_HUB_PUBLICATION_SESSION: "publisher-session",
+        AGENT_HUB_PUBLICATION_STAGE_DELEGATION: "publisher-delegation",
+      },
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("every default-lock validation suite uses a fixture root while the publisher lock is held", {
+  timeout: 60_000,
+}, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-held-publication-lock-"));
+  const previousLocalAppData = process.env.LOCALAPPDATA;
+  process.env.LOCALAPPDATA = root;
+  try {
+    const files = [
+      "tests/infrastructure/persistence/publication-state.test.mjs",
+      "tests/infrastructure/persistence/github-publication-baseline.test.mjs",
+      "tests/infrastructure/persistence/local-publication-receipt-baseline.test.mjs",
+      "tests/application/request-safe-restart.test.mjs",
+      "tests/public/release-candidate-contour.test.mjs",
+      "tests/public/publish-all.test.mjs",
+    ];
+    await withPublicationLock(async () => {
+      for (const file of files) {
+        await runWindowsTestFile(file, { cwd: path.resolve(import.meta.dirname, "../..") });
+      }
+    });
+  } finally {
+    if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = previousLocalAppData;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("visual matrices run explicitly and exactly once in all, never in the unit suite", async () => {
   const visual = ["tests/public/card-layout-dom.test.mjs", "tests/public/journal-account-provider-column.test.mjs"];
   const discovery = ["tests/composition/example.test.mjs", "tests/domain/example.test.mjs", "tests/public/message-behavior.test.mjs", ...visual];
@@ -67,7 +119,12 @@ test("fingerprints cover locks, declared fixtures, environment and toolchain wit
     await writeFile(path.join(root, "test.mjs"), "import { readFile } from 'node:fs/promises';\n");
     await writeFile(path.join(root, "fixtures/value.json"), "1");
     await writeFile(path.join(root, "package-lock.json"), "{}");
-    const options = { cwd: root, declaration: { inputs: ["fixtures"] }, environment: { LANG: "C", SECRET: "do-not-persist" }, toolchain: { node: "v24" } };
+    const options = {
+      cwd: root,
+      declaration: { inputs: ["fixtures"], builtins: ["fs/promises"] },
+      environment: { LANG: "C", SECRET: "do-not-persist" },
+      toolchain: { node: "v24" },
+    };
     const initial = await testFingerprint("test.mjs", options);
     assert.match(initial, /^[a-f0-9]{64}$/u);
     await writeFile(path.join(root, "test-contour.mjs"), "unrelated smoke correction");
@@ -102,5 +159,50 @@ test("undeclared IO, computed imports and missing browser identity cannot reuse 
     const before = await testFingerprint("test.mjs", options);
     await writeFile(binary, "browser-version-2");
     assert.notEqual(await testFingerprint("test.mjs", options), before);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("cache declarations allow only audited builtins and globals", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-declared-inputs-"));
+  try {
+    await writeFile(path.join(root, "fixture.txt"), "one", "utf8");
+    await writeFile(path.join(root, "test.mjs"), [
+      "import { readFile } from 'node:fs/promises';",
+      "export const value = process.platform + await readFile(new URL('./fixture.txt', import.meta.url), 'utf8');",
+    ].join("\n"), "utf8");
+    const declaration = {
+      inputs: ["fixture.txt"],
+      builtins: ["fs/promises"],
+      globals: ["process"],
+    };
+    const initial = await testFingerprint("test.mjs", { cwd: root, declaration });
+    assert.match(initial, /^[a-f0-9]{64}$/u);
+    assert.equal(await testFingerprint("test.mjs", {
+      cwd: root,
+      declaration: { ...declaration, globals: [] },
+    }), null);
+    assert.equal(await testFingerprint("test.mjs", {
+      cwd: root,
+      declaration: { ...declaration, builtins: [] },
+    }), null);
+    assert.equal(await testFingerprint("test.mjs", {
+      cwd: root,
+      declaration: { ...declaration, builtins: ["child_process"] },
+    }), null);
+    await writeFile(path.join(root, "test.mjs"), "import 'node:child_process';", "utf8");
+    assert.equal(await testFingerprint("test.mjs", {
+      cwd: root,
+      declaration: { packages: ["node:child_process"] },
+    }), null);
+    await writeFile(path.join(root, "test.mjs"), "await fetch('https://example.invalid');", "utf8");
+    assert.equal(await testFingerprint("test.mjs", { cwd: root, declaration: {} }), null);
+    await writeFile(path.join(root, "test.mjs"), [
+      "import { readFile } from 'node:fs/promises';",
+      "export const value = process.platform + await readFile(new URL('./fixture.txt', import.meta.url), 'utf8');",
+    ].join("\n"), "utf8");
+    await writeFile(path.join(root, "unrelated.txt"), "changed", "utf8");
+    assert.equal(await testFingerprint("test.mjs", { cwd: root, declaration }), initial);
+    await writeFile(path.join(root, "fixture.txt"), "two", "utf8");
+    assert.notEqual(await testFingerprint("test.mjs", { cwd: root, declaration }), initial);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

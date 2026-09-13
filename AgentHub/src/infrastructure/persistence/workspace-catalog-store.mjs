@@ -326,6 +326,8 @@ function mcpOperationFromRow(row) {
     argumentsHash: String(row.arguments_hash),
     interstreamContentHash: String(row.interstream_content_hash ?? ""),
     status: String(row.receipt_state ?? row.status),
+    operationStatus: String(row.status),
+    receiptState: String(row.receipt_state ?? row.status),
     result,
     error: String(row.error_text ?? ""),
     createdAtMs: Number(row.created_at_ms) || 0,
@@ -333,13 +335,13 @@ function mcpOperationFromRow(row) {
   };
 }
 
-function compactMcpOperationResult(result) {
+function compactMcpOperationResult(result, { outcome = "succeeded" } = {}) {
   const serialized = JSON.stringify(result ?? null);
   if (Buffer.byteLength(serialized, "utf8") <= 64 * 1024) return serialized;
   const taskId = String(result?.task?.id ?? result?.taskId ?? "").trim() || null;
   return JSON.stringify({
     receiptCompacted: true,
-    outcome: "succeeded",
+    outcome,
     taskId,
     resultType: Array.isArray(result) ? "array" : typeof result,
   });
@@ -981,6 +983,83 @@ export class WorkspaceCatalogStore {
     return mcpOperationFromRow(this.#database.prepare(
       "SELECT * FROM hub_mcp_operations WHERE request_id = ?",
     ).get(id));
+  }
+
+  completeUnknownMcpOperation(requestId, {
+    workspaceId, toolName, result, reconciliation,
+  } = {}) {
+    const id = safeIdentifier(requestId, "MCP request id");
+    const workspace = safeIdentifier(workspaceId, "workspace id");
+    const tool = safeIdentifier(toolName, "MCP tool name");
+    this.#database.exec("BEGIN IMMEDIATE");
+    try {
+      const operation = mcpOperationFromRow(this.#database.prepare(
+        "SELECT * FROM hub_mcp_operations WHERE request_id = ?",
+      ).get(id));
+      if (
+        !operation
+        || operation.workspaceId !== workspace
+        || operation.toolName !== tool
+        || operation.operationStatus !== "pending"
+        || operation.receiptState !== "unknown"
+      ) {
+        throw new Error("Unknown MCP operation identity or receipt state does not match");
+      }
+      const resultJson = compactMcpOperationResult({
+        ...result,
+        operatorReconciliation: reconciliation,
+      });
+      const updated = this.#database.prepare(`
+        UPDATE hub_mcp_operations
+        SET status = 'succeeded', receipt_state = 'succeeded', result_json = ?, error_text = '', completed_at_ms = ?
+        WHERE request_id = ? AND status = 'pending' AND receipt_state = 'unknown'
+      `).run(resultJson, this.#nowMs(), id);
+      if (Number(updated.changes) !== 1) throw new Error("Unknown MCP operation completion CAS failed");
+      this.#database.exec("COMMIT");
+      return this.mcpOperation(id);
+    } catch (error) {
+      this.#database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  failUnknownMcpOperation(requestId, {
+    workspaceId, toolName, error, reconciliation,
+  } = {}) {
+    const id = safeIdentifier(requestId, "MCP request id");
+    const workspace = safeIdentifier(workspaceId, "workspace id");
+    const tool = safeIdentifier(toolName, "MCP tool name");
+    this.#database.exec("BEGIN IMMEDIATE");
+    try {
+      const operation = mcpOperationFromRow(this.#database.prepare(
+        "SELECT * FROM hub_mcp_operations WHERE request_id = ?",
+      ).get(id));
+      if (
+        !operation
+        || operation.workspaceId !== workspace
+        || operation.toolName !== tool
+        || operation.operationStatus !== "pending"
+        || operation.receiptState !== "unknown"
+      ) {
+        throw new Error("Unknown MCP operation identity or receipt state does not match");
+      }
+      const errorText = String(error?.message ?? error ?? "authoritative reconciliation failed").slice(0, 2_000);
+      const resultJson = compactMcpOperationResult(
+        { operatorReconciliation: reconciliation },
+        { outcome: "failed" },
+      );
+      const updated = this.#database.prepare(`
+        UPDATE hub_mcp_operations
+        SET status = 'failed', receipt_state = 'failed', result_json = ?, error_text = ?, completed_at_ms = ?
+        WHERE request_id = ? AND status = 'pending' AND receipt_state = 'unknown'
+      `).run(resultJson, errorText, this.#nowMs(), id);
+      if (Number(updated.changes) !== 1) throw new Error("Unknown MCP operation failure CAS failed");
+      this.#database.exec("COMMIT");
+      return this.mcpOperation(id);
+    } catch (failure) {
+      this.#database.exec("ROLLBACK");
+      throw failure;
+    }
   }
 
   mcpOperation(requestId) {

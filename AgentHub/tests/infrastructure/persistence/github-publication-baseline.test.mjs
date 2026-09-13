@@ -25,7 +25,13 @@ async function git(cwd, ...args) {
 
 async function fixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), "github-baseline-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const previousLocalAppData = process.env.LOCALAPPDATA;
+  process.env.LOCALAPPDATA = root;
+  t.after(async () => {
+    if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = previousLocalAppData;
+    await rm(root, { recursive: true, force: true });
+  });
   const repo = path.join(root, "bookworm");
   await git(root, "init", repo);
   await git(repo, "remote", "add", "origin", "https://github.com/SidorukSV/bookworm.git");

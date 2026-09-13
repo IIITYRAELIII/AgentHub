@@ -9,6 +9,7 @@ import test from "node:test";
 import { taskBranchName } from "../../../src/domain/task-git-reference.mjs";
 import { taskReleasePlanRevision } from "../../../src/domain/task-release-snapshot.mjs";
 import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
+import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 
 async function fixture(t) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-board-"));
@@ -68,6 +69,38 @@ test("workflow transition atomically CAS-commits status and exact Git references
   assert.equal(committed.revision, current.revision + 1);
 });
 
+test("workflow transition readback exposes the exact immutable prior Task", async (t) => {
+  const store = await fixture(t);
+  const created = store.create({
+    text: "Same-status transition evidence", workspaceId: "workspace-1", bucket: "workspace",
+  });
+  store.claim(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", provider: "codex", threadId: "thread-1",
+    turnId: "turn-1", operationId: "claim-same-status-evidence",
+  });
+  const prior = store.recordTaskGitReference({
+    taskId: created.id,
+    projectRoot: "D:/repo",
+    branch: "HUB-216",
+    resultSnapshot: { repoRoot: "D:/repo", tree: "a".repeat(40) },
+  });
+  store.beginLifecycleTransition(created.id, {
+    operationId: "same-status-evidence",
+    kind: "workflow",
+    targetWorkflowStatus: prior.workflowStatus,
+    expectedRevision: prior.revision,
+  });
+
+  const transition = store.lifecycleTransition("same-status-evidence");
+  assert.equal(transition.expectedRevision, prior.revision);
+  assert.equal(transition.priorTask.id, prior.id);
+  assert.equal(transition.priorTask.revision, prior.revision);
+  assert.equal(transition.priorTask.workflowStatus, prior.workflowStatus);
+  assert.equal(transition.priorTask.workspaceId, "workspace-1");
+  assert.equal(transition.priorTask.streamId, "stream-1");
+  assert.deepEqual(transition.priorTask.gitReferences, prior.gitReferences);
+});
+
 test("workflow outcome rollback restores the exact prior status and Git references", async (t) => {
   const store = await fixture(t);
   const created = store.create({ text: "Await rollback" });
@@ -122,6 +155,53 @@ test("workflow CAS failure preserves the previous status and Git references", as
   const after = store.task(created.id);
   assert.equal(after.workflowStatus, "new");
   assert.equal(after.gitReferences[0].resultCommit, "b".repeat(40));
+});
+
+test("release transition atomically fences current Workspace and Stream settings", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-release-context-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const catalog = new WorkspaceCatalogStore({ databaseFile });
+  await catalog.load();
+  const store = new TaskBoardStore({ databaseFile });
+  t.after(async () => {
+    store.close();
+    catalog.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const repositoryRoot = path.join(directory, "repository");
+  const workspace = await catalog.runMutation(() => catalog.createWorkspace({
+    name: "Agent HUB", settings: { releaseWorkflowEnabled: true, workingDirectory: repositoryRoot },
+  }));
+  const stream = await catalog.runMutation(() => catalog.createStream({
+    workspaceId: workspace.id, name: "Architect", settings: {},
+  }));
+  const created = store.create({ text: "Release context fence", workspaceId: workspace.id, bucket: "workspace" });
+  store.claim(created.id, {
+    workspaceId: workspace.id, streamId: stream.id, provider: "codex", threadId: "thread-release-context",
+    turnId: "turn-release-context", operationId: "claim-release-context",
+  });
+  const current = store.task(created.id);
+  const releaseContext = { workspaceId: workspace.id, streamId: stream.id, projectRoot: repositoryRoot };
+
+  await catalog.runMutation(() => catalog.updateStreamSettings(stream.id, {
+    workingDirectory: path.join(directory, "moved-repository"),
+  }));
+  assert.throws(() => store.beginLifecycleTransition(created.id, {
+    operationId: "release-context-root-race", kind: "workflow",
+    targetWorkflowStatus: "awaiting_implementation", expectedRevision: current.revision, releaseContext,
+  }), /release context changed/u);
+  assert.equal(store.lifecycleTransition("release-context-root-race"), null);
+
+  await catalog.runMutation(() => catalog.updateStreamSettings(stream.id, {}));
+  await catalog.runMutation(() => catalog.updateWorkspaceSettings(workspace.id, {
+    releaseWorkflowEnabled: false, workingDirectory: repositoryRoot,
+  }));
+  assert.throws(() => store.beginLifecycleTransition(created.id, {
+    operationId: "release-context-disabled-race", kind: "workflow",
+    targetWorkflowStatus: "awaiting_implementation", expectedRevision: current.revision, releaseContext,
+  }), /release context changed/u);
+  assert.equal(store.lifecycleTransition("release-context-disabled-race"), null);
+  assert.equal(store.task(created.id).revision, current.revision);
 });
 
 test("prepare and cancel start enforce one exact owner and revision CAS", async (t) => {

@@ -17,6 +17,7 @@ import {
   LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V5,
   LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V6,
   LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V1,
+  LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V2,
   RELEASE_WORKFLOW_DEVELOPER_RULES,
   TEAM_LEAD_DEVELOPER_RULES,
 } from "../../src/domain/workspace-release-workflow.mjs";
@@ -201,4 +202,34 @@ test("Team Lead rules are independent and compose after Architect rules", () => 
   );
   assert.match(TEAM_LEAD_DEVELOPER_RULES, /highest number.*S<number>.*add one.*name the new Stream S2/iu);
   assert.match(TEAM_LEAD_DEVELOPER_RULES, /provider, model, and reasoning/u);
+});
+
+test("Architect role requires one service Task per release and keeps the rest", () => {
+  const issued = effectiveStreamDeveloperRules("", { architect: true });
+  assert.match(issued, /Релиз \[версия\]/u);
+  assert.match(issued, /Do not create a\s+separate Task per release operation/u);
+  // Служебные шаги одного выпуска не поглощают самостоятельные доработки механизмов.
+  assert.match(issued, /never absorbs independent work on release mechanisms/u);
+  // Прочие инструкции роли сохранены.
+  assert.ok(issued.includes(LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V1));
+  assert.ok(issued.includes(EXPLICIT_USER_WORKFLOW_EXCEPTION));
+});
+
+test("previously issued Architect prefix migrates to the release-Task rule once", () => {
+  const authored = "Мои личные правила.";
+  const migrated = effectiveStreamDeveloperRules(
+    `${LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V2}
+
+${authored}`,
+    { architect: true },
+  );
+  assert.ok(migrated.startsWith(ARCHITECT_RELEASE_DEVELOPER_RULES));
+  assert.ok(migrated.endsWith(authored));
+  assert.equal(migrated.split("Релиз [версия]").length - 1, 1);
+  assert.equal(migrated.split(EXPLICIT_USER_WORKFLOW_EXCEPTION).length - 1, 1);
+});
+
+test("the release-Task rule belongs to the Architect role only", () => {
+  assert.doesNotMatch(effectiveStreamDeveloperRules("", { teamLead: true }), /Релиз \[версия\]/u);
+  assert.doesNotMatch(effectiveWorkspaceDeveloperRules("", { releaseWorkflow: true }), /Релиз \[версия\]/u);
 });

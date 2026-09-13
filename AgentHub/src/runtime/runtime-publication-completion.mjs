@@ -14,6 +14,12 @@ function isPending(saved, runtimeRoot) {
     && Boolean(saved.progress?.publicationState && saved.progress?.expectedReleaseId);
 }
 
+function schedulePublicationCompletion(operation, delayMs = 0) {
+  const handle = delayMs > 0 ? setTimeout(operation, delayMs) : setImmediate(operation);
+  handle.unref?.();
+  return handle;
+}
+
 export async function resumeRuntimePublicationCompletion({
   runtimeRoot,
   environment = process.env,
@@ -50,15 +56,49 @@ export function publicationAwareReadiness({
   markReady,
   runtimeRoot,
   resume = () => resumeRuntimePublicationCompletion({ runtimeRoot }),
-  schedule = setImmediate,
+  schedule = schedulePublicationCompletion,
+  retryDelayMs = 1_000,
+  maxFinalizationAttempts = 3,
   onError = (error) => console.warn(`Publication completion recovery failed: ${error.message ?? error}`),
 }) {
+  if (!Number.isInteger(maxFinalizationAttempts) || maxFinalizationAttempts < 1) {
+    throw new TypeError("Publication completion recovery requires a positive attempt limit");
+  }
+  let activated = false;
   let scheduled = false;
+  let running = false;
+  let attempts = 0;
+  const enqueue = (delayMs = 0) => {
+    if (scheduled || running) return;
+    scheduled = true;
+    schedule(async () => {
+      scheduled = false;
+      running = true;
+      let retry = false;
+      try {
+        attempts += 1;
+        const result = await resume();
+        if (result?.status === "awaiting_finalization") {
+          retry = attempts < maxFinalizationAttempts;
+          if (!retry) {
+            onError(new Error(
+              `Publication completion remains awaiting_finalization after ${attempts} automatic attempts`,
+            ));
+          }
+        }
+      } catch (error) {
+        onError(error);
+      } finally {
+        running = false;
+        if (retry) enqueue(retryDelayMs);
+      }
+    }, delayMs);
+  };
   return async () => {
     await markReady();
-    if (scheduled) return;
-    scheduled = true;
+    if (activated) return;
+    activated = true;
     // Startup and admission continue without awaiting Git/Task finalization.
-    schedule(() => Promise.resolve().then(resume).catch(onError));
+    enqueue();
   };
 }
