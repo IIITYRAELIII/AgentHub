@@ -135,9 +135,10 @@ persisted wait reason is not authority: it is recalculated from current exact
 occupancy and self-heals after restart without manual interaction. When terminal
 admission is released, every queued lane head
 preempts polling backoff and is scheduled immediately because repository
-occupancy can couple otherwise independent lanes. A steer that no longer has
-an active turn is downgraded to ordinary intake before the later-turn FIFO
-choice.
+occupancy can couple otherwise independent lanes. A steer whose exact run or
+turn is no longer active becomes attention-required with that identity intact;
+it cannot enter the later-turn FIFO unless the user explicitly chooses the
+ordinary queue action.
 
 An attention-required lane head created by `task-running` or
 `activity-unknown` is rechecked against current exact occupancy. Once the
@@ -227,13 +228,16 @@ provider RPC once. Provider-internal compaction of that same ordinary turn does
 not downgrade admission to generic later-turn intake: the exact steer remains
 durable until the compaction barrier clears, then dispatches against its original
 run and turn. A Hub-owned compaction, rotation or restart reservation remains an
-admission barrier. A provider stale/not-steerable rejection converts that same
-durable item to ordinary queued intake once; it does not create a second command
-or change FIFO identity. Timeout or an unknown provider outcome enters bounded
-receipt/provider reconciliation and is never blindly replayed. Exact run/turn
-movement still fails before the RPC, and stale provider identity still follows
-the existing recovery path. Local text, phase, elapsed time and rendered state
-are observations, never steer authority.
+admission barrier. Exact run/turn movement before dispatch and a definite
+provider stale/not-steerable rejection have no provider effect, so the same
+durable item becomes visible attention-required state with its command, origin,
+attachments and exact steer identity intact. The lane is released, but the item
+cannot start a later turn automatically. An explicit `retry` keeps the exact
+steer identity; only the explicit ordinary queue action authorizes conversion to
+later-turn intake. Timeout or an unknown provider outcome enters bounded
+receipt/provider reconciliation, keeps the lane fail-closed and is never blindly
+replayed. Local text, phase, elapsed time and rendered state are observations,
+never steer authority.
 
 For an inter-Stream command, the envelope `requestId` deterministically restores
 the `mcp:<requestId>` command alias when a provider rollout omits

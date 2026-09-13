@@ -77,6 +77,7 @@ const DEFERRED_ERROR_MESSAGES = Object.freeze({
   ERR_CODEX_TURN_START_UNCONFIRMED: "Codex не подтвердил запуск; автоматический повтор не выполнялся.",
   ERR_DEFERRED_INPUT_PROCESSING: "Не удалось обработать сохранённое сообщение.",
   ERR_DEFERRED_INPUT_START: "Не удалось запустить сохранённое сообщение.",
+  ERR_PROVIDER_STEER_NOT_DELIVERED: "Уточнение не доставлено в исходный ход; выберите дальнейшее действие.",
   ERR_PROVIDER_STEER_UNCONFIRMED: "Провайдер не подтвердил уточнение; автоматический повтор не выполнялся.",
 });
 
@@ -246,9 +247,8 @@ export class DeferredInputController {
         const occupancy = await this.occupancy(item);
         activeSteer = steerTargetsOccupancy(item, occupancy);
         if (!activeSteer) {
-          item.conflictKind = "message-intake";
-          this.onStateChange(item, "queued");
-          await this.persist();
+          await this.requireSteerDecision(item);
+          return;
         }
       }
       if (!activeSteer) {
@@ -500,12 +500,12 @@ export class DeferredInputController {
     try {
       const steered = await this.steer(item);
       if (!steered) {
-        dispatchSpan?.finish({ outcome: "queued", queueDepth: this.queuedInputs.size });
-        delete item.dispatchingAt;
-        item.conflictKind = "message-intake";
-        this.onStateChange(item, "queued");
-        await this.persist();
-        this.schedule(item, 0);
+        dispatchSpan?.finish({
+          outcome: "failed",
+          queueDepth: this.queuedInputs.size,
+          metadata: { errorCode: "ERR_PROVIDER_STEER_NOT_DELIVERED" },
+        });
+        await this.requireSteerDecision(item);
         return;
       }
       dispatchSpan?.finish({
@@ -530,6 +530,40 @@ export class DeferredInputController {
       await this.persist();
       this.schedule(item, this.retryDelayMs);
     }
+  }
+
+  async requireSteerDecision(item) {
+    const detail = safeDeferredError({ code: "ERR_PROVIDER_STEER_NOT_DELIVERED" });
+    const previous = Object.getOwnPropertyDescriptors(item);
+    delete item.dispatchingAt;
+    delete item.waitReason;
+    delete item.blockedChecks;
+    delete item.recheckRequested;
+    delete item.providerReconciliationStartedAt;
+    delete item.providerReconciliationChecks;
+    item.lastErrorCode = detail.code;
+    item.lastError = detail.message;
+    item.laneReleased = true;
+    this.queuedInputs.delete(item.id);
+    this.pendingInputs.set(item.id, item);
+    this.onStateChange(item, "pending", detail);
+    try {
+      await this.persist();
+    } catch (error) {
+      this.pendingInputs.delete(item.id);
+      for (const key of Reflect.ownKeys(item)) delete item[key];
+      Object.defineProperties(item, previous);
+      this.queuedInputs.set(item.id, item);
+      this.onStateChange(item, "queued", safeDeferredError(error));
+      throw error;
+    }
+    await this.updateMessage(
+      item,
+      `⚠️ ${item.lastError}\n\nСообщение сохранено. Выберите дальнейшее действие:`,
+      this.pendingKeyboard(item),
+    );
+    await this.notifyReturned(item);
+    this.wakeLane(item);
   }
 
   async finishSteer(item, steered) {

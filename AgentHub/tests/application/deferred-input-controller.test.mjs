@@ -634,7 +634,7 @@ test("DeferredInputController preempts polling backoff in every lane after termi
   assert.equal(state.controller.timers.has(themes.id), true);
 });
 
-test("DeferredInputController restores ordinary FIFO when a steer misses its turn", async () => {
+test("DeferredInputController preserves exact steer intent when its target turn has changed", async () => {
   const started = [];
   let steers = 0;
   const state = fixture({
@@ -643,32 +643,50 @@ test("DeferredInputController restores ordinary FIFO when a steer misses its tur
     steer: async () => { steers += 1; return null; },
   });
   const lane = { streamId: "stream-1", provider: "codex", threadId: "thread-1" };
-  state.pendingInputs.set("user", {
-    ...lane,
-    id: "user",
-    queueOrder: 1,
-    conflictKind: "task-running",
-  });
+  const origin = { kind: "interstream", requestId: "request-1", sourceThreadId: "thread-source" };
   state.queuedInputs.set("themes", {
     ...lane,
     id: "themes",
-    queueOrder: 2,
+    queueOrder: 1,
     conflictKind: "message-steer",
+    clientUserMessageId: "mcp:request-1",
     steerTargetRunId: "run-old",
     steerTargetTurnId: "turn-old",
+    messageOrigin: origin,
+    temporaryFiles: ["stored.png"],
+  });
+  state.queuedInputs.set("later", {
+    ...lane,
+    id: "later",
+    queueOrder: 2,
+    conflictKind: "message-intake",
   });
 
   await state.controller.process("themes");
-  assert.equal(steers, 0);
-  assert.equal(state.queuedInputs.get("themes").conflictKind, "message-intake");
-  assert.equal(state.pendingInputs.has("user"), false);
 
-  await state.controller.process("user");
+  assert.equal(steers, 0);
+  assert.equal(state.queuedInputs.has("themes"), false);
+  const retained = state.pendingInputs.get("themes");
+  assert.equal(retained.conflictKind, "message-steer");
+  assert.equal(retained.clientUserMessageId, "mcp:request-1");
+  assert.equal(retained.steerTargetRunId, "run-old");
+  assert.equal(retained.steerTargetTurnId, "turn-old");
+  assert.deepEqual(retained.messageOrigin, origin);
+  assert.deepEqual(retained.temporaryFiles, ["stored.png"]);
+  assert.equal(retained.laneReleased, true);
+  assert.equal(retained.lastErrorCode, "ERR_PROVIDER_STEER_NOT_DELIVERED");
+  assert.equal(state.transitions.at(-1).state, "pending");
+  assert.match(state.updates.at(-1)[1], /не доставлено в исходный ход/iu);
+  assert.deepEqual(state.notifications, ["themes"]);
+  assert.equal(state.controller.timers.has("later"), true);
+
   await state.controller.process("themes");
-  assert.deepEqual(started, ["user", "themes"]);
+  await state.controller.process("later");
+  assert.equal(steers, 0);
+  assert.deepEqual(started, ["later"]);
 });
 
-test("DeferredInputController converts one provider-rejected steer into the same queued item", async () => {
+test("DeferredInputController returns one provider-rejected steer for an explicit decision", async () => {
   let steerCalls = 0;
   const state = fixture({
     occupancy: async () => ({
@@ -687,16 +705,58 @@ test("DeferredInputController converts one provider-rejected steer into the same
     conflictKind: "message-steer",
     steerTargetRunId: "run-1",
     steerTargetTurnId: "turn-1",
+    messageOrigin: { kind: "interstream", requestId: "request-provider-rejected" },
   };
   state.queuedInputs.set(item.id, item);
 
   await state.controller.process(item.id);
 
   assert.equal(steerCalls, 1);
-  assert.equal(state.queuedInputs.size, 1);
-  assert.equal(state.queuedInputs.get(item.id), item);
-  assert.equal(item.conflictKind, "message-intake");
+  assert.equal(state.queuedInputs.size, 0);
+  assert.equal(state.pendingInputs.get(item.id), item);
+  assert.equal(item.conflictKind, "message-steer");
+  assert.equal(item.steerTargetRunId, "run-1");
+  assert.equal(item.steerTargetTurnId, "turn-1");
+  assert.deepEqual(item.messageOrigin, { kind: "interstream", requestId: "request-provider-rejected" });
+  assert.equal(item.laneReleased, true);
+  assert.equal(item.lastErrorCode, "ERR_PROVIDER_STEER_NOT_DELIVERED");
   assert.equal(item.dispatchingAt, undefined);
+  await state.controller.process(item.id);
+  assert.equal(steerCalls, 1);
+});
+
+test("DeferredInputController restores exact steer when its attention state cannot persist", async () => {
+  let persistCalls = 0;
+  const state = fixture({
+    occupancy: async () => ({ occupied: false, waitReason: null }),
+    persist: async () => {
+      persistCalls += 1;
+      if (persistCalls === 1) throw new Error("disk busy");
+    },
+  });
+  const item = {
+    id: "steer-persist-failure",
+    streamId: "stream-1",
+    provider: "codex",
+    threadId: "thread-1",
+    conflictKind: "message-steer",
+    clientUserMessageId: "mcp:request-persist-failure",
+    steerTargetRunId: "run-original",
+    steerTargetTurnId: "turn-original",
+  };
+  const original = structuredClone(item);
+  state.queuedInputs.set(item.id, item);
+
+  await assert.rejects(state.controller.process(item.id), /disk busy/u);
+
+  assert.equal(state.queuedInputs.get(item.id), item);
+  assert.equal(state.pendingInputs.has(item.id), false);
+  assert.deepEqual(item, original);
+
+  await state.controller.process(item.id);
+  assert.equal(state.queuedInputs.has(item.id), false);
+  assert.equal(state.pendingInputs.get(item.id), item);
+  assert.equal(item.conflictKind, "message-steer");
 });
 
 test("DeferredInputController steers the exact active turn ahead of later-turn FIFO", async () => {
@@ -864,7 +924,7 @@ test("DeferredInputController claims dispatch before awaits so concurrent wake c
   const occupancyGate = new Promise((resolve) => { releaseOccupancy = resolve; });
   const started = [];
   const state = fixture({
-    occupancy: async () => occupancyGate,
+    isBlocked: async () => { await occupancyGate; return false; },
     start: async (item) => started.push(item.id),
   });
   const item = {
@@ -873,7 +933,7 @@ test("DeferredInputController claims dispatch before awaits so concurrent wake c
     provider: "codex",
     threadId: "thread-1",
     projectRoot: "D:\\Work",
-    conflictKind: "message-steer",
+    conflictKind: "message-intake",
     createdAt: "2026-07-30T08:00:00.000Z",
     temporaryFiles: ["screen.png"],
   };
