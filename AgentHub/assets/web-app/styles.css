@@ -3996,7 +3996,7 @@ html[data-view="dashboard"] .task-board-view {
 
 @media (min-width: 960px) {
   html[data-view="dashboard"] .task-board-view.is-status-view > .task-card-modal[open] {
-    grid-row: 1 / -1;
+    grid-row: 2;
   }
   html[data-view="dashboard"] .task-board-view.has-open-task {
     --task-board-detail-width: clamp(19rem, 24vw, 25rem);
@@ -4510,6 +4510,47 @@ html[data-view="dashboard"] .task-board-view.is-workspace-view {
   }
 }
 
+/* The view and active filters share one persistent row above the board. */
+html[data-view="dashboard"] .task-board-view .task-board-toolbar {
+  grid-column: 2 / -1;
+  grid-row: 1;
+  justify-content: flex-start;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-1);
+}
+html[data-view="dashboard"] .task-board-view .task-board-sidebar {
+  grid-row: 1 / -1;
+}
+html[data-view="dashboard"] .task-board-view .task-board-columns {
+  grid-row: 2;
+}
+html[data-view="dashboard"] .task-board-view.is-workspace-view .task-board-toolbar {
+  grid-column: 1 / -1;
+}
+.task-board-toolbar-actions > label {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+.task-board-toolbar-actions select {
+  min-width: 0;
+  max-width: 13rem;
+  padding: 0.4rem;
+}
+.task-board-toolbar-actions .task-board-grouping-setting[hidden] { display: none; }
+.task-board-toolbar-actions .task-board-view-options { flex-wrap: wrap; }
+html[data-view="dashboard"] .task-board-view.is-list-view .task-board-columns {
+  overflow: hidden;
+}
+.is-list-view .task-board-status-columns { min-width: 0; }
+.is-list-view .task-board-column { flex: 1 1 100%; min-width: 0; border-right: 0; }
+.is-list-view .task-board-column-list { flex: 1 1 auto; }
+.is-list-view .task-board-row-head { display: none; }
+
 .task-board-filter-controls[hidden] {
   display: none;
 }
@@ -4543,6 +4584,24 @@ html[data-view="dashboard"] .task-board-view.is-workspace-view {
   .task-board-scope-strip {
     padding-bottom: 0.25rem;
   }
+  html[data-view="dashboard"] .task-board-view,
+  html[data-view="dashboard"] .task-board-view.is-workspace-view {
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  html[data-view="dashboard"] .task-board-view .task-board-sidebar { display: none; }
+  html[data-view="dashboard"] .task-board-view .task-board-toolbar {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  html[data-view="dashboard"] .task-board-view .task-board-columns {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .task-board-toolbar-actions { width: 100%; }
+  .task-board-toolbar-actions > label { flex: 1 1 auto; }
+  .task-board-toolbar-actions select { flex: 1 1 auto; max-width: 100%; width: 0; }
+  .task-board-toolbar-actions .task-board-view-options { flex: 1 0 100%; }
+  .task-board-toolbar-actions .view-settings { margin-left: auto; }
 }
 
 .board-task-status[data-workflow-status="done"] {
