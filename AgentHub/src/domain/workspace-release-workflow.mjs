@@ -173,7 +173,7 @@ export const RELEASE_WORKFLOW_DEVELOPER_RULES_BODY_V7 = [
   "Every changing Task must use its own Git branch created from current main and a separate managed sparse worktree. Never perform Task work in a shared working tree.",
   "Create the branch and worktree through hub_task_claim or hub_task_start. Do not change files before they are available.",
   "Agent Hub may create Task snapshot commits and managed dev integration commits only during workflow-status transitions. Candidate aggregate commits belong only to explicit release preparation. Do not create unrelated commits, push, or deploy without explicit user authorization.",
-  "When a Task moves to Test, or directly to a later status, snapshot its latest branch result and merge that result into dev.",
+  "Test is the sole snapshot and dev-integration gate. Await and Done reuse the unique exact Test-owned result and never snapshot later branch bytes.",
   "Moving a Task to Await records its exact accepted result and invalidates any older release candidate. It does not build, rebuild or mutate PreRelease.",
   "At explicit release start, Architect selects the ready Await set, builds PreRelease from the approved main and only those Tasks' effective first-parent dev integration deltas, then freezes the exact plan, selected results, changelog and version before validation.",
   "Never merge dev into PreRelease and never publish a broad dominating Task snapshot. Test-only work and unselected Await work must not enter the selected release.",

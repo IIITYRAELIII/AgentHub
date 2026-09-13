@@ -35,10 +35,11 @@ test("legacy v1 policy is stripped once and replaced by Task workflow rules", ()
   );
   assert.match(rules, /hub_task_claim/u);
   assert.match(rules, /sparse worktree/u);
-  assert.match(rules, /merge that result into dev/u);
   assert.match(rules, /Do not create a Task for diagnosis/u);
   assert.match(rules, /preserve the user's original request in its description/iu);
   assert.match(rules, /Moving a Task to Await.*does not build, rebuild or mutate PreRelease/iu);
+  assert.match(rules, /Test is the sole snapshot and dev-integration gate.*Await and Done reuse/iu);
+  assert.doesNotMatch(rules, /directly to a later status/iu);
   assert.match(rules, /explicit release start.*effective first-parent dev integration deltas/iu);
   assert.match(rules, /Never merge dev into PreRelease.*never publish a broad dominating Task snapshot/iu);
   assert.match(rules, /fit it within 36 characters.*only when.*cannot be preserved/iu);

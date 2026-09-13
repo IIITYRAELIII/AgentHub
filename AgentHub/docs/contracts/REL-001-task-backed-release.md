@@ -168,9 +168,10 @@ after every supported database version is guaranteed to contain operation IDs.
 ## Test and acceptance integration
 
 In a Workspace with `settings.releaseWorkflowEnabled === true`, moving a Task
-to `testing`, or directly to a later implementation status,
-snapshots its complete dirty worktree into a local result commit and merges that
-result into the shared local `dev` branch. Git derives the stable changed-file
+to `testing` snapshots its complete dirty worktree into a local result commit
+and merges that result into the shared local `dev` branch. Later transitions to
+Await or Done reuse that exact Test-owned result and never take another snapshot.
+Git derives the stable changed-file
 set between the Task base commit and Task result commit:
 
 `Array<{projectRoot,path,operation:"added"|"modified"|"deleted",turnId:null|string}>`.
