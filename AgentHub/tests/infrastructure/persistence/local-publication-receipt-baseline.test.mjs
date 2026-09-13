@@ -188,6 +188,18 @@ test("local publisher receipt rejects moved refs, remote, raw evidence and runti
       /origin\/main moved/u,
     );
   });
+  await t.test("published revision absent from origin", async (subtest) => {
+    const setup = await fixture(subtest);
+    const tree = await git(setup.repo, "rev-parse", "HEAD^{tree}");
+    const unrelated = await git(setup.repo, "commit-tree", tree, "-m", "unrelated origin");
+    await git(setup.repo, "update-ref", "refs/remotes/origin/main", unrelated);
+    await assert.rejects(
+      () => previewLocalPublicationReceiptBaseline({
+        ...setup.request, expectedOriginMainCommit: unrelated,
+      }, setup.dependencies),
+      /not contained in origin\/main/u,
+    );
+  });
   await t.test("remote", async (subtest) => {
     const setup = await fixture(subtest);
     await git(setup.repo, "remote", "set-url", "origin", "https://github.com/Other/Utilities.git");
@@ -202,6 +214,37 @@ test("local publisher receipt rejects moved refs, remote, raw evidence and runti
     await assert.rejects(
       () => previewLocalPublicationReceiptBaseline(setup.request, setup.dependencies),
       /raw bytes changed/u,
+    );
+  });
+  await t.test("receipt bytes", async (subtest) => {
+    const setup = await fixture(subtest);
+    await writeFile(setup.statusFile, `${JSON.stringify(setup.receipt)}\n`, "utf8");
+    await assert.rejects(
+      () => previewLocalPublicationReceiptBaseline(setup.request, setup.dependencies),
+      /receipt raw bytes changed/u,
+    );
+  });
+  await t.test("incomplete legacy state", async (subtest) => {
+    const setup = await fixture(subtest);
+    const incomplete = { ...setup.state, plan: null };
+    const raw = `${JSON.stringify(incomplete, null, 2)}\n`;
+    await writeFile(setup.stateFile, raw, "utf8");
+    await assert.rejects(
+      () => previewLocalPublicationReceiptBaseline({
+        ...setup.request, expectedStateSha256: sha256(raw),
+      }, setup.dependencies),
+      /state is incomplete/u,
+    );
+  });
+  await t.test("malformed legacy state", async (subtest) => {
+    const setup = await fixture(subtest);
+    const raw = "{not-json\n";
+    await writeFile(setup.stateFile, raw, "utf8");
+    await assert.rejects(
+      () => previewLocalPublicationReceiptBaseline({
+        ...setup.request, expectedStateSha256: sha256(raw),
+      }, setup.dependencies),
+      /not valid JSON/u,
     );
   });
   await t.test("runtime source", async (subtest) => {
