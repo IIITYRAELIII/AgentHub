@@ -14487,6 +14487,28 @@ html[data-view="server"] .server-view {
   padding: 0.65rem 0.72rem;
 }
 
+.server-account-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.3rem;
+}
+
+.server-account-code-row {
+  display: grid;
+  gap: 0.3rem;
+  margin-top: 0.3rem;
+}
+
+.server-account-code {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.server-account[data-status="failed"] small {
+  color: var(--danger, var(--text-soft));
+}
+
 .server-config-row {
   align-items: start;
   border-bottom: 1px solid var(--line);

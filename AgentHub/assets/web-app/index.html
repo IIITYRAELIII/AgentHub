@@ -42,6 +42,7 @@
   <script src="/runtime-reload-controller.js" defer></script>
   <script src="/journal-view-controller.js" defer></script>
   <script src="/journal-account-panel.js" defer></script>
+  <script src="/provider-login-panel.js" defer></script>
   <script src="/journal-polling-policy.js" defer></script>
   <script src="/statistics-controls.js" defer></script>
   <script src="/attachments/interactions.js" defer></script>
@@ -1764,6 +1765,17 @@
         </div>
 
         <div class="server-overview-column server-overview-side">
+          <section class="server-card" aria-labelledby="server-accounts-title">
+            <header class="server-card-head compact">
+              <div>
+                <h2 id="server-accounts-title">Аккаунты</h2>
+              </div>
+            </header>
+            <div class="server-component-grid" data-server-accounts>
+              <span class="setting-empty">Загрузка…</span>
+            </div>
+          </section>
+
           <section class="server-card" aria-labelledby="server-components-title">
             <header class="server-card-head compact">
               <div>

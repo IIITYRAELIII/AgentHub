@@ -9,7 +9,7 @@ import { publicationRuntimeStatus, startInstalledPublicationRuntime } from "../.
 import { runtimeLayout } from "../../src/infrastructure/filesystem/runtime-layout.mjs";
 
 const ready = { current: "new", runningRelease: "new", running: true, ready: true, pid: 42 };
-const snapshot = { server: { process: { releaseId: "new", pid: 42 } } };
+const health = { live: true, ready: true, process: { releaseId: "new", pid: 42 } };
 
 test("unreadable or invalid lock never becomes confirmed process absence", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-publication-lock-"));
@@ -33,7 +33,7 @@ test("replacement endpoint cannot pass readiness for an old or unready release",
     await assert.rejects(waitForRuntimeReplacement({
       expectedReleaseId: "new", previousEndpointId: "old-endpoint", timeoutMs: 10,
       readEndpoint: async () => ({ endpointId: "new-endpoint" }),
-      readStatus: async () => status, probe: async () => snapshot,
+      readStatus: async () => status, probe: async () => health,
       now: () => clock, delay: async () => { clock += 10; },
     }), /Expected ready runtime new/u);
   }
@@ -45,7 +45,22 @@ test("matching lock with stale server response is not publication evidence", asy
     expectedReleaseId: "new", timeoutMs: 10,
     readEndpoint: async () => ({ endpointId: "new-endpoint" }),
     readStatus: async () => ready,
-    probe: async () => ({ server: { process: { releaseId: "old", pid: 42 } } }),
+    probe: async () => ({ ...health, process: { releaseId: "old", pid: 42 } }),
+    now: () => clock, delay: async () => { clock += 10; },
+  }), /Expected ready runtime new/u);
+});
+
+test("bounded readiness rejects an endpoint replaced during its authenticated health probe", async () => {
+  let clock = 0;
+  let reads = 0;
+  await assert.rejects(waitForRuntimeReplacement({
+    expectedReleaseId: "new", timeoutMs: 10,
+    readEndpoint: async () => ({ endpointId: ++reads === 1 ? "candidate-endpoint" : "replacement-endpoint" }),
+    readStatus: async () => ready,
+    probe: async (action) => {
+      assert.equal(action, "runtime-health");
+      return health;
+    },
     now: () => clock, delay: async () => { clock += 10; },
   }), /Expected ready runtime new/u);
 });

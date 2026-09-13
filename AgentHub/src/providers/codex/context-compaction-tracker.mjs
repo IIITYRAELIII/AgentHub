@@ -73,6 +73,17 @@ function persistedCompaction(record) {
   const rotationCompletedAt = normalizedTimestamp(record.rotationCompletedAt, null);
   if (rotationThreadId) value.rotationThreadId = rotationThreadId;
   if (rotationCompletedAt) value.rotationCompletedAt = rotationCompletedAt;
+  const rotationProbeTurnId = normalizedThreadId(record.rotationProbeTurnId);
+  const rotationMeasuredAt = normalizedTimestamp(record.rotationMeasuredAt, null);
+  if (rotationProbeTurnId) value.rotationProbeTurnId = rotationProbeTurnId;
+  if (rotationMeasuredAt) value.rotationMeasuredAt = rotationMeasuredAt;
+  if (["failed", "unknown"].includes(String(record.rotationStatus))) {
+    value.rotationStatus = String(record.rotationStatus);
+    const quarantinedThreadId = normalizedThreadId(record.rotationQuarantineThreadId);
+    const settledAt = normalizedTimestamp(record.rotationSettledAt, null);
+    if (quarantinedThreadId) value.rotationQuarantineThreadId = quarantinedThreadId;
+    if (settledAt) value.rotationSettledAt = settledAt;
+  }
   return value;
 }
 
@@ -164,6 +175,18 @@ export class ContextCompactionTracker {
     const rotationCompletedAt = normalizedTimestamp(details.rotationCompletedAt, null);
     if (rotationThreadId) record.rotationThreadId = rotationThreadId;
     if (rotationCompletedAt) record.rotationCompletedAt = rotationCompletedAt;
+    const rotationProbeTurnId = normalizedThreadId(details.rotationProbeTurnId);
+    const rotationMeasuredAt = normalizedTimestamp(details.rotationMeasuredAt, null);
+    if (rotationProbeTurnId) record.rotationProbeTurnId = rotationProbeTurnId;
+    if (rotationMeasuredAt) record.rotationMeasuredAt = rotationMeasuredAt;
+    const rotationStatus = String(details.rotationStatus ?? "").trim();
+    if (["failed", "unknown"].includes(rotationStatus)) {
+      record.rotationStatus = rotationStatus;
+      const quarantinedThreadId = normalizedThreadId(details.rotationQuarantineThreadId);
+      const settledAt = normalizedTimestamp(details.rotationSettledAt, null);
+      if (quarantinedThreadId) record.rotationQuarantineThreadId = quarantinedThreadId;
+      if (settledAt) record.rotationSettledAt = settledAt;
+    }
     const probeTurnId = normalizedThreadId(details.probeTurnId);
     if (probeTurnId) {
       record.probeTurnIds = normalizedProbeTurnIds([

@@ -38,6 +38,29 @@ test("publication run status and log survive the terminal process", async () => 
   }
 });
 
+test("a completed publication is archived exactly before the next identity replaces status", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-publication-terminal-"));
+  try {
+    const environment = { LOCALAPPDATA: root };
+    const paths = publicationRunPaths(environment);
+    const first = publicationRunStore({ environment, createId: () => "completed-run" });
+    await first.start({ mode: "changed", revision: "published" }, [{ label: "Publish" }]);
+    await first.stepStarted("Publish");
+    await first.stepFinished("Publish", { status: "completed" });
+    await first.updateProgress({ publicationState: { revision: "published", generation: "generation" } });
+    await first.finish("succeeded");
+    const completed = await readPublicationRunStatus(paths.statusFile);
+
+    const replacement = publicationRunStore({ environment, createId: () => "next-run" });
+    await replacement.start({ mode: "changed", revision: "next" }, [{ label: "Tests" }]);
+
+    assert.deepEqual(await readPublicationRunStatus(`${completed.logFile}.status.json`), completed);
+    assert.equal((await readPublicationRunStatus(paths.statusFile)).runId, "next-run");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a dead pre-effect run is archived exactly before a different candidate starts", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-publication-interrupt-"));
   try {

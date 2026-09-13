@@ -423,9 +423,9 @@
         streamId,
         task,
         sourceThreadId: source?.threadId ?? previous.threadId,
-        beforePercent: normalizedContextPercent(sourceCompaction?.afterPercent)
-          ?? normalizedContextPercent(source?.context?.percent)
-          ?? normalizedContextPercent(previous?.context?.percent),
+        // Только записанный замер после свёртки. Текущее использование Thread —
+        // живое значение, под видом исторического этапа его показывать нельзя.
+        beforePercent: normalizedContextPercent(sourceCompaction?.afterPercent),
         time: sourceCompaction?.completedAt ?? new Date().toISOString(),
       });
     }
@@ -443,11 +443,14 @@
       if (!provider || !streamId || !sourceThreadId || !operationId
         || compaction?.status !== "completed" || compaction.rotated !== true) continue;
       const targetThreadId = String(compaction.rotationThreadId ?? "").trim();
+      // Каждый процент — снимок своего этапа ротации, а не текущее состояние:
+      // живое использование нового Thread показывается отдельно и растёт.
+      const compactionBeforePercent = normalizedContextPercent(compaction.beforePercent);
       const beforePercent = normalizedContextPercent(compaction.afterPercent);
-      // Only the recorded rotation probe is a historical after-measurement.
-      // Today's usage of the new Thread is not the result of that rotation.
       const afterPercent = normalizedContextPercent(compaction.rotationAfterPercent);
-      const presentation = rotationMaintenancePresentation(beforePercent, afterPercent);
+      const presentation = rotationMaintenancePresentation(beforePercent, afterPercent, {
+        compactionBeforePercent,
+      });
       const id = `maintenance:rotation:${streamId}:${provider}:${sourceThreadId}:${operationId}`;
       messages.set(id, {
         id, itemId: id, provider, streamId, operationId,
@@ -456,11 +459,9 @@
         maintenanceType: "rotation",
         maintenanceStatus: "completed",
         maintenanceLabel: presentation.maintenanceLabel,
-        maintenanceDetail: afterPercent === null
-          ? `${beforePercent === null ? "" : `Контекст источника ${beforePercent}%; `}замер нового Thread не сохранён`
-          : presentation.maintenanceDetail,
+        maintenanceDetail: presentation.maintenanceDetail,
         placement: "after-source-turn",
-        beforePercent, afterPercent,
+        beforePercent, afterPercent, compactionBeforePercent,
         text: presentation.text,
         time: compaction.rotationCompletedAt ?? compaction.completedAt ?? null,
       });
@@ -468,29 +469,27 @@
     return [...messages.values()];
   }
 
-  function rotationMaintenancePresentation(beforeValue, afterValue) {
+  /* Этапы ротации называются явно: до свёртки и после неё — замеры исходного
+     Thread, «сразу после переноса» — проба нового. Отсутствующий замер не
+     достраивается и не выдаётся за результат. */
+  function rotationMaintenancePresentation(beforeValue, afterValue, {
+    compactionBeforePercent: compactionValue = null,
+  } = {}) {
+    const compactionBeforePercent = normalizedContextPercent(compactionValue);
     const beforePercent = normalizedContextPercent(beforeValue);
     const afterPercent = normalizedContextPercent(afterValue);
-    if (beforePercent !== null && afterPercent !== null) {
-      return {
-        maintenanceLabel: "Ротация завершена",
-        maintenanceDetail: `Новый Thread ${afterPercent}%; источник ${beforePercent}%`,
-        text: `Ротация завершена: новый Thread ${afterPercent}% (источник ${beforePercent}%)`,
-      };
-    }
-    if (beforePercent !== null) {
-      return {
-        maintenanceLabel: "Ротация завершена",
-        maintenanceDetail: `${beforePercent}% → замер нового Thread выполняется`,
-        text: `Ротация завершена; новый Thread создан после ${beforePercent}%`,
-      };
-    }
+    const stages = [
+      compactionBeforePercent === null ? "" : `до свёртки ${compactionBeforePercent}%`,
+      beforePercent === null ? "" : `после свёртки ${beforePercent}%`,
+      afterPercent === null
+        ? "новый Thread создан, его замер не сохранён"
+        : `новый Thread сразу после переноса ${afterPercent}%`,
+    ].filter(Boolean);
+    const detail = `Использование контекста: ${stages.join(" → ")}`;
     return {
       maintenanceLabel: "Ротация завершена",
-      maintenanceDetail: afterPercent === null ? "Новый Thread создан" : `Новый Thread: ${afterPercent}%`,
-      text: afterPercent === null
-        ? "Ротация завершена; новый Thread создан"
-        : `Ротация завершена; новый Thread ${afterPercent}%`,
+      maintenanceDetail: detail,
+      text: `Ротация завершена. ${detail}`,
     };
   }
 

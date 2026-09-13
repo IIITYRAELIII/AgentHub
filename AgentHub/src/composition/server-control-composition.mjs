@@ -15,6 +15,7 @@ export function createServerControlComposition({
   desktopSnapshot,
   spawnCapture,
   preTurnInstructions,
+  providerLogin = null,
   controllerOptions = {},
 }) {
   return new ServerControlController({
@@ -29,6 +30,7 @@ export function createServerControlComposition({
     desktopSnapshot,
     spawnCapture,
     preTurnInstructions,
+    providerLogin,
     ...controllerOptions,
   });
 }

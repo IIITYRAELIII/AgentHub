@@ -274,6 +274,7 @@ const serverStateNote = document.querySelector("[data-server-state-note]");
 const serverStateDot = document.querySelector("[data-server-state-dot]");
 const serverFacts = document.querySelector("[data-server-facts]");
 const serverComponents = document.querySelector("[data-server-components]");
+const serverAccounts = document.querySelector("[data-server-accounts]");
 const serverConfig = document.querySelector("[data-server-config]");
 
 const dialog = document.querySelector("[data-text-dialog]");
@@ -10350,6 +10351,7 @@ function renderServerStatus(payload = {}) {
     }),
     component.note ? el("small", { text: component.note }) : null,
   ].filter(Boolean))) : [el("span", { class: "setting-empty", text: "Компоненты не определены" })]));
+  renderServerAccounts(payload.accounts);
   /* Одно название вроде «Очередь входящих» ничего не объясняет, поэтому у
      плитки есть пояснение под значением и та же строка в подсказке. */
   const entries = Array.isArray(payload.configuration) ? payload.configuration : [];
@@ -10360,6 +10362,83 @@ function renderServerStatus(payload = {}) {
     : [el("span", { class: "setting-empty", text: "Конфигурация недоступна" })]));
   syncServerConfigDependencyVisibility();
   syncServerConfigActions();
+}
+
+/* Вход идёт штатным способом провайдера: Hub только запускает его и показывает
+   состояние. Повторное нажатие отменяет незавершённый вход, поэтому кнопка
+   остаётся доступной и во время ожидания. */
+/* Ссылку входа знает только локальный клиент, запустивший вход: в общий снапшот
+   она не попадает. */
+const providerLoginLocal = new Map();
+/* Черновик кода живёт только в памяти страницы, чтобы снапшот не стирал ввод. */
+const providerLoginCodeDrafts = new Map();
+let providerLoginRenderKey = "";
+
+function renderServerAccounts(accounts) {
+  const panel = window.AgentHubProviderLoginPanel;
+  if (!serverAccounts || !panel) return;
+  const list = Array.isArray(accounts) ? accounts : [];
+  const views = list.map((account) => {
+    if (!panel.retainLocal(account, providerLoginLocal.get(account?.provider))) {
+      providerLoginLocal.delete(account?.provider);
+      providerLoginCodeDrafts.delete(account?.provider);
+    }
+    return panel.accountView(account, providerLoginLocal.get(account?.provider));
+  });
+  const key = panel.renderKey(views);
+  if (key === providerLoginRenderKey && serverAccounts.childElementCount) return;
+  providerLoginRenderKey = key;
+  serverAccounts.replaceChildren(...(views.length ? views.map((view) => {
+    const start = el("button", { type: "button", class: "chip-button", text: view.startText });
+    start.addEventListener("click", () => emit("server:provider-login", { provider: view.provider }));
+    const open = view.authUrl
+      ? el("button", { type: "button", class: "chip-button ghost", text: "Открыть страницу входа" })
+      : null;
+    open?.addEventListener("click", () => emit("server:provider-login-open", { authUrl: view.authUrl }));
+    const cancel = view.canCancel
+      ? el("button", { type: "button", class: "chip-button ghost", text: "Отменить" })
+      : null;
+    cancel?.addEventListener("click", () => {
+      providerLoginCodeDrafts.delete(view.provider);
+      emit("server:provider-login-cancel", { provider: view.provider });
+    });
+    let codeRow = null;
+    if (view.acceptsCode) {
+      const input = el("input", { type: "text", class: "server-account-code" });
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      input.placeholder = "code#state";
+      input.setAttribute("aria-label", "Код со страницы входа Claude");
+      input.value = providerLoginCodeDrafts.get(view.provider) ?? "";
+      const send = el("button", { type: "button", class: "chip-button", text: "Отправить код" });
+      const sync = () => {
+        if (input.value) providerLoginCodeDrafts.set(view.provider, input.value);
+        else providerLoginCodeDrafts.delete(view.provider);
+        send.disabled = !panel.codeSubmission(view, input.value);
+      };
+      input.addEventListener("input", sync);
+      sync();
+      send.addEventListener("click", () => {
+        const submission = panel.codeSubmission(view, input.value);
+        if (!submission) return;
+        providerLoginCodeDrafts.delete(view.provider);
+        input.value = "";
+        sync();
+        emit("server:provider-login-code", submission);
+      });
+      codeRow = el("div", { class: "server-account-code-row" }, [
+        el("small", { text: view.codeHint }),
+        el("div", { class: "server-account-actions" }, [input, send]),
+      ]);
+    }
+    return el("div", { class: "server-component server-account", "data-status": view.status }, [
+      el("span", { class: "server-component-name", text: view.label }),
+      el("span", { class: "server-component-status", text: view.statusText }),
+      view.error ? el("small", { text: view.error }) : null,
+      el("div", { class: "server-account-actions" }, [start, open, cancel].filter(Boolean)),
+      codeRow,
+    ].filter(Boolean));
+  }) : [el("span", { class: "setting-empty", text: "Вход недоступен в этой версии Hub" })]));
 }
 
 /* Автозапуск — такая же настройка Hub, поэтому лежит первой плиткой сетки. В
@@ -11386,6 +11465,14 @@ const AgentHub = {
   setServerStatus(payload) {
     lastServerPayload = payload ?? {};
     if (root.dataset.view === "server") renderServerStatus(lastServerPayload);
+  },
+  /** Попытка и ссылка входа из локального ответа на запуск; снапшот их не содержит. */
+  setProviderLoginUrl(provider, { attemptId = null, authUrl = null } = {}) {
+    providerLoginCodeDrafts.delete(provider);
+    if (attemptId) providerLoginLocal.set(provider, { attemptId: String(attemptId), authUrl });
+    else providerLoginLocal.delete(provider);
+    providerLoginRenderKey = "";
+    if (root.dataset.view === "server" && lastServerPayload) renderServerStatus(lastServerPayload);
   },
   openAttachmentViewer,
   attachmentViewerLoadAuthority,

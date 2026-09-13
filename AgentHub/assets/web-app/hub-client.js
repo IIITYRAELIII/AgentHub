@@ -2127,9 +2127,10 @@ function observeStreamRotations(previousTasks, tasks) {
     }
     if (rotationMaintenanceActive(task)) continue;
     const beforePercent = contextPercent(pending.beforePercent);
-    const afterPercent = task.context?.usagePending
-      ? null
-      : contextPercent(task.context?.percent);
+    // Текущее использование нового Thread — живое значение, оно растёт вместе
+    // с работой. Замер «сразу после переноса» приходит только из записанной
+    // пробы ротации, поэтому до неё этот этап честно неизвестен.
+    const afterPercent = null;
     const presentation = window.AgentHubStreamTabs.rotationMaintenancePresentation(
       beforePercent,
       afterPercent,
@@ -2152,7 +2153,6 @@ function observeStreamRotations(previousTasks, tasks) {
       text: presentation.text,
       time: pending.time,
     })) changed.add(stableTaskId);
-    if (afterPercent !== null) pendingStreamRotations.delete(streamId);
   }
   for (const streamId of pendingStreamRotations.keys()) {
     if (currentByStream.has(streamId)) continue;
@@ -4579,6 +4579,40 @@ agentHub.on("server:autostart", ({ enabled }) => runAction(async () => {
   if (result?.snapshot) applySnapshot(result.snapshot);
   else applySnapshot(await control("snapshot"));
   agentHub.toast(result?.message ?? "Автозапуск Agent Hub обновлён");
+}));
+/* Страница входа провайдера открывается во внешнем браузере Hub-машины: туда
+   же возвращается OAuth callback. */
+async function openProviderLoginPage(authUrl) {
+  const href = String(authUrl ?? "");
+  if (!/^https:\/\//u.test(href)) return;
+  if (vscode) await bridgeCall("open-link", { href });
+  else window.open(href, "_blank", "noopener,noreferrer");
+}
+agentHub.on("server:provider-login", ({ provider }) => runAction(async () => {
+  const result = await control("start-provider-login", { provider });
+  const login = result?.login;
+  /* Сначала снапшот с новой попыткой, затем её локальная привязка: иначе
+     перерисовка по прежнему снапшоту сбросила бы ссылку и поле кода. */
+  if (result?.snapshot) applySnapshot(result.snapshot);
+  else applySnapshot(await control("snapshot"));
+  agentHub.setProviderLoginUrl?.(provider, { attemptId: login?.attemptId ?? null, authUrl: login?.authUrl ?? null });
+  /* Claude Code сам открывает браузер со своим callback; его печатная ссылка —
+     ручной путь с кодом, поэтому она открывается только кнопкой. */
+  if (provider === "codex" && login?.authUrl) await openProviderLoginPage(login.authUrl);
+  agentHub.toast(result?.message ?? "Вход запущен");
+}));
+agentHub.on("server:provider-login-code", ({ provider, attemptId, code }) => runAction(async () => {
+  const result = await control("submit-provider-login-code", { provider, attemptId, code });
+  if (result?.snapshot) applySnapshot(result.snapshot);
+  else applySnapshot(await control("snapshot"));
+  agentHub.toast(result?.message ?? "Код передан Claude Code");
+}));
+agentHub.on("server:provider-login-open", ({ authUrl }) => runAction(() => openProviderLoginPage(authUrl)));
+agentHub.on("server:provider-login-cancel", ({ provider }) => runAction(async () => {
+  const result = await control("cancel-provider-login", { provider });
+  if (result?.snapshot) applySnapshot(result.snapshot);
+  else applySnapshot(await control("snapshot"));
+  agentHub.toast(result?.message ?? "Вход отменён");
 }));
 agentHub.on("server:config-update", ({ key, value, changes }) => runAction(async () => {
   /* Страница сохраняет всю карточку разом, поэтому принимаем и набор правок,

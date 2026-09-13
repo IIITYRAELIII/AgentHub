@@ -494,6 +494,13 @@ Task revision, Git reference or approved `main` invalidates its use by later
 freeze, publication and completion CAS. Architect must explicitly prepare and
 refreeze; acceptance changes never mutate an already frozen candidate.
 
+Candidate readback is phase-specific. A `prepared` checkpoint requires the
+standalone clone to be an exact clean `PreRelease` checkout. A `frozen`
+checkpoint requires an exact clean `main` checkout while both `main` and
+`PreRelease` still equal the checkpointed `preReleaseHead`. Other phases and
+any branch, ref, tree, index or worktree drift fail closed. Freeze remains the
+only owner that promotes and attaches the standalone clone to `main`.
+
 Completion performs one transaction that CAS-checks every exact Task revision
 and the plan hash, then changes only those Tasks to `done` and persists a
 versioned finalization marker in the same commit. That marker binds the exact
@@ -544,6 +551,12 @@ idempotent. A live owner, unknown stage, effect-stage history, progress or
 checkpoint mismatch fails closed and remains subject to its specific recovery
 path.
 
+Before replacing an already terminal publication identity, the start owner
+archives the exact prior status beside its canonical run log. A conflicting
+archive or a log identity outside the canonical run directory fails before the
+new status is created. This preserves the terminal publication evidence even
+though `publication-status.json` remains the current-run projection.
+
 Deferred restart and `--skip-restart` with an unready runtime are
 `awaiting_restart`, not success. Publication-state is recorded only after
 required exact runtime readiness. Pending finalization stays recoverable and
@@ -553,6 +566,12 @@ deploy, push or restart; startup readiness does not wait for that work.
 Only completed Workspace finalization yields `succeeded`. A low-level publisher
 without a Workspace adapter yields `published` and does not claim Task closure.
 
+Exact runtime readiness uses the authenticated bounded `runtime-health`
+command, not the full application snapshot. Its live/ready flags and process
+release ID/PID must match the filesystem runtime status, and the endpoint ID is
+reread after the probe so an endpoint swap cannot be accepted. A mismatch keeps
+completion pending and performs no publication or Task-finalization effect.
+
 After readiness, durable `awaiting_finalization` is continued by the single
 owner of the original publication operation without new user input. An explicit
 `retry_required` repeats only the persisted Workspace finalization under the
@@ -560,6 +579,13 @@ same publication lock; retries are bounded by a shared budget and end with an
 explicit reason once it is exhausted. Repeated readiness/resume events are
 idempotent and create neither a second owner nor a second terminal. Already
 successful tests, build, Git publication and deploy are never repeated.
+
+An ambiguous finalization transport result retains the same command identity.
+Only an authenticated definitive Desktop rejection proves that the durable
+command is terminal and permits one fresh command identity for the same saved
+publication completion. The Workspace completion owner then resolves an exact
+completed outcome or pending marker idempotently; it does not repeat Task
+closure, Git publication, deployment or runtime activation.
 
 Validation is explicit and persisted: full, focused by affected surface, or a
 user-authorized quick mode without the test gate. All modes retain publication

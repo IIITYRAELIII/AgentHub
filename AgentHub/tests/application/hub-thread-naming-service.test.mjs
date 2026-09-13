@@ -98,6 +98,38 @@ test("rotated Thread receives its Hub name before the probe and restores it afte
     .every((call) => call.options.timeoutMs === 1_000));
 });
 
+// Новый Thread ротации пробуется ещё до привязки к Stream. Он получает имя из
+// привязки исходного Thread раньше пробы, но ничего не закрепляет за собой:
+// у Thread, который может оказаться неготовым, нет своего сохранённого имени.
+test("an unbound rotation target is named from its source Stream before the probe without pinning", async (t) => {
+  const f = await fixture(t);
+  const workspace = f.catalog.createWorkspace({ name: "Хаб" });
+  const stream = f.catalog.createStream({ workspaceId: workspace.id });
+  f.catalog.bindThread({ provider: "codex", threadId: "source", streamId: stream.id, projectRoot: f.root, source: "rebirth" });
+  const service = createCodexContextMaintenanceComposition({
+    config: { components: {}, codexRolloutContext: {} }, normalizeCodexModel: (value) => value,
+    sendRpc: f.rpc, transportRunning: () => true, runForTask: () => null,
+    knownRolloutPath: async () => "",
+    preserveProbeTitle: f.naming.preserveProbeTitle,
+  });
+
+  await service.startContextProbe("unbound-target", { titleSourceThreadId: "source" });
+
+  const nameIndex = f.calls.findIndex((call) => (
+    call.method === "thread/name/set" && call.params.threadId === "unbound-target"
+  ));
+  const probeIndex = f.calls.findIndex((call) => call.method === "turn/start");
+  assert.ok(nameIndex >= 0 && nameIndex < probeIndex, "новый Thread ушёл в пробу без имени");
+  assert.equal(f.calls[nameIndex].params.name, "Хаб — Поток 1");
+  assert.ok(!f.metadata.pinnedTitle({ provider: "codex", threadId: "unbound-target" }));
+  assert.ok(!f.catalog.thread({ provider: "codex", threadId: "unbound-target" }));
+
+  const count = f.calls.length;
+  assert.equal(await f.naming.preserveProbeTitle({ threadId: "unbound-other" }), "");
+  assert.equal(await f.naming.preserveProbeTitle({ threadId: "unbound-other", titleSourceThreadId: "missing" }), "");
+  assert.equal(f.calls.length, count);
+});
+
 for (const failedMethod of ["thread/read", "thread/name/set"]) {
   test(`${failedMethod} naming failure does not prevent the context probe`, async (t) => {
     const f = await fixture(t);
