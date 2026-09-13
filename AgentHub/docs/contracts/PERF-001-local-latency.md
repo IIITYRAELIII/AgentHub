@@ -298,7 +298,8 @@ scans. Periodic external history refresh runs only while chat is visible, and
 unchanged Dashboard collections retain their snapshot identity so they do not
 incur stringify comparison or card rebuild.
 The Desktop snapshot owner may reuse Dashboard workspaces, tasks and layout only
-under the TaskBoard's exact authoritative snapshot revision. Unrelated live-run
+under the TaskBoard's exact authoritative snapshot revision, including mutations
+committed by another supported SQLite owner or connection. Unrelated live-run
 revisions must not rebuild or reserialize those collections. A changed or
 unavailable TaskBoard revision invalidates that reuse atomically and preserves
 the existing content-derived collection versions and delta recovery behavior.

@@ -399,6 +399,14 @@ export class WorkspaceCatalogStore {
     return Number(this.#database.prepare("SELECT total_changes() AS value").get()?.value) || 0;
   }
 
+  get snapshotRevision() {
+    if (!this.#database) return null;
+    const externalRevision = Number(
+      this.#database.prepare("PRAGMA data_version").get()?.data_version,
+    ) || 0;
+    return `${this.revision}:${externalRevision}`;
+  }
+
   async #open() {
     if (this.#database) return this.#database;
     if (!this.#readOnly) await mkdir(path.dirname(this.#databaseFile), { recursive: true });

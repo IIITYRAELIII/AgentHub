@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { MessageReceiptRegistry } from "../../../src/infrastructure/persistence/message-receipts.mjs";
 import test from "node:test";
 import { createDesktopReadComposition } from "../../../src/composition/desktop-read-composition.mjs";
+import { TaskBoardService } from "../../../src/application/task-board-service.mjs";
+import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
+import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 
 test("exact receipt display follows queued and active messages without changing wire input", async () => {
   const receipts = new MessageReceiptRegistry();
@@ -171,7 +177,7 @@ function fixture(overrides = {}) {
         return state.telemetry;
       },
     },
-    board: {
+    board: overrides.board ?? {
       get snapshotRevision() {
         return state.boardRevision;
       },
@@ -297,7 +303,7 @@ function fixture(overrides = {}) {
         restart,
       }),
     },
-    revision: () => state.revision,
+    revision: overrides.revision ?? (() => state.revision),
     readState: {
       hasUnread: (value) => value.accountId === "owner" && value.answerTurnId !== "turn-previous",
     },
@@ -1822,6 +1828,59 @@ test("an unrelated live revision reuses exact TaskBoard state and collection ver
     state.boardWorkspaceBuilds,
     state.boardLayoutBuilds,
   ], boardBuilds.map((count) => count + 1));
+});
+
+test("TaskBoard cache observes same-owner and external SQLite mutations", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-desktop-board-revision-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const ownerCatalog = new WorkspaceCatalogStore({ databaseFile });
+  const externalCatalog = new WorkspaceCatalogStore({ databaseFile });
+  await ownerCatalog.load();
+  await externalCatalog.load();
+  const ownerStore = new TaskBoardStore({ databaseFile });
+  const externalStore = new TaskBoardStore({ databaseFile });
+  t.after(async () => {
+    ownerStore.close();
+    externalStore.close();
+    ownerCatalog.close();
+    externalCatalog.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const workspace = ownerCatalog.createWorkspace({ name: "Owner Workspace" });
+  const ownerBoard = new TaskBoardService({ store: ownerStore, workspaceCatalog: ownerCatalog });
+  const externalBoard = new TaskBoardService({ store: externalStore, workspaceCatalog: externalCatalog });
+  const setup = fixture({
+    board: ownerBoard,
+    revision: () => `desktop:${ownerBoard.snapshotRevision}`,
+  });
+  const requestFor = (snapshot) => ({
+    snapshotProtocol: 4,
+    compactSnapshot: true,
+    knownVersion: snapshot.version,
+    ...Object.fromEntries(Object.entries(snapshot.collectionDeltas).map(([name, delta]) => [
+      `${name}Version`, delta.version,
+    ])),
+  });
+
+  const first = await setup.desktopSnapshot({ snapshotProtocol: 4, compactSnapshot: true });
+  const localTask = await ownerBoard.create({
+    text: "Same owner", source: "test", bucket: "workspace", workspaceId: workspace.id,
+  });
+  const local = await setup.desktopSnapshot(requestFor(first));
+  assert.notEqual(local.notModified, true);
+  assert.deepEqual(local.collectionDeltas.boardTasks.upserts.map((task) => task.id), [localTask.id]);
+
+  const externalWorkspace = externalCatalog.createWorkspace({ name: "External Workspace" });
+  const externalTask = await externalBoard.create({
+    text: "External owner", source: "test", bucket: "workspace", workspaceId: externalWorkspace.id,
+  });
+  await externalBoard.setNotesComment({ comment: "External layout update" });
+  const external = await setup.desktopSnapshot(requestFor(local));
+
+  assert.notEqual(external.notModified, true);
+  assert.deepEqual(external.collectionDeltas.workspaces.upserts.map((item) => item.id), [externalWorkspace.id]);
+  assert.deepEqual(external.collectionDeltas.boardTasks.upserts.map((task) => task.id), [externalTask.id]);
+  assert.equal(external.boardLayout.notesComment, "External layout update");
 });
 
 test("an unavailable TaskBoard revision disables Dashboard state reuse", async () => {

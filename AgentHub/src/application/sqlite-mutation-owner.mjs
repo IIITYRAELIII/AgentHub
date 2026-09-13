@@ -46,7 +46,7 @@ const TASK_READS = new Set([
   "checklistRequestResult", "awaitRebuildPending", "releaseFinalizationOutcome",
 ]);
 
-const READ_PROPERTIES = new Set(["revision"]);
+const READ_PROPERTIES = new Set(["revision", "snapshotRevision"]);
 const OWNER_SCOPES = new WeakMap();
 
 function stableValue(value, seen = new WeakSet()) {
