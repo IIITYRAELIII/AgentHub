@@ -231,20 +231,21 @@ cannot enter Test or Await. Snapshot, merge, ancestry verification and recovery
 complete before one row-revision CAS atomically replaces Git references, updates
 the exact operation binding and changes workflow status. In a release-enabled
 Workspace, every workflow transition is serialized with the Workspace release
-lock. A transition into or out of Await rebuilds the complete Await-only
-`PreRelease` while that lock remains held. If the rebuild fails after the status
-CAS, a second exact CAS restores the prior status, Git references and requested
-workflow bindings before the error is returned. Any Git, recovery, CAS or Await
-rebuild failure therefore preserves the prior release membership.
+lock. Test owns the immutable snapshot and successful `dev` integration proof.
+A transition into or out of Await changes only accepted release membership and
+invalidates any older plan/candidate identity through the Task row revision; it
+does not compose `PreRelease`. Any Git, recovery or CAS failure therefore
+preserves the prior release membership, while an unrelated selected-delta
+composition conflict cannot roll back an already proven Task result.
 
 Moving a Task to `awaiting_implementation` records that its exact immutable
-result is accepted for a future release and atomically rematerializes mutable
-`PreRelease`. A ready Await Task requires a valid exact result and successful
-`dev` integration. Missing or ambiguous integration ownership, an effective
-delta that cannot be applied to the approved main base, or a dependency on work
-owned only by Test/In Progress/New blocks the transition. Such a dependency is
-never silently included; the user resolves it individually, normally by
-combining the dependent work into one accepted Task.
+result is accepted for a future release. A ready Await Task requires a valid
+exact result and successful `dev` integration. Missing or ambiguous integration
+ownership, an effective delta that cannot be applied to the approved main base,
+or a dependency on work owned only by Test/In Progress/New blocks the later
+explicit candidate preparation, not acceptance of the already proven Task.
+Such a dependency is never silently included; the user resolves it individually,
+normally by combining the dependent work into one accepted Task.
 
 ## Task Git reference and CAS
 
@@ -280,8 +281,9 @@ Shared paths are diagnostic: the blocking evidence is an ambiguous integration
 owner or a failed effective-delta application, not path overlap by itself.
 
 For each accepted Task, Agent Hub finds the Task branch first-parent lineage and
-the exact owning merge commits in the `dev` first-parent history. Mutable
-`PreRelease` is rebuilt from the approved `main` by applying only those effective
+the exact owning merge commits in the `dev` first-parent history. Explicit
+release preparation materializes `PreRelease` from the approved `main` by
+applying only those effective
 merge deltas in their original `dev` order, excluding Task-owned changelog
 edits, and writing one aggregate commit. `dev` is never merged into
 `PreRelease`; Test-only work cannot enter a release through a broad Task
@@ -459,38 +461,43 @@ repository evidence is compared recursively across the complete persisted
 record, including nested publisher and receipt fields; two records that differ
 below the first object level are conflicting rather than silently coalesced.
 
-The Architect adds one consolidated `CHANGELOG.md` entry when it exists, then
-freezes the exact main base, release-plan revision, included Task IDs and row
+The Architect explicitly prepares one selected set, supplies its consolidated
+`CHANGELOG.md`, and freezes the calendar version before validation. Freeze binds
+the exact main base, release-plan revision, included Task IDs and current row
 revisions, Task results, owning dev integrations, aggregate `PreRelease` head,
-manifest hash and standalone candidate head. Later Await Tasks are not silently
-added. Only a Stream with `settings.architect=true` may record verified release
+manifest hash, standalone candidate head and Agent Hub package version. Later
+Await Tasks are not silently added. The frozen release date/version remains the
+tested identity even if the local calendar date changes before publication.
+Only a Stream with `settings.architect=true` may record verified release
 completion.
 
-Prepared Await materialization precedes publication freeze. Await acceptance
-materializes a ready `PreRelease`: its aggregate head, manifest hash and base
-commit are checkpointed as the accepted composition. Freeze reuses that exact
-checkpointed result while `{planRevision, manifestHash, baseCommit}` and the
-branch head still match, and re-resolves neither the `dev` first-parent lineage
-nor the effective merge deltas. Unchanged inputs therefore produce no second
-reconstruction and no recomposition of the selected set. Any change of plan
-revision, Task revision, Git reference or approved `main` invalidates that
-checkpoint and requires an explicit rebuild before freeze. Freeze binds the
-consolidated root CHANGELOG to the exact prepared aggregate and plan, using the
-same release repository owner and lock. It may change only that CHANGELOG,
-records durable freeze intent before promoting the clone's main reference,
+Explicit preparation ordinarily composes the selected effective deltas. A
+bounded incremental preparation may start from an exact previously frozen
+manifest only when base, Workspace and selected Task IDs are unchanged, every
+other selected result is unchanged, and exactly one selected result advances by
+ancestry. Row-revision changes with an unchanged result are metadata-only. The
+builder applies only that result's exact non-`CHANGELOG.md` patch to the frozen
+candidate, without three-way or alternate fallback, then records the new current
+revisions and reuse evidence. A conflict fails normally. Known unselected paths
+and any contribution outside the selected delta remain excluded; changed
+selection/base or a non-descendant result uses ordinary selected-delta
+composition instead of this optimization.
+
+Freeze binds the consolidated root CHANGELOG and exact package metadata to the
+prepared aggregate and plan using the same release repository owner and lock.
+It records durable freeze intent before promoting the clone's main reference
 and resumes the identical target after interruption. Source edits or mismatched
 plan/head/content fail closed. The registered primary is never the promotion
-target. The frozen candidate remains immutable. If an included Task changes, is
-withdrawn or is excluded before completion, its Task revision or Git reference
-changes and completion CAS fails. Architect must explicitly rebuild and
-refreeze the release before it can complete; acceptance changes never mutate an
-already frozen candidate.
+target. The frozen candidate remains immutable. Any change of plan revision,
+Task revision, Git reference or approved `main` invalidates its use by later
+freeze, publication and completion CAS. Architect must explicitly prepare and
+refreeze; acceptance changes never mutate an already frozen candidate.
 
 Completion performs one transaction that CAS-checks every exact Task revision
 and the plan hash, then changes only those Tasks to `done` and persists a
 versioned finalization marker in the same commit. That marker binds the exact
 plan and published repository revisions to primary synchronization, dev
-synchronization and remaining-Await rebuild receipts.
+synchronization and explicit next-candidate invalidation receipts.
 Generic `done` and
 `hub_task_complete` do not create production evidence.
 
@@ -502,10 +509,10 @@ publication revision/generation readback immediately before the Task closure
 transaction. Once verified, only included Tasks are completed
 and their managed branches and worktrees may be removed. Published `main` is
 incorporated into `dev` without discarding later Test work. Remaining Await
-Tasks stay accepted and mutable `PreRelease` is immediately rebuilt for the next
-explicit release. If that rematerialization fails, the caller receives
-`retry_required`; a repeated completion request resumes only unfinished
-synchronization/rebuild stages, never Task closure. Each successful stage
+Tasks stay accepted and the previous candidate is durably invalidated; their
+next `PreRelease` is built only by a later explicit prepare. A repeated
+completion request resumes only unfinished synchronization stages, never Task
+closure or candidate preparation. Each successful stage
 persists its receipt through a short canonical mutation before the next stage.
 The active marker clears only after all stages have confirmed success.
 The last 16 completed exact-plan outcomes remain canonical evidence for lost-response
@@ -513,7 +520,7 @@ replay; transport acknowledgment is not permission to forget release completion.
 Interrupted Desktop completion reconciles only an existing pending or completed
 outcome, never starts fresh Task closure. Legacy Await-only markers cannot prove
 primary/dev synchronization: recovery explicitly reports unavailable legacy
-evidence and resumes their original rebuild scope.
+evidence and resumes only their original synchronization scope.
 
 The publication executor consumes the frozen manifest; it does not select Tasks
 or infer approval. Its durable journal retains exact candidate, validation mode,
@@ -524,6 +531,17 @@ candidate revision and exact origin lease with an ancestry guard; observing the
 same candidate on origin reconciles a lost push response without another push.
 The first automated adapter supports one exact repository; multiple repositories
 fail before publication rather than receiving partial completion evidence.
+
+Starting a different publication identity cannot overwrite a nonterminal run.
+Under the canonical publication lock, the existing start owner may automatically
+mark a dead run `interrupted` only when its exact journal and checkpoint show
+that execution reached solely the named pre-effect validation stages, no effect
+stage was started, reused, completed or failed, and progress is empty. The old
+terminal status is durably archived beside its existing log before the new
+status is created; an exact retry after a crash between those writes is
+idempotent. A live owner, unknown stage, effect-stage history, progress or
+checkpoint mismatch fails closed and remains subject to its specific recovery
+path.
 
 Deferred restart and `--skip-restart` with an unready runtime are
 `awaiting_restart`, not success. Publication-state is recorded only after
@@ -653,8 +671,9 @@ owner finalizes an already-ready exact candidate or records the interrupted
 operation as failed before starting new work. A planned replacement is reported
 as refresh state and is not classified as a runtime crash.
 
-An explicit release preflight always prepares a fresh candidate from `dev`; it
-must never reuse or start a cached candidate. After refresh,
+An explicit release preflight prepares the exact current selected set. It may
+use only the bounded frozen-candidate successor optimization above; no other
+cached or broad `dev` candidate is accepted. After refresh,
 `TestContour.source.headCommit` must equal the exact Agent Hub repository `dev`
 HEAD observed by the preflight. Only this release preflight additionally
 requires every selected immutable Task result commit to be an ancestor of the
@@ -808,7 +827,9 @@ so a settings or source-authority write cannot pass between readback and
 transition. The target Task remains the only Task whose result, status and
 release membership change.
 The same Task, repository and Await locks, lifecycle transition, immutable result,
-dev integration, complete plan rebuild, rollback and unknown-receipt rules apply.
+dev integration and unknown-receipt rules apply. The successful transition
+invalidates older candidate identity and does not compose `PreRelease` or roll
+back because another selected Task is not currently composable.
 The one-shot composition skips startup reconciliation of unrelated receipts and
 does not patch `PreRelease`, refs or SQLite directly. Its request ID is subject to
 the same no-blind-retry rule as the installed MCP operation.

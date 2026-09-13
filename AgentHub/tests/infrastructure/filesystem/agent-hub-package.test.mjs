@@ -111,3 +111,25 @@ test("publication preflight stops after preparing an uncommitted calendar versio
 test("calendar version uses the machine-local release date", () => {
   assert.equal(agentHubCalendarVersion(new Date(2026, 7, 24, 0, 1)), "2026.8.24");
 });
+
+test("publication validation keeps the version frozen before midnight", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-frozen-version-"));
+  try {
+    await writeFile(path.join(root, "package.json"), JSON.stringify({
+      name: "agent-hub", version: "2026.8.24",
+    }), "utf8");
+    await writeFile(path.join(root, "package-lock.json"), JSON.stringify({
+      name: "agent-hub", version: "2026.8.24",
+      packages: { "": { name: "agent-hub", version: "2026.8.24" } },
+    }), "utf8");
+    const result = await prepareCommittedAgentHubReleaseVersion({
+      root,
+      expectedVersion: "2026.8.24",
+      now: new Date(2026, 7, 25, 0, 1),
+    });
+    assert.equal(result.changed, false);
+    assert.equal(result.version, "2026.8.24");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

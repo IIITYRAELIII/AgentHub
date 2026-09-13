@@ -55,7 +55,6 @@ export class TaskLifecycleService {
       }
     }
     if (releasePreflight) {
-      requiredMethod(releasePreflight, "prepareAwaitSet");
       requiredMethod(releasePreflight, "withAwaitTransition");
     }
     this.taskBoard = taskBoard;
@@ -256,7 +255,6 @@ export class TaskLifecycleService {
           },
         } : {}),
       }), operationId);
-      let committed = false;
       try {
         if (!snapshotsResult) {
           await this.#assertOwned(lease);
@@ -267,13 +265,11 @@ export class TaskLifecycleService {
             ...binding,
             evidence: { ...(operationEvidence ?? {}), outcome: "not_required" },
           }), operationId);
-          committed = true;
           if (!affectsAwait) return current;
-          const preReleaseIntegration = await this.releasePreflight.prepareAwaitSet({
-            workspaceId: workspace.id,
-            fallbackProjectRoots: [selectedProjectRoot],
-          });
-          return { task: current, preReleaseIntegration };
+          return {
+            task: current,
+            releaseCandidate: { status: "invalidated", reason: "Await membership changed" },
+          };
         }
         if (!selectedProjectRoot || !this.taskGitWorkspaces) {
           throw new Error("Task Git workspace is unavailable; workflow status was not changed");
@@ -327,26 +323,16 @@ export class TaskLifecycleService {
             response: { gitWorkspace: gitWorkspaceResult, gitIntegration: gitIntegrationResult },
           },
         }), operationId);
-        committed = true;
-        const preReleaseIntegration = affectsAwait
-          ? await this.releasePreflight.prepareAwaitSet({
-            workspaceId: workspace.id,
-            fallbackProjectRoots: [selectedProjectRoot],
-          })
-          : null;
         return {
           task: current,
           gitWorkspace: gitWorkspaceResult,
           gitIntegration: gitIntegrationResult,
-          ...(preReleaseIntegration ? { preReleaseIntegration } : {}),
+          ...(affectsAwait ? {
+            releaseCandidate: { status: "invalidated", reason: "Await result changed" },
+          } : {}),
         };
       } catch (error) {
-        if (committed && affectsAwait) {
-          await this.#assertOwned(lease);
-          await this.#mutation(() => this.taskBoard.rollbackWorkflowOutcome(operationId, error), operationId);
-        } else {
-          await this.#failWhileOwned(lease, operationId, error);
-        }
+        await this.#failWhileOwned(lease, operationId, error);
         throw error;
       }
   }

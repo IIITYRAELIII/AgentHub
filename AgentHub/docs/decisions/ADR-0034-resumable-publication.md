@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted for HUB-182.
+Accepted for HUB-182. The remaining-Await rebuild receipt is superseded by the
+explicit candidate invalidation in ADR-0043.
 
 ## Context
 

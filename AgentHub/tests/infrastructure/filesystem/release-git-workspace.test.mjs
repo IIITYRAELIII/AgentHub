@@ -49,7 +49,12 @@ async function fixture(context) {
   await writeFile(path.join(primary, "app.txt"), "main\n", "utf8");
   await writeFile(path.join(primary, ".team", "participant.json"), "team-main\n", "utf8");
   await writeFile(path.join(primary, "1C_ACCESS", "access.json"), "access-main\n", "utf8");
-  await writeFile(path.join(primary, "AgentHub", "package.json"), "{}\n", "utf8");
+  await writeFile(path.join(primary, "AgentHub", "package.json"), `${JSON.stringify({
+    name: "agent-hub", version: "2026.8.23",
+  }, null, 2)}\n`, "utf8");
+  await writeFile(path.join(primary, "AgentHub", "package-lock.json"), `${JSON.stringify({
+    name: "agent-hub", version: "2026.8.23", packages: { "": { name: "agent-hub", version: "2026.8.23" } },
+  }, null, 2)}\n`, "utf8");
   const baseCommit = await commit(primary, "main");
   await git(primary, "push", "-u", "origin", "main");
   const canonicalRoot = canonicalPath(root);
@@ -1026,5 +1031,171 @@ test("repeated publication freeze reuses the accepted PreRelease without rebuild
   assert.equal(await git(accepted.releaseRoot, "show", `${refrozen.preReleaseHead}:dependent.txt`), "dependent");
   const names = (await git(accepted.releaseRoot, "diff", "--name-only",
     setup.baseCommit, refrozen.preReleaseHead)).split("\n").filter(Boolean).sort();
-  assert.deepEqual(names, ["CHANGELOG.md", "dependency.txt", "dependent.txt"]);
+  assert.deepEqual(names, [
+    "AgentHub/package-lock.json", "AgentHub/package.json", "CHANGELOG.md", "dependency.txt", "dependent.txt",
+  ]);
 });
+
+test("a frozen 13-Task candidate accepts one descendant result delta without foreign baggage", { timeout: 60000 }, async (context) => {
+  const setup = await fixture(context);
+  await writeFile(path.join(setup.primary, "CHANGELOG.md"), "previous\n", "utf8");
+  setup.baseCommit = await commit(setup.primary, "release base");
+  await git(setup.primary, "push", "origin", "main");
+
+  const ownerRoot = path.join(setup.root, "task-release-owner");
+  await git(setup.primary, "worktree", "add", "-b", "HUB-release-owner", ownerRoot, setup.baseCommit);
+  context.after(() => git(setup.primary, "worktree", "remove", "--force", ownerRoot).catch(() => {}));
+  await mkdir(path.join(ownerRoot, "AgentHub", "assets", "web-app", "themes", "bestiary"), { recursive: true });
+  await mkdir(path.join(ownerRoot, "AgentHub", "docs"), { recursive: true });
+  await writeFile(path.join(ownerRoot, "AgentHub", "assets", "web-app", "themes", "bestiary", "theme.css"), "foreign\n");
+  await writeFile(path.join(ownerRoot, "AgentHub", "docs", "recording-contour.md"), "foreign\n");
+  const foreignContext = await commit(ownerRoot, "unselected integrated context");
+  await writeFile(path.join(ownerRoot, "AgentHub", "selected-owner.txt"), "accepted\n");
+  const oldResult = await commit(ownerRoot, "accepted release owner");
+
+  const otherTasks = [];
+  for (let index = 1; index < 13; index += 1) {
+    const resultCommit = await taskResult(setup, context, {
+      branch: `HUB-selected-${index}`,
+      file: `AgentHub/selected-${index}.txt`,
+      content: `selected-${index}\n`,
+    });
+    otherTasks.push({ taskId: `selected-${String(index).padStart(2, "0")}`, taskRevision: 1, resultCommit });
+  }
+  const ownerTask = {
+    taskId: "selected-13",
+    taskRevision: 33,
+    baseCommit: setup.baseCommit,
+    resultCommit: oldResult,
+    integrations: [{ commit: oldResult, parent: foreignContext, order: 13 }],
+  };
+  const firstTasks = [...otherTasks, ownerTask];
+  const accepted = await setup.service.prepareCandidate({
+    planRevision: "plan-13-old", workspaceId: "workspace", projectRoot: setup.primary,
+    frozenTasks: firstTasks,
+  });
+  await assert.rejects(git(accepted.releaseRoot, "show", `${accepted.preReleaseHead}:AgentHub/assets/web-app/themes/bestiary/theme.css`));
+  await assert.rejects(git(accepted.releaseRoot, "show", `${accepted.preReleaseHead}:AgentHub/docs/recording-contour.md`));
+  await writeFile(path.join(accepted.releaseRoot, "CHANGELOG.md"), "release 13\n", "utf8");
+  const frozen = await setup.service.freezePublicationCandidate({
+    projectRoot: setup.primary, workspaceId: "workspace", expectedPlanRevision: "plan-13-old",
+    expectedPreparedHead: accepted.preReleaseHead, changelogContent: Buffer.from("release 13\n"),
+    releaseDate: new Date(2026, 8, 13, 23, 59),
+  });
+
+  await writeFile(path.join(ownerRoot, "AgentHub", "release-refresh.txt"), "reviewed fix\n");
+  const newResult = await commit(ownerRoot, "reviewed successor");
+  const refreshedTasks = firstTasks.map((task) => task.taskId === ownerTask.taskId
+    ? { ...task, taskRevision: 41, resultCommit: newResult }
+    : { ...task, taskRevision: task.taskRevision + 1 });
+  const checkpointFile = path.join(path.dirname(path.dirname(accepted.manifestFile)), "checkpoint.json");
+  const frozenCheckpoint = await readFile(checkpointFile, "utf8");
+  await assert.rejects(setup.service.prepareCandidate({
+    planRevision: "plan-13-stale", workspaceId: "workspace", projectRoot: setup.primary,
+    frozenTasks: refreshedTasks,
+    validateBeforeCommit: async () => { throw new Error("selected plan changed before candidate CAS"); },
+  }), /selected plan changed before candidate CAS/u);
+  assert.equal(await git(frozen.releaseRoot, "rev-parse", "PreRelease"), frozen.preReleaseHead);
+  assert.equal(
+    await readFile(checkpointFile, "utf8"),
+    frozenCheckpoint,
+  );
+  const refreshed = await setup.service.prepareCandidate({
+    planRevision: "plan-13-new", workspaceId: "workspace", projectRoot: setup.primary,
+    frozenTasks: refreshedTasks,
+  });
+  const manifest = JSON.parse(await readFile(refreshed.manifestFile, "utf8"));
+  assert.equal(manifest.tasks.length, 13);
+  assert.equal(manifest.candidateReuse.policy, "selected-result-successor-v1");
+  assert.equal(manifest.candidateReuse.sourceHead, frozen.preReleaseHead);
+  assert.equal(manifest.candidateReuse.priorResultCommit, oldResult);
+  assert.equal(manifest.candidateReuse.resultCommit, newResult);
+  assert.equal(manifest.tasks.find((task) => task.taskId === ownerTask.taskId).taskRevision, 41);
+  await assert.doesNotReject(git(
+    refreshed.releaseRoot, "merge-base", "--is-ancestor", newResult, refreshed.preReleaseHead,
+  ));
+  assert.deepEqual((await git(refreshed.releaseRoot, "diff", "--name-only", frozen.preReleaseHead, refreshed.preReleaseHead))
+    .split("\n").filter(Boolean), ["AgentHub/release-refresh.txt"]);
+  assert.equal(await git(refreshed.releaseRoot, "show", `${refreshed.preReleaseHead}:CHANGELOG.md`), "release 13");
+  await assert.rejects(git(refreshed.releaseRoot, "show", `${refreshed.preReleaseHead}:AgentHub/assets/web-app/themes/bestiary/theme.css`));
+  await assert.rejects(git(refreshed.releaseRoot, "show", `${refreshed.preReleaseHead}:AgentHub/docs/recording-contour.md`));
+
+  const refrozen = await setup.service.freezePublicationCandidate({
+    projectRoot: setup.primary, workspaceId: "workspace", expectedPlanRevision: "plan-13-new",
+    expectedPreparedHead: refreshed.preReleaseHead, changelogContent: Buffer.from("release 13\n"),
+    releaseDate: new Date(2026, 8, 13, 23, 59),
+  });
+  await rm(path.join(ownerRoot, "AgentHub", "selected-owner.txt"));
+  const revertedResult = await commit(ownerRoot, "accepted change to revert");
+  const revertedTasks = refreshedTasks.map((task) => task.taskId === ownerTask.taskId
+    ? { ...task, taskRevision: 42, resultCommit: revertedResult }
+    : task);
+  const reverted = await setup.service.prepareCandidate({
+    planRevision: "plan-13-revert", workspaceId: "workspace", projectRoot: setup.primary,
+    frozenTasks: revertedTasks,
+  });
+  assert.equal(JSON.parse(await readFile(reverted.manifestFile, "utf8")).candidateReuse.sourceHead,
+    refrozen.preReleaseHead);
+  await assert.doesNotReject(git(
+    reverted.releaseRoot, "merge-base", "--is-ancestor", revertedResult, reverted.preReleaseHead,
+  ));
+  await assert.rejects(git(reverted.releaseRoot, "show", `${reverted.preReleaseHead}:AgentHub/selected-owner.txt`));
+  assert.equal(await git(reverted.releaseRoot, "show", `${reverted.preReleaseHead}:AgentHub/release-refresh.txt`),
+    "reviewed fix");
+});
+
+for (const scenario of ["changed selection", "changed base", "non-descendant result"]) {
+  test(`frozen candidate reuse rejects ${scenario}`, { timeout: 30000 }, async (context) => {
+    const setup = await fixture(context);
+    const ownerRoot = path.join(setup.root, "task-reuse-owner");
+    await git(setup.primary, "worktree", "add", "-b", "HUB-reuse-owner", ownerRoot, setup.baseCommit);
+    context.after(() => git(setup.primary, "worktree", "remove", "--force", ownerRoot).catch(() => {}));
+    await writeFile(path.join(ownerRoot, "owner.txt"), "old\n");
+    const oldResult = await commit(ownerRoot, "old result");
+    const oldTask = {
+      taskId: "task-owner", taskRevision: 1, baseCommit: setup.baseCommit, resultCommit: oldResult,
+      integrations: [{ commit: oldResult, parent: setup.baseCommit, order: 1 }],
+    };
+    const accepted = await setup.service.prepareCandidate({
+      planRevision: "plan-old", workspaceId: "workspace", projectRoot: setup.primary, frozenTasks: [oldTask],
+    });
+    await setup.service.freezePublicationCandidate({
+      projectRoot: setup.primary, workspaceId: "workspace", expectedPlanRevision: "plan-old",
+      expectedPreparedHead: accepted.preReleaseHead, changelogContent: null,
+      releaseDate: new Date(2026, 8, 13),
+    });
+
+    let tasks;
+    if (scenario === "non-descendant result") {
+      const sibling = await taskResult(setup, context, {
+        branch: "HUB-reuse-sibling", file: "owner.txt", content: "sibling\n",
+      });
+      tasks = [{ ...oldTask, taskRevision: 2, resultCommit: sibling,
+        integrations: [{ commit: sibling, parent: setup.baseCommit, order: 1 }] }];
+    } else {
+      await writeFile(path.join(ownerRoot, "owner.txt"), "new\n");
+      const successor = await commit(ownerRoot, "successor result");
+      tasks = [{ ...oldTask, taskRevision: 2, resultCommit: successor,
+        integrations: [...oldTask.integrations, { commit: successor, parent: oldResult, order: 2 }] }];
+      if (scenario === "changed selection") {
+        const added = await taskResult(setup, context, {
+          branch: "HUB-reuse-added", file: "added.txt", content: "added\n",
+        });
+        tasks.push({ taskId: "task-added", taskRevision: 1, baseCommit: setup.baseCommit,
+          resultCommit: added, integrations: [{ commit: added, parent: setup.baseCommit, order: 3 }] });
+      } else {
+        await writeFile(path.join(setup.primary, "main-new.txt"), "new base\n");
+        setup.baseCommit = await commit(setup.primary, "new release base");
+        await git(setup.primary, "push", "origin", "main");
+      }
+    }
+
+    const candidate = await setup.service.prepareCandidate({
+      planRevision: `plan-${scenario.replaceAll(" ", "-")}`,
+      workspaceId: "workspace", projectRoot: setup.primary, frozenTasks: tasks,
+    });
+    const manifest = JSON.parse(await readFile(candidate.manifestFile, "utf8"));
+    assert.equal(manifest.candidateReuse, undefined);
+    assert.equal(manifest.projectionPolicy, "task-net-ancestry-v2");
+  });
+}
