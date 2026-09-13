@@ -323,6 +323,27 @@ test("release preflight rejects an unscoped global publication baseline", async 
   assert.deepEqual(calls.map(([name]) => name), ["plan"]);
 });
 
+test("release preflight reads a repository baseline appended from a local publisher receipt", async () => {
+  const { calls, projectRoot, service } = fixture();
+  service.readPublicationState = async () => ({
+    revision: "legacy-unscoped-head",
+    repositories: [{
+      root: projectRoot,
+      revision: "published-head",
+      adoptedFrom: "local-publisher-receipt",
+      publisher: { kind: "agent-hub-publication-receipt", runId: "publisher-run-1" },
+    }],
+  });
+
+  const result = await service.preflight({
+    workspaceId: "workspace-1",
+    expectedPlanRevision: "plan-1",
+  });
+
+  assert.equal(result.status, "ready");
+  assert.equal(calls.find(([name]) => name === "inspect-main")[1].publishedRevision, "published-head");
+});
+
 test("release preflight binds approved main commits to the selected repository", async () => {
   const { calls, projectRoot, service } = fixture();
   service.releaseGitWorkspaces.inspectMainChanges = async (request) => {

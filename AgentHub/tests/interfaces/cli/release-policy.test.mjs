@@ -71,6 +71,44 @@ test("release policy CLI previews and records one exact Task upstream adoption",
   assert.equal(calls[1][1].requestId, "operator-review-1");
 });
 
+test("release policy CLI previews and enables one exact local publisher receipt", async () => {
+  const calls = [];
+  const args = [
+    "local-publication-receipt", "preview",
+    "--project-root", "D:/repo",
+    "--workspace-id", "workspace-1",
+    "--run-id", "run-1",
+    "--revision", "1".repeat(40),
+    "--generation", "generation-1",
+    "--published-at", "2026-09-11T16:24:23.662Z",
+    "--state-sha256", "2".repeat(64),
+    "--receipt-sha256", "3".repeat(64),
+    "--release-id", "release-1",
+    "--origin", "https://github.com/Example/Utilities.git",
+    "--origin-main", "4".repeat(40),
+    "--request-id", "operator-1",
+  ];
+  const preview = await runReleasePolicyCli(args, {
+    write: () => {},
+    previewLocalPublication: async (input) => {
+      calls.push(["preview", input]);
+      return { status: "preview", repository: { root: input.projectRoot } };
+    },
+  });
+  assert.equal(preview.status, "preview");
+  assert.equal(calls[0][1].expectedReceiptSha256, "3".repeat(64));
+
+  const enabled = await runReleasePolicyCli(["local-publication-receipt", "enable", ...args.slice(2)], {
+    write: () => {},
+    enableLocalPublication: async (input) => {
+      calls.push(["enable", input]);
+      return { status: "adopted", repository: { root: input.projectRoot } };
+    },
+  });
+  assert.equal(enabled.status, "adopted");
+  assert.equal(calls[1][1].requestId, "operator-1");
+});
+
 test("release policy CLI rejects ambiguous commands", async () => {
   await assert.rejects(
     () => runReleasePolicyCli(["github-baseline", "enable", "--project-root"], { write: () => {} }),

@@ -432,6 +432,24 @@ local JSON file, an arbitrary supplied SHA, a foreign remote, a moved tag or an
 Actions run head SHA fails closed. Activation of such an adapter is a separate
 operator decision; existing unscoped state is not rewritten in place.
 
+An Agent Hub legacy publication that predates repository-scoped state may be
+adopted only through the separate operator surface `npm run release:policy --
+local-publication-receipt preview|enable ...`. This adapter does not infer scope
+from a SHA or ancestry. It binds the exact raw legacy state and successful local
+publisher receipt by SHA-256; verifies their revision, generation, publication
+time, Workspace, repository root, frozen plan/manifest and finalization
+identities; and verifies the exact active installed release and its runtime
+manifest were produced from the publisher checkout. The operator also pins the
+canonical origin and current remote-tracking `origin/main`; local main must equal
+the legacy published revision and that revision must be contained in the pinned
+origin observation. The adapter never fetches or moves refs. Preview is
+zero-write. Enable repeats all verification under the canonical publication
+lock and appends repository-scoped evidence through the publication-state owner,
+retaining the legacy fields and other repositories. Exact retry is idempotent;
+changed bytes, identity, deployment, refs or conflicting scoped evidence fail
+before write. This migration neither authorizes newer upstream content nor
+bypasses ordinary preflight.
+
 Every publication-state writer acquires or re-enters the canonical publication
 lock before reserving its per-file write turn. A writer outside the current
 owner therefore cannot occupy the write queue while waiting for that owner and

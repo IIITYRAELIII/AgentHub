@@ -2,6 +2,10 @@ import { pathToFileURL } from "node:url";
 import { loadConfig } from "../../infrastructure/filesystem/config.mjs";
 import { TaskGitWorkspaceService } from "../../infrastructure/filesystem/task-git-workspace.mjs";
 import { enableGithubReleaseBaseline, previewGithubReleaseBaseline } from "../../infrastructure/persistence/github-publication-baseline.mjs";
+import {
+  enableLocalPublicationReceiptBaseline,
+  previewLocalPublicationReceiptBaseline,
+} from "../../infrastructure/persistence/local-publication-receipt-baseline.mjs";
 import { writePublicationState } from "../../infrastructure/persistence/publication-state.mjs";
 
 function parseOptions(args) {
@@ -42,18 +46,37 @@ function taskUpstreamAdoptionInput(options) {
   };
 }
 
+function localPublicationReceiptInput(options) {
+  return {
+    projectRoot: options.project_root,
+    workspaceId: options.workspace_id,
+    runId: options.run_id,
+    expectedRevision: options.revision,
+    expectedGeneration: options.generation,
+    expectedPublishedAt: options.published_at,
+    expectedStateSha256: options.state_sha256,
+    expectedReceiptSha256: options.receipt_sha256,
+    expectedReleaseId: options.release_id,
+    expectedOriginUrl: options.origin,
+    expectedOriginMainCommit: options.origin_main,
+    requestId: options.request_id,
+  };
+}
+
 export async function runReleasePolicyCli(args, {
   write = console.log,
   previewGithub = previewGithubReleaseBaseline,
   enableGithub = enableGithubReleaseBaseline,
+  previewLocalPublication = previewLocalPublicationReceiptBaseline,
+  enableLocalPublication = enableLocalPublicationReceiptBaseline,
   previewTaskUpstream = null,
   enableTaskUpstream = null,
 } = {}) {
   const [surface, action, ...rawOptions] = args;
-  if (!["github-baseline", "task-upstream-adoption"].includes(surface)
+  if (!["github-baseline", "local-publication-receipt", "task-upstream-adoption"].includes(surface)
       || !["preview", "enable"].includes(action)) {
     throw new Error(
-      "Usage: npm run release:policy -- <github-baseline|task-upstream-adoption> <preview|enable> ...",
+      "Usage: npm run release:policy -- <github-baseline|local-publication-receipt|task-upstream-adoption> <preview|enable> ...",
     );
   }
   const options = parseOptions(rawOptions);
@@ -63,6 +86,11 @@ export async function runReleasePolicyCli(args, {
     result = action === "preview"
       ? await previewGithub(input)
       : await enableGithub(input, { writeState: (state) => writePublicationState(state) });
+  } else if (surface === "local-publication-receipt") {
+    const input = localPublicationReceiptInput(options);
+    result = action === "preview"
+      ? await previewLocalPublication(input)
+      : await enableLocalPublication(input, { writeState: (state) => writePublicationState(state) });
   } else {
     const input = taskUpstreamAdoptionInput(options);
     let preview = previewTaskUpstream;
