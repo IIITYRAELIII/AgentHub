@@ -4590,11 +4590,20 @@ async function openProviderLoginPage(authUrl) {
 }
 agentHub.on("server:provider-login", ({ provider }) => runAction(async () => {
   const result = await control("start-provider-login", { provider });
-  agentHub.setProviderLoginUrl?.(provider, result?.login?.authUrl ?? null);
-  if (result?.login?.authUrl) await openProviderLoginPage(result.login.authUrl);
+  const login = result?.login;
+  agentHub.setProviderLoginUrl?.(provider, { attemptId: login?.attemptId ?? null, authUrl: login?.authUrl ?? null });
+  /* Claude Code сам открывает браузер со своим callback; его печатная ссылка —
+     ручной путь с кодом, поэтому она открывается только кнопкой. */
+  if (provider === "codex" && login?.authUrl) await openProviderLoginPage(login.authUrl);
   if (result?.snapshot) applySnapshot(result.snapshot);
   else applySnapshot(await control("snapshot"));
   agentHub.toast(result?.message ?? "Вход запущен");
+}));
+agentHub.on("server:provider-login-code", ({ provider, attemptId, code }) => runAction(async () => {
+  const result = await control("submit-provider-login-code", { provider, attemptId, code });
+  if (result?.snapshot) applySnapshot(result.snapshot);
+  else applySnapshot(await control("snapshot"));
+  agentHub.toast(result?.message ?? "Код передан Claude Code");
 }));
 agentHub.on("server:provider-login-open", ({ authUrl }) => runAction(() => openProviderLoginPage(authUrl)));
 agentHub.on("server:provider-login-cancel", ({ provider }) => runAction(async () => {

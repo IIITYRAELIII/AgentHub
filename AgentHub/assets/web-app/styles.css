@@ -14494,6 +14494,17 @@ html[data-view="server"] .server-view {
   margin-top: 0.3rem;
 }
 
+.server-account-code-row {
+  display: grid;
+  gap: 0.3rem;
+  margin-top: 0.3rem;
+}
+
+.server-account-code {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
 .server-account[data-status="failed"] small {
   color: var(--danger, var(--text-soft));
 }

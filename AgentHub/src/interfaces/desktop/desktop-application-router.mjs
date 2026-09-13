@@ -29,6 +29,7 @@ const CONCURRENT_MUTATION_ACTIONS = Object.freeze([
 const LOCAL_ONLY_ACTIONS = Object.freeze([
   "update-server-configuration",
   "start-provider-login",
+  "submit-provider-login-code",
   "cancel-provider-login",
   "command-trace-timeline",
   "command-trace-percentiles",
@@ -108,6 +109,11 @@ export function createDesktopApplicationRouter({
       "start-provider-login": (params) => {
         if (!handlers.startProviderLogin) throw new Error("Вход в аккаунт недоступен в этой версии");
         return handlers.startProviderLogin(params);
+      },
+      // Not a durable mutation: the manual code must not enter command receipts.
+      "submit-provider-login-code": (params) => {
+        if (!handlers.submitProviderLoginCode) throw new Error("Вход в аккаунт недоступен в этой версии");
+        return handlers.submitProviderLoginCode(params);
       },
       "cancel-provider-login": (params) => {
         if (!handlers.cancelProviderLogin) throw new Error("Вход в аккаунт недоступен в этой версии");

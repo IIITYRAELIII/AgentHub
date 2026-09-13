@@ -565,6 +565,7 @@ export function createDesktopShellComposition({
       setAutostart: (params) => serverControlController.setAutostart(params),
       updateServerConfiguration: (params) => serverControlController.updateConfiguration(params),
       startProviderLogin: (params) => serverControlController.startProviderLogin(params),
+      submitProviderLoginCode: (params) => serverControlController.submitProviderLoginCode(params),
       cancelProviderLogin: (params) => serverControlController.cancelProviderLogin(params),
       readPreTurnInstructions: () => serverControlController.readPreTurnInstructions(),
       updateGlobalPreTurnInstructions: (params) => serverControlController.updateGlobalPreTurnInstructions(params),

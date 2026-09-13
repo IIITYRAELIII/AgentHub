@@ -162,6 +162,7 @@ export function serverPageSnapshot({
     accounts: (Array.isArray(accounts) ? accounts : []).map((account) => ({
       provider: String(account?.provider ?? ""),
       status: String(account?.status ?? "idle"),
+      attemptId: account?.attemptId ? String(account.attemptId) : null,
       startedAt: account?.startedAt ?? null,
       finishedAt: account?.finishedAt ?? null,
       error: account?.error || null,
