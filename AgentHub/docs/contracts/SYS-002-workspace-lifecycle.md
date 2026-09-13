@@ -58,11 +58,14 @@
   probed while still unbound. Only a completed probe with an exact usage
   measurement allows binding it to the Stream, retargeting the selection,
   client selections and deferred inputs, and recording the rotation together
-  with that probe's turn identity and measurement time. A definite failure — the
-  probe never started or its turn ended unsuccessfully — deletes the new Thread.
-  An unknown outcome — the probe did not settle, stayed active or produced no
-  exact measurement — leaves that Thread untouched and records it as quarantined
-  on the source compaction operation. In both cases the source Thread stays
+  with that probe's turn identity and measurement time. A definite failure
+  deletes the new Thread: either its probe turn ended unsuccessfully, or every
+  accepted probe attempt that did not materialize was then observed terminal in
+  the Thread itself. An acknowledged interrupt request alone is not that
+  evidence. An unknown outcome — an accepted probe could not be interrupted or
+  its stop was not observed, the probe did not settle, stayed active or produced
+  no exact measurement — stops without a further attempt, leaves that Thread
+  untouched and records it as quarantined on the source compaction operation. In both cases the source Thread stays
   authoritative and its queue is woken normally. One compaction receives at most
   one rotation attempt; a later compaction may try again.
 - Before its readiness probe the unbound rotation target is named from the

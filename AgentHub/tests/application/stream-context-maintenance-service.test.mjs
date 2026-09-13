@@ -720,6 +720,73 @@ test("a compaction whose rotation already settled unsuccessfully is not rotated 
   assert.equal(state.events.filter(([name]) => name === "rotate").length, 1);
 });
 
+// Настоящий владелец пробы: Codex принимает ход, но тот не показывается в
+// Thread. Исход остановки решает, удалять новый Thread или изолировать его.
+function realProbeOwner({ interrupt }) {
+  const calls = [];
+  const interrupted = new Set();
+  let clock = 0;
+  const owner = new CodexContextMaintenanceService({
+    startContextProbe: async (threadId) => {
+      const id = `accepted-${calls.filter(([name]) => name === "start").length + 1}`;
+      calls.push(["start", threadId, id]);
+      return { turn: { id } };
+    },
+    readThread: async () => ({
+      thread: { turns: [...interrupted].map((id) => ({ id, status: "interrupted" })) },
+    }),
+    interruptContextProbe: async (threadId, turnId) => {
+      calls.push(["interrupt", threadId, turnId]);
+      await interrupt(turnId, interrupted);
+    },
+    now: () => (clock += 10),
+    sleep: async () => {},
+    logger: { warn() {} },
+  });
+  const probeContext = (target, options = {}) => owner.probeContext(target, {
+    materializationTimeoutMs: 5,
+    pollMs: 1,
+    retryDelayMs: 1,
+    ...options,
+  });
+  return { calls, probeContext };
+}
+
+test("an accepted probe whose interruption fails is quarantined after one attempt and never deleted", async () => {
+  const state = fixture();
+  const owner = realProbeOwner({
+    interrupt: async () => { throw new Error("interrupt outcome unknown"); },
+  });
+  state.service.provider.probeContext = owner.probeContext;
+  queueForSource(state, "queued-interrupt-unknown");
+
+  await assert.rejects(state.service.rotate(state.source), /Готовность нового Thread не подтверждена/u);
+
+  assert.equal(owner.calls.filter(([name]) => name === "start").length, 1, "после неподтверждённой остановки запущена вторая проба");
+  assert.equal(owner.calls.filter(([name]) => name === "interrupt").length, 1);
+  assertSourceStaysAuthoritative(state, "queued-interrupt-unknown");
+  assert.equal(state.events.some(([name]) => name === "discard-target"), false, "Thread с возможно активной пробой удалён");
+  const settled = state.events.find(([name, , , details]) => name === "annotate" && details?.rotationStatus);
+  assert.equal(settled[3].rotationStatus, "unknown");
+  assert.equal(settled[3].rotationQuarantineThreadId, "thread-new");
+});
+
+test("empty probe starts whose stops are observed in the Thread give a bounded definite failure", async () => {
+  const state = fixture();
+  const owner = realProbeOwner({
+    interrupt: async (turnId, interrupted) => { interrupted.add(turnId); },
+  });
+  state.service.provider.probeContext = owner.probeContext;
+  queueForSource(state, "queued-interrupt-confirmed");
+
+  await assert.rejects(state.service.rotate(state.source), /не прошёл проверку готовности и удалён/u);
+
+  assert.equal(owner.calls.filter(([name]) => name === "start").length, 2);
+  assert.equal(owner.calls.filter(([name]) => name === "interrupt").length, 2);
+  assertSourceStaysAuthoritative(state, "queued-interrupt-confirmed");
+  assert.deepEqual(state.events.find(([name]) => name === "discard-target"), ["discard-target", "thread-new"]);
+});
+
 for (const mode of ["manual", "automatic", "observed"]) {
   test(`${mode} rotation switches once, only after a ready probe of the new Thread`, async () => {
     const state = fixture({

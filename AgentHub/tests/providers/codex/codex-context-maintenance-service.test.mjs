@@ -229,7 +229,7 @@ test("context probe returns only after its prompt materializes", async () => {
   ]);
 });
 
-test("context probe interrupts one empty start and retries once", async () => {
+test("context probe retries once after an empty start already observed terminal", async () => {
   let attempt = 0;
   const { service, calls } = harness({
     ensureTransport: async () => calls.push(["transport"]),
@@ -256,11 +256,8 @@ test("context probe interrupts one empty start and retries once", async () => {
 
   assert.equal(result.turnId, "probe-2");
   assert.equal(calls.filter(([name]) => name === "probe").length, 2);
-  assert.deepEqual(calls.find(([name]) => name === "interrupt"), [
-    "interrupt",
-    "thread-compacted",
-    "probe-1",
-  ]);
+  // Пустой запуск уже виден завершённым в самом Thread: останавливать нечего.
+  assert.equal(calls.some(([name]) => name === "interrupt"), false);
   assert.deepEqual(calls.find(([name]) => name === "sleep"), ["sleep", 250]);
 });
 
@@ -277,9 +274,83 @@ test("context probe fails after two empty starts without an unbounded loop", asy
 
   await assert.rejects(
     service.probeContext({ provider: "codex", threadId: "thread-compacted" }),
-    /дважды принял скрытый замер без фактического запуска/u,
+    (error) => error.code === "CODEX_CONTEXT_PROBE_NOT_STARTED"
+      && /дважды принял скрытый замер без фактического запуска/u.test(error.message),
   );
   assert.equal(attempt, 2);
+  assert.equal(calls.some(([name]) => name === "interrupt"), false);
+});
+
+// Принятый, но не показавшийся ход мог остаться активным. Остановка
+// засчитывается, только когда сам Thread показал ход завершённым; ответ на
+// turn/interrupt этого не доказывает.
+function unmaterializedProbeHarness({ interrupt, visibleAfterInterrupt }) {
+  let clock = 0;
+  const interrupted = new Set();
+  const { service, calls } = harness({
+    startContextProbe: async (...args) => {
+      const id = `probe-${calls.filter(([name]) => name === "probe").length + 1}`;
+      calls.push(["probe", ...args, id]);
+      return { turn: { id } };
+    },
+    readThread: async () => ({
+      thread: {
+        turns: visibleAfterInterrupt
+          ? [...interrupted].map((id) => ({ id, status: "interrupted" }))
+          : [],
+      },
+    }),
+    interruptContextProbe: async (threadId, turnId) => {
+      calls.push(["interrupt", threadId, turnId]);
+      await interrupt();
+      interrupted.add(turnId);
+    },
+    now: () => (clock += 10),
+    sleep: async () => {},
+  });
+  const probe = () => service.probeContext({ provider: "codex", threadId: "thread-new" }, {
+    materializationTimeoutMs: 5,
+    pollMs: 1,
+    retryDelayMs: 1,
+  });
+  return { calls, probe };
+}
+
+test("an accepted probe that cannot be interrupted stops as unknown without a second start", async () => {
+  const { calls, probe } = unmaterializedProbeHarness({
+    interrupt: async () => { throw new Error("interrupt outcome unknown"); },
+    visibleAfterInterrupt: true,
+  });
+
+  await assert.rejects(probe, (error) => (
+    error.code === "CODEX_CONTEXT_PROBE_UNSETTLED" && /interrupt outcome unknown/u.test(error.message)
+  ));
+
+  assert.equal(calls.filter(([name]) => name === "probe").length, 1, "после неудачной остановки запущена вторая проба");
+  assert.equal(calls.filter(([name]) => name === "interrupt").length, 1);
+});
+
+test("an acknowledged interrupt is not a proven stop until the Thread shows the turn terminal", async () => {
+  const { calls, probe } = unmaterializedProbeHarness({
+    interrupt: async () => {},
+    visibleAfterInterrupt: false,
+  });
+
+  await assert.rejects(probe, (error) => error.code === "CODEX_CONTEXT_PROBE_UNSETTLED");
+
+  assert.equal(calls.filter(([name]) => name === "probe").length, 1);
+  assert.equal(calls.filter(([name]) => name === "interrupt").length, 1);
+});
+
+test("stops of every empty start observed in the Thread give a definite not-started failure", async () => {
+  const { calls, probe } = unmaterializedProbeHarness({
+    interrupt: async () => {},
+    visibleAfterInterrupt: true,
+  });
+
+  await assert.rejects(probe, (error) => error.code === "CODEX_CONTEXT_PROBE_NOT_STARTED");
+
+  assert.equal(calls.filter(([name]) => name === "probe").length, 2);
   assert.equal(calls.filter(([name]) => name === "interrupt").length, 2);
 });
 

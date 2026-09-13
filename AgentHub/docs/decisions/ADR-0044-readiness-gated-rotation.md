@@ -38,9 +38,13 @@ and omitted the before-compaction value.
    selection, client selections, deferred inputs and the rotation annotation
    change only after a completed probe with an exact measurement, and the
    annotation records the probe turn identity and measurement time.
-3. Failure handling. A definite failure (probe never materialized, or its turn
-   ended unsuccessfully) deletes the new Thread. An unknown outcome (probe did
-   not settle, remained active, or produced no exact measurement) leaves it
+3. Failure handling. A definite failure deletes the new Thread: its probe turn
+   ended unsuccessfully, or every accepted probe attempt that did not
+   materialize was afterwards observed terminal in the Thread. A successful
+   `turn/interrupt` response alone does not prove the turn stopped. An unknown
+   outcome (an accepted probe could not be interrupted or its stop was not
+   observed, the probe did not settle, remained active, or produced no exact
+   measurement) stops without another attempt and leaves the new Thread
    untouched and records `rotationStatus: unknown` with the quarantined Thread
    on the source compaction record, the existing owner of rotation state. The
    source stays authoritative and its queue is woken. A compaction whose rotation
