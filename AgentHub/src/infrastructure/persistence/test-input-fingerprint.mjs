@@ -10,7 +10,13 @@ const SAFE_BUILTINS = new Set([
 const DECLARABLE_BUILTINS = new Set(["fs", "fs/promises", "module", "vm"]);
 const DECLARABLE_GLOBALS = new Set(["global", "globalThis", "process"]);
 const DECLARATION_FIELDS = new Set(["browser", "builtins", "execution", "globals", "inputs", "packages"]);
-const EXECUTION_ISOLATION_VALUES = new Set(["none", "per-child-temp", "per-launch", "per-test-temp"]);
+const EXECUTION_ISOLATION_FIELDS = new Map([
+  ["filesystem", new Set(["per-child-temp", "per-test-temp"])],
+  ["locks", new Set(["none", "per-child-temp", "per-test-temp"])],
+  ["git", new Set(["none", "per-test-temp"])],
+  ["ports", new Set(["none", "per-test-temp"])],
+  ["browserProfile", new Set(["none", "per-launch"])],
+]);
 const INPUT_LIMIT = 128 * 1024 * 1024;
 const FILE_LIMIT = 10_000;
 
@@ -31,8 +37,9 @@ function validDeclaration(declaration) {
     if (!execution || typeof execution !== "object" || Array.isArray(execution)
       || execution.parallel !== true
       || !execution.isolation || typeof execution.isolation !== "object" || Array.isArray(execution.isolation)
-      || Object.keys(execution.isolation).length === 0
-      || Object.values(execution.isolation).some((value) => !EXECUTION_ISOLATION_VALUES.has(value))
+      || Object.keys(execution.isolation).length !== EXECUTION_ISOLATION_FIELDS.size
+      || [...EXECUTION_ISOLATION_FIELDS].some(([field, values]) => !values.has(execution.isolation[field]))
+      || Object.keys(execution.isolation).some((field) => !EXECUTION_ISOLATION_FIELDS.has(field))
       || (execution.shared !== undefined
         && (!Array.isArray(execution.shared)
           || execution.shared.some((value) => typeof value !== "string" || !/^[a-z0-9._-]+$/u.test(value))))) return false;

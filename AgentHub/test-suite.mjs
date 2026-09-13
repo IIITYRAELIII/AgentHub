@@ -113,7 +113,9 @@ export async function runWindowsTestFile(file, {
   const args = ["--test", "--test-concurrency=1", ...(isolation ? ["--test-isolation=none"] : []), file];
   // A failed assertion and an OS failure share exit code 1. Neither proves a
   // transient failure; retries require a new explicit run and reuse successes.
-  const childRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-child-"));
+  // Keep the disposable owner short: deep Git refs in Windows fixtures still
+  // have to fit below MAX_PATH when they create repositories under os.tmpdir().
+  const childRoot = await mkdtemp(path.join(os.tmpdir(), "ah-"));
   try {
     await execute(process.execPath, args, {
       cwd,

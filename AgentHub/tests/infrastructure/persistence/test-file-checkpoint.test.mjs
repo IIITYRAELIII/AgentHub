@@ -217,3 +217,38 @@ test("uncached files report stable content-free miss reasons", async () => {
     "Тест без кэша (undeclared-network-fetch, undeclared-global:process): opaque.test.mjs",
   ]);
 });
+
+test("checkpoint write failure waits for started siblings and stops new admission", async () => {
+  let releaseSibling;
+  const siblingGate = new Promise((resolve) => { releaseSibling = resolve; });
+  const started = [];
+  let siblingFinished = false;
+  let settled = false;
+  const persistenceFailure = new Error("checkpoint storage unavailable");
+  const operation = runCheckpointedTestFiles(["first", "sibling", "later"], {
+    suite: "unit",
+    identity: "release",
+    checkpoint: {
+      read: async () => null,
+      write: async () => { throw persistenceFailure; },
+    },
+    concurrency: 2,
+    execution: async () => ({ parallel: true, shared: [] }),
+    run: async (file) => {
+      started.push(file);
+      if (file === "sibling") {
+        await siblingGate;
+        siblingFinished = true;
+      }
+    },
+  }).finally(() => { settled = true; });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(started, ["first", "sibling"]);
+  assert.equal(settled, false);
+  releaseSibling();
+  await assert.rejects(operation, (error) => error === persistenceFailure);
+  assert.equal(siblingFinished, true);
+  assert.equal(started.includes("later"), false);
+});

@@ -63,13 +63,28 @@ test("parallel admission requires a complete valid isolation declaration", () =>
   assert.equal(parallelTestExecution({
     execution: {
       parallel: true,
-      isolation: { filesystem: "shared" },
+      isolation: {
+        filesystem: "per-child-temp", locks: "per-test-temp", git: "none",
+        ports: "none", browerProfile: "none",
+      },
+    },
+  }), null);
+  assert.equal(parallelTestExecution({
+    execution: {
+      parallel: true,
+      isolation: {
+        filesystem: "none", locks: "per-test-temp", git: "none",
+        ports: "none", browserProfile: "none",
+      },
     },
   }), null);
   assert.deepEqual(parallelTestExecution({
     execution: {
       parallel: true,
-      isolation: { filesystem: "per-child-temp", locks: "per-test-temp" },
+      isolation: {
+        filesystem: "per-child-temp", locks: "per-test-temp", git: "none",
+        ports: "none", browserProfile: "none",
+      },
       shared: ["fixture-a"],
     },
   }), { parallel: true, shared: ["fixture-a"] });
@@ -84,6 +99,7 @@ test("each test process receives a disposable environment root", async () => {
         assert.notEqual(env.LOCALAPPDATA, "must-not-be-inherited");
         assert.equal(env.LOCALAPPDATA, env.TEMP);
         assert.equal(env.TEMP, env.TMP);
+        assert.ok(path.basename(env.LOCALAPPDATA).length <= 10);
         await access(env.LOCALAPPDATA);
         roots.push(env.LOCALAPPDATA);
       },
@@ -159,7 +175,7 @@ test("visual matrices run explicitly and exactly once in all, never in the unit 
   }
   const unit = await invoked("unit");
   assert.deepEqual(unit, ["tests/domain/example.test.mjs", "tests/public/message-behavior.test.mjs"]);
-  assert.deepEqual(await invoked("visual"), visual);
+  assert.deepEqual((await invoked("visual")).toSorted(), visual.toSorted());
   const all = await invoked("all");
   for (const file of discovery) assert.equal(all.filter((actual) => actual === file).length, 1, file);
 });

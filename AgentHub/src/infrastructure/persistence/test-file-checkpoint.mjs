@@ -109,6 +109,7 @@ export async function runCheckpointedTestFiles(files, {
   }
 
   let persist = Promise.resolve();
+  let persistenceError = null;
   const persistState = () => {
     state.suites = {
       ...state.suites,
@@ -127,7 +128,9 @@ export async function runCheckpointedTestFiles(files, {
     state.updatedAt = new Date(now()).toISOString();
     if (checkpoint && identity) {
       const snapshot = structuredClone(state);
-      persist = persist.then(() => checkpoint.write(snapshot));
+      persist = persist
+        .then(() => persistenceError ? undefined : checkpoint.write(snapshot))
+        .catch((error) => { persistenceError ??= error; });
     }
     return persist;
   };
@@ -159,6 +162,10 @@ export async function runCheckpointedTestFiles(files, {
   };
   const running = new Set();
   while (ordered.length || running.size) {
+    if (persistenceError) {
+      await Promise.all(running);
+      break;
+    }
     let launched = false;
     while (ordered.length && running.size < normalizedConcurrency) {
       const candidateIndex = ordered.findIndex((item) => !conflicts(item));
@@ -175,6 +182,14 @@ export async function runCheckpointedTestFiles(files, {
 
   // A wholly reused suite still persists pruning and its current release ID.
   if (checkpoint && identity) await persistState();
+
+  if (persistenceError) {
+    if (!failures.length) throw persistenceError;
+    throw new AggregateError(
+      [persistenceError, ...failures.map(({ error }) => error)],
+      `${suite}: checkpoint persistence failed after ${failures.length} test failure(s): ${persistenceError.message}`,
+    );
+  }
 
   if (failures.length) {
     failures.sort((a, b) => a.index - b.index);
