@@ -1,0 +1,183 @@
+/* HUB-218: proof of the selected assembly-chamber message/composer frame.
+   Shell layout, message identities and composer behavior remain shared. */
+html[data-theme="cauldron"] {
+  color-scheme: dark;
+  --font-body: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-display: var(--font-body);
+  --font-title: var(--font-body);
+  --font-numeric: var(--font-body);
+  --display-transform: none;
+  --display-spacing: .02em;
+  --display-shadow: none;
+  --radius-lg: 6px;
+  --radius-md: 3px;
+  --radius-sm: 2px;
+  --radius-chip: 3px;
+  --bg: #090c0e;
+  --surface-1: #101416;
+  --surface-2: #171c1e;
+  --surface-3: #242b2d;
+  --sunken: #090c0d;
+  --line: #303735;
+  --line-strong: #606a65;
+  --card-bg: #0e1214;
+  --card-bg-open: #171d1e;
+  --card-border: #414944;
+  --card-border-open: #f56a15;
+  --card-texture: none;
+  --card-shadow: none;
+  --plate-bg: #101416;
+  --plate-texture: none;
+  --plate-shadow: none;
+  --turn-shadow: none;
+  --text: #e6e5de;
+  --text-soft: #cdcec7;
+  --text-muted: #a3aaa4;
+  --text-faint: #8f9993;
+  --accent: #f56a15;
+  --accent-soft: rgb(245 106 21 / 10%);
+  --accent-line: #a75423;
+  --accent-glow: none;
+  --selection: rgb(245 106 21 / 30%);
+  --space-base: #090c0e;
+  --space-glow-a: transparent;
+  --space-glow-b: transparent;
+  --space-star: transparent;
+  --star-opacity: 0;
+  --dialog-canvas: #090c0e;
+  --dialog-chrome: #101416;
+  --dialog-raised: #101416;
+  --dialog-bubble-agent: #0d1113;
+  --dialog-bubble-user: #111618;
+  --dialog-code-bg: #080b0d;
+  --dialog-agent-1: #dfdfd5;
+  --dialog-agent-2: #c1c6bf;
+  --dialog-agent-3: #b7bcb7;
+  --shell-header-background: #101416;
+  --shell-header-border: 1px solid var(--line);
+  --shell-header-shadow: none;
+  --shell-control-background: #141a1c;
+  --shell-control-border: 1px solid var(--line);
+  --shell-control-shadow: none;
+  --shell-tab-active-background: #1c211e;
+  --shell-tab-active-shadow: inset 0 -2px 0 var(--accent);
+  --shell-panel-border: 1px solid var(--line);
+  --shell-panel-radius: 3px;
+}
+
+html[data-theme="cauldron"] body { background: var(--bg); }
+html[data-theme="cauldron"] body::before,
+html[data-theme="cauldron"] body::after { content: none; }
+
+html[data-theme="cauldron"][data-view="chat"][data-surface] .chat-log .msg.msg-agent:not(.msg-live),
+html[data-theme="cauldron"][data-view="chat"][data-surface] .chat-scroll > .msg.msg-live {
+  position: relative;
+  isolation: isolate;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 24px 27px 29px 43px;
+}
+
+/* Nine-slice edges keep the ceramic thickness and cuts at any message height.
+   Only the backing is clipped: content, focus rings and menus remain intact. */
+html[data-theme="cauldron"][data-view="chat"][data-surface] .msg.msg-agent::before,
+html[data-theme="cauldron"][data-view="chat"][data-surface] form.composer::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 48px solid transparent;
+  border-image: url("./message-frame.svg") 48 80 48 104 / 48px 80px 48px 104px / 0 stretch;
+  pointer-events: none;
+  z-index: -1;
+}
+
+html[data-theme="cauldron"][data-view="chat"][data-surface] .msg.msg-agent::after,
+html[data-theme="cauldron"][data-view="chat"][data-surface] form.composer::after {
+  content: "";
+  position: absolute;
+  inset: 8px;
+  background: linear-gradient(125deg, #171c1d, #0d1113 36%, #0a0e10 80%, #171c1c);
+  clip-path: polygon(20px 0, calc(100% - 14px) 0, 100% 14px, 100% calc(100% - 26px), calc(100% - 26px) 100%, 18px 100%, 0 calc(100% - 18px), 0 20px);
+  pointer-events: none;
+  z-index: -2;
+}
+
+html[data-theme="cauldron"][data-view="chat"][data-surface] .msg-agent .msg-head {
+  margin-bottom: 10px;
+}
+
+html[data-theme="cauldron"][data-view="chat"][data-surface] .msg-agent .msg-author {
+  color: #e4e4da;
+  font-size: 12px;
+}
+
+html[data-theme="cauldron"][data-view="chat"][data-surface] .msg-user .msg-user-bubble {
+  border: 1px solid #606a62;
+  border-right: 3px solid #f56a15;
+  border-radius: 2px;
+  background: linear-gradient(120deg, #171c1d, #0c1012);
+  box-shadow: inset 0 0 0 3px #0b0f11;
+}
+
+html[data-theme="cauldron"][data-view="chat"][data-surface] form.composer {
+  position: relative;
+  isolation: isolate;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 25px 31px 26px 34px;
+}
+
+html[data-theme="cauldron"][data-view="chat"][data-surface] form.composer::before {
+  border-width: 40px;
+  border-image: url("./composer-frame.svg") 40 / 40px / 0 stretch;
+}
+
+html[data-theme="cauldron"][data-view="chat"][data-surface] form.composer::after {
+  inset: 14px 18px;
+  clip-path: polygon(20px 0, calc(100% - 16px) 0, 100% 16px, 100% calc(100% - 16px), calc(100% - 16px) 100%, 20px 100%, 0 calc(100% - 20px), 0 20px);
+}
+
+html[data-theme="cauldron"][data-view="chat"][data-surface] form.composer:focus-within::before {
+  filter: drop-shadow(0 0 3px rgb(245 106 21 / 40%));
+}
+
+html[data-theme="cauldron"][data-view="chat"][data-surface] form.composer .composer-send {
+  width: 58px;
+  height: 32px;
+  background: #f56a15;
+  border: 1px solid #ffac67;
+  border-radius: 0;
+  color: #101517;
+  clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% calc(100% - 10px), calc(100% - 10px) 100%, 14px 100%);
+}
+
+html[data-theme="cauldron"][data-view="chat"][data-surface] form.composer .composer-send:focus-visible {
+  background: #ffb778;
+  box-shadow: inset 0 0 0 3px #fff0ce;
+}
+
+html[data-theme="cauldron"][data-view="chat"][data-surface] form.composer .composer-send:disabled {
+  opacity: .45;
+}
+
+@media (max-width: 700px) {
+  html[data-theme="cauldron"][data-view="chat"][data-surface] .chat-log .msg.msg-agent:not(.msg-live),
+  html[data-theme="cauldron"][data-view="chat"][data-surface] .chat-scroll > .msg.msg-live {
+    padding: 21px 20px 25px 32px;
+  }
+  html[data-theme="cauldron"][data-view="chat"][data-surface] .msg.msg-agent::before {
+    border-width: 36px;
+    border-image-width: 36px 60px 36px 78px;
+  }
+  html[data-theme="cauldron"][data-view="chat"][data-surface] form.composer {
+    padding: 22px 24px;
+  }
+  html[data-theme="cauldron"][data-view="chat"][data-surface] form.composer::before {
+    border-width: 32px;
+    border-image-width: 32px;
+  }
+}
