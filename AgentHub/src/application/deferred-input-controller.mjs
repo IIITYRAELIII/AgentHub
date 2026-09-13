@@ -95,6 +95,7 @@ export class DeferredInputController {
     laneKey = taskRunKey,
     findStarted = async () => null,
     findSteered = async () => null,
+    isSteerDispatchBlocked = async () => false,
     steer = async () => null,
     start,
     persist,
@@ -122,6 +123,7 @@ export class DeferredInputController {
     this.laneKey = laneKey;
     this.findStarted = findStarted;
     this.findSteered = findSteered;
+    this.isSteerDispatchBlocked = isSteerDispatchBlocked;
     this.steer = steer;
     this.start = start;
     this.persist = persist;
@@ -480,6 +482,12 @@ export class DeferredInputController {
       return;
     }
 
+    if (await this.isSteerDispatchBlocked(item)) {
+      item.blockedChecks = Number(item.blockedChecks ?? 0) + 1;
+      this.schedule(item, this.retryDelay(item.blockedChecks));
+      return;
+    }
+    delete item.blockedChecks;
     item.dispatchingAt = new Date(this.now()).toISOString();
     this.onStateChange(item, "dispatching");
     await this.persist();

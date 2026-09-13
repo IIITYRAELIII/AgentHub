@@ -90,6 +90,101 @@ test("RunCoordinator queues directly into a Stream under context maintenance", a
   assert.equal(f.calls.some(([name]) => name === "begin"), false);
 });
 
+test("RunCoordinator preserves exact durable steer during provider-internal compaction", async () => {
+  const active = {
+    id: "run-active", provider: "codex", threadId: "thread-1", turnId: "turn-active",
+    status: "running", executionOwner: "hub",
+  };
+  const f = fixture({
+    taskRuns: { forTask: () => active },
+    isMaintenanceActive: () => true,
+    isManagedMaintenanceActive: () => false,
+  });
+
+  const result = await f.coordinator.acceptClientInput({
+    input: "уточнение во время внутренней свёртки",
+    target: f.target,
+    clientUserMessageId: "message-compaction-steer",
+    followUpMode: "steer",
+  });
+
+  assert.equal(result.steerPending, true);
+  assert.equal(result.turnId, "turn-active");
+  const deferred = f.calls.find(([name]) => name === "defer")[3];
+  assert.equal(deferred.conflictKind, "message-steer");
+  assert.equal(deferred.steerTargetRunId, "run-active");
+  assert.equal(deferred.steerTargetTurnId, "turn-active");
+});
+
+test("RunCoordinator keeps Hub-managed maintenance as an explicit steer barrier", async () => {
+  const active = {
+    id: "run-active", provider: "codex", threadId: "thread-1", turnId: "turn-active",
+    status: "running", executionOwner: "hub",
+  };
+  const f = fixture({
+    taskRuns: { forTask: () => active },
+    isMaintenanceActive: () => true,
+    isManagedMaintenanceActive: () => true,
+  });
+
+  const result = await f.coordinator.acceptClientInput({
+    input: "не обходить ручную ротацию",
+    target: f.target,
+    clientUserMessageId: "message-managed-maintenance",
+    followUpMode: "steer",
+  });
+
+  assert.equal(result.reason, "context-maintenance");
+  const deferred = f.calls.find(([name]) => name === "defer")[3];
+  assert.equal(deferred.conflictKind, "context-maintenance");
+  assert.equal(deferred.steerTargetRunId, undefined);
+  assert.equal(deferred.steerTargetTurnId, undefined);
+});
+
+test("RunCoordinator keeps ordinary input behind provider-internal compaction", async () => {
+  const active = {
+    id: "run-active", provider: "codex", threadId: "thread-1", turnId: "turn-active",
+    status: "running", executionOwner: "hub",
+  };
+  const f = fixture({
+    taskRuns: { forTask: () => active },
+    isMaintenanceActive: () => true,
+    isManagedMaintenanceActive: () => false,
+  });
+
+  const result = await f.coordinator.acceptClientInput({
+    input: "следующим ходом",
+    target: f.target,
+    clientUserMessageId: "message-after-compaction",
+    followUpMode: "queue",
+  });
+
+  assert.equal(result.reason, "context-maintenance");
+  assert.equal(f.calls.find(([name]) => name === "defer")[3].conflictKind, "context-maintenance");
+});
+
+test("RunCoordinator legacy steer also delegates internal-compaction authority to provider", async () => {
+  const active = {
+    id: "run-active", provider: "codex", threadId: "thread-1", turnId: "turn-active",
+    status: "running", executionOwner: "hub", userMessages: [],
+  };
+  const f = fixture({
+    taskRuns: { forTask: () => active },
+    isMaintenanceActive: () => true,
+    isManagedMaintenanceActive: () => false,
+  });
+
+  const result = await f.coordinator.submitClientInput({
+    input: "ручное уточнение",
+    target: f.target,
+    clientUserMessageId: "legacy-compaction-steer",
+    followUpMode: "steer",
+  });
+
+  assert.equal(result.steered, true);
+  assert.equal(f.calls.filter(([name]) => name === "provider").length, 1);
+});
+
 test("RunCoordinator holds durable intake until a pending runtime restart clears", async () => {
   let restartPending = true;
   const f = fixture({ isRestartPending: () => restartPending });

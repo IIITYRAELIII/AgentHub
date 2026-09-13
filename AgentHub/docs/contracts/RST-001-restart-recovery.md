@@ -35,7 +35,11 @@ a user turn and does not alter the restart/compaction operation schema.
   Terminal reconciliation accounts their usage without emitting a user response
   or changing the last message. Inline compaction inside an ordinary turn and
   legacy operations lacking that marker do not authorize suppressing its final.
-- Admission is blocked only by an exact active maintenance operation.
+- Ordinary and new-turn admission is blocked by an exact active maintenance
+  operation. An explicit steer targeting an exact active managed turn may be
+  admitted during provider-internal compaction, but its provider dispatch waits
+  durably for that compaction to settle. Hub-owned compaction and rotation
+  reservations remain admission barriers.
 - Restart is a barrier over durable finals, command receipts, delivery outbox and
   maintenance reconciliation.
 - Once a restart operation is persisted, new durable commands remain queued in

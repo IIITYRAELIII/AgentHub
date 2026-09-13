@@ -123,6 +123,46 @@ test("DeferredInputController keeps the observed 13.429 second provider steer be
   assert.deepEqual(state.transitions.map((entry) => entry.state), ["dispatching", "steered"]);
 });
 
+test("DeferredInputController retains exact steer until internal compaction settles", async () => {
+  let compactionRunning = true;
+  let providerEffects = 0;
+  const state = fixture({
+    occupancy: async () => ({
+      occupied: true,
+      run: { id: "run-1", turnId: "turn-1" },
+    }),
+    isSteerDispatchBlocked: async () => compactionRunning,
+    steer: async () => {
+      providerEffects += 1;
+      return { accepted: true, steered: true, runId: "run-1", turnId: "turn-1" };
+    },
+  });
+  const item = {
+    id: "steer-after-compaction",
+    clientUserMessageId: "client-steer-after-compaction",
+    conflictKind: "message-steer",
+    steerTargetRunId: "run-1",
+    steerTargetTurnId: "turn-1",
+    taskTitle: "Task",
+  };
+  state.queuedInputs.set(item.id, item);
+
+  await state.controller.process(item.id);
+  assert.equal(providerEffects, 0);
+  assert.equal(state.queuedInputs.get(item.id), item);
+  assert.equal(item.conflictKind, "message-steer");
+  assert.equal(item.steerTargetRunId, "run-1");
+  assert.equal(item.steerTargetTurnId, "turn-1");
+  assert.equal(item.dispatchingAt, undefined);
+  assert.equal(state.timers.at(-1).delay, 2_000);
+
+  compactionRunning = false;
+  await state.controller.process(item.id);
+  assert.equal(providerEffects, 1);
+  assert.equal(state.queuedInputs.has(item.id), false);
+  assert.deepEqual(state.transitions.map((entry) => entry.state), ["dispatching", "steered"]);
+});
+
 test("DeferredInputController recovers a dispatched steer without a second provider effect", async () => {
   let providerEffects = 0;
   const state = fixture({

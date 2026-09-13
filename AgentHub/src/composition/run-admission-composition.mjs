@@ -259,6 +259,7 @@ export function createRunAdmissionComposition({
       collaborationMode: item.collaborationMode,
       steerTargetRunId: item.steerTargetRunId,
       steerTargetTurnId: item.steerTargetTurnId,
+      ...(item.messageOrigin ? { messageOrigin: item.messageOrigin } : {}),
     };
   }
 
@@ -329,6 +330,9 @@ export function createRunAdmissionComposition({
         clientUserMessageId: item.clientUserMessageId,
       };
     },
+    isSteerDispatchBlocked: (item) => Boolean(
+      runCoordinator.admissionBarrier(deferredTarget(item)),
+    ),
     steer: async (item) => {
       const target = deferredTarget(item);
       const existingRun = runCoordinator.activeRun(target);

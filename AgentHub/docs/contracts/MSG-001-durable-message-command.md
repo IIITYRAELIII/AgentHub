@@ -223,7 +223,11 @@ turn remains steerable. Local response projection, including an observed Codex
 the same provider turn may still accept steering after that marker. Admission
 first persists one durable `message-steer` item under its original
 `clientUserMessageId`, exact run ID and exact turn ID, then dispatch attempts the
-provider RPC once. A provider stale/not-steerable rejection converts that same
+provider RPC once. Provider-internal compaction of that same ordinary turn does
+not downgrade admission to generic later-turn intake: the exact steer remains
+durable until the compaction barrier clears, then dispatches against its original
+run and turn. A Hub-owned compaction, rotation or restart reservation remains an
+admission barrier. A provider stale/not-steerable rejection converts that same
 durable item to ordinary queued intake once; it does not create a second command
 or change FIFO identity. Timeout or an unknown provider outcome enters bounded
 receipt/provider reconciliation and is never blindly replayed. Exact run/turn
