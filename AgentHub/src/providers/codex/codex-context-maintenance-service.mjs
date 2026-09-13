@@ -14,6 +14,14 @@ function normalizedId(value) {
   return String(value ?? "").trim();
 }
 
+function unsettledContextProbeError(turnId, reason, cause = undefined) {
+  return Object.assign(
+    new Error(`Скрытый замер ${turnId} принят Codex App Server, но ${reason}; его ход мог остаться активным`,
+      cause ? { cause } : undefined),
+    { code: "CODEX_CONTEXT_PROBE_UNSETTLED" },
+  );
+}
+
 export class CodexContextMaintenanceService {
   constructor({
     timers,
@@ -208,19 +216,34 @@ export class CodexContextMaintenanceService {
       if (normalizedId(compactionId)) {
         this.compactions.annotate?.(threadId, normalizedId(compactionId), { probeTurnId: turnId });
       }
-      if (await this.#probeMaterialized(threadId, turnId, {
+      const observed = await this.#observeProbeTurn(threadId, turnId, {
         timeoutMs: materializationTimeoutMs,
         pollMs,
-      })) return { threadId, turnId, status: "started" };
-      try {
-        await this.interruptContextProbe(threadId, turnId);
-      } catch (error) {
-        this.logger.warn?.(`Cannot interrupt empty context probe ${turnId}: ${error.message}`);
+      });
+      if (observed.state === "materialized") return { threadId, turnId, status: "started" };
+      if (observed.state !== "terminal") {
+        /* Принятый ход не показался и мог остаться активным. Ответ на
+           turn/interrupt сам по себе не доказывает остановку: она засчитывается,
+           только когда Thread показал этот ход завершённым. Иначе исход
+           неизвестен — второй запуск не делается. */
+        try {
+          await this.interruptContextProbe(threadId, turnId);
+        } catch (error) {
+          throw unsettledContextProbeError(turnId, `остановить его не удалось: ${error.message}`, error);
+        }
+        const settled = await this.#observeProbeTurn(threadId, turnId, {
+          timeoutMs: materializationTimeoutMs,
+          pollMs,
+          settleOnly: true,
+        });
+        if (settled.state !== "terminal") {
+          throw unsettledContextProbeError(turnId, "его остановка не подтверждена");
+        }
       }
       if (attempt < 2) await this.sleep(Math.max(1, Number(retryDelayMs) || 250));
     }
-    // Оба запуска прерваны до фактического хода: провал подтверждён, а не
-    // просто не дождались.
+    // Каждый принятый запуск подтверждённо завершился без фактического хода:
+    // провал доказан, а не просто не дождались.
     throw Object.assign(
       new Error("Codex App Server дважды принял скрытый замер без фактического запуска"),
       { code: "CODEX_CONTEXT_PROBE_NOT_STARTED" },
@@ -284,20 +307,23 @@ export class CodexContextMaintenanceService {
     }
   }
 
-  async #probeMaterialized(threadId, turnId, { timeoutMs, pollMs }) {
+  async #observeProbeTurn(threadId, turnId, { timeoutMs, pollMs, settleOnly = false }) {
     const deadline = this.now() + Math.max(1, Number(timeoutMs) || 10_000);
     while (true) {
       const response = await this.readThread(threadId, { fresh: true, includeTurns: true });
       const thread = response?.thread ?? response;
       const turn = (Array.isArray(thread?.turns) ? thread.turns : [])
         .find((candidate) => normalizedId(candidate?.id) === turnId);
-      if (turn && isCodexContextProbeTurn(turn)) return true;
       const status = normalizedId(turn?.status);
-      if (turn && status && !["inProgress", "in_progress", "running"].includes(status)) return false;
-      if (this.now() >= deadline) return false;
+      if (!settleOnly && turn && isCodexContextProbeTurn(turn)) return { state: "materialized", status };
+      if (turn && status && !["inProgress", "in_progress", "running"].includes(status)) {
+        return { state: "terminal", status };
+      }
+      if (this.now() >= deadline) return { state: "timeout", status };
       await this.sleep(Math.max(1, Number(pollMs) || 100));
     }
   }
+
 
   async rotate(target) {
     const sourceThreadId = normalizedId(target?.threadId);
