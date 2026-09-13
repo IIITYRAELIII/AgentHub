@@ -206,6 +206,33 @@ test("Claude sign-in runs the official CLI and returns its printed link only to 
   assert.deepEqual(calls.changed, ["claude"]);
 });
 
+test("the printed link and the invalid-code notice survive stream chunk boundaries", async () => {
+  const printed = "https://claude.com/cai/oauth/authorize?code=true&state=abc";
+  const { service, calls } = createService({
+    claudeUrlWaitMs: 5_000,
+    spawnProcess: (command, args, options) => {
+      const worker = fakeWorker(100);
+      calls.spawned.push({ command, args, options, worker });
+      setImmediate(() => {
+        worker.stdout.emit("data", "Opening browser to sign in…\nIf the browser didn't open, visit: https://claude.com/cai/oauth/auth");
+        worker.stderr.emit("data", "noise without newline ");
+        worker.stdout.emit("data", "orize?code=true&state=abc\r\nPaste code here if prompted > ");
+      });
+      return worker;
+    },
+  });
+  const started = await service.start("claude");
+  assert.equal(started.authUrl, printed, "a link cut by a chunk boundary must not be accepted");
+
+  const { worker } = calls.spawned[0];
+  worker.stderr.emit("data", "Invalid co");
+  assert.equal(service.entry("claude").error, null, "a partial notice line is not matched yet");
+  worker.stdout.emit("data", "de. unrelated stdout\n");
+  assert.equal(service.entry("claude").error, null, "stdout and stderr lines are framed separately");
+  worker.stderr.emit("data", "de. Please make sure the full code was copied.\n");
+  assert.match(service.entry("claude").error, /не принял код/u);
+});
+
 test("a start without a printed link returns after the bounded wait instead of hanging", async () => {
   const { service } = createService({ claudeUrlWaitMs: 20 });
   const entry = await service.start("claude");

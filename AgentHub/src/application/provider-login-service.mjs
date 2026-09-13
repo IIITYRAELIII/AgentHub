@@ -288,26 +288,34 @@ export class ProviderLoginService {
     state.worker = worker;
     let urlSeen = null;
     const urlReady = new Promise((resolve) => { urlSeen = resolve; });
-    let scanned = 0;
     // The output is read only for the printed sign-in link and the CLI's
-    // invalid-code notice; reading also keeps the pipes drained.
-    const onOutput = (chunk) => {
-      if (state.worker !== worker || scanned >= MAX_OUTPUT_SCAN_CHARS) return;
-      const text = String(chunk ?? "");
-      scanned += text.length;
-      if (!state.authUrl) {
-        const url = firstHttpsUrl(text);
-        if (url) {
-          state.authUrl = url;
-          urlSeen();
+    // invalid-code notice; reading also keeps the pipes drained. Both are
+    // matched on complete lines, so a chunk boundary cannot cut a link short.
+    const lineReader = () => {
+      let scanned = 0;
+      let partial = "";
+      return (chunk) => {
+        if (state.worker !== worker || scanned >= MAX_OUTPUT_SCAN_CHARS) return;
+        const text = String(chunk ?? "");
+        scanned += text.length;
+        const lines = `${partial}${text}`.split(/\r?\n/u);
+        partial = (lines.pop() ?? "").slice(-MAX_OUTPUT_SCAN_CHARS);
+        for (const line of lines) {
+          if (!state.authUrl) {
+            const url = firstHttpsUrl(line);
+            if (url) {
+              state.authUrl = url;
+              urlSeen();
+            }
+          }
+          if (line.includes("Invalid code.")) state.error = INVALID_CODE_ERROR;
         }
-      }
-      if (text.includes("Invalid code.")) state.error = INVALID_CODE_ERROR;
+      };
     };
     worker.stdout?.setEncoding?.("utf8");
     worker.stderr?.setEncoding?.("utf8");
-    worker.stdout?.on("data", onOutput);
-    worker.stderr?.on("data", onOutput);
+    worker.stdout?.on("data", lineReader());
+    worker.stderr?.on("data", lineReader());
     const release = () => {
       // An exited child's PID may be reused: detach it before any further await.
       if (state.worker === worker) state.worker = null;
