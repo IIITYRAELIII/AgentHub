@@ -90,6 +90,7 @@ export class WorkLogUsageStore {
   #workspaceAssignments = new Map();
   #beforeProjectionWrite;
   #logger;
+  #journalProjections = new Map();
 
   constructor({
     repository,
@@ -179,6 +180,10 @@ export class WorkLogUsageStore {
 
   diagnostics() {
     return this.#repository.diagnostics?.() ?? {};
+  }
+
+  journalWriteDiagnostics() {
+    return this.#repository.journalWriteDiagnostics?.() ?? null;
   }
 
   async #projectionSource() {
@@ -842,23 +847,10 @@ export class WorkLogUsageStore {
     projectionProjectRoots,
   } = {}) {
     if (typeof this.#usageSyncStore?.projectJournal === "function" && !this.#beforeProjectionWrite) {
-      return this.#repository.enqueue(() => undefined, { load: false, pointRead: true }).then(async () => {
-        let projection;
-        for (let attempt = 0; attempt < 2; attempt += 1) {
-          projection = await this.#usageSyncStore.projectJournal({
-            defaultProjectRoot: this.#defaultProjectRoot,
-            projectRoots: Array.isArray(projectionProjectRoots) && projectionProjectRoots.length
-              ? projectionProjectRoots : [projectRoot],
-            includeClaudeUsage,
-            localDeviceId: this.#usageSyncDeviceId,
-            localDeviceLabel: this.#usageSyncDeviceLabel,
-          }, { workspaceResolver: this.#workspaceResolver() });
-          if (!projection.conflict && !projection.projectionDeferred) return projection;
-        }
-        const error = new Error("Journal projection could not commit after a journal revision conflict");
-        error.code = "JOURNAL_PROJECTION_CONFLICT";
-        error.projection = projection;
-        throw error;
+      return this.#coalescedWorkerProjection({
+        includeClaudeUsage,
+        projectRoots: Array.isArray(projectionProjectRoots) && projectionProjectRoots.length
+          ? projectionProjectRoots : [projectRoot],
       });
     }
     const operation = this.#enqueueMutation(workLogFile, async () => {
@@ -866,6 +858,58 @@ export class WorkLogUsageStore {
       return this.#projectDatabase(selectedTurns, { includeClaudeUsage });
     });
     return operation;
+  }
+
+  // A projection answers only requests made before it started, so its revision
+  // read covers every durable write that preceded them. Requests arriving while
+  // it is in flight share one trailing projection of the exact same scope; an
+  // older run never acknowledges a later terminal revision.
+  #coalescedWorkerProjection(scope) {
+    const key = JSON.stringify([scope.includeClaudeUsage, scope.projectRoots]);
+    const lane = this.#journalProjections.get(key);
+    if (!lane) return this.#startWorkerProjection(key, scope);
+    if (!lane.trailing) {
+      let settle;
+      const promise = new Promise((resolve, reject) => { settle = { resolve, reject }; });
+      lane.trailing = { promise, settle };
+    }
+    return lane.trailing.promise;
+  }
+
+  #startWorkerProjection(key, scope) {
+    const lane = { trailing: null };
+    this.#journalProjections.set(key, lane);
+    const run = this.#workerProjection(scope);
+    const advance = () => {
+      const { trailing } = lane;
+      if (!trailing) {
+        this.#journalProjections.delete(key);
+        return;
+      }
+      this.#startWorkerProjection(key, scope).then(trailing.settle.resolve, trailing.settle.reject);
+    };
+    run.then(advance, advance);
+    return run;
+  }
+
+  #workerProjection({ includeClaudeUsage, projectRoots }) {
+    return this.#repository.enqueue(() => undefined, { load: false, pointRead: true }).then(async () => {
+      let projection;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        projection = await this.#usageSyncStore.projectJournal({
+          defaultProjectRoot: this.#defaultProjectRoot,
+          projectRoots,
+          includeClaudeUsage,
+          localDeviceId: this.#usageSyncDeviceId,
+          localDeviceLabel: this.#usageSyncDeviceLabel,
+        }, { workspaceResolver: this.#workspaceResolver() });
+        if (!projection.conflict && !projection.projectionDeferred) return projection;
+      }
+      const error = new Error("Journal projection could not commit after a journal revision conflict");
+      error.code = "JOURNAL_PROJECTION_CONFLICT";
+      error.projection = projection;
+      throw error;
+    });
   }
 
   projectRateLimits(workLogFile, summary, sampledAt = "") {

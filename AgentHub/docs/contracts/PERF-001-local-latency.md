@@ -141,6 +141,13 @@ Terminal-outbox recovery likewise stages bounded batches before requesting a
 shared journal projection. It must not rebuild the entire retained journal for
 each recovered completion. Exact revisions are acknowledged only after the
 shared projection succeeds; live completion adds no batching delay.
+Concurrent full-projection requests share work only forward and only within one
+exact scope: the ordered project roots and Claude-usage inclusion. A projection
+answers requests made before it started; every request arriving while it runs
+joins a single trailing projection that starts after it settles. An in-flight
+projection never acknowledges a later terminal revision, different scopes never
+share a run, and a failed or conflicting trailing run leaves each of its exact
+revisions pending.
 Unchanged canonical merged records do not request a new projection; an existing
 pending projection still survives an unchanged replay. Provisional retraction
 checks only the exact turn before mutation. Missing or non-provisional turns
@@ -181,6 +188,13 @@ lane through the exact metadata-mutation handshake. Export, import and account
 projection perform worker I/O outside the lane; journal commits re-enter it
 with the existing revision fence. The handshake acquires the lane only when
 the worker reaches that mutation and releases it before any further request.
+Runtime journal repository writes follow the same contention protocol as worker
+journal commits. Each leaf database write that meets a foreign SQLite write lock
+waits within the existing mutation window and is repeated only when its
+transaction never started or was rolled back, so no committed change or change
+notification repeats. The window is not a delivery timeout: when it is exhausted
+the terminal revision stays pending and neither the repository revision nor the
+record fingerprint advances. Repository close waits for every accepted write.
 
 When the Codex transport is offline or reconnecting, versioned historical
 maintenance resolves subagent accounting roots only from retained rollout files.
@@ -201,7 +215,9 @@ update remains visible even when its `observedAt` shares or predates the prior
 millisecond watermark. Upgrades without a revision cursor perform one full
 export before persisting the new cursor. The legacy timestamp fallback replays
 the acknowledged millisecond and relies on exact event-id merge rather than
-dropping equal-timestamp rows.
+dropping equal-timestamp rows. A cursor snapshot does not read stored sync
+events, which only a full export merges; auth and limit observations are
+exported by both.
 Exact-turn and bounded Thread reads use SQLite primary/index queries and do not
 materialize the complete ledger after durable point-read readiness is known.
 The first read imports and normalizes legacy JSON only when it is newly imported
