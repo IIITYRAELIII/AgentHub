@@ -14,7 +14,7 @@ function createController(overrides = {}) {
   });
 }
 
-test("server snapshot exposes only provider sign-in state", async () => {
+test("server snapshot, which also reaches remote clients, exposes only sign-in state", async () => {
   const controller = createController({
     providerLogin: {
       snapshot: () => [
@@ -25,9 +25,11 @@ test("server snapshot exposes only provider sign-in state", async () => {
   });
   const snapshot = await controller.snapshot();
   assert.deepEqual(snapshot.accounts, [
-    { provider: "codex", status: "pending", authUrl: "https://auth.example/1", startedAt: "s", finishedAt: null, error: null },
-    { provider: "claude", status: "failed", authUrl: null, startedAt: "s", finishedAt: "f", error: "denied" },
+    { provider: "codex", status: "pending", startedAt: "s", finishedAt: null, error: null },
+    { provider: "claude", status: "failed", startedAt: "s", finishedAt: "f", error: "denied" },
   ]);
+  assert.equal(JSON.stringify(snapshot).includes("auth.example"), false);
+  assert.equal(JSON.stringify(snapshot).includes("hidden"), false);
 });
 
 test("server controller starts and cancels provider sign-in with a refreshed snapshot", async () => {

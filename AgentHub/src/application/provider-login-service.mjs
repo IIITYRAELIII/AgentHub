@@ -6,12 +6,16 @@
  * config directory (`claude auth login`). Hub never reads, stores or logs tokens,
  * so a successful sign-in applies to new requests without restarting Hub, and
  * running turns keep their existing process.
+ *
+ * The Codex sign-in link is returned only to the local caller that started the
+ * flow; snapshots carry state without it. Claude opens the browser itself with
+ * its localhost callback. The link it prints is the manual-code fallback, which
+ * needs the code typed back into the CLI, so Hub does not surface it.
  */
 export const PROVIDER_LOGIN_PROVIDERS = Object.freeze(["codex", "claude"]);
 
 const DEFAULT_TIMEOUT_MS = 10 * 60_000;
 const MAX_ERROR_LENGTH = 300;
-const MAX_URL_SCAN_BYTES = 64 * 1024;
 
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
@@ -23,11 +27,6 @@ function boundedError(value) {
   return text.length > MAX_ERROR_LENGTH ? `${text.slice(0, MAX_ERROR_LENGTH - 1)}…` : text;
 }
 
-function firstHttpsUrl(text) {
-  const match = /https:\/\/[^\s"'<>]+/u.exec(String(text ?? ""));
-  return match ? match[0].replace(/[).,;]+$/u, "") : "";
-}
-
 function normalizedProvider(value) {
   const provider = String(value ?? "").trim().toLowerCase();
   if (!PROVIDER_LOGIN_PROVIDERS.includes(provider)) throw new Error("Неизвестный провайдер входа");
@@ -37,6 +36,7 @@ function normalizedProvider(value) {
 export class ProviderLoginService {
   #d;
   #states = new Map();
+  #queues = new Map();
   #attempt = 0;
 
   constructor({
@@ -66,65 +66,66 @@ export class ProviderLoginService {
     for (const provider of PROVIDER_LOGIN_PROVIDERS) this.#states.set(provider, { provider, status: "idle" });
   }
 
+  /** Sign-in state for snapshots: never the sign-in link or provider identifiers. */
   snapshot() {
-    return PROVIDER_LOGIN_PROVIDERS.map((provider) => {
-      const state = this.#states.get(provider);
+    return PROVIDER_LOGIN_PROVIDERS.map((provider) => this.#publicEntry(provider));
+  }
+
+  entry(provider) {
+    return this.#publicEntry(normalizedProvider(provider));
+  }
+
+  /**
+   * Starts a sign-in; an unfinished sign-in of the same provider is cancelled
+   * first. Start, cancel and timeout of one provider run strictly one at a time.
+   */
+  start(providerName) {
+    const provider = normalizedProvider(providerName);
+    return this.#serialize(provider, async () => {
+      await this.#cancelPending(provider, "superseded");
+      const attempt = ++this.#attempt;
+      const state = { provider, status: "pending", attempt, startedAt: new Date(this.#d.clock()).toISOString() };
+      this.#states.set(provider, state);
+      try {
+        if (provider === "codex") await this.#startCodex(state);
+        else this.#startClaude(state);
+      } catch (error) {
+        if (this.#isCurrent(state)) this.#finish(state, "failed", error);
+        throw error;
+      }
+      if (this.#isCurrent(state)) {
+        state.timer = this.#d.timers.setTimeout(() => {
+          void this.#serialize(provider, () => this.#cancelPending(provider, "timeout", attempt));
+        }, this.#d.timeoutMs);
+        state.timer?.unref?.();
+      }
       return {
-        provider,
-        status: state.status,
-        authUrl: state.status === "pending" ? state.authUrl || null : null,
-        startedAt: state.startedAt ?? null,
-        finishedAt: state.finishedAt ?? null,
-        error: state.error || null,
+        ...this.#publicEntry(provider),
+        authUrl: this.#isCurrent(state) && provider === "codex" ? state.authUrl : null,
       };
     });
   }
 
-  entry(provider) {
-    return this.snapshot().find((item) => item.provider === normalizedProvider(provider));
-  }
-
-  /** Starts a sign-in; an unfinished sign-in of the same provider is cancelled first. */
-  async start(providerName) {
+  cancel(providerName) {
     const provider = normalizedProvider(providerName);
-    await this.#cancelPending(provider, "superseded");
-    const attempt = ++this.#attempt;
-    const state = { provider, status: "pending", attempt, startedAt: new Date(this.#d.clock()).toISOString() };
-    this.#states.set(provider, state);
-    try {
-      if (provider === "codex") await this.#startCodex(state);
-      else this.#startClaude(state);
-    } catch (error) {
-      this.#finish(state, "failed", error);
-      throw error;
-    }
-    if (this.#isCurrent(state)) {
-      state.timer = this.#d.timers.setTimeout(() => {
-        void this.#cancelPending(provider, "timeout", attempt);
-      }, this.#d.timeoutMs);
-      state.timer?.unref?.();
-    }
-    return this.entry(provider);
-  }
-
-  async cancel(providerName) {
-    const provider = normalizedProvider(providerName);
-    await this.#cancelPending(provider, "cancelled");
-    return this.entry(provider);
+    return this.#serialize(provider, async () => {
+      await this.#cancelPending(provider, "cancelled");
+      return this.#publicEntry(provider);
+    });
   }
 
   /** Receives every Codex App Server message; never throws into the event pipeline. */
   observeCodexMessage(message) {
     const method = message?.method;
-    if (method !== "account/login/completed" && method !== "account/updated") return;
     if (method === "account/updated") {
       this.#notifyAccountChanged("codex");
       return;
     }
+    if (method !== "account/login/completed") return;
     const params = message.params ?? {};
     const state = this.#states.get("codex");
-    if (state.status !== "pending") return;
-    if (params.loginId && state.loginId && params.loginId !== state.loginId) return;
+    // Only the exact attempt whose start response bound its loginId may settle.
+    if (state.status !== "pending" || !state.loginId || params.loginId !== state.loginId) return;
     if (params.success === true) {
       this.#finish(state, "succeeded");
       this.#notifyAccountChanged("codex");
@@ -133,8 +134,51 @@ export class ProviderLoginService {
     }
   }
 
-  async stop() {
-    for (const provider of PROVIDER_LOGIN_PROVIDERS) await this.#cancelPending(provider, "cancelled");
+  /**
+   * Synchronous Hub shutdown hook: closes only this service's own sign-in. The
+   * Claude sign-in CLI is killed with its process tree so it cannot outlive Hub;
+   * provider turns belong to other owners and are left alone.
+   */
+  dispose() {
+    for (const provider of PROVIDER_LOGIN_PROVIDERS) {
+      const state = this.#states.get(provider);
+      if (state.status !== "pending") continue;
+      const worker = state.worker;
+      this.#finish(state, "cancelled");
+      if (provider === "codex" && state.loginId) {
+        void Promise.resolve()
+          .then(() => this.#d.sendRpc("account/login/cancel", { loginId: state.loginId }, { timeoutMs: 2_000 }))
+          .catch(() => {});
+      }
+      if (worker) {
+        void Promise.resolve()
+          .then(() => this.#d.stopProcessTree(worker.pid))
+          .catch(() => {});
+        try {
+          worker.kill?.();
+        } catch {
+          // The process tree stop above remains the owner of cleanup.
+        }
+      }
+    }
+  }
+
+  #serialize(provider, operation) {
+    const previous = this.#queues.get(provider) ?? Promise.resolve();
+    const next = previous.then(operation, operation);
+    this.#queues.set(provider, next.catch(() => {}));
+    return next;
+  }
+
+  #publicEntry(provider) {
+    const state = this.#states.get(provider);
+    return {
+      provider,
+      status: state.status,
+      startedAt: state.startedAt ?? null,
+      finishedAt: state.finishedAt ?? null,
+      error: state.error || null,
+    };
   }
 
   async #startCodex(state) {
@@ -153,21 +197,19 @@ export class ProviderLoginService {
       stdio: ["pipe", "pipe", "pipe"],
     });
     state.worker = worker;
-    let scanned = 0;
-    const scan = (chunk) => {
-      if (state.authUrl || scanned >= MAX_URL_SCAN_BYTES || !this.#isCurrent(state)) return;
-      const text = String(chunk ?? "");
-      scanned += Buffer.byteLength(text, "utf8");
-      state.authUrl = firstHttpsUrl(text);
+    // The CLI output is not needed, but its pipes must be drained.
+    worker.stdout?.resume?.();
+    worker.stderr?.resume?.();
+    const release = () => {
+      // An exited child's PID may be reused: detach it before any further await.
+      if (state.worker === worker) state.worker = null;
     };
-    worker.stdout?.setEncoding?.("utf8");
-    worker.stderr?.setEncoding?.("utf8");
-    worker.stdout?.on("data", scan);
-    worker.stderr?.on("data", scan);
     worker.on("error", (error) => {
+      release();
       if (this.#isCurrent(state)) this.#finish(state, "failed", error);
     });
     worker.on("close", (code) => {
+      release();
       if (!this.#isCurrent(state)) return;
       if (code !== 0) {
         this.#finish(state, "failed", `Claude Code завершился с кодом ${code}`);
@@ -195,6 +237,7 @@ export class ProviderLoginService {
   async #cancelPending(provider, reason, attempt = null) {
     const state = this.#states.get(provider);
     if (state.status !== "pending" || (attempt !== null && state.attempt !== attempt)) return;
+    const worker = state.worker;
     if (reason === "timeout") this.#finish(state, "failed", "Время ожидания входа истекло");
     else this.#finish(state, "cancelled");
     if (provider === "codex" && state.loginId) {
@@ -204,8 +247,7 @@ export class ProviderLoginService {
         this.#d.logger.error?.("Cannot cancel Codex sign-in:", boundedError(error));
       }
     }
-    if (provider === "claude" && state.worker) {
-      const worker = state.worker;
+    if (worker) {
       try {
         const stopped = await this.#d.stopProcessTree(worker.pid);
         if (!stopped) worker.kill?.();
@@ -220,6 +262,7 @@ export class ProviderLoginService {
     state.finishedAt = new Date(this.#d.clock()).toISOString();
     state.error = error ? boundedError(error) : "";
     state.authUrl = "";
+    state.worker = null;
     if (state.timer) this.#d.timers.clearTimeout(state.timer);
     state.timer = null;
   }

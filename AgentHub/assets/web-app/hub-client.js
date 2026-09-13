@@ -4590,6 +4590,7 @@ async function openProviderLoginPage(authUrl) {
 }
 agentHub.on("server:provider-login", ({ provider }) => runAction(async () => {
   const result = await control("start-provider-login", { provider });
+  agentHub.setProviderLoginUrl?.(provider, result?.login?.authUrl ?? null);
   if (result?.login?.authUrl) await openProviderLoginPage(result.login.authUrl);
   if (result?.snapshot) applySnapshot(result.snapshot);
   else applySnapshot(await control("snapshot"));
