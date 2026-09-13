@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { MessageReceiptRegistry } from "../../../src/infrastructure/persistence/message-receipts.mjs";
 import test from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { createRecentRestartFailure } from "../../../src/application/restart-failure-notice.mjs";
+import { RESTART_FAILURE_NOTICE_WINDOW_MS } from "../../../src/domain/maintenance-operation.mjs";
+import { MaintenanceOperationStore } from "../../../src/infrastructure/persistence/maintenance-operation-store.mjs";
 import { createDesktopReadComposition } from "../../../src/composition/desktop-read-composition.mjs";
 
 test("exact receipt display follows queued and active messages without changing wire input", async () => {
@@ -275,6 +281,7 @@ function fixture(overrides = {}) {
     },
     restart: {
       request: () => state.restartRequest,
+      failure: () => overrides.restartFailure?.() ?? null,
       blockingRuns: () => [{ id: "blocking-1" }],
       compactionCount: () => 1,
       mediaJobCount: () => 2,
@@ -293,7 +300,7 @@ function fixture(overrides = {}) {
         restart,
       }),
     },
-    revision: () => state.revision,
+    revision: () => (overrides.revisionFn ? overrides.revisionFn() : state.revision),
     readState: {
       hasUnread: (value) => value.accountId === "owner" && value.answerTurnId !== "turn-previous",
     },
@@ -2172,4 +2179,79 @@ test("a receipt reaches the client only with an origin its own message confirms"
   assert.equal(benignReceipt.author, author, "подтверждённый автор не дошёл до клиента");
   assert.equal(benignReceipt.origin?.requestId, origin.requestId);
   assert.equal(benignReceipt.origin?.streamName, origin.streamName);
+});
+
+test("a settled restart failure invalidates a cached snapshot, a later success clears it and expiry drops it", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-restart-failure-cache-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let clock = Date.parse("2026-09-13T20:00:00.000Z");
+  const store = new MaintenanceOperationStore({ dataDir: directory, now: () => new Date(clock).toISOString() });
+  const recentRestartFailure = createRecentRestartFailure({ operations: store, now: () => clock });
+  // Every other snapshot source stays unchanged; only the restart owner moves.
+  const { desktopSnapshot } = fixture({
+    revisionFn: () => JSON.stringify({ sources: "unchanged", restartFailure: recentRestartFailure() }),
+    restartFailure: recentRestartFailure,
+  });
+  const settleRestart = (succeeded, error = null) => {
+    const operation = store.create({
+      kind: "restart", streamId: "stream-1", threadId: "thread-1", status: "requested", phase: "requested",
+    });
+    clock += 1_000;
+    store.settle(operation.operationId, {
+      succeeded,
+      phase: succeeded ? "completed" : "failed",
+      metadata: error ? { error } : {},
+    });
+    return operation.operationId;
+  };
+
+  const cachedBeforeRestart = await desktopSnapshot();
+  assert.equal(cachedBeforeRestart.restartFailure, null);
+  assert.equal((await desktopSnapshot({ knownVersion: cachedBeforeRestart.version })).notModified, true);
+
+  const failedId = settleRestart(false, "replacement bot 84 exited before becoming ready");
+  const failed = await desktopSnapshot({ knownVersion: cachedBeforeRestart.version });
+  assert.notEqual(failed.notModified, true);
+  assert.deepEqual(failed.restartFailure && {
+    operationId: failed.restartFailure.operationId,
+    error: failed.restartFailure.error,
+  }, { operationId: failedId, error: "replacement bot 84 exited before becoming ready" });
+  assert.equal((await desktopSnapshot({ knownVersion: failed.version })).notModified, true);
+
+  clock += 60_000;
+  settleRestart(true);
+  const recovered = await desktopSnapshot({ knownVersion: failed.version });
+  assert.notEqual(recovered.notModified, true);
+  assert.equal(recovered.restartFailure, null);
+
+  const expiringId = settleRestart(false, "replacement bot 85 exited before becoming ready");
+  const expiring = await desktopSnapshot({ knownVersion: recovered.version });
+  assert.equal(expiring.restartFailure?.operationId, expiringId);
+  clock += RESTART_FAILURE_NOTICE_WINDOW_MS + 1_000;
+  const expired = await desktopSnapshot({ knownVersion: expiring.version });
+  assert.notEqual(expired.notModified, true);
+  assert.equal(expired.restartFailure, null);
+});
+
+test("a restart failure that expires between snapshot reads never leaves a stale cached version", async () => {
+  const failure = {
+    operationId: "restart-1",
+    error: "replacement bot 84 exited before becoming ready",
+    failedAt: "2026-09-13T20:00:01.000Z",
+  };
+  let reads = 0;
+  // The revision before the build and the content see the failure; the
+  // revision after the build is read once its notice window has ended.
+  const recentRestartFailure = () => (reads++ < 2 ? failure : null);
+  const { desktopSnapshot } = fixture({
+    revisionFn: () => JSON.stringify({ sources: "unchanged", restartFailure: recentRestartFailure() }),
+    restartFailure: recentRestartFailure,
+  });
+
+  const boundary = await desktopSnapshot();
+  assert.equal(boundary.restartFailure?.operationId, "restart-1");
+
+  const next = await desktopSnapshot({ knownVersion: boundary.version });
+  assert.notEqual(next.notModified, true, "the version built across the boundary was not cached");
+  assert.equal(next.restartFailure, null);
 });

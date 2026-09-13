@@ -36,6 +36,8 @@ a user turn and does not alter the restart/compaction operation schema.
   or changing the last message. Inline compaction inside an ordinary turn and
   legacy operations lacking that marker do not authorize suppressing its final.
 - Admission is blocked only by an exact active maintenance operation.
+- A restart requested with no selected Stream and Thread is persisted under the
+  explicit runtime scope; a target naming only one of them is rejected.
 - Restart is a barrier over durable finals, command receipts, delivery outbox and
   maintenance reconciliation.
 - Once a restart operation is persisted, new durable commands remain queued in
@@ -92,7 +94,9 @@ a user turn and does not alter the restart/compaction operation schema.
   measured time since the wait began and says the previous process still
   answers only after a successful health response. A snapshot served after a
   failed restart carries its recent persisted reason, shown once per operation,
-  until a later restart settles successfully. Known failed
+  until a later restart settles successfully; that reason is part of the
+  snapshot source revision, so neither a failure, a later success nor the end
+  of its notice window can be hidden by a cached unchanged snapshot. Known failed
   startup details remain available during ordinary connection loss. Fresh
   health and the canonical connection state remain the reconnect authority.
 - The startup screen retains failed-stage details and exposes authenticated
