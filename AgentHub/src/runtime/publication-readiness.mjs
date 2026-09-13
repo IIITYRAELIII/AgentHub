@@ -20,12 +20,15 @@ export async function waitForRuntimeReplacement({
     try {
       const endpoint = await readEndpoint(runtimeRoot);
       if (!previousEndpointId || endpoint.endpointId !== previousEndpointId) {
-        const snapshot = await probe("snapshot", {}, { runtimeRoot, timeoutMs: Math.min(10_000, timeoutMs) });
+        const health = await probe("runtime-health", {}, { runtimeRoot, timeoutMs: Math.min(10_000, timeoutMs) });
         const status = await readStatus({ runtimeRoot });
+        const confirmedEndpoint = await readEndpoint(runtimeRoot);
         if (status.current !== expectedReleaseId || status.runningRelease !== expectedReleaseId
           || status.running !== true || status.ready !== true
-          || snapshot?.server?.process?.releaseId !== expectedReleaseId
-          || snapshot?.server?.process?.pid !== status.pid) {
+          || health?.live !== true || health?.ready !== true
+          || health?.process?.releaseId !== expectedReleaseId
+          || health?.process?.pid !== status.pid
+          || confirmedEndpoint.endpointId !== endpoint.endpointId) {
           throw new Error(`Expected ready runtime ${expectedReleaseId}; current=${status.current}, running=${status.runningRelease}`);
         }
         return endpoint;

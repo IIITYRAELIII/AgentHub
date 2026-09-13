@@ -10,7 +10,7 @@ import { retryAgentHubStartup } from "../application/agent-hub-startup-coordinat
 import { StreamMessagePinService } from "../application/stream-message-pin-service.mjs";
 
 export function createDesktopShellComposition({
-  config, diagnostics, limits, models, state, catalog,
+  config, server = {}, diagnostics, limits, models, state, catalog,
   runtime, provider, clients, presentation, repositories,
   serverControlController, desktopCommandsPort,
 }) {
@@ -580,7 +580,14 @@ export function createDesktopShellComposition({
     },
     desktop: {
       snapshot: desktopReadSystem.desktopSnapshot,
-      runtimeHealth: () => agentHubRuntimeHealth.snapshot(),
+      runtimeHealth: () => ({
+        ...agentHubRuntimeHealth.snapshot(),
+        process: {
+          pid: process.pid,
+          instanceId: String(server.instanceId ?? ""),
+          releaseId: String(server.releaseId ?? ""),
+        },
+      }),
       retryStartup: retryAgentHubStartup,
       taskHistory: desktopReadSystem.desktopTaskHistory,
       rateLimitHistory: desktopReadSystem.desktopRateLimitHistory,

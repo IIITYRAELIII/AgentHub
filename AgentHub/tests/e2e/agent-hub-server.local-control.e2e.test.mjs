@@ -445,6 +445,11 @@ test("local control client survives App Server exit during delayed startup and s
   }, "desktop context compaction after reconnect", 5_000);
 
   const startupProcess = (await callDesktopControl("snapshot", {}, { runtimeRoot })).server.process;
+  const startupHealth = await callDesktopControl("runtime-health", {}, { runtimeRoot });
+  assert.equal(startupHealth.live, true);
+  assert.equal(startupHealth.ready, true);
+  assert.equal(startupHealth.process.pid, startupProcess.pid);
+  assert.equal(startupHealth.process.releaseId, startupProcess.releaseId);
   const expectedStartupStages = ["configuration", "infrastructure", "web", "desktop-control", "runtime-command", "hub-mcp", "history",
     "provider", "runs", "readiness", "timers"].map((stage) => `startup-${stage}`);
   const startupSpans = await waitFor(() => {

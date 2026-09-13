@@ -943,9 +943,22 @@ export class ReleaseGitWorkspaceService {
     }
     const manifest = JSON.parse(manifestBytes.toString("utf8"));
     const marker = await assertReleaseCloneForPublication({ repositoryRoot: layout.releaseRoot });
-    const branchHead = await runGit(["rev-parse", `refs/heads/${RELEASE_BRANCH}^{commit}`], { cwd: marker.releaseRoot });
+    const [branchHead, mainHead] = await Promise.all([
+      runGit(["rev-parse", `refs/heads/${RELEASE_BRANCH}^{commit}`], { cwd: marker.releaseRoot }),
+      runGit(["rev-parse", "refs/heads/main^{commit}"], { cwd: marker.releaseRoot }),
+    ]);
     if (branchHead !== String(checkpoint.preReleaseHead)) {
       throw new Error("release checkpoint PreRelease branch no longer matches its prepared head");
+    }
+    const checkpointPhase = String(checkpoint.phase ?? "");
+    const expectedCheckout = checkpointPhase === "prepared"
+      ? RELEASE_BRANCH
+      : checkpointPhase === "frozen" ? "main" : null;
+    if (!expectedCheckout) {
+      throw new Error(`release checkpoint phase is not readable as a candidate: ${checkpointPhase || "missing"}`);
+    }
+    if (checkpointPhase === "frozen" && mainHead !== String(checkpoint.preReleaseHead)) {
+      throw new Error("frozen release checkpoint main branch no longer matches its prepared head");
     }
     const primaryFailure = primaryInvariantFailure(primary, "preflight frozen candidate readback");
     if (primaryFailure) throw new Error(primaryFailure);
@@ -955,8 +968,8 @@ export class ReleaseGitWorkspaceService {
       runGit(["rev-parse", "HEAD^{tree}"], { cwd: marker.releaseRoot }),
       runGit(["status", "--porcelain=v1", "--untracked-files=all"], { cwd: marker.releaseRoot }),
     ]);
-    if (releaseBranch !== RELEASE_BRANCH || releaseHead !== branchHead || releaseDirty) {
-      throw new Error("release checkpoint clone is not an exact clean PreRelease checkout");
+    if (releaseBranch !== expectedCheckout || releaseHead !== branchHead || releaseDirty) {
+      throw new Error(`release checkpoint clone is not an exact clean ${expectedCheckout} checkout for phase ${checkpointPhase}`);
     }
     if (manifest.schemaVersion !== 2
         || manifest.planRevision !== checkpoint.planRevision
@@ -985,7 +998,7 @@ export class ReleaseGitWorkspaceService {
       repositoryRoot: primary.root,
       releaseRoot: layout.releaseRoot,
       checkpointFile: layout.checkpointFile,
-      checkpointPhase: String(checkpoint.phase ?? ""),
+      checkpointPhase,
       planRevision: String(checkpoint.planRevision),
       manifestHash: String(checkpoint.manifestHash),
       manifestFile,

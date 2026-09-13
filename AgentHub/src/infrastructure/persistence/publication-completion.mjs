@@ -52,9 +52,20 @@ export async function completePublication({
     if (finalizePublication) {
       activeStage = RELEASE_FINALIZATION_STAGE;
       await journal?.stepStarted(RELEASE_FINALIZATION_STAGE);
-      const finalizationCommandId = journal?.progress?.finalizationCommandId || randomUUID();
+      let finalizationCommandId = journal?.progress?.finalizationCommandId || randomUUID();
       await journal?.updateProgress?.({ finalizationCommandId });
-      const result = await finalizePublication({ ...identity, publication: recorded, finalizationCommandId });
+      let result;
+      try {
+        result = await finalizePublication({ ...identity, publication: recorded, finalizationCommandId });
+      } catch (error) {
+        // An authenticated Desktop rejection is a terminal durable command
+        // outcome, not an ambiguous transport loss. A new exact command may
+        // therefore use WorkspaceReleaseService's idempotent completion owner.
+        if (error?.desktopControlRejected !== true) throw error;
+        finalizationCommandId = randomUUID();
+        await journal?.updateProgress?.({ finalizationCommandId });
+        result = await finalizePublication({ ...identity, publication: recorded, finalizationCommandId });
+      }
       if (result?.status !== "completed") {
         if (result?.status === "retry_required") {
           await journal?.updateProgress?.({ finalizationCommandId: randomUUID() });
