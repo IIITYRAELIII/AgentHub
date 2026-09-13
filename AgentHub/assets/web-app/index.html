@@ -796,11 +796,23 @@
 
   <main class="task-board-view" data-task-board>
     <header class="task-board-toolbar">
-      <h2 class="eyebrow task-board-catalog-title">Workspaces</h2>
       <div class="task-board-toolbar-actions">
-        <button type="button" class="task-board-filter-toggle" data-task-board-filter-toggle
-          aria-expanded="false" aria-controls="task-board-filter-controls">Фильтры</button>
-        <div class="task-board-filter-controls" id="task-board-filter-controls" data-task-board-filter-controls hidden>
+        <div class="task-board-status-language-options task-board-view-options" role="group" aria-label="Вид доски">
+          <button type="button" data-task-board-view="statuses" aria-pressed="true">По статусам</button>
+          <button type="button" data-task-board-view="workspaces" aria-pressed="false">По воркспейсам</button>
+          <button type="button" data-task-board-view="list" aria-pressed="false">Список</button>
+        </div>
+        <label class="task-board-scope-control">Раздел
+          <select data-task-board-scope-select aria-label="Раздел доски"></select>
+        </label>
+        <label>Статус
+          <select data-task-board-status-filter aria-label="Фильтр статуса задачи"></select>
+        </label>
+        <label class="task-board-grouping-setting" data-task-board-grouping-setting>
+          <input type="checkbox" data-task-board-grouping-toggle aria-label="Группировать по воркспейсам" checked>
+          <span>По Workspace</span>
+        </label>
+        <div class="task-board-filter-controls" data-task-board-filter-controls>
           <button
             type="button"
             class="task-board-completed-toggle"
@@ -828,13 +840,6 @@
 
   <div class="task-board-settings" id="task-board-settings" popover="auto" role="group" aria-label="Настройки доски">
     <div class="task-board-setting">
-      <strong>Вид доски</strong>
-      <div class="task-board-status-language-options task-board-view-options" role="group" aria-label="Вид доски">
-        <button type="button" data-task-board-view="statuses" aria-pressed="true">По статусам</button>
-        <button type="button" data-task-board-view="workspaces" aria-pressed="false">По воркспейсам</button>
-      </div>
-    </div>
-    <div class="task-board-setting">
       <strong>Открывать задачу</strong>
       <div class="task-board-status-language-options" role="group" aria-label="Открывать задачу">
         <button type="button" data-task-open-mode="modal" aria-pressed="false">В окне</button>
@@ -843,10 +848,6 @@
       </div>
       <p>«Справа + окно»: клик — справа, двойной клик — в окне. На узком экране всегда открывается окно.</p>
     </div>
-    <label class="task-board-grouping-setting" data-task-board-grouping-setting>
-      <input type="checkbox" data-task-board-grouping-toggle checked>
-      <span>Группировать по воркспейсам</span>
-    </label>
     <div class="task-board-status-language" role="group" aria-label="Язык статусов задач">
       <span>Язык статусов</span>
       <div class="task-board-status-language-options">

@@ -3636,6 +3636,7 @@ function renderStreamTabs() {
     overflowItems.push(el("button", {
       ...attributes,
       class: "stream-overflow-item",
+      draggable: window.AgentHubStreamTabs.streamsAreDraggable(streamOrderMode, surface) ? "true" : null,
       hidden: true,
     }, content()));
     return el("span", {
@@ -4771,7 +4772,10 @@ streamTabs?.addEventListener("drop", (event) => {
   const order = orderedWorkspaceStreams(streams, workspaceId).map((stream) => stream.id)
     .filter((id) => id !== streamId);
   const targetIndex = order.indexOf(targetId);
-  const insertAfter = event.clientX > target.getBoundingClientRect().left + target.clientWidth / 2;
+  const rect = target.getBoundingClientRect();
+  const insertAfter = target.classList.contains("stream-overflow-item")
+    ? event.clientY > rect.top + rect.height / 2
+    : event.clientX > rect.left + rect.width / 2;
   order.splice(Math.max(0, targetIndex + (insertAfter ? 1 : 0)), 0, streamId);
   const beforeStreamId = order[order.indexOf(streamId) + 1] ?? null;
   emit("stream:move", { streamId, workspaceId, beforeStreamId });
