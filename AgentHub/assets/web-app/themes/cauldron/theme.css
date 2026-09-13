@@ -1,4 +1,4 @@
-/* HUB-218: proof of the selected assembly-chamber message/composer frame.
+/* HUB-218: ceramic frames for the selected assembly-chamber theme.
    Shell layout, message identities and composer behavior remain shared. */
 html[data-theme="cauldron"] {
   color-scheme: dark;
@@ -63,11 +63,122 @@ html[data-theme="cauldron"] {
   --shell-tab-active-shadow: inset 0 -2px 0 var(--accent);
   --shell-panel-border: 1px solid var(--line);
   --shell-panel-radius: 3px;
+  --shell-panel-border: 12px solid transparent;
+  --shell-panel-border-image: var(--cauldron-panel-frame-asset, url("./panel-frame.svg")) 40 / 22px / 0 stretch;
+  --shell-panel-border-width: 12px;
+  --shell-panel-border-image-width: 22px;
+  --shell-chat-border: 1px solid #414b44;
+  --shell-chat-border-image: none;
+  --shell-chat-panel-border-width: 1px;
+  --shell-workspace-gap: 7px;
+  --shell-workspace-padding-bottom: 8px;
+  --shell-stream-tabs-background: linear-gradient(120deg, #1d2523, #0e1415);
+  --shell-stream-tabs-border-bottom: 1px solid #8b9487;
+  --shell-stream-tab-background: #101717;
+  --shell-stream-tab-active-background: #39271a;
+  --shell-stream-tab-hover-background: #292e2e;
+  --shell-stream-card-background: linear-gradient(120deg, #232828, #111719);
+  --shell-stream-card-border: 1px solid transparent;
+  --shell-stream-card-border-image: none;
+  --shell-stream-card-radius: 0;
+  --shell-stream-card-padding: 0.5rem 0.65rem;
+  --shell-tab-background: linear-gradient(#1e2723, #111719);
+  --shell-tab-border: 1px solid #5e6b60;
+  --shell-tab-shadow: inset 0 1px #a9b0a0, inset 0 -2px #080d0c;
+  --shell-tab-active-background: #34261c;
+  --shell-tab-active-border: 1px solid #f56a15;
+  --shell-control-border: 1px solid #77816f;
+  --shell-control-shadow: inset 0 1px #c0c4b6, inset 0 -2px #080d0c;
 }
 
 html[data-theme="cauldron"] body { background: var(--bg); }
 html[data-theme="cauldron"] body::before,
 html[data-theme="cauldron"] body::after { content: none; }
+
+/* Border images keep corners fixed while the existing panel resizers own width.
+   No pseudo-elements on Workspace entries: those belong to status effects. */
+html[data-theme="cauldron"] :is(.task-rail, .activity-rail) {
+  background: linear-gradient(110deg, #1b2021, #0c1213 55%, #191e1f);
+}
+
+html[data-theme="cauldron"] :is(.task-workspace-item, .board-task-card) {
+  border: 1px solid transparent;
+  border-image: var(--cauldron-tile-frame-asset, url("./tile-frame.svg")) 16 / 10px / 0 stretch;
+  border-radius: 0;
+  background: linear-gradient(115deg, #232828, #111719 75%);
+  box-shadow: none;
+}
+
+html[data-theme="cauldron"] .task-workspace-item[data-selected] {
+  background: linear-gradient(110deg, #70401e, #33251c);
+  box-shadow: inset 4px 0 #f56a15;
+}
+
+html[data-theme="cauldron"] :is(.task-workspace-item, .board-task-card):hover {
+  background: linear-gradient(115deg, #343937, #18201e);
+}
+
+html[data-theme="cauldron"] :is(.task-workspace-item, .board-task-card):focus-visible {
+  outline: 2px solid #ffad64;
+  outline-offset: -3px;
+}
+
+html[data-theme="cauldron"] :is(.task-rail-head, .activity-rail-head) {
+  background: linear-gradient(120deg, #292d2d, #101718);
+  box-shadow: inset 0 -1px #697568, inset 0 -3px #080d0c;
+}
+
+html[data-theme="cauldron"] :is(.workspace-task-section > header, .activity-section-head) {
+  background: linear-gradient(90deg, #242929, #111819);
+  border-bottom: 1px solid #465246;
+  color: #cbd0c0;
+}
+
+html[data-theme="cauldron"] .activity-stream-item::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  background: none;
+  border: 1px solid transparent;
+  border-image: var(--cauldron-tile-frame-asset, url("./tile-frame.svg")) 16 / 8px / 0 stretch;
+  pointer-events: none;
+}
+
+/* The card owns decoration; the tab keeps its shared divider and status layer. */
+html[data-theme="cauldron"] .stream-tabs .stream-tab-card {
+  position: relative;
+}
+
+html[data-theme="cauldron"] .stream-tabs .stream-tab:not(.stream-tab-create) > .stream-tab-card::after {
+  content: "";
+  position: absolute;
+  inset: 2px -6px;
+  border: 1px solid transparent;
+  border-image: var(--cauldron-tile-frame-asset, url("./tile-frame.svg")) 16 / 7px / 0 stretch;
+  pointer-events: none;
+}
+
+html[data-theme="cauldron"] :is(.task-card-modal, .workspace-card-modal, .settings-panel) {
+  border: 12px solid transparent;
+  border-image: var(--cauldron-panel-frame-asset, url("./panel-frame.svg")) 40 / 22px / 0 stretch;
+  border-radius: 0;
+  background-color: #101718;
+}
+
+@media (max-width: 859px) {
+  html[data-theme="cauldron"] :is(.task-rail, .activity-rail) {
+    border: 8px solid transparent;
+    border-image: var(--cauldron-panel-frame-asset, url("./panel-frame.svg")) 40 / 15px / 0 stretch;
+  }
+  html[data-theme="cauldron"] .stream-tab-card {
+    border: 1px solid transparent;
+    border-image: var(--cauldron-tile-frame-asset, url("./tile-frame.svg")) 16 / 8px / 0 stretch;
+    border-radius: 0;
+  }
+}
 
 html[data-theme="cauldron"][data-view="chat"][data-surface] .chat-log .msg.msg-agent:not(.msg-live),
 html[data-theme="cauldron"][data-view="chat"][data-surface] .chat-scroll > .msg.msg-live {
@@ -88,7 +199,7 @@ html[data-theme="cauldron"][data-view="chat"][data-surface] form.composer::befor
   position: absolute;
   inset: 0;
   border: 48px solid transparent;
-  border-image: url("./message-frame.svg") 48 80 48 104 / 48px 80px 48px 104px / 0 stretch;
+  border-image: var(--cauldron-message-frame-asset, url("./message-frame.svg")) 48 80 48 104 / 48px 80px 48px 104px / 0 stretch;
   pointer-events: none;
   z-index: -1;
 }
@@ -133,7 +244,7 @@ html[data-theme="cauldron"][data-view="chat"][data-surface] form.composer {
 
 html[data-theme="cauldron"][data-view="chat"][data-surface] form.composer::before {
   border-width: 40px;
-  border-image: url("./composer-frame.svg") 40 / 40px / 0 stretch;
+  border-image: var(--cauldron-composer-frame-asset, url("./composer-frame.svg")) 40 / 40px / 0 stretch;
 }
 
 html[data-theme="cauldron"][data-view="chat"][data-surface] form.composer::after {

@@ -1,12 +1,14 @@
 {
   "id": "cauldron",
-  "name": "Котёл · Сборочная камера",
+  "name": "Котёл",
   "color": "#f56a15",
   "order": 122,
   "styles": "theme.css",
   "assets": {
     "message-frame": "message-frame.svg",
-    "composer-frame": "composer-frame.svg"
+    "composer-frame": "composer-frame.svg",
+    "panel-frame": "panel-frame.svg",
+    "tile-frame": "tile-frame.svg"
   },
   "backgrounds": [{ "id": "cauldron", "name": "Чёрный металл" }]
 }
