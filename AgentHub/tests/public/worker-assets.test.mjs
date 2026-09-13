@@ -11,6 +11,7 @@ import { deployWorker } from "../../cloudflare-worker/deploy-worker.mjs";
 import {
   deployWorkerRelease,
   publishWorker,
+  verifyWorkerConvergence,
   verifyWorkerRelease,
   workerRouteBaseUrl,
 } from "../../cloudflare-worker/publish-worker.mjs";
@@ -18,6 +19,7 @@ import {
   changedBackgrounds,
   fetchWithTransportRace,
   measureImmediateControlDrain,
+  WorkerDeploymentNotConvergedError,
   verifyThemeDeployment,
   WORKER_VERIFY_REQUEST_TIMEOUT_MS,
 } from "../../cloudflare-worker/verify-deployment.mjs";
@@ -220,6 +222,75 @@ test("Worker deploy retries transient Cloudflare failures", async () => {
     run: async () => 1,
     pause: async () => {},
   }), /failed after 2 attempts/u);
+});
+
+test("Worker verification converges on exact bytes without another deploy", async () => {
+  let verificationAttempts = 0;
+  let deploys = 0;
+  const identity = { baseUrl: "https://hub.example.test/", checkpoint: { generation: "exact" } };
+  const result = await verifyWorkerConvergence(async (request) => {
+    verificationAttempts += 1;
+    assert.equal(request.requestTimeoutMs, 10_000);
+    assert.equal(deploys, 0);
+    assert.equal(identity.checkpoint.generation, "exact");
+    if (verificationAttempts < 3) {
+      throw new WorkerDeploymentNotConvergedError("stale index", {
+        expectedHash: "expected",
+        actualHash: `stale-${verificationAttempts}`,
+      });
+    }
+    return { status: "verified", identity };
+  }, {
+    timeoutMs: 10_000,
+    attempts: 3,
+    now: () => 0,
+    pause: async () => {},
+    log: () => {},
+  });
+  assert.equal(verificationAttempts, 3);
+  assert.equal(deploys, 0);
+  assert.deepEqual(result, { status: "verified", identity });
+});
+
+test("persistent Worker byte mismatch becomes terminal within the bounded attempts", async () => {
+  let attempts = 0;
+  await assert.rejects(verifyWorkerConvergence(async () => {
+    attempts += 1;
+    throw new WorkerDeploymentNotConvergedError("still stale", {
+      expectedHash: "expected",
+      actualHash: "actual",
+      expectedBytes: 10,
+      actualBytes: 9,
+    });
+  }, {
+    timeoutMs: 10_000,
+    attempts: 3,
+    now: () => 0,
+    pause: async () => {},
+    log: () => {},
+  }), (error) => {
+    assert.equal(error.code, "WORKER_DEPLOYMENT_MISMATCH");
+    assert.equal(error.attempts, 3);
+    assert.equal(error.cause.code, "WORKER_DEPLOYMENT_NOT_CONVERGED");
+    assert.deepEqual(error.details, {
+      expectedHash: "expected",
+      actualHash: "actual",
+      expectedBytes: 10,
+      actualBytes: 9,
+    });
+    return true;
+  });
+  assert.equal(attempts, 3);
+});
+
+test("Worker verification never retries transport or policy failures", async () => {
+  const failure = Object.assign(new Error("unauthorized"), { code: "WORKER_AUTHORIZATION_FAILED" });
+  let attempts = 0;
+  await assert.rejects(verifyWorkerConvergence(async () => {
+    attempts += 1;
+    throw failure;
+  }, { pause: async () => {}, log: () => {} }), (error) => error === failure);
+  assert.equal(attempts, 1);
 });
 
 test("Worker publication holds one transaction through build, deploy and live verification", async () => {

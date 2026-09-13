@@ -468,6 +468,9 @@ export async function publishChanged(args = process.argv.slice(2), {
         requestRestart: (verification) => restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot, verification),
       });
       console.log(`\nПубликация: ${completion.status}; ${files.length} изменённых файлов.`);
+      if (completion.handoff?.action === "yield_current_turn") {
+        console.log("Safe restart подготовлен: завершите текущий агентский ход без новых операций.");
+      }
       return { files, plan, revision: head, ...completion };
     } catch (error) {
       await journal?.finish("failed", error);

@@ -565,6 +565,10 @@ recording and canonical completion under the publication lock, without build,
 deploy, push or restart; startup readiness does not wait for that work.
 Only completed Workspace finalization yields `succeeded`. A low-level publisher
 without a Workspace adapter yields `published` and does not claim Task closure.
+When the safe restart owner defers rotation, the publication result carries the
+machine-readable `yield_current_turn` handoff. The current release agent ends
+its turn without starting more work; this neither interrupts another user's
+turn nor requests an early restart before the existing safety gate.
 
 Exact runtime readiness uses the authenticated bounded `runtime-health`
 command, not the full application snapshot. Its live/ready flags and process
@@ -600,6 +604,13 @@ The full-test stage has a two-hour wall-clock and ten-minute output-idle bound.
 These timeouts report failure, not an inferred external outcome. The two cosmetic
 browser matrices run in `test:visual`, affected focused UI validation and full
 validation exactly once, rather than every ordinary unit run. See ADR-0034.
+The process-per-file runner overlaps at most two files after CPU/memory admission
+and only for an explicit execution declaration proving distinct disposable
+roots, locks, Git repositories, ports and browser profiles. An undeclared file
+is exclusive; equal shared-resource tags serialize. Every child gets a unique
+temporary environment root, while the same selected file set, failure set and
+checkpoint fingerprints remain authoritative. A miss logs only stable policy
+reason codes or `input fingerprint changed`; it never logs input contents.
 Validation subprocesses are observers, not delegated publication stages: the
 test runner removes inherited publication session and stage-delegation markers
 before every child process. Publisher-owned deploy, activate and verification
@@ -609,6 +620,15 @@ publisher target already held by the parent pipeline. This applies both to
 direct state/adoption writers and to validation wrappers whose production
 defaults acquire the publication lock, including safe restart and publication
 orchestration tests, and runtime publication-completion recovery.
+
+After one successful Worker deploy, live verification may retry only a
+recognized exact-index byte-count or SHA-256 mismatch. It keeps the same
+published candidate, changed-file set and verification checkpoint, performs no
+deploy call, and is bounded to six attempts and 60 seconds. A transport,
+authorization or policy failure is not classified as convergence and is
+returned immediately. Persistent byte mismatch becomes the terminal
+`WORKER_DEPLOYMENT_MISMATCH` result with expected/actual hashes and lengths but
+without an HTML body dump.
 
 Verified release completion invokes the same Task Git owner with each exact
 published repository revision. The returned `devSynchronization` evidence
