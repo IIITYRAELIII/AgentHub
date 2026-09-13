@@ -138,6 +138,24 @@ test("local publisher receipt preview is zero-write and enable appends exact sco
   assert.equal((await readPublicationState(setup.stateFile)).repositories.length, 2);
 });
 
+test("local publisher receipt enable reenters the real publication lock through the default state writer", async (t) => {
+  const setup = await fixture(t);
+  const previousLocalAppData = process.env.LOCALAPPDATA;
+  process.env.LOCALAPPDATA = setup.root;
+  try {
+    const result = await enableLocalPublicationReceiptBaseline(setup.request, {
+      stateFile: setup.stateFile,
+      statusFile: setup.statusFile,
+      writeState: (value) => writePublicationState(value, setup.stateFile),
+    });
+    assert.equal(result.status, "adopted");
+    assert.equal((await readPublicationState(setup.stateFile)).repositories[0].revision, setup.revision);
+  } finally {
+    if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = previousLocalAppData;
+  }
+});
+
 test("local publisher receipt rejects mismatched durable publication and deployment identities without writing", async (t) => {
   const cases = [
     ["generation", async (setup) => ({ ...setup.request, expectedGeneration: "other" }), /identity changed/u],
