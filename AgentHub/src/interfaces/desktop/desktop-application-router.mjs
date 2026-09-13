@@ -21,12 +21,15 @@ const CONCURRENT_MUTATION_ACTIONS = Object.freeze([
 ]);
 
 /**
- * Server configuration remains local. Device enrollment may also be delegated
+ * Server configuration remains local. Provider sign-in is local too: its browser
+ * callback reaches only the Hub machine. Device enrollment may also be delegated
  * by an already trusted device; Telegram and unnamed remote sources cannot mint
  * credentials.
  */
 const LOCAL_ONLY_ACTIONS = Object.freeze([
   "update-server-configuration",
+  "start-provider-login",
+  "cancel-provider-login",
   "command-trace-timeline",
   "command-trace-percentiles",
   "command-trace-stats",
@@ -102,6 +105,14 @@ export function createDesktopApplicationRouter({
       "restart-server": handlers.restartServer,
       "set-autostart": handlers.setAutostart,
       "update-server-configuration": handlers.updateServerConfiguration,
+      "start-provider-login": (params) => {
+        if (!handlers.startProviderLogin) throw new Error("Вход в аккаунт недоступен в этой версии");
+        return handlers.startProviderLogin(params);
+      },
+      "cancel-provider-login": (params) => {
+        if (!handlers.cancelProviderLogin) throw new Error("Вход в аккаунт недоступен в этой версии");
+        return handlers.cancelProviderLogin(params);
+      },
       "read-pre-turn-instructions": handlers.readPreTurnInstructions,
       "update-global-pre-turn-instructions": handlers.updateGlobalPreTurnInstructions,
       "read-root-agents": handlers.readRootAgents,

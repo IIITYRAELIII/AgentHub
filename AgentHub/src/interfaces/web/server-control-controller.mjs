@@ -32,6 +32,7 @@ export class ServerControlController {
     updateRootAgentsFile = updateRootAgents,
     persistConfiguration = updateServerConfiguration,
     createPageSnapshot = serverPageSnapshot,
+    providerLogin = null,
   } = {}) {
     if (!config) throw new TypeError("config is required");
     if (typeof desktopSnapshot !== "function") throw new TypeError("desktopSnapshot is required");
@@ -56,6 +57,7 @@ export class ServerControlController {
     this.updateRootAgentsFile = updateRootAgentsFile;
     this.persistConfiguration = persistConfiguration;
     this.createPageSnapshot = createPageSnapshot;
+    this.providerLogin = providerLogin;
   }
 
   async snapshot({ activeCount = this.activeCount(), restart = null } = {}) {
@@ -69,7 +71,36 @@ export class ServerControlController {
       activeCount,
       restart: restart ?? this.restartState(),
       autostart: await this.readAutostart({ shortcutPath: this.shortcutPath }),
+      accounts: this.providerLogin?.snapshot() ?? [],
     });
+  }
+
+  #requireProviderLogin() {
+    if (!this.providerLogin) throw new Error("Вход в аккаунт недоступен в этой версии");
+    return this.providerLogin;
+  }
+
+  /** Starts the official provider sign-in; the page opens the returned link. */
+  async startProviderLogin(params) {
+    const login = await this.#requireProviderLogin().start(params?.provider);
+    return {
+      accepted: true,
+      message: login.authUrl
+        ? "Завершите вход в открывшемся браузере"
+        : "Вход запущен: завершите его в открывшемся браузере",
+      login,
+      snapshot: await this.desktopSnapshot(),
+    };
+  }
+
+  async cancelProviderLogin(params) {
+    const login = await this.#requireProviderLogin().cancel(params?.provider);
+    return {
+      accepted: true,
+      message: "Вход отменён",
+      login,
+      snapshot: await this.desktopSnapshot(),
+    };
   }
 
   async installAutostart() {

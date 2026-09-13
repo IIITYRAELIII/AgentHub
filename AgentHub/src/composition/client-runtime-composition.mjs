@@ -366,7 +366,10 @@ export async function createClientRuntimeComposition({
     runtimeDependencies: {
       getActiveProjectRoot: selectedProjectRoot,
       stopProcessTree: late.stopProcessTree,
-      handleMessage: api.handleCodexMessage,
+      handleMessage: (message) => {
+        clients.providerLogin.observeCodexMessage(message);
+        return api.handleCodexMessage(message);
+      },
       isStopping: () => hostState.stopping,
       providerSelected: isCodex,
       activeRuns: () => taskRuns.values(),
