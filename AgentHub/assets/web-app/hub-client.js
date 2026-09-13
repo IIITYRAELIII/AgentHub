@@ -2127,9 +2127,10 @@ function observeStreamRotations(previousTasks, tasks) {
     }
     if (rotationMaintenanceActive(task)) continue;
     const beforePercent = contextPercent(pending.beforePercent);
-    const afterPercent = task.context?.usagePending
-      ? null
-      : contextPercent(task.context?.percent);
+    // Текущее использование нового Thread — живое значение, оно растёт вместе
+    // с работой. Замер «сразу после переноса» приходит только из записанной
+    // пробы ротации, поэтому до неё этот этап честно неизвестен.
+    const afterPercent = null;
     const presentation = window.AgentHubStreamTabs.rotationMaintenancePresentation(
       beforePercent,
       afterPercent,
@@ -2152,7 +2153,6 @@ function observeStreamRotations(previousTasks, tasks) {
       text: presentation.text,
       time: pending.time,
     })) changed.add(stableTaskId);
-    if (afterPercent !== null) pendingStreamRotations.delete(streamId);
   }
   for (const streamId of pendingStreamRotations.keys()) {
     if (currentByStream.has(streamId)) continue;
