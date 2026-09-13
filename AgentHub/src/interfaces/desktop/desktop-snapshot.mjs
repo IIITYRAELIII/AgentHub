@@ -17,7 +17,11 @@ import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { taskRunIsActive } from "../../domain/task-runs.mjs";
 import { claudeModelOptions } from "../../domain/agent-runtime-settings.mjs";
 import { presentContextUsageBreakdown } from "../../domain/context-usage-breakdown.mjs";
-import { restartUiProjection } from "../../domain/maintenance-operation.mjs";
+import {
+  RESTART_FAILURE_NOTICE_WINDOW_MS,
+  restartFailureProjection,
+  restartUiProjection,
+} from "../../domain/maintenance-operation.mjs";
 import { deferredLaunchWaitReason } from "../../application/deferred-input-controller.mjs";
 import { createSnapshotCollectionDelta } from "./snapshot-collection-delta.mjs";
 import { deferredInputAttachments } from "./deferred-input-presentation-service.mjs";
@@ -922,6 +926,9 @@ export function createDesktopSnapshotFactory({
       restartPending: restartProjection.pending,
       restartWaiting,
       restartBlockingCount,
+      restartFailure: restartFailureProjection(restart.latestSettled?.({
+        since: new Date(Date.now() - RESTART_FAILURE_NOTICE_WINDOW_MS).toISOString(),
+      }) ?? null),
       exchangeRates: exchangeRates?.snapshot?.() ?? null,
       activeCount,
       server: serverSnapshot,

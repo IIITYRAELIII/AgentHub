@@ -6,6 +6,7 @@ import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
 import { MaintenanceOperationStore } from "../../../src/infrastructure/persistence/maintenance-operation-store.mjs";
+import { restartFailureProjection } from "../../../src/domain/maintenance-operation.mjs";
 
 test("exact provider-turn reads retain dedicated identity across restart and concurrent WAL writes", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-maintenance-turn-"));
@@ -161,4 +162,32 @@ test("restart recovery lookup never crosses Stream or Thread scope", async (t) =
     store.latestRestart({ streamId: "stream-a", threadId: "thread-a" })?.operationId,
     "restart-scope-a",
   );
+});
+
+test("a recent failed restart explains itself until a later restart succeeds", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-maintenance-restart-failure-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let clock = Date.parse("2026-09-13T19:30:00.000Z");
+  const store = new MaintenanceOperationStore({ dataDir: directory, now: () => new Date(clock).toISOString() });
+  const since = "2026-09-13T19:00:00.000Z";
+
+  const failed = store.create({ kind: "restart", streamId: "stream-a", threadId: "thread-a", status: "requested", phase: "requested" });
+  clock += 1_000;
+  store.settle(failed.operationId, {
+    succeeded: false,
+    phase: "failed",
+    metadata: { error: "replacement bot 84 exited before becoming ready" },
+  });
+  const failure = restartFailureProjection(store.latestSettledRestart({ since }));
+  assert.equal(failure.operationId, failed.operationId);
+  assert.equal(failure.error, "replacement bot 84 exited before becoming ready");
+  assert.ok(failure.failedAt);
+  assert.equal(store.latestSettledRestart({ since: "2026-09-13T20:00:00.000Z" }), null);
+
+  clock += 60_000;
+  const succeeded = store.create({ kind: "restart", streamId: "stream-a", threadId: "thread-a", status: "requested", phase: "requested" });
+  clock += 1_000;
+  store.settle(succeeded.operationId, { succeeded: true, phase: "completed" });
+  assert.equal(store.latestSettledRestart({ since }).operationId, succeeded.operationId);
+  assert.equal(restartFailureProjection(store.latestSettledRestart({ since })), null);
 });

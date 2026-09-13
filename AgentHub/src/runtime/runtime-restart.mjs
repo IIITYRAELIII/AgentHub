@@ -4,6 +4,8 @@ import path from "node:path";
 import { stopProcessTree } from "../infrastructure/process/process-tree.mjs";
 import { processIsAlive } from "../infrastructure/process/process-liveness.mjs";
 
+const REPLACEMENT_EXITED = "REPLACEMENT_EXITED";
+
 function windowsLauncherCommand({ environment, launcher }) {
   const configuredLauncher = path.resolve(launcher);
   const resolvedLauncher = path.extname(configuredLauncher).toLowerCase() === ".exe"
@@ -156,6 +158,7 @@ export async function waitForReplacementLock({
   requireReady = true,
   expectedPid = null,
   expectedInstanceToken = "",
+  failWhenExpectedOwnerExits = false,
   readFileImpl = readFile,
   isAlive = processIsAlive,
   delayImpl = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
@@ -176,6 +179,14 @@ export async function waitForReplacementLock({
       && (!requireReady || lock.ready === true)
       && isAlive(lock.pid)
     ) return lock;
+    // The awaited replacement is identified by the PID and token captured when it
+    // took ownership. Once that exact process is gone it can never become ready.
+    if (failWhenExpectedOwnerExits && expectedPid != null && !isAlive(expectedPid)) {
+      throw Object.assign(
+        new Error(`replacement bot ${expectedPid} exited before becoming ready`),
+        { code: REPLACEMENT_EXITED },
+      );
+    }
     await delayImpl(pollMs);
   }
   return null;
@@ -226,15 +237,21 @@ export async function launchReplacementAndWait({
       replacement ??= { child: null, launchedPid: null, ownerPid: null, instanceToken: "" };
       replacement.ownerPid = owner.pid;
       replacement.instanceToken = owner.instanceToken;
+      let exited = null;
       const lock = owner.ready === true ? owner : await waitForReplacementLock({
         lockFile,
         currentPid,
         timeoutMs: readinessTimeoutMs,
         expectedPid: owner.pid,
         expectedInstanceToken: owner.instanceToken,
+        failWhenExpectedOwnerExits: true,
         readFileImpl,
         delayImpl,
         isAlive,
+      }).catch((error) => {
+        if (error?.code !== REPLACEMENT_EXITED) throw error;
+        exited = error;
+        return null;
       });
       if (!lock) {
         const replacementCleanup = await cleanUpReplacement({
@@ -248,7 +265,7 @@ export async function launchReplacementAndWait({
           isAlive,
         });
         throw replacementFailure(
-          `replacement bot ${owner.pid} acquired ${lockFile} but did not become ready`,
+          exited?.message ?? `replacement bot ${owner.pid} acquired ${lockFile} but did not become ready`,
           replacementCleanup,
         );
       }
