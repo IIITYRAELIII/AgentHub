@@ -115,13 +115,21 @@ function sameTaskState(current, expected) {
   return JSON.stringify(state(current)) === JSON.stringify(state(expected));
 }
 
-function exactCommittedEvidence(committed, evidence, projectRoot, targetWorkflowStatus) {
+function exactCommittedEvidence(committed, evidence, projectRoot, targetWorkflowStatus, priorTask = null) {
   if (!committed || committed.workflowStatus !== targetWorkflowStatus) return false;
   const resultCommit = String(evidence?.resultCommit ?? "").trim().toLowerCase();
   const reference = normalizedTaskGitReferences(committed.gitReferences)
     .find((item) => samePath(item.projectRoot, projectRoot));
-  return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(resultCommit)
-    && reference?.resultCommit === resultCommit
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(resultCommit)
+      || reference?.resultCommit !== resultCommit) return false;
+  if (evidence?.outcome === "accepted_existing_result") {
+    const priorReferences = normalizedTaskGitReferences(priorTask?.gitReferences)
+      .filter((item) => samePath(item.projectRoot, projectRoot));
+    return priorReferences.length === 1
+      && priorReferences[0].branch === reference.branch
+      && priorReferences[0].resultCommit === reference.resultCommit;
+  }
+  return reference?.resultCommit === resultCommit
     && String(evidence?.response?.gitWorkspace?.headCommit ?? "").trim().toLowerCase() === resultCommit
     && evidence?.response?.gitIntegration?.integrated === true;
 }
@@ -197,13 +205,16 @@ export class TaskOperationReconciliationService {
           sameTaskState(task, outcome.result?.restoredTask)
           && exactCommittedEvidence(
             outcome.result?.task, outcome.result?.evidence, root, targetWorkflowStatus,
+            outcome.result?.priorTask,
           )
         ) state = "rolled_back";
       } else {
         const committed = outcome.result?.task;
         if (
           sameTaskState(task, committed)
-          && exactCommittedEvidence(committed, outcome.result?.evidence, root, targetWorkflowStatus)
+          && exactCommittedEvidence(
+            committed, outcome.result?.evidence, root, targetWorkflowStatus, outcome.result?.priorTask,
+          )
         ) state = "succeeded";
       }
     } else if (transition && !outcome) {

@@ -110,6 +110,14 @@ export function clearInheritedPublicationOwnership(environment = process.env) {
   return environment;
 }
 
+export function publicationLockOwned({
+  environment = process.env,
+  lockTarget = publicationLockTarget(environment),
+} = {}) {
+  const activeLease = publicationSessionStorage.getStore();
+  return activeLease?.active === true && activeLease.lockTarget === path.resolve(lockTarget);
+}
+
 export async function withPublicationLock(operation, {
   environment = process.env,
   lockTarget = publicationLockTarget(environment),

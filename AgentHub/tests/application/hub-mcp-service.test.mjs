@@ -316,26 +316,31 @@ async function fixture(context, {
       };
     },
     prepareOwned: async (params) => defaultTaskGitWorkspaces.prepare(params),
-    snapshotAndMerge: async ({ taskId }) => ({
-      snapshot: {
-        taskId,
-        branch: `agenthub/task/${taskId}/repo`,
-        projectRoot: path.join(directory, "task-worktree", taskId),
-        repositoryRoot: projectRoot,
-        baseCommit: "a".repeat(40),
-        headCommit: "a".repeat(40),
-        gitBaseline: { repoRoot: projectRoot, tree: "a".repeat(40) },
-        resultSnapshot: { repoRoot: projectRoot, tree: "a".repeat(40) },
-        changedFiles: [{ projectRoot, path: "result.mjs", operation: "modified" }],
-      },
-      integration: {
-        integrated: true,
-        resultProved: true,
-        outcome: "integrated",
-        alreadyIntegrated: true,
-        dev: { branch: "dev", headCommit: "a".repeat(40) },
-      },
-    }),
+    snapshotAndMerge: async ({ taskId }) => {
+      const selectedProjectRoot = [...taskGitPrepareCalls]
+        .reverse()
+        .find((call) => call.taskId === taskId)?.projectRoot;
+      return {
+        snapshot: {
+          taskId,
+          branch: `agenthub/task/${taskId}/repo`,
+          projectRoot: path.join(directory, "task-worktree", taskId),
+          repositoryRoot: selectedProjectRoot,
+          baseCommit: "a".repeat(40),
+          headCommit: "a".repeat(40),
+          gitBaseline: { repoRoot: selectedProjectRoot, tree: "a".repeat(40) },
+          resultSnapshot: { repoRoot: selectedProjectRoot, tree: "a".repeat(40) },
+          changedFiles: [{ projectRoot: selectedProjectRoot, path: "result.mjs", operation: "modified" }],
+        },
+        integration: {
+          integrated: true,
+          resultProved: true,
+          outcome: "integrated",
+          alreadyIntegrated: true,
+          dev: { branch: "dev", headCommit: "a".repeat(40) },
+        },
+      };
+    },
     adoptLegacyResult: async ({
       taskId, taskNumber, projectRoot: selectedProjectRoot, reportedResultCommit, mainResultCommit,
     }) => ({
@@ -748,12 +753,18 @@ test("HubMcpService keeps workflow Done visible until explicit completion", asyn
   assert.equal(completed.status, "done");
 });
 
-test("release-enabled Task statuses can be changed and rolled back directly", async (context) => {
+test("release-enabled Task statuses accept only the Test-owned result", async (context) => {
   const { service, token, workspaceCatalog } = await fixture(context);
   workspaceCatalog.workspace = (id) => id === "workspace-1" ? {
     id, name: "Agent Hub", settings: { releaseWorkflowEnabled: true },
   } : null;
 
+  const firstTesting = await service.call("hub_task_status_update", {
+    context_token: token,
+    request_id: "task-testing-before-await",
+    task_id: "task-current",
+    status: "testing",
+  });
   const awaiting = await service.call("hub_task_status_update", {
     context_token: token,
     request_id: "task-awaiting-direct",
@@ -773,12 +784,13 @@ test("release-enabled Task statuses can be changed and rolled back directly", as
     status: "done",
   });
 
+  assert.equal(firstTesting.workflowStatus, "testing");
   assert.equal(awaiting.workflowStatus, "awaiting_implementation");
   assert.equal(testing.workflowStatus, "testing");
   assert.equal(done.workflowStatus, "done");
 });
 
-test("Await status and old evidence remain unchanged when the Task branch conflicts with dev", async (context) => {
+test("Test status and old evidence remain unchanged when the Task branch conflicts with dev", async (context) => {
   const { service, token, tasks, taskGitWorkspaces, taskEvidenceCalls } = await fixture(context, { releaseWorkflowEnabled: true });
   taskGitWorkspaces.snapshotAndMerge = async ({ taskId }) => ({
     snapshot: {
@@ -804,9 +816,9 @@ test("Await status and old evidence remain unchanged when the Task branch confli
 
   await assert.rejects(() => service.call("hub_task_status_update", {
     context_token: token,
-    request_id: "task-awaiting-conflict",
+    request_id: "task-testing-conflict",
     task_id: "task-current",
-    status: "awaiting_implementation",
+    status: "testing",
   }), /merge conflict/u);
 
   assert.equal(tasks.get("task-current").workflowStatus, "new");

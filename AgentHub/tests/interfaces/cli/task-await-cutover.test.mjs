@@ -339,7 +339,7 @@ test("production cutover composer writes the canonical receipt and leaves unrela
     }),
   });
   assert.equal(result.result.workflowStatus, "awaiting_implementation");
-  assert.equal(result.result.preReleaseIntegration.planRevision, "plan-after-cutover");
+  assert.equal(result.result.releaseCandidate.status, "invalidated");
 
   readCatalog = new WorkspaceCatalogStore({ databaseFile });
   await readCatalog.load();
@@ -353,7 +353,7 @@ test("production cutover composer writes the canonical receipt and leaves unrela
   assert.equal(readTasks.lifecycleOutcome(input.requestId).result.task.workflowStatus, "awaiting_implementation");
 });
 
-test("production cross-Task cutover rollback settles after source Task changes without replay", async (t) => {
+test("production cross-Task cutover succeeds without eager release composition", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-await-cutover-rollback-"));
   const repositoryRoot = path.join(root, "repository");
   const databaseFile = path.join(root, "journal.sqlite");
@@ -424,19 +424,7 @@ test("production cross-Task cutover rollback settles after source Task changes w
     withTaskRecoveryLock: async (_taskId, operation) => operation(lease),
     withTaskRepositoryRecoveryLock: async (_taskId, _projectRoot, _taskLease, operation) => operation(lease),
     prepareOwned: async () => ({ projectRoot: repositoryRoot }),
-    snapshotAndMergeOwned: async () => {
-      snapshotCalls += 1;
-      return {
-        snapshot: {
-          branch: "HUB-217", projectRoot: repositoryRoot,
-          repositoryRoot, baseCommit: "e".repeat(40), headCommit: "c".repeat(40),
-        },
-        integration: {
-          outcome: "integrated", resultProved: true, integrated: true,
-          dev: { branch: "dev", headCommit: "f".repeat(40) },
-        },
-      };
-    },
+    snapshotAndMergeOwned: async () => { snapshotCalls += 1; throw new Error("Await must reuse Test result"); },
     cleanupOwned: async () => {},
     cleanupPreview: async () => ({ workspaces: [], gitReferences: [], deleting: [] }),
   };
@@ -466,18 +454,20 @@ test("production cross-Task cutover rollback settles after source Task changes w
     expectedSourceTaskRevision: sourceTesting.revision,
     confirm: true,
   };
-  await assert.rejects(executeTaskAwaitCutover(input, {
+  const result = await executeTaskAwaitCutover(input, {
     inspectSource: async () => {
       sourceInspections += 1;
       if (sourceInspections === 2) assert.equal(multiLockDepth, 1);
       return { headCommit: sha, projectorSha256: projectorSha };
     },
     openRuntime,
-  }), /injected PreRelease rebuild failure/u);
+  });
   assert.equal(sourceInspections, 2);
+  assert.equal(result.result.workflowStatus, "awaiting_implementation");
+  assert.equal(result.result.releaseCandidate.status, "invalidated");
 
-  const sourceMutator = new TaskBoardStore({ databaseFile });
-  assert.deepEqual(sourceMutator.lifecycleOutcome(requestId).result.evidence.cutoverSource, {
+  runtime = await openRuntime();
+  assert.deepEqual(runtime.taskBoard.lifecycleOutcome(requestId).result.evidence.cutoverSource, {
     taskId: sourceCreated.id,
     revision: sourceTesting.revision,
     workflowStatus: "testing",
@@ -485,45 +475,11 @@ test("production cross-Task cutover rollback settles after source Task changes w
     projectorSha256: projectorSha,
     projectRoot: repositoryRoot,
   });
-  sourceMutator.setWorkflowStatus(sourceCreated.id, "in_progress");
-  sourceMutator.close();
-
-  runtime = await openRuntime();
-  const token = runtime.service.contextToken({
-    provider: input.provider, threadId: input.threadId, streamId: input.streamId,
-  });
-  const before = runtime.taskBoard.task(input.taskId);
-  assert.equal(before.workflowStatus, "testing");
-  assert.equal(runtime.workspaceCatalog.mcpOperation(requestId).receiptState, "unknown");
-  assert.equal(runtime.taskBoard.lifecycleTransition(requestId), null);
-  assert.equal(runtime.taskBoard.lifecycleOutcome(requestId).result.rollback.completed, true);
-  const reconciliation = {
-    context_token: token,
-    request_id: "reconcile-cross-cutover-rollback",
-    task_id: input.taskId,
-    operation_request_id: requestId,
-    project_root: repositoryRoot,
-    expected_task_revision: input.expectedTaskRevision,
-    expected_workflow_status: "testing",
-    cutover_source_commit: sha,
-    cutover_projector_sha256: projectorSha,
-    cutover_source_task_id: sourceCreated.id,
-    cutover_source_task_revision: sourceTesting.revision,
-    confirm_reconcile: true,
-  };
-  await assert.rejects(runtime.service.call("hub_task_operation_reconcile", {
-    ...reconciliation,
-    request_id: "reconcile-cross-cutover-tampered",
-    cutover_source_task_revision: sourceTesting.revision + 1,
-  }), /identity.*CAS does not match/u);
-  assert.equal(runtime.workspaceCatalog.mcpOperation(requestId).receiptState, "unknown");
-  const reconciled = await runtime.service.call("hub_task_operation_reconcile", reconciliation);
-  assert.equal(reconciled.outcome, "failed");
-  assert.equal(reconciled.reconciliation.durableState, "workflow_rollback");
-  assert.equal(runtime.workspaceCatalog.mcpOperation(requestId).receiptState, "failed");
-  assert.equal(runtime.taskBoard.task(input.taskId).workflowStatus, "testing");
-  assert.equal(runtime.taskBoard.task(sourceCreated.id).workflowStatus, "in_progress");
-  assert.equal(snapshotCalls, 1);
+  assert.equal(runtime.workspaceCatalog.mcpOperation(requestId).receiptState, "succeeded");
+  assert.equal(runtime.taskBoard.task(input.taskId).workflowStatus, "awaiting_implementation");
+  assert.equal(runtime.taskBoard.task(sourceCreated.id).workflowStatus, "testing");
+  assert.equal(runtime.taskBoard.lifecycleOutcome(requestId).result.rollback, undefined);
+  assert.equal(snapshotCalls, 0);
 });
 
 test("production cross-Task pending recovery preserves its immutable source evidence", async (t) => {
@@ -626,19 +582,7 @@ test("production cross-Task pending recovery preserves its immutable source evid
       return { recovered: true, proof: { kind: options.proof.kind, verifiedAt: "2026-09-12T13:23:40.000Z" } };
     },
     prepareOwned: async () => ({ projectRoot: repositoryRoot, branch: "HUB-203" }),
-    snapshotAndMergeOwned: async () => {
-      snapshotCalls += 1;
-      return {
-        snapshot: {
-          branch: "HUB-203", projectRoot: repositoryRoot, repositoryRoot,
-          baseCommit: "e".repeat(40), headCommit: "c".repeat(40),
-        },
-        integration: {
-          outcome: "integrated", resultProved: true, integrated: true,
-          dev: { branch: "dev", headCommit: "f".repeat(40) },
-        },
-      };
-    },
+    snapshotAndMergeOwned: async () => { snapshotCalls += 1; throw new Error("Await recovery must reuse Test result"); },
     cleanupOwned: async () => {},
     cleanupPreview: async () => ({ workspaces: [], gitReferences: [], deleting: [] }),
   };
@@ -686,7 +630,7 @@ test("production cross-Task pending recovery preserves its immutable source evid
   assert.equal(runtime.taskBoard.task(sourceCreated.id).workflowStatus, "in_progress");
   assert.deepEqual(runtime.taskBoard.lifecycleOutcome(requestId).result.evidence.cutoverSource, cutoverSource);
   assert.equal(recoverCalls, 1);
-  assert.equal(snapshotCalls, 1);
+  assert.equal(snapshotCalls, 0);
 });
 
 test("cross-Task cutover atomically rejects a settings race without changing the target", async (t) => {

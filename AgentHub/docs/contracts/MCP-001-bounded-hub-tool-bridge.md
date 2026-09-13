@@ -45,7 +45,10 @@ begins. Current source/target Task, Workspace/Stream, repository and source-resu
 identity are fenced atomically by the transition transaction. A later pending reconciliation
 preserves the transition's immutable source evidence in its outcome; terminal
 reconciliation reproduces those durable arguments and does not consult a newer
-source Task state or replay the target lifecycle.
+source Task state or replay the target lifecycle. The transition records the
+accepted result and invalidates older release-plan identity; it does not compose
+`PreRelease`. Candidate assembly is owned only by the later explicit release
+prepare operation.
 `hub_release_preflight_reconcile` is a read-only release-specific readback path,
 not a replay of `hub_release_preflight`. It requires the original request id plus
 the exact original preflight arguments, expected plan and repository revisions.

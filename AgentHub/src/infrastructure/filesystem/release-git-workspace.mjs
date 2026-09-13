@@ -275,6 +275,49 @@ function normalizedFrozenTasks(tasks = []) {
   ));
 }
 
+async function selectedResultSuccessorReuse({ checkpoint, clone, tasks, baseCommit, workspaceId }) {
+  if (checkpoint?.phase !== "frozen" || !checkpoint.manifestHash || !checkpoint.preReleaseHead) return null;
+  const manifestFile = path.join(clone.evidenceRoot, `${checkpoint.manifestHash}.json`);
+  if (checkpoint.manifestFile && !samePath(checkpoint.manifestFile, manifestFile)) return null;
+  const bytes = await readFile(manifestFile).catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!bytes || sha256(bytes) !== checkpoint.manifestHash) return null;
+  const previous = JSON.parse(bytes.toString("utf8"));
+  if (previous.schemaVersion !== 2
+      || previous.baseCommit !== baseCommit
+      || previous.publication?.head !== checkpoint.preReleaseHead
+      || previous.publication?.preparedHead !== checkpoint.publicationFreeze?.preparedHead
+      || (workspaceId && previous.workspaceId && String(previous.workspaceId) !== String(workspaceId))) return null;
+  const branchHead = await gitMaybe(["rev-parse", `refs/heads/${RELEASE_BRANCH}^{commit}`], {
+    cwd: clone.releaseRoot,
+  });
+  if (branchHead !== checkpoint.preReleaseHead) return null;
+  const priorTasks = normalizedFrozenTasks(previous.tasks ?? []);
+  if (priorTasks.length !== tasks.length) return null;
+  const priorById = new Map(priorTasks.map((task) => [task.taskId, task]));
+  const changed = [];
+  for (const current of tasks) {
+    const prior = priorById.get(current.taskId);
+    if (!prior || prior.baseCommit !== current.baseCommit) return null;
+    if (prior.resultCommit !== current.resultCommit) changed.push({ prior, current });
+  }
+  if (changed.length !== 1) return null;
+  const [{ prior, current }] = changed;
+  if (await gitMaybe(["merge-base", "--is-ancestor", prior.resultCommit, current.resultCommit], {
+    cwd: clone.releaseRoot,
+  }) === null) return null;
+  return {
+    policy: "selected-result-successor-v1",
+    sourceManifestHash: checkpoint.manifestHash,
+    sourceHead: checkpoint.preReleaseHead,
+    taskId: current.taskId,
+    priorResultCommit: prior.resultCommit,
+    resultCommit: current.resultCommit,
+  };
+}
+
 async function dirtyState(root) {
   const [unstaged, staged, untracked, indexEntries] = await Promise.all([
     runGit(["diff", "--name-only", "-z", "--"], { cwd: root }),
@@ -630,9 +673,15 @@ export class ReleaseGitWorkspaceService {
       if (approvedBaseCommit != null && String(approvedBaseCommit).trim() !== baseCommit) {
         throw new Error(`approved origin/main changed: expected ${approvedBaseCommit}, got ${baseCommit}`);
       }
+      const checkpoint = await readJson(clone.checkpointFile);
+      const candidateReuse = await selectedResultSuccessorReuse({
+        checkpoint, clone, tasks, baseCommit, workspaceId,
+      });
       const manifest = {
         schemaVersion: 2,
-        projectionPolicy: "task-net-ancestry-v2",
+        projectionPolicy: candidateReuse
+          ? "task-net-ancestry-v2+selected-result-successor-v1"
+          : "task-net-ancestry-v2",
         ...(workspaceId ? { workspaceId: String(workspaceId) } : {}),
         ...(preflightRequestId ? { preflightRequestId: String(preflightRequestId) } : {}),
         planRevision: revision,
@@ -642,11 +691,11 @@ export class ReleaseGitWorkspaceService {
         releaseGitCommonDir: clone.releaseGitCommonDir,
         baseCommit,
         tasks,
+        ...(candidateReuse ? { candidateReuse } : {}),
       };
       const manifestText = stableManifest(manifest);
       const manifestHash = sha256(manifestText);
       const manifestFile = path.join(clone.evidenceRoot, `${manifestHash}.json`);
-      const checkpoint = await readJson(clone.checkpointFile);
       let preReleaseHead = null;
       let reused = false;
       let netProjectedTaskIds = [];
@@ -670,8 +719,29 @@ export class ReleaseGitWorkspaceService {
           else await runGit(["checkout", "--detach", baseCommit], { cwd: clone.releaseRoot });
         };
         try {
-          await runGit(["checkout", "--detach", baseCommit], { cwd: clone.releaseRoot });
-          const pendingTasks = await pendingTaskIntegrations(tasks, baseCommit,
+          if (candidateReuse) {
+            await runGit(["checkout", "--detach", candidateReuse.sourceHead], { cwd: clone.releaseRoot });
+            netProjectedTaskIds = checkpoint.netProjectedTaskIds ?? [];
+            const patch = await runGit([
+              "diff", "--binary", "--full-index", "--find-renames",
+              candidateReuse.priorResultCommit, candidateReuse.resultCommit,
+              "--", ".", ":(exclude,glob)**/CHANGELOG.md", ":(exclude)CHANGELOG.md",
+            ], { cwd: clone.releaseRoot, timeoutMs: 300_000, rawOutput: true });
+            if (patch.length) {
+              try {
+                await runGitWithInput([
+                  "apply", "--index", "--whitespace=nowarn", "-",
+                ], patch, { cwd: clone.releaseRoot, timeoutMs: 300_000 });
+              } catch (error) {
+                throw new Error(
+                  `PreRelease selected result successor ${candidateReuse.priorResultCommit}..`
+                  + `${candidateReuse.resultCommit} failed for Task ${candidateReuse.taskId}: ${error.message}`,
+                );
+              }
+            }
+          } else {
+            await runGit(["checkout", "--detach", baseCommit], { cwd: clone.releaseRoot });
+            const pendingTasks = await pendingTaskIntegrations(tasks, baseCommit,
             (args) => runGit(args, { cwd: clone.releaseRoot, timeoutMs: 300_000 }));
           const projections = await releaseTaskNetProjections({
             tasks: pendingTasks, baseCommit,
@@ -756,20 +826,21 @@ export class ReleaseGitWorkspaceService {
                 );
               }
             }
+            }
           }
           const staged = await gitMaybe(["diff", "--cached", "--quiet", "--"], { cwd: clone.releaseRoot }) === null;
-          if (staged) {
+          if (staged || candidateReuse) {
             const tree = await runGit(["write-tree"], { cwd: clone.releaseRoot });
-            const parents = [baseCommit, ...new Set(tasks.map((task) => task.resultCommit))]
+            const parents = [candidateReuse?.sourceHead ?? baseCommit, ...new Set(tasks.map((task) => task.resultCommit))]
               .flatMap((commit) => ["-p", commit]);
             preReleaseHead = await runGit([
               "-c", "user.name=Agent Hub",
               "-c", "user.email=agent-hub@local.invalid",
-              "commit-tree", tree, ...parents, "-m", `release: aggregate ${tasks.length} Await Tasks`,
+              "commit-tree", tree, ...parents, "-m", candidateReuse
+                ? `release: refresh accepted Task ${candidateReuse.taskId}`
+                : `release: aggregate ${tasks.length} Await Tasks`,
             ], { cwd: clone.releaseRoot });
-          } else {
-            preReleaseHead = baseCommit;
-          }
+          } else preReleaseHead = baseCommit;
           if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
           await mkdir(clone.evidenceRoot, { recursive: true });
           if (!await fileExists(manifestFile)) await writeFile(manifestFile, manifestText, "utf8");

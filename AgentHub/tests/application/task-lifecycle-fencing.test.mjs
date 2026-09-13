@@ -118,7 +118,7 @@ test("Task lifecycle rejects a synchronous assertOwned contract before mutation"
   });
 });
 
-test("failed Await rebuild rolls back the committed Task status and exact Git references", async () => {
+test("Await accepts the Test-owned result without eager PreRelease composition", async () => {
   const previousReference = {
     projectRoot: "D:/project", branch: "HUB-159", resultCommit: "a".repeat(40),
   };
@@ -137,21 +137,11 @@ test("failed Await rebuild rolls back the committed Task status and exact Git re
       Object.assign(task, {
         revision: 5,
         workflowStatus: "awaiting_implementation",
-        gitReferences: [{
-          projectRoot: "D:/project", branch: "HUB-174", resultCommit: "b".repeat(40),
-        }],
-      });
-      return structuredClone(task);
-    },
-    rollbackWorkflowOutcome: () => {
-      calls.push("rollback");
-      Object.assign(task, {
-        revision: 6,
-        workflowStatus: "testing",
         gitReferences: [previousReference],
       });
       return structuredClone(task);
     },
+    rollbackWorkflowOutcome: () => { calls.push("rollback"); return structuredClone(task); },
     failLifecycleTransition: () => { calls.push("fail"); return true; },
     finalizeCleanupTransition: () => ({ task }),
   };
@@ -168,16 +158,7 @@ test("failed Await rebuild rolls back the committed Task status and exact Git re
     taskGitWorkspaces: {
       withTaskLock: (_taskId, operation) => operation(lease),
       prepareOwned: async () => ({ projectRoot: "D:/managed/task", branch: "HUB-174" }),
-      snapshotAndMergeOwned: async () => ({
-        snapshot: {
-          branch: "HUB-174", projectRoot: "D:/managed/task", repositoryRoot: "D:/project",
-          baseCommit: "0".repeat(40), headCommit: "b".repeat(40),
-        },
-        integration: {
-          outcome: "merged", integrated: true, resultProved: true,
-          dev: { branch: "dev", headCommit: "c".repeat(40) },
-        },
-      }),
+      snapshotAndMergeOwned: async () => { throw new Error("Await must not ingest bytes after Test"); },
       cleanupOwned: async () => ({ removed: 0 }),
       cleanupPreview: async () => ({
         workspaces: [], gitReferences: [], dirty: false, unpublished: [], deleting: [],
@@ -188,23 +169,40 @@ test("failed Await rebuild rolls back the committed Task status and exact Git re
         calls.push(`lock:${workspaceId}`);
         return operation();
       },
-      prepareAwaitSet: async () => {
-        calls.push("rebuild");
-        throw new Error("injected Await rebuild failure");
-      },
+      prepareAwaitSet: async () => { throw new Error("eager Await composition must not run"); },
     },
   });
 
-  await assert.rejects(() => service.updateWorkflowStatus({
+  const result = await service.updateWorkflowStatus({
     taskId: task.id,
     status: "awaiting_implementation",
     operationId: "await-transition",
     projectRoot: "D:/project",
-  }), /injected Await rebuild failure/u);
+  });
+  const sameAwaitResult = await service.updateWorkflowStatus({
+    taskId: task.id,
+    status: "awaiting_implementation",
+    operationId: "same-await-transition",
+    projectRoot: "D:/project",
+  });
 
-  assert.deepEqual(calls, ["lock:workspace-1", "begin", "commit", "rebuild", "rollback"]);
-  assert.equal(task.workflowStatus, "testing");
+  assert.deepEqual(calls, [
+    "lock:workspace-1", "begin", "commit",
+    "lock:workspace-1", "begin", "commit",
+  ]);
+  assert.equal(task.workflowStatus, "awaiting_implementation");
+  assert.equal(result.releaseCandidate.status, "invalidated");
+  assert.equal(sameAwaitResult.releaseCandidate.status, "invalidated");
   assert.deepEqual(task.gitReferences, [previousReference]);
+});
+
+test("Await rejects a Task that has not established a Test-owned result", async () => {
+  const { service, task, calls } = lifecycleFixture();
+  await assert.rejects(service.updateWorkflowStatus({
+    taskId: task.id, status: "awaiting_implementation", operationId: "await-without-test",
+  }), /must enter Test/u);
+  assert.equal(calls.begin, 0);
+  assert.equal(calls.commit, 0);
 });
 
 test("cross-Task cutover rejects missing, mismatched or ambiguous source authority before target mutation", async () => {
@@ -355,5 +353,5 @@ test("unknown workflow recovery retains the repository lease through Git continu
     proof: { kind: "system-restart-after-guard", confirmed: true, summary: "boot proof" },
   });
   assert.equal(result.result.task.workflowStatus, "awaiting_implementation");
-  assert.deepEqual(calls, ["repository-lock", "recover", "begin", "prepare", "snapshot", "commit", "rebuild"]);
+  assert.deepEqual(calls, ["repository-lock", "recover", "begin", "commit"]);
 });
