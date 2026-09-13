@@ -956,6 +956,10 @@ test("ordinary Desktop ingress cannot forge the reserved MCP command namespace",
     text: "Unbound service input",
     clientUserMessageId: "mcp:forged-mcp-id",
   }, { source: "mcp" }), /не связано с MCP audit/u);
+  await assert.rejects(messages.sendMessage({
+    text: "Ordinary work disguised as a context probe",
+    clientUserMessageId: "agent-hub-context-probe:7583805f-6338-47f0-bc45-539530666ca3",
+  }), /зарезервирован/u);
 });
 
 test("desktop message receipt preserves the visible message before provider launch", async () => {
