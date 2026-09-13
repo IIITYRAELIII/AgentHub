@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -9,6 +9,7 @@ import {
   executeTaskAwaitCutover,
   openTaskAwaitCutoverRuntime,
   parseTaskAwaitCutoverArguments,
+  resolveTaskAwaitTestContourSource,
 } from "../../../task-await-cutover.mjs";
 import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
@@ -73,6 +74,21 @@ test("Await cutover binds a separate source Task as an all-or-none identity", ()
     ]),
     /source-task.*expected-source-task-revision/u,
   );
+});
+
+test("Await cutover composition identifies the Agent Hub Test Contour owner", async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-await-contour-source-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const sourceRoot = path.join(root, "AgentHub");
+  await mkdir(sourceRoot);
+  await writeFile(path.join(sourceRoot, "test-contour.mjs"), "", "utf8");
+  const repository = { projectRoot: "D:/repository", worktreeRoot: root, headCommit: sha };
+
+  assert.deepEqual(await resolveTaskAwaitTestContourSource([repository]), {
+    kind: "agent-hub-test-contour",
+    ...repository,
+    sourceRoot,
+  });
 });
 
 test("Await cutover sends a separate source Task through the supported locked cutover", async () => {

@@ -101,12 +101,12 @@ export async function inspectTaskAwaitCutoverSource({
   return { sourceRoot: workspaceRoot, headCommit, projectorRelativePath, projectorSha256 };
 }
 
-async function resolveTestContourSource(repositories) {
+export async function resolveTaskAwaitTestContourSource(repositories) {
   for (const repository of repositories) {
     const sourceRoot = path.join(repository.worktreeRoot, "AgentHub");
     try {
       await access(path.join(sourceRoot, "test-contour.mjs"));
-      return { ...repository, sourceRoot };
+      return { kind: "agent-hub-test-contour", ...repository, sourceRoot };
     } catch {}
   }
   throw new Error("release preflight could not locate AgentHub in an integrated dev worktree");
@@ -142,7 +142,7 @@ export async function openTaskAwaitCutoverRuntime({
     releasePlanner,
     taskGitWorkspaces,
     releaseGitWorkspaces,
-    resolveTestContourSource,
+    resolveTestContourSource: resolveTaskAwaitTestContourSource,
     refreshTestContour: ({ sourceRoot, ...options }) => startTestContour({
       refresh: true, sourceRoot, entryFile: path.join(sourceRoot, "test-contour.mjs"), ...options,
     }),
