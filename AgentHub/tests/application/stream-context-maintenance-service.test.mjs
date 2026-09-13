@@ -10,6 +10,14 @@ import {
 import { StreamMaintenanceRegistry } from "../../src/application/stream-maintenance-registry.mjs";
 import { CodexContextMaintenanceService } from "../../src/providers/codex/codex-context-maintenance-service.mjs";
 
+async function waitFor(predicate, attempts = 200) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.fail("ожидаемое состояние не наступило");
+}
+
 function fixture({
   beforePercent = 80,
   afterPercent = 18,
@@ -20,6 +28,9 @@ function fixture({
   probeFails = false,
   rotationProbePercent = 6,
   rotationProbeFails = false,
+  rotationProbeNotStarted = false,
+  rotationCompletionStatus = "completed",
+  rotationCompletionMissing = false,
   autoCompact = true,
   observedCompaction = false,
   observedAfterPercent = null,
@@ -88,6 +99,9 @@ function fixture({
       events.push(["probe", ...args, registry.isActive(source)]);
       const target = args[0];
       const afterRotation = target?.threadId === "thread-new";
+      if (afterRotation && rotationProbeNotStarted) {
+        throw Object.assign(new Error("probe never started"), { code: "CODEX_CONTEXT_PROBE_NOT_STARTED" });
+      }
       if (probeFails || (afterRotation && rotationProbeFails)) throw new Error("probe timed out");
       return {
         threadId: target.threadId,
@@ -115,6 +129,7 @@ function fixture({
       };
     },
     discardCompactionTransfer: (...args) => events.push(["discard", ...args]),
+    discardRotationTarget: async (...args) => events.push(["discard-target", ...args]),
   };
   const selectionStore = {
     threadId: "thread-old",
@@ -152,6 +167,10 @@ function fixture({
     },
     waitForTurnCompletion: async (...args) => {
       events.push(["turn-completed", ...args]);
+      if (args[0] === "rotation-probe-1") {
+        if (rotationCompletionMissing) return null;
+        return { turnId: args[0], status: rotationCompletionStatus };
+      }
       return { turnId: args[0], status: "completed" };
     },
     workspaceCatalog,
@@ -611,42 +630,108 @@ test("manual rotation retargets the active Telegram task binding", async () => {
   );
 });
 
-test("a failed post-rotation probe keeps the new Thread and releases the queue", async () => {
-  const state = fixture({ rotationProbeFails: true });
+function queueForSource(state, id) {
   state.deferredInputs.put({
-    id: "queued-after-failed-probe",
+    id,
     provider: "codex",
     streamId: "stream-1",
     threadId: "thread-old",
     projectRoot: "D:/Work",
     taskTitle: "Workspace",
   }, "queued");
+}
 
-  const result = await state.service.rotate(state.source);
-
-  assert.equal(result.thread.id, "thread-new");
-  assert.equal(state.deferredInputs.get("queued-after-failed-probe").threadId, "thread-new");
-  assert.equal(state.events.some(([name, id]) => name === "wake" && id === "queued-after-failed-probe"), true);
+function assertSourceStaysAuthoritative(state, queuedId) {
+  assert.equal(state.events.some(([name]) => name === "bind"), false, "неготовый Thread привязан к Stream");
+  assert.equal(state.events.some(([name]) => name === "select"), false, "неготовый Thread стал выбранным");
+  assert.equal(state.deferredInputs.get(queuedId).threadId, "thread-old", "очередь переназначена на неготовый Thread");
+  assert.equal(state.clientSelections.get("telegram:42").threadId, "thread-old");
+  assert.equal(state.events.some(([name, , , details]) => name === "annotate" && details?.rotated), false);
+  assert.equal(state.events.some(([name, id]) => name === "wake" && id === queuedId), true, "очередь источника не разбужена");
   assert.equal(state.registry.isActive(state.source), false);
-  const rotation = state.events.find(([name, , , details]) => name === "annotate" && details.rotated);
-  assert.equal(rotation[2], "manual-1");
-  assert.equal(rotation[3].rotationThreadId, "thread-new");
-  assert.ok(Number.isFinite(Date.parse(rotation[3].rotationCompletedAt)));
-  assert.equal(state.events.some(([name, , , details]) => (
-    name === "annotate" && details.rotationAfterPercent !== undefined
-  )), false);
-  assert.ok(state.events.findIndex(([name]) => name === "save") > state.events.indexOf(rotation));
+}
+
+test("an unconfirmed post-rotation probe keeps the source authoritative and quarantines the new Thread", async () => {
+  const state = fixture({ rotationProbeFails: true });
+  queueForSource(state, "queued-unknown");
+
+  await assert.rejects(state.service.rotate(state.source), /Готовность нового Thread не подтверждена/u);
+
+  assertSourceStaysAuthoritative(state, "queued-unknown");
+  assert.equal(state.events.some(([name]) => name === "discard-target"), false, "Thread с неизвестным исходом удалён");
+  const settled = state.events.find(([name, , , details]) => name === "annotate" && details?.rotationStatus);
+  assert.equal(settled[2], "manual-1");
+  assert.equal(settled[3].rotationStatus, "unknown");
+  assert.equal(settled[3].rotationQuarantineThreadId, "thread-new");
+  assert.ok(Number.isFinite(Date.parse(settled[3].rotationSettledAt)));
+  assert.ok(state.events.findIndex(([name]) => name === "save") > state.events.indexOf(settled));
+});
+
+test("a probe that never started is a definite failure: the new Thread is deleted", async () => {
+  const state = fixture({ rotationProbeNotStarted: true });
+  queueForSource(state, "queued-failed");
+
+  await assert.rejects(state.service.rotate(state.source), /не прошёл проверку готовности и удалён/u);
+
+  assertSourceStaysAuthoritative(state, "queued-failed");
+  assert.deepEqual(state.events.find(([name]) => name === "discard-target"), ["discard-target", "thread-new"]);
+  const settled = state.events.find(([name, , , details]) => name === "annotate" && details?.rotationStatus);
+  assert.equal(settled[3].rotationStatus, "failed");
+  assert.equal(settled[3].rotationQuarantineThreadId, undefined);
+});
+
+for (const [name, options, expectedStatus] of [
+  ["a probe turn that ends with an error", { rotationCompletionStatus: "failed" }, "failed"],
+  ["a probe turn whose completion is never observed", { rotationCompletionMissing: true }, "unknown"],
+  ["a completed probe without an exact measurement", { rotationProbePercent: 0 }, "unknown"],
+]) {
+  test(`automatic rotation stops before switching on ${name}`, async () => {
+    const state = fixture({ afterPercent: 28, ...options });
+    queueForSource(state, "queued-automatic");
+    assert.equal(state.service.reserveAfterTurn(state.source), true);
+
+    const result = await state.service.maintainAfterTurn(state.source);
+
+    assert.equal(result.compacted, true);
+    assert.equal(result.rotated, false);
+    assert.equal(result.rotationStatus, expectedStatus);
+    assertSourceStaysAuthoritative(state, "queued-automatic");
+    assert.equal(
+      state.events.some(([event]) => event === "discard-target"),
+      expectedStatus === "failed",
+    );
+  });
+}
+
+test("a compaction whose rotation already settled unsuccessfully is not rotated again", async () => {
+  const state = fixture({
+    observedCompaction: true,
+    observedAfterPercent: 28,
+    rotationProbeFails: true,
+    autoCompact: false,
+  });
+  assert.equal(state.service.reserveAfterTurn(state.source), true);
+  const first = await state.service.maintainAfterTurn(state.source);
+  assert.equal(first.rotated, false);
+  assert.equal(first.rotationStatus, "unknown");
+  assert.equal(state.events.filter(([name]) => name === "rotate").length, 1);
+
+  assert.equal(state.service.reserveAfterTurn(state.source), false, "неудачная ротация свёртки повторяется");
+  assert.equal(state.events.filter(([name]) => name === "rotate").length, 1);
 });
 
 for (const mode of ["manual", "automatic", "observed"]) {
-  test(`${mode} rotation records its exact target only after binding and saves before releasing maintenance`, async () => {
+  test(`${mode} rotation switches once, only after a ready probe of the new Thread`, async () => {
     const state = fixture({
       afterPercent: 28,
       observedCompaction: mode === "observed",
       observedAfterPercent: 28,
     });
     let bind;
-    state.service.workspaceCatalog.bindThread = () => new Promise((resolve) => { bind = resolve; });
+    state.service.workspaceCatalog.bindThread = (value) => {
+      state.events.push(["bind", value]);
+      return new Promise((resolve) => { bind = resolve; });
+    };
     const snapshots = [];
     let finishSave;
     state.service.saveState = () => {
@@ -660,22 +745,35 @@ for (const mode of ["manual", "automatic", "observed"]) {
     const result = mode === "manual"
       ? state.service.rotate(state.source)
       : state.service.maintainAfterTurn(state.source);
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(typeof bind, "function");
-    assert.equal(state.events.some(([name, , , details]) => name === "annotate" && details.rotated), false);
+
+    await waitFor(() => typeof bind === "function");
+    const probeIndex = state.events.findIndex(([name, target]) => name === "probe" && target.threadId === "thread-new");
+    const bindIndex = state.events.findIndex(([name]) => name === "bind");
+    assert.ok(probeIndex >= 0 && probeIndex < bindIndex, "новый Thread привязан раньше проверки готовности");
+    assert.equal(
+      state.events.find(([name, target]) => name === "probe" && target.threadId === "thread-new")[1].titleSourceThreadId,
+      "thread-old",
+    );
+    assert.equal(state.events.some(([name, , , details]) => name === "annotate" && details?.rotated), false);
+
     bind();
-    await new Promise((resolve) => setImmediate(resolve));
-    const rotation = snapshots[0].annotations.find(([, , , details]) => details.rotated);
-    assert.equal(rotation[2], mode === "manual" ? "manual-1" : mode === "observed" ? "compact-observed" : "compact-1");
-    assert.equal(rotation[3].rotationThreadId, "thread-new");
-    assert.ok(Number.isFinite(Date.parse(rotation[3].rotationCompletedAt)));
+    await waitFor(() => typeof finishSave === "function");
+    const rotations = snapshots[0].annotations.filter(([, , , details]) => details?.rotated);
+    assert.equal(rotations.length, 1);
+    const [, , operationId, details] = rotations[0];
+    assert.equal(operationId, mode === "manual" ? "manual-1" : mode === "observed" ? "compact-observed" : "compact-1");
+    assert.equal(details.rotationThreadId, "thread-new");
+    assert.equal(details.rotationAfterPercent, 6);
+    assert.equal(details.rotationProbeTurnId, "rotation-probe-1");
+    assert.equal(details.rotationMeasuredAt, "2026-08-07T10:02:00.000Z");
+    assert.ok(Number.isFinite(Date.parse(details.rotationCompletedAt)));
     assert.equal(state.registry.isActive(state.source), true);
-    assert.equal(state.events.some(([name, target]) => name === "probe" && target.threadId === "thread-new"), false);
+
     finishSave();
     await result;
-    assert.equal(snapshots.length, 2);
-    assert.equal(snapshots.every((snapshot) => snapshot.active), true);
-    assert.equal(snapshots[1].annotations.at(-1)[3].rotationAfterPercent, 6);
+    assert.equal(snapshots.length, 1);
+    assert.equal(snapshots[0].active, true);
+    assert.equal(state.events.filter(([name]) => name === "bind").length, 1);
     assert.equal(state.registry.isActive(state.source), false);
   });
 

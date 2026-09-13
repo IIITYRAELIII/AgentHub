@@ -1,6 +1,6 @@
 import { recycleCodexCompactionTransport } from "./codex-compaction-transport.mjs";
 import {
-  readCodexTurnResponseItems,
+  readCodexTurnItemsAfterCompaction,
   readLatestCodexCompactionItem,
 } from "./codex-compaction-rollout.mjs";
 import { readCodexRolloutActivity } from "./codex-rollout-activity.mjs";
@@ -51,7 +51,7 @@ export class CodexContextMaintenanceService {
     injectItems = async () => null,
     deleteThread = async () => null,
     readCompactionItem = readLatestCodexCompactionItem,
-    readTurnResponseItems = readCodexTurnResponseItems,
+    readTurnResponseItems = readCodexTurnItemsAfterCompaction,
     sandboxSettings = () => ({}),
     recycleTransport = recycleCodexCompactionTransport,
     now = Date.now,
@@ -202,7 +202,7 @@ export class CodexContextMaintenanceService {
     if (!threadId) throw new Error("Укажите корректный поток Codex");
     await this.ensureTransport();
     for (let attempt = 1; attempt <= 2; attempt += 1) {
-      const result = await this.startContextProbe(threadId);
+      const result = await this.startContextProbe(threadId, target);
       const turnId = normalizedId(result?.turn?.id ?? result?.turnId);
       if (!turnId) throw new Error("Codex App Server не вернул Turn скрытого замера");
       if (normalizedId(compactionId)) {
@@ -219,7 +219,12 @@ export class CodexContextMaintenanceService {
       }
       if (attempt < 2) await this.sleep(Math.max(1, Number(retryDelayMs) || 250));
     }
-    throw new Error("Codex App Server дважды принял скрытый замер без фактического запуска");
+    // Оба запуска прерваны до фактического хода: провал подтверждён, а не
+    // просто не дождались.
+    throw Object.assign(
+      new Error("Codex App Server дважды принял скрытый замер без фактического запуска"),
+      { code: "CODEX_CONTEXT_PROBE_NOT_STARTED" },
+    );
   }
 
   async waitForContextProbeIdle(target, turnId, {
@@ -348,12 +353,12 @@ export class CodexContextMaintenanceService {
       });
       if (!compactionItem) throw new Error("Не удалось извлечь результат свёртки для нового Thread");
       const transferredTurnId = normalizedId(includeTurnId);
+      /* Всё, что ход успел сделать до свёртки, уже представлено ею. Переносится
+         только хвост этого хода после той самой свёртки; пустой хвост законен,
+         а недоказанная граница срывает перенос до создания нового Thread. */
       const turnItems = transferredTurnId
-        ? await this.readTurnResponseItems(rolloutPath, transferredTurnId)
+        ? await this.readTurnResponseItems(rolloutPath, transferredTurnId, compactionItem)
         : [];
-      if (transferredTurnId && !turnItems.length) {
-        throw new Error("Не удалось извлечь завершённый ход для нового Thread");
-      }
       await this.ensureTransport();
       const sourceThread = resolvedSource?.thread ?? {};
       const startParams = {
@@ -394,6 +399,13 @@ export class CodexContextMaintenanceService {
     } finally {
       this.compactions.clearRawItem(sourceThreadId, expectedId);
     }
+  }
+
+  async discardRotationTarget(threadId) {
+    const key = normalizedId(threadId);
+    if (!key) return false;
+    await this.deleteThread(key);
+    return true;
   }
 
   discardCompactionTransfer(threadId, compactionId) {
