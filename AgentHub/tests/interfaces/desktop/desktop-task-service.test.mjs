@@ -101,7 +101,7 @@ test("oversized global snapshot cannot starve history into a fabricated 64 KiB b
   assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 850_000);
 });
 
-test("complete annotation larger than shared remainder retries only history without snapshot", async () => {
+test("complete annotation receives the full deferred-snapshot budget in one read", async () => {
   const { service } = fixture();
   const source = annotatedHistory();
   let selections = 0;
@@ -113,9 +113,8 @@ test("complete annotation larger than shared remainder retries only history with
     return fitTaskHistoryPayload(source, { maxBytes: params.maxResponseBytes });
   };
   const result = await service.openTask({ streamId: "stream-1", maxResponseBytes: 850_000 });
-  assert.equal(budgets.length, 2);
-  assert.ok(budgets[0] > 65_536 && budgets[0] < 150_000);
-  assert.ok(budgets[1] > 800_000);
+  assert.equal(budgets.length, 1);
+  assert.ok(budgets[0] > 800_000);
   assert.equal(selections, 1);
   assert.equal(result.snapshot, null);
   assert.equal(result.snapshotDeferred, true);
@@ -130,7 +129,7 @@ test("history read failure other than size is not retried or hidden", async () =
   assert.equal(reads, 1);
 });
 
-test("a successful but truncated shared history is reread once with the whole envelope", async () => {
+test("a large history uses the whole deferred-snapshot envelope without truncation", async () => {
   const { service } = fixture();
   const text = "Полное сообщение без усечения. ".repeat(4_000);
   const source = { start: 0, end: 1, total: 1, items: [{ id: "turn", messages: [{ itemId: "user", role: "user", text }] }] };
@@ -140,19 +139,19 @@ test("a successful but truncated shared history is reread once with the whole en
   service.taskHistory = async (params) => { reads.push(params); return fitTaskHistoryPayload(source, { maxBytes: params.maxResponseBytes }); };
   const result = await service.openTask({ streamId: "stream-1", maxResponseBytes: 850_000 });
   assert.equal(selections, 1);
-  assert.equal(reads.length, 2);
+  assert.equal(reads.length, 1);
   assert.ok(reads.every((request) => request.refreshSource === false));
   assert.equal(result.snapshotDeferred, true);
   assert.equal(result.history.items[0].messages[0].text, text);
   assert.equal(result.history.transportTruncated, undefined);
 });
 
-test("a quote exceeding the whole envelope fails after one read-only budget retry", async () => {
+test("a quote exceeding the whole envelope fails after one bounded history read", async () => {
   const { service } = fixture();
   let reads = 0;
   service.taskHistory = async (params) => { reads += 1; throw new TaskHistoryResponseBudgetError(params.maxResponseBytes); };
   await assert.rejects(service.openTask({ streamId: "stream-1" }), { code: "TASK_HISTORY_RESPONSE_BUDGET_EXCEEDED" });
-  assert.equal(reads, 2);
+  assert.equal(reads, 1);
 });
 
 test("openTurn defers oversized snapshot while retaining exact focused-message identity", async () => {
@@ -324,12 +323,13 @@ test("Desktop task open shares one response budget between snapshot and history"
   });
 
   assert.ok(Buffer.byteLength(JSON.stringify(result), "utf8") < 850_000);
+  assert.equal(result.snapshot, null);
+  assert.equal(result.snapshotDeferred, true);
   assert.equal(historyParams.refreshSource, false);
-  assert.ok(historyParams.maxResponseBytes >= 64 * 1_024);
-  assert.ok(historyParams.maxResponseBytes < 550_000);
+  assert.ok(historyParams.maxResponseBytes > 800_000);
 });
 
-test("Desktop task open returns cached history without waiting for provider hydration", async () => {
+test("Desktop task open returns cached history and defers the authoritative snapshot", async () => {
   const { service, calls } = fixture();
   service.dispatchCommand = async () => {
     calls.push(["dispatch-read"]);
@@ -357,9 +357,49 @@ test("Desktop task open returns cached history without waiting for provider hydr
     "cached-history",
   ]);
   assert.equal(calls[1][1], false);
-  assert.equal(result.snapshot.tasks[0].unread, true);
-  assert.equal(result.snapshot.selectionChanged, true);
+  assert.equal(result.snapshot, null);
+  assert.equal(result.snapshotDeferred, true);
+  assert.equal(result.selectionChanged, true);
   assert.equal(result.history.turns[0].id, "turn-cached");
+});
+
+test("Desktop task open overlaps exact history with selection and skips its synchronous snapshot", async () => {
+  const { service } = fixture();
+  const selection = Promise.withResolvers();
+  const history = Promise.withResolvers();
+  let selectionStarted = false;
+  let historyStarted = false;
+  let snapshots = 0;
+  service.activateBinding = async () => {
+    selectionStarted = true;
+    await selection.promise;
+    return { changed: true };
+  };
+  service.snapshot = async () => {
+    snapshots += 1;
+    return { selected: true };
+  };
+  service.dispatchCommand = async (_type, params, context) => service.select(params, context);
+  service.taskHistory = async () => {
+    historyStarted = true;
+    await history.promise;
+    return { turns: [{ id: "turn-cached" }] };
+  };
+
+  const pending = service.openTask({ streamId: "stream-1" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(selectionStarted, true);
+  assert.equal(historyStarted, true);
+  assert.equal(snapshots, 0);
+  history.resolve();
+  selection.resolve();
+
+  const result = await pending;
+  assert.equal(result.snapshot, null);
+  assert.equal(result.snapshotDeferred, true);
+  assert.equal(result.selectionChanged, true);
+  assert.equal(result.history.turns[0].id, "turn-cached");
+  assert.equal(snapshots, 0);
 });
 
 test("Desktop task open resolves a rotated Thread to the current Stream task", async () => {

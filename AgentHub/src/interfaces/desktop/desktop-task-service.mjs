@@ -8,6 +8,7 @@ import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 const MAX_DESKTOP_RESPONSE_BYTES = 3_500_000;
 const MIN_HISTORY_RESPONSE_BYTES = 64 * 1_024;
 const RESPONSE_ENVELOPE_RESERVE_BYTES = 16 * 1_024;
+const SELECTION_WITHOUT_SNAPSHOT = Symbol("selection-without-snapshot");
 
 function responseBudget(params = {}) {
   return Math.min(
@@ -172,6 +173,9 @@ export class DesktopTaskService {
       threadId: entry.threadId,
       taskTitle: taskDisplayTitle(entry),
     });
+    if (params[SELECTION_WITHOUT_SNAPSHOT] === true) {
+      return { selectionChanged: activation.changed };
+    }
     return {
       ...await this.snapshot(params, context),
       selectionChanged: activation.changed,
@@ -188,20 +192,45 @@ export class DesktopTaskService {
       threadId: entry.threadId,
       taskTitle: taskDisplayTitle(entry),
     };
-    const selectedSnapshot = await this.dispatchCommand(
-      "task.select",
-      resolvedParams,
-      context,
-      { target: this.commandTaskTarget(resolvedParams) },
-    );
-    return this.#openHistoryResponse(selectedSnapshot, {
+    const historyParams = {
       streamId: resolvedParams.streamId,
       provider: resolvedParams.provider,
       threadId: resolvedParams.threadId,
       refreshSource: false,
       limit: params.limit,
       maxAnswerChars: params.maxAnswerChars,
-    }, params);
+    };
+    const [selection, response] = await Promise.all([
+      this.dispatchCommand(
+        "task.select",
+        { ...resolvedParams, [SELECTION_WITHOUT_SNAPSHOT]: true },
+        context,
+        { target: this.commandTaskTarget(resolvedParams) },
+      ),
+      this.#openHistoryOnlyResponse(historyParams, params),
+    ]);
+    return { ...response, selectionChanged: selection?.selectionChanged === true };
+  }
+
+  async #openHistoryOnlyResponse(historyParams, params, extra = {}) {
+    const envelope = { ...extra, snapshot: null, snapshotDeferred: true };
+    const maxBytes = historyResponseBudget(envelope, params);
+    if (maxBytes < MIN_HISTORY_RESPONSE_BYTES) {
+      throw new Error("Содержимое выбранного сообщения превышает общий лимит транспорта");
+    }
+    // Selection is an ordered mutation, while the exact history page is an
+    // independent read. Run them together and let the client fetch the
+    // authoritative version-fenced snapshot after the first visible page.
+    const history = await this.taskHistory({
+      ...historyParams,
+      refreshSource: false,
+      maxResponseBytes: maxBytes,
+    });
+    const result = { ...envelope, history };
+    if (Buffer.byteLength(JSON.stringify(result), "utf8") > responseBudget(params)) {
+      throw new Error("Ответ открытия истории превышает общий лимит транспорта");
+    }
+    return result;
   }
 
   async #openHistoryResponse(snapshot, historyParams, params, extra = {}) {
