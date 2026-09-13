@@ -405,8 +405,19 @@ test("context usage percentage uses the current model window", () => {
 test("external Codex compaction blocks new input before Hub owns a reservation", () => {
   const state = fixture({ externalCompacting: true });
   assert.equal(state.registry.isActive(state.source), false);
+  assert.equal(state.service.isManagedActive(state.source), false);
   assert.equal(state.service.isActive(state.source), true);
   assert.equal(state.service.isActive({ ...state.source, provider: "claude" }), false);
+});
+
+test("Hub maintenance reservations remain distinct from provider-internal compaction", () => {
+  const state = fixture({ externalCompacting: true });
+  const reservation = state.registry.begin(state.source, "manual-compaction");
+  assert.equal(state.service.isManagedActive(state.source), true);
+  assert.equal(state.service.isActive(state.source), true);
+  state.registry.end(reservation);
+  assert.equal(state.service.isManagedActive(state.source), false);
+  assert.equal(state.service.isActive(state.source), true);
 });
 
 test("post-turn automation ignores non-terminal observation cleanup", () => {

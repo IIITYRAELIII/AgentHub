@@ -1265,6 +1265,17 @@ test("HubMcpService binds the current turn to its dedicated Task worktree", asyn
   assert.equal(tools.some((tool) => tool.name === "hub_release_preflight"), true);
 });
 
+test("HubMcpService describes steer as exact intent requiring explicit redirection", async (context) => {
+  const { service } = await fixture(context);
+  const mode = service.tools()
+    .find((tool) => tool.name === "hub_stream_message_send")
+    .inputSchema.properties.mode;
+
+  assert.match(mode.description, /exact steering of the current managed run/u);
+  assert.match(mode.description, /explicit retry or queue decision/u);
+  assert.doesNotMatch(mode.description, /queue if steering is no longer possible/u);
+});
+
 test("HubMcpService claims the active turn while an older terminal remains retained", async (context) => {
   const { service, token, activeRun, taskClaimCalls } = await fixture(context);
   service.setActiveRuns(() => [

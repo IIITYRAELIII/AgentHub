@@ -90,6 +90,106 @@ test("RunCoordinator queues directly into a Stream under context maintenance", a
   assert.equal(f.calls.some(([name]) => name === "begin"), false);
 });
 
+test("RunCoordinator preserves exact durable steer during provider-internal compaction", async () => {
+  const active = {
+    id: "run-active", provider: "codex", threadId: "thread-1", turnId: "turn-active",
+    status: "running", executionOwner: "hub",
+  };
+  const f = fixture({
+    taskRuns: { forTask: () => active },
+    isMaintenanceActive: () => true,
+    isManagedMaintenanceActive: () => false,
+  });
+
+  const result = await f.coordinator.acceptClientInput({
+    input: "уточнение во время внутренней свёртки",
+    target: f.target,
+    clientUserMessageId: "message-compaction-steer",
+    followUpMode: "steer",
+  });
+
+  assert.equal(result.steerPending, true);
+  assert.equal(result.turnId, "turn-active");
+  const deferred = f.calls.find(([name]) => name === "defer")[3];
+  assert.equal(deferred.conflictKind, "message-steer");
+  assert.equal(deferred.steerTargetRunId, "run-active");
+  assert.equal(deferred.steerTargetTurnId, "turn-active");
+});
+
+test("RunCoordinator preserves exact steer behind managed maintenance and restart barriers", async () => {
+  for (const [label, overrides] of [
+    ["maintenance", { isMaintenanceActive: () => true, isManagedMaintenanceActive: () => true }],
+    ["restart", { isRestartPending: () => true }],
+  ]) {
+    const active = {
+      id: `run-${label}`, provider: "codex", threadId: "thread-1", turnId: `turn-${label}`,
+      status: "running", executionOwner: "hub",
+    };
+    const f = fixture({ taskRuns: { forTask: () => active }, ...overrides });
+
+    const result = await f.coordinator.acceptClientInput({
+      input: `не терять steer за барьером ${label}`,
+      target: f.target,
+      clientUserMessageId: `message-${label}`,
+      followUpMode: "steer",
+    });
+
+    assert.equal(result.steerPending, true);
+    assert.equal(result.queued, false);
+    assert.equal(result.runId, `run-${label}`);
+    assert.equal(result.turnId, `turn-${label}`);
+    const deferred = f.calls.find(([name]) => name === "defer")[3];
+    assert.equal(deferred.conflictKind, "message-steer");
+    assert.equal(deferred.steerTargetRunId, `run-${label}`);
+    assert.equal(deferred.steerTargetTurnId, `turn-${label}`);
+    assert.equal(f.calls.some(([name]) => name === "begin" || name === "launch" || name === "provider"), false);
+  }
+});
+
+test("RunCoordinator keeps ordinary input behind provider-internal compaction", async () => {
+  const active = {
+    id: "run-active", provider: "codex", threadId: "thread-1", turnId: "turn-active",
+    status: "running", executionOwner: "hub",
+  };
+  const f = fixture({
+    taskRuns: { forTask: () => active },
+    isMaintenanceActive: () => true,
+    isManagedMaintenanceActive: () => false,
+  });
+
+  const result = await f.coordinator.acceptClientInput({
+    input: "следующим ходом",
+    target: f.target,
+    clientUserMessageId: "message-after-compaction",
+    followUpMode: "queue",
+  });
+
+  assert.equal(result.reason, "context-maintenance");
+  assert.equal(f.calls.find(([name]) => name === "defer")[3].conflictKind, "context-maintenance");
+});
+
+test("RunCoordinator legacy steer also delegates internal-compaction authority to provider", async () => {
+  const active = {
+    id: "run-active", provider: "codex", threadId: "thread-1", turnId: "turn-active",
+    status: "running", executionOwner: "hub", userMessages: [],
+  };
+  const f = fixture({
+    taskRuns: { forTask: () => active },
+    isMaintenanceActive: () => true,
+    isManagedMaintenanceActive: () => false,
+  });
+
+  const result = await f.coordinator.submitClientInput({
+    input: "ручное уточнение",
+    target: f.target,
+    clientUserMessageId: "legacy-compaction-steer",
+    followUpMode: "steer",
+  });
+
+  assert.equal(result.steered, true);
+  assert.equal(f.calls.filter(([name]) => name === "provider").length, 1);
+});
+
 test("RunCoordinator holds durable intake until a pending runtime restart clears", async () => {
   let restartPending = true;
   const f = fixture({ isRestartPending: () => restartPending });
@@ -232,6 +332,47 @@ test("RunCoordinator keeps durable intake automatic while terminal delivery is f
   assert.equal(f.calls.find(([name]) => name === "defer")[3].conflictKind, "message-intake");
   assert.deepEqual(f.calls.find(([name]) => name === "schedule").slice(1), [
     { id: "queued-finishing" }, 0,
+  ]);
+});
+
+test("RunCoordinator preserves exact steer intent while terminal delivery is finishing", async () => {
+  const active = {
+    id: "run-finishing",
+    provider: "codex",
+    streamId: "stream-1",
+    threadId: "thread-1",
+    turnId: "turn-finishing",
+    status: "finishing",
+    executionOwner: "hub",
+  };
+  const f = fixture({
+    taskRuns: { forTask: () => active },
+    deferInput: async (...args) => {
+      f.calls.push(["defer", ...args]);
+      return { id: "steer-finishing", item: { id: "steer-finishing" } };
+    },
+    scheduleDeferred: (item, delay) => f.calls.push(["schedule", item, delay]),
+  });
+
+  const result = await f.coordinator.acceptClientInput({
+    input: "exact finishing steer",
+    target: { provider: "codex", streamId: "stream-1", threadId: "thread-1" },
+    clientUserMessageId: "client-finishing-steer",
+    followUpMode: "steer",
+  });
+
+  assert.equal(result.accepted, true);
+  assert.equal(result.steerPending, true);
+  assert.equal(result.queued, false);
+  assert.equal(result.runId, "run-finishing");
+  assert.equal(result.turnId, "turn-finishing");
+  const deferred = f.calls.find(([name]) => name === "defer")[3];
+  assert.equal(deferred.conflictKind, "message-steer");
+  assert.equal(deferred.steerTargetRunId, "run-finishing");
+  assert.equal(deferred.steerTargetTurnId, "turn-finishing");
+  assert.equal(f.calls.some(([name]) => name === "begin" || name === "launch" || name === "provider"), false);
+  assert.deepEqual(f.calls.find(([name]) => name === "schedule").slice(1), [
+    { id: "steer-finishing" }, 0,
   ]);
 });
 
