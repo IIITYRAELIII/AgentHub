@@ -510,7 +510,7 @@ export class RunCoordinator {
     const admissionBarrier = this.admissionBarrier(target, {
       exactManagedSteer: followUpMode === "steer" && Boolean(existingRun),
     });
-    if (admissionBarrier) {
+    if (admissionBarrier && !(followUpMode === "steer" && existingRun)) {
       return this.queue(input, attachments, {
         target,
         executionOwner: TASK_EXECUTION_OWNERS.HUB,

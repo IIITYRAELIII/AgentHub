@@ -229,8 +229,9 @@ provider RPC once. Provider-internal compaction of that same ordinary turn does
 not downgrade admission to generic later-turn intake: the exact steer remains
 durable until the compaction barrier clears, then dispatches against its original
 run and turn. A Hub-owned compaction, rotation or restart reservation remains an
-admission barrier. Exact run/turn movement before dispatch and a definite
-provider stale/not-steerable rejection have no provider effect, so the same
+admission barrier: the exact steer identity remains durable while its dispatcher
+waits. Exact run/turn movement before dispatch and a definite provider
+stale/not-steerable rejection have no provider effect, so the same
 durable item becomes visible attention-required state with its command, origin,
 attachments and exact steer identity intact. The lane is released, but the item
 cannot start a later turn automatically. An explicit `retry` keeps the exact

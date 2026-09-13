@@ -116,29 +116,34 @@ test("RunCoordinator preserves exact durable steer during provider-internal comp
   assert.equal(deferred.steerTargetTurnId, "turn-active");
 });
 
-test("RunCoordinator keeps Hub-managed maintenance as an explicit steer barrier", async () => {
-  const active = {
-    id: "run-active", provider: "codex", threadId: "thread-1", turnId: "turn-active",
-    status: "running", executionOwner: "hub",
-  };
-  const f = fixture({
-    taskRuns: { forTask: () => active },
-    isMaintenanceActive: () => true,
-    isManagedMaintenanceActive: () => true,
-  });
+test("RunCoordinator preserves exact steer behind managed maintenance and restart barriers", async () => {
+  for (const [label, overrides] of [
+    ["maintenance", { isMaintenanceActive: () => true, isManagedMaintenanceActive: () => true }],
+    ["restart", { isRestartPending: () => true }],
+  ]) {
+    const active = {
+      id: `run-${label}`, provider: "codex", threadId: "thread-1", turnId: `turn-${label}`,
+      status: "running", executionOwner: "hub",
+    };
+    const f = fixture({ taskRuns: { forTask: () => active }, ...overrides });
 
-  const result = await f.coordinator.acceptClientInput({
-    input: "не обходить ручную ротацию",
-    target: f.target,
-    clientUserMessageId: "message-managed-maintenance",
-    followUpMode: "steer",
-  });
+    const result = await f.coordinator.acceptClientInput({
+      input: `не терять steer за барьером ${label}`,
+      target: f.target,
+      clientUserMessageId: `message-${label}`,
+      followUpMode: "steer",
+    });
 
-  assert.equal(result.reason, "context-maintenance");
-  const deferred = f.calls.find(([name]) => name === "defer")[3];
-  assert.equal(deferred.conflictKind, "context-maintenance");
-  assert.equal(deferred.steerTargetRunId, undefined);
-  assert.equal(deferred.steerTargetTurnId, undefined);
+    assert.equal(result.steerPending, true);
+    assert.equal(result.queued, false);
+    assert.equal(result.runId, `run-${label}`);
+    assert.equal(result.turnId, `turn-${label}`);
+    const deferred = f.calls.find(([name]) => name === "defer")[3];
+    assert.equal(deferred.conflictKind, "message-steer");
+    assert.equal(deferred.steerTargetRunId, `run-${label}`);
+    assert.equal(deferred.steerTargetTurnId, `turn-${label}`);
+    assert.equal(f.calls.some(([name]) => name === "begin" || name === "launch" || name === "provider"), false);
+  }
 });
 
 test("RunCoordinator keeps ordinary input behind provider-internal compaction", async () => {

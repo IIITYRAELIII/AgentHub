@@ -163,6 +163,52 @@ test("DeferredInputController retains exact steer until internal compaction sett
   assert.deepEqual(state.transitions.map((entry) => entry.state), ["dispatching", "steered"]);
 });
 
+test("DeferredInputController never starts a later turn when a barrier clears after the steer target exits", async () => {
+  let barrierActive = true;
+  let targetActive = true;
+  let providerEffects = 0;
+  let laterTurnStarts = 0;
+  const state = fixture({
+    occupancy: async () => targetActive ? ({
+      occupied: true,
+      run: { id: "run-old", turnId: "turn-old" },
+    }) : ({ occupied: false, waitReason: null }),
+    isSteerDispatchBlocked: async () => barrierActive,
+    steer: async () => { providerEffects += 1; return null; },
+    start: async () => { laterTurnStarts += 1; },
+  });
+  const item = {
+    id: "steer-behind-managed-barrier",
+    clientUserMessageId: "mcp:steer-behind-managed-barrier",
+    conflictKind: "message-steer",
+    steerTargetRunId: "run-old",
+    steerTargetTurnId: "turn-old",
+    streamId: "stream-1",
+    provider: "codex",
+    threadId: "thread-1",
+    taskTitle: "Task",
+  };
+  state.queuedInputs.set(item.id, item);
+
+  await state.controller.process(item.id);
+  assert.equal(state.queuedInputs.get(item.id), item);
+  assert.equal(providerEffects, 0);
+  assert.equal(laterTurnStarts, 0);
+
+  barrierActive = false;
+  targetActive = false;
+  await state.controller.process(item.id);
+
+  assert.equal(state.queuedInputs.has(item.id), false);
+  assert.equal(state.pendingInputs.get(item.id), item);
+  assert.equal(item.conflictKind, "message-steer");
+  assert.equal(item.steerTargetRunId, "run-old");
+  assert.equal(item.steerTargetTurnId, "turn-old");
+  assert.equal(item.lastErrorCode, "ERR_PROVIDER_STEER_NOT_DELIVERED");
+  assert.equal(providerEffects, 0);
+  assert.equal(laterTurnStarts, 0);
+});
+
 test("DeferredInputController recovers a dispatched steer without a second provider effect", async () => {
   let providerEffects = 0;
   const state = fixture({
