@@ -10379,7 +10379,7 @@ function renderServerAccounts(accounts) {
   if (!serverAccounts || !panel) return;
   const list = Array.isArray(accounts) ? accounts : [];
   const views = list.map((account) => {
-    if (account?.status !== "pending") {
+    if (!panel.retainLocal(account, providerLoginLocal.get(account?.provider))) {
       providerLoginLocal.delete(account?.provider);
       providerLoginCodeDrafts.delete(account?.provider);
     }

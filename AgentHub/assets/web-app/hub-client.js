@@ -4591,12 +4591,14 @@ async function openProviderLoginPage(authUrl) {
 agentHub.on("server:provider-login", ({ provider }) => runAction(async () => {
   const result = await control("start-provider-login", { provider });
   const login = result?.login;
+  /* Сначала снапшот с новой попыткой, затем её локальная привязка: иначе
+     перерисовка по прежнему снапшоту сбросила бы ссылку и поле кода. */
+  if (result?.snapshot) applySnapshot(result.snapshot);
+  else applySnapshot(await control("snapshot"));
   agentHub.setProviderLoginUrl?.(provider, { attemptId: login?.attemptId ?? null, authUrl: login?.authUrl ?? null });
   /* Claude Code сам открывает браузер со своим callback; его печатная ссылка —
      ручной путь с кодом, поэтому она открывается только кнопкой. */
   if (provider === "codex" && login?.authUrl) await openProviderLoginPage(login.authUrl);
-  if (result?.snapshot) applySnapshot(result.snapshot);
-  else applySnapshot(await control("snapshot"));
   agentHub.toast(result?.message ?? "Вход запущен");
 }));
 agentHub.on("server:provider-login-code", ({ provider, attemptId, code }) => runAction(async () => {

@@ -38,6 +38,44 @@ test("the sign-in link and code field belong only to the local client of the sam
   assert.equal(panel.accountView(pending, { attemptId: "7", authUrl: "http://insecure" }).authUrl, null);
 });
 
+test("a start response bound against a prior idle snapshot keeps the link and code field for the new pending attempt", async () => {
+  const panel = await panelApi();
+  // Mirrors renderServerAccounts: drop local state only when retainLocal says so.
+  let local = null;
+  const render = (account) => {
+    if (!panel.retainLocal(account, local)) local = null;
+    return panel.accountView(account, local);
+  };
+  const claudeUrl = "https://claude.com/cai/oauth/authorize?x=1";
+
+  render({ provider: "claude", status: "idle", attemptId: null });
+  local = { attemptId: "5", authUrl: claudeUrl };
+  const stale = render({ provider: "claude", status: "cancelled", attemptId: "4" });
+  assert.notEqual(local, null, "a snapshot taken before the start must not drop the new attempt");
+  assert.equal(stale.acceptsCode, false);
+  const idleAgain = render({ provider: "claude", status: "idle", attemptId: null });
+  assert.notEqual(local, null);
+  assert.equal(idleAgain.authUrl, null);
+
+  const pending = render({ provider: "claude", status: "pending", attemptId: "5" });
+  assert.equal(pending.authUrl, claudeUrl, "the open button is visible");
+  assert.equal(pending.acceptsCode, true, "the Claude code field is visible");
+
+  const done = render({ provider: "claude", status: "succeeded", attemptId: "5" });
+  assert.equal(local, null, "the terminal state of the same attempt clears it");
+  assert.equal(done.authUrl, null);
+
+  local = { attemptId: "5", authUrl: "https://auth.example/codex" };
+  const foreign = render({ provider: "codex", status: "pending", attemptId: "6" });
+  assert.equal(local, null, "a newer foreign attempt clears it");
+  assert.equal(foreign.authUrl, null);
+
+  local = { attemptId: "8", authUrl: "https://auth.example/codex" };
+  render({ provider: "codex", status: "idle", attemptId: null });
+  assert.equal(render({ provider: "codex", status: "pending", attemptId: "8" }).authUrl, "https://auth.example/codex",
+    "Codex keeps its fallback button through the same ordering");
+});
+
 test("status, completion, cancel and failure are shown from the shared state", async () => {
   const panel = await panelApi();
   assert.equal(panel.accountView({ provider: "codex", status: "idle" }).statusText, "Вход не запускался");
@@ -74,6 +112,12 @@ test("the page keeps the code local: memory-only draft, cleared on submit, never
   assert.match(index, /<script src="\/provider-login-panel\.js" defer><\/script>/u);
   assert.match(app, /const providerLoginCodeDrafts = new Map\(\);/u);
   assert.match(app, /providerLoginCodeDrafts\.delete\(view\.provider\);\s*input\.value = "";/u);
+  assert.match(app, /if \(!panel\.retainLocal\(account, providerLoginLocal\.get\(account\?\.provider\)\)\) \{/u);
+  assert.match(
+    hubClient,
+    /control\("start-provider-login", \{ provider \}\);[\s\S]*?applySnapshot\(result\.snapshot\);[\s\S]*?agentHub\.setProviderLoginUrl\?\.\(provider,/u,
+    "the start response binds its attempt only after the new snapshot is applied",
+  );
   assert.doesNotMatch(app, /localStorage[^\n]*providerLogin|sessionStorage[^\n]*providerLogin/u);
   assert.match(hubClient, /control\("submit-provider-login-code", \{ provider, attemptId, code \}\)/u);
   assert.match(hubClient, /if \(provider === "codex" && login\?\.authUrl\) await openProviderLoginPage\(login\.authUrl\);/u);

@@ -42,6 +42,15 @@
     };
   }
 
+  /* Локальная попытка переживает снапшоты, снятые до её запуска: её удаляет
+     только завершение этой же попытки или появление более новой. */
+  function retainLocal(account, local) {
+    if (!local?.attemptId) return false;
+    const attemptId = account?.attemptId ? String(account.attemptId) : null;
+    if (attemptId === String(local.attemptId)) return account?.status === "pending";
+    return !(attemptId && Number(attemptId) > Number(local.attemptId));
+  }
+
   function codeSubmission(view, draft) {
     if (!view?.acceptsCode || !isManualCode(draft)) return null;
     return { provider: view.provider, attemptId: view.attemptId, code: String(draft).trim() };
@@ -55,5 +64,7 @@
     ]));
   }
 
-  window.AgentHubProviderLoginPanel = Object.freeze({ accountView, codeSubmission, isManualCode, renderKey });
+  window.AgentHubProviderLoginPanel = Object.freeze({
+    accountView, codeSubmission, isManualCode, renderKey, retainLocal,
+  });
 })();
