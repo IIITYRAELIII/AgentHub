@@ -332,9 +332,11 @@ revisions must not rebuild or reserialize those collections. A changed or
 unavailable TaskBoard revision invalidates that reuse atomically and preserves
 the existing content-derived collection versions and delta recovery behavior.
 Opening a Task carries the client's exact snapshot and collection versions into
-the selection command. A selection-only change returns bounded collection
-deltas instead of another complete multi-megabyte snapshot; a missing or stale
-baseline still receives the existing authoritative reset.
+the selection command. The ordered selection mutation and its exact local
+history read run concurrently; the first response contains the history page and
+explicitly defers the authoritative snapshot to the ordinary version-fenced
+refresh. A missing or stale baseline still receives the existing authoritative
+reset, and no provider hydration enters this critical path.
 
 A lazy Journal version conflict supersedes that read. The client requests at
 most one refresh per displayed version through the existing refresh owner,
