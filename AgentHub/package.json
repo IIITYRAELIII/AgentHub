@@ -39,7 +39,7 @@
     "work-log:title-backfill": "node work-log-title-backfill-cli.mjs",
     "workspace:migrate": "node src/interfaces/cli/workspace-layout-migrate.mjs",
     "task:reconcile-operation": "node task-operation-reconcile.mjs",
-    "task:await-cutover": "node src/interfaces/cli/task-await-cutover.mjs",
+    "task:await-cutover": "node task-await-cutover.mjs",
     "contracts:check": "node --no-warnings --experimental-vm-modules syntax-check.mjs --contracts-only",
     "contracts:affected": "node contract-registry-cli.mjs affected",
     "rate-limits:backfill": "node rate-limit-backfill.mjs",

@@ -41,6 +41,30 @@ test("test execution never retries an assertion or an unclassified OS error", as
   }
 });
 
+test("test child processes never inherit publication mutation ownership", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-publication-env-"));
+  try {
+    await writeFile(path.join(root, "environment.test.mjs"), [
+      "import assert from 'node:assert/strict';",
+      "import test from 'node:test';",
+      "test('isolated publication environment', () => {",
+      "  assert.equal(process.env.AGENT_HUB_PUBLICATION_SESSION, undefined);",
+      "  assert.equal(process.env.AGENT_HUB_PUBLICATION_STAGE_DELEGATION, undefined);",
+      "});",
+      "",
+    ].join("\n"), "utf8");
+    await runWindowsTestFile("environment.test.mjs", {
+      cwd: root,
+      env: {
+        AGENT_HUB_PUBLICATION_SESSION: "publisher-session",
+        AGENT_HUB_PUBLICATION_STAGE_DELEGATION: "publisher-delegation",
+      },
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("visual matrices run explicitly and exactly once in all, never in the unit suite", async () => {
   const visual = ["tests/public/card-layout-dom.test.mjs", "tests/public/journal-account-provider-column.test.mjs"];
   const discovery = ["tests/composition/example.test.mjs", "tests/domain/example.test.mjs", "tests/public/message-behavior.test.mjs", ...visual];

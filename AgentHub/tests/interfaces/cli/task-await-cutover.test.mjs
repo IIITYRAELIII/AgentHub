@@ -9,7 +9,7 @@ import {
   executeTaskAwaitCutover,
   openTaskAwaitCutoverRuntime,
   parseTaskAwaitCutoverArguments,
-} from "../../../src/interfaces/cli/task-await-cutover.mjs";
+} from "../../../task-await-cutover.mjs";
 import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 

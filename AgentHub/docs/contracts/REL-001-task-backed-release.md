@@ -555,6 +555,10 @@ The full-test stage has a two-hour wall-clock and ten-minute output-idle bound.
 These timeouts report failure, not an inferred external outcome. The two cosmetic
 browser matrices run in `test:visual`, affected focused UI validation and full
 validation exactly once, rather than every ordinary unit run. See ADR-0034.
+Validation subprocesses are observers, not delegated publication stages: the
+test runner removes inherited publication session and stage-delegation markers
+before every child process. Publisher-owned deploy, activate and verification
+stages retain their separately verified live-owner delegation.
 
 Verified release completion invokes the same Task Git owner with each exact
 published repository revision. The returned `devSynchronization` evidence

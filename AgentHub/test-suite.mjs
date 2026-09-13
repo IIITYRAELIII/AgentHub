@@ -8,6 +8,7 @@ import {
   runCheckpointedTestFiles,
   testFileCheckpointStore,
 } from "./src/infrastructure/persistence/test-file-checkpoint.mjs";
+import { clearInheritedPublicationOwnership } from "./src/infrastructure/process/publication-lock.mjs";
 
 const ROOT = import.meta.dirname;
 const TEST_RUNNER_FILE = fileURLToPath(import.meta.url);
@@ -78,11 +79,13 @@ export async function discoverTestFiles(directory = ROOT) {
 
 function run(command, args, { cwd = ROOT, env } = {}) {
   return new Promise((resolve, reject) => {
+    const childEnvironment = { ...process.env, ...(env ?? {}) };
+    clearInheritedPublicationOwnership(childEnvironment);
     const child = spawn(command, args, {
       cwd,
       stdio: "inherit",
       windowsHide: true,
-      ...(env ? { env: { ...process.env, ...env } } : {}),
+      env: childEnvironment,
     });
     child.once("error", reject);
     child.once("exit", (code, signal) => {
