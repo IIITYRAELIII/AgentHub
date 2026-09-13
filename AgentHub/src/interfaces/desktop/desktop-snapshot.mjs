@@ -125,6 +125,37 @@ export function createDesktopSnapshotFactory({
   });
   const messagePinDelta = createSnapshotCollectionDelta({ keyOf: (item) => item?.id });
   let catalogRefresh = null;
+  let boardStateCache = null;
+
+  function boardRevision() {
+    try {
+      const value = board.snapshotRevision;
+      return value == null ? "" : String(value);
+    } catch (error) {
+      warn?.("Cannot read TaskBoard snapshot revision:", error.message);
+      return "";
+    }
+  }
+
+  function boardSnapshotState() {
+    const beforeRevision = boardRevision();
+    if (beforeRevision && boardStateCache?.sourceVersion === beforeRevision) {
+      return boardStateCache;
+    }
+    const state = {
+      workspaces: board.workspaces?.() ?? catalog.hierarchy?.() ?? [],
+      archivedWorkspaces: board.archivedWorkspaces?.() ?? [],
+      boardTasks: board.snapshot?.() ?? [],
+      boardLayout: board.layout?.() ?? { columnOrder: [], notesComment: "" },
+      sourceVersion: "",
+    };
+    const afterRevision = boardRevision();
+    if (beforeRevision && beforeRevision === afterRevision) {
+      state.sourceVersion = afterRevision;
+      boardStateCache = state;
+    }
+    return state;
+  }
 
   function catalogActiveRun(entry, lastMessage) {
     if (entry?.running !== true) return null;
@@ -705,7 +736,8 @@ export function createDesktopSnapshotFactory({
       return finishTiming({ notModified: true, version: knownVersion }, true);
     }
     phaseStartedAt = monotonicNow();
-    const workspaces = board.workspaces?.() ?? catalog.hierarchy?.() ?? [];
+    const boardState = boardSnapshotState();
+    const { workspaces } = boardState;
     let entries = catalog.entries();
     if (
       !entries.some((entry) => tasks.entryIsSelected(entry, selection.selectedTask()))
@@ -785,8 +817,7 @@ export function createDesktopSnapshotFactory({
       : null;
     snapshotTiming.serverStateMs = Math.round((monotonicNow() - phaseStartedAt) * 10) / 10;
     phaseStartedAt = monotonicNow();
-    const boardTasks = board.snapshot?.() ?? [];
-    const archivedWorkspaces = board.archivedWorkspaces?.() ?? [];
+    const { boardTasks, archivedWorkspaces, boardLayout } = boardState;
     const messageReceipts = desktopMessageReceiptSnapshot();
     const messagePins = pins.snapshot?.() ?? [];
     const snapshot = {
@@ -794,7 +825,7 @@ export function createDesktopSnapshotFactory({
       workspaces,
       archivedWorkspaces,
       boardTasks,
-      boardLayout: board.layout?.() ?? { columnOrder: [], notesComment: "" },
+      boardLayout,
       selected: {
         ...selectedIdentity,
         workspaceId: selectedTaskSnapshot?.workspaceId ?? selectedIdentity.workspaceId ?? null,
@@ -938,8 +969,12 @@ export function createDesktopSnapshotFactory({
     phaseStartedAt = monotonicNow();
     const collectionDeltas = protocol >= 4 ? {
       conversations: conversationDelta(taskSnapshots, conversationsVersion),
-      workspaces: workspaceDelta(workspaces, workspacesVersion),
-      boardTasks: boardTaskDelta(boardTasks, boardTasksVersion),
+      workspaces: workspaceDelta(workspaces, workspacesVersion, {
+        sourceVersion: boardState.sourceVersion,
+      }),
+      boardTasks: boardTaskDelta(boardTasks, boardTasksVersion, {
+        sourceVersion: boardState.sourceVersion,
+      }),
       messageReceipts: messageReceiptDelta(messageReceipts, messageReceiptsVersion),
       messagePins: messagePinDelta(messagePins, messagePinsVersion),
     } : null;

@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { MessageReceiptRegistry } from "../../../src/infrastructure/persistence/message-receipts.mjs";
 import test from "node:test";
 import { createDesktopReadComposition } from "../../../src/composition/desktop-read-composition.mjs";
+import { TaskBoardService } from "../../../src/application/task-board-service.mjs";
+import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
+import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 
 test("exact receipt display follows queued and active messages without changing wire input", async () => {
   const receipts = new MessageReceiptRegistry();
@@ -137,6 +143,7 @@ function fixture(overrides = {}) {
     receipts: [],
     messagePins: [],
     revision: "initial",
+    boardRevision: "board:1",
     snapshotBuilds: 0,
     boardSnapshotBuilds: 0,
     boardWorkspaceBuilds: 0,
@@ -170,7 +177,10 @@ function fixture(overrides = {}) {
         return state.telemetry;
       },
     },
-    board: {
+    board: overrides.board ?? {
+      get snapshotRevision() {
+        return state.boardRevision;
+      },
       snapshot: () => {
         state.boardSnapshotBuilds += 1;
         return state.boardTasks ?? [{ id: "board-task-1", text: "Проверить дашборд" }];
@@ -293,7 +303,7 @@ function fixture(overrides = {}) {
         restart,
       }),
     },
-    revision: () => state.revision,
+    revision: overrides.revision ?? (() => state.revision),
     readState: {
       hasUnread: (value) => value.accountId === "owner" && value.answerTurnId !== "turn-previous",
     },
@@ -1734,6 +1744,7 @@ test("snapshot protocol v4 renames conversations and sends collection deltas", a
     { id: "board-task-1", text: "Обновлено" },
     { id: "board-task-2", text: "Добавлено" },
   ];
+  state.boardRevision = "board:2";
   state.revision = "board-updated";
   const next = await desktopSnapshot({
     snapshotProtocol: 4,
@@ -1759,6 +1770,136 @@ test("snapshot protocol v4 renames conversations and sends collection deltas", a
     baseVersion: first.collectionDeltas.messageReceipts.version,
     version: first.collectionDeltas.messageReceipts.version,
   });
+});
+
+test("an unrelated live revision reuses exact TaskBoard state and collection versions", async () => {
+  const { desktopSnapshot, state } = fixture();
+  const first = await desktopSnapshot({ snapshotProtocol: 4, compactSnapshot: true });
+  const boardBuilds = [
+    state.boardSnapshotBuilds,
+    state.boardWorkspaceBuilds,
+    state.boardLayoutBuilds,
+  ];
+  state.run = { ...state.run, responseText: "Новый прогресс" };
+  state.revision = "run-progress:2";
+
+  const next = await desktopSnapshot({
+    snapshotProtocol: 4,
+    compactSnapshot: true,
+    knownVersion: first.version,
+    conversationsVersion: first.collectionDeltas.conversations.version,
+    workspacesVersion: first.collectionDeltas.workspaces.version,
+    boardTasksVersion: first.collectionDeltas.boardTasks.version,
+    messageReceiptsVersion: first.collectionDeltas.messageReceipts.version,
+    messagePinsVersion: first.collectionDeltas.messagePins.version,
+  });
+
+  assert.notEqual(next.notModified, true);
+  assert.deepEqual([
+    state.boardSnapshotBuilds,
+    state.boardWorkspaceBuilds,
+    state.boardLayoutBuilds,
+  ], boardBuilds);
+  assert.deepEqual(next.collectionDeltas.workspaces, {
+    baseVersion: first.collectionDeltas.workspaces.version,
+    version: first.collectionDeltas.workspaces.version,
+  });
+  assert.deepEqual(next.collectionDeltas.boardTasks, {
+    baseVersion: first.collectionDeltas.boardTasks.version,
+    version: first.collectionDeltas.boardTasks.version,
+  });
+
+  state.boardTasks = [{ id: "board-task-1", text: "Изменено" }];
+  state.boardRevision = "board:2";
+  state.revision = "board:2";
+  const changed = await desktopSnapshot({
+    snapshotProtocol: 4,
+    compactSnapshot: true,
+    knownVersion: next.version,
+    conversationsVersion: next.collectionDeltas.conversations.version,
+    workspacesVersion: next.collectionDeltas.workspaces.version,
+    boardTasksVersion: next.collectionDeltas.boardTasks.version,
+    messageReceiptsVersion: next.collectionDeltas.messageReceipts.version,
+    messagePinsVersion: next.collectionDeltas.messagePins.version,
+  });
+  assert.deepEqual(changed.collectionDeltas.boardTasks.upserts, state.boardTasks);
+  assert.deepEqual([
+    state.boardSnapshotBuilds,
+    state.boardWorkspaceBuilds,
+    state.boardLayoutBuilds,
+  ], boardBuilds.map((count) => count + 1));
+});
+
+test("TaskBoard cache observes same-owner and external SQLite mutations", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-desktop-board-revision-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const ownerCatalog = new WorkspaceCatalogStore({ databaseFile });
+  const externalCatalog = new WorkspaceCatalogStore({ databaseFile });
+  await ownerCatalog.load();
+  await externalCatalog.load();
+  const ownerStore = new TaskBoardStore({ databaseFile });
+  const externalStore = new TaskBoardStore({ databaseFile });
+  t.after(async () => {
+    ownerStore.close();
+    externalStore.close();
+    ownerCatalog.close();
+    externalCatalog.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const workspace = ownerCatalog.createWorkspace({ name: "Owner Workspace" });
+  const ownerBoard = new TaskBoardService({ store: ownerStore, workspaceCatalog: ownerCatalog });
+  const externalBoard = new TaskBoardService({ store: externalStore, workspaceCatalog: externalCatalog });
+  const setup = fixture({
+    board: ownerBoard,
+    revision: () => `desktop:${ownerBoard.snapshotRevision}`,
+  });
+  const requestFor = (snapshot) => ({
+    snapshotProtocol: 4,
+    compactSnapshot: true,
+    knownVersion: snapshot.version,
+    ...Object.fromEntries(Object.entries(snapshot.collectionDeltas).map(([name, delta]) => [
+      `${name}Version`, delta.version,
+    ])),
+  });
+
+  const first = await setup.desktopSnapshot({ snapshotProtocol: 4, compactSnapshot: true });
+  const localTask = await ownerBoard.create({
+    text: "Same owner", source: "test", bucket: "workspace", workspaceId: workspace.id,
+  });
+  const local = await setup.desktopSnapshot(requestFor(first));
+  assert.notEqual(local.notModified, true);
+  assert.deepEqual(local.collectionDeltas.boardTasks.upserts.map((task) => task.id), [localTask.id]);
+
+  const externalWorkspace = externalCatalog.createWorkspace({ name: "External Workspace" });
+  const externalTask = await externalBoard.create({
+    text: "External owner", source: "test", bucket: "workspace", workspaceId: externalWorkspace.id,
+  });
+  await externalBoard.setNotesComment({ comment: "External layout update" });
+  const external = await setup.desktopSnapshot(requestFor(local));
+
+  assert.notEqual(external.notModified, true);
+  assert.deepEqual(external.collectionDeltas.workspaces.upserts.map((item) => item.id), [externalWorkspace.id]);
+  assert.deepEqual(external.collectionDeltas.boardTasks.upserts.map((task) => task.id), [externalTask.id]);
+  assert.equal(external.boardLayout.notesComment, "External layout update");
+});
+
+test("an unavailable TaskBoard revision disables Dashboard state reuse", async () => {
+  const { desktopSnapshot, state } = fixture({ boardRevision: null });
+  await desktopSnapshot({ snapshotProtocol: 4, compactSnapshot: true });
+  const boardBuilds = [
+    state.boardSnapshotBuilds,
+    state.boardWorkspaceBuilds,
+    state.boardLayoutBuilds,
+  ];
+  state.revision = "unrelated:2";
+
+  await desktopSnapshot({ snapshotProtocol: 4, compactSnapshot: true });
+
+  assert.deepEqual([
+    state.boardSnapshotBuilds,
+    state.boardWorkspaceBuilds,
+    state.boardLayoutBuilds,
+  ], boardBuilds.map((count) => count + 1));
 });
 
 test("unchanged snapshot reports a measured revision cache hit", async () => {

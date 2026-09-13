@@ -429,7 +429,10 @@ export class TaskBoardService {
   }
 
   get snapshotRevision() {
-    return `${Number(this.store.revision) || 0}:${Number(this.workspaceCatalog.revision) || 0}`;
+    const boardRevision = this.store.snapshotRevision ?? this.store.revision;
+    const workspaceRevision = this.workspaceCatalog.snapshotRevision ?? this.workspaceCatalog.revision;
+    if (boardRevision == null || workspaceRevision == null) return "";
+    return `${String(boardRevision)}:${String(workspaceRevision)}`;
   }
 
   prepareStart({ id, workspaceId, streamId, requestId, streamName = null, reassign = false, expectedRevision = null } = {}) {

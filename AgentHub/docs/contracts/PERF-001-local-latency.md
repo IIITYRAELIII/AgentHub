@@ -313,6 +313,16 @@ insertion is excluded from body-wide themed-select and VS Code motion subtree
 scans. Periodic external history refresh runs only while chat is visible, and
 unchanged Dashboard collections retain their snapshot identity so they do not
 incur stringify comparison or card rebuild.
+The Desktop snapshot owner may reuse Dashboard workspaces, tasks and layout only
+under the TaskBoard's exact authoritative snapshot revision, including mutations
+committed by another supported SQLite owner or connection. Unrelated live-run
+revisions must not rebuild or reserialize those collections. A changed or
+unavailable TaskBoard revision invalidates that reuse atomically and preserves
+the existing content-derived collection versions and delta recovery behavior.
+Opening a Task carries the client's exact snapshot and collection versions into
+the selection command. A selection-only change returns bounded collection
+deltas instead of another complete multi-megabyte snapshot; a missing or stale
+baseline still receives the existing authoritative reset.
 
 A lazy Journal version conflict supersedes that read. The client requests at
 most one refresh per displayed version through the existing refresh owner,

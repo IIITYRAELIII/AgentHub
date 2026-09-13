@@ -481,6 +481,10 @@ function stableIdentity(identity) {
   };
 }
 
+function taskOpenParams(identity, params = {}) {
+  return window.AgentHubSnapshotTransport.openTaskRequestParams(lastSnapshot, identity, params);
+}
+
 function sameIdentity(left, right) {
   const a = stableIdentity(left);
   const b = stableIdentity(right);
@@ -2743,13 +2747,20 @@ function applyOpened(result, {
     });
   }
   if (selectTask) rememberSelectedTaskId(id);
-  if (!skipSnapshot) applySnapshot(result?.snapshot);
+  if (!skipSnapshot && result?.snapshot?.notModified !== true) {
+    try {
+      applySnapshot(result?.snapshot);
+    } catch (error) {
+      if (!window.AgentHubSnapshotTransport.isBaselineError(error)) throw error;
+      void refresh();
+    }
+  }
   if (!skipSnapshot && result?.snapshotDeferred === true) void refresh();
   if (selectTask) agentHub.selectTask(id);
   syncHistoryPagination(id);
   const renderedMessages = renderTaskMessages(id, { preserveScroll, exactNavigation });
-  renderTaskQueue(id, result?.snapshot ?? lastSnapshot);
-  const acknowledgementSnapshot = result?.snapshot ?? lastSnapshot;
+  renderTaskQueue(id, lastSnapshot);
+  const acknowledgementSnapshot = lastSnapshot;
   const acknowledgementTask = (acknowledgementSnapshot?.tasks ?? []).find((item) => taskId(
     item.provider,
     item.threadId,
@@ -2776,7 +2787,7 @@ function applyOpened(result, {
       threadId: history.threadId,
     });
   }
-  const task = (result.snapshot ?? lastSnapshot)?.tasks?.find(
+  const task = lastSnapshot?.tasks?.find(
     (item) => item.provider === history.provider && item.threadId === history.threadId,
   );
   updateHistoryCatchUp(id, history, task);
@@ -2898,7 +2909,7 @@ agentHub.on("task:select", ({ id }) => {
   selectionTail = runNavigation(
     identity,
     async () => {
-      const opened = await control("open-task", { ...identity, limit: 20 });
+      const opened = await control("open-task", taskOpenParams(identity, { limit: 20 }));
       if (opened?.history) verifiedTaskHistory(opened.history, identity);
       return opened;
     },
@@ -3334,7 +3345,7 @@ function sendUserMessage(request, frozenParams = null) {
           provider: result?.provider ?? identity?.provider,
           threadId: result.threadId,
         };
-        const opened = await control("open-task", { ...identity, limit: 20 });
+        const opened = await control("open-task", taskOpenParams(identity, { limit: 20 }));
         applyOpened(opened);
         const route = window.AgentHubNavigationTabs.resolvedChatRoute(
           { history: identity },
@@ -4777,7 +4788,7 @@ document.addEventListener("click", (event) => {
       ?? openTask.closest("[data-work-log-thread-id]")?.dataset.workLogThreadId;
     void runNavigation(
       { provider, threadId },
-      () => control("open-task", { provider, threadId, limit: 20 }),
+      () => control("open-task", taskOpenParams({ provider, threadId }, { limit: 20 })),
       (opened) => {
         applyOpened(opened);
         document.querySelector("[data-view-button='chat']")?.click();
@@ -4850,7 +4861,7 @@ async function openRoute() {
       };
       const opened = await runNavigation(
         identity,
-        () => control("open-task", { ...identity, limit: 20 }),
+        () => control("open-task", taskOpenParams(identity, { limit: 20 })),
         applyOpened,
       );
       return Boolean(opened);
@@ -4892,7 +4903,7 @@ async function openRoute() {
     };
     const opened = await runNavigation(
       identity,
-      () => control("open-task", { ...identity, limit: 20 }),
+      () => control("open-task", taskOpenParams(identity, { limit: 20 })),
       applyOpened,
     );
     if (!opened) return false;
@@ -5068,7 +5079,7 @@ void runAction(async () => {
     if (identity) {
       await runNavigation(
         identity,
-        () => control("open-task", { ...identity, limit: 20 }),
+        () => control("open-task", taskOpenParams(identity, { limit: 20 })),
         applyOpened,
       );
     }
