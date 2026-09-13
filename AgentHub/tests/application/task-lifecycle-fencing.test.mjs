@@ -137,9 +137,7 @@ test("Await accepts the Test-owned result without eager PreRelease composition",
       Object.assign(task, {
         revision: 5,
         workflowStatus: "awaiting_implementation",
-        gitReferences: [{
-          projectRoot: "D:/project", branch: "HUB-174", resultCommit: "b".repeat(40),
-        }],
+        gitReferences: [previousReference],
       });
       return structuredClone(task);
     },
@@ -160,16 +158,7 @@ test("Await accepts the Test-owned result without eager PreRelease composition",
     taskGitWorkspaces: {
       withTaskLock: (_taskId, operation) => operation(lease),
       prepareOwned: async () => ({ projectRoot: "D:/managed/task", branch: "HUB-174" }),
-      snapshotAndMergeOwned: async () => ({
-        snapshot: {
-          branch: "HUB-174", projectRoot: "D:/managed/task", repositoryRoot: "D:/project",
-          baseCommit: "0".repeat(40), headCommit: "b".repeat(40),
-        },
-        integration: {
-          outcome: "merged", integrated: true, resultProved: true,
-          dev: { branch: "dev", headCommit: "c".repeat(40) },
-        },
-      }),
+      snapshotAndMergeOwned: async () => { throw new Error("Await must not ingest bytes after Test"); },
       cleanupOwned: async () => ({ removed: 0 }),
       cleanupPreview: async () => ({
         workspaces: [], gitReferences: [], dirty: false, unpublished: [], deleting: [],
@@ -190,13 +179,30 @@ test("Await accepts the Test-owned result without eager PreRelease composition",
     operationId: "await-transition",
     projectRoot: "D:/project",
   });
+  const sameAwaitResult = await service.updateWorkflowStatus({
+    taskId: task.id,
+    status: "awaiting_implementation",
+    operationId: "same-await-transition",
+    projectRoot: "D:/project",
+  });
 
-  assert.deepEqual(calls, ["lock:workspace-1", "begin", "commit"]);
+  assert.deepEqual(calls, [
+    "lock:workspace-1", "begin", "commit",
+    "lock:workspace-1", "begin", "commit",
+  ]);
   assert.equal(task.workflowStatus, "awaiting_implementation");
   assert.equal(result.releaseCandidate.status, "invalidated");
-  assert.deepEqual(task.gitReferences, [{
-    projectRoot: "D:/project", branch: "HUB-174", resultCommit: "b".repeat(40),
-  }]);
+  assert.equal(sameAwaitResult.releaseCandidate.status, "invalidated");
+  assert.deepEqual(task.gitReferences, [previousReference]);
+});
+
+test("Await rejects a Task that has not established a Test-owned result", async () => {
+  const { service, task, calls } = lifecycleFixture();
+  await assert.rejects(service.updateWorkflowStatus({
+    taskId: task.id, status: "awaiting_implementation", operationId: "await-without-test",
+  }), /must enter Test/u);
+  assert.equal(calls.begin, 0);
+  assert.equal(calls.commit, 0);
 });
 
 test("cross-Task cutover rejects missing, mismatched or ambiguous source authority before target mutation", async () => {
@@ -347,5 +353,5 @@ test("unknown workflow recovery retains the repository lease through Git continu
     proof: { kind: "system-restart-after-guard", confirmed: true, summary: "boot proof" },
   });
   assert.equal(result.result.task.workflowStatus, "awaiting_implementation");
-  assert.deepEqual(calls, ["repository-lock", "recover", "begin", "prepare", "snapshot", "commit"]);
+  assert.deepEqual(calls, ["repository-lock", "recover", "begin", "commit"]);
 });

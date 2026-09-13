@@ -222,13 +222,32 @@ export class TaskLifecycleService {
           && task.workflowStatus !== String(expectedWorkflowStatus).trim()) {
         throw new Error("Task workflow cutover status changed");
       }
-      const snapshotsResult = releaseWorkflow && ["testing", "awaiting_implementation", "done"].includes(workflowStatus);
+      const snapshotsResult = releaseWorkflow && workflowStatus === "testing";
+      const acceptsExistingResult = releaseWorkflow
+        && ["awaiting_implementation", "done"].includes(workflowStatus);
       const workspace = task.workspaceId ? this.workspaceCatalog.workspace(task.workspaceId) : null;
       const affectsAwait = workspace?.settings?.releaseWorkflowEnabled === true
         && (task.workflowStatus === "awaiting_implementation" || workflowStatus === "awaiting_implementation");
       const selectedProjectRoot = releaseWorkflow ? projectRoot || this.#projectRoot(task) : null;
-      if (affectsAwait && !selectedProjectRoot) {
-        throw new Error("Task project root is unavailable; Await set was not changed");
+      let acceptedReference = null;
+      if ((affectsAwait || acceptsExistingResult) && !selectedProjectRoot) {
+        throw new Error("Task project root is unavailable; exact result was not accepted");
+      }
+      if (acceptsExistingResult) {
+        if (!["testing", "awaiting_implementation"].includes(task.workflowStatus)) {
+          throw new Error("Task must enter Test before its exact result can be accepted");
+        }
+        const references = (task.gitReferences ?? []).filter((reference) => (
+          samePath(reference.projectRoot, selectedProjectRoot)
+          && /^[a-f0-9]{40}$/u.test(String(reference.resultCommit ?? ""))
+        ));
+        if (references.length !== 1) {
+          throw new Error(
+            `Task has no unique Test-owned result for ${selectedProjectRoot}; `
+            + `recorded roots: ${(task.gitReferences ?? []).map((reference) => reference.projectRoot).join(", ") || "none"}`,
+          );
+        }
+        [acceptedReference] = references;
       }
       await this.#assertOwned(lease);
       await this.#mutation(() => this.taskBoard.beginLifecycleTransition({
@@ -263,7 +282,11 @@ export class TaskLifecycleService {
             gitReferences: [],
             replaceGitReferences: false,
             ...binding,
-            evidence: { ...(operationEvidence ?? {}), outcome: "not_required" },
+            evidence: {
+              ...(operationEvidence ?? {}),
+              outcome: acceptsExistingResult ? "accepted_existing_result" : "not_required",
+              ...(acceptedReference ? { resultCommit: acceptedReference.resultCommit } : {}),
+            },
           }), operationId);
           if (!affectsAwait) return current;
           return {

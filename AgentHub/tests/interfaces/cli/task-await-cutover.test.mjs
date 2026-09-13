@@ -424,19 +424,7 @@ test("production cross-Task cutover succeeds without eager release composition",
     withTaskRecoveryLock: async (_taskId, operation) => operation(lease),
     withTaskRepositoryRecoveryLock: async (_taskId, _projectRoot, _taskLease, operation) => operation(lease),
     prepareOwned: async () => ({ projectRoot: repositoryRoot }),
-    snapshotAndMergeOwned: async () => {
-      snapshotCalls += 1;
-      return {
-        snapshot: {
-          branch: "HUB-217", projectRoot: repositoryRoot,
-          repositoryRoot, baseCommit: "e".repeat(40), headCommit: "c".repeat(40),
-        },
-        integration: {
-          outcome: "integrated", resultProved: true, integrated: true,
-          dev: { branch: "dev", headCommit: "f".repeat(40) },
-        },
-      };
-    },
+    snapshotAndMergeOwned: async () => { snapshotCalls += 1; throw new Error("Await must reuse Test result"); },
     cleanupOwned: async () => {},
     cleanupPreview: async () => ({ workspaces: [], gitReferences: [], deleting: [] }),
   };
@@ -491,7 +479,7 @@ test("production cross-Task cutover succeeds without eager release composition",
   assert.equal(runtime.taskBoard.task(input.taskId).workflowStatus, "awaiting_implementation");
   assert.equal(runtime.taskBoard.task(sourceCreated.id).workflowStatus, "testing");
   assert.equal(runtime.taskBoard.lifecycleOutcome(requestId).result.rollback, undefined);
-  assert.equal(snapshotCalls, 1);
+  assert.equal(snapshotCalls, 0);
 });
 
 test("production cross-Task pending recovery preserves its immutable source evidence", async (t) => {
@@ -594,19 +582,7 @@ test("production cross-Task pending recovery preserves its immutable source evid
       return { recovered: true, proof: { kind: options.proof.kind, verifiedAt: "2026-09-12T13:23:40.000Z" } };
     },
     prepareOwned: async () => ({ projectRoot: repositoryRoot, branch: "HUB-203" }),
-    snapshotAndMergeOwned: async () => {
-      snapshotCalls += 1;
-      return {
-        snapshot: {
-          branch: "HUB-203", projectRoot: repositoryRoot, repositoryRoot,
-          baseCommit: "e".repeat(40), headCommit: "c".repeat(40),
-        },
-        integration: {
-          outcome: "integrated", resultProved: true, integrated: true,
-          dev: { branch: "dev", headCommit: "f".repeat(40) },
-        },
-      };
-    },
+    snapshotAndMergeOwned: async () => { snapshotCalls += 1; throw new Error("Await recovery must reuse Test result"); },
     cleanupOwned: async () => {},
     cleanupPreview: async () => ({ workspaces: [], gitReferences: [], deleting: [] }),
   };
@@ -654,7 +630,7 @@ test("production cross-Task pending recovery preserves its immutable source evid
   assert.equal(runtime.taskBoard.task(sourceCreated.id).workflowStatus, "in_progress");
   assert.deepEqual(runtime.taskBoard.lifecycleOutcome(requestId).result.evidence.cutoverSource, cutoverSource);
   assert.equal(recoverCalls, 1);
-  assert.equal(snapshotCalls, 1);
+  assert.equal(snapshotCalls, 0);
 });
 
 test("cross-Task cutover atomically rejects a settings race without changing the target", async (t) => {
