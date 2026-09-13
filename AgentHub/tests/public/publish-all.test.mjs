@@ -299,12 +299,12 @@ test("runtime readiness requires a replacement endpoint and a successful probe",
     readEndpoint: async () => endpoints.shift() ?? { endpointId: "new" },
     probe: async (action) => {
       probes.push(action);
-      return { server: { process: { releaseId: "release-new", pid: 12 } } };
+      return { live: true, ready: true, process: { releaseId: "release-new", pid: 12 } };
     },
     delay: async () => {},
   });
   assert.equal(result.endpointId, "new");
-  assert.deepEqual(probes, ["snapshot"]);
+  assert.deepEqual(probes, ["runtime-health"]);
 });
 
 test("selective publication maps shared UI to runtime, Worker and surface tests", async () => {

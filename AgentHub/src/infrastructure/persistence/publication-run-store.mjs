@@ -117,6 +117,7 @@ export function publicationRunStore({
   ownerPid = () => process.pid,
   isProcessAlive = processAlive,
   afterInterruptedArchive = async () => {},
+  afterTerminalArchive = async () => {},
 } = {}) {
   const paths = runtimeRoot ? {
     statusFile: path.join(runtimeRoot, "publication-status.json"),
@@ -188,6 +189,19 @@ export function publicationRunStore({
         }
         if (!archived) await writeJsonAtomic(archiveFile, interrupted);
         await afterInterruptedArchive({ previous: structuredClone(previous), interrupted, archiveFile });
+      }
+      if (previous && TERMINAL_STATUSES.has(previous.status)) {
+        if (!pathInside(paths.logDirectory, previous.logFile)
+            || !path.basename(previous.logFile).includes(String(previous.runId ?? ""))) {
+          throw new Error("terminal publication log identity is outside the canonical run directory");
+        }
+        const archiveFile = `${previous.logFile}.status.json`;
+        const archived = await readPublicationRunStatus(archiveFile);
+        if (archived && stableText(archived) !== stableText(previous)) {
+          throw new Error("terminal publication archive conflicts with the exact prior run");
+        }
+        if (!archived) await writeJsonAtomic(archiveFile, previous);
+        await afterTerminalArchive({ previous: structuredClone(previous), archiveFile });
       }
       const runId = createId();
       const timestamp = startedAt.toISOString().replaceAll(":", "-");

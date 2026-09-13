@@ -14,6 +14,8 @@ import {
 import { canonicalPath } from "../../../src/infrastructure/filesystem/config.mjs";
 import { TaskGitWorkspaceService } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
 import { taskBranchName, taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
+import { createTaskBoardMutationOwner } from "../../../src/application/sqlite-mutation-owner.mjs";
+import { WorkspaceReleaseService } from "../../../src/application/workspace-release-service.mjs";
 import {
   resolveTestContourSource,
   TEST_CONTOUR_RELEASE_CANDIDATE_SOURCE,
@@ -1027,6 +1029,10 @@ test("repeated publication freeze reuses the accepted PreRelease without rebuild
   assert.equal(refrozen.manifestHash, frozen.manifestHash);
   assert.equal(await git(accepted.releaseRoot, "rev-parse", "PreRelease"), frozen.preReleaseHead);
   assert.equal(await git(accepted.releaseRoot, "rev-parse", "main"), frozen.preReleaseHead);
+  const frozenReadback = await setup.service.frozenCandidate(setup.primary);
+  assert.equal(frozenReadback.checkpointPhase, "frozen");
+  assert.equal(frozenReadback.preReleaseHead, frozen.preReleaseHead);
+  assert.equal(await git(accepted.releaseRoot, "symbolic-ref", "HEAD"), "refs/heads/main");
   assert.equal(await git(accepted.releaseRoot, "show", `${refrozen.preReleaseHead}:dependency.txt`), "dependency");
   assert.equal(await git(accepted.releaseRoot, "show", `${refrozen.preReleaseHead}:dependent.txt`), "dependent");
   const names = (await git(accepted.releaseRoot, "diff", "--name-only",
@@ -1034,6 +1040,80 @@ test("repeated publication freeze reuses the accepted PreRelease without rebuild
   assert.deepEqual(names, [
     "AgentHub/package-lock.json", "AgentHub/package.json", "CHANGELOG.md", "dependency.txt", "dependent.txt",
   ]);
+});
+
+test("frozen candidate readback is phase-aware and feeds release completion without reattaching HEAD", async (context) => {
+  const setup = await fixture(context);
+  const resultCommit = await taskResult(setup, context);
+  const candidate = await setup.service.prepareCandidate({
+    planRevision: "plan-frozen-readback", workspaceId: "workspace", projectRoot: setup.primary,
+    frozenTasks: [{ taskId: "task-frozen", taskRevision: 1, resultCommit }],
+  });
+  const frozen = await setup.service.freezePublicationCandidate({
+    projectRoot: setup.primary, workspaceId: "workspace", expectedPlanRevision: "plan-frozen-readback",
+    expectedPreparedHead: candidate.preReleaseHead, changelogContent: null,
+    releaseDate: new Date(2026, 8, 13),
+  });
+  const checkpointFile = path.join(setup.dataDir, "release-repositories", taskRepositoryKey(setup.primary), "checkpoint.json");
+  const checkpoint = JSON.parse(await readFile(checkpointFile, "utf8"));
+
+  await writeFile(path.join(candidate.releaseRoot, "dirty.txt"), "dirty\n");
+  await assert.rejects(setup.service.frozenCandidate(setup.primary), /exact clean main checkout/u);
+  await rm(path.join(candidate.releaseRoot, "dirty.txt"));
+  await git(candidate.releaseRoot, "symbolic-ref", "HEAD", "refs/heads/PreRelease");
+  await assert.rejects(setup.service.frozenCandidate(setup.primary), /exact clean main checkout/u);
+  await git(candidate.releaseRoot, "symbolic-ref", "HEAD", "refs/heads/main");
+  await git(candidate.releaseRoot, "update-ref", "refs/heads/PreRelease", setup.baseCommit, frozen.preReleaseHead);
+  await assert.rejects(setup.service.frozenCandidate(setup.primary), /PreRelease branch no longer matches/u);
+  await git(candidate.releaseRoot, "update-ref", "refs/heads/PreRelease", frozen.preReleaseHead, setup.baseCommit);
+  await git(candidate.releaseRoot, "update-ref", "refs/heads/main", setup.baseCommit, frozen.preReleaseHead);
+  await assert.rejects(setup.service.frozenCandidate(setup.primary), /main branch no longer matches/u);
+  await git(candidate.releaseRoot, "update-ref", "refs/heads/main", frozen.preReleaseHead, setup.baseCommit);
+  await writeFile(checkpointFile, `${JSON.stringify({ ...checkpoint, phase: "freezing" }, null, 2)}\n`);
+  await assert.rejects(setup.service.frozenCandidate(setup.primary), /phase is not readable/u);
+  await writeFile(checkpointFile, `${JSON.stringify(checkpoint, null, 2)}\n`);
+
+  const plan = {
+    revision: "plan-frozen-readback", ready: [{ id: "task-frozen" }], draft: [], blocked: [], conflicts: [],
+    candidates: [{ gitReferences: [{ projectRoot: setup.primary, resultCommit }] }],
+  };
+  let pending = null;
+  const release = new WorkspaceReleaseService({
+    store: createTaskBoardMutationOwner({
+      runMutation: (operation) => Promise.resolve().then(operation),
+      awaitRebuildPending: () => structuredClone(pending),
+      releaseFinalizationOutcome: () => null,
+      completeRelease: (_workspaceId, options) => {
+        pending = structuredClone(options.awaitRebuild);
+        return { released: plan.ready };
+      },
+      recordReleaseFinalizationStage: (_workspaceId, { stage, projectRoot, receipt }) => {
+        if (stage === "await") pending.awaitResult = structuredClone(receipt);
+        else pending.repositories.find((item) => item.projectRoot === projectRoot)[stage] = structuredClone(receipt);
+      },
+      clearAwaitRebuildPending: () => { pending = null; return true; },
+    }),
+    releasePlanner: { plan: async () => plan },
+    releaseGitWorkspaces: {
+      frozenCandidate: (root) => setup.service.frozenCandidate(root),
+      synchronizePublishedPrimary: async ({ publishedRevision }) => ({ status: "fast_forwarded", publishedRevision }),
+    },
+    taskGitWorkspaces: { synchronizeMainIntoDev: async () => ({ integrated: true, status: "merged" }) },
+    releasePreflight: { withAwaitTransition: async (_workspaceId, operation) => operation() },
+    verifyPublication: async () => ({
+      repositories: [{ root: setup.primary, revision: frozen.preReleaseHead,
+        planRevision: plan.revision, manifestHash: frozen.manifestHash,
+        baseCommit: setup.baseCommit, preReleaseHead: frozen.preReleaseHead }],
+      agentHubPublication: { generation: "generation" },
+    }),
+  });
+  const completed = await release.completeRelease({
+    workspaceId: "workspace", expectedPlanRevision: plan.revision,
+    expectedRepositories: [{ projectRoot: setup.primary, revision: frozen.preReleaseHead }],
+    deploymentVerified: true, verificationSummary: "verified",
+  });
+  assert.equal(completed.finalization.status, "completed");
+  assert.equal(pending, null);
 });
 
 test("a frozen 13-Task candidate accepts one descendant result delta without foreign baggage", { timeout: 60000 }, async (context) => {

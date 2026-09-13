@@ -117,6 +117,7 @@ export function createInteractionShellPhase({
 
   const desktopShell = createDesktopShellComposition({
     config,
+    server,
     diagnostics: {
       reportClientError: (event, context) => sentryDiagnostics.captureClientEvent(event, context),
     },
