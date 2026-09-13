@@ -27,6 +27,8 @@ That preserved command identity but changed the authorized effect.
    actions keep their existing explicit meanings.
 4. An unknown provider outcome remains fail-closed in bounded reconciliation;
    this decision does not authorize a replay or release its lane.
+5. Ordinary queued intake and explicitly queued follow-up behavior outside an
+   exact `message-steer` item remain unchanged.
 
 ## Consequences
 
