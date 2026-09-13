@@ -4580,6 +4580,28 @@ agentHub.on("server:autostart", ({ enabled }) => runAction(async () => {
   else applySnapshot(await control("snapshot"));
   agentHub.toast(result?.message ?? "Автозапуск Agent Hub обновлён");
 }));
+/* Страница входа провайдера открывается во внешнем браузере Hub-машины: туда
+   же возвращается OAuth callback. */
+async function openProviderLoginPage(authUrl) {
+  const href = String(authUrl ?? "");
+  if (!/^https:\/\//u.test(href)) return;
+  if (vscode) await bridgeCall("open-link", { href });
+  else window.open(href, "_blank", "noopener,noreferrer");
+}
+agentHub.on("server:provider-login", ({ provider }) => runAction(async () => {
+  const result = await control("start-provider-login", { provider });
+  if (result?.login?.authUrl) await openProviderLoginPage(result.login.authUrl);
+  if (result?.snapshot) applySnapshot(result.snapshot);
+  else applySnapshot(await control("snapshot"));
+  agentHub.toast(result?.message ?? "Вход запущен");
+}));
+agentHub.on("server:provider-login-open", ({ authUrl }) => runAction(() => openProviderLoginPage(authUrl)));
+agentHub.on("server:provider-login-cancel", ({ provider }) => runAction(async () => {
+  const result = await control("cancel-provider-login", { provider });
+  if (result?.snapshot) applySnapshot(result.snapshot);
+  else applySnapshot(await control("snapshot"));
+  agentHub.toast(result?.message ?? "Вход отменён");
+}));
 agentHub.on("server:config-update", ({ key, value, changes }) => runAction(async () => {
   /* Страница сохраняет всю карточку разом, поэтому принимаем и набор правок,
      и одиночную настройку. */

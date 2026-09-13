@@ -274,6 +274,7 @@ const serverStateNote = document.querySelector("[data-server-state-note]");
 const serverStateDot = document.querySelector("[data-server-state-dot]");
 const serverFacts = document.querySelector("[data-server-facts]");
 const serverComponents = document.querySelector("[data-server-components]");
+const serverAccounts = document.querySelector("[data-server-accounts]");
 const serverConfig = document.querySelector("[data-server-config]");
 
 const dialog = document.querySelector("[data-text-dialog]");
@@ -10350,6 +10351,7 @@ function renderServerStatus(payload = {}) {
     }),
     component.note ? el("small", { text: component.note }) : null,
   ].filter(Boolean))) : [el("span", { class: "setting-empty", text: "Компоненты не определены" })]));
+  renderServerAccounts(payload.accounts);
   /* Одно название вроде «Очередь входящих» ничего не объясняет, поэтому у
      плитки есть пояснение под значением и та же строка в подсказке. */
   const entries = Array.isArray(payload.configuration) ? payload.configuration : [];
@@ -10360,6 +10362,46 @@ function renderServerStatus(payload = {}) {
     : [el("span", { class: "setting-empty", text: "Конфигурация недоступна" })]));
   syncServerConfigDependencyVisibility();
   syncServerConfigActions();
+}
+
+const PROVIDER_LOGIN_LABELS = Object.freeze({ codex: "Codex", claude: "Claude" });
+const PROVIDER_LOGIN_STATUS = Object.freeze({
+  idle: "Вход не запускался",
+  pending: "Ожидает входа в браузере",
+  succeeded: "Вход выполнен",
+  cancelled: "Вход отменён",
+  failed: "Ошибка входа",
+});
+
+/* Вход идёт штатным способом провайдера: Hub только запускает его и показывает
+   состояние. Повторное нажатие отменяет незавершённый вход, поэтому кнопка
+   остаётся доступной и во время ожидания. */
+function renderServerAccounts(accounts) {
+  if (!serverAccounts) return;
+  const list = Array.isArray(accounts) ? accounts : [];
+  serverAccounts.replaceChildren(...(list.length ? list.map((account) => {
+    const pending = account.status === "pending";
+    const start = el("button", {
+      type: "button",
+      class: "chip-button",
+      text: pending ? "Войти заново" : "Войти",
+    });
+    start.addEventListener("click", () => emit("server:provider-login", { provider: account.provider }));
+    const open = pending && account.authUrl
+      ? el("button", { type: "button", class: "chip-button ghost", text: "Открыть страницу входа" })
+      : null;
+    open?.addEventListener("click", () => emit("server:provider-login-open", { authUrl: account.authUrl }));
+    const cancel = pending
+      ? el("button", { type: "button", class: "chip-button ghost", text: "Отменить" })
+      : null;
+    cancel?.addEventListener("click", () => emit("server:provider-login-cancel", { provider: account.provider }));
+    return el("div", { class: "server-component server-account", "data-status": account.status }, [
+      el("span", { class: "server-component-name", text: PROVIDER_LOGIN_LABELS[account.provider] ?? account.provider }),
+      el("span", { class: "server-component-status", text: PROVIDER_LOGIN_STATUS[account.status] ?? account.status }),
+      account.status === "failed" && account.error ? el("small", { text: account.error }) : null,
+      el("div", { class: "server-account-actions" }, [start, open, cancel].filter(Boolean)),
+    ].filter(Boolean));
+  }) : [el("span", { class: "setting-empty", text: "Вход недоступен в этой версии Hub" })]));
 }
 
 /* Автозапуск — такая же настройка Hub, поэтому лежит первой плиткой сетки. В

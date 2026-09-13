@@ -138,6 +138,7 @@ export function serverPageSnapshot({
   restart = {},
   autostart = { supported: false, enabled: false },
   pendingConfiguration = {},
+  accounts = [],
 } = {}) {
   const webAppEnabled = config?.miniApp?.enabled === true
     || config?.components?.miniApp === true
@@ -155,6 +156,16 @@ export function serverPageSnapshot({
       version: String(version ?? "").trim() || null,
       activeCount: Math.max(0, Number(activeCount) || 0),
     },
+    // Only the sign-in state and the provider's own sign-in link; account
+    // credentials never enter the snapshot.
+    accounts: (Array.isArray(accounts) ? accounts : []).map((account) => ({
+      provider: String(account?.provider ?? ""),
+      status: String(account?.status ?? "idle"),
+      authUrl: account?.authUrl || null,
+      startedAt: account?.startedAt ?? null,
+      finishedAt: account?.finishedAt ?? null,
+      error: account?.error || null,
+    })),
     autostart: {
       supported: autostart.supported === true,
       enabled: autostart.enabled === true,

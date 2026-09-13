@@ -564,6 +564,8 @@ export function createDesktopShellComposition({
       runForTask: (target) => taskRuns.forTask(target),
       setAutostart: (params) => serverControlController.setAutostart(params),
       updateServerConfiguration: (params) => serverControlController.updateConfiguration(params),
+      startProviderLogin: (params) => serverControlController.startProviderLogin(params),
+      cancelProviderLogin: (params) => serverControlController.cancelProviderLogin(params),
       readPreTurnInstructions: () => serverControlController.readPreTurnInstructions(),
       updateGlobalPreTurnInstructions: (params) => serverControlController.updateGlobalPreTurnInstructions(params),
       readRootAgents: () => serverControlController.readRootAgents(),
