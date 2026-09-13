@@ -284,6 +284,9 @@ export async function publishAll(args = process.argv.slice(2), {
         requestRestart: (verification) => restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot, verification),
       });
       console.log(`\nПубликация: ${completion.status}.`);
+      if (completion.handoff?.action === "yield_current_turn") {
+        console.log("Safe restart подготовлен: завершите текущий агентский ход без новых операций.");
+      }
       return completion;
     } catch (error) {
       await journal?.finish("failed", error);

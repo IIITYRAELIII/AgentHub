@@ -1,8 +1,13 @@
 import { spawn } from "node:child_process";
-import { readFile, readdir } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { fingerprintTestInputs } from "./src/infrastructure/persistence/test-input-fingerprint.mjs";
+import {
+  explainTestInputFingerprint,
+  fingerprintTestInputs,
+  parallelTestExecution,
+} from "./src/infrastructure/persistence/test-input-fingerprint.mjs";
 
 import {
   runCheckpointedTestFiles,
@@ -108,11 +113,32 @@ export async function runWindowsTestFile(file, {
   const args = ["--test", "--test-concurrency=1", ...(isolation ? ["--test-isolation=none"] : []), file];
   // A failed assertion and an OS failure share exit code 1. Neither proves a
   // transient failure; retries require a new explicit run and reuse successes.
-  await execute(process.execPath, args, { cwd, env });
+  const childRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-child-"));
+  try {
+    await execute(process.execPath, args, {
+      cwd,
+      env: {
+        ...env,
+        LOCALAPPDATA: childRoot,
+        TEMP: childRoot,
+        TMP: childRoot,
+        TMPDIR: childRoot,
+      },
+    });
+  } finally {
+    await rm(childRoot, { recursive: true, force: true });
+  }
 }
 
-async function declaredFingerprint(file, cwd) {
+async function testManifest() {
   const manifest = JSON.parse(await readFile(path.join(ROOT, "tests/test-cache-inputs.json"), "utf8"));
+  if (manifest.version !== 2 || !manifest.files || typeof manifest.files !== "object") {
+    throw new Error("tests/test-cache-inputs.json must use version 2");
+  }
+  return manifest;
+}
+
+async function declaredFingerprint(file, cwd, manifest) {
   const key = path.relative(ROOT, path.resolve(cwd, file)).split(path.sep).join("/");
   const declaration = manifest.version === 2 ? manifest.files[key] ?? null : null;
   let browserFile = "";
@@ -124,7 +150,21 @@ async function declaredFingerprint(file, cwd) {
       browserFile = chromium.executablePath();
     }
   }
-  return testFingerprint(file, { cwd, root: ROOT, declaration, browserFile });
+  return explainTestInputFingerprint(file, {
+    cwd, root: ROOT, declaration, browserFile, runnerFile: TEST_RUNNER_FILE,
+  });
+}
+
+export function boundedTestFileConcurrency({
+  availableParallelism = os.availableParallelism(),
+  freeMemory = os.freemem(),
+} = {}) {
+  return availableParallelism >= 4 && freeMemory >= 4 * 1024 ** 3 ? 2 : 1;
+}
+
+function executionPolicy(file, cwd, manifest) {
+  const key = path.relative(ROOT, path.resolve(cwd, file)).split(path.sep).join("/");
+  return parallelTestExecution(manifest.files[key]) ?? { parallel: false, shared: [] };
 }
 
 export async function runTestSuite(mode, {
@@ -132,8 +172,9 @@ export async function runTestSuite(mode, {
   checkpoint = checkpointIdentity ? testFileCheckpointStore() : null,
   execute = run,
   discover = discoverTestFiles,
+  testConcurrency = boundedTestFileConcurrency(),
 } = {}) {
-  const options = { checkpointIdentity, checkpoint, execute, discover };
+  const options = { checkpointIdentity, checkpoint, execute, discover, testConcurrency };
   if (mode === "all") {
     const failures = [];
     const stages = [
@@ -198,12 +239,15 @@ export async function runTestSuite(mode, {
   if (!selected) throw new Error(`Неизвестная группа тестов: ${mode}.`);
   if (selected.files.length === 0) throw new Error(`Группа тестов ${mode} пуста.`);
 
+  const manifest = await testManifest();
   if (checkpointIdentity) {
     await runCheckpointedTestFiles(selected.files, {
       suite: mode,
       identity: checkpointIdentity,
       checkpoint,
-      fingerprint: (file) => declaredFingerprint(file, selected.cwd),
+      fingerprint: (file) => declaredFingerprint(file, selected.cwd, manifest),
+      concurrency: testConcurrency,
+      execution: (file) => executionPolicy(file, selected.cwd, manifest),
       run: (file) => runWindowsTestFile(file, { ...selected, execute }),
     });
     return;
@@ -216,6 +260,8 @@ export async function runTestSuite(mode, {
     // file handle briefly even with test concurrency set to one.
     await runCheckpointedTestFiles(selected.files, {
       suite: mode,
+      concurrency: testConcurrency,
+      execution: (file) => executionPolicy(file, selected.cwd, manifest),
       run: (file) => runWindowsTestFile(file, { ...selected, execute }),
     });
     return;
