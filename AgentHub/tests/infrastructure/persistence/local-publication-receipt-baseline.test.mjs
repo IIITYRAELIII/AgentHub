@@ -25,7 +25,13 @@ function sha256(value) {
 
 async function fixture(t, { otherRepository = false } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "local-publication-receipt-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const previousLocalAppData = process.env.LOCALAPPDATA;
+  process.env.LOCALAPPDATA = root;
+  t.after(async () => {
+    if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = previousLocalAppData;
+    await rm(root, { recursive: true, force: true });
+  });
   const repo = path.join(root, "repo");
   const runtimeRoot = path.join(root, "runtime");
   await git(root, "init", "-b", "main", repo);

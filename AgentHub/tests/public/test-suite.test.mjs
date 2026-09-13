@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { testFingerprint, runWindowsTestFile, runTestSuite } from "../../test-suite.mjs";
+import { withPublicationLock } from "../../src/infrastructure/process/publication-lock.mjs";
 
 test("test checkpoint fingerprints only transitive module dependencies", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-fingerprint-"));
@@ -61,6 +62,24 @@ test("test child processes never inherit publication mutation ownership", async 
       },
     });
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("publication-state tests use a fixture lock while the publisher lock is held", {
+  timeout: 20_000,
+}, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-held-publication-lock-"));
+  const previousLocalAppData = process.env.LOCALAPPDATA;
+  process.env.LOCALAPPDATA = root;
+  try {
+    await withPublicationLock(() => runWindowsTestFile(
+      "tests/infrastructure/persistence/publication-state.test.mjs",
+      { cwd: path.resolve(import.meta.dirname, "../..") },
+    ));
+  } finally {
+    if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = previousLocalAppData;
     await rm(root, { recursive: true, force: true });
   }
 });

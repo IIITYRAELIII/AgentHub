@@ -558,7 +558,9 @@ validation exactly once, rather than every ordinary unit run. See ADR-0034.
 Validation subprocesses are observers, not delegated publication stages: the
 test runner removes inherited publication session and stage-delegation markers
 before every child process. Publisher-owned deploy, activate and verification
-stages retain their separately verified live-owner delegation.
+stages retain their separately verified live-owner delegation. Validation that
+exercises publication locking uses a fixture-local lock root, never the live
+publisher target already held by the parent pipeline.
 
 Verified release completion invokes the same Task Git owner with each exact
 published repository revision. The returned `devSynchronization` evidence
