@@ -112,7 +112,9 @@ export function testContourPaths(root = defaultTestContourRoot()) {
     codexHome: path.join(resolved, "codex-home"),
     fakeCodexExecutable: path.join(resolved, "providers", "fake-codex-app-server.mjs"),
     codexMultiplexerExecutable: path.join(resolved, "providers", "test-contour-codex-multiplexer.mjs"),
+    fakeClaudeExecutable: path.join(resolved, "providers", "test-contour-claude-cli.mjs"),
     fakeCodexStateFile: path.join(resolved, "data", "fake-codex-state.json"),
+    fakeClaudeStateFile: path.join(resolved, "data", "fake-claude-auth-state.json"),
     codexMultiplexerStateFile: path.join(resolved, "data", "codex-multiplexer-state.json"),
     dataDir: path.join(resolved, "data"),
     dataBackupsDirectory: path.join(resolved, "backups", "data-clones"),
@@ -615,6 +617,11 @@ export function testContourConfig({
       "--routing-state",
       paths.codexMultiplexerStateFile,
     ],
+    // The contour's Claude sign-in runs the synthetic CLI, never the real one.
+    ...(recording ? {} : {
+      claudeExecutable: process.execPath,
+      claudeExecutableArgs: [paths.fakeClaudeExecutable, "--state", paths.fakeClaudeStateFile],
+    }),
     codexRateLimitPolling: false,
     claudeRateLimitPolling: false,
     createInitialThreadOnStartup: false,
@@ -673,6 +680,8 @@ export function testContourEnvironment({
     "AGENT_HUB_PROFILE",
     "CODEX_EXECUTABLE",
     "CODEX_EXECUTABLE_ARGS",
+    // CLAUDE_EXECUTABLE would override the contour's synthetic Claude CLI.
+    "CLAUDE_EXECUTABLE",
     "AGENT_HUB_RECORDING_PROVIDER_ROOT",
   ]) delete result[key];
   if (recording) delete result.CODEX_PROJECT_ROOT;
@@ -709,6 +718,7 @@ export async function prepareTestContourCodexProviders({
   const sources = [
     [path.join(sourceRoot, "e2e", "fake-codex-app-server.mjs"), paths.fakeCodexExecutable],
     [path.join(sourceRoot, "e2e", "test-contour-codex-multiplexer.mjs"), paths.codexMultiplexerExecutable],
+    [path.join(sourceRoot, "e2e", "test-contour-claude-cli.mjs"), paths.fakeClaudeExecutable],
   ];
   await mkdir(path.dirname(paths.fakeCodexExecutable), { recursive: true });
   await Promise.all(sources.map(async ([sourceFile, targetFile]) => {
@@ -717,6 +727,7 @@ export async function prepareTestContourCodexProviders({
   return {
     fakeCodexExecutable: paths.fakeCodexExecutable,
     codexMultiplexerExecutable: paths.codexMultiplexerExecutable,
+    fakeClaudeExecutable: paths.fakeClaudeExecutable,
   };
 }
 

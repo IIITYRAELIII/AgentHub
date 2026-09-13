@@ -80,15 +80,18 @@ test("provider sign-in and its code are available only to the local Hub", async 
         /только локальному Agent Hub/u,
       );
     }
-    assert.ok(await control.handleDesktopControl({
-      action,
-      params: { provider: "claude", code: CODE },
-      context: { source: "desktop-control", userId: "7", commandId: "cmd-1" },
-    }));
+    // The local VS Code panel reaches /api/control with its webview session.
+    for (const source of ["desktop-control", "local-mini-app", "local-vscode-webview"]) {
+      assert.ok(await control.handleDesktopControl({
+        action,
+        params: { provider: "claude", code: CODE },
+        context: { source, userId: "7", commandId: `cmd-${source}` },
+      }));
+    }
   }
   assert.deepEqual(calls, [
-    ["startProviderLogin", "claude"],
-    ["submitProviderLoginCode", "claude"],
-    ["cancelProviderLogin", "claude"],
+    ["startProviderLogin", "claude"], ["startProviderLogin", "claude"], ["startProviderLogin", "claude"],
+    ["submitProviderLoginCode", "claude"], ["submitProviderLoginCode", "claude"], ["submitProviderLoginCode", "claude"],
+    ["cancelProviderLogin", "claude"], ["cancelProviderLogin", "claude"], ["cancelProviderLogin", "claude"],
   ]);
 });

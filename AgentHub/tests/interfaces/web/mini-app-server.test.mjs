@@ -18,6 +18,7 @@ import {
 import { buildLazyJournalPayload } from "../../../src/interfaces/web/mini-app-journal-data.mjs";
 import { createAttachmentStorageName } from "../../../src/domain/attachment-files.mjs";
 import { createDesktopControlRouter } from "../../../src/interfaces/desktop/desktop-control-router.mjs";
+import { createDesktopApplicationRouter } from "../../../src/interfaces/desktop/desktop-application-router.mjs";
 import { createRuntimeHealth } from "../../../src/application/runtime-health.mjs";
 import { createLocalWebviewSession } from "../../../src/interfaces/web/local-webview-session.mjs";
 import { JournalDatabase } from "../../../src/infrastructure/persistence/journal-database.mjs";
@@ -171,6 +172,79 @@ test("local Web App accepts short-lived VS Code WebView CORS sessions", async ()
     assert.equal((await fetch(`${address.url}api/journal`, {
       headers: { Origin: origin, Authorization: `webview ${expired.token}` },
     })).status, 401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("the local VS Code webview session reaches local-only provider sign-in through the real /api/control authorizer", async () => {
+  const secret = "w".repeat(43);
+  const code = "Kc0de-AbC_123#sTaTe-456_xyz";
+  const calls = [];
+  const sources = [];
+  const handlers = new Proxy({}, {
+    get: (_target, name) => async (params) => {
+      calls.push({ handler: String(name), provider: params?.provider });
+      return { accepted: true, login: { provider: params?.provider, status: "pending" } };
+    },
+  });
+  const router = createDesktopApplicationRouter({
+    handlers,
+    commands: { dispatch: async () => ({ accepted: true }), settingTarget: () => ({}) },
+  });
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(),
+    localAccessSecret: secret,
+    deviceStore: {
+      async resolveSession(token) {
+        if (token !== "y".repeat(43)) throw new Error("device session is invalid");
+        return { id: "remote-owner", deviceId: "phone" };
+      },
+    },
+    controlHandler: (request) => {
+      sources.push(request.context?.source);
+      return router.handleDesktopControl(request);
+    },
+  });
+  const post = (address, authorization, action, params) => fetch(`${address.url}api/control`, {
+    method: "POST",
+    headers: { ...(authorization ? { Authorization: authorization } : {}), "Content-Type": "application/json" },
+    body: JSON.stringify({ action, params }),
+  });
+  try {
+    const address = await server.start();
+    const webview = `webview ${createLocalWebviewSession(secret).token}`;
+    for (const [action, params] of [
+      ["start-provider-login", { provider: "claude" }],
+      ["submit-provider-login-code", { provider: "claude", attemptId: "1", code }],
+      ["cancel-provider-login", { provider: "claude" }],
+    ]) {
+      const response = await post(address, webview, action, params);
+      const body = await response.text();
+      assert.equal(response.status, 200, `${action}: ${body}`);
+      assert.equal(JSON.parse(body).ok, true);
+      assert.equal(body.includes("Kc0de"), false, "the manual code is never echoed");
+
+      const expired = createLocalWebviewSession(secret, { now: Date.now() - 60_000, ttlSeconds: 30 });
+      assert.equal((await post(address, `webview ${expired.token}`, action, params)).status, 401);
+      assert.equal((await post(address, "", action, params)).status, 401);
+      const remote = await post(address, `device ${"y".repeat(43)}`, action, params);
+      assert.equal(remote.status, 400);
+      assert.match((await remote.json()).error, /только локальному Agent Hub/u);
+    }
+    assert.deepEqual(calls, [
+      { handler: "startProviderLogin", provider: "claude" },
+      { handler: "submitProviderLoginCode", provider: "claude" },
+      { handler: "cancelProviderLogin", provider: "claude" },
+    ]);
+    // The source is assigned by the authorizer, not by request parameters.
+    assert.deepEqual(sources, [
+      "local-vscode-webview", "trusted-device",
+      "local-vscode-webview", "trusted-device",
+      "local-vscode-webview", "trusted-device",
+    ]);
   } finally {
     await server.close();
   }

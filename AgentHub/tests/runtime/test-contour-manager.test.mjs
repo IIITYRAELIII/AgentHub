@@ -277,6 +277,9 @@ test("Test Contour defaults to Fake Codex while exposing optional real models", 
     "--routing-state",
     paths.codexMultiplexerStateFile,
   ]);
+  assert.equal(config.claudeExecutable, process.execPath, "Claude sign-in in the contour never runs the real CLI");
+  assert.deepEqual(config.claudeExecutableArgs, [paths.fakeClaudeExecutable, "--state", paths.fakeClaudeStateFile]);
+  assert.equal(path.dirname(paths.fakeClaudeStateFile), paths.dataDir);
   assert.equal(config.codexSandboxMode, "workspace-write");
   assert.equal(config.projectRoot, paths.projectRoot);
   assert.equal(config.diagnostics.sentry.enabled, false);
@@ -310,6 +313,7 @@ test("Test Contour defaults to Fake Codex while exposing optional real models", 
       TELEGRAM_API_BASE_URL: "https://api.telegram.org",
       SENTRY_DSN: "production-dsn",
       CODEX_EXECUTABLE: "fake-codex",
+      CLAUDE_EXECUTABLE: "real-claude",
       AGENT_HUB_RELEASE_ID: "production-release",
       PATH: "safe-path",
     },
@@ -318,6 +322,7 @@ test("Test Contour defaults to Fake Codex while exposing optional real models", 
   assert.equal(environment.TELEGRAM_API_BASE_URL, "http://127.0.0.1:43210");
   assert.equal(environment.SENTRY_DSN, "");
   assert.equal(environment.CODEX_EXECUTABLE, undefined);
+  assert.equal(environment.CLAUDE_EXECUTABLE, undefined, "a host Claude override cannot replace the synthetic CLI");
   assert.equal(environment.CODEX_MODEL, TEST_CONTOUR_MODEL);
   assert.equal(environment.CODEX_HOME, paths.codexHome);
   assert.equal(environment.AGENT_HUB_RELEASE_ID, "candidate-1");
@@ -339,15 +344,18 @@ test("Codex test providers are copied only into the marker-owned Test Contour ro
       "export const multiplexer = true;\n",
       "utf8",
     );
+    await writeFile(path.join(sourceRoot, "e2e", "test-contour-claude-cli.mjs"), "export const claude = true;\n", "utf8");
     await installTestContour({ root, run: async () => null });
     const copied = await prepareTestContourCodexProviders({ root, sourceRoot });
     assert.equal(copied.fakeCodexExecutable, testContourPaths(root).fakeCodexExecutable);
     assert.equal(copied.codexMultiplexerExecutable, testContourPaths(root).codexMultiplexerExecutable);
+    assert.equal(copied.fakeClaudeExecutable, testContourPaths(root).fakeClaudeExecutable);
     assert.equal(await readFile(copied.fakeCodexExecutable, "utf8"), "export const fake = true;\n");
     assert.equal(
       await readFile(copied.codexMultiplexerExecutable, "utf8"),
       "export const multiplexer = true;\n",
     );
+    assert.equal(await readFile(copied.fakeClaudeExecutable, "utf8"), "export const claude = true;\n");
   } finally {
     await Promise.all([
       rm(root, { recursive: true, force: true }),
