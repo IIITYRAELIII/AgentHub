@@ -563,7 +563,7 @@ exercises publication locking uses a fixture-local lock root, never the live
 publisher target already held by the parent pipeline. This applies both to
 direct state/adoption writers and to validation wrappers whose production
 defaults acquire the publication lock, including safe restart and publication
-orchestration tests.
+orchestration tests, and runtime publication-completion recovery.
 
 Verified release completion invokes the same Task Git owner with each exact
 published repository revision. The returned `devSynchronization` evidence

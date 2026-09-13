@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import fs from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -17,6 +18,15 @@ const publicationLockUrl = pathToFileURL(path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../src/infrastructure/process/publication-lock.mjs",
 )).href;
+
+const previousLocalAppData = process.env.LOCALAPPDATA;
+const fixtureLocalAppData = fs.mkdtempSync(path.join(os.tmpdir(), "agent-hub-runtime-publication-lock-"));
+process.env.LOCALAPPDATA = fixtureLocalAppData;
+test.after(() => {
+  if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+  else process.env.LOCALAPPDATA = previousLocalAppData;
+  fs.rmSync(fixtureLocalAppData, { recursive: true, force: true });
+});
 
 function deferred() {
   let resolve;
