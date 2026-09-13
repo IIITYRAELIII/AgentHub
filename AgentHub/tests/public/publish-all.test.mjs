@@ -25,6 +25,14 @@ import {
 } from "../../src/infrastructure/persistence/publication-state.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const previousLocalAppData = process.env.LOCALAPPDATA;
+const fixtureLocalAppData = fs.mkdtempSync(path.join(os.tmpdir(), "agent-hub-publish-all-lock-"));
+process.env.LOCALAPPDATA = fixtureLocalAppData;
+test.after(() => {
+  if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+  else process.env.LOCALAPPDATA = previousLocalAppData;
+  fs.rmSync(fixtureLocalAppData, { recursive: true, force: true });
+});
 
 test("publication rejects a dirty AgentHub working tree", async () => {
   assert.deepEqual(parseWorkingTreeStatus(" M AgentHub/server.mjs\n?? AgentHub/new.mjs\n"), [

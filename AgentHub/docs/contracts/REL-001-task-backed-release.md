@@ -560,7 +560,10 @@ test runner removes inherited publication session and stage-delegation markers
 before every child process. Publisher-owned deploy, activate and verification
 stages retain their separately verified live-owner delegation. Validation that
 exercises publication locking uses a fixture-local lock root, never the live
-publisher target already held by the parent pipeline.
+publisher target already held by the parent pipeline. This applies both to
+direct state/adoption writers and to validation wrappers whose production
+defaults acquire the publication lock, including safe restart and publication
+orchestration tests.
 
 Verified release completion invokes the same Task Git owner with each exact
 published repository revision. The returned `devSynchronization` evidence

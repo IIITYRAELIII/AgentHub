@@ -66,17 +66,26 @@ test("test child processes never inherit publication mutation ownership", async 
   }
 });
 
-test("publication-state tests use a fixture lock while the publisher lock is held", {
-  timeout: 20_000,
+test("every default-lock validation suite uses a fixture root while the publisher lock is held", {
+  timeout: 60_000,
 }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-held-publication-lock-"));
   const previousLocalAppData = process.env.LOCALAPPDATA;
   process.env.LOCALAPPDATA = root;
   try {
-    await withPublicationLock(() => runWindowsTestFile(
+    const files = [
       "tests/infrastructure/persistence/publication-state.test.mjs",
-      { cwd: path.resolve(import.meta.dirname, "../..") },
-    ));
+      "tests/infrastructure/persistence/github-publication-baseline.test.mjs",
+      "tests/infrastructure/persistence/local-publication-receipt-baseline.test.mjs",
+      "tests/application/request-safe-restart.test.mjs",
+      "tests/public/release-candidate-contour.test.mjs",
+      "tests/public/publish-all.test.mjs",
+    ];
+    await withPublicationLock(async () => {
+      for (const file of files) {
+        await runWindowsTestFile(file, { cwd: path.resolve(import.meta.dirname, "../..") });
+      }
+    });
   } finally {
     if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
     else process.env.LOCALAPPDATA = previousLocalAppData;
