@@ -128,6 +128,8 @@ const chatPane = document.querySelector("[data-chat-pane]");
 const streamTabs = document.querySelector("[data-stream-tabs]");
 const streamChatColumns = document.querySelector("[data-stream-chat-columns]");
 const streamChatHeader = document.querySelector("[data-stream-chat-header]");
+const streamHeaderWorkspace = document.querySelector("[data-stream-header-workspace]");
+const streamHeaderName = document.querySelector("[data-stream-header-name]");
 const streamHeaderProviderDot = document.querySelector("[data-stream-header-provider-dot]");
 const streamHeaderProvider = document.querySelector("[data-stream-header-provider]");
 const streamHeaderProviderConnection = document.querySelector("[data-provider-connection-quality]");
@@ -5706,6 +5708,13 @@ function providerConnectionTitle(providerLabel, presentation, measurement) {
 function renderStreamChatHeader(task, now = Date.now()) {
   if (!streamChatHeader) return;
   streamChatHeader.hidden = !task;
+  const workspaceName = task ? String(task.workspaceName || task.title || "Workspace").trim() : "";
+  const streamName = task ? String(task.streamName || task.streamDisplayName || "Stream").trim() : "";
+  if (streamHeaderWorkspace) {
+    streamHeaderWorkspace.textContent = workspaceName;
+    streamHeaderWorkspace.title = workspaceName;
+  }
+  if (streamHeaderName) streamHeaderName.textContent = streamName;
   if (!task) return;
   const provider = String(task.provider ?? "none");
   const providerLabel = task.agentLabel || providerLabels[provider] || "Агент";
