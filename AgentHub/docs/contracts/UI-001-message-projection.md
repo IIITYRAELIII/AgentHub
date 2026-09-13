@@ -216,6 +216,10 @@ A busy-origin command
 with `clientProjectionIntent=queue` remains queue-only if admission later finds
 the Stream idle. Attention-required and ambiguous commands remain queue-owned.
 Reconciliation never renders both forms and never loses the logical entity.
+After an exact steer is authoritatively known to have had no provider effect,
+its attention-required row exposes both exact retry and explicit after-turn
+queue actions; neither action runs before its own click. An unknown provider
+effect remains fail-closed and does not expose the after-turn conversion.
 Every canonical queue row exposes an explicit cancellation action. The action
 removes a waiting or attention-required command only after durable commit; if
 dispatch already owns it, the UI reports that cancellation was not confirmed.

@@ -8166,14 +8166,26 @@ function renderQueueForTask(taskId, container) {
         }));
       }
       if (entry.state === "pending") {
-        actions.push(el("button", {
-          type: "button",
-          class: "queue-accept",
-          "data-action": entry.lastError ? "queue-retry" : "queue-accept",
-          "data-queue-id": entry.id,
-          title: "Отправить после завершения текущего хода",
-          text: entry.lastError ? "Повторить" : "После хода",
-        }));
+        if (entry.lastError) {
+          actions.push(el("button", {
+            type: "button",
+            class: "queue-accept",
+            "data-action": "queue-retry",
+            "data-queue-id": entry.id,
+            title: "Повторить доставку в исходный ход с тем же идентификатором",
+            text: "Повторить",
+          }));
+        }
+        if (!entry.lastError || entry.queueAfterTurnAvailable === true) {
+          actions.push(el("button", {
+            type: "button",
+            class: "queue-accept",
+            "data-action": "queue-accept",
+            "data-queue-id": entry.id,
+            title: "Явно разрешить отправку после завершения текущего хода",
+            text: "После хода",
+          }));
+        }
       }
       actions.push(el("button", {
         type: "button", class: "queue-remove", "data-action": "queue-remove", "data-queue-id": entry.id,

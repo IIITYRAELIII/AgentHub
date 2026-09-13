@@ -884,6 +884,10 @@ export function createDesktopSnapshotFactory({
             annotations: deferred.responseAnnotations?.(item.input) ?? [],
             allowForce: item.allowForce === true,
             conflictKind: item.conflictKind ?? null,
+            ...(item.conflictKind === "message-steer"
+              && item.lastErrorCode === "ERR_PROVIDER_STEER_NOT_DELIVERED"
+              ? { queueAfterTurnAvailable: true }
+              : {}),
             ...waitProjection,
             attempts: Number(item.attempts) || 0,
             createdAt: item.createdAt ?? null,
