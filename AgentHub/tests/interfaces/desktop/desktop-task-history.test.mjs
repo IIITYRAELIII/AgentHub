@@ -915,7 +915,7 @@ test("desktop task history restores a reserved final from explicit journal ident
   assert.equal(result.items[0].terminalRevision, 1);
 });
 
-test("desktop task history hides an identity-less reserved final from the journal overlay", async () => {
+test("desktop task history preserves an identity-less work final that equals the probe marker", async () => {
   const { desktopTaskHistory } = fixture({
     run: null,
     history: [],
@@ -930,7 +930,11 @@ test("desktop task history hides an identity-less reserved final from the journa
 
   const result = await desktopTaskHistory({ includeActive: false, limit: 10 });
 
-  assert.deepEqual(result.items, []);
+  assert.equal(result.items.length, 1);
+  assert.equal(result.items[0].id, "legacy-synthetic-probe");
+  assert.equal(result.items[0].operationKind, "user-turn");
+  assert.equal(result.items[0].answer, CODEX_CONTEXT_PROBE_RESPONSE);
+  assert.equal(result.items[0].messages.at(-1).text, CODEX_CONTEXT_PROBE_RESPONSE);
 });
 
 test("desktop task history preserves the author of an interstream message", async () => {
