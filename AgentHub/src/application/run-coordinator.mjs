@@ -520,7 +520,7 @@ export class RunCoordinator {
         reason: admissionBarrier,
       });
     }
-    if (existingRun?.status === "finishing") {
+    if (existingRun?.status === "finishing" && followUpMode !== "steer") {
       return this.queue(input, attachments, {
         target,
         executionOwner: existingRun.executionOwner ?? TASK_EXECUTION_OWNERS.HUB,

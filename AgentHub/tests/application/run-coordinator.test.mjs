@@ -330,6 +330,47 @@ test("RunCoordinator keeps durable intake automatic while terminal delivery is f
   ]);
 });
 
+test("RunCoordinator preserves exact steer intent while terminal delivery is finishing", async () => {
+  const active = {
+    id: "run-finishing",
+    provider: "codex",
+    streamId: "stream-1",
+    threadId: "thread-1",
+    turnId: "turn-finishing",
+    status: "finishing",
+    executionOwner: "hub",
+  };
+  const f = fixture({
+    taskRuns: { forTask: () => active },
+    deferInput: async (...args) => {
+      f.calls.push(["defer", ...args]);
+      return { id: "steer-finishing", item: { id: "steer-finishing" } };
+    },
+    scheduleDeferred: (item, delay) => f.calls.push(["schedule", item, delay]),
+  });
+
+  const result = await f.coordinator.acceptClientInput({
+    input: "exact finishing steer",
+    target: { provider: "codex", streamId: "stream-1", threadId: "thread-1" },
+    clientUserMessageId: "client-finishing-steer",
+    followUpMode: "steer",
+  });
+
+  assert.equal(result.accepted, true);
+  assert.equal(result.steerPending, true);
+  assert.equal(result.queued, false);
+  assert.equal(result.runId, "run-finishing");
+  assert.equal(result.turnId, "turn-finishing");
+  const deferred = f.calls.find(([name]) => name === "defer")[3];
+  assert.equal(deferred.conflictKind, "message-steer");
+  assert.equal(deferred.steerTargetRunId, "run-finishing");
+  assert.equal(deferred.steerTargetTurnId, "turn-finishing");
+  assert.equal(f.calls.some(([name]) => name === "begin" || name === "launch" || name === "provider"), false);
+  assert.deepEqual(f.calls.find(([name]) => name === "schedule").slice(1), [
+    { id: "steer-finishing" }, 0,
+  ]);
+});
+
 test("RunCoordinator returns a durable same-id result without scheduling another effect", async () => {
   const f = fixture({
     deferInput: async () => ({

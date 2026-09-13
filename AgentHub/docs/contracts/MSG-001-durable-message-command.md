@@ -215,8 +215,9 @@ For a nonterminal Hub-owned managed run, its exact registered `run.turnId` is
 the primary steer identity. A lagging or temporarily incomplete Thread
 projection must not suppress the `turn/steer` attempt. Thread projection is
 consulted only when no exact managed identity exists or when the provider
-rejects that identity as stale; only a real provider rejection downgrades the
-durable command to queued intake.
+rejects that identity as stale. A real provider rejection moves the durable
+command to visible attention-required state without changing its exact steer
+identity.
 
 Provider `turn/steer` is the authority for whether one exact nonterminal managed
 turn remains steerable. Local response projection, including an observed Codex
