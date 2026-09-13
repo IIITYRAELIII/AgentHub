@@ -402,6 +402,26 @@ test("Desktop task open overlaps exact history with selection and skips its sync
   assert.equal(snapshots, 0);
 });
 
+test("Desktop task open settles selection before reporting a parallel history failure", async () => {
+  const { service } = fixture();
+  const selection = Promise.withResolvers();
+  let settled = false;
+  service.dispatchCommand = async () => {
+    await selection.promise;
+    return { selectionChanged: true };
+  };
+  service.taskHistory = async () => { throw new Error("history failed"); };
+
+  const pending = service.openTask({ streamId: "stream-1" });
+  void pending.finally(() => { settled = true; }).catch(() => {});
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  selection.resolve();
+
+  await assert.rejects(pending, /history failed/u);
+  assert.equal(settled, true);
+});
+
 test("Desktop task open resolves a rotated Thread to the current Stream task", async () => {
   const { service, calls } = fixture();
   service.threadsForStream = () => [

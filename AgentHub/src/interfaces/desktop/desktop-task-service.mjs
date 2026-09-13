@@ -200,7 +200,7 @@ export class DesktopTaskService {
       limit: params.limit,
       maxAnswerChars: params.maxAnswerChars,
     };
-    const [selection, response] = await Promise.all([
+    const [selectionResult, responseResult] = await Promise.allSettled([
       this.dispatchCommand(
         "task.select",
         { ...resolvedParams, [SELECTION_WITHOUT_SNAPSHOT]: true },
@@ -209,6 +209,10 @@ export class DesktopTaskService {
       ),
       this.#openHistoryOnlyResponse(historyParams, params),
     ]);
+    if (selectionResult.status === "rejected") throw selectionResult.reason;
+    if (responseResult.status === "rejected") throw responseResult.reason;
+    const selection = selectionResult.value;
+    const response = responseResult.value;
     return { ...response, selectionChanged: selection?.selectionChanged === true };
   }
 
