@@ -386,6 +386,27 @@ test("Codex lifecycle preserves payload-only user identity for exact context pro
   assert.equal(f.codexTurnStarts.size, 0);
 });
 
+test("Codex lifecycle preserves an identity-less work turn that returned the probe marker", async () => {
+  const f = await fixture({ run: null });
+  await f.controller.handle(request("turn-start", f.projectRoot, {
+    prompt: "Продолжай рабочую задачу",
+  }));
+
+  const result = await f.controller.handle(request("turn-complete", f.projectRoot, {
+    status: "completed",
+    prompt: "Продолжай рабочую задачу",
+    finalAnswer: CODEX_CONTEXT_PROBE_RESPONSE,
+  }));
+
+  assert.equal(result, "Recorded Codex turn completion turn-1.");
+  assert.equal(f.recorded.length, 1);
+  assert.equal(f.recorded[0].operationKind, "user-turn");
+  assert.equal(f.recorded[0].contextProbe, false);
+  assert.equal(f.recorded[0].prompt, "Продолжай рабочую задачу");
+  assert.equal(f.recorded[0].finalAnswer, CODEX_CONTEXT_PROBE_RESPONSE);
+  assert.deepEqual(f.deliveredCompletions, [{ id: "completion" }]);
+});
+
 test("Codex lifecycle rejects mixed caller identities", async () => {
   const f = await fixture();
   assert.throws(

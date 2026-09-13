@@ -6,6 +6,11 @@
 outermost client boundary through receipt, queue, run, provider prompt and
 history. A retry reuses it. Equal text is never an identity.
 
+An internal Codex context probe owns a reserved generated
+`clientUserMessageId`. Exact prompt text remains a legacy fallback only when a
+turn has no identity; probe response text alone never classifies or hides an
+ordinary work turn.
+
 If a provider omits that identity from a user item, the item remains unbound.
 A durable receipt may enrich only a provider item that already carries the same
 exact `clientUserMessageId`; receipt count, text, time, attachment names and

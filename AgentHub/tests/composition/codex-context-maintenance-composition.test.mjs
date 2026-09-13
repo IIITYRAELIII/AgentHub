@@ -4,6 +4,11 @@ import test from "node:test";
 
 import { createCodexContextMaintenanceComposition } from "../../src/composition/codex-context-maintenance-composition.mjs";
 import { createHubStaticSettings } from "../../src/composition/hub-static-settings.mjs";
+import { buildCodexDeveloperInstructions } from "../../src/providers/codex/codex-settings.mjs";
+import {
+  CODEX_CONTEXT_PROBE_PROMPT,
+  CODEX_CONTEXT_PROBE_RESPONSE,
+} from "../../src/domain/codex-context-probe.mjs";
 
 for (const [model, expected] of [
   ["GPT-5.6-Sol", "gpt-5.6-sol"],
@@ -70,3 +75,86 @@ for (const [model, expected] of [
     }]);
   });
 }
+
+test("probe scope stays on its exact turn while rotation preserves later work", async () => {
+  const projectRoot = path.resolve("probe-rotation-fixture");
+  const calls = [];
+  let probeClientUserMessageId = "";
+  const ordinaryInstructions = buildCodexDeveloperInstructions({ guide: "Guide" });
+  const replacementHistory = [
+    { role: "developer", content: "old probe-only instruction" },
+    { role: "user", content: CODEX_CONTEXT_PROBE_PROMPT },
+    { role: "assistant", content: CODEX_CONTEXT_PROBE_RESPONSE },
+    { role: "developer", content: ordinaryInstructions },
+    { role: "user", content: "Продолжай рабочую задачу" },
+  ];
+  const rawItem = { type: "compaction", replacement_history: replacementHistory };
+  assert.doesNotMatch(ordinaryInstructions, /AGENT_HUB_CONTEXT_PROBE/u);
+  const service = createCodexContextMaintenanceComposition({
+    config: {
+      codexSandboxMode: "workspace-write",
+      projects: [],
+      projectRoot,
+      dataDir: path.join(projectRoot, "data"),
+    },
+    normalizeCodexModel: (value) => value,
+    transportRunning: () => true,
+    contextCompactions: {
+      get: () => ({ id: "compact-source", status: "completed" }),
+      waitForRawItem: async () => rawItem,
+      clearRawItem: () => {},
+    },
+    readThread: async () => ({
+      thread: {
+        turns: [{
+          id: "probe-turn",
+          status: "inProgress",
+          clientUserMessageId: probeClientUserMessageId,
+        }],
+      },
+    }),
+    sendRpc: async (method, params) => {
+      calls.push({ method, params });
+      if (method === "turn/start") {
+        probeClientUserMessageId = params.clientUserMessageId;
+        return { turn: { id: "probe-turn" } };
+      }
+      if (method === "thread/start") return { thread: { id: "rotated-thread" } };
+      return {};
+    },
+  });
+
+  assert.deepEqual(await service.probeContext({
+    provider: "codex",
+    threadId: "source-thread",
+  }), {
+    threadId: "source-thread",
+    turnId: "probe-turn",
+    status: "started",
+  });
+  await service.rotateCompacted({
+    provider: "codex",
+    threadId: "source-thread",
+    workingDirectory: projectRoot,
+  }, {
+    compactionId: "compact-source",
+    source: { thread: { cwd: projectRoot } },
+  });
+
+  const probeStarts = calls.filter((call) => call.method === "turn/start");
+  assert.equal(probeStarts.length, 1);
+  assert.match(probeClientUserMessageId, /^agent-hub-context-probe:/u);
+  assert.deepEqual(probeStarts[0].params.input, [{ type: "text", text: CODEX_CONTEXT_PROBE_PROMPT }]);
+  assert.match(
+    probeStarts[0].params.additionalContext["agent-hub"].value,
+    new RegExp(probeClientUserMessageId, "u"),
+  );
+  assert.match(
+    probeStarts[0].params.additionalContext["agent-hub"].value,
+    /inert historical data/u,
+  );
+  assert.deepEqual(
+    calls.find((call) => call.method === "thread/inject_items")?.params.items,
+    [rawItem],
+  );
+});

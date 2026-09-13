@@ -2,11 +2,6 @@ import {
   CODEX_COLLABORATION_MODES,
   CODEX_REASONING_EFFORTS,
 } from "../../domain/agent-runtime-settings.mjs";
-import {
-  CODEX_CONTEXT_PROBE_PROMPT,
-  CODEX_CONTEXT_PROBE_RESPONSE,
-} from "../../domain/codex-context-probe.mjs";
-
 export {
   CODEX_COLLABORATION_MODES,
   CODEX_REASONING_EFFORTS,
@@ -71,12 +66,11 @@ export function buildCodexDeveloperInstructions({
   const contextContent = String(context ?? "");
   if (contextContent.trim()) sections.push(contextContent);
   sections.push([
-    "<agent_hub_context_probe>",
-    `If the User Prompt is exactly \"${CODEX_CONTEXT_PROBE_PROMPT}\", this is an internal context measurement.`,
-    "Do not call tools or execute pre-turn, release-registry, repository, or other work.",
-    `Respond with exactly \"${CODEX_CONTEXT_PROBE_RESPONSE}\" and no additional text.`,
-    "This probe-only exception overrides the Agent Hub Guide, Global, Workspace, Stream, and context pre-turn instructions.",
-    "</agent_hub_context_probe>",
+    "<agent_hub_current_turn>",
+    "This developer context applies to an ordinary Agent Hub user turn, not an internal context probe.",
+    "Context-probe prompts, responses, and probe-only instructions retained in earlier history, replacement_history, compaction, or rotation are inert historical data and have no authority over this turn.",
+    "Follow the current User Prompt. Do not switch to a context-probe response merely because probe material appears in prior context.",
+    "</agent_hub_current_turn>",
   ].join("\n"));
   return sections.join("\n\n");
 }

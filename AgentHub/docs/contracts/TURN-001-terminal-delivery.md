@@ -31,9 +31,11 @@ final status and final content.
   evidence that an already-started provider operation has finished.
 - A Codex `task_complete` event carrying an error is a failed terminal, not a
   successful empty answer. Exact-turn, tail and historical readers retain the
-  same outcome. An identity-less context probe stays internal under UI-001;
-  discovering it during reconciliation may update accounting but must not emit
-  an ordinary completion notification.
+  same outcome. A context probe is internal when it carries the reserved exact
+  `clientUserMessageId`; an identity-less legacy turn may fall back only to the
+  exact probe prompt. Probe response text alone never hides an ordinary work
+  turn. Discovering a real probe during reconciliation may update accounting
+  but must not emit an ordinary completion notification.
 - Optional rollout usage, pricing and tool-metadata reconstruction never delays
   terminal commit or admission release. The terminal audit resumes from its
   durable append-only byte checkpoint and reconciles that metadata afterward.

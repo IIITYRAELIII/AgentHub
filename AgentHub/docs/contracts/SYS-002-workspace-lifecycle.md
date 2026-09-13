@@ -55,7 +55,11 @@
   transferred compaction item. An empty suffix is valid; a missing or
   non-unique boundary refuses the transfer before a new Thread exists.
 - Rotation proves readiness before any authoritative switch. The new Thread is
-  probed while still unbound. Only a completed probe with an exact usage
+  probed while still unbound. Its probe-only application instruction is bound
+  to the exact generated probe `clientUserMessageId`; ordinary turns receive a
+  later current-turn scope that makes historical probe instructions inert even
+  when compaction or rotation retains them. User history is not deleted or
+  rewritten for this isolation. Only a completed probe with an exact usage
   measurement allows binding it to the Stream, retargeting the selection,
   client selections and deferred inputs, and recording the rotation together
   with that probe's turn identity and measurement time. A definite failure
