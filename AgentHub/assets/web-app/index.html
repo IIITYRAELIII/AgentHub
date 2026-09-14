@@ -521,7 +521,7 @@
                   <span class="setting-name">Режим</span>
                   <select data-dialog-options="mode" aria-label="Режим"></select>
                 </label>
-                <label class="setting-stack dialog-working-directory">
+                <div class="setting-stack dialog-working-directory directory-field-setting">
                   <span class="setting-name">Рабочая директория Stream</span>
                   <input type="text" data-dialog-working-directory data-directory-field
                     data-directory-empty-label="Наследуется от Workspace"
@@ -530,7 +530,7 @@
                   <span class="switch-note" data-dialog-working-directory-note>
                     Применится при создании следующего Thread.
                   </span>
-                </label>
+                </div>
                 <label class="setting-switch">
                   <input type="checkbox" data-dialog-toggle="autoApprove">
                   <span class="switch-text">Автоподтверждение</span>
@@ -1122,13 +1122,13 @@
           <span>Комментарий</span>
           <textarea rows="4" maxlength="1000" data-workspace-card-comment></textarea>
         </label>
-        <label>
+        <div class="directory-field-setting">
           <span>Рабочая директория</span>
           <input type="text" maxlength="1000" data-workspace-card-working-directory data-directory-field
             data-directory-empty-label="Каталог не выбран"
             data-directory-empty-status="Укажите каталог вручную или выберите через Проводник."
             placeholder="Например, D:\projects\Utilities\AgentHub" autocomplete="off" spellcheck="false">
-        </label>
+        </div>
         <label>
           <span>Префикс воркспейса</span>
           <input type="text" maxlength="40" data-workspace-card-task-prefix
