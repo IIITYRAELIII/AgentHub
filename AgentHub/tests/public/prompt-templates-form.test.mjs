@@ -202,6 +202,16 @@ test("общая форма открывается из настроек, кар
     assert.equal(await page.locator(MODAL).isVisible(), false);
     assert.equal(await page.locator('.settings-panel [data-quick-message-action-mode]').count(), 0);
     assert.equal(await page.locator('.quick-messages-settings-row .setting-name').textContent(), 'Prompt-шаблоны');
+    assert.equal(await page.locator('.quick-messages-settings-row').getByRole('button').count(), 1);
+    assert.equal(await page.locator('.quick-messages-settings-row').getByRole('button', { name: 'Настроить шаблоны' }).count(), 0);
+    const heading = page.locator('.quick-messages-settings-row').getByRole('button', { name: /Prompt-шаблоны/u });
+    for (const key of ['Enter', 'Space']) {
+      await heading.focus();
+      await page.keyboard.press(key);
+      assert.equal(await page.locator(MODAL).isVisible(), true);
+      await page.keyboard.press('Escape');
+      assert.equal(await page.locator(MODAL).isVisible(), false);
+    }
     assert.equal(await page.locator(".settings-panel [data-quick-message-row]").count(), 0,
       "встроенный редактор остался в панели настроек");
     await openForm(page, "global");

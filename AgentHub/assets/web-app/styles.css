@@ -5419,19 +5419,6 @@ html[data-view="dashboard"] .task-board-view.is-list-view .task-board-columns {
 }
 
 /* Вход в общую форму на месте прежнего редактора. */
-.prompt-template-entry-controls {
-  display: flex;
-  padding: 0.6rem 0.75rem 0.75rem;
-}
-
-/* На узкой карточке подпись переносится, но кнопка не сжимается в ноль: у чипа
-   по умолчанию текст в одну строку, и во flex-строке он схлопывался. */
-.prompt-template-entry-open {
-  flex: 0 1 auto;
-  max-width: 100%;
-  white-space: normal;
-}
-
 .workspace-card-modal::backdrop {
   background: rgba(2, 5, 10, 0.76);
   backdrop-filter: blur(3px);
@@ -10637,6 +10624,23 @@ html[data-surface="mobile"] .chat-stop-bottom > span {
 
 .quick-messages-settings-row .setting-name {
   overflow-wrap: anywhere;
+}
+
+.prompt-template-entry-heading {
+  background: transparent;
+  border: 0;
+  color: var(--text-soft);
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+}
+
+.prompt-template-entry-heading:hover {
+  background: var(--accent-soft);
+}
+
+.prompt-template-entry-heading:focus-visible {
+  outline-offset: -2px;
 }
 
 .setting-field select option {
