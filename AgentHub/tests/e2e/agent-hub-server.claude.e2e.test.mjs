@@ -484,18 +484,24 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   await waitFor(async () => (await activeRuns()).length === 0,
     "reattached Claude turn delivered its final answer", 20_000);
   const journalTurn = await waitFor(async () => {
-    const ledger = await new JournalDatabase(journalDatabasePath).loadLedger().catch(() => null);
-    return Object.values(ledger?.turns ?? {}).find((turn) => (
-      turn.provider === "claude"
-      && String(turn.body ?? "").includes(secondPrompt)
-    )) ?? null;
+    const database = new JournalDatabase(journalDatabasePath);
+    try {
+      const ledger = await database.loadLedger().catch(() => null);
+      return Object.values(ledger?.turns ?? {}).find((turn) => (
+        turn.provider === "claude"
+        && String(turn.body ?? "").includes(secondPrompt)
+      )) ?? null;
+    } finally {
+      database.close();
+    }
   }, "Claude journal entry", 15_000);
   assert.equal(journalTurn.threadId, secondThreadId);
   assert.equal(journalTurn.estimatedCredits, 0.1);
   assert.equal(journalTurn.estimateKind, "claude-cli-total-cost-usd");
 
-  // Брошенный незавершённый транскрипт имеет неопределённую живость: он не
-  // считается активным, но новый ход требует явного подтверждения пользователя.
+  // Брошенный незавершённый транскрипт имеет неопределённую живость: одного
+  // transcript недостаточно. Если exact external process уже
+  // исчез, production admission должен освободить lane без force/restart.
   const staleSessionId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
   const staleTranscript = path.join(
     transcriptRoot,
@@ -539,11 +545,10 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   mark = telegram.calls.length;
   const stalePrompt = "сообщение в брошенную сессию";
   telegram.pushMessage(stalePrompt);
-  let uncertain;
   try {
-    uncertain = await telegram.waitForText("Нельзя надёжно определить", {
+    await telegram.waitForText(`Claude готово: ${stalePrompt}`, {
       after: mark,
-      timeoutMs: 15_000,
+      timeoutMs: 25_000,
     });
   } catch (error) {
     throw new Error(
@@ -562,20 +567,6 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
       { cause: error },
     );
   }
-  const forceButton = uncertain.body.reply_markup.inline_keyboard.flat()
-    .find((button) => button.callback_data.startsWith("pending:force:"));
-  assert.ok(forceButton, "unknown Claude activity must require an explicit force action");
-  assert.equal(
-    telegram.callsAfter(mark, "sendMessage").some((call) => (
-      String(call.body.text ?? "").includes(`Claude готово: ${stalePrompt}`)
-    )),
-    false,
-    "an uncertain transcript must not start a new turn automatically",
-  );
-
-  mark = telegram.calls.length;
-  telegram.pushCallback(forceButton.callback_data, uncertain.result);
-  await telegram.waitForText(`Claude готово: ${stalePrompt}`, { after: mark, timeoutMs: 25_000 });
   try {
     await waitFor(async () => (await activeRuns()).length === 0, "stale session turn completion", 15_000);
   } catch (error) {
@@ -593,6 +584,45 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
       + `\nstderr:\n${stderr}`,
     );
   }
+
+  // Host process inventory can be temporarily unavailable. MSG-001 permits
+  // an unknown-activity warning, but requires automatic reconciliation once
+  // exact process absence is confirmed. No force callback or restart is sent.
+  await waitFor(async () => {
+    const state = await runtimeState();
+    return [...(state.pendingInputs ?? []), ...(state.queuedInputs ?? [])]
+      .every((item) => item.provider !== "claude" || item.threadId !== staleSessionId);
+  }, "abandoned session deferred command retired automatically", 15_000);
+  assert.equal(await telegramSelectedThread(), staleSessionId,
+    "automatic reconciliation must preserve the selected session");
+  const staleHistory = await callDesktopControl("task-history", {
+    provider: "claude",
+    threadId: staleSessionId,
+    limit: 20,
+  }, { runtimeRoot: temporaryRoot });
+  const staleExchanges = staleHistory.items.filter((item) => item.prompt === stalePrompt);
+  assert.equal(staleExchanges.length, 1,
+    "automatic reconciliation must produce exactly one exchange in the original session");
+  assert.ok(staleExchanges[0].answer.includes(`Claude готово: ${stalePrompt}`));
+  const staleJournalTurns = await waitFor(async () => {
+    const database = new JournalDatabase(journalDatabasePath);
+    try {
+      const ledger = await database.loadLedger();
+      const turns = Object.values(ledger?.turns ?? {}).filter((turn) => (
+        turn.provider === "claude"
+        && turn.threadId === staleSessionId
+        && String(turn.body ?? "").includes(stalePrompt)
+      ));
+      return turns.length > 0 ? turns : null;
+    } finally {
+      database.close();
+    }
+  }, "abandoned session durable completion", 15_000);
+  assert.equal(staleJournalTurns.length, 1,
+    "automatic reconciliation must account for one completed turn");
+  assert.equal(telegram.callsAfter(mark, "sendMessage").filter((call) => (
+    String(call.body.text ?? "").includes(`Claude готово: ${stalePrompt}`)
+  )).length, 1, "the abandoned session must answer once without force or restart");
 
   // Если локальный transcript удалён, task-sync всё равно сохраняет карточку.
   // Следующий ход должен пересоздать тот же UUID через --session-id, а не

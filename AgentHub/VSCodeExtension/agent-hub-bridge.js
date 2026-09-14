@@ -470,9 +470,22 @@ class AgentHubBridge {
   }
 
   async journal() {
-    this.journalCache = await this.withJournalStore((database) => database.payload());
+    this.journalCache ??= await this.withJournalStore((database) => database.payload());
     if (!this.journalCache) throw new Error("Журнал ещё не создан");
     return this.journalCache;
+  }
+
+  async journalMetadata() {
+    const metadata = await this.withJournalStore((database) => (
+      typeof database.metadata === "function" ? database.metadata() : null
+    ));
+    if (metadata) return metadata;
+    const journal = await this.journal();
+    return {
+      updatedAt: journal.updatedAt,
+      version: journal.version,
+      revision: journal.revision,
+    };
   }
 
   async journalData() {
@@ -525,7 +538,7 @@ class AgentHubBridge {
     }
   }
 
-  async subscribeJournal(listener, { pollMs = 500 } = {}) {
+  async subscribeJournal(listener, { pollMs = 5_000 } = {}) {
     if (!this.ownsJournalDatabase) {
       return (await this.journalStore()).subscribe((event) => {
         this.journalCache = null;
@@ -535,8 +548,9 @@ class AgentHubBridge {
     const dataDirectory = path.join(this.runtimeRoot, "data");
     const databaseNames = new Set(["journal.sqlite", "journal.sqlite-wal", "journal.sqlite-shm"]);
     let disposed = false;
-    let observedIdentity = null;
+    let observedVersion = null;
     let polling = false;
+    let lastPollAt = 0;
     const notify = (event) => {
       if (disposed) return;
       this.journalCache = null;
@@ -545,40 +559,45 @@ class AgentHubBridge {
     const poll = async () => {
       if (disposed || polling) return;
       polling = true;
+      lastPollAt = Date.now();
       try {
-        const identity = (await Promise.all([...databaseNames].map(async (name) => {
-          try {
-            const info = await stat(path.join(dataDirectory, name));
-            return `${name}:${info.size}:${info.mtimeMs}`;
-          } catch (error) {
-            if (error?.code === "ENOENT") return `${name}:missing`;
-            throw error;
-          }
-        }))).join("|");
-        const initial = observedIdentity === null;
-        if (initial || identity !== observedIdentity) {
-          observedIdentity = identity;
+        const metadata = await this.journalMetadata();
+        const version = String(metadata?.version ?? "");
+        const initial = observedVersion === null;
+        if (initial || version !== observedVersion) {
+          observedVersion = version;
           notify({ type: "filesystem", initial });
         }
       } finally {
         polling = false;
       }
     };
+    let debounceTimer = null;
+    const schedulePoll = () => {
+      if (debounceTimer) return;
+      const delayMs = Math.max(250, 1_000 - (Date.now() - lastPollAt));
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        void poll().catch(() => {});
+      }, delayMs);
+      debounceTimer.unref?.();
+    };
     let watcher = null;
     try {
       watcher = watch(dataDirectory, { persistent: false }, (_event, filename) => {
-        if (!filename || databaseNames.has(String(filename).toLowerCase())) void poll().catch(() => {});
+        if (!filename || databaseNames.has(String(filename).toLowerCase())) schedulePoll();
       });
       watcher.on("error", () => {});
     } catch {
       // Polling covers a data directory that is temporarily unavailable.
     }
-    const timer = setInterval(() => void poll().catch(() => {}), Math.max(100, Number(pollMs) || 500));
+    const timer = setInterval(() => void poll().catch(() => {}), Math.max(1_000, Number(pollMs) || 5_000));
     timer.unref?.();
     void poll().catch(() => {});
     return () => {
       disposed = true;
       watcher?.close();
+      if (debounceTimer) clearTimeout(debounceTimer);
       clearInterval(timer);
     };
   }
@@ -680,10 +699,10 @@ class AgentHubBridge {
       }
     }
     try {
-      const journal = await this.journal();
       /* Сводка лимитов нужна шапке во всех разделах, а журнал панель отдаёт
          целиком, поэтому блок вырезается из готового снимка. */
       if (url.pathname === "/api/rate-limits") {
+        const journal = await this.journal();
         const block = String(journal.html ?? "").match(
           /<div\b[^>]*data-work-log-rate-limits\b[^>]*>[\s\S]*?<\/div>/iu,
         )?.[0] ?? "";
@@ -695,6 +714,15 @@ class AgentHubBridge {
       if (url.pathname === "/api/journal") {
         const journalData = await this.journalData().catch(() => null);
         const usageSync = await this.usageSyncStatus();
+        const metadata = await this.journalMetadata();
+        const metadataEtagValue = journalData?.journalPayloadEtag
+          ? journalData.journalPayloadEtag(metadata, usageSync)
+          : metadata.version;
+        const metadataEtag = `"${metadataEtagValue}"`;
+        if (String(headers["if-none-match"] ?? "") === metadataEtag) {
+          return { status: 304, headers: { ETag: metadataEtag }, body: "" };
+        }
+        const journal = await this.journal();
         const etagValue = journalData?.journalPayloadEtag
           ? journalData.journalPayloadEtag(journal, usageSync)
           : journal.version;
@@ -713,6 +741,7 @@ class AgentHubBridge {
         return jsonResponse(payload, 200, { ETag: etag });
       }
       if (url.pathname === "/api/journal/day" || url.pathname === "/api/journal/turn") {
+        const journal = await this.journalMetadata();
         const requestedVersion = String(url.searchParams.get("version") ?? "");
         if (requestedVersion && requestedVersion !== journal.version) {
           return jsonResponse({ error: "Журнал обновился.", version: journal.version }, 409);

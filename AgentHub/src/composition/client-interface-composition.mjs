@@ -1,10 +1,12 @@
-import { unlink } from "node:fs/promises";
+import { createRuntimeFileRemoval } from "../runtime/test-contour-runtime-effects.mjs";
 import path from "node:path";
 
 import { BugReportTaskCapture } from "../application/bug-report-task-capture.mjs";
 import { RateLimitTelemetryService } from "../application/rate-limit-telemetry-service.mjs";
 import { createCodexAssistantAttachmentImporter } from "../providers/codex/codex-assistant-attachments.mjs";
 import { ApprovalController } from "../interfaces/telegram/approval-controller.mjs";
+import { AsyncUserQuestionService } from "../application/async-user-question-service.mjs";
+import { AsyncUserQuestionStore } from "../infrastructure/persistence/async-user-question-store.mjs";
 import { MediaController } from "../interfaces/telegram/media-controller.mjs";
 import { TelegramClient } from "../infrastructure/telegram/telegram-client.mjs";
 import { TelegramSettingsMenu } from "../interfaces/telegram/telegram-settings-menu.mjs";
@@ -21,6 +23,8 @@ import { BugReportRepository } from "../infrastructure/filesystem/bug-report-rep
 import { BugReportCaptureCursorStore } from "../infrastructure/persistence/bug-report-capture-cursor-store.mjs";
 import { QuickTunnelController } from "../infrastructure/network/quick-tunnel.mjs";
 import { readClaudeAccount } from "../providers/claude/claude-account.mjs";
+import { ProviderLoginService } from "../application/provider-login-service.mjs";
+import { spawn } from "node:child_process";
 
 const BUG_REPORT_SCAN_INTERVAL_MS = 5 * 60_000;
 
@@ -86,6 +90,7 @@ export async function createClientInterfaceComposition({
   taskProgress,
   mcpAdmissionCoordinator,
 }) {
+  const removeRuntimeFile = createRuntimeFileRemoval(config);
   let mediaController;
   const telegramClient = new TelegramClient({
     token,
@@ -206,14 +211,14 @@ export async function createClientInterfaceComposition({
         screenshots: files.map((file, index) => ({ file, type: descriptors[index]?.type })),
       });
       try {
-        bugReportTasks.capture(result, { text: params?.text });
+        await bugReportTasks.capture(result, { text: params?.text });
         await bugReportTasks.scan();
       } catch (error) {
         console.warn(`Cannot add bug report ${result.id} to Dashboard: ${error.message}`);
       }
       return result;
     } finally {
-      await Promise.all(files.map((file) => unlink(file).catch(() => {})));
+      await Promise.all(files.map((file) => removeRuntimeFile(file)));
     }
   };
   const telegramMultipart = (method, body, fileField, filePath) => (
@@ -261,6 +266,29 @@ export async function createClientInterfaceComposition({
     timers: runtimeTimers,
     isStopping,
   });
+  const providerLogin = new ProviderLoginService({
+    sendRpc,
+    resolveClaudeInvocation,
+    spawnProcess: spawn,
+    stopProcessTree,
+    readClaudeLoggedIn: async () => {
+      const invocation = resolveClaudeInvocation();
+      const result = await spawnCapture(invocation.command, [
+        ...invocation.prefixArgs, "auth", "status", "--json",
+      ], { timeoutMs: 15_000, maxOutputBytes: 64 * 1024 });
+      if (result.error || result.code !== 0) return false;
+      try {
+        return JSON.parse(result.stdout).loggedIn === true;
+      } catch {
+        return false;
+      }
+    },
+    // Codex limits belong to the account that just signed in; Claude account
+    // identity is re-read from its config file on the next access.
+    onAccountChanged: async (providerName) => {
+      if (providerName === "codex") await rateLimitTelemetry.refreshCodex();
+    },
+  });
   workLogUsageStore.setResolveAccount?.(async (providerName) => {
     const normalized = String(providerName ?? "").trim().toLowerCase();
     if (normalized === "codex") {
@@ -296,7 +324,10 @@ export async function createClientInterfaceComposition({
     stopProcessTree,
   });
   await mediaController.load();
+  const asyncQuestionStore = new AsyncUserQuestionStore({ dataDir: config.dataDir });
+  await asyncQuestionStore.load();
   const approvalController = new ApprovalController({
+    asyncQuestions: new AsyncUserQuestionService({ store: asyncQuestionStore }),
     approvalProtocol,
     autoApprove,
     respond: respondRpc,
@@ -332,6 +363,7 @@ export async function createClientInterfaceComposition({
     deferredInputPresentation,
     telegramSettingsMenu,
     rateLimitTelemetry,
+    providerLogin,
     telegramStatusController,
     mediaController,
     approvalController,

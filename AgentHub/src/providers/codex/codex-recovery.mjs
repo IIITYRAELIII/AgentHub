@@ -35,6 +35,16 @@ export async function steerCodexTurnWithRecovery({ threadId, steer, resume }) {
   }
 }
 
+export async function updateCodexThreadSettingsWithRecovery({ threadId, update, resume }) {
+  try {
+    return await update();
+  } catch (error) {
+    if (!needsThreadResume(error)) throw error;
+    await resume({ threadId });
+    return update();
+  }
+}
+
 export async function startCodexTurnWithRecovery({
   threadId,
   startTurn,

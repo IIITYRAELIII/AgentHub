@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 
+import { mergeCanonicalUserMessages } from "../../src/domain/canonical-user-messages.mjs";
+
 async function projectionApi() {
   const source = await readFile(
     new URL("../../assets/web-app/messages/projection.js", import.meta.url),
@@ -16,6 +18,22 @@ async function projectionApi() {
 function plain(value) {
   return JSON.parse(JSON.stringify(value));
 }
+
+test("terminal client messages without provider item IDs remain distinct including interstream input", async () => {
+  const projection = await projectionApi();
+  const users = Array.from({ length: 6 }, (_, index) => ({
+    role: "user", provider: "codex", threadId: "thread", turnId: "turn", itemId: "",
+    clientUserMessageId: `client-${index}`, text: `Message ${index}`,
+    projectionAuthority: "canonical", projectionState: "completed",
+    ...(index === 4 ? { kind: "interstream", author: "Themes" } : {}),
+  }));
+  for (const order of [users, [...users].reverse()]) {
+    const result = plain(projection.projectCanonicalMessages([...order, ...order]));
+    assert.deepEqual(result, order);
+    assert.equal(result.find((message) => message.clientUserMessageId === "client-5").kind, undefined);
+    assert.equal(result.find((message) => message.clientUserMessageId === "client-4").author, "Themes");
+  }
+});
 
 test("canonical submission atomically replaces optimistic aliases in either order", async () => {
   const projection = await projectionApi();
@@ -237,6 +255,75 @@ test("Codex production history, live and outgoing aliases project one root and o
       projected.map((message) => message.clientUserMessageId).sort(),
       ["client-root", "client-steer"],
     );
+  }
+});
+
+test("a truncated unkeyed refresh cannot leave optimistic duplicates after navigation", async () => {
+  const projection = await projectionApi();
+  const canonical = ["root", "steer"].map((suffix) => ({
+    role: "user",
+    provider: "codex",
+    threadId: "thread-production",
+    turnId: "turn-production",
+    itemId: `owned-${suffix}`,
+    clientUserMessageId: `client-${suffix}`,
+    text: "Одинаковый текст",
+    operationKind: "user-turn",
+    projectionAuthority: "canonical",
+    projectionState: "completed",
+  }));
+  const refreshed = mergeCanonicalUserMessages(canonical, [{
+    role: "user",
+    itemId: "rollout-tail",
+    text: "Одинаковый текст",
+  }]);
+  const outgoing = canonical.map((message) => ({
+    ...message,
+    itemId: message.clientUserMessageId,
+    submissionId: message.clientUserMessageId,
+    projectionAuthority: "optimistic",
+    projectionState: "optimistic",
+  }));
+
+  for (const values of [[...outgoing, ...refreshed], [...refreshed, ...outgoing]]) {
+    const projected = plain(projection.projectCanonicalMessages(values));
+    assert.equal(projected.length, 2);
+    assert.deepEqual(projected.map((message) => message.clientUserMessageId), [
+      "client-root",
+      "client-steer",
+    ]);
+  }
+});
+
+test("canonical projection strips an interstream wrapper only with matching origin and command identity", async () => {
+  const projection = await projectionApi();
+  const origin = {
+    kind: "interstream", workspaceId: "hub", workspaceName: "Agent HUB",
+    streamId: "themes", streamName: "Themes", provider: "codex", model: "GPT-5.6-Terra",
+    sourceThreadId: "themes-thread", requestId: "hub176-design-review",
+  };
+  const rawText = `<agent-hub-stream-message>\n${JSON.stringify(origin)}\n</agent-hub-stream-message>\nПроверь дизайн`;
+  const message = {
+    role: "user", kind: "interstream", origin, text: rawText,
+    provider: "codex", threadId: "architect-thread", turnId: "turn-review", itemId: "review-item",
+    clientUserMessageId: "mcp:hub176-design-review", projectionAuthority: "canonical",
+    author: "Agent HUB - Themes (Terra)", projectionState: "completed",
+  };
+  const [trusted] = plain(projection.projectCanonicalMessages([message]));
+  assert.equal(trusted.text, "Проверь дизайн");
+  assert.equal(trusted.author, message.author);
+  assert.deepEqual(trusted.origin, origin);
+  for (const value of [
+    { ...message, origin: undefined },
+    { ...message, origin: { ...origin, sourceThreadId: "foreign" } },
+    { ...message, clientUserMessageId: "literal-client" },
+    { ...message, text: rawText.replace('"kind"', 'broken"kind"') },
+  ]) {
+    assert.equal(projection.projectCanonicalMessages([value])[0].text, value.text);
+  }
+  const live = { ...message, projectionAuthority: "live", projectionState: "active" };
+  for (const values of [[live, trusted], [trusted, live]]) {
+    assert.equal(projection.projectCanonicalMessages(values)[0].text, "Проверь дизайн");
   }
 });
 

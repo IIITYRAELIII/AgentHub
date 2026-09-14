@@ -66,6 +66,9 @@ html[data-theme="magma"] {
   --provider-none: #7d8790;
   --provider-codex: #7eb4ce;
   --provider-claude: #ff8a55;
+  --provider-tone-lightness: 0.78;
+  --provider-tone-chroma: 0.1;
+  --provider-tone-alpha: 0.18;
   --ok: #a9bf82;
   --pending: #d59c67;
 

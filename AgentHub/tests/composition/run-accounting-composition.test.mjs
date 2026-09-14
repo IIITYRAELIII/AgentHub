@@ -3,6 +3,20 @@ import test from "node:test";
 
 import { createRunAccountingComposition } from "../../src/composition/run-accounting-composition.mjs";
 
+test("accounting forwards deferred projection options and its durable result intact", async () => {
+  const calls = [];
+  const result = { recorded: true, projected: false, projectionDeferred: true };
+  const accounting = createRunAccountingComposition({
+    runJournal: { projectTurn: async (...args) => { calls.push(args); return result; } },
+  });
+  const completion = { provider: "codex", threadId: "thread", turnId: "turn" };
+  const options = { title: "Corrected", body: "Full answer", deferProjection: true };
+  assert.equal(await accounting.projectTurnUsageToWorkLog(completion, options), result);
+  assert.deepEqual(calls, [[completion, options]]);
+  await accounting.projectTurnUsageToWorkLog(completion);
+  assert.deepEqual(calls[1], [completion, {}]);
+});
+
 test("Claude accounting resolves transcript path without loading history", async () => {
   let readOptions = null;
   const accounting = createRunAccountingComposition({

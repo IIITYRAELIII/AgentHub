@@ -20,7 +20,7 @@ const PRIVILEGED_CONTROL_SOURCES = Object.freeze(["desktop-control", "local-mini
 const RECEIPT_SHAPE = "__agentHubControlReceiptShape";
 const SNAPSHOT_RESULT_KEYS = Object.freeze([
   "apiVersion", "workspaces", "boardTasks", "boardLayout", "selected", "settings",
-  "pendingApprovals", "messageReceipts", "deferredInputs", "restartPending",
+  "pendingApprovals", "messageReceipts", "messagePins", "deferredInputs", "restartPending",
   "restartWaiting", "restartBlockingCount", "exchangeRates", "activeCount", "server",
   "tasks", "conversations", "collectionDeltas", "generatedAt", "version", "notModified",
 ]);
@@ -113,7 +113,7 @@ export function createDesktopControlRouter({
   }
 
   function durableFingerprintParams(params) {
-    const { clientTiming: _clientTiming, ...stableParams } = params;
+    const { clientTiming: _clientTiming, clientTraceId: _clientTraceId, ...stableParams } = params;
     return stableParams;
   }
 
@@ -145,7 +145,9 @@ export function createDesktopControlRouter({
       resolvedParams.clientUserMessageId = String(context.commandId);
     }
     const traceCommandId = String(
-      resolvedParams.clientUserMessageId ?? context?.commandId ?? "",
+      resolvedParams.clientUserMessageId
+        ?? (/^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/u.test(resolvedParams.clientTraceId ?? "")
+          ? resolvedParams.clientTraceId : context?.commandId) ?? "",
     ).trim();
     const traceTransport = String(context?.source ?? "desktop-control").trim().toLowerCase()
       || "desktop-control";
@@ -181,13 +183,18 @@ export function createDesktopControlRouter({
       stage: "response-send",
       transport: traceTransport,
       metadata: { action, receivedAtMs, handlerEnteredAtMs },
+      recordStarted: true,
     });
+    const measuredHandler = () => commandTrace?.measureBestEffort
+      ? commandTrace.measureBestEffort({ commandId: traceCommandId, stage: "control-handler", transport: traceTransport, metadata: { action } },
+        () => handler(resolvedParams, context))
+      : handler(resolvedParams, context);
     try {
       let result;
       if (mutations.has(action)) {
         const execute = () => concurrentMutations.has(action)
-          ? handler(resolvedParams, context)
-          : serializeDesktopMutation(() => handler(resolvedParams, context));
+          ? measuredHandler()
+          : serializeDesktopMutation(measuredHandler);
         const commandId = String(context?.commandId ?? "").trim();
         if (!receipts || !commandId || !durableMutations.has(action)) {
           result = await mutationResultForClient(await execute(), context);
@@ -217,7 +224,7 @@ export function createDesktopControlRouter({
             : await hydrateProjectedResult(durableResult, context);
         }
       } else {
-        result = await handler(resolvedParams, context);
+        result = await measuredHandler();
       }
       responseSpan?.finish?.({
         outcome: "succeeded",
@@ -233,7 +240,7 @@ export function createDesktopControlRouter({
         metadata: {
           hubReceiveToResponseMs: Math.max(0, Date.now() - receivedAtMs),
           handlerToResponseMs: Math.max(0, Date.now() - handlerEnteredAtMs),
-          error: String(error?.message ?? error).slice(0, 500),
+          failed: true,
         },
       });
       throw error;

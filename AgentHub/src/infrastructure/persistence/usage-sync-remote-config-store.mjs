@@ -7,6 +7,10 @@ function text(value, limit = 1024) {
   return String(value ?? "").trim().slice(0, limit);
 }
 
+function positiveInteger(value) {
+  return Math.max(0, Math.trunc(Number(value) || 0));
+}
+
 function normalizeUrl(value) {
   const candidate = text(value);
   if (!candidate) return "";
@@ -22,24 +26,23 @@ function normalizeUrl(value) {
 function normalizeState(value = {}, { defaultServerUrl = "" } = {}) {
   if (!value || typeof value !== "object") return {};
   const serverUrl = value.serverUrl ? normalizeUrl(value.serverUrl) : normalizeUrl(defaultServerUrl);
-  const pullRevision = Math.max(0, Math.trunc(Number(value.lastUsagePullRevision) || 0));
   return {
-    version: 2,
+    version: 3,
     serverUrl,
     deviceId: text(value.deviceId, 80),
     enrolledAt: text(value.enrolledAt, 80),
     lastPushAt: text(value.lastPushAt, 80),
     lastPullAt: text(value.lastPullAt, 80),
     lastUsagePushWatermark: text(value.lastUsagePushWatermark, 80),
-    lastUsagePushJournalRevision: Math.max(
-      0,
-      Math.trunc(Number(value.lastUsagePushJournalRevision) || 0),
-    ),
-    lastUsageHistoryResendVersion: Math.max(
-      0,
-      Math.trunc(Number(value.lastUsageHistoryResendVersion) || 0),
-    ),
-    lastUsagePullRevision: pullRevision,
+    lastUsagePushJournalRevision: positiveInteger(value.lastUsagePushJournalRevision),
+    lastUsageHistoryResendVersion: positiveInteger(value.lastUsageHistoryResendVersion),
+    lastUsagePullRevision: positiveInteger(value.lastUsagePullRevision),
+    lastUsagePullServerGeneration: text(value.lastUsagePullServerGeneration, 120),
+    lastUsagePullLocalGeneration: text(value.lastUsagePullLocalGeneration, 120),
+    lastUsagePullFactSummary: value.lastUsagePullFactSummary && typeof value.lastUsagePullFactSummary === "object"
+      ? structuredClone(value.lastUsagePullFactSummary)
+      : null,
+    lastUsageAntiEntropyAt: text(value.lastUsageAntiEntropyAt, 80),
     lastResult: value.lastResult && typeof value.lastResult === "object"
       ? structuredClone(value.lastResult)
       : null,
@@ -122,8 +125,22 @@ export class UsageSyncRemoteConfigStore {
     });
   }
 
-  rememberPull(result = {}, { serverRevision = null } = {}) {
-    return this.#rememberResult("lastPullAt", result, { serverRevision });
+  rememberPull(result = {}, {
+    serverRevision = null,
+    serverGeneration = "",
+    localGeneration = "",
+    factSummary = null,
+    antiEntropyAt = "",
+    replaceCursor = false,
+  } = {}) {
+    return this.#rememberResult("lastPullAt", result, {
+      serverRevision,
+      serverGeneration,
+      localGeneration,
+      factSummary,
+      antiEntropyAt,
+      replaceCursor,
+    });
   }
 
   #rememberResult(timestampField, result, {
@@ -131,6 +148,11 @@ export class UsageSyncRemoteConfigStore {
     usageJournalRevision = null,
     usageHistoryResendVersion = null,
     serverRevision = null,
+    serverGeneration = "",
+    localGeneration = "",
+    factSummary = null,
+    antiEntropyAt = "",
+    replaceCursor = false,
   } = {}) {
     return this.#enqueue(async () => {
       const current = this.#state ?? normalizeState(await readJson(this.#file), {
@@ -142,19 +164,21 @@ export class UsageSyncRemoteConfigStore {
         lastUsagePushWatermark: usageWatermark || current.lastUsagePushWatermark,
         lastUsagePushJournalRevision: usageJournalRevision == null
           ? current.lastUsagePushJournalRevision
-          : Math.max(
-              Number(current.lastUsagePushJournalRevision) || 0,
-              Math.trunc(Number(usageJournalRevision) || 0),
-            ),
+          : Math.max(Number(current.lastUsagePushJournalRevision) || 0, positiveInteger(usageJournalRevision)),
         lastUsageHistoryResendVersion: usageHistoryResendVersion == null
           ? current.lastUsageHistoryResendVersion
-          : Math.max(
-              Number(current.lastUsageHistoryResendVersion) || 0,
-              Math.trunc(Number(usageHistoryResendVersion) || 0),
-            ),
+          : Math.max(Number(current.lastUsageHistoryResendVersion) || 0, positiveInteger(usageHistoryResendVersion)),
         lastUsagePullRevision: serverRevision == null
           ? current.lastUsagePullRevision
-          : Math.max(Number(current.lastUsagePullRevision) || 0, Math.trunc(Number(serverRevision) || 0)),
+          : replaceCursor
+            ? positiveInteger(serverRevision)
+            : Math.max(Number(current.lastUsagePullRevision) || 0, positiveInteger(serverRevision)),
+        lastUsagePullServerGeneration: serverGeneration || current.lastUsagePullServerGeneration,
+        lastUsagePullLocalGeneration: localGeneration || current.lastUsagePullLocalGeneration,
+        lastUsagePullFactSummary: factSummary && typeof factSummary === "object"
+          ? structuredClone(factSummary)
+          : current.lastUsagePullFactSummary,
+        lastUsageAntiEntropyAt: antiEntropyAt || current.lastUsageAntiEntropyAt,
         lastResult: result,
       });
       await this.#write(state);

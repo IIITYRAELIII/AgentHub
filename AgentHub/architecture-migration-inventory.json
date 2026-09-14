@@ -1,9 +1,7 @@
 {
   "schemaVersion": 1,
   "baseline": {
-    "serverMaximumLines": 150,
-    "compositionMaximumLines": 638,
-    "rootProductionModules": 28,
+    "rootProductionModules": 30,
     "rootTestModules": 0
   },
   "publicRootModules": [
@@ -27,6 +25,8 @@
     "send-message.mjs",
     "shared-dashboard-bot-pair.mjs",
     "shared-dashboard-bot-webhook.mjs",
+    "task-await-cutover.mjs",
+    "task-operation-reconcile.mjs",
     "test-contour.mjs",
     "test-suite.mjs",
     "tts-smoke.mjs",

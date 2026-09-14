@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import {
   createMaintenanceOperation,
@@ -10,7 +11,8 @@ import {
   transitionMaintenanceOperation,
   unknownMaintenanceOutcome,
 } from "../../domain/maintenance-operation.mjs";
-import { openRuntimeDatabase } from "./runtime-state-store.mjs";
+import { openRuntimeDatabase, runtimeDatabasePath } from "./runtime-state-store.mjs";
+import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 
 const LEGACY_RESTART_MIGRATION_KEY = "maintenance-operations:legacy-restart:v1";
 
@@ -41,6 +43,8 @@ function configure(database) {
       ON maintenance_operations(kind, stream_id, thread_id, updated_at DESC);
     CREATE INDEX IF NOT EXISTS maintenance_operations_status_idx
       ON maintenance_operations(status, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS maintenance_operations_provider_turn_idx
+      ON maintenance_operations(kind, thread_id, provider_turn_id, updated_at DESC);
   `);
 }
 
@@ -65,6 +69,9 @@ function writeOperation(database, operation) {
 }
 
 export class MaintenanceOperationStore {
+  #initialized = false;
+  #restartMutations = new AsyncSqliteMutationQueue();
+
   constructor({ dataDir, idFactory = randomUUID, now = () => new Date().toISOString() } = {}) {
     if (!String(dataDir ?? "").trim()) throw new TypeError("dataDir is required");
     this.dataDir = path.resolve(dataDir);
@@ -72,10 +79,23 @@ export class MaintenanceOperationStore {
     this.now = now;
   }
 
+  runRestartMutation(operation, options = {}) {
+    return this.#restartMutations.run(operation, options);
+  }
+
   #withDatabase(callback) {
-    const database = openRuntimeDatabase(this.dataDir);
+    const database = this.#initialized
+      ? new DatabaseSync(runtimeDatabasePath(this.dataDir))
+      : openRuntimeDatabase(this.dataDir);
     try {
-      configure(database);
+      if (!this.#initialized) {
+        configure(database);
+        this.#initialized = true;
+      } else {
+        // Schema migration belongs to initialization, never an exact lifecycle
+        // read while another runtime owner holds the WAL writer reservation.
+        database.exec("PRAGMA synchronous = FULL; PRAGMA busy_timeout = 0;");
+      }
       return callback(database);
     } finally {
       database.close();
@@ -119,6 +139,18 @@ export class MaintenanceOperationStore {
         AND status NOT IN ('succeeded', 'failed')
       ORDER BY updated_at DESC, revision DESC LIMIT 1
     `).get(String(kind ?? ""), String(streamId ?? ""), String(threadId ?? ""))));
+  }
+
+  forProviderTurn({ kind, threadId, providerTurnId } = {}) {
+    const exactKind = String(kind ?? "").trim();
+    const exactThreadId = String(threadId ?? "").trim();
+    const exactTurnId = String(providerTurnId ?? "").trim();
+    if (!exactKind || !exactThreadId || !exactTurnId) return null;
+    return this.#withDatabase((database) => operationFromRow(database.prepare(`
+      SELECT operation_json FROM maintenance_operations
+      WHERE kind = ? AND thread_id = ? AND provider_turn_id = ?
+      ORDER BY updated_at DESC LIMIT 1
+    `).get(exactKind, exactThreadId, exactTurnId)));
   }
 
   transition(operationId, patch = {}, options = {}) {
@@ -200,54 +232,65 @@ export class MaintenanceOperationStore {
 
   migrateLegacyRestart(legacyRequest, { streamId, threadId } = {}) {
     return this.#withDatabase((database) => {
-      const marker = database.prepare(
-        "SELECT value FROM runtime_store_meta WHERE key = ?",
-      ).get(LEGACY_RESTART_MIGRATION_KEY);
-      if (marker) {
-        const operationId = String(legacyRequest?.operationId ?? "").trim();
-        return operationId
-          ? operationFromRow(database.prepare(
-            "SELECT operation_json FROM maintenance_operations WHERE operation_id = ?",
-          ).get(operationId))
-          : null;
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const migrate = () => {
+          const marker = database.prepare(
+            "SELECT value FROM runtime_store_meta WHERE key = ?",
+          ).get(LEGACY_RESTART_MIGRATION_KEY);
+          if (marker) {
+            const operationId = String(legacyRequest?.operationId ?? "").trim();
+            return operationId
+              ? operationFromRow(database.prepare(
+                "SELECT operation_json FROM maintenance_operations WHERE operation_id = ?",
+              ).get(operationId))
+              : null;
+          }
+          if (legacyRequest && typeof legacyRequest === "object" && (!streamId || !threadId)) {
+            return null;
+          }
+          let operation = null;
+          if (legacyRequest && typeof legacyRequest === "object" && streamId && threadId) {
+            operation = createMaintenanceOperation({
+              operationId: String(legacyRequest.operationId ?? "").trim() || this.idFactory(),
+              kind: MAINTENANCE_OPERATION_KINDS.RESTART,
+              streamId,
+              threadId,
+              status: legacyRequest.waitingForRuns
+                ? MAINTENANCE_OPERATION_STATUSES.BLOCKED
+                : MAINTENANCE_OPERATION_STATUSES.RUNNING,
+              phase: legacyRequest.waitingForRuns ? "waiting-for-work" : "cutover",
+              blockers: legacyRequest.waitingForRuns ? ["active-work"] : [],
+              metadata: {
+                chatId: legacyRequest.chatId,
+                messageId: legacyRequest.messageId,
+                minimumUpdateOffset: legacyRequest.minimumUpdateOffset,
+                notifyTelegram: legacyRequest.notifyTelegram === true,
+              },
+              createdAt: legacyRequest.requestedAt || this.now(),
+              updatedAt: this.now(),
+            });
+            const existing = operationFromRow(database.prepare(
+              "SELECT operation_json FROM maintenance_operations WHERE operation_id = ?",
+            ).get(operation.operationId));
+            if (existing) operation = existing;
+            else writeOperation(database, operation);
+          }
+          // Removal condition: delete this import path after every supported installation has
+          // recorded this marker for one production release; the operation table remains canonical.
+          database.prepare(`
+            INSERT INTO runtime_store_meta(key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+          `).run(LEGACY_RESTART_MIGRATION_KEY, this.now());
+          return operation;
+        };
+        const result = migrate();
+        database.exec("COMMIT");
+        return result;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
       }
-      if (legacyRequest && typeof legacyRequest === "object" && (!streamId || !threadId)) {
-        return null;
-      }
-      let operation = null;
-      if (legacyRequest && typeof legacyRequest === "object" && streamId && threadId) {
-        operation = createMaintenanceOperation({
-          operationId: String(legacyRequest.operationId ?? "").trim() || this.idFactory(),
-          kind: MAINTENANCE_OPERATION_KINDS.RESTART,
-          streamId,
-          threadId,
-          status: legacyRequest.waitingForRuns
-            ? MAINTENANCE_OPERATION_STATUSES.BLOCKED
-            : MAINTENANCE_OPERATION_STATUSES.RUNNING,
-          phase: legacyRequest.waitingForRuns ? "waiting-for-work" : "cutover",
-          blockers: legacyRequest.waitingForRuns ? ["active-work"] : [],
-          metadata: {
-            chatId: legacyRequest.chatId,
-            messageId: legacyRequest.messageId,
-            minimumUpdateOffset: legacyRequest.minimumUpdateOffset,
-            notifyTelegram: legacyRequest.notifyTelegram === true,
-          },
-          createdAt: legacyRequest.requestedAt || this.now(),
-          updatedAt: this.now(),
-        });
-        const existing = operationFromRow(database.prepare(
-          "SELECT operation_json FROM maintenance_operations WHERE operation_id = ?",
-        ).get(operation.operationId));
-        if (existing) operation = existing;
-        else writeOperation(database, operation);
-      }
-      // Removal condition: delete this import path after every supported installation has
-      // recorded this marker for one production release; the operation table remains canonical.
-      database.prepare(`
-        INSERT INTO runtime_store_meta(key, value) VALUES (?, ?)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value
-      `).run(LEGACY_RESTART_MIGRATION_KEY, this.now());
-      return operation;
     });
   }
 

@@ -422,6 +422,29 @@ test("Codex turn service persists the exact receipt before background materializ
   );
 });
 
+test("Codex turn service transfers the selected Astra model to App Server", async () => {
+  const calls = [];
+  const service = codexTurnService({
+    sendRpc: async (method, params) => {
+      calls.push({ method, params });
+      return { turn: { id: "turn-astra" } };
+    },
+  });
+  const run = {
+    threadId: "thread-astra",
+    projectRoot: "D:\\Work",
+    modelId: "gpt-6-astra",
+    reasoningId: "high",
+    collaborationMode: "default",
+  };
+
+  await service.launch(run, "Use Astra");
+
+  const request = calls.find(({ method }) => method === "turn/start");
+  assert.equal(request.params.model, "gpt-6-astra");
+  assert.equal(request.params.collaborationMode.settings.model, "gpt-6-astra");
+});
+
 test("Codex turn service does not wait for Thread projection before returning the accepted run", async () => {
   let finishRead;
   const readPending = new Promise((resolve) => { finishRead = resolve; });
@@ -641,7 +664,7 @@ test("a terminal provider event cannot be resurrected by a late RPC response", a
   assert.equal(run.turnId, undefined);
 });
 
-test("Codex turn service resolves developer instructions for every turn start", async () => {
+test("Codex turn service updates application instructions without changing user input or mode", async () => {
   const starts = [];
   const resolved = [];
   let instructions = "Workspace rules";
@@ -671,8 +694,13 @@ test("Codex turn service resolves developer instructions for every turn start", 
   await service.launch(run, "Second");
 
   assert.deepEqual(starts.map((call) => (
-    call.collaborationMode.settings.developer_instructions
+    call.additionalContext["agent-hub"].value
   )), ["Workspace rules", "Updated rules"]);
+  assert.deepEqual(starts.map((call) => call.additionalContext["agent-hub"].kind), ["application", "application"]);
+  assert.deepEqual(starts.map((call) => call.collaborationMode.settings.developer_instructions), [null, null]);
+  assert.deepEqual(starts.map((call) => call.input), [
+    [{ type: "text", text: "First" }], [{ type: "text", text: "Second" }],
+  ]);
   assert.deepEqual(resolved, [
     { provider: "codex", threadId: "thread-1", streamId: "stream-1" },
     { provider: "codex", threadId: "thread-1", streamId: "stream-1" },

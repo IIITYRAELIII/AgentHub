@@ -32,7 +32,96 @@ readback:
 
 - no operation means pre-dispatch and permits a retry with the same id;
 - `succeeded` or `failed` is terminal evidence and forbids another effect;
-- `pending` is unknown and permits reconciliation only with the same id.
+- `pending` permits only operation-specific durable reconciliation with the same
+  id; it is never a generic replay lease;
+- `unknown` is an explicit terminal receipt state when authoritative readback is
+  unavailable or an effect completed but its receipt could not be committed.
+
+The local Await cutover uses the same canonical `hub_task_status_update` receipt.
+When its projector source is a separate Task, the receipt includes that source
+Task's exact ID, Test revision, result commit and projector hash. Both Task locks
+are held while the source authority is rechecked and the target transition
+begins. Current source/target Task, Workspace/Stream, repository and source-result
+identity are fenced atomically by the transition transaction. A later pending reconciliation
+preserves the transition's immutable source evidence in its outcome; terminal
+reconciliation reproduces those durable arguments and does not consult a newer
+source Task state or replay the target lifecycle. The transition records the
+accepted result and invalidates older release-plan identity; it does not compose
+`PreRelease`. Candidate assembly is owned only by the later explicit release
+prepare operation.
+`hub_release_preflight_reconcile` is a read-only release-specific readback path,
+not a replay of `hub_release_preflight`. It requires the original request id plus
+the exact original preflight arguments, expected plan and repository revisions.
+It must find the original `hub_release_preflight` receipt and bind tool,
+Workspace, caller Stream/provider/thread and immutable arguments hash before any
+release checkpoint readback. It may only report existing frozen candidate
+checkpoint evidence owned by the release Git boundary. A prepared checkpoint is
+at most a candidate snapshot, whether or not it is causally bound to the original
+request; it is not a reconciled original outcome without separate authoritative
+final-phase evidence. Contradictory checkpoint/manifest request identity, wrong
+Workspace, stale Task revision/result evidence or failed primary/release
+invariant readback keep the original outcome unknown. The tool cannot create a
+candidate, repeat validation, finalize an unknown MCP receipt, or infer success
+from transport text.
+
+Receipt creation is atomic `INSERT OR IGNORE` under the exact identity. Success
+stores a bounded structural result projection rather than arbitrary response
+content, so a result larger than 1 MiB cannot turn an already-applied effect into
+`failed`. Concurrent callers with the same identity share one in-process effect;
+after restart an owned reconciliation worker first marks each receipt
+`reconciling`. A transactionally persisted lifecycle outcome finalizes the
+receipt from authoritative readback without repeating the effect. An incomplete
+transition, prepared launch or missing outcome becomes terminal `unknown`; it is
+never externally replayed.
+
+Startup scans every pending receipt, not only receipts reached by a retry. A
+mutation exception after dispatch is treated as a possibly partial effect and
+therefore becomes `unknown` unless an authoritative readback disproves it.
+Production composition cannot access raw Task/Workspace transactions or the
+callback-based queue primitive. Its immutable asynchronous owners queue the
+complete mutator inventory, including Desktop ingest/reassignment/events,
+bug-report and Telegram capture, MCP receipts/attachments/startup reconciliation,
+handoff metadata, provider catalog/backfill and Spark/Terra binding, settings,
+journal completion, thread binding and Task lifecycle.
+Bounded contention retry surrounds the real transaction, preserves the original
+identity and yields to HTTP, SSE and timers instead of increasing `busy_timeout`.
+The owners expose explicit read, short-mutation and internally managed-effect
+allowlists only; an unclassified raw member is not bound into application code.
+Checklist event delivery is an internally managed effect (ADR-0029): its
+single-flight durable outbox drain invokes delivery outside SQL retry and queues
+only quarantine/acknowledgment writes with the original event ID. A busy
+acknowledgment cannot replay that invocation. An interrupted drain remains
+recoverable through the existing idempotent event identity.
+Release completion uses the same
+Task owner. Desktop `complete-workspace-release` has action-specific interrupted
+effect reconciliation: under its existing command identity it can only resume
+the exact pending finalization or return the canonical completed outcome.
+It cannot begin fresh closure without that evidence. The Task store retains the
+last 16 completed exact plans/repositories in its existing finalization setting,
+so transport ACK retirement cannot erase release completion. A definitive
+`retry_required` response permits a new finalization attempt against the same
+pending plan; an ambiguous response retains its original command ID. Other
+interrupted Desktop mutations remain unknown and are not replayed.
+`hub_task_claim` enters Git through public Task admission, which
+creates the durable per-Task/repository process-tree guard before the first
+child process; an unproven survivor blocks claim effects and retries until the
+operator proves the tree absent.
+
+The underlying interprocess lease is represented by an immutable
+token-addressed owner file held by its creator. Stale time alone never permits
+replacement while the recorded PID is live. Every Git fence rereads the exact
+durable token/process identity; recovery requires proven death, exact identity
+mismatch, an owner-written release marker or trusted operator action. Renewal
+does not rewrite the shared pathname, and release removes only its own token
+file, so an old owner cannot retire a replacement swapped into the lock path.
+Task lifecycle fencing is a uniformly asynchronous contract: callers await each
+durable assertion before workflow, cleanup, failure or deletion persistence and
+reject synchronous implementations. Proven-dead or exact-mismatch legacy
+`owner.json` locks are retired only by bounded whole-directory quarantine plus
+post-move identity validation; live or ambiguous legacy owners remain blocked.
+Pending-triage startup recovery awaits its branded Task-owner mutation, and a
+queue failure rejects startup recovery without an unhandled rejection or a
+false successful outcome.
 
 Composed `functions.exec` calls bind each mutation to the `request_id` in that
 specific nested call's argument object. Missing, duplicate-property and
@@ -48,3 +137,45 @@ succeeds; it is never converted to a null operation.
 
 Logs contain tool and operation identity, status and recovery outcome, but not
 the context capability or tool arguments.
+
+For `hub_stream_message_send`, `hub_task_start` and `hub_task_reassign`, the
+pending operation is bound before provider delivery to one immutable SHA-256 of
+the exact stable inter-Stream origin and body assembled by message intake. A
+successful operation without that bound content is invalid. Read-side legacy
+origin recovery requires the successful tool, exact `mcp:<request_id>`, stored
+arguments hash and stored content hash; absent pre-migration content hashes fail
+closed and are not reconstructed from message text or ordering.
+
+`hub_task_launch_cancel` is an Architect-only terminal reconciliation, not a
+replay lease. It may change an original start receipt from `pending`,
+`reconciling` or `unknown` to a structured failed/cancelled result only when the
+same caller Workspace, Stream, provider and provider Thread presents the exact
+Task/start-request owner and Task revision, the Task is still `starting`, the
+planned destination Stream is absent and no inter-Stream content hash was ever
+admitted. The original receipt is terminalized before Task launch ownership is
+cleared. Before either write, cancellation must win the Task-row
+`prepared -> cancelling` CAS against the launcher's
+`prepared -> admitted(attemptId)` effect admission. A successful fence prevents
+that runner and concurrent retries from entering Stream/thread/delivery effects;
+an already admitted runner makes cancellation fail without changing the original
+receipt. The fence is per Task/request, durable across database connections and
+processes, and has no timeout lease. A crash between receipt terminalization and
+Task cleanup can leave the Task blocked but cannot make
+the original launch replayable; another exact cancellation request may finish
+the cleanup. A different caller, Task state, revision, destination effect,
+admitted content or successful/failed launch is not cancellable.
+
+Before the planned destination Stream exists, `task.starting` is an idempotent
+Workspace event whose payload names that Stream; the event write is awaited
+before the durable effect-admission CAS and Stream/thread/delivery effects. Its
+rejection leaves the durable prepare
+blocked for explicit cancellation and is not silently converted to success.
+
+## Queue diagnostics
+
+`hub_active_runs_list` and `hub_parallel_streams_list` expose bounded,
+payload-free deferred-input summaries separately from live runs. The summary
+includes exact Stream/provider/Thread and command identity, queue state, wait
+reason, state age and a stalled marker after sixty seconds in `dispatching` or
+`reconciling`. A deferred command never
+becomes a synthetic live run merely to make blocked admission observable.

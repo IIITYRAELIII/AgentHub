@@ -356,6 +356,27 @@ test("Codex test providers are copied only into the marker-owned Test Contour ro
   }
 });
 
+test("Fake Codex recovery initializes a missing Test Contour data directory", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-fake-data-"));
+  try {
+    const { paths } = await installTestContour({ root, run: async () => null });
+    const markerBefore = await readFile(paths.markerFile, "utf8");
+    await rm(paths.dataDir, { recursive: true, force: true });
+
+    const recovery = await reconcileTestContourFakeCodexState({ root });
+
+    assert.equal(recovery.status, "ready");
+    assert.equal(recovery.recoveredThreadCount, 0);
+    assert.deepEqual(
+      JSON.parse(await readFile(paths.fakeCodexStateFile, "utf8")).threads,
+      [],
+    );
+    assert.equal(await readFile(paths.markerFile, "utf8"), markerBefore);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("Fake Codex recovery recreates the exact Thread and preserves five FIFO commands", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-fake-recovery-"));
   const threadId = "10000000-0000-4000-8000-000000000020";
@@ -741,7 +762,7 @@ test("candidate preparation deploys only into the isolated runtime root", async 
           '<html lang="ru"><head><link rel="stylesheet" href="/test-contour-watermark.css"></head><body></body></html>',
           "utf8",
         );
-        await options.beforePointerCommit({ releaseRoot });
+        await options.beforeManifest({ stagingRoot: releaseRoot });
         assert.match(
           await readFile(path.join(webAppRoot, "index.html"), "utf8"),
           /<div class="test-contour-watermark" aria-hidden="true">ТЕСТ<\/div>/u,
@@ -785,6 +806,40 @@ test("candidate preparation refuses a non-dev source before deployment", async (
       /must use the exact dev HEAD/u,
     );
     assert.equal(deployed, false);
+  } finally {
+    await Promise.all([
+      rm(root, { recursive: true, force: true }),
+      rm(sourceRoot, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("release candidate source is revalidated around deployment and fails closed on replacement", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-release-contour-guard-"));
+  const sourceRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-release-contour-source-"));
+  let validation = 0;
+  let deployed = false;
+  try {
+    await assert.rejects(
+      prepareTestContourCandidate({
+        root,
+        sourceRoot,
+        sourceKind: "release-candidate",
+        validateReleaseSource: async () => ({
+          kind: "release-candidate",
+          branch: "main",
+          headCommit: ++validation < 3 ? "release-head" : "replacement-head",
+          sourceRoot,
+        }),
+        deploy: async () => {
+          deployed = true;
+          return { releaseId: "release-candidate", releaseRoot: path.join(root, "releases", "release-candidate") };
+        },
+      }),
+      /identity changed during preparation/u,
+    );
+    assert.equal(deployed, true);
+    assert.equal(validation, 3);
   } finally {
     await Promise.all([
       rm(root, { recursive: true, force: true }),

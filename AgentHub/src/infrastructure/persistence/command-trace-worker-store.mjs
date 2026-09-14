@@ -187,6 +187,10 @@ export class CommandTraceWorkerStore {
   }
 
   #onMessage(message) {
+    if (message?.maintenanceError) {
+      this.#report(`Command trace retention deferred: ${message.maintenanceError.message}`);
+      return;
+    }
     if (message?.bestEffort === true) {
       this.#pendingBestEffort.delete(message.id);
       if (message.error) {

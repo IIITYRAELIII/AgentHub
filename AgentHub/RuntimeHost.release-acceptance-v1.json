@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "cleanupFence": 1,
+  "recordingProfile": 1,
+  "capability": "persistent-isolated-release-acceptance-environment"
+}

@@ -83,6 +83,9 @@ html[data-theme="reliquary"] {
   --provider-none: #868681;
   --provider-codex: #86b9cc;
   --provider-claude: #b66c4b;
+  --provider-tone-lightness: 0.75;
+  --provider-tone-chroma: 0.075;
+  --provider-tone-alpha: 0.17;
   --ok: #8fa67d;
   --pending: #b88d5b;
   --dot-input: #89bbce;

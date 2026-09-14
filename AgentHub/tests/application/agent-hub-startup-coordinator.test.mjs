@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { setImmediate } from "node:timers/promises";
+import { CommandTraceService } from "../../src/application/command-trace-service.mjs";
 import { AgentHubStartupCoordinator } from "../../src/application/agent-hub-startup-coordinator.mjs";
 import { createRuntimeHealth } from "../../src/application/runtime-health.mjs";
 
@@ -35,9 +37,61 @@ function coordinator(overrides = {}) {
   return { service, calls, health };
 }
 
+test("failed provider retries once without repeating completed startup work", async () => {
+  let available = false;
+  let starts = 0;
+  let finish;
+  const { service, calls, health } = coordinator({
+    initializeProvider: async () => {
+      starts += 1;
+      if (starts === 1) throw new Error("signature check timed out");
+      await new Promise((resolve) => { finish = resolve; });
+      available = true;
+    },
+    providerIsRunning: () => available,
+  });
+  await service.start();
+  const before = [...calls];
+  const startedAtMs = health.snapshot().startup.startedAtMs;
+  service.requestRetry({ startedAtMs });
+  service.requestRetry({ startedAtMs });
+  assert.equal(starts, 2);
+  assert.equal(health.snapshot().ready, false);
+  finish();
+  await service.waitForRetry();
+  await service.waitForBackgroundWork();
+  assert.equal(health.snapshot().ready, true);
+  assert.equal(health.snapshot().startup.startedAtMs, startedAtMs);
+  assert.deepEqual(calls.slice(before.length), ["backfill"]);
+  assert.equal(health.snapshot().startup.operations.find((entry) => entry.id === "provider").state, "completed");
+  service.requestRetry({ startedAtMs });
+  await service.waitForRetry();
+  assert.equal(starts, 2);
+  assert.throws(() => service.requestRetry({ startedAtMs: startedAtMs - 1 }), /Процесс Хаба уже сменился/u);
+});
+
+test("retry preserves a repeated provider failure and does not run its dependencies", async () => {
+  const { service, calls, health } = coordinator({
+    initializeProvider: async () => { throw new Error("still unavailable"); },
+    providerIsRunning: () => false,
+  });
+  await service.start();
+  service.requestRetry({ startedAtMs: health.snapshot().startup.startedAtMs });
+  await service.waitForRetry();
+  assert.equal(health.snapshot().ready, false);
+  assert.equal(calls.includes("backfill"), false);
+  assert.equal(health.snapshot().startup.operations.find((entry) => entry.id === "provider").error, "still unavailable");
+});
+
+test("recovery rejects requests before the initial startup settles", () => {
+  const { service } = coordinator();
+  assert.throws(() => service.requestRetry({ startedAtMs: 1 }), /Процесс Хаба уже сменился/u);
+});
+
 test("startup preserves control, recovery and readiness order", async () => {
   const { service, calls, health } = coordinator();
   await service.start();
+  await service.waitForBackgroundWork();
   assert.deepEqual(calls, [
     "log:Mini App ready at http://localhost",
     "desktop",
@@ -45,7 +99,6 @@ test("startup preserves control, recovery and readiness order", async () => {
     "mcp",
     "sanitize",
     "provider",
-    "backfill",
     "recover",
     "notifications",
     "jobs",
@@ -55,6 +108,7 @@ test("startup preserves control, recovery and readiness order", async () => {
     "timers",
     "log:ready message",
     "poll",
+    "backfill",
   ]);
   assert.deepEqual(
     health.snapshot().startup.operations.map(({ id, state }) => ({ id, state })),
@@ -206,4 +260,81 @@ test("runtime health exposes bounded process diagnostics from registered owners"
   assert.ok(snapshot.diagnostics.process.rssBytes > 0);
   assert.ok(snapshot.diagnostics.process.heapUsedBytes > 0);
   assert.ok(snapshot.diagnostics.process.eventLoopDelayP95Ms >= 0);
+});
+
+
+test("optional metadata can remain pending without holding readiness or duplicating work", async () => {
+  let resolveMetadata;
+  let calls = 0;
+  let signal;
+  const { service, health } = coordinator({
+    backfillProviderMetadata: (options) => {
+      calls += 1;
+      signal = options.signal;
+      return new Promise((resolve) => { resolveMetadata = resolve; });
+    },
+  });
+  await service.start();
+  assert.equal(health.snapshot().ready, true);
+  const metadata = health.snapshot().startup.operations.find((entry) => entry.id === "provider-metadata");
+  assert.equal(metadata.state, "running");
+  assert.equal(metadata.background, true);
+  service.requestRetry({ startedAtMs: health.snapshot().startup.startedAtMs });
+  await service.waitForRetry();
+  await setImmediate();
+  assert.equal(calls, 1);
+  service.stopBackgroundWork();
+  assert.equal(signal.aborted, true);
+  resolveMetadata();
+  await service.waitForBackgroundWork();
+  assert.equal(health.snapshot().ready, true);
+});
+
+test("optional metadata failure and retry never reset readiness", async () => {
+  let fail = true;
+  let release;
+  const { service, health } = coordinator({
+    backfillProviderMetadata: async () => {
+      if (fail) throw new Error("metadata unavailable");
+      await new Promise((resolve) => { release = resolve; });
+    },
+  });
+  await service.start();
+  await service.waitForBackgroundWork();
+  assert.equal(health.snapshot().ready, true);
+  assert.equal(health.snapshot().startup.operations.find((entry) => entry.id === "provider-metadata").state, "failed");
+  fail = false;
+  service.requestRetry({ startedAtMs: health.snapshot().startup.startedAtMs });
+  await service.waitForRetry();
+  assert.equal(health.snapshot().ready, true);
+  await setImmediate();
+  release();
+  await service.waitForBackgroundWork();
+  assert.equal(health.snapshot().startup.operations.find((entry) => entry.id === "provider-metadata").state, "completed");
+});
+
+
+test("startup trace exposes an unresolved mandatory recovery before readiness", async () => {
+  const records = [];
+  let release;
+  let enter;
+  const entered = new Promise((resolve) => { enter = resolve; });
+  const { service, health } = coordinator({
+    recoverRuns: () => { enter(); return new Promise((resolve) => { release = resolve; }); },
+    commandTrace: new CommandTraceService({ store: {
+      appendBestEffort: (span) => { records.push(span); return true; },
+    }, metadata: { instanceId: "runtime-1" } }),
+    startupTraceId: "startup-1",
+  });
+  const started = service.start();
+  await entered;
+  const recovery = records.filter((record) => record.stage === "startup-runs");
+  assert.deepEqual(recovery.map((record) => record.outcome), ["started"]);
+  assert.equal(recovery[0].commandId, "startup:startup-1");
+  assert.equal(recovery[0].metadata.instanceId, "runtime-1");
+  assert.equal(health.snapshot().ready, false);
+  release();
+  await started;
+  await service.waitForBackgroundWork();
+  assert.deepEqual(records.filter((record) => record.stage === "startup-runs").map((record) => record.outcome), ["started", "succeeded"]);
 });

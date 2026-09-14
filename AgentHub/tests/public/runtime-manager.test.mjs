@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cp, mkdtemp, mkdir, readFile, stat, utimes, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -182,6 +182,32 @@ test("deployRuntime recompiles a tampered cached RuntimeHost", async (t) => {
   await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-2" });
 
   assert.notEqual((await readFile(launcher, "utf8")).trim(), "tampered");
+});
+
+test("deployRuntime restores a missing RuntimeHost without changing user data", async (context) => {
+  if (process.platform !== "win32") return context.skip("RuntimeHost is Windows-only");
+  const { sourceRoot, runtimeRoot } = await fixture();
+  context.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
+  await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-1" });
+  const configFile = path.join(runtimeRoot, "config.json");
+  const journalFile = path.join(runtimeRoot, "data", "journal.sqlite");
+  await mkdir(path.dirname(journalFile), { recursive: true });
+  await writeFile(configFile, '{"provider":"codex","customSetting":true}\n');
+  await writeFile(journalFile, "retained journal bytes");
+  const configBefore = await readFile(configFile);
+  const journalBefore = await readFile(journalFile);
+  const launcher = path.join(runtimeRoot, "AgentHub.RuntimeHost.exe");
+  await rm(launcher);
+  await rm(path.join(runtimeRoot, "releases", "release-1", "AgentHub.RuntimeHost.exe"));
+
+  const restored = await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-2" });
+
+  const binary = await readFile(launcher);
+  assert.equal(binary.subarray(0, 2).toString(), "MZ");
+  assert.deepEqual(binary, await readFile(path.join(restored.releaseRoot, "AgentHub.RuntimeHost.exe")));
+  assert.deepEqual(await readFile(configFile), configBefore);
+  assert.deepEqual(await readFile(journalFile), journalBefore);
+  assert.equal(JSON.parse(await readFile(path.join(runtimeRoot, "current.json"), "utf8")).current, "release-2");
 });
 
 test("deployRuntime does not replace unchanged stable runtime files", async () => {

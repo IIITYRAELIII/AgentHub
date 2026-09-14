@@ -1,7 +1,40 @@
 import { mkdir, readFile, readdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
-import { openRuntimeDatabase } from "./runtime-state-store.mjs";
+import { openRuntimeDatabase, runtimeDatabasePath } from "./runtime-state-store.mjs";
+import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
+
+const mutationQueues = new Map();
+function bindingMutations(dataDir) {
+  const key = path.resolve(dataDir);
+  let queue = mutationQueues.get(key);
+  if (!queue) mutationQueues.set(key, queue = new AsyncSqliteMutationQueue());
+  return queue;
+}
+
+const initializedDirectories = new Set();
+function openInitializedBindingDatabase(dataDir) {
+  const database = new DatabaseSync(runtimeDatabasePath(dataDir));
+  try {
+    database.exec("PRAGMA synchronous = FULL; PRAGMA busy_timeout = 0;");
+    return database;
+  } catch (error) {
+    database.close();
+    throw error;
+  }
+}
+
+async function openBindingDatabase(dataDir) {
+  const key = path.resolve(dataDir);
+  if (initializedDirectories.has(key)) return openInitializedBindingDatabase(dataDir);
+  return bindingMutations(dataDir).run(() => {
+    if (initializedDirectories.has(key)) return openInitializedBindingDatabase(dataDir);
+    const database = openRuntimeDatabase(dataDir);
+    initializedDirectories.add(key);
+    return database;
+  });
+}
 
 const MAX_BINDINGS = 500;
 const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -150,26 +183,28 @@ async function ensureLegacyImported(dataDir, database) {
   }
   const bindings = recentBindings([...byKey.values()]);
 
-  database.exec("BEGIN IMMEDIATE");
-  try {
-    const alreadyImported = database.prepare(
-      "SELECT value FROM runtime_store_meta WHERE key = 'telegram_bindings_imported'",
-    ).get();
-    if (!alreadyImported) {
-      const base = Date.now() - bindings.length;
-      bindings.forEach((binding, index) => insertBinding(database, binding, base + index));
-      pruneBindings(database);
-      database.prepare(`
-        INSERT INTO runtime_store_meta (key, value)
-        VALUES ('telegram_bindings_imported', ?)
-      `).run(new Date().toISOString());
+  return bindingMutations(dataDir).run(() => {
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      const alreadyImported = database.prepare(
+        "SELECT value FROM runtime_store_meta WHERE key = 'telegram_bindings_imported'",
+      ).get();
+      if (!alreadyImported) {
+        const base = Date.now() - bindings.length;
+        bindings.forEach((binding, index) => insertBinding(database, binding, base + index));
+        pruneBindings(database);
+        database.prepare(`
+          INSERT INTO runtime_store_meta (key, value)
+          VALUES ('telegram_bindings_imported', ?)
+        `).run(new Date().toISOString());
+      }
+      database.exec("COMMIT");
+      return { imported: !alreadyImported, count: alreadyImported ? 0 : bindings.length };
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
     }
-    database.exec("COMMIT");
-    return { imported: !alreadyImported, count: alreadyImported ? 0 : bindings.length };
-  } catch (error) {
-    database.exec("ROLLBACK");
-    throw error;
-  }
+  }, { requestId: "telegram-bindings:legacy-import" });
 }
 
 async function archiveLegacyBindings(dataDir) {
@@ -201,18 +236,19 @@ async function archiveLegacyBindings(dataDir) {
   return moved;
 }
 
-async function withDatabase(dataDir, operation) {
-  const database = openRuntimeDatabase(dataDir);
+async function withDatabase(dataDir, operation, { mutation = false } = {}) {
+  const queue = bindingMutations(dataDir);
+  const database = await openBindingDatabase(dataDir);
   try {
     await ensureLegacyImported(dataDir, database);
-    return await operation(database);
+    return await (mutation ? queue.run(() => operation(database)) : operation(database));
   } finally {
     database.close();
   }
 }
 
 export async function migrateMessageBindings(dataDir, { retireLegacy = true } = {}) {
-  const database = openRuntimeDatabase(dataDir);
+  const database = await openBindingDatabase(dataDir);
   try {
     const result = await ensureLegacyImported(dataDir, database);
     const archived = retireLegacy ? await archiveLegacyBindings(dataDir) : [];
@@ -243,7 +279,7 @@ export async function appendMessageBindings(dataDir, additions) {
       database.exec("ROLLBACK");
       throw error;
     }
-  });
+  }, { mutation: true });
 }
 
 export async function removeMessageBindings(dataDir, predicate) {
@@ -266,7 +302,7 @@ export async function removeMessageBindings(dataDir, predicate) {
       database.exec("ROLLBACK");
       throw error;
     }
-  });
+  }, { mutation: true });
 }
 
 export async function findMessageBinding(dataDir, chatId, messageId) {
@@ -307,5 +343,5 @@ export async function compactMessageBindings(dataDir, options = {}) {
       "SELECT COUNT(*) AS count FROM telegram_message_bindings",
     ).get().count);
     return before - after;
-  });
+  }, { mutation: true });
 }

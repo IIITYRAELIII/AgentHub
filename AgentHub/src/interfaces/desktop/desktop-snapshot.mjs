@@ -1,3 +1,4 @@
+import { receiptUserDisplay, receiptUserOrigin, userDisplayText } from "../../domain/user-message-display.mjs";
 import { createHash } from "node:crypto";
 import {
   displayUserPrompt,
@@ -7,9 +8,10 @@ import {
 import { isClaudeCompactionRun } from "../../domain/claude-context-maintenance.mjs";
 import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 import {
-  interstreamMessageDetails,
+  confirmedInterstreamOrigin,
   interstreamOriginAuthor,
   normalizeInterstreamOrigin,
+  trustedInterstreamMessageDetails,
 } from "../../domain/interstream-message.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { taskRunIsActive } from "../../domain/task-runs.mjs";
@@ -18,6 +20,7 @@ import { presentContextUsageBreakdown } from "../../domain/context-usage-breakdo
 import { restartUiProjection } from "../../domain/maintenance-operation.mjs";
 import { deferredLaunchWaitReason } from "../../application/deferred-input-controller.mjs";
 import { createSnapshotCollectionDelta } from "./snapshot-collection-delta.mjs";
+import { deferredInputAttachments } from "./deferred-input-presentation-service.mjs";
 
 const MAX_COMPACT_ACTIVITY_DETAIL_CHARS = 1_200;
 
@@ -65,14 +68,21 @@ export function workspaceBindingForTask(task, workspaces) {
   };
 }
 
-function deferredMessageProjection(item, deferred) {
-  const rawText = deferred.editableText?.(item.input) ?? deferred.inputPreview(item.input);
-  const rawPreview = deferred.inputPreview(item.input);
-  const interstream = interstreamMessageDetails(rawText) ?? interstreamMessageDetails(rawPreview);
-  const origin = normalizeInterstreamOrigin(item.messageOrigin) ?? interstream?.origin;
+function deferredMessageProjection(item, deferred, receipts) {
+  const display = receiptUserDisplay(receipts.forMessage?.(item), item);
+  const rawText = display?.text ?? deferred.editableText?.(item.input) ?? deferred.inputPreview(item.input);
+  const rawPreview = display?.text ?? deferred.inputPreview(item.input);
+  const identity = {
+    origin: item.messageOrigin,
+    clientUserMessageId: item.clientUserMessageId,
+  };
+  const textInterstream = trustedInterstreamMessageDetails(rawText, identity);
+  const previewInterstream = trustedInterstreamMessageDetails(rawPreview, identity);
+  const origin = confirmedInterstreamOrigin(rawText, identity)
+    && confirmedInterstreamOrigin(rawPreview, identity);
   return {
-    text: displayUserPrompt(rawText),
-    preview: displayUserPrompt(rawPreview),
+    text: displayUserPrompt(textInterstream?.text ?? rawText),
+    preview: displayUserPrompt(previewInterstream?.text ?? rawPreview),
     ...(origin ? { author: interstreamOriginAuthor(origin), origin } : {}),
   };
 }
@@ -87,6 +97,7 @@ export function createDesktopSnapshotFactory({
   settings,
   deferred,
   receipts = {},
+  pins = {},
   approvals,
   restart,
   exchangeRates,
@@ -108,6 +119,7 @@ export function createDesktopSnapshotFactory({
   const messageReceiptDelta = createSnapshotCollectionDelta({
     keyOf: (item) => [item?.provider, item?.threadId, item?.clientUserMessageId].join("\u0000"),
   });
+  const messagePinDelta = createSnapshotCollectionDelta({ keyOf: (item) => item?.id });
   let catalogRefresh = null;
 
   function catalogActiveRun(entry, lastMessage) {
@@ -196,6 +208,13 @@ export function createDesktopSnapshotFactory({
       const clientUserMessageId = String(receipt?.clientUserMessageId ?? "").trim();
       const result = receipt?.result;
       if (!provider || !threadId || !clientUserMessageId || !result) return [];
+      const receiptOrigin = confirmedInterstreamOrigin(String(result.displayText ?? ""), {
+        origin: result.origin,
+        clientUserMessageId,
+      });
+      const receiptAuthor = receiptOrigin
+        ? interstreamOriginAuthor(receiptOrigin) || String(result.author ?? "").trim()
+        : "";
       return [{
         provider,
         threadId,
@@ -222,10 +241,10 @@ export function createDesktopSnapshotFactory({
         deliveredAt: result.deliveredAt ?? null,
         message: result.message ?? null,
         displayText: String(result.displayText ?? ""),
-        ...(String(result.author ?? "").trim() ? { author: String(result.author).trim() } : {}),
-        ...(normalizeInterstreamOrigin(result.origin)
-          ? { origin: normalizeInterstreamOrigin(result.origin) }
-          : {}),
+        // The receipt leaves this owner already confirmed: a raw stored origin
+        // that its own message cannot confirm never reaches the client, so every
+        // surface downstream shares one trust rule instead of re-deriving it.
+        ...(receiptOrigin ? { author: receiptAuthor, origin: receiptOrigin } : {}),
         responseAnnotations: Array.isArray(result.responseAnnotations)
           ? result.responseAnnotations.map((item) => ({ ...item }))
           : [],
@@ -277,8 +296,15 @@ export function createDesktopSnapshotFactory({
 
   function desktopRunSnapshot(run, { compactSnapshot = false, operationKind = "" } = {}) {
     if (!run) return null;
-    const promptInterstream = interstreamMessageDetails(run.promptPreview);
-    const promptOrigin = normalizeInterstreamOrigin(run.messageOrigin) ?? promptInterstream?.origin;
+    const promptDisplay = receiptUserDisplay(receipts.forMessage?.(run), run)?.text ?? run.promptPreview;
+    const promptInterstream = trustedInterstreamMessageDetails(promptDisplay, {
+      origin: run.messageOrigin,
+      clientUserMessageId: run.clientUserMessageId,
+    });
+    const promptOrigin = confirmedInterstreamOrigin(promptDisplay, {
+      origin: run.messageOrigin,
+      clientUserMessageId: run.clientUserMessageId,
+    });
     const responseItem = (Array.isArray(run.responseItems) ? run.responseItems : [])
       .find((item) => String(item?.id ?? "") === String(run.responseItemId ?? ""));
     const compactActivity = (activity) => {
@@ -324,7 +350,7 @@ export function createDesktopSnapshotFactory({
       reasoning: run.reasoning ?? null,
       stage: String(run.progressStage ?? "Выполняется…"),
       ...(run.providerStart ? { providerStart: structuredClone(run.providerStart) } : {}),
-      prompt: displayUserPrompt(run.promptPreview),
+      prompt: displayUserPrompt(promptInterstream?.text ?? promptDisplay),
       ...(promptOrigin ? {
         promptAuthor: interstreamOriginAuthor(promptOrigin),
         promptOrigin,
@@ -335,13 +361,35 @@ export function createDesktopSnapshotFactory({
       userMessages: runUserMessages.flatMap((message, index) => {
         const rawText = String(message?.text ?? "");
         const role = message?.role === "agent" && message?.kind === "subagent" ? "agent" : "user";
-        const interstream = interstreamMessageDetails(rawText);
-        const origin = normalizeInterstreamOrigin(message?.origin) ?? interstream?.origin;
-        const text = displayUserPrompt(rawText);
         const turnReceipt = role === "user" ? turnReceiptBindings.get(index) ?? null : null;
         const clientUserMessageId = String(
-          message.clientUserMessageId ?? turnReceipt?.clientUserMessageId ?? "",
+          message.clientUserMessageId
+            ?? turnReceipt?.clientUserMessageId
+            ?? "",
         ).trim();
+        const displayIdentity = { provider: run.provider, threadId: run.threadId, clientUserMessageId };
+        const displayReceipt = role === "user" ? receipts.forMessage?.(displayIdentity) ?? turnReceipt : null;
+        // The provider echo carries the origin only after the run enrichment
+        // settles. Until then the exact receipt of this message is the
+        // authoritative source, so the first frame already names its author and
+        // renders the body instead of the raw transport envelope.
+        const directOrigin = message?.origin
+          ?? message?.messageOrigin
+          ?? (role === "user" ? receiptUserOrigin(displayReceipt, displayIdentity) : null);
+        const displayText = role === "user"
+          ? receiptUserDisplay(displayReceipt, displayIdentity)?.text
+            ?? userDisplayText(message.userDisplay, displayIdentity) ?? rawText
+          : rawText;
+        const interstream = role === "user" ? trustedInterstreamMessageDetails(displayText, {
+          origin: directOrigin,
+          clientUserMessageId,
+        }) : null;
+        const origin = role === "user"
+          ? confirmedInterstreamOrigin(displayText, { origin: directOrigin, clientUserMessageId })
+          : normalizeInterstreamOrigin(directOrigin);
+        const text = role === "user"
+          ? displayUserPrompt(interstream?.text ?? displayText)
+          : rawText.trim();
         const rootUserMessage = role === "user"
           && clientUserMessageId === String(run.clientUserMessageId ?? "").trim();
         const receipt = role === "user" && clientUserMessageId
@@ -372,9 +420,14 @@ export function createDesktopSnapshotFactory({
         return [{
           itemId: String(message.itemId ?? ""),
           clientUserMessageId,
+          ...(String(message.sourceOccurrenceId ?? "").trim()
+            ? { sourceOccurrenceId: String(message.sourceOccurrenceId).trim() }
+            : {}),
           role,
           text,
-          ...(message?.kind ? { kind: String(message.kind) } : {}),
+          ...(message?.kind || origin
+            ? { kind: message?.kind ? String(message.kind) : "interstream" }
+            : {}),
           ...(message?.agentThreadId ? { agentThreadId: String(message.agentThreadId) } : {}),
           ...(message?.model ? { model: String(message.model) } : {}),
           ...((interstreamOriginAuthor(origin) || String(message.author ?? "").trim())
@@ -394,15 +447,22 @@ export function createDesktopSnapshotFactory({
           ...(rootUserMessage ? {
             submittedAt: message.submittedAt ?? run.submittedAt ?? receipt?.createdAt ?? message.time ?? run.startedAt ?? null,
             startedAt: message.startedAt ?? run.startedAt ?? null,
+          } : role === "user" ? {
+            submittedAt: message.submittedAt ?? receipt?.createdAt ?? message.time ?? null,
           } : {}),
           time: rootUserMessage
             ? message.submittedAt ?? run.submittedAt ?? receipt?.createdAt ?? message.time ?? run.startedAt ?? null
-            : message.time ?? run.startedAt ?? receipt?.createdAt ?? null,
+            : role === "user"
+              ? message.submittedAt ?? receipt?.createdAt ?? message.time ?? null
+              : message.time ?? run.startedAt ?? null,
           attachments,
         }];
       }),
       progress: String(run.progressReasoning ?? ""),
       response: String(run.responseText ?? ""),
+      responseAttachments: Array.isArray(run.responseAttachments)
+        ? run.responseAttachments.map((attachment) => ({ ...attachment }))
+        : [],
       ...((run.responseAnnotationReferences ?? responseItem?.responseAnnotationReferences)?.length
         ? {
           responseAnnotationReferences: structuredClone(
@@ -437,7 +497,7 @@ export function createDesktopSnapshotFactory({
       || !String(compaction?.turnId ?? "").trim()
     ) return false;
     if (String(run.turnId ?? "").trim() !== String(compaction.turnId).trim()) return false;
-    if (compaction.origin === "manual") return true;
+    if (compaction.origin === "manual" || compaction.dedicatedProviderTurn === true) return true;
     return !String(run.promptPreview ?? "").trim()
       && !(Array.isArray(run.userMessages) && run.userMessages.some((message) => (
         String(message?.text ?? "").trim()
@@ -491,7 +551,7 @@ export function createDesktopSnapshotFactory({
       }, { allowTextFallback: false }));
   }
 
-  function desktopTaskSnapshot(entry, { accountId = "", compactSnapshot = false } = {}) {
+  function desktopTaskSnapshot(entry, { accountId = "", compactSnapshot = false, computeUnread = true } = {}) {
     const displayTitle = taskDisplayTitle(entry);
     const task = {
       streamId: entry.streamId ?? null,
@@ -526,7 +586,8 @@ export function createDesktopSnapshotFactory({
       ? null
       : run;
     const unread = Boolean(
-      accountId
+      computeUnread
+      && accountId
       && lastMessage?.updatedAt
       && readState?.hasUnread?.({
         accountId,
@@ -587,10 +648,12 @@ export function createDesktopSnapshotFactory({
     knownVersion = "",
     compactSnapshot = false,
     snapshotProtocol = 3,
+    projectTask = null,
     conversationsVersion = "",
     workspacesVersion = "",
     boardTasksVersion = "",
     messageReceiptsVersion = "",
+    messagePinsVersion = "",
   } = {}) {
     const snapshotStartedAt = monotonicNow();
     const snapshotTiming = {};
@@ -616,6 +679,7 @@ export function createDesktopSnapshotFactory({
       workspaces: String(workspacesVersion),
       boardTasks: String(boardTasksVersion),
       messageReceipts: String(messageReceiptsVersion),
+      messagePins: String(messagePinsVersion),
     };
     let phaseStartedAt = monotonicNow();
     const beforeRevision = refresh ? null : await sourceRevision(revisionParams);
@@ -657,7 +721,10 @@ export function createDesktopSnapshotFactory({
         running: false,
       }]);
     }
-    const taskSnapshots = entries.map((entry) => desktopTaskSnapshot(entry, { accountId, compactSnapshot }));
+    const taskSnapshots = entries.map((entry) => {
+      const task = desktopTaskSnapshot(entry, { accountId, compactSnapshot, computeUnread: !projectTask });
+      return projectTask ? projectTask(task) : task;
+    });
     snapshotTiming.taskProjectionMs = Math.round((monotonicNow() - phaseStartedAt) * 10) / 10;
     const selectedTaskSnapshot = taskSnapshots.find((task) => task.selected) ?? null;
     phaseStartedAt = monotonicNow();
@@ -717,6 +784,7 @@ export function createDesktopSnapshotFactory({
     const boardTasks = board.snapshot?.() ?? [];
     const archivedWorkspaces = board.archivedWorkspaces?.() ?? [];
     const messageReceipts = desktopMessageReceiptSnapshot();
+    const messagePins = pins.snapshot?.() ?? [];
     const snapshot = {
       apiVersion: protocol,
       workspaces,
@@ -764,6 +832,7 @@ export function createDesktopSnapshotFactory({
         streamCardGapEnabled: current.streamCardGapEnabled === true,
         pinnedWorkspaceStreams: current.pinnedWorkspaceStreams ?? {},
         quickMessages: current.quickMessages ?? { global: [], streams: {}, workspaces: {} },
+        quickMessageActionMode: current.quickMessageActionMode === "send" ? "send" : "insert",
         models: activeProvider === "codex"
           ? current.codexModels.map((model) => ({ value: model.value, label: model.label }))
           : claudeOptions,
@@ -797,26 +866,30 @@ export function createDesktopSnapshotFactory({
       },
       pendingApprovals: approvals.snapshot(),
       messageReceipts,
+      messagePins,
       deferredInputs: [
-        ...deferred.pendingValues().map((item) => ({
-          id: item.id,
-          state: item.manualAction === "steer" ? "steering" : "pending",
-          provider: item.provider,
-          threadId: item.threadId,
-          taskTitle: deferredTaskTitle(item),
-          clientUserMessageId: item.clientUserMessageId ?? null,
-          ...(item.clientProjectionIntent ? { clientProjectionIntent: item.clientProjectionIntent } : {}),
-          ...deferredMessageProjection(item, deferred),
-          annotations: deferred.responseAnnotations?.(item.input) ?? [],
-          allowForce: item.allowForce === true,
-          conflictKind: item.conflictKind ?? null,
-          ...deferredWaitProjection(item),
-          attempts: Number(item.attempts) || 0,
-          createdAt: item.createdAt ?? null,
-          attachments: item.persistentFiles
-            ? (deferred.describeAttachments?.(item.temporaryFiles) ?? [])
-            : [],
-        })),
+        ...deferred.pendingValues().map((item) => {
+          const waitProjection = deferredWaitProjection(item);
+          return {
+            id: item.id,
+            state: item.manualAction === "steer" ? "steering" : "pending",
+            ...(item.manualAction !== "steer" && waitProjection.lastError ? { attentionRequired: true } : {}),
+            provider: item.provider,
+            threadId: item.threadId,
+            streamId: item.streamId ?? null,
+            taskTitle: deferredTaskTitle(item),
+            clientUserMessageId: item.clientUserMessageId ?? null,
+            ...(item.clientProjectionIntent ? { clientProjectionIntent: item.clientProjectionIntent } : {}),
+            ...deferredMessageProjection(item, deferred, receipts),
+            annotations: deferred.responseAnnotations?.(item.input) ?? [],
+            allowForce: item.allowForce === true,
+            conflictKind: item.conflictKind ?? null,
+            ...waitProjection,
+            attempts: Number(item.attempts) || 0,
+            createdAt: item.createdAt ?? null,
+            attachments: deferredInputAttachments(item, deferred.describeAttachments),
+          };
+        }),
         ...deferred.queuedValues().map((item) => ({
           id: item.id,
           state: item.dispatchingAt
@@ -826,10 +899,11 @@ export function createDesktopSnapshotFactory({
               : item.paused === true ? "paused" : "queued",
           provider: item.provider,
           threadId: item.threadId,
+          streamId: item.streamId ?? null,
           taskTitle: deferredTaskTitle(item),
           clientUserMessageId: item.clientUserMessageId ?? null,
           ...(item.clientProjectionIntent ? { clientProjectionIntent: item.clientProjectionIntent } : {}),
-          ...deferredMessageProjection(item, deferred),
+          ...deferredMessageProjection(item, deferred, receipts),
           annotations: deferred.responseAnnotations?.(item.input) ?? [],
           allowForce: false,
           conflictKind: item.conflictKind ?? null,
@@ -837,9 +911,7 @@ export function createDesktopSnapshotFactory({
           attempts: Number(item.attempts) || 0,
           queueOrder: Number.isFinite(Number(item.queueOrder)) ? Number(item.queueOrder) : null,
           createdAt: item.createdAt ?? null,
-          attachments: item.persistentFiles
-            ? (deferred.describeAttachments?.(item.temporaryFiles) ?? [])
-            : [],
+          attachments: deferredInputAttachments(item, deferred.describeAttachments),
         })),
       ].sort((left, right) => {
         const leftAt = Date.parse(String(left.createdAt ?? ""));
@@ -862,6 +934,7 @@ export function createDesktopSnapshotFactory({
       workspaces: workspaceDelta(workspaces, workspacesVersion),
       boardTasks: boardTaskDelta(boardTasks, boardTasksVersion),
       messageReceipts: messageReceiptDelta(messageReceipts, messageReceiptsVersion),
+      messagePins: messagePinDelta(messagePins, messagePinsVersion),
     } : null;
     const collectionVersions = collectionDeltas ? Object.fromEntries(
       Object.entries(collectionDeltas).map(([name, delta]) => [name, delta.version]),
@@ -870,6 +943,7 @@ export function createDesktopSnapshotFactory({
       workspaces: _workspaces,
       boardTasks: _boardTasks,
       messageReceipts: _messageReceipts,
+      messagePins: _messagePins,
       conversations: _conversations,
       ...transportSnapshot
     } = protocol >= 4 ? snapshot : {};

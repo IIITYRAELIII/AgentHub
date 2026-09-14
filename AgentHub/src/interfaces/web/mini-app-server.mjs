@@ -8,6 +8,7 @@ import { pipeline } from "node:stream/promises";
 import { gzipSync } from "node:zlib";
 import { agentHubRuntimeHealth } from "../../application/runtime-health.mjs";
 import { clientCommandAckTraceSpan } from "../../application/client-command-trace.mjs";
+import { clientPerformanceTraceSpans } from "../../application/client-performance-trace.mjs";
 import { WorkspaceFileTransferTickets } from "../../application/workspace-file-transfer-tickets.mjs";
 
 import {
@@ -24,6 +25,8 @@ import {
 import { JournalDatabase } from "../../infrastructure/persistence/journal-database.mjs";
 import { pathInsideOrSame } from "../../infrastructure/filesystem/config.mjs";
 import { validLocalWebviewSession } from "./local-webview-session.mjs";
+import { acquireAttachmentUploadService } from "../../infrastructure/filesystem/attachment-upload-service.mjs";
+import { attachmentUploadLimits } from "../../domain/attachment-upload-policy.mjs";
 
 export { extractWorkLogHtml } from "./mini-app-journal-data.mjs";
 
@@ -192,7 +195,7 @@ async function readBinaryBody(request, maxBytes = MAX_ATTACHMENT_BYTES) {
   let size = 0;
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > maxBytes) throw new Error("Файл превышает 20 МБ");
+    if (size > maxBytes) throw Object.assign(new Error(`Размер запроса превышает ${maxBytes} байт`), { statusCode: 413 });
     chunks.push(chunk);
   }
   if (!size) throw new Error("Пустое изображение");
@@ -322,10 +325,13 @@ function deviceSessionCookie(token, expiresAt, { secure = false } = {}) {
     + `${secure ? "; Secure" : ""}`;
 }
 
-const TELEGRAM_RUNTIME_SCRIPT = /\s*<script src="https:\/\/telegram\.org\/[^"]*"><\/script>/u;
+const TELEGRAM_RUNTIME_SCRIPTS = [
+  /\s*<script src="https:\/\/telegram\.org\/[^"]*"><\/script>/gu,
+  /\s*<script src="\/telegram-runtime-bootstrap(?:\.[a-f0-9]{12})?\.js(?:\?[^"]*)?"><\/script>/gu,
+];
 
 export function withoutTelegramRuntime(html) {
-  return String(html).replace(TELEGRAM_RUNTIME_SCRIPT, "");
+  return TELEGRAM_RUNTIME_SCRIPTS.reduce((body, pattern) => body.replace(pattern, ""), String(html));
 }
 
 function loopbackAddress(value) {
@@ -527,6 +533,9 @@ export class MiniAppServer {
   #assetBundleRefreshMs;
   #assetBundleWarning = "";
   #attachmentDirectory;
+  #attachmentUploads = null;
+  #releaseAttachmentUploads = null;
+  #attachmentUploadLimits;
   #attachmentThumbnails;
   #botToken;
   #clients = new Set();
@@ -544,6 +553,7 @@ export class MiniAppServer {
   #handlerCloseTimeoutMs;
   #journalCache = null;
   #journalDatabase;
+  #journalProjectionService;
   #usageSyncRemoteConfigStore;
   #usageSyncService;
   #ownsJournalDatabase;
@@ -581,11 +591,13 @@ export class MiniAppServer {
     assetBundleProvider = null,
     assetBundleRefreshMs = 1_000,
     attachmentDirectory = null,
+    attachmentUploadPolicy = attachmentUploadLimits(),
     attachmentThumbnails = null,
     mobileUpdateDirectory = path.join(AGENT_HUB_ROOT, "assets", "mobile"),
     workLogCssFile = path.join(AGENT_HUB_ROOT, "work-log.css"),
     journalDatabase = null,
     journalDatabaseFile = null,
+    journalProjectionService = null,
     usageSyncRemoteConfigStore = null,
     usageSyncService = null,
     workspaceFileRoots = [],
@@ -620,6 +632,7 @@ export class MiniAppServer {
     this.#assetBundleProvider = typeof assetBundleProvider === "function" ? assetBundleProvider : null;
     this.#assetBundleRefreshMs = Math.max(0, Number(assetBundleRefreshMs) || 0);
     this.#attachmentDirectory = attachmentDirectory ? path.resolve(attachmentDirectory) : null;
+    this.#attachmentUploadLimits = attachmentUploadPolicy;
     this.#attachmentThumbnails = attachmentThumbnails && typeof attachmentThumbnails.create === "function"
       ? attachmentThumbnails
       : null;
@@ -636,6 +649,10 @@ export class MiniAppServer {
       throw new Error("Mini App journalDatabase or journalDatabaseFile is required");
     }
     this.#journalDatabase = journalDatabase ?? new JournalDatabase(journalDatabaseFile);
+    this.#journalProjectionService = journalProjectionService
+      && typeof journalProjectionService.ensureAccountUsageProjectionCurrent === "function"
+      ? journalProjectionService
+      : null;
     this.#usageSyncRemoteConfigStore = usageSyncRemoteConfigStore;
     this.#usageSyncService = validUsageSyncService(usageSyncService) ? usageSyncService : null;
     this.#ownsJournalDatabase = !journalDatabase;
@@ -666,9 +683,25 @@ export class MiniAppServer {
   }
 
   async #journal() {
-    this.#journalCache = await this.#journalDatabase.payload();
+    this.#journalCache ??= await this.#journalDatabase.payload();
     if (!this.#journalCache) throw new Error("Журнал ещё не создан");
     return this.#journalCache;
+  }
+
+  async #journalMetadata() {
+    const projection = await this.#journalProjectionService
+      ?.ensureAccountUsageProjectionCurrent();
+    if (projection?.projected) this.#journalCache = null;
+    const metadata = typeof this.#journalDatabase.metadata === "function"
+      ? await this.#journalDatabase.metadata()
+      : null;
+    if (metadata) return metadata;
+    const journal = await this.#journal();
+    return {
+      updatedAt: journal.updatedAt,
+      version: journal.version,
+      revision: journal.revision,
+    };
   }
 
   async #usageSyncStatus() {
@@ -911,8 +944,10 @@ export class MiniAppServer {
           "Content-Type",
           "If-None-Match",
           "X-Agent-Hub-Attachment-Name",
+          "X-Agent-Hub-File-Name",
+          "X-Agent-Hub-Chunk-Sha256",
         ].join(", "),
-        "Access-Control-Allow-Methods": "GET, HEAD, POST, OPTIONS",
+        "Access-Control-Allow-Methods": "GET, HEAD, POST, PUT, DELETE, OPTIONS",
         "Access-Control-Max-Age": "600",
       });
       response.end();
@@ -1038,6 +1073,7 @@ export class MiniAppServer {
             workspacesVersion: boundedVersion("workspacesVersion"),
             boardTasksVersion: boundedVersion("boardTasksVersion"),
             messageReceiptsVersion: boundedVersion("messageReceiptsVersion"),
+            messagePinsVersion: boundedVersion("messagePinsVersion"),
           },
           context: authorization,
         });
@@ -1049,7 +1085,7 @@ export class MiniAppServer {
       }
       return;
     }
-    if (url.pathname === "/api/command-trace/client-ack") {
+    if (["/api/command-trace/client-ack", "/api/command-trace/client-events"].includes(url.pathname)) {
       if (method !== "POST") {
         response.writeHead(405, {
           Allow: "POST",
@@ -1061,7 +1097,13 @@ export class MiniAppServer {
       const authorization = await this.#authorize(request, response);
       if (!authorization) return;
       try {
-        const body = await readJsonBody(request);
+        const body = await readJsonBody(request, 32 * 1024);
+        if (url.pathname.endsWith("/client-events")) {
+          const spans = clientPerformanceTraceSpans(body);
+          for (const span of spans) this.#recordCommandTrace?.(span);
+          json(response, 200, { ok: true, accepted: spans.length }, method);
+          return;
+        }
         const commandId = String(body.commandId ?? "").trim();
         if (!CONTROL_COMMAND_ID_PATTERN.test(commandId)) {
           throw new Error("Некорректный идентификатор команды");
@@ -1171,8 +1213,9 @@ export class MiniAppServer {
           acceptEncoding: request.headers["accept-encoding"],
         });
       } catch (error) {
-        this.#reportUnexpected(error, "control");
-        json(response, 400, { ok: false, error: String(error?.message ?? error) }, method);
+        const statusCode = Number(error?.statusCode) === 409 ? 409 : 400;
+        if (statusCode !== 409) this.#reportUnexpected(error, "control");
+        json(response, statusCode, { ok: false, error: String(error?.message ?? error) }, method);
       }
       return;
     }
@@ -1358,6 +1401,41 @@ export class MiniAppServer {
       }
       return;
     }
+    if (url.pathname === "/api/attachment-upload") {
+      const authorization = await this.#authorize(request, response);
+      if (!authorization) return;
+      if (!this.#attachmentUploads) {
+        json(response, 503, { error: "Загрузка файлов недоступна." }, method);
+        return;
+      }
+      try {
+        const owner = String(authorization.userId ?? "local");
+        const id = url.searchParams.get("id");
+        let result;
+        if (method === "GET") {
+          result = id ? await this.#attachmentUploads.status(owner, id) : this.#attachmentUploads.capabilities();
+        } else if (method === "POST" && id && url.searchParams.get("complete") === "1") {
+          result = await this.#attachmentUploads.complete(owner, id);
+        } else if (method === "POST" && !id) {
+          result = await this.#attachmentUploads.begin(owner, await readJsonBody(request));
+        } else if (method === "PUT" && id) {
+          const index = url.searchParams.get("index");
+          if (!/^\d+$/u.test(index ?? "")) throw new Error("Некорректный номер части");
+          result = await this.#attachmentUploads.putChunk(owner, id, Number(index),
+            await readBinaryBody(request, this.#attachmentUploadLimits.chunkBytes),
+            String(request.headers["x-agent-hub-chunk-sha256"] ?? ""));
+        } else if (method === "DELETE" && id) {
+          result = await this.#attachmentUploads.cancel(owner, id);
+        } else {
+          json(response, 405, { error: "Unsupported upload operation" }, method);
+          return;
+        }
+        json(response, 200, { ok: true, ...result }, method);
+      } catch (error) {
+        json(response, error.statusCode ?? 400, { ok: false, error: String(error?.message ?? error) }, method);
+      }
+      return;
+    }
     if (url.pathname === "/api/attachment") {
       if (method !== "POST") {
         response.writeHead(405, {
@@ -1433,17 +1511,16 @@ export class MiniAppServer {
           return;
         }
         const info = await stat(target);
-        if (!info.isFile() || info.size < 1 || info.size > MAX_ATTACHMENT_BYTES) {
+        if (!info.isFile() || info.size < 1 || info.size > this.#attachmentUploadLimits.maxBytes) {
           throw new Error("Вложение отсутствует или повреждено");
         }
-        send(response, 200, metadata.type, await readFile(target), method, {
-          headers: {
-            "Cache-Control": "private, max-age=300",
-            "X-Content-Type-Options": "nosniff",
-            ...(metadata.isImage ? {} : { "Content-Disposition": downloadDisposition(metadata.name) }),
-          },
+        await sendBoundedFile(response, target, info.size, metadata.type, method, {
+          "Cache-Control": "private, max-age=300",
+          "X-Content-Type-Options": "nosniff",
+          ...(metadata.isImage ? {} : { "Content-Disposition": downloadDisposition(metadata.name) }),
         });
-      } catch {
+      } catch (error) {
+        if (response.headersSent) { response.destroy(error); return; }
         json(response, 404, { error: "Вложение не найдено." }, method);
       }
       return;
@@ -1633,10 +1710,21 @@ export class MiniAppServer {
     if (url.pathname === "/api/journal") {
       if (!await this.#authorize(request, response)) return;
       try {
-        const journal = await this.#journal();
         const usageSync = await this.#usageSyncStatus();
+        const metadata = await this.#journalMetadata();
+        const requestedEtag = String(request.headers["if-none-match"] ?? "");
+        const metadataEtag = `"${journalPayloadEtag(metadata, usageSync)}"`;
+        if (requestedEtag === metadataEtag) {
+          response.writeHead(304, {
+            ...responseHeaders("application/json; charset=utf-8"),
+            ETag: metadataEtag,
+          });
+          response.end();
+          return;
+        }
+        const journal = await this.#journal();
         const etag = `"${journalPayloadEtag(journal, usageSync)}"`;
-        if (String(request.headers["if-none-match"] ?? "") === etag) {
+        if (requestedEtag === etag) {
           response.writeHead(304, {
             ...responseHeaders("application/json; charset=utf-8"),
             ETag: etag,
@@ -1656,14 +1744,27 @@ export class MiniAppServer {
     if (url.pathname === "/api/journal/days") {
       if (!await this.#authorize(request, response)) return;
       try {
-        const journal = await this.#journal();
+        const journal = await this.#journalMetadata();
         const requestedVersion = String(url.searchParams.get("version") ?? "");
         if (requestedVersion && requestedVersion !== journal.version) {
           json(response, 409, { error: "Журнал обновился.", version: journal.version }, method);
           return;
         }
-        const days = await this.#journalDatabase.fragments("day");
-        json(response, 200, { days, version: journal.version }, method, {
+        const offset = Math.max(0, Math.floor(Number(url.searchParams.get("offset")) || 0));
+        const limit = Math.max(1, Math.min(20, Math.floor(Number(url.searchParams.get("limit")) || 7)));
+        const page = typeof this.#journalDatabase.fragmentPage === "function"
+          ? await this.#journalDatabase.fragmentPage("day", { offset, limit })
+          : {
+              fragments: Object.fromEntries(Object.entries(
+                await this.#journalDatabase.fragments("day"),
+              ).slice(offset, offset + limit)),
+              nextOffset: null,
+            };
+        json(response, 200, {
+          days: page.fragments,
+          nextOffset: page.nextOffset,
+          version: journal.version,
+        }, method, {
           acceptEncoding: request.headers["accept-encoding"],
         });
       } catch (error) {
@@ -1674,7 +1775,7 @@ export class MiniAppServer {
     if (url.pathname === "/api/journal/day" || url.pathname === "/api/journal/turn") {
       if (!await this.#authorize(request, response)) return;
       try {
-        const journal = await this.#journal();
+        const journal = await this.#journalMetadata();
         const requestedVersion = String(url.searchParams.get("version") ?? "");
         if (requestedVersion && requestedVersion !== journal.version) {
           json(response, 409, { error: "Журнал обновился.", version: journal.version }, method);
@@ -1692,6 +1793,34 @@ export class MiniAppServer {
           return;
         }
         json(response, 200, { html, version: journal.version }, method, {
+          acceptEncoding: request.headers["accept-encoding"],
+        });
+      } catch (error) {
+        json(response, 503, { error: `Журнал недоступен: ${error.message}` }, method);
+      }
+      return;
+    }
+    if (url.pathname === "/api/journal/turns") {
+      if (!await this.#authorize(request, response)) return;
+      try {
+        const requestedVersion = String(url.searchParams.get("version") ?? "");
+        const page = await this.#journalDatabase.turnPage({
+          expectedVersion: requestedVersion,
+          profileMode: url.searchParams.get("profileMode"),
+          workspaceId: url.searchParams.get("workspaceId"),
+          streamId: url.searchParams.get("streamId"),
+          provider: url.searchParams.get("provider"),
+          threadId: url.searchParams.get("threadId"),
+          fromMs: url.searchParams.get("fromMs"),
+          toMs: url.searchParams.get("toMs"),
+          offset: url.searchParams.get("offset"),
+          limit: url.searchParams.get("limit"),
+        });
+        if (page.conflict) {
+          json(response, 409, { error: "Журнал обновился.", version: page.version }, method);
+          return;
+        }
+        json(response, 200, page, method, {
           acceptEncoding: request.headers["accept-encoding"],
         });
       } catch (error) {
@@ -1744,6 +1873,11 @@ export class MiniAppServer {
   async start() {
     if (this.#closePromise) await this.#closePromise;
     if (this.#server) return this.address();
+    if (!this.#attachmentUploads && this.#attachmentDirectory) {
+      const lease = await acquireAttachmentUploadService({ attachmentDirectory: this.#attachmentDirectory, limits: this.#attachmentUploadLimits });
+      this.#attachmentUploads = lease.service;
+      this.#releaseAttachmentUploads = lease.release;
+    }
     const server = createServer((request, response) => {
       const transportReceivedAtMs = Date.now();
       const handling = this.#handle(request, response, transportReceivedAtMs).catch((error) => {
@@ -1794,7 +1928,12 @@ export class MiniAppServer {
   async close() {
     if (this.#closePromise) return this.#closePromise;
     const server = this.#server;
-    if (!server) return;
+    if (!server) {
+      await this.#releaseAttachmentUploads?.();
+      this.#attachmentUploads = null;
+      this.#releaseAttachmentUploads = null;
+      return;
+    }
     this.#server = null;
     this.#closePromise = (async () => {
       if (this.#changeTimer) clearTimeout(this.#changeTimer);
@@ -1823,6 +1962,9 @@ export class MiniAppServer {
         ]).finally(() => clearTimeout(handlerCloseTimer));
       }
       for (const handling of activeHandlers) this.#activeHandlers.delete(handling);
+      await this.#releaseAttachmentUploads?.();
+      this.#attachmentUploads = null;
+      this.#releaseAttachmentUploads = null;
       if (this.#ownsJournalDatabase) this.#journalDatabase.close();
     })();
     try {

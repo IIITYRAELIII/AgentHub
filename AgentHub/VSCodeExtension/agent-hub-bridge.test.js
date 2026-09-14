@@ -21,6 +21,11 @@ function day(date, turnId) {
 
 function memoryJournal({ html = "", days = {}, turns = {}, version = "sqlite-v1" } = {}) {
   return {
+    metadata: async () => ({
+      updatedAt: "2026-07-30T02:55:14.512Z",
+      version,
+      revision: 1,
+    }),
     payload: async () => ({
       html,
       updatedAt: "2026-07-30T02:55:14.512Z",
@@ -73,7 +78,37 @@ test("VS Code bridge serves the same lazy journal contract", async () => {
   }
 });
 
-test("VS Code bridge exposes account panel HTML and usage sync status in journal payload", async () => {
+test("VS Code bridge returns metadata ETag without loading the journal payload", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-journal-etag-"));
+  let payloadCalls = 0;
+  const bridge = new AgentHubBridge({
+    journalDatabase: {
+      metadata: async () => ({ version: "sqlite-v-fast", revision: 7, updatedAt: "now" }),
+      payload: async () => {
+        payloadCalls += 1;
+        throw new Error("payload must remain lazy");
+      },
+      subscribe: () => () => {},
+      close() {},
+    },
+    moduleRoot: path.resolve(__dirname, ".."),
+    runtimeRoot: root,
+  });
+  bridge.control = async () => ({ configured: false });
+  try {
+    const response = await bridge.http({
+      path: "/api/journal",
+      headers: { "if-none-match": '"sqlite-v-fast"' },
+    });
+    assert.equal(response.status, 304);
+    assert.equal(payloadCalls, 0);
+  } finally {
+    bridge.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("VS Code bridge exposes account panel HTML and stored usage sync status when control is unavailable", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-journal-sync-status-"));
   let bridge;
   try {
@@ -102,6 +137,7 @@ test("VS Code bridge exposes account panel HTML and usage sync status in journal
       moduleRoot: path.resolve(__dirname, ".."),
       runtimeRoot: root,
     });
+    bridge.control = async () => { throw new Error("desktop control unavailable"); };
 
     const response = await bridge.http({ path: "/api/journal" });
     assert.equal(response.status, 200);
@@ -164,6 +200,51 @@ test("VS Code bridge exposes usage sync without the local Web App", async () => 
     assert.equal(actions[1].params.deviceLabel, "Tyrael");
   } finally {
     bridge?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("VS Code bridge revalidates journal metadata against the current desktop usage sync status", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-sync-etag-"));
+  const database = memoryJournal({ html: day("06.07.2026", "turn-1") });
+  const readPayload = database.payload;
+  let payloadCalls = 0;
+  database.payload = async () => {
+    payloadCalls += 1;
+    return readPayload();
+  };
+  const bridge = new AgentHubBridge({
+    journalDatabase: database,
+    moduleRoot: path.resolve(__dirname, ".."),
+    runtimeRoot: root,
+  });
+  const status = { configured: false, deviceLabel: "Desktop", deviceLabelPromptRequired: true };
+  bridge.control = async (action) => {
+    assert.equal(action, "usage-sync-status");
+    return { ...status };
+  };
+  try {
+    const initial = await bridge.http({ path: "/api/journal" });
+    assert.equal(initial.status, 200);
+    assert.equal(payloadCalls, 1);
+    bridge.journalCache = null;
+    const unchanged = await bridge.http({
+      path: "/api/journal",
+      headers: { "if-none-match": initial.headers.ETag },
+    });
+    assert.equal(unchanged.status, 304);
+    assert.equal(payloadCalls, 1);
+    status.deviceLabel = "Laptop";
+    const changed = await bridge.http({
+      path: "/api/journal",
+      headers: { "if-none-match": initial.headers.ETag },
+    });
+    assert.equal(changed.status, 200);
+    assert.notEqual(changed.headers.ETag, initial.headers.ETag);
+    assert.equal(JSON.parse(changed.body).usageSync.deviceLabel, "Laptop");
+    assert.equal(payloadCalls, 2);
+  } finally {
+    bridge.close();
     await rm(root, { recursive: true, force: true });
   }
 });

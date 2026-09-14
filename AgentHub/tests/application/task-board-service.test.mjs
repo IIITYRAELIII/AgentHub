@@ -5,7 +5,9 @@ import path from "node:path";
 import test from "node:test";
 
 import { BugReportTaskCapture } from "../../src/application/bug-report-task-capture.mjs";
+import { createTaskBoardMutationOwner } from "../../src/application/sqlite-mutation-owner.mjs";
 import { TaskBoardService } from "../../src/application/task-board-service.mjs";
+import { recoverTaskBoardStartup } from "../../src/composition/infrastructure-composition.mjs";
 import { TaskBoardStore } from "../../src/infrastructure/persistence/task-board-store.mjs";
 
 async function fixture(t, classify) {
@@ -29,6 +31,7 @@ async function fixture(t, classify) {
 
 test("snapshot revision reads owner revisions without building hierarchy or board", () => {
   let hierarchyCalls = 0;
+  const legacyAdoptions = [];
   const store = {
     revision: 7,
     create: () => null,
@@ -46,6 +49,10 @@ test("snapshot revision reads owner revisions without building hierarchy or boar
     recordTaskTurn: () => null,
     releaseTasks: () => [],
     completeRelease: () => null,
+    adoptLegacyGitReference: (payload) => {
+      legacyAdoptions.push(payload);
+      return { id: payload.taskId, workspaceId: "workspace-1", status: "open", bucket: "workspace" };
+    },
   };
   const service = new TaskBoardService({
     store,
@@ -60,6 +67,8 @@ test("snapshot revision reads owner revisions without building hierarchy or boar
 
   assert.equal(service.snapshotRevision, "7:11");
   assert.equal(hierarchyCalls, 0);
+  assert.equal(service.adoptLegacyGitReference({ taskId: "legacy-1", evidenceTurnId: "turn-1" }).id, "legacy-1");
+  assert.deepEqual(legacyAdoptions, [{ taskId: "legacy-1", evidenceTurnId: "turn-1" }]);
 });
 
 test("Spark correction and confident Workspace suggestion place a Task automatically", async (t) => {
@@ -72,7 +81,7 @@ test("Spark correction and confident Workspace suggestion place a Task automatic
     confidence: 0.94,
     reason: "Упомянут Agent Hub",
   }));
-  const created = service.create({ text: "исправить дашборд агент хаб", source: "telegram" });
+  const created = await service.create({ text: "исправить дашборд агент хаб", source: "telegram" });
   await service.waitForTriage();
   const task = service.task(created.id);
   assert.equal(task.correctedText, "Исправить дашборд Agent Hub");
@@ -92,7 +101,7 @@ test("uncertain Spark suggestion leaves a Task in the backlog", async (t) => {
     confidence: 0.31,
     reason: "Не хватает контекста",
   }));
-  const created = service.create({ text: "чтото проверить", source: "telegram" });
+  const created = await service.create({ text: "чтото проверить", source: "telegram" });
   await service.waitForTriage();
   const task = service.task(created.id);
   assert.equal(task.bucket, "backlog");
@@ -114,7 +123,7 @@ test("Telegram bundle rules are passed to Spark outside the Task text", async (t
     };
   });
   const text = "--- Сообщение 1 · Переслано · Клиент ---\nИсправить дату документа";
-  service.create({ text, source: "telegram", sourceDetails: { bundleId: "bundle-1" } });
+  await service.create({ text, source: "telegram", sourceDetails: { bundleId: "bundle-1" } });
   await service.waitForTriage();
   assert.equal(classifierInput.text, text);
   assert.equal(classifierInput.inputKind, "telegram-forward-bundle");
@@ -135,14 +144,14 @@ test("a following forward retriages the preceding Telegram Task instead of creat
       reason: "Workspace не определён",
     };
   });
-  const task = service.create({
+  const task = await service.create({
     text: "КЭМЗ",
     source: "telegram",
     sourceDetails: { updateId: 798, chatId: 42, userId: 42, messageId: 18 },
   });
   await service.waitForTriage();
   const mergedText = "--- Сообщение 1 · Вы ---\nКЭМЗ\n\n--- Сообщение 2 · Переслано · Иван ---\nКонтекст";
-  const merged = service.mergeSourceMessage({
+  const merged = await service.mergeSourceMessage({
     source: "telegram",
     chatId: 42,
     userId: 42,
@@ -171,13 +180,13 @@ test("a Telegram text reply retriages the same Task with the clarification", asy
       reason: "Workspace не определён",
     };
   });
-  const task = service.create({
+  const task = await service.create({
     text: "ЭКЗАМЕНЫ",
     source: "telegram",
     sourceDetails: { chatId: 42, userId: 42, messageId: 2 },
   });
   await service.waitForTriage();
-  const clarified = service.appendSourceMessage({
+  const clarified = await service.appendSourceMessage({
     source: "telegram",
     chatId: 42,
     userId: 42,
@@ -194,7 +203,7 @@ test("a Telegram text reply retriages the same Task with the clarification", asy
   assert.equal(service.snapshot().length, 1);
 });
 
-test("disabled Spark leaves new Tasks idle and clears recovered triage", () => {
+test("disabled Spark leaves new Tasks idle and clears recovered triage", async () => {
   let disabled = 0;
   const created = [];
   const service = new TaskBoardService({
@@ -217,23 +226,70 @@ test("disabled Spark leaves new Tasks idle and clears recovered triage", () => {
       recordTaskTurn: () => null,
       releaseTasks: () => [],
       completeRelease: () => null,
-      disablePendingTriage: () => { disabled += 1; },
+      adoptLegacyGitReference: () => null,
+      disablePendingTriage: () => { disabled += 1; return 1; },
     },
     workspaceCatalog: { hierarchy: () => [] },
     autoPlaceConfidence: 0,
   });
   const task = service.create({ text: "Без классификации" });
-  service.recoverPendingTriage();
+  const recovery = await service.recoverPendingTriage();
   assert.equal(task.triageStatus, "disabled");
   assert.equal(created[0].triageStatus, "disabled");
   assert.equal(service.autoPlaceConfidence, 0);
   assert.equal(disabled, 1);
+  assert.deepEqual(recovery, { mode: "disabled", disabled: 1, scheduled: 0 });
+});
+
+test("startup awaits branded pending-triage recovery and fails closed on queued persistence rejection", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-triage-recovery-"));
+  const successStore = new TaskBoardStore({ databaseFile: path.join(directory, "success.sqlite") });
+  const rejectedStore = new TaskBoardStore({ databaseFile: path.join(directory, "rejected.sqlite") });
+  t.after(async () => {
+    successStore.close();
+    rejectedStore.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  successStore.create({ text: "pending success" });
+  rejectedStore.create({ text: "pending rejected" });
+  const workspaceCatalog = { hierarchy: () => [] };
+  const successService = new TaskBoardService({
+    store: createTaskBoardMutationOwner(successStore), workspaceCatalog,
+  });
+  const success = await recoverTaskBoardStartup(successService);
+  assert.deepEqual(success, { mode: "disabled", disabled: 1, scheduled: 0 });
+  assert.equal(successStore.pendingTriage().length, 0);
+
+  rejectedStore.runMutation = async () => { throw new Error("queued persistence unavailable"); };
+  const rejectedService = new TaskBoardService({
+    store: createTaskBoardMutationOwner(rejectedStore), workspaceCatalog,
+  });
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  let startupContinued = false;
+  try {
+    await assert.rejects((async () => {
+      await recoverTaskBoardStartup(rejectedService);
+      startupContinued = true;
+    })(), (error) => {
+      assert.equal(error.message, "Task triage startup recovery failed");
+      assert.equal(error.cause?.message, "queued persistence unavailable");
+      return true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(startupContinued, false);
+    assert.deepEqual(unhandled, []);
+    assert.equal(rejectedStore.pendingTriage().length, 1);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
 });
 
 test("manual dashboard creation never starts Spark triage", async (t) => {
   let classifyCalls = 0;
   const service = await fixture(t, async () => { classifyCalls += 1; return {}; });
-  const task = service.create({ text: "Создано вручную", source: "hub" });
+  const task = await service.create({ text: "Создано вручную", source: "hub" });
   await service.waitForTriage();
   assert.equal(task.triageStatus, "disabled");
   assert.equal(classifyCalls, 0);
@@ -241,7 +297,7 @@ test("manual dashboard creation never starts Spark triage", async (t) => {
 
 test("Dashboard snapshot exposes attachment descriptors without local paths", async (t) => {
   const service = await fixture(t);
-  service.create({
+  await service.create({
     text: "Проверить скриншот",
     source: "hub",
     sourceDetails: { attachments: ["D:/runtime/attachments/screenshot.jpg"] },
@@ -260,7 +316,7 @@ test("Dashboard snapshot exposes attachment descriptors without local paths", as
 test("personal bug report capture bypasses Spark and resolves Agent HUB by name", async (t) => {
   let classifyCalls = 0;
   const service = await fixture(t, async () => { classifyCalls += 1; return {}; });
-  const task = new BugReportTaskCapture({
+  const task = await new BugReportTaskCapture({
     taskBoard: service,
     workspaceName: "Agent HUB",
   }).capture({
@@ -278,8 +334,8 @@ test("personal bug report capture bypasses Spark and resolves Agent HUB by name"
 
 test("dashboard updates a Task title and description", async (t) => {
   const service = await fixture(t);
-  const task = service.create({ text: "Черновик", source: "hub" });
-  const updated = service.update({
+  const task = await service.create({ text: "Черновик", source: "hub" });
+  const updated = await service.update({
     id: task.id,
     title: "Готовый заголовок",
     description: "Подробное описание",
@@ -292,9 +348,9 @@ test("dashboard keeps Other last while the remaining columns stay movable", asyn
   const service = await fixture(t);
   assert.deepEqual(service.layout().columnOrder, ["workspace:agent-hub", "notes", "workspace:other"]);
   assert.deepEqual(service.workspaces().map((workspace) => workspace.name), ["Agent Hub", "Other"]);
-  service.moveColumn({ columnId: "notes", beforeColumnId: "workspace:agent-hub" });
+  await service.moveColumn({ columnId: "notes", beforeColumnId: "workspace:agent-hub" });
   assert.deepEqual(service.layout().columnOrder, ["notes", "workspace:agent-hub", "workspace:other"]);
-  service.moveColumn({ columnId: "workspace:agent-hub" });
+  await service.moveColumn({ columnId: "workspace:agent-hub" });
   assert.deepEqual(service.layout().columnOrder, ["notes", "workspace:agent-hub", "workspace:other"]);
   service.workspaceCatalog.hierarchy().push({ id: "new", name: "New", systemKey: null, streams: [] });
   assert.deepEqual(

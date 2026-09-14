@@ -67,7 +67,8 @@ function configure(database) {
   database.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
-    PRAGMA busy_timeout = 5000;
+    PRAGMA busy_timeout = 0;
+    PRAGMA journal_size_limit = 16777216;
     CREATE TABLE IF NOT EXISTS command_trace_spans (
       sequence INTEGER PRIMARY KEY AUTOINCREMENT,
       span_id TEXT NOT NULL UNIQUE,
@@ -86,6 +87,8 @@ function configure(database) {
       ON command_trace_spans(command_id, observed_at_ms, sequence);
     CREATE INDEX IF NOT EXISTS command_trace_spans_stage_observed
       ON command_trace_spans(stage, observed_at_ms);
+    CREATE INDEX IF NOT EXISTS command_trace_spans_observed
+      ON command_trace_spans(observed_at_ms);
     CREATE TRIGGER IF NOT EXISTS command_trace_spans_append_only
       BEFORE UPDATE ON command_trace_spans
       BEGIN
@@ -115,6 +118,9 @@ export class CommandTraceSpanStore {
   #database = null;
   #tail = Promise.resolve();
   #closed = false;
+  // The trace worker is the sole writer; diagnostics open separate read-only handles.
+  // Advance only after COMMIT so rejected batches never alter retention accounting.
+  #rowCount = 0;
 
   constructor({
     databaseFile,
@@ -133,8 +139,15 @@ export class CommandTraceSpanStore {
     if (this.#closed) throw new Error("command trace span store is closed");
     if (!this.#database) {
       mkdirSync(path.dirname(this.databaseFile), { recursive: true });
-      this.#database = new DatabaseSync(this.databaseFile);
-      configure(this.#database);
+      const database = new DatabaseSync(this.databaseFile);
+      try {
+        configure(database);
+        this.#rowCount = Number(database.prepare("SELECT COUNT(*) AS count FROM command_trace_spans").get().count);
+        this.#database = database;
+      } catch (error) {
+        database.close();
+        throw error;
+      }
     }
     return this.#database;
   }
@@ -145,28 +158,26 @@ export class CommandTraceSpanStore {
     return next;
   }
 
-  #prune(database, nowMs = this.clock()) {
+  #prune(database, rowCount = this.#rowCount, nowMs = this.clock()) {
     const expired = database.prepare(`
       DELETE FROM command_trace_spans
       WHERE observed_at_ms < ?
     `).run(Math.max(0, Number(nowMs) - this.retentionMs)).changes;
-    const overflow = database.prepare(`
+    const excess = Math.max(0, rowCount - Number(expired) - this.maxSpans);
+    const overflow = excess === 0 ? 0 : database.prepare(`
       DELETE FROM command_trace_spans
       WHERE sequence <= COALESCE((
         SELECT sequence
         FROM command_trace_spans
-        ORDER BY sequence DESC
+        ORDER BY sequence ASC
         LIMIT 1 OFFSET ?
       ), -1)
-    `).run(this.maxSpans).changes;
+    `).run(excess - 1).changes;
     return Number(expired) + Number(overflow);
   }
 
   initialize() {
-    return this.#enqueue(() => {
-      this.#open();
-      return { ready: true };
-    });
+    return this.prune().then(() => ({ ready: true }));
   }
 
   append(span) {
@@ -209,8 +220,9 @@ export class CommandTraceSpanStore {
             JSON.stringify(span.metadata),
           ).changes);
         }
-        const pruned = this.#prune(database);
+        const pruned = this.#prune(database, this.#rowCount + appended);
         database.exec("COMMIT");
+        this.#rowCount += appended - pruned;
         return { appended, duplicates: normalized.length - appended, pruned };
       } catch (error) {
         database.exec("ROLLBACK");
@@ -306,6 +318,7 @@ export class CommandTraceSpanStore {
       try {
         const pruned = this.#prune(database);
         database.exec("COMMIT");
+        this.#rowCount -= pruned;
         return { pruned };
       } catch (error) {
         database.exec("ROLLBACK");

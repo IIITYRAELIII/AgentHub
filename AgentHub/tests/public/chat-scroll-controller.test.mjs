@@ -81,6 +81,28 @@ test("chat scroll controller follows the bottom until the reader moves away", as
   assert.equal(button.hidden, true);
 });
 
+test("chat scroll controller releases an exact history window before returning to bottom", async () => {
+  const { ChatScrollController } = await scrollApi();
+  const scroll = Object.assign(new FakeTarget(), {
+    scrollHeight: 1_000,
+    clientHeight: 200,
+    scrollTop: 400,
+  });
+  const button = fakeScrollButton();
+  const events = [];
+  new ChatScrollController(scroll, button, {
+    onReturnBottom: () => events.push("release-focus"),
+    reducedMotion: () => true,
+    requestAnimationFrame: (callback) => { callback(0); return 1; },
+    cancelAnimationFrame: () => {},
+    ResizeObserver: null,
+  });
+
+  button.dispatch("click");
+  assert.deepEqual(events, ["release-focus"]);
+  assert.equal(scroll.scrollTop, 1_000);
+});
+
 test("chat scroll controller restores distance from bottom after DOM replacement", async () => {
   const { ChatScrollController } = await scrollApi();
   const scroll = Object.assign(new FakeTarget(), {
@@ -97,6 +119,37 @@ test("chat scroll controller restores distance from bottom after DOM replacement
   scroll.scrollHeight = 1_200;
   controller.afterMutation(snapshot, { preserveDistance: true });
   assert.equal(scroll.scrollTop, 700);
+});
+
+test("exact navigation suppresses queued resize correction until its target position settles", async () => {
+  const { ChatScrollController } = await scrollApi();
+  const frames = [];
+  const scroll = Object.assign(new FakeTarget(), {
+    scrollHeight: 1_000,
+    clientHeight: 200,
+    scrollTop: 500,
+  });
+  const controller = new ChatScrollController(scroll, null, {
+    requestAnimationFrame: (callback) => { frames.push(callback); return frames.length; },
+    cancelAnimationFrame: () => {},
+    ResizeObserver: null,
+  });
+  frames.shift()(0);
+
+  const generation = controller.beginExactNavigation();
+  scroll.scrollHeight = 60_000;
+  scroll.scrollTop = 3_453;
+  scroll.dispatch("scroll");
+  controller.completeExactNavigation(generation);
+  controller.handleResize();
+  assert.equal(scroll.scrollTop, 3_453);
+
+  frames.shift()(16);
+  controller.handleResize();
+  assert.equal(scroll.scrollTop, 3_453);
+  frames.shift()(32);
+  assert.equal(controller.exactNavigationActive, false);
+  assert.equal(scroll.scrollTop, 3_453);
 });
 
 test("chat history requests another page only while older messages can fill the viewport", async () => {

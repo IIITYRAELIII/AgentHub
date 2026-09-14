@@ -155,10 +155,14 @@ test("title backfill updates SQLite and leaves legacy files unchanged", async ()
     const stored = await database.loadLedger();
     const snapshot = await database.snapshot();
     database.close();
+    const projected = [
+      snapshot.html,
+      ...Object.values(snapshot.days),
+    ].join("\n");
     assert.equal(stored.turns[key].title, "Отчёт сформирован");
-    assert.match(snapshot.html, /Отчёт сформирован/u);
-    assert.match(snapshot.html, /Неизвестный аккаунт/u);
-    assert.doesNotMatch(snapshot.html, /remote@example\.com/u);
+    assert.match(projected, /Отчёт сформирован/u);
+    assert.match(projected, /Неизвестный аккаунт/u);
+    assert.doesNotMatch(projected, /remote@example\.com/u);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -56,6 +56,9 @@ html[data-theme="zero"] {
   --provider-none: #737373;
   --provider-codex: #d8d8d8;
   --provider-claude: #949494;
+  --provider-tone-lightness: 0.74;
+  --provider-tone-chroma: 0.01;
+  --provider-tone-alpha: 0.16;
   --ok: #d8d8d8;
   --pending: #9a9a9a;
 

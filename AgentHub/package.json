@@ -1,12 +1,13 @@
 {
   "name": "agent-hub",
   "private": true,
-  "version": "2026.9.3",
+  "version": "2026.9.13",
   "type": "module",
   "engines": {
     "node": ">=22.5.0"
   },
   "scripts": {
+    "trace:report": "node src/composition/command-trace-report-cli.mjs",
     "start": "node agent-hub-main.mjs",
     "send": "node send-message.mjs",
     "render-code": "python render-code-images.py",
@@ -25,6 +26,7 @@
     "android:build": "powershell -NoProfile -ExecutionPolicy Bypass -File AndroidApp/build.ps1",
     "gateway:install": "node direct-gateway-cli.mjs install",
     "release:version": "node release-version.mjs",
+    "release:policy": "node src/interfaces/cli/release-policy.mjs",
     "publish:all": "node publish-all.mjs",
     "publish:changed": "node publish-changed.mjs",
     "hook:install": "node src/infrastructure/codex/codex-hook-config.mjs install",
@@ -36,6 +38,8 @@
     "work-log:claude-backfill": "node claude-work-log-backfill-cli.mjs",
     "work-log:title-backfill": "node work-log-title-backfill-cli.mjs",
     "workspace:migrate": "node src/interfaces/cli/workspace-layout-migrate.mjs",
+    "task:reconcile-operation": "node task-operation-reconcile.mjs",
+    "task:await-cutover": "node task-await-cutover.mjs",
     "contracts:check": "node --no-warnings --experimental-vm-modules syntax-check.mjs --contracts-only",
     "contracts:affected": "node contract-registry-cli.mjs affected",
     "rate-limits:backfill": "node rate-limit-backfill.mjs",
@@ -45,6 +49,10 @@
     "test:installer": "python -m unittest install_test.py",
     "test:e2e": "node test-suite.mjs e2e",
     "test:vscode": "node test-suite.mjs vscode",
+    "test:visual": "node test-suite.mjs visual",
+    "test:cosmetic": "node test-suite.mjs cosmetic",
+    "test:stress": "node test-suite.mjs stress",
+    "test:reliability": "node test-suite.mjs reliability",
     "test:core": "npm run check && npm test && npm run test:installer && npm run test:e2e",
     "test:all": "node test-suite.mjs all",
     "doctor": "node doctor.mjs",

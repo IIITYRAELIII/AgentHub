@@ -3,8 +3,50 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { DatabaseSync } from "node:sqlite";
 
 import { MaintenanceOperationStore } from "../../../src/infrastructure/persistence/maintenance-operation-store.mjs";
+
+test("exact provider-turn reads retain dedicated identity across restart and concurrent WAL writes", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-maintenance-turn-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const original = new MaintenanceOperationStore({ dataDir: directory });
+  const operation = original.create({
+    kind: "context-compaction", streamId: "stream-1", threadId: "thread-1",
+    providerTurnId: "dedicated-turn", metadata: { dedicatedProviderTurn: true },
+    status: "succeeded", phase: "completed",
+  });
+  const restored = new MaintenanceOperationStore({ dataDir: directory });
+  assert.equal(restored.get(operation.operationId).status, "succeeded");
+  const writer = new DatabaseSync(path.join(directory, "runtime.sqlite"));
+  try {
+    writer.exec("BEGIN IMMEDIATE");
+    writer.prepare("UPDATE maintenance_operations SET status = 'failed' WHERE operation_id = ?")
+      .run(operation.operationId);
+    const identity = { kind: "context-compaction", threadId: "thread-1", providerTurnId: "dedicated-turn" };
+    const exact = restored.forProviderTurn(identity);
+    assert.equal(exact.operationId, operation.operationId);
+    assert.equal(exact.metadata.dedicatedProviderTurn, true);
+    assert.equal(exact.status, "succeeded");
+    assert.equal(restored.get(operation.operationId).status, "succeeded");
+    assert.equal(restored.forProviderTurn({ ...identity, threadId: "thread-2" }), null);
+    assert.equal(restored.forProviderTurn({ ...identity, providerTurnId: "inline-turn" }), null);
+    assert.equal(restored.forProviderTurn({ ...identity, kind: "restart" }), null);
+    assert.equal(restored.forProviderTurn({ ...identity, providerTurnId: "" }), null);
+    assert.throws(() => restored.create({
+      operationId: "blocked-write", kind: "context-compaction", streamId: "stream-1",
+      threadId: "thread-1", providerTurnId: "next-turn",
+    }), /database is locked|SQLITE_BUSY/u);
+    assert.equal(restored.get("blocked-write"), null);
+  } finally {
+    writer.exec("ROLLBACK");
+    writer.close();
+  }
+  assert.equal(restored.create({
+    operationId: "blocked-write", kind: "context-compaction", streamId: "stream-1",
+    threadId: "thread-1", providerTurnId: "next-turn",
+  }).revision, 1, "retry after writer release keeps the original operation identity");
+});
 
 test("process death recovers running work as unknown, never as running fact", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-maintenance-"));

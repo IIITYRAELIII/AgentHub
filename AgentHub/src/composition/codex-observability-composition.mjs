@@ -1,3 +1,4 @@
+import { contourRolloutPolicy } from "../infrastructure/filesystem/test-contour-rollout-policy.mjs";
 import path from "node:path";
 
 import { turnEndKey } from "../application/turn-end-notifications.mjs";
@@ -8,7 +9,10 @@ import {
   backupCodexHistoricalReconciliation,
 } from "../infrastructure/persistence/codex-historical-reconciliation-backup.mjs";
 import { CodexAccountingResolver } from "../providers/codex/codex-accounting-resolver.mjs";
-import { scanCodexHistoricalRolloutInWorker } from "../providers/codex/codex-historical-backfill.mjs";
+import {
+  scanCodexHistoricalRolloutInWorker,
+  scanCodexLiveRolloutInWorker,
+} from "../providers/codex/codex-historical-backfill.mjs";
 import { resolveCodexJournalProject } from "../providers/codex/codex-journal-project.mjs";
 import { CODEX_AUDIT_SOURCE_KINDS } from "../providers/codex/codex-subagent-accounting.mjs";
 import { CodexTerminalAudit } from "../providers/codex/codex-terminal-audit.mjs";
@@ -39,6 +43,13 @@ function setBounded(map, key, value, limit) {
   while (map.size > limit) map.delete(map.keys().next().value);
 }
 
+export function createCodexAccountingResolutionPorts(accounting) {
+  return {
+    accountingThread: (...args) => accounting.accountingThread(...args),
+    subagentParentTurnId: (...args) => accounting.subagentParentTurnId(...args),
+  };
+}
+
 export function createCodexObservabilityComposition({
   config,
   sendRpc,
@@ -53,6 +64,8 @@ export function createCodexObservabilityComposition({
   lastSeenTaskTurnIds,
   saveState,
   deliverTurnEndNotification,
+  repairTurnEndAttachments,
+  reclassifyTurnEndContextProbe,
   defaultNotificationChatId,
   findProject,
   resolveTaskByProviderRef,
@@ -62,6 +75,7 @@ export function createCodexObservabilityComposition({
   streamIdForThread,
   importCodexAssistantAttachments,
 }) {
+  const rolloutPolicy = contourRolloutPolicy(config);
   const rolloutPathsByProviderTaskId = new Map();
   const compactions = new ContextCompactionTracker({
     cleanupTimeoutMs: Math.max(
@@ -118,6 +132,7 @@ export function createCodexObservabilityComposition({
   }
 
   async function knownRolloutPath(providerTaskId, startedAt = "") {
+    if (rolloutPolicy) { rolloutPolicy.exclude("known-rollout-path"); return ""; }
     const key = String(providerTaskId ?? "").trim();
     const known = String(rolloutPathsByProviderTaskId.get(key) ?? "").trim();
     if (known) return known;
@@ -132,10 +147,12 @@ export function createCodexObservabilityComposition({
   }
 
   const resolveTerminalAttachments = createCodexTerminalAttachmentResolver({
+    recordingRoot: config.testContourRecording?.root,
     knownRolloutPath,
     readRolloutActivity: readCodexRolloutActivity,
     importAttachments: importCodexAssistantAttachments,
   });
+  const accountingPorts = createCodexAccountingResolutionPorts(accounting);
 
   async function rememberAuditedTurnStart(thread, project, turn) {
     const identity = {
@@ -168,10 +185,9 @@ export function createCodexObservabilityComposition({
     notifications: turnEndNotifications,
     turnStarts,
     workLogStore: workLogUsageStore,
-    accountingThread: (thread) => accounting.accountingThread(thread),
-    subagentParentTurnId: (thread, accountingThread) => (
-      accounting.subagentParentTurnId(thread, accountingThread)
-    ),
+    operationStore,
+    accountingThread: accountingPorts.accountingThread,
+    subagentParentTurnId: accountingPorts.subagentParentTurnId,
     readTurnUsage: readCodexTurnUsage,
     taskGitDiff,
     dataDir: config.dataDir,
@@ -186,9 +202,12 @@ export function createCodexObservabilityComposition({
     },
     saveState,
     deliverNotification: deliverTurnEndNotification,
+    repairTerminalAttachments: repairTurnEndAttachments,
+    reclassifyTerminalContextProbe: reclassifyTurnEndContextProbe,
     resolveTerminalAttachments,
   });
   const terminalAudit = new CodexTerminalAudit({
+    recordingRoot: config.testContourRecording?.root,
     listPage: (cursor, limit) => sendRpc("thread/list", {
       cursor,
       limit,
@@ -233,7 +252,12 @@ export function createCodexObservabilityComposition({
     discoverHistoricalThreads: () => discoverCodexRollouts(),
     discoverSupplementalThreads: () => discoverCodexSubagentRollouts(),
     scanHistoricalFile: scanCodexHistoricalRolloutInWorker,
+    scanFile: scanCodexLiveRolloutInWorker,
+    incrementalUsageScan: true,
+    liveScanBytes: 4 * 1024 * 1024,
+    auditBytesPerRun: 8 * 1024 * 1024,
     shouldRunHistoricalBackfill: isHistoricalBackfillIdle,
+    persistProgress: saveState,
     prepareHistoricalBackfill: async () => {
       const result = await backupCodexHistoricalReconciliation({
         databaseFile: path.join(config.dataDir, "journal.sqlite"),

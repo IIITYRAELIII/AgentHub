@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
-import { callDesktopControl } from "../../desktop-control.mjs";
+import { callDesktopControl as sendDesktopControl } from "../../desktop-control.mjs";
 import { JournalDatabase } from "../../src/infrastructure/persistence/journal-database.mjs";
+import { LocalTaskSyncStore } from "../../src/infrastructure/persistence/task-sync-store.mjs";
+import { WorkspaceCatalogStore } from "../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import { readRuntimeState } from "../../src/infrastructure/persistence/runtime-state-store.mjs";
 import {
   CHAT_ID,
@@ -21,7 +24,16 @@ const ROOT = path.resolve(import.meta.dirname, "..", "..");
 const BOT_FILE = path.join(ROOT, "agent-hub-main.mjs");
 const FAKE_CODEX_FILE = path.join(ROOT, "e2e", "fake-codex-app-server.mjs");
 
-test("local control client survives App Server exit during delayed startup and shares tasks", { timeout: 60_000 }, async (t) => {
+async function callDesktopControl(action, params, options) {
+  const caller = new Error().stack;
+  try {
+    return await sendDesktopControl(action, params, options);
+  } catch (error) {
+    throw new Error(`${action}: ${error.message}\n${caller}`, { cause: error });
+  }
+}
+
+test("local control client survives App Server exit during delayed startup and shares tasks", { timeout: 120_000 }, async (t) => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "telegram-local-control-e2e-"));
   const dataDir = path.join(runtimeRoot, "data");
   const projectRoot = path.join(runtimeRoot, "project");
@@ -104,27 +116,41 @@ test("local control client survives App Server exit during delayed startup and s
     activeThreadTitle: "Saved large task",
   }, null, 2)}\n`, "utf8");
 
-  const bot = spawn(process.execPath, [BOT_FILE], {
-    cwd: ROOT,
-    env: {
-      ...process.env,
-      AGENT_HUB_CONFIG: configPath,
-      AGENT_HUB_RUNTIME_ROOT: runtimeRoot,
-      AGENT_HUB_LAUNCHER: "",
-      AGENT_HUB_DISABLE_SECRET_ACL: "1",
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true,
-  });
   let stderr = "";
-  bot.stderr.setEncoding("utf8");
-  bot.stderr.on("data", (chunk) => { stderr += chunk; });
-  t.after(async () => {
-    if (bot.exitCode == null) {
-      bot.kill("SIGTERM");
-      await Promise.race([new Promise((resolve) => bot.once("exit", resolve)), delay(2_000)]);
+  let bot = null;
+  const startBot = () => {
+    bot = spawn(process.execPath, [BOT_FILE], {
+      cwd: ROOT,
+      env: {
+        ...process.env,
+        AGENT_HUB_CONFIG: configPath,
+        AGENT_HUB_RUNTIME_ROOT: runtimeRoot,
+        AGENT_HUB_LAUNCHER: "",
+        AGENT_HUB_DISABLE_SECRET_ACL: "1",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    bot.stderr.setEncoding("utf8");
+    bot.stderr.on("data", (chunk) => { stderr += chunk; });
+    return bot;
+  };
+  const stopBot = async () => {
+    const current = bot;
+    if (!current) return;
+    if (current.exitCode == null) {
+      current.kill("SIGTERM");
+      await Promise.race([new Promise((resolve) => current.once("exit", resolve)), delay(2_000)]);
     }
-    if (bot.exitCode == null) await stopPid(bot.pid);
+    if (current.exitCode == null) {
+      await stopPid(current.pid);
+      await Promise.race([new Promise((resolve) => current.once("exit", resolve)), delay(2_000)]);
+    }
+    if (bot === current) bot = null;
+  };
+  startBot();
+  t.after(async () => {
+    await stopBot();
     journalDatabase.close();
     await telegram.stop();
     await rm(runtimeRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
@@ -153,6 +179,24 @@ test("local control client survives App Server exit during delayed startup and s
   assert.equal(statusDetails.model, "GPT-5.6-Sol");
   assert.equal(typeof statusDetails.limits, "string");
 
+  const configuredModel = await callDesktopControl("update-setting", {
+    name: "model",
+    value: "gpt-6-astra",
+    ...initial.selected,
+  }, { runtimeRoot });
+  assert.equal(configuredModel.settings.model, "gpt-6-astra");
+  const codexStateAfterModelUpdate = await readFile(codexStatePath, "utf8").then(JSON.parse);
+  assert.equal(codexStateAfterModelUpdate.requestCounts["thread/settings/update"], 2);
+  assert.equal(codexStateAfterModelUpdate.requestCounts["thread/resume"], 1);
+  assert.equal(
+    codexStateAfterModelUpdate.threads.find((thread) => thread.id === firstThreadId)?.model,
+    "gpt-6-astra",
+  );
+  const persistedStateAfterModelUpdate = await readRuntimeState(dataDir);
+  assert.deepEqual(persistedStateAfterModelUpdate.codexTaskSettings[firstThreadId], {
+    model: "gpt-6-astra",
+    reasoningEffort: "high",
+  });
   const configured = await callDesktopControl("update-setting", {
     name: "reasoning",
     value: "medium",
@@ -400,10 +444,37 @@ test("local control client survives App Server exit during delayed startup and s
       : null;
   }, "desktop context compaction after reconnect", 5_000);
 
+  const startupProcess = (await callDesktopControl("snapshot", {}, { runtimeRoot })).server.process;
+  const startupHealth = await callDesktopControl("runtime-health", {}, { runtimeRoot });
+  assert.equal(startupHealth.live, true);
+  assert.equal(startupHealth.ready, true);
+  assert.equal(startupHealth.process.pid, startupProcess.pid);
+  assert.equal(startupHealth.process.releaseId, startupProcess.releaseId);
+  const expectedStartupStages = ["configuration", "infrastructure", "web", "desktop-control", "runtime-command", "hub-mcp", "history",
+    "provider", "runs", "readiness", "timers"].map((stage) => `startup-${stage}`);
+  const startupSpans = await waitFor(() => {
+    const traceDatabase = new DatabaseSync(path.join(dataDir, "command-traces.sqlite"), { readOnly: true });
+    try {
+      const spans = traceDatabase.prepare("SELECT * FROM command_trace_spans WHERE stage LIKE 'startup-%'")
+        .all().map((span) => ({ ...span, metadata: JSON.parse(span.metadata_json) }))
+        .filter((span) => span.metadata.instanceId === startupProcess.instanceId);
+      return expectedStartupStages.every((stage) => spans.some((span) => span.stage === stage
+        && span.outcome === "succeeded")) ? spans : null;
+    } finally { traceDatabase.close(); }
+  }, "startup measurements persisted through production composition", 5_000);
+  for (const span of startupSpans.filter((entry) => expectedStartupStages.includes(entry.stage))) {
+    assert.equal(span.metadata.releaseId, startupProcess.releaseId);
+    if (span.outcome !== "succeeded") continue;
+    assert.ok(startupSpans.some((entry) => entry.outcome === "started"
+      && entry.stage === span.stage && entry.metadata.operationSpanId === span.metadata.operationSpanId),
+    `${span.stage} must retain its start marker and terminal measurement`);
+    assert.ok(span.monotonic_duration_ms >= 0);
+  }
+
   const firstMessageId = "desktop-message-first";
   const steerMessageId = "desktop-message-steer";
   const firstStart = await callDesktopControl("send-message", {
-    text: "[slow] desktop A",
+    text: "[slow][unkeyed-history-tail] desktop A",
     provider: "codex",
     threadId: firstThreadId,
     clientUserMessageId: firstMessageId,
@@ -488,6 +559,22 @@ test("local control client survives App Server exit during delayed startup and s
   assert.equal(steered.queued, false);
   assert.equal(steered.turnId, firstTurnId);
   assert.equal(steered.clientUserMessageId, steerMessageId);
+  const additionalSteerMessageIds = [
+    "desktop-message-steer-2",
+    "desktop-message-steer-3",
+    "desktop-message-steer-4",
+  ];
+  for (const [index, clientUserMessageId] of additionalSteerMessageIds.entries()) {
+    const additional = await callDesktopControl("send-message", {
+      text: `Точное уточнение ${index + 2}`,
+      provider: "codex",
+      threadId: firstThreadId,
+      clientUserMessageId,
+      followUpMode: "steer",
+    }, { runtimeRoot });
+    assert.equal(additional.accepted, true);
+    assert.equal(additional.turnId, firstTurnId);
+  }
   const deferred = await callDesktopControl("send-message", {
     text: "manual follow-up",
     provider: "codex",
@@ -502,30 +589,21 @@ test("local control client survives App Server exit during delayed startup and s
   assert.ok(deferredEntry, JSON.stringify(deferredSnapshot.deferredInputs));
   assert.equal(deferredEntry.provider, "codex");
   assert.equal(deferredEntry.threadId, firstThreadId);
-  const completedEdits = [];
-  const firstEditPromise = callDesktopControl("deferred-input", {
-      id: deferred.id,
-      action: "edit",
-      text: "parallel duplicate, first edit",
-    }, { runtimeRoot }).then((result) => {
-      completedEdits.push("parallel duplicate, first edit");
-      return result;
-    });
-  const editedDeferredPromise = callDesktopControl("deferred-input", {
-      id: deferred.id,
-      action: "edit",
-      text: "parallel duplicate, edited",
-    }, { runtimeRoot }).then((result) => {
-      completedEdits.push("parallel duplicate, edited");
-      return result;
-    });
-  const [firstEdit, editedDeferred] = await Promise.all([firstEditPromise, editedDeferredPromise]);
-  assert.equal(firstEdit.accepted, true);
-  assert.equal(editedDeferred.accepted, true);
-  const finalEditedText = (await callDesktopControl("snapshot", {}, { runtimeRoot }))
-    .deferredInputs.find((item) => item.id === deferred.id)?.text;
-  assert.equal(completedEdits.includes(finalEditedText), true,
-    "serialized edits must persist one of the two accepted values regardless of IPC response order");
+  await assert.rejects(callDesktopControl("deferred-input", {
+    id: deferred.id,
+    action: "edit",
+    text: "legacy edit",
+  }, { runtimeRoot }), /только через возврат в основной композер/u);
+  const preparedComposer = await callDesktopControl("deferred-input", {
+    id: deferred.id,
+    action: "composer-prepare",
+  }, { runtimeRoot });
+  assert.equal(preparedComposer.draft.text, "manual follow-up");
+  await callDesktopControl("deferred-input", {
+    id: deferred.id,
+    action: "composer-release",
+    token: preparedComposer.token,
+  }, { runtimeRoot });
   const queuedOnce = await callDesktopControl("deferred-input", {
     id: deferred.id,
     action: "queue",
@@ -546,6 +624,12 @@ test("local control client survives App Server exit during delayed startup and s
   assert.equal(steeredQueued.clientUserMessageId, deferred.clientUserMessageId);
   assert.equal(duplicateSteer.turnId, firstTurnId);
   assert.equal((await callDesktopControl("snapshot", {}, { runtimeRoot })).deferredInputs.length, 0);
+  const acceptedIds = [
+    firstMessageId,
+    steerMessageId,
+    ...additionalSteerMessageIds,
+    deferred.clientUserMessageId,
+  ];
 
   const selectedFirst = await callDesktopControl("select-task", {
     provider: "codex",
@@ -587,7 +671,8 @@ test("local control client survives App Server exit during delayed startup and s
     const slowExchange = result.items.find((item) => item.messages.some((message) => (
       message.clientUserMessageId === firstMessageId
     )));
-    return result.total === 3 && /Готово: \[slow\] desktop A/u.test(slowExchange?.answer ?? "")
+    return result.total === 3
+      && /Готово: \[slow\]\[unkeyed-history-tail\] desktop A/u.test(slowExchange?.answer ?? "")
       ? result
       : null;
   }, "background task history hydration", 5_000);
@@ -596,17 +681,556 @@ test("local control client survives App Server exit during delayed startup and s
     message.clientUserMessageId === firstMessageId
   )));
   assert.ok(slowExchange);
-  assert.match(slowExchange.prompt, /^\[slow\] desktop A/u);
-  assert.match(slowExchange.answer, /Готово: \[slow\] desktop A/);
+  assert.match(slowExchange.prompt, /^\[slow\]\[unkeyed-history-tail\] desktop A/u);
+  assert.match(slowExchange.answer, /Готово: \[slow\]\[unkeyed-history-tail\] desktop A/);
   const userMessages = slowExchange.messages.filter((item) => item.role === "user");
-  assert.deepEqual(userMessages.map((item) => item.clientUserMessageId), [
-    firstMessageId,
-    steerMessageId,
-    deferred.clientUserMessageId,
-  ]);
-  assert.ok(userMessages.every((item) => (
-    item.itemId && item.itemId !== item.clientUserMessageId
-  )));
+  assert.deepEqual(
+    userMessages.map((item) => item.clientUserMessageId).filter(Boolean),
+    acceptedIds,
+  );
+  const providerStateAfterUnkeyedRefresh = await readFile(codexStatePath, "utf8").then(JSON.parse);
+  for (const clientUserMessageId of acceptedIds) {
+    const effects = providerStateAfterUnkeyedRefresh.threads
+      .flatMap((thread) => thread.turns)
+      .flatMap((turn) => turn.items)
+      .filter((item) => item.clientId === clientUserMessageId);
+    assert.equal(effects.length, 1, `provider repeated exact message ${clientUserMessageId}`);
+  }
+  const navigationReload = await callDesktopControl("task-history", {
+    provider: "codex",
+    threadId: firstThreadId,
+    limit: 10,
+  }, { runtimeRoot });
+  const reloadedExchange = navigationReload.items.find((item) => item.id === firstTurnId);
+  assert.deepEqual(
+    reloadedExchange.messages
+      .filter((item) => item.role === "user")
+      .map((item) => item.clientUserMessageId)
+      .filter(Boolean),
+    acceptedIds,
+  );
+
+  // Exercise the production observer path rather than only the merge helper:
+  // the fake App Server exposes a real VS Code rollout, local control discovers
+  // it, and repeated task-history hydration crosses reader -> snapshot service
+  // -> observation/read-model projection. A malformed tail makes the exact
+  // turn explicitly incremental, reproducing the original 1->2->3->4 class.
+  await callDesktopControl("rename-task", {
+    provider: "codex",
+    threadId: firstThreadId,
+    title: "__E2E_EXTERNAL_UNCHANGED__",
+  }, { runtimeRoot });
+  const externalState = await waitFor(async () => {
+    const state = await readFile(codexStatePath, "utf8").then(JSON.parse);
+    const thread = state.threads.find((item) => item.id === firstThreadId);
+    const turn = thread?.turns.find((item) => item.prompt === "[external-unchanged] VSCode task");
+    return turn?.id && thread?.externalRolloutPath
+      ? { turnId: turn.id, rolloutPath: thread.externalRolloutPath }
+      : null;
+  }, "unchanged external rollout creation", 5_000);
+  await appendFile(externalState.rolloutPath, "{malformed-incremental-tail}\n", "utf8");
+  const readExternalOccurrenceIds = async () => {
+    const result = await callDesktopControl("task-history", {
+      provider: "codex",
+      threadId: firstThreadId,
+      limit: 20,
+      refreshSource: true,
+    }, { runtimeRoot });
+    const exchange = result.items.find((item) => item.id === externalState.turnId);
+    const users = (exchange?.messages ?? [])
+      .filter((message) => (
+        message.role === "user"
+        && message.text === "[external-unchanged] VSCode task"
+        && (message.clientUserMessageId || message.sourceOccurrenceId)
+      ));
+    // The keyed root keeps its canonical command identity across adapters;
+    // independent unkeyed observations must retain their exact source identity.
+    return users.map((message) => message.clientUserMessageId || message.sourceOccurrenceId);
+  };
+  const initialExternalOccurrenceIds = await waitFor(async () => {
+    const ids = await readExternalOccurrenceIds();
+    return ids.length === 2 && ids.includes(`fake-vscode-${externalState.turnId}`) ? ids : null;
+  }, "incremental external history hydration", 5_000);
+  for (let replay = 0; replay < 4; replay += 1) {
+    assert.deepEqual(
+      await readExternalOccurrenceIds(),
+      initialExternalOccurrenceIds,
+      `unchanged incremental replay ${replay + 1} multiplied an occurrence`,
+    );
+  }
+  await appendFile(externalState.rolloutPath, `${JSON.stringify({
+    timestamp: new Date().toISOString(),
+    type: "response_item",
+    payload: {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "[external-unchanged] VSCode task" }],
+      internal_chat_message_metadata_passthrough: { turn_id: externalState.turnId },
+    },
+  })}\n`, "utf8");
+  const appendedExternalOccurrenceIds = await waitFor(async () => {
+    const ids = await readExternalOccurrenceIds();
+    return ids.length === initialExternalOccurrenceIds.length + 1 ? ids : null;
+  }, "new identical external occurrence", 5_000);
+  assert.deepEqual(
+    appendedExternalOccurrenceIds.slice(0, initialExternalOccurrenceIds.length),
+    initialExternalOccurrenceIds,
+  );
+  for (let replay = 0; replay < 3; replay += 1) {
+    assert.deepEqual(await readExternalOccurrenceIds(), appendedExternalOccurrenceIds);
+  }
+  const readDurableExternalOccurrences = () => {
+    const db = new DatabaseSync(path.join(dataDir, "journal.sqlite"), { readOnly: true });
+    try { return db.prepare(`SELECT m.client_user_message_id,m.source_occurrence_id
+      FROM task_read_model_messages m JOIN task_read_model_turns t ON t.provider=m.provider AND t.thread_id=m.thread_id AND t.position=m.turn_position
+      WHERE t.provider='codex' AND t.thread_id=? AND t.id=? AND m.role='user' ORDER BY m.position`).all(firstThreadId, externalState.turnId); }
+    finally { db.close(); }
+  };
+  const durableBeforeRestart = readDurableExternalOccurrences();
+  assert.deepEqual(durableBeforeRestart.map((row) => row.client_user_message_id || row.source_occurrence_id), appendedExternalOccurrenceIds, "restart fixture must first commit exact canonical occurrence order");
+  await stopBot();
+  startBot();
+  await waitFor(
+    () => callDesktopControl("snapshot", {}, { runtimeRoot }).catch(() => null),
+    "incremental observer restart",
+    8_000,
+  );
+  let restartOccurrenceIds = [];
+  const restoredOccurrenceIds = await waitFor(async () => {
+      const ids = await readExternalOccurrenceIds();
+      restartOccurrenceIds = ids;
+      // Control becomes available before rollout recovery. Equal cardinality
+      // can still contain provisional App Server identities; await exact ones.
+      return ids.length === appendedExternalOccurrenceIds.length
+        && ids.every((id, index) => id === appendedExternalOccurrenceIds[index]) ? ids : null;
+    }, "incremental occurrence recovery after restart", 8_000).catch((error) => {
+      throw new Error(`${error.message}; expected=${JSON.stringify(appendedExternalOccurrenceIds)}; actual=${JSON.stringify(restartOccurrenceIds)}; before=${JSON.stringify(durableBeforeRestart)}; after=${JSON.stringify(readDurableExternalOccurrences())}`);
+    });
+  assert.deepEqual(
+    restoredOccurrenceIds,
+    appendedExternalOccurrenceIds,
+  );
+  await callDesktopControl("rename-task", {
+    provider: "codex",
+    threadId: firstThreadId,
+    title: "__E2E_EXTERNAL_UNCHANGED_RELEASE__",
+  }, { runtimeRoot });
+  await waitFor(async () => {
+    const [snapshot, runtimeState, providerState] = await Promise.all([
+      callDesktopControl("snapshot", {}, { runtimeRoot }),
+      readRuntimeState(dataDir),
+      readFile(codexStatePath, "utf8").then(JSON.parse),
+    ]);
+    const task = snapshot.tasks.find((item) => item.threadId === firstThreadId);
+    const providerThread = providerState.threads.find((item) => item.id === firstThreadId);
+    const providerTurn = providerThread?.turns.find((item) => item.id === externalState.turnId);
+    const runSettled = !runtimeState.activeRuns.some((run) => (
+      run.provider === "codex"
+      && run.threadId === firstThreadId
+      && ["running", "finishing"].includes(run.status)
+    ));
+    return task && !task.running && providerTurn?.status !== "inProgress" && runSettled
+      ? snapshot
+      : null;
+  }, "unchanged external rollout release", 8_000);
+
+  const pairedTask = await callDesktopControl("new-task", { provider: "codex" }, { runtimeRoot });
+  const pairedThreadId = pairedTask.selected.threadId;
+  const pairedClientIds = ["paired-rollout-client-one", "paired-rollout-client-two"];
+  const pairedPrompt = "[rollout-exact-pair] одинаковый последовательный ввод";
+  const readPairedHistory = () => callDesktopControl("task-history", {
+    provider: "codex",
+    threadId: pairedThreadId,
+    limit: 10,
+  }, { runtimeRoot });
+  for (const clientUserMessageId of pairedClientIds) {
+    const sent = await callDesktopControl("send-message", {
+      text: pairedPrompt,
+      provider: "codex",
+      threadId: pairedThreadId,
+      clientUserMessageId,
+    }, { runtimeRoot });
+    assert.equal(sent.accepted, true);
+    await waitFor(async () => {
+      const history = await readPairedHistory();
+      const exchange = history.items.find((item) => item.messages.some((message) => (
+        message.clientUserMessageId === clientUserMessageId
+      )));
+      return exchange?.completed === true ? history : null;
+    }, `paired rollout completion ${clientUserMessageId}`, 5_000);
+  }
+  const assertPairedProjection = async () => {
+    const history = await waitFor(async () => {
+      const candidate = await readPairedHistory();
+      const candidateExchanges = pairedClientIds.map((clientUserMessageId) => (
+        candidate.items.find((item) => item.messages.some((message) => (
+          message.clientUserMessageId === clientUserMessageId
+        )))
+      ));
+      return candidateExchanges.every((exchange) => (
+        exchange?.completed === true
+        && exchange.messages.filter((message) => message.role === "user").length === 1
+        && exchange.messages.filter((message) => (
+          message.role === "agent" && message.kind !== "subagent"
+        )).length === 1
+      )) ? candidate : null;
+    }, "stable paired rollout projection", 5_000);
+    const exchanges = pairedClientIds.map((clientUserMessageId) => history.items.find((item) => (
+      item.messages.some((message) => message.clientUserMessageId === clientUserMessageId)
+    )));
+    assert.equal(exchanges.every(Boolean), true, JSON.stringify(history.items));
+    for (const [index, exchange] of exchanges.entries()) {
+      const users = exchange.messages.filter((message) => message.role === "user");
+      const assistants = exchange.messages.filter((message) => (
+        message.role === "agent" && message.kind !== "subagent"
+      ));
+      assert.equal(users.length, 1, JSON.stringify(users));
+      assert.equal(users[0].clientUserMessageId, pairedClientIds[index]);
+      assert.equal(assistants.length, 1, JSON.stringify(assistants));
+    }
+    return history;
+  };
+  await assertPairedProjection();
+  const pairedProviderState = await readFile(codexStatePath, "utf8").then(JSON.parse);
+  const pairedProviderEffects = pairedProviderState.threads
+    .find((thread) => thread.id === pairedThreadId)
+    ?.turns.flatMap((turn) => turn.items)
+    .filter((item) => pairedClientIds.includes(item.clientId)) ?? [];
+  assert.deepEqual(
+    pairedProviderEffects.map((item) => item.clientId).sort(),
+    pairedClientIds.slice().sort(),
+  );
+  await assertPairedProjection();
+  await callDesktopControl("select-task", {
+    provider: "codex",
+    threadId: firstThreadId,
+  }, { runtimeRoot });
+  await callDesktopControl("select-task", {
+    provider: "codex",
+    threadId: pairedThreadId,
+  }, { runtimeRoot });
+  await assertPairedProjection();
+  await stopBot();
+  startBot();
+  await waitFor(
+    () => callDesktopControl("snapshot", {}, { runtimeRoot }).catch(() => null),
+    "paired rollout restart",
+    8_000,
+  );
+  await assertPairedProjection();
+
+  const recoveryThreadId = "e2e-corrupted-terminal-thread";
+  const recoveryTurnId = "e2e-corrupted-terminal-turn";
+  const recoveryRunId = "e2e-corrupted-terminal-run";
+  const recoveryIds = Array.from({ length: 6 }, (_, index) => `e2e-recovery-message-${index + 1}`);
+  const recoveryUsers = recoveryIds.map((clientUserMessageId, index) => ({
+    itemId: `e2e-provider-user-${index + 1}`,
+    clientUserMessageId,
+    role: "user",
+    text: index < 2 ? "Одинаковый recovery текст" : `Recovery message ${index + 1}`,
+  }));
+  const journalFile = path.join(dataDir, "journal.sqlite");
+  const terminalFile = path.join(dataDir, "runtime.sqlite");
+  const ledgerFile = path.join(dataDir, "message-command-ledger.sqlite");
+  const readRecoveredUsers = async () => {
+    const result = await callDesktopControl("task-history", {
+      provider: "codex",
+      threadId: recoveryThreadId,
+      limit: 10,
+    }, { runtimeRoot });
+    return result.items.find((item) => item.id === recoveryTurnId)?.messages
+      ?.filter((item) => item.role === "user") ?? [];
+  };
+  const readSearchSourceGroups = () => {
+    const database = new DatabaseSync(journalFile, { readOnly: true });
+    try {
+      return database.prepare(`
+        SELECT source, COUNT(*) AS count
+        FROM task_message_search_documents
+        WHERE provider = 'codex' AND thread_id = ? AND turn_id = ?
+        GROUP BY source ORDER BY source
+      `).all(recoveryThreadId, recoveryTurnId).map((row) => ({
+        source: row.source,
+        count: Number(row.count),
+      }));
+    } finally {
+      database.close();
+    }
+  };
+  const startAndWaitForControl = async (label) => {
+    startBot();
+    return waitFor(
+      () => callDesktopControl("snapshot", {}, { runtimeRoot }).catch(() => null),
+      label,
+      8_000,
+    );
+  };
+
+  await stopBot();
+  await journalDatabase.upsertRecords([{
+    provider: "codex",
+    threadId: recoveryThreadId,
+    taskThreadId: recoveryThreadId,
+    turnId: recoveryTurnId,
+    projectRoot,
+    status: "completed",
+    prompt: "Canonical recovery root",
+    body: "Recovery final",
+    startedAt: "2026-09-04T08:00:00.000Z",
+    completedAt: "2026-09-04T08:01:00.000Z",
+  }]);
+  const recoveryTask = {
+    provider: "codex",
+    threadId: recoveryThreadId,
+    projectRoot,
+    title: "Corrupted terminal recovery",
+    running: false,
+    updatedAtMs: Date.now(),
+  };
+  const recoveryWorkspaceCatalog = new WorkspaceCatalogStore({ databaseFile: journalFile });
+  await recoveryWorkspaceCatalog.load();
+  try {
+    recoveryWorkspaceCatalog.assignCatalogEntries([recoveryTask]);
+  } finally {
+    recoveryWorkspaceCatalog.close();
+  }
+  const recoveryStore = new LocalTaskSyncStore({
+    filePath: path.join(dataDir, "task-sync.json"),
+    databaseFile: journalFile,
+    terminalDatabaseFile: terminalFile,
+    messageCommandDatabaseFile: ledgerFile,
+  });
+  await recoveryStore.load();
+  await recoveryStore.recordCatalog([recoveryTask], Date.now());
+  await recoveryStore.recordHistory(recoveryTask, [{
+    id: recoveryTurnId,
+    prompt: "Corrupted tail",
+    answer: "Recovery final",
+    status: "completed",
+    active: false,
+    completed: true,
+    messages: [
+      { itemId: `${recoveryTurnId}:rollout-user:0`, role: "user", text: "Corrupted tail" },
+      { itemId: `${recoveryTurnId}:agent:final`, role: "agent", text: "Recovery final" },
+    ],
+  }]);
+  recoveryStore.close();
+  const recoveryTerminalPayloadJson = JSON.stringify({
+    history: {
+      id: recoveryRunId,
+      provider: "codex",
+      threadId: recoveryThreadId,
+      turnId: recoveryTurnId,
+      promptPreview: "Canonical recovery root",
+      userMessages: recoveryUsers,
+    },
+  });
+  const terminalSeed = new DatabaseSync(terminalFile);
+  terminalSeed.prepare(`
+    INSERT INTO provider_turn_terminals (
+      provider, thread_id, turn_id, terminal_revision, status, final_answer,
+      usage_identity, last_message_json, payload_json, payload_bytes, content_hash, committed_at
+    ) VALUES ('codex', ?, ?, 1, 'completed', ?, '', NULL, ?, ?, 'e2e-terminal-recovery', ?)
+    ON CONFLICT(provider, thread_id, turn_id) DO UPDATE SET
+      terminal_revision = excluded.terminal_revision,
+      status = excluded.status,
+      final_answer = excluded.final_answer,
+      payload_json = excluded.payload_json,
+      payload_bytes = excluded.payload_bytes,
+      content_hash = excluded.content_hash,
+      committed_at = excluded.committed_at
+  `).run(
+    recoveryThreadId,
+    recoveryTurnId,
+    "Recovery final",
+    recoveryTerminalPayloadJson,
+    Buffer.byteLength(recoveryTerminalPayloadJson, "utf8"),
+    new Date().toISOString(),
+  );
+  terminalSeed.close();
+  const terminalVerification = new DatabaseSync(terminalFile, { readOnly: true });
+  const exactTerminalRow = terminalVerification.prepare(`
+    SELECT thread_id, turn_id, payload_json FROM provider_turn_terminals
+    WHERE provider = 'codex' AND thread_id = ? AND turn_id = ?
+  `).get(recoveryThreadId, recoveryTurnId);
+  terminalVerification.close();
+  assert.ok(exactTerminalRow);
+  assert.equal(exactTerminalRow.thread_id, recoveryThreadId);
+  assert.equal(exactTerminalRow.turn_id, recoveryTurnId);
+  const terminalPayload = JSON.parse(exactTerminalRow.payload_json);
+  assert.deepEqual(
+    terminalPayload.history.userMessages.map((item) => item.clientUserMessageId),
+    recoveryIds,
+    "terminal payload must retain the six exact accepted identities",
+  );
+
+  const readModel = new DatabaseSync(journalFile);
+  const turnPosition = Number(readModel.prepare(`
+    SELECT position FROM task_read_model_turns
+    WHERE provider = 'codex' AND thread_id = ? AND id = ?
+  `).get(recoveryThreadId, recoveryTurnId).position);
+  const firstUserPosition = Number(readModel.prepare(`
+    SELECT MIN(position) AS position FROM task_read_model_messages
+    WHERE provider = 'codex' AND thread_id = ? AND turn_position = ? AND role = 'user'
+  `).get(recoveryThreadId, turnPosition).position);
+  readModel.prepare(`
+    DELETE FROM task_read_model_messages
+    WHERE provider = 'codex' AND thread_id = ? AND turn_position = ?
+      AND role = 'user' AND position <> ?
+  `).run(recoveryThreadId, turnPosition, firstUserPosition);
+  readModel.prepare(`
+    UPDATE task_read_model_messages
+    SET item_id = ?, client_user_message_id = NULL, text = 'Corrupted tail',
+        author = '', origin_json = '{}'
+    WHERE provider = 'codex' AND thread_id = ? AND turn_position = ? AND position = ?
+  `).run(`${recoveryTurnId}:rollout-user:0`, recoveryThreadId, turnPosition, firstUserPosition);
+  readModel.prepare(`
+    UPDATE task_read_model_turns SET user_message_authority = ''
+    WHERE provider = 'codex' AND thread_id = ? AND position = ?
+  `).run(recoveryThreadId, turnPosition);
+  readModel.close();
+
+  const ledger = new DatabaseSync(ledgerFile);
+  const ledgerRows = new Map(recoveryIds.map((clientUserMessageId) => {
+    const exact = {
+      provider: "codex",
+      threadId: recoveryThreadId,
+      turnId: recoveryTurnId,
+      runId: recoveryRunId,
+      clientUserMessageId,
+    };
+    return [clientUserMessageId, {
+      item_json: JSON.stringify(exact),
+      receipt_json: JSON.stringify({ ...exact, result: exact }),
+      result_json: JSON.stringify(exact),
+    }];
+  }));
+  const insertRecoveryLedger = ledger.prepare(`
+    INSERT INTO message_commands (
+      client_user_message_id, state, item_json, receipt_json, result_json,
+      accepted_at_ms, terminal_at_ms, updated_at_ms, revision
+    ) VALUES (?, 'completed', ?, ?, ?, 1, 2, 2, 1)
+    ON CONFLICT(client_user_message_id) DO UPDATE SET
+      state = excluded.state,
+      item_json = excluded.item_json,
+      receipt_json = excluded.receipt_json,
+      result_json = excluded.result_json,
+      terminal_at_ms = excluded.terminal_at_ms,
+      updated_at_ms = excluded.updated_at_ms,
+      revision = message_commands.revision + 1
+  `);
+  for (const [clientUserMessageId, row] of ledgerRows) {
+    insertRecoveryLedger.run(
+      clientUserMessageId,
+      row.item_json,
+      row.receipt_json,
+      row.result_json,
+    );
+  }
+  const firstRecoveryId = recoveryIds[0];
+  const firstLedger = ledgerRows.get(firstRecoveryId);
+  const omitIdentityField = (value, field) => {
+    const parsed = JSON.parse(String(value ?? "{}"));
+    const remove = (item) => {
+      if (!item || typeof item !== "object") return;
+      delete item[field];
+      for (const child of Object.values(item)) remove(child);
+    };
+    remove(parsed);
+    return JSON.stringify(parsed);
+  };
+  ledger.prepare(`
+    UPDATE message_commands SET item_json = ?, receipt_json = ?, result_json = ?
+    WHERE client_user_message_id = ?
+  `).run(
+    omitIdentityField(firstLedger.item_json, "runId"),
+    omitIdentityField(firstLedger.receipt_json, "runId"),
+    omitIdentityField(firstLedger.result_json, "runId"),
+    firstRecoveryId,
+  );
+  ledger.close();
+
+  await startAndWaitForControl("missing-run recovery restart");
+  assert.deepEqual(
+    (await readRecoveredUsers()).map((item) => item.clientUserMessageId).filter(Boolean),
+    [],
+    "missing authoritative run evidence must leave the corrupted row unchanged",
+  );
+  await stopBot();
+
+  let mutableLedger = new DatabaseSync(ledgerFile);
+  const conflictingResult = JSON.parse(firstLedger.result_json);
+  conflictingResult.turnId = "conflicting-turn";
+  mutableLedger.prepare(`
+    UPDATE message_commands SET item_json = ?, receipt_json = ?, result_json = ?
+    WHERE client_user_message_id = ?
+  `).run(firstLedger.item_json, firstLedger.receipt_json, JSON.stringify(conflictingResult), firstRecoveryId);
+  mutableLedger.close();
+  await startAndWaitForControl("conflicting-evidence recovery restart");
+  assert.deepEqual(
+    (await readRecoveredUsers()).map((item) => item.clientUserMessageId).filter(Boolean),
+    [],
+    "conflicting authoritative evidence must leave the corrupted row unchanged",
+  );
+  await stopBot();
+
+  mutableLedger = new DatabaseSync(ledgerFile);
+  for (const [clientUserMessageId, row] of ledgerRows) {
+    mutableLedger.prepare(`
+      UPDATE message_commands SET item_json = ?, receipt_json = ?, result_json = ?
+      WHERE client_user_message_id = ?
+    `).run(row.item_json, row.receipt_json, row.result_json, clientUserMessageId);
+  }
+  mutableLedger.close();
+
+  let stableSearchGroups = null;
+  for (let restart = 1; restart <= 3; restart += 1) {
+    await startAndWaitForControl(`exact recovery restart ${restart}`);
+    const recoveredUsers = await waitFor(async () => {
+      const users = await readRecoveredUsers();
+      return users.length === recoveryIds.length
+        && users.every((item) => item.clientUserMessageId)
+        ? users
+        : null;
+    }, `exact six-message recovery ${restart}`, 8_000);
+    assert.deepEqual(recoveredUsers.map((item) => item.clientUserMessageId), recoveryIds);
+    const sourceGroups = readSearchSourceGroups();
+    assert.deepEqual(sourceGroups.map((group) => group.source), ["history", "journal"]);
+    if (stableSearchGroups) assert.deepEqual(sourceGroups, stableSearchGroups);
+    else stableSearchGroups = sourceGroups;
+    if (restart < 3) await stopBot();
+  }
+  const providerStateAfterRecovery = await readFile(codexStatePath, "utf8").then(JSON.parse);
+  for (const clientUserMessageId of acceptedIds) {
+    assert.equal(providerStateAfterRecovery.threads
+      .flatMap((thread) => thread.turns)
+      .flatMap((turn) => turn.items)
+      .filter((item) => item.clientId === clientUserMessageId).length, 1);
+  }
+  for (const clientUserMessageId of recoveryIds) {
+    assert.equal(providerStateAfterRecovery.threads
+      .flatMap((thread) => thread.turns)
+      .flatMap((turn) => turn.items)
+      .filter((item) => item.clientId === clientUserMessageId).length, 0,
+    "read-model recovery must never dispatch a provider effect");
+  }
+  await callDesktopControl("select-task", {
+    provider: "codex",
+    threadId: firstThreadId,
+  }, { runtimeRoot });
+  await waitFor(async () => {
+    const [snapshot, runtimeState] = await Promise.all([
+      callDesktopControl("snapshot", {}, { runtimeRoot }),
+      readRuntimeState(dataDir),
+    ]);
+    const selectedTask = snapshot.tasks.find((item) => item.threadId === firstThreadId);
+    const runSettled = !runtimeState.activeRuns.some((run) => (
+      run.provider === "codex"
+      && run.threadId === firstThreadId
+      && ["running", "finishing"].includes(run.status)
+    ));
+    return snapshot.activeCount === 0 && !selectedTask?.running && runSettled ? snapshot : null;
+  }, "post-recovery task idle", 8_000);
 
   const attachmentRoot = path.join(runtimeRoot, "attachments");
   const imagePath = path.join(attachmentRoot, "desktop.png");
@@ -627,7 +1251,7 @@ test("local control client survives App Server exit during delayed startup and s
     provider: "codex",
     threadId: firstThreadId,
   }, { runtimeRoot });
-  assert.equal(imageStart.accepted, true);
+  assert.equal(imageStart.accepted, true, JSON.stringify(imageStart));
   const imageRunIdentity = await waitFor(async () => {
     const state = await readRuntimeState(dataDir);
     const run = state.activeRuns.find((item) => (

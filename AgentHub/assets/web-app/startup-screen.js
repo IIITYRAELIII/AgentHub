@@ -1,4 +1,5 @@
 import {
+  createVisibilityBoundAnimation,
   createStartupDisconnectedModel,
   createStartupScreenModel,
   formatStartupElapsed,
@@ -53,6 +54,14 @@ screen.innerHTML = `
       <div class="hub-startup-section-label">Далее</div>
       <ol class="hub-startup-queue-list"></ol>
     </section>
+    <section class="hub-startup-recovery">
+      <div class="hub-startup-errors"></div>
+      <div class="hub-startup-actions">
+        <button type="button" data-startup-retry>Повторить упавшие этапы</button>
+        <button type="button" data-startup-restart>Перезапустить Хаб</button>
+      </div>
+      <p class="hub-startup-action-status" role="status"></p>
+    </section>
   </main>
 `;
 
@@ -69,6 +78,30 @@ const queueList = screen.querySelector(".hub-startup-queue-list");
 const segmentGroup = screen.querySelector(".hub-startup-dial-segments");
 const canvas = screen.querySelector(".hub-startup-flow");
 const context = canvas.getContext("2d");
+const errorsList = screen.querySelector(".hub-startup-errors");
+const retryButton = screen.querySelector("[data-startup-retry]");
+const restartButton = screen.querySelector("[data-startup-restart]");
+const actionStatus = screen.querySelector(".hub-startup-action-status");
+let recoveryPending = false;
+
+function requestRecovery(action) {
+  if (recoveryPending) return;
+  recoveryPending = true;
+  retryButton.disabled = true;
+  restartButton.disabled = true;
+  actionStatus.textContent = "Отправляю запрос…";
+  document.dispatchEvent(new CustomEvent("agenthub:startup-recovery", {
+    detail: { action, startedAtMs: currentModel?.startedAtMs },
+  }));
+}
+
+retryButton.addEventListener("click", () => requestRecovery("retry-startup"));
+restartButton.addEventListener("click", () => requestRecovery("restart-server"));
+document.addEventListener("agenthub:startup-recovery-result", (event) => {
+  recoveryPending = false;
+  actionStatus.textContent = String(event.detail?.message ?? "");
+  scheduleRefresh(0);
+});
 const radius = 101;
 const circumference = 2 * Math.PI * radius;
 
@@ -177,7 +210,7 @@ function renderQueue(model) {
     marker.className = "hub-startup-queue-marker";
     const number = document.createElement("span");
     number.className = "hub-startup-queue-number";
-    number.textContent = String(model.currentIndex + index + 1);
+    number.textContent = String(model.operations.indexOf(operation) + 1);
     const label = document.createElement("span");
     label.className = "hub-startup-queue-label";
     label.textContent = operation.label;
@@ -211,12 +244,21 @@ function applyModel(model) {
   timer.textContent = model.elapsed;
   stageCount.textContent = model.stageLabel
     ?? `${model.stageNumber} из ${model.stageTotal} этапов`;
+  errorsList.replaceChildren(...(model.failedOperations ?? []).map((operation) => {
+    const detail = document.createElement("p");
+    detail.textContent = `${operation.label}: ${operation.error || "Этап не завершён. Повторите или перезапустите Хаб."}`;
+    return detail;
+  }));
+  retryButton.disabled = recoveryPending || !model.finished || !model.failed || model.connectionLost;
+  restartButton.disabled = recoveryPending || model.connectionLost;
+  retryButton.title = !model.finished ? "Повтор доступен после завершения остальных этапов" : "";
   renderCompleted(model);
   renderQueue(model);
   renderSegments(model);
   updateQueueOverflow();
   root.dataset.hubStartupScreen = model.failed ? "failed" : "visible";
   screen.hidden = false;
+  horizonAnimation.start();
 }
 
 function revealCurrentOperation() {
@@ -245,6 +287,7 @@ function showModel(model) {
 }
 
 function hideScreen() {
+  horizonAnimation.stop();
   screen.hidden = true;
   delete root.dataset.hubStartupScreen;
 }
@@ -260,7 +303,7 @@ function clearConnectionTimer() {
 }
 
 function showDisconnectedState({ force = false } = {}) {
-  const disconnectedModel = createStartupDisconnectedModel(currentModel);
+  const disconnectedModel = createStartupDisconnectedModel(currentModel, { restarting: restartExpected });
   if (disconnectedModel && (force || !screen.hidden)) showModel(disconnectedModel);
 }
 
@@ -295,7 +338,7 @@ async function refresh() {
       hadStartup = true;
       lastStartupStartedAtMs = model.startedAtMs;
       showModel(model);
-      if (model.ready) {
+      if (model.ready && !model.failed) {
         if (!hideTimer) {
           hideTimer = window.setTimeout(() => {
             hideTimer = 0;
@@ -334,7 +377,7 @@ window.addEventListener("agenthub:connection-state", (event) => {
 });
 
 function updateTimer() {
-  if (currentModel && !currentModel.connectionLost && !screen.hidden) {
+  if (currentModel && !currentModel.finished && !currentModel.connectionLost && !screen.hidden) {
     timer.textContent = formatStartupElapsed(currentModel.startedAtMs);
   }
 }
@@ -348,7 +391,6 @@ function resizeCanvas() {
 }
 
 function drawHorizon(now) {
-  if (stopped && screen.hidden) return;
   const width = canvas.clientWidth;
   const height = canvas.clientHeight;
   context.clearRect(0, 0, width, height);
@@ -369,17 +411,23 @@ function drawHorizon(now) {
     context.lineWidth = 1;
     context.stroke();
   }
-  requestAnimationFrame(drawHorizon);
 }
+
+const horizonAnimation = createVisibilityBoundAnimation({
+  requestFrame: (callback) => requestAnimationFrame(callback),
+  cancelFrame: (frameId) => cancelAnimationFrame(frameId),
+  isVisible: () => !screen.hidden,
+  draw: drawHorizon,
+});
 
 const timerInterval = window.setInterval(updateTimer, 1_000);
 new ResizeObserver(resizeCanvas).observe(canvas);
 new ResizeObserver(updateQueueOverflow).observe(queueSection);
-requestAnimationFrame(drawHorizon);
 void refresh();
 
 window.addEventListener("pagehide", () => {
   stopped = true;
+  horizonAnimation.destroy();
   window.clearTimeout(hideTimer);
   window.clearTimeout(pollTimer);
   clearConnectionTimer();

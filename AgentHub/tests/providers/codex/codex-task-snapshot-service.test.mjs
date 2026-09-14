@@ -3,8 +3,111 @@ import test from "node:test";
 import {
   CodexTaskSnapshotService,
   codexTurnSnapshot,
+  describeCodexItem,
 } from "../../../src/providers/codex/codex-task-snapshot-service.mjs";
 import { CODEX_CONTEXT_PROBE_PROMPT } from "../../../src/domain/codex-context-probe.mjs";
+import { codexRolloutTurnState } from "../../../src/providers/codex/codex-rollout-activity.mjs";
+
+test("active commentary stays in its trace and never becomes an answer or final", () => {
+  const snapshot = codexTurnSnapshot({
+    id: "active-turn", status: "inProgress",
+    items: [
+      { id: "prompt", type: "userMessage", content: [{ type: "text", text: "Continue" }] },
+      { id: "comment-1", type: "agentMessage", phase: "commentary", text: "Working" },
+      { id: "comment-2", type: "agentMessage", phase: "commentary", text: "Working" },
+      { id: "reasoning-1", type: "reasoning", summary: [] },
+    ],
+  });
+  assert.equal(snapshot.active, true);
+  assert.equal(snapshot.completed, false);
+  assert.equal(snapshot.answer, "");
+  assert.equal(snapshot.finalAnswer, "");
+  assert.deepEqual(snapshot.activityGroups.map((group) => group.reasoning), ["Working", "Working"]);
+  assert.notEqual(snapshot.activityGroups[0].id, snapshot.activityGroups[1].id);
+});
+
+test("a streaming final remains visible even when its text equals commentary", () => {
+  const snapshot = codexTurnSnapshot({
+    id: "active-turn", status: "inProgress",
+    items: [
+      { id: "prompt", type: "userMessage", content: [{ type: "text", text: "Continue" }] },
+      { id: "comment", type: "agentMessage", phase: "commentary", text: "Same text" },
+      { id: "final", type: "agentMessage", phase: "final_answer", text: "Same text" },
+    ],
+  });
+  assert.equal(snapshot.active, true);
+  assert.equal(snapshot.completed, false);
+  assert.equal(snapshot.answer, "Same text");
+  assert.equal(snapshot.finalAnswer, "Same text");
+  assert.equal(snapshot.activityGroups[0].reasoning, "Same text");
+});
+
+test("completed reasoning describes its stage without claiming the turn finished", () => {
+  assert.equal(describeCodexItem({ type: "reasoning" }, true), "Этап анализа завершён; ход продолжается.");
+  assert.equal(codexTurnSnapshot({ status: "completed", items: [] }).stage, "Поток завершён.");
+});
+
+test("async question final phase is a form, not a final answer, including an interrupted turn", () => {
+  for (const status of ["inProgress", "interrupted", "completed"]) {
+    const question = { id: "question", type: "agentMessage", phase: "final_answer",
+      text: "Choose a profile", questions: [{ title: "Profile?", options: ["A", "B"] }] };
+    const snapshot = codexTurnSnapshot({
+      id: "question-turn", status,
+      items: [
+        { id: "prompt", type: "userMessage", content: [{ type: "text", text: "Continue" }] },
+        { id: "comment", type: "agentMessage", phase: "commentary", text: "Working" },
+        question,
+      ],
+    });
+    assert.equal(snapshot.answer, "");
+    assert.equal(snapshot.finalAnswer, "");
+    assert.equal(snapshot.activityGroups[0].reasoning, "Working");
+    assert.deepEqual(question.questions, [{ title: "Profile?", options: ["A", "B"] }]);
+  }
+});
+
+test("managed snapshot never adopts a dangling historical turn before provider acceptance", async () => {
+  let reads = 0;
+  const activity = {
+    activeTurnIds: ["old-turn"],
+    startedAtMsByTurnId: { "old-turn": Date.parse("2026-08-24T07:24:23.359Z") },
+    completedAtMsByTurnId: { "new-turn": Date.parse("2026-09-09T11:16:16.277Z") },
+    finalMessages: { "new-turn": "Current answer" },
+  };
+  const service = new CodexTaskSnapshotService({
+    knownRolloutPath: async () => "rollout.jsonl",
+    readRolloutActivity: async () => activity,
+    rolloutTurnState: codexRolloutTurnState,
+    capturedOwner: () => null,
+    runtimeActive: async () => true,
+    resolveOwner: async () => "agent-hub",
+    readThread: async () => {
+      reads += 1;
+      return { thread: { path: "rollout.jsonl", turns: [], status: { type: "idle" } } };
+    },
+    selectTurn: () => null,
+    turnSnapshot: codexTurnSnapshot,
+    turnStartedAt: () => null,
+    describeItem: () => "stage",
+    hubOwner: () => "agent-hub",
+    agentHubPid: () => 1,
+    modelLabel: (value) => value,
+    runtimeLabel: (value) => value,
+    delay: async () => {},
+    reindexRun: () => {},
+  });
+  const run = { observer: false, threadId: "thread-1", turnId: null, startedAt: "2026-09-09T11:18:00.000Z" };
+  assert.equal(await service.read(run), null);
+  assert.equal(reads, 0);
+  assert.equal(run.turnId, null);
+  assert.equal(run.startedAt, "2026-09-09T11:18:00.000Z");
+  run.turnId = "new-turn";
+  const snapshot = await service.read(run);
+  assert.equal(snapshot.turnId, "new-turn");
+  assert.equal(snapshot.active, false);
+  assert.equal(snapshot.completed, true);
+  assert.equal(snapshot.answer, "Current answer");
+});
 
 test("Codex turn snapshot preserves the actual completion time", () => {
   const snapshot = codexTurnSnapshot({
@@ -23,13 +126,19 @@ test("Codex snapshot service reports an exact rollout observer", async () => {
     knownRolloutPath: async () => "rollout.jsonl",
     readRolloutActivity: async () => ({
       activeTurnIds: ["turn-1"], activityAtMsByTurnId: {}, running: true,
+      userMessageSnapshotAuthority: "complete",
+      userMessageSnapshotAuthorityByTurnId: { "turn-1": "incremental" },
       activityGroups: {
         "turn-1": [{ id: "comment-1", reasoning: "Проверяю.", activities: [] }],
       },
     }),
     rolloutTurnState: () => ({
       turnId: "turn-1", active: true, completed: false, latestAnswer: "Now", finalAnswer: "",
-      userMessages: [{ text: "Do" }], startedAt: "2026-08-04T10:00:00.000Z",
+      userMessages: [{
+        text: "Do",
+        sourceOccurrenceId: `codex-rollout:${"a".repeat(64)}`,
+      }],
+      startedAt: "2026-08-04T10:00:00.000Z",
     }),
     capturedOwner: () => null, runtimeActive: async () => true, resolveOwner: async () => "vscode-app-server",
     readThread: async () => ({ thread: {} }), selectTurn: () => null, turnSnapshot: () => ({}),
@@ -41,6 +150,8 @@ test("Codex snapshot service reports an exact rollout observer", async () => {
   assert.equal(snapshot.active, true);
   assert.equal(snapshot.answer, "Now");
   assert.equal(snapshot.executionOwner, "vscode-app-server");
+  assert.equal(snapshot.userMessageSnapshotAuthority, "incremental");
+  assert.equal(snapshot.userMessages[0].sourceOccurrenceId, `codex-rollout:${"a".repeat(64)}`);
   assert.equal(snapshot.activityGroups[0].reasoning, "Проверяю.");
 });
 
@@ -75,7 +186,7 @@ test("Codex snapshot service hydrates a rollout subagent model", async () => {
   assert.equal(snapshot.userMessages[1].author, "Субагент (Terra)");
 });
 
-test("Codex snapshot service uses rollout receipt identities instead of unkeyed App Server echoes", async () => {
+test("Codex snapshot service preserves complete App Server users while incremental rollout adds exact identities", async () => {
   const service = new CodexTaskSnapshotService({
     knownRolloutPath: async () => "rollout.jsonl",
     readRolloutActivity: async () => ({
@@ -146,6 +257,16 @@ test("Codex snapshot service uses rollout receipt identities instead of unkeyed 
     clientUserMessageId: message.clientUserMessageId,
     text: message.text,
   })), [
+    {
+      itemId: "msg-root",
+      clientUserMessageId: undefined,
+      text: "Исходный запрос",
+    },
+    {
+      itemId: "msg-steer",
+      clientUserMessageId: undefined,
+      text: "Уточнение в текущий ход",
+    },
     {
       itemId: "root-receipt",
       clientUserMessageId: "root-receipt",

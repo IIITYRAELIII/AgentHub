@@ -9,6 +9,7 @@ import test from "node:test";
 import { taskBranchName } from "../../../src/domain/task-git-reference.mjs";
 import { taskReleasePlanRevision } from "../../../src/domain/task-release-snapshot.mjs";
 import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
+import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 
 async function fixture(t) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-board-"));
@@ -25,6 +26,14 @@ async function fixture(t) {
   return store;
 }
 
+function admit(store, prepared, requestId, attemptId = `attempt-${requestId}`) {
+  return store.admitPreparedStart(prepared.id, {
+    requestId,
+    attemptId,
+    expectedRevision: prepared.revision,
+  });
+}
+
 test("Task store revision changes on writes but not reads", async (t) => {
   const store = await fixture(t);
   const initial = store.revision;
@@ -35,6 +44,349 @@ test("Task store revision changes on writes but not reads", async (t) => {
   assert.equal(store.revision, initial + 1);
   store.list();
   assert.equal(store.revision, initial + 1);
+});
+
+test("workflow transition atomically CAS-commits status and exact Git references", async (t) => {
+  const store = await fixture(t);
+  const created = store.create({ text: "Atomic transition" });
+  const current = store.task(created.id);
+  store.beginLifecycleTransition(created.id, {
+    operationId: "workflow-1", kind: "workflow", targetWorkflowStatus: "testing",
+    expectedRevision: current.revision,
+  });
+  assert.equal(store.task(created.id).workflowStatus, "new");
+
+  const committed = store.commitWorkflowTransition({
+    operationId: "workflow-1",
+    gitReferences: [{ projectRoot: "D:/repo", branch: "HUB-159", resultCommit: "a".repeat(40) }],
+    evidence: { outcome: "integrated" },
+  });
+
+  assert.equal(committed.workflowStatus, "testing");
+  assert.deepEqual(committed.gitReferences, [{
+    projectRoot: path.resolve("D:/repo"), branch: "HUB-159", resultCommit: "a".repeat(40),
+  }]);
+  assert.equal(committed.revision, current.revision + 1);
+});
+
+test("workflow transition readback exposes the exact immutable prior Task", async (t) => {
+  const store = await fixture(t);
+  const created = store.create({
+    text: "Same-status transition evidence", workspaceId: "workspace-1", bucket: "workspace",
+  });
+  store.claim(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", provider: "codex", threadId: "thread-1",
+    turnId: "turn-1", operationId: "claim-same-status-evidence",
+  });
+  const prior = store.recordTaskGitReference({
+    taskId: created.id,
+    projectRoot: "D:/repo",
+    branch: "HUB-216",
+    resultSnapshot: { repoRoot: "D:/repo", tree: "a".repeat(40) },
+  });
+  store.beginLifecycleTransition(created.id, {
+    operationId: "same-status-evidence",
+    kind: "workflow",
+    targetWorkflowStatus: prior.workflowStatus,
+    expectedRevision: prior.revision,
+  });
+
+  const transition = store.lifecycleTransition("same-status-evidence");
+  assert.equal(transition.expectedRevision, prior.revision);
+  assert.equal(transition.priorTask.id, prior.id);
+  assert.equal(transition.priorTask.revision, prior.revision);
+  assert.equal(transition.priorTask.workflowStatus, prior.workflowStatus);
+  assert.equal(transition.priorTask.workspaceId, "workspace-1");
+  assert.equal(transition.priorTask.streamId, "stream-1");
+  assert.deepEqual(transition.priorTask.gitReferences, prior.gitReferences);
+});
+
+test("workflow outcome rollback restores the exact prior status and Git references", async (t) => {
+  const store = await fixture(t);
+  const created = store.create({ text: "Await rollback" });
+  const previous = store.recordTaskGitReference({
+    taskId: created.id,
+    projectRoot: "D:/repo",
+    branch: "HUB-173",
+    resultSnapshot: { repoRoot: "D:/repo", tree: "a".repeat(40) },
+  });
+  store.beginLifecycleTransition(created.id, {
+    operationId: "workflow-rollback",
+    kind: "workflow",
+    targetWorkflowStatus: "awaiting_implementation",
+    expectedRevision: previous.revision,
+  });
+  const committed = store.commitWorkflowTransition({
+    operationId: "workflow-rollback",
+    gitReferences: [{
+      projectRoot: "D:/repo", branch: "HUB-174", resultCommit: "b".repeat(40),
+    }],
+    evidence: { outcome: "integrated" },
+  });
+
+  const restored = store.rollbackWorkflowOutcome(
+    "workflow-rollback",
+    new Error("injected Await rebuild failure"),
+  );
+
+  assert.equal(restored.workflowStatus, previous.workflowStatus);
+  assert.equal(restored.revision, committed.revision + 1);
+  assert.deepEqual(restored.gitReferences, previous.gitReferences);
+  assert.equal(store.lifecycleOutcome("workflow-rollback").result.rollback.completed, true);
+});
+
+test("workflow CAS failure preserves the previous status and Git references", async (t) => {
+  const store = await fixture(t);
+  const created = store.create({ text: "CAS transition" });
+  const oldReference = store.recordTaskGitReference({
+    taskId: created.id, projectRoot: "D:/repo", branch: "HUB-158",
+    resultSnapshot: { repoRoot: "D:/repo", tree: "b".repeat(40) },
+  });
+  store.beginLifecycleTransition(created.id, {
+    operationId: "workflow-cas", kind: "workflow", targetWorkflowStatus: "testing",
+    expectedRevision: oldReference.revision,
+  });
+  store.updatePresentation(created.id, { title: "Concurrent edit", description: "" });
+
+  assert.throws(() => store.commitWorkflowTransition({
+    operationId: "workflow-cas",
+    gitReferences: [{ projectRoot: "D:/repo", branch: "HUB-159", resultCommit: "c".repeat(40) }],
+  }), /changed while Git evidence was prepared/u);
+  const after = store.task(created.id);
+  assert.equal(after.workflowStatus, "new");
+  assert.equal(after.gitReferences[0].resultCommit, "b".repeat(40));
+});
+
+test("release transition atomically fences current Workspace and Stream settings", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-release-context-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const catalog = new WorkspaceCatalogStore({ databaseFile });
+  await catalog.load();
+  const store = new TaskBoardStore({ databaseFile });
+  t.after(async () => {
+    store.close();
+    catalog.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const repositoryRoot = path.join(directory, "repository");
+  const workspace = await catalog.runMutation(() => catalog.createWorkspace({
+    name: "Agent HUB", settings: { releaseWorkflowEnabled: true, workingDirectory: repositoryRoot },
+  }));
+  const stream = await catalog.runMutation(() => catalog.createStream({
+    workspaceId: workspace.id, name: "Architect", settings: {},
+  }));
+  const created = store.create({ text: "Release context fence", workspaceId: workspace.id, bucket: "workspace" });
+  store.claim(created.id, {
+    workspaceId: workspace.id, streamId: stream.id, provider: "codex", threadId: "thread-release-context",
+    turnId: "turn-release-context", operationId: "claim-release-context",
+  });
+  const current = store.task(created.id);
+  const releaseContext = { workspaceId: workspace.id, streamId: stream.id, projectRoot: repositoryRoot };
+
+  await catalog.runMutation(() => catalog.updateStreamSettings(stream.id, {
+    workingDirectory: path.join(directory, "moved-repository"),
+  }));
+  assert.throws(() => store.beginLifecycleTransition(created.id, {
+    operationId: "release-context-root-race", kind: "workflow",
+    targetWorkflowStatus: "awaiting_implementation", expectedRevision: current.revision, releaseContext,
+  }), /release context changed/u);
+  assert.equal(store.lifecycleTransition("release-context-root-race"), null);
+
+  await catalog.runMutation(() => catalog.updateStreamSettings(stream.id, {}));
+  await catalog.runMutation(() => catalog.updateWorkspaceSettings(workspace.id, {
+    releaseWorkflowEnabled: false, workingDirectory: repositoryRoot,
+  }));
+  assert.throws(() => store.beginLifecycleTransition(created.id, {
+    operationId: "release-context-disabled-race", kind: "workflow",
+    targetWorkflowStatus: "awaiting_implementation", expectedRevision: current.revision, releaseContext,
+  }), /release context changed/u);
+  assert.equal(store.lifecycleTransition("release-context-disabled-race"), null);
+  assert.equal(store.task(created.id).revision, current.revision);
+});
+
+test("prepare and cancel start enforce one exact owner and revision CAS", async (t) => {
+  const store = await fixture(t);
+  const created = store.create({ text: "Concurrent launch" });
+  const prepared = store.prepareStart(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", requestId: "owner-1",
+    expectedRevision: created.revision,
+  });
+  assert.throws(() => store.prepareStart(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-2", requestId: "owner-2",
+  }), /already pending/u);
+  assert.throws(
+    () => store.fencePreparedStartCancellation(created.id, {
+      requestId: "owner-2", cancellationRequestId: "cancel-owner-2",
+      expectedRevision: prepared.revision,
+    }),
+    /owner does not match/u,
+  );
+  assert.throws(
+    () => store.fencePreparedStartCancellation(created.id, {
+      requestId: "owner-1", cancellationRequestId: "cancel-stale",
+      expectedRevision: prepared.revision + 1,
+    }),
+    /revision conflict/u,
+  );
+  assert.throws(() => store.claim(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-existing", provider: "codex",
+    threadId: "thread-existing", turnId: "turn-existing", operationId: "claim-before-cancel",
+  }), /must be cancelled before claim/u);
+  const fenced = store.fencePreparedStartCancellation(created.id, {
+    requestId: "owner-1", cancellationRequestId: "cancel-owner-1",
+    expectedRevision: prepared.revision,
+  });
+  const cancelled = store.completePreparedStartCancellation(created.id, {
+    requestId: "owner-1", expectedRevision: fenced.revision,
+  });
+  assert.equal(cancelled.status, "open");
+  assert.equal(cancelled.startRequestId, null);
+  const claimed = store.claim(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-existing", provider: "codex",
+    threadId: "thread-existing", turnId: "turn-existing", operationId: "claim-after-cancel",
+  });
+  assert.equal(claimed.streamId, "stream-existing");
+  assert.throws(() => store.prepareStart(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", requestId: "owner-1",
+  }), /уже запущена/u);
+});
+
+test("markStarted requires exact prepared owner state and revision", async (t) => {
+  const store = await fixture(t);
+  const created = store.create({ text: "Exact launch completion" });
+  const prepared = store.prepareStart(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", requestId: "exact-launch",
+    expectedRevision: created.revision,
+  });
+  const admitted = admit(store, prepared, "exact-launch");
+  assert.throws(() => store.markStarted(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", requestId: "wrong-owner",
+    attemptId: "attempt-exact-launch", expectedRevision: admitted.revision,
+  }), /does not match/u);
+  assert.throws(() => store.markStarted(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", requestId: "exact-launch",
+    attemptId: "wrong-attempt", expectedRevision: admitted.revision,
+  }), /does not own effect admission/u);
+  assert.throws(() => store.markStarted(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", requestId: "exact-launch",
+    attemptId: "attempt-exact-launch", expectedRevision: admitted.revision - 1,
+  }), /revision CAS/u);
+  const started = store.markStarted(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", requestId: "exact-launch",
+    attemptId: "attempt-exact-launch", expectedRevision: admitted.revision,
+  });
+  assert.equal(started.status, "started");
+});
+
+test("launch admission and cancellation fence serialize across SQLite connections", async (t) => {
+  const first = await fixture(t);
+  const second = new TaskBoardStore({ databaseFile: first.databaseFile });
+  try {
+  const cancelledTask = first.create({ text: "Cancel wins" });
+  const preparedForCancel = first.prepareStart(cancelledTask.id, {
+    workspaceId: "workspace-1", streamId: "stream-cancel",
+    requestId: "cancel-wins", expectedRevision: cancelledTask.revision,
+  });
+  const fenced = second.fencePreparedStartCancellation(cancelledTask.id, {
+    requestId: "cancel-wins", cancellationRequestId: "cancel-attempt",
+    expectedRevision: preparedForCancel.revision,
+  });
+  assert.throws(() => first.admitPreparedStart(cancelledTask.id, {
+    requestId: "cancel-wins", attemptId: "late-launch",
+    expectedRevision: preparedForCancel.revision,
+  }), /revision conflict|not available for admission/u);
+  const cancelled = second.completePreparedStartCancellation(cancelledTask.id, {
+    requestId: "cancel-wins", expectedRevision: fenced.revision,
+  });
+  assert.equal(cancelled.status, "open");
+
+  const launchedTask = first.create({ text: "Launch wins" });
+  const preparedForLaunch = first.prepareStart(launchedTask.id, {
+    workspaceId: "workspace-1", streamId: "stream-launch",
+    requestId: "launch-wins", expectedRevision: launchedTask.revision,
+  });
+  const admitted = first.admitPreparedStart(launchedTask.id, {
+    requestId: "launch-wins", attemptId: "winning-launch",
+    expectedRevision: preparedForLaunch.revision,
+  });
+  assert.equal(admitted.startEffectState, "admitted");
+  assert.throws(() => second.fencePreparedStartCancellation(launchedTask.id, {
+    requestId: "launch-wins", cancellationRequestId: "late-cancel",
+    expectedRevision: admitted.revision,
+  }), /already admitted/u);
+  } finally {
+    second.close();
+  }
+});
+
+test("startup migration classifies a legacy unlaunched owner as prepared", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-launch-state-migration-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let store = new TaskBoardStore({ databaseFile });
+  const created = store.create({ text: "Legacy prepared launch" });
+  const prepared = store.prepareStart(created.id, {
+    workspaceId: "workspace-1", streamId: "planned-legacy", requestId: "legacy-request",
+    expectedRevision: created.revision,
+  });
+  store.close();
+  const legacy = new DatabaseSync(databaseFile);
+  legacy.prepare(
+    "UPDATE hub_board_tasks SET start_effect_state = NULL, start_effect_owner_id = NULL WHERE id = ?",
+  ).run(created.id);
+  legacy.close();
+
+  store = new TaskBoardStore({ databaseFile });
+  const migrated = store.task(created.id);
+  assert.ok(migrated.revision >= prepared.revision);
+  assert.equal(migrated.startEffectState, "prepared");
+  assert.equal(migrated.startEffectOwnerId, null);
+  store.close();
+});
+
+test("Task mutation queue retries the owning transaction without blocking timers", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-contention-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const store = new TaskBoardStore({ databaseFile });
+  const created = store.create({ text: "Before contention" });
+  const blocker = new DatabaseSync(databaseFile);
+  blocker.exec("PRAGMA busy_timeout = 0; BEGIN IMMEDIATE");
+  let timerFired = false;
+  const timer = setTimeout(() => {
+    timerFired = true;
+    blocker.exec("COMMIT");
+  }, 60);
+  t.after(async () => {
+    clearTimeout(timer);
+    try { blocker.exec("ROLLBACK"); } catch {}
+    blocker.close();
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const updated = await store.runMutation(
+    () => store.updatePresentation(created.id, { title: "After contention", description: "" }),
+    { requestId: "task-contention", timeoutMs: 1_000 },
+  );
+  assert.equal(timerFired, true);
+  assert.equal(updated.title, "After contention");
+  assert.ok(store.mutationDiagnostics().retries > 0);
+});
+
+test("delete transition keeps the Task durable until cleanup is confirmed successful", async (t) => {
+  const store = await fixture(t);
+  const created = store.create({ text: "Crash-safe delete" });
+  store.beginLifecycleTransition(created.id, {
+    operationId: "delete-1", kind: "delete", expectedRevision: created.revision,
+  });
+  assert.equal(store.task(created.id).id, created.id);
+  store.failLifecycleTransition("delete-1", new Error("cleanup failed"));
+  assert.equal(store.task(created.id).status, "open");
+
+  store.beginLifecycleTransition(created.id, {
+    operationId: "delete-2", kind: "delete", expectedRevision: store.task(created.id).revision,
+  });
+  assert.equal(store.finalizeCleanupTransition("delete-2", { deleteTask: true }).deleted, true);
+  assert.equal(store.task(created.id), null);
 });
 
 test("status integration records a Git result without fabricating a provider turn", async (t) => {
@@ -56,6 +408,61 @@ test("status integration records a Git result without fabricating a provider tur
     resultCommit,
   }]);
   assert.deepEqual(recorded.workLog, []);
+});
+
+test("legacy Git adoption is CAS-guarded and keeps an immutable audit", async (t) => {
+  const store = await fixture(t);
+  const created = store.create({ text: "Legacy Await" });
+  store.move(created.id, { bucket: "workspace", workspaceId: "workspace-1" });
+  const prepared = store.prepareStart(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", requestId: "legacy-start",
+  });
+  const admitted = admit(store, prepared, "legacy-start");
+  store.markStarted(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", requestId: "legacy-start",
+    attemptId: "attempt-legacy-start", expectedRevision: admitted.revision,
+  });
+  const awaiting = store.setWorkflowStatus(created.id, "awaiting_implementation");
+  const projectRoot = path.resolve("D:/repo");
+  const adopted = store.adoptLegacyGitReference({
+    taskId: created.id,
+    expectedRevision: awaiting.revision,
+    projectRoot,
+    branch: "HUB-98",
+    reportedResultCommit: "a".repeat(40),
+    mainResultCommit: "b".repeat(40),
+    patchId: "c".repeat(40),
+    evidenceStreamId: "stream-1",
+    evidenceProvider: "codex",
+    evidenceThreadId: "thread-1",
+    evidenceTurnId: "turn-1",
+    actorStreamId: "architect-stream",
+    actorProvider: "codex",
+    actorThreadId: "architect-thread",
+    requestId: "adopt-1",
+  });
+
+  assert.deepEqual(adopted.gitReferences, [{
+    projectRoot,
+    branch: "HUB-98",
+    resultCommit: "b".repeat(40),
+  }]);
+  assert.equal(adopted.gitAdoptions.length, 1);
+  assert.equal(adopted.gitAdoptions[0].reportedResultCommit, "a".repeat(40));
+  assert.equal(adopted.gitAdoptions[0].evidenceTurnId, "turn-1");
+  assert.throws(() => store.adoptLegacyGitReference({
+    taskId: created.id,
+    expectedRevision: awaiting.revision,
+    projectRoot,
+  }), /revision changed|already has Git evidence/u);
+
+  store.close();
+  const inspected = new DatabaseSync(store.databaseFile);
+  assert.throws(
+    () => inspected.prepare("DELETE FROM hub_task_legacy_git_adoptions").run(),
+    /legacy Git adoption audit is immutable/u,
+  );
+  inspected.close();
 });
 
 test("Task store deduplicates Telegram updates and persists capture mode", async (t) => {
@@ -82,7 +489,14 @@ test("restarting a closed Task clears its completion timestamp", async (t) => {
   const store = await fixture(t);
   const task = store.create({ text: "Исправить запуск" });
   const completed = store.complete(task.id);
-  const restarted = store.markStarted(task.id, { workspaceId: "workspace-1", streamId: "stream-1" });
+  const prepared = store.prepareStart(task.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", requestId: "restart-closed",
+  });
+  const admitted = admit(store, prepared, "restart-closed");
+  const restarted = store.markStarted(task.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", requestId: "restart-closed",
+    attemptId: "attempt-restart-closed", expectedRevision: admitted.revision,
+  });
 
   assert.equal(completed.status, "done");
   assert.equal(completed.workflowStatus, "new");
@@ -97,7 +511,14 @@ test("generic Task statuses remain directly editable", async (t) => {
   const created = store.create({ text: "Провести задачу по статусам" });
   assert.equal(created.workflowStatus, "new");
 
-  const started = store.markStarted(created.id, { workspaceId: "workspace-1", streamId: "stream-1" });
+  const prepared = store.prepareStart(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", requestId: "editable-start",
+  });
+  const admitted = admit(store, prepared, "editable-start");
+  const started = store.markStarted(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-1", requestId: "editable-start",
+    attemptId: "attempt-editable-start", expectedRevision: admitted.revision,
+  });
   assert.equal(started.workflowStatus, "in_progress");
   assert.equal(store.setWorkflowStatus(created.id, "testing").workflowStatus, "testing");
   assert.equal(
@@ -120,7 +541,14 @@ test("generic Task statuses remain directly editable", async (t) => {
 test("durable reassignment keeps the old executor until the new launch succeeds", async (t) => {
   const store = await fixture(t);
   const created = store.create({ text: "Переназначить Task" });
-  store.markStarted(created.id, { workspaceId: "workspace-1", streamId: "stream-old" });
+  const initialPrepared = store.prepareStart(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-old", requestId: "initial-start",
+  });
+  const initialAdmitted = admit(store, initialPrepared, "initial-start");
+  store.markStarted(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-old", requestId: "initial-start",
+    attemptId: "attempt-initial-start", expectedRevision: initialAdmitted.revision,
+  });
 
   const prepared = store.prepareStart(created.id, {
     workspaceId: "workspace-1", streamId: "stream-new", requestId: "reassign-1", reassign: true,
@@ -128,15 +556,21 @@ test("durable reassignment keeps the old executor until the new launch succeeds"
   assert.equal(prepared.status, "started");
   assert.equal(prepared.streamId, "stream-old");
 
-  const cancelled = store.cancelPreparedStart(created.id, { requestId: "reassign-1", reassign: true });
+  const admittedReassign = admit(store, prepared, "reassign-1");
+  const cancelled = store.cancelPreparedStart(created.id, {
+    requestId: "reassign-1", reassign: true,
+    attemptId: "attempt-reassign-1", expectedRevision: admittedReassign.revision,
+  });
   assert.equal(cancelled.status, "started");
   assert.equal(cancelled.streamId, "stream-old");
 
-  store.prepareStart(created.id, {
+  const secondPrepared = store.prepareStart(created.id, {
     workspaceId: "workspace-1", streamId: "stream-new", requestId: "reassign-2", reassign: true,
   });
+  const secondAdmitted = admit(store, secondPrepared, "reassign-2");
   const reassigned = store.markStarted(created.id, {
     workspaceId: "workspace-1", streamId: "stream-new", requestId: "reassign-2",
+    attemptId: "attempt-reassign-2", expectedRevision: secondAdmitted.revision,
   });
   assert.equal(reassigned.status, "started");
   assert.equal(reassigned.streamId, "stream-new");
@@ -579,7 +1013,7 @@ test("Await Tasks expose only their immutable Git references to the release plan
   assert.deepEqual(releaseTasks.find((task) => task.id === blocked.id).gitReferences, []);
 });
 
-test("a new Await request clears stale evidence until the Task branch is integrated again", async (t) => {
+test("a new Await request preserves accepted evidence until replacement integration succeeds", async (t) => {
   const store = await fixture(t);
   const projectRoot = path.resolve("D:/repo");
   const task = store.create({ text: "Retry integration" });
@@ -600,7 +1034,8 @@ test("a new Await request clears stale evidence until the Task branch is integra
     resultSnapshot: { repoRoot: projectRoot, tree: "b".repeat(40) },
   });
   store.setWorkflowStatus(task.id, "awaiting_implementation");
-  assert.equal(store.task(task.id).gitReferences.length, 1);
+  const accepted = store.task(task.id).gitReferences;
+  assert.equal(accepted.length, 1);
 
   store.requestWorkflowStatus(task.id, {
     status: "awaiting_implementation",
@@ -610,7 +1045,7 @@ test("a new Await request clears stale evidence until the Task branch is integra
     operationId: identity.operationId,
   });
 
-  assert.deepEqual(store.task(task.id).gitReferences, []);
+  assert.deepEqual(store.task(task.id).gitReferences, accepted);
 });
 
 test("rolling a Task back clears its pending awaiting intent", async (t) => {
@@ -838,9 +1273,19 @@ test("release completion CAS-checks the exact Task Git reference", async (t) => 
     expectedPlanRevision: plan.revision,
     plan,
     verificationEvidence: { publishedRevision: "c".repeat(40) },
+    awaitRebuild: {
+      planRevision: plan.revision,
+      fallbackProjectRoots: [projectRoot],
+    },
   });
   assert.deepEqual(result.released[0].gitReferences, candidate.gitReferences);
   assert.equal(store.task(task.id).workflowStatus, "done");
+  assert.deepEqual(store.awaitRebuildPending(identity.workspaceId), {
+    planRevision: plan.revision,
+    fallbackProjectRoots: [projectRoot],
+  });
+  assert.equal(store.clearAwaitRebuildPending(identity.workspaceId), true);
+  assert.equal(store.awaitRebuildPending(identity.workspaceId), null);
 });
 
 function createLegacyReleaseSchema(database) {
@@ -1005,9 +1450,13 @@ test("Completed cutover ignores retired Task state recreated by a previous runti
     workspaceId: "workspace-1",
     taskPrefix: "HUB",
   });
+  const initialPrepared = initial.prepareStart(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-live", requestId: "cutover-start",
+  });
+  const initialAdmitted = admit(initial, initialPrepared, "cutover-start");
   const expected = initial.markStarted(created.id, {
-    workspaceId: "workspace-1",
-    streamId: "stream-live",
+    workspaceId: "workspace-1", streamId: "stream-live", requestId: "cutover-start",
+    attemptId: "attempt-cutover-start", expectedRevision: initialAdmitted.revision,
   });
   initial.close();
 

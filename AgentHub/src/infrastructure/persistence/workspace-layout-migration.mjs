@@ -225,7 +225,7 @@ export async function applyWorkspaceLayout({ databaseFile, manifest, backupDirec
   const store = new WorkspaceCatalogStore({ databaseFile });
   await store.load();
   try {
-    const audit = store.transaction(() => {
+    const audit = await store.runMutation(() => store.transaction(() => {
       const workspaceIds = new Map();
       let explicitCount = 0;
       for (const workspaceSpec of plan.manifest.workspaces) {
@@ -275,7 +275,7 @@ export async function applyWorkspaceLayout({ databaseFile, manifest, backupDirec
       };
       store.setMeta(plan.markerKey, JSON.stringify(value));
       return value;
-    });
+    }), { requestId: `workspace-layout:${plan.manifestHash}` });
     await writeFile(path.join(backupRoot, "migration-report.json"), `${JSON.stringify({
       manifest: plan.manifest,
       audit,

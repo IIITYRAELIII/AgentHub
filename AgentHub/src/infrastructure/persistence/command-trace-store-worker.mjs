@@ -34,7 +34,25 @@ async function handle(message) {
 }
 
 let queue = Promise.resolve();
+let cleanupPending = false;
+const cleanupIntervalMs = Number.isSafeInteger(workerData.cleanupIntervalMs) && workerData.cleanupIntervalMs > 0
+  ? workerData.cleanupIntervalMs : 60_000;
+const cleanupTimer = setInterval(() => {
+  if (cleanupPending) return;
+  cleanupPending = true;
+  queue = queue.then(async () => {
+    try {
+      await store.prune();
+    } catch (error) {
+      parentPort.postMessage({ maintenanceError: serializedError(error) });
+    } finally {
+      cleanupPending = false;
+    }
+  });
+}, cleanupIntervalMs);
+cleanupTimer.unref();
 parentPort.on("message", (message) => {
+  if (message.type === "close") clearInterval(cleanupTimer);
   queue = queue.then(async () => {
     try {
       const value = await handle(message);

@@ -128,3 +128,43 @@ test("CommandTraceService best-effort writes never reject the command path", asy
   assert.equal(span.finish({ outcome: "succeeded" }), false);
   assert.equal(warnings.length, 2);
 });
+
+
+test("measured operation records its start before settling, keeps identity and monotonic timing", async () => {
+  const records = [];
+  let monotonic = 50;
+  let ids = 0;
+  let release;
+  const service = new CommandTraceService({
+    store: { appendBestEffort: (span) => { records.push(span); return true; } },
+    clock: () => 1000, monotonicClock: () => monotonic,
+    createSpanId: () => `span-${++ids}`, metadata: { instanceId: "actual-instance" },
+  });
+  const pending = service.measureBestEffort({
+    commandId: "exact-command", stage: "terminal-state-save", transport: "server-runtime",
+    metadata: { instanceId: "caller-instance", turnId: "exact-turn" },
+  }, () => new Promise((resolve) => { release = resolve; }));
+  assert.equal(records.length, 1);
+  assert.equal(records[0].outcome, "started");
+  assert.equal(records[0].metadata.instanceId, "actual-instance");
+  monotonic = 72.5;
+  release("original result");
+  assert.equal(await pending, "original result");
+  assert.equal(records[1].outcome, "succeeded");
+  assert.equal(records[1].monotonicDurationMs, 22.5);
+  assert.equal(records[0].metadata.operationSpanId, records[1].spanId);
+  assert.equal(records[1].metadata.turnId, "exact-turn");
+});
+
+test("measured operation preserves failure identity and does not put error content in trace", async () => {
+  const records = [];
+  const service = new CommandTraceService({
+    store: { appendBestEffort: (span) => { records.push(span); return true; } },
+  });
+  const error = new Error("private prompt and token");
+  await assert.rejects(service.measureBestEffort({
+    commandId: "command", stage: "startup-provider", transport: "server-runtime",
+  }, () => { throw error; }), (observed) => observed === error);
+  assert.deepEqual(records.map((record) => record.outcome), ["started", "failed"]);
+  assert.equal(JSON.stringify(records).includes(error.message), false);
+});

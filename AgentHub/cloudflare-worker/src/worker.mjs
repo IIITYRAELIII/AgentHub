@@ -31,6 +31,8 @@ const CLIENT_SNAPSHOT_PREFIX = "client:snapshot:";
 const CONTROL_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const DASHBOARD_BOT_PAIRING_EXPIRY_MS = 10 * 60 * 1_000;
 const DASHBOARD_BOT_COMMAND_EXPIRY_MS = 30 * 24 * 60 * 60 * 1_000;
+const DASHBOARD_BOT_RECEIPT_PREFIX = "control:dashboard-receipt:";
+const DASHBOARD_BOT_RECEIPT_RETRY_MS = 30_000;
 const DASHBOARD_BOT_PAIRING_CODE_PATTERN = /^[A-Z2-9]{8}$/u;
 const DASHBOARD_BOT_HUB_NAME_MAX_CHARS = 80;
 const DASHBOARD_BOT_HUB_VERIFIER_PATTERN = /^sha256:[a-f0-9]{64}$/u;
@@ -46,7 +48,21 @@ const DASHBOARD_BOT_PRECEDING_COMMENT_MAX_CHARS = 160;
 const DASHBOARD_BOT_PRECEDING_COMMENT_MAX_MESSAGE_GAP = 4;
 const SYNC_STAGING_EXPIRY_MS = 30 * 60 * 1_000;
 const STORAGE_DELETE_BATCH_SIZE = 128;
+const JOURNAL_PROJECTION_LAYOUT_VERSION = 3;
+const JOURNAL_PROJECTION_MANIFEST_KEY = "journal-projection-manifest";
+const JOURNAL_PROJECTION_PREFIX = "journal-projection:";
+const JOURNAL_PROJECTION_CHUNK_BYTES = 96 * 1_024;
+const JOURNAL_TURN_PAGE_LIMIT = 50;
+const JOURNAL_RANGE_DAY_LIMIT = 32;
+const JOURNAL_PROFILE_COHORT_LIMIT = 2_048;
+const DAY_MS = 24 * 60 * 60 * 1_000;
 const REMOTE_ATTACHMENT_PREFIX = "remote-attachment:";
+const ATTACHMENT_MANIFEST_PREFIX = "control:attachment-manifest:";
+const LEGACY_ATTACHMENT_MANIFEST_PREFIX = "control:attachment:";
+const ATTACHMENT_CHUNK_PREFIX = "control:attachment-chunk:";
+const ATTACHMENT_UPLOAD_PREFIX = "control:attachment-upload:";
+export const ATTACHMENT_UPLOAD_PROTOCOL = "agent-hub-attachment-upload-v1";
+const ATTACHMENT_UPLOAD_HARD_MAX_BYTES = 256 * 1024 * 1024;
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const ATTACHMENT_STORAGE_CHUNK_BYTES = 1024 * 1024;
 export const ATTACHMENT_TRANSPORT_PROTOCOL = "agent-hub-attachment-chunks-v1";
@@ -56,8 +72,28 @@ const ATTACHMENT_TRANSPORT_MAX_RESPONSE_BYTES = 24 * 1024;
 const ATTACHMENT_TRANSPORT_PROBE_BYTES = 128 * 1024 + 123;
 const MAX_ATTACHMENTS_PER_COMMAND = 8;
 const MAX_ATTACHMENTS_PER_USER = 32;
-const MAX_ATTACHMENT_BYTES_PER_USER = 100 * 1024 * 1024;
 const ATTACHMENT_EXPIRY_MS = 30 * 60 * 1_000;
+
+function attachmentUploadLimits(env) {
+  const bounded = (value, fallback, max) => Number.isSafeInteger(Number(value)) && Number(value) > 0
+    ? Math.min(Number(value), max) : fallback;
+  return {
+    protocol: ATTACHMENT_UPLOAD_PROTOCOL,
+    chunkBytes: ATTACHMENT_STORAGE_CHUNK_BYTES,
+    maxBytes: bounded(env?.AGENT_HUB_ATTACHMENT_MAX_BYTES, 128 * 1024 * 1024, ATTACHMENT_UPLOAD_HARD_MAX_BYTES),
+    maxTotalBytes: bounded(env?.AGENT_HUB_ATTACHMENT_USER_MAX_BYTES, 256 * 1024 * 1024, 512 * 1024 * 1024),
+    maxUploads: MAX_ATTACHMENTS_PER_USER,
+    expiresInMs: ATTACHMENT_EXPIRY_MS,
+  };
+}
+
+function attachmentUploadStatus(record, limits) {
+  return {
+    ...limits, id: record.id, uploadId: record.id, name: record.name, type: record.contentType, size: record.size,
+    status: record.state, received: record.received, expiresAt: record.expiresAt,
+    ...(record.state === "ready" ? { path: `${REMOTE_ATTACHMENT_PREFIX}${record.id}`, sha256: record.bodyHash } : {}),
+  };
+}
 const DEVICE_PAIRING_EXPIRY_MS = 10 * 60 * 1_000;
 const DEVICE_CHALLENGE_EXPIRY_MS = 2 * 60 * 1_000;
 const DEVICE_SESSION_EXPIRY_MS = 12 * 60 * 60 * 1_000;
@@ -90,11 +126,14 @@ const CONTROL_ACTIONS = new Set([
   "status-details",
   "speak-last-answer",
   "restart-server",
+  "retry-startup",
   "compact-context",
   "open-attachment",
   "trusted-devices",
   "create-device-pairing",
   "revoke-device",
+  "message-pin-set",
+  "message-pins-clear",
   "board-task-ingest",
   "board-task-attachment-add",
 ]);
@@ -818,9 +857,52 @@ async function dashboardBotTelegramRequest(env, method, body = {}) {
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload?.ok !== true) {
-    throw new Error(`Telegram ${method} failed: ${String(payload?.description ?? `HTTP ${response.status}`).slice(0, 300)}`);
+    const error = new Error(`Telegram ${method} failed: ${String(payload?.description ?? `HTTP ${response.status}`).slice(0, 300)}`);
+    const retryAfter = Number(payload?.parameters?.retry_after ?? response.headers.get("Retry-After"));
+    if (Number.isFinite(retryAfter) && retryAfter > 0) error.retryAfterMs = retryAfter * 1_000;
+    throw error;
   }
   return payload.result;
+}
+
+function dashboardBotReplyParameters(messageId) {
+  return Number.isSafeInteger(messageId) && messageId > 0
+    ? { reply_parameters: { message_id: messageId, allow_sending_without_reply: true } }
+    : {};
+}
+
+function dashboardBotCommandReceipt(command, identity) {
+  const source = command.params?.sourceDetails;
+  if (command.action !== "board-task-ingest" || !source || !identity
+    || String(identity.userId) !== command.userId
+    || String(source.chatId) !== String(identity.chatId)) return null;
+  const kind = Number.isSafeInteger(command.params?.replyMessageId) ? "update" : source.bundleId ? "bundle" : "task";
+  const successText = kind === "update"
+    ? "✅ Изменения сохранены в Dashboard."
+    : kind === "bundle"
+      ? source.separate
+        ? source.separateIndex
+          ? `✅ Задача ${source.separateIndex} добавлена в Backlog.`
+          : "✅ Отдельная задача добавлена в Backlog."
+        : "✅ Пачка сообщений добавлена в Backlog."
+      : "✅ Задача добавлена в Backlog.";
+  return {
+    kind,
+    state: "pending",
+    attempt: 0,
+    nextAttemptAt: command.updatedAt,
+    body: {
+      chat_id: identity.chatId,
+      text: command.status === "completed" ? successText
+        : `⚠️ Agent Hub не принял задачу: ${String(command.error ?? "неизвестная ошибка").slice(0, 300)}`,
+      disable_web_page_preview: true,
+      ...dashboardBotReplyParameters(source.cardMessageId ?? source.messageId ?? source.items?.[0]?.messageId),
+    },
+  };
+}
+
+function dashboardBotReceiptKey(command) {
+  return `${DASHBOARD_BOT_RECEIPT_PREFIX}${String(command.dashboardBotReceipt.nextAttemptAt).padStart(16, "0")}:${command.id}`;
 }
 
 async function dashboardBotTelegramFile(env, attachment) {
@@ -907,6 +989,7 @@ async function updateDashboardBotCard(env, registryStore, card) {
     text: card.text,
     disable_web_page_preview: true,
     reply_markup: card.replyMarkup,
+    ...dashboardBotReplyParameters(card.replyToMessageId),
   };
   const clearStoredCard = async () => registryStore.fetch(new Request(
     "https://journal.internal/dashboard-bot/card",
@@ -924,12 +1007,14 @@ async function updateDashboardBotCard(env, registryStore, card) {
     await clearStoredCard();
   } else if (card.mode === "edit" && Number.isSafeInteger(card.messageId)) {
     body.message_id = card.messageId;
+    delete body.reply_parameters;
     try {
       return await dashboardBotTelegramRequest(env, "editMessageText", body);
     } catch (error) {
       if (/message is not modified/iu.test(error.message)) return null;
       await clearStoredCard();
       delete body.message_id;
+      Object.assign(body, dashboardBotReplyParameters(card.replyToMessageId));
     }
   }
   let sent;
@@ -1421,12 +1506,323 @@ async function putStorageEntries(storage, entries) {
   }
 }
 
+async function deleteStoragePrefix(storage, prefix) {
+  while (true) {
+    const batch = await storage.list({ prefix, limit: STORAGE_DELETE_BATCH_SIZE });
+    if (!batch.size) return;
+    await storage.delete([...batch.keys()]);
+  }
+}
+
+const JOURNAL_RESOURCE_FIELDS = [
+  "date", "dayMs", "workspaceId", "workspaceName", "workspaceKind", "streamId",
+  "streamDisplayName", "streamOrdinal", "provider", "turnCount", "credits",
+  "knownCredits", "unknownCredits", "durationSeconds", "knownDurations",
+  "unknownDurations", "latestAt", "workspaceUsageHtml",
+];
+const JOURNAL_PROFILE_SUM_FIELDS = [
+  "turnCount", "credits", "knownCredits", "unknownCredits", "durationSeconds",
+  "knownDurations", "unknownDurations", "fileTouches", "knownFileTouches",
+  "unknownFileTouches", "changedLines", "knownChangedLines", "unknownChangedLines",
+  "subagentTurns", "knownSubagentTurns", "unknownSubagentTurns", "mcpCallCount",
+  "mcpFailures", "knownToolMetricTurns", "unknownToolMetricTurns",
+];
+
+function publicVirtualSummary(value) {
+  return {
+    version: 1,
+    buckets: Number(value?.version) === 1 && Array.isArray(value?.buckets)
+      ? value.buckets.map((bucket) => Object.fromEntries(
+          JOURNAL_RESOURCE_FIELDS.map((field) => [field, bucket?.[field]]),
+        ))
+      : [],
+  };
+}
+
+function profileCohortBuckets(value) {
+  const streams = new Map();
+  for (const bucket of Number(value?.version) === 1 && Array.isArray(value?.buckets)
+    ? value.buckets
+    : []) {
+    const workspaceId = String(bucket?.workspaceId ?? "").trim().slice(0, 256);
+    const streamId = String(bucket?.streamId ?? "").trim().slice(0, 256);
+    if (!workspaceId || !streamId) continue;
+    const provider = String(bucket?.provider ?? "").trim().slice(0, 32);
+    const key = `${workspaceId}\u001f${streamId}\u001f${provider}`;
+    const aggregate = streams.get(key) ?? {
+      date: String(bucket?.date ?? "").trim().slice(0, 32),
+      dayMs: Math.max(0, Number(bucket?.dayMs) || 0),
+      workspaceId,
+      workspaceName: String(bucket?.workspaceName ?? "").trim().slice(0, 256),
+      workspaceKind: String(bucket?.workspaceKind ?? "").trim().slice(0, 32),
+      streamId,
+      streamDisplayName: String(bucket?.streamDisplayName ?? "").trim().slice(0, 256),
+      streamOrdinal: Math.max(1, Number(bucket?.streamOrdinal) || 1),
+      provider,
+      latestAt: 0,
+      skillNames: new Set(),
+      mcpTools: new Set(),
+    };
+    for (const field of JOURNAL_PROFILE_SUM_FIELDS) {
+      aggregate[field] = Math.max(0, Number(aggregate[field]) || 0)
+        + Math.max(0, Number(bucket?.[field]) || 0);
+    }
+    for (const name of Array.isArray(bucket?.skillNames) ? bucket.skillNames : []) {
+      const normalized = String(name ?? "").trim().slice(0, 256);
+      if (normalized && aggregate.skillNames.size < 100) aggregate.skillNames.add(normalized);
+    }
+    for (const name of Array.isArray(bucket?.mcpTools) ? bucket.mcpTools : []) {
+      const normalized = String(name ?? "").trim().slice(0, 256);
+      if (normalized && aggregate.mcpTools.size < 100) aggregate.mcpTools.add(normalized);
+    }
+    const latestAt = Math.max(0, Number(bucket?.latestAt) || 0);
+    if (latestAt >= aggregate.latestAt) {
+      aggregate.latestAt = latestAt;
+      aggregate.date = String(bucket?.date ?? aggregate.date).trim().slice(0, 32);
+      aggregate.dayMs = Math.max(0, Number(bucket?.dayMs) || aggregate.dayMs);
+    }
+    streams.set(key, aggregate);
+  }
+  return [...streams.values()].sort((left, right) => (
+    right.latestAt - left.latestAt
+    || right.credits - left.credits
+    || left.workspaceId.localeCompare(right.workspaceId)
+    || left.streamId.localeCompare(right.streamId)
+  )).map((bucket) => ({
+    ...bucket,
+    skillNames: [...bucket.skillNames].sort((left, right) => left.localeCompare(right)),
+    mcpTools: [...bucket.mcpTools].sort((left, right) => left.localeCompare(right)),
+  }));
+}
+
+function boundedProfileCohortSummary(ordered) {
+  return {
+    version: 1,
+    buckets: ordered.slice(0, JOURNAL_PROFILE_COHORT_LIMIT),
+    truncated: ordered.length > JOURNAL_PROFILE_COHORT_LIMIT,
+  };
+}
+
+function journalProfileStreamIdentity(workspaceId, streamId) {
+  return stableStringify({
+    workspaceId: String(workspaceId ?? "").trim().slice(0, 256),
+    streamId: String(streamId ?? "").trim().slice(0, 256),
+  });
+}
+
+function profileBucketIdentity(bucket) {
+  return [bucket?.workspaceId, bucket?.streamId, bucket?.provider].map((value) => (
+    String(value ?? "").trim()
+  )).join("\u001f");
+}
+
+function journalProjectionPrefix(syncId, layoutVersion = JOURNAL_PROJECTION_LAYOUT_VERSION) {
+  if (Number(layoutVersion) === 1) return `${JOURNAL_PROJECTION_PREFIX}${syncId}:`;
+  return `${JOURNAL_PROJECTION_PREFIX}v${layoutVersion}:${syncId}:`;
+}
+
+function appendProjectionBytes(entries, prefix, value) {
+  const bytes = encoder.encode(String(value ?? ""));
+  const count = Math.ceil(bytes.byteLength / JOURNAL_PROJECTION_CHUNK_BYTES);
+  for (let index = 0; index < count; index += 1) {
+    entries.push([
+      `${prefix}:${String(index).padStart(6, "0")}`,
+      bytes.slice(index * JOURNAL_PROJECTION_CHUNK_BYTES, (index + 1) * JOURNAL_PROJECTION_CHUNK_BYTES),
+    ]);
+  }
+  return { count, byteLength: bytes.byteLength };
+}
+
+async function readProjectionBytes(storage, prefix, descriptor) {
+  const count = Math.max(0, Number(descriptor?.count) || 0);
+  if (!count) return "";
+  const keys = Array.from({ length: count }, (_, index) => `${prefix}:${String(index).padStart(6, "0")}`);
+  const chunks = await storage.get(keys);
+  if (chunks.size !== count) throw new Error("Проекция журнала повреждена.");
+  const bytes = new Uint8Array(Math.max(0, Number(descriptor?.byteLength) || 0));
+  let offset = 0;
+  for (const key of keys) {
+    const chunk = new Uint8Array(chunks.get(key));
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  if (offset !== bytes.byteLength) throw new Error("Проекция журнала повреждена.");
+  return new TextDecoder().decode(bytes);
+}
+
+function normalizedJournalTurn(entry) {
+  const turnRef = String(entry?.turnRef ?? "").trim().slice(0, 768);
+  const date = String(entry?.date ?? "").trim().slice(0, 32);
+  const html = typeof entry?.html === "string" ? entry.html : "";
+  if (!turnRef || !date || !html) return null;
+  return {
+    turnRef,
+    date,
+    dayMs: Math.max(0, Number(entry?.dayMs) || 0),
+    workspaceId: String(entry?.workspaceId ?? "").trim().slice(0, 256),
+    streamId: String(entry?.streamId ?? "").trim().slice(0, 256),
+    provider: String(entry?.provider ?? "").trim().slice(0, 32),
+    threadId: String(entry?.threadId ?? "").trim().slice(0, 256),
+    completedAtMs: Math.max(0, Number(entry?.completedAtMs) || 0),
+    html,
+  };
+}
+
+function journalScopeQueries(entry) {
+  const queries = [];
+  if (entry.workspaceId) {
+    queries.push({ workspaceId: entry.workspaceId, streamId: "", provider: "", threadId: "" });
+    if (entry.provider) {
+      queries.push({
+        workspaceId: entry.workspaceId,
+        streamId: "",
+        provider: entry.provider,
+        threadId: "",
+      });
+      if (entry.threadId) queries.push({
+        workspaceId: entry.workspaceId,
+        streamId: "",
+        provider: entry.provider,
+        threadId: entry.threadId,
+      });
+    }
+  }
+  if (entry.workspaceId && entry.streamId) {
+    queries.push({ workspaceId: entry.workspaceId, streamId: entry.streamId, provider: "", threadId: "" });
+    if (entry.provider) {
+      queries.push({
+        workspaceId: entry.workspaceId,
+        streamId: entry.streamId,
+        provider: entry.provider,
+        threadId: "",
+      });
+      if (entry.threadId) queries.push({
+        workspaceId: entry.workspaceId,
+        streamId: entry.streamId,
+        provider: entry.provider,
+        threadId: entry.threadId,
+      });
+    }
+  }
+  if (entry.provider) {
+    queries.push({ workspaceId: "", streamId: "", provider: entry.provider, threadId: "" });
+    if (entry.threadId) queries.push({
+      workspaceId: "",
+      streamId: "",
+      provider: entry.provider,
+      threadId: entry.threadId,
+    });
+  }
+  return [...new Map(queries.map((query) => [stableStringify(query), query])).values()];
+}
+
+async function materializedJournalProjection(payload, syncId) {
+  const prefix = journalProjectionPrefix(syncId);
+  const entries = [];
+  const summary = publicVirtualSummary(payload?.summary);
+  const profileBuckets = profileCohortBuckets(payload?.summary);
+  const profileSummary = boundedProfileCohortSummary(profileBuckets);
+  const html = appendProjectionBytes(entries, `${prefix}index-html`, payload?.html);
+  const summaryBytes = appendProjectionBytes(entries, `${prefix}summary`, JSON.stringify(summary));
+  const profileBytes = appendProjectionBytes(
+    entries,
+    `${prefix}profileSummary`,
+    JSON.stringify(profileSummary),
+  );
+  const rateLimitsHtml = String(payload?.html ?? "").match(
+    /<div\b[^>]*data-work-log-rate-limits\b[^>]*>[\s\S]*?<\/div>/iu,
+  )?.[0] ?? "";
+  const rateLimits = appendProjectionBytes(entries, `${prefix}rate-limits`, rateLimitsHtml);
+  const fragmentSources = [
+    ["day", payload?.days],
+    ["turn", payload?.turns],
+  ];
+  await Promise.all(fragmentSources.flatMap(([kind, fragments]) => (
+    Object.entries(fragments && typeof fragments === "object" ? fragments : {}).map(async ([identity, value]) => {
+      const hash = await sha256(String(identity));
+      const descriptor = appendProjectionBytes(entries, `${prefix}${kind}:${hash}`, value);
+      entries.push([`${prefix}${kind}-meta:${hash}`, descriptor]);
+    })
+  )));
+  const profileStreams = new Map();
+  const profileWorkspaces = new Map();
+  for (const bucket of profileBuckets) {
+    const identity = journalProfileStreamIdentity(bucket.workspaceId, bucket.streamId);
+    const buckets = profileStreams.get(identity) ?? [];
+    buckets.push(bucket);
+    profileStreams.set(identity, buckets);
+    const workspaceBuckets = profileWorkspaces.get(bucket.workspaceId) ?? [];
+    workspaceBuckets.push(bucket);
+    profileWorkspaces.set(bucket.workspaceId, workspaceBuckets);
+  }
+  await Promise.all([...profileStreams].map(async ([identity, buckets]) => {
+    const hash = await sha256(identity);
+    const descriptor = appendProjectionBytes(
+      entries,
+      `${prefix}profile-stream:${hash}`,
+      JSON.stringify({ version: 1, buckets, truncated: false }),
+    );
+    entries.push([`${prefix}profile-stream-meta:${hash}`, descriptor]);
+  }));
+  await Promise.all([...profileWorkspaces].map(async ([identity, buckets]) => {
+    const hash = await sha256(identity);
+    const descriptor = appendProjectionBytes(
+      entries,
+      `${prefix}profile-workspace:${hash}`,
+      JSON.stringify({ version: 1, buckets, truncated: false }),
+    );
+    entries.push([`${prefix}profile-workspace-meta:${hash}`, descriptor]);
+  }));
+  const turns = (Array.isArray(payload?.turnEntries) ? payload.turnEntries : [])
+    .map(normalizedJournalTurn)
+    .filter(Boolean)
+    .sort((left, right) => right.completedAtMs - left.completedAtMs || left.turnRef.localeCompare(right.turnRef));
+  const scopes = new Map();
+  for (const [index, turn] of turns.entries()) {
+    const turnKey = `${prefix}turn-shell:${String(index).padStart(12, "0")}`;
+    entries.push([turnKey, { turnRef: turn.turnRef, date: turn.date, html: turn.html }]);
+    for (const query of journalScopeQueries(turn)) {
+      const identity = stableStringify(query);
+      const scope = scopes.get(identity) ?? { query, all: [], dates: new Map() };
+      scope.all.push(turnKey);
+      const dateTurns = scope.dates.get(turn.date) ?? [];
+      dateTurns.push(turnKey);
+      scope.dates.set(turn.date, dateTurns);
+      scopes.set(identity, scope);
+    }
+  }
+  await Promise.all([...scopes.entries()].map(async ([identity, scope]) => {
+    const hash = await sha256(identity);
+    const appendBucket = (bucket, turnKeys) => {
+      const bucketPrefix = `${prefix}scope:${hash}:${bucket}`;
+      entries.push([`${bucketPrefix}:meta`, { total: turnKeys.length }]);
+      for (const [index, turnKey] of turnKeys.entries()) {
+        entries.push([`${bucketPrefix}:entry:${String(index).padStart(12, "0")}`, turnKey]);
+      }
+    };
+    appendBucket("all", scope.all);
+    for (const [date, turnKeys] of scope.dates) appendBucket(`date:${date}`, turnKeys);
+  }));
+  entries.push([`${prefix}meta`, {
+    layoutVersion: JOURNAL_PROJECTION_LAYOUT_VERSION,
+    syncId,
+    version: String(payload?.version ?? ""),
+    updatedAt: String(payload?.updatedAt ?? ""),
+    html,
+    summary: summaryBytes,
+    profileSummary: profileBytes,
+    rateLimits,
+  }]);
+  return entries;
+}
+
 export class JournalStore extends DurableObject {
   #cachedPayload = null;
   #snapshotCache = new Map();
   #snapshotWaiters = new Map();
   #controlResultWaiters = new Map();
   #controlWaiters = new Set();
+  #dashboardBotReceiptFlights = new Map();
   #deviceAuthAttempts = new DeviceAuthAttemptLimiter();
 
   webSocketMessage(socket, message) {
@@ -1801,6 +2197,7 @@ export class JournalStore extends DurableObject {
       bundleId: bundle.id,
       chatId: bundle.chatId,
       messageId,
+      replyToMessageId: bundle.items?.[0]?.messageId,
       text: finalText || dashboardBotBundleCardText(bundle, warning),
       replyMarkup: finalText ? { inline_keyboard: [] } : dashboardBotBundleKeyboard(bundle),
     };
@@ -1924,6 +2321,7 @@ export class JournalStore extends DurableObject {
                 sourceDetails: {
                   bundleId: bundle.id,
                   chatId: bundle.chatId,
+                  cardMessageId: bundle.cardMessageId,
                   userId: Number(bundle.userId),
                   messageCount: group.items.length,
                   bundleMessageCount: bundle.items.length,
@@ -2573,7 +2971,7 @@ export class JournalStore extends DurableObject {
       const command = commands.get(key);
       const markerKey = markerEntries[index][0];
       if (!command || command.expiryKey !== markerKey) continue;
-      deletes.push(key, command.availabilityKey);
+      deletes.push(key, command.availabilityKey, command.dashboardBotReceipt?.indexKey);
       if (!["completed", "failed"].includes(command.status)) activeCount = Math.max(0, activeCount - 1);
     }
     await deleteStorageKeys(storage, deletes);
@@ -2581,16 +2979,203 @@ export class JournalStore extends DurableObject {
     return markers.size;
   }
 
-  async #attachmentManifests(storage = this.ctx.storage) {
-    return [...(await storage.list({ prefix: "control:attachment:" })).values()];
+  async #cleanupAttachmentUploads(now, storage) {
+    let nextExpiry = Infinity;
+    for (const [key, record] of await storage.list({ prefix: ATTACHMENT_UPLOAD_PREFIX })) {
+      if (record.expiresAt > now) {
+        nextExpiry = Math.min(nextExpiry, record.expiresAt);
+        continue;
+      }
+      // Ready files belong to the existing command/manifest lifecycle. An upload
+      // expiry never deletes files after ownership has transferred to a command.
+      if (record.state === "uploading") {
+        await deleteStorageKeys(storage, record.received.map(({ index }) => `${ATTACHMENT_CHUNK_PREFIX}${record.id}:${index}`));
+      }
+      await storage.delete(key);
+    }
+    return nextExpiry;
   }
 
-  async #deleteAttachment(manifest, storage = this.ctx.storage) {
-    await storage.delete([
-      `control:attachment:${manifest.id}`,
+  async #attachmentUploadQuota(userId, manifests, storage) {
+    const records = [...(await storage.list({ prefix: ATTACHMENT_UPLOAD_PREFIX })).values()]
+      .filter((record) => record.userId === userId);
+    const pending = records.filter((record) => record.state === "uploading");
+    const ready = manifests.filter((manifest) => manifest.userId === userId);
+    return {
+      count: new Set([...records, ...ready].map((record) => record.id)).size,
+      bytes: [...pending, ...ready].reduce((total, record) => total + Number(record.size), 0),
+    };
+  }
+
+  async #attachmentUpload(request) {
+    const url = new URL(request.url);
+    const userId = String(request.headers.get("X-Agent-Hub-User-Id") ?? "");
+    const viewOnly = request.headers.get("X-Agent-Hub-Upload-View-Only") === "1";
+    if (!userId) return json({ error: "attachment upload owner required" }, 401);
+    const limits = attachmentUploadLimits(this.env);
+    if (request.method === "GET" && !url.searchParams.has("id")) return json(limits);
+    let metadata = null;
+    let part = null;
+    let hash = null;
+    let id = String(url.searchParams.get("id") ?? "").toLowerCase();
+    if (request.method === "POST" && !url.searchParams.has("id")) {
+      metadata = JSON.parse(new TextDecoder().decode(await readBoundedBinary(request, 4096, "upload metadata")));
+      id = String(metadata?.uploadId ?? "").toLowerCase();
+      if (!Number.isSafeInteger(metadata?.size) || metadata.size < 1 || metadata.size > limits.maxBytes) {
+        return json({ error: "attachment size exceeds upload limit" }, 413);
+      }
+      metadata = { size: metadata.size, name: attachmentFileName(metadata.name), contentType: attachmentContentType(metadata.type), viewOnly };
+    }
+    if (!CONTROL_ID_PATTERN.test(id)) return json({ error: "invalid attachment upload id" }, 400);
+    const index = Number(url.searchParams.get("index"));
+    if (request.method === "PUT") {
+      hash = String(request.headers.get("X-Agent-Hub-Chunk-Sha256") ?? "").toLowerCase();
+      if (!url.searchParams.has("index") || !Number.isSafeInteger(index) || index < 0 || !/^[a-f0-9]{64}$/u.test(hash)) {
+        return json({ error: "invalid attachment part metadata" }, 400);
+      }
+      part = await readBoundedBinary(request, limits.chunkBytes, "attachment part");
+      if (await sha256(part) !== hash) return json({ error: "attachment part hash mismatch" }, 400);
+    }
+    return this.ctx.storage.transaction(async (storage) => {
+      const now = Date.now();
+      await this.#cleanupAttachmentUploads(now, storage);
+      const manifests = await this.#cleanupAttachments(now, storage);
+      const key = `${ATTACHMENT_UPLOAD_PREFIX}${id}`;
+      let record = await storage.get(key);
+      const existing = await this.#attachmentManifestRecord(id, storage);
+      if (existing.state === "conflict") return json({ error: "attachment identity conflict" }, 409);
+      if (record && record.userId !== userId || existing.manifest && existing.manifest.userId !== userId) {
+        return json({ error: "attachment upload not found" }, 404);
+      }
+      if (record && Boolean(record.viewOnly) !== viewOnly) return json({ error: "attachment upload not found" }, 404);
+      if (record?.state === "uploading" && existing.state === "active") return json({ error: "attachment identity conflict" }, 409);
+      if (metadata) {
+        if (record && (record.size !== metadata.size || record.name !== metadata.name || record.contentType !== metadata.contentType)) {
+          return json({ error: "attachment upload metadata conflict" }, 409);
+        }
+        if (!record) {
+          if (existing.state === "active") return json({ error: "attachment identity already exists" }, 409);
+          const quota = await this.#attachmentUploadQuota(userId, manifests, storage);
+          if (quota.count >= limits.maxUploads || quota.bytes + metadata.size > limits.maxTotalBytes) {
+            return json({ error: "attachment upload quota exceeded" }, 429);
+          }
+          record = { ...metadata, id, userId, state: "uploading", received: [], createdAt: now, expiresAt: now + ATTACHMENT_EXPIRY_MS };
+          await storage.put(key, record);
+          await this.#scheduleCleanupAlarm(record.expiresAt, storage);
+        }
+      }
+      if (!record) return json({ error: "attachment upload not found or expired" }, 404);
+      if (record.state === "cancelled" || record.state === "ready" && existing.state !== "active") {
+        return json({ error: "attachment upload no longer available", state: record.state === "cancelled" ? "cancelled" : "consumed" }, 410);
+      }
+      if (metadata || request.method === "GET") return json(attachmentUploadStatus(record, limits));
+      if (request.method === "DELETE") {
+        if (existing.manifest?.commandIds?.length) return json({ error: "attachment is owned by an accepted command" }, 409);
+        if (existing.state === "active") await this.#deleteAttachment(existing.manifest, storage, id);
+        else await deleteStorageKeys(storage, record.received.map(({ index: partIndex }) => `${ATTACHMENT_CHUNK_PREFIX}${id}:${partIndex}`));
+        record = { ...record, state: "cancelled", received: [] };
+        await storage.put(key, record);
+        return json(attachmentUploadStatus(record, limits));
+      }
+      if (request.method === "PUT") {
+        const expectedSize = Math.min(limits.chunkBytes, record.size - index * limits.chunkBytes);
+        if (expectedSize <= 0 || part.byteLength !== expectedSize) return json({ error: "attachment part size mismatch" }, 400);
+        const previous = record.received.find((item) => item.index === index);
+        if (previous && (previous.sha256 !== hash || previous.size !== part.byteLength)) return json({ error: "attachment part conflict" }, 409);
+        if (!previous) {
+          if (record.state !== "uploading") return json({ error: "attachment already finalized" }, 409);
+          record = { ...record, received: [...record.received, { index, size: part.byteLength, sha256: hash }].sort((a, b) => a.index - b.index) };
+          await storage.put({ [key]: record, [`${ATTACHMENT_CHUNK_PREFIX}${id}:${index}`]: part }, { noCache: true });
+        }
+        return json(attachmentUploadStatus(record, limits));
+      }
+      if (request.method === "POST" && url.searchParams.get("complete") === "1") {
+        if (record.state === "ready") return json(attachmentUploadStatus(record, limits));
+        const count = Math.ceil(record.size / limits.chunkBytes);
+        if (record.received.length !== count) return json({ error: "attachment upload is incomplete" }, 409);
+        // Cloudflare's DigestStream retains only hash state, never the full file.
+        const digest = new crypto.DigestStream("SHA-256");
+        const writer = digest.getWriter();
+        let total = 0;
+        try {
+          for (const descriptor of record.received) {
+            const bytes = await storage.get(`${ATTACHMENT_CHUNK_PREFIX}${id}:${descriptor.index}`, { noCache: true });
+            if (!bytes || bytes.byteLength !== descriptor.size || await sha256(bytes) !== descriptor.sha256) {
+              throw new Error("attachment part is missing or damaged");
+            }
+            if (descriptor.index === 0 && !attachmentMatchesContentType(bytes, record.contentType)) {
+              throw new Error("attachment content does not match its type");
+            }
+            total += bytes.byteLength;
+            await writer.write(bytes);
+          }
+          if (total !== record.size) throw new Error("attachment total size mismatch");
+          await writer.close();
+        } catch (error) {
+          await writer.abort(error).catch(() => {});
+          await digest.digest.catch(() => {});
+          return json({ error: error.message }, 409);
+        }
+        const bodyHash = hex(await digest.digest);
+        record = { ...record, state: "ready", bodyHash };
+        await storage.put({
+          [key]: record,
+          [`${ATTACHMENT_MANIFEST_PREFIX}${id}`]: {
+            id, userId, contentType: record.contentType, name: record.name, bodyHash,
+            size: record.size, chunkCount: count, commandIds: [], createdAt: record.createdAt, expiresAt: record.expiresAt,
+            ...(record.viewOnly ? { viewOnly: true, chunks: record.received } : {}),
+          },
+        });
+        return json(attachmentUploadStatus(record, limits));
+      }
+      return json({ error: "Method Not Allowed" }, 405);
+    });
+  }
+
+  async #attachmentManifests(storage = this.ctx.storage) {
+    return [...(await storage.list({ prefix: ATTACHMENT_MANIFEST_PREFIX })).values()];
+  }
+
+  async #attachmentManifestRecord(id, storage = this.ctx.storage) {
+    const key = `${ATTACHMENT_MANIFEST_PREFIX}${id}`;
+    const legacyKey = `${LEGACY_ATTACHMENT_MANIFEST_PREFIX}${id}`;
+    const records = await storage.get([key, legacyKey]);
+    const manifest = records.get(key);
+    const legacyManifest = records.get(legacyKey);
+    if (manifest && legacyManifest) {
+      return { state: "conflict", id, key, legacyKey };
+    }
+    if (manifest) return { state: "active", id, key, legacyKey, namespace: "current", manifest };
+    if (legacyManifest) {
+      return { state: "active", id, key: legacyKey, legacyKey, namespace: "legacy", manifest: legacyManifest };
+    }
+    return { state: "missing", id, key, legacyKey };
+  }
+
+  async #activeAttachmentManifestRecord(id, now = Date.now(), storage = this.ctx.storage) {
+    const record = await this.#attachmentManifestRecord(id, storage);
+    if (record.state !== "active") return record;
+    if (Number(record.manifest?.expiresAt ?? 0) > now) return record;
+    await this.#deleteAttachment(record.manifest, storage, id);
+    return { state: "expired", id, key: record.key, legacyKey: record.legacyKey };
+  }
+
+  async #promoteAttachmentManifestRecord(record, storage = this.ctx.storage) {
+    if (record.state !== "active" || record.namespace !== "legacy") return record;
+    const manifest = { ...record.manifest };
+    const key = `${ATTACHMENT_MANIFEST_PREFIX}${record.id}`;
+    await storage.put(key, manifest);
+    await storage.delete(record.legacyKey);
+    return { ...record, key, namespace: "current", manifest };
+  }
+
+  async #deleteAttachment(manifest, storage = this.ctx.storage, exactId = manifest.id) {
+    await deleteStorageKeys(storage, [
+      `${ATTACHMENT_MANIFEST_PREFIX}${exactId}`,
+      `${LEGACY_ATTACHMENT_MANIFEST_PREFIX}${exactId}`,
       ...Array.from(
         { length: Number(manifest.chunkCount) || 0 },
-        (_, index) => `control:attachment-chunk:${manifest.id}:${index}`,
+        (_, index) => `${ATTACHMENT_CHUNK_PREFIX}${exactId}:${index}`,
       ),
     ]);
   }
@@ -2599,8 +3184,14 @@ export class JournalStore extends DurableObject {
     const manifests = await this.#attachmentManifests(storage);
     const active = [];
     for (const manifest of manifests) {
-      if (Number(manifest?.expiresAt ?? 0) <= now) await this.#deleteAttachment(manifest, storage);
-      else active.push(manifest);
+      const id = String(manifest?.id ?? "");
+      if (!CONTROL_ID_PATTERN.test(id)) {
+        active.push(manifest);
+        continue;
+      }
+      const record = await this.#activeAttachmentManifestRecord(id, now, storage);
+      if (record.state === "active") active.push(record.manifest);
+      else if (record.state === "conflict") active.push(manifest);
     }
     return active;
   }
@@ -2613,7 +3204,7 @@ export class JournalStore extends DurableObject {
     const absoluteOffset = index * ATTACHMENT_TRANSPORT_CHUNK_BYTES;
     const storageIndex = Math.floor(absoluteOffset / ATTACHMENT_STORAGE_CHUNK_BYTES);
     const storageOffset = absoluteOffset % ATTACHMENT_STORAGE_CHUNK_BYTES;
-    const storageKey = `control:attachment-chunk:${manifest.id}:${storageIndex}`;
+    const storageKey = `${ATTACHMENT_CHUNK_PREFIX}${manifest.id}:${storageIndex}`;
     let stored = storageChunks?.get(storageIndex);
     if (stored == null) {
       stored = await this.ctx.storage.get(storageKey);
@@ -2638,7 +3229,7 @@ export class JournalStore extends DurableObject {
     if (
       !Number.isSafeInteger(metadata.size)
       || metadata.size < 1
-      || metadata.size > MAX_ATTACHMENT_BYTES
+      || metadata.size > ATTACHMENT_UPLOAD_HARD_MAX_BYTES
       || !/^[a-f0-9]{64}$/u.test(metadata.hash)
     ) {
       return json({ error: "remote attachment metadata is invalid" }, 503);
@@ -2745,11 +3336,12 @@ export class JournalStore extends DurableObject {
     return nextExpiry;
   }
 
-  async #scheduleCleanupAlarm(expiresAt) {
+  async #scheduleCleanupAlarm(expiresAt, storage = null) {
     if (!Number.isFinite(expiresAt)) return;
-    const currentAlarm = await this.ctx.storage.getAlarm();
+    if (!storage) return this.ctx.storage.transaction((transaction) => this.#scheduleCleanupAlarm(expiresAt, transaction));
+    const currentAlarm = await storage.getAlarm();
     if (currentAlarm === null || expiresAt < currentAlarm) {
-      await this.ctx.storage.setAlarm(expiresAt);
+      await storage.setAlarm(expiresAt);
     }
   }
 
@@ -2761,13 +3353,96 @@ export class JournalStore extends DurableObject {
     return Number.isFinite(expiresAt) ? expiresAt : Number.POSITIVE_INFINITY;
   }
 
+  async #nextDashboardBotReceipt(storage = this.ctx.storage) {
+    const markers = await storage.list({ prefix: DASHBOARD_BOT_RECEIPT_PREFIX, limit: 1 });
+    const key = markers.keys().next().value;
+    return key ? Number(key.slice(DASHBOARD_BOT_RECEIPT_PREFIX.length, DASHBOARD_BOT_RECEIPT_PREFIX.length + 16))
+      : Number.POSITIVE_INFINITY;
+  }
+
+  #deliverDashboardBotReceipt(id) {
+    const existing = this.#dashboardBotReceiptFlights.get(id);
+    if (existing) return existing;
+    const flight = this.#sendDashboardBotReceipt(id).finally(() => this.#dashboardBotReceiptFlights.delete(id));
+    this.#dashboardBotReceiptFlights.set(id, flight);
+    return flight;
+  }
+
+  async #sendDashboardBotReceipt(id) {
+    const key = controlCommandKey(id);
+    const command = await this.ctx.storage.transaction(async (storage) => {
+      const current = await storage.get(key);
+      const receipt = current?.dashboardBotReceipt;
+      const now = Date.now();
+      if (receipt?.state !== "pending" || receipt.nextAttemptAt > now || current.expiresAt <= now) return null;
+      const previousIndexKey = receipt.indexKey;
+      receipt.attempt += 1;
+      receipt.nextAttemptAt = now + Math.min(15 * 60_000,
+        DASHBOARD_BOT_RECEIPT_RETRY_MS * 2 ** Math.min(receipt.attempt - 1, 5));
+      receipt.indexKey = dashboardBotReceiptKey(current);
+      await storage.put({ [key]: current, [receipt.indexKey]: { id } });
+      await storage.delete(previousIndexKey);
+      await this.#scheduleCleanupAlarm(receipt.nextAttemptAt, storage);
+      return current;
+    });
+    if (!command) return;
+    let sent;
+    try {
+      sent = await dashboardBotTelegramRequest(this.env, "sendMessage", command.dashboardBotReceipt.body);
+      if (!Number.isSafeInteger(sent?.message_id)) throw new Error("Telegram did not confirm a receipt message id");
+    } catch (error) {
+      if (Number.isFinite(error.retryAfterMs) && error.retryAfterMs > 0) {
+        await this.ctx.storage.transaction(async (storage) => {
+          const current = await storage.get(key);
+          const receipt = current?.dashboardBotReceipt;
+          if (receipt?.state !== "pending") return;
+          const previousIndexKey = receipt.indexKey;
+          receipt.nextAttemptAt = Math.min(current.expiresAt,
+            Math.max(receipt.nextAttemptAt, Date.now() + error.retryAfterMs));
+          receipt.indexKey = dashboardBotReceiptKey(current);
+          await storage.put({ [key]: current, [receipt.indexKey]: { id } });
+          if (previousIndexKey !== receipt.indexKey) await storage.delete(previousIndexKey);
+          await this.#scheduleCleanupAlarm(receipt.nextAttemptAt, storage);
+        });
+      }
+      console.warn(`Cannot send Dashboard bot delivery confirmation: ${error.message}`);
+      return;
+    }
+    await this.ctx.storage.transaction(async (storage) => {
+      const current = await storage.get(key);
+      if (current?.dashboardBotReceipt?.state !== "pending") return;
+      const previousIndexKey = current.dashboardBotReceipt.indexKey;
+      const previousExpiryKey = current.expiryKey;
+      current.dashboardBotReceipt.state = "delivered";
+      current.dashboardBotReceipt.messageId = sent.message_id;
+      current.dashboardBotReceipt.deliveredAt = Date.now();
+      delete current.dashboardBotReceipt.indexKey;
+      current.expiresAt = Date.now() + CONTROL_EXPIRY_MS;
+      current.expiryKey = controlExpiryKey(current);
+      await storage.put({ [key]: current, [current.expiryKey]: { id } });
+      await deleteStorageKeys(storage, [previousIndexKey,
+        previousExpiryKey === current.expiryKey ? null : previousExpiryKey]);
+      await this.#scheduleCleanupAlarm(current.expiresAt, storage);
+    });
+  }
+
   async alarm() {
-    const nextSyncExpiry = await this.#cleanupSyncStaging();
-    await this.ctx.storage.transaction((storage) => this.#cleanupExpiredControlCommands(Date.now(), storage));
-    const nextControlExpiry = await this.#nextControlExpiry();
-    const nextExpiry = Math.min(nextSyncExpiry, nextControlExpiry);
-    if (Number.isFinite(nextExpiry)) await this.ctx.storage.setAlarm(nextExpiry);
-    else await this.ctx.storage.deleteAlarm();
+    const receipts = await this.ctx.storage.list({
+      prefix: DASHBOARD_BOT_RECEIPT_PREFIX,
+      end: timedControlRangeEnd(DASHBOARD_BOT_RECEIPT_PREFIX, Date.now()),
+      limit: 20,
+    });
+    await Promise.all([...receipts.values()].map(({ id }) => this.#deliverDashboardBotReceipt(id)));
+    await this.ctx.storage.transaction(async (storage) => {
+      const nextSyncExpiry = await this.#cleanupSyncStaging(Date.now(), storage);
+      const nextUploadExpiry = await this.#cleanupAttachmentUploads(Date.now(), storage);
+      await this.#cleanupAttachments(Date.now(), storage);
+      await this.#cleanupExpiredControlCommands(Date.now(), storage);
+      const nextExpiry = Math.min(nextSyncExpiry, nextUploadExpiry, await this.#nextControlExpiry(storage),
+        await this.#nextDashboardBotReceipt(storage));
+      if (Number.isFinite(nextExpiry)) await storage.setAlarm(nextExpiry);
+      else await storage.deleteAlarm();
+    });
   }
 
   #controlStatus(command) {
@@ -2781,6 +3456,26 @@ export class JournalStore extends DurableObject {
     if (command.status === "completed") payload.result = command.result;
     if (command.status === "failed") payload.error = command.error;
     return payload;
+  }
+
+  async #payloadFromChunks(manifest, chunks) {
+    const chunkKeys = Array.from(
+      { length: manifest.count },
+      (_, chunkIndex) => `chunk:${manifest.syncId}:${chunkIndex}`,
+    );
+    if (chunks.size !== manifest.count) throw new Error("Снимок журнала повреждён.");
+    const ordered = chunkKeys.map((key) => new Uint8Array(chunks.get(key)));
+    const length = ordered.reduce((total, chunk) => total + chunk.byteLength, 0);
+    const compressed = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of ordered) {
+      compressed.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    const body = new Blob([compressed])
+      .stream()
+      .pipeThrough(new DecompressionStream(manifest.encoding));
+    return new Response(body).json();
   }
 
   async #payload() {
@@ -2797,24 +3492,196 @@ export class JournalStore extends DurableObject {
         (_, chunkIndex) => `chunk:${manifest.syncId}:${chunkIndex}`,
       );
       const chunks = await this.ctx.storage.get(chunkKeys);
-      if (chunks.size !== manifest.count) throw new Error("Снимок журнала повреждён.");
-      const ordered = chunkKeys.map((key) => new Uint8Array(chunks.get(key)));
-      const length = ordered.reduce((total, chunk) => total + chunk.byteLength, 0);
-      const compressed = new Uint8Array(length);
-      let offset = 0;
-      for (const chunk of ordered) {
-        compressed.set(chunk, offset);
-        offset += chunk.byteLength;
-      }
-      const body = new Blob([compressed])
-        .stream()
-        .pipeThrough(new DecompressionStream(manifest.encoding));
-      this.#cachedPayload = await new Response(body).json();
+      this.#cachedPayload = await this.#payloadFromChunks(manifest, chunks);
       return this.#cachedPayload;
     }
     this.#cachedPayload = await this.ctx.storage.get("journal");
     if (!this.#cachedPayload) throw new Error("Журнал ещё не опубликован.");
     return this.#cachedPayload;
+  }
+
+  async #publishJournalProjection(payload, syncId) {
+    const current = await this.ctx.storage.get(JOURNAL_PROJECTION_MANIFEST_KEY);
+    if (Number(current?.layoutVersion) === JOURNAL_PROJECTION_LAYOUT_VERSION
+      && String(current?.syncId ?? "") === syncId) return current;
+    const prefix = journalProjectionPrefix(syncId);
+    await deleteStoragePrefix(this.ctx.storage, prefix);
+    const entries = await materializedJournalProjection(payload, syncId);
+    await putStorageEntries(this.ctx.storage, entries);
+    const manifest = {
+      layoutVersion: JOURNAL_PROJECTION_LAYOUT_VERSION,
+      syncId,
+      version: String(payload?.version ?? ""),
+      updatedAt: String(payload?.updatedAt ?? ""),
+      previousSyncId: String(current?.syncId ?? ""),
+      previousLayoutVersion: Number(current?.layoutVersion) || 0,
+    };
+    await this.ctx.storage.transaction(async (storage) => {
+      await storage.put(JOURNAL_PROJECTION_MANIFEST_KEY, manifest);
+      await storage.delete(["journal", "journal-manifest"]);
+    });
+    const retiredSyncId = String(current?.previousSyncId ?? "");
+    if (retiredSyncId && retiredSyncId !== syncId) {
+      await deleteStoragePrefix(this.ctx.storage, journalProjectionPrefix(
+        retiredSyncId,
+        Number(current?.previousLayoutVersion) || Number(current?.layoutVersion) || 1,
+      ));
+    }
+    this.#cachedPayload = null;
+    return manifest;
+  }
+
+  async #projectionMeta() {
+    const manifest = await this.ctx.storage.get(JOURNAL_PROJECTION_MANIFEST_KEY);
+    if (Number(manifest?.layoutVersion) !== JOURNAL_PROJECTION_LAYOUT_VERSION
+      || !SYNC_ID_PATTERN.test(String(manifest?.syncId ?? ""))) return null;
+    const prefix = journalProjectionPrefix(manifest.syncId, manifest.layoutVersion);
+    const meta = await this.ctx.storage.get(`${prefix}meta`);
+    if (Number(meta?.layoutVersion) !== JOURNAL_PROJECTION_LAYOUT_VERSION
+      || String(meta?.syncId ?? "") !== String(manifest.syncId)
+      || String(meta?.version ?? "") !== String(manifest.version ?? "")) {
+      throw new Error("Проекция журнала повреждена.");
+    }
+    return { manifest, meta, prefix };
+  }
+
+  async #projectionJson(projection, field) {
+    const source = await readProjectionBytes(
+      this.ctx.storage,
+      `${projection.prefix}${field}`,
+      projection.meta[field],
+    );
+    try {
+      return JSON.parse(source);
+    } catch {
+      throw new Error("Проекция журнала повреждена.");
+    }
+  }
+
+  async #projectionFragment(projection, kind, identity) {
+    const hash = await sha256(String(identity));
+    const descriptor = await this.ctx.storage.get(`${projection.prefix}${kind}-meta:${hash}`);
+    if (!descriptor) return null;
+    return readProjectionBytes(this.ctx.storage, `${projection.prefix}${kind}:${hash}`, descriptor);
+  }
+
+  async #projectionProfileSummary(projection, query) {
+    const cohort = await this.#projectionJson(projection, "profileSummary");
+    if (!query.workspaceId) return cohort;
+    const kind = query.streamId ? "profile-stream" : "profile-workspace";
+    const identity = query.streamId
+      ? journalProfileStreamIdentity(query.workspaceId, query.streamId)
+      : query.workspaceId;
+    const source = await this.#projectionFragment(
+      projection,
+      kind,
+      identity,
+    );
+    if (source === null) return cohort;
+    let required;
+    try {
+      required = JSON.parse(source);
+    } catch {
+      throw new Error("Проекция журнала повреждена.");
+    }
+    const requiredBuckets = Array.isArray(required?.buckets) ? required.buckets : [];
+    const requiredByKey = new Map(requiredBuckets.map((bucket) => [profileBucketIdentity(bucket), bucket]));
+    const included = new Set();
+    const buckets = (Array.isArray(cohort?.buckets) ? cohort.buckets : []).map((bucket) => {
+      const key = profileBucketIdentity(bucket);
+      const exact = requiredByKey.get(key);
+      if (exact) included.add(key);
+      return exact ?? bucket;
+    });
+    for (const bucket of requiredBuckets) {
+      if (!included.has(profileBucketIdentity(bucket))) buckets.push(bucket);
+    }
+    return {
+      version: 1,
+      buckets,
+      truncated: Boolean(cohort?.truncated),
+    };
+  }
+
+  async #projectionTurnPage(projection, {
+    workspaceId = "",
+    streamId = "",
+    provider = "",
+    threadId = "",
+    fromMs = 0,
+    toMs = 0,
+    dates = "",
+    offset = 0,
+    limit = 20,
+    includeProfile = false,
+  } = {}) {
+    const query = {
+      workspaceId: String(workspaceId ?? "").trim().slice(0, 256),
+      streamId: String(streamId ?? "").trim().slice(0, 256),
+      provider: String(provider ?? "").trim().slice(0, 32),
+      threadId: String(threadId ?? "").trim().slice(0, 256),
+    };
+    const supported = (query.workspaceId && (!query.threadId || query.provider))
+      || (!query.workspaceId && !query.streamId && query.provider);
+    if (!supported) throw new Error("Неподдерживаемая область журнала.");
+    const rangeStart = Math.max(0, Number(fromMs) || 0);
+    const rangeEnd = Math.max(0, Number(toMs) || 0);
+    if ((rangeStart || rangeEnd) && (
+      !Number.isSafeInteger(rangeStart)
+      || !Number.isSafeInteger(rangeEnd)
+      || rangeStart >= rangeEnd
+      || Math.ceil((rangeEnd - rangeStart) / DAY_MS) > JOURNAL_RANGE_DAY_LIMIT
+    )) throw new Error("Диапазон журнала слишком велик.");
+    const dateValues = String(dates ?? "").split(",").map((value) => value.trim()).filter(Boolean);
+    if (dateValues.length > JOURNAL_RANGE_DAY_LIMIT
+      || dateValues.some((value) => !/^\d{2}\.\d{2}\.\d{4}$/u.test(value))) {
+      throw new Error("Некорректные календарные дни журнала.");
+    }
+    const visibleDates = [...new Set(dateValues)];
+    if ((rangeStart || rangeEnd) && !visibleDates.length) {
+      throw new Error("Календарные дни диапазона не заданы.");
+    }
+    const buckets = visibleDates.length
+      ? visibleDates.slice().reverse().map((date) => `date:${date}`)
+      : ["all"];
+    const scopeHash = await sha256(stableStringify(query));
+    const bucketPrefixes = buckets.map((bucket) => `${projection.prefix}scope:${scopeHash}:${bucket}`);
+    const metaKeys = bucketPrefixes.map((prefix) => `${prefix}:meta`);
+    const metas = await this.ctx.storage.get(metaKeys);
+    const descriptors = bucketPrefixes.map((prefix, index) => ({
+      prefix,
+      total: Math.max(0, Number(metas.get(metaKeys[index])?.total) || 0),
+    }));
+    const total = descriptors.reduce((sum, descriptor) => sum + descriptor.total, 0);
+    let skipped = Math.max(0, Number(offset) || 0);
+    let remaining = Math.max(1, Math.min(JOURNAL_TURN_PAGE_LIMIT, Number(limit) || 20));
+    const entryKeys = [];
+    for (const descriptor of descriptors) {
+      if (skipped >= descriptor.total) {
+        skipped -= descriptor.total;
+        continue;
+      }
+      const count = Math.min(remaining, descriptor.total - skipped);
+      for (let index = skipped; index < skipped + count; index += 1) {
+        entryKeys.push(`${descriptor.prefix}:entry:${String(index).padStart(12, "0")}`);
+      }
+      remaining -= count;
+      skipped = 0;
+      if (!remaining) break;
+    }
+    const indexed = entryKeys.length ? await this.ctx.storage.get(entryKeys) : new Map();
+    const turnKeys = entryKeys.map((key) => indexed.get(key)).filter(Boolean);
+    const turnsByKey = turnKeys.length ? await this.ctx.storage.get(turnKeys) : new Map();
+    const turns = turnKeys.map((key) => turnsByKey.get(key)).filter(Boolean);
+    const boundedOffset = Math.max(0, Number(offset) || 0);
+    return {
+      turns,
+      nextOffset: total > boundedOffset + turns.length ? boundedOffset + turns.length : null,
+      version: projection.meta.version,
+      ...(includeProfile
+        ? { profileSummary: await this.#projectionProfileSummary(projection, query) }
+        : {}),
+    };
   }
 
   async fetch(request) {
@@ -3021,6 +3888,13 @@ export class JournalStore extends DurableObject {
         return json({ error: error.message }, 400);
       }
     }
+    if (url.pathname === "/attachment-upload") {
+      try { return await this.#attachmentUpload(request); }
+      catch (error) {
+        const status = /too large/iu.test(error.message) ? 413 : error instanceof SyntaxError ? 400 : 503;
+        return json({ error: status === 503 ? "attachment upload storage unavailable" : error.message }, status);
+      }
+    }
     if (request.method === "POST" && url.pathname === "/attachment/upload") {
       const userId = String(request.headers.get("X-Agent-Hub-User-Id") ?? "");
       const id = String(request.headers.get("X-Agent-Hub-Attachment-Id") ?? "").toLowerCase();
@@ -3041,10 +3915,17 @@ export class JournalStore extends DurableObject {
       }
       const now = Date.now();
       return this.ctx.storage.transaction(async (storage) => {
+        await this.#cleanupAttachmentUploads(now, storage);
         const manifests = await this.#cleanupAttachments(now, storage);
-        const key = `control:attachment:${id}`;
-        const existing = await storage.get(key);
-        if (existing) {
+        const key = `${ATTACHMENT_MANIFEST_PREFIX}${id}`;
+        const upload = await storage.get(`${ATTACHMENT_UPLOAD_PREFIX}${id}`);
+        if (upload && upload.state !== "ready") return json({ error: "attachment upload identity reserved" }, 409);
+        let existingRecord = await this.#activeAttachmentManifestRecord(id, now, storage);
+        if (existingRecord.state === "conflict") {
+          return json({ error: "remote attachment id conflict" }, 409);
+        }
+        if (existingRecord.state === "active") {
+          const existing = existingRecord.manifest;
           if (
             existing.userId !== userId
             || existing.bodyHash !== bodyHash
@@ -3053,18 +3934,18 @@ export class JournalStore extends DurableObject {
           ) {
             return json({ error: "remote attachment id conflict" }, 409);
           }
+          existingRecord = await this.#promoteAttachmentManifestRecord(existingRecord, storage);
           return json({
             ok: true,
             path: `${REMOTE_ATTACHMENT_PREFIX}${id}`,
             id,
-            expiresAt: existing.expiresAt,
+            expiresAt: existingRecord.manifest.expiresAt,
           });
         }
-        const userAttachments = manifests.filter((manifest) => manifest.userId === userId);
-        const userBytes = userAttachments.reduce((total, manifest) => total + Number(manifest.size ?? 0), 0);
+        const quota = await this.#attachmentUploadQuota(userId, manifests, storage);
         if (
-          userAttachments.length >= MAX_ATTACHMENTS_PER_USER
-          || userBytes + body.byteLength > MAX_ATTACHMENT_BYTES_PER_USER
+          quota.count >= MAX_ATTACHMENTS_PER_USER
+          || quota.bytes + body.byteLength > attachmentUploadLimits(this.env).maxTotalBytes
         ) {
           return json({ error: "remote attachment quota exceeded" }, 429);
         }
@@ -3087,7 +3968,7 @@ export class JournalStore extends DurableObject {
         await storage.put({
           [key]: manifest,
           ...Object.fromEntries(chunks.map((chunk, index) => [
-            `control:attachment-chunk:${id}:${index}`,
+            `${ATTACHMENT_CHUNK_PREFIX}${id}:${index}`,
             chunk,
           ])),
         });
@@ -3119,10 +4000,17 @@ export class JournalStore extends DurableObject {
       }
       const now = Date.now();
       return this.ctx.storage.transaction(async (storage) => {
+        await this.#cleanupAttachmentUploads(now, storage);
         const manifests = await this.#cleanupAttachments(now, storage);
-        const key = `control:attachment:${id}`;
-        const existing = await storage.get(key);
-        if (existing) {
+        const key = `${ATTACHMENT_MANIFEST_PREFIX}${id}`;
+        const upload = await storage.get(`${ATTACHMENT_UPLOAD_PREFIX}${id}`);
+        if (upload) return json({ error: "attachment upload identity reserved" }, 409);
+        let existingRecord = await this.#activeAttachmentManifestRecord(id, now, storage);
+        if (existingRecord.state === "conflict") {
+          return json({ error: "attachment view id conflict" }, 409);
+        }
+        if (existingRecord.state === "active") {
+          const existing = existingRecord.manifest;
           if (
             existing.userId !== userId
             || existing.bodyHash !== bodyHash
@@ -3132,13 +4020,13 @@ export class JournalStore extends DurableObject {
           ) {
             return json({ error: "attachment view id conflict" }, 409);
           }
-          return json({ ok: true, id, expiresAt: existing.expiresAt });
+          existingRecord = await this.#promoteAttachmentManifestRecord(existingRecord, storage);
+          return json({ ok: true, id, expiresAt: existingRecord.manifest.expiresAt });
         }
-        const userAttachments = manifests.filter((manifest) => manifest.userId === userId);
-        const userBytes = userAttachments.reduce((total, manifest) => total + Number(manifest.size ?? 0), 0);
+        const quota = await this.#attachmentUploadQuota(userId, manifests, storage);
         if (
-          userAttachments.length >= MAX_ATTACHMENTS_PER_USER
-          || userBytes + body.byteLength > MAX_ATTACHMENT_BYTES_PER_USER
+          quota.count >= MAX_ATTACHMENTS_PER_USER
+          || quota.bytes + body.byteLength > attachmentUploadLimits(this.env).maxTotalBytes
         ) {
           return json({ error: "attachment view quota exceeded" }, 429);
         }
@@ -3162,7 +4050,7 @@ export class JournalStore extends DurableObject {
         await storage.put({
           [key]: manifest,
           ...Object.fromEntries(chunks.map((chunk, index) => [
-            `control:attachment-chunk:${id}:${index}`,
+            `${ATTACHMENT_CHUNK_PREFIX}${id}:${index}`,
             chunk,
           ])),
         });
@@ -3176,14 +4064,42 @@ export class JournalStore extends DurableObject {
       if (!CONTROL_ID_PATTERN.test(id) || !userId) {
         return json({ error: "invalid attachment view request" }, 400);
       }
-      await this.#cleanupAttachments();
-      const manifest = await this.ctx.storage.get(`control:attachment:${id}`);
+      const record = await this.ctx.storage.transaction(
+        (storage) => this.#activeAttachmentManifestRecord(id, Date.now(), storage),
+      );
+      const manifest = record.state === "active" ? record.manifest : null;
       if (!manifest || manifest.userId !== userId || manifest.viewOnly !== true) {
         return json({ error: "attachment view not found" }, 404);
       }
+      if (Array.isArray(manifest.chunks)) {
+        let index = 0;
+        const storage = this.ctx.storage;
+        const body = new ReadableStream({
+          async pull(controller) {
+            if (index === manifest.chunks.length) { controller.close(); return; }
+            const descriptor = manifest.chunks[index++];
+            try {
+              const bytes = await storage.get(`${ATTACHMENT_CHUNK_PREFIX}${id}:${descriptor.index}`, { noCache: true });
+              if (!bytes || bytes.byteLength !== descriptor.size || await sha256(bytes) !== descriptor.sha256) {
+                throw new Error("attachment view is missing or damaged");
+              }
+              controller.enqueue(new Uint8Array(bytes));
+            } catch (error) { controller.error(error); }
+          },
+        });
+        return new Response(body, {
+          headers: {
+            "Cache-Control": "private, no-store", "Content-Type": manifest.contentType,
+            "Content-Length": String(manifest.size), "X-Content-Type-Options": "nosniff",
+            "X-Agent-Hub-File-Name": encodedAttachmentFileName(manifest.name),
+            ...(String(manifest.contentType).startsWith("image/") ? {}
+              : { "Content-Disposition": `attachment; filename*=UTF-8''${encodedAttachmentFileName(manifest.name)}` }),
+          },
+        });
+      }
       const chunkKeys = Array.from(
         { length: manifest.chunkCount },
-        (_, index) => `control:attachment-chunk:${id}:${index}`,
+        (_, index) => `${ATTACHMENT_CHUNK_PREFIX}${id}:${index}`,
       );
       const chunks = await this.ctx.storage.get(chunkKeys);
       if (chunks.size !== manifest.chunkCount) return json({ error: "attachment view is incomplete" }, 503);
@@ -3216,8 +4132,10 @@ export class JournalStore extends DurableObject {
       if (!CONTROL_ID_PATTERN.test(id) || !userId || !CONTROL_ID_PATTERN.test(commandId)) {
         return json({ error: "invalid remote attachment request" }, 400);
       }
-      await this.#cleanupAttachments();
-      const manifest = await this.ctx.storage.get(`control:attachment:${id}`);
+      const record = await this.ctx.storage.transaction(
+        (storage) => this.#activeAttachmentManifestRecord(id, Date.now(), storage),
+      );
+      const manifest = record.state === "active" ? record.manifest : null;
       if (
         !manifest
         || manifest.userId !== userId
@@ -3227,9 +4145,10 @@ export class JournalStore extends DurableObject {
         return json({ error: "remote attachment not found" }, 404);
       }
       if (payload?.mode != null) return this.#attachmentTransportResponse(manifest, payload);
+      if (manifest.size > MAX_ATTACHMENT_BYTES) return json({ error: "large attachments require chunks-v1 transport" }, 413);
       const chunkKeys = Array.from(
         { length: manifest.chunkCount },
-        (_, index) => `control:attachment-chunk:${id}:${index}`,
+        (_, index) => `${ATTACHMENT_CHUNK_PREFIX}${id}:${index}`,
       );
       const chunks = await this.ctx.storage.get(chunkKeys);
       if (chunks.size !== manifest.chunkCount) return json({ error: "remote attachment is incomplete" }, 503);
@@ -3285,11 +4204,17 @@ export class JournalStore extends DurableObject {
         }
         const attachmentManifests = [];
         for (const attachmentId of attachmentIds) {
-          const manifest = await storage.get(`control:attachment:${attachmentId}`);
-          if (!manifest || manifest.userId !== userId) {
+          const attachmentRecord = await this.#activeAttachmentManifestRecord(attachmentId, now, storage);
+          if (attachmentRecord.state === "conflict") {
+            return json({ error: "remote attachment id conflict" }, 409);
+          }
+          if (attachmentRecord.state !== "active" || attachmentRecord.manifest.userId !== userId || attachmentRecord.manifest.viewOnly === true) {
             return json({ error: "remote attachment not found" }, 404);
           }
-          attachmentManifests.push(manifest);
+          attachmentManifests.push(attachmentRecord);
+        }
+        for (const [index, attachmentRecord] of attachmentManifests.entries()) {
+          attachmentManifests[index] = await this.#promoteAttachmentManifestRecord(attachmentRecord, storage);
         }
         const record = {
           ...command,
@@ -3310,10 +4235,13 @@ export class JournalStore extends DurableObject {
           [record.expiryKey]: { id: record.id },
           [CONTROL_ACTIVE_COUNT_KEY]: activeCount + 1,
           [CONTROL_WAKE_REVISION_KEY]: wakeRevision,
-          ...Object.fromEntries(attachmentManifests.map((manifest) => {
-            manifest.commandIds = [...new Set([...(manifest.commandIds ?? []), command.id])];
-            manifest.expiresAt = Math.max(manifest.expiresAt, record.expiresAt);
-            return [`control:attachment:${manifest.id}`, manifest];
+          ...Object.fromEntries(attachmentManifests.map(({ key: manifestKey, manifest }) => {
+            const linkedManifest = {
+              ...manifest,
+              commandIds: [...new Set([...(manifest.commandIds ?? []), command.id])],
+              expiresAt: Math.max(manifest.expiresAt, record.expiresAt),
+            };
+            return [manifestKey, linkedManifest];
           })),
         });
         return json(this.#controlStatus(record), 202);
@@ -3339,7 +4267,8 @@ export class JournalStore extends DurableObject {
             const current = await storage.get(controlCommandKey(id));
             if (!current || Number(current.expiresAt ?? 0) > Date.now()) return;
             const activeCount = Number(await storage.get(CONTROL_ACTIVE_COUNT_KEY)) || 0;
-            await deleteStorageKeys(storage, [controlCommandKey(id), current.availabilityKey, current.expiryKey]);
+            await deleteStorageKeys(storage, [controlCommandKey(id), current.availabilityKey, current.expiryKey,
+              current.dashboardBotReceipt?.indexKey]);
             if (!["completed", "failed"].includes(current.status)) {
               await storage.put(CONTROL_ACTIVE_COUNT_KEY, Math.max(0, activeCount - 1));
             }
@@ -3401,6 +4330,22 @@ export class JournalStore extends DurableObject {
         }
         if (command.status !== "running") return json({ error: "control command is not running" }, 409);
         const now = Date.now();
+        const attachmentManifests = [];
+        for (const attachmentId of command.attachmentIds ?? []) {
+          const attachmentRecord = await this.#activeAttachmentManifestRecord(attachmentId, now, storage);
+          if (attachmentRecord.state === "conflict") {
+            return json({ error: "remote attachment id conflict" }, 409);
+          }
+          if (
+            attachmentRecord.state === "active"
+            && attachmentRecord.manifest.userId !== command.userId
+          ) {
+            return json({ error: "remote attachment owner conflict" }, 409);
+          }
+          attachmentManifests.push(attachmentRecord.state === "active"
+            ? await this.#promoteAttachmentManifestRecord(attachmentRecord, storage)
+            : attachmentRecord);
+        }
         command.status = payload.ok ? "completed" : "failed";
         command.updatedAt = now;
         const previousAvailabilityKey = command.availabilityKey;
@@ -3416,6 +4361,16 @@ export class JournalStore extends DurableObject {
           command.error = String(payload.error ?? "Agent Hub control action failed").slice(0, MAX_CONTROL_ERROR_CHARS);
           delete command.result;
         }
+        command.dashboardBotReceipt = dashboardBotCommandReceipt(command,
+          await storage.get(DASHBOARD_BOT_SERVICE_IDENTITY_KEY));
+        if (command.dashboardBotReceipt) {
+          command.expiresAt = now + DASHBOARD_BOT_COMMAND_EXPIRY_MS;
+          command.expiryKey = controlExpiryKey(command);
+          command.dashboardBotReceipt.indexKey = dashboardBotReceiptKey(command);
+          await storage.put(command.dashboardBotReceipt.indexKey, { id });
+          // The command, pending receipt and wake-up commit together.
+          await this.#scheduleCleanupAlarm(now, storage);
+        }
         const activeCount = Math.max(0, (Number(await storage.get(CONTROL_ACTIVE_COUNT_KEY)) || 0) - 1);
         await deleteStorageKeys(storage, [
           previousAvailabilityKey,
@@ -3426,36 +4381,31 @@ export class JournalStore extends DurableObject {
           [command.expiryKey]: { id: command.id },
           [CONTROL_ACTIVE_COUNT_KEY]: activeCount,
         });
-        for (const attachmentId of command.attachmentIds ?? []) {
-          const attachmentKey = `control:attachment:${attachmentId}`;
-          const manifest = await storage.get(attachmentKey);
-          if (!manifest) continue;
-          manifest.commandIds = (manifest.commandIds ?? []).filter((commandId) => commandId !== command.id);
-          if (manifest.commandIds.length) await storage.put(attachmentKey, manifest);
-          else await this.#deleteAttachment(manifest, storage);
-        }
-        const sourceDetails = command.params?.sourceDetails;
-        const dashboardBotReceipt = command.action === "board-task-ingest"
-          && sourceDetails && typeof sourceDetails === "object"
-          ? {
-            kind: Number.isSafeInteger(command.params?.replyMessageId)
-              ? "update"
-              : sourceDetails.bundleId
-                ? "bundle"
-                : "task",
-            bundleId: String(sourceDetails.bundleId ?? ""),
-            separate: sourceDetails.separate === true,
-            separateIndex: Number(sourceDetails.separateIndex) || null,
+        for (const attachmentRecord of attachmentManifests) {
+          if (attachmentRecord.state !== "active") continue;
+          const manifest = {
+            ...attachmentRecord.manifest,
+            commandIds: (attachmentRecord.manifest.commandIds ?? [])
+              .filter((commandId) => commandId !== command.id),
+          };
+          if (manifest.commandIds.length) await storage.put(attachmentRecord.key, manifest);
+          else {
+            const upload = await storage.get(`${ATTACHMENT_UPLOAD_PREFIX}${attachmentRecord.id}`);
+            if (upload?.state === "ready" && upload.userId === manifest.userId && upload.expiresAt > now) {
+              // An explicit rejected-command retry reuses the same upload. Its
+              // original TTL is fixed; terminal retries cannot extend retention.
+              await storage.put(attachmentRecord.key, { ...manifest, expiresAt: upload.expiresAt });
+            } else await this.#deleteAttachment(manifest, storage, attachmentRecord.id);
           }
-          : null;
+        }
         return json({
           ...this.#controlStatus(command),
           resultAccepted: true,
-          ...(dashboardBotReceipt ? { dashboardBotReceipt } : {}),
         });
       });
       if (response.ok) {
         this.#wakeControlResultWaiters(id);
+        await this.#deliverDashboardBotReceipt(id);
         await this.#scheduleCleanupAlarm(Date.now() + CONTROL_EXPIRY_MS);
       }
       return response;
@@ -3463,14 +4413,13 @@ export class JournalStore extends DurableObject {
     if (request.method === "POST" && url.pathname === "/sync") {
       const payload = await request.json();
       const previous = await this.ctx.storage.get("journal-manifest");
-      await this.ctx.storage.put("journal", payload);
-      await this.ctx.storage.delete("journal-manifest");
+      const syncId = `sync-${await sha256(JSON.stringify(payload))}`;
+      await this.#publishJournalProjection(payload, syncId);
       if (previous?.syncId) {
         await this.ctx.storage.delete(
           Array.from({ length: previous.count }, (_, index) => `chunk:${previous.syncId}:${index}`),
         );
       }
-      this.#cachedPayload = payload;
       return json({ ok: true });
     }
     if (request.method === "POST" && url.pathname === "/sync-chunk") {
@@ -3514,15 +4463,13 @@ export class JournalStore extends DurableObject {
       if (chunks.size !== count) return json({ ok: true, complete: false }, 202);
 
       const previous = await this.ctx.storage.get("journal-manifest");
-      await this.ctx.storage.put("journal-manifest", {
-        syncId,
-        count,
-        encoding,
-        version,
-        updatedAt,
-      });
-      await this.ctx.storage.delete(["journal", metadataKey]);
-      this.#cachedPayload = null;
+      const payload = await this.#payloadFromChunks({ syncId, count, encoding }, chunks);
+      if (String(payload?.version ?? "") !== version || String(payload?.updatedAt ?? "") !== updatedAt) {
+        return json({ error: "sync payload identity conflict" }, 409);
+      }
+      await this.#publishJournalProjection(payload, syncId);
+      await this.ctx.storage.delete(metadataKey);
+      await deleteStorageKeys(this.ctx.storage, chunkKeys);
       if (previous?.syncId && previous.syncId !== syncId) {
         await this.ctx.storage.delete(
           Array.from({ length: previous.count }, (_, chunkIndex) => `chunk:${previous.syncId}:${chunkIndex}`),
@@ -3531,18 +4478,24 @@ export class JournalStore extends DurableObject {
       return json({ ok: true, complete: true });
     }
     if (request.method === "GET" && url.pathname === "/rate-limits") {
-      let payload;
+      let block = "";
       try {
-        payload = await this.#payload();
+        const projection = await this.#projectionMeta();
+        if (projection) {
+          block = await readProjectionBytes(
+            this.ctx.storage,
+            `${projection.prefix}rate-limits`,
+            projection.meta.rateLimits,
+          );
+        } else {
+          const payload = await this.#payload();
+          block = String(payload.html ?? "").match(
+            /<div\b[^>]*data-work-log-rate-limits\b[^>]*>[\s\S]*?<\/div>/iu,
+          )?.[0] ?? "";
+        }
       } catch (error) {
         return json({ error: error.message }, 503);
       }
-      /* Сводка лимитов — первый блок снимка. Шапка Mini App показывает её во
-         всех разделах, а журнал грузится лениво, поэтому блок отдаётся
-         отдельно, без мегабайтного payload. */
-      const block = String(payload.html ?? "").match(
-        /<div\b[^>]*data-work-log-rate-limits\b[^>]*>[\s\S]*?<\/div>/iu,
-      )?.[0] ?? "";
       return json({
         html: block,
         sampledAt: block.match(/data-sampled-at="([^"]*)"/iu)?.[1] ?? "",
@@ -3552,7 +4505,76 @@ export class JournalStore extends DurableObject {
       "/journal",
       "/journal/day",
       "/journal/turn",
+      "/journal/turns",
     ].includes(url.pathname)) {
+      let projection;
+      try {
+        projection = await this.#projectionMeta();
+      } catch (error) {
+        return json({ error: error.message }, 503);
+      }
+      if (projection) {
+        const requestedVersion = String(url.searchParams.get("version") ?? "");
+        if (requestedVersion && requestedVersion !== projection.meta.version) {
+          return json({ error: "Журнал обновился.", version: projection.meta.version }, 409);
+        }
+        if (url.pathname === "/journal/day" || url.pathname === "/journal/turn") {
+          const kind = url.pathname.endsWith("/day") ? "day" : "turn";
+          const identity = kind === "day"
+            ? String(url.searchParams.get("date") ?? "")
+            : String(url.searchParams.get("id") ?? "");
+          const html = await this.#projectionFragment(projection, kind, identity);
+          return html !== null
+            ? json({ html, version: projection.meta.version })
+            : json({ error: "Фрагмент журнала не найден." }, 404);
+        }
+        if (url.pathname === "/journal/turns") {
+          const boundedNumber = (name, maximum = Number.MAX_SAFE_INTEGER) => {
+            const number = Number(url.searchParams.get(name));
+            return Number.isSafeInteger(number) && number > 0 ? Math.min(number, maximum) : 0;
+          };
+          try {
+            return json(await this.#projectionTurnPage(projection, {
+              workspaceId: url.searchParams.get("workspaceId"),
+              streamId: url.searchParams.get("streamId"),
+              provider: url.searchParams.get("provider"),
+              threadId: url.searchParams.get("threadId"),
+              fromMs: boundedNumber("fromMs"),
+              toMs: boundedNumber("toMs"),
+              dates: url.searchParams.get("dates"),
+              offset: boundedNumber("offset", 1_000_000),
+              limit: Math.max(1, Math.min(
+                JOURNAL_TURN_PAGE_LIMIT,
+                Math.floor(Number(url.searchParams.get("limit")) || 20),
+              )),
+              includeProfile: url.searchParams.get("profileMode") === "stream",
+            }));
+          } catch (error) {
+            return json({ error: error.message, version: projection.meta.version }, 400);
+          }
+        }
+        const knownVersion = String(request.headers.get("If-None-Match") ?? "");
+        const etag = `"${projection.meta.version}"`;
+        if (knownVersion === etag) return new Response(null, { status: 304, headers: { ETag: etag } });
+        const [html, summary] = await Promise.all([
+          readProjectionBytes(this.ctx.storage, `${projection.prefix}index-html`, projection.meta.html),
+          this.#projectionJson(projection, "summary"),
+        ]);
+        const response = json({
+          html,
+          summary,
+          updatedAt: projection.meta.updatedAt,
+          version: projection.meta.version,
+        });
+        response.headers.set("ETag", etag);
+        return response;
+      }
+      if (url.pathname === "/journal/turns") {
+        return json({
+          error: "Индекс журнала ещё не опубликован.",
+          code: "journal_projection_required",
+        }, 503);
+      }
       let payload;
       try {
         payload = await this.#payload();
@@ -3579,6 +4601,7 @@ export class JournalStore extends DurableObject {
       if (knownVersion === etag) return new Response(null, { status: 304, headers: { ETag: etag } });
       const response = json({
         html: payload.html,
+        summary: publicVirtualSummary(payload.summary),
         updatedAt: payload.updatedAt,
         version: payload.version,
       });
@@ -4051,6 +5074,7 @@ export default {
           chat_id: chatId,
           text: routed.reply,
           disable_web_page_preview: true,
+          ...dashboardBotReplyParameters(update?.message?.message_id ?? update?.callback_query?.message?.message_id),
         });
       }
       return json({ ok: true, ignored: routed.ignored === true });
@@ -4171,26 +5195,6 @@ export default {
         }),
       }), "control-result");
       const result = await resultResponse.json().catch(() => ({}));
-      if (resultResponse.ok && result.resultAccepted === true && result.dashboardBotReceipt) {
-        const receipt = result.dashboardBotReceipt;
-        const successText = receipt.kind === "update"
-          ? "✅ Изменения сохранены в Dashboard."
-          : receipt.kind === "bundle"
-            ? receipt.separate
-              ? receipt.separateIndex
-                ? `✅ Задача ${receipt.separateIndex} добавлена в Backlog.`
-                : "✅ Отдельная задача добавлена в Backlog."
-              : "✅ Пачка сообщений добавлена в Backlog."
-            : "✅ Задача добавлена в Backlog.";
-        const failureText = `⚠️ Agent Hub не принял задачу: ${String(payload.error ?? "неизвестная ошибка").slice(0, 300)}`;
-        await dashboardBotTelegramRequest(env, "sendMessage", {
-          chat_id: identity.chatId,
-          text: payload.ok ? successText : failureText,
-          disable_web_page_preview: true,
-        }).catch((error) => {
-          console.warn(`Cannot send Dashboard bot delivery confirmation: ${error.message}`);
-        });
-      }
       return json(result, resultResponse.status);
     }
     if (url.pathname === "/api/sync") {
@@ -4331,6 +5335,26 @@ export default {
       return request.method === "HEAD"
         ? new Response(null, { status: response.status, headers: response.headers })
         : response;
+    }
+    if (url.pathname === "/api/attachment-upload") {
+      if (!["GET", "POST", "PUT", "DELETE"].includes(request.method)) return json({ error: "Method Not Allowed" }, 405);
+      let user;
+      try { user = await clientUser(request, env, store); }
+      catch (error) { return json({ error: error.message }, 401); }
+      try {
+        const body = ["POST", "PUT"].includes(request.method)
+          ? await readBoundedBinary(request, request.method === "PUT" ? ATTACHMENT_STORAGE_CHUNK_BYTES : 4096, "attachment upload request")
+          : undefined;
+        return store.fetch(new Request(`https://journal.internal/attachment-upload${url.search}`, {
+          method: request.method,
+          headers: {
+            "Content-Type": request.headers.get("Content-Type") ?? "application/octet-stream",
+            "X-Agent-Hub-User-Id": String(user.id),
+            "X-Agent-Hub-Chunk-Sha256": request.headers.get("X-Agent-Hub-Chunk-Sha256") ?? "",
+          },
+          body,
+        }));
+      } catch (error) { return json({ error: error.message }, /too large/iu.test(error.message) ? 413 : 400); }
     }
     if (url.pathname === "/api/attachment") {
       if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
@@ -4512,6 +5536,32 @@ export default {
         return json({ error: error.message }, status);
       }
     }
+    if (url.pathname === "/api/control/attachment-upload") {
+      if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
+      let payload;
+      try {
+        const bytes = await validateControlBinaryServiceRequest(request, env.SYNC_SECRET, { maxBytes: 1.5 * 1024 * 1024 });
+        payload = JSON.parse(new TextDecoder().decode(bytes));
+      } catch (error) { return json({ error: error.message }, /too large/iu.test(error.message) ? 413 : 401); }
+      const id = String(payload?.uploadId ?? "").toLowerCase();
+      const userId = String(payload?.userId ?? "");
+      if (!CONTROL_ID_PATTERN.test(id) || !userId || !["begin", "chunk", "complete"].includes(payload?.action)) {
+        return json({ error: "invalid service attachment upload" }, 400);
+      }
+      try {
+        const isChunk = payload.action === "chunk";
+        const body = isChunk ? Uint8Array.from(atob(String(payload.dataBase64 ?? "")), (char) => char.charCodeAt(0))
+          : payload.action === "begin" ? JSON.stringify({ uploadId: id, name: payload.name, type: payload.type, size: payload.size }) : undefined;
+        if (isChunk && body.byteLength > ATTACHMENT_STORAGE_CHUNK_BYTES) return json({ error: "attachment part too large" }, 413);
+        const query = payload.action === "begin" ? "" : `?id=${id}&${isChunk ? `index=${encodeURIComponent(payload.index)}` : "complete=1"}`;
+        return store.fetch(new Request(`https://journal.internal/attachment-upload${query}`, {
+          method: isChunk ? "PUT" : "POST",
+          headers: { "Content-Type": isChunk ? "application/octet-stream" : "application/json",
+            "X-Agent-Hub-User-Id": userId, "X-Agent-Hub-Upload-View-Only": "1", "X-Agent-Hub-Chunk-Sha256": String(payload.sha256 ?? "") },
+          body,
+        }));
+      } catch (error) { return json({ error: error.message }, 400); }
+    }
     if (url.pathname === "/api/control/attachment/view/push") {
       if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
       try {
@@ -4603,6 +5653,7 @@ export default {
       "/api/journal",
       "/api/journal/day",
       "/api/journal/turn",
+      "/api/journal/turns",
       "/api/rate-limits",
     ].includes(url.pathname)) {
       if (request.method !== "GET" && request.method !== "HEAD") {

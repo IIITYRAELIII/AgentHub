@@ -30,6 +30,7 @@ import { CodexTurnService, ProviderCancellationService } from "../providers/prov
 
 export function createProviderOperationComposition({
   claudeContextMaintenance = null,
+  removeRuntimeFile,
   taskRuns,
   selectionStore,
   workspaceCatalogStore,
@@ -52,6 +53,7 @@ export function createProviderOperationComposition({
   startCodexTransport,
   initializeCodex,
   sendRpc,
+  nameCreatedThread,
   activeProjectRoot,
   codexSandboxMode,
   codexModel,
@@ -102,6 +104,7 @@ export function createProviderOperationComposition({
   wakeDeferredInputs,
 }) {
   const codexProviderTasks = new CodexProviderTaskService({
+    nameCreatedThread,
     transportRunning: codexTransportRunning,
     startTransport: startCodexTransport,
     initialize: initializeCodex,
@@ -147,6 +150,7 @@ export function createProviderOperationComposition({
     rememberSeenTurn: rememberCodexSeenTurn,
     rememberLastMessage: rememberLastTaskMessage,
     temporaryFiles: turnTemporaryFiles,
+    removeFile: removeRuntimeFile,
     speechButtons: turnSpeechButtons,
     logError: (...args) => console.error(...args),
   });
@@ -160,12 +164,14 @@ export function createProviderOperationComposition({
       const streamId = selectionStore.streamId;
       selectionStore.setThread(sessionId, { provider: "claude", streamId, title });
       if (streamId && sessionId && !workspaceCatalogStore.thread({ provider: "claude", threadId: sessionId })) {
-        workspaceCatalogStore.bindThread({
+        void workspaceCatalogStore.bindThread({
           provider: "claude",
           threadId: sessionId,
           streamId,
           projectRoot: selectionStore.activeProjectRoot,
           source: "created",
+        }).catch((error) => {
+          console.error("Cannot bind Claude Thread:", error.message);
         });
       }
     },
@@ -175,6 +181,7 @@ export function createProviderOperationComposition({
     projectWorkLog: projectClaudeRunToWorkLog,
     finalizeDelivery: finalizeRunDelivery,
     temporaryFiles: turnTemporaryFiles,
+    removeFile: removeRuntimeFile,
     logError: (...args) => console.error(...args),
   });
   const claudeRecoveryService = new ClaudeRecoveryService({
@@ -230,6 +237,7 @@ export function createProviderOperationComposition({
     }),
     speechButtons: turnSpeechButtons,
     temporaryFiles: turnTemporaryFiles,
+    removeFile: removeRuntimeFile,
     turnTokenUsage,
     commandTrace,
   });
@@ -279,11 +287,11 @@ export function createProviderOperationComposition({
     turnActivityGroups: codexTurnActivityGroups,
     isCompactionItem: isContextCompactionItem,
     contextUsage: latestContextUsage,
-    beginCompaction: (...args) => contextCompactions.begin(...args),
+    beginCompaction: (threadId, details) => contextCompactions.mutate(threadId, () => contextCompactions.begin(threadId, details)),
     getCompaction: (providerTaskId) => contextCompactions.get(providerTaskId),
-    settleCompactionTurn: (...args) => contextCompactions.settleProviderTurn(...args),
+    settleCompactionTurn: (threadId, details) => contextCompactions.mutate(threadId, () => contextCompactions.settleProviderTurn(threadId, details)),
     rememberRawCompactionItem: (...args) => contextCompactions.rememberRawItem(...args),
-    beginCompactionCleanup: (...args) => codexContextMaintenance.beginCompactionCleanup(...args),
+    beginCompactionCleanup: (threadId, details) => contextCompactions.mutate(threadId, () => codexContextMaintenance.beginCompactionCleanup(threadId, details)),
     setStage: (...args) => taskProgress().setStage(...args),
     describeItem: describeCodexItem,
     itemActivity: codexItemActivity,
@@ -304,6 +312,7 @@ export function createProviderOperationComposition({
     turnTokenUsage,
     speechButtons: turnSpeechButtons,
     temporaryFiles: turnTemporaryFiles,
+    removeFile: removeRuntimeFile,
     taskDiffs,
     logWarn: (...args) => console.warn(...args),
     logError: (...args) => console.error(...args),

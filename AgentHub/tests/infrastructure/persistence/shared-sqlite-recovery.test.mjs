@@ -134,6 +134,52 @@ test("a new instance creates one replacement from the committed marker", async (
   }
 });
 
+test("inspection reads committed WAL while the previous runtime keeps SHM open", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "sqlite-recovery-open-wal-"));
+  const databaseFile = path.join(root, "journal.sqlite");
+  const database = new DatabaseSync(databaseFile);
+  t.after(async () => {
+    database.close();
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  });
+  database.exec("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;");
+  database.exec("CREATE TABLE sample (id INTEGER PRIMARY KEY); PRAGMA wal_checkpoint(TRUNCATE);");
+  const checkpointedDatabase = await fs.readFile(databaseFile);
+  database.exec("INSERT INTO sample VALUES (42)");
+  assert.deepEqual(await fs.readFile(databaseFile), checkpointedDatabase);
+  const originals = [databaseFile, `${databaseFile}-wal`, `${databaseFile}-shm`];
+  const before = await Promise.all(originals.map((file) => fs.readFile(file)));
+  assert.ok(before[1].length > 32, "committed row must still be in WAL");
+  let inspected = false;
+  const fileSystem = {
+    ...fs,
+    copyFile: async (source, destination) => {
+      if (source === `${databaseFile}-shm`) {
+        throw Object.assign(new Error("live SHM is mapped"), { code: "EBUSY" });
+      }
+      return fs.copyFile(source, destination);
+    },
+  };
+  const result = await coordinator(databaseFile, {
+    fileSystem,
+    databaseFactory: (file, options) => {
+      const copy = new DatabaseSync(file, options);
+      try {
+        assert.equal(copy.prepare("SELECT id FROM sample").get().id, 42);
+        inspected = true;
+        return copy;
+      } catch (error) {
+        copy.close();
+        throw error;
+      }
+    },
+  }).prepare();
+  assert.deepEqual(result, { degraded: false });
+  assert.equal(inspected, true);
+  assert.deepEqual(await Promise.all(originals.map((file) => fs.readFile(file))), before);
+  assert.deepEqual((await fs.readdir(root)).sort(), originals.map((file) => path.basename(file)).sort());
+});
+
 test("inspection cleanup retries transient Windows directory races", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "sqlite-recovery-cleanup-"));
   const databaseFile = path.join(root, "journal.sqlite");

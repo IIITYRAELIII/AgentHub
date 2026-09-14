@@ -79,6 +79,12 @@ export function createRuntimeFacadesComposition({
     deliverTurnEndNotification(completion) {
       return turnEndDelivery.deliver(completion);
     },
+    repairTurnEndAttachments(identity, options) {
+      return turnEndDelivery.reconcileResponseAttachments(identity, options);
+    },
+    reclassifyTurnEndContextProbe(identity, evidence) {
+      return turnEndDelivery.reclassifyContextProbe(identity, evidence);
+    },
     retryPendingTurnEndNotifications() {
       return turnEndDelivery.retryPending();
     },
@@ -94,8 +100,8 @@ export function createRuntimeFacadesComposition({
     applyCodexThreadSettings(...args) {
       return agentPreferences.applyCodexThreadSettings(...args);
     },
-    backfillWorkLogPricingMetadata(codexThreads) {
-      return journalBackfill.backfill(codexThreads);
+    backfillWorkLogPricingMetadata(codexThreads, options) {
+      return journalBackfill.backfill(codexThreads, options);
     },
     auditClaudeTranscriptSnapshots(snapshots) {
       return claudeTranscriptAudit.audit(snapshots);

@@ -47,6 +47,9 @@ html[data-theme="lake"] {
   --provider-none: #91a196;
   --provider-codex: #92d7cf;
   --provider-claude: #e9bd83;
+  --provider-tone-lightness: 0.8;
+  --provider-tone-chroma: 0.08;
+  --provider-tone-alpha: 0.17;
   --ok: #83dfa5;
   --pending: #e2bd70;
   --dot-input: #92d7cf;

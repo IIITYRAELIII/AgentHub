@@ -23,6 +23,8 @@ import {
 export class ClaudeRunController {
   constructor({
     dataDir,
+    processAuthority = null,
+    onRecoveryUnavailable = async () => {},
     pollIntervalMs = 250,
     isCurrentRun = () => true,
     isStopping = () => false,
@@ -37,6 +39,8 @@ export class ClaudeRunController {
     stopProcess = stopProcessTree,
   }) {
     this.dataDir = dataDir;
+    this.processAuthority = processAuthority;
+    this.onRecoveryUnavailable = onRecoveryUnavailable;
     this.pollIntervalMs = pollIntervalMs;
     this.isCurrentRun = isCurrentRun;
     this.isStopping = isStopping;
@@ -52,6 +56,7 @@ export class ClaudeRunController {
   }
 
   async start(run, { command, args, cwd, env, input = null }) {
+    this.processAuthority?.started(run);
     const output = await openClaudeRunOutput(this.dataDir, run.turnId);
     Object.assign(run, {
       claudeOutputPath: output.outputPath,
@@ -138,6 +143,7 @@ export class ClaudeRunController {
 
   async drain(run) {
     if (!run || run.claudeSettled || !this.isCurrentRun(run)) return;
+    if (this.processAuthority && !this.processAuthority.owns(run)) return;
     if (run.claudeDrainInFlight) {
       run.claudeDrainPending = true;
       return;
@@ -233,6 +239,7 @@ export class ClaudeRunController {
 
   async complete(run, { spawnError = null } = {}) {
     if (!run || run.claudeSettled) return;
+    if (this.processAuthority && !this.processAuthority.owns(run)) return;
     run.claudeSettled = true;
     this.pause(run);
     this.#closeInput(run);
@@ -254,6 +261,7 @@ export class ClaudeRunController {
 
   async stop(run) {
     if (!run) return false;
+    if (this.processAuthority && !this.processAuthority.owns(run)) return false;
     const pid = Number(run.pid ?? run.process?.pid);
     if (!this.processAlive(pid)) {
       run.claudeExited = true;
@@ -269,6 +277,12 @@ export class ClaudeRunController {
   }
 
   async attachAfterRestart(run) {
+    if (this.processAuthority && !this.processAuthority.owns(run)) {
+      run.contourRecoveryExclusion = "captured-process-and-output-not-owned";
+      await this.onPersist(run);
+      await this.onRecoveryUnavailable(run);
+      return false;
+    }
     const alive = this.processAlive(run.pid) && await this.#ownsProcess(run, run.pid);
     // Канал ввода перезапуск Hub не переживает: ход дочитывается, но отправка
     // в него уже недоступна.

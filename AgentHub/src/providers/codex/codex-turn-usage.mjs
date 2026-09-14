@@ -1,13 +1,16 @@
+import { assertCodexRolloutReadAllowed } from "../../infrastructure/filesystem/test-contour-rollout-policy.mjs";
 import { createReadStream } from "node:fs";
 import { open, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
+import { setImmediate } from "node:timers/promises";
 
 import { uuidV7TimestampMs } from "./codex-subagent-accounting.mjs";
 import { IMAGE_GENERATION_ESTIMATE_CREDITS } from "../../domain/codex-usage-estimate.mjs";
 import {
   isCodexContextProbeClientId,
+  isCodexContextProbeTurn,
 } from "../../domain/codex-context-probe.mjs";
 import {
   codexAssistantResponseProjection,
@@ -24,6 +27,60 @@ const DEFAULT_ROLLOUT_SESSION_SCAN_BYTES = 1024 * 1024;
 const DEFAULT_ROLLOUT_SESSION_SCAN_LINES = 4_096;
 const DEFAULT_ROLLOUT_SESSION_LINE_BYTES = 256 * 1024;
 const DEFAULT_ROLLOUT_SESSION_SCAN_MS = 1_000;
+const IMAGE_GENERATION_CALL_OWNER_LIMIT = 128;
+const AMBIGUOUS_IMAGE_GENERATION_CALL_OWNER = Object.freeze({ state: "ambiguous" });
+
+function rememberImageGenerationCallOwner(owners, callId, turnId) {
+  const normalizedCallId = String(callId ?? "").trim();
+  const normalizedTurnId = String(turnId ?? "").trim();
+  if (!normalizedCallId || !normalizedTurnId) return;
+  const currentOwner = owners.get(normalizedCallId);
+  const nextOwner = currentOwner === undefined || currentOwner === normalizedTurnId
+    ? normalizedTurnId
+    : AMBIGUOUS_IMAGE_GENERATION_CALL_OWNER;
+  owners.delete(normalizedCallId);
+  owners.set(normalizedCallId, nextOwner);
+  while (owners.size > IMAGE_GENERATION_CALL_OWNER_LIMIT) {
+    owners.delete(owners.keys().next().value);
+  }
+}
+
+function imageGenerationCallOwnerTurnId(owners, callId) {
+  const normalizedCallId = String(callId ?? "").trim();
+  const owner = normalizedCallId ? owners.get(normalizedCallId) : null;
+  return typeof owner === "string" ? owner : "";
+}
+
+function consumeImageGenerationCallOwner(owners, callId, turnId) {
+  const normalizedCallId = String(callId ?? "").trim();
+  const normalizedTurnId = String(turnId ?? "").trim();
+  if (!normalizedCallId || !normalizedTurnId) return;
+  const currentOwner = owners.get(normalizedCallId);
+  if (currentOwner === normalizedTurnId) {
+    owners.delete(normalizedCallId);
+  } else if (currentOwner !== undefined
+    && currentOwner?.state !== AMBIGUOUS_IMAGE_GENERATION_CALL_OWNER.state) {
+    owners.delete(normalizedCallId);
+    owners.set(normalizedCallId, AMBIGUOUS_IMAGE_GENERATION_CALL_OWNER);
+  }
+}
+
+function restoredImageGenerationCallOwners(value) {
+  const owners = new Map();
+  const entries = Array.isArray(value)
+    ? value.slice(-IMAGE_GENERATION_CALL_OWNER_LIMIT)
+    : [];
+  for (const entry of entries) {
+    if (!Array.isArray(entry)) continue;
+    if (entry[1]?.state === AMBIGUOUS_IMAGE_GENERATION_CALL_OWNER.state) {
+      const callId = String(entry[0] ?? "").trim();
+      if (callId) owners.set(callId, AMBIGUOUS_IMAGE_GENERATION_CALL_OWNER);
+    } else {
+      rememberImageGenerationCallOwner(owners, entry[0], entry[1]);
+    }
+  }
+  return owners;
+}
 
 function rolloutSessionCacheKey(file) {
   return path.resolve(file).toLowerCase();
@@ -98,6 +155,7 @@ export async function readCodexRolloutSession(transcriptPath, {
   maxLineBytes = DEFAULT_ROLLOUT_SESSION_LINE_BYTES,
   maxDurationMs = DEFAULT_ROLLOUT_SESSION_SCAN_MS,
 } = {}) {
+  assertCodexRolloutReadAllowed("readCodexRolloutSession");
   const byteLimit = Math.max(1, Number(maxBytes) || DEFAULT_ROLLOUT_SESSION_SCAN_BYTES);
   const lineLimit = Math.max(1, Number(maxLines) || DEFAULT_ROLLOUT_SESSION_SCAN_LINES);
   const lineByteLimit = Math.max(1, Number(maxLineBytes) || DEFAULT_ROLLOUT_SESSION_LINE_BYTES);
@@ -203,6 +261,60 @@ function entryTurnId(entry) {
   ).trim();
 }
 
+function imageGenerationCallId(entry) {
+  const payload = entry?.payload ?? {};
+  const payloadType = String(payload.type ?? "");
+  if (entry?.type !== "response_item"
+    || !payloadType.endsWith("_call")
+    || payloadType.endsWith("_call_output")) return "";
+  const callId = String(payload.call_id ?? "").trim();
+  const name = String(payload.name ?? "").trim().toLowerCase();
+  const input = String(payload.input ?? payload.arguments ?? "");
+  return callId && (
+    name === "imagegen"
+    || name === "image_gen__imagegen"
+    || /\btools\.image_gen__imagegen\s*\(/u.test(input)
+  ) ? callId : "";
+}
+
+function generatedImagePathsFromText(value) {
+  const paths = [];
+  const pattern = /Generated images are saved to[\s\S]*?\sas\s+((?:[A-Za-z]:)?(?:\\|\/)[^"\r\n]+?\.(?:png|jpe?g|webp|gif|bmp))/giu;
+  for (const match of String(value ?? "").matchAll(pattern)) {
+    const candidate = String(match[1] ?? "").replace(/\\\\/gu, "\\").trim();
+    if (candidate) paths.push(candidate);
+  }
+  return [...new Set(paths)];
+}
+
+function generatedImageOutputPaths(entry) {
+  const payload = entry?.payload ?? {};
+  if (entry?.type === "event_msg" && payload.type === "item_completed") {
+    const item = payload.item;
+    if (item?.type !== "Extension" || item.kind !== "image_gen.generation"
+      || item.status !== "completed" || item.failure != null) return [];
+    const value = String(item.savedPath ?? "").trim();
+    return value ? [value] : [];
+  }
+  if (entry?.type === "event_msg" && payload.type === "image_generation_end") {
+    const value = String(payload.saved_path ?? "").trim();
+    return value ? [value] : [];
+  }
+  if (entry?.type !== "response_item" || ![
+    "custom_tool_call_output",
+    "customToolCallOutput",
+    "function_call_output",
+    "functionCallOutput",
+  ].includes(String(payload.type ?? ""))) return [];
+  const blocks = Array.isArray(payload.output)
+    ? payload.output
+    : Array.isArray(payload.content) ? payload.content : [];
+  return generatedImagePathsFromText(blocks
+    .filter((block) => ["input_text", "output_text", "text"].includes(String(block?.type ?? "")))
+    .map((block) => String(block?.text ?? ""))
+    .join("\n"));
+}
+
 function normalizedRolloutUsage(value) {
   return normalizeTokenUsage({
     inputTokens: value?.input_tokens,
@@ -211,6 +323,14 @@ function normalizedRolloutUsage(value) {
     reasoningOutputTokens: value?.reasoning_output_tokens,
     totalTokens: value?.total_tokens,
   });
+}
+
+function exactTurnTokenUsage(entry) {
+  if (entry?.type !== "token_usage_record" || !entryTurnId(entry)) return null;
+  const usage = entry.payload?.turn_token_usage;
+  if (!usage || !["input_tokens", "cached_input_tokens", "output_tokens", "total_tokens"]
+    .every((key) => Number.isSafeInteger(usage[key]) && usage[key] >= 0)) return null;
+  return normalizedRolloutUsage(usage);
 }
 
 function isoFromEpochSeconds(value) {
@@ -274,12 +394,26 @@ function messageText(payload) {
     .trim();
 }
 
-function lifecycleTerminalStatus(value) {
-  if (value === "task_complete") return "completed";
+function lifecycleTerminalStatus(value, payload) {
+  if (value === "task_complete") return payload?.error ? "failed" : "completed";
   if (value === "turn_aborted") return "aborted";
   if (["turn_cancelled", "task_cancelled"].includes(value)) return "cancelled";
   if (["turn_failed", "task_failed"].includes(value)) return "failed";
   return "";
+}
+
+function acceptUserOperationIdentity(turn, entry) {
+  if (!turn) return;
+  const payload = entry?.payload;
+  const clientId = String(payload?.client_id ?? payload?.clientUserMessageId ?? "").trim();
+  if (clientId) turn.clientUserMessageId = clientId;
+  if (entry?.type === "response_item" && payload?.type === "message" && payload?.role === "user") {
+    turn.prompt ||= displayUserPrompt(messageText(payload));
+  }
+  turn.contextProbe = isCodexContextProbeTurn({
+    clientUserMessageId: turn.clientUserMessageId,
+    prompt: turn.prompt,
+  });
 }
 
 function patchInputFiles(value, workspaceRoot = "") {
@@ -406,6 +540,7 @@ function createTurnAccumulator(turnId) {
   const activeTurnIds = new Set();
   let latestResponseTurnId = "";
   let usage = emptyTokenUsage();
+  let exactUsageReported = false;
   let reported = false;
   let started = false;
   let terminal = false;
@@ -433,7 +568,9 @@ function createTurnAccumulator(turnId) {
   const patches = [];
   const imageGenerationCalls = new Map();
   const completedImageGenerationCalls = new Set();
+  const generatedImageSources = new Set();
   const spawnedSubagents = new Map();
+  const userOperation = {};
 
   const accept = (entry) => {
     index += 1;
@@ -459,12 +596,12 @@ function createTurnAccumulator(turnId) {
         started = true;
         startedAt ||= String(entry?.timestamp ?? "");
       }
-    } else if (lifecycleTerminalStatus(lifecycle) && lifecycleTurnId) {
+    } else if (lifecycleTerminalStatus(lifecycle, entry.payload) && lifecycleTurnId) {
       activeTurnIds.delete(lifecycleTurnId);
       if (lifecycleTurnId === requestedTurnId) {
         terminal = true;
         completedAt ||= String(entry?.timestamp ?? "");
-        status = lifecycleTerminalStatus(lifecycle);
+        status = lifecycleTerminalStatus(lifecycle, entry.payload);
         const terminalProjection = codexAssistantResponseProjection(entry.payload?.last_agent_message);
         const terminalAnswer = terminalProjection.text.trim();
         if (terminalAnswer && !finalAnswer) {
@@ -481,6 +618,15 @@ function createTurnAccumulator(turnId) {
     }
 
     const exactTurnId = entryTurnId(entry);
+    if (exactTurnId === requestedTurnId) acceptUserOperationIdentity(userOperation, entry);
+    const exactUsage = exactTurnTokenUsage(entry);
+    if (exactUsage && exactTurnId === requestedTurnId) {
+      usage = exactUsage;
+      exactUsageReported = true;
+      reported = true;
+      finalTokenIndex = index;
+      latestResponseTurnId = exactTurnId;
+    }
     if (exactTurnId && ["response_item", "turn_context"].includes(String(entry?.type ?? ""))) {
       latestResponseTurnId = exactTurnId;
       if (exactTurnId === requestedTurnId) started = true;
@@ -489,22 +635,28 @@ function createTurnAccumulator(turnId) {
       model = String(entry.payload?.model ?? latestModel).trim();
       serviceTier = String(entry.payload?.service_tier ?? latestServiceTier).trim() || "default";
     }
-    if (entry?.type === "response_item"
-      && entry.payload?.type === "function_call"
-      && entry.payload?.name === "imagegen"
-      && entry.payload?.call_id
-      && exactTurnId) {
-      imageGenerationCalls.set(String(entry.payload.call_id), exactTurnId);
+    const imageCallId = imageGenerationCallId(entry);
+    if (imageCallId && exactTurnId) {
+      rememberImageGenerationCallOwner(imageGenerationCalls, imageCallId, exactTurnId);
     }
     if (entry?.type === "event_msg"
       && entry.payload?.type === "image_generation_end"
       && entry.payload?.status === "completed") {
       const callId = String(entry.payload?.call_id ?? "").trim();
-      const attributedTurnId = imageGenerationCalls.get(callId)
-        || latestResponseTurnId
-        || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
+      const attributedTurnId = exactTurnId
+        || imageGenerationCallOwnerTurnId(imageGenerationCalls, callId);
       if (callId && attributedTurnId === requestedTurnId) {
         completedImageGenerationCalls.add(callId);
+      }
+    }
+    const generatedPaths = generatedImageOutputPaths(entry);
+    if (generatedPaths.length) {
+      const callId = String(entry.payload?.call_id ?? "").trim();
+      const attributedTurnId = exactTurnId
+        || imageGenerationCallOwnerTurnId(imageGenerationCalls, callId);
+      if (attributedTurnId === requestedTurnId) {
+        for (const generatedPath of generatedPaths) generatedImageSources.add(generatedPath);
+        consumeImageGenerationCallOwner(imageGenerationCalls, callId, attributedTurnId);
       }
     }
     const spawned = subagentActivity(entry);
@@ -554,7 +706,9 @@ function createTurnAccumulator(turnId) {
     const attributedTurnId = latestResponseTurnId
       || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
     if (attributedTurnId === requestedTurnId) {
-      usage = addTokenUsage(usage, normalizedRolloutUsage(entry.payload?.info?.last_token_usage));
+      if (!exactUsageReported) {
+        usage = addTokenUsage(usage, normalizedRolloutUsage(entry.payload?.info?.last_token_usage));
+      }
       limitSamples = mergeUsageLimitSamples(limitSamples, codexLimitSamplesFromTokenEvent(entry));
       reported = true;
       finalTokenIndex = index;
@@ -566,6 +720,8 @@ function createTurnAccumulator(turnId) {
     const imageGenerationCount = completedImageGenerationCalls.size;
     return {
       turnId: requestedTurnId,
+      ...(userOperation.clientUserMessageId ? { clientUserMessageId: userOperation.clientUserMessageId } : {}),
+      ...(userOperation.contextProbe ? { contextProbe: true } : {}),
       usage,
       reported,
       started,
@@ -587,6 +743,10 @@ function createTurnAccumulator(turnId) {
       spawnedSubagents: [...spawnedSubagents.values()],
       toolMetricsKnown: true,
       imageGenerationCount,
+      generatedImageSources: [...generatedImageSources].map((value) => ({
+        type: "generated-path",
+        value,
+      })),
       estimatedCredits: imageGenerationCount * IMAGE_GENERATION_ESTIMATE_CREDITS,
       estimateKind: imageGenerationCount > 0 ? "imagegen-default" : "",
       limitSamples,
@@ -614,6 +774,7 @@ export async function readCodexRolloutTail(transcriptPath, {
   openImpl = open,
   maxBytes = DEFAULT_ROLLOUT_TAIL_BYTES,
 } = {}) {
+  assertCodexRolloutReadAllowed("readCodexRolloutTail");
   const handle = await openImpl(transcriptPath, "r");
   try {
     const info = await handle.stat();
@@ -636,6 +797,7 @@ export async function findCodexTurnStartOffsetFromTail(transcriptPath, turnId, {
   openImpl = open,
   chunkBytes = DEFAULT_TURN_START_SEARCH_BYTES,
 } = {}) {
+  assertCodexRolloutReadAllowed("findCodexTurnStartOffsetFromTail");
   const requestedTurnId = String(turnId ?? "").trim();
   if (!requestedTurnId) throw new Error("Codex turn id is required");
   const handle = await openImpl(transcriptPath, "r");
@@ -702,7 +864,7 @@ export function codexRecentTerminalTurnsFromJsonl(text) {
   const values = new Map();
   for (const { value: entry } of parsedEntries(text)) {
     const lifecycle = entry?.type === "event_msg" ? String(entry.payload?.type ?? "") : "";
-    const status = lifecycleTerminalStatus(lifecycle);
+    const status = lifecycleTerminalStatus(lifecycle, entry.payload);
     const turnId = String(entry?.payload?.turn_id ?? "").trim();
     if (!status || !turnId) continue;
     values.set(turnId, {
@@ -718,12 +880,13 @@ export async function readCodexRecentTerminalTurns(transcriptPath, {
   readTailImpl = readCodexRolloutTail,
   maxBytes = DEFAULT_TERMINAL_TAIL_BYTES,
 } = {}) {
+  assertCodexRolloutReadAllowed("readCodexRecentTerminalTurns");
   return codexRecentTerminalTurnsFromJsonl(
     await readTailImpl(transcriptPath, { maxBytes }),
   );
 }
 
-async function scanJsonlChunks(input, acceptEntry, byteLimit = Number.POSITIVE_INFINITY) {
+async function scanJsonlChunks(input, acceptEntry, byteLimit = Number.POSITIVE_INFINITY, { signal } = {}) {
   let pendingParts = [];
   let pendingLength = 0;
   let bytesRead = 0;
@@ -741,6 +904,7 @@ async function scanJsonlChunks(input, acceptEntry, byteLimit = Number.POSITIVE_I
   };
 
   for await (const chunk of input) {
+    if (signal) await setImmediate(undefined, { signal });
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     bytesRead += buffer.length;
     let start = 0;
@@ -782,6 +946,7 @@ export async function scanCodexTerminalEventsFromOffset(transcriptPath, {
   initialActiveTurns = [],
   createReadStreamImpl = createReadStream,
 } = {}) {
+  assertCodexRolloutReadAllowed("scanCodexTerminalEventsFromOffset");
   const terminals = new Map();
   const activeTurns = new Map((initialActiveTurns ?? []).flatMap((turn) => {
     const turnId = String(turn?.turnId ?? "").trim();
@@ -789,6 +954,8 @@ export async function scanCodexTerminalEventsFromOffset(transcriptPath, {
       turnId,
       startedAt: String(turn?.startedAt ?? ""),
       lastActivityAt: String(turn?.lastActivityAt ?? turn?.startedAt ?? ""),
+      ...(turn?.prompt ? { prompt: turn.prompt } : {}),
+      ...(turn?.clientUserMessageId ? { clientUserMessageId: turn.clientUserMessageId } : {}),
       ...(turn?.contextProbe === true ? { contextProbe: true } : {}),
     }]] : [];
   }));
@@ -826,11 +993,9 @@ export async function scanCodexTerminalEventsFromOffset(transcriptPath, {
     const active = activeTurns.get(turnId);
     if (active) {
       active.lastActivityAt = timestamp;
-      if (isCodexContextProbeClientId(entry?.payload?.client_id)) {
-        active.contextProbe = true;
-      }
+      acceptUserOperationIdentity(active, entry);
     }
-    const status = lifecycleTerminalStatus(lifecycle);
+    const status = lifecycleTerminalStatus(lifecycle, entry.payload);
     if (!status) return;
     activeTurns.delete(turnId);
     terminals.set(turnId, {
@@ -866,6 +1031,7 @@ export async function scanCodexTerminalEventsFromOffset(transcriptPath, {
 export async function scanCodexTurnJsonl(transcriptPath, turnId, {
   createReadStreamImpl = createReadStream,
 } = {}) {
+  assertCodexRolloutReadAllowed("scanCodexTurnJsonl");
   const accumulator = createTurnAccumulator(turnId);
   const input = createReadStreamImpl(transcriptPath, { encoding: "utf8" });
   const lines = createInterface({ input, crlfDelay: Infinity });
@@ -904,13 +1070,13 @@ function createHistoricalTurn(turnId) {
     mcpCalls: new Map(),
     spawnedSubagents: new Map(),
     imageGenerationCalls: new Set(),
+    generatedImageSources: new Set(),
     estimatedCredits: 0,
     estimateKind: "",
     model: "",
     serviceTier: "default",
     status: "",
     contextCompacted: false,
-    contextProbe: false,
     hasOwnTurnContent: false,
     limitSamples: [],
   };
@@ -938,6 +1104,13 @@ function restoreHistoricalTurn(value) {
       spawned?.threadId ? [[String(spawned.threadId), spawned]] : []
     ))),
     imageGenerationCalls: new Set(value?.imageGenerationCalls ?? []),
+    generatedImageSources: new Set((value?.generatedImageSources ?? []).flatMap((source) => {
+      const candidate = typeof source === "string"
+        ? source
+        : source?.type === "generated-path" ? source.value : "";
+      const normalized = String(candidate ?? "").trim();
+      return normalized ? [normalized] : [];
+    })),
     limitSamples: mergeUsageLimitSamples(value?.limitSamples),
   };
 }
@@ -952,7 +1125,8 @@ function historicalTurnResult(turn, latestModel, latestServiceTier) {
     && !turn.patches.length
     && !turn.mcpCalls.size
     && !turn.spawnedSubagents.size
-    && !turn.imageGenerationCalls.size;
+    && !turn.imageGenerationCalls.size
+    && !turn.generatedImageSources.size;
   return {
     ...turn,
     changedFiles: [...turn.changedFiles],
@@ -961,6 +1135,10 @@ function historicalTurnResult(turn, latestModel, latestServiceTier) {
     mcpCalls: [...turn.mcpCalls.values()],
     spawnedSubagents: [...turn.spawnedSubagents.values()],
     imageGenerationCalls: [...turn.imageGenerationCalls],
+    generatedImageSources: [...turn.generatedImageSources].map((value) => ({
+      type: "generated-path",
+      value,
+    })),
     toolMetricsKnown: true,
     imageGenerationCount,
     estimatedCredits: imageGenerationCount * IMAGE_GENERATION_ESTIMATE_CREDITS,
@@ -983,12 +1161,16 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
   resumeState = null,
   createReadStreamImpl = createReadStream,
 } = {}) {
+  assertCodexRolloutReadAllowed("scanCodexHistoricalRollout");
   const restoredTurns = (resumeState?.turns ?? [])
     .map(restoreHistoricalTurn)
     .filter(Boolean);
   const turns = new Map(restoredTurns.map((turn) => [turn.turnId, turn]));
   const activeTurnIds = new Set(resumeState?.activeTurnIds ?? restoredTurns.map((turn) => turn.turnId));
-  const imageGenerationCalls = new Map(resumeState?.imageGenerationCalls ?? []);
+  const imageGenerationCalls = restoredImageGenerationCallOwners(
+    resumeState?.imageGenerationCalls,
+  );
+  const observedGeneratedImages = new Map();
   const knownSkills = new Set(resumeState?.knownSkills ?? []);
   let latestResponseTurnId = String(resumeState?.latestResponseTurnId ?? "").trim();
   let latestStartedTurnId = String(resumeState?.latestStartedTurnId ?? "").trim();
@@ -1043,12 +1225,12 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
       turn.started = true;
       turn.startedAt ||= timestamp;
       touch(turn, timestamp);
-    } else if (lifecycleTerminalStatus(lifecycle) && lifecycleTurnId) {
+    } else if (lifecycleTerminalStatus(lifecycle, entry.payload) && lifecycleTurnId) {
       const turn = ensureTurn(lifecycleTurnId);
       activeTurnIds.delete(lifecycleTurnId);
       turn.terminal = true;
       turn.completedAt = timestamp || turn.completedAt;
-      turn.status = lifecycleTerminalStatus(lifecycle);
+      turn.status = lifecycleTerminalStatus(lifecycle, entry.payload);
       touch(turn, timestamp);
     }
     if (lifecycleTurnId && isCodexContextProbeClientId(entry?.payload?.client_id)) {
@@ -1077,6 +1259,15 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
 
     const exactTurnId = entryTurnId(entry);
     const exactTurn = ensureTurn(exactTurnId);
+    acceptUserOperationIdentity(exactTurn, entry);
+    const exactUsage = exactTurnTokenUsage(entry);
+    if (exactUsage && exactTurn) {
+      exactTurn.usage = exactUsage;
+      exactTurn.exactUsageReported = true;
+      exactTurn.reported = true;
+      latestResponseTurnId = exactTurnId;
+      touch(exactTurn, timestamp);
+    }
     if (exactTurnId && ["response_item", "turn_context"].includes(String(entry?.type ?? ""))) {
       latestResponseTurnId = exactTurnId;
       exactTurn.started = true;
@@ -1089,23 +1280,37 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
         entry.payload?.service_tier ?? latestServiceTier,
       ).trim() || "default";
     }
-    if (entry?.type === "response_item"
-      && entry.payload?.type === "function_call"
-      && entry.payload?.name === "imagegen"
-      && entry.payload?.call_id
-      && exactTurnId) {
-      imageGenerationCalls.set(String(entry.payload.call_id), exactTurnId);
+    const imageCallId = imageGenerationCallId(entry);
+    if (imageCallId && exactTurnId) {
+      rememberImageGenerationCallOwner(imageGenerationCalls, imageCallId, exactTurnId);
     }
     if (entry?.type === "event_msg"
       && entry.payload?.type === "image_generation_end"
       && entry.payload?.status === "completed") {
       const callId = String(entry.payload?.call_id ?? "").trim();
-      const attributedTurnId = imageGenerationCalls.get(callId)
-        || latestResponseTurnId
-        || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
-      const turn = ensureTurn(attributedTurnId);
+      const attributedTurnId = exactTurnId
+        || imageGenerationCallOwnerTurnId(imageGenerationCalls, callId);
+      const turn = turns.get(attributedTurnId) ?? (exactTurnId ? ensureTurn(exactTurnId) : null);
       if (turn && callId) turn.imageGenerationCalls.add(callId);
       touch(turn, timestamp);
+    }
+    const generatedPaths = generatedImageOutputPaths(entry);
+    if (generatedPaths.length) {
+      const callId = String(entry.payload?.call_id ?? "").trim();
+      const ownerTurnId = exactTurnId
+        || imageGenerationCallOwnerTurnId(imageGenerationCalls, callId)
+        || "";
+      const ownerTurn = turns.get(ownerTurnId) ?? (exactTurnId ? ensureTurn(exactTurnId) : null);
+      if (ownerTurnId) {
+        const observed = observedGeneratedImages.get(ownerTurnId) ?? new Set();
+        for (const generatedPath of generatedPaths) {
+          ownerTurn?.generatedImageSources.add(generatedPath);
+          observed.add(generatedPath);
+        }
+        observedGeneratedImages.set(ownerTurnId, observed);
+        touch(ownerTurn, timestamp);
+        consumeImageGenerationCallOwner(imageGenerationCalls, callId, ownerTurnId);
+      }
     }
     if (exactTurn) {
       for (const name of skillReads(entry, knownSkills)) exactTurn.skillsUsed.add(name);
@@ -1161,10 +1366,12 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
       || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
     const attributedTurn = ensureTurn(attributedTurnId);
     if (attributedTurn) {
-      attributedTurn.usage = addTokenUsage(
-        attributedTurn.usage,
-        normalizedRolloutUsage(entry.payload?.info?.last_token_usage),
-      );
+      if (!attributedTurn.exactUsageReported) {
+        attributedTurn.usage = addTokenUsage(
+          attributedTurn.usage,
+          normalizedRolloutUsage(entry.payload?.info?.last_token_usage),
+        );
+      }
       attributedTurn.limitSamples = mergeUsageLimitSamples(
         attributedTurn.limitSamples,
         codexLimitSamplesFromTokenEvent(entry),
@@ -1205,13 +1412,15 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
       source: "",
     },
     turns: turnResults,
+    attachmentCandidates: [...observedGeneratedImages].map(([turnId, paths]) => ({
+      turnId,
+      generatedImageSources: [...paths].map((value) => ({ type: "generated-path", value })),
+    })),
     nextOffset,
     resumeState: {
       turns: activeResults,
       activeTurnIds: [...activeTurnIds],
-      imageGenerationCalls: [...imageGenerationCalls.entries()].filter(([, turnId]) => (
-        activeTurnIds.has(turnId)
-      )),
+      imageGenerationCalls: [...imageGenerationCalls.entries()],
       knownSkills: [...knownSkills],
       latestResponseTurnId,
       latestStartedTurnId,
@@ -1233,7 +1442,7 @@ export function codexSubagentSpawnFromJsonl(text, childThreadId) {
     const lifecycle = entry?.type === "event_msg" ? String(entry.payload?.type ?? "") : "";
     const lifecycleTurnId = lifecycle ? String(entry.payload?.turn_id ?? "").trim() : "";
     if (lifecycle === "task_started" && lifecycleTurnId) activeTurnIds.add(lifecycleTurnId);
-    else if (lifecycleTerminalStatus(lifecycle) && lifecycleTurnId) activeTurnIds.delete(lifecycleTurnId);
+    else if (lifecycleTerminalStatus(lifecycle, entry.payload) && lifecycleTurnId) activeTurnIds.delete(lifecycleTurnId);
     const exactTurnId = entryTurnId(entry);
     if (exactTurnId && ["response_item", "turn_context"].includes(String(entry?.type ?? ""))) {
       latestResponseTurnId = exactTurnId;
@@ -1254,6 +1463,7 @@ export async function readCodexSubagentSpawn(transcriptPath, childThreadId, {
   readTailImpl = readCodexRolloutTail,
   maxBytes = DEFAULT_ROLLOUT_TAIL_BYTES,
 } = {}) {
+  assertCodexRolloutReadAllowed("readCodexSubagentSpawn");
   return codexSubagentSpawnFromJsonl(
     await readTailImpl(transcriptPath, { maxBytes }),
     childThreadId,
@@ -1262,7 +1472,9 @@ export async function readCodexSubagentSpawn(transcriptPath, childThreadId, {
 
 export async function scanCodexTurnPricingMetadata(transcriptPath, turnIds, {
   createReadStreamImpl = createReadStream,
+  signal,
 } = {}) {
+  assertCodexRolloutReadAllowed("scanCodexTurnPricingMetadata");
   const requested = new Set(
     [...(turnIds ?? [])].map((value) => String(value ?? "").trim()).filter(Boolean),
   );
@@ -1270,10 +1482,14 @@ export async function scanCodexTurnPricingMetadata(transcriptPath, turnIds, {
   if (!requested.size) return result;
   let latestModel = "";
   let latestServiceTier = "default";
-  const input = createReadStreamImpl(transcriptPath, { encoding: "utf8" });
+  signal?.throwIfAborted();
+  const input = createReadStreamImpl(transcriptPath, { encoding: "utf8", signal });
+  let processedLines = 0;
   const lines = createInterface({ input, crlfDelay: Infinity });
   try {
     for await (const line of lines) {
+      signal?.throwIfAborted();
+      if (++processedLines % 256 === 0) await setImmediate(undefined, { signal });
       if (!line) continue;
       let entry;
       try {
@@ -1349,6 +1565,7 @@ export async function discoverCodexRollouts({
   sessionCache = readSession === readCodexRolloutSession ? rolloutSessionCache : null,
   sessionCacheLimit = DEFAULT_ROLLOUT_SESSION_CACHE_LIMIT,
 } = {}) {
+  assertCodexRolloutReadAllowed("discoverCodexRollouts");
   const files = [];
   const visit = async (directory) => {
     let entries;
@@ -1387,6 +1604,7 @@ export async function discoverCodexRollouts({
 }
 
 export async function discoverCodexSubagentRollouts(options = {}) {
+  assertCodexRolloutReadAllowed("discoverCodexSubagentRollouts");
   return (await discoverCodexRollouts(options))
     .filter((session) => session.parentThreadId);
 }
@@ -1404,6 +1622,7 @@ export async function findCodexRolloutPath(threadId, startedAt, {
   codexHome = process.env.CODEX_HOME || path.join(homedir(), ".codex"),
   readdirImpl = readdir,
 } = {}) {
+  assertCodexRolloutReadAllowed("findCodexRolloutPath");
   const normalizedThreadId = String(threadId ?? "").trim();
   const timestamp = Date.parse(String(startedAt ?? ""));
   if (!normalizedThreadId) return "";
@@ -1441,12 +1660,12 @@ async function scanCodexTurnJsonlFromOffset(
   transcriptPath,
   accumulator,
   start,
-  { createReadStreamImpl = createReadStream } = {},
+  { createReadStreamImpl = createReadStream, signal } = {},
 ) {
-  const input = createReadStreamImpl(transcriptPath, { start });
+  const input = createReadStreamImpl(transcriptPath, { start, signal });
   const { bytesRead, pending } = await scanJsonlChunks(input, (entry) => {
     accumulator.accept(entry);
-  });
+  }, Number.POSITIVE_INFINITY, { signal });
   if (pending.length) {
     try {
       accumulator.accept(JSON.parse(pending.toString("utf8").replace(/\r$/u, "")));
@@ -1463,7 +1682,10 @@ export async function scanCodexTurnJsonlIncrementally(transcriptPath, turnId, {
   findTurnStartImpl = findCodexTurnStartOffsetFromTail,
   attempts = 5,
   retryDelayMs = 40,
+  signal,
 } = {}) {
+  assertCodexRolloutReadAllowed("scanCodexTurnJsonlIncrementally");
+  signal?.throwIfAborted();
   const accumulator = createTurnAccumulator(turnId);
   let position;
   try {
@@ -1474,16 +1696,18 @@ export async function scanCodexTurnJsonlIncrementally(transcriptPath, turnId, {
   let result = null;
   let error = null;
   for (let attempt = 0; attempt < Math.max(1, attempts); attempt += 1) {
+    signal?.throwIfAborted();
     try {
       position = await scanCodexTurnJsonlFromOffset(
         transcriptPath,
         accumulator,
         position,
-        { createReadStreamImpl },
+        { createReadStreamImpl, signal },
       );
       result = accumulator.result();
       if (result.reported && result.finalTokenSeen && result.terminal) return result;
     } catch (currentError) {
+      signal?.throwIfAborted();
       error = currentError;
     }
     if (attempt + 1 < attempts) await delay(retryDelayMs);
@@ -1500,9 +1724,11 @@ export async function readCodexTurnUsage(transcriptPath, turnId, {
   scanIncrementalImpl = scanCodexTurnJsonlIncrementally,
   attempts = 5,
   retryDelayMs = 40,
+  signal,
 } = {}) {
+  assertCodexRolloutReadAllowed("readCodexTurnUsage");
   if (!readFileImpl && !readTailImpl && !scanImpl) {
-    return scanIncrementalImpl(transcriptPath, turnId, { attempts, retryDelayMs });
+    return scanIncrementalImpl(transcriptPath, turnId, { attempts, retryDelayMs, ...(signal ? { signal } : {}) });
   }
   let result = null;
   let error = null;

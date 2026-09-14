@@ -7,7 +7,10 @@ function serviceFixture({ allowed = false, android = false, snapshot = null, cur
   const snapshots = [];
   const reads = [];
   const service = new DesktopReadModelService({
-    snapshot: (params) => { snapshots.push(params); return snapshot ?? params; },
+    snapshot: ({ projectTask = (task) => task, ...params }) => {
+      snapshots.push(params);
+      return snapshot?.tasks ? { ...snapshot, tasks: snapshot.tasks.map(projectTask) } : snapshot ?? params;
+    },
     readStateStore: {
       get: () => cursor,
       markRead: (value) => { reads.push(value); return value; },

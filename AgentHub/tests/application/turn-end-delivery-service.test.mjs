@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { CommandTraceService } from "../../src/application/command-trace-service.mjs";
 
 import { TurnEndDeliveryService, fallbackTurnEndMessage } from "../../src/application/turn-end-delivery-service.mjs";
 
@@ -149,3 +150,47 @@ test("TurnEndDeliveryService reports a failed retry transition without hiding pr
   assert.match(errors[0][0], /Cannot return terminal revision 7/u);
   assert.equal(errors[0][1].message, "retry write failed");
 });
+
+
+for (const [blockedPort, blockedStage] of [
+  ["persistHistory", "terminal-history-persist"], ["projectTurn", "terminal-journal-project"],
+  ["saveState", "terminal-state-save"], ["acknowledge", "terminal-outbox-ack"],
+]) {
+  test(`outbox trace exposes pending ${blockedPort} under exact terminal identity`, async () => {
+    const records = [];
+    let release;
+    let entered;
+    const atBoundary = new Promise((resolve) => { entered = resolve; });
+    const port = () => { entered(); return new Promise((resolve) => { release = resolve; }); };
+    const item = {
+      id: "outbox-1", provider: "codex", threadId: "thread-1", turnId: "turn-1",
+      terminalRevision: 7, state: "pending", payload: {
+        completion: { provider: "codex", threadId: "thread-1", turnId: "turn-1",
+          status: "completed", clientUserMessageId: "command-1" },
+      },
+    };
+    const service = new TurnEndDeliveryService({
+      notifications: {}, taskRuns: {},
+      terminalCommits: {
+        claim: async () => item, acknowledge: blockedPort === "acknowledge" ? port : async () => true,
+      },
+      persistHistory: blockedPort === "persistHistory" ? port : async () => ({}),
+      projectTurn: blockedPort === "projectTurn" ? port : async () => ({}),
+      saveState: blockedPort === "saveState" ? port : async () => {},
+      rememberLastMessage() {}, rememberSeenTurn() {},
+      commandTrace: new CommandTraceService({ store: {
+        appendBestEffort: (span) => { records.push(span); return true; },
+      } }),
+    });
+    const pending = service.deliverOutbox(item);
+    await atBoundary;
+    const started = records.filter((record) => record.stage === blockedStage);
+    assert.deepEqual(started.map((record) => record.outcome), ["started"]);
+    assert.equal(started[0].commandId, "command-1");
+    assert.equal(started[0].metadata.turnId, "turn-1");
+    assert.equal(started[0].metadata.terminalRevision, 7);
+    release(true);
+    await pending;
+    assert.deepEqual(records.filter((record) => record.stage === blockedStage).map((record) => record.outcome), ["started", "succeeded"]);
+  });
+}

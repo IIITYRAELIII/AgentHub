@@ -74,6 +74,7 @@ const backgroundMotionToggle = document.querySelector("[data-background-motion-t
 const chatBackgroundToggle = document.querySelector("[data-chat-background-toggle]");
 const activityRailVisibilityToggle = document.querySelector("[data-activity-rail-visibility-toggle]");
 const journalGroupingButtons = [...document.querySelectorAll("[data-journal-grouping]")];
+const journalStreamGroupToggle = document.querySelector("[data-journal-stream-group-toggle]");
 const journalPrimaryColumn = document.querySelector("[data-journal-primary-column]");
 const journalWorkspaceCount = document.querySelector("[data-journal-workspace-count]");
 const journalTotalCredits = document.querySelector("[data-journal-total-credits]");
@@ -116,8 +117,9 @@ const workspaceCardWorkingDirectory = document.querySelector("[data-workspace-ca
 const workspaceCardTaskPrefix = document.querySelector("[data-workspace-card-task-prefix]");
 const workspaceCardRules = document.querySelector("[data-workspace-card-rules]");
 const workspaceCardRulesCount = document.querySelector("[data-workspace-card-rules-count]");
-const workspaceCardQuickMessages = document.querySelector("[data-workspace-card-quick-messages]");
+const workspaceCardQuickMessagesEntry = document.querySelector("[data-workspace-card-quick-messages-entry]");
 const workspaceCardQuickMessagesCount = document.querySelector("[data-workspace-card-quick-messages-count]");
+const workspaceCardArchive = document.querySelector("[data-workspace-card-archive]");
 const workspaceCardReleaseWorkflow = document.querySelector("[data-workspace-release-workflow]");
 const workspaceCardReleaseWorkflowTooltip = document.querySelector("[data-workspace-release-workflow-tooltip]");
 const workspaceCardOrder = document.querySelector("[data-workspace-card-order]");
@@ -151,6 +153,18 @@ const streamHeaderModelSeparator = document.querySelector("[data-stream-header-m
 const streamHeaderBranch = document.querySelector("[data-stream-header-branch]");
 const streamHeaderBranchSeparator = document.querySelector("[data-stream-header-branch-separator]");
 const streamHeaderMessageCount = document.querySelector("[data-stream-header-message-count]");
+const messagePinShelf = document.querySelector("[data-message-pin-shelf]");
+const messagePinCurrent = document.querySelector("[data-message-pin-current]");
+const messagePinPosition = document.querySelector("[data-message-pin-position]");
+const messagePinPrevious = document.querySelector("[data-message-pin-previous]");
+const messagePinNext = document.querySelector("[data-message-pin-next]");
+const messagePinsOpen = document.querySelector("[data-message-pins-open]");
+const messagePinStatus = document.querySelector("[data-message-pin-status]");
+const messagePinsModal = document.querySelector("[data-message-pins-modal]");
+const messagePinsList = document.querySelector("[data-message-pins-list]");
+const messagePinsClear = document.querySelector("[data-message-pins-clear]");
+const messagePinsClearModal = document.querySelector("[data-message-pins-clear-modal]");
+const messagePinsClearCopy = document.querySelector("[data-message-pins-clear-copy]");
 const chatEmpty = document.querySelector("[data-chat-empty]");
 const chatEmptyText = document.querySelector("[data-chat-empty-text]");
 const chatScroll = document.querySelector("[data-chat-scroll]");
@@ -164,6 +178,7 @@ const chatStops = [...document.querySelectorAll("[data-chat-stop]")];
 const dialogSettings = document.querySelector("[data-dialog-settings]");
 const dialogSettingsToggle = document.querySelector("[data-dialog-settings-toggle]");
 const dialogSettingsClose = document.querySelector("[data-dialog-settings-close]");
+const dialogStreamName = document.querySelector("[data-dialog-stream-name]");
 const dialogWorkingDirectory = document.querySelector("[data-dialog-working-directory]");
 const dialogWorkingDirectoryNote = document.querySelector("[data-dialog-working-directory-note]");
 const dialogStreamRules = document.querySelector("[data-dialog-stream-rules]");
@@ -172,8 +187,15 @@ const dialogStreamRulesSave = document.querySelector("[data-dialog-stream-rules-
 const dialogStreamArchitect = document.querySelector("[data-dialog-stream-architect]");
 const dialogStreamTeamLead = document.querySelector("[data-dialog-stream-team-lead]");
 const dialogStreamTeamLeadTooltip = document.querySelector("[data-stream-team-lead-tooltip]");
-const dialogStreamQuickMessages = document.querySelector("[data-dialog-stream-quick-messages]");
+const dialogStreamQuickMessagesEntry = document.querySelector("[data-dialog-stream-quick-messages-entry]");
 const dialogStreamQuickMessagesCount = document.querySelector("[data-dialog-stream-quick-messages-count]");
+const streamCardPin = document.querySelector("[data-stream-card-pin]");
+const streamCardWorkspace = document.querySelector("[data-stream-card-workspace]");
+const streamCardRotate = document.querySelector("[data-stream-card-rotate]");
+const streamCardContinueProvider = document.querySelector("[data-stream-card-continue-provider]");
+const streamCardMove = document.querySelector("[data-stream-card-move]");
+const streamCardMoveMenu = document.querySelector("[data-stream-card-move-menu]");
+const streamCardArchive = document.querySelector("[data-stream-card-archive]");
 const workspaceMessageSearch = document.querySelector("[data-workspace-message-search]");
 const workspaceMessageSearchToggle = document.querySelector("[data-workspace-message-search-toggle]");
 const workspaceMessageSearchClose = document.querySelector("[data-workspace-message-search-close]");
@@ -221,7 +243,16 @@ const approvalsBox = document.querySelector("[data-approvals]");
 const queueBox = document.querySelector("[data-queue]");
 
 const settingsPanel = document.querySelector("[data-settings-panel]");
-const settingsGlobalQuickMessages = document.querySelector("[data-settings-global-quick-messages]");
+const quickMessageActionModeSelect = document.querySelector("[data-quick-message-action-mode]");
+const quickMessageActionModeNote = document.querySelector("[data-quick-message-action-mode-note]");
+const settingsGlobalQuickMessagesEntry = document.querySelector("[data-settings-global-quick-messages-entry]");
+const promptTemplatesModal = document.querySelector("[data-prompt-templates-modal]");
+const promptTemplatesScopes = document.querySelector("[data-prompt-templates-scopes]");
+const promptTemplatesNote = document.querySelector("[data-prompt-templates-note]");
+const promptTemplatesEditor = document.querySelector("[data-prompt-templates-editor]");
+const promptTemplatesConflict = document.querySelector("[data-prompt-templates-conflict]");
+const promptTemplatesConflictText = document.querySelector("[data-prompt-templates-conflict-text]");
+const promptTemplatesReload = document.querySelector("[data-prompt-templates-reload]");
 const settingsGlobalQuickMessagesCount = document.querySelector("[data-settings-global-quick-messages-count]");
 const bugReportToggle = document.querySelector("[data-bug-report-toggle]");
 const bugReportForm = document.querySelector("[data-bug-report-form]");
@@ -246,6 +277,7 @@ const serverStateNote = document.querySelector("[data-server-state-note]");
 const serverStateDot = document.querySelector("[data-server-state-dot]");
 const serverFacts = document.querySelector("[data-server-facts]");
 const serverComponents = document.querySelector("[data-server-components]");
+const serverAccounts = document.querySelector("[data-server-accounts]");
 const serverConfig = document.querySelector("[data-server-config]");
 
 const dialog = document.querySelector("[data-text-dialog]");
@@ -281,8 +313,6 @@ const limitsTooltip = document.querySelector("[data-limits-tooltip]");
 const limitsLegend = document.querySelector("[data-limits-legend]");
 const limitsSpeedSummary = document.querySelector("[data-limits-speed-summary]");
 const limitsSpeedNote = document.querySelector("[data-limits-speed-note]");
-const limitsSpeedWindowSetting = document.querySelector("[data-limits-speed-window-setting]");
-const limitsSpeedFullWindow = document.querySelector("[data-limits-speed-full-window]");
 const limitsCredits = document.querySelector("[data-limits-credits]");
 const currentLimitsSlots = [...document.querySelectorAll("[data-current-limits]")];
 const usageRanges = document.querySelector("[data-usage-ranges]");
@@ -324,12 +354,14 @@ const comparisonViewModeButtons = [...document.querySelectorAll("[data-compariso
 /* --------------------------------------------------------- Telegram / темы */
 
 let journalHtml = "";
+let journalSummary = null;
 let grouping = "workspace";
 let usageUnit = "cr";
 let usdRubRate = null;
 let usdRubEffectiveDate = "";
 let exchangeRatesInitialized = false;
 let groupClaudeTasks = false;
+let groupJournalTurnsByStream = true;
 let streamOrderMode = "activity";
 const groupingStates = { date: null, week: null, month: null, stream: null, workspace: null };
 const journalDaySelections = new Map();
@@ -902,6 +934,29 @@ function selectClaudeGrouping(value, { persist = false } = {}) {
   }
 }
 
+function savedJournalStreamGrouping() {
+  try {
+    return localStorage.getItem("agent-hub-journal-stream-groups") !== "off";
+  } catch {
+    return true;
+  }
+}
+
+function selectJournalStreamGrouping(value, { persist = false } = {}) {
+  groupJournalTurnsByStream = value !== false;
+  if (journalStreamGroupToggle) journalStreamGroupToggle.checked = groupJournalTurnsByStream;
+  if (persist) {
+    try {
+      localStorage.setItem(
+        "agent-hub-journal-stream-groups",
+        groupJournalTurnsByStream ? "on" : "off",
+      );
+    } catch {
+      // Настройка останется активной до закрытия WebView.
+    }
+  }
+}
+
 telegram?.ready();
 telegram?.expand();
 telegram?.disableVerticalSwipes?.();
@@ -921,8 +976,13 @@ applyStreamOrderMode("activity");
 applyActivityRecentPeriod(DEFAULT_ACTIVITY_RECENT_MINUTES);
 selectUsageUnit(savedUsageUnit());
 selectClaudeGrouping(savedClaudeGrouping());
+selectJournalStreamGrouping(savedJournalStreamGrouping());
 claudeGroupToggle?.addEventListener("change", () => {
   selectClaudeGrouping(claudeGroupToggle.checked, { persist: true });
+  if (journalHtml) void renderJournal();
+});
+journalStreamGroupToggle?.addEventListener("change", () => {
+  selectJournalStreamGrouping(journalStreamGroupToggle.checked, { persist: true });
   if (journalHtml) void renderJournal();
 });
 for (const button of usageUnitButtons) {
@@ -1174,7 +1234,10 @@ new MutationObserver((records) => {
       if (node instanceof Element) cleanupThemedSelects(node);
     }
     for (const node of record.addedNodes) {
-      if (node instanceof Element) enhanceThemedSelects(node);
+      if (!(node instanceof Element) || node === journal || journal.contains(node)) continue;
+      if (node instanceof HTMLSelectElement || node.querySelector?.("select")) {
+        enhanceThemedSelects(node);
+      }
     }
   }
 }).observe(document.body, { childList: true, subtree: true });
@@ -1214,6 +1277,79 @@ function el(tag, props = {}, children = []) {
     node.append(child.nodeType ? child : document.createTextNode(String(child)));
   }
   return node;
+}
+
+/* Анимации состояния живут на псевдоэлементах карточки, поэтому новый узел
+   начинает их заново. Списки пересобираются целиком, и при частых обновлениях
+   полоса активности не успевает пройти свой цикл. Узел с тем же ключом
+   переиспользуется, а его анимации продолжаются с накопленного времени. */
+const STREAM_STATUS_LAYER_SELECTOR = ".stream-tab-status-layer";
+const STREAM_STATUS_ANIMATION_PREFIX = "stream-";
+let reusableWorkspaceCards = new Map();
+let reusableStreamTabs = new Map();
+let adoptedCardAnimations = [];
+
+function statusAnimationKey(animation) {
+  return `${animation.animationName} ${animation.effect?.pseudoElement ?? ""}`;
+}
+
+function statusAnimationTimes(node) {
+  const times = new Map();
+  for (const animation of node.getAnimations?.({ subtree: true }) ?? []) {
+    if (!String(animation.animationName ?? "").startsWith(STREAM_STATUS_ANIMATION_PREFIX)) continue;
+    const time = Number(animation.currentTime);
+    if (Number.isFinite(time)) times.set(statusAnimationKey(animation), time);
+  }
+  return times;
+}
+
+function indexRenderedCards(container, selector, attribute) {
+  const index = new Map();
+  for (const node of container?.querySelectorAll(selector) ?? []) {
+    const key = node.getAttribute(attribute);
+    if (key && !index.has(key)) index.set(key, { node, times: statusAnimationTimes(node) });
+  }
+  return index;
+}
+
+function adoptRenderedCard(index, key, next) {
+  const previous = index.get(key);
+  if (!previous || previous.node.tagName !== next.tagName) return next;
+  index.delete(key);
+  const node = previous.node;
+  /* Наблюдатель видимости помечает карточку своим атрибутом, и рендер им не
+     владеет: при обновлении он сохраняется. */
+  for (const attribute of [...node.attributes]) {
+    if (attribute.name === "data-stream-offscreen") continue;
+    if (!next.hasAttribute(attribute.name)) node.removeAttribute(attribute.name);
+  }
+  for (const attribute of next.attributes) {
+    if (node.getAttribute(attribute.name) !== attribute.value) {
+      node.setAttribute(attribute.name, attribute.value);
+    }
+  }
+  /* У вкладки Stream анимацию несёт собственный слой статуса, поэтому он
+     переносится в обновлённое содержимое вместо заново созданного. */
+  const keptLayer = node.querySelector(STREAM_STATUS_LAYER_SELECTOR);
+  const nextLayer = next.querySelector(STREAM_STATUS_LAYER_SELECTOR);
+  if (keptLayer && nextLayer) nextLayer.replaceWith(keptLayer);
+  node.replaceChildren(...next.childNodes);
+  if (previous.times.size) adoptedCardAnimations.push(previous);
+  return node;
+}
+
+/* Возврат узла в документ перезапускает его анимации, поэтому уже пройденное
+   время восстанавливается сразу после вставки. */
+function resumeAdoptedCardAnimations() {
+  for (const { node, times } of adoptedCardAnimations) {
+    if (!node.isConnected) continue;
+    for (const animation of node.getAnimations?.({ subtree: true }) ?? []) {
+      const time = times.get(statusAnimationKey(animation));
+      if (time === undefined) continue;
+      try { animation.currentTime = time; } catch { /* анимация уже недоступна */ }
+    }
+  }
+  adoptedCardAnimations = [];
 }
 
 function sameData(left, right) {
@@ -1282,9 +1418,19 @@ function refreshTaskDurations() {
 }
 
 let toastTimer = 0;
-function showToast(message) {
+function showToast(message, action = null) {
   if (!message) return;
-  toast.textContent = message;
+  toast.replaceChildren(el("span", { text: message }));
+  if (action?.label && typeof action.onClick === "function") {
+    const button = el("button", { type: "button", text: action.label });
+    button.addEventListener("click", () => {
+      clearTimeout(toastTimer);
+      toast.hidden = true;
+      toast.classList.remove("visible");
+      action.onClick();
+    }, { once: true });
+    toast.append(button);
+  }
   toast.hidden = false;
   toast.classList.add("visible");
   clearTimeout(toastTimer);
@@ -1302,6 +1448,10 @@ const listeners = new Map();
  *   document.addEventListener("agenthub:intent", (e) => …e.detail…)
  *   AgentHub.on("message:send", (detail) => …)  */
 function emit(type, detail = {}) {
+  return window.AgentHubCommandTrace.intent(type, detail, () => emitIntent(type, detail));
+}
+
+function emitIntent(type, detail) {
   const payload = { type, ...detail };
   document.dispatchEvent(new CustomEvent("agenthub:intent", { detail: payload }));
   for (const handler of listeners.get(type) ?? []) {
@@ -1371,14 +1521,18 @@ const state = {
   collapsedWorkspaceFolders: new Set(),
   workspaceFolderNames: new Set(),
   visibleStreamTaskIds: [],
+  messagePins: [],
+  activeMessagePinByStream: new Map(),
+  pendingMessagePinKeys: new Set(),
+  messagePinMutationBackups: new Map(),
 };
 let transientAnswerArrivalTaskIds = new Set();
 const observedAnswerFinalIdentityByTaskId = new Map();
 
-/* Черновики принадлежат конкретному клиенту и задаче. Вложение остаётся в
- * памяти страницы: data:-URL скриншотов может превысить лимит localStorage.
- * Набранный текст и аннотации сохраняем синхронно, чтобы жест «назад»,
- * пересоздание WebView или краткая потеря связи не стирали сообщение. */
+/* Черновики принадлежат конкретному клиенту и задаче. Обычные вложения остаются
+ * в памяти страницы. Только payload, который Hub точно отклонил, может быть
+ * сохранён для явного retry: сохраняем исходный data:-URL, но никогда не
+ * временный transport path. Quota/privacy отказ остаётся явным и fail-closed. */
 const drafts = new Map();
 const DRAFT_STORAGE_VERSION = "agent-hub:composer-drafts:v1";
 
@@ -1395,8 +1549,35 @@ function renderConnectionQuality() {
 }
 const DRAFT_STORAGE_MAX_TASKS = 100;
 const DRAFT_STORAGE_MAX_TEXT = 100_000;
+const DRAFT_RECOVERY_MAX_ATTACHMENTS = 8;
+const DRAFT_RECOVERY_MAX_ATTACHMENT_CHARS = 4_000_000;
+const DRAFT_ATTACHMENT_MAX_BYTES = 256 * 1024 * 1024;
+const DRAFT_ATTACHMENT_MAX_TOTAL_BYTES = 512 * 1024 * 1024;
+const DRAFT_RECOVERY_AUTHORITY_DB = "agent-hub-composer-recovery-v1";
+const DRAFT_RECOVERY_AUTHORITY_STORE = "surfaces";
+const composerTaskGenerations = new Map();
+let composerRecoveryWarningShown = false;
+let composerRecoveryAuthorityReady = false;
+let composerRecoveryAuthorityTrusted = false;
+let composerRecoveryAuthorityEpoch = 0;
+let composerRecoveryAuthorityPending = 0;
+let composerRecoveryAuthorityInitialization = null;
+let composerDraftRestoreInitialization = null;
+let composerDraftRestoreReady = false;
+let composerRecoveryAuthorityTail = Promise.resolve();
+let composerRecoveryAuthorityDatabase = null;
 let pendingComposerRequest = null;
 const retryComposerRequests = new Map();
+const composerDraftReconciliation = window.AgentHubComposerDraftReconciliation.create({
+  drafts,
+  retries: retryComposerRequests,
+  persist: (options) => persistDrafts(options),
+  render: (taskId) => {
+    if (state.selectedId === taskId) restoreDraft();
+  },
+  persistenceFailed: () => reportComposerRecoveryFailure(),
+  invalidateRecovery: ({ taskId, requestId }) => recordRecoveryInvalidation(taskId, requestId),
+});
 
 function draftStorageSurface() {
   if (vscodeMode) return "vscode";
@@ -1409,6 +1590,137 @@ function draftStorageKey() {
   return `${DRAFT_STORAGE_VERSION}:${draftStorageSurface()}`;
 }
 
+function reportComposerRecoveryFailure() {
+  if (composerRecoveryWarningShown) return;
+  composerRecoveryWarningShown = true;
+  showToast(
+    "Браузер не может точно сохранить или инвалидировать восстановленное сообщение. Повтори отправку до перезагрузки; обновление интерфейса заблокировано.",
+  );
+}
+
+function composerRecoveryAuthorityRequest(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error ?? new Error("IndexedDB request failed"));
+  });
+}
+
+function openComposerRecoveryAuthority() {
+  if (composerRecoveryAuthorityDatabase) return Promise.resolve(composerRecoveryAuthorityDatabase);
+  if (!globalThis.indexedDB) return Promise.reject(new Error("IndexedDB is unavailable"));
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DRAFT_RECOVERY_AUTHORITY_DB, 1);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(DRAFT_RECOVERY_AUTHORITY_STORE)) {
+        request.result.createObjectStore(DRAFT_RECOVERY_AUTHORITY_STORE, { keyPath: "surface" });
+      }
+    };
+    request.onsuccess = () => {
+      composerRecoveryAuthorityDatabase = request.result;
+      composerRecoveryAuthorityDatabase.onversionchange = () => {
+        composerRecoveryAuthorityDatabase.close();
+        composerRecoveryAuthorityDatabase = null;
+        composerRecoveryAuthorityTrusted = false;
+      };
+      resolve(composerRecoveryAuthorityDatabase);
+    };
+    request.onerror = () => reject(request.error ?? new Error("IndexedDB open failed"));
+    request.onblocked = () => reject(new Error("IndexedDB upgrade blocked"));
+  });
+}
+
+async function readComposerRecoveryAuthority() {
+  try {
+    const database = await openComposerRecoveryAuthority();
+    const transaction = database.transaction(DRAFT_RECOVERY_AUTHORITY_STORE, "readonly");
+    const record = await composerRecoveryAuthorityRequest(
+      transaction.objectStore(DRAFT_RECOVERY_AUTHORITY_STORE).get(draftStorageSurface()),
+    );
+    const epoch = Number(record?.epoch ?? 0);
+    if (!Number.isSafeInteger(epoch) || epoch < 0) throw new Error("Invalid recovery epoch");
+    composerRecoveryAuthorityEpoch = epoch;
+    composerRecoveryAuthorityTrusted = true;
+  } catch {
+    composerRecoveryAuthorityTrusted = false;
+    reportComposerRecoveryFailure();
+  } finally {
+    composerRecoveryAuthorityReady = true;
+  }
+}
+
+function ensureComposerRecoveryAuthority() {
+  if (!composerRecoveryAuthorityInitialization) {
+    composerRecoveryAuthorityInitialization = readComposerRecoveryAuthority();
+  }
+  return composerRecoveryAuthorityInitialization;
+}
+
+function ensureComposerDraftsRestored() {
+  if (!composerDraftRestoreInitialization) {
+    composerDraftRestoreInitialization = (async () => {
+      await ensureComposerRecoveryAuthority();
+      try {
+        await restorePersistedDrafts();
+        if (state.selectedId) restoreDraft();
+      } catch {
+        reportComposerRecoveryFailure();
+      } finally {
+        composerDraftRestoreReady = true;
+      }
+    })();
+  }
+  return composerDraftRestoreInitialization;
+}
+
+async function bumpComposerRecoveryAuthority() {
+  await ensureComposerRecoveryAuthority();
+  if (!composerRecoveryAuthorityTrusted) throw new Error("Recovery authority unavailable");
+  const database = await openComposerRecoveryAuthority();
+  const transaction = database.transaction(DRAFT_RECOVERY_AUTHORITY_STORE, "readwrite");
+  const store = transaction.objectStore(DRAFT_RECOVERY_AUTHORITY_STORE);
+  const current = await composerRecoveryAuthorityRequest(store.get(draftStorageSurface()));
+  const previousEpoch = Number(current?.epoch ?? 0);
+  if (!Number.isSafeInteger(previousEpoch) || previousEpoch < 0
+    || previousEpoch >= Number.MAX_SAFE_INTEGER) throw new Error("Recovery epoch exhausted");
+  const nextEpoch = previousEpoch + 1;
+  store.put({ surface: draftStorageSurface(), epoch: nextEpoch, updatedAt: Date.now() });
+  await new Promise((resolve, reject) => {
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error ?? new Error("Recovery authority write failed"));
+    transaction.onabort = () => reject(transaction.error ?? new Error("Recovery authority write aborted"));
+  });
+  composerRecoveryAuthorityEpoch = nextEpoch;
+  composerRecoveryAuthorityTrusted = true;
+}
+
+function recordRecoveryInvalidation(taskId, requestId, { clearNonDurableWhenPersisted = true } = {}) {
+  const id = String(requestId ?? "").trim();
+  if (!id) return true;
+  composerRecoveryAuthorityPending += 1;
+  composerRecoveryAuthorityTail = composerRecoveryAuthorityTail.then(async () => {
+    try {
+      await bumpComposerRecoveryAuthority();
+      discardPersistedRecovery(id);
+    } catch {
+      composerRecoveryAuthorityTrusted = false;
+      reportComposerRecoveryFailure();
+    } finally {
+      composerRecoveryAuthorityPending = Math.max(0, composerRecoveryAuthorityPending - 1);
+    }
+    if (composerRecoveryAuthorityPending === 0 && composerRecoveryAuthorityTrusted) {
+      const represented = persistDrafts();
+      const draft = drafts.get(taskId);
+      if (clearNonDurableWhenPersisted && represented
+        && draft?.recoveryNonDurable === true && !draft.recoveryRequestId) {
+        delete draft.recoveryNonDurable;
+      }
+    }
+  });
+  // The monotonic durable write is asynchronous. Until it commits, runtime
+  // reload remains blocked and this invalidation must not be called durable.
+  return false;
+}
+
 function normalizedDraftText(value) {
   return String(value ?? "").slice(0, DRAFT_STORAGE_MAX_TEXT);
 }
@@ -1418,14 +1730,14 @@ function normalizedDraftAnnotations(value) {
   return value.slice(0, 20).map((annotation) => {
     const source = normalizedResponseAnnotationSource(annotation?.source);
     return {
-      quote: String(annotation?.quote ?? "").slice(0, 400),
+      quote: String(annotation?.quote ?? ""),
       annotation: String(annotation?.annotation ?? annotation?.comment ?? "").slice(0, 20_000),
       ...(source ? { source } : {}),
     };
   }).filter((annotation) => annotation.quote);
 }
 
-function restorePersistedDrafts() {
+async function restorePersistedDrafts() {
   let persisted;
   try {
     persisted = JSON.parse(localStorage.getItem(draftStorageKey()) ?? "[]");
@@ -1433,17 +1745,129 @@ function restorePersistedDrafts() {
     return;
   }
   if (!Array.isArray(persisted)) return;
+  await window.AgentHubComposerFiles.hydrate(persisted.slice(0, DRAFT_STORAGE_MAX_TASKS)
+    .flatMap((entry) => Array.isArray(entry?.attachments) ? entry.attachments.slice(0, DRAFT_RECOVERY_MAX_ATTACHMENTS) : []));
+  let invalidRecoveryFound = false;
   for (const entry of persisted.slice(0, DRAFT_STORAGE_MAX_TASKS)) {
     const taskId = String(entry?.taskId ?? "").trim();
     if (!taskId) continue;
+    // A snapshot can make the composer interactive while IndexedDB is still
+    // opening. Never let a late persisted read replace a draft the user has
+    // already edited in this page generation.
+    if (composerDraftReconciliation.revision(taskId) !== 0) continue;
     const text = normalizedDraftText(entry.text);
     const annotations = normalizedDraftAnnotations(entry.annotations);
     const taskReferences = (Array.isArray(entry?.taskReferences) ? entry.taskReferences : [])
       .map((reference) => TaskReferences.normalize(reference))
       .filter(Boolean);
-    if (!text && annotations.length === 0 && taskReferences.length === 0) continue;
-    drafts.set(taskId, { text, attachments: [], taskReferences, annotations });
+    const recoveryRequestId = String(entry?.recoveryRequestId ?? "").trim();
+    const recoveryFingerprint = String(entry?.recoveryFingerprint ?? "");
+    const rawRecoveryMetadata = Boolean(recoveryRequestId && recoveryFingerprint);
+    const recoveryEpoch = Number(entry?.recoveryEpoch);
+    const authorityMatches = composerRecoveryAuthorityReady
+      && composerRecoveryAuthorityTrusted
+      && Number.isSafeInteger(recoveryEpoch)
+      && recoveryEpoch === composerRecoveryAuthorityEpoch;
+    const durablyInvalidated = rawRecoveryMetadata
+      && composerRecoveryAuthorityReady
+      && composerRecoveryAuthorityTrusted
+      && Number.isSafeInteger(recoveryEpoch)
+      && recoveryEpoch < composerRecoveryAuthorityEpoch;
+    if (durablyInvalidated) continue;
+    const recoveredAttachments = !rawRecoveryMetadata || authorityMatches
+      ? normalizedRecoveryAttachments(entry?.attachments)
+      : [];
+    const attachments = recoveredAttachments ?? [];
+    const exactRecovery = Boolean(rawRecoveryMetadata && authorityMatches && recoveredAttachments)
+      && window.AgentHubComposerDraftReconciliation.recoveryFingerprint({
+        taskId,
+        text,
+        attachments,
+        taskReferences,
+        annotations,
+      }) === recoveryFingerprint;
+    const invalidRecovery = (rawRecoveryMetadata && !exactRecovery)
+      || (!recoveredAttachments && Boolean(entry?.attachments?.length));
+    if (invalidRecovery) {
+      invalidRecoveryFound = true;
+      recordRecoveryInvalidation(taskId, recoveryRequestId, { clearNonDurableWhenPersisted: false });
+    }
+    if (!text && annotations.length === 0 && taskReferences.length === 0 && attachments.length === 0
+      && !invalidRecovery) continue;
+    composerDraftReconciliation.restore(taskId, {
+      text,
+      attachments,
+      taskReferences,
+      annotations,
+      ...(exactRecovery ? {
+        recoveryRequestId,
+        recoveryFingerprint,
+        recoveryEpoch,
+      } : {}),
+      ...(invalidRecovery ? { recoveryNonDurable: true } : {}),
+    });
   }
+  if (invalidRecoveryFound) reportComposerRecoveryFailure();
+}
+
+function composerTaskIdentity(task) {
+  if (!task) return "";
+  return JSON.stringify([
+    String(task.id ?? ""),
+    String(task.provider ?? ""),
+    String(task.threadId ?? ""),
+    String(task.streamId ?? ""),
+    String(task.workspaceId ?? ""),
+  ]);
+}
+
+function updateComposerTaskGenerations(previousTasks, nextTasks) {
+  const previous = new Map((previousTasks ?? []).map((task) => [task.id, composerTaskIdentity(task)]));
+  const next = new Map((nextTasks ?? []).map((task) => [task.id, composerTaskIdentity(task)]));
+  for (const id of new Set([...previous.keys(), ...next.keys()])) {
+    if (previous.get(id) === next.get(id)) continue;
+    composerTaskGenerations.set(id, (composerTaskGenerations.get(id) ?? 0) + 1);
+  }
+}
+
+function removeComposerTask(taskId) {
+  const id = String(taskId ?? "").trim();
+  if (!id) return;
+  if (pendingComposerRequest?.taskId === id) {
+    recordRecoveryInvalidation(id, pendingComposerRequest.requestId);
+    pendingComposerRequest = null;
+  }
+  composerDraftReconciliation.remove(id);
+  attachmentOperationSequences.delete(id);
+  annotationOperationSequences.delete(id);
+}
+
+function captureComposerTaskOperation(taskId = state.selectedId) {
+  const id = String(taskId ?? "").trim();
+  const task = state.tasks.find((candidate) => candidate.id === id);
+  if (!id || !task) return null;
+  return {
+    taskId: id,
+    taskIdentity: composerTaskIdentity(task),
+    taskGeneration: composerTaskGenerations.get(id) ?? 0,
+    editRevision: composerDraftReconciliation.revision(id),
+  };
+}
+
+function composerTaskOperationCurrent(operation) {
+  if (!operation) return false;
+  const task = state.tasks.find((candidate) => candidate.id === operation.taskId);
+  return Boolean(task)
+    && composerTaskIdentity(task) === operation.taskIdentity
+    && (composerTaskGenerations.get(operation.taskId) ?? 0) === operation.taskGeneration
+    && composerDraftReconciliation.revision(operation.taskId) === operation.editRevision;
+}
+
+function advanceComposerAsyncOperationFence(taskId) {
+  const id = String(taskId ?? "").trim();
+  if (!id) return;
+  attachmentOperationSequences.set(id, (attachmentOperationSequences.get(id) ?? 0) + 1);
+  annotationOperationSequences.set(id, (annotationOperationSequences.get(id) ?? 0) + 1);
 }
 
 function taskNavigationData(task) {
@@ -1493,33 +1917,398 @@ function changedTaskIds(previousTasks, nextTasks, project) {
   return changed;
 }
 
-function persistDrafts() {
-  const persisted = [...drafts.entries()]
-    .filter(([taskId, draft]) => String(taskId).trim() && (
-      draft?.text || draft?.annotations?.length || draft?.taskReferences?.length
-    ))
-    .slice(-DRAFT_STORAGE_MAX_TASKS)
-    .map(([taskId, draft]) => ({
-      taskId,
-      text: normalizedDraftText(draft.text),
-      taskReferences: (draft.taskReferences ?? [])
-        .map((reference) => TaskReferences.normalize(reference))
-        .filter(Boolean),
-      annotations: normalizedDraftAnnotations(draft.annotations),
-    }));
+function discardPersistedRecovery(requestId) {
   try {
-    if (persisted.length) localStorage.setItem(draftStorageKey(), JSON.stringify(persisted));
+    const current = JSON.parse(localStorage.getItem(draftStorageKey()) ?? "[]");
+    const scrubbed = Array.isArray(current)
+      ? current.filter((entry) => String(entry?.recoveryRequestId ?? "") !== requestId)
+      : [];
+    if (scrubbed.length) localStorage.setItem(draftStorageKey(), JSON.stringify(scrubbed));
     else localStorage.removeItem(draftStorageKey());
     return true;
   } catch {
-    // Privacy-mode WebView or a full storage quota: the in-memory draft still survives navigation.
-    return persisted.length === 0;
+    try {
+      localStorage.removeItem(draftStorageKey());
+      return true;
+    } catch {
+      // The independent IndexedDB epoch remains authoritative across WebView
+      // recreation even when the stale localStorage record cannot be scrubbed.
+      return false;
+    }
+  }
+}
+
+function persistDrafts({ requiredRecoveryRequestId = "" } = {}) {
+  queueMicrotask(pruneComposerFiles);
+  let requiredRecoveryRepresented = !requiredRecoveryRequestId;
+  let everyDraftRepresented = true;
+  let recoveryCharacters = 0;
+  const eligible = [...drafts.entries()]
+    .filter(([taskId, draft]) => String(taskId).trim() && (
+      draft?.text || draft?.annotations?.length || draft?.taskReferences?.length
+      || draft?.attachments?.length
+    ));
+  const selected = eligible.slice(-DRAFT_STORAGE_MAX_TASKS);
+  if (selected.length !== eligible.length) everyDraftRepresented = false;
+  const persisted = selected
+    .map(([taskId, draft]) => {
+      const recoveryRequestId = String(draft?.recoveryRequestId ?? "").trim();
+      const recoveryFingerprint = String(draft?.recoveryFingerprint ?? "");
+      const rawAttachments = Array.isArray(draft?.attachments) ? draft.attachments : [];
+      const attachmentCharacters = recoveryRequestId ? rawAttachments.reduce((sum, attachment) => (
+        sum + (attachment?.blobId ? 0 : String(attachment?.dataUrl ?? "").length)
+      ), 0) : 0;
+      const withinSurfaceBound = recoveryCharacters + attachmentCharacters
+        <= DRAFT_RECOVERY_MAX_ATTACHMENT_CHARS;
+      const recoveryAttachments = withinSurfaceBound && rawAttachments.every(window.AgentHubComposerFiles.durable)
+        ? window.AgentHubComposerDraftReconciliation.recoveryAttachments(rawAttachments, {
+          maxCount: DRAFT_RECOVERY_MAX_ATTACHMENTS,
+          maxDataUrlCharacters: DRAFT_RECOVERY_MAX_ATTACHMENT_CHARS - recoveryCharacters,
+          maxBytes: DRAFT_ATTACHMENT_MAX_BYTES,
+          maxTotalBytes: DRAFT_ATTACHMENT_MAX_TOTAL_BYTES,
+        })
+        : null;
+      const candidate = {
+        taskId,
+        text: normalizedDraftText(draft.text),
+        taskReferences: (draft.taskReferences ?? [])
+          .map((reference) => TaskReferences.normalize(reference))
+          .filter(Boolean),
+        annotations: normalizedDraftAnnotations(draft.annotations),
+      };
+      const exactRecovery = Boolean(
+        composerRecoveryAuthorityReady
+        && composerRecoveryAuthorityTrusted
+        && composerRecoveryAuthorityPending === 0
+        && recoveryRequestId
+        && recoveryFingerprint
+        && recoveryAttachments
+      )
+        && window.AgentHubComposerDraftReconciliation.recoveryFingerprint({
+          ...candidate,
+          attachments: recoveryAttachments,
+        }) === recoveryFingerprint;
+      if (exactRecovery) recoveryCharacters += attachmentCharacters;
+      const serializedAttachments = (!recoveryRequestId || exactRecovery) && recoveryAttachments
+        ? recoveryAttachments.map(window.AgentHubComposerFiles.serialized) : [];
+      const exactSerializedPayload = String(draft?.text ?? "") === candidate.text
+        && JSON.stringify(draft?.taskReferences ?? []) === JSON.stringify(candidate.taskReferences)
+        && JSON.stringify(draft?.annotations ?? []) === JSON.stringify(candidate.annotations)
+        && rawAttachments.length === serializedAttachments.length;
+      if (!exactSerializedPayload) everyDraftRepresented = false;
+      if (recoveryRequestId && !exactRecovery) everyDraftRepresented = false;
+      if (recoveryRequestId === requiredRecoveryRequestId && exactRecovery) {
+        requiredRecoveryRepresented = true;
+      }
+      return {
+        ...candidate,
+        attachments: serializedAttachments,
+        ...(exactRecovery ? {
+          recoveryRequestId,
+          recoveryFingerprint,
+          recoveryEpoch: composerRecoveryAuthorityEpoch,
+        } : {}),
+      };
+    })
+    .filter(Boolean);
+  if (!requiredRecoveryRepresented) {
+    discardPersistedRecovery(requiredRecoveryRequestId);
+    return false;
+  }
+  try {
+    if (persisted.length) localStorage.setItem(draftStorageKey(), JSON.stringify(persisted));
+    else localStorage.removeItem(draftStorageKey());
+    return everyDraftRepresented;
+  } catch {
+    if (requiredRecoveryRequestId) discardPersistedRecovery(requiredRecoveryRequestId);
+    return false;
   }
 }
 
 function currentTask() {
   return state.tasks.find((task) => task.id === state.selectedId) ?? null;
 }
+
+function pinsForTask(task = currentTask()) {
+  const streamId = String(task?.streamId ?? "").trim();
+  return streamId ? state.messagePins.filter((pin) => pin.streamId === streamId) : [];
+}
+
+function activePinForTask(task = currentTask()) {
+  const pins = pinsForTask(task);
+  if (!pins.length) return null;
+  const streamId = String(task.streamId);
+  const selectedPinId = state.activeMessagePinByStream.get(streamId);
+  const index = Math.max(0, pins.findIndex((pin) => pin.id === selectedPinId));
+  const pin = pins[index] ?? pins[0];
+  state.activeMessagePinByStream.set(streamId, pin.id);
+  return { pin, pins, index };
+}
+
+function setActiveMessagePinId(streamId, pinId = "") {
+  const normalizedStreamId = String(streamId ?? "").trim();
+  if (!normalizedStreamId) return;
+  if (pinId) state.activeMessagePinByStream.set(normalizedStreamId, pinId);
+  else state.activeMessagePinByStream.delete(normalizedStreamId);
+}
+
+function selectedMessagePinId(streamId, pins = state.messagePins) {
+  const streamPins = pins.filter((pin) => pin.streamId === streamId);
+  const selectedPinId = state.activeMessagePinByStream.get(streamId);
+  return streamPins.some((pin) => pin.id === selectedPinId)
+    ? selectedPinId
+    : streamPins[0]?.id ?? "";
+}
+
+function selectMessagePinAfterRemoval({ streamId, removedIndex, pins = state.messagePins }) {
+  const streamPins = pins.filter((pin) => pin.streamId === streamId);
+  if (!streamPins.length) {
+    setActiveMessagePinId(streamId);
+    return;
+  }
+  const index = Math.min(Math.max(0, removedIndex), streamPins.length - 1);
+  setActiveMessagePinId(streamId, streamPins[index].id);
+}
+
+function reconcilePendingMessagePins(pins) {
+  let reconciled = pins.slice();
+  for (const backup of state.messagePinMutationBackups.values()) {
+    if (backup.pinned) {
+      const committed = reconciled.find((pin) => (
+        pin.streamId === backup.streamId && pin.messageKey === backup.messageKey
+      ));
+      if (committed) {
+        if (state.activeMessagePinByStream.get(backup.streamId) === backup.optimisticPinId) {
+          setActiveMessagePinId(backup.streamId, committed.id);
+        }
+        continue;
+      }
+      const optimistic = state.messagePins.find((pin) => pin.id === backup.optimisticPinId);
+      if (optimistic) reconciled.unshift(optimistic);
+      continue;
+    }
+    reconciled = reconciled.filter((pin) => !(
+      pin.streamId === backup.streamId
+      && (pin.id === backup.targetPinId || pin.messageKey === backup.messageKey)
+    ));
+  }
+  return reconciled;
+}
+
+function pinMetaLabel(pin) {
+  const role = pin?.role === "user" ? "Вы" : String(pin?.author ?? "Агент").trim() || "Агент";
+  const timestamp = MessageView.messageTimestampLabel(pin?.time);
+  return [role, timestamp].filter(Boolean).join(" · ");
+}
+
+function messagePinIcon(name, className = "") {
+  return window.AgentHubStreamTabs.createPhosphorIcon(document, name, className);
+}
+
+function jumpToMessagePin(pin) {
+  if (!pin?.available) return;
+  emit("message-pin:open", { pin });
+}
+
+function setActiveMessagePin(indexDelta) {
+  const current = activePinForTask();
+  if (!current || current.pins.length < 2) return;
+  const index = (current.index + indexDelta + current.pins.length) % current.pins.length;
+  state.activeMessagePinByStream.set(current.pin.streamId, current.pins[index].id);
+  renderMessagePinShelf();
+}
+
+function renderMessagePinShelf() {
+  if (!messagePinShelf) return;
+  const current = activePinForTask();
+  messagePinShelf.hidden = !current;
+  if (!current) return;
+  const { pin, pins, index } = current;
+  messagePinCurrent.replaceChildren(
+    el("span", { class: "message-pin-current-meta", text: pinMetaLabel(pin) }),
+    el("span", {
+      class: "message-pin-current-preview",
+      text: pin.available ? pin.preview : `Недоступно · ${pin.preview}`,
+    }),
+  );
+  messagePinCurrent.disabled = !pin.available;
+  messagePinCurrent.title = pin.available ? "Перейти к сообщению" : "Исходное сообщение недоступно";
+  messagePinPosition.textContent = `${index + 1} из ${pins.length}`;
+  messagePinPrevious.disabled = pins.length < 2;
+  messagePinNext.disabled = pins.length < 2;
+  messagePinStatus.textContent = pin.available
+    ? `Закреплённое сообщение ${index + 1} из ${pins.length}`
+    : `Закреплённое сообщение ${index + 1} из ${pins.length} недоступно`;
+}
+
+function closeMessagePins() {
+  messagePinsModal?.close();
+  messagePinsOpen?.focus({ preventScroll: true });
+}
+
+function renderMessagePinsList() {
+  if (!messagePinsList) return;
+  const pins = pinsForTask();
+  messagePinsList.replaceChildren(...pins.map((pin) => {
+    const pending = state.pendingMessagePinKeys.has(pin.messageKey);
+    const row = el("article", {
+      class: "message-pin-row",
+      "data-message-pin-id": pin.id,
+      ...(pin.available ? {} : { "data-unavailable": "" }),
+    });
+    row.append(
+      el("div", { class: "message-pin-row-copy" }, [
+        el("span", { class: "message-pin-row-meta", text: pinMetaLabel(pin) }),
+        el("p", { text: pin.preview }),
+        pin.available ? null : el("span", { class: "message-pin-unavailable", text: "Исходное сообщение недоступно" }),
+      ]),
+      el("div", { class: "message-pin-row-actions" }, [
+        el("button", {
+          type: "button",
+          class: "chip-button",
+          text: "Перейти",
+          disabled: !pin.available,
+          "data-message-pin-jump": pin.id,
+        }),
+        el("button", {
+          type: "button",
+          class: "chip-button ghost",
+          text: "Открепить",
+          disabled: pending,
+          "data-message-pin-remove": pin.id,
+        }),
+      ]),
+    );
+    return row;
+  }));
+  messagePinsClear.disabled = pins.length === 0;
+}
+
+function openMessagePins() {
+  renderMessagePinsList();
+  const mobileSheet = surface === "mobile" || window.innerWidth <= 760;
+  if (messagePinsModal && !mobileSheet && messagePinShelf) {
+    const rect = messagePinShelf.getBoundingClientRect();
+    const width = Math.min(620, window.innerWidth - 32);
+    messagePinsModal.style.left = `${Math.max(16, Math.min(window.innerWidth - width - 16, rect.right - width))}px`;
+    messagePinsModal.style.top = `${Math.min(window.innerHeight - 160, rect.bottom + 6)}px`;
+  } else {
+    messagePinsModal?.style.removeProperty("left");
+    messagePinsModal?.style.removeProperty("top");
+  }
+  messagePinsModal?.showModal();
+}
+
+function requestMessagePinChange({ message = null, pin = null, pinned, undoToken = "" }) {
+  const task = currentTask();
+  const streamId = String(task?.streamId ?? pin?.streamId ?? "").trim();
+  const messageKey = String(message?.messageKey ?? pin?.messageKey ?? "").trim();
+  if (!streamId || (!messageKey && !undoToken)) return;
+  const mutationId = crypto.randomUUID();
+  const previous = state.messagePins.slice();
+  const streamPins = previous.filter((candidate) => candidate.streamId === streamId);
+  const selectedPinId = selectedMessagePinId(streamId, previous);
+  const removedIndex = Math.max(0, streamPins.findIndex((candidate) => candidate.id === pin?.id));
+  const backup = {
+    pins: previous,
+    messageKey,
+    streamId,
+    selectedPinId,
+    targetPinId: pin?.id ?? "",
+    removedIndex,
+    pinned: Boolean(pinned),
+    optimisticPinId: "",
+  };
+  if (pinned && !undoToken) {
+    backup.optimisticPinId = `optimistic:${mutationId}`;
+    state.messagePins = [{
+      id: backup.optimisticPinId,
+      streamId,
+      messageKey,
+      provider: message.provider ?? task.provider,
+      taskThreadId: message.threadId ?? task.threadId,
+      turnThreadId: message.threadId ?? task.threadId,
+      turnId: message.turnId,
+      itemId: message.itemId,
+      role: message.role,
+      preview: String(message.text ?? "").replace(/\s+/gu, " ").trim().slice(0, 320),
+      author: message.author ?? "",
+      time: message.time ?? null,
+      pinnedAt: new Date().toISOString(),
+      available: true,
+    }, ...state.messagePins];
+    setActiveMessagePinId(streamId, backup.optimisticPinId);
+  } else if (!undoToken) {
+    state.messagePins = state.messagePins.filter((candidate) => candidate.id !== pin?.id);
+    if (selectedPinId === pin?.id) {
+      selectMessagePinAfterRemoval({ streamId, removedIndex });
+    }
+  }
+  state.messagePinMutationBackups.set(mutationId, backup);
+  if (messageKey) state.pendingMessagePinKeys.add(messageKey);
+  renderMessagePinShelf();
+  renderMessagePinsList();
+  renderMessages({ preserveTop: true });
+  emit("message-pin:set", {
+    mutationId,
+    pinned,
+    streamId,
+    pinId: pin?.id,
+    messageKey,
+    undoToken,
+    provider: message?.provider,
+    taskThreadId: message?.threadId,
+    turnId: message?.turnId,
+    itemId: message?.itemId,
+    role: message?.role,
+  });
+}
+
+messagePinPrevious?.replaceChildren(messagePinIcon("caret-left"));
+messagePinNext?.replaceChildren(messagePinIcon("caret-right"));
+messagePinsOpen?.replaceChildren(messagePinIcon("list-bullets"));
+messagePinCurrent?.addEventListener("click", () => jumpToMessagePin(activePinForTask()?.pin));
+messagePinPrevious?.addEventListener("click", () => setActiveMessagePin(-1));
+messagePinNext?.addEventListener("click", () => setActiveMessagePin(1));
+messagePinsOpen?.addEventListener("click", openMessagePins);
+document.querySelector("[data-message-pins-close]")?.addEventListener("click", closeMessagePins);
+modalOverlays?.installDismissibleOverlay({ dialog: messagePinsModal, close: closeMessagePins });
+messagePinsList?.addEventListener("click", (event) => {
+  const jump = event.target.closest("[data-message-pin-jump]");
+  const remove = event.target.closest("[data-message-pin-remove]");
+  const pinId = String(jump?.dataset.messagePinJump ?? remove?.dataset.messagePinRemove ?? "");
+  const pin = state.messagePins.find((candidate) => candidate.id === pinId);
+  if (!pin) return;
+  if (jump) {
+    closeMessagePins();
+    jumpToMessagePin(pin);
+  } else requestMessagePinChange({ pin, pinned: false });
+});
+messagePinsClear?.addEventListener("click", () => {
+  const count = pinsForTask().length;
+  if (!count) return;
+  messagePinsClearCopy.textContent = `${count} закреплённых сообщений будут откреплены.`;
+  messagePinsClearModal?.showModal();
+});
+function closeMessagePinsClear() {
+  messagePinsClearModal?.close();
+  messagePinsClear?.focus({ preventScroll: true });
+}
+document.querySelector("[data-message-pins-clear-cancel]")?.addEventListener("click", closeMessagePinsClear);
+modalOverlays?.installDismissibleOverlay({ dialog: messagePinsClearModal, close: closeMessagePinsClear });
+document.querySelector("[data-message-pins-clear-confirm]")?.addEventListener("click", () => {
+  const task = currentTask();
+  const streamId = String(task?.streamId ?? "").trim();
+  if (!streamId) return;
+  const mutationId = crypto.randomUUID();
+  state.messagePinMutationBackups.set(mutationId, { pins: state.messagePins.slice(), messageKey: "" });
+  state.messagePins = state.messagePins.filter((pin) => pin.streamId !== streamId);
+  closeMessagePinsClear();
+  closeMessagePins();
+  renderMessagePinShelf();
+  renderMessages({ preserveTop: true });
+  emit("message-pins:clear", { mutationId, streamId });
+});
 
 function streamKey(task) {
   return String(task?.streamId ?? "").trim()
@@ -1649,17 +2438,22 @@ function renderWorkspaceArchive() {
   }, [
     el("strong", { text: workspace.name || "Без названия" }),
     el("span", {
-      text: `${workspace.streamCount} Streams · ${workspace.threadCount} Threads · ${workspace.remainingLabel}`,
-      title: workspace.purgeAfterMs
-        ? `Автоматическое удаление: ${new Date(workspace.purgeAfterMs).toLocaleString("ru-RU")}`
-        : "",
+      text: `${workspace.streamCount} Streams · ${workspace.threadCount} Threads · хранится бессрочно`,
     }),
-    el("button", {
-      type: "button",
-      class: "board-task-quiet workspace-archive-restore",
-      "data-workspace-archive-restore": workspace.id,
-      text: "Восстановить",
-    }),
+    el("span", { class: "workspace-archive-actions" }, [
+      el("button", {
+        type: "button",
+        class: "board-task-quiet workspace-archive-restore",
+        "data-workspace-archive-restore": workspace.id,
+        text: "Восстановить",
+      }),
+      el("button", {
+        type: "button",
+        class: "workspace-archive-delete",
+        "data-workspace-archive-delete": workspace.id,
+        text: "Удалить окончательно",
+      }),
+    ]),
   ])));
 }
 
@@ -1784,24 +2578,384 @@ function quickMessagesForScope(scope, scopeId = "") {
 
 function quickMessagesCountText(entries) {
   const count = window.AgentHubStreamTabs.normalizeQuickMessages({ global: entries }).global.length;
-  return count ? window.AgentHubStreamTabs.quickMessagesCountLabel(count) : "Не заданы";
+  return window.AgentHubStreamTabs.quickMessagesCountLabel(count);
 }
 
-function renderQuickMessagesControl(countElement, button, entries, disabled = false) {
-  if (countElement) countElement.textContent = quickMessagesCountText(entries);
-  if (button) {
-    button.disabled = Boolean(disabled);
-    button.setAttribute("aria-busy", String(disabled));
+const quickMessageEditorStates = new Map();
+const quickMessageEditorBindings = new WeakMap();
+const quickMessageMutations = new Map();
+const quickMessagePendingMutationIds = new Set();
+let quickMessageEditorNextId = 0;
+let quickMessageMutationNextId = 0;
+
+function quickMessageOwnerKey(scope, scopeId = "") {
+  const normalizedScope = scope === "global" ? "global" : scope === "workspace" ? "workspace" : "stream";
+  const normalizedId = normalizedScope === "global" ? "" : String(scopeId ?? "").trim();
+  return `${normalizedScope}\0${normalizedId}`;
+}
+
+function quickMessageEditorItem(entry, id = "") {
+  return {
+    id: id || `prompt-template-${++quickMessageEditorNextId}`,
+    title: String(entry?.title ?? entry?.label ?? entry?.text ?? ""),
+    text: String(entry?.text ?? ""),
+  };
+}
+
+function quickMessageEditorSignature(entries) {
+  return JSON.stringify((Array.isArray(entries) ? entries : []).map((entry) => ({
+    title: String(entry?.title ?? entry?.label ?? entry?.text ?? "").trim(),
+    text: String(entry?.text ?? "").trim(),
+  })).filter((entry) => entry.title || entry.text));
+}
+
+function quickMessageEditorState(container, ownerKey, entries = []) {
+  quickMessageEditorBindings.set(container, ownerKey);
+  let editorState = quickMessageEditorStates.get(ownerKey);
+  if (!editorState) {
+    const items = (Array.isArray(entries) ? entries : []).map((entry) => quickMessageEditorItem(entry));
+    editorState = {
+      items,
+      openId: items[0]?.id ?? "",
+      projectedSignature: quickMessageEditorSignature(entries),
+      keepDraft: false,
+      error: "",
+      disabled: false,
+    };
+    quickMessageEditorStates.set(ownerKey, editorState);
+  }
+  return editorState;
+}
+
+function boundQuickMessageEditorState(container) {
+  const ownerKey = quickMessageEditorBindings.get(container);
+  return ownerKey ? quickMessageEditorStates.get(ownerKey) : null;
+}
+
+function reconcileQuickMessageEditorState(editorState, entries) {
+  const values = Array.isArray(entries) ? entries : [];
+  const signature = quickMessageEditorSignature(values);
+  if (editorState.keepDraft || signature === editorState.projectedSignature) return;
+  const unused = new Set(editorState.items);
+  editorState.items = values.map((entry, index) => {
+    const normalized = quickMessageEditorItem(entry, "candidate");
+    const exact = [...unused].find((item) => (
+      item.title.trim() === normalized.title.trim() && item.text.trim() === normalized.text.trim()
+    ));
+    const positional = unused.has(editorState.items[index]) ? editorState.items[index] : null;
+    const previous = exact ?? positional;
+    if (previous) unused.delete(previous);
+    return quickMessageEditorItem(entry, previous?.id);
+  });
+  editorState.projectedSignature = signature;
+  if (!editorState.items.some((item) => item.id === editorState.openId)) {
+    editorState.openId = editorState.items[0]?.id ?? "";
   }
 }
 
-function renderGlobalQuickMessagesSettings() {
-  renderQuickMessagesControl(
-    settingsGlobalQuickMessagesCount,
-    settingsGlobalQuickMessages,
-    quickMessagesForScope("global"),
-    state.pendingSelections.has("quickMessages"),
+function quickMessageEditorEntries(container) {
+  const editorState = boundQuickMessageEditorState(container);
+  return (editorState?.items ?? []).map(({ title, text }) => ({
+    title: String(title).trim(),
+    text: String(text).trim(),
+  }));
+}
+
+function validQuickMessageEditorEntries(container) {
+  return quickMessageEditorEntries(container).filter((entry) => entry.title || entry.text);
+}
+
+function quickMessageEditorIcon(name, className = "") {
+  return window.AgentHubStreamTabs.createPhosphorIcon(document, name, className);
+}
+
+function quickMessageEditorActionButton({ action, icon, label = "", title, disabled = false, className = "" }) {
+  return el("button", {
+    type: "button",
+    class: `quick-message-editor-action ${className}`.trim(),
+    title,
+    "aria-label": title,
+    "data-quick-message-action": action,
+    disabled,
+  }, [
+    quickMessageEditorIcon(icon, "quick-message-editor-action-icon"),
+    label ? el("span", { text: label }) : null,
+  ].filter(Boolean));
+}
+
+function quickMessageEditorRow(entry, index, count, openId, disabled) {
+  const expanded = entry.id === openId;
+  const panelId = `${entry.id}-panel`;
+  const title = entry.title.trim() || "Без названия";
+  const preview = entry.text.trim() || "Пустой шаблон";
+  return el("div", {
+    class: `quick-message-editor-row${expanded ? " is-open" : ""}`,
+    "data-quick-message-row": entry.id,
+    "data-quick-message-index": String(index),
+  }, [
+    el("div", { class: "quick-message-editor-summary-row" }, [
+      el("button", {
+        type: "button",
+        class: "quick-message-editor-summary",
+        "data-quick-message-action": "toggle",
+        "aria-expanded": String(expanded),
+        "aria-controls": panelId,
+        disabled,
+      }, [
+        el("span", { class: "quick-message-editor-number", text: String(index + 1).padStart(2, "0") }),
+        el("span", { class: "quick-message-editor-title", text: title }),
+        el("span", { class: "quick-message-editor-preview", text: preview }),
+      ]),
+      el("div", { class: "quick-message-editor-order", "aria-label": `Порядок шаблона ${index + 1}` }, [
+        quickMessageEditorActionButton({
+          action: "up", icon: "arrow-up", title: `Переместить шаблон ${index + 1} выше`,
+          disabled: disabled || index === 0,
+        }),
+        quickMessageEditorActionButton({
+          action: "down", icon: "arrow-down", title: `Переместить шаблон ${index + 1} ниже`,
+          disabled: disabled || index === count - 1,
+        }),
+      ]),
+      quickMessageEditorActionButton({
+        action: "toggle",
+        icon: expanded ? "caret-down" : "caret-right",
+        title: expanded ? `Свернуть шаблон ${index + 1}` : `Развернуть шаблон ${index + 1}`,
+        disabled,
+        className: "toggle",
+      }),
+    ]),
+    el("div", {
+      class: "quick-message-editor-details",
+      id: panelId,
+      hidden: !expanded,
+    }, [
+      el("input", {
+        type: "text",
+        maxlength: "64",
+        value: entry.title,
+        placeholder: "Название шаблона",
+        "aria-label": `Название prompt-шаблона ${index + 1}`,
+        "data-quick-message-title": "",
+        disabled,
+      }),
+      el("textarea", {
+        rows: "5",
+        maxlength: "4000",
+        text: entry.text,
+        placeholder: "Текст промпта…",
+        "aria-label": `Текст prompt-шаблона ${index + 1}`,
+        "data-quick-message-text": "",
+        disabled,
+      }),
+      el("div", { class: "quick-message-editor-footer" }, [
+        el("div", { class: "quick-message-editor-footer-order" }, [
+          quickMessageEditorActionButton({
+            action: "up", icon: "arrow-up", label: "выше", title: `Переместить шаблон ${index + 1} выше`,
+            disabled: disabled || index === 0,
+          }),
+          quickMessageEditorActionButton({
+            action: "down", icon: "arrow-down", label: "ниже", title: `Переместить шаблон ${index + 1} ниже`,
+            disabled: disabled || index === count - 1,
+          }),
+          quickMessageEditorActionButton({
+            action: "duplicate", icon: "copy", label: "Дублировать", title: `Дублировать шаблон ${index + 1}`,
+            disabled: disabled || count >= 20,
+          }),
+        ]),
+        quickMessageEditorActionButton({
+          action: "delete", icon: "trash", label: "Удалить", title: `Удалить шаблон ${index + 1}`,
+          disabled, className: "danger",
+        }),
+      ]),
+    ]),
+  ]);
+}
+
+function quickMessageEditorFocus(container) {
+  const active = document.activeElement;
+  const row = active?.closest?.("[data-quick-message-row]");
+  if (!row || !container.contains(active)) return null;
+  return {
+    id: row.dataset.quickMessageRow,
+    action: active.dataset.quickMessageAction ?? "",
+    field: active.hasAttribute("data-quick-message-title")
+      ? "title"
+      : active.hasAttribute("data-quick-message-text") ? "text" : "",
+    start: active.selectionStart,
+    end: active.selectionEnd,
+  };
+}
+
+function restoreQuickMessageEditorFocus(container, focus) {
+  if (!focus?.id) return;
+  const row = [...container.querySelectorAll("[data-quick-message-row]")]
+    .find((candidate) => candidate.dataset.quickMessageRow === focus.id);
+  const target = focus.field
+    ? row?.querySelector(`[data-quick-message-${focus.field}]`)
+    : row?.querySelector(`[data-quick-message-action="${focus.action}"]`);
+  if (!target || target.disabled) return;
+  target.focus({ preventScroll: true });
+  if (focus.field && Number.isInteger(focus.start) && Number.isInteger(focus.end)) {
+    target.setSelectionRange?.(focus.start, focus.end);
+  }
+}
+
+function setQuickMessageEditorCount(container, count) {
+  const output = container?.closest(".quick-messages-editor")?.querySelector(".setting-value");
+  if (output) output.textContent = window.AgentHubStreamTabs.quickMessagesCountLabel(count);
+}
+
+function paintQuickMessagesEditor(container, disabled = false, requestedFocus = null) {
+  const editorState = boundQuickMessageEditorState(container);
+  if (!container || !editorState) return;
+  const preservedFocus = requestedFocus ?? quickMessageEditorFocus(container);
+  editorState.disabled = disabled;
+  if (editorState.items.length && !editorState.items.some((item) => item.id === editorState.openId)) {
+    editorState.openId = editorState.items[0].id;
+  }
+  const rows = container.querySelector("[data-quick-message-rows]");
+  rows?.replaceChildren(...editorState.items.map((entry, index) => (
+    quickMessageEditorRow(entry, index, editorState.items.length, editorState.openId, disabled)
+  )));
+  const error = container.querySelector("[data-quick-message-error]");
+  if (error) {
+    error.textContent = editorState.error;
+    error.hidden = !editorState.error;
+  }
+  const add = container.querySelector("[data-quick-message-add]");
+  if (add) {
+    add.disabled = disabled || editorState.items.length >= 20;
+    add.replaceChildren(
+      quickMessageEditorIcon("plus", "quick-message-editor-add-icon"),
+      el("span", { text: "Добавить шаблон" }),
+    );
+  }
+  container.setAttribute("aria-busy", String(disabled));
+  restoreQuickMessageEditorFocus(container, preservedFocus);
+}
+
+function renderQuickMessagesEditor(container, scope, scopeId, entries, disabled = false) {
+  if (!container) return;
+  const ownerKey = quickMessageOwnerKey(scope, scopeId);
+  const editorState = quickMessageEditorState(container, ownerKey, entries);
+  reconcileQuickMessageEditorState(editorState, entries);
+  setQuickMessageEditorCount(container, editorState.items.length);
+  paintQuickMessagesEditor(container, disabled);
+}
+
+function saveQuickMessagesForScope(scope, scopeId, entries, { rerender = true, container = null } = {}) {
+  const ownerKey = quickMessageOwnerKey(scope, scopeId);
+  /* Область разошлась с хранилищем, пока её правили: запись отключена до
+     явного решения человека, иначе черновик затёр бы чужое изменение. */
+  if (promptTemplatesConflicts.has(ownerKey)) return;
+  if (container && quickMessageEditorBindings.get(container) !== ownerKey) return;
+  const editorState = container ? boundQuickMessageEditorState(container) : quickMessageEditorStates.get(ownerKey);
+  const mutationId = `quick-messages-${++quickMessageMutationNextId}`;
+  const backup = window.AgentHubStreamTabs.normalizeQuickMessages(state.selection.quickMessages);
+  if (editorState) {
+    editorState.error = "";
+    editorState.keepDraft = false;
+    editorState.pendingMutationId = mutationId;
+    editorState.projectedSignature = quickMessageEditorSignature(entries);
+  }
+  const quickMessages = window.AgentHubStreamTabs.setQuickMessagesForScope(
+    state.selection,
+    scope,
+    scopeId,
+    entries,
   );
+  state.selection = { ...state.selection, quickMessages };
+  quickMessageMutations.set(mutationId, { ownerKey, backup, rejected: false });
+  renderComposerQuickMessages();
+  if (rerender) renderQuickMessageSettingsControls();
+  emit("selection:set", { key: "quickMessages", value: quickMessages, mutationId });
+}
+
+function handleQuickMessageEditorClick(event, container, scope, scopeId) {
+  const ownerKey = quickMessageOwnerKey(scope, scopeId);
+  if (quickMessageEditorBindings.get(container) !== ownerKey) return;
+  const editorState = boundQuickMessageEditorState(container);
+  if (!editorState || editorState.disabled) return;
+  const add = event.target.closest("[data-quick-message-add]");
+  if (add) {
+    if (editorState.items.length >= 20) return;
+    const item = quickMessageEditorItem({ title: "", text: "" });
+    editorState.items.push(item);
+    editorState.openId = item.id;
+    setQuickMessageEditorCount(container, editorState.items.length);
+    paintQuickMessagesEditor(container, false, { id: item.id, field: "title" });
+    return;
+  }
+  const action = event.target.closest("[data-quick-message-action]");
+  const row = action?.closest("[data-quick-message-row]");
+  if (!action || !row) return;
+  const index = editorState.items.findIndex((item) => item.id === row.dataset.quickMessageRow);
+  if (index < 0) return;
+  const kind = action.dataset.quickMessageAction;
+  if (kind === "toggle") {
+    editorState.openId = editorState.items[index].id;
+    paintQuickMessagesEditor(container, false, { id: editorState.openId, action: "toggle" });
+    return;
+  }
+  let focus = { id: editorState.items[index].id, action: kind };
+  if (kind === "delete") {
+    editorState.items.splice(index, 1);
+    editorState.openId = editorState.items[Math.min(index, editorState.items.length - 1)]?.id ?? "";
+    focus = editorState.openId ? { id: editorState.openId, action: "toggle" } : null;
+  } else if (kind === "duplicate") {
+    if (editorState.items.length >= 20) return;
+    const original = editorState.items[index];
+    const copy = quickMessageEditorItem({
+      title: `${original.title.trim() || "Без названия"} (копия)`,
+      text: original.text,
+    });
+    editorState.items.splice(index + 1, 0, copy);
+    editorState.openId = copy.id;
+    focus = { id: copy.id, field: "title" };
+  } else {
+    const nextIndex = kind === "up" ? index - 1 : index + 1;
+    if (nextIndex < 0 || nextIndex >= editorState.items.length) return;
+    [editorState.items[index], editorState.items[nextIndex]] = [
+      editorState.items[nextIndex], editorState.items[index],
+    ];
+  }
+  setQuickMessageEditorCount(container, editorState.items.length);
+  paintQuickMessagesEditor(container, false, focus);
+  saveQuickMessagesForScope(scope, scopeId, validQuickMessageEditorEntries(container), {
+    container,
+    rerender: false,
+  });
+}
+
+function handleQuickMessageEditorInput(event, container) {
+  const field = event.target.closest("[data-quick-message-title], [data-quick-message-text]");
+  const row = field?.closest("[data-quick-message-row]");
+  const editorState = boundQuickMessageEditorState(container);
+  const item = editorState?.items.find((candidate) => candidate.id === row?.dataset.quickMessageRow);
+  if (!field || !item) return;
+  if (field.hasAttribute("data-quick-message-title")) item.title = field.value;
+  else item.text = field.value;
+  editorState.error = "";
+  const summary = row.querySelector(".quick-message-editor-title");
+  const preview = row.querySelector(".quick-message-editor-preview");
+  if (summary) summary.textContent = item.title.trim() || "Без названия";
+  if (preview) preview.textContent = item.text.trim() || "Пустой шаблон";
+}
+
+function handleQuickMessageEditorChange(container, scope, scopeId) {
+  if (quickMessageEditorBindings.get(container) !== quickMessageOwnerKey(scope, scopeId)) return;
+  const entries = validQuickMessageEditorEntries(container);
+  saveQuickMessagesForScope(scope, scopeId, entries, { rerender: false, container });
+  setQuickMessageEditorCount(container, boundQuickMessageEditorState(container)?.items.length ?? entries.length);
+}
+
+function renderGlobalQuickMessagesSettings() {
+  const pending = state.pendingSelections.has("quickMessages");
+  if (settingsGlobalQuickMessagesCount) {
+    settingsGlobalQuickMessagesCount.textContent = quickMessagesCountText(quickMessagesForScope("global"));
+  }
+  settingsGlobalQuickMessagesEntry?.setAttribute("aria-busy", String(pending));
+  refreshOpenPromptTemplates();
 }
 
 function renderWorkspaceCardQuickMessages(workspaceId = workspaceCardId) {
@@ -1813,21 +2967,26 @@ function renderWorkspaceCardQuickMessages(workspaceId = workspaceCardId) {
       ? "Доступно после создания"
       : quickMessagesCountText(quickMessagesForScope("workspace", id));
   }
-  if (workspaceCardQuickMessages) {
-    workspaceCardQuickMessages.disabled = pending || createMode;
-    workspaceCardQuickMessages.setAttribute("aria-busy", String(pending));
+  if (workspaceCardQuickMessagesEntry) {
+    workspaceCardQuickMessagesEntry.disabled = createMode;
+    workspaceCardQuickMessagesEntry.title = createMode
+      ? "Шаблоны Workspace доступны после создания"
+      : "Открыть общую форму prompt-шаблонов";
+    workspaceCardQuickMessagesEntry.setAttribute("aria-busy", String(pending));
   }
+  refreshOpenPromptTemplates();
 }
 
 function renderStreamQuickMessagesSettings() {
   const task = currentTask();
   const streamId = String(task?.streamId ?? "").trim();
-  renderQuickMessagesControl(
-    dialogStreamQuickMessagesCount,
-    dialogStreamQuickMessages,
-    quickMessagesForScope("stream", streamId),
-    state.pendingSelections.has("quickMessages") || !streamId,
-  );
+  if (dialogStreamQuickMessagesCount) {
+    dialogStreamQuickMessagesCount.textContent = streamId
+      ? quickMessagesCountText(quickMessagesForScope("stream", streamId))
+      : "Недоступно";
+  }
+  if (dialogStreamQuickMessagesEntry) dialogStreamQuickMessagesEntry.disabled = !streamId;
+  refreshOpenPromptTemplates();
 }
 
 function renderQuickMessageSettingsControls() {
@@ -1836,42 +2995,349 @@ function renderQuickMessageSettingsControls() {
   renderStreamQuickMessagesSettings();
 }
 
-function saveQuickMessagesForScope(scope, scopeId, entries) {
-  const quickMessages = window.AgentHubStreamTabs.setQuickMessagesForScope(
-    state.selection,
-    scope,
-    scopeId,
-    entries,
-  );
-  state.selection = { ...state.selection, quickMessages };
+function rejectQuickMessagesSelection(mutationId = "") {
+  const mutation = quickMessageMutations.get(String(mutationId ?? ""));
+  if (!mutation) return;
+  state.selection = { ...state.selection, quickMessages: mutation.backup };
+  const editorState = quickMessageEditorStates.get(mutation.ownerKey);
+  if (editorState?.pendingMutationId === mutationId) {
+    editorState.keepDraft = true;
+    editorState.error = "Не удалось сохранить. Черновик оставлен в редакторе.";
+  }
+  mutation.rejected = true;
   renderComposerQuickMessages();
   renderQuickMessageSettingsControls();
-  emit("selection:set", { key: "quickMessages", value: quickMessages });
 }
 
-async function editQuickMessagesForScope(scope, scopeId, title) {
-  const id = String(scopeId ?? "").trim();
-  if (scope !== "global" && !id) return;
-  const quickMessages = window.AgentHubStreamTabs.normalizeQuickMessages(state.selection.quickMessages);
-  const key = scope === "global" ? "global" : scope === "workspace" ? "workspaces" : "streams";
-  const current = scope === "global" ? quickMessages.global : quickMessages[key][id] ?? [];
-  const value = window.AgentHubStreamTabs.quickMessagesToText(current);
-  const text = await askText({
-    title: `Быстрые ответы: ${title}`,
-    value,
-    multiline: true,
-  });
-  if (text === null) return;
-  saveQuickMessagesForScope(scope, id, window.AgentHubStreamTabs.quickMessagesFromText(text));
+function settleQuickMessagesSelection(mutationId = "") {
+  const key = String(mutationId ?? "");
+  const mutation = quickMessageMutations.get(key);
+  if (!mutation) return;
+  const editorState = quickMessageEditorStates.get(mutation.ownerKey);
+  if (editorState?.pendingMutationId === key) {
+    if (!mutation.rejected) {
+      editorState.keepDraft = false;
+      editorState.error = "";
+    }
+    editorState.pendingMutationId = "";
+  }
+  quickMessageMutations.delete(key);
+}
+
+/* ------------------------------------------ общая форма prompt-шаблонов */
+
+/* Один и тот же редактор стоял сразу в трёх местах и в узкой панели настроек
+   не помещался. Теперь он один и живёт в общей форме, а прежние места её
+   открывают с нужной областью. Сам редактор, его состояние, ошибки и учёт
+   незавершённых сохранений остались прежними: форма их переносит, а не
+   заменяет, поэтому и запись идёт единственным прежним путём. */
+const PROMPT_TEMPLATE_SCOPES = ["global", "workspace", "stream"];
+const PROMPT_TEMPLATE_SCOPE_NOTES = {
+  global: "Видны во всех Workspace и Stream.",
+  workspace: "Видны во всех Stream этого Workspace.",
+  stream: "Видны только в этом Stream.",
+};
+
+let promptTemplatesScope = "global";
+let promptTemplatesContext = { streamId: "", streamName: "", workspaceId: "", workspaceName: "" };
+let promptTemplatesReturnFocus = null;
+/* Область считается правленой с первого ввода, и тогда же запоминается точка
+   отсчёта — снимок хранилища на этот момент. Пока область правится, входящее
+   обновление её черновик не подменяет. Если оно изменило ту же область, это
+   расхождение: до явного решения человека ни один путь записи не срабатывает
+   и форма не закрывается, чтобы черновик не потерялся. */
+const promptTemplatesEditBase = new Map();
+const promptTemplatesConflicts = new Set();
+
+function promptTemplateScopeId(scope) {
+  if (scope === "workspace") return promptTemplatesContext.workspaceId;
+  if (scope === "stream") return promptTemplatesContext.streamId;
+  return "";
+}
+
+function promptTemplateScopeAvailable(scope) {
+  return scope === "global" || Boolean(promptTemplateScopeId(scope));
+}
+
+function promptTemplateScopeName(scope) {
+  if (scope === "global") return "Глобальные";
+  if (scope === "workspace") return promptTemplatesContext.workspaceName || "Workspace";
+  return promptTemplatesContext.streamName || "Stream";
+}
+
+function promptTemplateScopeEntries(scope) {
+  return promptTemplateScopeAvailable(scope)
+    ? quickMessagesForScope(scope, promptTemplateScopeId(scope))
+    : [];
+}
+
+function promptTemplatesOwnerKey(scope = promptTemplatesScope) {
+  return quickMessageOwnerKey(scope, promptTemplateScopeId(scope));
+}
+
+function promptTemplateEditorState(scope) {
+  return quickMessageEditorStates.get(promptTemplatesOwnerKey(scope)) ?? null;
+}
+
+function markPromptTemplatesEdited(scope = promptTemplatesScope) {
+  if (!promptTemplateScopeAvailable(scope)) return;
+  const ownerKey = promptTemplatesOwnerKey(scope);
+  if (!promptTemplatesEditBase.has(ownerKey)) {
+    promptTemplatesEditBase.set(ownerKey, {
+      scope,
+      scopeId: promptTemplateScopeId(scope),
+      signature: quickMessageEditorSignature(promptTemplateScopeEntries(scope)),
+    });
+  }
+  const editorState = quickMessageEditorStates.get(ownerKey);
+  if (editorState) editorState.keepDraft = true;
+}
+
+/* Точка отсчёта появляется и без ввода — когда сохранение отклонили и черновик
+   остался в редакторе: тогда отсчёт ведётся от откатившегося хранилища. */
+function refreshPromptTemplatesConflicts() {
+  for (const [ownerKey, editorState] of quickMessageEditorStates) {
+    if (editorState?.keepDraft !== true) {
+      promptTemplatesEditBase.delete(ownerKey);
+      promptTemplatesConflicts.delete(ownerKey);
+    }
+  }
+  for (const scope of PROMPT_TEMPLATE_SCOPES) {
+    if (!promptTemplateScopeAvailable(scope)) continue;
+    const ownerKey = promptTemplatesOwnerKey(scope);
+    if (promptTemplatesEditBase.has(ownerKey)) continue;
+    if (quickMessageEditorStates.get(ownerKey)?.keepDraft !== true) continue;
+    promptTemplatesEditBase.set(ownerKey, {
+      scope,
+      scopeId: promptTemplateScopeId(scope),
+      signature: quickMessageEditorSignature(promptTemplateScopeEntries(scope)),
+    });
+  }
+  for (const [ownerKey, base] of promptTemplatesEditBase) {
+    const stored = quickMessageEditorSignature(quickMessagesForScope(base.scope, base.scopeId));
+    if (stored !== base.signature) promptTemplatesConflicts.add(ownerKey);
+  }
+  return promptTemplatesConflicts;
+}
+
+function promptTemplatesScopeConflicted(scope = promptTemplatesScope) {
+  return promptTemplateScopeAvailable(scope) && promptTemplatesConflicts.has(promptTemplatesOwnerKey(scope));
+}
+
+/* Область доступна в этом окне формы, только если её можно выбрать прямо
+   здесь: глобальная, открытый Workspace и его Stream. Черновик и расхождение
+   чужой области сохраняются и ждут, когда откроют её Workspace, но форму,
+   открытую в другом месте, они не держат — иначе из неё некуда деться. */
+function promptTemplatesAccessibleScopes() {
+  return PROMPT_TEMPLATE_SCOPES.filter((scope) => promptTemplateScopeAvailable(scope));
+}
+
+function promptTemplatesBlocked() {
+  return promptTemplatesAccessibleScopes().some((scope) => promptTemplatesScopeConflicted(scope));
+}
+
+/* У области с неудавшимся сохранением счётчик показывает то, что человек видит
+   в редакторе, а не то, что успело лечь в хранилище. */
+function promptTemplateScopeCount(scope) {
+  const editorState = promptTemplateEditorState(scope);
+  if (editorState && (editorState.keepDraft || editorState.pendingMutationId)) return editorState.items.length;
+  return window.AgentHubStreamTabs.normalizeQuickMessages({
+    global: promptTemplateScopeEntries(scope),
+  }).global.length;
+}
+
+/* Кнопки областей создаются один раз и правятся на месте: счётчик обновляется
+   и по change из поля, а change приходит на blur между mousedown и click по
+   самой кнопке, и пересборка узлов съедала бы этот клик. */
+function promptTemplatesScopeButton(scope) {
+  const existing = promptTemplatesScopes.querySelector(`[data-prompt-templates-scope="${scope}"]`);
+  if (existing) return existing;
+  const button = el("button", {
+    type: "button",
+    class: "chip-button prompt-templates-scope",
+    "data-prompt-templates-scope": scope,
+  }, [
+    el("span", { class: "prompt-templates-scope-name" }),
+    el("span", { class: "prompt-templates-scope-count" }),
+  ]);
+  promptTemplatesScopes.append(button);
+  return button;
+}
+
+function renderPromptTemplatesScopes() {
+  if (!promptTemplatesScopes) return;
+  for (const scope of PROMPT_TEMPLATE_SCOPES) {
+    const button = promptTemplatesScopeButton(scope);
+    const available = promptTemplateScopeAvailable(scope);
+    button.disabled = !available;
+    button.setAttribute("aria-pressed", String(available && scope === promptTemplatesScope));
+    button.toggleAttribute("data-prompt-templates-diverged", available && promptTemplatesScopeDiverged(scope));
+    if (available) button.removeAttribute("title");
+    else button.title = "В текущем контексте эта область недоступна";
+    button.querySelector(".prompt-templates-scope-name").textContent = promptTemplateScopeName(scope);
+    button.querySelector(".prompt-templates-scope-count").textContent = available
+      ? String(promptTemplateScopeCount(scope))
+      : "—";
+  }
+  if (promptTemplatesNote) {
+    promptTemplatesNote.textContent = PROMPT_TEMPLATE_SCOPE_NOTES[promptTemplatesScope] ?? "";
+  }
+}
+
+/* Неудавшееся сохранение оставляет черновик в редакторе. Если ту же область за
+   это время изменили снаружи, подменять черновик молча нельзя и записывать его
+   поверх тоже: расхождение показывается явно, а выбор остаётся за человеком. */
+function promptTemplatesScopeDiverged(scope = promptTemplatesScope) {
+  return promptTemplatesScopeConflicted(scope);
+}
+
+function renderPromptTemplatesConflict() {
+  /* Пересчёт обязателен именно здесь: после удачной записи черновик совпал с
+     хранилищем, и точку отсчёта надо снять, иначе следующее чужое обновление
+     выглядело бы расхождением там, где его нет. */
+  refreshPromptTemplatesConflicts();
+  const active = promptTemplatesScopeConflicted();
+  const others = promptTemplatesAccessibleScopes()
+    .filter((scope) => scope !== promptTemplatesScope && promptTemplatesScopeConflicted(scope))
+    .map((scope) => promptTemplateScopeName(scope));
+  if (promptTemplatesConflict) promptTemplatesConflict.hidden = !(active || others.length > 0);
+  if (promptTemplatesConflictText) {
+    promptTemplatesConflictText.textContent = active
+      ? "Сохранённые шаблоны этой области изменились, пока правка не записалась. Черновик оставлен здесь, запись отключена до вашего решения."
+      : others.length
+        ? `Шаблоны области «${others.join("», «")}» изменились в другом месте. Откройте эту область и разберите расхождение.`
+        : "";
+  }
+  if (promptTemplatesReload) promptTemplatesReload.hidden = !active;
+}
+
+/* Подпись со счётчиком стоит рядом со входом, а редактор теперь в форме,
+   поэтому после правки счётчики обновляются отдельно от перерисовки строк.
+   У области, открытой в форме, подпись показывает то же число строк, что
+   человек видит в редакторе, включая только что добавленную пустую. */
+function promptTemplateEntryCountText(scope, scopeId) {
+  const editorState = quickMessageEditorStates.get(quickMessageOwnerKey(scope, scopeId));
+  if (promptTemplatesModal?.open && editorState
+    && promptTemplatesScope === scope && promptTemplateScopeId(scope) === scopeId) {
+    return window.AgentHubStreamTabs.quickMessagesCountLabel(editorState.items.length);
+  }
+  return quickMessagesCountText(quickMessagesForScope(scope, scopeId));
+}
+
+function renderPromptTemplateEntryCounts() {
+  if (settingsGlobalQuickMessagesCount) {
+    settingsGlobalQuickMessagesCount.textContent = promptTemplateEntryCountText("global", "");
+  }
+  if (workspaceCardQuickMessagesCount && workspaceCardId && workspaceCardMode !== "create") {
+    workspaceCardQuickMessagesCount.textContent = promptTemplateEntryCountText("workspace", workspaceCardId);
+  }
+  const streamId = String(currentTask()?.streamId ?? "").trim();
+  if (dialogStreamQuickMessagesCount && streamId) {
+    dialogStreamQuickMessagesCount.textContent = promptTemplateEntryCountText("stream", streamId);
+  }
+}
+
+function renderPromptTemplatesForm() {
+  const scope = promptTemplatesScope;
+  refreshPromptTemplatesConflicts();
+  renderQuickMessagesEditor(
+    promptTemplatesEditor,
+    scope,
+    promptTemplateScopeId(scope),
+    promptTemplateScopeEntries(scope),
+    state.pendingSelections.has("quickMessages")
+      || !promptTemplateScopeAvailable(scope)
+      || promptTemplatesScopeConflicted(scope),
+  );
+  renderPromptTemplatesScopes();
+  renderPromptTemplatesConflict();
+}
+
+/* Пока форма открыта, снимок может обновить ту же область. Редактор без
+   незаписанного черновика следует хранилищу, черновик остаётся на месте.
+   Форма сама знает свою активную область, поэтому перерисовывается на любое
+   обновление шаблонов: сверять её с областью вызывающего незачем. */
+function refreshOpenPromptTemplates() {
+  if (!promptTemplatesModal?.open) return;
+  renderPromptTemplatesForm();
+}
+
+function setPromptTemplatesScope(scope) {
+  if (scope === promptTemplatesScope || !promptTemplateScopeAvailable(scope)) return;
+  promptTemplatesScope = scope;
+  renderPromptTemplatesForm();
+  promptTemplatesScopes
+    ?.querySelector(`[data-prompt-templates-scope="${scope}"]`)
+    ?.focus({ preventScroll: true });
+}
+
+/* Явный отказ от своего черновика в пользу сохранённых значений. */
+function reloadPromptTemplatesScope() {
+  const ownerKey = promptTemplatesOwnerKey();
+  promptTemplatesEditBase.delete(ownerKey);
+  promptTemplatesConflicts.delete(ownerKey);
+  const editorState = promptTemplateEditorState(promptTemplatesScope);
+  if (editorState) {
+    editorState.keepDraft = false;
+    editorState.error = "";
+    editorState.projectedSignature = "";
+  }
+  renderPromptTemplatesForm();
+}
+
+function openPromptTemplates(scope, overrides = {}) {
+  if (!promptTemplatesModal) return;
+  const current = currentQuickMessageContext();
+  const workspaceId = String(overrides.workspaceId ?? current?.workspaceId ?? "").trim();
+  /* Форму открывают и из карточки чужого Workspace: область Stream остаётся
+     доступной только тогда, когда открытый Stream действительно его. */
+  const keepsStream = Boolean(current) && current.workspaceId === workspaceId;
+  promptTemplatesContext = {
+    streamId: keepsStream ? current.streamId : "",
+    streamName: keepsStream ? current.streamName : "",
+    workspaceId,
+    workspaceName: String(
+      overrides.workspaceName
+      ?? (keepsStream ? current.workspaceName : workspaceCatalogItem(workspaceId)?.name)
+      ?? "",
+    ).trim(),
+  };
+  promptTemplatesScope = promptTemplateScopeAvailable(scope) ? scope : "global";
+  promptTemplatesReturnFocus = document.activeElement;
+  renderPromptTemplatesForm();
+  if (!promptTemplatesModal.open) promptTemplatesModal.showModal();
+  promptTemplatesScopes?.querySelector("[aria-pressed='true']")?.focus({ preventScroll: true });
 }
 
 function quickMessageScopeLabel(scope) {
   return ({ global: "G", workspace: "W", stream: "S" })[scope] ?? "S";
 }
 
+function quickMessageActionMode() {
+  return state.selection.quickMessageActionMode === "send" ? "send" : "insert";
+}
+
+function quickMessageAction(mode, inverted = false) {
+  const primary = mode === "send" ? "send" : "insert";
+  return inverted ? (primary === "send" ? "insert" : "send") : primary;
+}
+
+function quickMessageActionCopy(mode) {
+  return mode === "send"
+    ? {
+        note: "Ctrl + нажатие — вставить в поле.",
+        title: "Отправить сразу. Ctrl + нажатие — вставить в поле.",
+      }
+    : {
+        note: "Ctrl + нажатие — отправить.",
+        title: "Вставить в поле. Ctrl + нажатие — отправить.",
+      };
+}
+
 function renderComposerQuickMessages() {
   if (!composerQuickMessages) return;
   const entries = quickMessageEntriesForCurrentTask();
+  const actionCopy = quickMessageActionCopy(quickMessageActionMode());
   composerQuickMessages.hidden = entries.length === 0;
   composerQuickMessages.replaceChildren(...entries.map((entry, index) => {
     const button = el("button", {
@@ -1879,15 +3345,27 @@ function renderComposerQuickMessages() {
       class: "composer-quick-message",
       "data-quick-message-index": String(index),
       "data-quick-message-scope": entry.scope,
-      title: entry.text,
+      title: `${entry.title}. ${actionCopy.title}`,
+      "aria-label": `${entry.title}. ${actionCopy.title}`,
       disabled: Boolean(pendingComposerRequest),
     }, [
       el("span", { class: "composer-quick-message-scope", text: quickMessageScopeLabel(entry.scope) }),
-      el("span", { class: "composer-quick-message-label", text: entry.label }),
+      el("span", { class: "composer-quick-message-label", text: entry.title }),
     ]);
     button.__agentHubQuickMessage = entry;
     return button;
   }));
+}
+
+function renderQuickMessageActionModeSetting() {
+  const mode = quickMessageActionMode();
+  const pending = state.pendingSelections.has("quickMessageActionMode");
+  if (quickMessageActionModeSelect) {
+    quickMessageActionModeSelect.value = mode;
+    quickMessageActionModeSelect.disabled = pending;
+    quickMessageActionModeSelect.setAttribute("aria-busy", String(pending));
+  }
+  if (quickMessageActionModeNote) quickMessageActionModeNote.textContent = quickMessageActionCopy(mode).note;
 }
 
 function reconcileOpenStreams(workspaceId, streams) {
@@ -1920,14 +3398,14 @@ function reconcileOpenStreams(workspaceId, streams) {
   return new Set(normalized);
 }
 
-function toggleOpenStream(workspaceId, streamId, streams, { additive = false } = {}) {
+function toggleOpenStream(workspaceId, streamId, streams, { additive = false, preserveClickTarget = false } = {}) {
   restoreOpenStreams();
   const stream = streams.find((value) => value.id === streamId);
   const target = representativeStreamTask(stream);
   if (!target) return;
   if (surface === "mobile") {
     state.openStreamsByWorkspace.set(workspaceId, [streamId]);
-    selectTaskFromUi(target.id);
+    selectTaskFromUi(target.id, { preserveStreamTabs: preserveClickTarget });
     return;
   }
   const available = new Set(streams.map((value) => value.id));
@@ -1943,11 +3421,11 @@ function toggleOpenStream(workspaceId, streamId, streams, { additive = false } =
   state.configuredOpenStreamWorkspaces.add(workspaceId);
   persistOpenStreams();
   if (next.includes(streamId)) {
-    selectTaskFromUi(target.id);
+    selectTaskFromUi(target.id, { preserveStreamTabs: preserveClickTarget });
     return;
   }
   const fallback = representativeStreamTask(streams.find((value) => value.id === next[0]));
-  if (fallback) selectTaskFromUi(fallback.id);
+  if (fallback) selectTaskFromUi(fallback.id, { preserveStreamTabs: preserveClickTarget });
 }
 
 /* =========================================================== роутер видов */
@@ -2145,6 +3623,12 @@ function populateBackgroundOptions(theme = root.dataset.theme) {
 }
 
 function setView(view, { persist = true, activate = true } = {}) {
+  return window.AgentHubCommandTrace.measure("ui-navigation", "set-view", () => (
+    setViewContent(view, { persist, activate })
+  ));
+}
+
+function setViewContent(view, { persist = true, activate = true } = {}) {
   const next = navigationTabs.isStandaloneNavigationTab(view) ? view : "chat";
   root.dataset.view = next;
   for (const button of document.querySelectorAll("[data-view-button]")) {
@@ -2240,6 +3724,8 @@ function shortModelLabel(value) {
   const source = String(value ?? "").trim();
   if (!source) return "";
   const normalized = source.toLowerCase();
+  if (normalized === "gpt-6-astra" || normalized === "gpt-6 astra") return "Astra";
+  if (normalized.includes("astra")) return source;
   const named = [
     ["terra", "Terra"],
     ["luna", "Luna"],
@@ -2275,6 +3761,10 @@ function modelTier(value) {
 }
 
 function renderTasks() {
+  return window.AgentHubCommandTrace.measure("ui-render", "task-list", renderTasksContent);
+}
+
+function renderTasksContent() {
   const filter = (taskFilter.value ?? "").trim().toLowerCase();
   const visible = state.tasks.filter((task) => {
     if (!filter) return true;
@@ -2282,6 +3772,7 @@ function renderTasks() {
       .toLowerCase().includes(filter);
     return local || state.searchResults.has(task.id);
   });
+  reusableWorkspaceCards = indexRenderedCards(taskList, ".task-workspace-item", "data-workspace-id");
   taskList.replaceChildren();
   let visibleCount = visible.length;
   const { workspaceTasks, unassignedTasks } = window.AgentHubStreamTabs.taskListSections(visible);
@@ -2311,9 +3802,6 @@ function renderTasks() {
         folderNames: workspaceFolderCatalogNames(),
       });
       for (const group of sections.active) taskList.append(renderTaskWorkspaceItem(group));
-      if (sections.active.length && sections.catalog.length) {
-        taskList.append(renderTaskWorkspaceDivider("Все"));
-      }
       for (const entry of sections.catalog) {
         if (entry.type === "workspace") {
           taskList.append(renderTaskWorkspaceItem(entry.group));
@@ -2338,6 +3826,8 @@ function renderTasks() {
   }
   taskCount.hidden = !hasTasks;
   taskCount.textContent = String(visibleCount);
+  reusableWorkspaceCards = new Map();
+  resumeAdoptedCardAnimations();
   renderActivityRail();
 }
 
@@ -2396,12 +3886,6 @@ function streamMaintenanceKind(task) {
   return String(task?.context?.compaction?.status ?? "") === "running" ? "compaction" : "";
 }
 
-function renderTaskWorkspaceDivider(label) {
-  return el("li", { class: "task-workspace-divider", role: "presentation" }, [
-    el("span", { class: "task-workspace-divider-label", text: label }),
-  ]);
-}
-
 function renderTaskWorkspaceFolder(folder) {
   restoreCollapsedWorkspaceFolders();
   const folderKey = String(folder.key ?? folder.name ?? "").trim();
@@ -2437,7 +3921,7 @@ function renderTaskWorkspaceFolder(folder) {
         el("span", { class: "task-workspace-folder-count", text: String(items.length) }),
       ]),
       el("ul", { class: "task-workspace-folder-list" }, items.length
-        ? items.map((item) => renderTaskWorkspaceItem(item, { family: true }))
+        ? items.map((item) => renderTaskWorkspaceItem(item, { folderMember: true }))
         : [el("li", {
             class: "task-workspace-folder-empty",
             text: "Папка пуста",
@@ -2447,13 +3931,13 @@ function renderTaskWorkspaceFolder(folder) {
   ]);
 }
 
-function renderTaskWorkspaceItem({ id, name, kind, tasks, shortName }, { family = false } = {}) {
+function renderTaskWorkspaceItem({ id, name, kind, tasks }, { folderMember = false } = {}) {
   const selected = workspaceKey(currentTask()) === id;
   const lastActivity = workspaceLastActivity(tasks);
   const unread = tasks.some((task) => task.unread);
   const running = tasks.some((task) => task.running);
   const maintenance = tasks.map(streamMaintenanceKind).find(Boolean) ?? "";
-  return el("li", {
+  return adoptRenderedCard(reusableWorkspaceCards, id, el("li", {
     class: "task-workspace-item",
     "data-workspace-id": id,
     "data-workspace-kind": kind,
@@ -2465,27 +3949,20 @@ function renderTaskWorkspaceItem({ id, name, kind, tasks, shortName }, { family 
     "data-answer-arrived": tasks.some((task) => transientAnswerArrivalTaskIds.has(task.id)) ? "" : null,
     "data-running": running ? "" : null,
     "data-maintenance": maintenance || null,
-    "data-family-member": family ? "" : null,
+    "data-folder-member": folderMember ? "" : null,
     role: "button",
     tabindex: "0",
     "aria-pressed": String(selected),
-    /* Внутри семейства префикс уже стоит в заголовке группы, поэтому в строке
-       остаётся только собственное имя — но полное имя нужно озвучке и поиску. */
-    "aria-label": family ? name : null,
+    "aria-label": folderMember ? name : null,
     title: "ПКМ — редактировать Workspace",
   }, [
-    el("span", { class: "task-workspace-name", text: family ? (shortName || name) : name }),
+    el("span", { class: "task-workspace-name", text: name }),
     el("span", {
       class: "task-workspace-time",
       text: formatRelativeTime(lastActivity),
       title: lastActivity ? new Date(lastActivity).toLocaleString("ru-RU") : "",
     }),
-  ]);
-}
-
-function streamDisplayName(stream, streamCount) {
-  if (stream.name) return stream.name;
-  return streamCount > 1 ? `Stream ${stream.ordinal}` : "Stream";
+  ]));
 }
 
 function representativeStreamTask(stream) {
@@ -2679,7 +4156,10 @@ function renderActivityRail() {
       "aria-label": [workspaceName, streamName, presentation.agentLabel, presentation.statusLabel]
         .filter(Boolean).join(". "),
       title,
-    }, [renderStreamStatusCard(task, activityTitle, presentation)]);
+    }, [
+      el("span", { class: "stream-tab-status-layer", "aria-hidden": "true" }),
+      renderStreamStatusCard(task, activityTitle, presentation),
+    ]);
   };
   activityStreamList.replaceChildren(...sections.active.map(renderEntry));
   activityRecentList.replaceChildren(...sections.recent.map(renderEntry));
@@ -2751,6 +4231,7 @@ function renderStreamTabs() {
     return;
   }
   const workspaceId = workspaceKey(selected);
+  reusableStreamTabs = indexRenderedCards(streamTabs, ".stream-tab", "data-stream-tab-id");
   const overflowMenuOpen = window.AgentHubStreamTabs.preserveStreamOverflowMenuOpen(
     streamTabs.dataset.workspaceId,
     workspaceId,
@@ -2793,7 +4274,7 @@ function renderStreamTabs() {
   const overflowItems = [];
   const groups = ordered.map((stream, index) => {
     const task = representativeStreamTask(stream);
-    const streamName = streamDisplayName(stream, streams.length);
+    const streamName = window.AgentHubStreamTabs.streamDisplayName(stream, streams.length);
     const provider = String(task?.provider ?? "none");
     const agentLabel = task?.agentLabel || providerLabels[provider] || "Агент";
     const { running, answerReady, statusLabel } = window.AgentHubStreamTabs.streamStatusPresentation(task);
@@ -2810,7 +4291,7 @@ function renderStreamTabs() {
       "data-stream-tab-id": stream.id,
       "data-workspace-id": workspaceId,
       "data-workspace-name": task?.workspaceName ?? "",
-      "data-stream-name": stream.name ?? "",
+      "data-stream-name": streamName,
       "data-stream-task-id": task?.id ?? "",
       "data-stream-provider": provider,
       "data-stream-provider-label": agentLabel,
@@ -2846,11 +4327,14 @@ function renderStreamTabs() {
         title: task?.lastActivity ? new Date(task.lastActivity).toLocaleString("ru-RU") : "",
       }),
     ];
-    const button = el("button", {
+    const button = adoptRenderedCard(reusableStreamTabs, stream.id, el("button", {
       ...attributes,
       class: "stream-tab",
       draggable: window.AgentHubStreamTabs.streamsAreDraggable(streamOrderMode, surface) ? "true" : null,
-    }, [el("span", { class: "stream-tab-card" }, content())]);
+    }, [
+      el("span", { class: "stream-tab-status-layer", "aria-hidden": "true" }),
+      el("span", { class: "stream-tab-card" }, content()),
+    ]));
     overflowItems.push(el("button", {
       ...attributes,
       class: "stream-overflow-item",
@@ -2890,6 +4374,8 @@ function renderStreamTabs() {
   }, [overflowButton, overflowMenu]);
   streamTabs.dataset.workspaceId = workspaceId;
   streamTabs.replaceChildren(leftControls, track, overflow);
+  reusableStreamTabs = new Map();
+  resumeAdoptedCardAnimations();
   streamTabs.hidden = false;
   scheduleStreamTabsOverflow();
 }
@@ -2917,6 +4403,9 @@ function bindChatScrollDown(scroll, button) {
   if (!scroll || !button || chatScrollControllers.has(scroll)) return;
   chatScrollControllers.set(scroll, new ChatScrollController(scroll, button, {
     onNearTop: scroll === chatScroll ? () => requestOlderHistory() : null,
+    onReturnBottom: scroll === chatScroll
+      ? () => emit("history:return-bottom", { taskId: state.selectedId })
+      : null,
   }));
 }
 
@@ -2998,6 +4487,7 @@ function renderStreamChatPreview(task) {
         el("div", { class: "activity-list", "data-activity-list": "" }),
       ]),
       el("div", { class: "msg-body", "data-live-body": "" }),
+      el("div", { "data-live-attachments": "", hidden: true }),
     ]);
     populateLiveCard(liveNode, live, task.agentLabel || "Агент", task);
     log.append(liveNode);
@@ -3011,7 +4501,24 @@ function renderStreamChatPreview(task) {
   if (!queue.hidden) log.append(queue);
   scroll.append(log);
   const scrollDown = createChatScrollDownButton(scroll, task);
-  preview.append(head, scroll, scrollDown);
+  const previewPins = pinsForTask(task);
+  const pin = previewPins[0];
+  const shelf = pin ? el("button", {
+    type: "button",
+    class: "message-pin-shelf stream-chat-preview-pins",
+    title: pin.available ? "Перейти к закреплённому сообщению" : "Исходное сообщение недоступно",
+    disabled: !pin.available,
+  }, [
+    messagePinIcon("push-pin-simple", "message-pin-shelf-icon"),
+    el("span", { class: "message-pin-current-preview", text: pin.preview }),
+    el("span", { class: "message-pin-position", text: `1 из ${previewPins.length}` }),
+  ]) : null;
+  shelf?.addEventListener("click", () => {
+    selectTaskFromUi(task.id);
+    state.activeMessagePinByStream.set(String(task.streamId), pin.id);
+    jumpToMessagePin(pin);
+  });
+  preview.append(head, ...(shelf ? [shelf] : []), scroll, scrollDown);
   window.requestAnimationFrame(() => {
     chatScrollControllers.get(scroll)?.pinNow();
   });
@@ -3145,23 +4652,50 @@ function renderTaskItem(task, { workspaceGrouped = false } = {}) {
   return item;
 }
 
+let workspaceDblclickCandidate = null;
 taskList.addEventListener("click", (event) => {
   const workspace = event.target.closest("[data-workspace-select]");
   if (!workspace) return;
   const workspaceId = String(workspace.dataset.workspaceSelect ?? "");
+  if (event.detail === 1) workspaceDblclickCandidate = { workspaceId };
+  else if (workspaceDblclickCandidate?.workspaceId !== workspaceId) workspaceDblclickCandidate = null;
   const target = representativeWorkspaceTask(state.tasks.filter((task) => workspaceKey(task) === workspaceId));
-  if (target) selectTaskFromUi(target.id);
+  if (target) selectTaskFromUi(target.id, {
+    preserveTaskList: true,
+    preservePane: surface === "mobile",
+  });
+});
+taskList.addEventListener("dblclick", (event) => {
+  const candidate = workspaceDblclickCandidate;
+  workspaceDblclickCandidate = null;
+  const workspace = event.target.closest?.("[data-workspace-select]");
+  const workspaceId = String(workspace?.dataset.workspaceSelect ?? "");
+  if (!candidate || candidate.workspaceId !== workspaceId
+    || !workspace?.isConnected || !taskList.contains(workspace) || !workspaceCatalogItem(workspaceId)) return;
+  openWorkspaceCard(workspaceId);
 });
 taskList.addEventListener("keydown", (event) => {
   if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+    const workspace = event.target.closest("[data-workspace-select]");
+    if (workspace) {
+      event.preventDefault();
+      const rect = workspace.getBoundingClientRect();
+      openWorkspaceContextMenu(
+        { clientX: rect.left + 12, clientY: rect.top + 36 },
+        workspace.dataset.workspaceSelect,
+      );
+      return;
+    }
     const folder = event.target.closest("[data-workspace-folder-name]");
-    if (!folder || folder.dataset.workspaceFolderKind !== "folder") return;
-    event.preventDefault();
-    const rect = folder.getBoundingClientRect();
-    openWorkspaceFolderContextMenu(
-      { clientX: rect.left + 12, clientY: rect.top + 36 },
-      folder.dataset.workspaceFolderName,
-    );
+    if (folder?.dataset.workspaceFolderKind === "folder") {
+      event.preventDefault();
+      const rect = folder.getBoundingClientRect();
+      openWorkspaceFolderContextMenu(
+        { clientX: rect.left + 12, clientY: rect.top + 36 },
+        folder.dataset.workspaceFolderName,
+      );
+      return;
+    }
     return;
   }
   if (!["Enter", " "].includes(event.key)) return;
@@ -3170,7 +4704,7 @@ taskList.addEventListener("keydown", (event) => {
   event.preventDefault();
   const workspaceId = String(workspace.dataset.workspaceSelect ?? "");
   const target = representativeWorkspaceTask(state.tasks.filter((task) => workspaceKey(task) === workspaceId));
-  if (target) selectTaskFromUi(target.id);
+  if (target) selectTaskFromUi(target.id, { preserveTaskList: true });
 });
 taskList.addEventListener("toggle", (event) => {
   const details = event.target.closest?.("[data-workspace-folder-details]");
@@ -3359,6 +4893,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 let suppressStreamTabClick = false;
+let streamDblclickCandidate = null;
 streamTabs?.addEventListener("click", (event) => {
   const overflowToggle = event.target.closest("[data-stream-overflow-toggle]");
   if (overflowToggle) {
@@ -3374,6 +4909,15 @@ streamTabs?.addEventListener("click", (event) => {
   }
   const tab = event.target.closest("[data-stream-tab-id][data-workspace-id]");
   if (!tab) return;
+  const candidate = {
+    workspaceId: String(tab.dataset.workspaceId ?? ""),
+    streamId: String(tab.dataset.streamTabId ?? ""),
+    taskId: String(tab.dataset.streamTaskId ?? ""),
+  };
+  if (event.detail === 1) streamDblclickCandidate = candidate;
+  else if (streamDblclickCandidate?.workspaceId !== candidate.workspaceId
+    || streamDblclickCandidate?.streamId !== candidate.streamId
+    || streamDblclickCandidate?.taskId !== candidate.taskId) streamDblclickCandidate = null;
   const overflowMenu = streamTabs.querySelector("[data-stream-tabs-overflow-menu]");
   if (overflowMenu) overflowMenu.hidden = true;
   streamTabs.querySelector("[data-stream-overflow-toggle]")?.setAttribute("aria-expanded", "false");
@@ -3381,7 +4925,23 @@ streamTabs?.addEventListener("click", (event) => {
   const streams = workspaceStreams(state.tasks.filter((task) => workspaceKey(task) === workspaceId));
   toggleOpenStream(workspaceId, String(tab.dataset.streamTabId ?? ""), streams, {
     additive: event.ctrlKey || event.metaKey,
+    preserveClickTarget: true,
   });
+});
+streamTabs?.addEventListener("dblclick", (event) => {
+  const candidate = streamDblclickCandidate;
+  streamDblclickCandidate = null;
+  const tab = event.target.closest?.("[data-stream-tab-id][data-workspace-id]");
+  const workspaceId = String(tab?.dataset.workspaceId ?? "");
+  const streamId = String(tab?.dataset.streamTabId ?? "");
+  const taskId = String(tab?.dataset.streamTaskId ?? "");
+  const task = state.tasks.find((entry) => entry.id === taskId);
+  if (!candidate || candidate.workspaceId !== workspaceId
+    || candidate.streamId !== streamId || candidate.taskId !== taskId
+    || !tab?.isConnected || !streamTabs.contains(tab) || !task
+    || workspaceKey(task) !== workspaceId || String(task.streamId ?? "") !== streamId) return;
+  if (taskId && currentTask()?.id !== taskId) selectTaskFromUi(taskId);
+  openDialogSettings();
 });
 
 function streamTaskDropTarget(event) {
@@ -3407,9 +4967,8 @@ function attachTaskReferenceToComposer(targetTaskId, reference) {
     return false;
   }
   const nextReferences = TaskReferences.merge(draft.taskReferences, reference);
-  drafts.set(targetTaskId, { ...draft, taskReferences: nextReferences });
-  if (state.selectedId === targetTaskId) restoreDraft();
-  persistDrafts();
+  setTaskReferences(nextReferences);
+  saveDraft({ userEdited: true });
   composerInput.focus({ preventScroll: true });
   composer.scrollIntoView({ block: "nearest", behavior: "smooth" });
   showToast(`Task «${reference.title}» прикреплена к сообщению`);
@@ -3462,6 +5021,8 @@ let workspaceContextMenu = null;
 let workspaceFolderContextMenu = null;
 let workspaceCardId = "";
 let workspaceCardMode = "edit";
+let workspaceCardReturnFocus = null;
+let streamCardReturnFocus = null;
 const AGENT_RULES_LIMIT_BYTES = 32 * 1024;
 const agentRulesEncoder = new TextEncoder();
 const streamRulesDrafts = new Map();
@@ -3534,9 +5095,12 @@ function closeWorkspaceContextMenu() {
 }
 
 function closeWorkspaceCard() {
+  const returnFocus = workspaceCardReturnFocus;
   workspaceCardId = "";
   workspaceCardMode = "edit";
   if (workspaceCardModal?.open) workspaceCardModal.close();
+  workspaceCardReturnFocus = null;
+  returnFocus?.focus?.({ preventScroll: true });
 }
 
 function openWorkspaceCard(workspaceId) {
@@ -3544,14 +5108,16 @@ function openWorkspaceCard(workspaceId) {
   if (!workspace || !workspaceCardModal) return;
   const columnId = `workspace:${workspace.id}`;
   const order = dashboardColumnOrder();
+  workspaceCardReturnFocus = document.activeElement;
   workspaceCardMode = "edit";
   workspaceCardId = String(workspace.id);
   workspaceCardTitle.textContent = "Редактирование Workspace";
   workspaceCardSubmit.textContent = "Сохранить";
   workspaceCardName.value = String(workspace.name ?? "");
   workspaceCardName.disabled = workspace.kind === "system";
-  if (workspaceCardFolderField) workspaceCardFolderField.hidden = true;
-  if (workspaceCardFolder) workspaceCardFolder.disabled = true;
+  if (workspaceCardFolderField) workspaceCardFolderField.hidden = false;
+  if (workspaceCardFolder) workspaceCardFolder.disabled = workspace.kind === "system";
+  populateWorkspaceFolderSelect(workspace.settings?.catalogFolder);
   workspaceCardComment.value = String(workspace.comment ?? "");
   workspaceCardWorkingDirectory.value = String(workspace.settings?.workingDirectory ?? "");
   workspaceCardTaskPrefix.value = String(workspace.settings?.taskPrefix ?? "");
@@ -3559,6 +5125,15 @@ function openWorkspaceCard(workspaceId) {
   workspaceCardReleaseWorkflow.checked = workspace.settings?.releaseWorkflowEnabled === true;
   updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
   renderWorkspaceCardQuickMessages(workspace.id);
+  if (workspaceCardArchive) {
+    workspaceCardArchive.hidden = workspace.kind === "system";
+    workspaceCardArchive.disabled = state.tasks.some((task) => (
+      workspaceKey(task) === workspace.id && task.running === true
+    ));
+    workspaceCardArchive.title = workspaceCardArchive.disabled
+      ? "Сначала завершите активные ходы в этом Workspace"
+      : "Переместить Workspace в бессрочный архив";
+  }
   workspaceCardOrder.max = String(order.length);
   workspaceCardOrder.value = String(Math.max(1, order.indexOf(columnId) + 1));
   workspaceCardModal.showModal();
@@ -3569,6 +5144,7 @@ function openNewWorkspaceCard() {
   if (!workspaceCardModal) return;
   const order = dashboardColumnOrder();
   const notesIndex = order.indexOf("notes");
+  workspaceCardReturnFocus = document.activeElement;
   workspaceCardMode = "create";
   workspaceCardId = "";
   workspaceCardTitle.textContent = "Новый Workspace";
@@ -3585,6 +5161,7 @@ function openNewWorkspaceCard() {
   workspaceCardReleaseWorkflow.checked = false;
   updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
   renderWorkspaceCardQuickMessages("");
+  if (workspaceCardArchive) workspaceCardArchive.hidden = true;
   workspaceCardOrder.max = String(order.length + 1);
   workspaceCardOrder.value = String((notesIndex < 0 ? order.length : notesIndex) + 1);
   workspaceCardModal.showModal();
@@ -3605,33 +5182,9 @@ function ensureWorkspaceContextMenu() {
     if (!action) return;
     event.preventDefault();
     const workspaceId = String(workspaceContextMenu.dataset.workspaceId ?? "");
-    const workspaceName = String(workspaceContextMenu.dataset.workspaceName ?? "Workspace");
     const kind = String(action.dataset.workspaceMenuAction ?? "");
     closeWorkspaceContextMenu();
     if (kind === "edit") openWorkspaceCard(workspaceId);
-    else if (kind === "quick-messages") {
-      await editQuickMessagesForScope("workspace", workspaceId, `${workspaceName} / Workspace`);
-    } else if (kind === "folder-move") {
-      moveWorkspaceToFolder(workspaceId, String(action.dataset.folderName ?? ""));
-    } else if (kind === "folder-new") {
-      const folderName = await askText({ title: "Название папки Workspace" });
-      if (folderName) createWorkspaceFolder(folderName);
-    } else if (kind === "folder-remove") {
-      moveWorkspaceToFolder(workspaceId, "");
-    } else if (kind === "archive") {
-      const confirmation = await askText({
-        title: `Для удаления на 3 дня введите: ${workspaceName}`,
-      });
-      if (confirmation == null) return;
-      if (!window.AgentHubStreamTabs.workspaceArchiveNameMatches(
-        workspaceCatalogItem(workspaceId),
-        confirmation,
-      )) {
-        showToast("Название не совпало — Workspace не удалён");
-        return;
-      }
-      emit("workspace:archive", { workspaceId });
-    }
   });
   return workspaceContextMenu;
 }
@@ -3643,63 +5196,15 @@ function closeWorkspaceFolderContextMenu() {
 }
 
 function renderWorkspaceContextMenu(menu, workspace) {
-  const currentFolder = window.AgentHubStreamTabs.normalizeWorkspaceFolderName(
-    workspace?.settings?.catalogFolder,
-  );
-  const folderActions = workspaceFolderCatalogNames()
-    .filter((name) => name !== currentFolder)
-    .map((name) => el("button", {
-      type: "button",
-      role: "menuitem",
-      class: "stream-context-action",
-      "data-workspace-menu-action": "folder-move",
-      "data-folder-name": name,
-      text: `В папку «${name}»`,
-      title: `Переместить Workspace в папку «${name}»`,
-    }));
-  window.AgentHubStreamTabs.renderWorkspaceContextMenuChildren(menu, [
+  menu.replaceChildren(
     el("button", {
       type: "button",
       role: "menuitem",
       class: "stream-context-action",
       "data-workspace-menu-action": "edit",
-      text: "Редактировать Workspace…",
+      text: "Редактировать…",
     }),
-    el("button", {
-      type: "button",
-      role: "menuitem",
-      class: "stream-context-action",
-      "data-workspace-menu-action": "quick-messages",
-      text: "Быстрые ответы Workspace…",
-    }),
-    el("span", { class: "stream-context-label", text: "Папка" }),
-    ...folderActions,
-    el("button", {
-      type: "button",
-      role: "menuitem",
-      class: "stream-context-action stream-context-create",
-      "data-workspace-menu-action": "folder-new",
-      text: "Новая папка…",
-    }),
-  ], currentFolder, () => el("button", {
-    type: "button",
-    role: "menuitem",
-    class: "stream-context-action",
-    "data-workspace-menu-action": "folder-remove",
-    text: "Убрать из папки",
-  }));
-  if (workspace?.kind !== "system") {
-    menu.append(el("span", {
-      class: "stream-context-label",
-      text: "Безопасность",
-    }), el("button", {
-      type: "button",
-      role: "menuitem",
-      class: "stream-context-action stream-context-danger",
-      "data-workspace-menu-action": "archive",
-      text: "Удалить в архив на 3 дня…",
-    }));
-  }
+  );
 }
 
 function openWorkspaceContextMenu(event, workspaceId) {
@@ -3710,7 +5215,6 @@ function openWorkspaceContextMenu(event, workspaceId) {
   const workspace = workspaceCatalogItem(workspaceId);
   renderWorkspaceContextMenu(menu, workspace);
   menu.dataset.workspaceId = String(workspaceId);
-  menu.dataset.workspaceName = String(workspace?.name ?? workspace?.displayName ?? workspaceId);
   menu.hidden = false;
   const left = Math.max(8, Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 8));
   const top = Math.max(8, Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 8));
@@ -3775,13 +5279,12 @@ function openWorkspaceFolderContextMenu(event, folderName) {
 }
 
 function workspaceMenuOptions(currentWorkspaceId) {
-  const workspaces = new Map();
-  for (const task of state.tasks) {
-    const workspaceId = String(task.workspaceId ?? "").trim();
-    if (!workspaceId || workspaceId === currentWorkspaceId || workspaces.has(workspaceId)) continue;
-    workspaces.set(workspaceId, String(task.workspaceName ?? task.title ?? "Без названия").trim() || "Без названия");
-  }
-  return [...workspaces].map(([id, name]) => ({ id, name }))
+  return state.workspaces
+    .filter((workspace) => String(workspace.id ?? "") !== String(currentWorkspaceId ?? ""))
+    .map((workspace) => ({
+      id: String(workspace.id ?? ""),
+      name: String(workspace.name ?? "Без названия").trim() || "Без названия",
+    }))
     .sort((left, right) => left.name.localeCompare(right.name, "ru"));
 }
 
@@ -3801,32 +5304,13 @@ function ensureStreamContextMenu() {
     event.stopPropagation();
     const streamId = String(streamContextMenu.dataset.streamId ?? "");
     const kind = String(action.dataset.streamMenuAction ?? "");
-    const currentName = String(streamContextMenu.dataset.streamName ?? "");
-    const workspaceId = String(streamContextMenu.dataset.workspaceId ?? "");
     const taskId = String(streamContextMenu.dataset.taskId ?? "");
-    const provider = String(streamContextMenu.dataset.provider ?? "codex");
+    const provider = String(streamContextMenu.dataset.provider ?? "").trim();
     closeStreamContextMenu();
     if (!streamId) return;
-    if (kind === "pin-toggle") {
-      togglePinnedWorkspaceStream(workspaceId, streamId);
-      return;
-    }
-    if (kind === "rename") {
-      const name = await askText({ title: "Новое название Stream", value: currentName });
-      if (name != null) emit("stream:rename", { streamId, name });
-      return;
-    }
     if (kind === "edit-stream") {
       if (taskId && currentTask()?.id !== taskId) selectTaskFromUi(taskId);
       openDialogSettings();
-      return;
-    }
-    if (kind === "quick-messages") {
-      await editQuickMessagesForScope("stream", streamId, `${currentName || "Stream"} / Stream`);
-      return;
-    }
-    if (kind === "edit-workspace") {
-      if (workspaceId) openWorkspaceCard(workspaceId);
       return;
     }
     if (kind === "replace-thread") {
@@ -3838,19 +5322,6 @@ function ensureStreamContextMenu() {
       emit("stream:continue-provider", { streamId, provider: targetProvider, taskId });
       return;
     }
-    if (kind === "archive") {
-      const intent = window.AgentHubStreamTabs.archiveStreamIntent(streamId);
-      emit(intent.type, intent.detail);
-      return;
-    }
-    if (kind === "move") {
-      emit("stream:move", { streamId, workspaceId: String(action.dataset.workspaceId ?? "") });
-      return;
-    }
-    if (kind === "create-workspace") {
-      const name = await askText({ title: "Название нового Workspace" });
-      if (name) emit("workspace:create-from-stream", { streamId, name });
-    }
   });
   return streamContextMenu;
 }
@@ -3861,36 +5332,19 @@ function openStreamContextMenu(event, tab) {
   const menu = ensureStreamContextMenu();
   const streamId = String(tab.dataset.streamTabId ?? "");
   const workspaceId = String(tab.dataset.workspaceId ?? "");
-  const provider = String(tab.dataset.streamProvider ?? "codex");
+  const provider = String(tab.dataset.streamProvider ?? "").trim();
   menu.dataset.streamId = streamId;
   menu.dataset.workspaceId = workspaceId;
   menu.dataset.workspaceName = String(tab.dataset.workspaceName ?? "");
   menu.dataset.streamName = String(tab.dataset.streamName ?? "");
   menu.dataset.taskId = String(tab.dataset.streamTaskId ?? "");
   menu.dataset.provider = provider;
-  const pinned = tab.hasAttribute("data-pinned");
+  const oppositeProvider = provider === "codex" ? "claude" : provider === "claude" ? "codex" : "";
+  const oppositeLabel = oppositeProvider === "claude" ? "Claude" : oppositeProvider === "codex" ? "Codex" : "";
   menu.replaceChildren(
     el("button", {
       type: "button", role: "menuitem", class: "stream-context-action",
-      "data-stream-menu-action": "pin-toggle",
-      text: window.AgentHubStreamTabs.pinnedStreamActionLabel(pinned),
-      title: window.AgentHubStreamTabs.pinnedStreamActionTitle(pinned),
-    }),
-    el("button", {
-      type: "button", role: "menuitem", class: "stream-context-action",
-      "data-stream-menu-action": "edit-stream", text: "Редактировать Stream…",
-    }),
-    el("button", {
-      type: "button", role: "menuitem", class: "stream-context-action",
-      "data-stream-menu-action": "quick-messages", text: "Быстрые ответы Stream…",
-    }),
-    el("button", {
-      type: "button", role: "menuitem", class: "stream-context-action",
-      "data-stream-menu-action": "rename", text: "Переименовать Stream…",
-    }),
-    el("button", {
-      type: "button", role: "menuitem", class: "stream-context-action",
-      "data-stream-menu-action": "edit-workspace", text: "Редактировать Workspace…",
+      "data-stream-menu-action": "edit-stream", text: "Редактировать…",
     }),
     el("button", {
       type: "button", role: "menuitem", class: "stream-context-action",
@@ -3905,45 +5359,15 @@ function openStreamContextMenu(event, tab) {
     el("button", {
       type: "button", role: "menuitem", class: "stream-context-action",
       "data-stream-menu-action": "continue-provider",
-      "data-provider": "codex",
-      text: "Продолжить в Codex",
-      disabled: tab.hasAttribute("data-running"),
+      "data-provider": oppositeProvider,
+      text: oppositeProvider ? `Продолжить в ${oppositeLabel}` : "Продолжение недоступно",
+      disabled: tab.hasAttribute("data-running") || !oppositeProvider,
       title: tab.hasAttribute("data-running")
         ? "Сначала завершите текущий ход"
-        : "Создать новый Codex Thread в этом Stream и передать ему handoff-пакет",
+        : oppositeProvider
+          ? `Создать новый ${oppositeLabel} Thread в этом Stream и передать ему handoff-пакет`
+          : "Провайдер Stream не определён",
     }),
-    el("button", {
-      type: "button", role: "menuitem", class: "stream-context-action",
-      "data-stream-menu-action": "continue-provider",
-      "data-provider": "claude",
-      text: "Продолжить в Claude",
-      disabled: tab.hasAttribute("data-running"),
-      title: tab.hasAttribute("data-running")
-        ? "Сначала завершите текущий ход"
-        : "Создать новый Claude Thread в этом Stream и передать ему handoff-пакет",
-    }),
-    el("button", {
-      type: "button", role: "menuitem", class: "stream-context-action stream-context-danger",
-      "data-stream-menu-action": "archive", text: "В архив",
-      disabled: tab.hasAttribute("data-running"),
-      title: tab.hasAttribute("data-running")
-        ? "Сначала завершите активный ход в этом Stream"
-        : "Архивировать Stream",
-    }),
-    el("details", { class: "stream-context-submenu" }, [
-      el("summary", { class: "stream-context-action", text: "Перенести в Workspace…" }),
-      el("div", { class: "stream-context-submenu-options" }, [
-        ...workspaceMenuOptions(workspaceId).map((workspace) => el("button", {
-          type: "button", role: "menuitem", class: "stream-context-action",
-          "data-stream-menu-action": "move", "data-workspace-id": workspace.id,
-          text: workspace.name,
-        })),
-        el("button", {
-          type: "button", role: "menuitem", class: "stream-context-action stream-context-create",
-          "data-stream-menu-action": "create-workspace", text: "+ Новый Workspace…",
-        }),
-      ]),
-    ]),
   );
   menu.hidden = false;
   const left = Math.max(8, Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 8));
@@ -4080,7 +5504,38 @@ function ensureTaskStreamVisible(task) {
   persistOpenStreams();
 }
 
-function selectTaskFromUi(id) {
+function syncTaskListSelection() {
+  const selected = currentTask();
+  const selectedWorkspaceId = workspaceKey(selected);
+  for (const item of taskList.querySelectorAll("[data-workspace-select]")) {
+    const active = String(item.dataset.workspaceSelect ?? "") === selectedWorkspaceId;
+    item.toggleAttribute("data-selected", active);
+    item.setAttribute("aria-pressed", String(active));
+  }
+  for (const item of taskList.querySelectorAll("[data-task-id]")) {
+    const active = String(item.dataset.taskId ?? "") === String(selected?.id ?? "");
+    item.toggleAttribute("data-selected", active);
+    item.setAttribute("aria-pressed", String(active));
+  }
+}
+
+function syncStreamTabsSelection() {
+  const selected = currentTask();
+  const workspaceId = workspaceKey(selected);
+  const open = new Set(state.openStreamsByWorkspace.get(workspaceId) ?? []);
+  for (const tab of streamTabs?.querySelectorAll("[data-stream-tab-id]") ?? []) {
+    const taskId = String(tab.dataset.streamTaskId ?? "");
+    const streamId = String(tab.dataset.streamTabId ?? "");
+    tab.toggleAttribute("data-current", taskId === String(selected?.id ?? ""));
+    tab.setAttribute("aria-pressed", String(open.has(streamId)));
+  }
+}
+
+function selectTaskFromUi(id, {
+  preserveTaskList = false,
+  preserveStreamTabs = false,
+  preservePane = false,
+} = {}) {
   if (!id) return;
   saveDraft();
   state.selectedId = id;
@@ -4091,9 +5546,10 @@ function selectTaskFromUi(id) {
   }
   ensureTaskStreamVisible(currentTask());
   persistOpenStreams();
-  renderTasks();
-  renderChat();
-  setPane("chat");
+  if (preserveTaskList) syncTaskListSelection();
+  else renderTasks();
+  renderChat({ preserveStreamTabs });
+  if (!preservePane) setPane("chat");
   emit("task:select", { id });
 }
 
@@ -4327,7 +5783,11 @@ function renderStreamChatHeader(task, now = Date.now()) {
   }
 }
 
-function renderChat() {
+function renderChat({ preserveStreamTabs = false } = {}) {
+  return window.AgentHubCommandTrace.measure("ui-render", "chat", () => renderChatContent({ preserveStreamTabs }));
+}
+
+function renderChatContent({ preserveStreamTabs = false } = {}) {
   const task = currentTask();
   const hasTask = Boolean(task);
   if (!hasTask) {
@@ -4343,6 +5803,7 @@ function renderChat() {
     streamChatColumns?.removeAttribute("data-multi-stream");
     publishVisibleStreamTasks([]);
     renderStreamChatHeader(null);
+    renderMessagePinShelf();
     renderComposerQuickMessages();
     setDialogSettingsOpen(false);
     return;
@@ -4356,9 +5817,16 @@ function renderChat() {
 
   renderDialogSettings();
   renderStreamChatHeader(task);
-  for (const stop of chatStops) stop.hidden = !task.running;
+  renderMessagePinShelf();
+  for (const stop of chatStops) {
+    const preparing = contextMaintenancePreparing(task);
+    stop.hidden = !task.running && !preparing;
+    stop.title = preparing ? "Отменить подготовку обслуживания контекста" : "Остановить ход";
+    stop.setAttribute("aria-label", stop.title);
+  }
   renderContextUsage(task);
-  renderStreamTabs();
+  if (preserveStreamTabs) syncStreamTabsSelection();
+  else renderStreamTabs();
   // Сначала закрепляем окончательную ширину и порядок колонок. Историю и её
   // нижний якорь рисуем уже после layout, поэтому открытый чат не остаётся выше.
   renderStreamChatDeck();
@@ -4377,6 +5845,11 @@ function renderChat() {
   if (taskChanged) restoreDraft();
 }
 
+function contextMaintenancePreparing(task) {
+  return ["automatic-post-turn", "automatic-post-turn-rotation"].includes(task?.maintenance?.reason)
+    && task?.maintenance?.phase === "preparing";
+}
+
 function renderContextUsage(task) {
   if (!contextUsageButton) return;
   const context = task?.context;
@@ -4387,11 +5860,15 @@ function renderContextUsage(task) {
   const used = Math.max(0, Number(context.usedTokens) || 0);
   const total = Math.max(0, Number(context.modelContextWindow) || 0);
   const cleaningImages = context.compaction?.stage === "cleaning-images";
-  contextLabel.textContent = context.compacting
+  const preparing = contextMaintenancePreparing(task);
+  const starting = ["automatic-post-turn", "automatic-post-turn-rotation"].includes(task?.maintenance?.reason)
+    && task?.maintenance?.phase === "starting";
+  contextLabel.textContent = preparing ? "подготовка…" : starting ? "запуск…" : context.compacting
     ? "свёртка…"
     : context.usagePending ? "обновление…" : `${Math.round(percent)}% контекста`;
   contextRing.style.setProperty("--context-percent", `${percent}%`);
-  contextUsageButton.title = context.compacting
+  contextUsageButton.title = preparing ? "Подготовка обслуживания контекста. Проверяется завершение предыдущего хода…"
+    : starting ? "Запуск обслуживания контекста…" : context.compacting
     ? cleaningImages
       ? "Свёртка создана. Удаляются дубликаты изображений…"
       : "Контекст сворачивается…"
@@ -4451,7 +5928,7 @@ function renderContextUsageDetails(task) {
   }
   contextUsageNote.textContent = context.breakdown?.note ?? "";
   contextUsageCompact.hidden = !["codex", "claude"].includes(String(task.provider ?? ""));
-  contextUsageCompact.disabled = Boolean(task.running || context.compacting || context.usagePending);
+  contextUsageCompact.disabled = Boolean(task.running || task.maintenance || context.compacting || context.usagePending);
   contextUsageCompact.textContent = context.compacting ? "Контекст сворачивается…" : "Свернуть контекст";
 }
 
@@ -4502,6 +5979,33 @@ let attachmentViewerOpen = false;
 let attachmentViewerGallery = [];
 let attachmentViewerIndex = 0;
 let attachmentViewerReturnFocus = null;
+let attachmentViewerGeneration = 0;
+let attachmentViewerLoadTimer = null;
+let attachmentViewerDeadlineAt = 0;
+const ATTACHMENT_VIEWER_LOAD_TIMEOUT_MS = Math.max(
+  1,
+  Number(window.__agentHubAttachmentViewerLoadTimeoutMs) || 30_000,
+);
+
+function attachmentViewerLoadAuthority({
+  generation = attachmentViewerGeneration,
+  index = attachmentViewerIndex,
+} = {}) {
+  const current = attachmentViewerOpen
+    && generation === attachmentViewerGeneration
+    && index === attachmentViewerIndex;
+  const remainingMs = current
+    ? Math.max(0, attachmentViewerDeadlineAt - performance.now())
+    : 0;
+  return Object.freeze({
+    current,
+    owned: current && remainingMs > 0,
+    generation: attachmentViewerGeneration,
+    index: attachmentViewerIndex,
+    deadlineAt: attachmentViewerDeadlineAt,
+    remainingMs,
+  });
+}
 
 function syncAttachmentViewerControls() {
   const length = attachmentViewerGallery.length;
@@ -4513,37 +6017,144 @@ function syncAttachmentViewerControls() {
   attachmentViewerCounter.textContent = length > 1 ? `${attachmentViewerIndex + 1} / ${length}` : "";
 }
 
+function clearAttachmentViewerLoad() {
+  if (attachmentViewerLoadTimer != null) window.clearTimeout(attachmentViewerLoadTimer);
+  attachmentViewerLoadTimer = null;
+  attachmentViewerImage.onload = null;
+  attachmentViewerImage.onerror = null;
+}
+
+function disposeAttachmentViewerResource(generation = attachmentViewerGeneration) {
+  document.dispatchEvent(new CustomEvent("agenthub:attachment-viewer-dispose", {
+    detail: { generation, index: attachmentViewerIndex },
+  }));
+}
+
+function setAttachmentViewerLoading(message = "Загрузка…", error = false) {
+  attachmentViewerLoading.textContent = String(message || "Не удалось загрузить изображение");
+  attachmentViewerLoading.classList.toggle("is-error", error);
+  attachmentViewerLoading.hidden = false;
+}
+
+function settleAttachmentViewerLoad({ generation, index, loaded, message = "" }) {
+  if (!attachmentViewerOpen
+    || generation !== attachmentViewerGeneration
+    || index !== attachmentViewerIndex) return false;
+  const loadedInTime = loaded && performance.now() <= attachmentViewerDeadlineAt;
+  if (!loadedInTime) disposeAttachmentViewerResource(generation);
+  clearAttachmentViewerLoad();
+  if (loadedInTime) {
+    attachmentViewerImage.hidden = false;
+    attachmentViewerLoading.hidden = true;
+    attachmentViewerLoading.classList.remove("is-error");
+    return true;
+  }
+  attachmentViewerImage.removeAttribute("src");
+  attachmentViewerImage.hidden = true;
+  setAttachmentViewerLoading(
+    message || (loaded ? "Изображение не загрузилось вовремя" : "Не удалось загрузить изображение"),
+    true,
+  );
+  return true;
+}
+
+function loadAttachmentViewerSource({ source = "", name = "Изображение", generation, index }) {
+  const authority = attachmentViewerLoadAuthority({ generation, index });
+  if (!authority.owned) return false;
+  clearAttachmentViewerLoad();
+  attachmentViewerImage.removeAttribute("src");
+  attachmentViewerImage.hidden = true;
+  attachmentViewerImage.alt = String(name || "Изображение");
+  setAttachmentViewerLoading();
+  attachmentViewerLoadTimer = window.setTimeout(() => {
+    settleAttachmentViewerLoad({
+      generation,
+      index,
+      loaded: false,
+      message: "Изображение не загрузилось вовремя",
+    });
+  }, Math.max(1, authority.remainingMs));
+  const resource = String(source ?? "").trim();
+  if (!resource) return true;
+  attachmentViewerImage.onload = () => {
+    settleAttachmentViewerLoad({ generation, index, loaded: true });
+  };
+  attachmentViewerImage.onerror = () => {
+    settleAttachmentViewerLoad({
+      generation,
+      index,
+      loaded: false,
+      message: "Не удалось загрузить изображение",
+    });
+  };
+  attachmentViewerImage.src = resource;
+  return true;
+}
+
 function openAttachmentViewer({ dataUrl = "", name = "Изображение", gallery = [], index = 0 } = {}) {
   if (!attachmentViewerOpen) attachmentViewerReturnFocus = document.activeElement;
+  disposeAttachmentViewerResource();
   attachmentViewerGallery = resourceInteractions.imageGallery(
     Array.isArray(gallery) && gallery.length ? gallery : [{ dataUrl, name, type: "image/*" }],
   );
   attachmentViewerIndex = resourceInteractions.galleryIndex(index, attachmentViewerGallery.length);
   const selected = attachmentViewerGallery[attachmentViewerIndex] ?? { dataUrl, name };
   const selectedDataUrl = String(selected.dataUrl ?? dataUrl ?? "");
+  attachmentViewerGeneration += 1;
+  const generation = attachmentViewerGeneration;
+  attachmentViewerDeadlineAt = performance.now() + ATTACHMENT_VIEWER_LOAD_TIMEOUT_MS;
   attachmentViewerOpen = true;
   attachmentViewer.hidden = false;
   if (!attachmentViewer.open) {
     if (typeof attachmentViewer.showModal === "function") attachmentViewer.showModal();
     else attachmentViewer.setAttribute("open", "");
   }
-  attachmentViewerImage.hidden = !selectedDataUrl;
-  attachmentViewerLoading.hidden = Boolean(selectedDataUrl);
-  attachmentViewerImage.alt = String(selected.name ?? name);
-  attachmentViewerImage.src = selectedDataUrl;
+  modalOverlays?.activateOverlay(attachmentViewer, attachmentViewerReturnFocus);
+  modalOverlays?.activateOverlay(attachmentViewerStage, attachmentViewerReturnFocus);
   syncAttachmentViewerControls();
   root.dataset.overlay = "attachment";
   attachmentViewer.focus({ preventScroll: true });
+  loadAttachmentViewerSource({
+    source: selectedDataUrl,
+    name: selected.name ?? name,
+    generation,
+    index: attachmentViewerIndex,
+  });
+  return generation;
 }
 
-function showAttachmentViewer({ dataUrl, name = "Изображение", index = attachmentViewerIndex } = {}) {
-  if (!attachmentViewerOpen) openAttachmentViewer();
-  if (resourceInteractions.galleryIndex(index, attachmentViewerGallery.length) !== attachmentViewerIndex) return;
-  attachmentViewerImage.alt = name;
-  attachmentViewerImage.src = String(dataUrl ?? "");
-  attachmentViewerImage.hidden = !dataUrl;
-  attachmentViewerLoading.hidden = Boolean(dataUrl);
+function showAttachmentViewer({
+  dataUrl,
+  name = "Изображение",
+  index = attachmentViewerIndex,
+  generation = attachmentViewerGeneration,
+  transient = false,
+} = {}) {
+  if (!attachmentViewerOpen) {
+    if (generation !== attachmentViewerGeneration) return false;
+    generation = openAttachmentViewer({ name, index });
+  }
+  if (!attachmentViewerLoadAuthority({ generation, index }).owned) return false;
+  if (resourceInteractions.galleryIndex(index, attachmentViewerGallery.length) !== attachmentViewerIndex) return false;
+  if (!transient) {
+    const selected = attachmentViewerGallery[attachmentViewerIndex] ?? {};
+    attachmentViewerGallery[attachmentViewerIndex] = { ...selected, dataUrl: String(dataUrl ?? "") };
+  }
   syncAttachmentViewerControls();
+  return loadAttachmentViewerSource({
+    source: dataUrl,
+    name,
+    generation,
+    index: attachmentViewerIndex,
+  });
+}
+
+function failAttachmentViewer({
+  message = "Не удалось загрузить изображение",
+  index = attachmentViewerIndex,
+  generation = attachmentViewerGeneration,
+} = {}) {
+  return settleAttachmentViewerLoad({ generation, index, loaded: false, message });
 }
 
 function moveAttachmentViewer(direction) {
@@ -4554,31 +6165,44 @@ function moveAttachmentViewer(direction) {
     attachmentViewerGallery.length,
   );
   if (nextIndex === attachmentViewerIndex) return false;
+  disposeAttachmentViewerResource();
   attachmentViewerIndex = nextIndex;
+  attachmentViewerGeneration += 1;
+  const generation = attachmentViewerGeneration;
+  attachmentViewerDeadlineAt = performance.now() + ATTACHMENT_VIEWER_LOAD_TIMEOUT_MS;
   const attachment = attachmentViewerGallery[attachmentViewerIndex];
   const dataUrl = String(attachment?.dataUrl ?? "");
-  attachmentViewerImage.alt = String(attachment?.name ?? "Изображение");
-  attachmentViewerImage.src = dataUrl;
-  attachmentViewerImage.hidden = !dataUrl;
-  attachmentViewerLoading.hidden = Boolean(dataUrl);
   syncAttachmentViewerControls();
+  loadAttachmentViewerSource({
+    source: dataUrl,
+    name: attachment?.name,
+    generation,
+    index: attachmentViewerIndex,
+  });
   if (!dataUrl) emit("attachment:load", {
     attachment,
     gallery: attachmentViewerGallery,
     index: attachmentViewerIndex,
+    generation,
   });
   return true;
 }
 
 function closeAttachmentViewer() {
   if (!attachmentViewerOpen) return false;
+  modalOverlays?.deactivateOverlay(attachmentViewerStage);
+  modalOverlays?.deactivateOverlay(attachmentViewer);
+  disposeAttachmentViewerResource();
   attachmentViewerOpen = false;
+  attachmentViewerGeneration += 1;
+  attachmentViewerDeadlineAt = 0;
+  clearAttachmentViewerLoad();
   if (attachmentViewer.open && typeof attachmentViewer.close === "function") attachmentViewer.close();
   else attachmentViewer.removeAttribute("open");
   attachmentViewer.hidden = true;
   attachmentViewerImage.removeAttribute("src");
   attachmentViewerImage.hidden = true;
-  attachmentViewerLoading.hidden = false;
+  setAttachmentViewerLoading();
   attachmentViewerGallery = [];
   attachmentViewerIndex = 0;
   delete root.dataset.overlay;
@@ -4610,16 +6234,14 @@ function navigateBack() {
 attachmentViewerClose.addEventListener("click", closeAttachmentViewer);
 attachmentViewerPrevious.addEventListener("click", () => moveAttachmentViewer(-1));
 attachmentViewerNext.addEventListener("click", () => moveAttachmentViewer(1));
-attachmentViewer.addEventListener("click", (event) => {
-  if (resourceInteractions.shouldDismissViewer(
-    event.target,
-    attachmentViewer,
-    attachmentViewerStage,
-  )) closeAttachmentViewer();
+modalOverlays?.installDismissibleOverlay({
+  dialog: attachmentViewer,
+  content: attachmentViewerStage,
+  close: closeAttachmentViewer,
 });
-attachmentViewer.addEventListener("cancel", (event) => {
-  event.preventDefault();
-  closeAttachmentViewer();
+modalOverlays?.installScrimDismiss({
+  scrim: attachmentViewerStage,
+  close: closeAttachmentViewer,
 });
 window.addEventListener("keydown", (event) => {
   if (!attachmentViewerOpen) return;
@@ -4723,6 +6345,32 @@ function restoreChatAnchor(anchor) {
   window.requestAnimationFrame(apply);
 }
 
+function renderedMessageTarget({ turnId, itemId } = {}) {
+  return [...chatLog.querySelectorAll("[data-item-id]")].find((node) => (
+    String(node.dataset.turnId ?? "") === String(turnId ?? "")
+    && String(node.dataset.itemId ?? "") === String(itemId ?? "")
+  )) ?? null;
+}
+
+function focusRenderedMessage(identity, { behavior = "smooth" } = {}) {
+  const target = renderedMessageTarget(identity);
+  if (!target) return false;
+  chatLog.querySelectorAll("[data-search-match], [data-pin-highlight]").forEach((node) => {
+    node.removeAttribute("data-search-match");
+    node.removeAttribute("data-pin-highlight");
+  });
+  const scrollController = chatScrollControllers.get(chatScroll);
+  const navigationGeneration = scrollController?.beginExactNavigation();
+  target.setAttribute("data-pin-highlight", "");
+  target.tabIndex = -1;
+  target.scrollIntoView({ block: "center", behavior });
+  target.focus({ preventScroll: true });
+  scrollController?.completeExactNavigation(navigationGeneration);
+  if (messagePinStatus) messagePinStatus.textContent = "Закреплённое сообщение показано";
+  window.setTimeout(() => target.removeAttribute("data-pin-highlight"), 4_000);
+  return true;
+}
+
 function currentHistoryPagination() {
   return state.historyPagination.get(state.selectedId) ?? { hasOlder: false, loading: false };
 }
@@ -4757,13 +6405,30 @@ function messageDisclosureId(article) {
   return String(article.dataset.messageId ?? "").trim();
 }
 
+const deferredUserMessageBodyRenderers = new WeakMap();
+
+function configureDeferredUserMessageBody(body, { renderPreview, renderFull, expanded = false }) {
+  const state = { expanded: null, renderFull, renderPreview };
+  deferredUserMessageBodyRenderers.set(body, state);
+  syncDeferredUserMessageBody(body, expanded);
+}
+
+function syncDeferredUserMessageBody(body, expanded) {
+  const state = deferredUserMessageBodyRenderers.get(body);
+  if (!state || state.expanded === expanded) return;
+  body.replaceChildren();
+  (expanded ? state.renderFull : state.renderPreview)(body);
+  state.expanded = expanded;
+}
+
 function updateUserMessageDisclosure(article) {
   const body = article.querySelector(".msg-body[data-user-message-disclosure]");
   if (!body) return;
   const bubble = article.querySelector(".msg-user-bubble");
   if (!bubble) return;
   const id = messageDisclosureId(article);
-  const overflows = hasCollapsedOverflow(body.scrollHeight, USER_MESSAGE_COLLAPSE_HEIGHT_PX);
+  const deferred = deferredUserMessageBodyRenderers.has(body);
+  const overflows = deferred || hasCollapsedOverflow(body.scrollHeight, USER_MESSAGE_COLLAPSE_HEIGHT_PX);
   const existing = article.querySelector("[data-message-disclosure]");
   if (!overflows) {
     body.classList.remove("is-collapsed");
@@ -4772,7 +6437,8 @@ function updateUserMessageDisclosure(article) {
     return;
   }
 
-  const expanded = id && expandedUserMessageIds.has(id);
+  const expanded = Boolean(id && expandedUserMessageIds.has(id));
+  syncDeferredUserMessageBody(body, expanded);
   body.classList.toggle("is-collapsed", !expanded);
   const button = existing ?? el("button", {
     type: "button",
@@ -4794,6 +6460,7 @@ function updateUserMessageDisclosure(article) {
   button.setAttribute("aria-expanded", String(expanded));
   button.onclick = () => {
     const nextExpanded = body.classList.contains("is-collapsed");
+    syncDeferredUserMessageBody(body, nextExpanded);
     body.classList.toggle("is-collapsed", !nextExpanded);
     if (id) {
       if (nextExpanded) expandedUserMessageIds.add(id);
@@ -4839,6 +6506,33 @@ function renderedMessageAuthor(message, role) {
   return message?.kind === "interstream" ? `Служебное · ${author}` : author;
 }
 
+function pruneComposerFiles() {
+  const attachments = [...drafts.values()].flatMap((draft) => draft.attachments ?? []);
+  attachments.push(...(pendingComposerRequest?.attachments ?? []), ...(window.AgentHubRetainedUploadAttachments?.() ?? []));
+  window.AgentHubComposerFiles.prune(attachments.map((file) => file.blobId).filter(Boolean));
+}
+window.AgentHubPruneComposerFiles = pruneComposerFiles;
+
+function syncMessageUploadActions(head, message) {
+  const state = String(message.uploadState ?? "");
+  let actions = head?.querySelector("[data-message-upload-actions]");
+  if (!state) { actions?.remove(); return; }
+  if (actions?.dataset.uploadState === state) return;
+  actions?.remove();
+  actions = el("span", { "data-message-upload-actions": "", "data-upload-state": state, class: "msg-upload-actions" });
+  for (const action of state === "paused" ? ["resume", "cancel"] : ["cancel"]) {
+    const button = el("button", {
+      type: "button", class: "queue-accept", [`data-upload-${action}`]: "",
+      text: action === "resume" ? "Продолжить загрузку" : "Отменить отправку",
+    });
+    button.addEventListener("click", () => emit(`message:upload-${action}`, {
+      clientUserMessageId: message.clientUserMessageId,
+    }));
+    actions.append(button);
+  }
+  head?.append(actions);
+}
+
 function patchRenderedMessage(node, message) {
   const article = node.matches?.("article.msg, details.msg")
     ? node
@@ -4851,6 +6545,7 @@ function patchRenderedMessage(node, message) {
   const role = message.role === "user" ? "user" : message.role === "system" ? "system" : "agent";
   const author = renderedMessageAuthor(message, role);
   const head = article.querySelector(".msg-head");
+  syncMessageUploadActions(head, message);
   const authorNode = head?.querySelector(".msg-author");
   if (authorNode) authorNode.textContent = author;
   let time = head?.querySelector(".msg-time");
@@ -4919,23 +6614,31 @@ function createRenderedMessage(spec) {
   ]);
 }
 
-function renderMessages({
+function renderMessages(options = {}) {
+  return window.AgentHubCommandTrace.measure("ui-render", "messages", () => renderMessagesContent(options));
+}
+
+function renderMessagesContent({
   forceBottom = false,
   preserveTop = false,
   prependedCount = 0,
   tailLimit = 0,
+  exactNavigation = null,
 } = {}) {
   const task = currentTask();
   const taskId = String(task?.id ?? "");
   renderStreamChatHeader(task);
   const scrollController = chatScrollControllers.get(chatScroll);
-  const scrollSnapshot = scrollController?.capture();
-  const stickToBottom = forceBottom || scrollSnapshot?.pinned || chatIsNearBottom();
+  const scrollSnapshot = exactNavigation ? null : scrollController?.capture();
+  const stickToBottom = !exactNavigation
+    && (forceBottom || scrollSnapshot?.pinned || chatIsNearBottom());
   // Обновление истории после финального ответа использует preserveTop. У низа
   // якорь первого видимого сообщения оставлял зазор после новой карточки.
   // Якорь нужен только читателю, который уже ушёл выше по истории.
   const incrementalPrepend = Number(prependedCount) > 0 && !tailLimit;
-  const anchor = preserveTop && !stickToBottom && !incrementalPrepend ? captureChatAnchor() : null;
+  const anchor = !exactNavigation && preserveTop && !stickToBottom && !incrementalPrepend
+    ? captureChatAnchor()
+    : null;
   // chatLog is a single physical DOM surface shared by every Stream. Claim it
   // before reading the new history so keyed reconciliation can never reuse a
   // message node (or its event handlers) owned by the previously selected
@@ -4961,7 +6664,8 @@ function renderMessages({
     } else {
       existingEmpty.textContent = emptyText;
     }
-    if (anchor) restoreChatAnchor(anchor);
+    if (exactNavigation) focusRenderedMessage(exactNavigation, { behavior: "auto" });
+    else if (anchor) restoreChatAnchor(anchor);
     else if (stickToBottom) pinChatToBottom();
     else window.requestAnimationFrame(() => scrollController?.afterMutation(scrollSnapshot, { preserveDistance: true }));
     scheduleUnderfilledHistoryLoad();
@@ -5010,7 +6714,10 @@ function renderMessages({
     });
   }
   scheduleUserMessageDisclosureSync(prependedNodes);
-  if (anchor) {
+  syncMessagePinActions();
+  if (exactNavigation) {
+    focusRenderedMessage(exactNavigation, { behavior: "auto" });
+  } else if (anchor) {
     restoreChatAnchor(anchor);
     scrollController?.addUnread(newTailMessages);
   }
@@ -5401,7 +7108,8 @@ function renderMarkdownCodeBlock(lines, language = "") {
   ]);
 }
 
-function renderMarkdown(target, source, fileContext = currentFileLinkContext(), messageRole = "agent") {
+function renderMarkdown(target, source, fileContext = currentFileLinkContext(), messageRole = "agent", detailsDepth = 0) {
+  const disclosureState = MessageView.captureMarkdownDetailsState(target);
   target.replaceChildren();
   const lines = String(source ?? "").replace(/\r\n?/gu, "\n").split("\n");
   let index = 0;
@@ -5411,13 +7119,25 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
       index += 1;
       continue;
     }
-    const fence = line.match(/^\s*```([\w+-]*)\s*$/u);
+    const fence = MessageView.markdownFenceStart(line);
     if (fence) {
       const code = [];
       index += 1;
-      while (index < lines.length && !/^\s*```\s*$/u.test(lines[index])) code.push(lines[index++]);
+      while (index < lines.length && !MessageView.markdownFenceEnd(lines[index], fence)) code.push(lines[index++]);
       if (index < lines.length) index += 1;
-      target.append(renderMarkdownCodeBlock(code, fence[1]));
+      target.append(renderMarkdownCodeBlock(code, fence.language));
+      continue;
+    }
+    const disclosure = detailsDepth < 32 ? MessageView.markdownDetailsAt(lines, index) : null;
+    if (disclosure) {
+      const summary = el("summary");
+      appendInlineMarkdown(summary, disclosure.summary || "Подробнее", fileContext);
+      const body = el("div", { class: "markdown-details-body" });
+      renderMarkdown(body, disclosure.body, fileContext, messageRole, detailsDepth + 1);
+      const details = el("details", { class: "markdown-details" }, [summary, body]);
+      details.agentHubMarkdownDetailsSource = JSON.stringify([disclosure.summary, disclosure.body]);
+      target.append(details);
+      index = disclosure.nextIndex;
       continue;
     }
     const standaloneCode = MessageView.standaloneInlineCode(line);
@@ -5488,7 +7208,9 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
     const paragraph = [];
     while (index < lines.length
       && lines[index].trim()
-      && !/^\s*(?:```|#{1,6}\s|[-+*]\s+|\d+\.\s+|>\s?)/u.test(lines[index])
+      && !MessageView.markdownFenceStart(lines[index])
+      && !/^\s*(?:#{1,6}\s|[-+*]\s+|\d+\.\s+|>\s?)/u.test(lines[index])
+      && !(paragraph.length && detailsDepth < 32 && MessageView.markdownDetailsAt(lines, index))
       && !markdownTableAt(lines, index)) {
       paragraph.push(lines[index++]);
     }
@@ -5504,6 +7226,7 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
     const technicalRows = renderTechnicalRows(extracted.rows);
     if (technicalRows) target.append(technicalRows);
   }
+  MessageView.restoreMarkdownDetailsState(target, disclosureState);
 }
 
 function activityDisclosureSummary({ label = "Выполненные действия", count = 0, stage = "" } = {}) {
@@ -5535,13 +7258,33 @@ function activityItemNode(activity) {
   ]);
 }
 
+const deferredDisclosureControllers = new WeakMap();
+
+function configureDeferredDisclosure(details, content, renderContent) {
+  const existing = deferredDisclosureControllers.get(details);
+  if (existing) existing.update(renderContent);
+  else deferredDisclosureControllers.set(
+    details,
+    MessageView.createDeferredDisclosureController(details, content, renderContent),
+  );
+  return details;
+}
+
+function syncDeferredDisclosure(details) {
+  deferredDisclosureControllers.get(details)?.sync();
+}
+
 function activityFeedNode(activities) {
   const values = Array.isArray(activities) ? activities : [];
   if (!values.length) return null;
-  return el("details", { class: "activity-feed" }, [
+  const content = el("div", { class: "activity-list", "data-deferred-disclosure-content": "" });
+  const details = el("details", { class: "activity-feed" }, [
     activityDisclosureSummary({ count: values.length }),
-    el("div", { class: "activity-list" }, values.map(activityItemNode)),
+    content,
   ]);
+  return configureDeferredDisclosure(details, content, (target) => {
+    target.replaceChildren(...values.map(activityItemNode));
+  });
 }
 
 function visibleTurnTraceGroups(groups) {
@@ -5563,7 +7306,11 @@ function turnTraceGroupsNode(values, { liveStage = "", openGroupIds = [] } = {})
     return section;
   });
   if (content.activities.length) {
-    blocks.push(el("details", {
+    const activityContent = el("div", {
+      class: "activity-list",
+      "data-deferred-disclosure-content": "",
+    });
+    const activityDetails = el("details", {
       class: "turn-trace-activities",
       "data-trace-group-id": TURN_TRACE_ACTIVITY_GROUP_ID,
       open: liveTraceDisclosureOpen({
@@ -5572,8 +7319,11 @@ function turnTraceGroupsNode(values, { liveStage = "", openGroupIds = [] } = {})
       }),
     }, [
       activityDisclosureSummary({ count: content.activities.length, stage: liveStage }),
-      el("div", { class: "activity-list" }, content.activities.map(activityItemNode)),
-    ]));
+      activityContent,
+    ]);
+    blocks.push(configureDeferredDisclosure(activityDetails, activityContent, (target) => {
+      target.replaceChildren(...content.activities.map(activityItemNode));
+    }));
   }
   return el("div", { class: "turn-trace-groups" }, blocks);
 }
@@ -5583,35 +7333,42 @@ function turnTraceNode(groups) {
   if (!values.length) return null;
   const activityCount = values.reduce((total, group) => total + (group.activities?.length ?? 0), 0);
   const content = turnTraceContent(values);
-  const expanded = el("div", { class: "turn-trace-groups" });
-  content.reasoningBlocks.forEach((reasoning, index) => {
-    const reasoningNode = el("div", { class: "turn-trace-reasoning" });
-    renderMarkdown(reasoningNode, reasoning);
-    expanded.append(el("section", {
-      class: "turn-trace-block",
-      "data-trace-index": String(index),
-    }, [reasoningNode]));
-  });
-  if (content.activities.length) {
-    expanded.append(el("div", { class: "activity-list" }, content.activities.map(activityItemNode)));
-  }
   const summary = turnTraceSummary({
     reasoningCount: content.reasoningBlocks.length,
     activityCount,
   });
-  return el("details", { class: "turn-trace" }, [
+  const expanded = el("div", {
+    class: "turn-trace-groups",
+    "data-deferred-disclosure-content": "",
+  });
+  const details = el("details", { class: "turn-trace" }, [
     activityDisclosureSummary(summary),
     expanded,
   ]);
+  return configureDeferredDisclosure(details, expanded, (target) => {
+    content.reasoningBlocks.forEach((reasoning, index) => {
+      const reasoningNode = el("div", { class: "turn-trace-reasoning" });
+      renderMarkdown(reasoningNode, reasoning);
+      target.append(el("section", {
+        class: "turn-trace-block",
+        "data-trace-index": String(index),
+      }, [reasoningNode]));
+    });
+    if (content.activities.length) {
+      target.append(el("div", { class: "activity-list" }, content.activities.map(activityItemNode)));
+    }
+  });
 }
 
-function messageActionButton({ icon, label, action, onClick }) {
+function messageActionButton({ icon, label, action, onClick, pressed = null, disabled = false }) {
   const button = el("button", {
     type: "button",
     class: "msg-action",
     title: label,
     "aria-label": `${label} сообщение`,
     [`data-message-${action}`]: "",
+    ...(pressed === null ? {} : { "aria-pressed": String(pressed) }),
+    disabled,
   }, [
     window.AgentHubStreamTabs.createPhosphorIcon(document, icon, "msg-action-icon"),
     el("span", { text: label }),
@@ -5624,7 +7381,7 @@ function editUserMessage(message) {
   composerInput.value = String(message?.text ?? "");
   autosizeComposer();
   updateSendState();
-  saveDraft();
+  saveDraft({ userEdited: true });
   composerInput.focus({ preventScroll: true });
   composer.scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
@@ -5643,6 +7400,7 @@ function repeatAgentMessage(message) {
   composerInput.value = String(prompt.text ?? "");
   autosizeComposer();
   updateSendState();
+  saveDraft({ userEdited: true });
   submitComposer();
 }
 
@@ -5656,6 +7414,21 @@ function renderMessageActions(message, role) {
     action: "copy",
     onClick: () => emit("clipboard:write", request),
   }));
+  if (message.pinEligible === true && message.messageKey) {
+    const pin = pinsForTask().find((candidate) => candidate.messageKey === message.messageKey);
+    const pinned = Boolean(pin);
+    actions.push(messageActionButton({
+      icon: "push-pin-simple",
+      label: pinned ? "Открепить" : "Закрепить",
+      action: "pin",
+      pressed: pinned,
+      disabled: state.pendingMessagePinKeys.has(message.messageKey),
+      onClick: () => {
+        const currentPin = pinsForTask().find((candidate) => candidate.messageKey === message.messageKey);
+        requestMessagePinChange({ message, pin: currentPin, pinned: !currentPin });
+      },
+    }));
+  }
   if (role === "user") actions.push(messageActionButton({
     icon: "pencil-simple",
     label: "Редактировать",
@@ -5671,6 +7444,21 @@ function renderMessageActions(message, role) {
   return actions.length ? el("div", { class: "msg-actions" }, actions) : null;
 }
 
+function syncMessagePinActions() {
+  for (const button of chatLog.querySelectorAll("[data-message-pin]")) {
+    const article = button.closest(".msg-stack")?.querySelector("[data-message-key]");
+    const messageKey = String(article?.dataset.messageKey ?? "");
+    const pinned = pinsForTask().some((pin) => pin.messageKey === messageKey);
+    const label = pinned ? "Открепить" : "Закрепить";
+    button.setAttribute("aria-pressed", String(pinned));
+    button.setAttribute("aria-label", `${label} сообщение`);
+    button.title = label;
+    button.disabled = state.pendingMessagePinKeys.has(messageKey);
+    const caption = button.querySelector("span");
+    if (caption) caption.textContent = label;
+  }
+}
+
 function renderMessage(message, { readOnly = false, task = currentTask() } = {}) {
   const role = message.role === "user" ? "user" : message.role === "system" ? "system" : "agent";
   const maintenance = role === "system" && message.kind === "maintenance";
@@ -5682,6 +7470,7 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
     "data-message-id": message.id ?? "",
     "data-turn-id": message.turnId ?? "",
     "data-item-id": message.itemId ?? "",
+    "data-message-key": message.messageKey ?? "",
     "data-delivery-state": message.deliveryState ?? "",
     "data-provider": String(task?.provider ?? "none"),
     ...(subagent ? { "data-subagent-response": true } : {}),
@@ -5728,19 +7517,33 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
     class: "msg-body",
     ...(role === "user" ? { "data-user-message-disclosure": "" } : {}),
   });
-  // Markdown собирается только безопасными DOM-узлами; сырой HTML не исполняется.
-  if (!renderResponseAnnotations(body, message)) {
+  const renderBody = (target) => {
+    target.replaceChildren();
+    // Markdown собирается только безопасными DOM-узлами; сырой HTML не исполняется.
+    if (renderResponseAnnotations(target, message)) return;
     const text = role === "system"
       ? MessageView.normalizeSystemEventText(message.text ?? "")
       : message.text ?? "";
     if (role === "agent" && Array.isArray(message.responseCitationPresentations)
       && message.responseCitationPresentations.length) {
-      renderAgentResponseBody(body, message, text, currentFileLinkContext(task));
-    } else renderMarkdown(body, text, currentFileLinkContext(task), role);
-  }
+      renderAgentResponseBody(target, message, text, currentFileLinkContext(task));
+    } else renderMarkdown(target, text, currentFileLinkContext(task), role);
+  };
+  const deferredPreview = MessageView.deferredUserMessagePreview(message);
+  if (deferredPreview != null) {
+    body.dataset.deferredMessageBody = "";
+    configureDeferredUserMessageBody(body, {
+      expanded: Boolean(message.id && expandedUserMessageIds.has(message.id)),
+      renderPreview: (target) => target.append(el("p", {
+        class: "msg-deferred-preview",
+        text: deferredPreview,
+      })),
+      renderFull: renderBody,
+    });
+  } else renderBody(body);
 
   if (maintenance) article.append(body);
-  else article.append(head);
+  else { article.append(head); if (!readOnly) syncMessageUploadActions(head, message); }
   const trace = turnTraceNode(message.activityGroups);
   const activity = trace ? null : activityFeedNode(message.activities);
   if (trace) article.append(trace);
@@ -5950,6 +7753,15 @@ function revealResponseCitationSource(article, surface) {
   }
 }
 
+function materializeDeferredCitationSource(article, surfaceKind) {
+  if (!article || surfaceKind !== "message-body") return;
+  const body = article.querySelector(".msg-body[data-deferred-message-body]");
+  if (!body || !deferredUserMessageBodyRenderers.has(body)) return;
+  const disclosure = article.querySelector("[data-message-disclosure]");
+  if (body.classList.contains("is-collapsed") && disclosure) disclosure.click();
+  else syncDeferredUserMessageBody(body, true);
+}
+
 async function focusResponseCitationSource(button) {
   const target = responseCitationSources.get(button);
   const source = normalizedResponseAnnotationSource(target?.source);
@@ -5961,12 +7773,19 @@ async function focusResponseCitationSource(button) {
   const article = rootNode?.matches?.("article.msg, details.msg")
     ? rootNode
     : rootNode?.querySelector?.("article.msg, details.msg");
+  materializeDeferredCitationSource(article, source.surfaceKind);
+  if (article && source.surfaceKind === "trace-reasoning") {
+    for (const details of article.querySelectorAll("details.turn-trace")) {
+      details.open = true;
+      syncDeferredDisclosure(details);
+    }
+  }
   const surface = responseAnnotationSourceSurface(article, source);
   if (!article || !surface) return false;
   const range = domRangeFromOffsets(surface, source.start, source.end);
   if (!range) return false;
   const [contentHash, surfaceHash, selectionHash] = await Promise.all([
-    responseAnnotationSha256(responseAnnotationSourceContent(projection.message)),
+    responseAnnotationSha256(responseAnnotationSourceContent(projection.message, source)),
     responseAnnotationSha256(surface.textContent),
     responseAnnotationSha256(range.toString().trim()),
   ]);
@@ -6022,6 +7841,7 @@ function liveCardHasContent(live) {
     || normalizedMessageText(live.reasoning)
     || normalizedMessageText(live.stage)
     || visibleTurnTraceGroups(live.activityGroups).length
+    || (Array.isArray(live.attachments) && live.attachments.length)
   ));
 }
 
@@ -6102,6 +7922,16 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
     } else renderMarkdown(body, visibleText, fileContext);
   });
   body.hidden = !visibleText && liveMessage.responseCitationPresentations.length === 0;
+  const attachmentStrip = node.querySelector("[data-live-attachments]");
+  const liveAttachments = Array.isArray(liveMessage.attachments) ? liveMessage.attachments : [];
+  if (attachmentStrip) {
+    liveCardRenderController.reconcile(node, "attachments", liveAttachments, () => {
+      attachmentStrip.replaceChildren(...(liveAttachments.length
+        ? [renderAttachmentStrip(liveAttachments, { readOnly: true })]
+        : []));
+    });
+    attachmentStrip.hidden = liveAttachments.length === 0;
+  }
   const activityFeed = node.querySelector("[data-activity-feed]");
   liveCardRenderController.reconcile(node, "activity-feed", renderParts.activityFeed, () => {
     activityFeed.open = liveActivityDisclosureOpen({
@@ -6110,9 +7940,10 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
       visible: renderParts.activityFeed.visible,
     });
     activityFeed.hidden = !renderParts.activityFeed.visible;
-    node.querySelector("[data-activity-list]").replaceChildren(
-      ...renderParts.activityFeed.activities.map(activityItemNode),
-    );
+    const activityList = node.querySelector("[data-activity-list]");
+    configureDeferredDisclosure(activityFeed, activityList, (target) => {
+      target.replaceChildren(...renderParts.activityFeed.activities.map(activityItemNode));
+    });
   });
   liveCardRenderController.reconcile(node, "activity-feed-summary", renderParts.activityFeedSummary, () => {
     renderActivityDisclosureSummary(node.querySelector("[data-activity-summary]"), {
@@ -6149,20 +7980,22 @@ function renderLive() {
 
 function renderApprovals() {
   const approvals = state.approvals.get(state.selectedId) ?? [];
-  approvalsBox.replaceChildren();
-  approvalsBox.hidden = approvals.length === 0;
-  for (const approval of approvals) {
+  window.AgentHubApprovalForm.reconcileApprovals(approvalsBox, approvals, (approval) => {
+    const asyncQuestion = approval.kind === "async-user-input";
+    const frozen = asyncQuestion && approval.state === "dispatching";
     const questions = Array.isArray(approval.questions) ? approval.questions : [];
-    const options = Array.isArray(approval.options) && approval.options.length > 0
+    const options = Array.isArray(approval.options)
       ? approval.options
       : [{ id: "approve", label: "Разрешить", kind: "primary" }, { id: "deny", label: "Отклонить" }];
     const questionFields = questions.map((question, index) => {
       const questionId = String(question.id ?? `question-${index}`);
       const choices = Array.isArray(question.options) ? question.options : [];
+      const frozenAnswer = frozen ? String(approval.answers?.[questionId]?.[0] ?? "") : "";
       const field = el("fieldset", {
         class: "approval-question",
         "data-approval-question": questionId,
         "data-question-kind": choices.length ? "options" : "text",
+        disabled: frozen,
       }, [
         el("legend", { text: question.header || `Вопрос ${index + 1}` }),
         el("div", { class: "approval-question-text", text: question.question || "" }),
@@ -6173,7 +8006,7 @@ function renderApprovals() {
             type: "radio",
             name: `approval-${approval.id}-${questionId}`,
             value: choice.label,
-            checked: choiceIndex === 0,
+            checked: frozen ? frozenAnswer === choice.label : !asyncQuestion && choiceIndex === 0,
           }),
           el("span", {}, [
             el("strong", { text: choice.label }),
@@ -6181,23 +8014,25 @@ function renderApprovals() {
           ]),
         ])));
       }
-      if (!choices.length || question.isOther) {
+      if (!choices.length || question.isOther || asyncQuestion) {
         field.append(el("input", {
           class: "approval-input",
           type: question.isSecret ? "password" : "text",
           "data-approval-other": "",
           placeholder: choices.length ? "Другой ответ" : "Ваш ответ",
           autocomplete: question.isSecret ? "off" : "on",
+          value: frozen && !choices.some((choice) => choice.label === frozenAnswer) ? frozenAnswer : "",
         }));
       }
       return field;
     });
-    approvalsBox.append(el("div", { class: "approval", "data-approval-id": approval.id }, [
+    return el("div", { class: "approval", "data-approval-id": approval.id }, [
       el("div", { class: "approval-head" }, [
-        el("span", { class: "approval-kind", text: approval.kind || "Подтверждение" }),
+        el("span", { class: "approval-kind", text: asyncQuestion ? "Вопрос агента" : approval.kind || "Подтверждение" }),
       ]),
       el("div", { class: "approval-text", text: approval.text || "" }),
       ...questionFields,
+      frozen ? el("div", { class: "approval-text", text: "Ответ сохранён. Доставка уточняется; повтор отправит тот же ответ." }) : null,
       el("div", { class: "approval-actions" }, options.map((option) => {
         const attributes = {
           class: `chip-button ${option.kind === "primary" ? "primary" : option.kind === "danger" ? "danger" : ""}`,
@@ -6214,10 +8049,10 @@ function renderApprovals() {
           class: "chip-button primary",
           "data-action": "approval-submit",
           "data-approval-id": approval.id,
-          text: "Ответить",
+          text: frozen ? "Повторить отправку" : "Ответить",
         })] : [])),
-    ]));
-  }
+    ]);
+  });
 }
 
 function renderQueueForTask(taskId, container) {
@@ -6246,6 +8081,7 @@ function renderQueueForTask(taskId, container) {
   ].filter(Boolean).join(" · ");
   container.append(el("div", { class: "queue-head", text: counts }));
   const task = state.tasks.find((entry) => entry.id === taskId);
+  const movable = queued.filter((entry) => !entry.optimistic && ["queued", "paused"].includes(entry.state));
   for (const entry of queued) {
     const actions = [];
     if (entry.optimistic) {
@@ -6253,6 +8089,29 @@ function renderQueueForTask(taskId, container) {
         class: "queue-optimistic",
         text: String(entry.delivery ?? "").trim() || "Ожидает подтверждения Hub…",
       }));
+      if (entry.uploadState) {
+        for (const action of entry.uploadState === "paused" ? ["resume", "cancel"] : ["cancel"]) {
+          const button = el("button", {
+            type: "button", class: "queue-accept", [`data-upload-${action}`]: "",
+            text: action === "resume" ? "Продолжить загрузку" : "Отменить отправку",
+          });
+          button.addEventListener("click", () => emit(`message:upload-${action}`, {
+            taskId, clientUserMessageId: entry.clientUserMessageId,
+          }));
+          actions.push(button);
+        }
+      }
+      if (entry.admissionRetryAvailable) {
+        const retry = el("button", {
+          type: "button", class: "queue-accept", "data-message-retry-unconfirmed": "",
+          text: "Повторить отправку",
+          title: "Повторить исходный запрос с тем же идентификатором; приём Hub пока не подтверждён",
+        });
+        retry.addEventListener("click", () => emit("message:retry-unconfirmed", {
+          taskId, clientUserMessageId: entry.clientUserMessageId,
+        }));
+        actions.push(retry);
+      }
     } else {
       const steerAvailable = Boolean(task?.running && ["codex", "claude"].includes(String(task?.provider ?? "")));
       actions.push(el("button", {
@@ -6273,10 +8132,33 @@ function renderQueueForTask(taskId, container) {
         class: "queue-edit",
         "data-action": "queue-edit",
         "data-queue-id": entry.id,
-        title: "Изменить текст сообщения, не затрагивая изображения и аннотации",
+        title: "Вернуть весь исходный черновик в основной композер",
         text: "Изменить",
       }));
       if (["queued", "paused"].includes(entry.state)) {
+        const movableIndex = movable.findIndex((candidate) => candidate.id === entry.id);
+        actions.push(el("button", {
+          type: "button",
+          class: "queue-move",
+          "data-action": "queue-move",
+          "data-direction": "up",
+          "data-queue-id": entry.id,
+          title: "Поднять сообщение в очереди",
+          "aria-label": "Поднять сообщение в очереди",
+          disabled: movableIndex <= 0,
+          text: "↑",
+        }));
+        actions.push(el("button", {
+          type: "button",
+          class: "queue-move",
+          "data-action": "queue-move",
+          "data-direction": "down",
+          "data-queue-id": entry.id,
+          title: "Опустить сообщение в очереди",
+          "aria-label": "Опустить сообщение в очереди",
+          disabled: movableIndex < 0 || movableIndex >= movable.length - 1,
+          text: "↓",
+        }));
         if (entry.waitReason === "provider-thread-active") {
           actions.push(el("button", {
             type: "button",
@@ -6309,7 +8191,7 @@ function renderQueueForTask(taskId, container) {
       }
       actions.push(el("button", {
         type: "button", class: "queue-remove", "data-action": "queue-remove", "data-queue-id": entry.id,
-        title: "Убрать отложенное сообщение", "aria-label": "Убрать отложенное сообщение", text: "×",
+        title: "Отменить отложенное сообщение", "aria-label": "Отменить отложенное сообщение", text: "Отменить",
       }));
     }
     const entryAnnotations = Array.isArray(entry.annotations) ? entry.annotations : [];
@@ -6418,6 +8300,7 @@ function runSlashCommand(command) {
   composerInput.value = "";
   autosizeComposer();
   updateSendState();
+  saveDraft({ userEdited: true });
   closeSlashMenu();
   if (entry.run) entry.run();
   else if (entry.action) handleAction(entry.action, slashButton);
@@ -6441,15 +8324,21 @@ function updateSendState() {
 composerInput.addEventListener("input", () => {
   autosizeComposer();
   updateSendState();
-  saveDraft();
+  saveDraft({ userEdited: true });
   slashSelection = 0;
   renderSlashMenu();
+});
+
+composerQuickMessages?.addEventListener("pointerdown", (event) => {
+  if (event.target.closest("[data-quick-message-index]")) event.preventDefault();
 });
 
 composerQuickMessages?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-quick-message-index]");
   if (!button || button.disabled) return;
-  submitQuickMessage(button.__agentHubQuickMessage);
+  const entry = button.__agentHubQuickMessage;
+  if (quickMessageAction(quickMessageActionMode(), event.ctrlKey) === "send") submitQuickMessage(entry);
+  else insertQuickMessage(entry);
 });
 
 composerInput.addEventListener("keydown", (event) => {
@@ -6492,6 +8381,8 @@ function sendComposerRequest({
   attachments: requestAttachments = [],
   taskReferences: requestTaskReferences = [],
   annotations: requestAnnotations = [],
+  messageOrigin: requestMessageOrigin = null,
+  composerTransfer: requestComposerTransfer = null,
   steerWhileRunning = false,
   clearComposer = false,
   restoreOnReject = false,
@@ -6508,12 +8399,14 @@ function sendComposerRequest({
     && payloadAttachments.length === 0
     && payloadTaskReferences.length === 0
     && payloadAnnotations.length === 0) return;
-  const fingerprint = JSON.stringify({
+  const fingerprint = window.AgentHubComposerDraftReconciliation.recoveryFingerprint({
     taskId: state.selectedId,
     rawText,
     attachments: payloadAttachments,
     taskReferences: payloadTaskReferences,
     annotations: payloadAnnotations,
+    messageOrigin: requestMessageOrigin,
+    composerTransfer: requestComposerTransfer,
   });
   const retry = retryComposerRequests.get(state.selectedId);
   const requestId = retry?.fingerprint === fingerprint
@@ -6528,9 +8421,16 @@ function sendComposerRequest({
     attachments: payloadAttachments,
     taskReferences: payloadTaskReferences,
     annotations: payloadAnnotations,
+    messageOrigin: requestMessageOrigin,
+    composerTransfer: requestComposerTransfer,
     restoreOnReject,
+    editRevision: composerDraftReconciliation.revision(state.selectedId),
   };
   if (clearComposer) {
+    // Sending is itself a composition boundary. A FileReader or annotation
+    // hash that started from the pre-send draft must not reapply that draft
+    // after the accepted send has cleared it.
+    advanceComposerAsyncOperationFence(state.selectedId);
     drafts.set(state.selectedId, { text: "", attachments: [], taskReferences: [], annotations: [] });
     composerInput.value = "";
     setAttachments([]);
@@ -6547,6 +8447,8 @@ function sendComposerRequest({
     annotations: payloadAnnotations,
     attachments: payloadAttachments,
     taskReferences: payloadTaskReferences,
+    messageOrigin: requestMessageOrigin,
+    composerTransfer: requestComposerTransfer,
     followUpMode: MessageView.composerFollowUpMode(task, { steerWhileRunning }),
     deferWhileRunning: task?.running === true && !steerWhileRunning,
     draftStream: task?.draftStream === true,
@@ -6564,6 +8466,8 @@ function submitComposer({ steerWhileRunning = false } = {}) {
     attachments: currentAttachments(),
     taskReferences: currentTaskReferences(),
     annotations: currentAnnotations(),
+    messageOrigin: drafts.get(state.selectedId)?.messageOrigin ?? null,
+    composerTransfer: drafts.get(state.selectedId)?.composerTransfer ?? null,
     steerWhileRunning,
     clearComposer: true,
     restoreOnReject: true,
@@ -6572,50 +8476,61 @@ function submitComposer({ steerWhileRunning = false } = {}) {
 
 function submitQuickMessage(entry) {
   if (!entry?.text) return;
-  saveDraft();
   const sent = sendComposerRequest({
     rawText: entry.text,
     clearComposer: false,
     restoreOnReject: false,
   });
-  if (sent) showToast(`Отправлено: ${entry.label}`);
+  if (sent) showToast(`Отправлено: ${entry.title}`);
 }
 
-function completeComposerSend(requestId, accepted) {
-  const pending = pendingComposerRequest;
-  if (!pending || pending.requestId !== requestId) return;
-  pendingComposerRequest = null;
-  if (accepted) {
-    retryComposerRequests.delete(pending.taskId);
-  } else {
-    retryComposerRequests.set(pending.taskId, {
-      requestId: pending.requestId,
-      fingerprint: pending.fingerprint,
-    });
-    const draft = drafts.get(pending.taskId);
-    const untouched = draft
-      && !draft.text
-      && (draft.attachments ?? []).length === 0
-      && (draft.taskReferences ?? []).length === 0
-      && (draft.annotations ?? []).length === 0;
-    if (pending.restoreOnReject !== false && untouched) {
-      drafts.set(pending.taskId, {
-        text: pending.rawText,
-        attachments: pending.attachments,
-        taskReferences: pending.taskReferences,
-        annotations: pending.annotations,
-      });
-      if (state.selectedId === pending.taskId) restoreDraft();
-    }
+function insertTextAtCaret(input, text) {
+  if (!input || !text) return false;
+  const start = Number.isSafeInteger(input.selectionStart) ? input.selectionStart : input.value.length;
+  input.setRangeText(text, start, start, "end");
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.focus({ preventScroll: true });
+  return true;
+}
+
+function insertQuickMessage(entry) {
+  const text = String(entry?.text ?? "");
+  if (!text) return;
+  const activeComment = document.activeElement?.closest?.("[data-annotation-comment-index]");
+  if (activeComment && annotationsBox.contains(activeComment)) {
+    insertTextAtCaret(activeComment, text);
+    return;
   }
-  updateSendState();
-  saveDraft();
+  insertTextAtCaret(composerInput, text);
 }
 
-/* ---- вложения (превью через data:-URL, blob: закрыт CSP) ---- */
+function completeComposerSend(requestId, { outcome = "unknown", taskId = "" } = {}) {
+  const pending = pendingComposerRequest;
+  const completion = composerDraftReconciliation.complete({
+    pending,
+    requestId,
+    taskId,
+    outcome,
+  });
+  pendingComposerRequest = completion.pending;
+  updateSendState();
+  return completion;
+}
+
+function normalizedRecoveryAttachments(value) {
+  return window.AgentHubComposerDraftReconciliation.recoveryAttachments(value, {
+    maxCount: DRAFT_RECOVERY_MAX_ATTACHMENTS,
+    maxDataUrlCharacters: DRAFT_RECOVERY_MAX_ATTACHMENT_CHARS,
+    maxBytes: DRAFT_ATTACHMENT_MAX_BYTES,
+    maxTotalBytes: DRAFT_ATTACHMENT_MAX_TOTAL_BYTES,
+  });
+}
+
+/* ---- вложения: локальные Blob-превью и опубликованные ссылки ---- */
 
 let attachments = [];
 let taskReferences = [];
+const attachmentOperationSequences = new Map();
 
 function currentAttachments() {
   return attachments;
@@ -6811,43 +8726,101 @@ attachmentsBox.addEventListener("click", (event) => {
   if (taskReferenceRemove) {
     const index = Number(taskReferenceRemove.dataset.taskReferenceIndex);
     setTaskReferences(taskReferences.filter((_, itemIndex) => itemIndex !== index));
-    saveDraft();
+    saveDraft({ userEdited: true });
     return;
   }
   const remove = event.target.closest("[data-attachment-index]");
   if (!remove) return;
   const index = Number(remove.dataset.attachmentIndex);
   setAttachments(attachments.filter((_, i) => i !== index));
-  saveDraft();
+  saveDraft({ userEdited: true });
 });
 
 async function readAttachmentFiles(files) {
-  const selected = [...files].filter((file) => file && file.size > 0);
+  const operation = captureComposerTaskOperation();
+  if (!operation) return;
+  const initialDraft = composerDraftSnapshot(operation.taskId);
+  const selected = [...files].filter((file) => (
+    file && Number.isSafeInteger(file.size) && file.size > 0
+  ));
   if (selected.length === 0) return;
+  const operationSequence = (attachmentOperationSequences.get(operation.taskId) ?? 0) + 1;
+  attachmentOperationSequences.set(operation.taskId, operationSequence);
+  let policy;
+  try { policy = await window.AgentHubAttachmentCapabilities(); }
+  catch (error) { showToast(error.message); return; }
+  if (!composerTaskOperationCurrent(operation)
+    || attachmentOperationSequences.get(operation.taskId) !== operationSequence) return;
   const limit = 8;
-  const room = Math.max(0, limit - attachments.length);
-  const accepted = selected.slice(0, room).filter((file) => file.size <= 20 * 1024 * 1024);
-  const oversized = selected.slice(0, room).length - accepted.length;
-  const loaded = await Promise.all(accepted.map((file) => new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve({
+  const room = Math.max(0, limit - initialDraft.attachments.length);
+  const existingBytes = initialDraft.attachments.reduce((sum, item) => sum + (Number(item?.size) || 0), 0);
+  let remainingBytes = Math.max(0, policy.maxTotalBytes - existingBytes);
+  let oversized = 0;
+  let unsafe = 0;
+  const accepted = [];
+  for (const file of selected.slice(0, room)) {
+    const metadata = window.AgentHubComposerDraftReconciliation.safeAttachmentMetadata({
       name: file.name,
       type: file.type || "application/octet-stream",
       size: file.size,
-      dataUrl: String(reader.result),
-    });
-    reader.onerror = () => reject(new Error(`Не удалось прочитать файл «${file.name}»`));
-    reader.readAsDataURL(file);
-  }))).catch((error) => {
-    showToast(error.message);
-    return [];
-  });
-  if (loaded.length) {
-    setAttachments([...attachments, ...loaded].slice(0, limit));
-    saveDraft();
+    }, { maxBytes: Math.min(policy.maxBytes, DRAFT_ATTACHMENT_MAX_BYTES) });
+    if (!metadata) {
+      unsafe += 1;
+      continue;
+    }
+    if (file.size > remainingBytes) {
+      oversized += 1;
+      continue;
+    }
+    accepted.push(file);
+    remainingBytes -= file.size;
   }
+  if (accepted.length === 0) {
+    if (room === 0 || selected.length > room) showToast(`Можно приложить не больше ${limit} файлов.`);
+    else if (unsafe) showToast("Имя или тип файла небезопасны для отправки.");
+    else if (oversized) showToast(`Общий лимит вложений: ${Math.floor(policy.maxTotalBytes / 1024 / 1024)} МБ.`);
+    return;
+  }
+  const settled = await Promise.allSettled(accepted.map((file) => window.AgentHubComposerFiles.prepare(file, {
+      name: file.name,
+      type: file.type || "application/octet-stream",
+      size: file.size,
+    })));
+  const failed = settled.find((result) => result.status === "rejected");
+  if (failed) {
+    window.AgentHubComposerFiles.settle(settled.filter((result) => result.status === "fulfilled").map((result) => result.value));
+    pruneComposerFiles();
+    showToast(failed.reason?.message ?? "Не удалось прочитать вложение");
+    return;
+  }
+  const loaded = settled.map((result) => result.value);
+  const canonical = window.AgentHubComposerDraftReconciliation.recoveryAttachments(loaded, {
+    maxCount: limit,
+    maxBytes: DRAFT_ATTACHMENT_MAX_BYTES,
+    maxTotalBytes: policy.maxTotalBytes - existingBytes,
+  });
+  if (!canonical) {
+    window.AgentHubComposerFiles.settle(loaded);
+    pruneComposerFiles();
+    showToast("Вложение не прошло проверку целостности.");
+    return;
+  }
+  if (attachmentOperationSequences.get(operation.taskId) === operationSequence
+    && composerTaskOperationCurrent(operation)) {
+    composerDraftReconciliation.save(operation.taskId, {
+      ...initialDraft,
+      attachments: [...initialDraft.attachments, ...canonical].slice(0, limit),
+    }, { userEdited: true });
+    if (state.selectedId === operation.taskId) restoreDraft();
+  }
+  window.AgentHubComposerFiles.settle(loaded);
+  pruneComposerFiles();
   if (selected.length > room) showToast(`Можно приложить не больше ${limit} файлов.`);
-  else if (oversized) showToast("Размер одного файла не должен превышать 20 МБ.");
+  else if (unsafe) showToast("Часть файлов отклонена: небезопасное имя или тип.");
+  else if (oversized) showToast(`Общий лимит вложений: ${Math.floor(policy.maxTotalBytes / 1024 / 1024)} МБ.`);
+  if (loaded.some((file) => !window.AgentHubComposerFiles.durable(file))) {
+    showToast("Файл доступен до закрытия страницы. Локальное хранилище недоступно; после перезагрузки выбери файл снова.");
+  }
 }
 
 document.querySelector("[data-action='attach']").addEventListener("click", () => fileInput.click());
@@ -6939,6 +8912,7 @@ let annotations = [];
 let pendingAnnotationSelection = null;
 let lastAnnotationSelection = null;
 let lastTouchSelectionAt = 0;
+const annotationOperationSequences = new Map();
 const TOUCH_CONTEXT_MENU_WINDOW_MS = 3_000;
 
 function currentAnnotations() {
@@ -6957,7 +8931,7 @@ function renderAnnotations() {
   annotations.forEach((annotation, index) => {
     annotationsBox.append(el("div", { class: "annotation" }, [
       el("div", { class: "annotation-content" }, [
-        el("span", { class: "annotation-quote", text: annotation.quote }),
+        el("span", { class: "annotation-quote", tabindex: "0", text: annotation.quote }),
         el("textarea", {
           class: "annotation-comment",
           "data-annotation-comment-index": index,
@@ -6979,7 +8953,7 @@ annotationsBox.addEventListener("click", (event) => {
   const remove = event.target.closest("[data-annotation-index]");
   if (!remove) return;
   setAnnotations(annotations.filter((_, i) => Number(remove.dataset.annotationIndex) !== i));
-  saveDraft();
+  saveDraft({ userEdited: true });
 });
 
 annotationsBox.addEventListener("input", (event) => {
@@ -6991,7 +8965,20 @@ annotationsBox.addEventListener("input", (event) => {
     ...annotations[index],
     annotation: String(input.value ?? "").slice(0, 20_000),
   };
-  saveDraft();
+  saveDraft({ userEdited: true });
+});
+
+annotationsBox.addEventListener("keydown", (event) => {
+  const input = event.target.closest("[data-annotation-comment-index]");
+  if (!input || event.key !== "Enter" || event.isComposing) return;
+  if (event.shiftKey || event.ctrlKey) {
+    event.preventDefault();
+    if (!event.repeat) insertTextAtCaret(input, "\n");
+    return;
+  }
+  event.preventDefault();
+  if (event.repeat || pendingComposerRequest) return;
+  submitComposer({ steerWhileRunning: event.metaKey });
 });
 
 const QUOTABLE_SURFACE_SELECTOR = ".msg-body, .turn-trace-reasoning, .msg-reasoning";
@@ -7076,8 +9063,7 @@ function selectedQuotableSelectionAt(target) {
 }
 
 function normalizedAnnotationQuote(value) {
-  const quote = String(value ?? "").trim();
-  return quote.length <= 400 ? quote : "";
+  return String(value ?? "").trim();
 }
 
 function meaningfulAnnotationSelection(value) {
@@ -7095,7 +9081,10 @@ document.addEventListener("selectionchange", () => {
 });
 
 function sourceMessageForSelection(selection) {
-  const renderedRoot = selection?.message?.closest?.("[data-message-key]");
+  let renderedRoot = selection?.message ?? null;
+  while (renderedRoot && renderedRoot !== chatLive && renderedRoot.parentElement !== chatLog) {
+    renderedRoot = renderedRoot.parentElement;
+  }
   const renderedKey = String(renderedRoot?.dataset?.messageKey ?? "");
   if (!renderedKey) return null;
   const messages = selectedResponseAnnotationSourceMessages();
@@ -7145,20 +9134,40 @@ async function addAnnotation(selection) {
     showToast("Выделите фрагмент сообщения или рассуждения.");
     return false;
   }
-  const next = await responseAnnotationFromSelection(selection);
+  const operation = captureComposerTaskOperation();
+  if (!operation) return false;
+  const operationSequence = (annotationOperationSequences.get(operation.taskId) ?? 0) + 1;
+  annotationOperationSequences.set(operation.taskId, operationSequence);
+  let next;
+  try {
+    next = await responseAnnotationFromSelection(selection);
+  } catch {
+    next = null;
+  }
   if (!next) {
     showToast("Не удалось подтвердить источник выделенного фрагмента.");
     return false;
   }
-  if (annotations.some((annotation) => duplicateResponseAnnotation(annotation, next))) {
+  if (annotationOperationSequences.get(operation.taskId) !== operationSequence
+    || !composerTaskOperationCurrent(operation)) return false;
+  const current = composerDraftSnapshot(operation.taskId);
+  if (current.annotations.some((annotation) => duplicateResponseAnnotation(annotation, next))) {
     showToast("Этот фрагмент уже добавлен.");
     return false;
   }
-  setAnnotations([...annotations, next]);
-  lastAnnotationSelection = null;
-  window.getSelection()?.removeAllRanges();
-  annotationsBox.querySelector(`[data-annotation-comment-index="${annotations.length - 1}"]`)?.focus();
-  saveDraft();
+  const nextAnnotations = [...current.annotations, next];
+  composerDraftReconciliation.save(operation.taskId, {
+    ...current,
+    annotations: nextAnnotations,
+  }, { userEdited: true });
+  if (state.selectedId === operation.taskId) {
+    restoreDraft();
+    lastAnnotationSelection = null;
+    window.getSelection()?.removeAllRanges();
+    annotationsBox.querySelector(
+      `[data-annotation-comment-index="${nextAnnotations.length - 1}"]`,
+    )?.focus();
+  }
   return true;
 }
 
@@ -7293,15 +9302,43 @@ window.addEventListener("scroll", closeResourceContextMenu, true);
 
 /* ---- черновики ---- */
 
-function saveDraft() {
+function composerDraftSnapshot(taskId) {
+  const id = String(taskId ?? "").trim();
+  if (id && state.selectedId === id) {
+    return window.AgentHubComposerDraftReconciliation.normalizedDraft({
+      ...(drafts.get(id) ?? {}),
+      text: composerInput.value,
+      attachments: attachments.slice(),
+      taskReferences: taskReferences.slice(),
+      annotations: annotations.slice(),
+    });
+  }
+  return window.AgentHubComposerDraftReconciliation.normalizedDraft(
+    drafts.get(id) ?? window.AgentHubComposerDraftReconciliation.emptyDraft(),
+  );
+}
+
+function saveDraft({ userEdited = false } = {}) {
   if (!state.selectedId) return;
-  drafts.set(state.selectedId, {
-    text: composerInput.value,
-    attachments: attachments.slice(),
-    taskReferences: taskReferences.slice(),
-    annotations: annotations.slice(),
-  });
-  persistDrafts();
+  composerDraftReconciliation.save(
+    state.selectedId,
+    composerDraftSnapshot(state.selectedId),
+    { userEdited },
+  );
+}
+
+function composerDraftState(taskId) {
+  return composerDraftSnapshot(taskId);
+}
+
+function writeComposerDraft(taskId, draft) {
+  const next = composerDraftReconciliation.save(
+    taskId,
+    draft,
+    { userEdited: true },
+  );
+  if (state.selectedId === taskId) restoreDraft();
+  return next;
 }
 
 function prepareForRuntimeReload() {
@@ -7338,7 +9375,16 @@ function restoreDraft() {
   updateSendState();
 }
 
+const queueComposerTransfer = window.AgentHubQueueComposerTransfer.create({
+  read: composerDraftState,
+  write: writeComposerDraft,
+  revision: (taskId) => composerDraftReconciliation.revision(taskId),
+  notify: showToast,
+});
+
 /* ============================================= панель настроек и селекторы */
+
+let settingsPanelReturnFocus = null;
 
 function setDialogSettingsOpen(open) {
   const task = currentTask();
@@ -7346,9 +9392,20 @@ function setDialogSettingsOpen(open) {
     emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
   }
   const visible = Boolean(open && currentTask());
-  dialogSettings.hidden = !visible;
+  if (!visible && streamCardMoveMenu?.matches(":popover-open")) streamCardMoveMenu.hidePopover();
   chatPane.toggleAttribute("data-dialog-settings-open", visible);
   dialogSettingsToggle.setAttribute("aria-pressed", String(visible));
+  if (visible) {
+    streamCardReturnFocus = document.activeElement;
+    renderDialogSettings();
+    dialogSettings.hidden = false;
+    if (!dialogSettings.open) dialogSettings.showModal();
+    dialogStreamName?.focus();
+    dialogStreamName?.select();
+    return;
+  }
+  if (dialogSettings.open) dialogSettings.close();
+  dialogSettings.hidden = true;
 }
 
 function openDialogSettings() {
@@ -7356,7 +9413,7 @@ function openDialogSettings() {
 }
 
 function toggleDialogSettings() {
-  setDialogSettingsOpen(dialogSettings.hidden);
+  setDialogSettingsOpen(!dialogSettings.open);
 }
 
 dialogSettingsClose?.addEventListener("click", () => {
@@ -7364,9 +9421,11 @@ dialogSettingsClose?.addEventListener("click", () => {
 });
 
 function openPanel() {
+  if (settingsPanel.hidden) settingsPanelReturnFocus = document.activeElement;
   renderGlobalQuickMessagesSettings();
   settingsPanel.hidden = false;
   panelScrim.hidden = false;
+  modalOverlays?.activateOverlay(panelScrim, settingsPanelReturnFocus);
   if (limitsState.status === "idle") requestLimits(limitsState.range);
   emit("devices:refresh");
   requestAnimationFrame(() => {
@@ -7463,23 +9522,95 @@ bugReportToggle?.addEventListener("click", () => {
 });
 document.addEventListener("contextmenu", (event) => {
   if (event.defaultPrevented) return;
+  const workspace = event.target.closest("[data-workspace-heading], [data-board-workspace-id]");
+  if (workspace) {
+    event.preventDefault();
+    const workspaceId = String(workspace.dataset.workspaceHeading ?? workspace.dataset.boardWorkspaceId ?? "");
+    openWorkspaceContextMenu(event, workspaceId);
+    return;
+  }
   const folder = event.target.closest("[data-workspace-folder-name]");
   if (folder?.dataset.workspaceFolderKind === "folder") {
     event.preventDefault();
     openWorkspaceFolderContextMenu(event, folder.dataset.workspaceFolderName);
     return;
   }
-  const workspace = event.target.closest("[data-workspace-heading], [data-board-workspace-id]");
-  if (!workspace) return;
-  event.preventDefault();
-  const workspaceId = String(workspace.dataset.workspaceHeading ?? workspace.dataset.boardWorkspaceId ?? "");
-  openWorkspaceContextMenu(event, workspaceId);
 });
-workspaceCardQuickMessages?.addEventListener("click", async () => {
-  const workspace = workspaceCatalogItem(workspaceCardId);
-  if (!workspace) return;
-  await editQuickMessagesForScope("workspace", workspace.id, String(workspace.name ?? "Workspace"));
-  renderWorkspaceCardQuickMessages(workspace.id);
+workspaceCardQuickMessagesEntry?.addEventListener("click", () => {
+  if (!workspaceCardId) return;
+  openPromptTemplates("workspace", {
+    workspaceId: workspaceCardId,
+    workspaceName: workspaceCatalogItem(workspaceCardId)?.name ?? "",
+  });
+});
+/* Редактор внутри формы остался прежним, поэтому и обработчики его прежние —
+   форма только подставляет активную область и обновляет свои подписи. */
+promptTemplatesModal?.addEventListener("click", (event) => {
+  const scopeButton = event.target.closest("[data-prompt-templates-scope]");
+  if (scopeButton) {
+    /* Переключение области — не запись, и оно нужно, чтобы дойти до соседней
+       области с расхождением и разобрать его. */
+    setPromptTemplatesScope(scopeButton.dataset.promptTemplatesScope);
+    return;
+  }
+  if (event.target.closest("[data-prompt-templates-reload]")) {
+    reloadPromptTemplatesScope();
+    return;
+  }
+  if (event.target.closest("[data-prompt-templates-close], [data-prompt-templates-done]")) {
+    if (promptTemplatesBlocked()) return;
+    promptTemplatesModal.close();
+    return;
+  }
+  const editorAction = event.target.closest("[data-quick-message-add], [data-quick-message-action]");
+  if (!editorAction) return;
+  if (promptTemplatesScopeConflicted()) return;
+  /* Раскрытие строки правкой не является и точку отсчёта не заводит. */
+  if (editorAction.dataset.quickMessageAction !== "toggle") markPromptTemplatesEdited();
+  handleQuickMessageEditorClick(
+    event,
+    promptTemplatesEditor,
+    promptTemplatesScope,
+    promptTemplateScopeId(promptTemplatesScope),
+  );
+  renderPromptTemplatesScopes();
+  renderPromptTemplatesConflict();
+  renderPromptTemplateEntryCounts();
+});
+promptTemplatesModal?.addEventListener("input", (event) => {
+  if (!event.target.closest("[data-quick-message-title], [data-quick-message-text]")) return;
+  if (promptTemplatesScopeConflicted()) return;
+  /* Первый же ввод отмечает область правленой: входящее обновление снимка с
+     этого момента черновик не подменяет. */
+  markPromptTemplatesEdited();
+  handleQuickMessageEditorInput(event, promptTemplatesEditor);
+  renderPromptTemplatesScopes();
+});
+promptTemplatesModal?.addEventListener("change", (event) => {
+  if (!event.target.closest("[data-quick-message-title], [data-quick-message-text]")) return;
+  if (promptTemplatesScopeConflicted()) return;
+  markPromptTemplatesEdited();
+  handleQuickMessageEditorChange(
+    promptTemplatesEditor,
+    promptTemplatesScope,
+    promptTemplateScopeId(promptTemplatesScope),
+  );
+  renderPromptTemplatesScopes();
+  renderPromptTemplatesConflict();
+  renderPromptTemplateEntryCounts();
+});
+/* Escape тоже закрывает форму, поэтому расхождение останавливает и его:
+   иначе черновик исчез бы вместе с окном. */
+promptTemplatesModal?.addEventListener("cancel", (event) => {
+  if (promptTemplatesBlocked()) event.preventDefault();
+});
+/* Форму закрывают и клавишей Escape, поэтому фокус возвращается в обработчике
+   самого закрытия. Черновик остаётся в состоянии редактора и переживёт
+   повторное открытие. */
+promptTemplatesModal?.addEventListener("close", () => {
+  const returnFocus = promptTemplatesReturnFocus;
+  promptTemplatesReturnFocus = null;
+  if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
 });
 workspaceCardForm?.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -7515,6 +9646,7 @@ workspaceCardForm?.addEventListener("submit", (event) => {
   emit("workspace:update", {
     workspaceId: workspace.id,
     name,
+    folderName: workspaceCardFolder?.value ?? "",
     comment: workspaceCardComment.value.trim(),
     workingDirectory: workspaceCardWorkingDirectory.value.trim(),
     taskPrefix: workspaceCardTaskPrefix.value.trim(),
@@ -7529,21 +9661,60 @@ workspaceCardRules?.addEventListener("input", () => {
 });
 document.querySelector("[data-workspace-card-close]")?.addEventListener("click", closeWorkspaceCard);
 document.querySelector("[data-workspace-card-cancel]")?.addEventListener("click", closeWorkspaceCard);
+workspaceCardArchive?.addEventListener("click", () => {
+  if (!workspaceCardId || workspaceCardArchive.disabled) return;
+  const workspaceId = workspaceCardId;
+  closeWorkspaceCard();
+  emit("workspace:archive", { workspaceId });
+});
 modalOverlays?.installDismissibleOverlay({
   dialog: workspaceCardModal,
   content: workspaceCardForm,
   close: closeWorkspaceCard,
 });
 workspaceCardModal?.addEventListener("close", () => {
+  const returnFocus = workspaceCardReturnFocus;
   workspaceCardId = "";
   workspaceCardMode = "edit";
+  workspaceCardReturnFocus = null;
+  returnFocus?.focus?.({ preventScroll: true });
 });
 workspaceArchiveList?.addEventListener("click", (event) => {
   const restore = event.target.closest("[data-workspace-archive-restore]");
   const workspaceId = String(restore?.dataset?.workspaceArchiveRestore ?? "").trim();
-  if (workspaceId) emit("workspace:restore", { workspaceId });
+  if (workspaceId) {
+    emit("workspace:restore", { workspaceId });
+    return;
+  }
+  const remove = event.target.closest("[data-workspace-archive-delete]");
+  const deleteWorkspaceId = String(remove?.dataset?.workspaceArchiveDelete ?? "").trim();
+  if (!deleteWorkspaceId) return;
+  const workspace = state.archivedWorkspaces.find((item) => String(item.id ?? "") === deleteWorkspaceId);
+  if (!workspace) return;
+  closeWorkspaceArchive();
+  void askText({
+    title: `Окончательное удаление необратимо и уничтожит Workspace «${workspace.name}» вместе со связанными Streams и Threads. Для подтверждения введите точное имя: ${workspace.name}`,
+  }).then((confirmationName) => {
+    if (confirmationName == null) {
+      openWorkspaceArchive();
+      return;
+    }
+    if (confirmationName !== workspace.name) {
+      showToast("Название не совпало — Workspace не удалён");
+      openWorkspaceArchive();
+      return;
+    }
+    emit("workspace:delete-permanently", { workspaceId: deleteWorkspaceId, confirmationName });
+  });
 });
 document.querySelector("[data-workspace-archive-close]")?.addEventListener("click", closeWorkspaceArchive);
+document.addEventListener("agenthub:workspace-delete-rejected", (event) => {
+  openWorkspaceArchive();
+  const workspaceId = String(event.detail?.workspaceId ?? "").trim();
+  if (!workspaceId) return;
+  workspaceArchiveList?.querySelector(`[data-workspace-archive-delete="${CSS.escape(workspaceId)}"]`)
+    ?.focus({ preventScroll: true });
+});
 modalOverlays?.installDismissibleOverlay({
   dialog: workspaceArchiveModal,
   close: closeWorkspaceArchive,
@@ -7688,12 +9859,16 @@ function trustedDeviceRow(device, revoked) {
 }
 
 function closePanel() {
+  const returnFocus = settingsPanelReturnFocus;
+  settingsPanelReturnFocus = null;
+  modalOverlays?.deactivateOverlay(panelScrim);
   settingsPanel.classList.remove("open");
   panelScrim.classList.remove("open");
   window.setTimeout(() => {
     settingsPanel.hidden = true;
     panelScrim.hidden = true;
   }, 220);
+  if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
 }
 
 for (const opener of document.querySelectorAll("[data-panel-open='settings']")) {
@@ -7702,10 +9877,11 @@ for (const opener of document.querySelectorAll("[data-panel-open='settings']")) 
 for (const closer of document.querySelectorAll("[data-panel-close]")) {
   closer.addEventListener("click", closePanel);
 }
-panelScrim.addEventListener("click", closePanel);
+modalOverlays?.installScrimDismiss({ scrim: panelScrim, close: closePanel });
 
 function renderOptions() {
   renderDialogSettings();
+  renderQuickMessageActionModeSetting();
   renderGlobalQuickMessagesSettings();
   renderTurnTimeModeOptions();
   renderComparisonViewModeOptions();
@@ -7749,6 +9925,16 @@ function renderDialogSettings() {
   const task = currentTask();
   const selection = task?.draftStream ? task.streamSettings : state.selection;
   const effectiveProvider = task?.draftStream ? selection?.provider : task?.provider;
+  const streamId = String(task?.streamId ?? "").trim();
+  const workspaceId = workspaceKey(task);
+  const running = task?.running === true;
+  const provider = String(task?.provider ?? selection?.provider ?? "").trim();
+  const oppositeProvider = provider === "codex" ? "claude" : provider === "claude" ? "codex" : "";
+  const oppositeLabel = oppositeProvider === "claude" ? "Claude" : oppositeProvider === "codex" ? "Codex" : "";
+  if (dialogStreamName && document.activeElement !== dialogStreamName) {
+    dialogStreamName.value = String(task?.streamName ?? task?.streamDisplayName ?? "").trim();
+  }
+  if (dialogStreamName) dialogStreamName.disabled = !streamId;
   const optionGroups = {
     provider: task?.draftStream
       ? state.options.provider
@@ -7816,6 +10002,52 @@ function renderDialogSettings() {
     dialogStreamTeamLead.checked = streamRoleSettings.teamLeadEnabled(task?.streamSettings);
     dialogStreamTeamLead.disabled = !task?.streamId;
   }
+  const pinned = window.AgentHubStreamTabs.streamIsPinned(state.selection, workspaceId, streamId);
+  if (streamCardPin) {
+    streamCardPin.textContent = window.AgentHubStreamTabs.pinnedStreamActionLabel(pinned);
+    streamCardPin.title = window.AgentHubStreamTabs.pinnedStreamActionTitle(pinned);
+    streamCardPin.disabled = !streamId;
+  }
+  if (streamCardWorkspace) {
+    const workspace = workspaceCatalogItem(workspaceId);
+    streamCardWorkspace.textContent = workspace ? `Workspace: ${workspace.name}` : "Открыть карточку Workspace";
+    streamCardWorkspace.disabled = !workspace;
+  }
+  if (streamCardRotate) {
+    streamCardRotate.disabled = !streamId || running || !["codex", "claude"].includes(provider);
+    streamCardRotate.title = running ? "Сначала завершите текущий ход" : "Продолжить Stream в новом Thread текущего провайдера";
+  }
+  if (streamCardContinueProvider) {
+    streamCardContinueProvider.textContent = oppositeProvider
+      ? `Продолжить в ${oppositeLabel}`
+      : "Продолжение недоступно";
+    streamCardContinueProvider.dataset.provider = oppositeProvider;
+    streamCardContinueProvider.disabled = !streamId || running || !oppositeProvider;
+    streamCardContinueProvider.title = running
+      ? "Сначала завершите текущий ход"
+      : oppositeProvider ? "Продолжить Stream в противоположном провайдере" : "Провайдер Stream не определён";
+  }
+  const moveOptions = workspaceMenuOptions(workspaceId);
+  if (streamCardMoveMenu) {
+    streamCardMoveMenu.replaceChildren(...moveOptions.map((workspace) => el("button", {
+      type: "button",
+      class: "stream-card-move-option",
+      role: "menuitem",
+      "data-stream-card-move-workspace": workspace.id,
+      text: workspace.name,
+    })));
+  }
+  if (streamCardMove) {
+    streamCardMove.disabled = !streamId || moveOptions.length === 0
+      || typeof streamCardMoveMenu?.showPopover !== "function";
+    streamCardMove.title = moveOptions.length
+      ? "Выбрать Workspace и сразу перенести Stream"
+      : "Нет доступных Workspace для переноса";
+  }
+  if (streamCardArchive) {
+    streamCardArchive.disabled = !streamId || running;
+    streamCardArchive.title = running ? "Сначала завершите активный ход в этом Stream" : "Архивировать Stream";
+  }
   renderStreamRulesPreview();
   renderStreamQuickMessagesSettings();
 }
@@ -7844,22 +10076,92 @@ function selectDialogSetting(group, value) {
   renderOptions();
 }
 
-settingsPanel?.addEventListener("click", async (event) => {
-  const globalQuickMessages = event.target.closest("[data-settings-global-quick-messages]");
-  if (!globalQuickMessages) return;
-  await editQuickMessagesForScope("global", "", "Глобальные");
-  renderGlobalQuickMessagesSettings();
+function openStreamCardMoveMenu() {
+  if (!streamCardMoveMenu || !streamCardMove || streamCardMove.disabled
+    || typeof streamCardMoveMenu.showPopover !== "function") return;
+  streamCardMoveMenu.showPopover();
+  const anchor = streamCardMove.getBoundingClientRect();
+  const menu = streamCardMoveMenu.getBoundingClientRect();
+  const left = Math.max(8, Math.min(anchor.left, window.innerWidth - menu.width - 8));
+  const below = anchor.bottom + 6;
+  const top = below + menu.height <= window.innerHeight - 8
+    ? below
+    : Math.max(8, anchor.top - menu.height - 6);
+  streamCardMoveMenu.style.left = `${left}px`;
+  streamCardMoveMenu.style.top = `${top}px`;
+  streamCardMoveMenu.querySelector("[role='menuitem']")?.focus({ preventScroll: true });
+}
+
+settingsGlobalQuickMessagesEntry?.addEventListener("click", () => {
+  openPromptTemplates("global");
 });
 
-dialogSettings.addEventListener("click", async (event) => {
-  const streamQuickMessages = event.target.closest("[data-dialog-stream-quick-messages]");
-  if (streamQuickMessages) {
-    const task = currentTask();
-    const streamId = String(task?.streamId ?? "").trim();
-    if (!streamId) return;
-    const name = String(task?.streamName ?? task?.streamDisplayName ?? "потока").trim() || "потока";
-    await editQuickMessagesForScope("stream", streamId, name);
+settingsPanel?.addEventListener("change", (event) => {
+  const actionMode = event.target.closest("[data-quick-message-action-mode]");
+  if (actionMode) {
+    const value = actionMode.value === "send" ? "send" : "insert";
+    state.selection = { ...state.selection, quickMessageActionMode: value };
+    renderQuickMessageActionModeSetting();
+    renderComposerQuickMessages();
+    emit("selection:set", { key: "quickMessageActionMode", value });
+    return;
+  }
+});
+
+dialogSettings.addEventListener("click", (event) => {
+  const task = currentTask();
+  const streamId = String(task?.streamId ?? "").trim();
+  const workspaceId = workspaceKey(task);
+  if (event.target.closest("[data-prompt-templates-open]")) {
+    if (streamId) openPromptTemplates("stream");
+    return;
+  }
+  if (event.target.closest("[data-stream-card-pin]")) {
+    if (streamId) togglePinnedWorkspaceStream(workspaceId, streamId);
     renderDialogSettings();
+    return;
+  }
+  if (event.target.closest("[data-stream-card-workspace]")) {
+    if (!workspaceCatalogItem(workspaceId)) return;
+    setDialogSettingsOpen(false);
+    openWorkspaceCard(workspaceId);
+    return;
+  }
+  if (event.target.closest("[data-stream-card-rotate]")) {
+    if (!streamId || streamCardRotate?.disabled) return;
+    emit("stream:rebirth", { streamId, provider: task.provider, taskId: task.id });
+    setDialogSettingsOpen(false);
+    return;
+  }
+  const continuation = event.target.closest("[data-stream-card-continue-provider]");
+  if (continuation) {
+    const provider = String(continuation.dataset.provider ?? "");
+    if (!streamId || continuation.disabled || !provider) return;
+    emit("stream:continue-provider", { streamId, provider, taskId: task.id });
+    setDialogSettingsOpen(false);
+    return;
+  }
+  const moveOption = event.target.closest("[data-stream-card-move-workspace]");
+  if (moveOption) {
+    const targetWorkspaceId = String(moveOption.dataset.streamCardMoveWorkspace ?? "");
+    const allowed = workspaceMenuOptions(workspaceId).some((workspace) => workspace.id === targetWorkspaceId);
+    if (!streamId || !allowed) {
+      if (streamCardMoveMenu?.matches(":popover-open")) streamCardMoveMenu.hidePopover();
+      renderDialogSettings();
+      return;
+    }
+    emit("stream:move", { streamId, workspaceId: targetWorkspaceId });
+    setDialogSettingsOpen(false);
+    return;
+  }
+  if (event.target.closest("[data-stream-card-move]")) {
+    openStreamCardMoveMenu();
+    return;
+  }
+  if (event.target.closest("[data-stream-card-archive]")) {
+    if (!streamId || streamCardArchive?.disabled) return;
+    emit("stream:archive", { streamId });
+    setDialogSettingsOpen(false);
     return;
   }
   const chip = event.target.closest("[data-select-group]");
@@ -7868,6 +10170,19 @@ dialogSettings.addEventListener("click", async (event) => {
 });
 
 dialogSettings.addEventListener("change", (event) => {
+  const streamName = event.target.closest("[data-dialog-stream-name]");
+  if (streamName) {
+    const task = currentTask();
+    const name = String(streamName.value ?? "").trim();
+    if (!task?.streamId || !name) {
+      renderDialogSettings();
+      return;
+    }
+    if (name !== String(task.streamName ?? task.streamDisplayName ?? "")) {
+      emit("stream:rename", { streamId: task.streamId, name });
+    }
+    return;
+  }
   const setting = event.target.closest("select[data-dialog-options]");
   if (setting) {
     selectDialogSetting(setting.dataset.dialogOptions, setting.value);
@@ -7914,6 +10229,22 @@ dialogSettings.addEventListener("change", (event) => {
     state.selection[key] = toggle.checked;
     emit("selection:set", { key, value: toggle.checked });
   }
+});
+
+modalOverlays?.installDismissibleOverlay({
+  dialog: dialogSettings,
+  close: () => setDialogSettingsOpen(false),
+});
+dialogSettings.addEventListener("close", () => {
+  const returnFocus = streamCardReturnFocus;
+  streamCardReturnFocus = null;
+  dialogSettings.hidden = true;
+  chatPane.toggleAttribute("data-dialog-settings-open", false);
+  dialogSettingsToggle.setAttribute("aria-pressed", "false");
+  returnFocus?.focus?.({ preventScroll: true });
+});
+streamCardMoveMenu?.addEventListener("toggle", (event) => {
+  streamCardMove?.setAttribute("aria-expanded", String(event.newState === "open"));
 });
 
 dialogStreamRules?.addEventListener("input", () => {
@@ -8038,6 +10369,7 @@ function renderServerStatus(payload = {}) {
     }),
     component.note ? el("small", { text: component.note }) : null,
   ].filter(Boolean))) : [el("span", { class: "setting-empty", text: "Компоненты не определены" })]));
+  renderServerAccounts(payload.accounts);
   /* Одно название вроде «Очередь входящих» ничего не объясняет, поэтому у
      плитки есть пояснение под значением и та же строка в подсказке. */
   const entries = Array.isArray(payload.configuration) ? payload.configuration : [];
@@ -8048,6 +10380,83 @@ function renderServerStatus(payload = {}) {
     : [el("span", { class: "setting-empty", text: "Конфигурация недоступна" })]));
   syncServerConfigDependencyVisibility();
   syncServerConfigActions();
+}
+
+/* Вход идёт штатным способом провайдера: Hub только запускает его и показывает
+   состояние. Повторное нажатие отменяет незавершённый вход, поэтому кнопка
+   остаётся доступной и во время ожидания. */
+/* Ссылку входа знает только локальный клиент, запустивший вход: в общий снапшот
+   она не попадает. */
+const providerLoginLocal = new Map();
+/* Черновик кода живёт только в памяти страницы, чтобы снапшот не стирал ввод. */
+const providerLoginCodeDrafts = new Map();
+let providerLoginRenderKey = "";
+
+function renderServerAccounts(accounts) {
+  const panel = window.AgentHubProviderLoginPanel;
+  if (!serverAccounts || !panel) return;
+  const list = Array.isArray(accounts) ? accounts : [];
+  const views = list.map((account) => {
+    if (!panel.retainLocal(account, providerLoginLocal.get(account?.provider))) {
+      providerLoginLocal.delete(account?.provider);
+      providerLoginCodeDrafts.delete(account?.provider);
+    }
+    return panel.accountView(account, providerLoginLocal.get(account?.provider));
+  });
+  const key = panel.renderKey(views);
+  if (key === providerLoginRenderKey && serverAccounts.childElementCount) return;
+  providerLoginRenderKey = key;
+  serverAccounts.replaceChildren(...(views.length ? views.map((view) => {
+    const start = el("button", { type: "button", class: "chip-button", text: view.startText });
+    start.addEventListener("click", () => emit("server:provider-login", { provider: view.provider }));
+    const open = view.authUrl
+      ? el("button", { type: "button", class: "chip-button ghost", text: "Открыть страницу входа" })
+      : null;
+    open?.addEventListener("click", () => emit("server:provider-login-open", { authUrl: view.authUrl }));
+    const cancel = view.canCancel
+      ? el("button", { type: "button", class: "chip-button ghost", text: "Отменить" })
+      : null;
+    cancel?.addEventListener("click", () => {
+      providerLoginCodeDrafts.delete(view.provider);
+      emit("server:provider-login-cancel", { provider: view.provider });
+    });
+    let codeRow = null;
+    if (view.acceptsCode) {
+      const input = el("input", { type: "text", class: "server-account-code" });
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      input.placeholder = "code#state";
+      input.setAttribute("aria-label", "Код со страницы входа Claude");
+      input.value = providerLoginCodeDrafts.get(view.provider) ?? "";
+      const send = el("button", { type: "button", class: "chip-button", text: "Отправить код" });
+      const sync = () => {
+        if (input.value) providerLoginCodeDrafts.set(view.provider, input.value);
+        else providerLoginCodeDrafts.delete(view.provider);
+        send.disabled = !panel.codeSubmission(view, input.value);
+      };
+      input.addEventListener("input", sync);
+      sync();
+      send.addEventListener("click", () => {
+        const submission = panel.codeSubmission(view, input.value);
+        if (!submission) return;
+        providerLoginCodeDrafts.delete(view.provider);
+        input.value = "";
+        sync();
+        emit("server:provider-login-code", submission);
+      });
+      codeRow = el("div", { class: "server-account-code-row" }, [
+        el("small", { text: view.codeHint }),
+        el("div", { class: "server-account-actions" }, [input, send]),
+      ]);
+    }
+    return el("div", { class: "server-component server-account", "data-status": view.status }, [
+      el("span", { class: "server-component-name", text: view.label }),
+      el("span", { class: "server-component-status", text: view.statusText }),
+      view.error ? el("small", { text: view.error }) : null,
+      el("div", { class: "server-account-actions" }, [start, open, cancel].filter(Boolean)),
+      codeRow,
+    ].filter(Boolean));
+  }) : [el("span", { class: "setting-empty", text: "Вход недоступен в этой версии Hub" })]));
 }
 
 /* Автозапуск — такая же настройка Hub, поэтому лежит первой плиткой сетки. В
@@ -8317,9 +10726,11 @@ document.querySelector("[data-server-config-discard]")
 
 let dialogResolve = null;
 let dialogActiveInput = dialogInput;
+let dialogReturnFocus = null;
 
 function askText({ title, value = "", multiline = false }) {
   return new Promise((resolve) => {
+    if (dialog.hidden) dialogReturnFocus = document.activeElement;
     dialogResolve = resolve;
     dialogTitle.textContent = title;
     dialogActiveInput = multiline ? dialogTextarea : dialogInput;
@@ -8328,16 +10739,21 @@ function askText({ title, value = "", multiline = false }) {
     dialogActiveInput.value = value;
     dialog.hidden = false;
     dialogScrim.hidden = false;
+    modalOverlays?.activateOverlay(dialogScrim, dialogReturnFocus);
     requestAnimationFrame(() => dialogActiveInput.focus());
   });
 }
 
 function closeDialog(result) {
+  const returnFocus = dialogReturnFocus;
+  dialogReturnFocus = null;
+  modalOverlays?.deactivateOverlay(dialogScrim);
   dialog.hidden = true;
   dialogScrim.hidden = true;
   const resolve = dialogResolve;
   dialogResolve = null;
   resolve?.(result);
+  if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
 }
 
 dialogForm.addEventListener("submit", (event) => {
@@ -8350,8 +10766,13 @@ modalOverlays?.installScrimDismiss({
   close: () => closeDialog(null),
 });
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && !dialog.hidden) closeDialog(null);
-  if (event.key === "Escape" && !settingsPanel.hidden) closePanel();
+  if (event.key !== "Escape") return;
+  /* Escape снимает только верхний слой. Модальный диалог закрывает себя сам, и
+     панель под ним остаётся: иначе форма шаблонов, открытая из настроек,
+     уносила бы за собой и сами настройки. */
+  if (document.querySelector("dialog[open]")) return;
+  if (!dialog.hidden) closeDialog(null);
+  if (!settingsPanel.hidden) closePanel();
 });
 
 /* ================================================= общие действия (intents) */
@@ -8397,12 +10818,6 @@ async function handleAction(action, trigger) {
     case "task-settings":
       toggleDialogSettings();
       break;
-    case "task-rename": {
-      const task = currentTask();
-      const title = await askText({ title: "Новое название Workspace", value: task?.workspaceName ?? task?.title ?? "" });
-      if (title != null && task) emit("task:rename", { id: task.id, title });
-      break;
-    }
     case "task-archive":
       if (taskId) emit("task:archive", { id: taskId });
       break;
@@ -8444,14 +10859,17 @@ async function handleAction(action, trigger) {
     case "queue-edit": {
       const entry = (state.queue.get(taskId) ?? []).find((item) => item.id === trigger.dataset.queueId);
       if (!entry) break;
-      const text = await askText({
-        title: "Изменить сообщение в очереди",
-        value: entry.text ?? entry.preview ?? "",
-        multiline: true,
-      });
-      if (text != null) emit("queue:edit", { taskId, id: entry.id, text });
+      const guard = queueComposerTransfer.begin(taskId);
+      if (guard) emit("queue:edit", { taskId, id: entry.id, guard });
       break;
     }
+    case "queue-move":
+      emit("queue:move", {
+        taskId,
+        id: trigger.dataset.queueId,
+        direction: trigger.dataset.direction,
+      });
+      break;
     case "queue-pause":
       emit("queue:pause", { taskId, id: trigger.dataset.queueId });
       break;
@@ -8469,7 +10887,12 @@ async function handleAction(action, trigger) {
       break;
     case "slash-menu":
       if (slashMenu.hidden) {
-        if (!composerInput.value.trim()) composerInput.value = "/";
+        if (!composerInput.value.trim()) {
+          composerInput.value = "/";
+          autosizeComposer();
+          updateSendState();
+          saveDraft({ userEdited: true });
+        }
         composerInput.focus();
         renderSlashMenu({ force: true });
       } else {
@@ -8496,9 +10919,6 @@ async function handleAction(action, trigger) {
   if (overflow) overflow.open = false;
 }
 
-contextUsageModal?.addEventListener("click", (event) => {
-  if (modalOverlays?.isDialogBackdropClick(event, contextUsageModal)) closeContextUsage();
-});
 document.addEventListener("pointerdown", (event) => {
   if (!contextUsageModal?.open) return;
   if (contextUsageModal.contains(event.target) || contextUsageButton?.contains(event.target)) return;
@@ -8524,6 +10944,18 @@ const AgentHub = {
   },
   off(type, handler) {
     listeners.get(type)?.delete(handler);
+  },
+  composerRecoveryDiagnostics() {
+    return Object.freeze({
+      epoch: composerRecoveryAuthorityEpoch,
+      pending: composerRecoveryAuthorityPending,
+      ready: composerRecoveryAuthorityReady,
+      restored: composerDraftRestoreReady,
+      trusted: composerRecoveryAuthorityTrusted,
+    });
+  },
+  whenComposerRecoveryReady() {
+    return ensureComposerDraftsRestored();
   },
   prepareForRuntimeReload,
   setConnectionQuality({ latencyMs = null } = {}) {
@@ -8583,6 +11015,10 @@ const AgentHub = {
       workspaceKey(previousSelectedTask) !== workspaceKey(nextSelectedTask)
       || streamKey(previousSelectedTask) !== streamKey(nextSelectedTask)
     );
+    const nextTaskIds = new Set(nextTasks.map((task) => String(task?.id ?? "").trim()).filter(Boolean));
+    for (const previousTask of previousTasks) {
+      if (!nextTaskIds.has(String(previousTask?.id ?? "").trim())) removeComposerTask(previousTask.id);
+    }
     if (state.workspaceMessageSearch.open && nextSelectedTask
       && state.workspaceMessageSearch.workspaceId !== workspaceKey(nextSelectedTask)) {
       closeWorkspaceMessageSearch({ restoreFocus: false });
@@ -8604,6 +11040,7 @@ const AgentHub = {
       observedAnswerFinalIdentityByTaskId,
     );
     if (selectionChanged && state.selectedId) saveDraft();
+    updateComposerTaskGenerations(previousTasks, nextTasks);
     state.tasks = nextTasks;
     state.selectedId = nextSelectedId;
     if (selectionChanged || selectedTaskLocationChanged) {
@@ -8695,6 +11132,23 @@ const AgentHub = {
       renderStreamChatHeader(currentTask());
     } else refreshSupplementaryStreamChat(taskId);
   },
+  setMessagesForExactNavigation(taskId, messages, exactNavigation) {
+    const next = Array.isArray(messages) ? messages.slice() : [];
+    const sameMessages = state.messages.has(taskId) && sameData(state.messages.get(taskId), next);
+    const selectedSurfaceOwned = taskId === state.selectedId
+      && String(chatLog.dataset.messageOwnerKey ?? "") === String(taskId ?? "");
+    if (!sameMessages) state.messages.set(taskId, next);
+    if (taskId === state.selectedId) {
+      if (sameMessages && selectedSurfaceOwned) {
+        const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        focusRenderedMessage(exactNavigation, { behavior: reducedMotion ? "auto" : "smooth" });
+      } else {
+        renderMessages({ exactNavigation });
+      }
+      renderLive();
+      renderStreamChatHeader(currentTask());
+    } else refreshSupplementaryStreamChat(taskId);
+  },
   /** Раскрываемый diff выбранной задачи под её последним ответом. */
   setTaskDiff(taskId, text) {
     if (!taskId) return;
@@ -8768,8 +11222,14 @@ const AgentHub = {
       renderLive();
     } else refreshSupplementaryStreamChat(taskId);
   },
-  completeSend(requestId, { accepted = false } = {}) {
-    completeComposerSend(requestId, accepted);
+  completeSend(requestId, options = {}) {
+    return completeComposerSend(requestId, options);
+  },
+  applyQueueComposerTransfer(guard, draft, identity) {
+    return queueComposerTransfer.apply(guard, draft, identity);
+  },
+  rollbackQueueComposerTransfer(applied) {
+    return queueComposerTransfer.rollback(applied);
   },
   completeBugReport(result = {}) {
     applyBugReportFlowState(bugReportFlow.complete(result));
@@ -8830,21 +11290,68 @@ const AgentHub = {
     state.workspaceMessageSearch.error = String(message ?? "Не удалось выполнить поиск");
     renderWorkspaceMessageSearch();
   },
+  setMessagePins(pins) {
+    const next = reconcilePendingMessagePins(Array.isArray(pins) ? pins : []);
+    if (sameData(state.messagePins, next)) return;
+    state.messagePins = next;
+    for (const [streamId, pinId] of state.activeMessagePinByStream) {
+      if (!next.some((pin) => pin.streamId === streamId && pin.id === pinId)) {
+        state.activeMessagePinByStream.delete(streamId);
+      }
+    }
+    renderMessagePinShelf();
+    renderMessagePinsList();
+    renderMessages({ preserveTop: true });
+    renderStreamChatDeck({ force: true });
+  },
+  completeMessagePinMutation(mutationId, result = {}) {
+    const backup = state.messagePinMutationBackups.get(mutationId);
+    if (!backup) return;
+    state.messagePinMutationBackups.delete(mutationId);
+    if (backup.messageKey) state.pendingMessagePinKeys.delete(backup.messageKey);
+    if (result.error) {
+      state.messagePins = backup.pins;
+      setActiveMessagePinId(backup.streamId, backup.selectedPinId);
+      showToast(String(result.error));
+    } else if (Array.isArray(result.messagePins)) {
+      state.messagePins = result.messagePins;
+      if (backup.pinned) {
+        const committed = result.messagePins.find((pin) => (
+          pin.streamId === backup.streamId && pin.messageKey === backup.messageKey
+        ));
+        setActiveMessagePinId(backup.streamId, committed?.id);
+      } else if (backup.selectedPinId === backup.targetPinId) {
+        selectMessagePinAfterRemoval({
+          streamId: backup.streamId,
+          removedIndex: backup.removedIndex,
+          pins: result.messagePins,
+        });
+      } else if (!result.messagePins.some((pin) => pin.id === backup.selectedPinId)) {
+        setActiveMessagePinId(backup.streamId);
+      }
+      if (result.undoToken && result.removedPin) {
+        showToast("Сообщение откреплено", {
+          label: "Отменить",
+          onClick: () => requestMessagePinChange({
+            pin: result.removedPin,
+            pinned: true,
+            undoToken: result.undoToken,
+          }),
+        });
+      }
+    }
+    renderMessagePinShelf();
+    renderMessagePinsList();
+    renderMessages({ preserveTop: true });
+    renderStreamChatDeck({ force: true });
+  },
   openWorkspaceMessageSearch,
   closeWorkspaceMessageSearch,
   focusMessage({ turnId, itemId } = {}) {
-    const target = [...chatLog.querySelectorAll("[data-item-id]")].find((node) => (
-      String(node.dataset.turnId ?? "") === String(turnId ?? "")
-      && String(node.dataset.itemId ?? "") === String(itemId ?? "")
-    ));
-    if (!target) return false;
-    chatLog.querySelectorAll("[data-search-match]").forEach((node) => {
-      node.removeAttribute("data-search-match");
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    return focusRenderedMessage({ turnId, itemId }, {
+      behavior: reducedMotion ? "auto" : "smooth",
     });
-    target.setAttribute("data-search-match", "");
-    target.scrollIntoView({ block: "center", behavior: "smooth" });
-    window.setTimeout(() => target.removeAttribute("data-search-match"), 4_000);
-    return true;
   },
   /** running=true подсвечивает индикатор и показывает «Стоп». */
   setRunning(taskId, running) {
@@ -8875,7 +11382,7 @@ const AgentHub = {
   /** Текущий выбор: { model, reasoning, mode, project, autoApprove,
    *  includeClaudeUsage, activityRecentMinutes, streamOrderMode,
    *  streamCardWidthMode, streamCardFixedWidth, streamCardGapEnabled,
-   *  pinnedWorkspaceStreams, quickMessages }. */
+   *  pinnedWorkspaceStreams, quickMessages, quickMessageActionMode }. */
   setSelection(selection) {
     const incoming = { ...(selection ?? {}) };
     for (const key of state.pendingSelections) {
@@ -8904,12 +11411,25 @@ const AgentHub = {
     else renderComposerQuickMessages();
     if (claudeUsageChanged && journalHtml) void renderJournal();
   },
-  setSelectionPending(key, pending) {
+  setSelectionPending(key, pending, mutationId = "") {
     const normalizedKey = String(key ?? "").trim();
     if (!normalizedKey) return;
-    if (pending) state.pendingSelections.add(normalizedKey);
+    const normalizedMutationId = String(mutationId ?? "").trim();
+    if (normalizedKey === "quickMessages" && normalizedMutationId) {
+      if (pending) quickMessagePendingMutationIds.add(normalizedMutationId);
+      else quickMessagePendingMutationIds.delete(normalizedMutationId);
+      if (quickMessagePendingMutationIds.size) state.pendingSelections.add(normalizedKey);
+      else state.pendingSelections.delete(normalizedKey);
+    } else if (pending) state.pendingSelections.add(normalizedKey);
     else state.pendingSelections.delete(normalizedKey);
+    if (normalizedKey === "quickMessages" && !pending) settleQuickMessagesSelection(mutationId);
     renderOptions();
+    /* Редактор шаблонов теперь один на все области, поэтому снятие блокировки
+       перерисовывает его целиком, а не только карточку Workspace. */
+    if (normalizedKey === "quickMessages") renderQuickMessageSettingsControls();
+  },
+  rejectSelection(key, mutationId = "") {
+    if (String(key ?? "") === "quickMessages") rejectQuickMessagesSelection(mutationId);
   },
   /** Сводка статуса/лимитов для панели: { rows: [{ name, value }] }. */
   setStatus(status) {
@@ -8964,9 +11484,36 @@ const AgentHub = {
     lastServerPayload = payload ?? {};
     if (root.dataset.view === "server") renderServerStatus(lastServerPayload);
   },
+  /** Попытка и ссылка входа из локального ответа на запуск; снапшот их не содержит. */
+  setProviderLoginUrl(provider, { attemptId = null, authUrl = null } = {}) {
+    providerLoginCodeDrafts.delete(provider);
+    if (attemptId) providerLoginLocal.set(provider, { attemptId: String(attemptId), authUrl });
+    else providerLoginLocal.delete(provider);
+    providerLoginRenderKey = "";
+    if (root.dataset.view === "server" && lastServerPayload) renderServerStatus(lastServerPayload);
+  },
   openAttachmentViewer,
+  attachmentViewerLoadAuthority,
   showAttachmentViewer,
+  failAttachmentViewer,
   closeAttachmentViewer,
+  openStream(workspaceId, streamId) {
+    const normalizedWorkspaceId = String(workspaceId ?? "").trim();
+    const normalizedStreamId = String(streamId ?? "").trim();
+    const streams = workspaceStreams(state.tasks.filter((task) => (
+      workspaceKey(task) === normalizedWorkspaceId
+    )));
+    const stream = streams.find((candidate) => candidate.id === normalizedStreamId);
+    const target = representativeStreamTask(stream);
+    if (!target) {
+      showToast("Stream недоступен");
+      return false;
+    }
+    state.openStreamsByWorkspace.set(normalizedWorkspaceId, [normalizedStreamId]);
+    state.configuredOpenStreamWorkspaces.add(normalizedWorkspaceId);
+    selectTaskFromUi(target.id);
+    return true;
+  },
   showSelectedTask() {
     setView("chat");
     setPane("chat");
@@ -9003,7 +11550,6 @@ const SERIES_PALETTE = [
  * несовместимом изменении формата, чтобы восстановление пережило перезапуск. */
 const LIMITS_HIDDEN_KEY = "agent-hub-limits-hidden-v1";
 const LIMITS_MODE_KEY = "agent-hub-limits-mode-v1";
-const LIMITS_SPEED_FULL_WINDOW_KEY = "agent-hub-limits-speed-full-window-v1";
 
 function savedLimitsRange() {
   return storedLimitsRange(localStorage);
@@ -9014,14 +11560,6 @@ function loadLimitsMode() {
     return localStorage.getItem(LIMITS_MODE_KEY) === "speed" ? "speed" : "usage";
   } catch {
     return "usage";
-  }
-}
-
-function loadLimitsSpeedFullWindow() {
-  try {
-    return localStorage.getItem(LIMITS_SPEED_FULL_WINDOW_KEY) !== "false";
-  } catch {
-    return true;
   }
 }
 
@@ -9064,7 +11602,6 @@ const limitsState = {
   payload: null,
   error: "",
   hidden: loadHiddenSeries(),
-  speedFullWindow: loadLimitsSpeedFullWindow(),
 };
 
 function selectLimitsMode(mode) {
@@ -9086,17 +11623,9 @@ function renderLimitsModes() {
     button.setAttribute("aria-pressed", String(button.dataset.limitsMode === limitsState.mode));
   }
   if (limitsSpeedNote) {
-    const hourly = burnRatePolicyForRange(limitsState.range).unit === "hour";
     limitsSpeedNote.hidden = limitsState.mode !== "speed";
-    const calculation = limitsState.speedFullWindow
-      ? hourly
-        ? "Фактическая скорость появляется после накопления почти полного часа."
-        : "Фактическая скорость появляется после накопления почти полных суток."
-      : "Предварительная скорость считается по доступной истории сразу после второго замера и в начале цикла может резко меняться.";
-    limitsSpeedNote.textContent = `${calculation} Разрывы между замерами восстанавливаются: неизменившийся лимит даёт нулевой расход, а изменение равномерно распределяется по пропущенному времени. Пунктир показывает допустимый темп по остатку и времени до сброса. Горизонтальная линия — ровный расход 100% за неделю, или ${hourly ? "0,6% в час" : "14,3% в сутки"}.`;
+    limitsSpeedNote.textContent = "Основная линия показывает сглаженный текущий темп с чувствительностью около 3 часов, длинный пунктир — средний темп за последние 24 часа, мелкий пунктир — допустимый темп по остатку и времени до сброса. Допустимый темп не меняет масштаб графика: значения выше шкалы прижимаются к верхней границе. Простои снижают текущий темп, а сброс лимита не обрывает историю и не создаёт нулевую точку. Пока доступно меньше суток истории, среднее отмечается как предварительное. Горизонтальная линия — ровный расход 14,3% в сутки.";
   }
-  if (limitsSpeedWindowSetting) limitsSpeedWindowSetting.hidden = limitsState.mode !== "speed";
-  if (limitsSpeedFullWindow) limitsSpeedFullWindow.checked = limitsState.speedFullWindow;
 }
 
 function statisticsAccounts(payload = limitsState.payload) {
@@ -9354,14 +11883,9 @@ function parseClaudeResetAt(value, nowMs = Date.now()) {
 }
 
 const WEEK_MILLISECONDS = 7 * 24 * 60 * 60_000;
-const BURN_RATE_ROLLING_WINDOW_MS = 24 * 60 * 60_000;
-const BURN_RATE_HOURLY_WINDOW_MS = 60 * 60_000;
-// Процент лимита приходит целым числом. На коротком отрезке один новый процент
-// превращался в огромный ложный пик, поэтому 24-часовой темп показываем только
-// после накопления почти полного окна (с часовым допуском для редких снимков).
-const BURN_RATE_MINIMUM_SPAN_MS = 23 * 60 * 60_000;
-const BURN_RATE_HOURLY_MINIMUM_SPAN_MS = 45 * 60_000;
-const BURN_RATE_CHART_MAX = 400;
+const BURN_RATE_CURRENT_HALF_LIFE_MS = 3 * 60 * 60_000;
+const BURN_RATE_AVERAGE_WINDOW_MS = 24 * 60 * 60_000;
+const BURN_RATE_RESET_SHIFT_TOLERANCE_MS = 30 * 60_000;
 const {
   interpolateRateLimitGaps,
   limitPriceStatistics,
@@ -9369,28 +11893,8 @@ const {
   recoverRateLimitResetGaps,
   selectCurrentLimitSeries,
   signedComparisonDeviations,
+  smoothedRateLimitConsumption,
 } = globalThis.AgentHubRateLimitSeries;
-
-function burnRatePolicyForRange(range) {
-  return ["6h", "24h"].includes(String(range))
-    ? {
-      rollingWindowMs: BURN_RATE_HOURLY_WINDOW_MS,
-      minimumSpanMs: BURN_RATE_HOURLY_MINIMUM_SPAN_MS,
-      unit: "hour",
-    }
-    : {
-      rollingWindowMs: BURN_RATE_ROLLING_WINDOW_MS,
-      minimumSpanMs: BURN_RATE_MINIMUM_SPAN_MS,
-      unit: "day",
-    };
-}
-
-function selectedBurnRatePolicyForRange(range) {
-  const policy = burnRatePolicyForRange(range);
-  return limitsState.speedFullWindow
-    ? policy
-    : { ...policy, minimumSpanMs: 0, showResetStartAsZero: true };
-}
 
 function weeklyLimitDurationMs(series) {
   const explicitDurations = (Array.isArray(series?.points) ? series.points : [])
@@ -9419,19 +11923,13 @@ function limitPointResetMs(point) {
   return parseClaudeResetAt(point?.resetsText, Number.isFinite(atMs) ? atMs : Date.now());
 }
 
-function sameWeeklyLimitCycle(left, right) {
-  return Number.isInteger(left?.cycleIndex)
-    && Number.isInteger(right?.cycleIndex)
-    && left.cycleIndex === right.cycleIndex;
-}
-
 function sameLimitsSpeedSegment(left, right) {
   const hasPathSegments = Number.isInteger(left?.pathSegmentIndex)
     && Number.isInteger(right?.pathSegmentIndex);
-  const joinsResetAnchor = right?.resetAnchor === true
-    && Number.isInteger(left?.cycleIndex)
-    && right.cycleIndex === left.cycleIndex + 1;
-  return (sameWeeklyLimitCycle(left, right) || joinsResetAnchor)
+  const sameContinuity = Number.isInteger(left?.continuityIndex)
+    && Number.isInteger(right?.continuityIndex)
+    && left.continuityIndex === right.continuityIndex;
+  return sameContinuity
     && (!hasPathSegments || left.pathSegmentIndex === right.pathSegmentIndex);
 }
 
@@ -9444,11 +11942,11 @@ function limitsSpeedPath(points) {
     .join(" ");
 }
 
-function limitsFiniteSpeedPoints(points) {
+function limitsFiniteSpeedPoints(points, field = "actualRate") {
   let pathSegmentIndex = 0;
   let previousWasFinite = false;
   return (Array.isArray(points) ? points : []).flatMap((point) => {
-    if (!Number.isFinite(point?.actualRate)) {
+    if (!Number.isFinite(point?.[field])) {
       previousWasFinite = false;
       return [];
     }
@@ -9458,19 +11956,7 @@ function limitsFiniteSpeedPoints(points) {
   });
 }
 
-function shouldWaitForBurnRateData(speedFullWindow, latest, range) {
-  const fullWindow = burnRatePolicyForRange(range).minimumSpanMs;
-  return Boolean(speedFullWindow)
-    && Number.isFinite(latest?.cycleAgeMs)
-    && latest.cycleAgeMs < fullWindow;
-}
-
-function weeklyBurnRatePoints(series, {
-  rollingWindowMs = BURN_RATE_ROLLING_WINDOW_MS,
-  minimumSpanMs = BURN_RATE_MINIMUM_SPAN_MS,
-  maximumLookbackMs = rollingWindowMs * 1.5,
-  showResetStartAsZero = false,
-} = {}) {
+function weeklyBurnRatePoints(series, options = {}) {
   const durationMs = weeklyLimitDurationMs(series);
   if (!durationMs) return [];
   const points = interpolateRateLimitGaps(series?.points)
@@ -9494,10 +11980,21 @@ function weeklyBurnRatePoints(series, {
 
   let cycleIndex = 0;
   for (let index = 0; index < points.length; index += 1) {
+    const previous = points[index - 1];
+    const resetAdvanceMs = previous ? points[index].resetMs - previous.resetMs : 0;
+    const crossedPreviousReset = previous
+      && previous.resetMs > previous.atMs
+      && previous.resetMs <= points[index].atMs;
+    const advancedByFullWindow = previous
+      && Math.abs(resetAdvanceMs - durationMs) <= BURN_RATE_RESET_SHIFT_TOLERANCE_MS;
+    const scheduledReset = Boolean(crossedPreviousReset && advancedByFullWindow);
+    const earlyReset = previous
+      && points[index].usedPercent < previous.usedPercent
+      && resetAdvanceMs > BURN_RATE_RESET_SHIFT_TOLERANCE_MS;
+    const startsAfterReset = Boolean(scheduledReset || earlyReset);
+    const cycleStartMs = scheduledReset ? previous.resetMs : points[index].resetMs - durationMs;
     const previousAccount = String(points[index - 1]?.raw?.accountKey ?? "");
     const currentAccount = String(points[index]?.raw?.accountKey ?? "");
-    const startsAfterReset = index > 0
-      && points[index].usedPercent < points[index - 1].usedPercent;
     const startsAfterAccountChange = index > 0
       && previousAccount
       && currentAccount
@@ -9505,73 +12002,61 @@ function weeklyBurnRatePoints(series, {
     if (startsAfterReset || startsAfterAccountChange) cycleIndex += 1;
     points[index].cycleIndex = cycleIndex;
     points[index].startsAfterReset = startsAfterReset;
+    points[index].cycleStartMs = cycleStartMs;
   }
 
-  const ratePoints = points.map((point, index) => {
+  return smoothedRateLimitConsumption(points, {
+    currentHalfLifeMs: BURN_RATE_CURRENT_HALF_LIFE_MS,
+    averageWindowMs: BURN_RATE_AVERAGE_WINDOW_MS,
+    ratePeriodMs: WEEK_MILLISECONDS,
+    ...options,
+  }).map((point) => {
     const remainingMs = point.resetMs - point.atMs;
     const targetRate = Math.max(0, point.remainingPercent) / remainingMs * WEEK_MILLISECONDS;
-    let baseline = null;
-    let baselineDistance = Number.POSITIVE_INFINITY;
-    for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
-      const candidate = points[cursor];
-      const candidateSpanMs = point.atMs - candidate.atMs;
-      if (candidateSpanMs > maximumLookbackMs) break;
-      if (!sameWeeklyLimitCycle(point, candidate)) continue;
-      if (candidateSpanMs < minimumSpanMs || point.usedPercent < candidate.usedPercent) continue;
-      const distance = Math.abs(candidateSpanMs - rollingWindowMs);
-      if (distance < baselineDistance) {
-        baseline = candidate;
-        baselineDistance = distance;
-      }
-    }
-    const spanMs = baseline ? point.atMs - baseline.atMs : 0;
-    const usedDelta = baseline ? point.usedPercent - baseline.usedPercent : Number.NaN;
-    const actualRate = spanMs > 0 && spanMs >= minimumSpanMs && usedDelta >= 0
-      ? usedDelta / spanMs * WEEK_MILLISECONDS
-      : showResetStartAsZero && point.startsAfterReset ? 0 : null;
+    const actualRate = point.currentRate;
     const deviationRate = Number.isFinite(actualRate) ? actualRate - targetRate : null;
     return {
       ...point,
       durationMs,
       cycleAgeMs: Math.max(0, point.atMs - (point.resetMs - durationMs)),
-      sampleSpanMs: spanMs,
       targetRate,
       actualRate,
       deviationRate,
       overTarget: Number.isFinite(deviationRate) ? deviationRate > 0 : false,
     };
   });
-  if (!showResetStartAsZero) return ratePoints;
-  return ratePoints.flatMap((point, index) => {
-    if (!point.startsAfterReset) return [point];
-    const previousAtMs = ratePoints[index - 1]?.atMs;
-    const cycleStartMs = point.resetMs - durationMs;
-    if (!(cycleStartMs > previousAtMs && cycleStartMs < point.atMs)) return [point];
-    const remainingPercent = 100;
-    const targetRate = remainingPercent / durationMs * WEEK_MILLISECONDS;
-    return [{
-      ...point,
-      raw: {
-        ...point.raw,
-        at: new Date(cycleStartMs).toISOString(),
-        usedPercent: 0,
-        remainingPercent,
-        estimated: true,
-        estimateKind: "reset-start",
-      },
-      atMs: cycleStartMs,
-      usedPercent: 0,
-      remainingPercent,
-      cycleAgeMs: 0,
-      sampleSpanMs: 0,
-      targetRate,
-      actualRate: 0,
-      deviationRate: -targetRate,
-      overTarget: false,
-      startsAfterReset: false,
-      resetAnchor: true,
-    }, point];
-  });
+}
+
+function limitsSpeedChartScale(series, normalWeeklyRate = 100) {
+  const normalDailyRate = Math.max(0, Number(normalWeeklyRate) || 0) / 7;
+  const visibleDailyRates = (Array.isArray(series) ? series : []).flatMap((item) => (
+    Array.isArray(item?.ratePoints) ? item.ratePoints : []
+  ).flatMap((point) => [
+    Number.isFinite(point.actualRate) ? point.actualRate / 7 : null,
+    Number.isFinite(point.averageRate) ? point.averageRate / 7 : null,
+  ])).filter(Number.isFinite);
+  const maximumDailyRate = Math.max(normalDailyRate, ...visibleDailyRates);
+  const roughStep = maximumDailyRate / 4;
+  const magnitude = 10 ** Math.floor(Math.log10(Math.max(1, roughStep)));
+  const normalizedStep = roughStep / magnitude;
+  const tickStep = (normalizedStep <= 1 ? 1 : normalizedStep <= 2 ? 2 : normalizedStep <= 5 ? 5 : 10)
+    * magnitude;
+  return {
+    chartMaximum: Math.max(tickStep, Math.ceil(maximumDailyRate / tickStep) * tickStep),
+    maximumDailyRate,
+    normalDailyRate,
+    tickStep,
+  };
+}
+
+function limitsSpeedChartRate(weeklyRate, chartMaximum) {
+  const dailyRate = Math.max(0, Number(weeklyRate) || 0) / 7;
+  const maximum = Math.max(0, Number(chartMaximum) || 0);
+  return {
+    dailyRate,
+    offScale: dailyRate > maximum,
+    plottedDailyRate: Math.min(dailyRate, maximum),
+  };
 }
 
 function formatResetCountdown(point) {
@@ -9707,6 +12192,10 @@ function renderLimitsSubtitle() {
 }
 
 function renderLimits() {
+  return window.AgentHubCommandTrace.measure("ui-render", "limits", renderLimitsContent);
+}
+
+function renderLimitsContent() {
   const status = limitsState.status;
   if (limitsLoading) limitsLoading.hidden = status !== "loading";
   if (limitsError) limitsError.hidden = status !== "error";
@@ -9926,7 +12415,7 @@ function buildLimitsSpeedChart(payload) {
         id,
         color: seriesColor(item, index),
         hidden: limitsState.hidden.has(id),
-        ratePoints: weeklyBurnRatePoints(item, selectedBurnRatePolicyForRange(limitsState.range)),
+        ratePoints: weeklyBurnRatePoints(item),
       };
     })
     .filter((item) => item.ratePoints.length > 0);
@@ -9947,9 +12436,11 @@ function buildLimitsSpeedChart(payload) {
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
   const xOf = (time) => padL + ((time - tMin) / (tMax - tMin)) * plotW;
-  const yOf = (rate) => (
-    padT + (1 - clampNumber(Number(rate) || 0, 0, BURN_RATE_CHART_MAX) / BURN_RATE_CHART_MAX) * plotH
-  );
+  const { chartMaximum, tickStep } = limitsSpeedChartScale(series);
+  const yOf = (weeklyRate) => {
+    const { plottedDailyRate } = limitsSpeedChartRate(weeklyRate, chartMaximum);
+    return padT + (1 - plottedDailyRate / chartMaximum) * plotH;
+  };
   const svg = svgEl("svg", {
     viewBox: `0 0 ${W} ${H}`,
     class: "limits-chart-svg limits-speed-chart-svg",
@@ -9957,21 +12448,21 @@ function buildLimitsSpeedChart(payload) {
     "aria-hidden": "true",
   });
 
-  for (const value of [0, 100, 200, 300, 400]) {
-    const y = yOf(value);
+  for (let value = 0; value <= chartMaximum + tickStep / 2; value += tickStep) {
+    const y = yOf(value * 7);
     svg.append(svgEl("line", { x1: padL, y1: y, x2: W - padR, y2: y, class: "limits-grid-line" }));
     svg.append(svgEl("text", {
       x: padL - 6,
       y: y + 3,
       class: "limits-axis-label limits-axis-y",
       "text-anchor": "end",
-    }, [value === BURN_RATE_CHART_MAX ? `${value}+` : String(value)]));
+    }, [new Intl.NumberFormat("ru-RU", { maximumFractionDigits: value < 10 ? 1 : 0 }).format(value)]));
   }
   svg.append(svgEl("text", {
     x: padL,
     y: padT + 9,
     class: "limits-axis-label limits-speed-unit",
-  }, ["% / нед."]));
+  }, ["% / сутки"]));
 
   const normalRateY = yOf(100);
   svg.append(svgEl("line", {
@@ -9986,9 +12477,7 @@ function buildLimitsSpeedChart(payload) {
     y: normalRateY - 6,
     class: "limits-burn-normal-label",
     "text-anchor": "end",
-  }, [burnRatePolicyForRange(limitsState.range).unit === "hour"
-    ? "Ровный темп · 0,6%/час"
-    : "Ровный темп · 14,3%/сутки"]));
+  }, ["Ровный темп · 14,3%/сутки"]));
 
   const span = tMax - tMin;
   const dayMs = 24 * 60 * 60_000;
@@ -10032,16 +12521,31 @@ function buildLimitsSpeedChart(payload) {
   }
 
   for (const item of series) {
-    const targetPoints = item.ratePoints.map((point) => ({
-      ...point,
-      x: xOf(point.atMs),
-      y: yOf(point.targetRate),
-    }));
+    const targetPoints = limitsFiniteSpeedPoints(item.ratePoints, "targetRate")
+      .map((point) => ({ ...point, x: xOf(point.atMs), y: yOf(point.targetRate) }));
     if (targetPoints.length) {
+      const targetOffScale = targetPoints.some((point) => (
+        limitsSpeedChartRate(point.targetRate, chartMaximum).offScale
+      ));
       svg.append(svgEl("path", {
         d: limitsSpeedPath(targetPoints),
-        class: "limits-burn-target-line",
+        class: `limits-burn-target-line${targetOffScale ? " is-off-scale" : ""}`,
         fill: "none",
+        stroke: item.color,
+      }));
+    }
+    const averagePoints = limitsFiniteSpeedPoints(item.ratePoints, "averageRate")
+      .map((point) => ({ ...point, x: xOf(point.atMs), y: yOf(point.averageRate) }));
+    for (let index = 1; index < averagePoints.length; index += 1) {
+      const left = averagePoints[index - 1];
+      const right = averagePoints[index];
+      if (!sameLimitsSpeedSegment(left, right)) continue;
+      svg.append(svgEl("line", {
+        x1: left.x,
+        y1: left.y,
+        x2: right.x,
+        y2: right.y,
+        class: `limits-burn-average-segment${right.averagePreliminary ? " is-preliminary" : ""}`,
         stroke: item.color,
       }));
     }
@@ -10063,10 +12567,12 @@ function buildLimitsSpeedChart(payload) {
         y1: left.y,
         x2: right.x,
         y2: right.y,
-        class: `limits-burn-rate-segment ${right.overTarget ? "is-over-target" : "is-safe"}`,
+        class: `limits-burn-rate-segment ${right.overTarget ? "is-over-target" : "is-safe"}${
+          right.currentPreliminary ? " is-preliminary" : ""
+        }`,
       }));
     }
-    const markerPoints = limitsMarkerPoints(actualPoints);
+    const markerPoints = limitsMarkerPoints(actualPoints.filter((point) => !point.resetBoundary));
     markerPoints.forEach((point) => {
       const isLast = point === actualPoints.at(-1);
       const circle = svgEl("circle", {
@@ -10085,6 +12591,9 @@ function buildLimitsSpeedChart(payload) {
         window: item.window || "",
         at: point.raw.at,
         actualRate: point.actualRate,
+        averageRate: point.averageRate,
+        averageSpanMs: point.averageSpanMs,
+        averagePreliminary: point.averagePreliminary,
         targetRate: point.targetRate,
         deviationRate: point.deviationRate,
         estimated: point.raw?.estimated === true,
@@ -10116,7 +12625,7 @@ function buildLimitsSpeedChart(payload) {
     ? series.map((item) => {
       const last = item.ratePoints.findLast((point) => Number.isFinite(point.actualRate));
       return last
-        ? `${item.name || item.id}: ${Math.round(last.actualRate)}% в неделю, допустимо ${Math.round(last.targetRate)}%`
+        ? `${item.name || item.id}: сейчас ${formatLimitRateForPeriod(last.actualRate)}% в сутки, за 24 часа ${formatLimitRateForPeriod(last.averageRate)}%`
         : `${item.name || item.id}: недостаточно истории для фактической скорости`;
     }).join("; ")
     : allSeries.length ? "все недельные серии скрыты" : "нет недельных лимитов";
@@ -10125,17 +12634,16 @@ function buildLimitsSpeedChart(payload) {
   return allSeries;
 }
 
-function formatLimitRateForPeriod(weeklyRate, range = limitsState.range) {
-  const hourly = burnRatePolicyForRange(range).unit === "hour";
-  const periodRate = Math.max(0, Number(weeklyRate) || 0) / (hourly ? 7 * 24 : 7);
+function formatLimitRateForPeriod(weeklyRate) {
+  const periodRate = Math.max(0, Number(weeklyRate) || 0) / 7;
   return new Intl.NumberFormat("ru-RU", {
     maximumFractionDigits: periodRate < 10 ? 1 : 0,
     minimumFractionDigits: periodRate > 0 && periodRate < 10 ? 1 : 0,
   }).format(periodRate);
 }
 
-function burnRatePeriodSuffix(range = limitsState.range) {
-  return burnRatePolicyForRange(range).unit === "hour" ? "%/час" : "%/сутки";
+function burnRatePeriodSuffix() {
+  return "%/сутки";
 }
 
 function formatBurnRateSampleSpan(spanMs) {
@@ -10157,33 +12665,18 @@ function renderLimitsSpeedSummary(series) {
     .filter((item) => !item.hidden)
     .map((item) => ({
       item,
-      latest: item.ratePoints?.at(-1),
       point: item.ratePoints?.findLast((point) => Number.isFinite(point.actualRate)),
     }))
-    .filter(({ latest, point }) => latest || point);
+    .filter(({ point }) => point);
   if (!items.length) {
     limitsSpeedSummary.hidden = true;
     limitsSpeedSummary.replaceChildren();
     return;
   }
-  const cards = items.map(({ item, latest, point }) => {
+  const cards = items.map(({ item, point }) => {
     const name = [item.name || item.baseId || item.id, item.window].filter(Boolean).join(" · ");
-    const waiting = shouldWaitForBurnRateData(
-      limitsState.speedFullWindow,
-      latest,
-      limitsState.range,
-    );
-    if (waiting) {
-      return el("section", { class: "limits-speed-summary-card is-waiting" }, [
-        el("span", { class: "limits-speed-summary-name", text: name }),
-        el("div", { class: "limits-speed-summary-rates" }, [
-          el("span", { text: "После сброса ещё не накоплен полный интервал скорости." }),
-        ]),
-        el("strong", { class: "limits-speed-summary-status", text: "Ожидание данных" }),
-      ]);
-    }
-    if (!point) return null;
     const actualPeriod = formatLimitRateForPeriod(point.actualRate);
+    const averagePeriod = formatLimitRateForPeriod(point.averageRate);
     const targetPeriod = formatLimitRateForPeriod(point.targetRate);
     const periodSuffix = burnRatePeriodSuffix();
     const ratio = point.targetRate > 0 ? point.actualRate / point.targetRate : Number.POSITIVE_INFINITY;
@@ -10199,10 +12692,15 @@ function renderLimitsSpeedSummary(series) {
       el("span", { class: "limits-speed-summary-name", text: name }),
       el("div", { class: "limits-speed-summary-rates" }, [
         el("span", {}, ["Сейчас ", el("strong", { text: `${actualPeriod}${periodSuffix}` })]),
+        Number.isFinite(point.averageRate)
+          ? el("span", {}, [
+            point.averagePreliminary
+              ? `Среднее за ${formatBurnRateSampleSpan(point.averageSpanMs)} (предв.) `
+              : "За 24 часа ",
+            el("strong", { text: `${averagePeriod}${periodSuffix}` }),
+          ])
+          : null,
         el("span", {}, ["Допустимо ", el("strong", { text: `${targetPeriod}${periodSuffix}` })]),
-        el("span", {}, ["Интервал расчёта ", el("strong", {
-          text: formatBurnRateSampleSpan(point.sampleSpanMs),
-        })]),
       ]),
       el("strong", { class: "limits-speed-summary-status", text: status }),
     ]);
@@ -10240,8 +12738,8 @@ function renderLimitsLegend(series) {
       rate
         ? el("span", {
           class: `limits-legend-value limits-speed-value${rate.overTarget ? " is-over-target" : " is-safe"}`,
-          text: `${Math.round(rate.actualRate)}% / ${Math.round(rate.targetRate)}% в неделю`,
-          title: "Фактическая / допустимая скорость в неделю",
+          text: `сейчас ${formatLimitRateForPeriod(rate.actualRate)}%/сутки · 24 ч ${formatLimitRateForPeriod(rate.averageRate)}%/сутки`,
+          title: "Сглаженный текущий темп и средний темп за 24 часа",
         })
         : limitsState.mode === "speed"
           ? el("span", { class: "limits-legend-value", text: "Недостаточно истории" })
@@ -10282,18 +12780,20 @@ function renderLimitsCredits(payload) {
 function limitsTooltipText(info) {
   const time = formatLimitsDateTime(info.at);
   if (info.mode === "speed") {
-    const actual = Math.round(Number(info.actualRate) || 0);
-    const target = Math.round(Number(info.targetRate) || 0);
     const actualPeriod = formatLimitRateForPeriod(info.actualRate);
+    const averagePeriod = formatLimitRateForPeriod(info.averageRate);
     const targetPeriod = formatLimitRateForPeriod(info.targetRate);
     const periodSuffix = burnRatePeriodSuffix();
-    const deviation = actual - target;
+    const deviation = (Number(info.actualRate) - Number(info.targetRate)) / 7;
     const status = deviation > 0
-      ? `выше допустимой на ${deviation}%`
-      : `запас ${Math.abs(deviation)}%`;
+      ? `выше допустимой на ${formatLimitRateForPeriod(deviation * 7)}${periodSuffix}`
+      : `запас ${formatLimitRateForPeriod(Math.abs(deviation) * 7)}${periodSuffix}`;
     const name = info.window ? `${info.name} · ${info.window}` : info.name;
     const estimate = info.estimated ? ". Оценка по соседним замерам" : "";
-    return `${name}. ${time}: ${actualPeriod}${periodSuffix} (${actual}% в неделю), допустимо ${targetPeriod}${periodSuffix} (${target}% в неделю), ${status}${estimate}`;
+    const average = Number.isFinite(info.averageRate)
+      ? `, среднее ${averagePeriod}${periodSuffix}${info.averagePreliminary ? ` за ${formatBurnRateSampleSpan(info.averageSpanMs)}` : " за 24 часа"}`
+      : "";
+    return `${name}. ${time}: сейчас ${actualPeriod}${periodSuffix}${average}, допустимо ${targetPeriod}${periodSuffix}, ${status}${estimate}`;
   }
   const used = Math.round(Number(info.used) || 0);
   const remaining = info.remaining == null
@@ -10320,22 +12820,25 @@ function positionChartTooltip(element, fx, fy, options) {
 function showLimitsTooltip(info, fx, fy) {
   if (!limitsTooltip) return;
   if (info.mode === "speed") {
-    const actual = Math.round(Number(info.actualRate) || 0);
-    const target = Math.round(Number(info.targetRate) || 0);
     const actualPeriod = formatLimitRateForPeriod(info.actualRate);
+    const averagePeriod = formatLimitRateForPeriod(info.averageRate);
     const targetPeriod = formatLimitRateForPeriod(info.targetRate);
     const periodSuffix = burnRatePeriodSuffix();
-    const deviation = actual - target;
+    const deviation = (Number(info.actualRate) - Number(info.targetRate)) / 7;
     limitsTooltip.replaceChildren(
       el("span", { class: "limits-tooltip-title", text: info.window ? `${info.name} · ${info.window}` : info.name }),
       el("span", { class: "limits-tooltip-time", text: formatLimitsDateTime(info.at) }),
       el("span", { class: "limits-tooltip-row", text: `Сейчас ${actualPeriod}${periodSuffix} · допустимо ${targetPeriod}${periodSuffix}` }),
-      el("span", { class: "limits-tooltip-row", text: `${actual}%/нед. · допустимо ${target}%/нед.` }),
+      Number.isFinite(info.averageRate)
+        ? el("span", { class: "limits-tooltip-row", text: info.averagePreliminary
+          ? `Среднее ${averagePeriod}${periodSuffix} за ${formatBurnRateSampleSpan(info.averageSpanMs)} · предварительно`
+          : `Среднее за 24 часа ${averagePeriod}${periodSuffix}` })
+        : null,
       el("span", {
         class: `limits-tooltip-row limits-speed-deviation${deviation > 0 ? " is-over-target" : " is-safe"}`,
         text: deviation > 0
-          ? `Перерасход скорости +${deviation}%`
-          : `Запас скорости ${Math.abs(deviation)}%`,
+          ? `Выше допустимой на ${formatLimitRateForPeriod(deviation * 7)}${periodSuffix}`
+          : `Запас ${formatLimitRateForPeriod(Math.abs(deviation) * 7)}${periodSuffix}`,
       }),
       ...(info.estimated ? [el("span", {
         class: "limits-tooltip-row",
@@ -10373,17 +12876,6 @@ limitsRanges?.addEventListener("click", (event) => {
 limitsModes?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-limits-mode]");
   if (button) selectLimitsMode(button.dataset.limitsMode);
-});
-
-limitsSpeedFullWindow?.addEventListener("change", () => {
-  limitsState.speedFullWindow = limitsSpeedFullWindow.checked;
-  try {
-    localStorage.setItem(LIMITS_SPEED_FULL_WINDOW_KEY, String(limitsState.speedFullWindow));
-  } catch {
-    // Настройка останется активной до закрытия WebView.
-  }
-  renderLimitsModes();
-  renderLimits();
 });
 
 document.querySelector("[data-limits-retry]")?.addEventListener("click", () => {
@@ -10479,9 +12971,7 @@ function statusFromUsagePayload(payload) {
 function applyUsageHistory(payload) {
   const data = payload && typeof payload === "object" ? payload : null;
   if (data?.turnTimeMode && normalizeTurnTimeMode(data.turnTimeMode) !== turnTimeMode) return;
-  const selectedAccount = resolvedStatisticsAccountKey();
-  const requestedAccount = selectedAccount === ALL_STATISTICS_ACCOUNTS ? "" : selectedAccount;
-  if (String(data?.accountKey ?? "") !== requestedAccount) return;
+  if (String(data?.accountKey ?? "")) return;
   usageState.payload = data;
   usageState.error = data?.error ? String(data.error) : "";
   if (data?.range) usageState.range = normalizeRange(data.range);
@@ -10492,18 +12982,16 @@ function applyUsageHistory(payload) {
 
 function requestUsageHistory(range, { force = false } = {}) {
   usageState.range = persistRange(localStorage, USAGE_RANGE_KEY, range);
-  const selectedAccount = resolvedStatisticsAccountKey();
-  const accountKey = selectedAccount === ALL_STATISTICS_ACCOUNTS ? "" : selectedAccount;
   const cached = usageState.payload
     && !usageState.payload.error
     && normalizeRange(usageState.payload.range) === usageState.range
-    && String(usageState.payload.accountKey ?? "") === accountKey
+    && !String(usageState.payload.accountKey ?? "")
     && normalizeTurnTimeMode(usageState.payload.turnTimeMode) === turnTimeMode;
   usageState.status = cached && !force ? statusFromUsagePayload(usageState.payload) : "loading";
   usageState.error = "";
   renderUsageRanges();
   renderUsageHistory();
-  emit("usage:open", { range: usageState.range, accountKey, turnTimeMode });
+  emit("usage:open", { range: usageState.range, turnTimeMode });
 }
 
 function renderUsageRanges() {
@@ -11033,6 +13521,10 @@ function buildUsageChart(payload) {
 }
 
 function renderUsageHistory() {
+  return window.AgentHubCommandTrace.measure("ui-render", "usage-history", renderUsageHistoryContent);
+}
+
+function renderUsageHistoryContent() {
   if (!usageLoading) return;
   const status = usageState.status;
   usageLoading.hidden = status !== "loading";
@@ -11078,10 +13570,11 @@ function renderUsageHistory() {
   if (status === "ready") {
     buildUsageChart(payload);
     renderUsageBurnSummary(payload, burnAnalysis);
+    const scopeNote = "Учтён весь локальный расход; расход других устройств — только в интервалы активности того же аккаунта на этом компьютере.";
     if (intensity) {
       usageNote.textContent = burnAnalysis?.forecastAvailable
-        ? "EMA считает календарный темп расхода cr/мин; прогноз суток не использует неизвестные лимиты Codex или Claude."
-        : "EMA считает календарный темп cr/мин. Суточный прогноз показывается только на диапазоне 24 ч, где известен расход с полуночи.";
+        ? `${scopeNote} EMA считает календарный темп расхода cr/мин; прогноз суток не использует неизвестные лимиты Codex или Claude.`
+        : `${scopeNote} EMA считает календарный темп cr/мин. Суточный прогноз показывается только на диапазоне 24 ч, где известен расход с полуночи.`;
     } else {
       renderUsageBurnSummary(null, null);
       const unpriced = Math.max(0, Number(payload.unpricedCount) || 0);
@@ -11098,7 +13591,7 @@ function renderUsageHistory() {
       if (rate && usageState.rateBasis === "task" && untimed) {
         notes.push(`Без длительности и вне скорости по времени задач: ${untimed}.`);
       }
-      usageNote.textContent = notes.join(" ") || "Все показанные ходы тарифицированы и имеют длительность.";
+      usageNote.textContent = `${scopeNote} ${notes.join(" ") || "Все показанные ходы тарифицированы и имеют длительность."}`;
     }
   }
 }
@@ -12094,6 +14587,10 @@ function renderComparisonSummary(model) {
 }
 
 function renderUsageComparison() {
+  return window.AgentHubCommandTrace.measure("ui-render", "usage-comparison", renderUsageComparisonContent);
+}
+
+function renderUsageComparisonContent() {
   if (!comparisonLoading) return;
   const status = comparisonState.status;
   comparisonLoading.hidden = status !== "loading";
@@ -12236,6 +14733,9 @@ function captureOpenState() {
         threadId: item.dataset.workLogThreadId,
       }))
       .filter((item) => item.provider && item.threadId),
+    virtualScopes: [...journal.querySelectorAll("details[data-journal-virtual-scope][open]")]
+      .map((item) => item.dataset.journalVirtualScope)
+      .filter(Boolean),
   };
 }
 
@@ -12389,6 +14889,11 @@ function restoreOpenState(openState) {
       + `[data-work-log-thread-id="${selectorValue(task.threadId)}"]`,
     )?.setAttribute("open", "");
   }
+  for (const key of openState.virtualScopes ?? []) {
+    journal.querySelector(
+      `details[data-journal-virtual-scope="${selectorValue(key)}"]`,
+    )?.setAttribute("open", "");
+  }
 }
 
 function removeJournalRateLimits() {
@@ -12403,36 +14908,34 @@ function disableLocalLinks(scope = journal) {
   }
 }
 
+let journalFragmentRefreshVersion = null;
+
+function isSupersededJournalFragment(error) {
+  return error?.code === "JOURNAL_FRAGMENT_SUPERSEDED";
+}
+
 async function fetchJournalFragment(pathname, params) {
   await localSessionReady;
-  const query = new URLSearchParams({ ...params, version: currentVersion });
+  const requestedVersion = currentVersion;
+  const query = new URLSearchParams({ ...params, version: requestedVersion });
   const response = await fetch(`${pathname}?${query}`, {
     cache: "no-store",
     headers: await authenticatedRequestHeaders(),
   });
   const payload = await response.json();
-  if (response.status === 409 || payload.version && payload.version !== currentVersion) {
-    void loadJournal({ force: true });
-    throw new Error("Журнал обновился.");
+  if (requestedVersion !== currentVersion || response.status === 409
+    || payload.version && payload.version !== requestedVersion) {
+    // A fragment belongs to its requested snapshot. Refresh through the normal
+    // owner once per stale version, never replay an old page into the new DOM.
+    // Do not await this refresh: the current render may itself await a fragment.
+    if (requestedVersion === currentVersion && journalFragmentRefreshVersion !== requestedVersion) {
+      journalFragmentRefreshVersion = requestedVersion;
+      void loadJournal({ force: true });
+    }
+    throw Object.assign(new Error("Журнал обновился."), { code: "JOURNAL_FRAGMENT_SUPERSEDED" });
   }
   if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
   return payload;
-}
-
-async function fetchJournalDayFragments() {
-  await localSessionReady;
-  const query = new URLSearchParams({ version: currentVersion });
-  const response = await fetch(`/api/journal/days?${query}`, {
-    cache: "no-store",
-    headers: await authenticatedRequestHeaders(),
-  });
-  const payload = await response.json();
-  if (response.status === 409 || payload.version && payload.version !== currentVersion) {
-    void loadJournal({ force: true });
-    throw new Error("Журнал обновился.");
-  }
-  if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
-  return payload.days && typeof payload.days === "object" ? payload.days : {};
 }
 
 function materializeLazyDay(details, html, {
@@ -12487,7 +14990,7 @@ async function loadLazyDay(details) {
   })().catch((error) => {
     if (details.isConnected) {
       details.removeAttribute("aria-busy");
-      details.title = error.message;
+      if (!isSupersededJournalFragment(error)) details.title = error.message;
     }
   }).finally(() => loadingDays.delete(date));
   loadingDays.set(date, promise);
@@ -12514,7 +15017,7 @@ async function loadLazyTurn(details) {
   })().catch((error) => {
     if (details.isConnected) {
       details.removeAttribute("aria-busy");
-      details.title = error.message;
+      if (!isSupersededJournalFragment(error)) details.title = error.message;
     }
   }).finally(() => loadingTurns.delete(turnId));
   loadingTurns.set(turnId, promise);
@@ -13244,13 +15747,18 @@ function taskGroupsFrom(source, { workspace = null, hierarchy = "" } = {}) {
         } else {
           group.unknownDurations += 1;
         }
-        const creditValue = entry.dataset.workLogTurnCredits;
-        const credits = creditValue === undefined ? Number.NaN : Number(creditValue);
-        if (Number.isFinite(credits) && credits >= 0) {
-          group.credits += credits;
-          group.knownCredits += 1;
-        } else {
-          group.unknownCredits += 1;
+        const entryProvider = String(
+          entry.dataset.workLogTurnProvider ?? provider,
+        ).trim().toLowerCase();
+        if (state.selection.includeClaudeUsage !== false || entryProvider !== "claude") {
+          const creditValue = entry.dataset.workLogTurnCredits;
+          const credits = creditValue === undefined ? Number.NaN : Number(creditValue);
+          if (Number.isFinite(credits) && credits >= 0) {
+            group.credits += credits;
+            group.knownCredits += 1;
+          } else {
+            group.unknownCredits += 1;
+          }
         }
         const completedAt = Date.parse(entry.dataset.workLogTurnCompletedAt ?? "");
         if (Number.isFinite(completedAt)) group.latestAt = Math.max(group.latestAt, completedAt);
@@ -13683,29 +16191,25 @@ function dayGroupingContent(source) {
 let journalRenderSequence = 0;
 let journalSyncLatestStatus = null;
 
-async function hydrateAllLazyDays() {
+async function hydrateAllLazyDays({ isCurrent = () => true } = {}) {
   const days = [...journal.querySelectorAll(
     "details[data-work-log-day-section][data-lazy-day]",
   )];
-  const missingDates = days
-    .map((details) => details.dataset.lazyDay)
-    .filter((date) => date && !journalDayHtmlCache.has(date));
-  if (missingDates.length) {
-    const fragments = await fetchJournalDayFragments();
-    for (const [date, html] of Object.entries(fragments)) {
-      if (typeof html === "string") journalDayHtmlCache.set(date, html);
-    }
-  }
-  const fallback = [];
-  for (const details of days) {
-    const html = journalDayHtmlCache.get(details.dataset.lazyDay);
-    if (html) {
-      materializeLazyDay(details, html, { decorate: false, postProcess: false });
-    } else {
-      fallback.push(loadLazyDay(details));
-    }
-  }
-  await Promise.all(fallback);
+  return JournalView.hydrateLazyDays(days, {
+    dateFor: (details) => details.dataset.lazyDay,
+    cachedHtml: (date) => journalDayHtmlCache.get(date),
+    fetchHtml: async (date) => (
+      await fetchJournalFragment("/api/journal/day", { date })
+    ).html,
+    rememberHtml: (date, html) => journalDayHtmlCache.set(date, html),
+    materialize: (details, html) => materializeLazyDay(details, html, {
+      decorate: false,
+      postProcess: false,
+    }),
+    isCurrent,
+    yieldControl: () => new Promise((resolve) => requestAnimationFrame(() => resolve())),
+    batchSize: 2,
+  });
 }
 
 function summarizedLazyDays(source) {
@@ -13915,6 +16419,456 @@ function replaceJournalGroupedContent(content) {
   mountStatisticsAccountPanel();
 }
 
+function virtualUsageShare(value, total, known = true) {
+  if (!known) return "";
+  if (!(Number(total) > 0)) return " (0%)";
+  const share = Math.max(0, Math.min(100, Number(value) / Number(total) * 100));
+  return ` (${Math.round(share)}%)`;
+}
+
+function virtualStreamUsage(stream, workspace) {
+  const usage = document.createElement("span");
+  usage.dataset.workLogStreamUsage = "";
+  const creditShare = stream.knownCredits
+    ? virtualUsageShare(stream.credits, workspace.credits, workspace.knownCredits)
+    : "";
+  usage.append(
+    stream.knownDurations
+      ? el("span", {
+        "data-work-log-stream-duration": "",
+        text: `${formatTaskDuration(stream.durationSeconds)}${virtualUsageShare(
+          stream.durationSeconds,
+          workspace.durationSeconds,
+          workspace.knownDurations,
+        )}`,
+      })
+      : el("span", { "data-work-log-stream-duration": "", text: "время —" }),
+    stream.knownCredits
+      ? el("span", { "data-work-log-stream-credits": "" }, [
+        usageBadge(formatUsageValue(stream.credits), stream.credits),
+      ])
+      : el("span", { text: "расход —" }),
+    el("span", { "data-work-log-stream-credit-share": "", text: creditShare }),
+  );
+  return usage;
+}
+
+function virtualWorkspaceBreakdown(workspace) {
+  const source = String(workspace.workspaceUsageHtml ?? "").trim();
+  if (!source) return null;
+  const template = document.createElement("template");
+  template.innerHTML = source;
+  const usage = template.content.querySelector("details[data-work-log-workspace-usage-details]");
+  if (!usage) return null;
+  usage.open = true;
+  const breakdown = document.createElement("div");
+  breakdown.dataset.journalDayBreakdown = "";
+  breakdown.append(usage);
+  return breakdown;
+}
+
+function applyVirtualTurnQuery(node, scope, workspace, stream = null) {
+  const query = JournalView.virtualTurnQuery(scope, workspace, stream);
+  node.dataset.journalVirtualTurns = "";
+  node.dataset.virtualWorkspaceId = query.workspaceId;
+  node.dataset.virtualStreamId = query.streamId;
+  node.dataset.virtualProvider = query.provider;
+  node.dataset.virtualFromMs = String(query.fromMs);
+  node.dataset.virtualToMs = String(query.toMs);
+  node.dataset.virtualDateKeys = query.dateKeys.join(",");
+  if (scope.mode === "stream") node.dataset.virtualProfileMode = "stream";
+}
+
+function virtualTurnTable() {
+  const table = document.createElement("div");
+  table.dataset.journalTurnTable = "";
+  return table;
+}
+
+function virtualStreamDetails(scope, workspace, stream) {
+  const details = document.createElement("details");
+  details.dataset.workLogStream = "";
+  details.dataset.workLogStreamId = stream.id;
+  details.dataset.workLogWorkspaceId = workspace.id;
+  if (stream.providers.length === 1) {
+    details.dataset.workLogProvider = stream.providers[0];
+  }
+  applyVirtualTurnQuery(details, scope, workspace, stream);
+  const summary = document.createElement("summary");
+  summary.dataset.workLogStreamSummary = "";
+  const title = document.createElement("span");
+  title.dataset.workLogStreamTitle = "";
+  title.append(
+    el("span", { "data-work-log-stream-name": "", text: stream.name }),
+    el("span", {
+      "data-work-log-stream-turn-count": "",
+      text: `${Math.max(0, Number(stream.turnCount) || 0)} ход.${virtualUsageShare(
+        stream.turnCount,
+        workspace.turnCount,
+      )}`,
+    }),
+  );
+  summary.append(
+    virtualStreamUsage(stream, workspace),
+    title,
+  );
+  const body = document.createElement("div");
+  body.dataset.workLogStreamTurns = "";
+  body.append(virtualTurnTable());
+  details.append(summary, body);
+  return details;
+}
+
+function virtualWorkspaceTurns(scope, workspace) {
+  const body = document.createElement("div");
+  body.dataset.journalVirtualFlatTurns = "";
+  applyVirtualTurnQuery(body, scope, workspace);
+  body.append(virtualTurnTable());
+  return body;
+}
+
+function virtualWorkspaceContent(scope, workspace) {
+  if (!groupJournalTurnsByStream) return virtualWorkspaceTurns(scope, workspace);
+  const streams = document.createElement("div");
+  streams.dataset.workLogWorkspaceStreams = "";
+  for (const stream of workspace.streams) {
+    streams.append(virtualStreamDetails(scope, workspace, stream));
+  }
+  return streams;
+}
+
+function virtualTemporalContent(scope) {
+  const expanded = document.createElement("div");
+  expanded.dataset.journalDayExpanded = "";
+  const picker = document.createElement("div");
+  picker.dataset.journalDayPicker = "";
+  picker.append(el("span", { "data-journal-section-label": "", text: "Workspace" }));
+  const panels = document.createElement("div");
+  panels.dataset.journalDayPanels = "";
+  const remembered = journalDaySelections.get(scope.key);
+  const selected = scope.workspaces.some((workspace) => workspace.id === remembered)
+    ? remembered
+    : scope.workspaces[0]?.id ?? "";
+  if (selected) journalDaySelections.set(scope.key, selected);
+  for (const workspace of scope.workspaces) {
+    const active = workspace.id === selected;
+    const item = document.createElement("div");
+    item.dataset.journalDayPickerItem = "";
+    item.toggleAttribute("data-selected", active);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.journalDaySelect = workspace.id;
+    button.setAttribute("aria-pressed", String(active));
+    const credits = el("span", { "data-journal-day-picker-credits": "" });
+    if (workspace.knownCredits) {
+      credits.append(
+        usageBadge(formatUsageValue(workspace.credits), workspace.credits),
+        el("span", {
+          "data-journal-day-picker-share": "",
+          text: virtualUsageShare(workspace.credits, scope.credits, scope.knownCredits),
+        }),
+      );
+    } else {
+      credits.textContent = "—";
+    }
+    button.append(
+      el("span", { "data-journal-day-picker-title": "", text: workspace.name }),
+      el("span", {
+        "data-journal-day-picker-turns": "",
+        text: `${workspace.turnCount} ходов${virtualUsageShare(workspace.turnCount, scope.turnCount)}`,
+      }),
+      el("span", {
+        "data-journal-day-picker-duration": "",
+        text: workspace.knownDurations
+          ? `${formatTaskDuration(workspace.durationSeconds)}${virtualUsageShare(
+            workspace.durationSeconds,
+            scope.durationSeconds,
+            scope.knownDurations,
+          )}`
+          : "—",
+      }),
+      credits,
+    );
+    item.append(button);
+    const breakdown = virtualWorkspaceBreakdown(workspace);
+    if (breakdown) item.append(breakdown);
+    picker.append(item);
+    const panel = document.createElement("section");
+    panel.dataset.journalDayPanel = workspace.id;
+    panel.dataset.workLogWorkspace = "";
+    panel.dataset.workLogWorkspaceId = workspace.id;
+    panel.hidden = !active;
+    panel.append(virtualWorkspaceContent(scope, workspace));
+    panels.append(panel);
+  }
+  expanded.append(picker, panels);
+  return expanded;
+}
+
+function virtualScopeSection(scope, index) {
+  const details = document.createElement("details");
+  details.dataset.workLogTaskGroup = "";
+  details.dataset.journalLedgerRow = "";
+  details.dataset.journalVirtualScope = scope.key;
+  details.dataset.journalVirtualMode = scope.mode;
+  if (scope.mode === "date") {
+    details.dataset.workLogDaySection = "";
+    details.dataset.journalDayDate = scope.key;
+  }
+  if (scope.mode === "workspace" && scope.workspaces[0]) {
+    details.dataset.workLogWorkspace = "";
+    details.dataset.workLogWorkspaceId = scope.workspaces[0].id;
+  }
+  const label = scope.mode === "stream"
+    ? `${scope.workspaces[0]?.name ?? "Workspace"} — ${scope.label}`
+    : scope.label;
+  details.append(journalLedgerSummary(scope, { label, showStreams: false }));
+  const expanded = document.createElement("div");
+  expanded.dataset.journalLedgerExpanded = "";
+  if (scope.mode === "stream") {
+    const workspace = scope.workspaces[0];
+    const stream = workspace?.streams[0];
+    if (workspace && stream) {
+      applyVirtualTurnQuery(expanded, scope, workspace, stream);
+      const overview = document.createElement("div");
+      overview.dataset.journalGroupOverview = "";
+      const metrics = document.createElement("div");
+      metrics.dataset.journalVirtualProfileMetrics = "";
+      metrics.append(el("span", { text: "Профиль загружается при раскрытии." }));
+      const body = document.createElement("div");
+      body.dataset.journalTurnList = "";
+      body.append(
+        el("span", { "data-journal-section-label": "", text: "Ходы" }),
+        virtualTurnTable(),
+      );
+      overview.append(metrics, body);
+      const profile = document.createElement("div");
+      profile.dataset.journalVirtualTaskProfile = "";
+      expanded.append(overview, profile);
+    }
+  } else if (scope.mode === "workspace") {
+    const workspace = scope.workspaces[0];
+    if (workspace) {
+      const overview = document.createElement("div");
+      overview.dataset.journalGroupOverview = "";
+      const metrics = document.createElement("div");
+      metrics.dataset.journalVirtualWorkspaceProfileMetrics = "";
+      metrics.append(el("span", { text: "Профиль загружается при раскрытии." }));
+      const body = document.createElement("div");
+      body.dataset.journalTurnList = "";
+      body.append(
+        el("span", { "data-journal-section-label": "", text: "Потоки" }),
+        virtualWorkspaceContent(scope, workspace),
+      );
+      overview.append(metrics, body);
+      const profile = document.createElement("div");
+      profile.dataset.journalVirtualWorkspaceProfile = "";
+      expanded.append(overview, profile);
+    }
+  } else {
+    details.dataset.journalDayDate = scope.key;
+    expanded.append(virtualTemporalContent(scope));
+  }
+  details.append(expanded);
+  if (scope.mode === "stream" && index === 0) details.open = true;
+  return details;
+}
+
+function renderVirtualWorkspaceProfile(summary, scopeKey) {
+  const profiles = JournalView.virtualJournalScopes(summary, "workspace", {
+    includeClaudeUsage: state.selection.includeClaudeUsage !== false,
+    groupClaude: groupClaudeTasks,
+  });
+  const group = profiles.find((profile) => profile.key === scopeKey);
+  if (!group) return;
+  const details = [...journal.querySelectorAll(
+    'details[data-journal-virtual-scope][data-journal-virtual-mode="workspace"]',
+  )].find((item) => item.dataset.journalVirtualScope === scopeKey);
+  const metrics = details?.querySelector("[data-journal-virtual-workspace-profile-metrics]");
+  const profile = details?.querySelector("[data-journal-virtual-workspace-profile]");
+  if (metrics) metrics.replaceWith(journalProfileMetrics(group));
+  if (profile) profile.replaceChildren(taskProfile(group, profiles, {
+    title: "Профиль Workspace",
+    itemName: "Этот Workspace",
+    cohortName: "видимых Workspace",
+  }));
+}
+
+async function loadVirtualWorkspaceProfile(details) {
+  if (!details || details.dataset.virtualWorkspaceProfileLoaded === "true") return;
+  const renderSequence = journalRenderSequence;
+  details.dataset.virtualWorkspaceProfileLoaded = "true";
+  try {
+    const payload = await fetchJournalFragment("/api/journal/turns", {
+      workspaceId: details.dataset.workLogWorkspaceId ?? "",
+      profileMode: "stream",
+      limit: "1",
+    });
+    if (!details.isConnected || renderSequence !== journalRenderSequence) return;
+    if (payload.profileSummary) {
+      renderVirtualWorkspaceProfile(payload.profileSummary, details.dataset.journalVirtualScope ?? "");
+    }
+  } catch (error) {
+    delete details.dataset.virtualWorkspaceProfileLoaded;
+    if (!details.isConnected || renderSequence !== journalRenderSequence
+      || isSupersededJournalFragment(error)) return;
+    showToast(`Не удалось загрузить профиль Workspace: ${error.message}`);
+  }
+}
+
+function renderVirtualStreamProfiles(summary, scopeKey) {
+  const profiles = JournalView.virtualJournalScopes(summary, "stream", {
+    includeClaudeUsage: state.selection.includeClaudeUsage !== false,
+    groupClaude: groupClaudeTasks,
+  });
+  const byKey = new Map(profiles.map((profile) => [profile.key, profile]));
+  for (const details of journal.querySelectorAll(
+    'details[data-journal-virtual-scope][data-journal-virtual-mode="stream"]',
+  )) {
+    if (details.dataset.journalVirtualScope !== scopeKey) continue;
+    const group = byKey.get(details.dataset.journalVirtualScope);
+    if (!group) continue;
+    const metrics = details.querySelector("[data-journal-virtual-profile-metrics]");
+    const profile = details.querySelector("[data-journal-virtual-task-profile]");
+    if (metrics) metrics.replaceWith(journalProfileMetrics(group));
+    if (profile) profile.replaceChildren(taskProfile(group, profiles));
+  }
+}
+
+function virtualJournalTotals() {
+  const scopes = JournalView.virtualJournalScopes(journalSummary, "stream", {
+    includeClaudeUsage: state.selection.includeClaudeUsage !== false,
+    groupClaude: groupClaudeTasks,
+  });
+  return {
+    scopes,
+    totals: JournalView.summarizeGroups(scopes),
+  };
+}
+
+function updateVirtualJournalSummary() {
+  const { scopes, totals } = virtualJournalTotals();
+  if (journalWorkspaceCount) {
+    journalWorkspaceCount.textContent = scopes.length.toLocaleString("ru-RU");
+  }
+  if (journalTotalCredits) {
+    journalTotalCredits.replaceChildren(
+      totals.knownCredits
+        ? usageBadge(formatUsageValue(totals.credits), totals.credits)
+        : document.createTextNode("—"),
+    );
+  }
+  if (journalTotalDuration) {
+    journalTotalDuration.textContent = totals.knownDurations
+      ? formatTaskDuration(totals.durationSeconds)
+      : "—";
+  }
+}
+
+function renderVirtualJournal() {
+  const scopes = JournalView.virtualJournalScopes(journalSummary, grouping, {
+    includeClaudeUsage: state.selection.includeClaudeUsage !== false,
+    groupClaude: groupClaudeTasks,
+  });
+  const list = document.createElement("div");
+  list.dataset.workLogTaskGroups = "";
+  scopes.forEach((scope, index) => list.append(virtualScopeSection(scope, index)));
+  updateVirtualJournalSummary();
+  replaceJournalGroupedContent(list);
+  refreshUsageUnits(journal);
+  disableLocalLinks();
+  const saved = groupingStates[grouping];
+  if (saved) restoreOpenState(saved);
+  for (const opened of list.querySelectorAll(
+    'details[data-journal-virtual-scope][data-journal-virtual-mode="stream"][open]',
+  )) {
+    const turns = opened.querySelector(
+      ":scope > [data-journal-ledger-expanded][data-journal-virtual-turns]",
+    );
+    if (turns) void appendVirtualTurnPage(turns);
+  }
+  for (const opened of list.querySelectorAll(
+    'details[data-journal-virtual-scope][data-journal-virtual-mode="workspace"][open]',
+  )) void loadVirtualWorkspaceProfile(opened);
+  journalRendered = true;
+  journal.setAttribute("aria-busy", "false");
+}
+
+async function appendVirtualTurnPage(container, { nextPage = false } = {}) {
+  if (!container?.isConnected || container.dataset.virtualLoading === "true") return;
+  const renderSequence = journalRenderSequence;
+  if (container.dataset.virtualLoaded === "true" && !nextPage) return;
+  const table = container.querySelector(":scope [data-journal-turn-table]")
+    ?? container.querySelector("[data-journal-turn-table]");
+  if (!table) return;
+  const offset = nextPage ? Math.max(0, Number(container.dataset.virtualNextOffset) || 0) : 0;
+  container.dataset.virtualLoading = "true";
+  container.setAttribute("aria-busy", "true");
+  try {
+    const payload = await fetchJournalFragment("/api/journal/turns", {
+      workspaceId: container.dataset.virtualWorkspaceId ?? "",
+      streamId: container.dataset.virtualStreamId ?? "",
+      provider: container.dataset.virtualProvider ?? "",
+      fromMs: container.dataset.virtualFromMs ?? "0",
+      toMs: container.dataset.virtualToMs ?? "0",
+      dates: container.dataset.virtualDateKeys ?? "",
+      profileMode: container.dataset.virtualProfileMode ?? "",
+      offset: String(offset),
+      limit: "30",
+    });
+    if (!container.isConnected || renderSequence !== journalRenderSequence) return;
+    if (payload.profileSummary) {
+      renderVirtualStreamProfiles(
+        payload.profileSummary,
+        container.closest("[data-journal-virtual-scope]")?.dataset.journalVirtualScope ?? "",
+      );
+      delete container.dataset.virtualProfileMode;
+    }
+    table.querySelector("[data-journal-turn-show-more]")?.remove();
+    const known = new Set([...table.querySelectorAll("[data-work-log-turn-entry]")]
+      .map((entry) => JournalView.turnIdentity(entry.dataset)).filter(Boolean));
+    for (const item of Array.isArray(payload.turns) ? payload.turns : []) {
+      const template = document.createElement("template");
+      template.innerHTML = String(item?.html ?? "").trim();
+      const entry = template.content.firstElementChild;
+      if (!entry?.matches("[data-work-log-turn-entry]")) continue;
+      const identity = JournalView.turnIdentity(entry.dataset);
+      if (identity && known.has(identity)) continue;
+      if (identity) known.add(identity);
+      table.append(groupedTurn(entry, String(item?.date ?? "")));
+    }
+    if (!table.children.length) {
+      table.append(el("span", { "data-journal-turn-empty": "", text: "Ходов нет." }));
+    }
+    if (payload.nextOffset !== null && payload.nextOffset !== undefined) {
+      container.dataset.virtualNextOffset = String(payload.nextOffset);
+      const more = document.createElement("button");
+      more.type = "button";
+      more.dataset.journalTurnShowMore = "";
+      more.textContent = "Показать ещё";
+      more.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void appendVirtualTurnPage(container, { nextPage: true });
+      });
+      table.append(more);
+    } else {
+      delete container.dataset.virtualNextOffset;
+    }
+    container.dataset.virtualLoaded = "true";
+    refreshUsageUnits(table);
+    disableLocalLinks(table);
+  } catch (error) {
+    if (!container.isConnected || renderSequence !== journalRenderSequence
+      || isSupersededJournalFragment(error)) return;
+    container.title = error.message;
+    showToast(`Не удалось загрузить ходы: ${error.message}`);
+  } finally {
+    delete container.dataset.virtualLoading;
+    container.removeAttribute("aria-busy");
+  }
+}
+
 function applyJournalGrouping() {
   decorateDayHeadings(journal);
   upgradeLegacyWorkspaceGroups(journal);
@@ -13947,6 +16901,10 @@ function applyJournalGrouping() {
 }
 
 async function renderJournal() {
+  return window.AgentHubCommandTrace.measure("ui-render", "journal", renderJournalContent);
+}
+
+async function renderJournalContent() {
   const sequence = ++journalRenderSequence;
   const template = document.createElement("template");
   template.innerHTML = journalHtml;
@@ -13954,12 +16912,20 @@ async function renderJournal() {
   journal.replaceChildren(template.content.cloneNode(true));
   removeJournalRateLimits();
   try {
-    if (JournalView.requiresCompleteHistory(grouping)) await hydrateAllLazyDays();
+    if (JournalView.virtualSummaryBuckets(journalSummary).length) {
+      if (sequence !== journalRenderSequence) return;
+      renderVirtualJournal();
+      return;
+    }
+    if (JournalView.requiresCompleteHistory(grouping)) {
+      await hydrateAllLazyDays({ isCurrent: () => sequence === journalRenderSequence });
+    }
     if (sequence !== journalRenderSequence) return;
     applyJournalGrouping();
   } catch (error) {
     if (sequence !== journalRenderSequence) return;
     journal.setAttribute("aria-busy", "false");
+    if (isSupersededJournalFragment(error)) return;
     showToast(`Не удалось собрать журнал: ${error.message}`);
   }
 }
@@ -14281,6 +17247,7 @@ async function requestJournal({ force = false, announce = false } = {}) {
       if (versionChanged) journalDayHtmlCache.clear();
       currentVersion = payload.version;
       journalHtml = payload.html;
+      journalSummary = payload.summary ?? null;
       await renderJournal();
       persistOpenState();
     }
@@ -14378,6 +17345,11 @@ journal.addEventListener("click", (event) => {
     for (const panel of day.querySelectorAll("[data-journal-day-panel]")) {
       panel.hidden = panel.dataset.journalDayPanel !== key;
     }
+    const selectedPanel = day.querySelector(
+      `[data-journal-day-panel="${selectorValue(key)}"]`,
+    );
+    const flatTurns = selectedPanel?.querySelector("[data-journal-virtual-flat-turns]");
+    if (flatTurns && day.open) void appendVirtualTurnPage(flatTurns);
     return;
   }
   const collapse = event.target.closest("[data-work-log-collapse-turns]");
@@ -14428,6 +17400,24 @@ journal.addEventListener("toggle", (event) => {
   }
   if (opened.matches?.("details[data-work-log-turn-details][data-lazy-turn-id][open]")) {
     void loadLazyTurn(opened);
+  }
+  if (opened.matches?.("details[data-work-log-stream][data-journal-virtual-turns][open]")) {
+    void appendVirtualTurnPage(opened);
+  }
+  if (opened.matches?.("details[data-journal-virtual-scope][open]")) {
+    if (opened.matches('[data-journal-virtual-mode="stream"]')) {
+      const turns = opened.querySelector(
+        ":scope > [data-journal-ledger-expanded][data-journal-virtual-turns]",
+      );
+      if (turns) void appendVirtualTurnPage(turns);
+    } else if (opened.matches('[data-journal-virtual-mode="workspace"]')) {
+      void loadVirtualWorkspaceProfile(opened);
+    } else {
+      const selectedPanel = opened.querySelector("[data-journal-day-panel]:not([hidden])");
+      const flatTurns = selectedPanel?.querySelector("[data-journal-virtual-flat-turns]")
+        ?? opened.querySelector(":scope > [data-journal-ledger-expanded] > [data-journal-virtual-flat-turns]");
+      if (flatTurns) void appendVirtualTurnPage(flatTurns);
+    }
   }
   if (opened.matches?.("details[data-work-log-task-group][open]")) {
     appendTaskGroupTurnPage(opened);
@@ -14509,7 +17499,7 @@ if (vscodeMode) {
 
 AgentHub.setConnection(telegramMode ? "online" : "connecting");
 const taskDurationTimer = window.setInterval(refreshTaskDurations, 1_000);
-restorePersistedDrafts();
+void ensureComposerDraftsRestored();
 window.addEventListener("pagehide", () => {
   saveDraft();
   clearInterval(taskDurationTimer);

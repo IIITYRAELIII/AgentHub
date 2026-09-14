@@ -52,6 +52,9 @@ html[data-theme="ephemeris"] {
   --provider-none: #6f969f;
   --provider-codex: #43bdd1;
   --provider-claude: #d79451;
+  --provider-tone-lightness: 0.78;
+  --provider-tone-chroma: 0.09;
+  --provider-tone-alpha: 0.18;
 
   --ok: #51b9a8;
   --pending: #e2a04a;

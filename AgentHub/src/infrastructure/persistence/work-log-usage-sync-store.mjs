@@ -1,11 +1,15 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 
 import {
   normalizeAuthObservation,
   normalizeLimitObservation,
   normalizeUsageFact,
+  usageFactIdentity,
+  usageFactSummary,
   USAGE_FACT_SCHEMA_VERSION,
   USAGE_FACT_TYPES,
 } from "../../domain/usage-facts.mjs";
@@ -17,20 +21,14 @@ import {
   USAGE_SYNC_SNAPSHOT_VERSION,
 } from "../../domain/work-log-usage-sync.mjs";
 
-const SQLITE_BUSY_RETRY_DELAYS_MS = [10, 25, 50, 100, 250, 500, 1_000, 2_000];
+const SQLITE_BUSY_TIMEOUT_MS = 3_935;
 const UPSERT_CHUNK = 400;
-
-const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
-
-function sqliteBusy(error) {
-  return /SQLITE_BUSY|database is locked|database is busy/iu.test(String(error?.message ?? error));
-}
 
 function configureUsageSyncDatabase(database) {
   database.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
-    PRAGMA busy_timeout = 5000;
+    PRAGMA busy_timeout = 0;
     CREATE TABLE IF NOT EXISTS usage_sync_events (
       event_id TEXT PRIMARY KEY,
       device_id TEXT NOT NULL,
@@ -120,6 +118,14 @@ function configureUsageSyncDatabase(database) {
     WHERE lower(trim(account_attribution)) <> 'exact'
        OR trim(account_key) = ''
   `);
+  const generation = database.prepare(`
+    SELECT value FROM usage_sync_meta WHERE key = 'local_store_generation'
+  `).get()?.value;
+  if (!generation) {
+    database.prepare(`
+      INSERT OR REPLACE INTO usage_sync_meta (key, value) VALUES ('local_store_generation', ?)
+    `).run(randomUUID());
+  }
 }
 
 function parseJson(value, fallback) {
@@ -244,6 +250,7 @@ export class WorkLogUsageSyncStore {
   #database = null;
   #closed = false;
   #tail = Promise.resolve();
+  #mutations = new AsyncSqliteMutationQueue();
 
   constructor({ databaseFile, legacyFile = "", deviceId = "", defaultRuntimeHomeIds = {} } = {}) {
     if (!databaseFile) throw new TypeError("WorkLogUsageSyncStore requires a databaseFile");
@@ -265,15 +272,8 @@ export class WorkLogUsageSyncStore {
     return this.#databaseFile;
   }
 
-  async #retryBusy(operation) {
-    for (let attempt = 0; ; attempt += 1) {
-      try {
-        return await operation();
-      } catch (error) {
-        if (!sqliteBusy(error) || attempt >= SQLITE_BUSY_RETRY_DELAYS_MS.length) throw error;
-        await delay(SQLITE_BUSY_RETRY_DELAYS_MS[attempt]);
-      }
-    }
+  #retryBusy(operation) {
+    return this.#mutations.run(operation, { timeoutMs: SQLITE_BUSY_TIMEOUT_MS });
   }
 
   async #open() {
@@ -427,7 +427,7 @@ export class WorkLogUsageSyncStore {
   }
 
   /** Applies the domain merge rule and writes only rows that actually change. */
-  #upsert(database, events) {
+  #upsert(database, events, { transaction = true } = {}) {
     const byId = new Map();
     for (const value of Array.isArray(events) ? events : []) {
       const event = normalizeUsageSyncEvent(value);
@@ -495,12 +495,12 @@ export class WorkLogUsageSyncStore {
         device_label = excluded.device_label,
         observed_at = excluded.observed_at
     `);
-    database.exec("BEGIN IMMEDIATE");
+    if (transaction) database.exec("BEGIN IMMEDIATE");
     try {
       for (const event of changes) statement.run(...eventParameters(event));
-      database.exec("COMMIT");
+      if (transaction) database.exec("COMMIT");
     } catch (error) {
-      database.exec("ROLLBACK");
+      if (transaction) database.exec("ROLLBACK");
       throw error;
     }
     return { added, updated: changes.length - added };
@@ -590,7 +590,7 @@ export class WorkLogUsageSyncStore {
     return { added, updated };
   }
 
-  #upsertFacts(database, facts) {
+  #upsertFacts(database, facts, { transaction = true } = {}) {
     const turns = [];
     const auth = [];
     const limits = [];
@@ -601,16 +601,28 @@ export class WorkLogUsageSyncStore {
       else if (fact.type === USAGE_FACT_TYPES.LIMIT_OBSERVATION) limits.push(fact);
       else turns.push(fact);
     }
-    const turnResult = this.#upsert(database, turns);
-    const authResult = this.#upsertAuthObservations(database, auth);
-    const limitResult = this.#upsertLimitObservations(database, limits);
-    return {
-      added: turnResult.added + authResult.added + limitResult.added,
-      updated: turnResult.updated + authResult.updated + limitResult.updated,
-      turns: turnResult,
-      authObservations: authResult,
-      limitObservations: limitResult,
+    const operation = () => {
+      const turnResult = this.#upsert(database, turns, { transaction: false });
+      const authResult = this.#upsertAuthObservations(database, auth);
+      const limitResult = this.#upsertLimitObservations(database, limits);
+      return {
+        added: turnResult.added + authResult.added + limitResult.added,
+        updated: turnResult.updated + authResult.updated + limitResult.updated,
+        turns: turnResult,
+        authObservations: authResult,
+        limitObservations: limitResult,
+      };
     };
+    if (!transaction) return operation();
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      const result = operation();
+      database.exec("COMMIT");
+      return result;
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   #enqueue(operation) {
@@ -633,6 +645,12 @@ export class WorkLogUsageSyncStore {
       + Number(database.prepare("SELECT COUNT(*) AS count FROM usage_limit_observations").get()?.count ?? 0);
   }
 
+  #localStoreGeneration(database) {
+    return String(database.prepare(`
+      SELECT value FROM usage_sync_meta WHERE key = 'local_store_generation'
+    `).get()?.value ?? "").trim();
+  }
+
   events() {
     return this.#enqueue((database) => this.#readAll(database));
   }
@@ -645,6 +663,20 @@ export class WorkLogUsageSyncStore {
     ]);
   }
 
+  usageSyncState() {
+    return this.#enqueue((database) => {
+      const facts = [
+        ...this.#readAll(database),
+        ...this.#readAuthObservations(database),
+        ...this.#readLimitObservations(database),
+      ];
+      return {
+        localStoreGeneration: this.#localStoreGeneration(database),
+        factSummary: usageFactSummary(facts),
+      };
+    });
+  }
+
   journalTurns(options = {}) {
     return this.#enqueue((database) => this.#journalDelta(database, options).turns);
   }
@@ -653,6 +685,7 @@ export class WorkLogUsageSyncStore {
     deviceLabel = "",
     afterObservedAt = "",
     afterJournalRevision = 0,
+    ownFactsOnly = false,
   } = {}) {
     return this.#enqueue((database) => {
       const delta = this.#journalDelta(database, { afterObservedAt, afterJournalRevision });
@@ -662,12 +695,18 @@ export class WorkLogUsageSyncStore {
         afterObservedAt: delta.revisionCursor ? "" : afterObservedAt,
         defaultRuntimeHomeIds: this.#defaultRuntimeHomeIds,
       });
+      const storeTurns = this.#readAll(database)
+        .filter((event) => !ownFactsOnly || event.deviceId === this.#deviceId);
+      const authObservations = this.#readAuthObservations(database)
+        .filter((fact) => !ownFactsOnly || fact.deviceId === this.#deviceId);
+      const limitObservations = this.#readLimitObservations(database)
+        .filter((fact) => !ownFactsOnly || fact.deviceId === this.#deviceId);
       return {
         ...snapshot,
         events: [
-          ...mergeUsageSyncEvents((afterObservedAt || afterJournalRevision) ? [] : this.#readAll(database), snapshot.events),
-          ...this.#readAuthObservations(database),
-          ...this.#readLimitObservations(database),
+          ...mergeUsageSyncEvents((afterObservedAt || afterJournalRevision) ? [] : storeTurns, snapshot.events),
+          ...authObservations,
+          ...limitObservations,
         ],
         journalRevision: delta.journalRevision,
       };
@@ -693,13 +732,71 @@ export class WorkLogUsageSyncStore {
     });
   }
 
+  reconcileSnapshot(remoteSnapshot) {
+    return this.#enqueue((database) => {
+      const before = this.#countFacts(database);
+      const events = Array.isArray(remoteSnapshot)
+        ? remoteSnapshot
+        : remoteSnapshot?.events ?? [];
+      const normalized = events.map(normalizeUsageFact).filter(Boolean);
+      const remoteIds = new Set(normalized.map(usageFactIdentity).filter(Boolean));
+      let pruned = 0;
+      let result = { added: 0, updated: 0 };
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        result = this.#upsertFacts(database, normalized, { transaction: false });
+        for (const [table, idColumn] of [
+          ["usage_sync_events", "event_id"],
+          ["usage_auth_observations", "observation_id"],
+          ["usage_limit_observations", "observation_id"],
+        ]) {
+          const rows = database.prepare(`
+            SELECT ${idColumn} AS id
+            FROM ${table}
+            WHERE device_id <> ?
+          `).all(this.#deviceId);
+          const stale = rows.map((row) => row.id).filter((id) => !remoteIds.has(id));
+          for (let index = 0; index < stale.length; index += UPSERT_CHUNK) {
+            const slice = stale.slice(index, index + UPSERT_CHUNK);
+            if (!slice.length) continue;
+            const placeholders = slice.map(() => "?").join(",");
+            pruned += Number(database.prepare(`
+              DELETE FROM ${table} WHERE ${idColumn} IN (${placeholders})
+            `).run(...slice)?.changes ?? 0);
+          }
+        }
+        database.exec("COMMIT");
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+      return {
+        imported: true,
+        reconciled: true,
+        before,
+        after: this.#countFacts(database),
+        added: result.added,
+        updated: result.updated,
+        pruned,
+        file: this.#databaseFile,
+      };
+    });
+  }
+
   replaceEvents(events) {
     return this.#enqueue((database) => {
-      database.exec("DELETE FROM usage_sync_events");
-      database.exec("DELETE FROM usage_auth_observations");
-      database.exec("DELETE FROM usage_limit_observations");
-      this.#upsertFacts(database, events);
-      return { replaced: this.#count(database), file: this.#databaseFile };
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        database.exec("DELETE FROM usage_sync_events");
+        database.exec("DELETE FROM usage_auth_observations");
+        database.exec("DELETE FROM usage_limit_observations");
+        this.#upsertFacts(database, events, { transaction: false });
+        database.exec("COMMIT");
+        return { replaced: this.#count(database), file: this.#databaseFile };
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
     });
   }
 

@@ -121,7 +121,7 @@ export class CodexCompletionService {
     this.#d.temporaryFiles.delete(turnId);
     const forceSpeechButton = this.#d.speechButtons.get(turnId) ?? false;
     this.#d.speechButtons.delete(turnId);
-    await Promise.all(files.map((file) => unlink(file).catch(() => {})));
+    await Promise.all(files.map((file) => (this.#d.removeFile ?? ((value) => unlink(value).catch(() => {})))(file)));
     return forceSpeechButton;
   }
 }
@@ -162,7 +162,7 @@ export class ClaudeCompletionService {
     const files = this.#d.temporaryFiles.get(turnId) ?? run.claudeTemporaryFiles ?? [];
     this.#d.temporaryFiles.delete(turnId);
     run.claudeTemporaryFiles = [];
-    await Promise.all(files.map((file) => unlink(file).catch(() => {})));
+    await Promise.all(files.map((file) => (this.#d.removeFile ?? ((value) => unlink(value).catch(() => {})))(file)));
     const forceSpeechButton = run.claudeForceSpeechButton === true;
     try {
       if (spawnError) throw spawnError;

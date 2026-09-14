@@ -47,6 +47,9 @@ html[data-theme="blackhole"] {
   --provider-none: #718194;
   --provider-codex: #69c7ff;
   --provider-claude: #b8a6e8;
+  --provider-tone-lightness: 0.78;
+  --provider-tone-chroma: 0.09;
+  --provider-tone-alpha: 0.18;
   --ok: #77d0ff;
   --pending: #8a96a5;
   --dot-input: #58bfff;

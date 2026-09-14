@@ -3,6 +3,7 @@ export {
   extractRateLimitsHtml,
   extractWorkLogHtml,
 } from "../../application/journal-projection-data.mjs";
+import { resourceVirtualJournalSummary } from "../../domain/journal-virtual-projection.mjs";
 
 function cleanText(value, limit = 1024) {
   return String(value ?? "").trim().slice(0, limit);
@@ -69,6 +70,7 @@ export function journalPayloadEtag(payload, usageSync = null) {
 export function publicJournalPayload(payload, { usageSync = null } = {}) {
   return {
     html: String(payload?.html ?? ""),
+    summary: resourceVirtualJournalSummary(payload?.summary),
     updatedAt: String(payload?.updatedAt ?? ""),
     version: String(payload?.version ?? ""),
     usageSync: publicUsageSyncStatus(usageSync),

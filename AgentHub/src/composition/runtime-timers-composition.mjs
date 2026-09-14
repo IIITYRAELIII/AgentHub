@@ -22,10 +22,12 @@ export function createRuntimeTimersComposition({
   rateLimitTelemetry,
   usageSyncAuto = null,
   testContourJournalSync = null,
+  providerLogin = null,
 }) {
   function stopRuntimeTimers() {
     stopTyping();
     contextCompactions.dispose();
+    providerLogin?.dispose?.();
     usageSyncAuto?.stop?.();
     testContourJournalSync?.stop?.();
     runtimeTimers.clearAll();
@@ -39,7 +41,9 @@ export function createRuntimeTimersComposition({
 
   function startRuntimeTimers() {
     codexContextMaintenance.schedulePeriodic();
-    for (const item of queuedInputs.values()) scheduleQueuedInput(item, 500);
+    if (!deferredInputController.wakeAll()) {
+      for (const item of queuedInputs.values()) scheduleQueuedInput(item, 500);
+    }
     if (telegramEnabled) scheduleDeliveryOutboxFlush(1_000);
     selectedTaskWatch.schedule(500);
     scheduleCodexTerminalAudit(500);

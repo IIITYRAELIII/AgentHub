@@ -62,8 +62,10 @@ export function createRuntimeOrchestrationComposition({
     scheduleDeliveryOutboxFlush,
     scheduleCodexTerminalAudit,
     rateLimitTelemetry,
+    providerLogin,
     usageSyncAuto,
     taskSyncStore,
+    messagePins,
     workspaceCatalogStore,
     preTurnInstructions,
     dismissedExternalTasks,
@@ -183,6 +185,7 @@ export function createRuntimeOrchestrationComposition({
   const providerRuntimeWiring = ports.providerRuntime.bind(createProviderRuntimeWiring({
     observation: {
       dataDir: config.dataDir,
+      recordingContourRoot: config.testContourRecording?.root ?? null,
       claudeOutputPollIntervalMs,
       taskRuns,
       isStopping: () => hostState.stopping,
@@ -269,6 +272,7 @@ export function createRuntimeOrchestrationComposition({
     rateLimitTelemetry,
     usageSyncAuto,
     testContourJournalSync,
+    providerLogin,
   });
 
   ports.taskInteraction.bind(createTaskInteractionWiring({
@@ -286,6 +290,7 @@ export function createRuntimeOrchestrationComposition({
       readClaudeSnapshot: (...args) => claudeTaskSnapshots.read(...args),
       attachmentImporter: provider.importCodexDesktopAttachments,
       taskSyncStore,
+      messagePins,
       workspaceCatalogStore,
       taskRuns,
       deleteTaskMessages,

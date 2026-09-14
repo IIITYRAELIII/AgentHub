@@ -1,7 +1,10 @@
+import { updateCodexThreadSettingsWithRecovery } from "../providers/codex/codex-recovery.mjs";
+
 export function createCodexTaskSettingsComposition({
   pinnedTaskTitle,
   readCodexThreadTitleHistory,
   sendRpc,
+  resumeCodexThread,
   isCodex,
   getThreadId,
   contextCompactions,
@@ -57,10 +60,15 @@ export function createCodexTaskSettingsComposition({
     if (contextCompactions.isRunning(threadId)) {
       throw new Error("Дождитесь завершения свёртки контекста перед сменой модели или Reasoning");
     }
-    await sendRpc("thread/settings/update", {
+    const settings = {
       threadId,
       model: agentPreferences.codexModel,
       effort: agentPreferences.codexReasoningEffort,
+    };
+    await updateCodexThreadSettingsWithRecovery({
+      threadId,
+      update: () => sendRpc("thread/settings/update", settings),
+      resume: resumeCodexThread,
     });
     agentPreferences.rememberCodexTaskSettings();
     await saveState();

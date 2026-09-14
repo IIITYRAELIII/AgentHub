@@ -29,6 +29,7 @@ export async function messageRequestFingerprint({
   taskReferences = [],
   followUpMode = "",
   clientProjectionIntent = "",
+  messageOrigin = null,
 } = {}, {
   readAttachment = readFile,
 } = {}) {
@@ -41,6 +42,9 @@ export async function messageRequestFingerprint({
       attachmentDigests.push(createHash("sha256").update(content).digest("hex"));
     }
   }
+  const normalizedOrigin = messageOrigin && typeof messageOrigin === "object"
+    ? Object.fromEntries(Object.entries(messageOrigin).sort(([left], [right]) => left.localeCompare(right)))
+    : null;
   return createHash("sha256")
     .update(JSON.stringify({
       text: String(text).trim(),
@@ -51,6 +55,7 @@ export async function messageRequestFingerprint({
       })),
       followUpMode: String(followUpMode).trim().toLowerCase(),
       clientProjectionIntent: String(clientProjectionIntent).trim().toLowerCase(),
+      ...(normalizedOrigin ? { messageOrigin: normalizedOrigin } : {}),
     }))
     .digest("hex");
 }

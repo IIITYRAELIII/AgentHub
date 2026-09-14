@@ -21,9 +21,18 @@ import {
   assertCleanPublicationTree,
   assertCurrentPublicationRevision,
   parseWorkingTreeStatus,
+  readPublicationState,
 } from "../../src/infrastructure/persistence/publication-state.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const previousLocalAppData = process.env.LOCALAPPDATA;
+const fixtureLocalAppData = fs.mkdtempSync(path.join(os.tmpdir(), "agent-hub-publish-all-lock-"));
+process.env.LOCALAPPDATA = fixtureLocalAppData;
+test.after(() => {
+  if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+  else process.env.LOCALAPPDATA = previousLocalAppData;
+  fs.rmSync(fixtureLocalAppData, { recursive: true, force: true });
+});
 
 test("publication rejects a dirty AgentHub working tree", async () => {
   assert.deepEqual(parseWorkingTreeStatus(" M AgentHub/server.mjs\n?? AgentHub/new.mjs\n"), [
@@ -135,6 +144,7 @@ test("publication requests the server's safe deferred restart last", async () =>
   const events = [];
   await publishAll(["--skip-tests", "--skip-worker"], {
     run: async (step) => events.push(step.label),
+    readRuntimeStatus: async () => ({ current: "release-new", running: true }),
     restart: async (action) => {
       events.push(action);
       return { message: "scheduled" };
@@ -151,12 +161,55 @@ test("publication requests the server's safe deferred restart last", async () =>
   ]);
 });
 
+test("full publication default writer records supplied repository-scoped publication state", async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "agent-hub-publication-state-"));
+  const previousLocalAppData = process.env.LOCALAPPDATA;
+  let savedCheckpoint = null;
+  try {
+    process.env.LOCALAPPDATA = temporary;
+    await publishAll(["--skip-tests", "--skip-worker", "--skip-restart"], {
+      run: async () => {},
+      revision: async () => "published-head",
+      checkpoint: {
+        read: async () => savedCheckpoint,
+        write: async (value) => {
+          savedCheckpoint = structuredClone(value);
+        },
+        clear: async () => { savedCheckpoint = null; },
+      },
+      readRuntimeStatus: async () => ({
+        current: "release-new",
+        running: true,
+        ready: true,
+        runningRelease: "release-new",
+      }),
+      verifyRestart: async () => {},
+    });
+
+    const state = await readPublicationState(path.join(temporary, "AgentHub", "publication-state.json"));
+    assert.equal(state.revision, "published-head");
+    assert.equal(state.mode, "full");
+    assert.equal(state.validationMode, "quick");
+    assert.equal(state.repositories.length, 1);
+    assert.equal(path.resolve(state.repositories[0].root), path.resolve(ROOT, ".."));
+    assert.equal(state.repositories[0].revision, "published-head");
+    assert.match(state.generation, /^[0-9a-f-]{36}$/u);
+  } finally {
+    if (previousLocalAppData == null) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = previousLocalAppData;
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
 test("publication restart tolerates a stalled outgoing runtime", async () => {
   let request = null;
   await restartRuntimeAndVerify(async (...args) => {
     request = args;
     return { accepted: true };
-  }, async () => {}, "C:\\runtime");
+  }, async () => {}, "C:\\runtime", {
+    readStatus: async () => ({ current: "release-new", running: true }),
+    readEndpoint: async () => ({ endpointId: "old" }),
+  });
   assert.deepEqual(request, [
     "restart-server",
     {},
@@ -168,6 +221,7 @@ test("publication skips optional test contour when the component is disabled", a
   const events = [];
   await publishAll([], {
     run: async (step) => events.push(step.label),
+    readRuntimeStatus: async () => ({ current: "release-new", running: true }),
     restart: async (action) => {
       events.push(action);
       return { message: "scheduled" };
@@ -181,11 +235,12 @@ test("publication skips optional test contour when the component is disabled", a
   assert.ok(events.indexOf("Полные тесты Agent Hub") < events.indexOf("Сборка Agent Hub Mobile"));
 });
 
-test("full publication does not wait on the release turn that blocks its safe restart", async () => {
+test("full publication remains pending when the release turn blocks its safe restart", async () => {
   const events = [];
   await publishAll(["--skip-tests", "--skip-worker"], {
     prepareVersion: async () => events.push("release-version"),
     run: async (step) => events.push(step.label),
+    readRuntimeStatus: async () => ({ current: "release-new", running: true }),
     restart: async () => {
       events.push("restart-server");
       return { accepted: true, waiting: true, message: "waiting for active turn" };
@@ -194,7 +249,8 @@ test("full publication does not wait on the release turn that blocks its safe re
     record: async () => events.push("record-publication"),
   });
   assert.equal(events[0], "release-version");
-  assert.deepEqual(events.slice(-2), ["restart-server", "record-publication"]);
+  assert.equal(events.at(-1), "restart-server");
+  assert.equal(events.includes("record-publication"), false);
 });
 
 test("publication stage timeout terminates the complete process tree", async () => {
@@ -237,13 +293,18 @@ test("runtime readiness requires a replacement endpoint and a successful probe",
   const probes = [];
   const result = await waitForRuntimeReplacement({
     previousEndpointId: "old",
+    expectedReleaseId: "release-new",
+    readStatus: async () => ({ current: "release-new", runningRelease: "release-new", pid: 12, running: true, ready: true }),
     timeoutMs: 100,
     readEndpoint: async () => endpoints.shift() ?? { endpointId: "new" },
-    probe: async (action) => probes.push(action),
+    probe: async (action) => {
+      probes.push(action);
+      return { live: true, ready: true, process: { releaseId: "release-new", pid: 12 } };
+    },
     delay: async () => {},
   });
   assert.equal(result.endpointId, "new");
-  assert.deepEqual(probes, ["snapshot"]);
+  assert.deepEqual(probes, ["runtime-health"]);
 });
 
 test("selective publication maps shared UI to runtime, Worker and surface tests", async () => {
@@ -319,6 +380,9 @@ test("selective publication maps shared UI to runtime, Worker and surface tests"
     skipRestart: true,
     fullTests: true,
     testContour: false,
+    quick: false,
+    resume: false,
+    workspaceId: "",
   });
   assert.equal(parseChangedArguments(["--test-contour"]).testContour, true);
 });
@@ -327,6 +391,7 @@ test("selective publication runs unit and cross-surface E2E tests for runtime co
   const labels = [];
   const result = await publishChanged(["--from", "base", "--skip-restart"], {
     run: async (step) => labels.push(step.label),
+    readRuntimeStatus: async () => ({ current: "release-new", running: true }),
     restart: async () => assert.fail("restart must be skipped"),
     readState: async () => null,
     writeState: async () => {},
@@ -351,6 +416,7 @@ test("selective publication keeps Test Contour optional with full tests", async 
   const steps = [];
   await publishChanged(["--from", "base", "--skip-restart", "--full-tests"], {
     run: async (step) => steps.push(step),
+    readRuntimeStatus: async () => ({ current: "release-new", running: true }),
     restart: async () => assert.fail("restart must be skipped"),
     readState: async () => null,
     writeState: async () => {},
@@ -378,6 +444,7 @@ test("selective publication can opt into Test Contour without full tests", async
   const labels = [];
   await publishChanged(["--from", "base", "--skip-restart", "--test-contour"], {
     run: async (step) => labels.push(step.label),
+    readRuntimeStatus: async () => ({ current: "release-new", running: true }),
     restart: async () => assert.fail("restart must be skipped"),
     readState: async () => null,
     writeState: async () => {},
@@ -395,6 +462,7 @@ test("selective publication records the exact published revision", async () => {
   let written = null;
   const result = await publishChanged(["--from", "base", "--skip-restart"], {
     run: async (step) => steps.push(step),
+    readRuntimeStatus: async () => ({ current: "release-new", running: true, runningRelease: "release-new", ready: true }),
     restart: async () => assert.fail("restart must be skipped"),
     readState: async () => null,
     writeState: async (value) => { written = value; },
@@ -407,6 +475,7 @@ test("selective publication records the exact published revision", async () => {
   assert.deepEqual(steps.map((step) => step.label), [
     "Проверка синтаксиса Agent Hub",
     "Unit-тесты Agent Hub",
+    "Визуальные матрицы UI Agent Hub",
     "Межповерхностные E2E Agent Hub",
     "Тесты расширения VS Code",
     "Сборка runtime-релиза",
@@ -446,6 +515,7 @@ test("selective frontend publication records state after verified restart", asyn
   const events = [];
   await publishChanged(["--from", "base"], {
     run: async (step) => events.push(step.label),
+    readRuntimeStatus: async () => ({ current: "release-new", running: true }),
     restart: async () => events.push("restart-server"),
     readState: async () => null,
     writeState: async () => events.push("record-publication"),
@@ -461,6 +531,7 @@ test("selective backend publication records state after verified restart", async
   const events = [];
   await publishChanged(["--from", "base"], {
     run: async (step) => events.push(step.label),
+    readRuntimeStatus: async () => ({ current: "release-new", running: true }),
     restart: async () => events.push("restart-server"),
     readState: async () => null,
     writeState: async () => events.push("record-publication"),
@@ -470,10 +541,11 @@ test("selective backend publication records state after verified restart", async
   assert.ok(events.indexOf("restart-server") < events.indexOf("record-publication"));
 });
 
-test("selective backend publication records an already queued safe restart without waiting", async () => {
+test("selective backend publication leaves an already queued safe restart pending", async () => {
   const events = [];
   await publishChanged(["--from", "base"], {
     run: async (step) => events.push(step.label),
+    readRuntimeStatus: async () => ({ current: "release-new", running: true }),
     restart: async () => {
       events.push("restart-server");
       return { accepted: false, message: "already queued" };
@@ -484,7 +556,8 @@ test("selective backend publication records an already queued safe restart witho
     revision: async () => "head",
     diff: async () => ["AgentHub/src/interfaces/web/mini-app-server.mjs"],
   });
-  assert.deepEqual(events.slice(-2), ["restart-server", "record-publication"]);
+  assert.equal(events.at(-1), "restart-server");
+  assert.equal(events.includes("record-publication"), false);
 });
 
 test("every validation failure stops publication before deployment", async () => {
@@ -514,6 +587,7 @@ test("every validation failure stops publication before deployment", async () =>
             throw new Error(`synthetic validation failure: ${failedLabel}`);
           }
         },
+        readRuntimeStatus: async () => ({ current: "release-new", running: true }),
         restart: async () => {
           restartCalled = true;
         },
@@ -619,6 +693,7 @@ test("selective publication resumes after the last successful stage", async () =
     clear: async () => { savedCheckpoint = null; },
   };
   const common = {
+    readRuntimeStatus: async () => ({ current: "release-new", running: true }),
     restart: async () => assert.fail("restart must be skipped"),
     readState: async () => null,
     writeState: async () => {},
@@ -648,7 +723,8 @@ test("selective publication resumes after the last successful stage", async () =
     "Проверка Mini App Worker",
     "Активация runtime-релиза",
   ]);
-  assert.equal(savedCheckpoint, null);
+  assert.equal(savedCheckpoint.identity.revision, "head");
+  assert.ok(savedCheckpoint.completedLabels.includes("Активация runtime-релиза"));
 });
 
 test("selective publication prepares the committed product version before validation", async () => {
@@ -657,6 +733,7 @@ test("selective publication prepares the committed product version before valida
     before: async () => events.push("clean-tree"),
     prepareVersion: async () => events.push("release-version"),
     run: async (step) => events.push(step.label),
+    readRuntimeStatus: async () => ({ current: "release-new", running: true }),
     restart: async () => assert.fail("restart must be skipped"),
     readState: async () => null,
     writeState: async () => {},

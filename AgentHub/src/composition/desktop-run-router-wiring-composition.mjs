@@ -1,9 +1,7 @@
 import path from "node:path";
-import { unlink } from "node:fs/promises";
+import { createRuntimeFileRemoval } from "../runtime/test-contour-runtime-effects.mjs";
 import {
-  deferredResponseAnnotations,
   pendingInputKeyboard,
-  replaceDeferredInputText,
 } from "../domain/deferred-input.mjs";
 import { runInputPreview } from "../application/managed-run-lifecycle-service.mjs";
 import { commandClientContext } from "../application/application-command-service.mjs";
@@ -21,6 +19,7 @@ export function createDesktopRunRouterWiring({
   services,
   desktop,
 }) {
+  const removeRuntimeFile = createRuntimeFileRemoval(config);
   const compactContext = async (params) => (
     services.startManualCompaction(await desktop.messageTarget(params))
   );
@@ -64,13 +63,14 @@ export function createDesktopRunRouterWiring({
   }
 
   const runInputs = createDesktopRunInputComposition({
+    composerTransfers: services.composerTransfers,
     deferredInput: {
       store: services.deferredInputs,
       maxItems: constants.maxDeferredInputs,
       persist: services.saveState,
       persistIntake: services.persistDeferredIntake,
       commandTrace: services.commandTrace,
-      removeFiles: (files) => Promise.all(files.map((file) => unlink(file).catch(() => {}))),
+      removeFiles: (files) => Promise.all(files.map((file) => removeRuntimeFile(file))),
       notify: async (item, { executionOwner, conflictTask }) => {
         const preview = runInputPreview(item.input);
         const runtime = item.provider === "codex"
@@ -136,6 +136,7 @@ export function createDesktopRunRouterWiring({
       },
     },
     messageController: {
+      commandMapping: services.contourCommandMapping ?? null,
       attachmentPaths: services.attachmentPaths,
       describeAttachments: services.describeAttachments,
       resolveTaskReferences: async (values, target) => {
@@ -169,8 +170,6 @@ export function createDesktopRunRouterWiring({
       findReceiptByResultId: services.findReceiptByResultId,
       isProcessing: services.isDeferredInputProcessing,
       cancelSchedule: services.cancelDeferredInputSchedule,
-      responseAnnotations: deferredResponseAnnotations,
-      replaceInputText: replaceDeferredInputText,
       saveState: services.saveState,
       updateReceipt: services.updateDeferredReceipt,
       cleanupFiles: services.cleanupDeferredFiles,
@@ -237,13 +236,16 @@ export function createDesktopRunRouterWiring({
     voiceTranscriber: services.taskVoiceTranscriber,
     workspaceCatalog: services.workspaceCatalog,
     taskLauncher: taskBoardLauncher,
+    taskLifecycle: services.taskLifecycle,
     attachmentDirectory: services.attachmentDirectory,
     snapshot: desktop.snapshot,
   });
   const router = createDesktopRouterComposition({
+    canonicalizeRequest: services.contourCommandMapping?.request,
     handlers: {
       snapshot: desktop.snapshot,
       runtimeHealth: desktop.runtimeHealth,
+      retryStartup: desktop.retryStartup,
       taskHistory: desktop.taskHistory,
       rateLimitHistory: desktop.rateLimitHistory,
       usageHistory: desktop.usageHistory,
@@ -261,6 +263,9 @@ export function createDesktopRunRouterWiring({
       restartServer: desktop.restartServer,
       setAutostart: services.setAutostart,
       updateServerConfiguration: services.updateServerConfiguration,
+      startProviderLogin: services.startProviderLogin,
+      submitProviderLoginCode: services.submitProviderLoginCode,
+      cancelProviderLogin: services.cancelProviderLogin,
       readPreTurnInstructions: services.readPreTurnInstructions,
       updateGlobalPreTurnInstructions: services.updateGlobalPreTurnInstructions,
       readRootAgents: services.readRootAgents,
@@ -272,14 +277,18 @@ export function createDesktopRunRouterWiring({
       trustedDevices: desktop.trustedDevices,
       createDevicePairing: desktop.createDevicePairing,
       revokeDevice: desktop.revokeDevice,
+      messagePinSet: (params) => services.streamMessagePins.set(params),
+      messagePinsClear: (params) => services.streamMessagePins.clear(params),
       boardTaskCreate: (params) => taskBoardController.create(params),
       boardTaskIngest: (params) => taskBoardController.ingest(params),
       boardTaskUpdate: (params) => taskBoardController.update(params),
+      boardTaskChecklist: (params) => taskBoardController.checklist(params),
+      boardTaskChecklistLinkedAction: (params) => taskBoardController.checklistLinkedTaskAction(params),
       boardTaskAttachmentAdd: (params) => taskBoardController.addAttachments(params),
-      boardTaskStatus: (params) => taskBoardController.status(params),
+      boardTaskStatus: (params, context) => taskBoardController.status(params, context),
       boardTaskMove: (params) => taskBoardController.move(params),
-      boardTaskComplete: (params) => taskBoardController.complete(params),
-      boardTaskRemove: (params) => taskBoardController.remove(params),
+      boardTaskComplete: (params, context) => taskBoardController.complete(params, context),
+      boardTaskRemove: (params, context) => taskBoardController.remove(params, context),
       boardTaskRetryTriage: (params) => taskBoardController.retryTriage(params),
       boardTaskStart: (params, context) => taskBoardController.start(params, context),
       boardColumnMove: (params) => taskBoardController.moveColumn(params),

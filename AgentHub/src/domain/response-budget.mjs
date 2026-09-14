@@ -1,5 +1,14 @@
 const ELLIPSIS = "\n…[усечено по лимиту транспорта]";
 
+export class TaskHistoryResponseBudgetError extends Error {
+  constructor(maxBytes) {
+    super(`История превышает лимит транспорта ${maxBytes} байт даже после усечения`);
+    this.name = "TaskHistoryResponseBudgetError";
+    this.code = "TASK_HISTORY_RESPONSE_BUDGET_EXCEEDED";
+    this.maxBytes = maxBytes;
+  }
+}
+
 export function utf8ByteLength(value) {
   return Buffer.byteLength(String(value ?? ""), "utf8");
 }
@@ -85,7 +94,7 @@ export function fitTaskHistoryPayload(payload, {
     break;
   }
   if (encodedSize() > budget) {
-    throw new Error(`История превышает лимит транспорта ${budget} байт даже после усечения`);
+    throw new TaskHistoryResponseBudgetError(budget);
   }
   if (truncated) result.transportTruncated = true;
   return result;

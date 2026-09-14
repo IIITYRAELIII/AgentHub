@@ -22,6 +22,20 @@
   --title-weight: 545;
   --label-spacing: 0.15em;
   --label-transform: uppercase;
+  /* Подпись поля в модальных карточках. До этого карточка Stream писала
+     подписи 0.83rem, Workspace — 0.72rem, задача — 0.68rem, и одинаковые по
+     смыслу строки выглядели тремя разными уровнями. */
+  --card-label-size: 0.78rem;
+
+  /* Заголовок секции: один источник истины для «ПАРАМЕТРЫ», «ДЕЙСТВИЯ» и
+     заголовков вложенных блоков карточки. Тема переопределяет эти токены, а
+     не каждое место по отдельности. */
+  --section-heading-family: var(--font-title);
+  --section-heading-size: 0.63rem;
+  --section-heading-weight: 700;
+  --section-heading-spacing: 0.18em;
+  --section-heading-transform: uppercase;
+  --section-heading-color: var(--text-faint);
 
   /* ---- геометрия ---- */
   --radius-lg: 16px;
@@ -70,6 +84,13 @@
   --provider-none: #8797ab;
   --provider-codex: #6cb2ff;
   --provider-claude: #e08a63;
+  /* Реестр провайдеров владеет только hue. Светлость, хрома и прозрачность
+     колонки расхода задаёт активный пакет темы. */
+  --provider-codex-hue: 260;
+  --provider-claude-hue: 35;
+  --provider-tone-lightness: 0.78;
+  --provider-tone-chroma: 0.09;
+  --provider-tone-alpha: 0.18;
   --comparison-local: #f3f7ff;
   --comparison-deviation: #f0b95b;
   --comparison-cost: #d49cff;
@@ -236,9 +257,9 @@ a:hover {
 /* ================================================================ шапка === */
 
 .app-header {
-  backdrop-filter: blur(18px) saturate(150%);
-  -webkit-backdrop-filter: blur(18px) saturate(150%);
-  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter: var(--shell-header-backdrop-filter, blur(18px) saturate(150%));
+  -webkit-backdrop-filter: var(--shell-header-backdrop-filter, blur(18px) saturate(150%));
+  background: var(--shell-header-background, color-mix(in srgb, var(--bg) 82%, transparent));
   border-bottom: 1px solid var(--line);
   /* Положение верхней оболочки принадлежит Hub, а не теме: декоративный CSS
      может менять материал панели, но не её высоту или привязку к краю. */
@@ -1050,6 +1071,18 @@ main {
   --row-accent: var(--provider-none);
 }
 
+.journal [data-work-log-workspace-streams] details[data-work-log-stream] {
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.journal [data-work-log-workspace-streams] details[data-work-log-stream]
+  + details[data-work-log-stream] {
+  margin-top: 0.38rem;
+}
+
 .journal details[data-work-log-stream][data-work-log-provider="codex"] {
   --row-accent: var(--provider-codex);
 }
@@ -1059,30 +1092,57 @@ main {
 }
 
 .journal details[data-work-log-stream][open] {
-  align-items: start;
-  display: grid;
-  grid-template-columns: 17.5rem minmax(0, 1fr);
+  display: block;
 }
 
 .journal details[data-work-log-stream]:not([open]) > :not(summary) {
   display: none !important;
 }
 
-/* Название Stream, его расход и время стоят в одну строку: имя слева, числа
-   прижаты вправо. Раньше итог уходил на вторую строку под названием. */
 .journal summary[data-work-log-stream-summary] {
   align-items: center;
   align-self: start;
-  column-gap: 0.5rem;
+  column-gap: 0;
   cursor: pointer;
   display: grid;
-  grid-column: 1;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: 23rem minmax(0, 1fr);
   list-style: none;
   min-width: 0;
   padding: 0.55rem;
-  position: sticky;
-  top: calc(var(--header-height) + 0.6rem);
+  position: static;
+}
+
+.journal [data-work-log-workspace-streams] summary[data-work-log-stream-summary] {
+  min-height: 2.35rem;
+  padding: 0;
+}
+
+.journal [data-work-log-workspace-streams] span[data-work-log-stream-title] {
+  background: transparent;
+  border: 0;
+  border-left: var(--rail-width) solid var(--row-accent);
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0.55rem 0.68rem;
+}
+
+.journal span[data-work-log-stream-title] {
+  align-items: center;
+  display: flex;
+  gap: 0.7rem;
+  justify-content: space-between;
+}
+
+.journal span[data-work-log-stream-turn-count] {
+  color: var(--text-muted);
+  flex: 0 0 auto;
+  font-family: var(--font-numeric);
+  font-size: 0.72rem;
+  font-weight: 400;
+}
+
+.journal [data-work-log-workspace-streams] span[data-work-log-stream-usage] {
+  padding: 0.48rem 0.65rem;
 }
 
 .journal summary[data-work-log-stream-summary]::-webkit-details-marker {
@@ -1133,22 +1193,31 @@ main {
 .journal span[data-work-log-stream-usage] {
   align-items: center;
   color: var(--text-muted);
-  column-gap: 0.45rem;
-  display: inline-flex;
-  flex-wrap: nowrap;
+  gap: 0.45rem;
+  display: grid;
+  grid-template-columns: minmax(10.75rem, 1fr) 6.2rem 3.2rem;
   font-family: var(--font-numeric);
   font-size: 0.75rem;
-  padding: 0;
+  padding: 0.48rem 0.65rem;
   white-space: nowrap;
 }
 
 .journal span[data-work-log-stream-usage] > span {
+  text-align: left;
+}
+
+.journal span[data-work-log-stream-usage] > span:nth-child(n + 2) {
   text-align: right;
 }
 
 .journal div[data-work-log-stream-turns] {
-  grid-column: 2;
   min-width: 0;
+  padding: 0 0 0.45rem 1.05rem;
+}
+
+.journal [data-work-log-workspace-streams] div[data-work-log-stream-turns] {
+  border-top: 1px solid var(--line);
+  padding: 0;
 }
 
 .journal div[data-work-log-stream-turns] > div[data-work-log-row] {
@@ -2613,6 +2682,17 @@ html[data-surface="mobile"] .eyebrow {
   display: none;
 }
 
+/* В модальных карточках надзаголовок не дублирует нижнюю навигацию, а у
+   карточки Stream он вообще единственное название окна, поэтому на телефоне
+   шапка карточки остаётся подписанной. */
+html[data-surface="mobile"] .dialog-settings-head .eyebrow,
+html[data-surface="mobile"] .workspace-card-modal .eyebrow,
+html[data-surface="mobile"] .workspace-archive-modal .eyebrow,
+html[data-surface="mobile"] .task-card-modal .eyebrow,
+html[data-surface="mobile"] .task-start-modal .eyebrow {
+  display: block;
+}
+
 /* Название раздела на телефоне дублирует подписанную вкладку нижней
    навигации, поэтому из шапки оно убирается визуально, но остаётся в
    структуре страницы для скринридера. */
@@ -3588,6 +3668,8 @@ html[data-view="chat"]:not([data-surface="mobile"])
 
 /* ======================================================= Task board === */
 .task-board-view {
+  --task-board-detail-width: 0px;
+  --task-board-content-end: 1.2rem;
   display: none;
   min-height: 0;
   width: 100%;
@@ -3607,22 +3689,154 @@ html[data-view="dashboard"] .server-view {
 }
 
 html[data-view="dashboard"] .task-board-view {
-  display: flex;
-  flex-direction: column;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: var(--task-rail-width, 17.5rem) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   height: calc(100dvh - var(--app-header-h, 4.2rem));
   margin-inline: 0;
   max-width: none;
   overflow: hidden;
+  padding: 0.6rem clamp(0.5rem, 1vw, 1rem);
 }
 
 .task-board-toolbar {
+  grid-column: 2 / -1;
+  grid-row: 1;
   align-items: center;
   border-bottom: 1px solid var(--line);
   display: flex;
   flex: 0 0 auto;
   gap: 0.55rem;
   justify-content: flex-end;
-  padding: 0.65rem 1.2rem 0;
+  flex-wrap: wrap;
+  min-width: 0;
+  padding: 0.45rem 0.7rem;
+}
+
+.task-board-toolbar-actions,
+.task-board-filter-controls {
+  align-items: center;
+  display: flex;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.task-board-sidebar {
+  grid-column: 1;
+  grid-row: 1 / -1;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  background: var(--surface-1);
+  padding: 0.75rem;
+}
+.task-board-sidebar > h2 { margin: 0 0 0.8rem; }
+.task-board-catalog-title { display: none; }
+.is-status-view .task-board-toolbar {
+  grid-column: 1;
+  grid-row: 1;
+  justify-content: space-between;
+  gap: 0.3rem;
+  padding: 0.6rem;
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  background: var(--surface-1);
+}
+.is-status-view .task-board-catalog-title {
+  display: block;
+  margin: 0;
+  font-size: 0.6rem;
+  letter-spacing: 0.1em;
+}
+.is-status-view .task-board-toolbar-actions { gap: 0.3rem; }
+.is-status-view .task-board-filter-toggle { padding: 0.45rem; font-size: 0.65rem; }
+.is-status-view .task-board-sidebar { grid-row: 2; border-top: 0; padding-top: 0.25rem; }
+.is-status-view .task-board-columns { grid-row: 1 / -1; }
+.task-board-scope-strip { display: grid; gap: 0.25rem; }
+.task-board-scope-strip .task-board-scope {
+  width: 100%;
+  min-width: 0;
+  text-align: start;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.task-board-columns { grid-column: 2; grid-row: 2; }
+
+.task-board-toolbar-actions {
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+}
+
+.task-board-settings {
+  box-sizing: border-box;
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  width: min(24rem, calc(100vw - 16px));
+  padding: 1rem;
+  overflow: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: linear-gradient(var(--surface-1), var(--surface-1)), var(--bg);
+  color: var(--text);
+  box-shadow: 0 0.5rem 1.5rem #0006;
+}
+.task-board-settings:popover-open { display: grid; gap: 1rem; }
+.task-board-setting { display: grid; gap: 0.6rem; min-width: 0; }
+.task-board-setting strong { font-size: 0.8rem; }
+.task-board-setting p { margin: 0; color: var(--text-muted); font-size: 0.7rem; line-height: 1.5; }
+.task-board-settings .task-board-status-language { justify-content: space-between; }
+.task-board-settings .task-board-status-language-options { display: flex; }
+.task-board-settings .task-board-status-language-options button { flex: 1; }
+.task-board-grouping-setting { display: flex; align-items: center; gap: 0.6rem; font-size: 0.8rem; cursor: pointer; }
+.task-board-grouping-setting[hidden] { display: none; }
+.task-board-grouping-setting input { accent-color: var(--accent); inline-size: 1rem; block-size: 1rem; }
+
+.task-board-folder-heading { display: flex; min-width: 0; }
+.task-board-folder-heading > .task-board-scope { flex: 1; border: 0; }
+.task-board-folder.is-selected { border-color: var(--accent-line); }
+.task-board-folder-toggle {
+  cursor: pointer;
+  border: 0;
+  border-inline-start: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  padding: 0.4rem 0.65rem;
+}
+.task-board-folder-toggle:is(:hover, :focus-visible) {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.task-board-folder .task-workspace-folder-list[hidden] { display: none; }
+
+.task-board-scope,
+.task-board-filter-toggle {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 650;
+  padding: 0.65rem 0.8rem;
+}
+
+.task-board-scope:hover,
+.task-board-scope:focus-visible,
+.task-board-scope.is-selected,
+.task-board-scope.is-dragover,
+.task-board-filter-toggle:hover,
+.task-board-filter-toggle:focus-visible,
+.task-board-filter-toggle[aria-expanded="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+  outline: none;
 }
 
 .task-board-status-language {
@@ -3716,59 +3930,37 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .task-board-columns {
-  --task-board-column-base-width: clamp(
-    16rem,
-    calc((100vw - 4rem) / var(--board-column-count)),
-    22rem
-  );
-  --board-column-count: 2;
-  align-items: stretch;
-  display: grid;
+  --task-board-column-base-width: 16rem;
+  box-sizing: border-box;
+  display: flex;
   flex: 1 1 auto;
-  gap: 0.75rem;
-  grid-template-columns:
-    var(--task-board-column-base-width)
-    minmax(0, 1fr)
-    var(--task-board-column-base-width);
-  min-height: 0;
-  overflow: hidden;
-  padding: 1rem 1.2rem 1.1rem;
-}
-
-.task-board-edge,
-.task-board-workspace-columns {
   min-height: 0;
   min-width: 0;
-}
-
-.task-board-edge {
-  display: flex;
-}
-
-.task-board-workspace-columns {
-  align-items: stretch;
-  display: flex;
-  gap: 0.75rem;
   overflow-x: auto;
   overflow-y: hidden;
-  overscroll-behavior-inline: contain;
+  padding: 0;
+}
+
+.task-board-status-columns {
+  align-items: stretch;
+  display: flex;
+  flex: 1 1 auto;
+  gap: 0;
+  inline-size: 100%;
+  min-height: 0;
+  min-inline-size: 100%;
 }
 
 .task-board-column {
-  background: color-mix(in srgb, var(--surface-1) 86%, transparent);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
+  background: transparent;
+  border: 0;
+  border-inline-end: 1px solid var(--line);
+  border-radius: 0;
   display: flex;
-  flex: 0 0 var(--task-board-column-base-width);
+  flex: 1 0 var(--task-board-column-base-width);
   flex-direction: column;
   min-height: 0;
   transition: border-color 0.14s ease, background 0.14s ease;
-}
-
-.task-board-edge .task-board-column {
-  flex: 1 1 100%;
-  inline-size: 100%;
-  min-width: 0;
 }
 
 .task-board-column.is-dragover {
@@ -3777,9 +3969,7 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .task-board-column.is-backlog {
-  background: color-mix(in srgb, var(--surface-1) 96%, var(--surface-2));
-  border-top-color: color-mix(in srgb, var(--pending) 70%, var(--line));
-  box-shadow: 0.65rem 0 0.9rem -0.75rem color-mix(in srgb, var(--text) 24%, transparent);
+  background: color-mix(in srgb, var(--surface-1) 65%, transparent);
 }
 
 .task-board-column.is-notes {
@@ -3788,16 +3978,63 @@ html[data-view="dashboard"] .task-board-view {
   box-shadow: -0.65rem 0 0.9rem -0.75rem color-mix(in srgb, var(--text) 24%, transparent);
 }
 
+.task-board-column.is-status-in_progress {
+  border-top-color: color-mix(in srgb, var(--accent) 70%, var(--line));
+}
+
+.task-board-column.is-status-testing {
+  border-top-color: color-mix(in srgb, var(--pending) 70%, var(--line));
+}
+
+.task-board-column.is-status-awaiting_implementation {
+  border-top-color: color-mix(
+    in srgb,
+    var(--task-status-awaiting-color, color-mix(in srgb, var(--pending) 84%, var(--accent))) 70%,
+    var(--line)
+  );
+}
+
+@media (min-width: 960px) {
+  html[data-view="dashboard"] .task-board-view.is-status-view > .task-card-modal[open] {
+    grid-row: 1 / -1;
+  }
+  html[data-view="dashboard"] .task-board-view.has-open-task {
+    --task-board-detail-width: clamp(19rem, 24vw, 25rem);
+    grid-template-columns: var(--task-rail-width, 17.5rem) minmax(0, 1fr) var(--task-board-detail-width);
+  }
+
+  html[data-view="dashboard"] .task-board-view > .task-card-modal[open] {
+    position: static;
+    grid-column: 3;
+    grid-row: 2;
+    align-self: stretch;
+    block-size: 100%;
+    inline-size: 100%;
+    width: 100%;
+    min-width: 0;
+    min-height: 0;
+    margin: 0;
+    max-height: none;
+    max-width: none;
+    border: 0;
+    border-inline-start: 1px solid var(--line);
+    border-radius: 0;
+    box-shadow: none;
+    background: var(--surface-1);
+  }
+}
+
 .task-board-column-head {
-  align-items: start;
+  align-items: center;
   border-bottom: 1px solid var(--line);
   box-sizing: border-box;
   display: flex;
+  flex: 0 0 3.75rem;
   gap: 0.6rem;
-  height: 6.5rem;
+  height: 3.75rem;
   justify-content: space-between;
   overflow: hidden;
-  padding: 0.75rem;
+  padding: 0.6rem 0.7rem;
 }
 
 .task-board-column-head > div:first-child {
@@ -3867,11 +4104,12 @@ html[data-view="dashboard"] .task-board-view {
 
 .task-board-column-list {
   box-sizing: border-box;
-  display: grid;
-  gap: 0.55rem;
-  min-height: 4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-height: 0;
   overflow-y: auto;
-  padding: 0.65rem;
+  padding: 0 0.65rem;
 }
 
 .task-board-empty {
@@ -4004,7 +4242,307 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .board-task-status[data-workflow-status="awaiting_implementation"] {
-  --task-status-color: #e87823;
+  --task-status-color: var(
+    --task-status-awaiting-color,
+    color-mix(in srgb, var(--pending) 84%, var(--accent))
+  );
+}
+
+/* Dashboard rows share the column grid; embedded cards keep their own layout. */
+html[data-view="dashboard"] .task-board-columns .board-task-card {
+  display: grid;
+  grid-template-columns: 2.9rem minmax(0, 1fr) minmax(3.4rem, 30%);
+  align-items: start;
+  gap: 0.4rem;
+  flex: 0 0 auto;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0.9rem 0.4rem;
+}
+
+html[data-view="dashboard"] .task-board-columns .board-task-card:hover {
+  background: var(--accent-soft);
+}
+
+html[data-view="dashboard"] .task-board-columns .board-task-card:is(.is-selected, :focus-visible) {
+  background: var(--accent-soft);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+  box-shadow: inset 3px 0 var(--accent);
+}
+
+html[data-view="dashboard"] .task-board-columns .board-task-title {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 450;
+  line-height: 1.5;
+  overflow-wrap: break-word;
+}
+
+html[data-view="dashboard"] .task-board-columns .board-task-number {
+  grid-column: 1;
+  grid-row: 1;
+  font-size: 0.6rem;
+  line-height: 1.7;
+  color: var(--text-muted);
+  border: 0;
+}
+
+html[data-view="dashboard"] .task-board-columns .board-task-summary {
+  display: contents;
+}
+
+html[data-view="dashboard"] .task-board-columns .board-task-executor {
+  grid-column: 3;
+  grid-row: 1;
+  line-height: 1.7;
+}
+
+.board-task-workspace {
+  grid-column: 2;
+  grid-row: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: 0.62rem;
+  line-height: 1.7;
+}
+
+html[data-view="dashboard"] .task-board-columns .board-task-status {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
+html[data-view="dashboard"] .task-board-columns [class*="is-status-"] .board-task-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  clip-path: inset(50%);
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+}
+
+html[data-view="dashboard"] .task-board-columns .board-task-attachments {
+  grid-column: 1 / -1;
+}
+
+.task-card-preview {
+  display: none;
+}
+
+/* Status board: shared column headings and Workspace swimlanes. */
+.is-status-view { --task-rail-width: 15rem; column-gap: 0.6rem; }
+.is-status-view .task-board-status-columns { gap: 0.6rem; }
+.is-status-view .task-board-status-columns > .is-backlog { flex: 0 0 12rem; }
+.is-status-view .task-board-row-head { display: none; }
+.is-grouped-view .task-board-status-columns {
+  display: grid;
+  grid-template-columns: 12rem minmax(0, 1fr);
+  gap: 0.75rem;
+  min-width: 0;
+}
+.is-grouped-view .task-board-columns { overflow: hidden; }
+.is-grouped-view .task-board-status-columns > .is-backlog {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.is-grouped-view .is-backlog .task-board-row-head { display: none; }
+.is-grouped-view .task-board-column-head { flex-basis: 4.5rem; height: 4.5rem; }
+.is-status-view .is-backlog .board-task-workspace { display: none; }
+html[data-view="dashboard"] .is-status-view .is-backlog .board-task-executor { grid-column: 2; }
+.task-board-matrix {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+.task-board-matrix-content { min-width: calc(var(--task-status-count) * 16rem); }
+.task-board-matrix-head,
+.task-board-lane-cells {
+  display: grid;
+  grid-template-columns: repeat(var(--task-status-count), minmax(0, 1fr));
+  gap: 0.5rem;
+}
+.task-board-matrix-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  gap: 0.5rem;
+  background: var(--bg);
+}
+.task-board-status-heading {
+  min-width: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.task-board-lane { margin-bottom: 0.65rem; }
+.task-board-lane-heading {
+  box-sizing: border-box;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--bg) 96%, var(--accent) 4%);
+  color: var(--text);
+  font-size: 0.95rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+.task-board-lane-heading > span { margin-inline-start: 0.5rem; }
+.task-board-lane-heading:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.task-board-lane-cell {
+  min-width: 0;
+  padding: 0.65rem 0.3rem 1rem;
+  border-inline-end: 1px dashed var(--line);
+}
+.task-board-lane-cell:last-child { border-inline-end: 0; }
+.task-board-lane-cell .task-board-column-list { overflow: visible; }
+.task-board-lane-create { align-self: flex-start; margin-top: 0.2rem; }
+.is-status-view .task-board-column-list { gap: 0.6rem; padding: 0.6rem; }
+.task-board-lane-cell .task-board-column-list { padding: 0.1rem 0.25rem; }
+html[data-view="dashboard"] .is-status-view .task-board-columns .board-task-card {
+  grid-template-columns: 3.4rem minmax(0, 1fr) minmax(3.4rem, 30%);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg) 96%, var(--accent) 4%);
+  padding: 0.8rem;
+  gap: 0.5rem;
+}
+html[data-view="dashboard"] .is-status-view .task-board-columns .board-task-card:hover {
+  border-color: var(--accent-line);
+  background: color-mix(in srgb, var(--bg) 92%, var(--accent) 8%);
+}
+html[data-view="dashboard"] .is-status-view .task-board-columns .board-task-card:is(.is-selected, :focus-visible) {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--bg) 88%, var(--accent) 12%);
+  box-shadow: none;
+  outline-offset: -1px;
+}
+html[data-view="dashboard"] .is-status-view .task-board-columns .board-task-title { font-size: 0.9375rem; }
+html[data-view="dashboard"] .is-status-view .task-board-columns :is(.board-task-number, .board-task-workspace, .board-task-executor) { font-size: 0.6875rem; }
+.is-status-view .task-board-row-head { grid-template-columns: 3.4rem minmax(0, 1fr) minmax(3.4rem, 30%); }
+html[data-view="dashboard"] .is-status-view .is-backlog .board-task-card { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+
+@media (max-width: 959px) {
+  .is-grouped-view .task-board-status-columns { grid-template-columns: 10rem minmax(0, 1fr); gap: 0.5rem; }
+}
+
+html[data-view="dashboard"] .task-board-view.is-workspace-view .task-board-columns .board-task-status {
+  grid-column: 3;
+  grid-row: 1;
+  justify-self: end;
+}
+
+html[data-view="dashboard"] .task-board-view.is-workspace-view .board-task-executor {
+  grid-column: 2;
+}
+
+html[data-view="dashboard"] .task-board-view.is-workspace-view .board-task-workspace,
+html[data-view="dashboard"] .task-board-view.is-workspace-view .task-board-sidebar {
+  display: none;
+}
+
+html[data-view="dashboard"] .task-board-view.is-workspace-view {
+  --task-rail-width: 0px;
+}
+
+.is-workspace-view .task-board-row-head > :last-child { text-align: end; }
+
+.task-board-row-head {
+  display: grid;
+  grid-template-columns: 2.9rem minmax(0, 1fr) minmax(3.4rem, 30%);
+  gap: 0.4rem;
+  padding: 0.65rem 1.05rem;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-faint);
+  font-size: 0.62rem;
+}
+
+@media (min-width: 960px) {
+  html[data-view="dashboard"] .task-board-view > .task-card-modal:not(.is-editing) .task-card-editor {
+    display: none;
+  }
+  html[data-view="dashboard"] .task-board-view > .task-card-modal:not(.is-editing) .task-card-preview {
+    display: grid;
+    gap: 1rem;
+  }
+  .task-card-preview-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+  .task-card-preview-meta strong {
+    font: 0.75rem var(--font-mono);
+  }
+  .task-card-preview h3 {
+    margin: 0;
+    font-size: 1rem;
+    line-height: 1.45;
+  }
+  .task-card-preview-description {
+    border-top: 1px solid var(--line);
+    padding-top: 1rem;
+    font-size: 0.8rem;
+  }
+  .task-card-preview-description p {
+    color: var(--text-muted);
+    line-height: 1.6;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    margin-top: 0.5rem;
+  }
+  html[data-view="dashboard"] .task-board-view > .task-card-modal .task-card-checklist,
+  html[data-view="dashboard"] .task-board-view > .task-card-modal .task-card-release-details {
+    border: 0;
+    border-top: 1px solid var(--line);
+    border-radius: 0;
+    padding: 1rem 0;
+    background: transparent;
+  }
+}
+
+.task-board-filter-controls[hidden] {
+  display: none;
+}
+
+@media (max-width: 959px) {
+  html[data-view="dashboard"] .task-board-view {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
+  }
+  .task-board-sidebar { grid-column: 1; grid-row: 1; max-height: 12rem; }
+  .task-board-toolbar { grid-column: 1; grid-row: 2; }
+  .task-board-columns { grid-column: 1; grid-row: 3; }
+  .is-status-view .task-board-toolbar { flex-direction: row; align-items: center; }
+  .is-status-view .task-board-sidebar { grid-row: 2; }
+  .is-status-view .task-board-columns { grid-row: 3; }
+  html[data-view="dashboard"] .task-board-view.is-workspace-view {
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .is-workspace-view .task-board-toolbar { grid-row: 1; }
+  .is-workspace-view .task-board-columns { grid-row: 2; }
+  .task-card-backdrop { display: none; }
+  .task-board-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 0.6rem;
+    padding: 0.6rem;
+  }
+  .task-board-toolbar-actions {
+    flex-wrap: wrap;
+  }
+  .task-board-scope-strip {
+    padding-bottom: 0.25rem;
+  }
 }
 
 .board-task-status[data-workflow-status="done"] {
@@ -4074,9 +4612,9 @@ html[data-view="dashboard"] .task-board-view {
 
 .task-card-attachment-toolbar {
   align-items: center;
-  color: var(--text-faint);
+  color: var(--text-muted);
   display: flex;
-  font-size: 0.68rem;
+  font-size: var(--card-label-size);
   justify-content: space-between;
 }
 
@@ -4213,6 +4751,14 @@ html[data-view="dashboard"] .task-board-view {
   max-width: 26rem;
 }
 
+.task-cleanup-preview {
+  margin: 0;
+  max-height: 45dvh;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .task-delete-modal > section,
 .task-delete-modal > footer {
   padding: 1rem;
@@ -4277,7 +4823,29 @@ html[data-view="dashboard"] .task-board-view {
 
 .task-card-modal > footer {
   border-top: 1px solid var(--line);
+  gap: 0.5rem;
   margin-top: 0;
+}
+
+/* Действия футера одного размера; удаление отделено и уходит к правому краю,
+   а при переносе строки остаётся справа, а не повисает под кнопками. */
+.task-card-modal > footer .board-task-quiet,
+.task-card-modal > footer .board-task-remove {
+  border-radius: var(--radius-md);
+  font-size: 0.76rem;
+  padding: 0.48rem 0.6rem;
+}
+
+.task-card-modal > footer .board-task-remove {
+  margin-inline-start: auto;
+}
+
+.task-card-modal > footer > * {
+  min-height: 2.15rem;
+}
+
+.task-card-modal > footer .board-task-destination {
+  flex: 0 1 11rem;
 }
 
 .task-card-modal h2,
@@ -4302,11 +4870,18 @@ html[data-view="dashboard"] .task-board-view {
   gap: 0.75rem;
 }
 
+/* Сохранение относится к паре полей выше, а не ко всей карточке, поэтому
+   кнопка не растягивается на всю ширину и не спорит с действиями футера. */
+.task-card-editor > .board-task-primary {
+  justify-self: end;
+  min-height: 2.15rem;
+}
+
 .task-card-editor label {
-  color: var(--text-faint);
+  color: var(--text-muted);
   display: grid;
-  font-size: 0.68rem;
-  gap: 0.3rem;
+  font-size: var(--card-label-size);
+  gap: 0.35rem;
 }
 
 .task-card-title-control {
@@ -4334,11 +4909,16 @@ html[data-view="dashboard"] .task-board-view {
   display: none;
 }
 
+.task-card-status-field[hidden],
+.board-task-status[hidden] {
+  display: none;
+}
+
 .task-card-status-field {
-  color: var(--text-faint);
+  color: var(--text-muted);
   display: grid;
-  font-size: 0.68rem;
-  gap: 0.3rem;
+  font-size: var(--card-label-size);
+  gap: 0.35rem;
 }
 
 .task-card-status-field select {
@@ -4377,8 +4957,8 @@ html[data-view="dashboard"] .task-board-view {
 .task-card-detail-row > span,
 .task-card-changed-files > span,
 .task-card-work-log > span {
-  color: var(--text-faint);
-  font-size: 0.68rem;
+  color: var(--text-muted);
+  font-size: var(--card-label-size);
 }
 
 .task-card-detail-row strong {
@@ -4436,9 +5016,12 @@ html[data-view="dashboard"] .task-board-view {
   margin: 0;
 }
 
+/* Записи лога лежат внутри блока «Исполнение и изменения», у которого уже есть
+   своя рамка. Вторая рамка внутри первой давала двойной контур, поэтому запись
+   отделяется заливкой. */
 .task-card-work-log-entry {
   background: color-mix(in srgb, var(--surface-2) 78%, transparent);
-  border: 1px solid var(--line);
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
   display: grid;
   gap: 0.35rem;
@@ -4509,6 +5092,10 @@ html[data-view="dashboard"] .task-board-view {
   color: var(--text);
   max-height: min(90dvh, 56rem);
   max-width: 42rem;
+  /* Форма берёт max-height диалога через inherit, поэтому рамка диалога
+     добавляла ровно свои 2px переполнения и рядом с полосой прокрутки полей
+     появлялась вторая, внешняя. Прокручиваются только поля. */
+  overflow: hidden;
   padding: 0;
   width: calc(100% - 2rem);
 }
@@ -4589,15 +5176,200 @@ html[data-view="dashboard"] .task-board-view {
   font-size: 0.7rem;
 }
 
-.workspace-archive-restore {
+.workspace-archive-actions {
+  align-items: center;
+  display: flex;
+  gap: 0.4rem;
   grid-column: 2;
   grid-row: 1 / span 2;
+}
+
+.workspace-archive-delete,
+.workspace-card-archive,
+.stream-card-archive {
+  background: color-mix(in srgb, var(--danger, #ff7b7b) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger, #ff7b7b) 55%, var(--line));
+  border-radius: var(--radius-sm);
+  color: var(--danger, #ff7b7b);
+  cursor: pointer;
+  font: inherit;
+  padding: 0.42rem 0.62rem;
+}
+
+.workspace-archive-delete:hover,
+.workspace-card-archive:hover,
+.stream-card-archive:hover {
+  background: color-mix(in srgb, var(--danger, #ff7b7b) 20%, transparent);
+}
+
+.workspace-card-archive:disabled,
+.stream-card-archive:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 
 .workspace-archive-empty {
   color: var(--text-faint);
   padding: 1.5rem 1rem 1.8rem;
   text-align: center;
+}
+
+/* Общая форма prompt-шаблонов повторяет карточку Workspace: шапка, прокрутка
+   полей и строка действий. Сам редактор внутри — прежний, поэтому его
+   собственные стили здесь не переопределяются. */
+.prompt-templates-modal {
+  /* Форму открывают и поверх панели настроек, поэтому фон непрозрачный: тот же
+     рецепт, что у самой панели, а не полупрозрачный --surface-1. */
+  background:
+    radial-gradient(120% 60% at 90% -20%, var(--space-glow-a), transparent 60%),
+    var(--space-base);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  color: var(--text);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-height: min(90dvh, 52rem);
+  max-width: 40rem;
+  overflow: hidden;
+  padding: 0;
+  width: calc(100% - 2rem);
+}
+
+.prompt-templates-modal::backdrop {
+  backdrop-filter: blur(3px);
+  background: rgba(2, 5, 10, 0.76);
+}
+
+.prompt-templates-modal > header,
+.prompt-templates-modal > footer {
+  align-items: center;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+  padding: 0.85rem 1rem;
+}
+
+.prompt-templates-modal > header {
+  border-bottom: 1px solid var(--line);
+}
+
+.prompt-templates-modal > footer {
+  border-top: 1px solid var(--line);
+  justify-content: flex-end;
+}
+
+.prompt-templates-modal > footer button {
+  min-height: 2.15rem;
+}
+
+.prompt-templates-modal h2,
+.prompt-templates-modal p {
+  margin: 0;
+}
+
+.prompt-templates-modal h2 {
+  font-size: 0.95rem;
+  margin-top: 0.2rem;
+}
+
+.prompt-templates-fields {
+  display: grid;
+  gap: 0.7rem;
+  overflow-y: auto;
+  padding: 1rem;
+}
+
+/* Внутри формы карточка редактора занимает всю ширину: ограничение меры нужно
+   было соседству с другими настройками, а здесь она одна. */
+.prompt-templates-card {
+  max-width: none;
+}
+
+/* Область действия видна с одного взгляда: выбранная подсвечена, рядом стоит
+   число шаблонов именно этой области. Кнопки переносятся, а не сжимаются. */
+.prompt-templates-scopes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.prompt-templates-scope {
+  align-items: baseline;
+  display: inline-flex;
+  gap: 0.4rem;
+  max-width: 100%;
+}
+
+.prompt-templates-scope-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.prompt-templates-scope-count {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+}
+
+.prompt-templates-scope[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.prompt-templates-scope[aria-pressed="true"] .prompt-templates-scope-count {
+  color: inherit;
+}
+
+.prompt-templates-scope[data-prompt-templates-diverged] {
+  border-color: color-mix(in srgb, var(--danger, #ff7b7b) 60%, transparent);
+}
+
+.prompt-templates-scope:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.prompt-templates-note {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+/* Расхождение показывается прямо в форме: черновик остаётся на месте, а выбор
+   между ним и сохранёнными значениями делает человек. */
+.prompt-templates-conflict {
+  align-items: start;
+  background: color-mix(in srgb, var(--danger, #ff7b7b) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger, #ff7b7b) 45%, transparent);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: space-between;
+  padding: 0.6rem 0.7rem;
+}
+
+.prompt-templates-conflict[hidden] {
+  display: none;
+}
+
+.prompt-templates-conflict p {
+  flex: 1 1 14rem;
+  font-size: 0.8rem;
+}
+
+/* Вход в общую форму на месте прежнего редактора. */
+.prompt-template-entry-controls {
+  display: flex;
+  padding: 0.6rem 0.75rem 0.75rem;
+}
+
+/* На узкой карточке подпись переносится, но кнопка не сжимается в ноль: у чипа
+   по умолчанию текст в одну строку, и во flex-строке он схлопывался. */
+.prompt-template-entry-open {
+  flex: 0 1 auto;
+  max-width: 100%;
+  white-space: normal;
 }
 
 .workspace-card-modal::backdrop {
@@ -4626,7 +5398,23 @@ html[data-view="dashboard"] .task-board-view {
 
 .workspace-card-modal footer {
   border-top: 1px solid var(--line);
+  gap: 0.5rem;
   justify-content: flex-end;
+}
+
+/* «Отмена» остаётся тише «Сохранить», но обе кнопки одного размера. */
+.workspace-card-modal footer button {
+  min-height: 2.15rem;
+}
+
+.workspace-card-modal footer .board-task-quiet {
+  border-radius: var(--radius-md);
+  font-size: 0.76rem;
+  padding: 0.48rem 0.72rem;
+}
+
+.workspace-card-modal footer .board-task-quiet:hover {
+  color: var(--text);
 }
 
 .workspace-card-modal h2,
@@ -4640,10 +5428,24 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .workspace-card-fields {
+  align-content: start;
   display: grid;
   gap: 0.8rem;
+  grid-auto-rows: max-content;
   overflow-y: auto;
   padding: 1rem;
+}
+
+.workspace-card-actions-section {
+  padding-top: 0.45rem;
+}
+
+/* Тот же размер, что у действий карточки Stream. */
+.workspace-card-actions .workspace-card-archive {
+  border-radius: var(--radius-chip);
+  font-size: 0.76rem;
+  min-height: 2.45rem;
+  width: 100%;
 }
 
 .workspace-card-fields [hidden] {
@@ -4657,7 +5459,7 @@ html[data-view="dashboard"] .task-board-view {
 
 .workspace-card-fields label > span {
   color: var(--text-muted);
-  font-size: 0.72rem;
+  font-size: var(--card-label-size);
 }
 
 /* Поля брали оформление у браузера и оставались серыми в любой теме. Токены
@@ -4700,9 +5502,15 @@ html[data-view="dashboard"] .task-board-view {
   outline: none;
 }
 
+/* Необязательный комментарий занимал столько же, сколько правила агента, и
+   вытеснял нижние поля за край карточки. Растянуть его по-прежнему можно. */
 .workspace-card-fields textarea {
-  min-height: 6rem;
+  min-height: 4.5rem;
   resize: vertical;
+}
+
+.workspace-card-fields [data-workspace-card-comment] {
+  height: 4.5rem;
 }
 
 .workspace-card-fields [data-workspace-card-rules] {
@@ -4747,18 +5555,32 @@ html[data-view="dashboard"] .task-board-view {
   color: var(--danger);
 }
 
+/* Та же раскладка, что у переключателей ролей Stream: подпись слева,
+   пояснение следом, тумблер прижат к правому краю карточки. */
 .workspace-release-workflow-setting {
   align-items: center;
-  display: flex;
+  display: grid;
   gap: 0.55rem;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   position: relative;
 }
 
 .workspace-release-workflow-switch {
-  align-items: center;
   cursor: pointer;
-  display: flex !important;
-  gap: 0.6rem !important;
+  display: contents !important;
+}
+
+.workspace-release-workflow-switch .switch-text {
+  grid-area: 1 / 1;
+}
+
+.workspace-release-workflow-help-popover {
+  grid-area: 1 / 2;
+}
+
+.workspace-release-workflow-switch .switch-track {
+  grid-area: 1 / 3;
+  justify-self: end;
 }
 
 .workspace-release-workflow-help-popover {
@@ -4828,10 +5650,30 @@ html[data-view="dashboard"] .task-board-view {
   gap: 0.35rem;
 }
 
+/* Подпись, знак вопроса и тумблер — ячейки одной строки, поэтому тумблеры
+   ролей стоят на той же вертикали, что «Автоподтверждение» над ними. */
 .stream-role-setting-heading {
   align-items: center;
-  display: flex;
+  display: grid;
   gap: 0.45rem;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.stream-role-setting-heading .setting-switch {
+  display: contents;
+}
+
+.stream-role-setting-heading .switch-text {
+  grid-area: 1 / 1;
+}
+
+.stream-role-setting-heading .stream-role-help-popover {
+  grid-area: 1 / 2;
+}
+
+.stream-role-setting-heading .switch-track {
+  grid-area: 1 / 3;
+  justify-self: end;
 }
 
 .stream-role-help-popover {
@@ -4900,8 +5742,14 @@ html[data-view="dashboard"] .task-board-view {
   margin: 0;
 }
 
+/* Короткие значения не растягиваются на всю карточку: поле по длине данных
+   читается как короткое, а не как ещё одна строка полной ширины. */
 .workspace-card-fields input[type="number"] {
   max-width: 8rem;
+}
+
+.workspace-card-fields [data-workspace-card-task-prefix] {
+  max-width: 12rem;
 }
 
 .workspace-card-fields input:disabled {
@@ -4996,30 +5844,22 @@ html[data-view="dashboard"] .task-board-view {
     padding: 0.8rem;
   }
 
-  .task-board-edge,
-  .task-board-workspace-columns {
-    display: contents;
+  .task-board-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 0.55rem;
   }
 
-  .task-board-column.is-backlog {
-    left: 0.8rem;
-    position: sticky;
-    z-index: 3;
+  .task-board-toolbar-actions {
+    justify-content: space-between;
   }
 
-  .task-board-column.is-notes {
-    position: sticky;
-    right: 0.8rem;
-    z-index: 3;
+  .task-board-filter-controls {
+    flex-wrap: wrap;
   }
 
   .task-board-column {
     flex-basis: min(82vw, 19rem);
-  }
-
-  .task-board-edge .task-board-column {
-    flex-basis: min(82vw, 19rem);
-    inline-size: auto;
   }
 
   .task-start-new {
@@ -5067,32 +5907,6 @@ html[data-surface="mobile"]
   padding: 0.55rem 0.62rem;
   position: relative;
   transition: background 0.14s ease, border-color 0.14s ease;
-}
-
-/* Заголовок семейства — не строка списка, а надпись на полке: он ничего не
-   открывает, поэтому набран тише самих пространств и не претендует на клик. */
-.task-workspace-divider {
-  align-items: center;
-  display: flex;
-  gap: 0.5rem;
-  list-style: none;
-  margin: 0.62rem 0 0.3rem;
-  padding: 0 0.62rem;
-}
-
-.task-workspace-divider::after {
-  background: var(--line);
-  content: "";
-  flex: 1 1 auto;
-  height: 1px;
-}
-
-.task-workspace-divider-label {
-  color: var(--text-faint);
-  flex: 0 0 auto;
-  font-size: 0.66rem;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
 }
 
 .task-rail-actions {
@@ -5250,7 +6064,7 @@ html[data-surface="mobile"]
 }
 
 /* Внутри папки строки сдвинуты — видно, что они принадлежат заголовку. */
-.task-workspace-item[data-family-member] {
+.task-workspace-item[data-folder-member] {
   margin: 0;
 }
 
@@ -5949,11 +6763,7 @@ html[data-surface="mobile"]
 :root[data-stream-status-effect]:not([data-stream-status-effect="off"])
   .task-workspace-item[data-running],
 :root[data-stream-status-effect]:not([data-stream-status-effect="off"])
-  .task-workspace-item[data-unread]:not([data-running]),
-:root[data-stream-status-effect]:not([data-stream-status-effect="off"])
-  .stream-tab[data-running] .stream-tab-card,
-:root[data-stream-status-effect]:not([data-stream-status-effect="off"])
-  .stream-tab[data-answer-ready] .stream-tab-card {
+  .task-workspace-item[data-unread]:not([data-running]) {
   border-color: var(--accent-line);
 }
 
@@ -5968,7 +6778,7 @@ html[data-surface="mobile"]
 /* Спокойный: неподвижная сигнальная точка во время хода и зафиксированная
    верхняя риска после ответа. */
 :root[data-stream-status-effect="calm"] .task-workspace-item[data-running]::before,
-:root[data-stream-status-effect="calm"] .stream-tab[data-running] .stream-tab-card::before {
+:root[data-stream-status-effect="calm"] .stream-tab[data-running] .stream-tab-status-layer::before {
   background: var(--accent);
   border-radius: 50%;
   box-shadow: 0 0 0.48rem color-mix(in srgb, var(--accent) 58%, transparent);
@@ -5983,7 +6793,7 @@ html[data-surface="mobile"]
 }
 
 :root[data-stream-status-effect="calm"] .task-workspace-item[data-unread]:not([data-running])::before,
-:root[data-stream-status-effect="calm"] .stream-tab[data-answer-ready] .stream-tab-card::before {
+:root[data-stream-status-effect="calm"] .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
   background: linear-gradient(90deg, transparent, var(--accent) 20%, var(--accent) 80%, transparent);
   content: "";
   height: 1.5px;
@@ -5998,9 +6808,9 @@ html[data-surface="mobile"]
 :root[data-stream-status-style="fill"][data-stream-status-effect="calm"]
   .task-workspace-item[data-unread]:not([data-running])::before,
 :root[data-stream-status-style="fill"][data-stream-status-effect="calm"]
-  .stream-tab[data-running] .stream-tab-card::before,
+  .stream-tab[data-running] .stream-tab-status-layer::before,
 :root[data-stream-status-style="fill"][data-stream-status-effect="calm"]
-  .stream-tab[data-answer-ready] .stream-tab-card::before {
+  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
   background: var(--accent);
   border-radius: inherit;
   box-shadow: none;
@@ -6013,14 +6823,14 @@ html[data-surface="mobile"]
 :root[data-stream-status-style="fill"][data-stream-status-effect="calm"]
   .task-workspace-item[data-unread]:not([data-running])::before,
 :root[data-stream-status-style="fill"][data-stream-status-effect="calm"]
-  .stream-tab[data-answer-ready] .stream-tab-card::before {
+  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
   opacity: 0.13;
 }
 
 /* Импульс: сигнал проходит по контуру, а готовый ответ дважды отвечает
    коротким маяком и остаётся со спокойной световой отметкой. */
 :root[data-stream-status-effect="impulse"] .task-workspace-item[data-running]::after,
-:root[data-stream-status-effect="impulse"] .stream-tab[data-running] .stream-tab-card::after {
+:root[data-stream-status-effect="impulse"] .stream-tab[data-running] .stream-tab-status-layer::after {
   animation: stream-running-wave 2.2s linear infinite;
   background: linear-gradient(90deg, transparent 0%, var(--accent) 44%, var(--accent) 56%, transparent 100%);
   border-radius: inherit;
@@ -6040,7 +6850,7 @@ html[data-surface="mobile"]
 :root[data-stream-status-effect="impulse"]
   .task-workspace-item[data-unread]:not([data-running])::before,
 :root[data-stream-status-effect="impulse"]
-  .stream-tab[data-answer-ready] .stream-tab-card::before {
+  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
   --stream-status-peak: 1;
   border: 2px solid var(--accent);
   border-radius: inherit;
@@ -6055,14 +6865,14 @@ html[data-surface="mobile"]
 :root[data-stream-status-effect="impulse"]
   .task-workspace-item[data-unread][data-answer-arrived]:not([data-running])::before,
 :root[data-stream-status-effect="impulse"]
-  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-card::before {
+  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-status-layer::before {
   animation: stream-answer-ready 1.45s ease-out 2;
 }
 
 :root[data-stream-status-style="fill"][data-stream-status-effect="impulse"]
   .task-workspace-item[data-running]::after,
 :root[data-stream-status-style="fill"][data-stream-status-effect="impulse"]
-  .stream-tab[data-running] .stream-tab-card::after {
+  .stream-tab[data-running] .stream-tab-status-layer::after {
   filter: none;
   inset: 0;
   opacity: 0.34;
@@ -6076,7 +6886,7 @@ html[data-surface="mobile"]
 :root[data-stream-status-style="fill"][data-stream-status-effect="impulse"]
   .task-workspace-item[data-unread]:not([data-running])::before,
 :root[data-stream-status-style="fill"][data-stream-status-effect="impulse"]
-  .stream-tab[data-answer-ready] .stream-tab-card::before {
+  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
   --stream-status-peak: 0.42;
   background: var(--accent);
   border: 0;
@@ -6088,7 +6898,7 @@ html[data-surface="mobile"]
 /* Сканер: узкий луч проверяет канал; готовность фиксируется быстрой
    центральной развёрткой, которая не продолжает мигать. */
 :root[data-stream-status-effect="scanner"] .task-workspace-item[data-running]::after,
-:root[data-stream-status-effect="scanner"] .stream-tab[data-running] .stream-tab-card::after {
+:root[data-stream-status-effect="scanner"] .stream-tab[data-running] .stream-tab-status-layer::after {
   animation: stream-scanner-pass 1.85s linear infinite;
   background: linear-gradient(90deg, transparent 0%, var(--accent) 40%, var(--accent) 60%, transparent 100%);
   border-radius: inherit;
@@ -6109,11 +6919,11 @@ html[data-surface="mobile"]
 :root[data-stream-status-style="edge"][data-stream-status-effect="impulse"]
   .task-workspace-item[data-running]::after,
 :root[data-stream-status-style="edge"][data-stream-status-effect="impulse"]
-  .stream-tab[data-running] .stream-tab-card::after,
+  .stream-tab[data-running] .stream-tab-status-layer::after,
 :root[data-stream-status-style="edge"][data-stream-status-effect="scanner"]
   .task-workspace-item[data-running]::after,
 :root[data-stream-status-style="edge"][data-stream-status-effect="scanner"]
-  .stream-tab[data-running] .stream-tab-card::after {
+  .stream-tab[data-running] .stream-tab-status-layer::after {
   padding: 0;
   -webkit-mask:
     linear-gradient(#000 0 0) top / 100% 2px no-repeat,
@@ -6128,7 +6938,7 @@ html[data-surface="mobile"]
 :root[data-stream-status-effect="scanner"]
   .task-workspace-item[data-unread]:not([data-running])::after,
 :root[data-stream-status-effect="scanner"]
-  .stream-tab[data-answer-ready] .stream-tab-card::after {
+  .stream-tab[data-answer-ready] .stream-tab-status-layer::after {
   background: linear-gradient(90deg, transparent, var(--accent) 14%, var(--accent) 86%, transparent);
   border-radius: 2px;
   box-shadow: 0 0 9px color-mix(in srgb, var(--accent) 55%, transparent);
@@ -6144,14 +6954,14 @@ html[data-surface="mobile"]
 :root[data-stream-status-effect="scanner"]
   .task-workspace-item[data-unread][data-answer-arrived]:not([data-running])::after,
 :root[data-stream-status-effect="scanner"]
-  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-card::after {
+  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-status-layer::after {
   animation: stream-scanner-lock 0.72s ease-out 2;
 }
 
 :root[data-stream-status-style="fill"][data-stream-status-effect="scanner"]
   .task-workspace-item[data-running]::after,
 :root[data-stream-status-style="fill"][data-stream-status-effect="scanner"]
-  .stream-tab[data-running] .stream-tab-card::after {
+  .stream-tab[data-running] .stream-tab-status-layer::after {
   filter: none;
   inset: 0;
   opacity: 0.28;
@@ -6165,7 +6975,7 @@ html[data-surface="mobile"]
 :root[data-stream-status-style="fill"][data-stream-status-effect="scanner"]
   .task-workspace-item[data-unread]:not([data-running])::before,
 :root[data-stream-status-style="fill"][data-stream-status-effect="scanner"]
-  .stream-tab[data-answer-ready] .stream-tab-card::before {
+  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
   background: var(--accent);
   border-radius: inherit;
   content: "";
@@ -6178,11 +6988,11 @@ html[data-surface="mobile"]
 /* Энергия: ход циклически набирает заряд слева направо; после ответа заряд
    дважды расширяется и остаётся заполненным до открытия Stream. */
 :root[data-stream-status-effect="energy"] .task-workspace-item[data-running]::before,
-:root[data-stream-status-effect="energy"] .stream-tab[data-running] .stream-tab-card::before,
+:root[data-stream-status-effect="energy"] .stream-tab[data-running] .stream-tab-status-layer::before,
 :root[data-stream-status-effect="energy"]
   .task-workspace-item[data-unread]:not([data-running])::before,
 :root[data-stream-status-effect="energy"]
-  .stream-tab[data-answer-ready] .stream-tab-card::before {
+  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
   background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 46%, transparent), var(--accent));
   border-radius: 3px;
   box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 50%, transparent);
@@ -6197,25 +7007,25 @@ html[data-surface="mobile"]
 }
 
 :root[data-stream-status-effect="energy"] .task-workspace-item[data-running]::before,
-:root[data-stream-status-effect="energy"] .stream-tab[data-running] .stream-tab-card::before {
+:root[data-stream-status-effect="energy"] .stream-tab[data-running] .stream-tab-status-layer::before {
   animation: stream-energy-charge 2.65s cubic-bezier(0.22, 0.65, 0.3, 1) infinite;
 }
 
 :root[data-stream-status-effect="energy"]
   .task-workspace-item[data-unread][data-answer-arrived]:not([data-running])::before,
 :root[data-stream-status-effect="energy"]
-  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-card::before {
+  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-status-layer::before {
   animation: stream-energy-ready 0.92s ease-out 2;
 }
 
 :root[data-stream-status-style="fill"][data-stream-status-effect="energy"]
   .task-workspace-item[data-running]::before,
 :root[data-stream-status-style="fill"][data-stream-status-effect="energy"]
-  .stream-tab[data-running] .stream-tab-card::before,
+  .stream-tab[data-running] .stream-tab-status-layer::before,
 :root[data-stream-status-style="fill"][data-stream-status-effect="energy"]
   .task-workspace-item[data-unread]:not([data-running])::before,
 :root[data-stream-status-style="fill"][data-stream-status-effect="energy"]
-  .stream-tab[data-answer-ready] .stream-tab-card::before {
+  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
   border-radius: inherit;
   box-shadow: none;
   height: auto;
@@ -6226,7 +7036,7 @@ html[data-surface="mobile"]
 :root[data-stream-status-style="fill"][data-stream-status-effect="energy"]
   .task-workspace-item[data-unread]:not([data-running])::before,
 :root[data-stream-status-style="fill"][data-stream-status-effect="energy"]
-  .stream-tab[data-answer-ready] .stream-tab-card::before {
+  .stream-tab[data-answer-ready] .stream-tab-status-layer::before {
   opacity: 0.4;
 }
 
@@ -6234,8 +7044,8 @@ html[data-surface="mobile"]
    разрешает темам выбирать только объявленные ниже радиусы и зазоры токенами. */
 @media (min-width: 860px) {
   html:not([data-surface="mobile"]) .app-header {
-    backdrop-filter: blur(18px) saturate(150%) !important;
-    -webkit-backdrop-filter: blur(18px) saturate(150%) !important;
+    backdrop-filter: var(--shell-header-backdrop-filter, blur(18px) saturate(150%)) !important;
+    -webkit-backdrop-filter: var(--shell-header-backdrop-filter, blur(18px) saturate(150%)) !important;
     background: var(--shell-header-background, color-mix(in srgb, var(--bg) 82%, transparent)) !important;
     border: 0 !important;
     border-bottom: var(--shell-header-border, 1px solid var(--line)) !important;
@@ -6757,19 +7567,19 @@ html[data-surface="mobile"]
 
 @media (prefers-reduced-motion: reduce) {
   :root[data-stream-status-effect="impulse"] .task-workspace-item[data-running]::after,
-  :root[data-stream-status-effect="impulse"] .stream-tab[data-running] .stream-tab-card::after {
+  :root[data-stream-status-effect="impulse"] .stream-tab[data-running] .stream-tab-status-layer::after {
     animation: none;
     transform: translateX(70%);
   }
 
   :root[data-stream-status-effect="scanner"] .task-workspace-item[data-running]::after,
-  :root[data-stream-status-effect="scanner"] .stream-tab[data-running] .stream-tab-card::after {
+  :root[data-stream-status-effect="scanner"] .stream-tab[data-running] .stream-tab-status-layer::after {
     animation: none;
     transform: translateX(96%);
   }
 
   :root[data-stream-status-effect="energy"] .task-workspace-item[data-running]::before,
-  :root[data-stream-status-effect="energy"] .stream-tab[data-running] .stream-tab-card::before {
+  :root[data-stream-status-effect="energy"] .stream-tab[data-running] .stream-tab-status-layer::before {
     animation: none;
     opacity: 0.72;
     transform: scaleX(0.72);
@@ -6780,9 +7590,9 @@ html[data-surface="mobile"]
   :root[data-stream-status-effect]:not([data-stream-status-effect="off"])
     .task-workspace-item[data-unread]:not([data-running])::after,
   :root[data-stream-status-effect]:not([data-stream-status-effect="off"])
-    .stream-tab[data-answer-ready] .stream-tab-card::before,
+    .stream-tab[data-answer-ready] .stream-tab-status-layer::before,
   :root[data-stream-status-effect]:not([data-stream-status-effect="off"])
-    .stream-tab[data-answer-ready] .stream-tab-card::after {
+    .stream-tab[data-answer-ready] .stream-tab-status-layer::after {
     animation: none;
   }
 }
@@ -7023,7 +7833,7 @@ html[data-surface="mobile"]
 }
 
 .chat-pane[data-dialog-settings-open] {
-  grid-template-columns: minmax(0, 1fr) clamp(17rem, 28vw, 22rem);
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .stream-chat-columns[data-multi-stream] > .chat-pane[data-dialog-settings-open] {
@@ -7289,14 +8099,17 @@ html[data-surface="mobile"]
 }
 
 .dialog-settings {
+  /* Общая мера правой колонки карточки: чип агента, селекты и тумблеры
+     выстраиваются по одному левому и правому краю. */
+  --dialog-control-width: 13rem;
+  --dialog-control-height: 2.125rem;
   background:
     radial-gradient(120% 60% at 90% -20%, var(--space-glow-a), transparent 60%),
     color-mix(in srgb, var(--space-base) 96%, transparent);
-  border-left: 1px solid var(--line-strong);
+  border: 1px solid var(--line-strong);
   display: flex;
   flex-direction: column;
-  grid-column: 2;
-  grid-row: 1;
+  height: min(90dvh, 56rem);
   min-height: 0;
   min-width: 0;
   overflow: hidden;
@@ -7306,12 +8119,17 @@ html[data-surface="mobile"]
   display: none;
 }
 
+.dialog-settings:not([open]) {
+  display: none;
+}
+
 .dialog-settings-head {
   align-items: center;
   border-bottom: 1px solid var(--line);
   display: flex;
   flex: 0 0 auto;
   gap: 0.6rem;
+  justify-content: space-between;
   min-height: 3rem;
   padding: 0.7rem 0.9rem;
 }
@@ -7346,8 +8164,348 @@ html[data-surface="mobile"]
   padding: 0.85rem 0.8rem max(1rem, env(safe-area-inset-bottom));
 }
 
-.agent-rules-card {
+/* Подписи полей карточки Stream — той же меры, что в карточках Workspace
+   и задачи; общая настроечная панель приложения свой размер сохраняет. */
+.dialog-settings .setting-name,
+.dialog-settings .switch-text,
+.dialog-settings .setting-value {
+  font-size: var(--card-label-size);
+}
+
+.quick-messages-editor {
+  background: color-mix(in srgb, var(--surface-1) 88%, transparent);
+  border: 1px solid var(--line);
+  border-radius: calc(var(--radius-md) + 0.15rem);
+  margin-inline: auto;
+  max-width: 38.75rem;
+  min-width: 0;
+  overflow: hidden;
+  width: 100%;
+}
+
+.workspace-card-fields .quick-messages-editor {
+  min-height: max-content;
+}
+
+.quick-message-editor-header {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+  min-height: 3rem;
+  padding: 0.75rem 1rem;
+}
+
+.quick-message-editor-header .setting-name {
+  align-items: center;
+  display: inline-flex;
+  font-family: var(--font-numeric);
+  font-size: 0.72rem;
+  font-weight: 600;
+  gap: 0.55rem;
+  letter-spacing: 0.075em;
+  min-width: 0;
+  text-transform: uppercase;
+}
+
+.quick-message-editor-header .setting-name::before {
+  background: var(--accent);
+  border-radius: 50%;
+  content: "";
+  flex: 0 0 auto;
+  height: 0.4rem;
+  width: 0.4rem;
+}
+
+.quick-message-editor-header .setting-value {
+  color: var(--text-muted);
+  flex: 0 0 auto;
+  font-family: var(--font-numeric);
+  font-size: 0.72rem;
+}
+
+.quick-messages-editor-controls {
+  min-width: 0;
+}
+
+.quick-message-editor-rows {
+  min-width: 0;
+}
+
+.quick-message-editor-rows:empty {
+  display: none;
+}
+
+.quick-message-editor-row {
+  background: color-mix(in srgb, var(--surface-1) 72%, transparent);
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+
+.quick-message-editor-row.is-open {
+  background: color-mix(in srgb, var(--surface-2) 82%, transparent);
+}
+
+.quick-message-editor-summary-row {
+  align-items: center;
+  display: grid;
+  column-gap: 0.5rem;
+  row-gap: 0.25rem;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  min-width: 0;
+  padding: 0.35rem 0.65rem 0.35rem 0.9rem;
+}
+
+.quick-message-editor-summary {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: auto minmax(5rem, auto) minmax(0, 1fr);
+  min-height: 2.65rem;
+  min-width: 0;
+  padding: 0.35rem 0.45rem;
+  text-align: left;
+  width: 100%;
+}
+
+.quick-message-editor-summary:hover:not(:disabled),
+.quick-message-editor-summary:focus-visible,
+.quick-message-editor-action:hover:not(:disabled),
+.quick-message-editor-action:focus-visible,
+.quick-message-editor-add:hover:not(:disabled),
+.quick-message-editor-add:focus-visible {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.quick-message-editor-number {
+  background: var(--surface-3);
+  border-radius: 0.35rem;
+  color: var(--text-muted);
+  font-family: var(--font-numeric);
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  padding: 0.22rem 0.35rem;
+}
+
+.quick-message-editor-title {
+  font-size: 0.86rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quick-message-editor-preview {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quick-message-editor-chevron,
+.quick-message-editor-action-icon,
+.quick-message-editor-add-icon {
+  fill: currentColor;
+  height: 1rem;
+  width: 1rem;
+}
+
+.quick-message-editor-order,
+.quick-message-editor-footer-order,
+.quick-message-editor-footer {
+  align-items: center;
+  display: flex;
+}
+
+.quick-message-editor-order {
+  gap: 0.1rem;
+}
+
+.quick-message-editor-action {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  display: inline-flex;
+  font: inherit;
+  font-size: 0.76rem;
+  gap: 0.35rem;
+  justify-content: center;
+  min-height: 2rem;
+  padding: 0.35rem 0.55rem;
+}
+
+.quick-message-editor-order .quick-message-editor-action {
+  border-color: transparent;
+  min-width: 2rem;
+  padding: 0.35rem;
+}
+
+.quick-message-editor-action.toggle {
+  border-color: transparent;
+  min-width: 2rem;
+  padding: 0.35rem;
+}
+
+.quick-message-editor-action.danger {
+  color: var(--danger, #ff7b7b);
+}
+
+.quick-message-editor-action:disabled,
+.quick-message-editor-add:disabled,
+.quick-message-editor-summary:disabled {
+  cursor: default;
+  opacity: 0.42;
+}
+
+.quick-message-editor-details {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.15rem 1rem 0.9rem;
+}
+
+.quick-message-editor-details[hidden] {
+  display: none;
+}
+
+.quick-message-editor-row input,
+.quick-message-editor-row textarea,
+.stream-card-name-field input {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font: inherit;
+  padding: 0.45rem 0.55rem;
+  width: 100%;
+}
+
+.quick-message-editor-row textarea {
+  line-height: 1.5;
+  min-height: 6.5rem;
+  resize: vertical;
+}
+
+.quick-message-editor-footer {
+  gap: 0.6rem;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.quick-message-editor-footer-order {
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.quick-message-editor-add {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--accent);
+  display: flex;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  gap: 0.45rem;
+  min-height: 2.9rem;
+  padding: 0.75rem 1rem;
+  text-align: left;
+  width: 100%;
+}
+
+.quick-message-editor-error {
+  background: color-mix(in srgb, var(--danger, #ff7b7b) 10%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--danger, #ff7b7b) 35%, var(--line));
+  color: var(--danger, #ff7b7b);
+  font-size: 0.76rem;
+  padding: 0.55rem 1rem;
+}
+
+.quick-messages-settings-row {
+  margin-top: 0.7rem;
+}
+
+.stream-card-actions {
+  align-items: stretch;
+  display: grid;
+  gap: 0.55rem;
+}
+
+/* Все действия одной высоты, а необратимое отделено от обычных пропуском. */
+.stream-card-actions .chip-button {
+  justify-content: center;
+  min-height: 2.45rem;
+}
+
+.stream-card-actions .stream-card-archive {
+  border-radius: var(--radius-chip);
+  font-size: 0.76rem;
+  margin-top: 0.45rem;
+}
+
+.stream-agent-rules {
+  padding-bottom: 0.45rem;
+}
+
+.stream-card-actions-section {
+  padding-top: 0.45rem;
+}
+
+.settings-card.stream-card-actions {
+  padding-block: 0.5rem;
+}
+
+.stream-card-move-menu {
+  background-color: var(--bg);
+  background-image: var(--card-bg-open);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  box-shadow: 0 1rem 3rem rgb(0 0 0 / 72%), var(--card-shadow);
+  color: var(--text);
+  display: grid;
+  gap: 0.25rem;
+  inset: auto;
+  margin: 0;
+  max-height: min(18rem, calc(100dvh - 2rem));
+  min-width: min(22rem, calc(100vw - 2rem));
+  overflow-y: auto;
+  padding: 0.4rem;
+  position: fixed;
+}
+
+.stream-card-move-menu:not(:popover-open) {
+  display: none;
+}
+
+.stream-card-move-option {
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 0.55rem 0.65rem;
+  text-align: left;
+}
+
+.stream-card-move-option:hover,
+.stream-card-move-option:focus-visible {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  outline: none;
+}
+
+.settings-card.agent-rules-card {
   gap: 0;
+  padding-bottom: 0.5rem;
 }
 
 .stream-agent-rules textarea {
@@ -7368,10 +8526,21 @@ html[data-surface="mobile"]
   grid-template-columns: minmax(0, auto) minmax(0, 1fr);
 }
 
+/* Чипы агента занимают ту же колонку, что селекты соседних строк: ширина
+   и высота контролов карточки общие, иначе строка «Агент» выпадала из ряда. */
 .dialog-agent-options {
-  grid-template-columns: repeat(auto-fit, minmax(5.8rem, auto));
-  justify-content: end;
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+  justify-content: stretch;
   justify-self: end;
+  max-width: var(--dialog-control-width);
+  width: 100%;
+}
+
+.dialog-agent-options .option-chip {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+  min-height: var(--dialog-control-height);
 }
 
 .dialog-agent {
@@ -7612,6 +8781,10 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   font-size: 0.72rem;
   font-weight: 620;
 }
+
+.msg-head:has(.msg-upload-actions) { flex-wrap: wrap; }
+.msg-upload-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; width: 100%; }
+.msg-upload-actions button { white-space: normal; }
 
 .msg-stage {
   color: var(--accent);
@@ -8040,6 +9213,7 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
 .queue-accept,
 .queue-steer,
 .queue-edit,
+.queue-move,
 .queue-pause {
   background: color-mix(in srgb, var(--accent) 10%, transparent);
   border: 1px solid var(--accent-line);
@@ -8054,11 +9228,18 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
 .queue-accept:hover,
 .queue-steer:hover,
 .queue-edit:hover,
+.queue-move:hover:not(:disabled),
 .queue-pause:hover {
   color: var(--text);
 }
 
-.queue-steer:disabled {
+.queue-move {
+  min-width: 1.7rem;
+  padding-inline: 0.35rem;
+}
+
+.queue-steer:disabled,
+.queue-move:disabled {
   cursor: not-allowed;
   opacity: 0.52;
 }
@@ -8080,6 +9261,14 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
 .attachment-remove:hover,
 .annotation-remove:hover {
   color: #ff9d9d;
+}
+
+.queue-remove {
+  border: 1px solid color-mix(in srgb, #ff9d9d 38%, transparent);
+  border-radius: var(--radius-chip);
+  font-size: 0.7rem;
+  line-height: normal;
+  padding: 0.2rem 0.55rem;
 }
 
 /* ======================================================= композер === */
@@ -8128,7 +9317,8 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   font-size: 0.78rem;
   font-style: italic;
   line-height: 1.4;
-  overflow: hidden;
+  max-height: 8.4em;
+  overflow: auto;
   overflow-wrap: anywhere;
 }
 
@@ -8449,6 +9639,12 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
 
 .attachment-viewer-loading {
   color: #f4f8fa;
+  max-width: min(80vw, 32rem);
+  text-align: center;
+}
+
+.attachment-viewer-loading.is-error {
+  color: #ffb5ad;
 }
 
 .attachment-viewer-close {
@@ -9374,6 +10570,26 @@ html[data-surface="mobile"] .chat-stop-bottom > span {
   max-width: 11rem;
 }
 
+.prompt-template-action-row {
+  align-items: center;
+  grid-template-columns: minmax(0, 1fr) minmax(8.5rem, 11rem);
+}
+
+.prompt-template-action-copy {
+  display: grid;
+  min-width: 0;
+}
+
+.prompt-template-action-row .switch-note {
+  overflow-wrap: anywhere;
+}
+
+.prompt-template-action-row > select,
+.prompt-template-action-row > .themed-select {
+  max-width: 11rem;
+  min-width: 0;
+}
+
 .quick-messages-settings-row {
   display: grid;
   gap: 0.35rem;
@@ -9382,29 +10598,6 @@ html[data-surface="mobile"] .chat-stop-bottom > span {
 
 .quick-messages-settings-row .setting-name {
   overflow-wrap: anywhere;
-}
-
-.quick-messages-settings-control {
-  align-items: center;
-  display: flex;
-  gap: 0.75rem;
-  justify-content: space-between;
-  min-width: 0;
-}
-
-.quick-messages-settings-control .setting-value {
-  color: var(--text-muted);
-  flex: 1 1 auto;
-  font-size: 0.78rem;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.quick-messages-settings-control > .chip-button {
-  flex: 0 0 auto;
-  justify-content: center;
 }
 
 .setting-field select option {
@@ -9556,7 +10749,7 @@ html[data-surface="mobile"] .chat-stop-bottom > span {
 }
 
 .dialog-settings .setting-row > .themed-select {
-  max-width: 13rem;
+  max-width: var(--dialog-control-width);
 }
 
 .theme-picker .themed-select,
@@ -10373,6 +11566,19 @@ html[data-surface="mobile"] .limits-chart-svg {
   transform: translate(-50%, 0.6rem);
   transition: opacity 0.2s ease, transform 0.2s ease;
   z-index: 80;
+  align-items: center;
+  display: flex;
+  gap: 0.75rem;
+}
+
+.toast button {
+  background: transparent;
+  border: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  padding: 0;
 }
 
 .toast.visible {
@@ -10505,13 +11711,55 @@ html[data-surface="mobile"][data-theme] .dialog-settings {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
   background: var(--bg);
-  border-left: 0;
-  grid-column: 1;
-  grid-row: 1;
-  justify-self: end;
+  border: 1px solid var(--line-strong);
   max-width: 24rem;
   width: 100%;
   z-index: 20;
+}
+
+html[data-surface="mobile"] .quick-message-editor-summary-row,
+html[data-surface="webview"] .quick-message-editor-summary-row {
+  align-items: start;
+}
+
+html[data-surface="mobile"] .quick-message-editor-summary,
+html[data-surface="webview"] .quick-message-editor-summary {
+  grid-template-columns: auto minmax(0, 1fr);
+  row-gap: 0.2rem;
+}
+
+html[data-surface="mobile"] .quick-message-editor-preview,
+html[data-surface="webview"] .quick-message-editor-preview {
+  grid-column: 2 / -1;
+  grid-row: 2;
+}
+
+html[data-surface="mobile"] .quick-message-editor-action,
+html[data-surface="mobile"] .quick-message-editor-add,
+html[data-surface="mobile"] .quick-message-editor-summary {
+  min-height: 2.75rem;
+}
+
+html[data-surface="mobile"] .quick-message-editor-order .quick-message-editor-action {
+  min-width: 2.75rem;
+}
+
+html[data-surface="mobile"] .quick-message-editor-action.toggle {
+  min-width: 2.75rem;
+}
+
+html[data-surface="mobile"] .quick-message-editor-footer {
+  align-items: stretch;
+  flex-direction: column;
+}
+
+html[data-surface="mobile"] .quick-message-editor-footer-order {
+  align-items: stretch;
+}
+
+html[data-surface="mobile"] .quick-message-editor-footer-order .quick-message-editor-action,
+html[data-surface="mobile"] .quick-message-editor-footer > .quick-message-editor-action {
+  flex: 1 1 auto;
 }
 
 html[data-surface="mobile"][data-pane="tasks"] .chat {
@@ -11202,9 +12450,46 @@ details:not([open]) > summary[data-journal-ledger-summary] [data-journal-ledger-
   padding: 0.25rem 1.35rem 1.35rem;
 }
 
+[data-journal-ledger-expanded] > :is(
+  [data-journal-virtual-turns],
+  [data-journal-virtual-flat-turns],
+  [data-work-log-workspace-streams],
+  [data-journal-day-expanded]
+) {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+[data-journal-virtual-turns][aria-busy="true"] [data-journal-turn-table]::before,
+[data-journal-virtual-flat-turns][aria-busy="true"] [data-journal-turn-table]::before {
+  color: var(--text-muted);
+  content: "Загрузка ходов…";
+  display: block;
+  padding: 0.8rem;
+}
+
+[data-journal-turn-show-more] {
+  margin: 0.75rem 0;
+}
+
 [data-journal-ledger-expanded] > [data-work-log-task-profile] {
   align-items: stretch;
   align-self: start;
+  background: transparent;
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0;
+  min-height: 0;
+  padding: 0;
+  width: 100%;
+}
+
+[data-journal-ledger-expanded]
+  :is([data-journal-virtual-task-profile], [data-journal-virtual-workspace-profile])
+  > [data-work-log-task-profile] {
+  align-items: stretch;
   background: transparent;
   border: 0;
   display: flex;
@@ -11362,15 +12647,21 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
   .journal [data-journal-turn-table]
   details[data-work-log-turn-details] > summary,
 .journal [data-journal-turn-table] details[data-work-log-turn-details] > summary {
-  grid-template-columns: 15.5rem minmax(0, 1fr) auto auto;
+  grid-template-columns: 23rem minmax(0, 1fr) auto auto;
   min-height: 2.35rem;
 }
 
 .journal [data-journal-turn-table] [data-work-log-turn-meta] {
   display: grid;
-  gap: 0.7rem;
-  grid-template-columns: minmax(8.5rem, 1fr) 5.5rem;
+  gap: 0.45rem;
+  grid-template-columns: minmax(10.75rem, 1fr) 6.2rem 3.2rem;
   padding: 0.48rem 0.65rem;
+}
+
+.journal details[data-journal-virtual-mode="date"]
+  [data-journal-turn-table]
+  [data-work-log-turn-day] {
+  display: none;
 }
 
 .journal [data-journal-turn-table] [data-journal-turn-when],
@@ -11386,7 +12677,7 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
 }
 
 .journal [data-journal-turn-table] [data-work-log-turn-share] {
-  display: none;
+  display: inline;
 }
 
 .journal [data-journal-turn-table] [data-work-log-turn-title] {
@@ -11434,9 +12725,9 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
   border: 0;
   color: var(--text-soft);
   cursor: pointer;
-  display: flex;
-  gap: 0.6rem;
-  justify-content: space-between;
+  display: grid;
+  gap: 0.38rem 0.6rem;
+  grid-template-columns: minmax(0, 1fr) auto;
   padding: 0.62rem 0.7rem;
   text-align: left;
   width: 100%;
@@ -11447,6 +12738,8 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
 }
 
 [data-journal-day-picker-title] {
+  grid-column: 1;
+  grid-row: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -11464,26 +12757,37 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
 }
 
 [data-journal-day-picker-credits] {
+  align-items: baseline;
+  display: inline-flex;
   flex: 0 0 auto;
+  grid-column: 2;
+  grid-row: 2;
   font-family: var(--font-numeric);
   font-size: 0.74rem;
 }
 
 [data-journal-day-picker-turns] {
   color: var(--text-muted);
-  display: none;
+  display: inline;
   flex: 0 0 auto;
+  grid-column: 2;
+  grid-row: 1;
   font-family: var(--font-numeric);
   font-size: 0.68rem;
   text-transform: uppercase;
 }
 
-[data-journal-day-picker-item][data-selected] [data-journal-day-picker-turns] {
-  display: inline;
+[data-journal-day-picker-duration] {
+  color: var(--text-muted);
+  font-family: var(--font-numeric);
+  font-size: 0.72rem;
+  grid-column: 1;
+  grid-row: 2;
+  white-space: nowrap;
 }
 
-[data-journal-day-picker-item][data-selected] [data-journal-day-picker-credits] {
-  display: none;
+[data-journal-day-picker-share] {
+  color: var(--text-muted);
 }
 
 [data-journal-day-breakdown] {
@@ -11867,18 +13171,82 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
   min-width: 0;
 }
 
+[data-work-log-account-provider-rail] {
+  align-self: stretch;
+  display: flex;
+  flex: 0 0 var(--rail-width);
+  flex-direction: column;
+  min-height: 1.35rem;
+  overflow: hidden;
+  width: var(--rail-width);
+}
+
+[data-work-log-account-provider-rail-segment] {
+  background: var(--account-provider-color, var(--provider-none));
+  flex: 1 1 0;
+  min-height: 2px;
+}
+
 [data-work-log-account-provider-name] {
-  color: var(--text-soft);
+  align-items: baseline;
+  display: inline-flex;
   font-size: 0.75rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-[data-work-log-account-plan] {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
+[data-work-log-account-provider-label] {
+  color: var(--account-provider-color, var(--text-soft));
+}
+
+[data-work-log-account-provider-separator] {
   color: var(--text-faint);
+}
+
+[data-provider-tone="codex"] {
+  --account-provider-hue: var(--provider-codex-hue);
+  --account-provider-color: oklch(
+    var(--provider-tone-lightness)
+    var(--provider-tone-chroma)
+    var(--account-provider-hue)
+  );
+  --account-provider-tint: oklch(
+    var(--provider-tone-lightness)
+    var(--provider-tone-chroma)
+    var(--account-provider-hue)
+    / var(--provider-tone-alpha)
+  );
+}
+
+[data-provider-tone="claude"] {
+  --account-provider-hue: var(--provider-claude-hue);
+  --account-provider-color: oklch(
+    var(--provider-tone-lightness)
+    var(--provider-tone-chroma)
+    var(--account-provider-hue)
+  );
+  --account-provider-tint: oklch(
+    var(--provider-tone-lightness)
+    var(--provider-tone-chroma)
+    var(--account-provider-hue)
+    / var(--provider-tone-alpha)
+  );
+}
+
+[data-provider-tone="unknown"] {
+  --account-provider-color: var(--provider-none);
+}
+
+[data-work-log-account-plan] {
+  background: var(--account-provider-tint, var(--surface-2));
+  border: 1px solid color-mix(
+    in srgb,
+    var(--account-provider-color, var(--provider-none)) 58%,
+    transparent
+  );
+  border-radius: var(--radius-sm);
+  color: var(--account-provider-color, var(--text-faint));
   font-family: var(--font-numeric);
   font-size: 0.65rem;
   overflow: hidden;
@@ -12284,7 +13652,9 @@ html[data-surface="mobile"] [data-work-log-account-group][data-open] {
   background: var(--surface-2);
   border: 0;
   border-radius: var(--radius-md);
+  overflow: hidden;
   padding: 0.75rem;
+  position: relative;
 }
 
 html[data-surface="mobile"] [data-work-log-account-row],
@@ -12351,17 +13721,26 @@ html[data-surface="mobile"] [data-work-log-account-row] > [data-work-log-account
   order: 60;
 }
 
-html[data-surface="mobile"] [data-work-log-account-provider-name],
-html[data-surface="mobile"] [data-work-log-account-plan] {
+html[data-surface="mobile"] [data-work-log-account-provider-name] {
   border: 0;
-  color: var(--text-faint);
   font-family: var(--font-body);
   font-size: 0.69rem;
   padding: 0;
 }
 
-html[data-surface="mobile"] [data-work-log-account-plan]::before {
-  content: "· ";
+html[data-surface="mobile"] [data-work-log-account-plan] {
+  border: 0;
+  border-radius: calc(var(--radius-sm) * 0.7);
+  font-size: 0.62rem;
+  padding: 0.08rem 0.28rem;
+}
+
+html[data-surface="mobile"] [data-work-log-account-provider-rail] {
+  bottom: 0;
+  left: 0;
+  min-height: 0;
+  position: absolute;
+  top: 0;
 }
 
 html[data-surface="mobile"] [data-work-log-account-row] > [data-work-log-account-share] {
@@ -12545,14 +13924,14 @@ html[data-surface="mobile"] [data-work-log-account-empty] {
 }
 
 .journal [data-journal-day-panel] details[data-work-log-turn-details] > summary {
-  grid-template-columns: 14rem minmax(0, 1fr) auto auto;
+  grid-template-columns: 23rem minmax(0, 1fr) auto auto;
   min-height: 2.35rem;
 }
 
 .journal [data-journal-day-panel] [data-work-log-turn-meta] {
   display: grid;
-  gap: 0.6rem;
-  grid-template-columns: 3.2rem 4.6rem 2.9rem;
+  gap: 0.45rem;
+  grid-template-columns: minmax(10.75rem, 1fr) 6.2rem 3.2rem;
   padding: 0.48rem 0.65rem;
 }
 
@@ -13127,6 +14506,28 @@ html[data-view="server"] .server-view {
   gap: 0.22rem;
   min-width: 0;
   padding: 0.65rem 0.72rem;
+}
+
+.server-account-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.3rem;
+}
+
+.server-account-code-row {
+  display: grid;
+  gap: 0.3rem;
+  margin-top: 0.3rem;
+}
+
+.server-account-code {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.server-account[data-status="failed"] small {
+  color: var(--danger, var(--text-soft));
 }
 
 .server-config-row {
@@ -13941,12 +15342,28 @@ html[data-surface="mobile"] .server-config-inline-label {
   fill: var(--usage-device-color);
 }
 
+.limits-burn-average-segment {
+  opacity: 0.72;
+  stroke-dasharray: 5 4;
+  stroke-linecap: round;
+  stroke-width: 1.5;
+}
+
 .limits-burn-target-line {
-  opacity: 0.62;
-  stroke-dasharray: 5 5;
+  opacity: 0.68;
+  stroke-dasharray: 1 5;
   stroke-linecap: round;
   stroke-linejoin: round;
-  stroke-width: 1.5;
+  stroke-width: 1.7;
+}
+
+.limits-burn-target-line.is-off-scale {
+  opacity: 0.82;
+}
+
+.limits-burn-average-segment.is-preliminary,
+.limits-burn-rate-segment.is-preliminary {
+  opacity: 0.42;
 }
 
 .limits-burn-normal-line {
@@ -14030,14 +15447,6 @@ html[data-surface="mobile"] .server-config-inline-label {
 
 .limits-speed-summary-card.is-over-target {
   border-left-color: var(--danger, #ff7f8d);
-}
-
-.limits-speed-summary-card.is-waiting {
-  border-left-color: var(--pending, #e8bd69);
-}
-
-.limits-speed-summary-card.is-waiting .limits-speed-summary-status {
-  color: var(--pending, #e8bd69);
 }
 
 .limits-speed-summary-name {
@@ -14336,13 +15745,13 @@ html[data-surface="mobile"] .comparison-series-picker > .limits-legend-value {
 }
 
 .settings-section-title {
-  color: var(--text-faint);
-  font-family: var(--font-title);
-  font-size: 0.63rem;
-  font-weight: 700;
-  letter-spacing: 0.18em;
+  color: var(--section-heading-color);
+  font-family: var(--section-heading-family);
+  font-size: var(--section-heading-size);
+  font-weight: var(--section-heading-weight);
+  letter-spacing: var(--section-heading-spacing);
   margin: 0 0 0 0.15rem;
-  text-transform: uppercase;
+  text-transform: var(--section-heading-transform);
 }
 
 .compact-options {
@@ -14968,18 +16377,6 @@ html[data-browser-auth] {
 .chart-rail-account-control .themed-select {
   min-width: 0;
   width: 100%;
-}
-
-.chart-rail-switch {
-  margin: 0.15rem 0 0;
-}
-
-.chart-rail-switch .switch-text {
-  font-size: 0.74rem;
-}
-
-.chart-rail-switch .switch-note {
-  font-size: 0.68rem;
 }
 
 .chart-main {

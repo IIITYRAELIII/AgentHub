@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -867,4 +868,391 @@ test("shared Dashboard bot accepts a text reply clarification without a source k
   assert.equal(handled[0].params.replyMessageId, 7);
   assert.equal(handled[0].params.text, "надо сдать..");
   assert.equal(handled[0].params.sourceKey, undefined);
+});
+
+test("failed attachment stops scheduling chunks and drains every started download before retry", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-attachment-drain-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const secretFile = path.join(directory, "secret");
+  await writeFile(secretFile, "s".repeat(64), "utf8");
+  const attachmentId = "018f6c86-3f34-7a31-8f27-16f5b96ccea2";
+  const command = {
+    id: "018f6c86-3f34-7a31-8f27-16f5b96ccea3", userId: "42", action: "board-task-ingest",
+    params: { text: "request", sourceKey: "shared-dashboard:123", attachments: [`remote-attachment:${attachmentId}`] },
+  };
+  const body = Buffer.alloc(10 * 16 * 1024, 7);
+  const transport = attachmentChunkTransport(body, { id: attachmentId });
+  const started = [];
+  const gates = Array.from({ length: 8 }, () => Promise.withResolvers());
+  const allStarted = Promise.withResolvers();
+  const firstError = Object.assign(new TypeError("fetch failed on first chunk"), { code: "ECONNRESET" });
+  let firstAttempt = true;
+  let handled = 0;
+  let results = 0;
+  const client = new SharedDashboardBotClient({
+    publicUrl: "https://hub.example.com", hubId: "018f6c86-3f34-7a31-8f27-16f5b96ccea4", secretFile,
+    attachmentDirectory: path.join(directory, "attachments"),
+    fetchImpl: async (url, options) => {
+      if (url.endsWith("/api/dashboard-bot/pull")) return Response.json({ commands: [command] });
+      if (url.endsWith("/api/dashboard-bot/result")) { results += 1; return Response.json({ ok: true }); }
+      const payload = JSON.parse(options.body);
+      assert.equal(payload.commandId, command.id);
+      if (firstAttempt && payload.mode === "chunk") {
+        started.push(payload.index);
+        if (started.length === 8) allStarted.resolve();
+        await gates[payload.index]?.promise;
+      }
+      return transport(payload);
+    },
+    handler: async ({ params }) => {
+      assert.deepEqual(await readFile(params.attachments[0]), body);
+      handled += 1;
+      return {};
+    },
+  });
+  let settled = false;
+  const attempt = client.poll().then(
+    () => { settled = true; return null; },
+    (error) => { settled = true; return error; },
+  );
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+  try {
+    await allStarted.promise;
+    gates[5].reject(firstError);
+    await flush();
+    gates[1].resolve();
+    await flush();
+    assert.deepEqual([...started].sort((a, b) => a - b), [0, 1, 2, 3, 4, 5, 6, 7]);
+    assert.equal(settled, false);
+    assert.equal(handled, 0);
+    assert.equal(results, 0);
+    gates[0].reject(new TypeError("fetch failed on later chunk"));
+    for (const gate of gates) gate.resolve();
+    const error = await attempt;
+    assert.equal(error.code, firstError.code);
+    let cause = error;
+    while (cause && cause !== firstError) cause = cause.cause;
+    assert.equal(cause, firstError);
+    firstAttempt = false;
+    assert.equal(await client.poll(), 1);
+    assert.equal(handled, 1);
+    assert.equal(results, 1);
+  } finally {
+    for (const gate of gates) gate.resolve();
+    await attempt;
+  }
+});
+
+for (const phase of ["headers", "body"]) {
+  test(`shared Dashboard bot diagnoses a real HTTP ${phase} timeout without acknowledging the command`, async (context) => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-attachment-diagnostic-"));
+    context.after(() => rm(directory, { recursive: true, force: true }));
+    const secretFile = path.join(directory, "secret");
+    const secret = "private-signing-key-".repeat(4);
+    await writeFile(secretFile, secret, "utf8");
+    const attachmentId = "018f6c86-3f34-7a31-8f27-16f5b96ccea2";
+    const command = {
+      id: "018f6c86-3f34-7a31-8f27-16f5b96ccea3", userId: "private-user-id", action: "board-task-ingest",
+      params: { text: "private-message-text", sourceKey: "shared-dashboard:123", attachments: [`remote-attachment:${attachmentId}`] },
+    };
+    const transport = attachmentChunkTransport(Buffer.from("private-file-bytes"), { id: attachmentId, name: "private-file.bin" });
+    let stalled = true;
+    let handled = 0;
+    let results = 0;
+    const server = createServer(async (request, response) => {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      let result;
+      if (request.url === "/api/dashboard-bot/pull") result = Response.json({ commands: [command] });
+      else if (request.url === "/api/dashboard-bot/result") { results += 1; result = Response.json({ ok: true }); }
+      else {
+        const payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        result = transport(payload);
+        if (stalled && (phase === "headers" || payload.mode === "chunk")) {
+          if (phase === "body") {
+            response.writeHead(200, Object.fromEntries(result.headers));
+            response.write(Buffer.from("pri"));
+          }
+          return;
+        }
+      }
+      response.writeHead(result.status, Object.fromEntries(result.headers));
+      response.end(Buffer.from(await result.arrayBuffer()));
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    context.after(async () => {
+      const closed = new Promise((resolve) => server.close(resolve));
+      server.closeAllConnections();
+      await closed;
+    });
+    const publicUrl = `http://127.0.0.1:${server.address().port}`;
+    const client = new SharedDashboardBotClient({
+      publicUrl, hubId: "018f6c86-3f34-7a31-8f27-16f5b96ccea4", secretFile,
+      attachmentDirectory: path.join(directory, "attachments"), attachmentTimeoutMs: 100,
+      handler: async () => { handled += 1; return {}; },
+    });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await assert.rejects(client.poll(), (error) => {
+        assert.ok(["AbortError", "TimeoutError"].includes(error.name));
+        assert.equal(error.retryable, true);
+        const diagnostic = error.attachmentTransport;
+        assert.equal(diagnostic.phase, phase);
+        assert.equal(diagnostic.mode, phase === "headers" ? "manifest" : "chunk");
+        assert.equal(diagnostic.page, phase === "headers" ? 0 : null);
+        assert.equal(diagnostic.index, phase === "body" ? 0 : null);
+        assert.equal(diagnostic.status, phase === "body" ? 200 : null);
+        assert.equal(diagnostic.bytes, phase === "body" ? 3 : 0);
+        assert.equal(diagnostic.activeAtStart, 1);
+        assert.equal(diagnostic.activeAtFailure, 1);
+        assert.ok(diagnostic.elapsedMs >= 50);
+        if (phase === "body") {
+          assert.ok(Number.isInteger(diagnostic.headersMs));
+          assert.ok(diagnostic.bodyMs >= 0);
+        } else {
+          assert.equal(diagnostic.headersMs, null);
+          assert.equal(diagnostic.bodyMs, null);
+        }
+        for (const privateValue of [secret, publicUrl, attachmentId, command.id, command.userId, command.params.text, "private-file.bin", "private-file-bytes"]) {
+          assert.equal(error.message.includes(privateValue), false);
+        }
+        return true;
+      });
+    }
+    assert.equal(handled, 0);
+    assert.equal(results, 0);
+    stalled = false;
+    assert.equal(await client.poll(), 1);
+    assert.equal(handled, 1);
+    assert.equal(results, 1);
+  });
+}
+
+test("shared Dashboard bot retains transport error causes while logging only allowlisted codes", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-attachment-safe-error-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const secretFile = path.join(directory, "secret");
+  await writeFile(secretFile, "s".repeat(64), "utf8");
+  const command = {
+    id: "018f6c86-3f34-7a31-8f27-16f5b96ccea3", userId: "42", action: "board-task-ingest",
+    params: { text: "request", sourceKey: "shared-dashboard:123", attachments: ["remote-attachment:018f6c86-3f34-7a31-8f27-16f5b96ccea2"] },
+  };
+  for (const code of ["ECONNRESET", "PRIVATE_SIGNED_URL_SECRET", undefined]) {
+    const original = new Error("fetch failed at https://private.example?signature=private-auth-value", {
+      cause: Object.assign(new Error("private-request-body"), { code: code ?? "UND_ERR_HEADERS_TIMEOUT" }),
+    });
+    original.code = code;
+    original.retryAfterMs = 12_345;
+    const client = new SharedDashboardBotClient({
+      publicUrl: "https://hub.example.com", hubId: "018f6c86-3f34-7a31-8f27-16f5b96ccea4", secretFile,
+      attachmentDirectory: path.join(directory, "attachments"),
+      fetchImpl: async (url) => {
+        if (url.endsWith("/api/dashboard-bot/pull")) return Response.json({ commands: [command] });
+        throw original;
+      },
+      handler: async () => assert.fail("timeout must not dispatch"),
+    });
+    await assert.rejects(client.poll(), (error) => {
+      assert.equal(error.name, original.name);
+      assert.equal(error.code, original.code);
+      assert.equal(error.retryAfterMs, original.retryAfterMs);
+      assert.equal(error.attachmentTransport.causeCode, code === "PRIVATE_SIGNED_URL_SECRET" ? null : (code ?? "UND_ERR_HEADERS_TIMEOUT"));
+      let cause = error;
+      while (cause && cause !== original) cause = cause.cause;
+      assert.equal(cause, original);
+      assert.doesNotMatch(error.message, /private|PRIVATE/u);
+      return true;
+    });
+  }
+});
+
+test("отклонённое подтверждение останавливает планирование и дожидается начатых команд", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-shared-bot-pool-drain-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const secretFile = path.join(directory, "shared-dashboard-bot.secret");
+  await writeFile(secretFile, "s".repeat(64), "utf8");
+
+  // Пул берёт ATTACHMENT_COMMAND_CONCURRENCY = 3 команды сразу, четвёртая ждёт
+  // освободившегося worker. Подтверждение первой команды отказывает так же, как
+  // отказывает сегодняшний внешний маршрут: заголовки уже получены, ответа нет.
+  const ids = [
+    "018f6c86-3f34-7a31-8f27-16f5b96cce01",
+    "018f6c86-3f34-7a31-8f27-16f5b96cce02",
+    "018f6c86-3f34-7a31-8f27-16f5b96cce03",
+    "018f6c86-3f34-7a31-8f27-16f5b96cce04",
+  ];
+  const commands = ids.map((id, index) => ({
+    id,
+    userId: "42",
+    action: "board-task-ingest",
+    params: {
+      text: `Задача ${index + 1}`,
+      sourceKey: `shared-dashboard:${100 + index}`,
+      attachments: [`remote-attachment:018f6c86-3f34-7a31-8f27-16f5b96ccf0${index + 1}`],
+    },
+  }));
+
+  let failAcknowledgement;
+  const acknowledgementFailed = new Promise((resolve) => { failAcknowledgement = resolve; });
+  const acknowledged = [];
+  const handled = [];
+  const requested = [];
+  const body = Buffer.from("attachment");
+  const ackError = new Error("acknowledgement body never arrived");
+
+  const client = new SharedDashboardBotClient({
+    publicUrl: "https://hub.example.com",
+    hubId: "018f6c86-3f34-7a31-8f27-16f5b96ccea5",
+    secretFile,
+    attachmentDirectory: path.join(directory, "attachments"),
+    fetchImpl: async (url, init) => {
+      const payload = JSON.parse(String(init?.body ?? "{}"));
+      requested.push({ url, body: String(init?.body ?? "") });
+      if (url.endsWith("/api/dashboard-bot/pull")) return Response.json({ commands });
+      if (url.endsWith("/api/dashboard-bot/attachment/pull")) {
+        return new Response(body, {
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "Content-Length": String(body.length),
+            "X-Agent-Hub-Attachment-Hash": createHash("sha256").update(body).digest("hex"),
+            "X-Agent-Hub-File-Name": encodeURIComponent("attachment.bin"),
+          },
+        });
+      }
+      if (url.endsWith("/api/dashboard-bot/result")) {
+        if (payload.id === ids[0]) {
+          failAcknowledgement();
+          throw ackError;
+        }
+        acknowledged.push(payload.id);
+        return Response.json({ ok: true });
+      }
+      return Response.json({ error: "unexpected request" }, { status: 500 });
+    },
+    handler: async (request) => {
+      handled.push(request.context.commandId);
+      // Соседние worker'ы остаются активными в момент отказа подтверждения.
+      if (request.context.commandId !== ids[0]) await acknowledgementFailed;
+      return { taskId: `task-${request.context.commandId}` };
+    },
+  });
+
+  const polling = client.poll();
+  await assert.rejects(polling, (error) => {
+    assert.equal(error.cause, ackError, "исходная ошибка подтверждения должна сохраниться");
+    return true;
+  });
+
+  // Начатые команды дорабатывают внутри этой попытки: отклонение poll не
+  // оставляет их слать запросы в фоне.
+  assert.deepEqual(acknowledged.toSorted(), [ids[1], ids[2]]);
+  // Четвёртая команда не планируется после первого отказа и остаётся в очереди
+  // для следующего опроса с той же идентичностью.
+  assert.equal(handled.includes(ids[3]), false);
+  const fourth = [ids[3], "018f6c86-3f34-7a31-8f27-16f5b96ccf04"];
+  assert.equal(
+    requested.some((entry) => fourth.some((identity) => entry.body.includes(identity))),
+    false,
+    "ни один запрос не должен относиться к незапланированной четвёртой команде",
+  );
+
+  const settledRequests = requested.length;
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(requested.length, settledRequests, "после отклонения не должно быть новых запросов");
+});
+
+test("отказ текстовой полосы не оставляет полосу вложений работать после отклонения", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-shared-bot-lane-drain-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const secretFile = path.join(directory, "shared-dashboard-bot.secret");
+  await writeFile(secretFile, "s".repeat(64), "utf8");
+
+  // Текстовая полоса идёт последовательно, полоса вложений — пулом. Отказ
+  // подтверждения первой текстовой команды не должен ни запускать вторую, ни
+  // бросать полосу вложений дорабатывать уже после отклонения опроса.
+  const textIds = [
+    "018f6c86-3f34-7a31-8f27-16f5b96ccd01",
+    "018f6c86-3f34-7a31-8f27-16f5b96ccd02",
+  ];
+  const attachmentIds = [
+    "018f6c86-3f34-7a31-8f27-16f5b96ccd11",
+    "018f6c86-3f34-7a31-8f27-16f5b96ccd12",
+  ];
+  const commands = [
+    ...textIds.map((id, index) => ({
+      id,
+      userId: "42",
+      action: "board-task-ingest",
+      params: { text: `Текст ${index + 1}`, sourceKey: `shared-dashboard:${200 + index}` },
+    })),
+    ...attachmentIds.map((id, index) => ({
+      id,
+      userId: "42",
+      action: "board-task-ingest",
+      params: {
+        text: `Вложение ${index + 1}`,
+        sourceKey: `shared-dashboard:${210 + index}`,
+        attachments: [`remote-attachment:018f6c86-3f34-7a31-8f27-16f5b96ccd2${index + 1}`],
+      },
+    })),
+  ];
+
+  let failAcknowledgement;
+  const acknowledgementFailed = new Promise((resolve) => { failAcknowledgement = resolve; });
+  const acknowledged = [];
+  const handled = [];
+  const requested = [];
+  const body = Buffer.from("attachment");
+  const ackError = new Error("text acknowledgement body never arrived");
+
+  const client = new SharedDashboardBotClient({
+    publicUrl: "https://hub.example.com",
+    hubId: "018f6c86-3f34-7a31-8f27-16f5b96ccea5",
+    secretFile,
+    attachmentDirectory: path.join(directory, "attachments"),
+    fetchImpl: async (url, init) => {
+      const payload = JSON.parse(String(init?.body ?? "{}"));
+      requested.push({ url, body: String(init?.body ?? "") });
+      if (url.endsWith("/api/dashboard-bot/pull")) return Response.json({ commands });
+      if (url.endsWith("/api/dashboard-bot/attachment/pull")) {
+        return new Response(body, {
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "Content-Length": String(body.length),
+            "X-Agent-Hub-Attachment-Hash": createHash("sha256").update(body).digest("hex"),
+            "X-Agent-Hub-File-Name": encodeURIComponent("attachment.bin"),
+          },
+        });
+      }
+      if (url.endsWith("/api/dashboard-bot/result")) {
+        if (payload.id === textIds[0]) {
+          failAcknowledgement();
+          throw ackError;
+        }
+        acknowledged.push(payload.id);
+        return Response.json({ ok: true });
+      }
+      return Response.json({ error: "unexpected request" }, { status: 500 });
+    },
+    handler: async (request) => {
+      handled.push(request.context.commandId);
+      if (request.context.commandId !== textIds[0]) await acknowledgementFailed;
+      return { taskId: `task-${request.context.commandId}` };
+    },
+  });
+
+  await assert.rejects(client.poll(), (error) => {
+    assert.equal(error.cause, ackError, "исходная ошибка подтверждения должна сохраниться");
+    return true;
+  });
+
+  // Обе команды с вложениями были начаты до отказа и дорабатывают внутри опроса.
+  assert.deepEqual(acknowledged.toSorted(), attachmentIds.toSorted());
+  // Вторая текстовая команда не запускается и остаётся в очереди для следующего
+  // опроса с той же идентичностью.
+  assert.equal(handled.includes(textIds[1]), false);
+  assert.equal(requested.some((entry) => entry.body.includes(textIds[1])), false);
+
+  const settledRequests = requested.length;
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(requested.length, settledRequests, "после отклонения не должно быть новых запросов");
 });

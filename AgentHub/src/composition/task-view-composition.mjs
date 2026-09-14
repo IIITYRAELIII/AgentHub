@@ -1,4 +1,5 @@
 import { TaskViewController } from "../interfaces/telegram/task-view-controller.mjs";
+import { recoverCodexRolloutSubagents } from "../providers/codex/codex-rollout-activity-worker-client.mjs";
 
 export function createTaskViewComposition({
   ensureCodex,
@@ -31,6 +32,7 @@ export function createTaskViewComposition({
 }) {
   let taskViewController;
   taskViewController = new TaskViewController({
+    recoverCodexRolloutSubagents,
     ensureCodex,
     findCodexRolloutPath,
     readCodexThread,

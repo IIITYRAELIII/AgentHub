@@ -41,7 +41,7 @@ function journalDay(date, turnId, {
   ].join("");
 }
 
-test("Mini App includes five recent day shells and lazily splits every turn body", () => {
+test("Mini App initial journal contains only day totals and lazily splits every turn", () => {
   const dates = [
     "06.07.2026",
     "05.07.2026",
@@ -55,12 +55,11 @@ test("Mini App includes five recent day shells and lazily splits every turn body
     ...dates.map((date, index) => journalDay(date, `turn-${index + 1}`)),
   ].join("\n"));
 
-  assert.match(payload.html, /Ход turn-1/u);
-  assert.match(payload.html, /Ход turn-5/u);
+  assert.doesNotMatch(payload.html, /Ход turn-[1-6]/u);
   assert.doesNotMatch(payload.html, /Запрос turn-[1-6]|Ответ turn-[1-6]/u);
-  assert.match(payload.html, /data-lazy-turn-id="turn-1"/u);
-  assert.match(payload.html, /data-lazy-turn-id="turn-5"/u);
+  assert.match(payload.html, /data-lazy-day="06\.07\.2026"/u);
   assert.match(payload.html, /data-lazy-day="01\.07\.2026"/u);
+  assert.match(payload.days["06.07.2026"], /Ход turn-1/u);
   assert.match(payload.days["01.07.2026"], /Ход turn-6/u);
   assert.doesNotMatch(payload.days["01.07.2026"], /Запрос turn-6|Ответ turn-6/u);
   assert.match(payload.days["01.07.2026"], /data-lazy-turn-id="turn-6"/u);
@@ -69,6 +68,65 @@ test("Mini App includes five recent day shells and lazily splits every turn body
   assert.match(payload.turns["turn-5"], /Ответ turn-5/u);
   assert.match(payload.turns["turn-6"], /Запрос turn-6/u);
   assert.match(payload.turns["turn-6"], /Ответ turn-6/u);
+});
+
+test("Mini App materializes compact workspace and stream totals with turn index shells", () => {
+  const row = ({ provider, threadId, turnId, credits, duration, completedAt }) => [
+    `<div data-work-log-row data-work-log-provider="${provider}" data-work-log-thread-id="${threadId}"`,
+    ' data-work-log-workspace-id="workspace-1" data-work-log-stream-id="stream-1">',
+    '<div data-work-log-task-cell><div data-work-log-task-content>Задача</div></div>',
+    '<div data-work-log-turn-list>',
+    `<div data-work-log-turn-entry data-work-log-turn-provider="${provider}"`,
+    ` data-work-log-turn-thread-id="${threadId}" data-work-log-turn-depth="0"`,
+    ` data-work-log-turn-id="${turnId}" data-work-log-turn-credits="${credits}"`,
+    ` data-work-log-turn-duration-seconds="${duration}" data-work-log-turn-completed-at="${completedAt}">`,
+    '<details data-work-log-turn-details><summary>Ход</summary>',
+    `<div data-work-log-turn-expanded>Секрет ${turnId}</div></details></div></div></div>`,
+  ].join("");
+  const payload = buildLazyJournalPayload([
+    '<details data-work-log-day-section><summary data-work-log-day><strong>06.07.2026</strong></summary>',
+    '<details data-work-log-workspace data-work-log-workspace-id="workspace-1"',
+    ' data-work-log-workspace-kind="catalog"><summary><strong>Agent HUB</strong></summary>',
+    '<details data-work-log-stream data-work-log-stream-id="stream-1"',
+    ' data-work-log-stream-ordinal="3"><summary><span data-work-log-stream-title>Architect</span></summary>',
+    row({
+      provider: "codex",
+      threadId: "thread-codex",
+      turnId: "turn-codex",
+      credits: 12,
+      duration: 30,
+      completedAt: "2026-07-06T12:00:00.000Z",
+    }),
+    row({
+      provider: "claude",
+      threadId: "thread-claude",
+      turnId: "turn-claude",
+      credits: 50,
+      duration: 40,
+      completedAt: "2026-07-06T13:00:00.000Z",
+    }),
+    "</details></details></details>",
+  ].join(""));
+
+  assert.equal(payload.summary.version, 1);
+  assert.equal(payload.summary.buckets.length, 2);
+  assert.deepEqual(
+    payload.summary.buckets.map(({ provider, turnCount, credits, durationSeconds }) => ({
+      provider,
+      turnCount,
+      credits,
+      durationSeconds,
+    })).sort((left, right) => left.provider.localeCompare(right.provider)),
+    [
+      { provider: "claude", turnCount: 1, credits: 50, durationSeconds: 40 },
+      { provider: "codex", turnCount: 1, credits: 12, durationSeconds: 30 },
+    ],
+  );
+  assert.equal(payload.entries.length, 2);
+  assert.equal(payload.entries[0].workspaceId, "workspace-1");
+  assert.equal(payload.entries[0].streamId, "stream-1");
+  assert.doesNotMatch(payload.html, /Секрет/u);
+  assert.match(payload.days["06.07.2026"], /data-lazy-turn-id/u);
 });
 
 test("Mini App lazy turn references stay unique across tasks and providers", () => {
@@ -98,7 +156,8 @@ test("Mini App lazily extracts a turn whose entry attributes exceed the old scan
   }));
 
   assert.doesNotMatch(payload.html, /Ответ turn-wide/u);
-  assert.match(payload.html, /data-lazy-turn-id="turn-wide"/u);
+  assert.match(payload.html, /data-lazy-day="06\.07\.2026"/u);
+  assert.match(payload.days["06.07.2026"], /data-lazy-turn-id="turn-wide"/u);
   assert.match(payload.turns["turn-wide"], /Ответ turn-wide/u);
 });
 
@@ -107,7 +166,8 @@ test("упоминание data-lazy-day в теле хода не делает 
     .replace("Ответ turn-content", "В ответе обсуждается data-lazy-day");
   const payload = buildLazyJournalPayload(markdown);
 
-  assert.match(payload.html, /data-lazy-turn-id="turn-content"/u);
+  assert.match(payload.html, /data-lazy-day="06\.07\.2026"/u);
+  assert.match(payload.days["06.07.2026"], /data-lazy-turn-id="turn-content"/u);
   assert.doesNotMatch(payload.html, /В ответе обсуждается data-lazy-day/u);
   assert.match(payload.turns["turn-content"], /В ответе обсуждается data-lazy-day/u);
 });

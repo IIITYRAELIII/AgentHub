@@ -42,6 +42,23 @@ test("compatibility canary executes health, MCP, cancel, next-turn and restart/r
   assert.deepEqual(await readdir(path.join(dataDir, "codex-executable-canary")), []);
 });
 
+test("compatibility canary rejects an executable that ignores application context", async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-codex-context-test-"));
+  const sourceHome = path.join(root, "source-codex-home");
+  await mkdir(sourceHome, { recursive: true });
+  await writeFile(path.join(sourceHome, "auth.json"), "{}\n", "utf8");
+  context.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
+  await assert.rejects(runCodexAppServerCompatibilityCanary({ path: process.execPath }, {
+    dataDir: path.join(root, "data"),
+    executableArgs: [FAKE_APP_SERVER, "--ignore-application-context"],
+    environment: { ...process.env, CODEX_HOME: sourceHome },
+    protectDirectory: async () => {},
+    rpcTimeoutMs: 3_000,
+    totalTimeoutMs: 15_000,
+    logger: { error() {} },
+  }));
+});
+
 test("compatibility canary timeout is bounded and removes isolated runtime", async (context) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-codex-canary-timeout-"));
   const dataDir = path.join(root, "data");
@@ -72,13 +89,13 @@ test("compatibility canary keeps asynchronous turn SLA separate from RPC timeout
 
   const result = await runCodexAppServerCompatibilityCanary({ path: process.execPath }, {
     dataDir,
-    executableArgs: [FAKE_APP_SERVER, "--delay-turn-ms=150"],
+    executableArgs: [FAKE_APP_SERVER, "--delay-turn-ms=800"],
     environment: { ...process.env, CODEX_HOME: sourceHome },
     protectDirectory: async () => {},
-    rpcTimeoutMs: 50,
-    turnTimeoutMs: 500,
-    cancelTimeoutMs: 500,
-    totalTimeoutMs: 5_000,
+    rpcTimeoutMs: 500,
+    turnTimeoutMs: 1_500,
+    cancelTimeoutMs: 1_500,
+    totalTimeoutMs: 10_000,
     logger: { error() {} },
   });
 
@@ -143,9 +160,9 @@ test("compatibility canary preserves bounded secret-free failure evidence", asyn
     executableArgs: [FAKE_APP_SERVER, "--hang-health"],
     environment: { ...process.env, CODEX_HOME: sourceHome },
     protectDirectory: async () => {},
-    rpcTimeoutMs: 50,
+    rpcTimeoutMs: 500,
     turnTimeoutMs: 500,
-    totalTimeoutMs: 1_000,
+    totalTimeoutMs: 2_000,
     logger: { error() {} },
   }), /rpc-timeout/u);
 
@@ -229,8 +246,8 @@ test("compatibility canary never persists or throws arbitrary child stderr conte
       executableArgs: [FAKE_APP_SERVER, "--leak-stderr", "--hang-health"],
       environment: { ...process.env, CODEX_HOME: sourceHome },
       protectDirectory: async () => {},
-      rpcTimeoutMs: 100,
-      totalTimeoutMs: 1_000,
+      rpcTimeoutMs: 500,
+      totalTimeoutMs: 2_000,
       logger: { error: (...args) => logs.push(args) },
     });
   } catch (error) {

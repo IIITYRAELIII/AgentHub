@@ -128,6 +128,20 @@ test("task command service renames one exact logical task", async () => {
   assert.equal(events.some(([name]) => name === "selection-title"), true);
 });
 
+test("stop without a user run delegates exact maintenance cancellation without killing the provider", async () => {
+  const { service } = fixture();
+  let target;
+  service.cancelContextMaintenance = (value) => {
+    target = value;
+    return { accepted: true, message: "Preparation cancelled" };
+  };
+  service.providerCancel = () => { throw new Error("Provider must not be killed"); };
+  assert.deepEqual(await service.cancel({}), { accepted: true, message: "Preparation cancelled" });
+  assert.equal(target.threadId, "thread-1");
+  service.cancelContextMaintenance = () => null;
+  assert.equal((await service.cancel({})).accepted, false);
+});
+
 test("task command service protects the title before awaiting the provider rename", async () => {
   const { service, events } = fixture();
   let releaseRename;
@@ -210,6 +224,16 @@ test("task command service creates a sibling Stream in the source Workspace", as
     title: "Existing",
   });
   assert.equal(events.some(([name]) => name === "handoff"), false);
+});
+
+test("new default Workspace keeps its name instead of adopting the generated provider title", async () => {
+  const { service, events } = fixture({
+    createTask: async () => ({ provider: "codex", threadId: "thread-new", title: "New Workspace — Поток 1" }),
+  });
+  service.workspaceCatalog.renameWorkspace = () => { throw new Error("Thread title must not rename its Workspace"); };
+  const result = await service.create({ provider: "codex" });
+  assert.equal(result.createdTask.taskTitle, "New Workspace — Поток 1");
+  assert.equal(events.find(([name]) => name === "set-thread")[2].title, "New Workspace");
 });
 
 test("task command service rejects a source Stream without its Workspace", async () => {

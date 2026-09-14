@@ -1,3 +1,4 @@
+import { createContourExternalEffects } from "../../infrastructure/filesystem/test-contour-external-effects.mjs";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
@@ -89,6 +90,8 @@ export class MediaController {
     activeProjectRoot,
     stopProcessTree,
   }) {
+    this.contourExternalEffects = config.testContourRecording
+      ? createContourExternalEffects({ root: config.testContourRecording.root }) : null;
     this.config = config;
     this.token = token;
     this.agentHubRoot = agentHubRoot;
@@ -104,7 +107,9 @@ export class MediaController {
     this.writeQueue = Promise.resolve();
     this.ttsWorker = null;
     this.ttsClient = new PersistentTtsWorkerClient({
-      spawnWorker: () => spawn(this.config.ttsPythonExe, [
+      spawnWorker: () => {
+        this.assertMediaOperation("spawn-tts-worker");
+        return spawn(this.config.ttsPythonExe, [
         this.config.ttsWorkerScript,
         "--idle-timeout", String(this.config.ttsIdleTimeoutSeconds),
         "--model", this.config.ttsModel,
@@ -116,7 +121,8 @@ export class MediaController {
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
         env: { ...process.env, PYTHONUTF8: "1", TORCH_HOME: this.config.ttsCacheDir },
-      }),
+      });
+      },
       timeoutMs: this.config.ttsRequestTimeoutSeconds * 1000,
       idleTimeoutMs: this.config.ttsIdleTimeoutSeconds * 1000,
       terminateWorker: (worker) => this.stopProcessTree(worker.pid).catch(() => worker.kill()),
@@ -125,6 +131,12 @@ export class MediaController {
         if (message) console.error(`[tts] ${message}`);
       },
     });
+  }
+
+  assertMediaOperation(operation) {
+    if (!this.contourExternalEffects) return;
+    this.contourExternalEffects.exclude("media", operation);
+    throw Object.assign(new Error("Media is excluded in the recording contour"), { code: "CONTOUR_MEDIA_EXCLUDED" });
   }
 
   async load() {
@@ -171,6 +183,7 @@ export class MediaController {
   }
 
   async download(fileId, destination) {
+    this.assertMediaOperation("download");
     const file = await this.telegram("getFile", { file_id: fileId });
     const response = await fetch(
       telegramFileApiUrl(this.config.telegramApiBaseUrl, this.token, file.file_path),
@@ -182,6 +195,7 @@ export class MediaController {
   }
 
   async captureImage(descriptor) {
+    this.assertMediaOperation("captureImage");
     if (!descriptor?.fileId) throw new Error("Telegram не передал идентификатор изображения");
     if ((descriptor.fileSize ?? 0) > MAX_MEDIA_BYTES) {
       throw new Error("Изображение слишком большое. Максимальный размер — 20 МБ.");
@@ -205,6 +219,7 @@ export class MediaController {
   }
 
   async transcribeVoice(message, target) {
+    this.assertMediaOperation("transcribeVoice");
     if (!this.config.voiceEnabled) {
       await this.sendMessage(target.chatId, "Голосовые сообщения отключены в конфигурации.");
       return;
@@ -252,6 +267,7 @@ export class MediaController {
   }
 
   async analyzeImage(message, target) {
+    this.assertMediaOperation("analyzeImage");
     const descriptor = telegramImageDescriptor(message);
     if (!descriptor) return;
 
@@ -285,6 +301,7 @@ export class MediaController {
   }
 
   runTranscription(audioPath) {
+    this.assertMediaOperation("runTranscription");
     return runBoundedProcess({
       spawnProcess: spawn,
       command: this.config.pythonExe,
@@ -309,6 +326,7 @@ export class MediaController {
   }
 
   async synthesizeSpeech(text) {
+    this.assertMediaOperation("synthesizeSpeech");
     await mkdir(this.config.ttsDir, { recursive: true });
     const id = randomUUID();
     const outputPath = path.join(this.config.ttsDir, `${randomUUID()}.ogg`);
@@ -320,6 +338,7 @@ export class MediaController {
   }
 
   async sendVoiceFile(targetChatId, voicePath) {
+    this.assertMediaOperation("sendVoiceFile");
     const form = new FormData();
     form.append("chat_id", String(targetChatId));
     form.append("voice", new Blob([await readFile(voicePath)], { type: "audio/ogg" }), path.basename(voicePath));
@@ -337,6 +356,7 @@ export class MediaController {
   }
 
   async processSpeechRequest(targetChatId, text) {
+    this.assertMediaOperation("processSpeechRequest");
     const tick = () => this.telegram("sendChatAction", {
       chat_id: targetChatId,
       action: "record_voice",

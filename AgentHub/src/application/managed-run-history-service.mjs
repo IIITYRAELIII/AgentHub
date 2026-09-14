@@ -1,3 +1,4 @@
+import { receiptUserDisplay } from "../domain/user-message-display.mjs";
 import { isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
 import { isClaudeCompactionRun } from "../domain/claude-context-maintenance.mjs";
 import { providerTurnTelemetrySnapshot } from "../domain/task-runs.mjs";
@@ -12,6 +13,7 @@ export class ManagedRunHistoryService {
     telemetryStore = null,
     terminalCommits = null,
     commandTrace = null,
+    receiptForMessage = () => null,
     logger = console,
   }) {
     this.taskSyncStore = taskSyncStore;
@@ -22,6 +24,7 @@ export class ManagedRunHistoryService {
     this.telemetryStore = telemetryStore;
     this.terminalCommits = terminalCommits;
     this.commandTrace = commandTrace;
+    this.receiptForMessage = receiptForMessage;
     this.logger = logger;
   }
 
@@ -35,19 +38,43 @@ export class ManagedRunHistoryService {
     if (!run?.threadId || !turnId) return;
     // Служебная свёртка контекста Claude не является ходом разговора.
     if (isClaudeCompactionRun(run)) return;
-    if (run.provider === "codex" && isCodexContextProbeTurn({
+    const contextProbe = run.provider === "codex" && isCodexContextProbeTurn({
+      operationKind: run.operationKind,
       contextProbe: run.contextProbe,
       prompt: run.promptPreview,
       finalAnswer: answer || run.responseText,
       clientUserMessageId: run.clientUserMessageId,
       userMessages: run.userMessages,
-    }, { allowTextFallback: false })) return;
+    }, { allowTextFallback: false });
+    if (contextProbe && (active || !Number.isSafeInteger(terminalRevision))) return;
     try {
       const committedTerminal = await this.terminalCommits?.get({
         provider: run.provider,
         threadId: run.threadId,
         turnId,
       });
+      if (contextProbe) {
+        if (committedTerminal?.terminalRevision !== terminalRevision
+          || committedTerminal?.payload?.completion?.operationKind !== "probe"
+          || committedTerminal?.payload?.completion?.contextProbe !== true) return;
+        const history = this.taskSyncStore.history(run);
+        let current = history.find((item) => String(item?.id ?? "") === String(turnId));
+        if (!current) {
+          current = { id: turnId };
+          history.push(current);
+        }
+        current.operationKind = "probe";
+        current.contextProbe = true;
+        current.status = committedTerminal.status;
+        current.completed = true;
+        await this.taskSyncStore.recordHistory({
+          provider: run.provider,
+          threadId: run.threadId,
+          projectRoot: run.projectRoot,
+        }, history);
+        await this.taskSyncStore.save();
+        return { absorbed: false, terminalRevision };
+      }
       if (active && committedTerminal) {
         return {
           absorbed: true,
@@ -80,6 +107,15 @@ export class ManagedRunHistoryService {
       });
       const current = history.findLast((item) => String(item?.id ?? "") === String(turnId));
       if (current) {
+        for (const message of current.messages ?? []) {
+          if (message.role !== "user" || !message.clientUserMessageId) continue;
+          const identity = {
+            provider: run.provider, threadId: run.threadId,
+            clientUserMessageId: message.clientUserMessageId,
+          };
+          const display = receiptUserDisplay(this.receiptForMessage(identity), identity);
+          if (display) message.userDisplay = display;
+        }
         const responseAttachments = Array.isArray(run.responseAttachments)
           ? run.responseAttachments.map((attachment) => ({ ...attachment }))
           : [];
@@ -128,7 +164,7 @@ export class ManagedRunHistoryService {
           current.messages = messages;
         }
       }
-      this.taskSyncStore.recordHistory(run, history, {
+      await this.taskSyncStore.recordHistory(run, history, {
         active,
         turnId: active ? turnId : null,
         activityAtMs,
@@ -139,7 +175,11 @@ export class ManagedRunHistoryService {
       });
       await this.taskSyncStore.save();
       if (!active && telemetry && this.telemetryStore?.upsert) {
-        await this.telemetryStore.upsert(telemetry);
+        // The canonical history already retains telemetry. Its optional query
+        // index cannot hold terminal delivery or invalidate committed history.
+        void Promise.resolve().then(() => this.telemetryStore.upsert(telemetry)).catch((error) => {
+          this.logger.error(`Cannot index provider turn telemetry ${run.threadId}/${turnId}:`, error.message);
+        });
       }
       if (!active && run.clientUserMessageId) {
         const transport = String(run.clientSource ?? "server-runtime").trim().toLowerCase() || "server-runtime";

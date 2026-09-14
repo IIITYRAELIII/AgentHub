@@ -71,8 +71,8 @@ export function createRunAccountingComposition({
     return [...files].sort((left, right) => left.localeCompare(right));
   }
 
-  async function projectTurnUsageToWorkLog(completion, { title = "", body = "" } = {}) {
-    return runJournal.projectTurn(completion, { title, body });
+  async function projectTurnUsageToWorkLog(completion, options = {}) {
+    return runJournal.projectTurn(completion, options);
   }
 
   async function projectClaudeRunToWorkLog(run, {

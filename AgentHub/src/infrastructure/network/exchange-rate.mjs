@@ -6,7 +6,7 @@ import { writeTextAtomic } from "../persistence/state-store.mjs";
 export const CBR_DAILY_RATES_URL = "https://www.cbr.ru/scripts/XML_daily.asp";
 export const CREDITS_PER_USD = 25;
 /* Базой ПТЭ выбран входной токен GPT-5.4 / GPT-5.6-Terra: один такой токен ровно
-   равен одному ПТЭ. Флагман вдвое дороже, Luna — в 2,5 раза дешевле. */
+   равен одному ПТЭ. Sol вдвое дороже, Astra — впятеро, Luna — в 2,5 раза дешевле. */
 export const PTE_PER_CREDIT = 16_000;
 
 function positiveRate(value) {

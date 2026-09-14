@@ -181,8 +181,35 @@ export class WorkLogUsageRepository {
     return queued;
   }
 
+  prepareIndependentRead() {
+    return this.#pointReadsReady
+      ? Promise.resolve()
+      : this.enqueue(() => null, { load: false, pointRead: true });
+  }
+
   getRecord(identity) {
     return this.#database.getRecord(identity);
+  }
+
+  upsertRecords(records) {
+    return this.applyExternalMutation(() => this.#database.upsertRecords(records));
+  }
+
+  async deleteRecord(identity) {
+    const result = await this.#database.deleteRecords([identity]);
+    this.#releaseLoadedLedger();
+    this.#loadedRevision = result.revision;
+    return result;
+  }
+
+  async applyExternalMutation(operation) {
+    try {
+      const result = await operation();
+      this.#loadedRevision = result.revision;
+      return result;
+    } finally {
+      this.#releaseLoadedLedger();
+    }
   }
 
   threadRecords(identities, options) {
@@ -191,6 +218,14 @@ export class WorkLogUsageRepository {
 
   payload() {
     return this.#database.payload();
+  }
+
+  currentRevision() {
+    return this.#database.currentRevision();
+  }
+
+  accountUsageProjectionVersion() {
+    return this.#database.accountUsageProjectionVersion();
   }
 
   snapshot() {

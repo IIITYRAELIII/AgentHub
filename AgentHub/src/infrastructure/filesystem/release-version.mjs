@@ -48,11 +48,11 @@ export function agentHubCalendarVersion(now = new Date()) {
   return `${now.getFullYear()}.${now.getMonth() + 1}.${now.getDate()}`;
 }
 
-export async function prepareAgentHubReleaseVersion({
+export async function inspectAgentHubReleaseVersion({
   root = AGENT_HUB_ROOT,
   now = new Date(),
+  expectedVersion = null,
   readFileImpl = readFile,
-  writeFileImpl = writeFile,
 } = {}) {
   const packageFile = path.join(root, "package.json");
   const lockFile = path.join(root, "package-lock.json");
@@ -64,7 +64,10 @@ export async function prepareAgentHubReleaseVersion({
   const lockMetadata = JSON.parse(lockSource);
   assertAgentHubMetadata(packageMetadata, lockMetadata);
 
-  const version = agentHubCalendarVersion(now);
+  const version = expectedVersion == null
+    ? agentHubCalendarVersion(now)
+    : String(expectedVersion).trim();
+  if (!calendarVersionParts(version)) throw new Error("Agent Hub frozen release version is invalid");
   const previousVersion = String(packageMetadata.version ?? "").trim();
   const comparison = compareCalendarVersions(previousVersion, version);
   if (comparison !== null && comparison > 0) {
@@ -76,14 +79,28 @@ export async function prepareAgentHubReleaseVersion({
   const changed = previousVersion !== version
     || lockVersion !== version
     || lockPackageVersion !== version;
-  if (!changed) return { changed: false, previousVersion, version, files: [] };
+  if (!changed) return { changed: false, previousVersion, version, files: [], writes: [] };
 
   packageMetadata.version = version;
   lockMetadata.version = version;
   lockMetadata.packages[""].version = version;
-  await writeFileImpl(lockFile, serializedJson(lockMetadata, lockSource), "utf8");
-  await writeFileImpl(packageFile, serializedJson(packageMetadata, packageSource), "utf8");
-  return { changed: true, previousVersion, version, files: [packageFile, lockFile] };
+  return {
+    changed: true,
+    previousVersion,
+    version,
+    files: [packageFile, lockFile],
+    writes: [
+      { file: lockFile, content: serializedJson(lockMetadata, lockSource) },
+      { file: packageFile, content: serializedJson(packageMetadata, packageSource) },
+    ],
+  };
+}
+
+export async function prepareAgentHubReleaseVersion({ writeFileImpl = writeFile, ...options } = {}) {
+  const result = await inspectAgentHubReleaseVersion(options);
+  for (const update of result.writes) await writeFileImpl(update.file, update.content, "utf8");
+  const { writes, ...publicResult } = result;
+  return publicResult;
 }
 
 export async function prepareCommittedAgentHubReleaseVersion(options = {}) {

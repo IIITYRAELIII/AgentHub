@@ -10,6 +10,7 @@ import { catalogEntryIsSelected } from "../domain/task-catalog-identity.mjs";
 import { taskRunKey } from "../domain/task-runs.mjs";
 import { readCodexRolloutActivity } from "../providers/codex/codex-rollout-activity.mjs";
 import { markProgressHeartbeat, PROGRESS_STALLED_AFTER_MS } from "../runtime/progress-heartbeat.mjs";
+import { publicationAwareReadiness } from "../runtime/runtime-publication-completion.mjs";
 import { delay } from "./runtime-timers-composition.mjs";
 import { createAgentHubBootstrapComposition } from "./agent-hub-bootstrap-composition.mjs";
 import { createRuntimeOrchestrationComposition } from "./runtime-orchestration-composition.mjs";
@@ -72,8 +73,10 @@ export function createExecutionBootstrapPhase({
       scheduleDeliveryOutboxFlush: clients.scheduleDeliveryOutboxFlush,
       scheduleCodexTerminalAudit: api.scheduleCodexTerminalAudit,
       rateLimitTelemetry: clients.rateLimitTelemetry,
+      providerLogin: clients.providerLogin,
       usageSyncAuto: provider.usageSyncAuto,
       taskSyncStore: provider.taskSyncStore,
+      messagePins: provider.messagePins,
       workspaceCatalogStore: provider.workspaceCatalogStore,
       dismissedExternalTasks: provider.dismissedExternalTasks,
       lastSeenTaskTurnIds: provider.lastSeenTaskTurnIds,
@@ -347,8 +350,16 @@ export function createExecutionBootstrapPhase({
     sanitizeRollouts: () => provider.codexContextMaintenance.runPeriodic({ reschedule: false }),
     initializeProvider: api.initializeProvider,
     providerIsRunning: () => clients.codexTransport.running,
-    backfillProviderMetadata: () => provider.codexProviderTasks.discoverTasks()
-      .then((threads) => api.backfillWorkLogPricingMetadata(threads)),
+    backfillProviderMetadata: async ({ signal } = {}) => {
+      signal?.throwIfAborted();
+      const trace = infrastructure.commandTraceService;
+      const measure = (stage, operation) => trace?.measureBestEffort ? trace.measureBestEffort({
+        commandId: "startup-provider-metadata", stage, transport: "server-runtime",
+      }, operation) : operation();
+      const threads = await measure("startup-codex-catalog", () => provider.codexProviderTasks.discoverTasks());
+      signal?.throwIfAborted();
+      return measure("startup-pricing-backfill", () => api.backfillWorkLogPricingMetadata(threads, { signal, propagateErrors: true }));
+    },
     recoverRuns: (...args) => runtime.runRecovery.recoverAll(...args),
     retryNotifications: api.retryPendingTurnEndNotifications,
     restoreBackgroundJobs: () => provider.backgroundJobs.restore(),
@@ -358,7 +369,10 @@ export function createExecutionBootstrapPhase({
     }),
     hasPendingRestart: () => Boolean(selection.hostState.restartRequest),
     finalizeRestart: api.finalizeRestartMessage,
-    markReady: () => infrastructure.instanceGuard.markReady(),
+    markReady: publicationAwareReadiness({
+      markReady: () => infrastructure.instanceGuard.markReady(),
+      runtimeRoot: runtimeCommandRoot,
+    }),
     readyMessage: () => (
       `Agent Hub ready; components: ${Object.entries(config.components).filter(([, enabled]) => enabled).map(([name]) => name).join(", ") || "core"}; provider: ${selection.providerTitle()}; project: ${selection.selectedProjectRoot()}`
     ),
@@ -367,6 +381,7 @@ export function createExecutionBootstrapPhase({
     beginStopping: () => selection.hostState.beginStopping(),
     sqliteRecovery: infrastructure.sqliteRecovery,
     acknowledgeSqliteRecovery: infrastructure.acknowledgeSqliteRecovery,
+    commandTrace: infrastructure.commandTraceService,
   });
   ports.bootstrap.bind(bootstrap);
 

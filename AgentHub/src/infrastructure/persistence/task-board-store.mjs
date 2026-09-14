@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 
 import {
   LEGACY_TELEGRAM_BUNDLE_PREFIX,
@@ -20,8 +21,36 @@ import {
 } from "../../domain/task-release-snapshot.mjs";
 import { normalizedTaskGitReferences, taskBranchName } from "../../domain/task-git-reference.mjs";
 import { normalizedTaskNumber, normalizedWorkspaceTaskPrefix, taskNumberParts } from "../../domain/task-number.mjs";
+import { taskProjectRoot } from "../../domain/task-project-root.mjs";
+import {
+  assertTaskChecklistWorkspaceReassignmentAllowed,
+  assertTaskChecklistWorkspaceTransitionAllowed,
+  configureTaskChecklist,
+  markTaskChecklistEventDelivered,
+  mutateTaskChecklist,
+  mutateTaskChecklistLinkedAction,
+  nextTaskChecklistEvent,
+  quarantineTaskChecklistEvent,
+  taskChecklistProjectionMap,
+  taskChecklistRequestOutcome,
+} from "./task-checklist-repository.mjs";
 
 const NOTES_COLUMN_ID = "notes";
+
+function sameResolvedPath(left, right) {
+  const a = path.resolve(String(left ?? ""));
+  const b = path.resolve(String(right ?? ""));
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+function parsedSettings(value) {
+  try {
+    const parsed = JSON.parse(String(value ?? "{}"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
 
 function gitBaselineJson(value) {
   const repositories = Array.isArray(value?.repositories) ? value.repositories : [value];
@@ -33,7 +62,7 @@ function gitBaselineJson(value) {
 }
 
 function configure(database) {
-  database.exec("PRAGMA busy_timeout = 5000");
+  database.exec("PRAGMA busy_timeout = 0");
   database.exec("PRAGMA journal_mode = WAL");
   database.exec("PRAGMA foreign_keys = ON");
   database.exec(`
@@ -66,8 +95,32 @@ function configure(database) {
       completed_at_ms INTEGER,
       start_request_id TEXT,
       start_stream_name TEXT,
+      start_destination_stream_id TEXT,
+      start_effect_state TEXT,
+      start_effect_owner_id TEXT,
       row_revision INTEGER NOT NULL DEFAULT 1
     );
+    CREATE TABLE IF NOT EXISTS hub_workspace_deletion_fences (
+      workspace_id TEXT PRIMARY KEY,
+      confirmed_name TEXT NOT NULL,
+      deleted_at_ms INTEGER NOT NULL
+    ) WITHOUT ROWID;
+    CREATE TRIGGER IF NOT EXISTS hub_board_tasks_no_deleted_workspace_insert
+      BEFORE INSERT ON hub_board_tasks
+      WHEN NEW.workspace_id IS NOT NULL AND EXISTS (
+        SELECT 1 FROM hub_workspace_deletion_fences WHERE workspace_id = NEW.workspace_id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'workspace was permanently deleted');
+      END;
+    CREATE TRIGGER IF NOT EXISTS hub_board_tasks_no_deleted_workspace_update
+      BEFORE UPDATE OF workspace_id ON hub_board_tasks
+      WHEN NEW.workspace_id IS NOT NULL AND EXISTS (
+        SELECT 1 FROM hub_workspace_deletion_fences WHERE workspace_id = NEW.workspace_id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'workspace was permanently deleted');
+      END;
     CREATE TABLE IF NOT EXISTS hub_board_workspace_order (
       workspace_id TEXT PRIMARY KEY,
       position INTEGER NOT NULL,
@@ -148,6 +201,55 @@ function configure(database) {
       updated_at_ms INTEGER NOT NULL,
       PRIMARY KEY (task_id, project_root),
       FOREIGN KEY (task_id) REFERENCES hub_board_tasks(id) ON DELETE CASCADE
+    ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS hub_task_legacy_git_adoptions (
+      task_id TEXT NOT NULL,
+      task_number TEXT NOT NULL DEFAULT '',
+      project_root TEXT NOT NULL,
+      branch TEXT NOT NULL,
+      reported_result_commit TEXT NOT NULL,
+      main_result_commit TEXT NOT NULL,
+      patch_id TEXT NOT NULL,
+      evidence_stream_id TEXT NOT NULL,
+      evidence_provider TEXT NOT NULL,
+      evidence_thread_id TEXT NOT NULL,
+      evidence_turn_id TEXT NOT NULL,
+      actor_stream_id TEXT NOT NULL,
+      actor_provider TEXT NOT NULL,
+      actor_thread_id TEXT NOT NULL,
+      request_id TEXT NOT NULL,
+      adopted_at_ms INTEGER NOT NULL,
+      PRIMARY KEY (task_id, project_root)
+    ) WITHOUT ROWID;
+    CREATE TRIGGER IF NOT EXISTS hub_task_legacy_git_adoptions_no_update
+      BEFORE UPDATE ON hub_task_legacy_git_adoptions
+      BEGIN SELECT RAISE(ABORT, 'legacy Git adoption audit is immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS hub_task_legacy_git_adoptions_no_delete
+      BEFORE DELETE ON hub_task_legacy_git_adoptions
+      BEGIN SELECT RAISE(ABORT, 'legacy Git adoption audit is immutable'); END;
+    CREATE TABLE IF NOT EXISTS hub_task_lifecycle_transitions (
+      operation_id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('workflow', 'complete', 'delete')),
+      phase TEXT NOT NULL CHECK (phase IN ('pending_git', 'cleanup', 'failed')),
+      target_workflow_status TEXT,
+      expected_task_revision INTEGER NOT NULL,
+      prior_state_json TEXT NOT NULL,
+      evidence_json TEXT NOT NULL DEFAULT '{}',
+      error_text TEXT NOT NULL DEFAULT '',
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL,
+      FOREIGN KEY (task_id) REFERENCES hub_board_tasks(id) ON DELETE CASCADE
+    ) WITHOUT ROWID;
+    CREATE UNIQUE INDEX IF NOT EXISTS hub_task_lifecycle_active_idx
+      ON hub_task_lifecycle_transitions(task_id)
+      WHERE phase IN ('pending_git', 'cleanup');
+    CREATE TABLE IF NOT EXISTS hub_task_lifecycle_outcomes (
+      operation_id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('workflow', 'complete', 'delete')),
+      result_json TEXT NOT NULL,
+      completed_at_ms INTEGER NOT NULL
     ) WITHOUT ROWID;
     CREATE TABLE IF NOT EXISTS hub_task_release_revisions (
       task_id TEXT NOT NULL,
@@ -271,6 +373,25 @@ function configure(database) {
   if (!taskColumns.some((column) => column.name === "start_stream_name")) {
     database.exec("ALTER TABLE hub_board_tasks ADD COLUMN start_stream_name TEXT");
   }
+  if (!taskColumns.some((column) => column.name === "start_destination_stream_id")) {
+    database.exec("ALTER TABLE hub_board_tasks ADD COLUMN start_destination_stream_id TEXT");
+  }
+  if (!taskColumns.some((column) => column.name === "start_effect_state")) {
+    database.exec("ALTER TABLE hub_board_tasks ADD COLUMN start_effect_state TEXT");
+  }
+  if (!taskColumns.some((column) => column.name === "start_effect_owner_id")) {
+    database.exec("ALTER TABLE hub_board_tasks ADD COLUMN start_effect_owner_id TEXT");
+  }
+  database.exec(`
+    UPDATE hub_board_tasks
+    SET start_effect_state = CASE
+      WHEN start_request_id IS NULL THEN NULL
+      WHEN status = 'starting' THEN 'prepared'
+      WHEN status = 'started' AND start_destination_stream_id IS NOT stream_id THEN 'prepared'
+      ELSE 'completed'
+    END
+    WHERE start_effect_state IS NULL
+  `);
   if (!taskColumns.some((column) => column.name === "workflow_status")) {
     database.exec("ALTER TABLE hub_board_tasks ADD COLUMN workflow_status TEXT NOT NULL DEFAULT 'new'");
     database.exec(`
@@ -399,11 +520,15 @@ function configure(database) {
         OR NEW.triage_error IS NOT OLD.triage_error OR NEW.started_at_ms IS NOT OLD.started_at_ms
         OR NEW.completed_at_ms IS NOT OLD.completed_at_ms OR NEW.start_request_id IS NOT OLD.start_request_id
         OR NEW.start_stream_name IS NOT OLD.start_stream_name
+        OR NEW.start_destination_stream_id IS NOT OLD.start_destination_stream_id
+        OR NEW.start_effect_state IS NOT OLD.start_effect_state
+        OR NEW.start_effect_owner_id IS NOT OLD.start_effect_owner_id
       )
       BEGIN
         UPDATE hub_board_tasks SET row_revision = OLD.row_revision + 1 WHERE id = OLD.id;
       END;
   `);
+  configureTaskChecklist(database);
 }
 
 function taskLocationRows(database, bucket, workspaceId = null) {
@@ -461,6 +586,36 @@ function taskNumberForRow(database, row, prefix, timestamp) {
   return allocateTaskNumber(database, prefix, timestamp);
 }
 
+function createExtractedChecklistTask(database, {
+  parentTask, itemId, text, timestamp, taskPrefix, idFactory,
+}) {
+  const id = String(idFactory());
+  const presentation = taskPresentation(text);
+  const taskNumber = allocateTaskNumber(database, taskPrefix, timestamp);
+  const boardOrder = taskLocationRows(database, "workspace", parentTask.workspace_id).length;
+  database.prepare(`
+    INSERT INTO hub_board_tasks (
+      id, raw_text, title, description, task_number, presentation_source,
+      category, bucket, status, workflow_status, workspace_id, stream_id,
+      source, source_key, source_json, placement_source, triage_status,
+      board_order, created_at_ms, updated_at_ms
+    ) VALUES (?, ?, ?, ?, ?, 'manual', 'task', 'workspace', 'open', 'new', ?, NULL,
+      'hub-checklist', NULL, ?, 'manual', 'disabled', ?, ?, ?)
+  `).run(
+    id,
+    text,
+    presentation.title,
+    presentation.description,
+    taskNumber,
+    parentTask.workspace_id,
+    JSON.stringify({ parentTaskId: parentTask.id, checklistItemId: itemId }),
+    boardOrder,
+    timestamp,
+    timestamp,
+  );
+  return id;
+}
+
 function assignTaskNumber(database, row, prefix, timestamp) {
   const taskNumber = taskNumberForRow(database, row, prefix, timestamp);
   if (taskNumber) database.prepare("UPDATE hub_board_tasks SET task_number = ? WHERE id = ?").run(taskNumber, row.id);
@@ -494,6 +649,21 @@ function ensureColumnOrder(database, workspaceIds, timestamp) {
   return ids.sort((left, right) => (
     known.get(left) - known.get(right) || originalPosition.get(left) - originalPosition.get(right)
   ));
+}
+
+function readColumnOrder(database, workspaceIds) {
+  const ids = [...normalizedColumnIds(workspaceIds), NOTES_COLUMN_ID];
+  const rows = database.prepare(`
+    SELECT column_id, position FROM hub_board_column_order
+    ORDER BY position, column_id
+  `).all();
+  const known = new Map(rows.map((row) => [row.column_id, Number(row.position)]));
+  const originalPosition = new Map(ids.map((id, index) => [id, index]));
+  return ids.sort((left, right) => {
+    const leftPosition = known.has(left) ? known.get(left) : Number.MAX_SAFE_INTEGER;
+    const rightPosition = known.has(right) ? known.get(right) : Number.MAX_SAFE_INTEGER;
+    return leftPosition - rightPosition || originalPosition.get(left) - originalPosition.get(right);
+  });
 }
 
 function parseJson(value) {
@@ -561,6 +731,9 @@ function taskFromRow(row) {
     revision: Number(row.row_revision) || 1,
     startRequestId: row.start_request_id ?? null,
     startStreamName: row.start_stream_name ?? null,
+    startDestinationStreamId: row.start_destination_stream_id ?? null,
+    startEffectState: row.start_effect_state ?? null,
+    startEffectOwnerId: row.start_effect_owner_id ?? null,
     boardOrder: Number(row.board_order) || 0,
   };
 }
@@ -568,6 +741,8 @@ function taskFromRow(row) {
 export class TaskBoardStore {
   #database;
   #revision = 0;
+  #checklistEventDrain = null;
+  #mutations = new AsyncSqliteMutationQueue();
 
   constructor({ databaseFile, now = () => Date.now(), idFactory = randomUUID } = {}) {
     if (!databaseFile) throw new TypeError("databaseFile is required");
@@ -978,15 +1153,46 @@ export class TaskBoardStore {
       SELECT project_root AS projectRoot, branch, result_commit AS resultCommit
       FROM hub_task_git_references WHERE task_id = ? ORDER BY project_root
     `).all(taskId);
+    const gitAdoptions = database.prepare(`
+      SELECT task_number AS taskNumber, project_root AS projectRoot, branch,
+        reported_result_commit AS reportedResultCommit, main_result_commit AS mainResultCommit,
+        patch_id AS patchId, evidence_stream_id AS evidenceStreamId,
+        evidence_provider AS evidenceProvider, evidence_thread_id AS evidenceThreadId,
+        evidence_turn_id AS evidenceTurnId, actor_stream_id AS actorStreamId,
+        actor_provider AS actorProvider, actor_thread_id AS actorThreadId,
+        request_id AS requestId, adopted_at_ms
+      FROM hub_task_legacy_git_adoptions WHERE task_id = ? ORDER BY project_root
+    `).all(taskId).map(({ adopted_at_ms: adoptedAtMs, ...row }) => ({
+      ...row,
+      adoptedAt: new Date(Number(adoptedAtMs)).toISOString(),
+    }));
     return {
       workLog,
       gitReferences: normalizedTaskGitReferences(gitReferences),
+      gitAdoptions,
     };
   }
 
-  #taskWithRelease(database, row) {
+  #taskWithRelease(database, row, checklistProjections = null) {
     const task = taskFromRow(row);
-    return task ? { ...task, ...this.#releaseDetails(database, task.id) } : null;
+    if (!task) return null;
+    const checklist = (checklistProjections ?? taskChecklistProjectionMap(database, [task.id])).get(task.id)
+      ?? { checklist: [], checklistParent: null };
+    return { ...task, ...this.#releaseDetails(database, task.id), ...checklist };
+  }
+
+  #withChecklistWrite(operation) {
+    return this.#withDatabase((database) => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const result = operation(database);
+        database.exec("COMMIT");
+        return result;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    });
   }
 
   get revision() {
@@ -1227,12 +1433,122 @@ export class TaskBoardStore {
   }
 
   list({ includeDone = true } = {}) {
-    return this.#withDatabase((database) => database.prepare(`
-      SELECT * FROM hub_board_tasks
-      ${includeDone ? "" : "WHERE status != 'done'"}
-      ORDER BY CASE status WHEN 'open' THEN 0 WHEN 'started' THEN 1 ELSE 2 END,
-        bucket, workspace_id, board_order, created_at_ms, id
-    `).all().map((row) => this.#taskWithRelease(database, row)));
+    return this.#withDatabase((database) => {
+      const rows = database.prepare(`
+        SELECT * FROM hub_board_tasks
+        ${includeDone ? "" : "WHERE status != 'done'"}
+        ORDER BY CASE status WHEN 'open' THEN 0 WHEN 'started' THEN 1 ELSE 2 END,
+          bucket, workspace_id, board_order, created_at_ms, id
+      `).all();
+      const checklistProjections = taskChecklistProjectionMap(database, rows.map((row) => row.id));
+      return rows.map((row) => this.#taskWithRelease(database, row, checklistProjections));
+    });
+  }
+
+  async updateChecklist({
+    id, operation, itemId = null, text = null, completed = null,
+    beforeItemId = null, linkedTaskId = null, expectedRevision, requestId, taskPrefix = "",
+  } = {}) {
+    const payload = {
+      taskId: String(id ?? "").trim(), operation, itemId, text, completed,
+      beforeItemId, linkedTaskId, expectedRevision, requestId: String(requestId ?? "").trim(),
+    };
+    const outcome = this.#withChecklistWrite((database) => mutateTaskChecklist(database, payload, {
+      now: this.now,
+      idFactory: this.idFactory,
+      createExtractedTask: (target, extracted) => createExtractedChecklistTask(target, {
+        ...extracted,
+        taskPrefix,
+        idFactory: this.idFactory,
+      }),
+    }));
+    return this.checklistRequestResult(payload, outcome);
+  }
+
+  async applyChecklistLinkedTaskAction({
+    id, itemId, linkedTaskId, action, expectedTaskRevision,
+    expectedLinkedTaskRevision, requestId,
+  } = {}) {
+    const payload = {
+      taskId: String(id ?? "").trim(),
+      itemId: String(itemId ?? "").trim(),
+      linkedTaskId: String(linkedTaskId ?? "").trim(),
+      action: String(action ?? "").trim(),
+      expectedTaskRevision,
+      expectedLinkedTaskRevision,
+      requestId: String(requestId ?? "").trim(),
+    };
+    let firstReplay = null;
+    for (let phase = 0; phase < 2; phase += 1) {
+      const outcome = this.#withChecklistWrite((database) => (
+        mutateTaskChecklistLinkedAction(database, payload, { now: this.now })
+      ));
+      if (firstReplay == null) firstReplay = outcome.replayed;
+      if (outcome.completed) return { ...outcome, replayed: firstReplay };
+    }
+    throw new Error("Действие связанной Task не завершило durable-фазу");
+  }
+
+  checklistRequestResult(payload = {}, knownOutcome = null) {
+    return this.#withDatabase((database) => {
+      const outcome = knownOutcome ?? taskChecklistRequestOutcome(database, {
+        taskId: payload.taskId ?? payload.id,
+        operation: payload.operation,
+        itemId: payload.itemId,
+        text: payload.text,
+        completed: payload.completed,
+        beforeItemId: payload.beforeItemId,
+        linkedTaskId: payload.linkedTaskId,
+        expectedRevision: payload.expectedRevision,
+        requestId: payload.requestId,
+      });
+      if (!outcome) return null;
+      const taskId = String(payload.taskId ?? payload.id);
+      const ids = [taskId, outcome.createdTaskId].filter(Boolean);
+      const checklistProjections = taskChecklistProjectionMap(database, ids);
+      const project = (id) => this.#taskWithRelease(
+        database,
+        database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(id),
+        checklistProjections,
+      );
+      return {
+        task: project(taskId),
+        createdTask: outcome.createdTaskId ? project(outcome.createdTaskId) : null,
+        itemId: outcome.itemId,
+        replayed: outcome.replayed,
+      };
+    });
+  }
+
+  deliverChecklistEvents(deliver) {
+    if (typeof deliver !== "function") throw new TypeError("Task checklist event delivery is required");
+    if (this.#checklistEventDrain) return this.#checklistEventDrain;
+    this.#checklistEventDrain = (async () => {
+      let delivered = 0;
+      let quarantined = 0;
+      const diagnostics = [];
+      for (;;) {
+        const event = this.#withDatabase((database) => nextTaskChecklistEvent(database));
+        if (!event) break;
+        if (event.invalidReason) {
+          await this.#mutations.run(() => this.#withDatabase((database) => {
+            quarantineTaskChecklistEvent(database, event.id, event.invalidReason, this.now());
+          }), { requestId: `task:checklist-event:${event.id}:quarantine` });
+          quarantined += 1;
+          diagnostics.push({ eventId: event.id, reason: event.invalidReason });
+          continue;
+        }
+        await deliver(event);
+        await this.#mutations.run(() => this.#withDatabase((database) => {
+          markTaskChecklistEventDelivered(database, event.id, this.now());
+        }), { requestId: `task:checklist-event:${event.id}:delivered` });
+        delivered += 1;
+      }
+      return { delivered, quarantined, diagnostics };
+    })().finally(() => {
+      this.#checklistEventDrain = null;
+    });
+    return this.#checklistEventDrain;
   }
 
   pendingTriage() {
@@ -1327,6 +1643,9 @@ export class TaskBoardStore {
         const targetWorkspaceId = canAutoPlace && normalizedBucket === "workspace"
           ? String(workspaceId ?? "").trim() || null
           : current.workspace_id;
+        if (canAutoPlace && targetWorkspaceId !== current.workspace_id) {
+          assertTaskChecklistWorkspaceTransitionAllowed(database, taskId, targetWorkspaceId);
+        }
         const taskNumber = canAutoPlace && normalizedBucket === "workspace"
           ? taskNumberForRow(database, current, taskPrefix, this.now())
           : String(current.task_number ?? "");
@@ -1401,6 +1720,7 @@ export class TaskBoardStore {
       const oldWorkspaceId = current.workspace_id ?? null;
       database.exec("BEGIN IMMEDIATE");
       try {
+        assertTaskChecklistWorkspaceTransitionAllowed(database, taskId, normalizedWorkspaceId);
         const taskNumber = normalizedBucket === "workspace"
           ? taskNumberForRow(database, current, taskPrefix, this.now())
           : String(current.task_number ?? "");
@@ -1448,6 +1768,7 @@ export class TaskBoardStore {
       const targetIds = taskLocationRows(database, "workspace", targetId).map((row) => row.id);
       database.exec("BEGIN IMMEDIATE");
       try {
+        assertTaskChecklistWorkspaceReassignmentAllowed(database, sourceId, targetId);
         for (const taskId of allSourceIds) {
           assignTaskNumber(database, this.#taskRow(database, taskId), taskPrefix, this.now());
         }
@@ -1491,7 +1812,7 @@ export class TaskBoardStore {
   }
 
   orderedColumnIds(workspaceIds) {
-    return this.#withDatabase((database) => ensureColumnOrder(database, workspaceIds, this.now()));
+    return this.#withDatabase((database) => readColumnOrder(database, workspaceIds));
   }
 
   moveColumn(workspaceIds, { columnId, beforeColumnId = null } = {}) {
@@ -1537,94 +1858,299 @@ export class TaskBoardStore {
   }
 
   prepareStart(id, {
-    workspaceId, streamId, requestId, streamName = null, reassign = false,
+    workspaceId, streamId, requestId, streamName = null, reassign = false, expectedRevision = null,
   } = {}) {
     const taskId = String(id);
     const normalizedRequestId = String(requestId ?? "").trim();
     if (!normalizedRequestId) throw new Error("Task launch request id is required");
     const timestamp = this.now();
     return this.#withDatabase((database) => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
       const current = this.#taskRow(database, taskId);
+      if (expectedRevision != null && Number(expectedRevision) !== Number(current.row_revision)) {
+        throw new Error("Task launch revision conflict");
+      }
       const currentRequestId = String(current.start_request_id ?? "").trim();
       if (currentRequestId && currentRequestId !== normalizedRequestId && !reassign) {
         throw new Error("Task launch is already pending; retry it with the original request_id");
       }
-      if (current.status === "done") throw new Error("Task уже закрыта");
       if (reassign && current.status !== "started") throw new Error("Переназначить можно только запущенную Task");
       if (!reassign && current.status === "started" && !currentRequestId) throw new Error("Task уже запущена");
       if (reassign && String(current.stream_id ?? "") === String(streamId)) {
         throw new Error("Task уже назначена этому Stream");
       }
-      if (reassign && currentRequestId !== normalizedRequestId) {
-        database.prepare(`
+      let changed = { changes: 0 };
+      if (currentRequestId === normalizedRequestId) {
+        const replay = taskFromRow(current);
+        database.exec("COMMIT");
+        return replay;
+      } else if (reassign) {
+        changed = database.prepare(`
           UPDATE hub_board_tasks
-          SET start_request_id = ?, start_stream_name = ?, updated_at_ms = ?
-          WHERE id = ?
-        `).run(normalizedRequestId, String(streamName ?? "").trim() || null, timestamp, taskId);
+          SET start_request_id = ?, start_stream_name = ?, start_destination_stream_id = ?,
+            start_effect_state = 'prepared', start_effect_owner_id = NULL, updated_at_ms = ?
+          WHERE id = ? AND row_revision = ? AND status = 'started'
+        `).run(
+          normalizedRequestId, String(streamName ?? "").trim() || null, String(streamId),
+          timestamp, taskId, current.row_revision,
+        );
       } else if (!currentRequestId) {
-        database.prepare(`
+        assertTaskChecklistWorkspaceTransitionAllowed(database, taskId, String(workspaceId));
+        changed = database.prepare(`
           UPDATE hub_board_tasks
           SET bucket = 'workspace', status = 'starting', workspace_id = ?, stream_id = ?,
             placement_source = 'manual', start_request_id = ?, start_stream_name = ?,
+            start_destination_stream_id = ?, start_effect_state = 'prepared', start_effect_owner_id = NULL,
             completed_at_ms = NULL, updated_at_ms = ?
-          WHERE id = ?
+          WHERE id = ? AND row_revision = ? AND start_request_id IS NULL
         `).run(
           String(workspaceId), String(streamId), normalizedRequestId,
-          String(streamName ?? "").trim() || null, timestamp, taskId,
+          String(streamName ?? "").trim() || null, String(streamId), timestamp, taskId, current.row_revision,
         );
       }
-      return taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId));
+      if (!Number(changed.changes)) throw new Error("Task launch ownership CAS failed");
+      const result = taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId));
+      database.exec("COMMIT");
+      return result;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
     });
   }
 
-  cancelPreparedStart(id, { requestId, reassign = false } = {}) {
+  admitPreparedStart(id, { requestId, attemptId, expectedRevision } = {}) {
+    const taskId = String(id);
+    const normalizedRequestId = String(requestId ?? "").trim();
+    const normalizedAttemptId = String(attemptId ?? "").trim();
+    if (!normalizedRequestId) throw new Error("Task launch request id is required");
+    if (!normalizedAttemptId) throw new Error("Task launch attempt id is required");
+    return this.#withDatabase((database) => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const current = this.#taskRow(database, taskId);
+        if (Number(expectedRevision) !== Number(current.row_revision)) {
+          throw new Error("Task launch effect admission revision conflict");
+        }
+        if (String(current.start_request_id ?? "") !== normalizedRequestId) {
+          throw new Error("Task launch effect admission owner does not match the prepared request");
+        }
+        if (
+          current.start_effect_state === "admitted"
+          && current.start_effect_owner_id === normalizedAttemptId
+        ) {
+          database.exec("COMMIT");
+          return taskFromRow(current);
+        }
+        if (current.start_effect_state !== "prepared") {
+          throw new Error("Task launch effects are not available for admission");
+        }
+        const changed = database.prepare(`
+          UPDATE hub_board_tasks
+          SET start_effect_state = 'admitted', start_effect_owner_id = ?, updated_at_ms = ?
+          WHERE id = ? AND row_revision = ? AND start_request_id = ? AND start_effect_state = 'prepared'
+        `).run(
+          normalizedAttemptId, this.now(), taskId, Number(expectedRevision), normalizedRequestId,
+        );
+        if (!Number(changed.changes)) throw new Error("Task launch effect admission CAS failed");
+        const task = taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId));
+        database.exec("COMMIT");
+        return task;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
+  fencePreparedStartCancellation(id, { requestId, cancellationRequestId, expectedRevision } = {}) {
+    const taskId = String(id);
+    const normalizedRequestId = String(requestId ?? "").trim();
+    const normalizedCancellationId = String(cancellationRequestId ?? "").trim();
+    if (!normalizedRequestId) throw new Error("Task launch request id is required");
+    if (!normalizedCancellationId) throw new Error("Task launch cancellation request id is required");
+    return this.#withDatabase((database) => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const current = this.#taskRow(database, taskId);
+        if (Number(expectedRevision) !== Number(current.row_revision)) {
+          throw new Error("Task launch cancel revision conflict");
+        }
+        if (String(current.start_request_id ?? "") !== normalizedRequestId) {
+          throw new Error("Task launch cancel owner does not match the prepared request");
+        }
+        if (current.start_effect_state === "cancelling") {
+          database.exec("COMMIT");
+          return taskFromRow(current);
+        }
+        if (current.start_effect_state !== "prepared") {
+          throw new Error("Task launch effects were already admitted");
+        }
+        const changed = database.prepare(`
+          UPDATE hub_board_tasks
+          SET start_effect_state = 'cancelling', start_effect_owner_id = ?, updated_at_ms = ?
+          WHERE id = ? AND row_revision = ? AND start_request_id = ? AND start_effect_state = 'prepared'
+        `).run(
+          normalizedCancellationId, this.now(), taskId, Number(expectedRevision), normalizedRequestId,
+        );
+        if (!Number(changed.changes)) throw new Error("Task launch cancellation fence CAS failed");
+        const task = taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId));
+        database.exec("COMMIT");
+        return task;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
+  completePreparedStartCancellation(id, { requestId, expectedRevision } = {}) {
     const taskId = String(id);
     const normalizedRequestId = String(requestId ?? "").trim();
     if (!normalizedRequestId) throw new Error("Task launch request id is required");
     return this.#withDatabase((database) => {
-      this.#taskRow(database, taskId);
-      if (reassign) {
-        database.prepare(`
-          UPDATE hub_board_tasks
-          SET start_request_id = NULL, start_stream_name = NULL, updated_at_ms = ?
-          WHERE id = ? AND status = 'started' AND start_request_id = ?
-        `).run(this.now(), taskId, normalizedRequestId);
-      } else {
-        database.prepare(`
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const current = this.#taskRow(database, taskId);
+        if (Number(expectedRevision) !== Number(current.row_revision)) {
+          throw new Error("Task launch cancel completion revision conflict");
+        }
+        if (
+          String(current.start_request_id ?? "") !== normalizedRequestId
+          || current.start_effect_state !== "cancelling"
+        ) throw new Error("Task launch cancellation fence is not owned by the prepared request");
+        const changed = database.prepare(`
           UPDATE hub_board_tasks
           SET status = 'open', stream_id = NULL, start_request_id = NULL, start_stream_name = NULL,
+            start_destination_stream_id = NULL, start_effect_state = NULL, start_effect_owner_id = NULL,
             updated_at_ms = ?
-          WHERE id = ? AND status = 'starting' AND start_request_id = ?
-        `).run(this.now(), taskId, normalizedRequestId);
+          WHERE id = ? AND status = 'starting' AND row_revision = ?
+            AND start_request_id = ? AND start_effect_state = 'cancelling'
+        `).run(this.now(), taskId, Number(expectedRevision), normalizedRequestId);
+        if (!Number(changed.changes)) throw new Error("Task launch cancel completion CAS failed");
+        const task = taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId));
+        database.exec("COMMIT");
+        return task;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
       }
-      const task = taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId));
-      if (!task) throw new Error("Task не найден");
-      return task;
     });
   }
 
-  markStarted(id, { workspaceId, streamId, requestId = null } = {}) {
+  runMutation(operation, options = {}) {
+    return this.#mutations.run(operation, options);
+  }
+
+  mutationDiagnostics() {
+    return this.#mutations.diagnostics();
+  }
+
+  cancelPreparedStart(id, {
+    requestId, reassign = false, expectedRevision = null, attemptId = null,
+  } = {}) {
+    const taskId = String(id);
+    const normalizedRequestId = String(requestId ?? "").trim();
+    if (!normalizedRequestId) throw new Error("Task launch request id is required");
+    return this.#withDatabase((database) => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+      const current = this.#taskRow(database, taskId);
+      if (expectedRevision != null && Number(expectedRevision) !== Number(current.row_revision)) {
+        throw new Error("Task launch cancel revision conflict");
+      }
+      if (String(current.start_request_id ?? "") !== normalizedRequestId) {
+        throw new Error("Task launch cancel owner does not match the prepared request");
+      }
+      if (
+        String(current.start_effect_state ?? "") !== "admitted"
+        || String(current.start_effect_owner_id ?? "") !== String(attemptId ?? "").trim()
+      ) throw new Error("Task launch rollback does not own effect admission");
+      let changed;
+      if (reassign) {
+        changed = database.prepare(`
+          UPDATE hub_board_tasks
+          SET start_request_id = NULL, start_stream_name = NULL, start_destination_stream_id = NULL,
+            start_effect_state = NULL, start_effect_owner_id = NULL, updated_at_ms = ?
+          WHERE id = ? AND status = 'started' AND start_request_id = ? AND row_revision = ?
+        `).run(this.now(), taskId, normalizedRequestId, current.row_revision);
+      } else {
+        changed = database.prepare(`
+          UPDATE hub_board_tasks
+          SET status = 'open', stream_id = NULL, start_request_id = NULL, start_stream_name = NULL,
+            start_destination_stream_id = NULL, start_effect_state = NULL, start_effect_owner_id = NULL,
+            updated_at_ms = ?
+          WHERE id = ? AND status = 'starting' AND start_request_id = ? AND row_revision = ?
+        `).run(this.now(), taskId, normalizedRequestId, current.row_revision);
+      }
+      if (!Number(changed.changes)) throw new Error("Task launch cancel CAS failed");
+      const task = taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId));
+      if (!task) throw new Error("Task не найден");
+      database.exec("COMMIT");
+      return task;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
+  markStarted(id, {
+    workspaceId, streamId, requestId = null, expectedRevision = null, attemptId = null,
+  } = {}) {
     const timestamp = this.now();
     return this.#withDatabase((database) => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
       const normalizedRequestId = String(requestId ?? "").trim();
+      if (!normalizedRequestId) throw new Error("Task launch completion requires its exact request owner");
       const current = this.#taskRow(database, id);
-      if (normalizedRequestId && String(current.start_request_id ?? "") !== normalizedRequestId) {
+      if (String(current.start_request_id ?? "") !== normalizedRequestId) {
         throw new Error("Task launch request does not match the prepared Task");
       }
-      database.prepare(`
+      if (
+        current.start_effect_state !== "admitted"
+        || String(current.start_effect_owner_id ?? "") !== String(attemptId ?? "").trim()
+      ) throw new Error("Task launch completion does not own effect admission");
+      if (!Number.isInteger(Number(expectedRevision)) || Number(current.row_revision) !== Number(expectedRevision)) {
+        throw new Error("Task launch completion revision CAS failed");
+      }
+      if (!['starting', 'started'].includes(String(current.status))) {
+        throw new Error("Task launch completion state does not match a prepared Task");
+      }
+      if (String(current.workspace_id ?? "") !== String(workspaceId)
+          || String(current.start_destination_stream_id ?? "") !== String(streamId)) {
+        throw new Error("Task launch completion owner does not match its prepared destination");
+      }
+      assertTaskChecklistWorkspaceTransitionAllowed(database, String(id), String(workspaceId));
+      const changed = database.prepare(`
         UPDATE hub_board_tasks
         SET bucket = 'workspace', status = 'started', workspace_id = ?, stream_id = ?,
           workflow_status = 'in_progress', placement_source = 'manual',
           started_at_ms = COALESCE(started_at_ms, ?),
-          completed_at_ms = NULL, updated_at_ms = ?
-        WHERE id = ?
-      `).run(String(workspaceId), String(streamId), timestamp, timestamp, String(id));
+          completed_at_ms = NULL, start_effect_state = 'completed', start_effect_owner_id = NULL,
+          updated_at_ms = ?
+        WHERE id = ? AND row_revision = ? AND start_request_id = ?
+          AND status IN ('starting', 'started') AND workspace_id = ? AND start_destination_stream_id = ?
+          AND start_effect_state = 'admitted' AND start_effect_owner_id = ?
+      `).run(
+        String(workspaceId), String(streamId), timestamp, timestamp, String(id),
+        Number(expectedRevision), normalizedRequestId, String(workspaceId), String(streamId),
+        String(attemptId ?? "").trim(),
+      );
+      if (!Number(changed.changes)) throw new Error("Task launch completion CAS changed no rows");
       const task = this.#taskWithRelease(
         database,
         database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(String(id)),
       );
       if (!task) throw new Error("Task не найден");
+      database.exec("COMMIT");
       return task;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
     });
   }
 
@@ -1692,6 +2218,9 @@ export class TaskBoardStore {
       if (String(current.workspace_id ?? "") !== String(workspaceId ?? "")) {
         throw new Error("Task is outside the current Workspace");
       }
+      if (current.status === "starting" && String(current.start_request_id ?? "").trim()) {
+        throw new Error("prepared Task launch must be cancelled before claim");
+      }
       const bound = database.prepare(`
         SELECT * FROM hub_task_turn_bindings
         WHERE provider = ? AND provider_thread_id = ? AND turn_id = ? AND operation_id = ?
@@ -1725,6 +2254,7 @@ export class TaskBoardStore {
           baseline_json, claimed_at_ms
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `).run(taskId, ...identity, kind, baselineJson, timestamp);
+      assertTaskChecklistWorkspaceTransitionAllowed(database, taskId, String(workspaceId));
       database.prepare(`
         UPDATE hub_board_tasks SET bucket = 'workspace', status = 'started', workflow_status = 'in_progress',
           workspace_id = ?, stream_id = ?, placement_source = 'manual',
@@ -1773,13 +2303,39 @@ export class TaskBoardStore {
     });
   }
 
-  requestWorkflowStatus(id, { status, provider, threadId, turnId, operationId } = {}) {
+  requestWorkflowStatus(id, {
+    status, provider, threadId, turnId, operationId, expectedRevision = null, expectedStatus = null,
+  } = {}) {
     const workflowStatus = normalizedTaskWorkflowStatus(status);
-    if (workflowStatus === "awaiting_implementation") {
-      const identity = [provider, threadId, turnId, operationId].map((value) => String(value ?? "").trim());
-      this.#withDatabase((database) => {
-        this.#taskRow(database, id);
-        database.prepare("DELETE FROM hub_task_git_references WHERE task_id = ?").run(String(id));
+    const identity = [provider, threadId, turnId, operationId].map((value) => String(value ?? "").trim());
+    const timestamp = this.now();
+    return this.#withDatabase((database) => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const taskId = String(id);
+        const current = this.#taskRow(database, taskId);
+        if (expectedRevision != null && Number(current.row_revision) !== Number(expectedRevision)) {
+          throw new Error("Task revision changed during workflow transition");
+        }
+        if (expectedStatus != null && current.workflow_status !== normalizedTaskWorkflowStatus(expectedStatus)) {
+          throw new Error("Task workflow status changed during workflow transition");
+        }
+        const lifecycleStatus = current.status === "done"
+          ? (current.stream_id ? "started" : "open")
+          : current.status;
+        if (workflowStatus !== "awaiting_implementation") {
+          database.prepare(`
+            UPDATE hub_task_turn_bindings SET requested_workflow_status = NULL
+            WHERE task_id = ? AND requested_workflow_status IS NOT NULL
+          `).run(taskId);
+        }
+        database.prepare(`
+          UPDATE hub_board_tasks
+          SET status = ?, workflow_status = ?, completed_at_ms = NULL, updated_at_ms = ?,
+            row_revision = row_revision + 1
+          WHERE id = ?
+        `).run(lifecycleStatus, workflowStatus, timestamp, taskId);
+        if (workflowStatus === "awaiting_implementation") {
         if (!identity.some((value) => !value)) {
           const binding = database.prepare(`
             SELECT task_id FROM hub_task_turn_bindings
@@ -1792,9 +2348,388 @@ export class TaskBoardStore {
             `).run(...identity);
           }
         }
-      });
-    }
-    return this.setWorkflowStatus(id, workflowStatus);
+        }
+        const task = this.#taskWithRelease(database, this.#taskRow(database, taskId));
+        database.exec("COMMIT");
+        return task;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
+  beginLifecycleTransition(id, {
+    operationId, kind = "workflow", targetWorkflowStatus = null, expectedRevision, evidence = null,
+    releaseContext = null,
+  } = {}) {
+    const taskId = String(id ?? "").trim();
+    const operation = String(operationId ?? "").trim();
+    if (!operation) throw new Error("Task lifecycle operation id is required");
+    const normalizedKind = String(kind ?? "workflow");
+    const target = targetWorkflowStatus == null ? null : normalizedTaskWorkflowStatus(targetWorkflowStatus);
+    const timestamp = this.now();
+    return this.#withDatabase((database) => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const current = this.#taskRow(database, taskId);
+        const revision = Number(expectedRevision);
+        if (!Number.isInteger(revision) || revision !== Number(current.row_revision)) {
+          throw new Error("Task lifecycle revision conflict; read the Task and retry with a new request_id");
+        }
+        const existing = database.prepare(
+          "SELECT * FROM hub_task_lifecycle_transitions WHERE operation_id = ?",
+        ).get(operation);
+        if (existing) {
+          if (existing.task_id !== taskId || existing.kind !== normalizedKind
+              || Number(existing.expected_task_revision) !== revision) {
+            throw new Error("Task lifecycle operation id was already used for another transition");
+          }
+          database.exec("COMMIT");
+          return { task: this.#taskWithRelease(database, current), replayed: true, phase: existing.phase };
+        }
+        if (releaseContext) {
+          const workspaceId = String(releaseContext.workspaceId ?? "").trim();
+          const streamId = String(releaseContext.streamId ?? "").trim();
+          const rootText = String(releaseContext.projectRoot ?? "").trim();
+          const expectedRoot = rootText ? path.resolve(rootText) : null;
+          const workspace = database.prepare(
+            "SELECT id, settings_json FROM hub_workspaces WHERE id = ?",
+          ).get(workspaceId);
+          const stream = streamId ? database.prepare(
+            "SELECT id, workspace_id, settings_json FROM hub_streams WHERE id = ?",
+          ).get(streamId) : null;
+          const currentRoot = workspace ? taskProjectRoot({
+            workspace: { id: workspace.id, settings: parsedSettings(workspace.settings_json) },
+            stream: stream ? { id: stream.id, settings: parsedSettings(stream.settings_json) } : null,
+          }) : null;
+          const sourceContext = releaseContext.source ?? null;
+          const sourceTaskId = String(sourceContext?.taskId ?? "").trim();
+          const sourceTask = sourceContext ? database.prepare(
+            "SELECT * FROM hub_board_tasks WHERE id = ?",
+          ).get(sourceTaskId) : null;
+          const sourceStream = sourceTask?.stream_id ? database.prepare(
+            "SELECT id, workspace_id, settings_json FROM hub_streams WHERE id = ?",
+          ).get(sourceTask.stream_id) : null;
+          const sourceRoot = sourceTask && workspace ? taskProjectRoot({
+            workspace: { id: workspace.id, settings: parsedSettings(workspace.settings_json) },
+            stream: sourceStream ? { id: sourceStream.id, settings: parsedSettings(sourceStream.settings_json) } : null,
+          }) : null;
+          const sourceReferences = sourceTask ? database.prepare(`
+            SELECT project_root, result_commit FROM hub_task_git_references WHERE task_id = ?
+          `).all(sourceTaskId).filter((reference) => sameResolvedPath(reference.project_root, expectedRoot)) : [];
+          const sourceMatches = !sourceContext || (
+            sourceTask
+            && sourceTaskId !== taskId
+            && Number(sourceTask.row_revision) === Number(sourceContext.revision)
+            && sourceTask.workflow_status === String(sourceContext.workflowStatus ?? "")
+            && sourceTask.workflow_status === "testing"
+            && String(sourceTask.workspace_id ?? "") === workspaceId
+            && sourceStream
+            && String(sourceStream.workspace_id ?? "") === workspaceId
+            && sourceRoot
+            && sameResolvedPath(sourceRoot, expectedRoot)
+            && sameResolvedPath(sourceContext.projectRoot, expectedRoot)
+            && sourceReferences.length === 1
+            && String(sourceReferences[0].result_commit ?? "").trim().toLowerCase()
+              === String(sourceContext.resultCommit ?? "").trim().toLowerCase()
+          );
+          if (String(current.workspace_id ?? "") !== workspaceId
+              || String(current.stream_id ?? "") !== streamId
+              || !workspace
+              || (streamId && (!stream || String(stream.workspace_id ?? "") !== workspaceId))
+              || parsedSettings(workspace.settings_json).releaseWorkflowEnabled !== true
+              || !expectedRoot
+              || !currentRoot
+              || !sourceMatches
+              || !sameResolvedPath(currentRoot, expectedRoot)) {
+            throw new Error("Task release context changed during lifecycle transition");
+          }
+        }
+        const active = database.prepare(`
+          SELECT operation_id FROM hub_task_lifecycle_transitions
+          WHERE task_id = ? AND phase IN ('pending_git', 'cleanup')
+        `).get(taskId);
+        if (active) throw new Error(`Task lifecycle transition is already active: ${active.operation_id}`);
+        database.prepare(`
+          INSERT INTO hub_task_lifecycle_transitions (
+            operation_id, task_id, kind, phase, target_workflow_status,
+            expected_task_revision, prior_state_json, evidence_json, created_at_ms, updated_at_ms
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          operation, taskId, normalizedKind, normalizedKind === "workflow" ? "pending_git" : "cleanup",
+          target, revision, JSON.stringify({
+            task: this.#taskWithRelease(database, current),
+            bindingRequests: database.prepare(`
+              SELECT provider, provider_thread_id, turn_id, operation_id, requested_workflow_status
+              FROM hub_task_turn_bindings WHERE task_id = ?
+            `).all(taskId),
+          }), JSON.stringify(evidence ?? {}), timestamp, timestamp,
+        );
+        database.exec("COMMIT");
+        return { task: this.#taskWithRelease(database, current), replayed: false, phase: normalizedKind === "workflow" ? "pending_git" : "cleanup" };
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
+  lifecycleTransition(operationId) {
+    const operation = String(operationId ?? "").trim();
+    return this.#withDatabase((database) => {
+      const row = database.prepare(
+        "SELECT * FROM hub_task_lifecycle_transitions WHERE operation_id = ?",
+      ).get(operation);
+      return row ? {
+        operationId: row.operation_id,
+        taskId: row.task_id,
+        kind: row.kind,
+        phase: row.phase,
+        targetWorkflowStatus: row.target_workflow_status ?? null,
+        expectedRevision: Number(row.expected_task_revision),
+        priorTask: (() => {
+          const priorState = JSON.parse(row.prior_state_json);
+          return priorState?.task ?? priorState;
+        })(),
+        error: row.error_text,
+        evidence: JSON.parse(row.evidence_json ?? "{}"),
+      } : null;
+    });
+  }
+
+  lifecycleOutcome(operationId) {
+    const operation = String(operationId ?? "").trim();
+    return this.#withDatabase((database) => {
+      const row = database.prepare(
+        "SELECT * FROM hub_task_lifecycle_outcomes WHERE operation_id = ?",
+      ).get(operation);
+      if (!row) return null;
+      try {
+        return {
+          operationId: row.operation_id,
+          taskId: row.task_id,
+          kind: row.kind,
+          result: JSON.parse(row.result_json),
+          completedAtMs: Number(row.completed_at_ms),
+        };
+      } catch {
+        throw new Error("Task lifecycle outcome is corrupt");
+      }
+    });
+  }
+
+  failLifecycleTransition(operationId, error) {
+    const operation = String(operationId ?? "").trim();
+    return this.#withDatabase((database) => {
+      const updated = database.prepare(`
+        UPDATE hub_task_lifecycle_transitions
+        SET phase = 'failed', error_text = ?, updated_at_ms = ?
+        WHERE operation_id = ? AND phase IN ('pending_git', 'cleanup')
+      `).run(String(error?.message ?? error ?? "lifecycle transition failed").slice(0, 4000), this.now(), operation);
+      return Number(updated.changes) > 0;
+    });
+  }
+
+  commitWorkflowTransition({
+    operationId, provider = null, threadId = null, turnId = null, bindingOperationId = null,
+    gitReferences = [], evidence = null, replaceGitReferences = true,
+  } = {}) {
+    const operation = String(operationId ?? "").trim();
+    return this.#withDatabase((database) => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const transition = database.prepare(`
+          SELECT * FROM hub_task_lifecycle_transitions
+          WHERE operation_id = ? AND kind = 'workflow' AND phase = 'pending_git'
+        `).get(operation);
+        if (!transition) throw new Error("Task workflow transition is not pending");
+        const current = this.#taskRow(database, transition.task_id);
+        if (Number(current.row_revision) !== Number(transition.expected_task_revision)) {
+          throw new Error("Task changed while Git evidence was prepared");
+        }
+        if (replaceGitReferences) {
+          database.prepare("DELETE FROM hub_task_git_references WHERE task_id = ?").run(transition.task_id);
+          for (const reference of gitReferences) {
+            this.#recordGitReference(
+              database,
+              transition.task_id,
+              reference.projectRoot,
+              reference.branch,
+              { repoRoot: reference.projectRoot, tree: reference.resultCommit },
+            );
+          }
+        }
+        const lifecycleStatus = current.status === "done"
+          ? (current.stream_id ? "started" : "open")
+          : current.status;
+        const changed = database.prepare(`
+          UPDATE hub_board_tasks
+          SET status = ?, workflow_status = ?, completed_at_ms = NULL, updated_at_ms = ?,
+            row_revision = row_revision + 1
+          WHERE id = ? AND row_revision = ?
+        `).run(
+          lifecycleStatus, transition.target_workflow_status, this.now(), transition.task_id,
+          transition.expected_task_revision,
+        );
+        if (!Number(changed.changes)) throw new Error("Task workflow CAS failed");
+        if (transition.target_workflow_status !== "awaiting_implementation") {
+          database.prepare(`
+            UPDATE hub_task_turn_bindings SET requested_workflow_status = NULL
+            WHERE task_id = ? AND requested_workflow_status IS NOT NULL
+          `).run(transition.task_id);
+        } else if ([provider, threadId, turnId, bindingOperationId].every((value) => String(value ?? "").trim())) {
+          database.prepare(`
+            UPDATE hub_task_turn_bindings SET requested_workflow_status = 'awaiting_implementation'
+            WHERE task_id = ? AND provider = ? AND provider_thread_id = ? AND turn_id = ? AND operation_id = ?
+          `).run(transition.task_id, provider, threadId, turnId, bindingOperationId);
+        }
+        database.prepare(`
+          UPDATE hub_task_lifecycle_transitions SET evidence_json = ?, updated_at_ms = ?
+          WHERE operation_id = ?
+        `).run(JSON.stringify(evidence ?? {}), this.now(), operation);
+        const task = this.#taskWithRelease(database, this.#taskRow(database, transition.task_id));
+        const priorState = JSON.parse(transition.prior_state_json);
+        const priorTask = priorState?.task ?? priorState;
+        database.prepare(`
+          INSERT OR REPLACE INTO hub_task_lifecycle_outcomes (
+            operation_id, task_id, kind, result_json, completed_at_ms
+          ) VALUES (?, ?, 'workflow', ?, ?)
+        `).run(operation, transition.task_id, JSON.stringify({
+          task,
+          priorTask,
+          priorBindingRequests: priorState?.bindingRequests ?? [],
+          evidence: evidence ?? {},
+        }), this.now());
+        database.prepare("DELETE FROM hub_task_lifecycle_transitions WHERE operation_id = ?").run(operation);
+        database.exec("COMMIT");
+        return task;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
+  rollbackWorkflowOutcome(operationId, error) {
+    const operation = String(operationId ?? "").trim();
+    return this.#withDatabase((database) => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const outcome = database.prepare(`
+          SELECT * FROM hub_task_lifecycle_outcomes
+          WHERE operation_id = ? AND kind = 'workflow'
+        `).get(operation);
+        if (!outcome) throw new Error("Task workflow outcome is unavailable for rollback");
+        const result = JSON.parse(outcome.result_json);
+        if (result.rollback?.completed === true) {
+          database.exec("COMMIT");
+          return this.#taskWithRelease(database, this.#taskRow(database, outcome.task_id));
+        }
+        const committed = result.task;
+        const prior = result.priorTask;
+        if (!committed || !prior) throw new Error("Task workflow outcome has no rollback state");
+        const current = this.#taskRow(database, outcome.task_id);
+        if (Number(current.row_revision) !== Number(committed.revision)
+          || current.workflow_status !== committed.workflowStatus) {
+          throw new Error("Task changed after workflow commit; rollback was not applied");
+        }
+        database.prepare("DELETE FROM hub_task_git_references WHERE task_id = ?").run(outcome.task_id);
+        for (const reference of prior.gitReferences ?? []) {
+          this.#recordGitReference(database, outcome.task_id, reference.projectRoot, reference.branch, {
+            repoRoot: reference.projectRoot,
+            tree: reference.resultCommit,
+          });
+        }
+        const restored = database.prepare(`
+          UPDATE hub_board_tasks SET status = ?, workflow_status = ?, completed_at_ms = ?,
+            updated_at_ms = ?, row_revision = row_revision + 1
+          WHERE id = ? AND row_revision = ? AND workflow_status = ?
+        `).run(
+          prior.status,
+          prior.workflowStatus,
+          prior.completedAt ? Date.parse(prior.completedAt) : null,
+          this.now(), outcome.task_id, committed.revision, committed.workflowStatus,
+        );
+        if (!Number(restored.changes)) throw new Error("Task workflow rollback CAS failed");
+        database.prepare(`
+          UPDATE hub_task_turn_bindings SET requested_workflow_status = NULL WHERE task_id = ?
+        `).run(outcome.task_id);
+        for (const binding of result.priorBindingRequests ?? []) {
+          if (!binding.requested_workflow_status) continue;
+          database.prepare(`
+            UPDATE hub_task_turn_bindings SET requested_workflow_status = ?
+            WHERE task_id = ? AND provider = ? AND provider_thread_id = ?
+              AND turn_id = ? AND operation_id = ?
+          `).run(
+            binding.requested_workflow_status, outcome.task_id, binding.provider,
+            binding.provider_thread_id, binding.turn_id, binding.operation_id,
+          );
+        }
+        const task = this.#taskWithRelease(database, this.#taskRow(database, outcome.task_id));
+        const rollback = {
+          completed: true,
+          reason: String(error?.message ?? error ?? "Await rebuild failed").slice(0, 4000),
+          completedAtMs: this.now(),
+        };
+        database.prepare(`
+          UPDATE hub_task_lifecycle_outcomes SET result_json = ?, completed_at_ms = ?
+          WHERE operation_id = ?
+        `).run(JSON.stringify({ ...result, rollback, restoredTask: task }), rollback.completedAtMs, operation);
+        database.exec("COMMIT");
+        return task;
+      } catch (rollbackError) {
+        database.exec("ROLLBACK");
+        throw rollbackError;
+      }
+    });
+  }
+
+  finalizeCleanupTransition(operationId, { deleteTask = false, receiptEvidence = null } = {}) {
+    const operation = String(operationId ?? "").trim();
+    return this.#withDatabase((database) => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const transition = database.prepare(`
+          SELECT * FROM hub_task_lifecycle_transitions
+          WHERE operation_id = ? AND phase = 'cleanup'
+        `).get(operation);
+        if (!transition) throw new Error("Task cleanup transition is not pending");
+        const current = this.#taskRow(database, transition.task_id);
+        if (Number(current.row_revision) !== Number(transition.expected_task_revision)) {
+          throw new Error("Task changed while cleanup was running");
+        }
+        let result;
+        if (deleteTask) {
+          result = { deleted: true, task: taskFromRow(current) };
+          database.prepare(`
+            INSERT OR REPLACE INTO hub_task_lifecycle_outcomes (
+              operation_id, task_id, kind, result_json, completed_at_ms
+            ) VALUES (?, ?, 'delete', ?, ?)
+          `).run(operation, transition.task_id, JSON.stringify({ result, evidence: receiptEvidence ?? {} }), this.now());
+          database.prepare("DELETE FROM hub_board_tasks WHERE id = ? AND row_revision = ?")
+            .run(transition.task_id, transition.expected_task_revision);
+        } else {
+          const changed = database.prepare(`
+            UPDATE hub_board_tasks SET status = 'done', completed_at_ms = ?, updated_at_ms = ?
+            WHERE id = ? AND row_revision = ?
+          `).run(this.now(), this.now(), transition.task_id, transition.expected_task_revision);
+          if (!Number(changed.changes)) throw new Error("Task complete CAS failed");
+          result = this.#taskWithRelease(database, this.#taskRow(database, transition.task_id));
+          database.prepare(`
+            INSERT OR REPLACE INTO hub_task_lifecycle_outcomes (
+              operation_id, task_id, kind, result_json, completed_at_ms
+            ) VALUES (?, ?, 'complete', ?, ?)
+          `).run(operation, transition.task_id, JSON.stringify({ result, evidence: receiptEvidence ?? {} }), this.now());
+          database.prepare("DELETE FROM hub_task_lifecycle_transitions WHERE operation_id = ?").run(operation);
+        }
+        database.exec("COMMIT");
+        return result;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    });
   }
 
   recordTaskTurn({
@@ -1881,6 +2816,60 @@ export class TaskBoardStore {
     });
   }
 
+  adoptLegacyGitReference({
+    taskId, expectedRevision, projectRoot, branch, reportedResultCommit, mainResultCommit, patchId,
+    evidenceStreamId, evidenceProvider, evidenceThreadId, evidenceTurnId,
+    actorStreamId, actorProvider, actorThreadId, requestId,
+  } = {}) {
+    const timestamp = this.now();
+    return this.#withDatabase((database) => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const row = this.#taskRow(database, taskId);
+        if (row.status === "done" || row.workflow_status !== "awaiting_implementation") {
+          throw new Error("Legacy Git adoption requires an open Await Task");
+        }
+        if (Number(row.row_revision) !== Number(expectedRevision)) {
+          throw new Error("Task revision changed before legacy Git adoption");
+        }
+        const referenceCount = Number(database.prepare(
+          "SELECT COUNT(*) AS value FROM hub_task_git_references WHERE task_id = ?",
+        ).get(row.id)?.value) || 0;
+        if (referenceCount) throw new Error("Task already has Git evidence");
+        const root = path.resolve(String(projectRoot ?? ""));
+        database.prepare(`
+          INSERT INTO hub_task_git_references (
+            task_id, project_root, branch, result_commit, updated_at_ms
+          ) VALUES (?, ?, ?, ?, ?)
+        `).run(row.id, root, String(branch), String(mainResultCommit), timestamp);
+        database.prepare(`
+          INSERT INTO hub_task_legacy_git_adoptions (
+            task_id, task_number, project_root, branch,
+            reported_result_commit, main_result_commit, patch_id,
+            evidence_stream_id, evidence_provider, evidence_thread_id, evidence_turn_id,
+            actor_stream_id, actor_provider, actor_thread_id, request_id, adopted_at_ms
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          row.id, row.task_number ?? "", root, String(branch),
+          String(reportedResultCommit), String(mainResultCommit), String(patchId),
+          String(evidenceStreamId), String(evidenceProvider), String(evidenceThreadId), String(evidenceTurnId),
+          String(actorStreamId), String(actorProvider), String(actorThreadId), String(requestId), timestamp,
+        );
+        const updated = database.prepare(`
+          UPDATE hub_board_tasks SET updated_at_ms = ?, row_revision = row_revision + 1
+          WHERE id = ? AND row_revision = ? AND workflow_status = 'awaiting_implementation' AND status != 'done'
+        `).run(timestamp, row.id, Number(expectedRevision));
+        if (updated.changes !== 1) throw new Error("Task changed during legacy Git adoption");
+        const task = this.#taskWithRelease(database, this.#taskRow(database, row.id));
+        database.exec("COMMIT");
+        return task;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
   #recordGitReference(database, taskId, projectRoot, branch, resultSnapshot) {
     const flatten = (snapshot) => Array.isArray(snapshot?.repositories)
       ? snapshot.repositories
@@ -1947,11 +2936,114 @@ export class TaskBoardStore {
     return this.list({ includeDone: true }).filter((task) => task.workspaceId === String(workspaceId));
   }
 
-  completeRelease(workspaceId, { expectedPlanRevision = null, plan = null, verificationEvidence = null } = {}) {
+  awaitRebuildPending(workspaceId) {
+    const key = `release_await_rebuild_pending:${String(workspaceId)}`;
+    return this.#withDatabase((database) => {
+      const value = database.prepare("SELECT value FROM hub_board_settings WHERE key = ?").get(key)?.value;
+      if (!value) return null;
+      try {
+        const parsed = JSON.parse(value);
+        if (parsed.completed === true) return null;
+        if (parsed.version != null && parsed.version !== 2) throw new Error("unsupported finalization version");
+        if (parsed.version === 2 && (!Array.isArray(parsed.repositories) || !parsed.repositories.length
+          || parsed.repositories.some((repository) => !repository.projectRoot || !repository.publishedRevision))) {
+          throw new Error("invalid exact finalization repositories");
+        }
+        return {
+          ...(parsed.version === 2 ? {
+            version: 2,
+            repositories: parsed.repositories,
+            awaitResult: parsed.awaitResult ?? null,
+          } : {}),
+          planRevision: String(parsed.planRevision ?? ""),
+          fallbackProjectRoots: Array.isArray(parsed.fallbackProjectRoots)
+            ? parsed.fallbackProjectRoots.map((root) => String(root)).filter(Boolean)
+            : [],
+        };
+      } catch {
+        throw new Error(`invalid pending Await rebuild evidence for Workspace ${workspaceId}`);
+      }
+    });
+  }
+
+  releaseFinalizationOutcome(workspaceId, planRevision) {
+    const key = `release_await_rebuild_pending:${String(workspaceId)}`;
+    return this.#withDatabase((database) => {
+      const value = database.prepare("SELECT value FROM hub_board_settings WHERE key = ?").get(key)?.value;
+      if (!value) return null;
+      const saved = JSON.parse(value);
+      return (saved.completedOutcomes ?? []).find((outcome) => outcome.planRevision === planRevision) ?? null;
+    });
+  }
+
+  recordReleaseFinalizationStage(workspaceId, { planRevision, stage, projectRoot, receipt }) {
+    const key = `release_await_rebuild_pending:${String(workspaceId)}`;
+    return this.#withDatabase((database) => {
+      const value = database.prepare("SELECT value FROM hub_board_settings WHERE key = ?").get(key)?.value;
+      const pending = value ? JSON.parse(value) : null;
+      if (!pending || pending.version !== 2 || pending.planRevision !== planRevision) {
+        throw new Error("release finalization revision conflict");
+      }
+      if (!receipt || typeof receipt.completed !== "boolean" || !receipt.result) {
+        throw new Error("release finalization requires a stage receipt");
+      }
+      let holder;
+      let field;
+      if (stage === "await") {
+        holder = pending;
+        field = "awaitResult";
+      } else if (["primary", "dev"].includes(stage)) {
+        holder = pending.repositories.find((repository) => repository.projectRoot === projectRoot);
+        field = stage;
+      }
+      if (!holder) throw new Error("unknown release finalization stage or repository");
+      if (holder[field]?.completed) return false;
+      holder[field] = receipt;
+      const updated = database.prepare(`
+        UPDATE hub_board_settings SET value = ?, updated_at_ms = ? WHERE key = ? AND value = ?
+      `).run(JSON.stringify(pending), this.now(), key, value);
+      if (!Number(updated.changes)) throw new Error("release finalization checkpoint changed");
+      return true;
+    });
+  }
+
+  clearAwaitRebuildPending(workspaceId, expectedPlanRevision = null) {
+    const key = `release_await_rebuild_pending:${String(workspaceId)}`;
+    return this.#withDatabase((database) => {
+      const value = database.prepare("SELECT value FROM hub_board_settings WHERE key = ?").get(key)?.value;
+      if (!value) return false;
+      const pending = JSON.parse(value);
+      if (expectedPlanRevision && pending.planRevision !== expectedPlanRevision) {
+        throw new Error("release finalization revision conflict");
+      }
+      if (pending.completed === true) return false;
+      if (pending.version === 2 && (!pending.awaitResult?.completed
+        || pending.repositories.some((repository) => !repository.primary?.completed || !repository.dev?.completed))) {
+        throw new Error("release finalization has unfinished stages");
+      }
+      if (pending.version === 2) {
+        const completedOutcomes = [...(pending.completedOutcomes ?? []), {
+          planRevision: pending.planRevision,
+          repositories: pending.repositories.map(({ projectRoot, publishedRevision }) => ({ projectRoot, publishedRevision })),
+        }].slice(-16);
+        return Number(database.prepare(`
+          UPDATE hub_board_settings SET value = ?, updated_at_ms = ? WHERE key = ? AND value = ?
+        `).run(JSON.stringify({ version: 2, completed: true, completedOutcomes }), this.now(), key, value).changes) > 0;
+      }
+      return Number(database.prepare("DELETE FROM hub_board_settings WHERE key = ? AND value = ?").run(key, value).changes) > 0;
+    });
+  }
+
+  completeRelease(workspaceId, {
+    expectedPlanRevision = null, plan = null, verificationEvidence = null, awaitRebuild = null,
+  } = {}) {
     const expected = String(expectedPlanRevision ?? "").trim();
     return this.#withDatabase((database) => {
       database.exec("BEGIN IMMEDIATE");
       try {
+      if (this.awaitRebuildPending(workspaceId)) {
+        throw new Error("release finalization is still pending");
+      }
       const tasks = this.releaseTasks(workspaceId);
       const awaiting = tasks.filter((task) => task.status !== "done"
         && task.workflowStatus === "awaiting_implementation");
@@ -1963,6 +3055,35 @@ export class TaskBoardStore {
       if (!plan.candidates.length) throw new Error("release has no awaiting Task candidates");
       if (!verificationEvidence || typeof verificationEvidence !== "object") {
         throw new Error("release completion requires durable publication evidence");
+      }
+      const rebuildPlanRevision = String(awaitRebuild?.planRevision ?? "").trim();
+      const fallbackProjectRoots = Array.isArray(awaitRebuild?.fallbackProjectRoots)
+        ? awaitRebuild.fallbackProjectRoots.map((root) => String(root).trim()).filter(Boolean)
+        : [];
+      if (rebuildPlanRevision !== expected || !fallbackProjectRoots.length) {
+        throw new Error("release completion requires durable Await rebuild evidence");
+      }
+      const previousValue = database.prepare("SELECT value FROM hub_board_settings WHERE key = ?")
+        .get(`release_await_rebuild_pending:${String(workspaceId)}`)?.value;
+      const completedOutcomes = previousValue ? JSON.parse(previousValue).completedOutcomes ?? [] : [];
+      const pending = { planRevision: rebuildPlanRevision, fallbackProjectRoots };
+      if (awaitRebuild.version === 2) {
+        const expectedRepositories = verificationEvidence.publication?.repositories ?? [];
+        if (!expectedRepositories.length || !Array.isArray(awaitRebuild.repositories)
+          || awaitRebuild.repositories.length !== expectedRepositories.length
+          || awaitRebuild.repositories.some((repository, index) => (
+            repository.projectRoot !== expectedRepositories[index].root
+            || repository.publishedRevision !== expectedRepositories[index].revision
+            || !repository.publishedRevision
+          ))) throw new Error("release finalization requires exact verified repositories");
+        Object.assign(pending, {
+          version: 2,
+          completedOutcomes,
+          repositories: awaitRebuild.repositories.map(({ projectRoot, publishedRevision }) => ({
+            projectRoot, publishedRevision, primary: null, dev: null,
+          })),
+          awaitResult: null,
+        });
       }
       const timestamp = this.now();
       for (const task of plan.candidates) {
@@ -1990,6 +3111,15 @@ export class TaskBoardStore {
         })),
         verificationEvidence,
       };
+      database.prepare(`
+        INSERT INTO hub_board_settings (key, value, updated_at_ms)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at_ms = excluded.updated_at_ms
+      `).run(
+        `release_await_rebuild_pending:${String(workspaceId)}`,
+        JSON.stringify(pending),
+        timestamp,
+      );
       database.exec("COMMIT");
       return result;
       } catch (error) {

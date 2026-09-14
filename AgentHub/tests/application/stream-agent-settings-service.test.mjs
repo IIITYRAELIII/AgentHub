@@ -31,7 +31,7 @@ function fixture() {
     setClaudeReasoning: (value) => { values.reasoningEffort = value; },
     setClaudeMode: (value) => { values.collaborationMode = value; },
     setCodexModel: (value) => {
-      if (!["gpt-5.6-sol", "gpt-5.6-terra"].includes(value)) throw new Error("unknown Codex model");
+      if (!["gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra"].includes(value)) throw new Error("unknown Codex model");
       values.model = value;
     },
     setCodexReasoning: (value) => {
@@ -94,6 +94,19 @@ test("a model saved for the other provider falls back to the provider default", 
   assert.doesNotThrow(() => service.apply("s2"));
   assert.equal(values.model, "gpt-5.6-sol");
   assert.equal(values.reasoningEffort, "medium");
+});
+
+test("switching a Codex Stream to Astra preserves the canonical model ID", () => {
+  const { service, selection, streams, values } = fixture();
+  selection.activeProvider = "codex";
+  values.model = "gpt-6-astra";
+  values.reasoningEffort = "high";
+  service.remember();
+  assert.equal(streams.get("s1").settings.model, "gpt-6-astra");
+
+  values.model = "gpt-5.6-sol";
+  service.apply("s1");
+  assert.equal(values.model, "gpt-6-astra");
 });
 
 test("unrelated Stream settings survive an agent settings update", () => {

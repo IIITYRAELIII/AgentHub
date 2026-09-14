@@ -36,6 +36,19 @@ test("unbound maintenance falls back to the provider Thread identity", () => {
   assert.equal(streamMaintenanceKey(target), "provider:codex:d:/work:thread-1");
 });
 
+test("released reservation cannot inspect, update or end a replacement on the same Stream", () => {
+  const registry = new StreamMaintenanceRegistry();
+  const target = { provider: "codex", streamId: "stream-1", threadId: "thread-1" };
+  const old = registry.begin(target);
+  assert.equal(registry.end(old), true);
+  const current = registry.begin(target);
+  assert.notEqual(current.reservationId, old.reservationId);
+  assert.equal(registry.entry(old), null);
+  assert.equal(registry.update(old, { phase: "running" }), null);
+  assert.equal(registry.end(old), false);
+  assert.equal(registry.entry(target), current);
+});
+
 test("unbound automatic maintenance blocks the matching Stream target", () => {
   const registry = new StreamMaintenanceRegistry();
   const automaticRun = { provider: "codex", projectRoot: "D:/Work", threadId: "thread-1" };

@@ -54,6 +54,9 @@ html[data-theme="bespin"] {
   --provider-none: #777279;
   --provider-codex: #477b9f;
   --provider-claude: #bf674a;
+  --provider-tone-lightness: 0.48;
+  --provider-tone-chroma: 0.09;
+  --provider-tone-alpha: 0.14;
   --comparison-local: #375c7b;
   --comparison-deviation: #a76532;
   --comparison-cost: #8c5c88;

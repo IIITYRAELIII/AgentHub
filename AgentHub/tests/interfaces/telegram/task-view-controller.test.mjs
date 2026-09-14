@@ -5,6 +5,7 @@ import {
   taskViewMessages,
   TaskViewController,
 } from "../../../src/interfaces/telegram/task-view-controller.mjs";
+import { createInterstreamMessage } from "../../../src/domain/interstream-message.mjs";
 
 function controller(overrides = {}) {
   return new TaskViewController({
@@ -131,6 +132,15 @@ test("Codex history refresh reads the rollout directly without blocking App Serv
   let providerReads = 0;
   let snapshotInput = null;
   let rolloutOptions = null;
+  const input = createInterstreamMessage({
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    requestId: "telegram-history-1",
+    text: "Новый запрос",
+  });
   const view = controller({
     findCodexRolloutPath: async () => "C:/rollout.jsonl",
     ensureCodex: async () => { providerReads += 1; },
@@ -139,7 +149,20 @@ test("Codex history refresh reads the rollout directly without blocking App Serv
       rolloutOptions = options;
       return {
         activeTurnIds: ["turn-live"],
-        userMessages: { "turn-live": [{ text: "Новый запрос" }] },
+        userMessages: {
+          "turn-live": [{
+            text: input,
+            clientUserMessageId: "mcp:telegram-history-1",
+            origin: {
+              workspaceId: "workspace-1",
+              workspaceName: "Agent HUB",
+              streamId: "stream-architect",
+              streamName: "Architect",
+              provider: "codex",
+              requestId: "telegram-history-1",
+            },
+          }],
+        },
         latestMessages: { "turn-live": "Промежуточный ответ" },
         finalMessages: {},
       };
@@ -165,6 +188,45 @@ test("Codex history refresh reads the rollout directly without blocking App Serv
   assert.equal(snapshotInput.rolloutPath, "C:/rollout.jsonl");
   assert.equal(rolloutOptions.tailBytes, 16 * 1024 * 1024);
   assert.deepEqual(result.history.map((item) => item.id), ["turn-old", "turn-live"]);
+  assert.equal(result.history[1].prompt, "Новый запрос");
+  assert.equal(result.history[1].messages[0].text, "Новый запрос");
+});
+
+for (const directRollout of [true, false]) test(`Codex history returns committed active user chronology without losing requested detail (${directRollout ? "rollout" : "App Server"})`, async () => {
+  const sourceUser = (id) => ({ role: "user", text: "same", sourceOccurrenceId: `codex-rollout:${id.repeat(64)}` });
+  const ownedUser = { role: "user", text: "owned", clientUserMessageId: "owned-command" };
+  const olderTurn = { id: "turn-old", prompt: "old", completed: true,
+    messages: [{ role: "agent", text: "older full answer" }],
+    activities: [{ type: "tool", text: "older full tool detail" }] };
+  const activeTurn = { id: "turn-live", active: true, completed: false,
+    messages: [sourceUser("a"), ownedUser, { role: "agent", text: "current full answer" }],
+    activities: [{ type: "tool", text: "current full tool detail" }] };
+  let durable = [olderTurn, activeTurn];
+  const view = controller({
+    findCodexRolloutPath: async () => directRollout ? "C:/rollout.jsonl" : null,
+    ensureCodex: async () => {},
+    readCodexThread: async () => ({ thread: { turns: [] } }),
+    readCodexRolloutActivity: async () => ({ activeTurnIds: [], userMessages: {}, finalMessages: {} }),
+    readCodexSnapshot: async () => ({ active: true, turnId: "turn-live" }),
+    taskSyncStore: {
+      history: () => structuredClone(durable),
+      recordHistory: async () => {
+        // Another observation won the write lane. The bounded durable page
+        // owns user chronology, but does not replace the requested rich page.
+        durable = [{ ...activeTurn, messages: [ownedUser, sourceUser("a"), sourceUser("c")] }];
+      },
+      save: async () => {},
+    },
+  });
+  const result = await view.readHistory({ provider: "codex", threadId: "thread-shared", projectRoot: "C:/repo", chatId: 1 });
+  assert.deepEqual(result.history.map((turn) => turn.id), ["turn-old", "turn-live"]);
+  assert.deepEqual(result.history[0].messages, olderTurn.messages);
+  assert.deepEqual(result.history[0].activities, olderTurn.activities);
+  const live = result.history[1];
+  assert.deepEqual(live.messages.filter((message) => message.role === "user").map((message) => message.clientUserMessageId || message.sourceOccurrenceId),
+    ["owned-command", sourceUser("a").sourceOccurrenceId, sourceUser("c").sourceOccurrenceId]);
+  assert.equal(live.messages.find((message) => message.role === "agent").text, "current full answer");
+  assert.deepEqual(live.activities, activeTurn.activities);
 });
 
 test("Codex history removes a context probe turn identified by rollout metadata", async () => {
@@ -936,22 +998,38 @@ test("rollout enriches an already completed cached turn with response annotation
     "## My request for Codex:",
     "Это не повторится больше?",
   ].join("\n");
+  let storedHistory = [{
+    id: turnId,
+    prompt: "Это не повторится больше?",
+    answer: "Нет, при обычных запусках не повторится.",
+    completed: true,
+    messages: [{
+      itemId: "accepted-user",
+      clientUserMessageId: "accepted-user",
+      role: "user",
+      text: "Managed command",
+    }, {
+      itemId: "temporary-user",
+      role: "user",
+      text: "Это не повторится больше?",
+    }],
+  }];
   const view = controller({
     findCodexRolloutPath: async () => "C:/rollout.jsonl",
     readCodexRolloutActivity: async () => ({
-      userMessages: { [turnId]: [{ itemId: "rollout-user", role: "user", text: prompt }] },
+      userMessageSnapshotAuthority: "complete",
+      userMessages: { [turnId]: [{
+        itemId: "rollout-user",
+        clientUserMessageId: "accepted-user",
+        role: "user",
+        text: prompt,
+      }] },
       finalMessages: { [turnId]: "Нет, при обычных запусках не повторится." },
     }),
     readCodexSnapshot: async () => ({ active: false }),
     taskSyncStore: {
-      history: () => [{
-        id: turnId,
-        prompt: "Это не повторится больше?",
-        answer: "Нет, при обычных запусках не повторится.",
-        completed: true,
-        messages: [{ itemId: "temporary-user", role: "user", text: "Это не повторится больше?" }],
-      }],
-      recordHistory: () => {},
+      history: () => structuredClone(storedHistory),
+      recordHistory: (_task, history) => { storedHistory = structuredClone(history); },
       save: async () => {},
     },
   });
@@ -966,8 +1044,210 @@ test("rollout enriches an already completed cached turn with response annotation
     text: "миграция полностью завершена.",
     annotation: "",
   }]);
-  assert.deepEqual(result.history[0].messages[0].responseAnnotations, [{
+  const annotated = result.history[0].messages.find((message) => (
+    message.role === "user" && message.responseAnnotations?.length
+  ));
+  assert.deepEqual(annotated.responseAnnotations, [{
     text: "миграция полностью завершена.",
     annotation: "",
   }]);
+  assert.deepEqual(
+    result.history[0].messages.filter((message) => message.role === "user")
+      .map((message) => message.clientUserMessageId ?? message.itemId),
+    ["accepted-user", "temporary-user"],
+  );
+  const repeated = await view.readHistory({
+    provider: "codex",
+    threadId: "019f75bd-3fd4-7e32-9dc9-0177a261a117",
+    projectRoot: "C:/repo",
+    title: "Agent HUB 1",
+    chatId: 1,
+  });
+  assert.deepEqual(
+    repeated.history[0].messages.filter((message) => message.role === "user"),
+    result.history[0].messages.filter((message) => message.role === "user"),
+  );
+});
+
+test("Telegram history replays cumulative incremental rollout occurrences exactly once", async () => {
+  const turnId = "019fc8c5-ed6c-72d3-9f37-02cb9a797791";
+  const first = {
+    itemId: "colliding-provider-id",
+    role: "user",
+    text: "Одинаковый текст",
+    sourceOccurrenceId: `codex-rollout:${"7".repeat(64)}`,
+  };
+  const appended = {
+    ...first,
+    sourceOccurrenceId: `codex-rollout:${"8".repeat(64)}`,
+  };
+  let observed = [first];
+  let storedHistory = [];
+  const view = controller({
+    findCodexRolloutPath: async () => "C:/rollout.jsonl",
+    readCodexRolloutActivity: async () => ({
+      userMessageSnapshotAuthority: "incremental",
+      userMessageSnapshotAuthorityByTurnId: { [turnId]: "incremental" },
+      userMessages: { [turnId]: structuredClone(observed) },
+      latestMessages: { [turnId]: "Working" },
+      activeTurnIds: [turnId],
+    }),
+    readCodexSnapshot: async () => ({ active: false }),
+    taskSyncStore: {
+      history: () => structuredClone(storedHistory),
+      recordHistory: (_task, history) => { storedHistory = structuredClone(history); },
+      save: async () => {},
+    },
+  });
+  const binding = {
+    provider: "codex",
+    threadId: "019f75bd-3fd4-7e32-9dc9-0177a261a118",
+    projectRoot: "C:/repo",
+    title: "Agent HUB",
+    chatId: 1,
+  };
+
+  await view.readHistory(binding);
+  await view.readHistory(binding);
+  await view.readHistory(binding);
+  assert.equal(storedHistory[0].messages.filter((message) => message.role === "user").length, 1);
+
+  observed = [first, appended];
+  await view.readHistory(binding);
+  await view.readHistory(binding);
+  assert.deepEqual(
+    storedHistory[0].messages.filter((message) => message.role === "user")
+      .map((message) => message.sourceOccurrenceId),
+    [first.sourceOccurrenceId, appended.sourceOccurrenceId],
+  );
+});
+
+test("Telegram history replaces an App Server occurrence enriched with exact identity", async () => {
+  const turnId = "telegram-enrichment-turn";
+  const sourceOccurrenceId = `codex-app-server:${"e".repeat(64)}`;
+  const initial = { role: "user", text: "Provider projection", sourceOccurrenceId };
+  const enriched = {
+    role: "user",
+    text: "Accepted projection",
+    sourceOccurrenceId,
+    clientUserMessageId: "telegram-accepted",
+  };
+  let observed = [initial];
+  let storedHistory = [];
+  const view = controller({
+    findCodexRolloutPath: async () => "C:/rollout.jsonl",
+    readCodexRolloutActivity: async () => ({
+      userMessageSnapshotAuthority: "incremental",
+      userMessageSnapshotAuthorityByTurnId: { [turnId]: "incremental" },
+      userMessages: { [turnId]: structuredClone(observed) },
+      latestMessages: { [turnId]: "Working" },
+      activeTurnIds: [turnId],
+    }),
+    readCodexSnapshot: async () => ({ active: false }),
+    taskSyncStore: {
+      history: () => structuredClone(storedHistory),
+      recordHistory: (_task, history) => { storedHistory = structuredClone(history); },
+      save: async () => {},
+    },
+  });
+  const binding = {
+    provider: "codex",
+    threadId: "telegram-enrichment-thread",
+    projectRoot: "C:/repo",
+    title: "Agent HUB",
+    chatId: 1,
+  };
+
+  await view.readHistory(binding);
+  observed = [enriched];
+  await view.readHistory(binding);
+  observed = [initial];
+  await view.readHistory(binding);
+
+  const users = storedHistory[0].messages.filter((message) => message.role === "user");
+  assert.equal(users.length, 1);
+  assert.equal(users[0].clientUserMessageId, "telegram-accepted");
+});
+
+test("Codex refresh preserves accepted identities and every unproven provider occurrence", async () => {
+  const turnId = "01a068fd-a375-70c1-bc78-7bb15ab3f81c";
+  const accepted = [
+    {
+      itemId: "local-root",
+      role: "user",
+      text: "Одинаковый текст",
+      clientUserMessageId: "accepted-root",
+      origin: { streamId: "owned-stream" },
+    },
+    { itemId: "local-steer-1", role: "user", text: "Одинаковый текст", clientUserMessageId: "accepted-steer-1" },
+    { itemId: "external-owned", role: "user", text: "Одинаковый текст" },
+    { itemId: "local-steer-2", role: "user", text: "Финальный steer", clientUserMessageId: "accepted-steer-2" },
+  ];
+  let recorded = null;
+  const view = controller({
+    findCodexRolloutPath: async () => "",
+    ensureCodex: async () => {},
+    readCodexThread: async () => ({ thread: {
+      path: "C:/bounded-tail.jsonl",
+      turns: [{
+        id: turnId,
+        status: "completed",
+        items: [
+          {
+            id: "provider-root",
+            type: "userMessage",
+            clientId: "accepted-root",
+            content: [{ type: "text", text: "Подменённый provider root" }],
+          },
+          { id: "provider-tail", type: "userMessage", content: [{ type: "text", text: "Финальный steer" }] },
+          { id: "provider-answer", type: "agentMessage", text: "Готово", phase: "final_answer" },
+        ],
+      }],
+    } }),
+    readCodexRolloutActivity: async () => ({
+      userMessages: { [turnId]: [{ itemId: "rollout-user:0", role: "user", text: "Финальный steer" }] },
+      finalMessages: { [turnId]: "Готово" },
+    }),
+    readCodexSnapshot: async () => ({ active: false }),
+    taskSyncStore: {
+      history: () => [{
+        id: turnId,
+        prompt: "Одинаковый текст",
+        completed: false,
+        messages: structuredClone(accepted),
+      }],
+      recordHistory: (_task, history) => { recorded = structuredClone(history); },
+      save: async () => {},
+    },
+  });
+
+  const result = await view.readHistory({
+    provider: "codex",
+    threadId: "production-shaped-thread",
+    projectRoot: "C:/repo",
+    title: "Agent HUB",
+    chatId: 1,
+  });
+
+  const users = result.history[0].messages.filter((message) => message.role === "user");
+  assert.deepEqual(users.map((message) => message.clientUserMessageId).filter(Boolean), [
+    "accepted-root",
+    "accepted-steer-1",
+    "accepted-steer-2",
+  ]);
+  assert.deepEqual(users.map((message) => message.text), [
+    "Одинаковый текст",
+    "Одинаковый текст",
+    "Одинаковый текст",
+    "Финальный steer",
+    "Финальный steer",
+    "Финальный steer",
+  ]);
+  assert.equal(users.some((message) => message.itemId === "provider-tail"), true);
+  assert.equal(users.some((message) => message.itemId === "rollout-user:0"), true);
+  assert.equal(result.history[0].messages.filter((message) => message.role === "agent").length, 1);
+  assert.equal(result.history[0].prompt, "Одинаковый текст");
+  assert.deepEqual(users[0].origin, { streamId: "owned-stream" });
+  assert.equal(users.some((message) => message.itemId === "external-owned"), true);
+  assert.deepEqual(recorded, result.history);
 });

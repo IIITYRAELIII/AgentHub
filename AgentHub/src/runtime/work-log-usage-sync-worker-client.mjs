@@ -1,7 +1,16 @@
 import { Worker } from "node:worker_threads";
+import { randomUUID } from "node:crypto";
 
 const DEFAULT_MAX_PENDING_REQUESTS = 32;
 const DEFAULT_CLOSE_TIMEOUT_MS = 2_000;
+const TRACE_MEASUREMENTS = [
+  "queueWaitMs", "durationMs", "recordCount", "invalidRecordCount", "eventCount", "factCount",
+  "workerThreadId", "inspected", "candidateCount", "updated", "revisionReadMs", "projectionReadMs", "ledgerReadMs", "normalizeMs",
+  "metadataReadMs", "recordReadMs",
+  "workspaceResolveMs", "workspaceReadMs", "factsReadMs", "accountCatalogReadMs", "renderMs",
+  "lazyBuildMs", "commitMs", "aggregateMs",
+  "expectedRevision", "revision",
+];
 
 function workerError(value) {
   const error = new Error(String(value?.message ?? "usage sync worker failed"));
@@ -17,6 +26,12 @@ export class WorkLogUsageSyncWorkerStore {
   #closed = false;
   #lastProjection = null;
   #lastSnapshot = null;
+  #lastJournalProjection = null;
+  #lastMetadataRead = null;
+  #lastMetadataMutation = null;
+  #lastUsageHistory = null;
+  #traceService = null;
+  #traceIdentity = randomUUID();
 
   constructor({
     databaseFile,
@@ -38,9 +53,13 @@ export class WorkLogUsageSyncWorkerStore {
     });
     this.#worker.unref?.();
     this.#worker.on("message", (message) => this.#settle(message));
-    this.#worker.on("error", (error) => this.#fail(error));
+    this.#worker.on("error", (error) => {
+      this.#closed = true;
+      this.#fail(error);
+    });
     this.#worker.once("exit", (code) => {
       if (!this.#closed && !this.#closing) {
+        this.#closed = true;
         this.#fail(new Error(`usage sync worker exited with code ${code}`));
       }
     });
@@ -54,8 +73,56 @@ export class WorkLogUsageSyncWorkerStore {
     return this.#request("facts");
   }
 
+  setTraceService(service) {
+    this.#traceService = service;
+  }
+
+  #startTrace(type, id) {
+    try {
+      return this.#traceService?.startBestEffortSpan?.({
+        commandId: `usage-worker:${this.#traceIdentity}:${id}`, stage: "usage-worker-request",
+        transport: "server-runtime", recordStarted: true, metadata: { action: type },
+      });
+    } catch { return null; }
+  }
+
+  #finishTrace(request, outcome, value = {}) {
+    const source = value?.measurements ?? value;
+    try {
+      request.trace?.finish({
+        outcome, queueDepth: request.queueDepth,
+        metadata: {
+          ...Object.fromEntries(TRACE_MEASUREMENTS
+            .filter((key) => Number.isFinite(source?.[key]) && source[key] >= 0)
+            .map((key) => [key, source[key]])),
+          ...Object.fromEntries(["conflict", "projectionDeferred"]
+            .filter((key) => typeof value?.[key] === "boolean")
+            .map((key) => [key, value[key]])),
+        },
+      });
+    } catch { /* Diagnostics never change a worker operation's result. */ }
+  }
+
+  usageHistory(payload = {}, { workspaceResolver = null } = {}) {
+    const startedAt = performance.now();
+    return this.#request("usage-history", {
+      ...payload,
+      resolveWorkspaces: Boolean(payload.workspaceId || payload.streamId)
+        && typeof workspaceResolver === "function",
+    }, { workspaceResolver }).then(({ history, measurements }) => {
+      this.#lastUsageHistory = {
+        ...measurements, totalMs: performance.now() - startedAt, completedAtMs: Date.now(),
+      };
+      return history;
+    });
+  }
+
   importSnapshot(snapshot) {
     return this.#request("import-snapshot", { snapshot });
+  }
+
+  reconcileSnapshot(snapshot) {
+    return this.#request("reconcile-snapshot", { snapshot });
   }
 
   replaceEvents(events) {
@@ -77,6 +144,44 @@ export class WorkLogUsageSyncWorkerStore {
     });
   }
 
+  projectJournal(payload = {}, { workspaceResolver = null } = {}) {
+    return this.#request("project-journal", {
+      ...payload,
+      resolveWorkspaces: typeof workspaceResolver === "function",
+    }, { workspaceResolver }).then((result) => {
+      this.#lastJournalProjection = result;
+      return result;
+    });
+  }
+
+  readTurnMetadataCandidates(payload) {
+    const startedAt = performance.now();
+    return this.#request("read-turn-metadata-candidates", payload).then((result) => {
+      this.#lastMetadataRead = {
+        kind: payload.kind, inspected: result.inspected, candidates: result.candidates.length,
+        durationMs: result.durationMs, totalMs: performance.now() - startedAt, completedAtMs: Date.now(),
+      };
+      return result.candidates;
+    });
+  }
+
+  synchronizeTurnMetadata(payload, { mutationLock = null } = {}) {
+    return this.#request("synchronize-turn-metadata", {
+      ...payload, serializeMutation: typeof mutationLock === "function",
+    }, { mutationLock }).then((result) => {
+      this.#lastMetadataMutation = {
+        kind: payload.kind, updated: result.updated, durationMs: result.durationMs, completedAtMs: Date.now(),
+      };
+      return result;
+    });
+  }
+
+  synchronizeTaskTitles(payload, { mutationLock = null } = {}) {
+    return this.#request("synchronize-task-titles", {
+      ...payload, serializeMutation: typeof mutationLock === "function",
+    }, { mutationLock });
+  }
+
   usageSyncSnapshot(payload) {
     return this.#request("usage-sync-snapshot", payload).then((result) => {
       this.#lastSnapshot = {
@@ -88,12 +193,20 @@ export class WorkLogUsageSyncWorkerStore {
     });
   }
 
+  usageSyncState() {
+    return this.#request("usage-sync-state");
+  }
+
   diagnostics() {
     return {
       pendingRequests: this.#pending.size,
       closed: this.#closed,
       lastProjection: this.#lastProjection,
       lastSnapshot: this.#lastSnapshot,
+      lastJournalProjection: this.#lastJournalProjection,
+      lastMetadataRead: this.#lastMetadataRead,
+      lastMetadataMutation: this.#lastMetadataMutation,
+      lastUsageHistory: this.#lastUsageHistory,
     };
   }
 
@@ -126,7 +239,7 @@ export class WorkLogUsageSyncWorkerStore {
     }
   }
 
-  #request(type, payload = {}, { allowClosing = false } = {}) {
+  #request(type, payload = {}, { allowClosing = false, workspaceResolver = null, mutationLock = null } = {}) {
     if (this.#closed || (this.#closing && !allowClosing) || !this.#worker) {
       return Promise.reject(new Error("usage sync worker is unavailable"));
     }
@@ -136,11 +249,16 @@ export class WorkLogUsageSyncWorkerStore {
     const id = ++this.#sequence;
     this.#worker.ref?.();
     return new Promise((resolve, reject) => {
-      this.#pending.set(id, { resolve, reject });
+      const request = {
+        resolve, reject, workspaceResolver, mutationLock,
+        trace: this.#startTrace(type, id), queueDepth: this.#pending.size,
+      };
+      this.#pending.set(id, request);
       try {
         this.#worker.postMessage({ id, type, payload });
       } catch (error) {
         this.#pending.delete(id);
+        this.#finishTrace(request, "failed");
         reject(error);
       }
     });
@@ -149,14 +267,55 @@ export class WorkLogUsageSyncWorkerStore {
   #settle(message) {
     const request = this.#pending.get(message?.id);
     if (!request) return;
+    if (message.type === "journal-mutation") {
+      let granted = false;
+      void Promise.resolve().then(() => request.mutationLock(() => new Promise((resolve, reject) => {
+        request.mutationResult = { resolve, reject };
+        granted = true;
+        this.#worker.postMessage({ id: message.id, type: "journal-mutation-granted" });
+      }))).then((value) => this.#settle({ id: message.id, value }), (error) => {
+        if (!granted) this.#worker?.postMessage({
+          id: message.id, type: "journal-mutation-granted", error: { message: String(error?.message ?? error) },
+        });
+        this.#settle({ id: message.id, error });
+      });
+      return;
+    }
+    if (message.type === "journal-workspaces") {
+      void Promise.resolve().then(() => Promise.all(
+        message.references.map((reference) => request.workspaceResolver(reference)),
+      ))
+        .then((bindings) => this.#worker?.postMessage({
+          id: message.id, type: "journal-workspaces-result", bindings,
+        }))
+        .catch((error) => this.#worker?.postMessage({
+          id: message.id, type: "journal-workspaces-result",
+          error: { message: String(error?.message ?? error) },
+        }));
+      return;
+    }
+    if (request.mutationResult) {
+      const result = request.mutationResult;
+      request.mutationResult = null;
+      if (message.error) result.reject(workerError(message.error));
+      else result.resolve(message.value);
+      return;
+    }
     this.#pending.delete(message.id);
+    const failed = message.error || message.value?.conflict === true
+      || message.value?.projectionDeferred === true;
+    this.#finishTrace(request, failed ? "failed" : "succeeded", message.value);
     if (message.error) request.reject(workerError(message.error));
     else request.resolve(message.value);
     if (!this.#pending.size) this.#worker?.unref?.();
   }
 
   #fail(error) {
-    for (const request of this.#pending.values()) request.reject(error);
+    for (const request of this.#pending.values()) {
+      this.#finishTrace(request, "failed");
+      request.mutationResult?.reject(error);
+      request.reject(error);
+    }
     this.#pending.clear();
   }
 }

@@ -1,25 +1,18 @@
 import { createDesktopReadSystemWiring } from "./desktop-read-system-wiring-composition.mjs";
+import { createContourCommandMapping } from "../infrastructure/filesystem/test-contour-command-mapping.mjs";
 import { createDesktopCommandWiring } from "./desktop-command-wiring-composition.mjs";
 import { createDesktopRunRouterWiring } from "./desktop-run-router-wiring-composition.mjs";
 import { createDesktopTaskCreationPreparation } from "./desktop-task-creation-composition.mjs";
 import { WorkspaceCatalogService } from "../application/workspace-catalog-service.mjs";
 import { ClientTaskSelectionService } from "../application/client-task-selection-service.mjs";
 import { agentHubRuntimeHealth } from "../application/runtime-health.mjs";
+import { retryAgentHubStartup } from "../application/agent-hub-startup-coordinator.mjs";
+import { StreamMessagePinService } from "../application/stream-message-pin-service.mjs";
 
 export function createDesktopShellComposition({
-  config,
-  diagnostics,
-  limits,
-  models,
-  state,
-  catalog,
-  runtime,
-  provider,
-  clients,
-  presentation,
-  repositories,
-  serverControlController,
-  desktopCommandsPort,
+  config, server = {}, diagnostics, limits, models, state, catalog,
+  runtime, provider, clients, presentation, repositories,
+  serverControlController, desktopCommandsPort,
 }) {
   const { projects, maxSpeechJobs, maxDeferredInputs, taskExecutionOwners,
     globalWorkLogProjectRoots } = limits;
@@ -53,6 +46,7 @@ export function createDesktopShellComposition({
   const {
     taskRuns,
     taskSyncStore,
+    messagePins,
     taskRunIsActive,
     backgroundJobs,
     rateLimitTelemetry,
@@ -75,7 +69,7 @@ export function createDesktopShellComposition({
     approvalController,
     taskDiffs,
     managedRunLifecycle,
-    deferredInputs,
+    deferredInputs, composerTransfers,
     taskProgress,
     taskExternalActivity,
     scheduleQueuedInput,
@@ -91,6 +85,7 @@ export function createDesktopShellComposition({
     streamContextMaintenance,
     streamMaintenance,
     taskBoard,
+    taskLifecycle,
     taskGitWorkspaces,
     taskVoiceTranscriber,
     attachmentDirectory,
@@ -143,12 +138,21 @@ export function createDesktopShellComposition({
     taskRunKey,
     samePath,
   } = presentation;
-  const {
-    resolveTaskGitRepoRoots,
-    findRepositoryWriteConflict,
-  } = repositories;
+  const { resolveTaskGitRepoRoots, findRepositoryWriteConflict } = repositories;
+
+  const streamMessagePins = new StreamMessagePinService({
+    store: messagePins,
+    workspaceCatalog: workspaceCatalogStore,
+    resolveMessage: (identity) => taskSyncStore.durableMessageCandidate(identity),
+  });
+
+  const contourCommandMapping = config.testContourRecording
+    ? createContourCommandMapping({ root: config.testContourRecording.root,
+      readCommand: (id) => runtimeStateStore.messageCommand(id) })
+    : null;
 
   const desktopReadSystem = createDesktopReadSystemWiring({
+    contourCommandMapping,
     config,
     models,
     projects,
@@ -219,6 +223,7 @@ export function createDesktopShellComposition({
           messages: runtime.lastTaskMessageRevision(),
           readState: taskReadStateStore.revision,
           receipts: desktopMessageReceipts.revision,
+          messagePins: messagePins.revision, taskHistory: taskSyncStore.revision,
           exchangeRates: usdRubRateStore.snapshot(),
           server: await serverControlController.snapshot({ activeCount: 0, restart: null }),
         });
@@ -242,6 +247,7 @@ export function createDesktopShellComposition({
       describeAttachments: desktopAttachmentDescriptors,
       receiptForMessage: (identity) => desktopMessageReceipts.get(identity),
       recentReceipts: () => desktopMessageReceipts.snapshot(),
+      messagePinsSnapshot: () => streamMessagePins.snapshot(),
       receiptsForTurn: (identity) => desktopMessageReceipts.findAllByTurn(identity),
       interstreamOriginForClientMessage: (clientUserMessageId) => (
         workspaceCatalogStore.interstreamOriginForClientMessage(clientUserMessageId)
@@ -257,21 +263,33 @@ export function createDesktopShellComposition({
       hasAllowedUsers: () => Boolean(config.allowedUserIds.size),
       androidEnabled: () => Boolean(config.components.androidApp),
       readCachedHistory,
-      readHistoryPage: (...args) => taskSyncStore.historyPage(...args),
+      readHistoryPage: (...args) => taskSyncStore.readHistoryPage(...args),
       refreshHistory,
       attachmentImporter: importCodexDesktopAttachments,
       warn: (...args) => console.warn(...args),
     },
   });
 
+  let desktopRunCoordinator = null;
+  const blockingRunForWorkspace = (workspaceId) => {
+    const activeRun = taskRuns.values().find((run) => (
+      taskRunIsActive(run)
+      && workspaceCatalogStore.stream(run.streamId)?.workspaceId === workspaceId
+    ));
+    if (activeRun) return activeRun;
+    return desktopRunCoordinator?.hasPendingAdmission((target) => (
+      workspaceCatalogStore.stream(target.streamId)?.workspaceId === workspaceId
+    )) ? { status: "admitting" } : null;
+  };
   const workspaceCatalog = new WorkspaceCatalogService({
     store: workspaceCatalogStore,
     taskBoard,
     releasePlanner: taskReleasePlanner,
     releaseCompleter: workspaceReleaseService,
+    blockingRunForWorkspace,
   });
   const workspaceMutation = async (run, { resultKey = "" } = {}) => {
-    const result = run();
+    const result = await run();
     invalidateTaskCatalog();
     await saveState();
     const snapshot = await desktopReadSystem.desktopSnapshot({ refresh: true });
@@ -288,12 +306,13 @@ export function createDesktopShellComposition({
     saveState,
   });
 
+  const canonicalSelection = (value) => contourCommandMapping ? contourCommandMapping.target(value) : value;
   const telegramSelection = new ClientTaskSelectionService({
     sessionState: hostState,
-    fallbackSelection: selectedTask,
+    fallbackSelection: () => canonicalSelection(selectedTask()),
     fallbackTitle: selectedTaskTitle,
     findProject,
-    catalogEntries: getTaskCatalog,
+    catalogEntries: () => contourCommandMapping ? getTaskCatalog().map((entry) => contourCommandMapping.readReference(entry)) : getTaskCatalog(),
     catalogEntryIsSelected,
     preferences: agentPreferences,
     samePath,
@@ -304,7 +323,7 @@ export function createDesktopShellComposition({
   const telegramSelectedTurnTarget = (...args) => telegramSelection.turnTarget(...args);
   const telegramCurrentUiContextToken = (...args) => telegramSelection.currentUiContextToken(...args);
   const telegramUiCallback = (...args) => telegramSelection.uiCallback(...args);
-  const selectTelegramTaskFromBinding = (...args) => telegramSelection.select(...args);
+  const selectTelegramTaskFromBinding = (binding, ...args) => telegramSelection.select(canonicalSelection(binding), ...args);
   const clearTelegramTaskSelection = (...args) => telegramSelection.clear(...args);
   const telegramSelectionNotificationOptions = (options = {}) => ({
     ...options,
@@ -357,6 +376,7 @@ export function createDesktopShellComposition({
       runForTask: (target) => taskRuns.forTask(target),
       taskBoard,
       workspaceCatalog: workspaceCatalogStore,
+      streamMessagePins,
       updateRunTitle: updateTaskRunTitle,
       catalogEntryIsSelected,
       selection: {
@@ -439,6 +459,8 @@ export function createDesktopShellComposition({
       setPinnedWorkspaceStreams: (value) => agentPreferences.setPinnedWorkspaceStreams(value),
       getQuickMessages: () => agentPreferences.quickMessages,
       setQuickMessages: (value) => agentPreferences.setQuickMessages(value),
+      getQuickMessageActionMode: () => agentPreferences.quickMessageActionMode,
+      setQuickMessageActionMode: (value) => agentPreferences.setQuickMessageActionMode(value),
       projectUsage: (includeClaudeUsage) => workLogUsageStore.project(null, {
         includeClaudeUsage,
         projectRoot: config.projectRoot,
@@ -479,7 +501,8 @@ export function createDesktopShellComposition({
     },
     services: {
       startManualCompaction: (target) => streamContextMaintenance.compact(target),
-      deferredInputs,
+      contourCommandMapping,
+      deferredInputs, composerTransfers,
       saveState,
       persistDeferredIntake: (item, destination, fallbackReceipt = null) => runtimeStateStore.saveDeferredIntake({
         item,
@@ -502,7 +525,18 @@ export function createDesktopShellComposition({
       taskRuns,
       providers: agentProviders,
       externalActivity: taskExternalActivity,
-      beginRun: (input, target) => managedRunLifecycle.begin(input, target),
+      beginRun: (input, target) => {
+        const targetStreamId = String(target?.streamId ?? "").trim();
+        const targetStream = targetStreamId ? workspaceCatalogStore.stream(targetStreamId) : null;
+        if (targetStreamId && (
+          !targetStream || workspaceCatalog.permanentDeletionPending(targetStream.workspaceId)
+        )) {
+          const error = new Error("Run target Workspace or Stream no longer exists");
+          error.code = "RUN_TARGET_NOT_FOUND";
+          throw error;
+        }
+        return managedRunLifecycle.begin(input, target);
+      },
       rollbackAdmission: (run) => managedRunLifecycle.releaseAdmission(run),
       launchTurn,
       describeAttachments: desktopAttachmentDescriptors,
@@ -531,20 +565,33 @@ export function createDesktopShellComposition({
       runForTask: (target) => taskRuns.forTask(target),
       setAutostart: (params) => serverControlController.setAutostart(params),
       updateServerConfiguration: (params) => serverControlController.updateConfiguration(params),
+      startProviderLogin: (params) => serverControlController.startProviderLogin(params),
+      submitProviderLoginCode: (params) => serverControlController.submitProviderLoginCode(params),
+      cancelProviderLogin: (params) => serverControlController.cancelProviderLogin(params),
       readPreTurnInstructions: () => serverControlController.readPreTurnInstructions(),
       updateGlobalPreTurnInstructions: (params) => serverControlController.updateGlobalPreTurnInstructions(params),
       readRootAgents: () => serverControlController.readRootAgents(),
       updateRootAgents: (params) => serverControlController.updateRootAgents(params),
       taskBoard,
       taskVoiceTranscriber,
+      taskLifecycle,
       attachmentDirectory,
       usageSyncAuto,
       usageSyncRemoteConfigStore,
       workspaceCatalog: workspaceCatalogStore,
+      streamMessagePins,
     },
     desktop: {
       snapshot: desktopReadSystem.desktopSnapshot,
-      runtimeHealth: () => agentHubRuntimeHealth.snapshot(),
+      runtimeHealth: () => ({
+        ...agentHubRuntimeHealth.snapshot(),
+        process: {
+          pid: process.pid,
+          instanceId: String(server.instanceId ?? ""),
+          releaseId: String(server.releaseId ?? ""),
+        },
+      }),
+      retryStartup: retryAgentHubStartup,
       taskHistory: desktopReadSystem.desktopTaskHistory,
       rateLimitHistory: desktopReadSystem.desktopRateLimitHistory,
       usageHistory: desktopReadSystem.desktopUsageHistory,
@@ -570,6 +617,23 @@ export function createDesktopShellComposition({
       applicationCommands: desktopCommands.applicationCommands,
     },
   });
+  desktopRunCoordinator = desktopRunRouter.runCoordinator;
+  approvalController.asyncQuestions?.setSender(async (params) => {
+    const current = await desktopActions.messageTarget({ streamId: params.streamId });
+    if (current.provider !== params.provider || current.threadId !== params.threadId) {
+      throw new Error("После отправки вопроса сменился Thread. Автоматический перенос ответа запрещён; уточните исход отправки в истории.");
+    }
+    // Resolve an exact provider Thread rather than a moving Stream head. The
+    // frozen destination cannot silently change the message-ledger identity.
+    const { streamId: _streamId, ...exact } = params;
+    return desktopRunRouter.desktopMessageController.sendMessage(exact, {
+      source: "desktop-control", clientId: "agent-question-form",
+      commandId: params.clientUserMessageId,
+    });
+  }, async (streamId) => {
+    const target = await desktopActions.messageTarget({ streamId });
+    return { streamId: target.streamId, provider: target.provider, threadId: target.threadId };
+  });
 
   desktopCommandsPort.bind({
     messageTarget: desktopActions.messageTarget,
@@ -580,8 +644,5 @@ export function createDesktopShellComposition({
     forgetDesktopControl: desktopRunRouter.forgetDesktopControl,
   });
 
-  return {
-    ...desktopCommands,
-    ...desktopRunRouter,
-  };
+  return { ...desktopCommands, ...desktopRunRouter };
 }

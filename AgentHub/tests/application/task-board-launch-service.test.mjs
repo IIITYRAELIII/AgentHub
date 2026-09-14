@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import process from "node:process";
 import test from "node:test";
 
 import { TaskBoardLaunchService } from "../../src/application/task-board-launch-service.mjs";
+import {
+  initializeTaskGitRepository,
+  unprovenProcessTaskGit,
+} from "../helpers/task-git-unproven-process.mjs";
 
 function fixture({ interruptAfterCreate = false, gitWorktree = false, started = false, activeRuns = [], deferredInputs = [] } = {}) {
   const calls = [];
@@ -16,6 +24,9 @@ function fixture({ interruptAfterCreate = false, gitWorktree = false, started = 
     status: started ? "started" : "open",
     workspaceId: "workspace-1",
     streamId: started ? "stream-old" : null,
+    revision: 1,
+    startEffectState: started ? "completed" : null,
+    startEffectOwnerId: null,
     sourceDetails: {},
   };
   const taskBoard = {
@@ -24,28 +35,62 @@ function fixture({ interruptAfterCreate = false, gitWorktree = false, started = 
       if (task.startRequestId && task.startRequestId !== requestId && !reassign) {
         throw new Error("Task launch is already pending; retry it with the original request_id");
       }
+      if (task.startRequestId === requestId) return { ...task, sourceDetails: { ...task.sourceDetails } };
       Object.assign(task, reassign ? {
         startRequestId: requestId,
         startStreamName: streamName,
+        startDestinationStreamId: streamId,
+        startEffectState: "prepared",
+        startEffectOwnerId: null,
+        revision: task.revision + 1,
       } : {
         bucket: "workspace", status: "starting", workspaceId, streamId,
-        startRequestId: requestId, startStreamName: streamName,
+        startRequestId: requestId, startStreamName: streamName, startDestinationStreamId: streamId,
+        startEffectState: "prepared", startEffectOwnerId: null, revision: task.revision + 1,
       });
       calls.push(["prepare", requestId, streamId, reassign, task.streamId]);
       return { ...task, sourceDetails: { ...task.sourceDetails } };
     },
-    cancelPreparedStart: ({ requestId, reassign = false }) => {
+    admitPreparedStart: ({ requestId, attemptId, expectedRevision }) => {
+      assert.equal(task.startRequestId, requestId);
+      assert.equal(task.revision, expectedRevision);
+      if (task.startEffectState !== "prepared") {
+        throw new Error("Task launch effects are not available for admission");
+      }
+      Object.assign(task, {
+        startEffectState: "admitted", startEffectOwnerId: attemptId, revision: task.revision + 1,
+      });
+      calls.push(["admit", requestId, attemptId]);
+      return { ...task, sourceDetails: { ...task.sourceDetails } };
+    },
+    cancelPreparedStart: ({ requestId, reassign = false, attemptId, expectedRevision }) => {
+      assert.equal(task.startEffectState, "admitted");
+      assert.equal(task.startEffectOwnerId, attemptId);
+      assert.equal(task.revision, expectedRevision);
       if (reassign && task.status === "started" && task.startRequestId === requestId) {
-        Object.assign(task, { startRequestId: null, startStreamName: null });
+        Object.assign(task, {
+          startRequestId: null, startStreamName: null, startDestinationStreamId: null,
+          startEffectState: null, startEffectOwnerId: null, revision: task.revision + 1,
+        });
       } else if (task.status === "starting" && task.startRequestId === requestId) {
-        Object.assign(task, { status: "open", streamId: null, startRequestId: null, startStreamName: null });
+        Object.assign(task, {
+          status: "open", streamId: null, startRequestId: null, startStreamName: null,
+          startDestinationStreamId: null, startEffectState: null, startEffectOwnerId: null,
+          revision: task.revision + 1,
+        });
       }
       calls.push(["cancel", requestId, reassign]);
       return { ...task };
     },
-    markStarted: ({ workspaceId, streamId, requestId }) => {
+    markStarted: ({ workspaceId, streamId, requestId, attemptId, expectedRevision }) => {
       assert.equal(task.startRequestId, requestId);
-      Object.assign(task, { status: "started", workspaceId, streamId });
+      assert.equal(task.startEffectState, "admitted");
+      assert.equal(task.startEffectOwnerId, attemptId);
+      assert.equal(task.revision, expectedRevision);
+      Object.assign(task, {
+        status: "started", workspaceId, streamId,
+        startEffectState: "completed", startEffectOwnerId: null, revision: task.revision + 1,
+      });
       calls.push(["started", requestId, streamId]);
       return { ...task, sourceDetails: { ...task.sourceDetails } };
     },
@@ -121,6 +166,95 @@ test("TaskBoardLaunchService starts a Task in its dedicated Git worktree", async
   assert.equal(create[2].taskNumber, "AH-42");
 });
 
+test("TaskBoardLaunchService creates the durable guard before spawn and blocks every follow-up until proof", {
+  skip: process.platform !== "win32" ? "Windows taskkill contract" : false,
+}, async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-launch-guard-"));
+  const dataDir = path.join(root, "data");
+  const repositoryRoot = path.join(root, "repository");
+  const taskId = "launch-guard-task";
+  context.after(() => rm(root, { recursive: true, force: true }));
+  await initializeTaskGitRepository(repositoryRoot);
+  const guarded = await unprovenProcessTaskGit({ context, root: repositoryRoot, dataDir, taskId });
+  const task = {
+    id: taskId, taskNumber: "HUB-159", title: "Guarded launch", rawText: "Guarded launch",
+    status: "open", workflowStatus: "new", workspaceId: "workspace-1", streamId: null, revision: 1,
+  };
+  const streams = new Map();
+  let followUpMutations = 0;
+  const taskBoard = {
+    task: () => ({ ...task }),
+    prepareStart: ({ streamId, requestId }) => {
+      followUpMutations += 1;
+      Object.assign(task, {
+        status: "starting", streamId, startRequestId: requestId,
+        startEffectState: "prepared", revision: task.revision + 1,
+      });
+      return { ...task };
+    },
+    admitPreparedStart: ({ attemptId, expectedRevision }) => {
+      followUpMutations += 1;
+      assert.equal(task.revision, expectedRevision);
+      Object.assign(task, {
+        startEffectState: "admitted", startEffectOwnerId: attemptId, revision: task.revision + 1,
+      });
+      return { ...task };
+    },
+    cancelPreparedStart: () => ({ ...task }),
+    markStarted: ({ streamId, attemptId, expectedRevision }) => {
+      followUpMutations += 1;
+      assert.equal(task.startEffectOwnerId, attemptId);
+      assert.equal(task.revision, expectedRevision);
+      Object.assign(task, {
+        status: "started", streamId, startEffectState: "completed",
+        startEffectOwnerId: null, revision: task.revision + 1,
+      });
+      return { ...task };
+    },
+  };
+  const workspaceCatalog = {
+    workspace: () => ({
+      id: "workspace-1", name: "Agent HUB", settings: { workingDirectory: repositoryRoot },
+    }),
+    stream: (id) => streams.get(id) ?? null,
+    activeThread: () => null,
+    createStream: ({ id, workspaceId, name }) => {
+      followUpMutations += 1;
+      const stream = { id, workspaceId, name };
+      streams.set(id, stream);
+      return stream;
+    },
+  };
+  const launch = new TaskBoardLaunchService({
+    taskBoard,
+    workspaceCatalog,
+    taskGitWorkspaces: guarded.service,
+    dispatchCommand: async (_type, payload) => {
+      followUpMutations += 1;
+      return { createdTask: {
+        streamId: payload.streamId, provider: "codex", threadId: "thread-guard", projectRoot: payload.workingDirectory,
+      } };
+    },
+    sendMessage: async () => {
+      followUpMutations += 1;
+      return { accepted: true };
+    },
+  });
+  const params = {
+    id: taskId, workspaceId: "workspace-1", streamName: "Guarded",
+    provider: "codex", launchRequestId: "launch-guard-request",
+  };
+  await assert.rejects(() => launch.start(params), /process tree stop is unproven/u);
+  assert.equal(guarded.guardSeen(), true);
+  await assert.rejects(() => launch.start(params), /unresolved process-tree guard requires operator proof/u);
+  assert.equal(followUpMutations, 0);
+  assert.equal(await guarded.waitForStaleMutation(), "stale mutation attempted");
+  await guarded.proveAndRecover();
+  const resumed = await launch.start(params);
+  assert.equal(resumed.task.status, "started");
+  assert.ok(followUpMutations > 0);
+});
+
 test("TaskBoardLaunchService forwards the audited assignment origin to message intake", async () => {
   const { launch, calls } = fixture();
   const messageOrigin = {
@@ -186,7 +320,7 @@ test("TaskBoardLaunchService falls back from an empty Stream root to the Workspa
   ]);
 });
 
-test("TaskBoardLaunchService reconciles a crashed MCP start without creating another Stream or Task", async () => {
+test("TaskBoardLaunchService does not blindly replay an attempt after provider effects were admitted", async () => {
   const { launch, task, calls, streams } = fixture({ interruptAfterCreate: true });
   const params = {
     id: "board-1",
@@ -203,17 +337,15 @@ test("TaskBoardLaunchService reconciles a crashed MCP start without creating ano
   assert.equal(streams.size, 1);
   assert.equal(calls.filter(([kind]) => kind === "command").length, 1);
 
-  const resumed = await launch.start(params);
-  assert.equal(resumed.task.status, "started");
+  await assert.rejects(
+    () => launch.start(params),
+    /effects are not available for admission/u,
+  );
+  assert.equal(task.status, "starting");
   assert.equal(streams.size, 1);
   assert.equal(calls.filter(([kind]) => kind === "create-stream").length, 1);
   assert.equal(calls.filter(([, type]) => type === "task.create").length, 1);
-  assert.equal(calls.filter(([kind]) => kind === "send").length, 1);
-  const sent = calls.find(([kind]) => kind === "send")[1];
-  assert.equal(sent.clientUserMessageId, "mcp:mcp-start-1");
-  assert.equal(sent.text, "");
-  assert.deepEqual(sent.taskReferences, [{ taskId: "board-1", intent: "start" }]);
-  assert.equal("attachments" in sent, false);
+  assert.equal(calls.filter(([kind]) => kind === "send").length, 0);
 });
 
 test("TaskBoardLaunchService compensates a failed planned Stream before any Task is created", async () => {
@@ -222,11 +354,27 @@ test("TaskBoardLaunchService compensates a failed planned Stream before any Task
     taskBoard: {
       task: () => task,
       prepareStart: ({ workspaceId, streamId, streamName, requestId }) => {
-        Object.assign(task, { status: "starting", workspaceId, streamId, startStreamName: streamName, startRequestId: requestId });
+        Object.assign(task, {
+          status: "starting", workspaceId, streamId, startStreamName: streamName,
+          startRequestId: requestId, startEffectState: "prepared",
+          revision: Number(task.revision ?? 0) + 1,
+        });
         return { ...task };
       },
-      cancelPreparedStart: () => {
-        Object.assign(task, { status: "open", streamId: null, startStreamName: null, startRequestId: null });
+      admitPreparedStart: ({ attemptId, expectedRevision }) => {
+        assert.equal(task.revision, expectedRevision);
+        Object.assign(task, {
+          startEffectState: "admitted", startEffectOwnerId: attemptId, revision: task.revision + 1,
+        });
+        return { ...task };
+      },
+      cancelPreparedStart: ({ attemptId, expectedRevision }) => {
+        assert.equal(task.startEffectOwnerId, attemptId);
+        assert.equal(task.revision, expectedRevision);
+        Object.assign(task, {
+          status: "open", streamId: null, startStreamName: null, startRequestId: null,
+          startEffectState: null, startEffectOwnerId: null, revision: task.revision + 1,
+        });
         return { ...task };
       },
       markStarted: () => { throw new Error("must not mark a failed launch as started"); },

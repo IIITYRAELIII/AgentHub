@@ -22,7 +22,7 @@
   const STREAM_VIEW_SETTINGS_CHANGE_EVENT = "agenthub:stream-view-settings-change";
   const QUICK_MESSAGE_MAX_SCOPES = 200;
   const QUICK_MESSAGE_MAX_ITEMS = 20;
-  const QUICK_MESSAGE_MAX_LABEL = 64;
+  const QUICK_MESSAGE_MAX_TITLE = 64;
   const QUICK_MESSAGE_MAX_TEXT = 4_000;
 
   function normalizePinnedWorkspaceStreams(value) {
@@ -46,11 +46,10 @@
       : { text: value };
     const text = String(source.text ?? "").trim().slice(0, QUICK_MESSAGE_MAX_TEXT);
     if (!text) return null;
-    const label = String(source.label ?? text).trim().slice(0, QUICK_MESSAGE_MAX_LABEL)
-      || text.slice(0, QUICK_MESSAGE_MAX_LABEL);
+    const title = String(source.title ?? source.label ?? text).trim().slice(0, QUICK_MESSAGE_MAX_TITLE)
+      || text.slice(0, QUICK_MESSAGE_MAX_TITLE);
     return {
-      id: String(source.id ?? label).trim().slice(0, QUICK_MESSAGE_MAX_LABEL) || label,
-      label,
+      title,
       text,
     };
   }
@@ -58,12 +57,10 @@
   function normalizeQuickMessageEntries(value) {
     if (!Array.isArray(value)) return [];
     const entries = [];
-    const seen = new Set();
     for (const item of value) {
       const entry = normalizeQuickMessageEntry(item);
-      if (!entry || seen.has(entry.text)) continue;
+      if (!entry) continue;
       entries.push(entry);
-      seen.add(entry.text);
       if (entries.length >= QUICK_MESSAGE_MAX_ITEMS) break;
     }
     return entries;
@@ -95,16 +92,13 @@
     const workspaceEntries = messages.workspaces[String(workspaceId ?? "").trim()] ?? [];
     const streamEntries = messages.streams[String(streamId ?? "").trim()] ?? [];
     const entries = [];
-    const seen = new Set();
     for (const [scope, source] of [
       ["global", globalEntries],
       ["workspace", workspaceEntries],
       ["stream", streamEntries],
     ]) {
       for (const entry of source) {
-        if (seen.has(entry.text)) continue;
         entries.push({ ...entry, scope });
-        seen.add(entry.text);
       }
     }
     return entries;
@@ -119,9 +113,9 @@
         .map((line) => {
           const separator = line.indexOf("|");
           return separator < 0
-            ? { label: line, text: line }
+            ? { title: line, text: line }
             : {
-                label: line.slice(0, separator).trim(),
+                title: line.slice(0, separator).trim(),
                 text: line.slice(separator + 1).trim(),
               };
         }),
@@ -130,7 +124,7 @@
 
   function quickMessagesToText(entries) {
     return normalizeQuickMessageEntries(entries)
-      .map((entry) => (entry.label === entry.text ? entry.text : `${entry.label} | ${entry.text}`))
+      .map((entry) => (entry.title === entry.text ? entry.text : `${entry.title} | ${entry.text}`))
       .join("\n");
   }
 
@@ -139,10 +133,10 @@
     const mod10 = count % 10;
     const mod100 = count % 100;
     const noun = mod10 === 1 && mod100 !== 11
-      ? "ответ"
+      ? "шаблон"
       : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)
-        ? "ответа"
-        : "ответов";
+        ? "шаблона"
+        : "шаблонов";
     return `${count} ${noun}`;
   }
 
@@ -202,7 +196,10 @@
 
   const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
   const PHOSPHOR_ICON_PATHS = Object.freeze({
+    "arrow-down": "M213.66,162.34a8,8,0,0,0-11.32,0L136,228.69V16a8,8,0,0,0-16,0V228.69L53.66,162.34a8,8,0,0,0-11.32,11.32l80,80a8,8,0,0,0,11.32,0l80-80A8,8,0,0,0,213.66,162.34Z",
+    "arrow-up": "M213.66,82.34l-80-80a8,8,0,0,0-11.32,0l-80,80A8,8,0,0,0,53.66,93.66L120,27.31V240a8,8,0,0,0,16,0V27.31l66.34,66.35a8,8,0,0,0,11.32-11.32Z",
     "caret-down": "M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80A8,8,0,0,1,53.66,90.34L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z",
+    "caret-left": "M165.66,181.66a8,8,0,0,1-11.32,0l-48-48a8,8,0,0,1,0-11.32l48-48a8,8,0,0,1,11.32,11.32L123.31,128l42.35,42.34A8,8,0,0,1,165.66,181.66Z",
     "caret-right": "M181.66,133.66l-80,80a8,8,0,0,1-11.32-11.32L164.69,128,90.34,53.66a8,8,0,0,1,11.32-11.32l80,80A8,8,0,0,1,181.66,133.66Z",
     "caret-up": "M213.66,165.66a8,8,0,0,1-11.32,0L128,91.31,53.66,165.66a8,8,0,0,1-11.32-11.32l80-80a8,8,0,0,1,11.32,0l80,80A8,8,0,0,1,213.66,165.66Z",
     copy: "M216,32H88A16,16,0,0,0,72,48V72H48A16,16,0,0,0,32,88V216a16,16,0,0,0,16,16H176a16,16,0,0,0,16-16V192h24a16,16,0,0,0,16-16V48A16,16,0,0,0,216,32ZM176,216H48V88H72v88a16,16,0,0,0,16,16h88Zm40-40H88V48H216Z",
@@ -210,9 +207,11 @@
     "arrow-clockwise": "M240,56v48a8,8,0,0,1-8,8H184a8,8,0,0,1,0-16h28.77L194.4,77.33a80,80,0,1,0,1.84,99.28,8,8,0,0,1,12.48,10A96,96,0,1,1,207.5,67.64L224,84.44V56a8,8,0,0,1,16,0Z",
     "arrows-down-up": "M117.66,170.34a8,8,0,0,1,0,11.32l-32,32a8,8,0,0,1-11.32,0l-32-32a8,8,0,0,1,11.32-11.32L72,188.69V48a8,8,0,0,1,16,0V188.69l18.34-18.35A8,8,0,0,1,117.66,170.34Zm96-96-32-32a8,8,0,0,0-11.32,0l-32,32a8,8,0,0,0,11.32,11.32L168,67.31V208a8,8,0,0,0,16,0V67.31l18.34,18.35a8,8,0,0,0,11.32-11.32Z",
     folder: "M216,72H131.31L104,44.69A15.86,15.86,0,0,0,92.69,40H40A16,16,0,0,0,24,56V200.62A15.4,15.4,0,0,0,39.38,216H216.89A15.13,15.13,0,0,0,232,200.89V88A16,16,0,0,0,216,72ZM40,56H92.69l16,16H40ZM216,200H40V88H216Z",
+    "list-bullets": "M80,64a12,12,0,1,1-12-12A12,12,0,0,1,80,64Zm24-8a8,8,0,0,0,0,16H216a8,8,0,0,0,0-16Zm-36,60a12,12,0,1,0,12,12A12,12,0,0,0,68,116Zm148,4H104a8,8,0,0,0,0,16H216a8,8,0,0,0,0-16ZM68,180a12,12,0,1,0,12,12A12,12,0,0,0,68,180Zm148,4H104a8,8,0,0,0,0,16H216a8,8,0,0,0,0-16Z",
     "pencil-simple": "M227.31,73.37,182.63,28.69a16,16,0,0,0-22.63,0L36.69,152A15.86,15.86,0,0,0,32,163.31V208a16,16,0,0,0,16,16H92.69A15.86,15.86,0,0,0,104,219.31L227.31,96A16,16,0,0,0,227.31,73.37ZM92.69,208H48V163.31l88-88L180.69,120ZM216,84.69,192,108.69,147.31,64,171.31,40,216,84.69Z",
     plus: "M216,128a8,8,0,0,1-8,8H136v72a8,8,0,0,1-16,0V136H48a8,8,0,0,1,0-16h72V48a8,8,0,0,1,16,0v72h72A8,8,0,0,1,216,128Z",
     "push-pin-simple": "M235.32,73.37,182.63,20.69a16,16,0,0,0-22.63,0L132.69,48,92.69,36.69a16,16,0,0,0-15.38,4.1L52.69,65.37a16,16,0,0,0,0,22.63L92.69,128,40,180.69A16,16,0,0,0,40,203.31L52.69,216a16,16,0,0,0,22.62,0L128,163.31l40,40a16,16,0,0,0,22.63,0l24.68-24.68a16,16,0,0,0,4.1-15.38L208,123.31,235.32,96A16,16,0,0,0,235.32,73.37ZM196.69,112a16,16,0,0,0-4.1,15.38L204,167.31,179.31,192l-40-40a16,16,0,0,0-22.62,0L64,204.69,51.31,192,104,139.31a16,16,0,0,0,0-22.62l-40-40L88.69,52,128.62,63.41a16,16,0,0,0,15.38-4.1L171.31,32,224,84.69Z",
+    trash: "M216,48H176V40a24,24,0,0,0-24-24H104A24,24,0,0,0,80,40v8H40a8,8,0,0,0,0,16h8V208a16,16,0,0,0,16,16H192a16,16,0,0,0,16-16V64h8a8,8,0,0,0,0-16ZM96,40a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8v8H96Zm96,168H64V64H192ZM104,96v80a8,8,0,0,1-16,0V96a8,8,0,0,1,16,0Zm64,0v80a8,8,0,0,1-16,0V96a8,8,0,0,1,16,0Z",
   });
 
   function createPhosphorIcon(documentRef, name, className = "") {
@@ -273,6 +272,25 @@
     return Math.max(0, ...(stream?.tasks ?? []).map((task) => (
       Date.parse(task?.lastActivity || 0) || 0
     )));
+  }
+
+  function streamDisplayName(stream, streamCount) {
+    const name = String(stream?.name ?? "").trim();
+    if (name) return name;
+    return Number(streamCount) > 1
+      ? `Stream ${Math.max(1, Number(stream?.ordinal) || 1)}`
+      : "Stream";
+  }
+
+  function streamTabsMutationAction(mutations) {
+    const values = Array.isArray(mutations) ? mutations : [...(mutations ?? [])];
+    const contentChanged = values.some((mutation) => mutation.type !== "attributes"
+      || mutation.attributeName === "data-order-mode");
+    if (contentChanged) return "sync";
+    const overflowChanged = values.some((mutation) => mutation.type === "attributes"
+      && mutation.attributeName === "hidden"
+      && mutation.target?.matches?.(".stream-tab-group, .stream-tabs-overflow"));
+    return overflowChanged ? "align" : "none";
   }
 
   function streamsAreDraggable(mode, surface) {
@@ -405,38 +423,73 @@
         streamId,
         task,
         sourceThreadId: source?.threadId ?? previous.threadId,
-        beforePercent: normalizedContextPercent(sourceCompaction?.afterPercent)
-          ?? normalizedContextPercent(source?.context?.percent)
-          ?? normalizedContextPercent(previous?.context?.percent),
+        // Только записанный замер после свёртки. Текущее использование Thread —
+        // живое значение, под видом исторического этапа его показывать нельзя.
+        beforePercent: normalizedContextPercent(sourceCompaction?.afterPercent),
         time: sourceCompaction?.completedAt ?? new Date().toISOString(),
       });
     }
     return transitions;
   }
 
-  function rotationMaintenancePresentation(beforeValue, afterValue) {
+  function persistedStreamRotationMessages(tasks) {
+    const messages = new Map();
+    for (const task of tasks ?? []) {
+      const compaction = task?.context?.compaction;
+      const provider = String(task?.provider ?? "").trim();
+      const streamId = String(task?.streamId ?? "").trim();
+      const sourceThreadId = String(task?.threadId ?? "").trim();
+      const operationId = String(compaction?.operationId ?? compaction?.id ?? "").trim();
+      if (!provider || !streamId || !sourceThreadId || !operationId
+        || compaction?.status !== "completed" || compaction.rotated !== true) continue;
+      const targetThreadId = String(compaction.rotationThreadId ?? "").trim();
+      // Каждый процент — снимок своего этапа ротации, а не текущее состояние:
+      // живое использование нового Thread показывается отдельно и растёт.
+      const compactionBeforePercent = normalizedContextPercent(compaction.beforePercent);
+      const beforePercent = normalizedContextPercent(compaction.afterPercent);
+      const afterPercent = normalizedContextPercent(compaction.rotationAfterPercent);
+      const presentation = rotationMaintenancePresentation(beforePercent, afterPercent, {
+        compactionBeforePercent,
+      });
+      const id = `maintenance:rotation:${streamId}:${provider}:${sourceThreadId}:${operationId}`;
+      messages.set(id, {
+        id, itemId: id, provider, streamId, operationId,
+        threadId: targetThreadId || sourceThreadId,
+        sourceThreadId,
+        maintenanceType: "rotation",
+        maintenanceStatus: "completed",
+        maintenanceLabel: presentation.maintenanceLabel,
+        maintenanceDetail: presentation.maintenanceDetail,
+        placement: "after-source-turn",
+        beforePercent, afterPercent, compactionBeforePercent,
+        text: presentation.text,
+        time: compaction.rotationCompletedAt ?? compaction.completedAt ?? null,
+      });
+    }
+    return [...messages.values()];
+  }
+
+  /* Этапы ротации называются явно: до свёртки и после неё — замеры исходного
+     Thread, «сразу после переноса» — проба нового. Отсутствующий замер не
+     достраивается и не выдаётся за результат. */
+  function rotationMaintenancePresentation(beforeValue, afterValue, {
+    compactionBeforePercent: compactionValue = null,
+  } = {}) {
+    const compactionBeforePercent = normalizedContextPercent(compactionValue);
     const beforePercent = normalizedContextPercent(beforeValue);
     const afterPercent = normalizedContextPercent(afterValue);
-    if (beforePercent !== null && afterPercent !== null) {
-      return {
-        maintenanceLabel: "Ротация завершена",
-        maintenanceDetail: `Новый Thread ${afterPercent}%; источник ${beforePercent}%`,
-        text: `Ротация завершена: новый Thread ${afterPercent}% (источник ${beforePercent}%)`,
-      };
-    }
-    if (beforePercent !== null) {
-      return {
-        maintenanceLabel: "Ротация завершена",
-        maintenanceDetail: `${beforePercent}% → замер нового Thread выполняется`,
-        text: `Ротация завершена; новый Thread создан после ${beforePercent}%`,
-      };
-    }
+    const stages = [
+      compactionBeforePercent === null ? "" : `до свёртки ${compactionBeforePercent}%`,
+      beforePercent === null ? "" : `после свёртки ${beforePercent}%`,
+      afterPercent === null
+        ? "новый Thread создан, его замер не сохранён"
+        : `новый Thread сразу после переноса ${afterPercent}%`,
+    ].filter(Boolean);
+    const detail = `Использование контекста: ${stages.join(" → ")}`;
     return {
       maintenanceLabel: "Ротация завершена",
-      maintenanceDetail: afterPercent === null ? "Новый Thread создан" : `Новый Thread: ${afterPercent}%`,
-      text: afterPercent === null
-        ? "Ротация завершена; новый Thread создан"
-        : `Ротация завершена; новый Thread ${afterPercent}%`,
+      maintenanceDetail: detail,
+      text: `Ротация завершена. ${detail}`,
     };
   }
 
@@ -596,23 +649,11 @@
     ));
   }
 
-  /* Список рабочих пространств отвечает сразу на два разных вопроса: «где
-     сейчас идёт работа» и «где вообще живёт проект». Пока это один список,
-     они мешают друг другу: сортировка по активности поднимает наверх целое
-     семейство однотипных пространств, а группировка по семействам, наоборот,
-     прячет то, что горит прямо сейчас.
-
-     Поэтому вопросы разведены. Сверху — короткая лента активных, плоская и
-     без группировки: семейство попадает в неё ровно теми пространствами, где
-     действительно идёт работа. Ниже — каталог, который от активности не
-     зависит: порядок в нём стабильный, и место проекта не прыгает от того,
-     что кто-то в соседнем потоке написал сообщение.
-
-     Семейство определяется по первому слову имени и собирается только когда
-     его носят minGroupSize и больше пространств: две «FB» группой не станут. */
+  /* Активные Workspace остаются наверху, а остальной каталог — в стабильном
+     алфавитном порядке. Только явно выбранные пользователем папки группируют
+     Workspace; совпадающие префиксы имён не меняют структуру каталога. */
   const WORKSPACE_ACTIVE_LIMIT = 6;
   const WORKSPACE_ACTIVE_WINDOW_MS = 3 * 60 * 60 * 1000;
-  const WORKSPACE_GROUP_MIN_SIZE = 3;
   const WORKSPACE_FOLDER_MAX_LENGTH = 80;
 
   function normalizeWorkspaceFolderName(value) {
@@ -639,19 +680,6 @@
     if (!workspaceId) return null;
     const normalized = normalizeWorkspaceFolderName(folderName);
     return { workspaceId, folderName: normalized };
-  }
-
-  function renderWorkspaceContextMenuChildren(menu, children, currentFolder, createRemoveAction) {
-    const rendered = [...(children ?? [])];
-    if (normalizeWorkspaceFolderName(currentFolder)) {
-      if (typeof createRemoveAction !== "function") {
-        throw new TypeError("Workspace folder remove action factory is required");
-      }
-      const removeAction = createRemoveAction();
-      if (removeAction == null) throw new TypeError("Workspace folder remove action is required");
-      rendered.push(removeAction);
-    }
-    menu.replaceChildren(...rendered);
   }
 
   function workspaceCreationSettings({
@@ -689,36 +717,24 @@
     };
   }
 
-  function workspaceArchivePresentation(workspaces, nowMs = Date.now()) {
-    return [...(workspaces ?? [])].map((workspace) => {
-      const remainingMs = Math.max(0, Number(workspace?.purgeAfterMs) - nowMs);
-      const hours = Math.max(1, Math.ceil(remainingMs / (60 * 60 * 1000)));
-      return {
-        id: String(workspace?.id ?? ""),
-        name: String(workspace?.name ?? "").trim() || "Без названия",
-        streamCount: Math.max(0, Number(workspace?.streamCount) || 0),
-        threadCount: Math.max(0, Number(workspace?.threadCount) || 0),
-        purgeAfterMs: Number(workspace?.purgeAfterMs) || 0,
-        remainingLabel: hours < 24 ? `Осталось около ${hours} ч.` : `Осталось ${Math.ceil(hours / 24)} дн.`,
-      };
-    }).filter((workspace) => workspace.id);
+  function workspaceArchivePresentation(workspaces) {
+    return [...(workspaces ?? [])].map((workspace) => ({
+      id: String(workspace?.id ?? ""),
+      name: String(workspace?.name ?? "").trim() || "Без названия",
+      streamCount: Math.max(0, Number(workspace?.streamCount) || 0),
+      threadCount: Math.max(0, Number(workspace?.threadCount) || 0),
+      purgeAfterMs: null,
+    })).filter((workspace) => workspace.id);
   }
 
   function workspaceArchiveNameMatches(workspace, confirmation) {
     return String(confirmation ?? "") === String(workspace?.name ?? "");
   }
 
-  function workspaceFamilyKey(group) {
-    const name = String(group?.name ?? "").trim();
-    const [head] = name.split(/\s+/u);
-    return head && head.length <= 24 && name.length > head.length ? head : "";
-  }
-
   function workspaceSections(groups, {
     nowMs = Date.now(),
     activeLimit = WORKSPACE_ACTIVE_LIMIT,
     activeWindowMs = WORKSPACE_ACTIVE_WINDOW_MS,
-    minGroupSize = WORKSPACE_GROUP_MIN_SIZE,
     folderNames = [],
   } = {}) {
     const ordered = orderWorkspaceGroups(groups);
@@ -742,18 +758,11 @@
       const folderName = workspaceFolderName(group);
       if (folderName) {
         const items = manualFolders.get(folderName) ?? [];
-        items.push({ ...group, shortName: group.name });
+        items.push(group);
         manualFolders.set(folderName, items);
       } else {
         unassigned.push(group);
       }
-    }
-
-    const families = new Map();
-    for (const group of unassigned) {
-      const key = workspaceFamilyKey(group);
-      if (!key) continue;
-      families.set(key, (families.get(key) ?? 0) + 1);
     }
 
     const catalog = [...manualFolders.entries()]
@@ -766,25 +775,10 @@
           String(left?.name ?? "").localeCompare(String(right?.name ?? ""), "ru")
         )),
       }));
-    const opened = new Map();
     for (const group of [...unassigned].sort((left, right) => (
       String(left?.name ?? "").localeCompare(String(right?.name ?? ""), "ru")
     ))) {
-      const key = workspaceFamilyKey(group);
-      if (!key || (families.get(key) ?? 0) < minGroupSize) {
-        catalog.push({ type: "workspace", group });
-        continue;
-      }
-      let family = opened.get(key);
-      if (!family) {
-        family = { type: "family", key: `family:${key}`, name: key, items: [] };
-        opened.set(key, family);
-        catalog.push(family);
-      }
-      family.items.push({
-        ...group,
-        shortName: String(group.name ?? "").slice(key.length).trim() || group.name,
-      });
+      catalog.push({ type: "workspace", group });
     }
     return { active, catalog };
   }
@@ -1036,13 +1030,9 @@
       });
       if (typeof this.window.MutationObserver === "function") {
         this.tabsObserver = new this.window.MutationObserver((mutations) => {
-          const overflowChanged = mutations.some((mutation) => mutation.type === "attributes"
-            && mutation.attributeName === "hidden"
-            && mutation.target.matches?.(".stream-tab-group, .stream-tabs-overflow"));
-          const contentChanged = mutations.some((mutation) => mutation.type !== "attributes"
-            || mutation.attributeName === "data-order-mode");
-          if (contentChanged) this.sync();
-          else if (overflowChanged) this.alignOverflow();
+          const action = streamTabsMutationAction(mutations);
+          if (action === "sync") this.sync();
+          else if (action === "align") this.alignOverflow();
         });
         this.tabsObserver.observe(this.tabs, {
           attributes: true,
@@ -1618,7 +1608,6 @@
     workspaceFolderOpen,
     workspaceFolderNames,
     workspaceFolderMutation,
-    renderWorkspaceContextMenuChildren,
     workspaceFolderRenamePlan,
     workspaceCreationSettings,
     workspaceArchiveNameMatches,
@@ -1657,7 +1646,10 @@
     reconcileOpenStreamIds,
     resolveStableStreamCardWidth,
     rotationMaintenancePresentation,
+    persistedStreamRotationMessages,
     streamDeckRenderKey,
+    streamDisplayName,
+    streamTabsMutationAction,
     streamHeadTasks,
     streamLastActivity,
     streamRotationTransitions,

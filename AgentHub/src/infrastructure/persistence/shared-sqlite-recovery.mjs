@@ -220,7 +220,11 @@ export class SharedSqliteRecoveryCoordinator {
     let database;
     try {
       await this.#fileSystem.mkdir(inspectionDirectory, { recursive: false });
-      for (const source of [this.#databaseFile, `${this.#databaseFile}-wal`, `${this.#databaseFile}-shm`]) {
+      // The old runtime can still map its SHM until replacement readiness.
+      // Copy durable DB/WAL under the existing database lock; SQLite rebuilds
+      // the transient WAL index in this fresh, writable inspection directory.
+      // Never copy or modify the live SHM (Windows can reject copying it EBUSY).
+      for (const source of [this.#databaseFile, `${this.#databaseFile}-wal`]) {
         if (await optionalStat(source, this.#fileSystem)) {
           await this.#fileSystem.copyFile(source, path.join(inspectionDirectory, path.basename(source)));
         }

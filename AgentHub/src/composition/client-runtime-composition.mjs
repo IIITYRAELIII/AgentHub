@@ -1,3 +1,5 @@
+import { recoverRestartOperation } from "../application/restart-operation-mutations.mjs";
+import { createContourCommandMapping } from "../infrastructure/filesystem/test-contour-command-mapping.mjs";
 import { canonicalizeProjectRoots, findContainingProject, samePath } from "../infrastructure/filesystem/config.mjs";
 import { taskGitDiff } from "../infrastructure/filesystem/task-git-diff.mjs";
 import { contextualCallback } from "../interfaces/telegram/callback-context.mjs";
@@ -7,6 +9,7 @@ import {
 } from "../interfaces/telegram/status.mjs";
 import { parseClaudeLimits } from "../providers/claude/claude.mjs";
 import { readCodexRolloutActivity } from "../providers/codex/codex-rollout-activity.mjs";
+import { codexThreadSandboxSettings } from "../providers/codex/codex-sandbox.mjs";
 import { readCodexTurnUsage } from "../providers/codex/codex-turn-usage.mjs";
 import { catalogEntryIsSelected } from "../domain/task-catalog-identity.mjs";
 import { restartRequestProjection } from "../domain/maintenance-operation.mjs";
@@ -92,6 +95,7 @@ export async function createClientRuntimeComposition({
     workspaceCatalogStore,
     taskDiffs,
     deferredInputs,
+    composerTransfers,
     pendingInputs,
     queuedInputs,
     forwardBundles,
@@ -194,6 +198,7 @@ export async function createClientRuntimeComposition({
 
   const delivery = await createDeliveryOutboxComposition({
     directoryPath: deliveryOutboxDirectory,
+    recordingRoot: config.testContourRecording?.root ?? null,
     retryIntervalMs: config.deliveryRetryIntervalSeconds * 1000,
     runtimeTimers,
     isStopping: () => hostState.stopping,
@@ -224,6 +229,8 @@ export async function createClientRuntimeComposition({
   });
 
   ports.taskState.bind(createTaskStateWiring({
+    contourCommandMapping: config.testContourRecording
+      ? createContourCommandMapping({ root: config.testContourRecording.root }) : null,
     taskCatalogService,
     taskSyncStore,
     selectionStore,
@@ -279,6 +286,7 @@ export async function createClientRuntimeComposition({
         cancelledManagedClaudeTasks,
         pendingInputs,
         queuedInputs,
+        composerTransfers,
         isLegacyDesktopAttachmentFile: clients.isLegacyDesktopAttachmentFile,
         desktopMessageReceipts,
         updateDeferredDesktopReceipt: api.updateDeferredDesktopReceipt,
@@ -299,6 +307,7 @@ export async function createClientRuntimeComposition({
         cancelledManagedClaudeTasks,
         pendingInputs,
         queuedInputs,
+        composerTransfers,
         desktopMessageReceipts,
         forwardBundles,
         runJournal,
@@ -311,27 +320,16 @@ export async function createClientRuntimeComposition({
         statusMediaFileIds,
       },
     },
-    applyRestoredState: (restoredState) => {
+    applyRestoredState: async (restoredState) => {
       hostState.restore(restoredState);
       const restartTarget = {
         streamId: selectionStore.snapshot().streamId,
         threadId: selectedThreadId(),
       };
-      const restoredOperationId = String(restoredState.restartRequest?.operationId ?? "").trim();
-      const interruptedRestart = restoredOperationId
-        ? maintenanceOperations.get(restoredOperationId)
-        : maintenanceOperations.migrateLegacyRestart(restoredState.restartRequest, restartTarget)
-          ?? maintenanceOperations.latestRestart(restartTarget);
-      if (interruptedRestart) {
-        maintenanceOperations.recoverInterrupted({
-          operationIds: [interruptedRestart.operationId],
-        });
-        hostState.setRestartRequest(restartRequestProjection(
-          maintenanceOperations.get(interruptedRestart.operationId),
-        ));
-      } else {
-        hostState.setRestartRequest(null);
-      }
+      const interruptedRestart = await recoverRestartOperation(
+        maintenanceOperations, restoredState.restartRequest, restartTarget,
+      );
+      hostState.setRestartRequest(interruptedRestart ? restartRequestProjection(interruptedRestart) : null);
       replaceCodexHookReceipts(restoredState.codexHookReceipts);
       const restoredThreadId = selectedThreadId();
       if (isCodex() && restoredThreadId) {
@@ -368,7 +366,10 @@ export async function createClientRuntimeComposition({
     runtimeDependencies: {
       getActiveProjectRoot: selectedProjectRoot,
       stopProcessTree: late.stopProcessTree,
-      handleMessage: api.handleCodexMessage,
+      handleMessage: (message) => {
+        clients.providerLogin.observeCodexMessage(message);
+        return api.handleCodexMessage(message);
+      },
       isStopping: () => hostState.stopping,
       providerSelected: isCodex,
       activeRuns: () => taskRuns.values(),
@@ -404,6 +405,10 @@ export async function createClientRuntimeComposition({
     pinnedTaskTitle,
     readCodexThreadTitleHistory,
     sendRpc: api.sendRpc,
+    resumeCodexThread: ({ threadId }) => api.sendRpc("thread/resume", {
+      threadId,
+      ...codexThreadSandboxSettings(config.codexSandboxMode),
+    }),
     isCodex,
     getThreadId: selectedThreadId,
     contextCompactions: provider.contextCompactions,

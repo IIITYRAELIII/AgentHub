@@ -1,3 +1,5 @@
+import { assertRecordingContourConfiguration } from "./test-contour-recording-environment.mjs";
+import { recordingContourProfile } from "./test-contour-recording-profile.mjs";
 import { access, readFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { isIP } from "node:net";
@@ -129,6 +131,38 @@ function taskBoardSettings(value) {
       || "gpt-5.3-codex-spark",
     autoPlaceConfidence: confidence,
     bugReportWorkspaceName: String(source.bugReportWorkspaceName ?? "").replace(/\s+/gu, " ").trim(),
+  };
+}
+
+function releaseValidationSettings(value, { configDirectory = process.cwd() } = {}) {
+  const raw = value ?? {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("releaseValidation must be an object");
+  }
+  const repositories = raw.repositories == null ? [] : raw.repositories;
+  if (!Array.isArray(repositories)) throw new Error("releaseValidation.repositories must be an array");
+  return {
+    repositories: repositories.map((repository, index) => {
+      if (!repository || typeof repository !== "object" || Array.isArray(repository)) {
+        throw new Error(`releaseValidation.repositories[${index}] must be an object`);
+      }
+      const projectRoot = String(repository.projectRoot ?? repository.root ?? "").trim();
+      if (!projectRoot) throw new Error(`releaseValidation.repositories[${index}].projectRoot is required`);
+      const check = repository.check ?? {};
+      if (!check || typeof check !== "object" || Array.isArray(check)) {
+        throw new Error(`releaseValidation.repositories[${index}].check must be an object`);
+      }
+      return {
+        ...repository,
+        projectRoot: path.resolve(configDirectory, projectRoot),
+        enabled: repository.enabled === true,
+        check: {
+          ...check,
+          commands: Array.isArray(check.commands) ? check.commands : [],
+          artifacts: Array.isArray(check.artifacts) ? check.artifacts : [],
+        },
+      };
+    }),
   };
 }
 
@@ -561,7 +595,7 @@ function loadProjects(raw, defaultRoot) {
 }
 
 function loadCodexModels(raw) {
-  const defaultModels = [
+  const legacyShippedModels = [
     { value: "gpt-5.5", label: "GPT-5.5" },
     { value: "gpt-5.6-sol", label: "GPT-5.6-Sol" },
     { value: "gpt-5.6-terra", label: "GPT-5.6-Terra" },
@@ -570,12 +604,14 @@ function loadCodexModels(raw) {
     { value: "gpt-5.4-mini", label: "GPT-5.4-Mini" },
     { value: "gpt-5.3-codex-spark", label: "GPT-5.3-Codex-Spark" },
   ];
+  const astraModel = { value: "gpt-6-astra", label: "GPT-6 Astra" };
+  const defaultModels = [legacyShippedModels[0], astraModel, ...legacyShippedModels.slice(1)];
   const source = raw.codexModels ?? defaultModels;
   if (!Array.isArray(source) || source.length === 0) {
     throw new Error("codexModels must be a non-empty array");
   }
 
-  const models = source.map((model, index) => {
+  const normalizedModels = source.map((model, index) => {
     if (typeof model === "string") {
       const value = model.trim();
       if (!value) throw new Error(`codexModels[${index}] is empty`);
@@ -589,6 +625,16 @@ function loadCodexModels(raw) {
     const label = String(model.label ?? model.displayName ?? model.display_name ?? value).trim();
     return { value, label: label || value };
   });
+
+  const isLegacyShippedCatalog = raw.codexModels != null
+    && normalizedModels.length === legacyShippedModels.length
+    && normalizedModels.every((model, index) => (
+      model.value === legacyShippedModels[index].value
+      && model.label === legacyShippedModels[index].label
+    ));
+  const models = isLegacyShippedCatalog
+    ? [normalizedModels[0], astraModel, ...normalizedModels.slice(1)]
+    : normalizedModels;
 
   for (let index = 0; index < models.length; index += 1) {
     if (models.findIndex((model) => model.value === models[index].value) !== index) {
@@ -681,6 +727,8 @@ export async function loadConfig() {
       : requireIntegerArray(raw.allowedChatIds, "allowedChatIds")
     : new Set();
   const dataDir = path.resolve(configDirectory, raw.dataDir ?? "data");
+  const testContourRecording = await recordingContourProfile(raw.testContourRecording, { dataDir });
+  if (testContourRecording) assertRecordingContourConfiguration(raw, { telegramEnabled });
   const defaultTtsVenv = path.join(defaultRuntimeRoot(), "tts-venv");
   const provider = String(process.env.AI_PROVIDER ?? raw.provider ?? "codex").trim().toLowerCase();
   if (provider !== "codex" && provider !== "claude") {
@@ -726,6 +774,7 @@ export async function loadConfig() {
 
   return {
     configPath,
+    testContourRecording,
     components,
     telegramEnabled,
     token,
@@ -740,16 +789,18 @@ export async function loadConfig() {
       process.env.TELEGRAM_API_BASE_URL ?? raw.telegramApiBaseUrl ?? "https://api.telegram.org",
       "telegramApiBaseUrl",
     ),
-    codexExecutable: String(process.env.CODEX_EXECUTABLE ?? raw.codexExecutable ?? "").trim(),
-    codexExecutableAutoUpdate: booleanSetting(
+    codexExecutable: testContourRecording ? process.execPath : String(process.env.CODEX_EXECUTABLE ?? raw.codexExecutable ?? "").trim(),
+    codexExecutableAutoUpdate: testContourRecording ? false : booleanSetting(
       process.env.CODEX_EXECUTABLE_AUTO_UPDATE ?? raw.codexExecutableAutoUpdate,
       true,
       "codexExecutableAutoUpdate",
     ),
-    codexExecutableVersionPin: codexExecutableVersionPin(
+    codexExecutableVersionPin: testContourRecording ? null : codexExecutableVersionPin(
       process.env.CODEX_EXECUTABLE_VERSION_PIN ?? raw.codexExecutableVersionPin,
     ),
-    codexExecutableArgs: stringArray(raw.codexExecutableArgs, "codexExecutableArgs"),
+    codexExecutableArgs: testContourRecording
+      ? [path.join(AGENT_HUB_ROOT, "src", "providers", "recording-contour-codex-cli.mjs"), "--recording-root", testContourRecording.root]
+      : stringArray(raw.codexExecutableArgs, "codexExecutableArgs"),
     codexRpcTimeoutSeconds: positiveInteger(
       process.env.CODEX_RPC_TIMEOUT_SECONDS ?? raw.codexRpcTimeoutSeconds,
       30,
@@ -760,12 +811,13 @@ export async function loadConfig() {
     codexCollaborationMode,
     codexSandboxMode,
     codexModels: loadCodexModels(raw),
-    codexRateLimitPolling: raw.codexRateLimitPolling !== false,
+    codexRateLimitPolling: testContourRecording ? false : raw.codexRateLimitPolling !== false,
     codexRolloutContext: codexRolloutContextSettings(raw.codexRolloutContext, {
       enabled: false,
     }),
     contextAutomation: contextAutomationSettings(raw.contextAutomation),
     taskBoard: taskBoardSettings(raw.taskBoard),
+    releaseValidation: releaseValidationSettings(raw.releaseValidation, { configDirectory }),
     diagnostics: {
       sentry: sentrySettings(diagnosticsRaw.sentry, { projectRoot }),
     },
@@ -773,9 +825,11 @@ export async function loadConfig() {
       enabled: components.sharedDashboardBot,
       configDirectory,
     }),
-    claudeExecutable: String(process.env.CLAUDE_EXECUTABLE ?? raw.claudeExecutable ?? "claude").trim(),
-    claudeExecutableArgs: stringArray(raw.claudeExecutableArgs, "claudeExecutableArgs"),
-    claudeRateLimitPolling: raw.claudeRateLimitPolling !== false,
+    claudeExecutable: testContourRecording ? process.execPath : String(process.env.CLAUDE_EXECUTABLE ?? raw.claudeExecutable ?? "claude").trim(),
+    claudeExecutableArgs: testContourRecording
+      ? [path.join(AGENT_HUB_ROOT, "src", "providers", "recording-contour-claude-cli.mjs"), "--recording-root", testContourRecording.root]
+      : stringArray(raw.claudeExecutableArgs, "claudeExecutableArgs"),
+    claudeRateLimitPolling: testContourRecording ? false : raw.claudeRateLimitPolling !== false,
     claudeModel: String(process.env.CLAUDE_MODEL ?? raw.claudeModel ?? "").trim(),
     claudePermissionMode,
     claudeReasoningEffort: String(

@@ -160,6 +160,26 @@ test("restart preserves a provisional Stream-scoped queued command", () => {
   assert.deepEqual(restoreDeferredInput(item), { destination: "pending", item });
 });
 
+test("restart releases an interrupted composer reservation without losing its prior pause state", () => {
+  const runnable = {
+    id: "queued-runnable", provider: "codex", threadId: "thread-1", paused: true,
+    composerTransfer: { token: "transfer-1", paused: false },
+  };
+  assert.deepEqual(restoreDeferredInput(runnable), {
+    destination: "pending",
+    item: { id: "queued-runnable", provider: "codex", threadId: "thread-1" },
+  });
+
+  const paused = {
+    id: "queued-paused", provider: "codex", threadId: "thread-1", paused: true,
+    composerTransfer: { token: "transfer-2", paused: true },
+  };
+  assert.deepEqual(restoreDeferredInput(paused), {
+    destination: "pending",
+    item: { id: "queued-paused", provider: "codex", threadId: "thread-1", paused: true },
+  });
+});
+
 test("legacy Desktop attachments become persistent while other temporary files stay temporary", () => {
   const desktopItem = {
     id: "019f7152-726b-7b62-a595-62a3fccef0bf",

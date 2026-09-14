@@ -124,6 +124,18 @@ export class CodexEventService {
         provider: "codex",
         allowThreadFallback: method === "turn/started",
       });
+    if (!contextProbe && run) {
+      // A terminal snapshot can recover an item whose individual notification
+      // was lost. Both observations share the durable question identity.
+      const questionItems = method === "item/completed" ? [params.item]
+        : method === "turn/completed" ? params.turn?.items ?? [] : [];
+      for (const item of questionItems) {
+        if (item?.type !== "agentMessage" || !item.questions?.length) continue;
+        await d.requestUserInput(item.id, {
+          asyncItem: item, threadId: params.threadId, turnId: eventTurnId,
+        }, run);
+      }
+    }
     if (method !== "mcpServer/elicitation/request" && [
       "item/started",
       "item/completed",
@@ -164,7 +176,7 @@ export class CodexEventService {
         && pendingCompaction?.status === "running"
         && !String(pendingCompaction.turnId ?? "").trim()
       ) {
-        d.beginCompaction(params.threadId, {
+        await d.beginCompaction(params.threadId, {
           origin: pendingCompaction.origin,
           turnId: eventTurnId,
           startedAt: params.startedAtMs,
@@ -274,7 +286,7 @@ export class CodexEventService {
           stage: "started",
           occurredAt: params.startedAtMs ?? Date.now(),
         });
-        d.beginCompaction(params.threadId, {
+        await d.beginCompaction(params.threadId, {
           origin: "automatic",
           turnId: eventTurnId,
           itemId: params.item?.id,
@@ -300,7 +312,7 @@ export class CodexEventService {
           stage: "completed",
           occurredAt: params.completedAtMs ?? Date.now(),
         });
-        d.beginCompactionCleanup(params.threadId, {
+        await d.beginCompactionCleanup(params.threadId, {
           turnId: eventTurnId, itemId: params.item?.id, compactedAt: params.completedAtMs,
         });
       }
@@ -331,7 +343,7 @@ export class CodexEventService {
     if (method === "thread/compacted") {
       const threadId = String(params.threadId ?? run?.threadId ?? "").trim();
       const modernItemAlreadyHandled = Boolean(d.getCompaction(threadId)?.itemId);
-      d.beginCompactionCleanup(threadId, { turnId: eventTurnId });
+      await d.beginCompactionCleanup(threadId, { turnId: eventTurnId });
       if (run && !modernItemAlreadyHandled) d.appendActivity(run, {
         id: `compaction:${eventTurnId ?? run.turnId ?? run.id}`,
         type: "compaction", label: "Контекст свёрнут", status: "completed",
@@ -372,7 +384,13 @@ export class CodexEventService {
           completedAt: params.completedAtMs ?? Date.now(),
         });
       }
-      d.settleCompactionTurn(params.threadId, {
+      const completedCompaction = params.turn?.items?.findLast?.((item) => d.isCompactionItem(item));
+      if (completedCompaction) {
+        await d.beginCompactionCleanup(params.threadId, {
+          turnId: eventTurnId, itemId: completedCompaction.id, compactedAt: params.completedAtMs,
+        });
+      }
+      await d.settleCompactionTurn(params.threadId, {
         turnId: eventTurnId,
         status: params.turn?.status,
       });
@@ -386,7 +404,7 @@ export class CodexEventService {
         d.speechButtons.delete(eventTurnId);
         const temporaryFiles = d.temporaryFiles.get(eventTurnId) ?? [];
         d.temporaryFiles.delete(eventTurnId);
-        await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
+        await Promise.all(temporaryFiles.map((file) => (d.removeFile ?? ((value) => unlink(value).catch(() => {})))(file)));
         if (!contextProbe) {
           d.logWarn?.(`Completed Codex turn ${eventTurnId ?? "unknown"} has no registered task run`);
         }
@@ -400,7 +418,7 @@ export class CodexEventService {
         d.speechButtons.delete(completedTurnId);
         const temporaryFiles = d.temporaryFiles.get(completedTurnId) ?? [];
         d.temporaryFiles.delete(completedTurnId);
-        await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
+        await Promise.all(temporaryFiles.map((file) => (d.removeFile ?? ((value) => unlink(value).catch(() => {})))(file)));
         await d.finishObserved(run, {
           ...d.turnSnapshot(params.turn), turnId: completedTurnId,
           executionOwner: run.executionOwner, tokenTracker: tracker,

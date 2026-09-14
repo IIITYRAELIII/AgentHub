@@ -98,6 +98,7 @@ export async function restoreHubRuntimeSnapshot(saved, context) {
     cancelledManagedClaudeTasks,
     pendingInputs,
     queuedInputs,
+    composerTransfers,
     restoreDeferredInput,
     deferredInputOptions,
     isRetryableDeferredLaunchError,
@@ -202,6 +203,9 @@ export async function restoreHubRuntimeSnapshot(saved, context) {
     else queuedInputs.set(restored.item.id, restored.item);
   }
   desktopMessageReceipts.restore(saved.desktopMessageReceipts);
+  await composerTransfers?.restore?.(saved.deferredComposerTransfers, {
+    cleanup: (item) => removeFiles(item?.temporaryFiles ?? []),
+  });
   for (const item of restoredDuplicateInputs) updateDeferredDesktopReceipt(item, "cancelled");
   if (restoredDuplicateInputs.length) {
     warn(`Discarded ${restoredDuplicateInputs.length} rapid duplicate queued input(s)`);
@@ -301,6 +305,7 @@ export function createHubRuntimeSnapshot(context) {
     cancelledManagedClaudeTasks: [...context.cancelledManagedClaudeTasks.entries()],
     pendingInputs: [...context.pendingInputs.values()],
     queuedInputs: [...context.queuedInputs.values()],
+    deferredComposerTransfers: context.composerTransfers?.snapshot?.() ?? [],
     desktopMessageReceipts: context.desktopMessageReceipts.snapshot(),
     forwardBundles: [...context.forwardBundles.values()].map((bundle) => ({
       ...bundle,

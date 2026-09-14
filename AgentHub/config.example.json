@@ -54,6 +54,31 @@
     "autoPlaceConfidence": 0.82,
     "bugReportWorkspaceName": ""
   },
+  "releaseValidation": {
+    "repositories": [
+      {
+        "enabled": false,
+        "projectRoot": "C:\\Projects\\Bookworm",
+        "check": {
+          "kind": "bookworm-android-qa",
+          "id": "bookworm-frozen-candidate",
+          "commands": [
+            {
+              "command": ".\\gradlew.bat",
+              "args": [
+                "qualityCheck",
+                "--stacktrace",
+                "--console=plain"
+              ]
+            }
+          ],
+          "artifacts": [
+            "app/build/outputs/androidTest-results/connected/debug/TEST-bookworm-audit-api34.xml"
+          ]
+        }
+      }
+    ]
+  },
   "sharedDashboardBot": {
     "publicUrl": "https://hub.example.com",
     "hubId": "018f6c86-3f34-7a31-8f27-16f5b96cce70",
@@ -86,6 +111,10 @@
     {
       "value": "gpt-5.5",
       "label": "GPT-5.5"
+    },
+    {
+      "value": "gpt-6-astra",
+      "label": "GPT-6 Astra"
     },
     {
       "value": "gpt-5.6-sol",

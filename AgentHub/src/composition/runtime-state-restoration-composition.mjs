@@ -1,4 +1,4 @@
-import { unlink } from "node:fs/promises";
+import { createRuntimeFileRemoval } from "../runtime/test-contour-runtime-effects.mjs";
 import {
   forwardBundleAttachmentPaths,
   restoreForwardBundle,
@@ -72,6 +72,7 @@ export async function createRuntimeStateRestorationComposition({
   restoreContext,
   snapshotContext,
 }) {
+  const removeRuntimeFile = createRuntimeFileRemoval(config);
   const deferredInputTtlMs = config.deferredInputTtlHours * 60 * 60 * 1000;
   const runtimeStateCoordinator = new HubRuntimeStateCoordinator({
     store: runtimeStateStore,
@@ -86,7 +87,7 @@ export async function createRuntimeStateRestorationComposition({
       isRetryableDeferredLaunchError,
       restoreForwardBundle,
       forwardBundleAttachmentPaths,
-      removeFiles: (files) => Promise.all(files.map((file) => unlink(file).catch(() => {}))),
+      removeFiles: (files) => Promise.all(files.map((file) => removeRuntimeFile(file))),
       deferredInputTtlMs,
       maximumDeferredInputs,
       restoreTaskRun: restorePersistedTaskRun,

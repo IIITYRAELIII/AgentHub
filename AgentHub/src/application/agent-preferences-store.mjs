@@ -17,7 +17,7 @@ const STREAM_CARD_MIN_WIDTH = 90;
 const STREAM_CARD_MAX_WIDTH = 450;
 const QUICK_MESSAGE_MAX_SCOPES = 200;
 const QUICK_MESSAGE_MAX_ITEMS = 20;
-const QUICK_MESSAGE_MAX_LABEL = 64;
+const QUICK_MESSAGE_MAX_TITLE = 64;
 const QUICK_MESSAGE_MAX_TEXT = 4_000;
 
 function activityRecentMinutes(value, fallback = DEFAULT_ACTIVITY_RECENT_MINUTES) {
@@ -40,6 +40,10 @@ function streamCardFixedWidth(value) {
   return Number.isFinite(width)
     ? Math.max(STREAM_CARD_MIN_WIDTH, Math.min(STREAM_CARD_MAX_WIDTH, width))
     : STREAM_CARD_MIN_WIDTH;
+}
+
+function quickMessageActionMode(value) {
+  return value === "send" ? "send" : "insert";
 }
 
 function pinnedWorkspaceStreams(value) {
@@ -71,10 +75,10 @@ function quickMessageEntry(value) {
     : { text: value };
   const text = String(source.text ?? "").trim().slice(0, QUICK_MESSAGE_MAX_TEXT);
   if (!text) return null;
-  const label = String(source.label ?? text).trim().slice(0, QUICK_MESSAGE_MAX_LABEL) || text.slice(0, QUICK_MESSAGE_MAX_LABEL);
+  const title = String(source.title ?? source.label ?? text).trim().slice(0, QUICK_MESSAGE_MAX_TITLE)
+    || text.slice(0, QUICK_MESSAGE_MAX_TITLE);
   return {
-    id: String(source.id ?? label).trim().slice(0, QUICK_MESSAGE_MAX_LABEL) || label,
-    label,
+    title,
     text,
   };
 }
@@ -82,12 +86,10 @@ function quickMessageEntry(value) {
 function quickMessageEntries(value) {
   if (!Array.isArray(value)) return [];
   const entries = [];
-  const seen = new Set();
   for (const item of value) {
     const entry = quickMessageEntry(item);
-    if (!entry || seen.has(entry.text)) continue;
+    if (!entry) continue;
     entries.push(entry);
-    seen.add(entry.text);
     if (entries.length >= QUICK_MESSAGE_MAX_ITEMS) break;
   }
   return entries;
@@ -190,6 +192,7 @@ export class AgentPreferencesStore {
   get streamCardGapEnabled() { return this.values.streamCardGapEnabled; }
   get pinnedWorkspaceStreams() { return structuredClone(this.values.pinnedWorkspaceStreams); }
   get quickMessages() { return structuredClone(this.values.quickMessages); }
+  get quickMessageActionMode() { return this.values.quickMessageActionMode; }
   get defaultCodexModel() { return this.defaults.codexModel; }
   get defaultCodexReasoningEffort() { return this.defaults.codexReasoningEffort; }
   get defaultCodexCollaborationMode() { return this.defaults.codexCollaborationMode; }
@@ -260,6 +263,10 @@ export class AgentPreferencesStore {
 
   setQuickMessages(value) {
     return this.#set("quickMessages", quickMessages(value));
+  }
+
+  setQuickMessageActionMode(value) {
+    return this.#set("quickMessageActionMode", quickMessageActionMode(value));
   }
 
   #set(name, value) {
@@ -375,6 +382,7 @@ export class AgentPreferencesStore {
       streamCardGapEnabled: snapshot.streamCardGapEnabled === true,
       pinnedWorkspaceStreams: pinnedWorkspaceStreams(snapshot.pinnedWorkspaceStreams),
       quickMessages: quickMessages(snapshot.quickMessages),
+      quickMessageActionMode: quickMessageActionMode(snapshot.quickMessageActionMode),
     };
     return this.snapshot();
   }

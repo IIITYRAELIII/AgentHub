@@ -1,9 +1,13 @@
+import { userDisplayText } from "../../domain/user-message-display.mjs";
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 
 import { catalogTaskKey } from "../../domain/task-catalog-identity.mjs";
+import { rebaseActiveCodexUsers } from "../../domain/canonical-user-messages.mjs";
 import { withoutClaudeManagedTranscriptDuplicates } from "../../domain/claude-transcript.mjs";
 import {
   interstreamOriginAuthor,
@@ -11,16 +15,26 @@ import {
 } from "../../domain/interstream-message.mjs";
 import { normalizedCodexResponseAnnotationReferences } from "../../domain/codex-response-annotation.mjs";
 import { normalizedResponseAnnotations } from "../../domain/response-annotation-source.mjs";
+import {
+  durableUserCommandItemId,
+  indexedDurableMessageMetadata,
+  indexedDurableMessageMetadataWithEvidence,
+  withDurableMessageMetadata,
+} from "../../domain/stream-message-pin.mjs";
 
 const FORMAT_VERSION = 1;
-const TASK_SCHEMA_VERSION = 9;
+const TASK_SCHEMA_VERSION = 12;
 const MODEL_BACKFILL_VERSION = "1";
 const SUBAGENT_MODEL_BACKFILL_VERSION = "1";
-const SEARCH_BACKFILL_VERSION = "3";
+const SEARCH_BACKFILL_VERSION = "5";
 const TERMINAL_HISTORY_BACKFILL_VERSION = "4";
 const DEFAULT_HISTORY_LIMIT = 50;
 const DEFAULT_RUNNING_FRESHNESS_MS = 10 * 60 * 1000;
 const DEFAULT_TASK_LIMIT = 1_000;
+const TERMINAL_IDENTITY_RECOVERY_LIMIT = 200;
+const TERMINAL_IDENTITY_RECOVERY_PAYLOAD_MAX_BYTES = 2 * 1024 * 1024;
+const TERMINAL_IDENTITY_RECOVERY_TOTAL_BYTES = 4 * 1024 * 1024;
+const TERMINAL_IDENTITY_RECOVERY_INSPECTION_BYTES = 8 * 1024 * 1024;
 
 function cleanText(value, limit) {
   return String(value ?? "").trim().slice(0, limit);
@@ -112,43 +126,6 @@ function withoutPromptlessAnswerEchoes(history) {
   return values;
 }
 
-function mergePersistedSyntheticRoot(turn) {
-  const messages = Array.isArray(turn?.messages) ? turn.messages : [];
-  const syntheticId = `${String(turn?.id ?? "").trim()}:rollout-user:0`;
-  const syntheticIndex = messages.findIndex((message) => (
-    message.role === "user"
-    && message.itemId === syntheticId
-    && !message.clientUserMessageId
-  ));
-  if (syntheticIndex < 0) return turn;
-  const canonicalIndex = messages.findIndex((message, index) => (
-    index < syntheticIndex
-    && message.role === "user"
-    && Boolean(message.clientUserMessageId)
-  ));
-  if (canonicalIndex < 0) return turn;
-  const canonical = messages[canonicalIndex];
-  const knownAttachments = new Set();
-  const attachments = [
-    ...(Array.isArray(canonical.attachments) ? canonical.attachments : []),
-    ...(Array.isArray(messages[syntheticIndex].attachments)
-      ? messages[syntheticIndex].attachments
-      : []),
-  ].filter((attachment) => {
-    const id = String(attachment?.id ?? "").trim().toLowerCase();
-    if (!id || knownAttachments.has(id)) return false;
-    knownAttachments.add(id);
-    return true;
-  });
-  return {
-    ...turn,
-    messages: messages.flatMap((message, index) => {
-      if (index === canonicalIndex) return [{ ...canonical, attachments }];
-      return index === syntheticIndex ? [] : [message];
-    }),
-  };
-}
-
 function withoutRepeatedClientMessages(history) {
   const seen = new Set();
   return history.map((turn) => ({
@@ -166,7 +143,24 @@ function withoutRepeatedClientMessages(history) {
 function withoutInternalContextTurns(history) {
   return history.filter((turn) => (
     !String(turn?.prompt ?? "").trim().startsWith("<codex_internal_context")
+    && turn?.operationKind !== "probe" && turn?.contextProbe !== true
   ));
+}
+
+function preserveUserDisplay(existingHistory, history, task) {
+  const displays = new Map();
+  for (const turn of existingHistory ?? []) {
+    for (const message of turn.messages ?? []) {
+      const identity = { provider: task.provider, threadId: task.threadId, clientUserMessageId: message.clientUserMessageId };
+      if (message.role === "user" && userDisplayText(message.userDisplay, identity) !== null) {
+        displays.set(message.clientUserMessageId, message.userDisplay);
+      }
+    }
+  }
+  return (history ?? []).map((turn) => ({ ...turn, messages: (turn.messages ?? []).map((message) => {
+    const display = message.role === "user" ? displays.get(message.clientUserMessageId) : null;
+    return display ? { ...message, userDisplay: structuredClone(display) } : message;
+  }) }));
 }
 
 function cleanHistory(history, limit, { provider = "" } = {}) {
@@ -178,8 +172,12 @@ function cleanHistory(history, limit, { provider = "" } = {}) {
       const promptOrigin = normalizeInterstreamOrigin(item?.promptOrigin);
       const promptAuthor = interstreamOriginAuthor(promptOrigin)
         || cleanText(item?.promptAuthor, 1_000);
+      const sourceMessages = Array.isArray(item?.messages) ? item.messages : [];
+      const messagesTruncated = sourceMessages.length > 100;
       return {
         id: cleanText(item?.id, 100),
+        ...(item?.operationKind ? { operationKind: cleanText(item.operationKind, 40) } : {}),
+        ...(item?.contextProbe === true ? { contextProbe: true } : {}),
         prompt: cleanText(item?.prompt, 12_000),
         ...(promptAuthor ? { promptAuthor } : {}),
         ...(promptOrigin ? { promptOrigin } : {}),
@@ -187,6 +185,12 @@ function cleanHistory(history, limit, { provider = "" } = {}) {
         status: cleanText(item?.status, 40),
         active: item?.active === true,
         completed: item?.completed === true,
+        ...(item?.userMessageAuthority === "terminal-ledger"
+          ? { userMessageAuthority: "terminal-ledger" }
+          : {}),
+        ...(item?.userMessageSnapshotAuthority === "complete" && !messagesTruncated
+          ? { userMessageSnapshotAuthority: "complete" }
+          : {}),
         promptAnnotations: cleanResponseAnnotations(item?.promptAnnotations),
         ...(cleanText(item?.promptRequest, 12_000)
           ? { promptRequest: cleanText(item.promptRequest, 12_000) }
@@ -198,7 +202,7 @@ function cleanHistory(history, limit, { provider = "" } = {}) {
         ...(cleanActivityGroups(item?.activityGroups).length
           ? { activityGroups: cleanActivityGroups(item.activityGroups) }
           : {}),
-        messages: (Array.isArray(item?.messages) ? item.messages : [])
+        messages: sourceMessages
         .slice(-100)
         .flatMap((message) => {
           const role = cleanText(message?.role, 20);
@@ -213,6 +217,8 @@ function cleanHistory(history, limit, { provider = "" } = {}) {
             || /^Субагент(?:\s*·|\s*\()/iu.test(rawAuthor);
           const misattributedSubagent = role === "agent"
             && hasSubagentMetadata
+            && kind !== "subagent"
+            && !agentThreadId
             && !itemId.includes(":subagent:");
           const origin = !misattributedSubagent && role === "user"
             ? normalizeInterstreamOrigin(message?.origin)
@@ -223,8 +229,15 @@ function cleanHistory(history, limit, { provider = "" } = {}) {
             ...(message?.clientUserMessageId
               ? { clientUserMessageId: cleanText(message.clientUserMessageId, 200) }
               : {}),
+            ...(message?.sourceOccurrenceId
+              ? { sourceOccurrenceId: cleanText(message.sourceOccurrenceId, 200) }
+              : {}),
             role,
             text,
+            ...(role === "user" && userDisplayText(message.userDisplay, {
+              provider, threadId: message.userDisplay?.threadId,
+              clientUserMessageId: message.clientUserMessageId,
+            }) !== null ? { userDisplay: { ...message.userDisplay, text: cleanText(message.userDisplay.text, 12_000) } } : {}),
             ...(!misattributedSubagent && author
               ? { author }
               : {}),
@@ -256,8 +269,17 @@ function cleanHistory(history, limit, { provider = "" } = {}) {
         }),
       };
     });
-  const normalized = withoutRepeatedClientMessages(cleaned.map(mergePersistedSyntheticRoot));
+  const normalized = withoutRepeatedClientMessages(cleaned);
   return withoutPromptlessAnswerEchoes(withoutInternalContextTurns(normalized)).slice(-limit);
+}
+
+function normalizedStoredHistory(history, limit, { provider, threadId }) {
+  const cleaned = cleanHistory(history, limit, { provider });
+  const canonical = cleaned.map((turn) => withDurableMessageMetadata(turn, {
+    provider,
+    threadId,
+  }));
+  return cleanHistory(canonical, limit, { provider });
 }
 
 const TERMINAL_TURN_STATUSES = new Set([
@@ -287,6 +309,26 @@ function preserveTerminalHistory(terminals, history) {
     const terminal = terminals.get(String(turn?.id ?? "").trim());
     const status = String(turn?.status ?? "").trim().toLowerCase();
     const incomingIsTerminal = turn?.completed === true || TERMINAL_TURN_STATUSES.has(status);
+    if (terminal?.userMessageAuthority === "terminal-ledger" && incomingIsTerminal) {
+      return {
+        ...turn,
+        prompt: terminal.prompt,
+        promptAuthor: terminal.promptAuthor,
+        promptOrigin: terminal.promptOrigin,
+        promptAnnotations: terminal.promptAnnotations,
+        promptRequest: terminal.promptRequest,
+        attachments: terminal.attachments,
+        userMessageAuthority: "terminal-ledger",
+        messages: [
+          ...(Array.isArray(terminal.messages) ? terminal.messages : [])
+            .filter((message) => message?.role === "user")
+            .map((message) => structuredClone(message)),
+          ...(Array.isArray(turn?.messages) ? turn.messages : [])
+            .filter((message) => message?.role !== "user")
+            .map((message) => structuredClone(message)),
+        ],
+      };
+    }
     return terminal && !incomingIsTerminal ? structuredClone(terminal) : turn;
   });
 }
@@ -489,6 +531,77 @@ function parseJsonArray(value) {
   }
 }
 
+function parseJsonObject(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  try {
+    const parsed = JSON.parse(String(value ?? "{}"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function exactLedgerTerminalBinding(row, {
+  provider,
+  threadId,
+  turnId,
+  runId,
+  clientUserMessageId,
+}) {
+  if (!row || String(row.client_user_message_id ?? "").trim() !== clientUserMessageId) return false;
+  if (!TERMINAL_TURN_STATUSES.has(String(row.state ?? "").trim().toLowerCase())) return false;
+  const item = parseJsonObject(row.item_json);
+  const receipt = parseJsonObject(row.receipt_json);
+  const receiptResult = parseJsonObject(receipt.result);
+  const result = parseJsonObject(row.result_json);
+  const allExact = (field, expected, normalize = (value) => value) => {
+    const values = [result, receiptResult, receipt, item]
+      .map((value) => String(value?.[field] ?? "").trim())
+      .filter(Boolean)
+      .map(normalize);
+    return values.length > 0 && values.every((value) => value === normalize(expected));
+  };
+  return allExact("provider", provider, (value) => value.toLowerCase())
+    && allExact("threadId", threadId)
+    && allExact("turnId", turnId)
+    && Boolean(runId)
+    && allExact("runId", runId);
+}
+
+function recoverTerminalTurnMessages(turn, terminalPayload, ledgerStatement, identity) {
+  const history = terminalPayload?.history ?? {};
+  const provider = String(identity?.provider ?? "").trim().toLowerCase();
+  const threadId = String(identity?.threadId ?? "").trim();
+  const turnId = String(identity?.turnId ?? "").trim();
+  const runId = String(history?.id ?? "").trim();
+  if (String(history?.provider ?? "").trim().toLowerCase() !== provider
+    || String(history?.threadId ?? "").trim() !== threadId
+    || String(history?.turnId ?? "").trim() !== turnId) return turn;
+  const authoritativeUsers = Array.isArray(history.userMessages)
+    ? history.userMessages.filter((message) => message?.role !== "agent")
+    : [];
+  const ids = authoritativeUsers
+    .map((message) => String(message?.clientUserMessageId ?? "").trim())
+    .filter(Boolean);
+  if (!ids.length || new Set(ids).size !== ids.length) return turn;
+  if (!ids.every((clientUserMessageId) => exactLedgerTerminalBinding(
+    ledgerStatement.get(clientUserMessageId),
+    { provider, threadId, turnId, runId, clientUserMessageId },
+  ))) return turn;
+
+  const currentMessages = Array.isArray(turn?.messages) ? turn.messages : [];
+  const currentAgents = currentMessages.filter((message) => message?.role !== "user");
+  return {
+    ...turn,
+    userMessageAuthority: "terminal-ledger",
+    ...(String(history.promptPreview ?? "").trim() ? { prompt: history.promptPreview } : {}),
+    messages: [
+      ...authoritativeUsers.map((message) => structuredClone(message)),
+      ...currentAgents.map((message) => structuredClone(message)),
+    ],
+  };
+}
+
 function normalizedSearchTerms(value) {
   return String(value ?? "")
     .normalize("NFKC")
@@ -517,7 +630,19 @@ function compactSearchSnippet(value, terms, limit = 220) {
   return `${start > 0 ? "…" : ""}${text.slice(start, end).trim()}${end < text.length ? "…" : ""}`;
 }
 
-function searchDocumentKey({ provider, threadId, turnId, itemId, role }) {
+function searchDocumentKey({
+  provider,
+  threadId,
+  turnId,
+  itemId,
+  role,
+  source = "history",
+  occurrence = "",
+}) {
+  return JSON.stringify([provider, threadId, turnId, itemId, role, source, String(occurrence)]);
+}
+
+function legacySearchDocumentKey({ provider, threadId, turnId, itemId, role }) {
   return JSON.stringify([provider, threadId, turnId, itemId, role]);
 }
 
@@ -535,11 +660,51 @@ function searchHistoryFingerprint(history) {
     .digest("hex");
 }
 
+function migrateReceiptBackedUserItemIds(database) {
+  const rows = database.prepare(`
+    SELECT provider, thread_id, turn_position, position, client_user_message_id
+    FROM task_read_model_messages
+    WHERE role = 'user'
+      AND trim(item_id) = ''
+      AND trim(client_user_message_id) <> ''
+    ORDER BY provider, thread_id, turn_position, position
+  `).all();
+  const collision = database.prepare(`
+    SELECT 1 AS present FROM task_read_model_messages
+    WHERE provider = ? AND thread_id = ? AND turn_position = ?
+      AND item_id = ? AND position <> ?
+    LIMIT 1
+  `);
+  const update = database.prepare(`
+    UPDATE task_read_model_messages SET item_id = ?
+    WHERE provider = ? AND thread_id = ? AND turn_position = ? AND position = ?
+      AND role = 'user' AND trim(item_id) = '' AND client_user_message_id = ?
+  `);
+  for (const row of rows) {
+    const itemId = durableUserCommandItemId(row.client_user_message_id);
+    if (!itemId || collision.get(
+      row.provider,
+      row.thread_id,
+      row.turn_position,
+      itemId,
+      row.position,
+    )) continue;
+    update.run(
+      itemId,
+      row.provider,
+      row.thread_id,
+      row.turn_position,
+      row.position,
+      row.client_user_message_id,
+    );
+  }
+}
+
 function configure(database) {
   database.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
-    PRAGMA busy_timeout = 5000;
+    PRAGMA busy_timeout = 0;
     PRAGMA foreign_keys = ON;
     CREATE TABLE IF NOT EXISTS task_read_model_meta (
       key TEXT PRIMARY KEY,
@@ -586,6 +751,8 @@ function configure(database) {
       attachments_json TEXT NOT NULL,
       activities_json TEXT NOT NULL,
       activity_groups_json TEXT NOT NULL DEFAULT '[]',
+      user_message_authority TEXT NOT NULL DEFAULT '',
+      user_message_snapshot_authority TEXT NOT NULL DEFAULT '',
       PRIMARY KEY (provider, thread_id, position),
       FOREIGN KEY (provider, thread_id)
         REFERENCES task_read_model_tasks (provider, thread_id) ON DELETE CASCADE
@@ -599,6 +766,7 @@ function configure(database) {
       position INTEGER NOT NULL,
       item_id TEXT NOT NULL,
       client_user_message_id TEXT,
+      source_occurrence_id TEXT NOT NULL DEFAULT '',
       role TEXT NOT NULL CHECK (role IN ('user', 'agent')),
       text TEXT NOT NULL,
       author TEXT NOT NULL DEFAULT '',
@@ -625,6 +793,11 @@ function configure(database) {
       turn_id TEXT NOT NULL,
       item_id TEXT NOT NULL,
       role TEXT NOT NULL CHECK (role IN ('user', 'agent')),
+      client_user_message_id TEXT NOT NULL DEFAULT '',
+      message_key TEXT NOT NULL DEFAULT '',
+      source_alias TEXT NOT NULL DEFAULT '',
+      semantic_slot TEXT NOT NULL DEFAULT '',
+      pin_eligible INTEGER NOT NULL DEFAULT 0,
       message_text TEXT NOT NULL,
       author TEXT NOT NULL DEFAULT '',
       annotation_text TEXT NOT NULL DEFAULT '',
@@ -692,9 +865,18 @@ function configure(database) {
   if (!turnColumns.has("activity_groups_json")) {
     database.exec("ALTER TABLE task_read_model_turns ADD COLUMN activity_groups_json TEXT NOT NULL DEFAULT '[]'");
   }
+  if (!turnColumns.has("user_message_authority")) {
+    database.exec("ALTER TABLE task_read_model_turns ADD COLUMN user_message_authority TEXT NOT NULL DEFAULT ''");
+  }
+  if (!turnColumns.has("user_message_snapshot_authority")) {
+    database.exec("ALTER TABLE task_read_model_turns ADD COLUMN user_message_snapshot_authority TEXT NOT NULL DEFAULT ''");
+  }
   const messageColumns = new Set(database.prepare(
     "PRAGMA table_info(task_read_model_messages)",
   ).all().map((column) => String(column.name)));
+  if (!messageColumns.has("source_occurrence_id")) {
+    database.exec("ALTER TABLE task_read_model_messages ADD COLUMN source_occurrence_id TEXT NOT NULL DEFAULT ''");
+  }
   if (!messageColumns.has("response_annotations_json")) {
     database.exec("ALTER TABLE task_read_model_messages ADD COLUMN response_annotations_json TEXT NOT NULL DEFAULT '[]'");
   }
@@ -703,6 +885,9 @@ function configure(database) {
   }
   if (!messageColumns.has("response_annotation_references_json")) {
     database.exec("ALTER TABLE task_read_model_messages ADD COLUMN response_annotation_references_json TEXT NOT NULL DEFAULT '[]'");
+  }
+  if (!messageColumns.has("display_text")) {
+    database.exec("ALTER TABLE task_read_model_messages ADD COLUMN display_text TEXT");
   }
   if (!turnColumns.has("prompt_author")) {
     database.exec("ALTER TABLE task_read_model_turns ADD COLUMN prompt_author TEXT NOT NULL DEFAULT ''");
@@ -730,6 +915,8 @@ function configure(database) {
     SET author = '', kind = '', agent_thread_id = '', model = ''
     WHERE provider = 'codex'
       AND instr(item_id, ':subagent:') = 0
+      AND kind <> 'subagent'
+      AND trim(agent_thread_id) = ''
       AND (
         kind = 'subagent'
         OR trim(agent_thread_id) <> ''
@@ -753,6 +940,18 @@ function configure(database) {
   if (!searchColumns.has("author")) {
     database.exec("ALTER TABLE task_message_search_documents ADD COLUMN author TEXT NOT NULL DEFAULT ''");
   }
+  for (const [column, definition] of [
+    ["client_user_message_id", "TEXT NOT NULL DEFAULT ''"],
+    ["message_key", "TEXT NOT NULL DEFAULT ''"],
+    ["source_alias", "TEXT NOT NULL DEFAULT ''"],
+    ["semantic_slot", "TEXT NOT NULL DEFAULT ''"],
+    ["pin_eligible", "INTEGER NOT NULL DEFAULT 0"],
+  ]) {
+    if (!searchColumns.has(column)) {
+      database.exec(`ALTER TABLE task_message_search_documents ADD COLUMN ${column} ${definition}`);
+    }
+  }
+  migrateReceiptBackedUserItemIds(database);
   database.exec(`
     CREATE TRIGGER IF NOT EXISTS task_read_model_subagent_insert
     AFTER INSERT ON task_read_model_messages
@@ -973,7 +1172,7 @@ function historyPageQuery(references, {
   const cte = `WITH selected_threads(provider, thread_id, source_order) AS (
     VALUES ${referenceSql}
   ), base_turns AS (
-    SELECT turns.*, selected_threads.source_order,
+    SELECT turns.provider, turns.thread_id, turns.position, selected_threads.source_order,
       COALESCE(
         julianday(turns.started_at),
         (
@@ -1015,41 +1214,55 @@ function historyPageQuery(references, {
 export class LocalTaskSyncStore {
   #filePath;
   #databaseFile;
+  #terminalDatabaseFile;
+  #messageCommandDatabaseFile;
   #database = null;
   #historyLimit;
   #taskLimit;
   #canonicalizeProjectRoot;
   #canonicalizeValue;
+  #mutations = new AsyncSqliteMutationQueue();
+  #mutationTimeoutMs;
+  #revision = 0;
 
   constructor({
     filePath,
     databaseFile = path.join(path.dirname(filePath), "journal.sqlite"),
+    terminalDatabaseFile = path.join(path.dirname(databaseFile), "runtime.sqlite"),
+    messageCommandDatabaseFile = path.join(path.dirname(databaseFile), "message-command-ledger.sqlite"),
     historyLimit = DEFAULT_HISTORY_LIMIT,
     taskLimit = DEFAULT_TASK_LIMIT,
     canonicalizeProjectRoot = (projectRoot) => projectRoot,
     canonicalizeValue = (value) => value,
+    mutationTimeoutMs = 2_000,
   }) {
     this.#filePath = path.resolve(filePath);
     this.#databaseFile = path.resolve(databaseFile);
+    this.#terminalDatabaseFile = path.resolve(terminalDatabaseFile);
+    this.#messageCommandDatabaseFile = path.resolve(messageCommandDatabaseFile);
     this.#historyLimit = Math.max(1, Number(historyLimit) || DEFAULT_HISTORY_LIMIT);
     this.#taskLimit = Math.max(1, Number(taskLimit) || DEFAULT_TASK_LIMIT);
     this.#canonicalizeProjectRoot = canonicalizeProjectRoot;
     this.#canonicalizeValue = canonicalizeValue;
+    this.#mutationTimeoutMs = mutationTimeoutMs;
   }
 
   async #open() {
     if (this.#database) return this.#database;
     await mkdir(path.dirname(this.#databaseFile), { recursive: true });
-    let database;
-    try {
-      database = new DatabaseSync(this.#databaseFile);
-      configure(database);
-    } catch (error) {
-      database?.close();
-      throw error;
-    }
-    this.#database = database;
-    return database;
+    return this.#mutations.run(() => {
+      if (this.#database) return this.#database;
+      let database;
+      try {
+        database = new DatabaseSync(this.#databaseFile);
+        configure(database);
+        this.#database = database;
+        return database;
+      } catch (error) {
+        database?.close();
+        throw error;
+      }
+    }, { timeoutMs: this.#mutationTimeoutMs });
   }
 
   #taskRow(task) {
@@ -1098,8 +1311,14 @@ export class LocalTaskSyncStore {
         ...(row.client_user_message_id
           ? { clientUserMessageId: String(row.client_user_message_id) }
           : {}),
+        ...(row.source_occurrence_id
+          ? { sourceOccurrenceId: String(row.source_occurrence_id) }
+          : {}),
         role: String(row.role),
         text: String(row.text),
+        ...(row.role === "user" && row.client_user_message_id && typeof row.display_text === "string"
+          ? { userDisplay: { provider: row.provider, threadId: row.thread_id,
+            clientUserMessageId: row.client_user_message_id, text: row.display_text } } : {}),
         ...(row.author ? { author: String(row.author) } : {}),
         ...(origin ? { origin } : {}),
         ...(row.kind ? { kind: String(row.kind) } : {}),
@@ -1120,26 +1339,32 @@ export class LocalTaskSyncStore {
     }
     return turns.map((row) => {
       const promptOrigin = parseInterstreamOrigin(row.prompt_origin_json);
-      return {
-      id: String(row.id ?? ""),
-      prompt: String(row.prompt ?? ""),
-      ...(row.prompt_author ? { promptAuthor: String(row.prompt_author) } : {}),
-      ...(promptOrigin ? { promptOrigin } : {}),
-      answer: String(row.answer ?? ""),
-      status: String(row.status ?? ""),
-      active: Number(row.active) === 1,
-      completed: Number(row.completed) === 1,
-      ...(row.started_at ? { startedAt: String(row.started_at) } : {}),
-      ...(row.completed_at ? { completedAt: String(row.completed_at) } : {}),
-      promptAnnotations: cleanResponseAnnotations(parseJsonArray(row.prompt_annotations_json)),
-      ...(row.prompt_request ? { promptRequest: String(row.prompt_request) } : {}),
-      attachments: parseJsonArray(row.attachments_json),
-      activities: parseJsonArray(row.activities_json),
-      ...(parseJsonArray(row.activity_groups_json).length
-        ? { activityGroups: parseJsonArray(row.activity_groups_json) }
-        : {}),
-      messages: messagesByTurn.get(`${row.provider}\0${row.thread_id}\0${Number(row.position)}`) ?? [],
-      };
+      return withDurableMessageMetadata({
+        id: String(row.id ?? ""),
+        prompt: String(row.prompt ?? ""),
+        ...(row.prompt_author ? { promptAuthor: String(row.prompt_author) } : {}),
+        ...(promptOrigin ? { promptOrigin } : {}),
+        answer: String(row.answer ?? ""),
+        status: String(row.status ?? ""),
+        active: Number(row.active) === 1,
+        completed: Number(row.completed) === 1,
+        ...(row.user_message_authority === "terminal-ledger"
+          ? { userMessageAuthority: "terminal-ledger" }
+          : {}),
+        ...(row.user_message_snapshot_authority === "complete"
+          ? { userMessageSnapshotAuthority: "complete" }
+          : {}),
+        ...(row.started_at ? { startedAt: String(row.started_at) } : {}),
+        ...(row.completed_at ? { completedAt: String(row.completed_at) } : {}),
+        promptAnnotations: cleanResponseAnnotations(parseJsonArray(row.prompt_annotations_json)),
+        ...(row.prompt_request ? { promptRequest: String(row.prompt_request) } : {}),
+        attachments: parseJsonArray(row.attachments_json),
+        activities: parseJsonArray(row.activities_json),
+        ...(parseJsonArray(row.activity_groups_json).length
+          ? { activityGroups: parseJsonArray(row.activity_groups_json) }
+          : {}),
+        messages: messagesByTurn.get(`${row.provider}\0${row.thread_id}\0${Number(row.position)}`) ?? [],
+      }, { provider: row.provider, threadId: row.thread_id });
     });
   }
 
@@ -1294,6 +1519,152 @@ export class LocalTaskSyncStore {
     }
   }
 
+  #recoverTerminalCommandIdentities(references = null) {
+    if (!existsSync(this.#terminalDatabaseFile) || !existsSync(this.#messageCommandDatabaseFile)) {
+      return 0;
+    }
+    let terminalDatabase;
+    let ledgerDatabase;
+    try {
+      terminalDatabase = new DatabaseSync(this.#terminalDatabaseFile, { readOnly: true });
+      ledgerDatabase = new DatabaseSync(this.#messageCommandDatabaseFile, { readOnly: true });
+      const hasTerminals = terminalDatabase.prepare(`
+        SELECT 1 AS present FROM sqlite_schema
+        WHERE type = 'table' AND name = 'provider_turn_terminals'
+      `).get();
+      const hasLedger = ledgerDatabase.prepare(`
+        SELECT 1 AS present FROM sqlite_schema
+        WHERE type = 'table' AND name = 'message_commands'
+      `).get();
+      if (!hasTerminals || !hasLedger) return 0;
+      const terminalColumns = new Set(terminalDatabase
+        .prepare("PRAGMA table_info(provider_turn_terminals)").all()
+        .map((column) => String(column.name)));
+      const ledgerColumns = new Set(ledgerDatabase
+        .prepare("PRAGMA table_info(message_commands)").all()
+        .map((column) => String(column.name)));
+      if (!["provider", "thread_id", "turn_id", "payload_json", "payload_bytes", "committed_at"]
+        .every((column) => terminalColumns.has(column))
+        || !["client_user_message_id", "state", "item_json", "receipt_json", "result_json"]
+          .every((column) => ledgerColumns.has(column))) return 0;
+      const recoveryIndexColumns = terminalDatabase
+        .prepare("PRAGMA index_info(provider_turn_terminals_recovery_idx)").all()
+        .map((column) => String(column.name));
+      if (JSON.stringify(recoveryIndexColumns) !== JSON.stringify([
+        "committed_at", "provider", "thread_id", "turn_id", "payload_bytes",
+      ])) return 0;
+      const candidateByIdentity = references ? terminalDatabase.prepare(`
+        SELECT provider, thread_id, turn_id, committed_at, payload_bytes
+        FROM provider_turn_terminals
+        WHERE provider = ? AND thread_id = ? AND turn_id = ?
+      `) : null;
+      const candidates = references
+        ? references.map((reference) => candidateByIdentity.get(
+          reference.provider, reference.threadId, reference.turnId,
+        )).filter(Boolean)
+        : terminalDatabase.prepare(`
+        SELECT provider, thread_id, turn_id,
+          committed_at, payload_bytes
+        FROM provider_turn_terminals INDEXED BY provider_turn_terminals_recovery_idx
+        ORDER BY committed_at DESC, provider, thread_id, turn_id
+        LIMIT ?
+      `).all(TERMINAL_IDENTITY_RECOVERY_LIMIT);
+      const payloadByRow = terminalDatabase.prepare(`
+        SELECT payload_json FROM provider_turn_terminals
+        WHERE provider = ? AND thread_id = ? AND turn_id = ?
+      `);
+      const ledger = ledgerDatabase.prepare(`
+        SELECT client_user_message_id, state, item_json, receipt_json, result_json
+        FROM message_commands WHERE client_user_message_id = ?
+      `);
+      const histories = new Map();
+      let recovered = 0;
+      let inspectedBytes = 0;
+      let acceptedBytes = 0;
+      for (const candidate of candidates) {
+        const payloadBytes = Number(candidate.payload_bytes) || 0;
+        if (payloadBytes <= 0
+          || payloadBytes > TERMINAL_IDENTITY_RECOVERY_PAYLOAD_MAX_BYTES
+          || inspectedBytes + payloadBytes > TERMINAL_IDENTITY_RECOVERY_INSPECTION_BYTES) {
+          continue;
+        }
+        const payloadJson = payloadByRow.get(
+          candidate.provider,
+          candidate.thread_id,
+          candidate.turn_id,
+        )?.payload_json;
+        inspectedBytes += payloadBytes;
+        let terminalPayload = null;
+        try {
+          const parsed = JSON.parse(String(payloadJson ?? ""));
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            terminalPayload = parsed;
+          }
+        } catch {
+          // Malformed terminal evidence is skipped without consuming the valid
+          // payload admission budget.
+        }
+        if (!terminalPayload) continue;
+        if (acceptedBytes + payloadBytes > TERMINAL_IDENTITY_RECOVERY_TOTAL_BYTES) continue;
+        acceptedBytes += payloadBytes;
+        const provider = String(candidate.provider);
+        const threadId = String(candidate.thread_id);
+        const turnId = String(candidate.turn_id);
+        // Page recovery re-reads the exact durable turn inside the writer lane.
+        // It must neither scan the Thread nor overwrite another page/position.
+        if (references) {
+          const rows = this.#database.prepare(`
+            SELECT * FROM task_read_model_turns
+            WHERE provider = ? AND thread_id = ? AND id = ?
+          `).all(provider, threadId, turnId);
+          if (rows.length !== 1 || Number(rows[0].completed) !== 1
+            || Number(rows[0].active) === 1 || rows[0].user_message_authority === "terminal-ledger") continue;
+          const [turn] = this.#hydrateHistoryRows(rows);
+          const nextTurn = recoverTerminalTurnMessages(
+            turn, terminalPayload, ledger, { provider, threadId, turnId },
+          );
+          if (nextTurn === turn) continue;
+          const cleaned = cleanHistory([nextTurn], 1, { provider });
+          this.#writeHistory({ provider, threadId }, cleaned, [Number(rows[0].position)]);
+          // Invalidate the whole-Thread search fingerprint; update only this
+          // turn's history documents, leaving journal and other turns intact.
+          this.#writeSearchHistory({ provider, threadId }, cleaned, "");
+          recovered += 1;
+          continue;
+        }
+        const key = `${provider}\0${threadId}`;
+        const history = histories.get(key) ?? this.#readHistory({ provider, threadId });
+        histories.set(key, history);
+        const position = history.findIndex((turn) => String(turn?.id ?? "").trim() === turnId);
+        if (position < 0) continue;
+        const nextTurn = recoverTerminalTurnMessages(
+          history[position],
+          terminalPayload,
+          ledger,
+          { provider, threadId, turnId },
+        );
+        if (JSON.stringify(nextTurn) === JSON.stringify(history[position])) continue;
+        history[position] = nextTurn;
+        recovered += 1;
+      }
+      for (const [key, history] of histories) {
+        const [provider, threadId] = key.split("\0");
+        const task = this.#readTask({ provider, threadId }, true);
+        if (!task) continue;
+        const cleaned = cleanHistory(history, this.#historyLimit, { provider });
+        if (JSON.stringify(task.history) === JSON.stringify(cleaned)) continue;
+        const next = { ...task, history: cleaned };
+        this.#writeTask(next);
+        this.#writeHistory(next, cleaned);
+        this.#writeSearchHistory(next, cleaned);
+      }
+      return recovered;
+    } finally {
+      terminalDatabase?.close();
+      ledgerDatabase?.close();
+    }
+  }
+
   #backfillModelsFromJournal() {
     const tasks = this.#database.prepare(`
       SELECT provider, thread_id FROM task_read_model_tasks
@@ -1352,29 +1723,40 @@ export class LocalTaskSyncStore {
     );
   }
 
-  #writeHistory(task, history) {
+  #writeHistory(task, history, positions = null) {
     const provider = task.provider;
     const threadId = task.threadId;
-    this.#database.prepare(`
-      DELETE FROM task_read_model_turns WHERE provider = ? AND thread_id = ?
-    `).run(provider, threadId);
+    if (positions) {
+      const remove = this.#database.prepare(`
+        DELETE FROM task_read_model_turns WHERE provider = ? AND thread_id = ? AND position = ?
+      `);
+      for (const position of positions) remove.run(provider, threadId, position);
+    } else {
+      this.#database.prepare(`
+        DELETE FROM task_read_model_turns WHERE provider = ? AND thread_id = ?
+      `).run(provider, threadId);
+    }
     const insertTurn = this.#database.prepare(`
       INSERT INTO task_read_model_turns (
         provider, thread_id, position, id, prompt, answer, status, active,
         completed, started_at, completed_at, prompt_author, prompt_origin_json,
         prompt_annotations_json, prompt_request,
-        attachments_json, activities_json, activity_groups_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        attachments_json, activities_json, activity_groups_json, user_message_authority,
+        user_message_snapshot_authority
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertMessage = this.#database.prepare(`
       INSERT INTO task_read_model_messages (
         provider, thread_id, turn_position, position, item_id,
-        client_user_message_id, role, text, author, kind, agent_thread_id, model, phase, time,
+        client_user_message_id, source_occurrence_id, role, text, author, kind,
+        agent_thread_id, model, phase, time,
         origin_json, response_annotations_json, response_annotation_request,
-        response_annotation_references_json, attachments_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        response_annotation_references_json, attachments_json, display_text
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    history.forEach((turn, turnPosition) => {
+    history.forEach((sourceTurn, index) => {
+      const turn = withDurableMessageMetadata(sourceTurn, { provider, threadId });
+      const turnPosition = positions ? positions[index] : index;
       insertTurn.run(
         provider,
         threadId,
@@ -1394,6 +1776,8 @@ export class LocalTaskSyncStore {
         JSON.stringify(turn.attachments),
         JSON.stringify(turn.activities),
         JSON.stringify(turn.activityGroups ?? []),
+        turn.userMessageAuthority ?? "",
+        turn.userMessageSnapshotAuthority ?? "",
       );
       turn.messages.forEach((message, messagePosition) => {
         insertMessage.run(
@@ -1403,6 +1787,7 @@ export class LocalTaskSyncStore {
           messagePosition,
           message.itemId,
           message.clientUserMessageId ?? null,
+          message.sourceOccurrenceId ?? "",
           message.role,
           message.text,
           message.author ?? "",
@@ -1416,14 +1801,23 @@ export class LocalTaskSyncStore {
           message.responseAnnotationRequest ?? "",
           JSON.stringify(message.responseAnnotationReferences ?? []),
           JSON.stringify(message.attachments),
+          message.role === "user" ? userDisplayText(message.userDisplay, {
+            provider, threadId, clientUserMessageId: message.clientUserMessageId,
+          }) : null,
         );
       });
     });
   }
 
   #writeSearchDocument(document, { replace = true } = {}) {
+    const durableMetadata = indexedDurableMessageMetadata(document);
     const occurredAt = String(document.occurredAt ?? "").trim() || null;
     const occurredAtMs = occurredAt ? Date.parse(occurredAt) : 0;
+    const source = document.source ?? "history";
+    this.#database.prepare(`
+      DELETE FROM task_message_search_documents
+      WHERE document_key = ? AND source = ?
+    `).run(legacySearchDocumentKey(document), source);
     const values = [
       searchDocumentKey(document),
       document.provider,
@@ -1432,16 +1826,26 @@ export class LocalTaskSyncStore {
       document.turnId,
       document.itemId,
       document.role,
+      String(document.clientUserMessageId ?? "").trim(),
+      durableMetadata.messageKey,
+      durableMetadata.sourceAlias,
+      durableMetadata.semanticSlot,
+      durableMetadata.pinEligible === true ? 1 : 0,
       String(document.text ?? "").trim(),
       String(document.author ?? "").trim(),
       String(document.annotationText ?? "").trim(),
       String(document.attachmentNames ?? "").trim(),
       occurredAt,
       Number.isFinite(occurredAtMs) ? occurredAtMs : 0,
-      document.source ?? "history",
+      source,
     ];
     const conflict = replace ? `DO UPDATE SET
       turn_thread_id = excluded.turn_thread_id,
+      client_user_message_id = excluded.client_user_message_id,
+      message_key = excluded.message_key,
+      source_alias = excluded.source_alias,
+      semantic_slot = excluded.semantic_slot,
+      pin_eligible = excluded.pin_eligible,
       message_text = excluded.message_text,
       author = excluded.author,
       annotation_text = excluded.annotation_text,
@@ -1452,9 +1856,9 @@ export class LocalTaskSyncStore {
     this.#database.prepare(`
       INSERT INTO task_message_search_documents (
         document_key, provider, thread_id, turn_thread_id, turn_id, item_id,
-        role, message_text, author, annotation_text, attachment_names,
-        occurred_at, occurred_at_ms, source
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        role, client_user_message_id, message_key, source_alias, semantic_slot, pin_eligible,
+        message_text, author, annotation_text, attachment_names, occurred_at, occurred_at_ms, source
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(document_key) ${conflict}
     `).run(...values);
   }
@@ -1498,11 +1902,12 @@ export class LocalTaskSyncStore {
     const turns = Array.isArray(history) ? history : [];
     const removeTurn = this.#database.prepare(`
       DELETE FROM task_message_search_documents
-      WHERE provider = ? AND thread_id = ? AND turn_id = ?
+      WHERE provider = ? AND thread_id = ? AND turn_id = ? AND source = 'history'
     `);
     for (const turn of turns) {
       if (!turn.id) continue;
       removeTurn.run(provider, threadId, turn.id);
+      if (turn.operationKind === "probe" || turn.contextProbe === true) continue;
       const messages = (Array.isArray(turn?.messages) ? turn.messages : []).flatMap((message) => {
         const role = String(message?.role ?? "").trim() === "assistant"
           ? "agent"
@@ -1528,7 +1933,11 @@ export class LocalTaskSyncStore {
           attachments: [],
         });
       }
-      for (const [position, message] of messages.entries()) {
+      const durableMessages = withDurableMessageMetadata({ ...turn, messages }, {
+        provider,
+        threadId,
+      }).messages;
+      for (const [position, message] of durableMessages.entries()) {
         const text = String(message?.text ?? "").trim();
         const annotations = [
           ...(Array.isArray(message?.responseAnnotations) ? message.responseAnnotations : []),
@@ -1547,6 +1956,10 @@ export class LocalTaskSyncStore {
           turnId: turn.id,
           itemId: String(message?.itemId ?? "").trim() || `${turn.id}:${message.role}:${position}`,
           role: message.role,
+          clientUserMessageId: message.clientUserMessageId,
+          messageKey: message.messageKey,
+          sourceAlias: message.sourceAlias,
+          semanticSlot: message.semanticSlot,
           text,
           author: message.author,
           annotationText,
@@ -1554,6 +1967,7 @@ export class LocalTaskSyncStore {
           occurredAt: message?.time
             ?? (message.role === "user" ? turn.startedAt : turn.completedAt),
           source: "history",
+          occurrence: position,
         });
       }
     }
@@ -1648,8 +2062,11 @@ export class LocalTaskSyncStore {
   #transaction(run) {
     this.#database.exec("BEGIN IMMEDIATE");
     try {
+      const changesBefore = this.#database.prepare("SELECT total_changes() AS count").get().count;
       const result = run();
+      const changed = this.#database.prepare("SELECT total_changes() AS count").get().count !== changesBefore;
       this.#database.exec("COMMIT");
+      if (changed) this.#revision += 1;
       return result;
     } catch (error) {
       this.#database.exec("ROLLBACK");
@@ -1706,23 +2123,26 @@ export class LocalTaskSyncStore {
       .map((value) => persistedTask(value, this.#canonicalizeProjectRoot))
       .filter(Boolean);
     if (String(migrated?.value ?? "") !== fingerprint) {
-      this.#transaction(() => {
+      await this.#mutations.run(() => this.#transaction(() => {
         for (const task of tasks) {
+          const history = normalizedStoredHistory(task.history, this.#historyLimit, task);
           this.#writeTask(task);
-          this.#writeHistory(task, cleanHistory(task.history, this.#historyLimit, { provider: task.provider }));
+          this.#writeHistory(task, history);
         }
         this.#prune();
         this.#database.prepare(`
           INSERT INTO task_read_model_meta (key, value) VALUES ('legacy_task_sync_sha256', ?)
           ON CONFLICT(key) DO UPDATE SET value = excluded.value
         `).run(fingerprint);
-      });
+      }), { timeoutMs: this.#mutationTimeoutMs, requestId: `task-sync:migrate:${fingerprint}` });
     }
     for (const expected of tasks) {
       const actual = this.#readTask(expected, true);
-      if (!actual || JSON.stringify(actual) !== JSON.stringify({
+      const expectedHistory = normalizedStoredHistory(expected.history, this.#historyLimit, expected);
+      const actualHistory = normalizedStoredHistory(actual?.history, this.#historyLimit, expected);
+      if (!actual || JSON.stringify({ ...actual, history: actualHistory }) !== JSON.stringify({
         ...expected,
-        history: cleanHistory(expected.history, this.#historyLimit, { provider: expected.provider }),
+        history: expectedHistory,
       })) {
         throw new Error(`SQLite verification failed for ${catalogTaskKey(expected)}`);
       }
@@ -1734,7 +2154,8 @@ export class LocalTaskSyncStore {
   async load() {
     await this.#open();
     await this.#migrateLegacyFile();
-    this.#transaction(() => {
+    await this.#mutations.run(() => this.#transaction(() => {
+      this.#recoverTerminalCommandIdentities();
       this.#runVersionedBackfill(
         "backfill_task_message_search_version",
         SEARCH_BACKFILL_VERSION,
@@ -1762,7 +2183,7 @@ export class LocalTaskSyncStore {
         `${SEARCH_BACKFILL_VERSION}:${journalIdentity}`,
         () => this.#backfillJournalSearchIndex(),
       );
-    });
+    }), { timeoutMs: this.#mutationTimeoutMs, requestId: "task-sync:load" });
     return this;
   }
 
@@ -1800,6 +2221,14 @@ export class LocalTaskSyncStore {
   }
 
   recordCatalog(entries, nowMs = Date.now()) {
+    const captured = (Array.isArray(entries) ? entries : []).map((entry) => ({ ...entry }));
+    return this.#mutations.run(() => this.#recordCatalog(captured, nowMs), {
+      timeoutMs: this.#mutationTimeoutMs,
+      requestId: "task-sync:catalog",
+    });
+  }
+
+  #recordCatalog(entries, nowMs) {
     let changed = false;
     this.#transaction(() => {
       for (const entry of Array.isArray(entries) ? entries : []) {
@@ -1823,6 +2252,17 @@ export class LocalTaskSyncStore {
     executionOwner = null,
     nowMs = Date.now(),
   } = {}) {
+    const capturedTask = { ...task };
+    const capturedSnapshot = { ...snapshot };
+    return this.#mutations.run(() => this.#recordSnapshot(capturedTask, capturedSnapshot, {
+      executionOwner, nowMs,
+    }), {
+      timeoutMs: this.#mutationTimeoutMs,
+      requestId: `task-sync:snapshot:${catalogTaskKey(capturedTask)}`,
+    });
+  }
+
+  #recordSnapshot(task, snapshot, { executionOwner, nowMs }) {
     const existing = this.#readTask(task) ?? {};
     const activityAtMs = Number(snapshot.activityAtMs ?? snapshot.modifiedAtMs ?? nowMs) || nowMs;
     const next = persistedTask({
@@ -1847,15 +2287,27 @@ export class LocalTaskSyncStore {
   }
 
   recordHistory(task, history, snapshot = null, nowMs = Date.now()) {
+    const capturedTask = { ...task };
+    const capturedSnapshot = snapshot ? { ...snapshot } : null;
+    const capturedHistory = structuredClone(history);
+    return this.#mutations.run(() => this.#recordHistory(capturedTask, capturedHistory, capturedSnapshot, nowMs), {
+      timeoutMs: this.#mutationTimeoutMs,
+      requestId: `task-sync:history:${catalogTaskKey(capturedTask)}`,
+    });
+  }
+
+  #recordHistory(task, history, snapshot, nowMs) {
     const existing = this.#readTask(task, true) ?? {};
     const terminals = terminalHistoryTurns(existing.history);
-    const journalHistory = this.#reconcileHistoryWithJournal(task, history);
+    const rebasedHistory = task.provider === "codex" ? rebaseActiveCodexUsers(existing.history, history) : history;
+    const journalHistory = this.#reconcileHistoryWithJournal(task, rebasedHistory);
     const reconciledHistory = preserveTerminalHistory(terminals, journalHistory);
     const durableAttachments = preserveDurableAttachments(existing.history, reconciledHistory);
     const durableHistory = preserveDurableChronology(existing.history, durableAttachments);
     const enrichedHistory = this.#withJournalSubagentModels(task, durableHistory);
     const durableMetadataHistory = preserveDurableResponseAnnotationReferences(existing.history, enrichedHistory);
-    const cleanedHistory = cleanHistory(durableMetadataHistory, this.#historyLimit, { provider: task.provider });
+    const displayHistory = preserveUserDisplay(existing.history, durableMetadataHistory, task);
+    const cleanedHistory = cleanHistory(displayHistory, this.#historyLimit, { provider: task.provider });
     const effectiveSnapshot = terminalSafeSnapshot(existing, snapshot, terminals);
     const next = persistedTask({
       ...existing,
@@ -1938,7 +2390,7 @@ export class LocalTaskSyncStore {
     };
   }
 
-  searchMessage({ provider, threadId, turnId, itemId } = {}) {
+  searchMessage({ provider, threadId, turnId, itemId, durableIdentity = null } = {}) {
     const row = this.#database.prepare(`
       SELECT * FROM task_message_search_documents
       WHERE provider = ? AND thread_id = ? AND turn_id = ? AND item_id = ?
@@ -1950,18 +2402,86 @@ export class LocalTaskSyncStore {
       cleanText(itemId, 200),
     );
     if (!row) return null;
-    return {
+    const value = {
       provider: String(row.provider),
       threadId: String(row.thread_id),
       turnThreadId: String(row.turn_thread_id),
       turnId: String(row.turn_id),
       itemId: String(row.item_id),
       role: String(row.role),
+      ...(row.client_user_message_id
+        ? { clientUserMessageId: String(row.client_user_message_id) }
+        : {}),
+      messageKey: String(row.message_key ?? ""),
+      sourceAlias: String(row.source_alias ?? ""),
+      semanticSlot: String(row.semantic_slot ?? ""),
       text: String(row.message_text),
       ...(row.author ? { author: String(row.author) } : {}),
       attachmentNames: String(row.attachment_names ?? "").split(/\s*\n\s*/u).filter(Boolean),
       occurredAt: row.occurred_at ? String(row.occurred_at) : null,
     };
+    return {
+      ...value,
+      ...indexedDurableMessageMetadataWithEvidence(value, durableIdentity ?? {}),
+    };
+  }
+
+  durableMessageCandidate({
+    provider,
+    threadId,
+    turnId,
+    itemId,
+    role,
+    clientUserMessageId,
+    messageKey: expectedMessageKey,
+    sourceAlias: expectedSourceAlias,
+    semanticSlot,
+  } = {}) {
+    const normalizedProvider = cleanText(provider, 20).toLowerCase();
+    const normalizedThreadId = cleanText(threadId, 100);
+    const normalizedTurnId = cleanText(turnId, 100);
+    const normalizedItemId = cleanText(itemId, 200);
+    const normalizedRole = cleanText(role, 20);
+    const row = this.#database.prepare(`
+      SELECT * FROM task_read_model_turns
+      WHERE provider = ? AND thread_id = ? AND id = ?
+      ORDER BY position DESC LIMIT 1
+    `).get(normalizedProvider, normalizedThreadId, normalizedTurnId);
+    if (row) {
+      const turn = this.#hydrateHistoryRows([row])[0];
+      const message = turn?.messages?.find((candidate) => (
+        String(candidate?.itemId ?? "") === normalizedItemId
+        && String(candidate?.role ?? "") === normalizedRole
+      ));
+      if (message) {
+        return {
+          provider: normalizedProvider,
+          threadId: normalizedThreadId,
+          turnThreadId: normalizedThreadId,
+          turnId: normalizedTurnId,
+          ...message,
+          occurredAt: message.time ?? (message.role === "user" ? turn.startedAt : turn.completedAt) ?? null,
+        };
+      }
+    }
+    const indexed = this.searchMessage({
+      provider: normalizedProvider,
+      threadId: normalizedThreadId,
+      turnId: normalizedTurnId,
+      itemId: normalizedItemId,
+      durableIdentity: {
+        provider: normalizedProvider,
+        threadId: normalizedThreadId,
+        turnId: normalizedTurnId,
+        itemId: normalizedItemId,
+        role: normalizedRole,
+        clientUserMessageId,
+        messageKey: expectedMessageKey,
+        sourceAlias: expectedSourceAlias,
+        semanticSlot,
+      },
+    });
+    return indexed?.role === normalizedRole ? indexed : null;
   }
 
   messageSearchStatus(references = []) {
@@ -2011,6 +2531,19 @@ export class LocalTaskSyncStore {
     return cleanHistory(this.#readHistory(task, limit), limit, { provider: task.provider });
   }
 
+  async readHistoryPage(references, options = {}) {
+    const page = this.historyPage(references, options);
+    const candidates = page.items.filter(({ turn }) => (
+      turn.completed === true && turn.active !== true
+      && turn.userMessageAuthority !== "terminal-ledger"
+    )).map(({ provider, threadId, turn }) => ({ provider, threadId, turnId: turn.id }));
+    if (!candidates.length) return page;
+    await this.#mutations.run(() => this.#transaction(() => (
+      this.#recoverTerminalCommandIdentities(candidates)
+    )), { timeoutMs: this.#mutationTimeoutMs, requestId: "task-sync:page-terminal-recovery" });
+    return this.historyPage(references, options);
+  }
+
   historyPage(references, {
     before,
     limit = 10,
@@ -2024,7 +2557,7 @@ export class LocalTaskSyncStore {
     const query = historyPageQuery(normalizedReferences, visibility);
     const aggregate = this.#database.prepare(`${query.cte}
       SELECT COUNT(*) AS total, COALESCE(SUM(message_count), 0) AS message_total
-      FROM visible_turns
+      FROM base_turns
     `).get(...query.params);
     const total = Number(aggregate?.total) || 0;
     const requestedEnd = Number(before);
@@ -2041,10 +2574,17 @@ export class LocalTaskSyncStore {
         items: [],
       };
     }
-    const rows = this.#database.prepare(`${query.cte}
-      SELECT * FROM visible_turns
+    const rows = this.#database.prepare(`${query.cte}, selected_page AS (
+      SELECT provider, thread_id, position, chronology_anchor, source_order
+      FROM visible_turns
       ORDER BY chronology_anchor, source_order, position
       LIMIT ? OFFSET ?
+    )
+      SELECT turns.* FROM selected_page
+      JOIN task_read_model_turns turns
+        ON turns.provider = selected_page.provider AND turns.thread_id = selected_page.thread_id
+        AND turns.position = selected_page.position
+      ORDER BY selected_page.chronology_anchor, selected_page.source_order, selected_page.position
     `).all(...query.params, end - start, start);
     const history = this.#hydrateHistoryRows(rows);
     return {
@@ -2082,10 +2622,20 @@ export class LocalTaskSyncStore {
   }
 
   save() {
-    return Promise.resolve();
+    return this.#mutations.idle();
+  }
+
+  mutationDiagnostics() {
+    return this.#mutations.diagnostics();
+  }
+
+  // Process-local read-model invalidation, never a command/CAS identity.
+  get revision() {
+    return this.#revision;
   }
 
   close() {
+    if (this.#mutations.diagnostics().queued > 0) return this.#mutations.idle().then(() => this.close());
     this.#database?.close();
     this.#database = null;
   }

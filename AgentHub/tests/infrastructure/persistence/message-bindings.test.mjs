@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +11,11 @@ import {
   readMessageBindings,
   removeMessageBindings,
 } from "../../../src/infrastructure/persistence/message-bindings.mjs";
+
+function lockOwnerPath(lockDirectory, token) {
+  const digest = createHash("sha256").update(String(token)).digest("hex");
+  return path.join(lockDirectory, `owner-${digest}.json`);
+}
 
 test("message bindings persist and resolve by chat and message", async (context) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "telegram-bindings-"));
@@ -141,9 +147,10 @@ test("a lock left by a dead process is recovered without waiting for the stale t
   context.after(() => rm(directory, { recursive: true, force: true }));
   const lockDirectory = path.join(directory, "telegram-thread-bindings.lock");
   await mkdir(lockDirectory, { recursive: true });
-  await writeFile(path.join(lockDirectory, "owner.json"), JSON.stringify({
+  await writeFile(lockOwnerPath(lockDirectory, "abandoned"), JSON.stringify({
     pid: 2_147_483_647,
     token: "abandoned",
+    processInstanceId: "dead-process",
     createdAt: new Date().toISOString(),
   }), "utf8");
 
@@ -166,9 +173,10 @@ test("a live compaction lock cannot block an append-only binding event", async (
   context.after(() => rm(directory, { recursive: true, force: true }));
   const lockDirectory = path.join(directory, "telegram-thread-bindings.lock");
   await mkdir(lockDirectory, { recursive: true });
-  await writeFile(path.join(lockDirectory, "owner.json"), JSON.stringify({
+  await writeFile(lockOwnerPath(lockDirectory, "live-compactor"), JSON.stringify({
     pid: process.pid,
     token: "live-compactor",
+    processInstanceId: "live-process",
     createdAt: new Date().toISOString(),
   }), "utf8");
 

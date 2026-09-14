@@ -55,6 +55,29 @@ export function requireDesktopTaskSyncStore(provider) {
   return taskSyncStore;
 }
 
+export function mcpTaskLaunchContext(context = {}) {
+  const source = context && typeof context === "object" && !Array.isArray(context)
+    ? context
+    : {};
+  return {
+    ...source,
+    source: "mcp",
+    clientId: `mcp:${String(source.provider ?? "").trim()}:${String(source.auditThreadId ?? "").trim()}`,
+  };
+}
+
+export function configureMcpTaskLauncher({ hubMcpService, taskBoardLauncher } = {}) {
+  if (typeof hubMcpService?.setTaskLauncher !== "function") {
+    throw new TypeError("hubMcpService.setTaskLauncher is required");
+  }
+  if (typeof taskBoardLauncher?.start !== "function") {
+    throw new TypeError("taskBoardLauncher.start is required");
+  }
+  hubMcpService.setTaskLauncher((params, context) => (
+    taskBoardLauncher.start(params, mcpTaskLaunchContext(context))
+  ));
+}
+
 export function requireRuntimeStateStore(infrastructure) {
   const runtimeStateStore = infrastructure?.runtimeStateStore;
   if (typeof runtimeStateStore?.saveDeferredIntake !== "function") {
@@ -90,10 +113,12 @@ export function createInteractionShellPhase({
     desktopSnapshot: api.desktopSnapshot,
     spawnCapture: provider.spawnCapture,
     preTurnInstructions: infrastructure.preTurnInstructions,
+    providerLogin: clients.providerLogin,
   });
 
   const desktopShell = createDesktopShellComposition({
     config,
+    server,
     diagnostics: {
       reportClientError: (event, context) => sentryDiagnostics.captureClientEvent(event, context),
     },
@@ -147,6 +172,7 @@ export function createInteractionShellPhase({
     runtime: {
       taskRuns: provider.taskRuns,
       taskSyncStore,
+      messagePins: provider.messagePins,
       taskRunIsActive,
       backgroundJobs: provider.backgroundJobs,
       rateLimitTelemetry: clients.rateLimitTelemetry,
@@ -156,9 +182,12 @@ export function createInteractionShellPhase({
       workLogUsageStore: infrastructure.workLogUsageStore,
       workLogUsageRemoteConfigStore: infrastructure.workLogUsageRemoteConfigStore,
       workspaceCatalogStore: infrastructure.workspaceCatalogStore,
+      taskReleasePlanner: infrastructure.taskReleasePlanner,
+      workspaceReleaseService: infrastructure.workspaceReleaseService,
       streamHandoff: infrastructure.streamHandoff,
       runtimeStateStore,
       taskBoard: infrastructure.taskBoard,
+      taskLifecycle: infrastructure.taskLifecycle,
       taskGitWorkspaces: infrastructure.taskGitWorkspaces,
       taskVoiceTranscriber: infrastructure.taskVoiceTranscriber,
       attachmentDirectory: infrastructure.attachmentDirectory,
@@ -172,6 +201,7 @@ export function createInteractionShellPhase({
       taskDiffs: provider.taskDiffs,
       managedRunLifecycle: provider.managedRunLifecycle,
       deferredInputs: provider.deferredInputs,
+      composerTransfers: provider.composerTransfers,
       taskProgress: {
         setStage: (...args) => runShell.taskProgress.setStage(...args),
         finish: (...args) => runShell.taskProgress.finish(...args),
@@ -324,6 +354,8 @@ export function createInteractionShellPhase({
       sendMessageTo: clients.sendMessageTo,
       saveState: api.saveState,
       streamHandoff: infrastructure.streamHandoff,
+      stageLaunchAdmission: (run) => provider.claudeRunAdmission.stageLaunch(run),
+      abortLaunchAdmission: (run, ticket) => provider.claudeRunAdmission.abortLaunch(run, ticket),
       commandTrace: infrastructure.commandTraceService,
     },
     diff: {

@@ -1,3 +1,4 @@
+import { assertContourExternalEffects } from "../ports/contour-external-effects.mjs";
 import { BackgroundJobQueue } from "./background-job-queue.mjs";
 
 const MEDIA_KINDS = Object.freeze(["image", "voice", "forward-bundle-image"]);
@@ -12,6 +13,7 @@ export class PersistentBackgroundJobController {
 
   constructor({
     store,
+    contourExternalEffects = null,
     maxMediaJobs,
     maxSpeechJobs,
     isStopping = () => false,
@@ -40,6 +42,7 @@ export class PersistentBackgroundJobController {
     if (!Number.isSafeInteger(retryMaxDelayMs) || retryMaxDelayMs < retryBaseDelayMs) {
       throw new TypeError("retryMaxDelayMs must not be smaller than retryBaseDelayMs");
     }
+    this.contourExternalEffects = assertContourExternalEffects(contourExternalEffects);
     this.store = store;
     this.maxMediaJobs = maxMediaJobs;
     this.maxSpeechJobs = maxSpeechJobs;
@@ -70,6 +73,7 @@ export class PersistentBackgroundJobController {
   get speechSize() { return this.#persistedCount("speech"); }
   get speechPending() { return this.speechQueue.pending; }
   get size() { return this.store.size; }
+  get activeSize() { return this.contourExternalEffects ? 0 : this.size; }
 
   #capture(error, action) {
     try {
@@ -126,7 +130,7 @@ export class PersistentBackgroundJobController {
   }
 
   #requestPump() {
-    if (this.isStopping() || this.#pumpPromise) return;
+    if (this.contourExternalEffects || this.isStopping() || this.#pumpPromise) return;
     this.#pumpPromise = Promise.resolve()
       .then(() => this.#pumpPersistedJobs())
       .catch((error) => {
@@ -209,6 +213,7 @@ export class PersistentBackgroundJobController {
   }
 
   #schedule(item) {
+    if (this.contourExternalEffects) return false;
     if (this.#scheduledIds.has(item.id)) return true;
     this.#scheduledIds.add(item.id);
     const dueAt = Date.parse(String(item.nextAttemptAt ?? ""));
@@ -235,6 +240,10 @@ export class PersistentBackgroundJobController {
   }
 
   async enqueue(kind, payload, targetChatId, { dedupeKey = null } = {}) {
+    if (this.contourExternalEffects) {
+      this.contourExternalEffects.exclude("media", "enqueue-background-job");
+      throw Object.assign(new Error("Media jobs are excluded in the recording contour"), { code: "CONTOUR_MEDIA_EXCLUDED" });
+    }
     await this.store.load();
     const replayed = this.store.findByDedupeKey(dedupeKey);
     if (replayed) {
@@ -257,6 +266,10 @@ export class PersistentBackgroundJobController {
 
   async restore() {
     await this.store.load();
+    if (this.contourExternalEffects) return {
+      ...this.contourExternalEffects.exclude("media", "restore-background-jobs"),
+      restored: 0, total: this.store.size,
+    };
     for (const pending of this.forwardBundles.pendingImageJobs?.() ?? []) {
       try {
         const restored = await this.enqueue(

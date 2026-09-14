@@ -3,6 +3,7 @@ import { stat } from "node:fs/promises";
 
 import { legacyTaskRunKeys, taskRunKey } from "../domain/task-runs.mjs";
 import { isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
+import { normalizeInterstreamClientUserMessageId } from "../domain/interstream-message.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
 import { conciseTurnTitle } from "./turn-title.mjs";
 
@@ -76,6 +77,8 @@ export class RunJournalService {
     const authoritativeUpdatedAt = normalizedIsoTimestamp(updatedAt);
     const startedAt = normalizedIsoTimestamp(run.startedAt);
     const sameTurn = Boolean(turnId) && current?.turnId === turnId;
+    if (sameTurn && Number(terminalRevision) > 0
+      && Number(current.terminalRevision) > Number(terminalRevision)) return false;
     const currentStartedAt = normalizedIsoTimestamp(current?.startedAt);
     if (
       current
@@ -101,7 +104,7 @@ export class RunJournalService {
       operationKind: String(run.operationKind ?? "").trim()
         || (run.contextProbe === true ? "probe" : "user-turn"),
       contextProbe: run.contextProbe === true,
-      clientUserMessageId: String(run.clientUserMessageId ?? "").trim() || null,
+      clientUserMessageId: normalizeInterstreamClientUserMessageId(run.clientUserMessageId),
     };
     if (
       current
@@ -199,6 +202,8 @@ export class RunJournalService {
       title: title || (body ? conciseTurnTitle(body, completion.status) : ""),
       body,
       prompt: journalPrompt(completion),
+      clientUserMessageId: completion.clientUserMessageId,
+      messageOrigin: completion.messageOrigin,
       changedFiles: completion.changedFiles,
       diff: completion.diff,
       skillsUsed: completion.skillsUsed,
@@ -220,7 +225,7 @@ export class RunJournalService {
         threadId: completion.threadId,
       });
       if (resolved) {
-        this.workspaceCatalogStore.recordWorkspaceEvent?.({
+        await this.workspaceCatalogStore.recordWorkspaceEvent?.({
           workspaceId: resolved.workspaceId,
           streamId: resolved.streamId,
           type: "run.completed",
@@ -241,6 +246,20 @@ export class RunJournalService {
       this.logger.error(`Cannot record Workspace event for ${completion.turnId}:`, error.message);
     }
     return result;
+  }
+
+  async flushTurnProjections(completions) {
+    const projectRoots = this.projectionProjectRoots?.length
+      ? this.projectionProjectRoots
+      : [...new Set(completions.map((completion) => {
+        const project = this.findProject(completion.projectRoot);
+        if (!project) throw new Error(`Cannot find journal project for ${completion.projectRoot}`);
+        return project.path;
+      }))];
+    return this.usageStore.project(null, {
+      projectRoot: this.defaultProjectRoot,
+      projectionProjectRoots: projectRoots,
+    });
   }
 
   async initialize(restoredTurnEndSnapshot = {}) {

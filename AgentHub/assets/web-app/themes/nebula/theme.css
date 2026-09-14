@@ -44,6 +44,9 @@ html[data-theme="nebula"] {
 
   --provider-codex: #8cc7bb;
   --provider-claude: #d7aa78;
+  --provider-tone-lightness: 0.78;
+  --provider-tone-chroma: 0.075;
+  --provider-tone-alpha: 0.18;
   --ok: #8cc7a8;
   --pending: #e0a85d;
 

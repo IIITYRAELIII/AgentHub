@@ -40,7 +40,7 @@ function source(overrides = {}) {
 
 test("response annotation source accepts only exact bounded provider item ranges", () => {
   assert.deepEqual(normalizedResponseAnnotationSource(source()), source());
-  assert.equal(normalizedResponseAnnotationSource(source({ end: 408 })), null);
+  assert.equal(normalizedResponseAnnotationSource(source({ end: 1_000_001 })), null);
   assert.equal(normalizedResponseAnnotationSource(source({ start: -1 })), null);
   assert.equal(normalizedResponseAnnotationSource(source({ contentHash: "sha256:nope" })), null);
   assert.equal(normalizedResponseAnnotationSource(source({ messageKey: "provider\u001fwrong" })), null);
@@ -56,6 +56,43 @@ test("invalid source metadata fails closed without discarding readable legacy an
   }]), [{ text: "Читаемая цитата", annotation: "Проверить" }]);
 });
 
+test("client user locators remain exact across item hydration and preserve provider locators", async () => {
+  const script = await readFile(new URL("../../assets/web-app/messages/disclosure.js", import.meta.url), "utf8");
+  const context = vm.createContext({ crypto: webcrypto, TextEncoder });
+  context.window = context;
+  vm.runInContext(script, context);
+  const api = context.AgentHubMessageDisclosure;
+  const user = {
+    provider: "codex", threadId: "thread-source", turnId: "turn-source", itemId: "",
+    clientUserMessageId: "ordinary-client", role: "user", text: "проценты",
+  };
+  const locator = source({ role: "user", turnId: "", itemId: "", clientUserMessageId: "ordinary-client" });
+  assert.deepEqual(normalizedResponseAnnotationSource(locator), locator);
+  assert.deepEqual(JSON.parse(JSON.stringify(api.normalizedResponseAnnotationSource(locator))), locator);
+  const hydrated = { ...user, itemId: "item-source" };
+  assert.equal(api.responseAnnotationSourceProjection([hydrated], locator).message, hydrated);
+  assert.equal(api.responseAnnotationSourceContent(user), api.responseAnnotationSourceContent(hydrated, locator));
+  const providerLocator = source({ role: "user" });
+  assert.equal(api.responseAnnotationSourceProjection([hydrated], providerLocator).message, hydrated);
+  assert.equal(api.responseAnnotationSourceContent(hydrated, providerLocator),
+    api.responseAnnotationSourceContent({ ...hydrated, clientUserMessageId: "" }));
+  assert.equal(api.responseAnnotationSourceProjection([{ ...user, clientUserMessageId: "different" }], locator), null);
+  assert.equal(api.responseAnnotationSourceProjection([{ ...user, threadId: "different" }], locator), null);
+  assert.equal(api.responseAnnotationSourceProjection([user, hydrated], locator), null);
+  for (const invalid of [
+    { ...locator, role: "agent" },
+    { ...locator, clientUserMessageId: "bad\u001fid" },
+    { ...locator, turnId: "mixed-provider-turn" },
+    { ...locator, itemId: "mixed-provider-item" },
+    { ...locator, messageKey: providerLocator.messageKey },
+    { ...locator, selectionHash: "missing" },
+    { ...locator, end: 1_000_001 },
+  ]) {
+    assert.equal(normalizedResponseAnnotationSource(invalid), null);
+    assert.equal(api.normalizedResponseAnnotationSource(invalid), null);
+  }
+});
+
 test("browser and backend source normalizers keep the same canonical schema", async () => {
   const script = await readFile(
     new URL("../../assets/web-app/messages/disclosure.js", import.meta.url),
@@ -68,6 +105,17 @@ test("browser and backend source normalizers keep the same canonical schema", as
   assert.deepEqual(JSON.parse(JSON.stringify(browserSource)), source());
   const digest = await context.AgentHubMessageDisclosure.responseAnnotationSha256("exact content");
   assert.match(digest, /^sha256:[0-9a-f]{64}$/u);
+  for (const length of [401, 430, 12_000]) {
+    const text = "Полная цитата. ".repeat(length).slice(0, length - 1) + "!";
+    const locator = source({ end: 7 + text.length });
+    assert.deepEqual(normalizedResponseAnnotationSource(locator), locator);
+    assert.deepEqual(JSON.parse(JSON.stringify(
+      context.AgentHubMessageDisclosure.normalizedResponseAnnotationSource(locator),
+    )), locator);
+    assert.deepEqual(normalizedResponseAnnotations([{ text, source: locator }]), [
+      { text, annotation: "", source: locator },
+    ]);
+  }
 });
 
 test("browser source resolution ignores equal text and fails closed on absent identity or stale hashes", async () => {

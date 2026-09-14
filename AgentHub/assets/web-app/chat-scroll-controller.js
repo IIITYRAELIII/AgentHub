@@ -24,6 +24,7 @@
       this.duration = Number(options.animationDurationMs) || DEFAULT_ANIMATION_DURATION_MS;
       this.topThreshold = Number(options.topThresholdPx) || DEFAULT_TOP_THRESHOLD_PX;
       this.onNearTop = typeof options.onNearTop === "function" ? options.onNearTop : null;
+      this.onReturnBottom = typeof options.onReturnBottom === "function" ? options.onReturnBottom : null;
       this.requestFrame = options.requestAnimationFrame ?? window.requestAnimationFrame.bind(window);
       this.cancelFrame = options.cancelAnimationFrame ?? window.cancelAnimationFrame.bind(window);
       this.reducedMotion = options.reducedMotion ?? (() => (
@@ -32,6 +33,8 @@
       this.ResizeObserver = options.ResizeObserver ?? window.ResizeObserver;
       this.animationFrame = 0;
       this.animationGeneration = 0;
+      this.exactNavigationGeneration = 0;
+      this.exactNavigationActive = false;
       this.working = false;
       this.unreadCount = 0;
       this.pinned = this.isNearBottom();
@@ -48,7 +51,10 @@
           this.noteUserIntent();
         }
       });
-      if (this.button) this.bind(this.button, "click", () => this.scrollToBottom({ animate: true }));
+      if (this.button) this.bind(this.button, "click", () => {
+        this.onReturnBottom?.();
+        this.scrollToBottom({ animate: true });
+      });
       this.resizeObserver = typeof this.ResizeObserver === "function"
         ? new this.ResizeObserver(() => this.handleResize())
         : null;
@@ -127,13 +133,52 @@
       this.pinned = false;
     }
 
+    syncExactNavigation() {
+      this.pinned = false;
+      this.lastDistance = distanceFromBottom(this.scroll);
+      this.lastScrollHeight = Number(this.scroll.scrollHeight) || 0;
+      this.updateButton(this.isNearBottom());
+    }
+
+    beginExactNavigation() {
+      this.noteUserIntent();
+      this.exactNavigationActive = true;
+      return ++this.exactNavigationGeneration;
+    }
+
+    completeExactNavigation(generation) {
+      if (generation !== this.exactNavigationGeneration) return;
+      this.syncExactNavigation();
+      let remainingFrames = 2;
+      const settle = () => {
+        if (generation !== this.exactNavigationGeneration) return;
+        this.syncExactNavigation();
+        remainingFrames -= 1;
+        if (remainingFrames > 0) {
+          this.requestFrame(settle);
+          return;
+        }
+        this.exactNavigationActive = false;
+        this.sync();
+      };
+      this.requestFrame(settle);
+    }
+
     handleScroll() {
+      if (this.exactNavigationActive) {
+        this.syncExactNavigation();
+        return;
+      }
       this.pinned = this.isNearBottom();
       this.sync();
     }
 
     handleResize() {
       const nextHeight = Number(this.scroll.scrollHeight) || 0;
+      if (this.exactNavigationActive) {
+        this.syncExactNavigation();
+        return;
+      }
       if (this.pinned) this.pinNow();
       else if (nextHeight !== this.lastScrollHeight) {
         this.scroll.scrollTop = Math.max(0, nextHeight - this.scroll.clientHeight - this.lastDistance);

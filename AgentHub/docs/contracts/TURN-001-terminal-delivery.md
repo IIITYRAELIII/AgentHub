@@ -1,5 +1,10 @@
 # TURN-001 — Terminal turn commit and delivery
 
+Audit checkpoints before version 17 retain their live byte cursors but rebuild
+the existing bounded historical queue once to repair failed identity-less context
+probes. Version 17 historical completion is durable across restart; it does not
+authorize periodic full-history scans or resubmission of provider operations.
+
 ## Identity and owner
 
 A provider run is identified by `provider + threadId + turnId`. A terminal
@@ -10,6 +15,25 @@ final status and final content.
 
 - Terminal status, final content, usage identity and last-message identity are
   committed before admission or queue ownership is released.
+- The post-turn reservation is acquired before admission release. Once the
+  terminal is durable, admission completion starts reserved post-turn
+  maintenance independently of outbox delivery. A stalled delivery cannot hold
+  an otherwise idle Stream in preparation. The existing maintenance reservation
+  has an exact identity: cancellation before provider start releases only that
+  preparation and wakes the original queued input. Late idle checks and cleanup
+  cannot start work or release a replacement reservation. Cancellation after
+  provider start is not reported as confirmed without provider evidence.
+- Post-turn context idle checks bound awaited rollout discovery and observation
+  by one deadline. If the check cannot establish inactivity before that deadline,
+  no compaction is started; its reservation is released and the original queued
+  input is woken through normal admission checks. Late read completion cannot
+  resume the abandoned check or start provider work. A read timeout is not
+  evidence that an already-started provider operation has finished.
+- A Codex `task_complete` event carrying an error is a failed terminal, not a
+  successful empty answer. Exact-turn, tail and historical readers retain the
+  same outcome. An identity-less context probe stays internal under UI-001;
+  discovering it during reconciliation may update accounting but must not emit
+  an ordinary completion notification.
 - Optional rollout usage, pricing and tool-metadata reconstruction never delays
   terminal commit or admission release. The terminal audit resumes from its
   durable append-only byte checkpoint and reconciles that metadata afterward.
@@ -25,13 +49,27 @@ final status and final content.
   uses the exact reconciled provider final after a bounded settle window.
 - Terminal is absorbing: late running, progress, snapshot or reconnect events
   cannot revive it.
+- A bounded restart or opened-history-page reprojection may replace a corrupted terminal user
+  projection only when the retained terminal payload and command ledger prove
+  the same non-empty `provider + threadId + turnId + runId` for every distinct
+  Hub command identity. Missing, duplicate or conflicting proof fails closed;
+  successful reprojection preserves terminal state and never dispatches again.
 - Live, focused, history and badge views derive from the same terminal revision.
+- Terminal completion and history payloads retain the raw root prompt separately
+  from body-only live user projections. Their `clientUserMessageId` is nonempty
+  and at most 200 characters; invalid or conflicting provider identity and its
+  origin are omitted before `payload_json` and outbox serialization.
 - Versioned response-annotation source locators for user, final agent and
   non-final agent provider items attached to the turn prompt are
   retained byte-for-byte through terminal history persistence and reload after
   intake validation; terminal coalescing cannot strip or retarget them.
 - Delivery uses a durable outbox. A missing UI ACK retries delivery without
   reverting terminal state or regenerating the provider effect.
+- Recovery may stage a bounded batch of exact outbox revisions and perform one
+  shared journal projection. Every revision remains unacknowledged until its
+  history and journal data are persisted and the shared projection succeeds.
+  Projection failure preserves retryability; a superseding revision retains its
+  own delivery identity. Ordinary live completion does not wait for a batch.
 - A later user turn cannot suppress or mutate the previous terminal entity.
 - Projection overlays the exact latest terminal independently of a later active
   turn, so both entities remain visible in provider sequence.

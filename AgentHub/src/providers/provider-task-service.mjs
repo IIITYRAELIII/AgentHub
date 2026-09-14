@@ -34,7 +34,7 @@ export class CodexProviderTaskService {
   #updateSettings;
   #clearLatestDiff;
   #saveState;
-  #clock;
+  #nameCreatedThread;
   #discoverLocalTasks;
   #logWarn;
 
@@ -56,7 +56,7 @@ export class CodexProviderTaskService {
     this.#updateSettings = requiredFunction(options.updateSettings, "updateSettings");
     this.#clearLatestDiff = requiredFunction(options.clearLatestDiff, "clearLatestDiff");
     this.#saveState = requiredFunction(options.saveState, "saveState");
-    this.#clock = options.clock ?? (() => new Date());
+    this.#nameCreatedThread = options.nameCreatedThread;
     this.#discoverLocalTasks = options.discoverLocalTasks ?? null;
     if (this.#discoverLocalTasks !== null && typeof this.#discoverLocalTasks !== "function") {
       throw new TypeError("discoverLocalTasks must be a function");
@@ -75,7 +75,7 @@ export class CodexProviderTaskService {
     });
     const threadId = String(result?.thread?.id ?? "").trim();
     if (!threadId) throw new Error("Codex did not return a thread id");
-    this.#bindCreatedThread({
+    await this.#bindCreatedThread({
       provider: "codex",
       threadId,
       streamId,
@@ -90,7 +90,8 @@ export class CodexProviderTaskService {
     this.#invalidateCatalog();
     this.#restoreSettings(threadId, { inheritCurrent: true });
     await this.#updateSettings();
-    const title = await this.#nameTask(threadId);
+    if (typeof this.#nameCreatedThread !== "function") throw new Error("Hub Thread naming is not configured");
+    const title = await this.#nameCreatedThread({ provider: "codex", threadId, streamId, projectRoot });
     this.#selection.setTitle(title);
     await this.#saveState();
     return {
@@ -99,19 +100,6 @@ export class CodexProviderTaskService {
       projectRoot,
       title,
     };
-  }
-
-  async #nameTask(threadId) {
-    const timestamp = this.#clock().toLocaleString("ru-RU", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-    const title = `Telegram · ${timestamp}`;
-    await this.#sendRpc("thread/name/set", { threadId, name: title });
-    return title;
   }
 
   async discoverTasks() {

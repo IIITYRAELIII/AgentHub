@@ -69,12 +69,14 @@ export function createProviderSnapshotComposition({
       const streamId = selectionStore.streamId;
       selectionStore.setThread(threadId, { provider: "claude", streamId, title });
       if (streamId && threadId && !workspaceCatalogStore.thread({ provider: "claude", threadId })) {
-        workspaceCatalogStore.bindThread({
+        void workspaceCatalogStore.bindThread({
           provider: "claude",
           threadId,
           streamId,
           projectRoot: selectionStore.activeProjectRoot,
           source: "created",
+        }).catch((error) => {
+          console.error("Cannot bind Claude Thread:", error.message);
         });
       }
     },

@@ -69,13 +69,19 @@ function upsertAgentMessage(run, reference, defaults = {}) {
 }
 
 function selectedAgentMessage(items) {
-  const populated = items.filter((item) => String(item.text ?? "").length > 0);
-  return populated.at(-1) ?? items.at(-1) ?? null;
+  const answers = items.filter((item) => !(Array.isArray(item.questions) && item.questions.length));
+  const populated = answers.filter((item) => String(item.text ?? "").length > 0);
+  return populated.at(-1) ?? answers.at(-1) ?? null;
 }
 
 function synchronizeResponse(run) {
   const selected = selectedAgentMessage(agentMessages(run));
-  if (!selected) return null;
+  if (!selected) {
+    run.responseItemId = null;
+    run.responseText = "";
+    run.responseAnnotationReferences = [];
+    return null;
+  }
   run.responseItemId = selected.id;
   run.responseText = String(selected.text ?? "");
   run.responseAnnotationReferences = Array.isArray(selected.responseAnnotationReferences)
@@ -98,6 +104,7 @@ export function startCodexAgentMessage(run, { turnId = null, item = null } = {})
   const phase = agentMessagePhase(item);
   const message = upsertAgentMessage(run, { turnId, itemId: item.id }, {
     type: item.type, ...(phase ? { phase } : {}), status: "inProgress",
+    ...(Array.isArray(item.questions) ? { questions: structuredClone(item.questions) } : {}),
   });
   const text = agentMessageText(item);
   if (text) setProviderText(message, text);
@@ -126,6 +133,7 @@ export function completeCodexAgentMessage(run, { turnId = null, item = null } = 
   const phase = agentMessagePhase(item);
   const message = upsertAgentMessage(run, { turnId, itemId: item.id }, {
     type: item.type, ...(phase ? { phase } : {}), status: "completed",
+    ...(Array.isArray(item.questions) ? { questions: structuredClone(item.questions) } : {}),
   });
   if (typeof item.text === "string") setProviderText(message, item.text);
   synchronizeResponse(run);
@@ -144,6 +152,7 @@ export function hydrateCodexAgentMessages(run, items = [], { turnId = null } = {
       turnId: normalizedId(turnId) || null,
       text: "",
       phase: agentMessagePhase(item),
+      ...(Array.isArray(item.questions) ? { questions: structuredClone(item.questions) } : {}),
       status: String(item.status ?? "completed"),
     };
     setProviderText(message, agentMessageText(item));

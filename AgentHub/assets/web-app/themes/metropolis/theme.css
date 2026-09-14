@@ -50,6 +50,9 @@ html[data-theme="metropolis"] {
   --provider-none: #78909c;
   --provider-codex: #74d2ef;
   --provider-claude: #e5a05f;
+  --provider-tone-lightness: 0.79;
+  --provider-tone-chroma: 0.1;
+  --provider-tone-alpha: 0.18;
   --ok: #6fd3ad;
   --pending: #e3ab64;
 

@@ -9,11 +9,10 @@ import { readClaudeAccount } from "../providers/claude/claude-account.mjs";
 import { ClaudeContextMaintenanceService } from "../providers/claude/claude-context-maintenance-service.mjs";
 import { processIsAlive } from "../providers/claude/claude-run-io.mjs";
 import { readClaudeSessionSnapshot } from "../providers/claude/claude-session-reader.mjs";
+import { ClaudeRunAdmissionGate, ClaudeRuntimeOwner } from "../providers/claude/claude-runtime-owner.mjs";
 import { readCodexTurnUsage } from "../providers/codex/codex-turn-usage.mjs";
 import {
-  codexObservedRuntimeActive,
-  resolveCodexObservedExecutionOwner,
-  resolveCodexTaskActivity,
+  codexObservedRuntimeActive, resolveCodexObservedExecutionOwner, resolveCodexTaskActivity,
 } from "../providers/codex/codex-runtime-owner.mjs";
 import { readCodexThreadTitleHistories } from "../../send-message.mjs";
 import { createBackgroundWorkComposition } from "./background-work-composition.mjs";
@@ -22,7 +21,9 @@ import { createCodexContextMaintenanceComposition } from "./codex-context-mainte
 import { createCodexObservabilityComposition } from "./codex-observability-composition.mjs";
 import { createJournalBackfillComposition } from "./journal-backfill-composition.mjs";
 import { createProviderCatalogComposition } from "./provider-catalog-composition.mjs";
+import { createRuntimeFileRemoval } from "../runtime/test-contour-runtime-effects.mjs";
 import { createProviderOperationComposition } from "./provider-operation-composition.mjs";
+import { createHubThreadNamingService } from "../application/hub-thread-naming-service.mjs";
 import { createProviderProcessComposition } from "./provider-process-composition.mjs";
 import { createProviderSnapshotComposition } from "./provider-snapshot-composition.mjs";
 import { createProviderStartupComposition } from "./provider-startup-composition.mjs";
@@ -46,6 +47,24 @@ import { createRuntimeDataComposition } from "./runtime-data-composition.mjs";
 import { RuntimeTimerCoordinator } from "../runtime/runtime-timer-coordinator.mjs";
 import { createTaskCatalogFinalizationComposition } from "./task-catalog-finalization-composition.mjs";
 import { delay } from "./runtime-timers-composition.mjs";
+
+export function createClaudeRunAdmissionBoundary({
+  resolveClaudeInvocation,
+  agentHubPid = process.pid,
+  runtimeOwner = null,
+} = {}) {
+  if (!runtimeOwner && typeof resolveClaudeInvocation !== "function") {
+    throw new TypeError("resolveClaudeInvocation is required");
+  }
+  const claudeRuntimeOwner = runtimeOwner ?? new ClaudeRuntimeOwner({
+    agentHubPid,
+    invocation: resolveClaudeInvocation(),
+  });
+  return {
+    claudeRuntimeOwner,
+    claudeRunAdmission: new ClaudeRunAdmissionGate({ runtimeOwner: claudeRuntimeOwner }),
+  };
+}
 
 export async function createProviderApplicationComposition({
   config,
@@ -101,6 +120,7 @@ export async function createProviderApplicationComposition({
     providerTurnTelemetryStore,
     runtimeStateStore,
     commandTraceService,
+    contourExternalEffects,
   } = infrastructure;
   const {
     findProject,
@@ -116,6 +136,7 @@ export async function createProviderApplicationComposition({
   } = taskServices;
   const runtimeTimers = new RuntimeTimerCoordinator();
   const usageSyncAuto = new UsageSyncAutoService({
+    externalEffects: contourExternalEffects,
     timers: runtimeTimers,
     remoteConfigStore: workLogUsageRemoteConfigStore,
     identityStore: workLogUsageIdentityStore,
@@ -143,6 +164,9 @@ export async function createProviderApplicationComposition({
     getProjectRoot: selectedProjectRoot,
     stopProcessTree: late.stopProcessTree,
   });
+  const { claudeRuntimeOwner, claudeRunAdmission } = createClaudeRunAdmissionBoundary({
+    resolveClaudeInvocation: providerProcess.resolveClaudeInvocation,
+  });
   const accounting = createRunAccountingComposition({
     runJournal,
     refreshTaskDiff: api.refreshTaskDiff,
@@ -158,7 +182,7 @@ export async function createProviderApplicationComposition({
   });
   const maintenanceOperations = new MaintenanceOperationStore({ dataDir: config.dataDir });
   hubMcpService.setActiveRuns(() => runtimeData.taskRuns.values());
-  hubMcpService.setDeferredInputs(() => runtimeData.deferredInputs.values());
+  hubMcpService.setDeferredInputs(() => runtimeData.deferredInputs.diagnostics());
 
   const codexObservability = createCodexObservabilityComposition({
     config,
@@ -174,13 +198,16 @@ export async function createProviderApplicationComposition({
     lastSeenTaskTurnIds: runtimeData.lastSeenTaskTurnIds,
     saveState: api.saveState,
     deliverTurnEndNotification: api.deliverTurnEndNotification,
+    repairTurnEndAttachments: api.repairTurnEndAttachments,
+    reclassifyTurnEndContextProbe: api.reclassifyTurnEndContextProbe,
     defaultNotificationChatId,
     findProject,
     resolveTaskByProviderRef: ({ provider, providerTaskId }) => providerCatalog.taskCatalog.find((entry) => (
       entry.provider === provider && String(entry.threadId) === String(providerTaskId)
     )),
     globalWorkLogProjectRoots,
-    isHistoricalBackfillIdle: () => false,
+    isHistoricalBackfillIdle: () => !runtimeData.taskRuns.values().some(taskRunIsActive)
+      && runtimeData.deferredInputs.size === 0,
     operationStore: maintenanceOperations,
     streamIdForThread: (threadId) => workspaceCatalogStore.thread({
       provider: "codex",
@@ -236,6 +263,8 @@ export async function createProviderApplicationComposition({
         scheduleDeferredRestartIfReady: api.scheduleDeferredRestartIfReady,
       });
     },
+    prepareRunAdmission: (target) => claudeRunAdmission.prepare(target),
+    revokeRunAdmission: (run) => claudeRunAdmission.revoke(run),
     turnEndNotifications,
     runJournal,
     lastSeenTaskTurnIds: runtimeData.lastSeenTaskTurnIds,
@@ -253,9 +282,13 @@ export async function createProviderApplicationComposition({
     commandTrace: commandTraceService,
   });
 
+  const hubThreadNaming = createHubThreadNamingService({
+    workspaceCatalog: workspaceCatalogStore, taskMetadata, sendRpc: api.sendRpc,
+    saveTitles: api.savePinnedTaskTitles, saveState: api.saveState,
+  });
   const codexContextMaintenance = createCodexContextMaintenanceComposition({
-    config,
-    runtimeTimers,
+    preserveProbeTitle: hubThreadNaming.preserveProbeTitle,
+    config, runtimeTimers,
     contextCompactions: codexObservability.compactions,
     sanitizer: codexRolloutContextSanitizer,
     isStopping: () => hostState.stopping,
@@ -275,6 +308,7 @@ export async function createProviderApplicationComposition({
     restartTransportAfterCrash: api.restartCodexAfterCrash,
     runForTask: (target) => runtimeData.taskRuns.forTask(target),
     sendRpc: api.sendRpc,
+    normalizeCodexModel,
   });
   const claudeContextMaintenance = new ClaudeContextMaintenanceService({
     compactions: codexObservability.compactions,
@@ -318,6 +352,7 @@ export async function createProviderApplicationComposition({
 
   const backgroundWork = await createBackgroundWorkComposition({
     backgroundDirectory: backgroundJobsDirectory,
+    contourExternalEffects,
     failedUpdatesDirectory,
     maxMediaJobs: maximumMediaJobs,
     maxSpeechJobs: maximumSpeechJobs,
@@ -339,6 +374,7 @@ export async function createProviderApplicationComposition({
     },
   });
   const journalBackfill = createJournalBackfillComposition({
+    commandTrace: commandTraceService,
     projects,
     workLogUsageStore,
     projectionProjectRoots: globalWorkLogProjectRoots,
@@ -397,6 +433,8 @@ export async function createProviderApplicationComposition({
     delay,
   });
   const providerOperations = createProviderOperationComposition({
+    removeRuntimeFile: createRuntimeFileRemoval(config),
+    nameCreatedThread: hubThreadNaming.nameCreatedThread,
     claudeContextMaintenance,
     taskRuns: runtimeData.taskRuns,
     selectionStore,
@@ -473,6 +511,7 @@ export async function createProviderApplicationComposition({
     wakeDeferredInputs: api.wakeDeferredInputs,
   });
   const providerCatalog = createProviderCatalogComposition({
+    receiptForMessage: (identity) => runtimeData.desktopMessageReceipts.get(identity),
     taskSyncStore: runtimeData.taskSyncStore,
     workspaceCatalogStore,
     taskRuns: runtimeData.taskRuns,
@@ -489,6 +528,8 @@ export async function createProviderApplicationComposition({
     startClaudeTurn: api.startClaudeTurn,
     steerClaudeTurn: api.steerClaudeTurn,
     claudeTaskSnapshots: providerSnapshots.claudeTaskSnapshots,
+    claudeRuntimeOwner,
+    claudeRunAdmission,
     backfillWorkLogPricingMetadata: api.backfillWorkLogPricingMetadata,
     readCodexThreadTitleHistories,
     rememberCodexRolloutPath: codexObservability.rememberRolloutPath,
@@ -552,6 +593,7 @@ export async function createProviderApplicationComposition({
     turnTokenUsage: codexObservability.turnTokenUsage,
     contextCompactions: codexObservability.compactions,
     maintenanceOperations,
+    claudeRunAdmission,
     codexTurnStarts: codexObservability.turnStarts,
     codexHookReceipts: codexObservability.hookReceipts,
     replaceCodexHookReceipts: codexObservability.replaceHookReceipts,

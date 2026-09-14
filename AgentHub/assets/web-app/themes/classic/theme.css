@@ -18,6 +18,15 @@ html[data-theme="classic"] {
   --label-spacing: 0;
   --label-transform: none;
 
+  /* Заголовки секций «Классики» — обычный системный текст, а не разрядка
+     капителью. Токены адаптируют разом и «ПАРАМЕТРЫ»/«ДЕЙСТВИЯ», и заголовки
+     вложенных блоков карточки задачи. */
+  --section-heading-size: 14px;
+  --section-heading-weight: 400;
+  --section-heading-spacing: 0;
+  --section-heading-transform: none;
+  --section-heading-color: var(--text-muted);
+
   --radius-lg: 8px;
   --radius-md: 6px;
   --radius-sm: 4px;
@@ -61,6 +70,9 @@ html[data-theme="classic"] {
   --provider-none: #848485;
   --provider-codex: #48a0c7;
   --provider-claude: #a7a7a7;
+  --provider-tone-lightness: 0.72;
+  --provider-tone-chroma: 0.015;
+  --provider-tone-alpha: 0.16;
   --comparison-local: #bfbfbf;
   --comparison-deviation: #a7a7a7;
   --comparison-cost: #848485;
@@ -201,8 +213,7 @@ html[data-theme="classic"]:not([data-surface="mobile"]) .activity-rail {
 }
 
 html[data-theme="classic"] .task-rail-title,
-html[data-theme="classic"] .activity-rail-toggle,
-html[data-theme="classic"] .settings-section-title {
+html[data-theme="classic"] .activity-rail-toggle {
   color: var(--text-muted);
   font-size: 14px !important;
   font-weight: 400;

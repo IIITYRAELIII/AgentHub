@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { HubMcpService } from "../../src/application/hub-mcp-service.mjs";
+import { createInterstreamMessage } from "../../src/domain/interstream-message.mjs";
 
 function methodStub(result = null) {
   return () => result;
@@ -54,6 +55,9 @@ test("hub_task_start carries the audited source Stream into message intake", asy
       operations.set(operation.requestId, value);
       return value;
     },
+    bindMcpOperationInterstreamContentHash: (requestId, contentHash) => {
+      Object.assign(operations.get(requestId), { interstreamContentHash: contentHash });
+    },
     completeMcpOperation: (requestId, result) => {
       Object.assign(operations.get(requestId), { status: "succeeded", result });
     },
@@ -67,12 +71,20 @@ test("hub_task_start carries the audited source Stream into message intake", asy
     create: methodStub(task),
     move: methodStub(task),
     update: methodStub(task),
+    updateChecklist: methodStub({ task, createdTask: null, itemId: null, replayed: false }),
+    checklistRequestResult: () => null,
     markStarted: methodStub(task),
     complete: methodStub(task),
     addAttachment: methodStub(task),
     claim: methodStub(task),
     requestWorkflowStatus: methodStub(task),
+    beginLifecycleTransition: methodStub(task),
+    commitWorkflowTransition: methodStub(task),
+    rollbackWorkflowOutcome: methodStub(task),
+    failLifecycleTransition: methodStub(task),
+    finalizeCleanupTransition: methodStub(task),
     releaseTasks: methodStub([]),
+    adoptLegacyGitReference: methodStub(task),
   };
   const service = new HubMcpService({
     workspaceCatalog,
@@ -81,7 +93,11 @@ test("hub_task_start carries the audited source Stream into message intake", asy
     attachmentDirectory: "D:/attachments",
     secret: "test-secret",
     releasePlanner: { plan: async () => ({}) },
-    releasePreflight: { preflight: async () => ({}) },
+    releasePreflight: {
+      preflight: async () => ({}),
+      prepareAwaitSet: async () => ({}),
+      withAwaitTransition: async (_workspaceId, operation) => operation(),
+    },
     releaseCompleter: { completeRelease: async () => ({}) },
   });
   service.setActiveRuns(() => [{
@@ -92,6 +108,10 @@ test("hub_task_start carries the audited source Stream into message intake", asy
   let launch = null;
   service.setTaskLauncher(async (params, context) => {
     launch = { params, context };
+    context.bindInterstreamAuditContent(createInterstreamMessage({
+      ...context.messageOrigin,
+      text: params.message,
+    }));
     return {
       task: { ...task, status: "started", workflowStatus: "in_progress", streamId: "stream-architect" },
       target: { streamId: "stream-architect", provider: "codex", threadId: "thread-target" },

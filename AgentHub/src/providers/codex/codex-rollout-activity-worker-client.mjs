@@ -72,3 +72,7 @@ export function pinCodexRolloutActivityCacheInWorker(rolloutPath) {
   return requestWorker("pin-cache", { rolloutPath });
 }
 
+export function recoverCodexRolloutSubagents(rolloutPath, candidates) {
+  return requestWorker("recover-subagents", { rolloutPath, candidates });
+}
+

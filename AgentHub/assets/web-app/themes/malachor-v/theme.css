@@ -59,6 +59,9 @@ html[data-theme="malachor-v"] {
   --provider-none: #747977;
   --provider-codex: #c2c6c3;
   --provider-claude: #9d554a;
+  --provider-tone-lightness: 0.72;
+  --provider-tone-chroma: 0.06;
+  --provider-tone-alpha: 0.17;
   --ok: #718a74;
   --pending: #9a6845;
   --dot-input: #ce303c;

@@ -132,7 +132,9 @@ test("desktop control exposes handler failures to the guarded diagnostics bounda
   });
   try {
     await server.start();
-    await assert.rejects(() => callDesktopControl("snapshot", {}, { runtimeRoot }), /broken desktop invariant/u);
+    await assert.rejects(() => callDesktopControl("snapshot", {}, { runtimeRoot }), {
+      message: "broken desktop invariant", desktopControlRejected: true,
+    });
     assert.deepEqual(captured, [{
       error: failure,
       context: {

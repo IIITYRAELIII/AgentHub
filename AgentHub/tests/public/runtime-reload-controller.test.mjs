@@ -55,7 +55,16 @@ test("runtime reload preserves stored text but blocks non-restorable state", asy
   assert.equal(runtimeReloadBlocked({ drafts: [{ text: "Пишу" }] }), false);
   assert.equal(runtimeReloadBlocked({ drafts: [{ annotations: [{ quote: "x" }] }] }), false);
   assert.equal(runtimeReloadBlocked({ draftsPersisted: false }), true);
+  assert.equal(runtimeReloadBlocked({ drafts: [{ text: "exact bytes only", recoveryNonDurable: true }] }), true);
   assert.equal(runtimeReloadBlocked({ drafts: [{ attachments: [{ name: "screen.png" }] }] }), true);
+  assert.equal(runtimeReloadBlocked({
+    drafts: [{
+      attachments: [{ name: "screen.png", dataUrl: "data:image/png;base64,AQID" }],
+      recoveryRequestId: "request-1",
+      recoveryFingerprint: "fingerprint-1",
+      recoveryDurable: true,
+    }],
+  }), false);
   assert.equal(runtimeReloadBlocked({ modalOpen: true }), true);
   assert.equal(runtimeReloadBlocked({ requestPending: true }), true);
   assert.equal(runtimeReloadBlocked({ bugReportAttachments: [{ name: "screen.png" }] }), true);

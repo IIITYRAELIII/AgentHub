@@ -8,6 +8,8 @@ import path from "node:path";
 import process from "node:process";
 import test from "node:test";
 
+import { canonicalPath } from "../../src/infrastructure/filesystem/config.mjs";
+
 import {
   beginTestContourOperation,
   readTestContourOperationDocument,
@@ -15,9 +17,11 @@ import {
   transitionTestContourOperation,
 } from "../../src/runtime/test-contour-operation-state.mjs";
 import {
+  readTestContourStatus,
   readyTestContourHealth,
   startTestContour,
   TEST_CONTOUR_SPARK_MODEL,
+  testContourSmokeAgentPolicy,
   testContourPaths,
   verifyTestContour,
 } from "../../src/runtime/test-contour-manager.mjs";
@@ -576,6 +580,53 @@ test("readiness rejects a healthy server from another contour identity", async (
   }
 });
 
+test("status distinguishes an exact operation health mismatch from a stopped runtime", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-readiness-reason-"));
+  const server = await healthServer();
+  try {
+    const paths = await writeRunningContour(root, server, { headCommit: "head-readiness" });
+    const state = JSON.parse(await readFile(paths.stateFile, "utf8"));
+    server.testContourIdentity = {
+      ...server.testContourIdentity,
+      operationId: "foreign-operation",
+    };
+
+    const mismatch = await readTestContourStatus({
+      root,
+      expectedOperationId: state.operationId,
+      expectedHeadCommit: "head-readiness",
+    });
+    assert.equal(mismatch.readback.outcome, "exact");
+    assert.equal(mismatch.running, false);
+    assert.equal(mismatch.status, "not-ready");
+    assert.deepEqual(mismatch.readiness, {
+      ready: false,
+      retryable: false,
+      reason: "health-operation-mismatch",
+    });
+
+    await rm(paths.stateFile, { force: true });
+    const stopped = await readTestContourStatus({
+      root,
+      expectedOperationId: state.operationId,
+      expectedHeadCommit: "head-readiness",
+    });
+    assert.equal(stopped.readback.outcome, "exact");
+    assert.equal(stopped.status, "stopped");
+    assert.deepEqual(stopped.readiness, {
+      ready: false,
+      retryable: false,
+      reason: "state-missing",
+    });
+  } finally {
+    await closeServer(server);
+    await Promise.all([
+      rm(root, { recursive: true, force: true }),
+      rm(`${root}-operation.lock`, { recursive: true, force: true }),
+    ]);
+  }
+});
+
 test("foreign healthy process cannot satisfy readiness with a forged root-local lock", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-foreign-health-"));
   const spawnHealth = (identity) => {
@@ -665,9 +716,170 @@ test("verify preserves the requested root and custom port through refresh and sm
       },
     });
     assert.equal(result.smoke.ok, true);
-    assert.equal(calls[0].options.root, root);
+    assert.equal(calls[0].options.root, canonicalPath(root));
     assert.equal(calls[0].options.port, port);
+    assert.equal(calls[0].options.sourceKind, "dev");
     assert.equal(calls[1].options.url, `http://127.0.0.1:${port}/`);
+  } finally {
+    await Promise.all([
+      rm(root, { recursive: true, force: true }),
+      rm(`${root}-operation.lock`, { recursive: true, force: true }),
+      rm(sourceRoot, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("verify reports the recording agent probe as skipped and leaves its journal untouched", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-recording-verify-root-"));
+  const sourceRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-recording-verify-source-"));
+  let smokeOptions = null;
+  try {
+    assert.deepEqual(testContourSmokeAgentPolicy({ withAgent: true }), {
+      withAgent: true,
+      agentProbeSkipped: null,
+    });
+    const result = await verifyTestContour({
+      root,
+      sourceRoot,
+      withAgent: true,
+      startContour: async () => ({
+        url: "http://127.0.0.1:18879/",
+        model: TEST_CONTOUR_SPARK_MODEL,
+        startedAt: new Date().toISOString(),
+      }),
+      readRecordingConfiguration: async () => ({ root: path.join(root, "recording") }),
+      smokeRunner: async (options) => {
+        smokeOptions = options;
+        return { ok: true, withAgent: options.withAgent };
+      },
+    });
+    assert.equal(smokeOptions.withAgent, false);
+    assert.equal(result.journal, null);
+    assert.equal(result.agentProbeSkipped, "recording-contour-external-effects-denied");
+  } finally {
+    await Promise.all([
+      rm(root, { recursive: true, force: true }),
+      rm(`${root}-operation.lock`, { recursive: true, force: true }),
+      rm(sourceRoot, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("verify forwards explicit release-candidate source without changing the default dev contract", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-release-verify-root-"));
+  const sourceRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-release-verify-source-"));
+  let start = null;
+  try {
+    await verifyTestContour({
+      root,
+      sourceRoot,
+      sourceKind: "release-candidate",
+      withAgent: false,
+      startContour: async (options) => {
+        start = options;
+        return {
+          url: "http://127.0.0.1:18880/",
+          model: TEST_CONTOUR_SPARK_MODEL,
+          startedAt: new Date().toISOString(),
+        };
+      },
+      smokeRunner: async () => ({ ok: true, withAgent: false }),
+    });
+    assert.equal(start.sourceKind, "release-candidate");
+    assert.equal(start.refresh, true);
+  } finally {
+    await Promise.all([
+      rm(root, { recursive: true, force: true }),
+      rm(`${root}-operation.lock`, { recursive: true, force: true }),
+      rm(sourceRoot, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("ordinary start replaces a persisted release candidate with the exact current dev source", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-main-to-dev-root-"));
+  const sourceRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-main-to-dev-source-"));
+  const paths = testContourPaths(root);
+  const releaseRoot = path.join(root, "releases", "release-main");
+  const port = 18_881;
+  let preparedSource = null;
+  let launchedCandidate = null;
+  try {
+    await mkdir(releaseRoot, { recursive: true });
+    await Promise.all([
+      writeFile(paths.markerFile, JSON.stringify({
+        kind: "agent-hub-test-contour",
+        id: "contour-main-to-dev",
+      }), "utf8"),
+      writeFile(path.join(root, "current.json"), JSON.stringify({
+        current: "release-main",
+        previous: null,
+      }), "utf8"),
+      writeFile(paths.sourceFile, JSON.stringify({
+        kind: "release-candidate",
+        branch: "main",
+        headCommit: "release-main-head",
+        sourceRoot: path.join(sourceRoot, "release-main"),
+        contourId: "contour-main-to-dev",
+        operationId: "operation-main",
+        port,
+        model: TEST_CONTOUR_SPARK_MODEL,
+        releaseId: "release-main",
+      }), "utf8"),
+      writeFile(path.join(releaseRoot, "agent-hub-main.mjs"), "export {};\n", "utf8"),
+    ]);
+
+    const result = await startTestContour({
+      root,
+      sourceRoot,
+      port,
+      model: TEST_CONTOUR_SPARK_MODEL,
+      prepareSource: async () => ({ sourceRoot, branch: "dev", headCommit: "dev-head-current" }),
+      prepareCandidate: async ({ source }) => {
+        preparedSource = source;
+        return {
+          releaseId: "release-dev",
+          releaseRoot: path.join(root, "releases", "release-dev"),
+          kind: source.kind,
+          branch: source.branch,
+          headCommit: source.headCommit,
+          sourceRoot: source.sourceRoot,
+        };
+      },
+      stopRuntime: async () => {},
+      launchCandidate: async ({ candidate, operation }) => {
+        launchedCandidate = candidate;
+        return {
+          managerPid: process.pid,
+          runtimePid: process.pid,
+          releaseId: candidate.releaseId,
+          operationId: operation.operationId,
+          source: { branch: candidate.branch, headCommit: candidate.headCommit },
+          contourId: "contour-main-to-dev",
+          model: TEST_CONTOUR_SPARK_MODEL,
+          port,
+          url: `http://127.0.0.1:${port}/`,
+        };
+      },
+    });
+
+    assert.equal(preparedSource.kind, "dev");
+    assert.equal(preparedSource.headCommit, "dev-head-current");
+    assert.equal(launchedCandidate.releaseId, "release-dev");
+    assert.equal(result.refreshOutcome, "refreshed");
+    assert.deepEqual(JSON.parse(await readFile(paths.sourceFile, "utf8")), {
+      kind: "dev",
+      branch: "dev",
+      headCommit: "dev-head-current",
+      sourceRoot: canonicalPath(sourceRoot),
+      contourId: "contour-main-to-dev",
+      port,
+      model: TEST_CONTOUR_SPARK_MODEL,
+      preparedAt: result.operation.createdAt,
+      activatedAt: result.source.activatedAt,
+      operationId: result.operation.operationId,
+      releaseId: "release-dev",
+    });
   } finally {
     await Promise.all([
       rm(root, { recursive: true, force: true }),
@@ -686,6 +898,7 @@ test("restart reuses only the persisted release identity on its original port", 
   const port = 18_879;
   const operationId = "operation-restart";
   let launch = null;
+  let resolved = 0;
   try {
     await mkdir(releaseRoot, { recursive: true });
     await Promise.all([
@@ -714,6 +927,10 @@ test("restart reuses only the persisted release identity on its original port", 
       sourceRoot,
       port,
       model: TEST_CONTOUR_SPARK_MODEL,
+      prepareSource: async () => {
+        resolved += 1;
+        return { sourceRoot, branch: "dev", headCommit: "head-restart" };
+      },
       launchCandidate: async (options) => {
         launch = options;
         return {
@@ -727,6 +944,7 @@ test("restart reuses only the persisted release identity on its original port", 
     assert.equal(result.releaseId, releaseId);
     assert.equal(launch.operation.operationId, operationId);
     assert.equal(launch.port, port);
+    assert.equal(resolved, 1);
   } finally {
     await Promise.all([
       rm(root, { recursive: true, force: true }),

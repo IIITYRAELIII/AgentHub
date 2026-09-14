@@ -64,6 +64,9 @@ html[data-theme="gothic"] {
   --provider-none: #766a5a;
   --provider-codex: #c8b89e;
   --provider-claude: #b66f4a;
+  --provider-tone-lightness: 0.75;
+  --provider-tone-chroma: 0.07;
+  --provider-tone-alpha: 0.17;
   --ok: #8b9c6a;
   --pending: #c08a4d;
   --dot-input: #b9a88c;
@@ -577,13 +580,6 @@ html[data-theme="gothic"] .composer-send {
     background-size: 18rem 18rem;
     border-color: rgb(106 101 92 / 48%);
     border-radius: 0;
-  }
-
-  html[data-theme="gothic"] .quick-messages-settings-control > .chip-button {
-    background-color: #100f0f;
-    background-image: var(--gothic-panel-texture-preview);
-    background-blend-mode: normal;
-    background-size: auto;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .task-workspace-name,
@@ -1944,13 +1940,13 @@ html[data-theme="gothic"][data-surface="mobile"] .stream-tab[aria-pressed="true"
   }
 
   html[data-theme="gothic"][data-view="chat"][data-stream-status-style="edge"][data-stream-status-effect="impulse"]:not([data-surface="mobile"])
-    .stream-tabs .stream-tab[data-running]::before,
+    .stream-tabs .stream-tab[data-running] .stream-tab-status-layer::before,
   html[data-theme="gothic"][data-view="chat"][data-stream-status-style="edge"][data-stream-status-effect="impulse"]:not([data-surface="mobile"])
-    .stream-tabs .stream-tab[data-running]::after,
+    .stream-tabs .stream-tab[data-running] .stream-tab-status-layer::after,
   html[data-theme="gothic"][data-view="chat"][data-stream-status-style="edge"][data-stream-status-effect="scanner"]:not([data-surface="mobile"])
-    .stream-tabs .stream-tab[data-running]::before,
+    .stream-tabs .stream-tab[data-running] .stream-tab-status-layer::before,
   html[data-theme="gothic"][data-view="chat"][data-stream-status-style="edge"][data-stream-status-effect="scanner"]:not([data-surface="mobile"])
-    .stream-tabs .stream-tab[data-running]::after {
+    .stream-tabs .stream-tab[data-running] .stream-tab-status-layer::after {
     background: linear-gradient(90deg, transparent 0%, var(--accent) 44%, var(--accent) 56%, transparent 100%) !important;
     content: "" !important;
     display: block !important;
@@ -1967,38 +1963,32 @@ html[data-theme="gothic"][data-surface="mobile"] .stream-tab[aria-pressed="true"
   }
 
   html[data-theme="gothic"][data-view="chat"][data-stream-status-style="edge"]:is([data-stream-status-effect="impulse"], [data-stream-status-effect="scanner"]):not([data-surface="mobile"])
-    .stream-tabs .stream-tab[data-running]::before {
+    .stream-tabs .stream-tab[data-running] .stream-tab-status-layer::before {
     bottom: auto !important;
     top: 2px !important;
   }
 
   html[data-theme="gothic"][data-view="chat"][data-stream-status-style="edge"]:is([data-stream-status-effect="impulse"], [data-stream-status-effect="scanner"]):not([data-surface="mobile"])
-    .stream-tabs .stream-tab[data-running]::after {
+    .stream-tabs .stream-tab[data-running] .stream-tab-status-layer::after {
     bottom: 1px !important;
     top: auto !important;
   }
 
   html[data-theme="gothic"][data-view="chat"][data-stream-status-style="edge"][data-stream-status-effect="impulse"]:not([data-surface="mobile"])
-    .stream-tabs .stream-tab[data-running]::before,
+    .stream-tabs .stream-tab[data-running] .stream-tab-status-layer::before,
   html[data-theme="gothic"][data-view="chat"][data-stream-status-style="edge"][data-stream-status-effect="impulse"]:not([data-surface="mobile"])
-    .stream-tabs .stream-tab[data-running]::after {
+    .stream-tabs .stream-tab[data-running] .stream-tab-status-layer::after {
     animation: gothic-stream-running-wave 2.2s linear infinite !important;
   }
 
   html[data-theme="gothic"][data-view="chat"][data-stream-status-style="edge"][data-stream-status-effect="scanner"]:not([data-surface="mobile"])
-    .stream-tabs .stream-tab[data-running]::before,
+    .stream-tabs .stream-tab[data-running] .stream-tab-status-layer::before,
   html[data-theme="gothic"][data-view="chat"][data-stream-status-style="edge"][data-stream-status-effect="scanner"]:not([data-surface="mobile"])
-    .stream-tabs .stream-tab[data-running]::after {
+    .stream-tabs .stream-tab[data-running] .stream-tab-status-layer::after {
     animation: gothic-stream-scanner-pass 1.85s linear infinite !important;
     background: linear-gradient(90deg, transparent 0%, var(--accent) 40%, var(--accent) 60%, transparent 100%) !important;
     filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 78%, transparent)) !important;
     width: 30% !important;
-  }
-
-  html[data-theme="gothic"][data-view="chat"][data-stream-status-style="edge"]:is([data-stream-status-effect="impulse"], [data-stream-status-effect="scanner"]):not([data-surface="mobile"])
-    .stream-tabs .stream-tab[data-running] .stream-tab-card::after {
-    content: none !important;
-    display: none !important;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .stream-tab-group {

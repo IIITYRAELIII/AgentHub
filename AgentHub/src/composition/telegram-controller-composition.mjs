@@ -1,4 +1,4 @@
-import { unlink } from "node:fs/promises";
+import { createRuntimeFileRemoval } from "../runtime/test-contour-runtime-effects.mjs";
 import { TelegramForwardBundleController } from "../interfaces/telegram/telegram-forward-bundle.mjs";
 import { TelegramMessageController } from "../interfaces/telegram/telegram-message-controller.mjs";
 import { TelegramCallbackController } from "../interfaces/telegram/telegram-callback-controller.mjs";
@@ -100,6 +100,7 @@ export function createTelegramControllerComposition({
   performRestart,
   taskBoard,
 }) {
+  const removeRuntimeFile = createRuntimeFileRemoval(config);
   const interactiveJobService = new InteractiveJobService({
     queue: interactiveJobs,
     stopping: isStopping,
@@ -128,7 +129,7 @@ export function createTelegramControllerComposition({
       payload.chatId,
       { dedupeKey },
     ),
-    removeFile: (file) => unlink(file).catch(() => {}),
+    removeFile: (file) => removeRuntimeFile(file),
   });
 
   const telegramSettingsCallbacks = new TelegramSettingsCallbackService({
@@ -275,24 +276,29 @@ export function createTelegramControllerComposition({
     selectTaskFromBinding,
   });
 
+  const mutateTask = (operation, requestId) => {
+    void requestId;
+    return Promise.resolve().then(operation);
+  };
   const taskCommand = async ({ message, argument }) => {
     const value = String(argument ?? "").trim();
+    const requestId = `telegram:${message.chat.id}:${message.message_id}`;
     if (value.toLowerCase() === "off") {
-      taskBoard.setCaptureEnabled(message.chat.id, false);
+      await mutateTask(() => taskBoard.setCaptureEnabled(message.chat.id, false), requestId);
       await sendMessage("Режим задач выключен. Обычные сообщения снова отправляются в текущий диалог.");
       return;
     }
     if (value) {
-      const task = taskBoard.create({
+      const task = await mutateTask(() => taskBoard.create({
         text: value,
         source: "telegram",
         sourceKey: `telegram:${message.chat.id}:${message.message_id}`,
         sourceDetails: { chatId: message.chat.id, messageId: message.message_id, userId: message.from?.id },
-      });
+      }), requestId);
       await sendMessage(`Задача добавлена в бэклог: ${task.rawText.slice(0, 300)}`);
       return;
     }
-    taskBoard.setCaptureEnabled(message.chat.id, true);
+    await mutateTask(() => taskBoard.setCaptureEnabled(message.chat.id, true), requestId);
     await sendMessage("Режим задач включён. Все обычные текстовые сообщения попадут в бэклог. Чтобы выйти: /task off");
   };
   const telegramMessageController = new TelegramMessageController({
@@ -308,12 +314,12 @@ export function createTelegramControllerComposition({
     commandHandlers: { ...telegramCommandService.handlers(), task: taskCommand },
     captureTask: async (message, text) => {
       if (!taskBoard.captureEnabled(message.chat.id)) return false;
-      const task = taskBoard.create({
+      const task = await mutateTask(() => taskBoard.create({
         text,
         source: "telegram",
         sourceKey: `telegram:${message.chat.id}:${message.message_id}`,
         sourceDetails: { chatId: message.chat.id, messageId: message.message_id, userId: message.from?.id },
-      });
+      }), `telegram:${message.chat.id}:${message.message_id}`);
       await sendMessage(`Задача добавлена в бэклог: ${task.rawText.slice(0, 300)}`);
       return true;
     },
