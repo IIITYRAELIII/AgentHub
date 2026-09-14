@@ -14925,7 +14925,8 @@ html[data-surface="mobile"] .server-config-inline-label {
 }
 
 .current-limits-card {
-  background: var(--card-bg-open), color-mix(in srgb, var(--bg) 94%, transparent);
+  background: var(--card-bg-open);
+  background-color: color-mix(in srgb, var(--bg) 94%, transparent);
   border: 1px solid var(--line-strong);
   border-radius: 14px;
   box-shadow: var(--card-shadow);
@@ -15167,7 +15168,8 @@ html[data-surface="mobile"] .server-config-inline-label {
 }
 
 .statistics-card {
-  background: var(--card-bg-open), color-mix(in srgb, var(--bg) 94%, transparent);
+  background: var(--card-bg-open);
+  background-color: color-mix(in srgb, var(--bg) 94%, transparent);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-lg);
   box-shadow: var(--card-shadow);
