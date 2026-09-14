@@ -351,6 +351,7 @@ export async function createClientInterfaceComposition({
     desktopAttachmentDescriptors: (...args) => desktopAttachments.descriptors(...args),
     importCodexDesktopAttachments: (...args) => desktopAttachments.importCodex(...args),
     desktopOpenAttachment: (...args) => desktopAttachments.open(...args),
+    desktopUploadAttachment: (...args) => desktopAttachments.upload(...args),
     desktopSubmitBugReport,
     scheduleBugReportScan,
     telegramMultipart,

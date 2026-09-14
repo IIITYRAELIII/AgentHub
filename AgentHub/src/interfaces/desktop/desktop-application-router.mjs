@@ -29,6 +29,7 @@ const CONCURRENT_MUTATION_ACTIONS = Object.freeze([
  * credentials.
  */
 const LOCAL_ONLY_ACTIONS = Object.freeze([
+  "attachment-upload",
   "update-server-configuration",
   "start-provider-login",
   "submit-provider-login-code",
@@ -132,6 +133,7 @@ export function createDesktopApplicationRouter({
       "update-root-agents": handlers.updateRootAgents,
       "compact-context": handlers.compactContext,
       "open-attachment": handlers.openAttachment,
+      "attachment-upload": handlers.uploadAttachment,
       "submit-bug-report": handlers.submitBugReport,
       "report-diagnostic": handlers.reportDiagnostic,
       "trusted-devices": handlers.trustedDevices,

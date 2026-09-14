@@ -291,7 +291,7 @@ class AgentHubBridge {
         "usage-sync-invite",
         "usage-sync-enroll",
         "usage-sync-device-label",
-      ].includes(action) ? 180_000 : 10_000,
+      ].includes(action) ? 180_000 : action === "attachment-upload" ? 30_000 : 10_000,
       ...(commandId ? { commandId } : {}),
     });
   }
@@ -643,9 +643,18 @@ class AgentHubBridge {
     };
   }
 
-  async http({ method = "GET", path: requestPath = "", headers = {}, body = "" }) {
+  async http({ method = "GET", path: requestPath = "", headers = {}, body = "", bodyEncoding }) {
     const requestMethod = String(method).toUpperCase();
     const url = new URL(requestPath, "https://agent-hub.local");
+    if (url.pathname === "/api/attachment-upload") {
+      return this.desktopControl("attachment-upload", {
+        method: requestMethod,
+        path: `${url.pathname}${url.search}`,
+        headers,
+        body,
+        bodyEncoding,
+      });
+    }
     const proxyPaths = new Set([
       "/api/journal/usage-sync",
       "/api/journal/usage-sync/invite",

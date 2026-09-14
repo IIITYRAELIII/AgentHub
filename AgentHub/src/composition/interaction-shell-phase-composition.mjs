@@ -257,6 +257,7 @@ export function createInteractionShellPhase({
       desktopAttachmentDescriptors: clients.desktopAttachmentDescriptors,
       desktopAttachmentPaths: clients.desktopAttachmentPaths,
       desktopOpenAttachment: clients.desktopOpenAttachment,
+      desktopUploadAttachment: clients.desktopUploadAttachment,
       desktopSubmitBugReport: clients.desktopSubmitBugReport,
       readCachedHistory: api.readCachedHistory,
       refreshHistory: api.refreshHistory,

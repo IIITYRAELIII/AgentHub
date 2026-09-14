@@ -2801,9 +2801,6 @@ function dataUrlBody(dataUrl) {
 
 const attachmentUploader = window.AgentHubAttachmentUpload.create({
   request: async (path, init) => {
-    if (vscode && !(await window.__agentHubDirectTransport?.available())) {
-      throw new Error("Локальное соединение для загрузки файлов недоступно. Повтори после подключения Hub.");
-    }
     await localSessionReady;
     const signal = AbortSignal.any([...(init?.signal ? [init.signal] : []), AbortSignal.timeout(30_000)]);
     return hubFetch(path, { ...init, signal, headers: { ...authorizationHeaders(), ...init?.headers } });

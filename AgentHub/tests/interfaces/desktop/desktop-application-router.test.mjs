@@ -9,7 +9,7 @@ function router(calls, { omit = [] } = {}) {
     "openTask", "openTurn", "workspaceMessageOpen", "sendMessage", "taskDiff", "deferredInput",
     "statusDetails", "speakLastAnswer", "restartServer", "setAutostart",
     "updateServerConfiguration", "readPreTurnInstructions", "updateGlobalPreTurnInstructions",
-    "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport", "reportDiagnostic",
+    "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "uploadAttachment", "submitBugReport", "reportDiagnostic",
     "trustedDevices", "createDevicePairing", "revokeDevice",
     "messagePinSet", "messagePinsClear",
     "renameWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "renameStream", "moveStream",
@@ -37,6 +37,16 @@ test("Desktop application router requires the Task workflow status handler", () 
     () => router([], { omit: ["boardTaskStatus"] }),
     /boardTaskStatus is required/u,
   );
+});
+
+test("Desktop application router keeps attachment preparation local and outside command dispatch", async () => {
+  const calls = [];
+  const control = router(calls);
+  const request = { action: "attachment-upload", params: { method: "GET", path: "/api/attachment-upload" } };
+  const result = await control.handleDesktopControl({ ...request, context: { source: "desktop-control" } });
+  assert.equal(result.params.path, request.params.path);
+  assert.deepEqual(calls, []);
+  await assert.rejects(control.handleDesktopControl({ ...request, context: { source: "trusted-device" } }), /локаль|local/iu);
 });
 
 test("Desktop application router forwards the exact startup generation for recovery", async () => {
