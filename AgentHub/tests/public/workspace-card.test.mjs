@@ -21,7 +21,21 @@ test("Dialog settings replace the legacy Project picker with a Stream working di
   assert.doesNotMatch(html, /data-dialog-options="project"/u);
   assert.doesNotMatch(app, /command: "\/projects"/u);
   assert.doesNotMatch(app, /renderTaskProjectGroup/u);
+  assert.match(app, /addEventListener\("directorycommit"/u);
   assert.match(app, /workingDirectory: directory\.value\.trim\(\)/u);
+});
+
+test("Workspace and Stream use the shared breadcrumb directory field", async () => {
+  const [html, app, component] = await Promise.all([
+    asset("index.html"), asset("app.js"), asset("directory-field.js"),
+  ]);
+  assert.equal((html.match(/data-directory-field/gu) ?? []).length, 2);
+  assert.match(html, /src="\/directory-field\.js"/u);
+  assert.match(app, /AgentHubDirectoryField\?\.create/u);
+  assert.match(app, /emit\("directory:browse"/u);
+  assert.match(component, /directory-field-breadcrumbs/u);
+  assert.match(component, /event\.key === "Enter"/u);
+  assert.match(component, /event\.key === "Escape"/u);
 });
 
 test("Dashboard renders only non-empty comments without inline editing", async () => {

@@ -66,6 +66,7 @@
   <script src="/workspace-release-primary-guard.js" defer></script>
   <script src="/stream-role-settings.js" defer></script>
   <script src="/themed-select-placement.js" defer></script>
+  <script src="/directory-field.js" defer></script>
   <script src="/messages/composer-draft-reconciliation.js" defer></script>
   <script src="/app.js" defer></script>
   <script src="/pre-turn-instructions-editor.js" defer></script>
@@ -522,7 +523,9 @@
                 </label>
                 <label class="setting-stack dialog-working-directory">
                   <span class="setting-name">Рабочая директория Stream</span>
-                  <input type="text" data-dialog-working-directory
+                  <input type="text" data-dialog-working-directory data-directory-field
+                    data-directory-empty-label="Наследуется от Workspace"
+                    data-directory-empty-status="Пустое значение использует рабочую директорию Workspace."
                     placeholder="Наследуется от Workspace" autocomplete="off" spellcheck="false">
                   <span class="switch-note" data-dialog-working-directory-note>
                     Применится при создании следующего Thread.
@@ -1121,7 +1124,9 @@
         </label>
         <label>
           <span>Рабочая директория</span>
-          <input type="text" maxlength="1000" data-workspace-card-working-directory
+          <input type="text" maxlength="1000" data-workspace-card-working-directory data-directory-field
+            data-directory-empty-label="Каталог не выбран"
+            data-directory-empty-status="Укажите каталог вручную или выберите через Проводник."
             placeholder="Например, D:\projects\Utilities\AgentHub" autocomplete="off" spellcheck="false">
         </label>
         <label>

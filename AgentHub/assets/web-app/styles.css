@@ -10881,6 +10881,192 @@ html[data-surface="mobile"] .chat-stop-bottom > span {
   outline-offset: 1px;
 }
 
+/* Единое поле рабочей директории: компактное чтение крошками и явный режим
+   редактирования сохраняют обычный input источником значения для форм. */
+.directory-field {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.directory-field-view,
+.directory-field-editor,
+.directory-field-empty {
+  align-items: center;
+  display: grid;
+  gap: 0.45rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-width: 0;
+}
+
+.directory-field-editor {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.directory-field [hidden] {
+  display: none;
+}
+
+.directory-field-path,
+.directory-field-empty {
+  background: color-mix(in srgb, var(--surface-2) 88%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text-soft);
+  min-height: 2.3rem;
+  min-width: 0;
+}
+
+.directory-field-path {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  overflow: hidden;
+  padding: 0.45rem 0.6rem;
+  text-align: left;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+  width: 100%;
+}
+
+.directory-field-path:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.directory-field-path:focus-visible,
+.directory-field-action:focus-visible {
+  border-color: var(--accent-line);
+  box-shadow: var(--accent-glow);
+  outline: none;
+}
+
+.directory-field-folder {
+  color: var(--accent);
+  flex: 0 0 auto;
+  height: 1rem;
+  margin-right: 0.45rem;
+  width: 1rem;
+}
+
+.directory-field-breadcrumbs {
+  align-items: center;
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.directory-field-segment {
+  flex: 0 1 auto;
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  max-width: 10rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.directory-field-segment[data-collapsed] {
+  color: var(--text-faint);
+  flex: 0 0 auto;
+}
+
+.directory-field-segment[data-current] {
+  color: var(--text);
+  font-weight: 650;
+}
+
+.directory-field-separator {
+  color: var(--text-faint);
+  flex: 0 0 auto;
+  height: 0.72rem;
+  margin: 0 0.22rem;
+  width: 0.72rem;
+}
+
+.directory-field-action {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  color: var(--text-soft);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.73rem;
+  min-height: 2.15rem;
+  padding: 0.38rem 0.65rem;
+  white-space: nowrap;
+}
+
+.directory-field-action:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.directory-field-action-primary {
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface-2));
+  border-color: var(--accent-line);
+  color: var(--text);
+}
+
+.directory-field-action:disabled,
+.directory-field-path:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.directory-field-empty {
+  border-style: dashed;
+  padding: 0.38rem 0.45rem 0.38rem 0.65rem;
+}
+
+.directory-field-empty-value {
+  color: var(--text-faint);
+  font-size: 0.78rem;
+  min-width: 0;
+}
+
+.directory-field-empty-actions {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.directory-field .directory-field-input {
+  box-sizing: border-box;
+  font-family: var(--font-mono);
+  min-height: 2.3rem;
+  min-width: 0;
+  width: 100%;
+}
+
+.directory-field-status {
+  color: var(--text-faint);
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
+.directory-field-status[data-tone="error"] {
+  color: var(--danger);
+}
+
+@media (max-width: 640px) {
+  .directory-field-editor {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .directory-field-editor .directory-field-input {
+    grid-column: 1 / -1;
+  }
+
+  .directory-field-empty {
+    align-items: stretch;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .directory-field-empty-actions .directory-field-action {
+    flex: 1 1 0;
+  }
+}
+
 .setting-label {
   color: var(--text-faint);
   display: block;

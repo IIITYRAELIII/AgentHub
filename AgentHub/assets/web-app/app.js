@@ -1463,6 +1463,23 @@ function emitIntent(type, detail) {
   }
 }
 
+const directoryBrowseAvailable = window.AgentHubResourceInteractions.localWorkspaceFilesAvailable({
+  vscode: vscodeMode,
+  protocol: window.location.protocol,
+  hostname: window.location.hostname,
+});
+function createDirectoryField(input) {
+  return input && window.AgentHubDirectoryField?.create(input, {
+    browseAvailable: directoryBrowseAvailable,
+    browse: ({ initialPath }) => new Promise((resolve, reject) => {
+      emit("directory:browse", { initialPath, resolve, reject });
+    }),
+    onError: (error) => showToast(String(error?.message ?? error)),
+  });
+}
+const workspaceWorkingDirectoryField = createDirectoryField(workspaceCardWorkingDirectory);
+const streamWorkingDirectoryField = createDirectoryField(dialogWorkingDirectory);
+
 document.addEventListener("agenthub:attachment-open", (event) => {
   emit("attachment:open", event.detail ?? {});
 });
@@ -5119,7 +5136,7 @@ function openWorkspaceCard(workspaceId) {
   if (workspaceCardFolder) workspaceCardFolder.disabled = workspace.kind === "system";
   populateWorkspaceFolderSelect(workspace.settings?.catalogFolder);
   workspaceCardComment.value = String(workspace.comment ?? "");
-  workspaceCardWorkingDirectory.value = String(workspace.settings?.workingDirectory ?? "");
+  workspaceWorkingDirectoryField?.setValue(String(workspace.settings?.workingDirectory ?? ""));
   workspaceCardTaskPrefix.value = String(workspace.settings?.taskPrefix ?? "");
   workspaceCardRules.value = entityAgentRules(workspace);
   workspaceCardReleaseWorkflow.checked = workspace.settings?.releaseWorkflowEnabled === true;
@@ -5155,7 +5172,7 @@ function openNewWorkspaceCard() {
   if (workspaceCardFolder) workspaceCardFolder.disabled = false;
   populateWorkspaceFolderSelect();
   workspaceCardComment.value = "";
-  workspaceCardWorkingDirectory.value = "";
+  workspaceWorkingDirectoryField?.setValue("");
   workspaceCardTaskPrefix.value = "";
   workspaceCardRules.value = "";
   workspaceCardReleaseWorkflow.checked = false;
@@ -9983,7 +10000,7 @@ function renderDialogSettings() {
   if (dialogWorkingDirectory) {
     const workspaceDirectory = String(task?.workspaceSettings?.workingDirectory ?? "").trim();
     const currentDirectory = String(task?.sessionCwd ?? task?.projectRoot ?? "").trim();
-    dialogWorkingDirectory.value = String(task?.streamSettings?.workingDirectory ?? "").trim();
+    streamWorkingDirectoryField?.setValue(String(task?.streamSettings?.workingDirectory ?? "").trim());
     dialogWorkingDirectory.disabled = !task?.streamId;
     dialogWorkingDirectory.placeholder = workspaceDirectory
       ? `Workspace: ${workspaceDirectory}`
@@ -9993,6 +10010,7 @@ function renderDialogSettings() {
         ? "Будет использована при создании Thread; пустое значение наследуется от Workspace."
         : "Применится при создании следующего Thread; текущий Thread сохраняет свою директорию.";
     }
+    streamWorkingDirectoryField?.refresh();
   }
   if (dialogStreamArchitect) {
     dialogStreamArchitect.checked = streamRoleSettings.architectEnabled(task?.streamSettings);
@@ -10188,18 +10206,6 @@ dialogSettings.addEventListener("change", (event) => {
     selectDialogSetting(setting.dataset.dialogOptions, setting.value);
     return;
   }
-  const directory = event.target.closest("[data-dialog-working-directory]");
-  if (directory) {
-    const task = currentTask();
-    if (!task?.streamId) return;
-    task.streamSettings = {
-      ...(task.streamSettings ?? {}),
-      workingDirectory: directory.value.trim(),
-    };
-    emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
-    renderOptions();
-    return;
-  }
   const architect = event.target.closest("[data-dialog-stream-architect]");
   if (architect) {
     const task = currentTask();
@@ -10229,6 +10235,19 @@ dialogSettings.addEventListener("change", (event) => {
     state.selection[key] = toggle.checked;
     emit("selection:set", { key, value: toggle.checked });
   }
+});
+
+dialogSettings.addEventListener("directorycommit", (event) => {
+  const directory = event.target.closest("[data-dialog-working-directory]");
+  if (!directory) return;
+  const task = currentTask();
+  if (!task?.streamId) return;
+  task.streamSettings = {
+    ...(task.streamSettings ?? {}),
+    workingDirectory: directory.value.trim(),
+  };
+  emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
+  renderOptions();
 });
 
 modalOverlays?.installDismissibleOverlay({

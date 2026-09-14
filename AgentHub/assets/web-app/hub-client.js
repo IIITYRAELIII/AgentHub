@@ -88,7 +88,7 @@ const REMOTE_WAIT_MS = 0;
 const REMOTE_RESULT_FALLBACK_POLL_MS = 600;
 const DEFAULT_CONTROL_TIMEOUT_MS = 45_000;
 const LONG_CONTROL_TIMEOUT_MS = 180_000;
-const LONG_CONTROL_ACTIONS = new Set(["rotate-stream", "submit-bug-report"]);
+const LONG_CONTROL_ACTIONS = new Set(["rotate-stream", "submit-bug-report", "browse-directory"]);
 const VSCODE_MESSAGE_CONTROL_TIMEOUT_MS = LONG_CONTROL_TIMEOUT_MS;
 const VSCODE_MESSAGE_RETRY_DELAYS_MS = Object.freeze([150, 600]);
 const VSCODE_DIRECT_SEND_HEDGE_DELAY_MS = 250;
@@ -3580,6 +3580,9 @@ agentHub.on("workspace:update", ({
   }
   applySnapshot(snapshot);
 }));
+agentHub.on("directory:browse", ({ initialPath, resolve, reject }) => {
+  void control("browse-directory", { initialPath }).then(resolve, reject);
+});
 document.addEventListener("agenthub:board-action", (event) => {
   const detail = event.detail ?? {};
   let succeeded = false;
