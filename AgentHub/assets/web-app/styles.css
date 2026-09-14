@@ -5299,7 +5299,17 @@ html[data-view="dashboard"] .task-board-view.is-workspace-view {
   gap: 0.35rem;
 }
 
+.workspace-card-fields .directory-field-setting {
+  display: grid;
+  gap: 0.35rem;
+}
+
 .workspace-card-fields label > span {
+  color: var(--text-muted);
+  font-size: var(--card-label-size);
+}
+
+.workspace-card-fields .directory-field-setting > span {
   color: var(--text-muted);
   font-size: var(--card-label-size);
 }

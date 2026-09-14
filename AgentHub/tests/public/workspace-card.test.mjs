@@ -31,6 +31,7 @@ test("Workspace and Stream use the shared breadcrumb directory field", async () 
   ]);
   assert.equal((html.match(/data-directory-field/gu) ?? []).length, 2);
   assert.match(html, /src="\/directory-field\.js"/u);
+  assert.equal((html.match(/class="[^"]*directory-field-setting/gu) ?? []).length, 2);
   assert.match(app, /AgentHubDirectoryField\?\.create/u);
   assert.match(app, /emit\("directory:browse"/u);
   assert.match(component, /directory-field-breadcrumbs/u);
