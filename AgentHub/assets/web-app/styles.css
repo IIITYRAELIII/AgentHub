@@ -129,6 +129,7 @@
   --vscode-foreground: var(--text);
 }
 
+dialog:not([open]),
 [hidden] {
   display: none !important;
 }

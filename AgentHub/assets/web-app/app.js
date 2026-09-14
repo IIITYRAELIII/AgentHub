@@ -10091,16 +10091,12 @@ settingsGlobalQuickMessagesEntry?.addEventListener("click", () => {
   openPromptTemplates("global");
 });
 
-settingsPanel?.addEventListener("change", (event) => {
-  const actionMode = event.target.closest("[data-quick-message-action-mode]");
-  if (actionMode) {
-    const value = actionMode.value === "send" ? "send" : "insert";
-    state.selection = { ...state.selection, quickMessageActionMode: value };
-    renderQuickMessageActionModeSetting();
-    renderComposerQuickMessages();
-    emit("selection:set", { key: "quickMessageActionMode", value });
-    return;
-  }
+quickMessageActionModeSelect?.addEventListener("change", () => {
+  const value = quickMessageActionModeSelect.value === "send" ? "send" : "insert";
+  state.selection = { ...state.selection, quickMessageActionMode: value };
+  renderQuickMessageActionModeSetting();
+  renderComposerQuickMessages();
+  emit("selection:set", { key: "quickMessageActionMode", value });
 });
 
 dialogSettings.addEventListener("click", (event) => {
