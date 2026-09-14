@@ -51,10 +51,27 @@ export function createHubThreadNamingService({
       workspaceProviderThreadTitle(resolved.workspace, resolved.stream));
   }
 
+  /* Новый Thread ротации проверяется пробой ещё до привязки к Stream. Имя
+     ему даётся из привязки исходного Thread, чтобы текст пробы не стал его
+     заголовком. Закрепление имени остаётся за обычной привязкой после
+     подтверждённой готовности: у неготового Thread не должно появиться
+     собственного сохранённого состояния. */
+  async function nameRotationTarget(reference, target) {
+    const sourceThreadId = String(target?.titleSourceThreadId ?? "").trim();
+    if (!sourceThreadId || sourceThreadId === reference.threadId) return "";
+    const source = context({ provider: "codex", threadId: sourceThreadId });
+    if (!source) return "";
+    const name = normalized(workspaceProviderThreadTitle(source.workspace, source.stream));
+    if (!name) return "";
+    await sendRpc("thread/name/set", { threadId: reference.threadId, name }, { timeoutMs: TITLE_RPC_TIMEOUT_MS });
+    return name;
+  }
+
   async function preserveProbeTitle(target) {
     const reference = { provider: "codex", threadId: String(target?.threadId ?? "").trim() };
     const resolved = context(reference);
-    if (!resolved || !ownedSources.has(resolved.binding.source)) return "";
+    if (!resolved) return nameRotationTarget(reference, target);
+    if (!ownedSources.has(resolved.binding.source)) return "";
     const rpcOptions = { timeoutMs: TITLE_RPC_TIMEOUT_MS };
     const result = await sendRpc("thread/read", { threadId: reference.threadId, includeTurns: false }, rpcOptions);
     const current = normalized(result?.thread?.name);

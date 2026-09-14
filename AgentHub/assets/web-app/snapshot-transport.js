@@ -97,6 +97,7 @@
       pinnedWorkspaceStreams: settings.pinnedWorkspaceStreams ?? {},
       quickMessages: settings.quickMessages ?? { global: [], streams: {}, workspaces: {} },
       ...(streamSettings ?? {}),
+      quickMessageActionMode: settings.quickMessageActionMode === "send" ? "send" : "insert",
     };
   }
 

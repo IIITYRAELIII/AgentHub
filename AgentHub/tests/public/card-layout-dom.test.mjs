@@ -511,7 +511,7 @@ test("Prompt-шаблоны показывают значение в одной 
       const editor = document.querySelector("[data-dialog-settings] .quick-messages-editor");
       const name = editor.querySelector(".setting-name").getBoundingClientRect();
       const value = editor.querySelector(".setting-value").getBoundingClientRect();
-      const add = editor.querySelector("[data-quick-message-add]").getBoundingClientRect();
+      const add = editor.querySelector("[data-prompt-templates-open]").getBoundingClientRect();
       return {
         sameRow: Math.abs(Math.round(name.top - value.top)) <= 2,
         valueRight: Math.round(value.right),
@@ -523,7 +523,7 @@ test("Prompt-шаблоны показывают значение в одной 
     assert.equal(rows.sameRow, true, "подпись и значение Prompt-шаблонов оказались в разных строках");
     assert.ok(rows.valueRight > rows.nameRight, "значение не прижато к правому краю строки");
     assert.ok(rows.addWidth < rows.editorWidth * 0.6,
-      `кнопка добавления растянулась на ${rows.addWidth} из ${rows.editorWidth}`);
+      `кнопка входа в форму шаблонов растянулась на ${rows.addWidth} из ${rows.editorWidth}`);
   } finally {
     await browser.close();
   }

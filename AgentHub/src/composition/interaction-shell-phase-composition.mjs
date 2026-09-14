@@ -113,10 +113,12 @@ export function createInteractionShellPhase({
     desktopSnapshot: api.desktopSnapshot,
     spawnCapture: provider.spawnCapture,
     preTurnInstructions: infrastructure.preTurnInstructions,
+    providerLogin: clients.providerLogin,
   });
 
   const desktopShell = createDesktopShellComposition({
     config,
+    server,
     diagnostics: {
       reportClientError: (event, context) => sentryDiagnostics.captureClientEvent(event, context),
     },

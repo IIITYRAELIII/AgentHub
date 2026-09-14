@@ -181,6 +181,7 @@ test("snapshot transport maps persisted stream UI settings into selection", asyn
     streamCardWidthMode: "fixed",
     streamCardFixedWidth: 240,
     streamCardGapEnabled: true,
+    quickMessageActionMode: "send",
     pinnedWorkspaceStreams: { "workspace-1": ["stream-architect"] },
     quickMessages: {
       global: [{ label: "Пинг", text: "пинг" }],
@@ -201,6 +202,7 @@ test("snapshot transport maps persisted stream UI settings into selection", asyn
     streamCardWidthMode: "fixed",
     streamCardFixedWidth: 240,
     streamCardGapEnabled: true,
+    quickMessageActionMode: "send",
     pinnedWorkspaceStreams: { "workspace-1": ["stream-architect"] },
     quickMessages: {
       global: [{ label: "Пинг", text: "пинг" }],
@@ -208,4 +210,10 @@ test("snapshot transport maps persisted stream UI settings into selection", asyn
       workspaces: {},
     },
   });
+
+  assert.equal(api.selectionFromSnapshotSettings({ quickMessageActionMode: "invalid" }).quickMessageActionMode, "insert");
+  assert.equal(api.selectionFromSnapshotSettings(
+    { quickMessageActionMode: "send" },
+    { quickMessageActionMode: "insert" },
+  ).quickMessageActionMode, "send");
 });

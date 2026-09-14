@@ -399,6 +399,14 @@ placed after the source answer and restored on first snapshot and reload without
 creating a user turn. The bound target Thread and completion time are recorded
 after successful catalog binding; only the exact post-rotation probe supplies
 the historical after-percentage. Current target usage is never that measurement.
+A rotation is recorded only after its target passed the readiness probe, so a
+rotation that stopped before switching produces no completed rotation marker.
+Every percentage in the marker is used context of a named historical stage —
+before compaction, after compaction, and immediately after transfer — shown
+only when an exact value exists for that stage. A missing target measurement is
+stated as not saved rather than invented, and the marker never presents a stage
+value as the Thread's current usage. The live transition compatibility path
+never substitutes the target's current usage for the transfer measurement.
 Legacy `rotated: true` operations without target metadata retain a generic
 rotation marker without guessing a target or its context percentage. The existing
 live transition observer remains a compatibility path only when no retained

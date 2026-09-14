@@ -45,6 +45,7 @@ import { verifyWorkspaceReleasePublication } from "../infrastructure/persistence
 import { SingleInstanceGuard } from "../infrastructure/process/instance-lock.mjs";
 import { captureProcess } from "../infrastructure/process/process-capture.mjs";
 import { RuntimeCommandServer } from "../infrastructure/process/runtime-command.mjs";
+import { createRepositoryProductionValidationAdapter } from "../infrastructure/process/repository-production-validation.mjs";
 import {
   copyWindowsFileObject,
   revealWindowsFile,
@@ -203,10 +204,14 @@ async function resolveReleaseTestContourSource(repositories) {
     const sourceRoot = path.join(repository.worktreeRoot, "AgentHub");
     try {
       await access(path.join(sourceRoot, "test-contour.mjs"));
-      return { ...repository, sourceRoot };
+      return { kind: "agent-hub-test-contour", ...repository, sourceRoot };
     } catch {}
   }
-  throw new Error("release preflight could not locate AgentHub in an integrated dev worktree");
+  return {
+    kind: "external-validation-required",
+    repositories,
+    reason: "release preflight requires an explicit repository-owned production validation gate for non-AgentHub repositories",
+  };
 }
 
 export async function createHubInfrastructure({
@@ -418,6 +423,10 @@ export async function createHubInfrastructure({
     }),
     readTestContourStatus,
     readPublicationState,
+    validateProductionCandidate: createRepositoryProductionValidationAdapter({
+      policies: config.releaseValidation?.repositories ?? [],
+      dataDir: path.join(config.dataDir, "release-validation"),
+    }),
   });
   const taskLifecycle = new TaskLifecycleService({
     taskBoard,

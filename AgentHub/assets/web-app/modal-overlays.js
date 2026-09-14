@@ -10,6 +10,9 @@
     "[data-workspace-card-close]",
     "[data-workspace-archive-close]",
   ]);
+  const overlayEntries = new Map();
+  const overlayStack = [];
+  const documentSequenceStates = new WeakMap();
 
   function createSvgElement(documentRef, localName) {
     if (typeof documentRef?.createElementNS !== "function") return null;
@@ -69,7 +72,7 @@
     return x < rect.left || x > rect.right || y < rect.top || y > rect.bottom;
   }
 
-  function isDialogBackdropClick(event, dialog, content = null) {
+  function isDialogBackdropPointerDown(event, dialog, content = null) {
     if (!event || !dialog || event.target !== dialog) return false;
     const rectSource = content && typeof content.getBoundingClientRect === "function"
       ? content
@@ -80,40 +83,254 @@
     return pointOutsideRect(event, rect);
   }
 
-  function installDismissibleOverlay({ dialog, close, content = null } = {}) {
+  function isPrimaryPointerDown(event) {
+    return event?.type === "pointerdown"
+      && event.isPrimary !== false
+      && Number(event.button ?? 0) === 0;
+  }
+
+  function consumeEvent(event) {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    event?.stopImmediatePropagation?.();
+  }
+
+  function pointerSequenceKey(event) {
+    const pointerId = Number(event?.pointerId);
+    if (!Number.isFinite(pointerId)) return "";
+    return `${String(event?.pointerType ?? "mouse")}\0${pointerId}`;
+  }
+
+  function sequenceStateForDocument(documentRef) {
+    let state = documentSequenceStates.get(documentRef);
+    if (state) return state;
+    state = { guards: new Map(), released: [] };
+    const removeGuard = (key) => {
+      state.guards.delete(key);
+      state.released = state.released.filter((candidate) => candidate !== key);
+    };
+    documentRef.addEventListener("pointerdown", (event) => {
+      const key = pointerSequenceKey(event);
+      if (key) removeGuard(key);
+    }, true);
+    documentRef.addEventListener("pointerup", (event) => {
+      const key = pointerSequenceKey(event);
+      const guard = key ? state.guards.get(key) : null;
+      if (!guard) return;
+      consumeEvent(event);
+      guard.released = true;
+      if (!state.released.includes(key)) state.released.push(key);
+    }, true);
+    documentRef.addEventListener("pointercancel", (event) => {
+      const key = pointerSequenceKey(event);
+      if (!key || !state.guards.has(key)) return;
+      consumeEvent(event);
+      removeGuard(key);
+    }, true);
+    documentRef.addEventListener("click", (event) => {
+      if (Number(event?.detail ?? 0) === 0) return;
+      const exactKey = pointerSequenceKey(event);
+      if (exactKey && !state.guards.get(exactKey)?.released) return;
+      const key = exactKey || state.released[0];
+      if (!key) return;
+      consumeEvent(event);
+      removeGuard(key);
+    }, true);
+    documentSequenceStates.set(documentRef, state);
+    return state;
+  }
+
+  function installCompatibilityClickShield(event) {
+    const documentRef = event?.currentTarget?.ownerDocument
+      ?? event?.target?.ownerDocument
+      ?? (typeof document === "undefined" ? null : document);
+    if (typeof documentRef?.addEventListener !== "function") return;
+    const key = pointerSequenceKey(event);
+    if (!key) return;
+    const state = sequenceStateForDocument(documentRef);
+    state.guards.set(key, { released: false });
+    state.released = state.released.filter((candidate) => candidate !== key);
+  }
+
+  function overlayEntry(overlay) {
+    let entry = overlayEntries.get(overlay);
+    if (!entry) {
+      entry = { overlay, active: false, opener: null, observer: null };
+      overlayEntries.set(overlay, entry);
+    }
+    return entry;
+  }
+
+  function activateOverlay(overlay, opener = null) {
+    if (!overlay) return false;
+    const entry = overlayEntry(overlay);
+    const index = overlayStack.indexOf(entry);
+    if (index >= 0) overlayStack.splice(index, 1);
+    entry.active = true;
+    if (opener) entry.opener = opener;
+    overlayStack.push(entry);
+    return true;
+  }
+
+  function deactivateOverlay(overlay) {
+    const entry = overlayEntries.get(overlay);
+    if (!entry) return false;
+    const index = overlayStack.indexOf(entry);
+    if (index >= 0) overlayStack.splice(index, 1);
+    entry.active = false;
+    return true;
+  }
+
+  function topOverlayEntry() {
+    return overlayStack.at(-1) ?? null;
+  }
+
+  function canActivateFromInteraction(entry) {
+    const top = topOverlayEntry();
+    if (!top) return true;
+    return top.overlay?.contains?.(entry.overlay) === true;
+  }
+
+  function ownsTopOverlay(entry) {
+    if (!entry.active && canActivateFromInteraction(entry)) activateOverlay(entry.overlay);
+    return topOverlayEntry() === entry;
+  }
+
+  function resolvedFocusTarget(value, event) {
+    return typeof value === "function" ? value(event) : value;
+  }
+
+  function canRestoreFocus(target) {
+    return Boolean(target?.isConnected)
+      && typeof target.focus === "function"
+      && target.disabled !== true
+      && !target.closest?.("[inert], [hidden]");
+  }
+
+  function topOverlayFocusTarget() {
+    const overlay = topOverlayEntry()?.overlay;
+    const focusable = overlay?.querySelectorAll?.([
+      "[autofocus]",
+      "button:not([disabled])",
+      "input:not([disabled])",
+      "select:not([disabled])",
+      "textarea:not([disabled])",
+      '[tabindex]:not([tabindex="-1"])',
+    ].join(", ")) ?? [];
+    return [...focusable].find(canRestoreFocus) ?? null;
+  }
+
+  function restoreFocus(returnFocus, fallbackFocus, event) {
+    const documentRef = event?.currentTarget?.ownerDocument
+      ?? event?.target?.ownerDocument
+      ?? (typeof document === "undefined" ? null : document);
+    const schedule = typeof window.queueMicrotask === "function"
+      ? window.queueMicrotask.bind(window)
+      : (callback) => Promise.resolve().then(callback);
+    schedule(() => {
+      const preferred = resolvedFocusTarget(returnFocus, event);
+      const fallback = resolvedFocusTarget(fallbackFocus, event);
+      const overlayFallback = topOverlayFocusTarget(documentRef);
+      const target = canRestoreFocus(preferred)
+        ? preferred
+        : canRestoreFocus(fallback)
+          ? fallback
+          : canRestoreFocus(overlayFallback) ? overlayFallback : null;
+      target?.focus?.({ preventScroll: true });
+    });
+  }
+
+  function dismissFromPointerDown(event, entry, close, { returnFocus = null, fallbackFocus = null } = {}) {
+    if (!isPrimaryPointerDown(event)) return false;
+    consumeEvent(event);
+    installCompatibilityClickShield(event);
+    deactivateOverlay(entry.overlay);
+    close(event);
+    restoreFocus(returnFocus, fallbackFocus, event);
+    return true;
+  }
+
+  function installDismissibleOverlay({
+    dialog,
+    close,
+    content = null,
+    returnFocus = null,
+    fallbackFocus = null,
+  } = {}) {
     if (!dialog || typeof dialog.addEventListener !== "function" || typeof close !== "function") {
       return () => {};
     }
-    const clickHandler = (event) => {
-      if (isDialogBackdropClick(event, dialog, content)) close(event);
+    let capturedOpener = null;
+    const entry = overlayEntry(dialog);
+    const beforeToggleHandler = (event) => {
+      if (event?.newState !== "open") {
+        if (event?.newState === "closed") deactivateOverlay(dialog);
+        return;
+      }
+      const activeElement = dialog.ownerDocument?.activeElement;
+      if (activeElement && activeElement !== dialog && !dialog.contains?.(activeElement)) {
+        capturedOpener = activeElement;
+      }
+      activateOverlay(dialog, capturedOpener);
+    };
+    const focusReturn = returnFocus ?? (() => capturedOpener ?? entry.opener);
+    const pointerDownHandler = (event) => {
+      if (!isDialogBackdropPointerDown(event, dialog, content)) return;
+      if (!ownsTopOverlay(entry)) return;
+      dismissFromPointerDown(event, entry, close, { returnFocus: focusReturn, fallbackFocus });
     };
     const cancelHandler = (event) => {
+      if (!ownsTopOverlay(entry)) return;
       event?.preventDefault?.();
+      event?.stopPropagation?.();
+      deactivateOverlay(dialog);
       close(event);
+      restoreFocus(focusReturn, fallbackFocus, event);
     };
-    dialog.addEventListener("click", clickHandler);
+    const closeHandler = () => deactivateOverlay(dialog);
+    dialog.addEventListener("beforetoggle", beforeToggleHandler);
+    dialog.addEventListener("pointerdown", pointerDownHandler);
     dialog.addEventListener("cancel", cancelHandler);
+    dialog.addEventListener("close", closeHandler);
     return () => {
-      dialog.removeEventListener?.("click", clickHandler);
+      deactivateOverlay(dialog);
+      dialog.removeEventListener?.("beforetoggle", beforeToggleHandler);
+      dialog.removeEventListener?.("pointerdown", pointerDownHandler);
       dialog.removeEventListener?.("cancel", cancelHandler);
+      dialog.removeEventListener?.("close", closeHandler);
     };
   }
 
-  function installScrimDismiss({ scrim, close } = {}) {
+  function installScrimDismiss({
+    scrim,
+    close,
+    returnFocus = null,
+    fallbackFocus = null,
+  } = {}) {
     if (!scrim || typeof scrim.addEventListener !== "function" || typeof close !== "function") {
       return () => {};
     }
-    const clickHandler = (event) => close(event);
-    scrim.addEventListener("click", clickHandler);
-    return () => scrim.removeEventListener?.("click", clickHandler);
+    const entry = overlayEntry(scrim);
+    const pointerDownHandler = (event) => {
+      if (event.target !== scrim) return;
+      if (!ownsTopOverlay(entry)) return;
+      dismissFromPointerDown(event, entry, close, { returnFocus, fallbackFocus });
+    };
+    scrim.addEventListener("pointerdown", pointerDownHandler);
+    return () => {
+      deactivateOverlay(scrim);
+      scrim.removeEventListener?.("pointerdown", pointerDownHandler);
+    };
   }
 
   window.AgentHubModalOverlays = Object.freeze({
     createPhosphorXIcon,
+    activateOverlay,
+    deactivateOverlay,
     installModalCloseIcons,
     installScrimDismiss,
     installDismissibleOverlay,
-    isDialogBackdropClick,
+    isDialogBackdropPointerDown,
     modalCloseIconSelectors: MODAL_CLOSE_ICON_SELECTORS,
   });
 

@@ -1,9 +1,16 @@
 import { createHash } from "node:crypto";
+import path from "node:path";
 
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
 
 function requiredMethod(value, name) {
   if (typeof value?.[name] !== "function") throw new TypeError(`${name} is required`);
+}
+
+function samePath(left, right) {
+  const a = path.resolve(String(left ?? ""));
+  const b = path.resolve(String(right ?? ""));
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
 function confirmation(task, action, preview) {
@@ -48,7 +55,6 @@ export class TaskLifecycleService {
       }
     }
     if (releasePreflight) {
-      requiredMethod(releasePreflight, "prepareAwaitSet");
       requiredMethod(releasePreflight, "withAwaitTransition");
     }
     this.taskBoard = taskBoard;
@@ -114,17 +120,134 @@ export class TaskLifecycleService {
     );
   }
 
-  async #updateWorkflowStatusLocked({ taskId, status, operationId, binding = {}, projectRoot = null } = {}, { releaseWorkflow = false } = {}) {
-    return this.#withLock(taskId, async (lease = {}) => {
+  async updateWorkflowStatusFromSource(options = {}, {
+    taskId: sourceTaskId,
+    expectedRevision: expectedSourceRevision,
+    expectedCommit: expectedSourceCommit,
+    expectedProjectorSha256,
+    verifySource,
+  } = {}) {
+    const target = this.#task(options.taskId);
+    const source = this.#task(sourceTaskId);
+    const workspace = target.workspaceId ? this.workspaceCatalog.workspace(target.workspaceId) : null;
+    if (workspace?.settings?.releaseWorkflowEnabled !== true || !this.releasePreflight) {
+      throw new Error("Cross-Task cutover requires an enabled release workflow");
+    }
+    if (source.id === target.id || source.workspaceId !== target.workspaceId) {
+      throw new Error("Cross-Task cutover source and target identity does not match");
+    }
+    requiredMethod(this.taskGitWorkspaces, "withTaskLocks");
+    requiredMethod({ verifySource }, "verifySource");
+    const projectRoot = path.resolve(String(options.projectRoot || this.#projectRoot(target) || ""));
+    if (!projectRoot || !samePath(this.#projectRoot(source), projectRoot)) {
+      throw new Error("Cross-Task cutover source and target repository does not match");
+    }
+    return this.releasePreflight.withAwaitTransition(workspace.id, () => (
+      this.taskGitWorkspaces.withTaskLocks(
+        [source.id, target.id],
+        async (lease) => {
+          const lockedSource = this.#task(source.id);
+          const lockedTarget = this.#task(target.id);
+          const lockedWorkspace = lockedTarget.workspaceId
+            ? this.workspaceCatalog.workspace(lockedTarget.workspaceId)
+            : null;
+          const lockedStream = lockedTarget.streamId
+            ? this.workspaceCatalog.stream(lockedTarget.streamId)
+            : null;
+          const revision = Number(expectedSourceRevision);
+          const commit = String(expectedSourceCommit ?? "").trim().toLowerCase();
+          const projectorSha256 = String(expectedProjectorSha256 ?? "").trim().toLowerCase();
+          if (!Number.isInteger(revision) || revision < 1
+              || lockedSource.revision !== revision
+              || lockedSource.workflowStatus !== "testing"
+              || lockedSource.workspaceId !== lockedTarget.workspaceId
+              || lockedTarget.workspaceId !== workspace.id
+              || (lockedTarget.streamId && lockedStream?.workspaceId !== workspace.id)
+              || lockedWorkspace?.settings?.releaseWorkflowEnabled !== true
+              || !samePath(this.#projectRoot(lockedSource), projectRoot)
+              || !samePath(taskProjectRoot({ workspace: lockedWorkspace, stream: lockedStream }), projectRoot)) {
+            throw new Error("Cross-Task cutover source Task revision, status or repository changed");
+          }
+          const references = (lockedSource.gitReferences ?? [])
+            .filter((reference) => samePath(reference?.projectRoot, projectRoot));
+          if (references.length !== 1
+              || String(references[0].resultCommit ?? "").trim().toLowerCase() !== commit) {
+            throw new Error("Cross-Task cutover source is not the unique authoritative Task result");
+          }
+          const inspected = await verifySource();
+          if (String(inspected?.headCommit ?? "").trim().toLowerCase() !== commit
+              || String(inspected?.projectorSha256 ?? "").trim().toLowerCase() !== projectorSha256) {
+            throw new Error("Cross-Task cutover source checkout changed while locked");
+          }
+          return this.#updateWorkflowStatusWithLease({
+            ...options,
+            projectRoot,
+            operationEvidence: {
+              cutoverSource: {
+                taskId: lockedSource.id,
+                revision,
+                workflowStatus: lockedSource.workflowStatus,
+                resultCommit: commit,
+                projectorSha256,
+                projectRoot,
+              },
+            },
+          }, { releaseWorkflow: true, lease });
+        },
+        { guardTaskId: target.id },
+      )
+    ));
+  }
+
+  async #updateWorkflowStatusLocked({
+    taskId, status, operationId, binding = {}, projectRoot = null,
+    expectedRevision = null, expectedWorkflowStatus = null, operationEvidence = null,
+  } = {}, { releaseWorkflow = false } = {}) {
+    return this.#withLock(taskId, (lease = {}) => this.#updateWorkflowStatusWithLease({
+      taskId, status, operationId, binding, projectRoot, expectedRevision, expectedWorkflowStatus,
+      operationEvidence,
+    }, { releaseWorkflow, lease }), { git: releaseWorkflow });
+  }
+
+  async #updateWorkflowStatusWithLease({
+    taskId, status, operationId, binding = {}, projectRoot = null,
+    expectedRevision = null, expectedWorkflowStatus = null, operationEvidence = null,
+  } = {}, { releaseWorkflow = false, lease = {} } = {}) {
       const task = this.#task(taskId);
       const workflowStatus = String(status ?? "").trim();
-      const snapshotsResult = releaseWorkflow && ["testing", "awaiting_implementation", "done"].includes(workflowStatus);
+      if (expectedRevision != null && task.revision !== Number(expectedRevision)) {
+        throw new Error("Task workflow cutover revision changed");
+      }
+      if (expectedWorkflowStatus != null
+          && task.workflowStatus !== String(expectedWorkflowStatus).trim()) {
+        throw new Error("Task workflow cutover status changed");
+      }
+      const snapshotsResult = releaseWorkflow && workflowStatus === "testing";
+      const acceptsExistingResult = releaseWorkflow
+        && ["awaiting_implementation", "done"].includes(workflowStatus);
       const workspace = task.workspaceId ? this.workspaceCatalog.workspace(task.workspaceId) : null;
       const affectsAwait = workspace?.settings?.releaseWorkflowEnabled === true
         && (task.workflowStatus === "awaiting_implementation" || workflowStatus === "awaiting_implementation");
       const selectedProjectRoot = releaseWorkflow ? projectRoot || this.#projectRoot(task) : null;
-      if (affectsAwait && !selectedProjectRoot) {
-        throw new Error("Task project root is unavailable; Await set was not changed");
+      let acceptedReference = null;
+      if ((affectsAwait || acceptsExistingResult) && !selectedProjectRoot) {
+        throw new Error("Task project root is unavailable; exact result was not accepted");
+      }
+      if (acceptsExistingResult) {
+        if (!["testing", "awaiting_implementation"].includes(task.workflowStatus)) {
+          throw new Error("Task must enter Test before its exact result can be accepted");
+        }
+        const references = (task.gitReferences ?? []).filter((reference) => (
+          samePath(reference.projectRoot, selectedProjectRoot)
+          && /^[a-f0-9]{40}$/u.test(String(reference.resultCommit ?? ""))
+        ));
+        if (references.length !== 1) {
+          throw new Error(
+            `Task has no unique Test-owned result for ${selectedProjectRoot}; `
+            + `recorded roots: ${(task.gitReferences ?? []).map((reference) => reference.projectRoot).join(", ") || "none"}`,
+          );
+        }
+        [acceptedReference] = references;
       }
       await this.#assertOwned(lease);
       await this.#mutation(() => this.taskBoard.beginLifecycleTransition({
@@ -133,8 +256,24 @@ export class TaskLifecycleService {
         kind: "workflow",
         targetWorkflowStatus: workflowStatus,
         expectedRevision: task.revision,
+        evidence: operationEvidence,
+        ...(releaseWorkflow && affectsAwait ? {
+          releaseContext: {
+            workspaceId: task.workspaceId,
+            streamId: task.streamId,
+            projectRoot: selectedProjectRoot,
+            ...(operationEvidence?.cutoverSource ? {
+              source: {
+                taskId: operationEvidence.cutoverSource.taskId,
+                revision: operationEvidence.cutoverSource.revision,
+                workflowStatus: operationEvidence.cutoverSource.workflowStatus,
+                resultCommit: operationEvidence.cutoverSource.resultCommit,
+                projectRoot: operationEvidence.cutoverSource.projectRoot,
+              },
+            } : {}),
+          },
+        } : {}),
       }), operationId);
-      let committed = false;
       try {
         if (!snapshotsResult) {
           await this.#assertOwned(lease);
@@ -143,15 +282,17 @@ export class TaskLifecycleService {
             gitReferences: [],
             replaceGitReferences: false,
             ...binding,
-            evidence: { outcome: "not_required" },
+            evidence: {
+              ...(operationEvidence ?? {}),
+              outcome: acceptsExistingResult ? "accepted_existing_result" : "not_required",
+              ...(acceptedReference ? { resultCommit: acceptedReference.resultCommit } : {}),
+            },
           }), operationId);
-          committed = true;
           if (!affectsAwait) return current;
-          const preReleaseIntegration = await this.releasePreflight.prepareAwaitSet({
-            workspaceId: workspace.id,
-            fallbackProjectRoots: [selectedProjectRoot],
-          });
-          return { task: current, preReleaseIntegration };
+          return {
+            task: current,
+            releaseCandidate: { status: "invalidated", reason: "Await membership changed" },
+          };
         }
         if (!selectedProjectRoot || !this.taskGitWorkspaces) {
           throw new Error("Task Git workspace is unavailable; workflow status was not changed");
@@ -198,35 +339,81 @@ export class TaskLifecycleService {
           }],
           ...binding,
           evidence: {
+            ...(operationEvidence ?? {}),
             outcome: integration.outcome,
             resultCommit: snapshot.headCommit,
             devHeadCommit: integration.dev?.headCommit ?? null,
             response: { gitWorkspace: gitWorkspaceResult, gitIntegration: gitIntegrationResult },
           },
         }), operationId);
-        committed = true;
-        const preReleaseIntegration = affectsAwait
-          ? await this.releasePreflight.prepareAwaitSet({
-            workspaceId: workspace.id,
-            fallbackProjectRoots: [selectedProjectRoot],
-          })
-          : null;
         return {
           task: current,
           gitWorkspace: gitWorkspaceResult,
           gitIntegration: gitIntegrationResult,
-          ...(preReleaseIntegration ? { preReleaseIntegration } : {}),
+          ...(affectsAwait ? {
+            releaseCandidate: { status: "invalidated", reason: "Await result changed" },
+          } : {}),
         };
       } catch (error) {
-        if (committed && affectsAwait) {
-          await this.#assertOwned(lease);
-          await this.#mutation(() => this.taskBoard.rollbackWorkflowOutcome(operationId, error), operationId);
-        } else {
-          await this.#failWhileOwned(lease, operationId, error);
-        }
+        await this.#failWhileOwned(lease, operationId, error);
         throw error;
       }
-    }, { git: releaseWorkflow });
+  }
+
+  withUnknownWorkflowReconciliationLock({ taskId, projectRoot } = {}, operation) {
+    const task = this.#task(taskId);
+    const workspace = task.workspaceId ? this.workspaceCatalog.workspace(task.workspaceId) : null;
+    if (workspace?.settings?.releaseWorkflowEnabled !== true || !this.releasePreflight) {
+      throw new Error("Unknown workflow reconciliation requires an enabled release workflow");
+    }
+    requiredMethod(this.taskGitWorkspaces, "withTaskRecoveryLock");
+    requiredMethod(this.taskGitWorkspaces, "withTaskRepositoryRecoveryLock");
+    return this.releasePreflight.withAwaitTransition(workspace.id, () => (
+      this.taskGitWorkspaces.withTaskRecoveryLock(task.id, (taskLease) => (
+        this.taskGitWorkspaces.withTaskRepositoryRecoveryLock(
+          task.id, projectRoot, taskLease, operation,
+        )
+      ))
+    ));
+  }
+
+  async reconcileUnknownWorkflowStatusOwned({
+    taskId, operationId, projectRoot, guardId, proof, lease,
+  } = {}) {
+    await this.#assertOwned(lease);
+    const current = this.#task(taskId);
+    const transition = this.taskBoard.lifecycleTransition?.(operationId);
+    if (
+      transition?.operationId !== operationId
+      || transition.taskId !== current.id
+      || transition.kind !== "workflow"
+      || transition.phase !== "pending_git"
+      || transition.targetWorkflowStatus !== "awaiting_implementation"
+      || transition.expectedRevision !== current.revision
+      || current.workflowStatus !== "testing"
+    ) {
+      throw new Error("Unknown workflow reconciliation identity or Task CAS does not match");
+    }
+    const recovery = await this.taskGitWorkspaces.recoverProcessTreeGuard(current.id, {
+      repositoryRoot: projectRoot,
+      guardId,
+      proof,
+      lease,
+    });
+    const result = await this.#updateWorkflowStatusWithLease({
+      taskId: current.id,
+      status: transition.targetWorkflowStatus,
+      operationId,
+      projectRoot,
+      operationEvidence: transition.evidence,
+    }, { releaseWorkflow: true, lease });
+    return { result, recovery };
+  }
+
+  reconcileUnknownWorkflowStatus(options = {}) {
+    return this.withUnknownWorkflowReconciliationLock(options, (lease) => (
+      this.reconcileUnknownWorkflowStatusOwned({ ...options, lease })
+    ));
   }
 
   async #cleanupPreview(task, action) {

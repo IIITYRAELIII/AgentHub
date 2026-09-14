@@ -179,9 +179,19 @@ export class StreamContextMaintenanceService {
           settlement: compaction,
           includeTurnId: run.turnId,
         });
-        queueTarget = await this.#bindRotation(run, rotated, compaction.id);
         compactionId = null;
-        await this.#measureBoundRotation(run, queueTarget, compaction.id);
+        const readiness = await this.#probeRotationTarget(run, rotated);
+        if (readiness.status !== "ready") {
+          const rotationStatus = await this.#abandonRotation(run, rotated, compaction.id, readiness);
+          return {
+            compacted: true,
+            rotated: false,
+            deferredRotation: true,
+            afterPercent,
+            rotationStatus,
+          };
+        }
+        queueTarget = await this.#bindRotation(run, rotated, compaction.id, readiness);
         return {
           compacted: true,
           rotated: true,
@@ -232,9 +242,13 @@ export class StreamContextMaintenanceService {
         compactionId: started.compactionId,
         settlement: settled,
       });
-      queueTarget = await this.#bindRotation(run, rotated, started.compactionId);
       compactionId = null;
-      await this.#measureBoundRotation(run, queueTarget, started.compactionId);
+      const readiness = await this.#probeRotationTarget(run, rotated);
+      if (readiness.status !== "ready") {
+        const rotationStatus = await this.#abandonRotation(run, rotated, started.compactionId, readiness);
+        return { compacted: true, rotated: false, beforePercent, afterPercent, rotationStatus };
+      }
+      queueTarget = await this.#bindRotation(run, rotated, started.compactionId, readiness);
       return { compacted: true, rotated: true, beforePercent, afterPercent, ...rotated };
     } catch (error) {
       this.logger.error(`Automatic context maintenance failed for ${run?.threadId ?? "unknown"}:`, error.message);
@@ -301,8 +315,14 @@ export class StreamContextMaintenanceService {
     let queueTarget = target;
     try {
       const rotated = await provider.rotate(target);
-      queueTarget = await this.#bindRotation(target, rotated);
-      await this.#measureBoundRotation(target, queueTarget, rotated?.compactionId);
+      const readiness = await this.#probeRotationTarget(target, rotated);
+      if (readiness.status !== "ready") {
+        const rotationStatus = await this.#abandonRotation(target, rotated, rotated?.compactionId, readiness);
+        throw new Error(rotationStatus === "failed"
+          ? `Новый Thread не прошёл проверку готовности и удалён; Stream остался на прежнем Thread. ${readiness.message}`
+          : `Готовность нового Thread не подтверждена; Stream остался на прежнем Thread, новый Thread сохранён для разбора. ${readiness.message}`);
+      }
+      queueTarget = await this.#bindRotation(target, rotated, rotated?.compactionId, readiness);
       return rotated;
     } finally {
       this.registry.end(reservation);
@@ -310,7 +330,7 @@ export class StreamContextMaintenanceService {
     }
   }
 
-  async #bindRotation(source, rotated, compactionId = rotated?.compactionId) {
+  async #bindRotation(source, rotated, compactionId = rotated?.compactionId, readiness = null) {
     const binding = this.workspaceCatalog.thread({
       provider: source.provider,
       threadId: source.threadId,
@@ -335,6 +355,11 @@ export class StreamContextMaintenanceService {
         rotated: true,
         rotationThreadId: threadId,
         rotationCompletedAt: new Date().toISOString(),
+        ...(readiness?.status === "ready" ? {
+          rotationAfterPercent: readiness.percent,
+          rotationProbeTurnId: readiness.probeTurnId,
+          rotationMeasuredAt: readiness.measuredAt,
+        } : {}),
       });
     }
     if (this.selectionStore.threadId === source.threadId) {
@@ -397,53 +422,129 @@ export class StreamContextMaintenanceService {
     }
   }
 
-  async #measureBoundRotation(source, target, compactionId) {
-    const measured = await this.#exactContextAfterRotation(target);
-    const rotationAfterPercent = contextUsagePercent(measured);
-    if (!normalized(compactionId) || rotationAfterPercent === null) return;
-    this.maintenanceProvider(source)?.compactions.annotate?.(source.threadId, compactionId, {
-      rotationAfterPercent,
-    });
-    await this.saveState();
-  }
-
   #completedTurnCompaction(run) {
     const compaction = this.provider.compactions?.get?.(normalized(run?.threadId));
     if (
       compaction?.origin !== "automatic"
       || compaction.status !== "completed"
       || compaction.rotated === true
+      // Ротация этой свёртки уже закончилась неудачей: повтор снова создал бы
+      // новый Thread на тот же перенос. Следующая свёртка — новая попытка.
+      || ["failed", "unknown"].includes(String(compaction.rotationStatus ?? ""))
       || normalized(compaction.turnId) !== normalized(run?.turnId)
     ) return null;
     return compaction;
   }
 
-  async #exactContextAfterRotation(target) {
+  /* Новый Thread считается готовым только после завершённой скрытой пробы с
+     точным замером. До этого Stream, выбор, очередь и отметка ротации остаются
+     на исходном Thread: иначе неготовый или переполненный Thread уже принимал
+     бы ввод. Явный провал отличается от неизвестного исхода: пробу, которая
+     могла остаться активной, нельзя считать завершённой. */
+  async #probeRotationTarget(source, rotated) {
+    const threadId = normalized(rotated?.thread?.id);
+    if (!threadId || threadId === normalized(source?.threadId)) {
+      return { status: "failed", threadId: "", message: "Codex App Server не создал новый Thread" };
+    }
+    const target = {
+      provider: "codex",
+      threadId,
+      streamId: source.streamId,
+      projectRoot: source.projectRoot,
+      taskTitle: source.taskTitle,
+      titleSourceThreadId: source.threadId,
+    };
     const probeStartedAt = Date.now() - 1;
+    let probe;
     try {
-      const probe = await this.provider.probeContext(target);
-      const [measured, completion] = await Promise.all([
-        this.waitForContextUpdate(target.threadId, {
+      probe = await this.provider.probeContext(target);
+    } catch (error) {
+      return {
+        status: error?.code === "CODEX_CONTEXT_PROBE_NOT_STARTED" ? "failed" : "unknown",
+        threadId,
+        message: error.message,
+      };
+    }
+    const probeTurnId = normalized(probe?.turnId);
+    let measured = null;
+    let completion = null;
+    try {
+      [measured, completion] = await Promise.all([
+        this.waitForContextUpdate(threadId, {
           after: probeStartedAt,
-          turnId: probe?.turnId,
+          turnId: probeTurnId,
           timeoutMs: 60_000,
         }),
-        this.waitForTurnCompletion(probe?.turnId, { timeoutMs: 60_000 }),
+        this.waitForTurnCompletion(probeTurnId, { timeoutMs: 60_000 }),
       ]);
-      if (!completion) throw new Error("Скрытый замер нового Thread не завершился вовремя");
-      if (completion.status !== "completed") {
-        throw new Error(`Скрытый замер нового Thread завершился со статусом ${completion.status}`);
-      }
-      if (await this.provider.waitForContextProbeIdle?.(target, probe?.turnId) === false) {
-        throw new Error("Скрытый замер нового Thread завершён, но его ход всё ещё активен");
-      }
-      return measured?.provisional === true || Number(measured?.usedTokens) <= 0
-        ? null
-        : measured;
     } catch (error) {
-      this.logger.warn?.(`Cannot measure rotated context for ${target.threadId}: ${error.message}`);
-      return null;
+      return { status: "unknown", threadId, probeTurnId, message: error.message };
     }
+    if (!completion) {
+      return {
+        status: "unknown", threadId, probeTurnId,
+        message: "Скрытый замер нового Thread не завершился вовремя",
+      };
+    }
+    if (completion.status !== "completed") {
+      return {
+        status: "failed", threadId, probeTurnId,
+        message: `Скрытый замер нового Thread завершился со статусом ${completion.status}`,
+      };
+    }
+    try {
+      if (await this.provider.waitForContextProbeIdle?.(target, probeTurnId) === false) {
+        return {
+          status: "unknown", threadId, probeTurnId,
+          message: "Скрытый замер нового Thread завершён, но его ход всё ещё активен",
+        };
+      }
+    } catch (error) {
+      return { status: "unknown", threadId, probeTurnId, message: error.message };
+    }
+    const percent = measured?.provisional === true || Number(measured?.usedTokens) <= 0
+      ? null
+      : contextUsagePercent(measured);
+    if (percent === null) {
+      return { status: "unknown", threadId, probeTurnId, message: "Замер нового Thread не получен" };
+    }
+    return {
+      status: "ready",
+      threadId,
+      probeTurnId,
+      percent,
+      measuredAt: normalized(measured?.updatedAt) || new Date().toISOString(),
+    };
+  }
+
+  /* Неготовый Thread не получает ни привязки, ни очереди, ни отметки
+     ротации. Явно проваленный удаляется: его терминальное состояние
+     подтверждено. Неизвестный не трогается — он мог остаться активным — и
+     записывается на операции свёртки источника, которая и владеет этой
+     ротацией. */
+  async #abandonRotation(source, rotated, compactionId, readiness) {
+    const threadId = normalized(readiness?.threadId ?? rotated?.thread?.id);
+    let status = readiness?.status === "failed" ? "failed" : "unknown";
+    if (status === "failed" && threadId) {
+      try {
+        await this.provider.discardRotationTarget?.(threadId);
+      } catch (error) {
+        status = "unknown";
+        this.logger.warn?.(`Cannot delete unready rotated Thread ${threadId}: ${error.message}`);
+      }
+    }
+    this.logger.warn?.(
+      `Rotation of ${source?.threadId ?? "unknown"} stopped before switching (${status}): ${readiness?.message ?? ""}`,
+    );
+    if (normalized(compactionId)) {
+      this.maintenanceProvider(source)?.compactions.annotate?.(source.threadId, compactionId, {
+        rotationStatus: status,
+        rotationSettledAt: new Date().toISOString(),
+        ...(status === "unknown" && threadId ? { rotationQuarantineThreadId: threadId } : {}),
+      });
+      await this.saveState();
+    }
+    return status;
   }
 
   #wakeQueue(target) {

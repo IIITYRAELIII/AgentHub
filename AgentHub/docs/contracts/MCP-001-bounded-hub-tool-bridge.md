@@ -37,6 +37,33 @@ readback:
 - `unknown` is an explicit terminal receipt state when authoritative readback is
   unavailable or an effect completed but its receipt could not be committed.
 
+The local Await cutover uses the same canonical `hub_task_status_update` receipt.
+When its projector source is a separate Task, the receipt includes that source
+Task's exact ID, Test revision, result commit and projector hash. Both Task locks
+are held while the source authority is rechecked and the target transition
+begins. Current source/target Task, Workspace/Stream, repository and source-result
+identity are fenced atomically by the transition transaction. A later pending reconciliation
+preserves the transition's immutable source evidence in its outcome; terminal
+reconciliation reproduces those durable arguments and does not consult a newer
+source Task state or replay the target lifecycle. The transition records the
+accepted result and invalidates older release-plan identity; it does not compose
+`PreRelease`. Candidate assembly is owned only by the later explicit release
+prepare operation.
+`hub_release_preflight_reconcile` is a read-only release-specific readback path,
+not a replay of `hub_release_preflight`. It requires the original request id plus
+the exact original preflight arguments, expected plan and repository revisions.
+It must find the original `hub_release_preflight` receipt and bind tool,
+Workspace, caller Stream/provider/thread and immutable arguments hash before any
+release checkpoint readback. It may only report existing frozen candidate
+checkpoint evidence owned by the release Git boundary. A prepared checkpoint is
+at most a candidate snapshot, whether or not it is causally bound to the original
+request; it is not a reconciled original outcome without separate authoritative
+final-phase evidence. Contradictory checkpoint/manifest request identity, wrong
+Workspace, stale Task revision/result evidence or failed primary/release
+invariant readback keep the original outcome unknown. The tool cannot create a
+candidate, repeat validation, finalize an unknown MCP receipt, or infer success
+from transport text.
+
 Receipt creation is atomic `INSERT OR IGNORE` under the exact identity. Success
 stores a bounded structural result projection rather than arbitrary response
 content, so a result larger than 1 MiB cannot turn an already-applied effect into
@@ -118,6 +145,31 @@ successful operation without that bound content is invalid. Read-side legacy
 origin recovery requires the successful tool, exact `mcp:<request_id>`, stored
 arguments hash and stored content hash; absent pre-migration content hashes fail
 closed and are not reconstructed from message text or ordering.
+
+`hub_task_launch_cancel` is an Architect-only terminal reconciliation, not a
+replay lease. It may change an original start receipt from `pending`,
+`reconciling` or `unknown` to a structured failed/cancelled result only when the
+same caller Workspace, Stream, provider and provider Thread presents the exact
+Task/start-request owner and Task revision, the Task is still `starting`, the
+planned destination Stream is absent and no inter-Stream content hash was ever
+admitted. The original receipt is terminalized before Task launch ownership is
+cleared. Before either write, cancellation must win the Task-row
+`prepared -> cancelling` CAS against the launcher's
+`prepared -> admitted(attemptId)` effect admission. A successful fence prevents
+that runner and concurrent retries from entering Stream/thread/delivery effects;
+an already admitted runner makes cancellation fail without changing the original
+receipt. The fence is per Task/request, durable across database connections and
+processes, and has no timeout lease. A crash between receipt terminalization and
+Task cleanup can leave the Task blocked but cannot make
+the original launch replayable; another exact cancellation request may finish
+the cleanup. A different caller, Task state, revision, destination effect,
+admitted content or successful/failed launch is not cancellable.
+
+Before the planned destination Stream exists, `task.starting` is an idempotent
+Workspace event whose payload names that Stream; the event write is awaited
+before the durable effect-admission CAS and Stream/thread/delivery effects. Its
+rejection leaves the durable prepare
+blocked for explicit cancellation and is not silently converted to success.
 
 ## Queue diagnostics
 

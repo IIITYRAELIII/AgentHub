@@ -7,6 +7,7 @@ import { callDesktopControl } from "./desktop-control.mjs";
 import { publicationRuntimeStatus } from "./src/runtime/runtime-publication-start.mjs";
 import {
   npmStep,
+  publicationRepositories,
   publicationSteps,
   restartRuntimeAndVerify,
   runStep,
@@ -316,9 +317,9 @@ export async function publishChanged(args = process.argv.slice(2), {
 } = {}) {
   return exclusive(async () => {
     const options = parseChangedArguments(args);
-    // Finalization can rebuild PreRelease and move this clone before its reply
-    // reaches the publisher. Explicit resume owns the saved run, not that newer
-    // checkout; it must not freeze or deploy the next candidate.
+    // Finalization may synchronize repository refs before its reply reaches the
+    // publisher. Explicit resume owns the saved run and must not prepare or
+    // deploy another candidate.
     const pending = options.resume ? await journal?.read?.() : null;
     if (pending?.progress?.publicationState) {
       const identity = pending.identity;
@@ -455,7 +456,13 @@ export async function publishChanged(args = process.argv.slice(2), {
         journal,
       });
       const completion = await completePublication({
-        identity, publicationState: { revision: head, files, plan, validationMode: identity.validationMode },
+        identity, publicationState: {
+          revision: head,
+          repositories: publicationRepositories(identity, head),
+          files,
+          plan,
+          validationMode: identity.validationMode,
+        },
         journal, checkpoint, needsRestart: plan.runtimeRestart, skipRestart: options.skipRestart,
         readRuntimeStatus, verifyRestart, writeState, finalizePublication,
         requestRestart: (verification) => restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot, verification),
@@ -471,6 +478,7 @@ export async function publishChanged(args = process.argv.slice(2), {
 
 const invokedFile = process.argv[1] ? path.resolve(process.argv[1]) : "";
 if (invokedFile === fileURLToPath(import.meta.url)) {
+  let frozenReleaseVersion = "";
   const control = createBootstrapReleasePlanControl({
     contextFile: parseChangedArguments(process.argv.slice(2)).bootstrapMcpContext,
     control: callDesktopControl, readState: readPublicationState,
@@ -493,7 +501,7 @@ if (invokedFile === fileURLToPath(import.meta.url)) {
         throw error;
       });
       const workspace = new ReleaseGitWorkspaceService({ dataDir: path.dirname(marker.managedRoot) });
-      await workspace.freezePublicationCandidate({
+      const frozen = await workspace.freezePublicationCandidate({
         projectRoot: marker.primaryRoot, workspaceId,
         expectedPlanRevision: checkpoint.planRevision, expectedPreparedHead: checkpoint.preReleaseHead,
         changelogContent,
@@ -502,10 +510,13 @@ if (invokedFile === fileURLToPath(import.meta.url)) {
           if (plan.revision !== checkpoint.planRevision) throw new Error("release plan changed before publication freeze");
         },
       });
+      const frozenManifest = JSON.parse(await readFile(frozen.manifestFile, "utf8"));
+      frozenReleaseVersion = String(frozenManifest.publication?.releaseVersion ?? "");
+      if (!frozenReleaseVersion) throw new Error("frozen release version is missing from the immutable manifest");
       await assertCleanPublicationTree({ cwd: REPOSITORY_ROOT });
       await assertCurrentPublicationRevision({ cwd: REPOSITORY_ROOT });
     },
-    prepareVersion: prepareCommittedAgentHubReleaseVersion,
+    prepareVersion: () => prepareCommittedAgentHubReleaseVersion({ expectedVersion: frozenReleaseVersion }),
   }).catch((error) => {
     console.error(`\nПубликация остановлена: ${error.message}`);
     process.exitCode = 1;

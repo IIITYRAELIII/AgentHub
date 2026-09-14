@@ -41,24 +41,6 @@ function persistentAttachmentDescriptors(describeAttachments, files, persistentF
   return persistentFiles ? describeAttachments(files) : [];
 }
 
-function codexFinalAnswerStarted(run, target) {
-  const runId = String(run?.id ?? "").trim();
-  const runTurnId = String(run?.turnId ?? "").trim();
-  const runThreadId = String(run?.threadId ?? "").trim();
-  const targetThreadId = String(target?.threadId ?? "").trim();
-  if (!runId || !runTurnId || !runThreadId || runThreadId !== targetThreadId) return false;
-  if (String(run?.provider ?? "").trim().toLowerCase() !== "codex"
-    || String(target?.provider ?? "").trim().toLowerCase() !== "codex") return false;
-  return (Array.isArray(run.responseItems) ? run.responseItems : []).some((item) => (
-    String(item?.id ?? "").trim()
-    && item?.type === "agentMessage"
-    && String(item?.phase ?? "").trim() === "final_answer"
-    // Async questions reuse final_answer but leave the provider turn open.
-    && !(Array.isArray(item.questions) && item.questions.length > 0)
-    && String(item?.turnId ?? "").trim() === runTurnId
-  ));
-}
-
 export class RunCoordinator {
   #lanes = new Map();
   #intakeLanes = new Map();
@@ -541,16 +523,6 @@ export class RunCoordinator {
     }
     if (existingRun) {
       if (followUpMode === "steer") {
-        if (codexFinalAnswerStarted(existingRun, target)) {
-          return this.queue(input, attachments, {
-            target,
-            executionOwner: existingRun.executionOwner ?? TASK_EXECUTION_OWNERS.HUB,
-            clientUserMessageId,
-            messageFingerprint,
-            reason: "final-answer-active",
-            conflictKind: "message-intake",
-          });
-        }
         return this.queueSteer(input, attachments, {
           existingRun,
           messageFingerprint,
@@ -609,9 +581,6 @@ export class RunCoordinator {
     if ((expectedRunId && expectedRunId !== String(existingRun?.id ?? "").trim())
       || (expectedTurnId && expectedTurnId !== String(existingRun?.turnId ?? "").trim())) {
       throw new Error("Active turn not steerable: the targeted managed turn is no longer active");
-    }
-    if (codexFinalAnswerStarted(existingRun, target)) {
-      throw new Error("Active turn not steerable: the exact Codex final answer already started");
     }
     const externalActivity = existingRun
       ? { state: "active", executionOwner: existingRun.executionOwner }

@@ -69,8 +69,14 @@ export function createCodexContextMaintenanceComposition({
       ...sandbox,
     }),
     startCompaction: (threadId) => sendRpc("thread/compact/start", { threadId }),
-    startContextProbe: async (threadId) => {
-      try { await preserveProbeTitle({ provider: "codex", threadId }); }
+    startContextProbe: async (threadId, target = null) => {
+      try {
+        await preserveProbeTitle({
+          provider: "codex",
+          threadId,
+          titleSourceThreadId: target?.titleSourceThreadId,
+        });
+      }
       catch (error) { logger.warn?.(`Cannot preserve Thread title before context probe: ${error.message}`); }
       return sendRpc("turn/start", {
         threadId,

@@ -116,6 +116,7 @@ test("core-only components need neither Telegram credentials nor Web App", async
       autoPlaceConfidence: 0.82,
       bugReportWorkspaceName: "",
     });
+    assert.deepEqual(config.releaseValidation, { repositories: [] });
     assert.deepEqual(config.diagnostics.sentry, {
       enabled: false,
       dsn: "",
@@ -134,6 +135,56 @@ test("core-only components need neither Telegram credentials nor Web App", async
     else process.env.SENTRY_ENVIRONMENT = previousSentryEnvironment;
     if (previousSentryRelease == null) delete process.env.SENTRY_RELEASE;
     else process.env.SENTRY_RELEASE = previousSentryRelease;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("release validation policy is explicit and disabled by default", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-release-validation-config-"));
+  const configFile = path.join(root, "config.json");
+  const previous = process.env.AGENT_HUB_CONFIG;
+  try {
+    await writeFile(configFile, JSON.stringify({
+      components: { telegram: false, miniApp: false, androidApp: false },
+      projectRoot: root,
+      releaseValidation: {
+        repositories: [{
+          projectRoot: "Bookworm",
+          check: {
+            kind: "bookworm-android-qa",
+            id: "bookworm-frozen-candidate",
+            commands: [{ command: ".\\gradlew.bat", args: ["qualityCheck"] }],
+            artifacts: ["app/build/report.xml"],
+          },
+        }],
+      },
+    }), "utf8");
+    process.env.AGENT_HUB_CONFIG = configFile;
+    const disabled = await loadConfig();
+    assert.equal(disabled.releaseValidation.repositories[0].enabled, false);
+    assert.equal(disabled.releaseValidation.repositories[0].projectRoot, path.join(root, "Bookworm"));
+
+    await writeFile(configFile, JSON.stringify({
+      components: { telegram: false, miniApp: false, androidApp: false },
+      projectRoot: root,
+      releaseValidation: {
+        repositories: [{
+          enabled: true,
+          projectRoot: "Bookworm",
+          check: {
+            kind: "bookworm-android-qa",
+            id: "bookworm-frozen-candidate",
+            commands: [{ command: ".\\gradlew.bat", args: ["qualityCheck"] }],
+          },
+        }],
+      },
+    }), "utf8");
+    const enabled = await loadConfig();
+    assert.equal(enabled.releaseValidation.repositories[0].enabled, true);
+    assert.equal(enabled.releaseValidation.repositories[0].check.commands[0].args[0], "qualityCheck");
+  } finally {
+    if (previous == null) delete process.env.AGENT_HUB_CONFIG;
+    else process.env.AGENT_HUB_CONFIG = previous;
     await rm(root, { recursive: true, force: true });
   }
 });

@@ -62,6 +62,7 @@ export function createRuntimeOrchestrationComposition({
     scheduleDeliveryOutboxFlush,
     scheduleCodexTerminalAudit,
     rateLimitTelemetry,
+    providerLogin,
     usageSyncAuto,
     taskSyncStore,
     messagePins,
@@ -271,6 +272,7 @@ export function createRuntimeOrchestrationComposition({
     rateLimitTelemetry,
     usageSyncAuto,
     testContourJournalSync,
+    providerLogin,
   });
 
   ports.taskInteraction.bind(createTaskInteractionWiring({

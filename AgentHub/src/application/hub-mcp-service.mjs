@@ -19,6 +19,7 @@ import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { taskRunIsActive } from "../domain/task-runs.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
 import { TaskLifecycleService } from "./task-lifecycle-service.mjs";
+import { TaskOperationReconciliationService } from "./task-operation-reconciliation-service.mjs";
 import { createWorkspaceCatalogMutationOwner } from "./sqlite-mutation-owner.mjs";
 
 const CONTEXT_TOKEN_VERSION = 1;
@@ -27,9 +28,10 @@ const STREAM_HISTORY_CURSOR_VERSION = 1;
 const DEFAULT_HISTORY_ACTIVITY_LIMIT = 40;
 const DEFERRED_INPUT_STALLED_AFTER_MS = 60_000;
 const MUTATING_TOOLS = new Set([
-  "hub_task_create", "hub_task_update", "hub_task_checklist_update", "hub_task_move", "hub_task_start", "hub_task_reassign", "hub_task_claim", "hub_task_status_update", "hub_task_legacy_git_adopt", "hub_task_complete", "hub_task_delete",
+  "hub_task_create", "hub_task_update", "hub_task_checklist_update", "hub_task_move", "hub_task_start", "hub_task_reassign", "hub_task_launch_cancel", "hub_task_claim", "hub_task_status_update", "hub_task_legacy_git_adopt", "hub_task_complete", "hub_task_delete",
   "hub_task_attachment_add", "hub_workspace_rules_update", "hub_stream_rules_update",
   "hub_stream_message_send",
+  "hub_task_operation_reconcile",
   "hub_release_preflight", "hub_release_complete",
 ]);
 
@@ -435,6 +437,8 @@ export class HubMcpService {
   constructor({
     workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releasePlanner, releasePreflight, releaseCompleter,
     taskGitWorkspaces = null, taskLifecycle = null,
+    taskOperationReconciliation = null,
+    reconcilePendingOnStartup = true,
   } = {}) {
     for (const name of [
       "resolveThread", "workspace", "hierarchy", "developerRulesForStream",
@@ -467,7 +471,21 @@ export class HubMcpService {
     this.taskLifecycle = taskLifecycle ?? new TaskLifecycleService({
       taskBoard, workspaceCatalog: this.workspaceCatalog, taskGitWorkspaces, releasePreflight,
     });
-    this.#startupReconciliation = this.reconcilePendingMcpOperations();
+    this.taskOperationReconciliation = taskOperationReconciliation
+      ?? (["mcpOperation", "completeUnknownMcpOperation", "failUnknownMcpOperation"]
+        .every((name) => typeof this.workspaceCatalog?.[name] === "function")
+        && ["task", "lifecycleTransition", "lifecycleOutcome"]
+          .every((name) => typeof taskBoard?.[name] === "function")
+        && typeof this.taskLifecycle?.reconcileUnknownWorkflowStatus === "function"
+        ? new TaskOperationReconciliationService({
+          workspaceCatalog: this.workspaceCatalog,
+          taskBoard,
+          taskLifecycle: this.taskLifecycle,
+        })
+        : null);
+    this.#startupReconciliation = reconcilePendingOnStartup === false
+      ? Promise.resolve({ reconciled: 0, skipped: true })
+      : this.reconcilePendingMcpOperations();
   }
 
   async reconcilePendingMcpOperations() {
@@ -646,13 +664,38 @@ export class HubMcpService {
         message: { type: "string", description: "Optional assignment message delivered together with the Task reference." },
         confirm_launch: { type: "boolean", description: "Must be true because this starts or queues another agent turn." },
       }, ["task_id", "confirm_launch"]),
+      tool("hub_task_launch_cancel", "Architect-only exact reconciliation that cancels an unlaunched new-Stream Task start before another assignment.", {
+        task_id: { type: "string" },
+        launch_request_id: { type: "string", description: "Original hub_task_start request_id retained by the prepared Task." },
+        expected_task_revision: { type: "integer", minimum: 1 },
+        confirm_cancel: { type: "boolean", description: "Must be true because this terminalizes the original launch receipt." },
+      }, ["task_id", "launch_request_id", "expected_task_revision", "confirm_cancel"]),
       tool("hub_task_claim", "Bind a Dashboard Task to the exact current provider turn, assign its dedicated Git branch/worktree, and make the current Stream its executor. Continue repository work only in the returned gitWorkspace.projectRoot.", {
         task_id: { type: "string" },
       }, ["task_id"]),
       tool("hub_task_status_update", "Change workflow status only after exact Git result evidence is integrated. Test/Await/Done fail closed when no result or integration fails.", {
         task_id: { type: "string" },
         status: { type: "string", enum: ["new", "in_progress", "testing", "awaiting_implementation", "done"] },
+        expected_task_revision: { type: "integer", minimum: 1, description: "Optional exact Task revision CAS for a local cutover." },
+        expected_workflow_status: { type: "string", enum: ["new", "in_progress", "testing", "awaiting_implementation", "done"], description: "Optional exact current workflow status CAS for a local cutover." },
+        cutover_source_commit: { type: "string", description: "Optional clean checkout commit recorded by a local cutover." },
+        cutover_projector_sha256: { type: "string", description: "Optional verified release-projector hash recorded by a local cutover." },
       }, ["task_id", "status"]),
+      tool("hub_task_operation_reconcile", "Architect-only reconciliation of one exact unknown Task workflow operation. A pending Git operation requires trusted process-tree proof; an already terminal lifecycle settles its original receipt without Git replay or invented guard evidence.", {
+        task_id: { type: "string" },
+        operation_request_id: { type: "string" },
+        project_root: { type: "string" },
+        guard_id: { type: "string", description: "Required only while the exact lifecycle remains pending Git." },
+        proof_kind: { type: "string", enum: ["system-restart-after-guard"], description: "Required only while the exact lifecycle remains pending Git." },
+        proof_summary: { type: "string", description: "Required only while the exact lifecycle remains pending Git." },
+        expected_task_revision: { type: "integer", minimum: 1, description: "Required only to reproduce an original local cutover receipt." },
+        expected_workflow_status: { type: "string", enum: ["new", "in_progress", "testing", "awaiting_implementation", "done"], description: "Required only to reproduce an original local cutover receipt." },
+        cutover_source_commit: { type: "string", description: "Required only to reproduce an original local cutover receipt." },
+        cutover_projector_sha256: { type: "string", description: "Required only to reproduce an original local cutover receipt." },
+        cutover_source_task_id: { type: "string", description: "Required only when the original local cutover used a separate source Task." },
+        cutover_source_task_revision: { type: "integer", minimum: 1, description: "Required only when the original local cutover used a separate source Task." },
+        confirm_reconcile: { type: "boolean", description: "Must be true because this settles the original unknown receipt and may recover a guarded process boundary." },
+      }, ["task_id", "operation_request_id", "project_root", "confirm_reconcile"]),
       tool("hub_task_legacy_git_adopt", "Architect-only migration for a legacy Await Task with no Git reference. It verifies terminal Stream evidence and exact non-changelog patch equivalence to a named commit already in local main before recording immutable Task evidence.", {
         task_id: { type: "string" },
         expected_task_revision: { type: "integer", minimum: 1 },
@@ -687,7 +730,40 @@ export class HubMcpService {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
         expected_plan_revision: { type: "string", description: "Exact revision returned by hub_release_plan_get." },
         conflicts_resolved: { type: "boolean", description: "True only after the Architect explicitly resolves every reported overlap." },
+        approved_repositories: {
+          type: "array",
+          description: "Repository-scoped approved main commits returned by the previous preflight audit.",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              projectRoot: { type: "string" },
+              approvedLocalMainCommit: { type: "string" },
+              approvedOriginMainCommit: { type: "string" },
+            },
+            required: ["projectRoot", "approvedLocalMainCommit", "approvedOriginMainCommit"],
+          },
+        },
       }, ["expected_plan_revision"]),
+      tool("hub_release_preflight_reconcile", "Read back an interrupted release preflight from exact frozen candidate evidence without replaying effects.", {
+        workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
+        original_request_id: { type: "string" },
+        original_preflight_arguments: {
+          type: "object",
+          description: "Exact original hub_release_preflight arguments except context_token. request_id may be omitted and is filled from original_request_id.",
+        },
+        error_class: { type: "string", description: "For example: serialization_error." },
+        expected_plan_revision: { type: "string" },
+        expected_repositories: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: { projectRoot: { type: "string" }, revision: { type: "string" } },
+            required: ["projectRoot", "revision"],
+          },
+        },
+      }, ["original_request_id", "original_preflight_arguments", "expected_plan_revision", "expected_repositories"]),
       tool("hub_release_complete", "Complete a release only after clean main revisions and explicit deployment verification.", {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
         expected_repositories: {
@@ -760,6 +836,38 @@ export class HubMcpService {
     return this.#dispatch(context, toolName, args);
   }
 
+  async callTaskStatusCutover(args = {}, { verifySource } = {}) {
+    await this.#startupReconciliation;
+    const context = this.#authorize(args.context_token);
+    const sourceTaskId = requiredText(args.cutover_source_task_id, "cutover source Task id", 200);
+    const targetTaskId = requiredText(args.task_id, "cutover target Task id", 200);
+    const sourceTaskRevision = Number(args.cutover_source_task_revision);
+    if (!Number.isInteger(sourceTaskRevision) || sourceTaskRevision < 1) {
+      throw new Error("cutover source Task revision must be a positive integer");
+    }
+    if (sourceTaskId === targetTaskId || args.status !== "awaiting_implementation") {
+      throw new Error("Cross-Task cutover requires distinct source and target Tasks and an Await target");
+    }
+    const sourceCommit = requiredText(args.cutover_source_commit, "cutover source commit", 128).toLowerCase();
+    const projectorSha256 = requiredText(args.cutover_projector_sha256, "cutover projector SHA-256", 128).toLowerCase();
+    if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(sourceCommit)
+        || !/^[0-9a-f]{64}$/u.test(projectorSha256)) {
+      throw new Error("Cross-Task cutover source commit or projector hash is invalid");
+    }
+    if (typeof verifySource !== "function") throw new TypeError("cutover source verifier is required");
+    return this.#mutate(context, "hub_task_status_update", args, () => (
+      this.#updateTaskWorkflowStatus(context, args, {
+        source: {
+          taskId: sourceTaskId,
+          expectedRevision: sourceTaskRevision,
+          expectedCommit: sourceCommit,
+          expectedProjectorSha256: projectorSha256,
+          verifySource,
+        },
+      })
+    ));
+  }
+
   async #dispatch(context, name, args) {
     switch (name) {
       case "hub_context_get":
@@ -804,10 +912,32 @@ export class HubMcpService {
         return this.#startTask(context, args);
       case "hub_task_reassign":
         return this.#startTask(context, args, { reassign: true });
+      case "hub_task_launch_cancel":
+        return this.#cancelTaskLaunch(context, args);
       case "hub_task_claim":
         return this.#claimTask(context, args);
       case "hub_task_status_update":
         return this.#updateTaskWorkflowStatus(context, args);
+      case "hub_task_operation_reconcile":
+        if (!this.#isArchitect(context)) throw new Error("Task operation reconciliation requires an Architect Stream");
+        if (args.confirm_reconcile !== true) throw new Error("Task operation reconciliation requires explicit confirmation");
+        if (!this.taskOperationReconciliation) throw new Error("Task operation reconciliation is unavailable");
+        return this.taskOperationReconciliation.reconcileUnknownWorkflow({
+          workspaceId: context.workspaceId,
+          taskId: args.task_id,
+          operationRequestId: args.operation_request_id,
+          projectRoot: args.project_root,
+          guardId: args.guard_id,
+          proofKind: args.proof_kind,
+          proofSummary: args.proof_summary,
+          expectedTaskRevision: args.expected_task_revision,
+          expectedWorkflowStatus: args.expected_workflow_status,
+          cutoverSourceCommit: args.cutover_source_commit,
+          cutoverProjectorSha256: args.cutover_projector_sha256,
+          cutoverSourceTaskId: args.cutover_source_task_id,
+          cutoverSourceTaskRevision: args.cutover_source_task_revision,
+          confirmed: args.confirm_reconcile,
+        });
       case "hub_task_legacy_git_adopt":
         if (!this.#isArchitect(context)) throw new Error("legacy Git adoption requires an Architect Stream");
         return this.#adoptLegacyTaskGit(context, args);
@@ -825,6 +955,9 @@ export class HubMcpService {
       case "hub_release_preflight":
         if (!this.#isArchitect(context)) throw new Error("release preflight requires an Architect Stream");
         return this.#preflightRelease(context, args);
+      case "hub_release_preflight_reconcile":
+        if (!this.#isArchitect(context)) throw new Error("release preflight reconciliation requires an Architect Stream");
+        return this.#reconcileReleasePreflight(context, args);
       case "hub_release_complete":
         if (!this.#isArchitect(context)) throw new Error("release completion requires an Architect Stream");
         return this.#completeRelease(context, args);
@@ -1183,7 +1316,16 @@ export class HubMcpService {
     return active[0];
   }
 
-  async #updateTaskWorkflowStatus(context, { task_id: taskId, status, request_id: operationId } = {}) {
+  async #updateTaskWorkflowStatus(context, {
+    task_id: taskId, status, request_id: operationId,
+    expected_task_revision: expectedRevision = null,
+    expected_workflow_status: expectedWorkflowStatus = null,
+    cutover_source_task_id: sourceTaskId = null,
+    cutover_source_task_revision: sourceTaskRevision = null,
+  } = {}, { source = null } = {}) {
+    if ((sourceTaskId != null || sourceTaskRevision != null) && !source) {
+      throw new Error("Cross-Task cutover requires the supported local cutover entrypoint");
+    }
     const task = this.#task(context, taskId);
     const workflowStatus = requiredText(status, "task workflow status", 40);
     let binding = {};
@@ -1199,7 +1341,7 @@ export class HubMcpService {
         };
       }
     } catch {}
-    const result = await this.taskLifecycle.updateWorkflowStatus({
+    const options = {
       taskId: task.id,
       status: workflowStatus,
       operationId,
@@ -1209,7 +1351,12 @@ export class HubMcpService {
         String(task.streamId ?? "").trim() || context.streamId,
         task.workspaceId,
       ),
-    });
+      expectedRevision,
+      expectedWorkflowStatus,
+    };
+    const result = source
+      ? await this.taskLifecycle.updateWorkflowStatusFromSource(options, source)
+      : await this.taskLifecycle.updateWorkflowStatus(options);
     if (!result?.task) return compactTask(result);
     const { task: updated, ...evidence } = result;
     return { ...compactTask(updated), ...evidence };
@@ -1481,6 +1628,87 @@ export class HubMcpService {
         projectRoot: gitWorkspace.projectRoot,
         baseCommit: gitWorkspace.baseCommit,
       } : null,
+    };
+  }
+
+  async #cancelTaskLaunch(context, {
+    task_id: taskId,
+    launch_request_id: launchRequestId,
+    expected_task_revision: expectedTaskRevision,
+    confirm_cancel: confirmCancel = false,
+    request_id: cancellationRequestId,
+  } = {}) {
+    if (!this.#isArchitect(context)) throw new Error("only an Architect Stream can cancel a prepared Task launch");
+    if (confirmCancel !== true) throw new Error("confirm_cancel must be true");
+    const task = this.#task(context, taskId);
+    const normalizedLaunchRequestId = requiredText(launchRequestId, "launch request id", 200);
+    const normalizedCancellationRequestId = requiredText(cancellationRequestId, "request id", 200);
+    const revision = Number(expectedTaskRevision);
+    if (!Number.isSafeInteger(revision) || revision < 1 || revision !== Number(task.revision)) {
+      throw new Error("Task revision changed before launch cancellation");
+    }
+    if (
+      task.workspaceId !== context.workspaceId
+      || task.status !== "starting"
+      || task.startRequestId !== normalizedLaunchRequestId
+    ) throw new Error("Task does not retain the exact prepared launch owner");
+    const destinationStreamId = requiredText(task.startDestinationStreamId, "planned destination Stream id", 300);
+    if (this.workspaceCatalog.stream(destinationStreamId)) {
+      throw new Error("launch cancellation cannot prove that no destination Stream effect exists");
+    }
+    const original = this.workspaceCatalog.mcpOperation?.(normalizedLaunchRequestId);
+    if (!original || original.toolName !== "hub_task_start") {
+      throw new Error("original Task launch receipt was not found");
+    }
+    const exactCaller = original.workspaceId === context.workspaceId
+      && original.streamId === context.streamId
+      && original.provider === context.provider
+      && original.threadId === context.auditThreadId;
+    if (!exactCaller) throw new Error("original Task launch receipt belongs to another caller");
+    if (original.interstreamContentHash) {
+      throw new Error("launch cancellation cannot disprove an admitted delivery effect");
+    }
+    const alreadyCancelled = original.status === "failed"
+      && original.result?.cancelled === true
+      && original.result?.taskId === task.id;
+    if (!["pending", "reconciling", "unknown"].includes(original.status) && !alreadyCancelled) {
+      throw new Error("original Task launch receipt is not cancellable");
+    }
+    requiredMethod(this.workspaceCatalog, "cancelMcpOperation");
+    requiredMethod(this.taskBoard, "fencePreparedStartCancellation");
+    requiredMethod(this.taskBoard, "completePreparedStartCancellation");
+    const fenced = await this.taskBoard.fencePreparedStartCancellation({
+      id: task.id,
+      requestId: normalizedLaunchRequestId,
+      cancellationRequestId: normalizedCancellationRequestId,
+      expectedRevision: revision,
+    });
+    if (this.workspaceCatalog.stream(destinationStreamId)) {
+      throw new Error("launch cancellation fence found a destination Stream effect");
+    }
+    const fencedReceipt = this.workspaceCatalog.mcpOperation(normalizedLaunchRequestId);
+    if (fencedReceipt?.interstreamContentHash) {
+      throw new Error("launch cancellation fence found an admitted delivery effect");
+    }
+    const terminalReceipt = await this.workspaceCatalog.cancelMcpOperation(normalizedLaunchRequestId, {
+      taskId: task.id,
+      cancellationRequestId: normalizedCancellationRequestId,
+    });
+    const cancelled = await this.taskBoard.completePreparedStartCancellation({
+      id: task.id,
+      requestId: normalizedLaunchRequestId,
+      expectedRevision: fenced.revision,
+    });
+    return {
+      task: compactTask(cancelled),
+      cancelledLaunch: {
+        requestId: normalizedLaunchRequestId,
+        receiptStatus: terminalReceipt.status,
+        argumentsHash: original.argumentsHash,
+        destinationStreamId,
+        destinationAbsent: true,
+        admittedContentAbsent: true,
+      },
     };
   }
 
@@ -1868,6 +2096,58 @@ export class HubMcpService {
       workspaceId,
       expectedPlanRevision: optionalText(args.expected_plan_revision, 128),
       conflictsResolved: args.conflicts_resolved === true,
+      approvedRepositories: Array.isArray(args.approved_repositories) ? args.approved_repositories : [],
+      requestId: requiredText(args.request_id, "request id", 200),
+    });
+  }
+
+  async #reconcileReleasePreflight(context, args) {
+    const workspaceId = this.#workspace(context, args.workspace_id).id;
+    if (typeof this.releasePreflight.reconcilePreflight !== "function") {
+      throw new Error("release preflight reconciliation is unavailable");
+    }
+    const originalRequestId = optionalText(args.original_request_id, 200);
+    const originalReceipt = this.workspaceCatalog.mcpOperation?.(originalRequestId);
+    if (!originalReceipt) throw new Error("original release preflight MCP receipt was not found");
+    if (originalReceipt.toolName !== "hub_release_preflight") {
+      throw new Error("original MCP receipt is not a release preflight");
+    }
+    const exactCaller = originalReceipt.workspaceId === workspaceId
+      && originalReceipt.streamId === context.streamId
+      && originalReceipt.provider === context.provider
+      && originalReceipt.threadId === context.auditThreadId;
+    if (!exactCaller) throw new Error("original release preflight MCP receipt belongs to another caller");
+    const originalArguments = args.original_preflight_arguments;
+    if (!originalArguments || typeof originalArguments !== "object" || Array.isArray(originalArguments)) {
+      throw new Error("release preflight reconciliation requires exact original preflight arguments");
+    }
+    if (originalArguments.request_id != null && String(originalArguments.request_id) !== originalRequestId) {
+      throw new Error("original preflight arguments request_id does not match the receipt");
+    }
+    const originalWorkspaceId = originalArguments.workspace_id == null
+      ? workspaceId
+      : this.#workspace(context, originalArguments.workspace_id).id;
+    if (originalWorkspaceId !== workspaceId) {
+      throw new Error("original preflight arguments target another Workspace");
+    }
+    if (String(originalArguments.expected_plan_revision ?? "") !== String(args.expected_plan_revision ?? "")) {
+      throw new Error("original preflight arguments plan revision does not match");
+    }
+    const expectedArgumentsHash = argumentsHash({
+      ...originalArguments,
+      request_id: originalRequestId,
+      context_token: args.context_token,
+    });
+    if (originalReceipt.argumentsHash !== expectedArgumentsHash) {
+      throw new Error("original release preflight MCP receipt arguments do not match");
+    }
+    return this.releasePreflight.reconcilePreflight({
+      workspaceId,
+      expectedPlanRevision: optionalText(args.expected_plan_revision, 128),
+      expectedRepositories: Array.isArray(args.expected_repositories) ? args.expected_repositories : [],
+      originalRequestId,
+      errorClass: optionalText(args.error_class, 100),
+      originalReceipt: { ...originalReceipt, expectedArgumentsHash },
     });
   }
 }

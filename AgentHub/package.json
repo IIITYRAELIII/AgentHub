@@ -1,7 +1,7 @@
 {
   "name": "agent-hub",
   "private": true,
-  "version": "2026.9.11",
+  "version": "2026.9.13",
   "type": "module",
   "engines": {
     "node": ">=22.5.0"
@@ -26,6 +26,7 @@
     "android:build": "powershell -NoProfile -ExecutionPolicy Bypass -File AndroidApp/build.ps1",
     "gateway:install": "node direct-gateway-cli.mjs install",
     "release:version": "node release-version.mjs",
+    "release:policy": "node src/interfaces/cli/release-policy.mjs",
     "publish:all": "node publish-all.mjs",
     "publish:changed": "node publish-changed.mjs",
     "hook:install": "node src/infrastructure/codex/codex-hook-config.mjs install",
@@ -37,6 +38,8 @@
     "work-log:claude-backfill": "node claude-work-log-backfill-cli.mjs",
     "work-log:title-backfill": "node work-log-title-backfill-cli.mjs",
     "workspace:migrate": "node src/interfaces/cli/workspace-layout-migrate.mjs",
+    "task:reconcile-operation": "node task-operation-reconcile.mjs",
+    "task:await-cutover": "node task-await-cutover.mjs",
     "contracts:check": "node --no-warnings --experimental-vm-modules syntax-check.mjs --contracts-only",
     "contracts:affected": "node contract-registry-cli.mjs affected",
     "rate-limits:backfill": "node rate-limit-backfill.mjs",

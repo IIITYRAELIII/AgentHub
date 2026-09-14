@@ -10,7 +10,7 @@ import { completePublication, resumePendingPublicationCompletion } from "../../.
 
 async function fixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-publication-completion-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
   const environment = { LOCALAPPDATA: root };
   const journal = publicationRunStore({ environment });
   const checkpoint = publicationCheckpointStore(path.join(root, "checkpoint.json"));
@@ -138,4 +138,29 @@ test("ambiguous finalization retries the same command while an authoritative par
   } });
   assert.equal(ids[0], ids[1]);
   assert.notEqual(ids[1], ids[2]);
+});
+
+test("definitive Desktop rejection rotates the finalization command and retries only completion", async (t) => {
+  const { common, records } = await fixture(t);
+  const ids = [];
+  const ready = {
+    ...common,
+    readRuntimeStatus: async () => ({ current: "new", runningRelease: "new", running: true, ready: true }),
+    verifyRestart: async () => {},
+  };
+  const result = await completePublication({
+    ...ready,
+    finalizePublication: async ({ finalizationCommandId }) => {
+      ids.push(finalizationCommandId);
+      if (ids.length === 1) {
+        throw Object.assign(new Error("terminal durable command failure"), { desktopControlRejected: true });
+      }
+      return { status: "completed", releaseAlreadyCompleted: true };
+    },
+  });
+  assert.equal(result.status, "succeeded");
+  assert.equal(ids.length, 2);
+  assert.notEqual(ids[0], ids[1]);
+  assert.equal(records.length, 1);
+  assert.equal((await common.journal.read()).progress.finalizationCommandId, ids[1]);
 });
