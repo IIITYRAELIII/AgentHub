@@ -1224,6 +1224,18 @@
         </button>
     </header>
     <section class="prompt-templates-fields">
+      <div class="settings-card">
+        <label class="setting-row setting-field prompt-template-action-row">
+          <span class="prompt-template-action-copy">
+            <span class="setting-name">Нажатие на prompt-шаблон</span>
+            <span class="switch-note" data-quick-message-action-mode-note>Ctrl + нажатие — отправить.</span>
+          </span>
+          <select data-quick-message-action-mode aria-label="Нажатие на prompt-шаблон">
+            <option value="insert">Вставлять в поле</option>
+            <option value="send">Отправлять сразу</option>
+          </select>
+        </label>
+      </div>
       <div class="prompt-templates-scopes" role="group" aria-label="Область действия"
         data-prompt-templates-scopes></div>
       <p class="prompt-templates-note" data-prompt-templates-note></p>
@@ -1938,21 +1950,9 @@
       </section>
       <section class="settings-section">
         <h3 class="settings-section-title">Диалоги</h3>
-        <div class="settings-card">
-          <label class="setting-row setting-field prompt-template-action-row">
-            <span class="prompt-template-action-copy">
-              <span class="setting-name">Нажатие на prompt-шаблон</span>
-              <span class="switch-note" data-quick-message-action-mode-note>Ctrl + нажатие — отправить.</span>
-            </span>
-            <select data-quick-message-action-mode aria-label="Нажатие на prompt-шаблон">
-              <option value="insert">Вставлять в поле</option>
-              <option value="send">Отправлять сразу</option>
-            </select>
-          </label>
-        </div>
         <div class="quick-messages-editor prompt-template-editor-card quick-messages-settings-row">
           <header class="quick-message-editor-header">
-            <span class="setting-name">Глобальные prompt-шаблоны</span>
+            <span class="setting-name">Prompt-шаблоны</span>
             <span class="setting-value" data-settings-global-quick-messages-count>0 шаблонов</span>
           </header>
           <div class="prompt-template-entry-controls">
