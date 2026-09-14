@@ -46,6 +46,7 @@ const {
 } = window.AgentHubMessageDisclosure;
 const chatSurfacePreference = window.AgentHubChatSurfacePreference;
 const backgroundMotionPreference = window.AgentHubBackgroundMotionPreference;
+const activityRailPreference = window.AgentHubActivityRailPreference;
 const backgroundImageResolver = window.AgentHubBackgroundImageResolver;
 const modalOverlays = window.AgentHubModalOverlays;
 const particleStyle = window.AgentHubParticleStyle;
@@ -71,6 +72,7 @@ const themeSelect = document.querySelector("[data-theme-select]");
 const backgroundSelect = document.querySelector("[data-background-select]");
 const backgroundMotionToggle = document.querySelector("[data-background-motion-toggle]");
 const chatBackgroundToggle = document.querySelector("[data-chat-background-toggle]");
+const activityRailVisibilityToggle = document.querySelector("[data-activity-rail-visibility-toggle]");
 const journalGroupingButtons = [...document.querySelectorAll("[data-journal-grouping]")];
 const journalStreamGroupToggle = document.querySelector("[data-journal-stream-group-toggle]");
 const journalPrimaryColumn = document.querySelector("[data-journal-primary-column]");
@@ -115,7 +117,7 @@ const workspaceCardWorkingDirectory = document.querySelector("[data-workspace-ca
 const workspaceCardTaskPrefix = document.querySelector("[data-workspace-card-task-prefix]");
 const workspaceCardRules = document.querySelector("[data-workspace-card-rules]");
 const workspaceCardRulesCount = document.querySelector("[data-workspace-card-rules-count]");
-const workspaceCardQuickMessages = document.querySelector("[data-workspace-card-quick-messages]");
+const workspaceCardQuickMessagesEntry = document.querySelector("[data-workspace-card-quick-messages-entry]");
 const workspaceCardQuickMessagesCount = document.querySelector("[data-workspace-card-quick-messages-count]");
 const workspaceCardArchive = document.querySelector("[data-workspace-card-archive]");
 const workspaceCardReleaseWorkflow = document.querySelector("[data-workspace-release-workflow]");
@@ -175,6 +177,7 @@ const chatLive = document.querySelector("[data-chat-live]");
 const chatStops = [...document.querySelectorAll("[data-chat-stop]")];
 const dialogSettings = document.querySelector("[data-dialog-settings]");
 const dialogSettingsToggle = document.querySelector("[data-dialog-settings-toggle]");
+const dialogSettingsClose = document.querySelector("[data-dialog-settings-close]");
 const dialogStreamName = document.querySelector("[data-dialog-stream-name]");
 const dialogWorkingDirectory = document.querySelector("[data-dialog-working-directory]");
 const dialogWorkingDirectoryNote = document.querySelector("[data-dialog-working-directory-note]");
@@ -184,7 +187,7 @@ const dialogStreamRulesSave = document.querySelector("[data-dialog-stream-rules-
 const dialogStreamArchitect = document.querySelector("[data-dialog-stream-architect]");
 const dialogStreamTeamLead = document.querySelector("[data-dialog-stream-team-lead]");
 const dialogStreamTeamLeadTooltip = document.querySelector("[data-stream-team-lead-tooltip]");
-const dialogStreamQuickMessages = document.querySelector("[data-dialog-stream-quick-messages]");
+const dialogStreamQuickMessagesEntry = document.querySelector("[data-dialog-stream-quick-messages-entry]");
 const dialogStreamQuickMessagesCount = document.querySelector("[data-dialog-stream-quick-messages-count]");
 const streamCardPin = document.querySelector("[data-stream-card-pin]");
 const streamCardWorkspace = document.querySelector("[data-stream-card-workspace]");
@@ -242,7 +245,14 @@ const queueBox = document.querySelector("[data-queue]");
 const settingsPanel = document.querySelector("[data-settings-panel]");
 const quickMessageActionModeSelect = document.querySelector("[data-quick-message-action-mode]");
 const quickMessageActionModeNote = document.querySelector("[data-quick-message-action-mode-note]");
-const settingsGlobalQuickMessages = document.querySelector("[data-settings-global-quick-messages]");
+const settingsGlobalQuickMessagesEntry = document.querySelector("[data-settings-global-quick-messages-entry]");
+const promptTemplatesModal = document.querySelector("[data-prompt-templates-modal]");
+const promptTemplatesScopes = document.querySelector("[data-prompt-templates-scopes]");
+const promptTemplatesNote = document.querySelector("[data-prompt-templates-note]");
+const promptTemplatesEditor = document.querySelector("[data-prompt-templates-editor]");
+const promptTemplatesConflict = document.querySelector("[data-prompt-templates-conflict]");
+const promptTemplatesConflictText = document.querySelector("[data-prompt-templates-conflict-text]");
+const promptTemplatesReload = document.querySelector("[data-prompt-templates-reload]");
 const settingsGlobalQuickMessagesCount = document.querySelector("[data-settings-global-quick-messages-count]");
 const bugReportToggle = document.querySelector("[data-bug-report-toggle]");
 const bugReportForm = document.querySelector("[data-bug-report-form]");
@@ -267,6 +277,7 @@ const serverStateNote = document.querySelector("[data-server-state-note]");
 const serverStateDot = document.querySelector("[data-server-state-dot]");
 const serverFacts = document.querySelector("[data-server-facts]");
 const serverComponents = document.querySelector("[data-server-components]");
+const serverAccounts = document.querySelector("[data-server-accounts]");
 const serverConfig = document.querySelector("[data-server-config]");
 
 const dialog = document.querySelector("[data-text-dialog]");
@@ -745,6 +756,11 @@ function applyChatSurface(value, { persist = false } = {}) {
   if (persist) chatSurfacePreference.persist(localStorage, selected);
 }
 
+function applyActivityRailVisibility(value, { persist = false } = {}) {
+  const selected = activityRailPreference.apply(root, activityRailVisibilityToggle, value);
+  if (persist) activityRailPreference.persist(localStorage, selected);
+}
+
 function savedStreamStatusStyle() {
   try {
     const value = localStorage.getItem("agent-hub-stream-status-style")
@@ -952,6 +968,7 @@ telegramFullscreenButton?.addEventListener("click", () => {
 applyBackgroundMotion(backgroundMotionPreference.stored(localStorage));
 applyTheme(savedTheme());
 applyChatSurface(chatSurfacePreference.stored(localStorage));
+applyActivityRailVisibility(activityRailPreference.stored(localStorage));
 applyStreamStatusStyle(savedStreamStatusStyle());
 applyStreamStatusEffect(savedStreamStatusEffect());
 applyActivityStreamDetailedCards(savedActivityStreamDetailedCards());
@@ -984,6 +1001,11 @@ backgroundMotionToggle?.addEventListener("change", () => {
 });
 chatBackgroundToggle?.addEventListener("change", () => {
   applyChatSurface(chatBackgroundToggle.checked ? "transparent" : "themed", { persist: true });
+});
+activityRailVisibilityToggle?.addEventListener("change", () => {
+  applyActivityRailVisibility(activityRailVisibilityToggle.checked ? "visible" : "hidden", {
+    persist: true,
+  });
 });
 for (const button of journalGroupingButtons) {
   button.addEventListener("click", () => {
@@ -1255,6 +1277,79 @@ function el(tag, props = {}, children = []) {
     node.append(child.nodeType ? child : document.createTextNode(String(child)));
   }
   return node;
+}
+
+/* Анимации состояния живут на псевдоэлементах карточки, поэтому новый узел
+   начинает их заново. Списки пересобираются целиком, и при частых обновлениях
+   полоса активности не успевает пройти свой цикл. Узел с тем же ключом
+   переиспользуется, а его анимации продолжаются с накопленного времени. */
+const STREAM_STATUS_LAYER_SELECTOR = ".stream-tab-status-layer";
+const STREAM_STATUS_ANIMATION_PREFIX = "stream-";
+let reusableWorkspaceCards = new Map();
+let reusableStreamTabs = new Map();
+let adoptedCardAnimations = [];
+
+function statusAnimationKey(animation) {
+  return `${animation.animationName} ${animation.effect?.pseudoElement ?? ""}`;
+}
+
+function statusAnimationTimes(node) {
+  const times = new Map();
+  for (const animation of node.getAnimations?.({ subtree: true }) ?? []) {
+    if (!String(animation.animationName ?? "").startsWith(STREAM_STATUS_ANIMATION_PREFIX)) continue;
+    const time = Number(animation.currentTime);
+    if (Number.isFinite(time)) times.set(statusAnimationKey(animation), time);
+  }
+  return times;
+}
+
+function indexRenderedCards(container, selector, attribute) {
+  const index = new Map();
+  for (const node of container?.querySelectorAll(selector) ?? []) {
+    const key = node.getAttribute(attribute);
+    if (key && !index.has(key)) index.set(key, { node, times: statusAnimationTimes(node) });
+  }
+  return index;
+}
+
+function adoptRenderedCard(index, key, next) {
+  const previous = index.get(key);
+  if (!previous || previous.node.tagName !== next.tagName) return next;
+  index.delete(key);
+  const node = previous.node;
+  /* Наблюдатель видимости помечает карточку своим атрибутом, и рендер им не
+     владеет: при обновлении он сохраняется. */
+  for (const attribute of [...node.attributes]) {
+    if (attribute.name === "data-stream-offscreen") continue;
+    if (!next.hasAttribute(attribute.name)) node.removeAttribute(attribute.name);
+  }
+  for (const attribute of next.attributes) {
+    if (node.getAttribute(attribute.name) !== attribute.value) {
+      node.setAttribute(attribute.name, attribute.value);
+    }
+  }
+  /* У вкладки Stream анимацию несёт собственный слой статуса, поэтому он
+     переносится в обновлённое содержимое вместо заново созданного. */
+  const keptLayer = node.querySelector(STREAM_STATUS_LAYER_SELECTOR);
+  const nextLayer = next.querySelector(STREAM_STATUS_LAYER_SELECTOR);
+  if (keptLayer && nextLayer) nextLayer.replaceWith(keptLayer);
+  node.replaceChildren(...next.childNodes);
+  if (previous.times.size) adoptedCardAnimations.push(previous);
+  return node;
+}
+
+/* Возврат узла в документ перезапускает его анимации, поэтому уже пройденное
+   время восстанавливается сразу после вставки. */
+function resumeAdoptedCardAnimations() {
+  for (const { node, times } of adoptedCardAnimations) {
+    if (!node.isConnected) continue;
+    for (const animation of node.getAnimations?.({ subtree: true }) ?? []) {
+      const time = times.get(statusAnimationKey(animation));
+      if (time === undefined) continue;
+      try { animation.currentTime = time; } catch { /* анимация уже недоступна */ }
+    }
+  }
+  adoptedCardAnimations = [];
 }
 
 function sameData(left, right) {
@@ -2767,6 +2862,9 @@ function renderQuickMessagesEditor(container, scope, scopeId, entries, disabled 
 
 function saveQuickMessagesForScope(scope, scopeId, entries, { rerender = true, container = null } = {}) {
   const ownerKey = quickMessageOwnerKey(scope, scopeId);
+  /* Область разошлась с хранилищем, пока её правили: запись отключена до
+     явного решения человека, иначе черновик затёр бы чужое изменение. */
+  if (promptTemplatesConflicts.has(ownerKey)) return;
   if (container && quickMessageEditorBindings.get(container) !== ownerKey) return;
   const editorState = container ? boundQuickMessageEditorState(container) : quickMessageEditorStates.get(ownerKey);
   const mutationId = `quick-messages-${++quickMessageMutationNextId}`;
@@ -2869,19 +2967,12 @@ function handleQuickMessageEditorChange(container, scope, scopeId) {
 }
 
 function renderGlobalQuickMessagesSettings() {
-  const entries = quickMessagesForScope("global");
   const pending = state.pendingSelections.has("quickMessages");
   if (settingsGlobalQuickMessagesCount) {
-    settingsGlobalQuickMessagesCount.textContent = quickMessagesCountText(entries);
+    settingsGlobalQuickMessagesCount.textContent = quickMessagesCountText(quickMessagesForScope("global"));
   }
-  renderQuickMessagesEditor(
-    settingsGlobalQuickMessages,
-    "global",
-    "",
-    entries,
-    pending,
-  );
-  settingsGlobalQuickMessages?.setAttribute("aria-busy", String(pending));
+  settingsGlobalQuickMessagesEntry?.setAttribute("aria-busy", String(pending));
+  refreshOpenPromptTemplates();
 }
 
 function renderWorkspaceCardQuickMessages(workspaceId = workspaceCardId) {
@@ -2893,14 +2984,14 @@ function renderWorkspaceCardQuickMessages(workspaceId = workspaceCardId) {
       ? "Доступно после создания"
       : quickMessagesCountText(quickMessagesForScope("workspace", id));
   }
-  renderQuickMessagesEditor(
-    workspaceCardQuickMessages,
-    "workspace",
-    id,
-    createMode ? [] : quickMessagesForScope("workspace", id),
-    pending || createMode,
-  );
-  workspaceCardQuickMessages?.setAttribute("aria-busy", String(pending));
+  if (workspaceCardQuickMessagesEntry) {
+    workspaceCardQuickMessagesEntry.disabled = createMode;
+    workspaceCardQuickMessagesEntry.title = createMode
+      ? "Шаблоны Workspace доступны после создания"
+      : "Открыть общую форму prompt-шаблонов";
+    workspaceCardQuickMessagesEntry.setAttribute("aria-busy", String(pending));
+  }
+  refreshOpenPromptTemplates();
 }
 
 function renderStreamQuickMessagesSettings() {
@@ -2911,13 +3002,8 @@ function renderStreamQuickMessagesSettings() {
       ? quickMessagesCountText(quickMessagesForScope("stream", streamId))
       : "Недоступно";
   }
-  renderQuickMessagesEditor(
-    dialogStreamQuickMessages,
-    "stream",
-    streamId,
-    streamId ? quickMessagesForScope("stream", streamId) : [],
-    state.pendingSelections.has("quickMessages") || !streamId,
-  );
+  if (dialogStreamQuickMessagesEntry) dialogStreamQuickMessagesEntry.disabled = !streamId;
+  refreshOpenPromptTemplates();
 }
 
 function renderQuickMessageSettingsControls() {
@@ -2953,6 +3039,291 @@ function settleQuickMessagesSelection(mutationId = "") {
     editorState.pendingMutationId = "";
   }
   quickMessageMutations.delete(key);
+}
+
+/* ------------------------------------------ общая форма prompt-шаблонов */
+
+/* Один и тот же редактор стоял сразу в трёх местах и в узкой панели настроек
+   не помещался. Теперь он один и живёт в общей форме, а прежние места её
+   открывают с нужной областью. Сам редактор, его состояние, ошибки и учёт
+   незавершённых сохранений остались прежними: форма их переносит, а не
+   заменяет, поэтому и запись идёт единственным прежним путём. */
+const PROMPT_TEMPLATE_SCOPES = ["global", "workspace", "stream"];
+const PROMPT_TEMPLATE_SCOPE_NOTES = {
+  global: "Видны во всех Workspace и Stream.",
+  workspace: "Видны во всех Stream этого Workspace.",
+  stream: "Видны только в этом Stream.",
+};
+
+let promptTemplatesScope = "global";
+let promptTemplatesContext = { streamId: "", streamName: "", workspaceId: "", workspaceName: "" };
+let promptTemplatesReturnFocus = null;
+/* Область считается правленой с первого ввода, и тогда же запоминается точка
+   отсчёта — снимок хранилища на этот момент. Пока область правится, входящее
+   обновление её черновик не подменяет. Если оно изменило ту же область, это
+   расхождение: до явного решения человека ни один путь записи не срабатывает
+   и форма не закрывается, чтобы черновик не потерялся. */
+const promptTemplatesEditBase = new Map();
+const promptTemplatesConflicts = new Set();
+
+function promptTemplateScopeId(scope) {
+  if (scope === "workspace") return promptTemplatesContext.workspaceId;
+  if (scope === "stream") return promptTemplatesContext.streamId;
+  return "";
+}
+
+function promptTemplateScopeAvailable(scope) {
+  return scope === "global" || Boolean(promptTemplateScopeId(scope));
+}
+
+function promptTemplateScopeName(scope) {
+  if (scope === "global") return "Глобальные";
+  if (scope === "workspace") return promptTemplatesContext.workspaceName || "Workspace";
+  return promptTemplatesContext.streamName || "Stream";
+}
+
+function promptTemplateScopeEntries(scope) {
+  return promptTemplateScopeAvailable(scope)
+    ? quickMessagesForScope(scope, promptTemplateScopeId(scope))
+    : [];
+}
+
+function promptTemplatesOwnerKey(scope = promptTemplatesScope) {
+  return quickMessageOwnerKey(scope, promptTemplateScopeId(scope));
+}
+
+function promptTemplateEditorState(scope) {
+  return quickMessageEditorStates.get(promptTemplatesOwnerKey(scope)) ?? null;
+}
+
+function markPromptTemplatesEdited(scope = promptTemplatesScope) {
+  if (!promptTemplateScopeAvailable(scope)) return;
+  const ownerKey = promptTemplatesOwnerKey(scope);
+  if (!promptTemplatesEditBase.has(ownerKey)) {
+    promptTemplatesEditBase.set(ownerKey, {
+      scope,
+      scopeId: promptTemplateScopeId(scope),
+      signature: quickMessageEditorSignature(promptTemplateScopeEntries(scope)),
+    });
+  }
+  const editorState = quickMessageEditorStates.get(ownerKey);
+  if (editorState) editorState.keepDraft = true;
+}
+
+/* Точка отсчёта появляется и без ввода — когда сохранение отклонили и черновик
+   остался в редакторе: тогда отсчёт ведётся от откатившегося хранилища. */
+function refreshPromptTemplatesConflicts() {
+  for (const [ownerKey, editorState] of quickMessageEditorStates) {
+    if (editorState?.keepDraft !== true) {
+      promptTemplatesEditBase.delete(ownerKey);
+      promptTemplatesConflicts.delete(ownerKey);
+    }
+  }
+  for (const scope of PROMPT_TEMPLATE_SCOPES) {
+    if (!promptTemplateScopeAvailable(scope)) continue;
+    const ownerKey = promptTemplatesOwnerKey(scope);
+    if (promptTemplatesEditBase.has(ownerKey)) continue;
+    if (quickMessageEditorStates.get(ownerKey)?.keepDraft !== true) continue;
+    promptTemplatesEditBase.set(ownerKey, {
+      scope,
+      scopeId: promptTemplateScopeId(scope),
+      signature: quickMessageEditorSignature(promptTemplateScopeEntries(scope)),
+    });
+  }
+  for (const [ownerKey, base] of promptTemplatesEditBase) {
+    const stored = quickMessageEditorSignature(quickMessagesForScope(base.scope, base.scopeId));
+    if (stored !== base.signature) promptTemplatesConflicts.add(ownerKey);
+  }
+  return promptTemplatesConflicts;
+}
+
+function promptTemplatesScopeConflicted(scope = promptTemplatesScope) {
+  return promptTemplateScopeAvailable(scope) && promptTemplatesConflicts.has(promptTemplatesOwnerKey(scope));
+}
+
+/* Область доступна в этом окне формы, только если её можно выбрать прямо
+   здесь: глобальная, открытый Workspace и его Stream. Черновик и расхождение
+   чужой области сохраняются и ждут, когда откроют её Workspace, но форму,
+   открытую в другом месте, они не держат — иначе из неё некуда деться. */
+function promptTemplatesAccessibleScopes() {
+  return PROMPT_TEMPLATE_SCOPES.filter((scope) => promptTemplateScopeAvailable(scope));
+}
+
+function promptTemplatesBlocked() {
+  return promptTemplatesAccessibleScopes().some((scope) => promptTemplatesScopeConflicted(scope));
+}
+
+/* У области с неудавшимся сохранением счётчик показывает то, что человек видит
+   в редакторе, а не то, что успело лечь в хранилище. */
+function promptTemplateScopeCount(scope) {
+  const editorState = promptTemplateEditorState(scope);
+  if (editorState && (editorState.keepDraft || editorState.pendingMutationId)) return editorState.items.length;
+  return window.AgentHubStreamTabs.normalizeQuickMessages({
+    global: promptTemplateScopeEntries(scope),
+  }).global.length;
+}
+
+/* Кнопки областей создаются один раз и правятся на месте: счётчик обновляется
+   и по change из поля, а change приходит на blur между mousedown и click по
+   самой кнопке, и пересборка узлов съедала бы этот клик. */
+function promptTemplatesScopeButton(scope) {
+  const existing = promptTemplatesScopes.querySelector(`[data-prompt-templates-scope="${scope}"]`);
+  if (existing) return existing;
+  const button = el("button", {
+    type: "button",
+    class: "chip-button prompt-templates-scope",
+    "data-prompt-templates-scope": scope,
+  }, [
+    el("span", { class: "prompt-templates-scope-name" }),
+    el("span", { class: "prompt-templates-scope-count" }),
+  ]);
+  promptTemplatesScopes.append(button);
+  return button;
+}
+
+function renderPromptTemplatesScopes() {
+  if (!promptTemplatesScopes) return;
+  for (const scope of PROMPT_TEMPLATE_SCOPES) {
+    const button = promptTemplatesScopeButton(scope);
+    const available = promptTemplateScopeAvailable(scope);
+    button.disabled = !available;
+    button.setAttribute("aria-pressed", String(available && scope === promptTemplatesScope));
+    button.toggleAttribute("data-prompt-templates-diverged", available && promptTemplatesScopeDiverged(scope));
+    if (available) button.removeAttribute("title");
+    else button.title = "В текущем контексте эта область недоступна";
+    button.querySelector(".prompt-templates-scope-name").textContent = promptTemplateScopeName(scope);
+    button.querySelector(".prompt-templates-scope-count").textContent = available
+      ? String(promptTemplateScopeCount(scope))
+      : "—";
+  }
+  if (promptTemplatesNote) {
+    promptTemplatesNote.textContent = PROMPT_TEMPLATE_SCOPE_NOTES[promptTemplatesScope] ?? "";
+  }
+}
+
+/* Неудавшееся сохранение оставляет черновик в редакторе. Если ту же область за
+   это время изменили снаружи, подменять черновик молча нельзя и записывать его
+   поверх тоже: расхождение показывается явно, а выбор остаётся за человеком. */
+function promptTemplatesScopeDiverged(scope = promptTemplatesScope) {
+  return promptTemplatesScopeConflicted(scope);
+}
+
+function renderPromptTemplatesConflict() {
+  /* Пересчёт обязателен именно здесь: после удачной записи черновик совпал с
+     хранилищем, и точку отсчёта надо снять, иначе следующее чужое обновление
+     выглядело бы расхождением там, где его нет. */
+  refreshPromptTemplatesConflicts();
+  const active = promptTemplatesScopeConflicted();
+  const others = promptTemplatesAccessibleScopes()
+    .filter((scope) => scope !== promptTemplatesScope && promptTemplatesScopeConflicted(scope))
+    .map((scope) => promptTemplateScopeName(scope));
+  if (promptTemplatesConflict) promptTemplatesConflict.hidden = !(active || others.length > 0);
+  if (promptTemplatesConflictText) {
+    promptTemplatesConflictText.textContent = active
+      ? "Сохранённые шаблоны этой области изменились, пока правка не записалась. Черновик оставлен здесь, запись отключена до вашего решения."
+      : others.length
+        ? `Шаблоны области «${others.join("», «")}» изменились в другом месте. Откройте эту область и разберите расхождение.`
+        : "";
+  }
+  if (promptTemplatesReload) promptTemplatesReload.hidden = !active;
+}
+
+/* Подпись со счётчиком стоит рядом со входом, а редактор теперь в форме,
+   поэтому после правки счётчики обновляются отдельно от перерисовки строк.
+   У области, открытой в форме, подпись показывает то же число строк, что
+   человек видит в редакторе, включая только что добавленную пустую. */
+function promptTemplateEntryCountText(scope, scopeId) {
+  const editorState = quickMessageEditorStates.get(quickMessageOwnerKey(scope, scopeId));
+  if (promptTemplatesModal?.open && editorState
+    && promptTemplatesScope === scope && promptTemplateScopeId(scope) === scopeId) {
+    return window.AgentHubStreamTabs.quickMessagesCountLabel(editorState.items.length);
+  }
+  return quickMessagesCountText(quickMessagesForScope(scope, scopeId));
+}
+
+function renderPromptTemplateEntryCounts() {
+  if (settingsGlobalQuickMessagesCount) {
+    settingsGlobalQuickMessagesCount.textContent = promptTemplateEntryCountText("global", "");
+  }
+  if (workspaceCardQuickMessagesCount && workspaceCardId && workspaceCardMode !== "create") {
+    workspaceCardQuickMessagesCount.textContent = promptTemplateEntryCountText("workspace", workspaceCardId);
+  }
+  const streamId = String(currentTask()?.streamId ?? "").trim();
+  if (dialogStreamQuickMessagesCount && streamId) {
+    dialogStreamQuickMessagesCount.textContent = promptTemplateEntryCountText("stream", streamId);
+  }
+}
+
+function renderPromptTemplatesForm() {
+  const scope = promptTemplatesScope;
+  refreshPromptTemplatesConflicts();
+  renderQuickMessagesEditor(
+    promptTemplatesEditor,
+    scope,
+    promptTemplateScopeId(scope),
+    promptTemplateScopeEntries(scope),
+    state.pendingSelections.has("quickMessages")
+      || !promptTemplateScopeAvailable(scope)
+      || promptTemplatesScopeConflicted(scope),
+  );
+  renderPromptTemplatesScopes();
+  renderPromptTemplatesConflict();
+}
+
+/* Пока форма открыта, снимок может обновить ту же область. Редактор без
+   незаписанного черновика следует хранилищу, черновик остаётся на месте.
+   Форма сама знает свою активную область, поэтому перерисовывается на любое
+   обновление шаблонов: сверять её с областью вызывающего незачем. */
+function refreshOpenPromptTemplates() {
+  if (!promptTemplatesModal?.open) return;
+  renderPromptTemplatesForm();
+}
+
+function setPromptTemplatesScope(scope) {
+  if (scope === promptTemplatesScope || !promptTemplateScopeAvailable(scope)) return;
+  promptTemplatesScope = scope;
+  renderPromptTemplatesForm();
+  promptTemplatesScopes
+    ?.querySelector(`[data-prompt-templates-scope="${scope}"]`)
+    ?.focus({ preventScroll: true });
+}
+
+/* Явный отказ от своего черновика в пользу сохранённых значений. */
+function reloadPromptTemplatesScope() {
+  const ownerKey = promptTemplatesOwnerKey();
+  promptTemplatesEditBase.delete(ownerKey);
+  promptTemplatesConflicts.delete(ownerKey);
+  const editorState = promptTemplateEditorState(promptTemplatesScope);
+  if (editorState) {
+    editorState.keepDraft = false;
+    editorState.error = "";
+    editorState.projectedSignature = "";
+  }
+  renderPromptTemplatesForm();
+}
+
+function openPromptTemplates(scope, overrides = {}) {
+  if (!promptTemplatesModal) return;
+  const current = currentQuickMessageContext();
+  const workspaceId = String(overrides.workspaceId ?? current?.workspaceId ?? "").trim();
+  /* Форму открывают и из карточки чужого Workspace: область Stream остаётся
+     доступной только тогда, когда открытый Stream действительно его. */
+  const keepsStream = Boolean(current) && current.workspaceId === workspaceId;
+  promptTemplatesContext = {
+    streamId: keepsStream ? current.streamId : "",
+    streamName: keepsStream ? current.streamName : "",
+    workspaceId,
+    workspaceName: String(
+      overrides.workspaceName
+      ?? (keepsStream ? current.workspaceName : workspaceCatalogItem(workspaceId)?.name)
+      ?? "",
+    ).trim(),
+  };
+  promptTemplatesScope = promptTemplateScopeAvailable(scope) ? scope : "global";
+  promptTemplatesReturnFocus = document.activeElement;
+  renderPromptTemplatesForm();
+  if (!promptTemplatesModal.open) promptTemplatesModal.showModal();
+  promptTemplatesScopes?.querySelector("[aria-pressed='true']")?.focus({ preventScroll: true });
 }
 
 function quickMessageScopeLabel(scope) {
@@ -3418,6 +3789,7 @@ function renderTasksContent() {
       .toLowerCase().includes(filter);
     return local || state.searchResults.has(task.id);
   });
+  reusableWorkspaceCards = indexRenderedCards(taskList, ".task-workspace-item", "data-workspace-id");
   taskList.replaceChildren();
   let visibleCount = visible.length;
   const { workspaceTasks, unassignedTasks } = window.AgentHubStreamTabs.taskListSections(visible);
@@ -3471,6 +3843,8 @@ function renderTasksContent() {
   }
   taskCount.hidden = !hasTasks;
   taskCount.textContent = String(visibleCount);
+  reusableWorkspaceCards = new Map();
+  resumeAdoptedCardAnimations();
   renderActivityRail();
 }
 
@@ -3580,7 +3954,7 @@ function renderTaskWorkspaceItem({ id, name, kind, tasks }, { folderMember = fal
   const unread = tasks.some((task) => task.unread);
   const running = tasks.some((task) => task.running);
   const maintenance = tasks.map(streamMaintenanceKind).find(Boolean) ?? "";
-  return el("li", {
+  return adoptRenderedCard(reusableWorkspaceCards, id, el("li", {
     class: "task-workspace-item",
     "data-workspace-id": id,
     "data-workspace-kind": kind,
@@ -3605,7 +3979,7 @@ function renderTaskWorkspaceItem({ id, name, kind, tasks }, { folderMember = fal
       text: formatRelativeTime(lastActivity),
       title: lastActivity ? new Date(lastActivity).toLocaleString("ru-RU") : "",
     }),
-  ]);
+  ]));
 }
 
 function representativeStreamTask(stream) {
@@ -3874,6 +4248,7 @@ function renderStreamTabs() {
     return;
   }
   const workspaceId = workspaceKey(selected);
+  reusableStreamTabs = indexRenderedCards(streamTabs, ".stream-tab", "data-stream-tab-id");
   const overflowMenuOpen = window.AgentHubStreamTabs.preserveStreamOverflowMenuOpen(
     streamTabs.dataset.workspaceId,
     workspaceId,
@@ -3969,14 +4344,14 @@ function renderStreamTabs() {
         title: task?.lastActivity ? new Date(task.lastActivity).toLocaleString("ru-RU") : "",
       }),
     ];
-    const button = el("button", {
+    const button = adoptRenderedCard(reusableStreamTabs, stream.id, el("button", {
       ...attributes,
       class: "stream-tab",
       draggable: window.AgentHubStreamTabs.streamsAreDraggable(streamOrderMode, surface) ? "true" : null,
     }, [
       el("span", { class: "stream-tab-status-layer", "aria-hidden": "true" }),
       el("span", { class: "stream-tab-card" }, content()),
-    ]);
+    ]));
     overflowItems.push(el("button", {
       ...attributes,
       class: "stream-overflow-item",
@@ -4016,6 +4391,8 @@ function renderStreamTabs() {
   }, [overflowButton, overflowMenu]);
   streamTabs.dataset.workspaceId = workspaceId;
   streamTabs.replaceChildren(leftControls, track, overflow);
+  reusableStreamTabs = new Map();
+  resumeAdoptedCardAnimations();
   streamTabs.hidden = false;
   scheduleStreamTabsOverflow();
 }
@@ -4127,6 +4504,7 @@ function renderStreamChatPreview(task) {
         el("div", { class: "activity-list", "data-activity-list": "" }),
       ]),
       el("div", { class: "msg-body", "data-live-body": "" }),
+      el("div", { "data-live-attachments": "", hidden: true }),
     ]);
     populateLiveCard(liveNode, live, task.agentLabel || "Агент", task);
     log.append(liveNode);
@@ -7480,6 +7858,7 @@ function liveCardHasContent(live) {
     || normalizedMessageText(live.reasoning)
     || normalizedMessageText(live.stage)
     || visibleTurnTraceGroups(live.activityGroups).length
+    || (Array.isArray(live.attachments) && live.attachments.length)
   ));
 }
 
@@ -7560,6 +7939,16 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
     } else renderMarkdown(body, visibleText, fileContext);
   });
   body.hidden = !visibleText && liveMessage.responseCitationPresentations.length === 0;
+  const attachmentStrip = node.querySelector("[data-live-attachments]");
+  const liveAttachments = Array.isArray(liveMessage.attachments) ? liveMessage.attachments : [];
+  if (attachmentStrip) {
+    liveCardRenderController.reconcile(node, "attachments", liveAttachments, () => {
+      attachmentStrip.replaceChildren(...(liveAttachments.length
+        ? [renderAttachmentStrip(liveAttachments, { readOnly: true })]
+        : []));
+    });
+    attachmentStrip.hidden = liveAttachments.length === 0;
+  }
   const activityFeed = node.querySelector("[data-activity-feed]");
   liveCardRenderController.reconcile(node, "activity-feed", renderParts.activityFeed, () => {
     activityFeed.open = liveActivityDisclosureOpen({
@@ -9044,6 +9433,10 @@ function toggleDialogSettings() {
   setDialogSettingsOpen(!dialogSettings.open);
 }
 
+dialogSettingsClose?.addEventListener("click", () => {
+  setDialogSettingsOpen(false);
+});
+
 function openPanel() {
   if (settingsPanel.hidden) settingsPanelReturnFocus = document.activeElement;
   renderGlobalQuickMessagesSettings();
@@ -9160,16 +9553,81 @@ document.addEventListener("contextmenu", (event) => {
     return;
   }
 });
-workspaceCardQuickMessages?.addEventListener("click", (event) => {
+workspaceCardQuickMessagesEntry?.addEventListener("click", () => {
   if (!workspaceCardId) return;
-  handleQuickMessageEditorClick(event, workspaceCardQuickMessages, "workspace", workspaceCardId);
+  openPromptTemplates("workspace", {
+    workspaceId: workspaceCardId,
+    workspaceName: workspaceCatalogItem(workspaceCardId)?.name ?? "",
+  });
 });
-workspaceCardQuickMessages?.addEventListener("input", (event) => {
-  handleQuickMessageEditorInput(event, workspaceCardQuickMessages);
+/* Редактор внутри формы остался прежним, поэтому и обработчики его прежние —
+   форма только подставляет активную область и обновляет свои подписи. */
+promptTemplatesModal?.addEventListener("click", (event) => {
+  const scopeButton = event.target.closest("[data-prompt-templates-scope]");
+  if (scopeButton) {
+    /* Переключение области — не запись, и оно нужно, чтобы дойти до соседней
+       области с расхождением и разобрать его. */
+    setPromptTemplatesScope(scopeButton.dataset.promptTemplatesScope);
+    return;
+  }
+  if (event.target.closest("[data-prompt-templates-reload]")) {
+    reloadPromptTemplatesScope();
+    return;
+  }
+  if (event.target.closest("[data-prompt-templates-close], [data-prompt-templates-done]")) {
+    if (promptTemplatesBlocked()) return;
+    promptTemplatesModal.close();
+    return;
+  }
+  const editorAction = event.target.closest("[data-quick-message-add], [data-quick-message-action]");
+  if (!editorAction) return;
+  if (promptTemplatesScopeConflicted()) return;
+  /* Раскрытие строки правкой не является и точку отсчёта не заводит. */
+  if (editorAction.dataset.quickMessageAction !== "toggle") markPromptTemplatesEdited();
+  handleQuickMessageEditorClick(
+    event,
+    promptTemplatesEditor,
+    promptTemplatesScope,
+    promptTemplateScopeId(promptTemplatesScope),
+  );
+  renderPromptTemplatesScopes();
+  renderPromptTemplatesConflict();
+  renderPromptTemplateEntryCounts();
 });
-workspaceCardQuickMessages?.addEventListener("change", () => {
-  if (!workspaceCardId) return;
-  handleQuickMessageEditorChange(workspaceCardQuickMessages, "workspace", workspaceCardId);
+promptTemplatesModal?.addEventListener("input", (event) => {
+  if (!event.target.closest("[data-quick-message-title], [data-quick-message-text]")) return;
+  if (promptTemplatesScopeConflicted()) return;
+  /* Первый же ввод отмечает область правленой: входящее обновление снимка с
+     этого момента черновик не подменяет. */
+  markPromptTemplatesEdited();
+  handleQuickMessageEditorInput(event, promptTemplatesEditor);
+  renderPromptTemplatesScopes();
+});
+promptTemplatesModal?.addEventListener("change", (event) => {
+  if (!event.target.closest("[data-quick-message-title], [data-quick-message-text]")) return;
+  if (promptTemplatesScopeConflicted()) return;
+  markPromptTemplatesEdited();
+  handleQuickMessageEditorChange(
+    promptTemplatesEditor,
+    promptTemplatesScope,
+    promptTemplateScopeId(promptTemplatesScope),
+  );
+  renderPromptTemplatesScopes();
+  renderPromptTemplatesConflict();
+  renderPromptTemplateEntryCounts();
+});
+/* Escape тоже закрывает форму, поэтому расхождение останавливает и его:
+   иначе черновик исчез бы вместе с окном. */
+promptTemplatesModal?.addEventListener("cancel", (event) => {
+  if (promptTemplatesBlocked()) event.preventDefault();
+});
+/* Форму закрывают и клавишей Escape, поэтому фокус возвращается в обработчике
+   самого закрытия. Черновик остаётся в состоянии редактора и переживёт
+   повторное открытие. */
+promptTemplatesModal?.addEventListener("close", () => {
+  const returnFocus = promptTemplatesReturnFocus;
+  promptTemplatesReturnFocus = null;
+  if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
 });
 workspaceCardForm?.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -9652,13 +10110,8 @@ function openStreamCardMoveMenu() {
   streamCardMoveMenu.querySelector("[role='menuitem']")?.focus({ preventScroll: true });
 }
 
-settingsPanel?.addEventListener("click", (event) => {
-  if (!event.target.closest("[data-quick-message-add], [data-quick-message-action]")) return;
-  handleQuickMessageEditorClick(event, settingsGlobalQuickMessages, "global", "");
-});
-
-settingsPanel?.addEventListener("input", (event) => {
-  handleQuickMessageEditorInput(event, settingsGlobalQuickMessages);
+settingsGlobalQuickMessagesEntry?.addEventListener("click", () => {
+  openPromptTemplates("global");
 });
 
 settingsPanel?.addEventListener("change", (event) => {
@@ -9671,16 +10124,14 @@ settingsPanel?.addEventListener("change", (event) => {
     emit("selection:set", { key: "quickMessageActionMode", value });
     return;
   }
-  if (!event.target.closest("[data-quick-message-title], [data-quick-message-text]")) return;
-  handleQuickMessageEditorChange(settingsGlobalQuickMessages, "global", "");
 });
 
 dialogSettings.addEventListener("click", (event) => {
   const task = currentTask();
   const streamId = String(task?.streamId ?? "").trim();
   const workspaceId = workspaceKey(task);
-  if (event.target.closest("[data-quick-message-add], [data-quick-message-action]")) {
-    if (streamId) handleQuickMessageEditorClick(event, dialogStreamQuickMessages, "stream", streamId);
+  if (event.target.closest("[data-prompt-templates-open]")) {
+    if (streamId) openPromptTemplates("stream");
     return;
   }
   if (event.target.closest("[data-stream-card-pin]")) {
@@ -9736,16 +10187,7 @@ dialogSettings.addEventListener("click", (event) => {
   selectDialogSetting(chip.dataset.selectGroup, chip.dataset.selectValue);
 });
 
-dialogSettings.addEventListener("input", (event) => {
-  handleQuickMessageEditorInput(event, dialogStreamQuickMessages);
-});
-
 dialogSettings.addEventListener("change", (event) => {
-  if (event.target.closest("[data-quick-message-title], [data-quick-message-text]")) {
-    const streamId = String(currentTask()?.streamId ?? "").trim();
-    if (streamId) handleQuickMessageEditorChange(dialogStreamQuickMessages, "stream", streamId);
-    return;
-  }
   const streamName = event.target.closest("[data-dialog-stream-name]");
   if (streamName) {
     const task = currentTask();
@@ -9946,6 +10388,7 @@ function renderServerStatus(payload = {}) {
     }),
     component.note ? el("small", { text: component.note }) : null,
   ].filter(Boolean))) : [el("span", { class: "setting-empty", text: "Компоненты не определены" })]));
+  renderServerAccounts(payload.accounts);
   /* Одно название вроде «Очередь входящих» ничего не объясняет, поэтому у
      плитки есть пояснение под значением и та же строка в подсказке. */
   const entries = Array.isArray(payload.configuration) ? payload.configuration : [];
@@ -9956,6 +10399,83 @@ function renderServerStatus(payload = {}) {
     : [el("span", { class: "setting-empty", text: "Конфигурация недоступна" })]));
   syncServerConfigDependencyVisibility();
   syncServerConfigActions();
+}
+
+/* Вход идёт штатным способом провайдера: Hub только запускает его и показывает
+   состояние. Повторное нажатие отменяет незавершённый вход, поэтому кнопка
+   остаётся доступной и во время ожидания. */
+/* Ссылку входа знает только локальный клиент, запустивший вход: в общий снапшот
+   она не попадает. */
+const providerLoginLocal = new Map();
+/* Черновик кода живёт только в памяти страницы, чтобы снапшот не стирал ввод. */
+const providerLoginCodeDrafts = new Map();
+let providerLoginRenderKey = "";
+
+function renderServerAccounts(accounts) {
+  const panel = window.AgentHubProviderLoginPanel;
+  if (!serverAccounts || !panel) return;
+  const list = Array.isArray(accounts) ? accounts : [];
+  const views = list.map((account) => {
+    if (!panel.retainLocal(account, providerLoginLocal.get(account?.provider))) {
+      providerLoginLocal.delete(account?.provider);
+      providerLoginCodeDrafts.delete(account?.provider);
+    }
+    return panel.accountView(account, providerLoginLocal.get(account?.provider));
+  });
+  const key = panel.renderKey(views);
+  if (key === providerLoginRenderKey && serverAccounts.childElementCount) return;
+  providerLoginRenderKey = key;
+  serverAccounts.replaceChildren(...(views.length ? views.map((view) => {
+    const start = el("button", { type: "button", class: "chip-button", text: view.startText });
+    start.addEventListener("click", () => emit("server:provider-login", { provider: view.provider }));
+    const open = view.authUrl
+      ? el("button", { type: "button", class: "chip-button ghost", text: "Открыть страницу входа" })
+      : null;
+    open?.addEventListener("click", () => emit("server:provider-login-open", { authUrl: view.authUrl }));
+    const cancel = view.canCancel
+      ? el("button", { type: "button", class: "chip-button ghost", text: "Отменить" })
+      : null;
+    cancel?.addEventListener("click", () => {
+      providerLoginCodeDrafts.delete(view.provider);
+      emit("server:provider-login-cancel", { provider: view.provider });
+    });
+    let codeRow = null;
+    if (view.acceptsCode) {
+      const input = el("input", { type: "text", class: "server-account-code" });
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      input.placeholder = "code#state";
+      input.setAttribute("aria-label", "Код со страницы входа Claude");
+      input.value = providerLoginCodeDrafts.get(view.provider) ?? "";
+      const send = el("button", { type: "button", class: "chip-button", text: "Отправить код" });
+      const sync = () => {
+        if (input.value) providerLoginCodeDrafts.set(view.provider, input.value);
+        else providerLoginCodeDrafts.delete(view.provider);
+        send.disabled = !panel.codeSubmission(view, input.value);
+      };
+      input.addEventListener("input", sync);
+      sync();
+      send.addEventListener("click", () => {
+        const submission = panel.codeSubmission(view, input.value);
+        if (!submission) return;
+        providerLoginCodeDrafts.delete(view.provider);
+        input.value = "";
+        sync();
+        emit("server:provider-login-code", submission);
+      });
+      codeRow = el("div", { class: "server-account-code-row" }, [
+        el("small", { text: view.codeHint }),
+        el("div", { class: "server-account-actions" }, [input, send]),
+      ]);
+    }
+    return el("div", { class: "server-component server-account", "data-status": view.status }, [
+      el("span", { class: "server-component-name", text: view.label }),
+      el("span", { class: "server-component-status", text: view.statusText }),
+      view.error ? el("small", { text: view.error }) : null,
+      el("div", { class: "server-account-actions" }, [start, open, cancel].filter(Boolean)),
+      codeRow,
+    ].filter(Boolean));
+  }) : [el("span", { class: "setting-empty", text: "Вход недоступен в этой версии Hub" })]));
 }
 
 /* Автозапуск — такая же настройка Hub, поэтому лежит первой плиткой сетки. В
@@ -10265,8 +10785,13 @@ modalOverlays?.installScrimDismiss({
   close: () => closeDialog(null),
 });
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && !dialog.hidden) closeDialog(null);
-  if (event.key === "Escape" && !settingsPanel.hidden) closePanel();
+  if (event.key !== "Escape") return;
+  /* Escape снимает только верхний слой. Модальный диалог закрывает себя сам, и
+     панель под ним остаётся: иначе форма шаблонов, открытая из настроек,
+     уносила бы за собой и сами настройки. */
+  if (document.querySelector("dialog[open]")) return;
+  if (!dialog.hidden) closeDialog(null);
+  if (!settingsPanel.hidden) closePanel();
 });
 
 /* ================================================= общие действия (intents) */
@@ -10918,7 +11443,9 @@ const AgentHub = {
     else state.pendingSelections.delete(normalizedKey);
     if (normalizedKey === "quickMessages" && !pending) settleQuickMessagesSelection(mutationId);
     renderOptions();
-    if (normalizedKey === "quickMessages") renderWorkspaceCardQuickMessages();
+    /* Редактор шаблонов теперь один на все области, поэтому снятие блокировки
+       перерисовывает его целиком, а не только карточку Workspace. */
+    if (normalizedKey === "quickMessages") renderQuickMessageSettingsControls();
   },
   rejectSelection(key, mutationId = "") {
     if (String(key ?? "") === "quickMessages") rejectQuickMessagesSelection(mutationId);
@@ -10975,6 +11502,14 @@ const AgentHub = {
   setServerStatus(payload) {
     lastServerPayload = payload ?? {};
     if (root.dataset.view === "server") renderServerStatus(lastServerPayload);
+  },
+  /** Попытка и ссылка входа из локального ответа на запуск; снапшот их не содержит. */
+  setProviderLoginUrl(provider, { attemptId = null, authUrl = null } = {}) {
+    providerLoginCodeDrafts.delete(provider);
+    if (attemptId) providerLoginLocal.set(provider, { attemptId: String(attemptId), authUrl });
+    else providerLoginLocal.delete(provider);
+    providerLoginRenderKey = "";
+    if (root.dataset.view === "server" && lastServerPayload) renderServerStatus(lastServerPayload);
   },
   openAttachmentViewer,
   attachmentViewerLoadAuthority,

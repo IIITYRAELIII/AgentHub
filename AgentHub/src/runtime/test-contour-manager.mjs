@@ -950,33 +950,74 @@ async function waitFor(operation, description, timeoutMs = 120_000) {
   throw new Error(`Timeout waiting for ${description}: ${lastError?.message ?? "not ready"}`);
 }
 
-export async function readyTestContourHealth(port, {
+function unavailableHealth(reason, { retryable = true } = {}) {
+  return {
+    health: null,
+    readiness: { ready: false, retryable, reason },
+  };
+}
+
+async function inspectReadyTestContourHealth(port, {
   root = defaultTestContourRoot(),
   requireFakeQueue = false,
   expectedIdentity = null,
+  timeoutMs = 2_000,
 } = {}) {
   const baseUrl = `http://127.0.0.1:${port}`;
-  const response = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(2_000) });
-  if (!response.ok) return null;
-  const body = await response.json();
-  if (body?.ok !== true || body?.live !== true || body?.ready !== true) return null;
+  let response;
+  try {
+    response = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(Math.max(1, timeoutMs)) });
+  } catch {
+    return unavailableHealth("health-request-failed");
+  }
+  if (!response.ok) return unavailableHealth("health-http-status");
+  let body;
+  try {
+    body = await response.json();
+  } catch {
+    return unavailableHealth("health-invalid-response");
+  }
+  if (body?.ok !== true || body?.live !== true || body?.ready !== true) {
+    return unavailableHealth("health-not-ready");
+  }
   if (expectedIdentity) {
     const served = body?.testContourRuntime;
     const lock = await readJson(path.join(testContourPaths(root).dataDir, "bot.lock"));
-    if (!served
-        || served.contourId !== expectedIdentity.contourId
-        || served.releaseId !== expectedIdentity.releaseId
-        || (served.operationId ?? null) !== (expectedIdentity.operationId ?? null)
-        || served.model !== expectedIdentity.model
-        || served.runtimeNonce !== expectedIdentity.runtimeNonce
-        || Number(served.pid) !== Number(expectedIdentity.runtimePid)
-        || Number(served.expectedPort) !== Number(expectedIdentity.port)
-        || Number(served.actualPort) !== Number(port)
-        || Number(lock?.pid) !== Number(expectedIdentity.runtimePid)
-        || lock?.releaseId !== expectedIdentity.releaseId
-        || lock?.ready !== true) return null;
+    if (!served) return unavailableHealth("health-runtime-identity-missing", { retryable: false });
+    if (served.contourId !== expectedIdentity.contourId) {
+      return unavailableHealth("health-contour-mismatch", { retryable: false });
+    }
+    if (served.releaseId !== expectedIdentity.releaseId) {
+      return unavailableHealth("health-release-mismatch", { retryable: false });
+    }
+    if ((served.operationId ?? null) !== (expectedIdentity.operationId ?? null)) {
+      return unavailableHealth("health-operation-mismatch", { retryable: false });
+    }
+    if (served.model !== expectedIdentity.model) {
+      return unavailableHealth("health-model-mismatch", { retryable: false });
+    }
+    if (served.runtimeNonce !== expectedIdentity.runtimeNonce) {
+      return unavailableHealth("health-runtime-nonce-mismatch", { retryable: false });
+    }
+    if (Number(served.pid) !== Number(expectedIdentity.runtimePid)) {
+      return unavailableHealth("health-runtime-pid-mismatch", { retryable: false });
+    }
+    if (Number(served.expectedPort) !== Number(expectedIdentity.port)
+        || Number(served.actualPort) !== Number(port)) {
+      return unavailableHealth("health-port-mismatch", { retryable: false });
+    }
+    if (!lock) return unavailableHealth("health-lock-missing");
+    if (Number(lock.pid) !== Number(expectedIdentity.runtimePid)) {
+      return unavailableHealth("health-lock-pid-mismatch", { retryable: false });
+    }
+    if (lock.releaseId !== expectedIdentity.releaseId) {
+      return unavailableHealth("health-lock-release-mismatch", { retryable: false });
+    }
+    if (lock.ready !== true) return unavailableHealth("health-lock-not-ready");
   }
-  if (!requireFakeQueue) return body;
+  if (!requireFakeQueue) {
+    return { health: body, readiness: { ready: true, retryable: false, reason: "ready" } };
+  }
   const paths = testContourPaths(root);
   const fakeState = await readJson(paths.fakeCodexStateFile, {});
   const recovery = fakeState?.hubRecovery ?? { status: "missing" };
@@ -984,13 +1025,18 @@ export async function readyTestContourHealth(port, {
   if (recovery.status !== "ready" || queue.status !== "ready") {
     throw new Error(`Fake Codex queue recovery is ${queue.status}: ${JSON.stringify({ recovery, queue })}`);
   }
-  return {
+  const health = {
     ...body,
     testContour: {
       fakeCodexRecovery: recovery,
       fakeCodexQueue: queue,
     },
   };
+  return { health, readiness: { ready: true, retryable: false, reason: "ready" } };
+}
+
+export async function readyTestContourHealth(port, options = {}) {
+  return (await inspectReadyTestContourHealth(port, options)).health;
 }
 
 async function requireRecordingBoot(paths, recording) {
@@ -1141,6 +1187,7 @@ export async function readTestContourStatus({
   root = defaultTestContourRoot(),
   expectedOperationId = null,
   expectedHeadCommit = null,
+  healthTimeoutMs = 2_000,
 } = {}) {
   const paths = testContourPaths(root);
   const [state, source, operationDocument] = await Promise.all([
@@ -1156,7 +1203,10 @@ export async function readTestContourStatus({
     ? { ...source, ...state.source }
     : source;
   const planned = operationDocument.current?.status === "running";
-  if (!state || !processIsAlive(state.managerPid) || !processIsAlive(state.runtimePid)) {
+  const managerAlive = Boolean(state) && processIsAlive(state.managerPid);
+  const runtimeAlive = Boolean(state) && processIsAlive(state.runtimePid);
+  if (!state || !managerAlive || !runtimeAlive) {
+    const reason = !state ? "state-missing" : (!managerAlive ? "manager-stopped" : "runtime-stopped");
     return {
       running: false,
       root: paths.root,
@@ -1166,11 +1216,12 @@ export async function readTestContourStatus({
       planned,
       operation: operationReadback.current,
       readback: operationReadback,
+      readiness: { ready: false, retryable: false, reason },
     };
   }
   const recording = await readTestContourRecordingConfiguration(root);
   await requireRecordingBoot(paths, recording);
-  const health = await readyTestContourHealth(state.port, {
+  const inspection = await inspectReadyTestContourHealth(state.port, {
     root: paths.root,
     requireFakeQueue: !recording && state.model === TEST_CONTOUR_FAKE_MODEL,
     expectedIdentity: state.contourId && state.releaseId ? {
@@ -1182,7 +1233,9 @@ export async function readTestContourStatus({
       runtimeNonce: state.runtimeNonce,
       runtimePid: state.runtimePid,
     } : null,
-  }).catch(() => null);
+    timeoutMs: healthTimeoutMs,
+  }).catch(() => unavailableHealth("health-check-failed"));
+  const health = inspection.health;
   return {
     running: Boolean(health),
     root: paths.root,
@@ -1193,6 +1246,7 @@ export async function readTestContourStatus({
     planned,
     operation: operationReadback.current,
     readback: operationReadback,
+    readiness: inspection.readiness,
   };
 }
 

@@ -1507,6 +1507,7 @@ test("production upload completion is fenced by Task generation and exact Thread
     await page.locator("[data-file-input]").setInputFiles({
       name: "held.png", mimeType: "image/png", buffer: Buffer.from([1, 2, 3]),
     });
+    await page.waitForFunction(() => document.querySelectorAll("[data-attachment-index]").length === 1);
     await page.locator("[data-composer]").evaluate((form) => form.requestSubmit());
     await page.waitForFunction(() => Boolean(window.__agentHubFixture.heldUpload));
     const replaced = snapshot();

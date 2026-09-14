@@ -592,7 +592,7 @@ test("RunCoordinator acknowledges durable steer within 250ms without awaiting th
   ]);
 });
 
-test("RunCoordinator queues an exact Codex final-answer follow-up instead of steering", async () => {
+test("RunCoordinator keeps provider-authoritative steer admission after a Codex final marker", async () => {
   const active = {
     id: "active",
     provider: "codex",
@@ -627,16 +627,21 @@ test("RunCoordinator queues an exact Codex final-answer follow-up instead of ste
   });
 
   assert.equal(result.accepted, true);
-  assert.equal(result.queued, true);
-  assert.equal(result.steerPending, undefined);
-  assert.equal(result.reason, "final-answer-active");
-  assert.match(result.message, /очереди для следующего хода/u);
+  assert.equal(result.queued, false);
+  assert.equal(result.steerPending, true);
   assert.equal(f.calls.some(([name]) => name === "provider"), false);
-  assert.equal(f.calls.find(([name]) => name === "defer")[3].conflictKind, "message-intake");
+  assert.equal(f.calls.find(([name]) => name === "defer")[3].conflictKind, "message-steer");
   assert.equal(f.calls.find(([name]) => name === "defer")[3].clientUserMessageId, "message-after-final");
   assert.deepEqual(f.calls.find(([name]) => name === "schedule").slice(1), [
-    { id: "queued-after-final" }, 500,
+    { id: "queued-after-final" }, 0,
   ]);
+  const steered = await f.coordinator.steer({
+    input: "следующий вопрос",
+    target: { ...f.target, steerTargetRunId: "active", steerTargetTurnId: "turn-1" },
+    clientUserMessageId: "message-after-final",
+  });
+  assert.equal(steered.steered, true);
+  assert.equal(f.calls.filter(([name]) => name === "provider").length, 1);
 });
 
 for (const observation of ["started", "completed", "hydrated", "late-question-metadata"]) {
@@ -679,7 +684,7 @@ for (const observation of ["started", "completed", "hydrated", "late-question-me
   });
 }
 
-test("RunCoordinator async questions do not reopen a genuine final-answer fence", async () => {
+test("RunCoordinator leaves exact provider steer authoritative after genuine final-answer observations", async () => {
   for (const questions of [undefined, [], null]) {
     const active = {
       id: "active", provider: "codex", threadId: "thread-1", turnId: "turn-1",
@@ -696,17 +701,18 @@ test("RunCoordinator async questions do not reopen a genuine final-answer fence"
     const admission = await f.coordinator.acceptClientInput({
       input: "B", target: f.target, clientUserMessageId: "answer-command", followUpMode: "steer",
     });
-    assert.equal(admission.reason, "final-answer-active");
-    assert.equal(admission.queued, true);
-    await assert.rejects(f.coordinator.steer({
+    assert.equal(admission.steerPending, true);
+    assert.equal(admission.queued, false);
+    const result = await f.coordinator.steer({
       input: "B", clientUserMessageId: "answer-command",
       target: { ...f.target, steerTargetRunId: active.id, steerTargetTurnId: active.turnId },
-    }), /exact Codex final answer already started/u);
-    assert.equal(f.calls.some(([name]) => name === "provider"), false);
+    });
+    assert.equal(result.steered, true);
+    assert.equal(f.calls.filter(([name]) => name === "provider").length, 1);
   }
 });
 
-test("RunCoordinator genuine final after async-question admission still blocks dispatch", async () => {
+test("RunCoordinator dispatches to the provider when final starts after steer admission", async () => {
   const active = {
     id: "active", provider: "codex", threadId: "thread-1", turnId: "turn-1",
     status: "running", executionOwner: "hub",
@@ -723,11 +729,12 @@ test("RunCoordinator genuine final after async-question admission still blocks d
   startCodexAgentMessage(active, { turnId: active.turnId, item: {
     id: "final-after-question", type: "agentMessage", phase: "final_answer", text: "",
   } });
-  await assert.rejects(f.coordinator.steer({
+  const result = await f.coordinator.steer({
     input: "B", clientUserMessageId: "answer-command",
     target: { ...f.target, steerTargetRunId: active.id, steerTargetTurnId: active.turnId },
-  }), /exact Codex final answer already started/u);
-  assert.equal(f.calls.some(([name]) => name === "provider"), false);
+  });
+  assert.equal(result.steered, true);
+  assert.equal(f.calls.filter(([name]) => name === "provider").length, 1);
 });
 
 test("RunCoordinator keeps exact Codex commentary steering available", async () => {
@@ -875,7 +882,7 @@ test("RunCoordinator ignores final-answer markers outside the exact Codex run id
   }
 });
 
-test("RunCoordinator closes a queued steer when the exact final starts before dispatch", async () => {
+test("RunCoordinator asks the provider when the exact final starts before dispatch", async () => {
   const active = {
     id: "active",
     provider: "codex",
@@ -900,7 +907,7 @@ test("RunCoordinator closes a queued steer when the exact final starts before di
     status: "inProgress",
   });
 
-  await assert.rejects(f.coordinator.steer({
+  const result = await f.coordinator.steer({
     input: "не прерывать финал",
     target: {
       ...f.target,
@@ -908,8 +915,9 @@ test("RunCoordinator closes a queued steer when the exact final starts before di
       steerTargetTurnId: "turn-1",
     },
     clientUserMessageId: "message-final-race",
-  }), /exact Codex final answer already started/u);
-  assert.equal(f.calls.some(([name]) => name === "provider"), false);
+  });
+  assert.equal(result.steered, true);
+  assert.equal(f.calls.filter(([name]) => name === "provider").length, 1);
 });
 
 test("RunCoordinator rejects a durable steer after its exact managed turn changes", async () => {

@@ -16,7 +16,10 @@ import {
   LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V4,
   LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V5,
   LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V6,
+  LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V7,
   LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V1,
+  LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V2,
+  LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V3,
   RELEASE_WORKFLOW_DEVELOPER_RULES,
   TEAM_LEAD_DEVELOPER_RULES,
 } from "../../src/domain/workspace-release-workflow.mjs";
@@ -32,12 +35,13 @@ test("legacy v1 policy is stripped once and replaced by Task workflow rules", ()
   );
   assert.match(rules, /hub_task_claim/u);
   assert.match(rules, /sparse worktree/u);
-  assert.match(rules, /merge that result into dev/u);
   assert.match(rules, /Do not create a Task for diagnosis/u);
   assert.match(rules, /preserve the user's original request in its description/iu);
-  assert.match(rules, /Await Task MUST be reproducible.*Test, In Progress or New/iu);
-  assert.match(rules, /effective first-parent dev integration deltas.*one aggregate PreRelease commit/iu);
-  assert.match(rules, /Never merge dev into PreRelease.*never replay broad Task result snapshot commits/iu);
+  assert.match(rules, /Moving a Task to Await.*does not build, rebuild or mutate PreRelease/iu);
+  assert.match(rules, /Test is the sole snapshot and dev-integration gate.*Await and Done reuse/iu);
+  assert.doesNotMatch(rules, /directly to a later status/iu);
+  assert.match(rules, /explicit release start.*effective first-parent dev integration deltas/iu);
+  assert.match(rules, /Never merge dev into PreRelease.*never publish a broad dominating Task snapshot/iu);
   assert.match(rules, /fit it within 36 characters.*only when.*cannot be preserved/iu);
   assert.doesNotMatch(rules, /[А-Яа-яЁё]/u);
 });
@@ -48,6 +52,7 @@ test("previous release policies are stripped after title and freeze guidance cha
     LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V4,
     LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V5,
     LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V6,
+    LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V7,
   ]) {
     const rules = effectiveWorkspaceDeveloperRules(
       `${legacyRules}\n\nCustom rule`,
@@ -115,7 +120,12 @@ test("both generated policies grant a scoped explicit user exception", () => {
 });
 
 test("generated Architect prefixes are replaced once while authored edits survive", () => {
-  for (const prefix of [LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V1, ARCHITECT_RELEASE_DEVELOPER_RULES]) {
+  for (const prefix of [
+    LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V1,
+    LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V2,
+    LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V3,
+    ARCHITECT_RELEASE_DEVELOPER_RULES,
+  ]) {
     const stored = `${prefix}\n\n${prefix}\n\nCustom rule`.replace(/\n/gu, "\r\n");
     const output = effectiveStreamDeveloperRules(stored, { architect: true });
     assert.equal(output, `${ARCHITECT_RELEASE_DEVELOPER_RULES}\n\nCustom rule`);
@@ -153,7 +163,7 @@ test("Architect rules use only explicit settings.architect and allow multiple St
   assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /fetch origin without changing local main/iu);
   assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /authors and committers.*GitHub logins.*signatures.*changed files/iu);
   assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /Immediately before push.*frozen approved main commit/iu);
-  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /rebuild the mutable PreRelease.*remaining Await Tasks/iu);
+  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /invalidate the old candidate.*later explicit release preparation/iu);
   assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /Workspace-prescribed preflight/u);
   assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /immutable candidate/u);
   assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /production deployment is healthy/u);
@@ -201,4 +211,34 @@ test("Team Lead rules are independent and compose after Architect rules", () => 
   );
   assert.match(TEAM_LEAD_DEVELOPER_RULES, /highest number.*S<number>.*add one.*name the new Stream S2/iu);
   assert.match(TEAM_LEAD_DEVELOPER_RULES, /provider, model, and reasoning/u);
+});
+
+test("Architect role requires one service Task per release and keeps the rest", () => {
+  const issued = effectiveStreamDeveloperRules("", { architect: true });
+  assert.match(issued, /Релиз \[версия\]/u);
+  assert.match(issued, /Do not create a\s+separate Task per release operation/u);
+  // Служебные шаги одного выпуска не поглощают самостоятельные доработки механизмов.
+  assert.match(issued, /never absorbs independent work on release mechanisms/u);
+  // Прочие инструкции роли сохранены.
+  assert.match(issued, /You are a Workspace release architect/u);
+  assert.ok(issued.includes(EXPLICIT_USER_WORKFLOW_EXCEPTION));
+});
+
+test("previously issued Architect prefix migrates to the release-Task rule once", () => {
+  const authored = "Мои личные правила.";
+  const migrated = effectiveStreamDeveloperRules(
+    `${LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V2}
+
+${authored}`,
+    { architect: true },
+  );
+  assert.ok(migrated.startsWith(ARCHITECT_RELEASE_DEVELOPER_RULES));
+  assert.ok(migrated.endsWith(authored));
+  assert.equal(migrated.split("Релиз [версия]").length - 1, 1);
+  assert.equal(migrated.split(EXPLICIT_USER_WORKFLOW_EXCEPTION).length - 1, 1);
+});
+
+test("the release-Task rule belongs to the Architect role only", () => {
+  assert.doesNotMatch(effectiveStreamDeveloperRules("", { teamLead: true }), /Релиз \[версия\]/u);
+  assert.doesNotMatch(effectiveWorkspaceDeveloperRules("", { releaseWorkflow: true }), /Релиз \[версия\]/u);
 });

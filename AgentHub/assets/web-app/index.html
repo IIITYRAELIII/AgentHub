@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="ru" data-theme="orbit" data-surface="desktop" data-view="chat" data-pane="tasks"
-  data-activity-stream-cards="compact">
+  data-activity-stream-cards="compact" data-activity-rail-visibility="hidden">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -29,6 +29,7 @@
   <script src="/chat-scroll-controller.js" defer></script>
   <script src="/chat-surface-preference.js" defer></script>
   <script src="/background-motion-preference.js" defer></script>
+  <script src="/activity-rail-preference.js" defer></script>
   <script src="/background-image-resolver.js" defer></script>
   <script src="/navigation-tabs-controller.js" defer></script>
   <script src="/stream-tabs-controller.js" defer></script>
@@ -42,6 +43,7 @@
   <script src="/runtime-reload-controller.js" defer></script>
   <script src="/journal-view-controller.js" defer></script>
   <script src="/journal-account-panel.js" defer></script>
+  <script src="/provider-login-panel.js" defer></script>
   <script src="/journal-polling-policy.js" defer></script>
   <script src="/statistics-controls.js" defer></script>
   <script src="/attachments/interactions.js" defer></script>
@@ -465,6 +467,7 @@
               <div class="activity-list" data-activity-list></div>
             </details>
             <div class="msg-body" data-live-body></div>
+            <div data-live-attachments hidden></div>
           </article>
           <div class="queue" data-queue hidden aria-label="Очередь сообщений"></div>
         </div>
@@ -590,10 +593,9 @@
                   <span class="setting-name">Prompt-шаблоны потока</span>
                   <span class="setting-value" data-dialog-stream-quick-messages-count>0 шаблонов</span>
                 </header>
-                <div class="quick-messages-editor-controls" data-dialog-stream-quick-messages>
-                  <div class="quick-message-editor-rows" data-quick-message-rows></div>
-                  <div class="quick-message-editor-error" data-quick-message-error role="status" hidden></div>
-                  <button type="button" class="quick-message-editor-add" data-quick-message-add></button>
+                <div class="prompt-template-entry-controls">
+                  <button type="button" class="chip-button prompt-template-entry-open"
+                    data-prompt-templates-open="stream" data-dialog-stream-quick-messages-entry>Настроить шаблоны</button>
                 </div>
               </div>
             </section>
@@ -1147,10 +1149,9 @@
             <span class="setting-name">Prompt-шаблоны Workspace</span>
             <span class="setting-value" data-workspace-card-quick-messages-count>0 шаблонов</span>
           </header>
-          <div class="quick-messages-editor-controls" data-workspace-card-quick-messages>
-            <div class="quick-message-editor-rows" data-quick-message-rows></div>
-            <div class="quick-message-editor-error" data-quick-message-error role="status" hidden></div>
-            <button type="button" class="quick-message-editor-add" data-quick-message-add></button>
+          <div class="prompt-template-entry-controls">
+            <button type="button" class="chip-button prompt-template-entry-open"
+              data-prompt-templates-open="workspace" data-workspace-card-quick-messages-entry>Настроить шаблоны</button>
           </div>
         </div>
         <div class="workspace-release-workflow-setting">
@@ -1205,6 +1206,42 @@
     <p class="workspace-archive-note">Workspace хранятся бессрочно, пока вы явно не восстановите или окончательно не удалите их.</p>
     <div class="workspace-archive-list" data-workspace-archive-list></div>
     <p class="workspace-archive-empty" data-workspace-archive-empty>Архив пуст.</p>
+  </dialog>
+
+  <dialog class="prompt-templates-modal" data-prompt-templates-modal aria-labelledby="prompt-templates-title">
+    <header>
+      <div>
+        <p class="eyebrow">Prompt-шаблоны</p>
+        <h2 id="prompt-templates-title">Управление шаблонами</h2>
+      </div>
+        <button type="button" class="icon-button" data-prompt-templates-close aria-label="Закрыть">
+          <svg data-phosphor-icon="x" viewBox="0 0 256 256" aria-hidden="true">
+            <line x1="200" y1="56" x2="56" y2="200" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+            <line x1="200" y1="200" x2="56" y2="56" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+          </svg>
+        </button>
+    </header>
+    <section class="prompt-templates-fields">
+      <div class="prompt-templates-scopes" role="group" aria-label="Область действия"
+        data-prompt-templates-scopes></div>
+      <p class="prompt-templates-note" data-prompt-templates-note></p>
+      <div class="prompt-templates-conflict" data-prompt-templates-conflict hidden role="status">
+        <p data-prompt-templates-conflict-text></p>
+        <button type="button" class="chip-button" data-prompt-templates-reload>Взять сохранённые</button>
+      </div>
+      <div class="quick-messages-editor prompt-template-editor-card prompt-templates-card">
+        <div class="quick-messages-editor-controls" data-prompt-templates-editor>
+          <div class="quick-message-editor-rows" data-quick-message-rows></div>
+          <div class="quick-message-editor-error" data-quick-message-error role="status" hidden></div>
+          <button type="button" class="quick-message-editor-add" data-quick-message-add></button>
+        </div>
+      </div>
+    </section>
+    <footer>
+      <button type="button" class="board-task-primary" data-prompt-templates-done>Готово</button>
+    </footer>
   </dialog>
 
   <!-- ================================================= Отдельное представление: журнал === -->
@@ -1734,6 +1771,17 @@
         </div>
 
         <div class="server-overview-column server-overview-side">
+          <section class="server-card" aria-labelledby="server-accounts-title">
+            <header class="server-card-head compact">
+              <div>
+                <h2 id="server-accounts-title">Аккаунты</h2>
+              </div>
+            </header>
+            <div class="server-component-grid" data-server-accounts>
+              <span class="setting-empty">Загрузка…</span>
+            </div>
+          </section>
+
           <section class="server-card" aria-labelledby="server-components-title">
             <header class="server-card-head compact">
               <div>
@@ -1907,10 +1955,9 @@
             <span class="setting-name">Глобальные prompt-шаблоны</span>
             <span class="setting-value" data-settings-global-quick-messages-count>0 шаблонов</span>
           </header>
-          <div class="quick-messages-editor-controls" data-settings-global-quick-messages>
-            <div class="quick-message-editor-rows" data-quick-message-rows></div>
-            <div class="quick-message-editor-error" data-quick-message-error role="status" hidden></div>
-            <button type="button" class="quick-message-editor-add" data-quick-message-add></button>
+          <div class="prompt-template-entry-controls">
+            <button type="button" class="chip-button prompt-template-entry-open"
+              data-prompt-templates-open="global" data-settings-global-quick-messages-entry>Настроить шаблоны</button>
           </div>
         </div>
       </section>
@@ -1937,6 +1984,13 @@
             <input type="checkbox" data-chat-background-toggle>
             <span class="switch-text">Прозрачный фон переписки
               <span class="switch-note">Убирает только заливку области сообщений; панели, карточки и рамки остаются.</span>
+            </span>
+            <span class="switch-track" aria-hidden="true"></span>
+          </label>
+          <label class="setting-switch">
+            <input type="checkbox" data-activity-rail-visibility-toggle>
+            <span class="switch-text">Боковая панель потоков
+              <span class="switch-note">Показывает справа активные и недавние потоки.</span>
             </span>
             <span class="switch-track" aria-hidden="true"></span>
           </label>

@@ -37,6 +37,18 @@ readback:
 - `unknown` is an explicit terminal receipt state when authoritative readback is
   unavailable or an effect completed but its receipt could not be committed.
 
+The local Await cutover uses the same canonical `hub_task_status_update` receipt.
+When its projector source is a separate Task, the receipt includes that source
+Task's exact ID, Test revision, result commit and projector hash. Both Task locks
+are held while the source authority is rechecked and the target transition
+begins. Current source/target Task, Workspace/Stream, repository and source-result
+identity are fenced atomically by the transition transaction. A later pending reconciliation
+preserves the transition's immutable source evidence in its outcome; terminal
+reconciliation reproduces those durable arguments and does not consult a newer
+source Task state or replay the target lifecycle. The transition records the
+accepted result and invalidates older release-plan identity; it does not compose
+`PreRelease`. Candidate assembly is owned only by the later explicit release
+prepare operation.
 `hub_release_preflight_reconcile` is a read-only release-specific readback path,
 not a replay of `hub_release_preflight`. It requires the original request id plus
 the exact original preflight arguments, expected plan and repository revisions.

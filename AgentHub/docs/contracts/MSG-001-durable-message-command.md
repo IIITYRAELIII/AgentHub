@@ -217,20 +217,19 @@ consulted only when no exact managed identity exists or when the provider
 rejects that identity as stale; only a real provider rejection downgrades the
 durable command to queued intake.
 
-Codex closes steer admission for one exact nonterminal turn when that run has
-observed `item/started` for an `agentMessage` with `phase="final_answer"` and the
-item's non-empty `turnId` equals the registered `run.turnId`. An item carrying
-a nonempty typed `questions` array is an asynchronous question, not a final
-answer (UI-001), and cannot close this fence. This holds after live completion,
-hydration and late question metadata; a separate genuine final item still
-closes admission for the exact turn. The admission
-boundary checks this protocol state both before acknowledging a requested steer
-and immediately before `turn/steer`, because the phase may advance while the
-durable command waits for dispatch. The same command remains ordinary durable
-queued intake under its original `clientUserMessageId` and FIFO position until
-the turn releases occupancy. Analysis, commentary and reasoning remain
-steerable. A different item or turn, missing identity, and every Claude run are
-outside this guard; text, elapsed time and rendered state are never evidence.
+Provider `turn/steer` is the authority for whether one exact nonterminal managed
+turn remains steerable. Local response projection, including an observed Codex
+`agentMessage` with `phase="final_answer"`, does not veto admission or dispatch:
+the same provider turn may still accept steering after that marker. Admission
+first persists one durable `message-steer` item under its original
+`clientUserMessageId`, exact run ID and exact turn ID, then dispatch attempts the
+provider RPC once. A provider stale/not-steerable rejection converts that same
+durable item to ordinary queued intake once; it does not create a second command
+or change FIFO identity. Timeout or an unknown provider outcome enters bounded
+receipt/provider reconciliation and is never blindly replayed. Exact run/turn
+movement still fails before the RPC, and stale provider identity still follows
+the existing recovery path. Local text, phase, elapsed time and rendered state
+are observations, never steer authority.
 
 For an inter-Stream command, the envelope `requestId` deterministically restores
 the `mcp:<requestId>` command alias when a provider rollout omits

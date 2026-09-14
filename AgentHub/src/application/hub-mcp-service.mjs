@@ -19,6 +19,7 @@ import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { taskRunIsActive } from "../domain/task-runs.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
 import { TaskLifecycleService } from "./task-lifecycle-service.mjs";
+import { TaskOperationReconciliationService } from "./task-operation-reconciliation-service.mjs";
 import { createWorkspaceCatalogMutationOwner } from "./sqlite-mutation-owner.mjs";
 
 const CONTEXT_TOKEN_VERSION = 1;
@@ -30,6 +31,7 @@ const MUTATING_TOOLS = new Set([
   "hub_task_create", "hub_task_update", "hub_task_checklist_update", "hub_task_move", "hub_task_start", "hub_task_reassign", "hub_task_launch_cancel", "hub_task_claim", "hub_task_status_update", "hub_task_legacy_git_adopt", "hub_task_complete", "hub_task_delete",
   "hub_task_attachment_add", "hub_workspace_rules_update", "hub_stream_rules_update",
   "hub_stream_message_send",
+  "hub_task_operation_reconcile",
   "hub_release_preflight", "hub_release_complete",
 ]);
 
@@ -435,6 +437,8 @@ export class HubMcpService {
   constructor({
     workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releasePlanner, releasePreflight, releaseCompleter,
     taskGitWorkspaces = null, taskLifecycle = null,
+    taskOperationReconciliation = null,
+    reconcilePendingOnStartup = true,
   } = {}) {
     for (const name of [
       "resolveThread", "workspace", "hierarchy", "developerRulesForStream",
@@ -467,7 +471,21 @@ export class HubMcpService {
     this.taskLifecycle = taskLifecycle ?? new TaskLifecycleService({
       taskBoard, workspaceCatalog: this.workspaceCatalog, taskGitWorkspaces, releasePreflight,
     });
-    this.#startupReconciliation = this.reconcilePendingMcpOperations();
+    this.taskOperationReconciliation = taskOperationReconciliation
+      ?? (["mcpOperation", "completeUnknownMcpOperation", "failUnknownMcpOperation"]
+        .every((name) => typeof this.workspaceCatalog?.[name] === "function")
+        && ["task", "lifecycleTransition", "lifecycleOutcome"]
+          .every((name) => typeof taskBoard?.[name] === "function")
+        && typeof this.taskLifecycle?.reconcileUnknownWorkflowStatus === "function"
+        ? new TaskOperationReconciliationService({
+          workspaceCatalog: this.workspaceCatalog,
+          taskBoard,
+          taskLifecycle: this.taskLifecycle,
+        })
+        : null);
+    this.#startupReconciliation = reconcilePendingOnStartup === false
+      ? Promise.resolve({ reconciled: 0, skipped: true })
+      : this.reconcilePendingMcpOperations();
   }
 
   async reconcilePendingMcpOperations() {
@@ -658,7 +676,26 @@ export class HubMcpService {
       tool("hub_task_status_update", "Change workflow status only after exact Git result evidence is integrated. Test/Await/Done fail closed when no result or integration fails.", {
         task_id: { type: "string" },
         status: { type: "string", enum: ["new", "in_progress", "testing", "awaiting_implementation", "done"] },
+        expected_task_revision: { type: "integer", minimum: 1, description: "Optional exact Task revision CAS for a local cutover." },
+        expected_workflow_status: { type: "string", enum: ["new", "in_progress", "testing", "awaiting_implementation", "done"], description: "Optional exact current workflow status CAS for a local cutover." },
+        cutover_source_commit: { type: "string", description: "Optional clean checkout commit recorded by a local cutover." },
+        cutover_projector_sha256: { type: "string", description: "Optional verified release-projector hash recorded by a local cutover." },
       }, ["task_id", "status"]),
+      tool("hub_task_operation_reconcile", "Architect-only reconciliation of one exact unknown Task workflow operation. A pending Git operation requires trusted process-tree proof; an already terminal lifecycle settles its original receipt without Git replay or invented guard evidence.", {
+        task_id: { type: "string" },
+        operation_request_id: { type: "string" },
+        project_root: { type: "string" },
+        guard_id: { type: "string", description: "Required only while the exact lifecycle remains pending Git." },
+        proof_kind: { type: "string", enum: ["system-restart-after-guard"], description: "Required only while the exact lifecycle remains pending Git." },
+        proof_summary: { type: "string", description: "Required only while the exact lifecycle remains pending Git." },
+        expected_task_revision: { type: "integer", minimum: 1, description: "Required only to reproduce an original local cutover receipt." },
+        expected_workflow_status: { type: "string", enum: ["new", "in_progress", "testing", "awaiting_implementation", "done"], description: "Required only to reproduce an original local cutover receipt." },
+        cutover_source_commit: { type: "string", description: "Required only to reproduce an original local cutover receipt." },
+        cutover_projector_sha256: { type: "string", description: "Required only to reproduce an original local cutover receipt." },
+        cutover_source_task_id: { type: "string", description: "Required only when the original local cutover used a separate source Task." },
+        cutover_source_task_revision: { type: "integer", minimum: 1, description: "Required only when the original local cutover used a separate source Task." },
+        confirm_reconcile: { type: "boolean", description: "Must be true because this settles the original unknown receipt and may recover a guarded process boundary." },
+      }, ["task_id", "operation_request_id", "project_root", "confirm_reconcile"]),
       tool("hub_task_legacy_git_adopt", "Architect-only migration for a legacy Await Task with no Git reference. It verifies terminal Stream evidence and exact non-changelog patch equivalence to a named commit already in local main before recording immutable Task evidence.", {
         task_id: { type: "string" },
         expected_task_revision: { type: "integer", minimum: 1 },
@@ -799,6 +836,38 @@ export class HubMcpService {
     return this.#dispatch(context, toolName, args);
   }
 
+  async callTaskStatusCutover(args = {}, { verifySource } = {}) {
+    await this.#startupReconciliation;
+    const context = this.#authorize(args.context_token);
+    const sourceTaskId = requiredText(args.cutover_source_task_id, "cutover source Task id", 200);
+    const targetTaskId = requiredText(args.task_id, "cutover target Task id", 200);
+    const sourceTaskRevision = Number(args.cutover_source_task_revision);
+    if (!Number.isInteger(sourceTaskRevision) || sourceTaskRevision < 1) {
+      throw new Error("cutover source Task revision must be a positive integer");
+    }
+    if (sourceTaskId === targetTaskId || args.status !== "awaiting_implementation") {
+      throw new Error("Cross-Task cutover requires distinct source and target Tasks and an Await target");
+    }
+    const sourceCommit = requiredText(args.cutover_source_commit, "cutover source commit", 128).toLowerCase();
+    const projectorSha256 = requiredText(args.cutover_projector_sha256, "cutover projector SHA-256", 128).toLowerCase();
+    if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(sourceCommit)
+        || !/^[0-9a-f]{64}$/u.test(projectorSha256)) {
+      throw new Error("Cross-Task cutover source commit or projector hash is invalid");
+    }
+    if (typeof verifySource !== "function") throw new TypeError("cutover source verifier is required");
+    return this.#mutate(context, "hub_task_status_update", args, () => (
+      this.#updateTaskWorkflowStatus(context, args, {
+        source: {
+          taskId: sourceTaskId,
+          expectedRevision: sourceTaskRevision,
+          expectedCommit: sourceCommit,
+          expectedProjectorSha256: projectorSha256,
+          verifySource,
+        },
+      })
+    ));
+  }
+
   async #dispatch(context, name, args) {
     switch (name) {
       case "hub_context_get":
@@ -849,6 +918,26 @@ export class HubMcpService {
         return this.#claimTask(context, args);
       case "hub_task_status_update":
         return this.#updateTaskWorkflowStatus(context, args);
+      case "hub_task_operation_reconcile":
+        if (!this.#isArchitect(context)) throw new Error("Task operation reconciliation requires an Architect Stream");
+        if (args.confirm_reconcile !== true) throw new Error("Task operation reconciliation requires explicit confirmation");
+        if (!this.taskOperationReconciliation) throw new Error("Task operation reconciliation is unavailable");
+        return this.taskOperationReconciliation.reconcileUnknownWorkflow({
+          workspaceId: context.workspaceId,
+          taskId: args.task_id,
+          operationRequestId: args.operation_request_id,
+          projectRoot: args.project_root,
+          guardId: args.guard_id,
+          proofKind: args.proof_kind,
+          proofSummary: args.proof_summary,
+          expectedTaskRevision: args.expected_task_revision,
+          expectedWorkflowStatus: args.expected_workflow_status,
+          cutoverSourceCommit: args.cutover_source_commit,
+          cutoverProjectorSha256: args.cutover_projector_sha256,
+          cutoverSourceTaskId: args.cutover_source_task_id,
+          cutoverSourceTaskRevision: args.cutover_source_task_revision,
+          confirmed: args.confirm_reconcile,
+        });
       case "hub_task_legacy_git_adopt":
         if (!this.#isArchitect(context)) throw new Error("legacy Git adoption requires an Architect Stream");
         return this.#adoptLegacyTaskGit(context, args);
@@ -1227,7 +1316,16 @@ export class HubMcpService {
     return active[0];
   }
 
-  async #updateTaskWorkflowStatus(context, { task_id: taskId, status, request_id: operationId } = {}) {
+  async #updateTaskWorkflowStatus(context, {
+    task_id: taskId, status, request_id: operationId,
+    expected_task_revision: expectedRevision = null,
+    expected_workflow_status: expectedWorkflowStatus = null,
+    cutover_source_task_id: sourceTaskId = null,
+    cutover_source_task_revision: sourceTaskRevision = null,
+  } = {}, { source = null } = {}) {
+    if ((sourceTaskId != null || sourceTaskRevision != null) && !source) {
+      throw new Error("Cross-Task cutover requires the supported local cutover entrypoint");
+    }
     const task = this.#task(context, taskId);
     const workflowStatus = requiredText(status, "task workflow status", 40);
     let binding = {};
@@ -1243,7 +1341,7 @@ export class HubMcpService {
         };
       }
     } catch {}
-    const result = await this.taskLifecycle.updateWorkflowStatus({
+    const options = {
       taskId: task.id,
       status: workflowStatus,
       operationId,
@@ -1253,7 +1351,12 @@ export class HubMcpService {
         String(task.streamId ?? "").trim() || context.streamId,
         task.workspaceId,
       ),
-    });
+      expectedRevision,
+      expectedWorkflowStatus,
+    };
+    const result = source
+      ? await this.taskLifecycle.updateWorkflowStatusFromSource(options, source)
+      : await this.taskLifecycle.updateWorkflowStatus(options);
     if (!result?.task) return compactTask(result);
     const { task: updated, ...evidence } = result;
     return { ...compactTask(updated), ...evidence };

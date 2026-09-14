@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted for HUB-182.
+Accepted for HUB-182. The remaining-Await rebuild receipt is superseded by the
+explicit candidate invalidation in ADR-0043.
 
 ## Context
 
@@ -94,3 +95,14 @@ publication requires coordinated evidence before this restriction can be lifted.
 No broad dev merge, Task selection, or user approval is synthesized by retry.
 Source fixes still require a new immutable candidate; deployment failure is not
 permission to repair production from a dirty checkout.
+
+Freeze and completion now share a phase-aware candidate readback: prepared
+state is attached to the exact clean `PreRelease`, while frozen state is
+attached to exact clean `main` and requires both branch refs to retain the
+checkpointed commit. Runtime replacement is verified through the authenticated
+bounded health command with release/PID and stable-endpoint binding instead of
+loading the full snapshot. Ambiguous finalization transport keeps its durable
+command identity; only a definitive authenticated Desktop rejection may rotate
+that identity and retry the same idempotent Workspace completion. When a later
+publication replaces a terminal run projection, the exact prior status is
+archived beside its canonical log before replacement.

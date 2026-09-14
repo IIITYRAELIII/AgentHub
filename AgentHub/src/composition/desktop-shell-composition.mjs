@@ -11,7 +11,7 @@ import { StreamMessagePinService } from "../application/stream-message-pin-servi
 import { DesktopDirectoryPickerService } from "../interfaces/desktop/desktop-directory-picker-service.mjs";
 
 export function createDesktopShellComposition({
-  config, diagnostics, limits, models, state, catalog,
+  config, server = {}, diagnostics, limits, models, state, catalog,
   runtime, provider, clients, presentation, repositories,
   serverControlController, desktopCommandsPort,
 }) {
@@ -92,6 +92,7 @@ export function createDesktopShellComposition({
     taskVoiceTranscriber,
     attachmentDirectory,
     usageSyncAuto,
+    usageSyncRemoteConfigStore,
   } = runtime;
   const {
     agentProviders,
@@ -117,6 +118,7 @@ export function createDesktopShellComposition({
     desktopAttachmentDescriptors,
     desktopAttachmentPaths,
     desktopOpenAttachment,
+    desktopUploadAttachment,
     desktopSubmitBugReport,
     readCachedHistory,
     refreshHistory,
@@ -566,6 +568,9 @@ export function createDesktopShellComposition({
       runForTask: (target) => taskRuns.forTask(target),
       setAutostart: (params) => serverControlController.setAutostart(params),
       updateServerConfiguration: (params) => serverControlController.updateConfiguration(params),
+      startProviderLogin: (params) => serverControlController.startProviderLogin(params),
+      submitProviderLoginCode: (params) => serverControlController.submitProviderLoginCode(params),
+      cancelProviderLogin: (params) => serverControlController.cancelProviderLogin(params),
       readPreTurnInstructions: () => serverControlController.readPreTurnInstructions(),
       updateGlobalPreTurnInstructions: (params) => serverControlController.updateGlobalPreTurnInstructions(params),
       readRootAgents: () => serverControlController.readRootAgents(),
@@ -574,12 +579,21 @@ export function createDesktopShellComposition({
       taskVoiceTranscriber,
       taskLifecycle,
       attachmentDirectory,
+      usageSyncAuto,
+      usageSyncRemoteConfigStore,
       workspaceCatalog: workspaceCatalogStore,
       streamMessagePins,
     },
     desktop: {
       snapshot: desktopReadSystem.desktopSnapshot,
-      runtimeHealth: () => agentHubRuntimeHealth.snapshot(),
+      runtimeHealth: () => ({
+        ...agentHubRuntimeHealth.snapshot(),
+        process: {
+          pid: process.pid,
+          instanceId: String(server.instanceId ?? ""),
+          releaseId: String(server.releaseId ?? ""),
+        },
+      }),
       retryStartup: retryAgentHubStartup,
       taskHistory: desktopReadSystem.desktopTaskHistory,
       rateLimitHistory: desktopReadSystem.desktopRateLimitHistory,
@@ -594,6 +608,7 @@ export function createDesktopShellComposition({
       speakLastAnswer: desktopReadSystem.desktopSpeakLastAnswer,
       restartServer: desktopActions.restartServer,
       openAttachment: desktopOpenAttachment,
+      uploadAttachment: desktopUploadAttachment,
       browseDirectory: (params, context) => desktopDirectoryPicker.browse(params, context),
       submitBugReport: desktopSubmitBugReport,
       reportDiagnostic: diagnostics.reportClientError,

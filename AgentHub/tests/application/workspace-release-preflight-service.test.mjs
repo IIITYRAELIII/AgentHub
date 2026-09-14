@@ -73,6 +73,10 @@ function fixture({ planRevision = "plan-1", contourHead = "dev-head", rejectDev 
       },
     },
     taskGitWorkspaces: {
+      assertExplicitUpstreamAdoption: async (request) => {
+        calls.push(["verify-upstream-adoption", request]);
+        return { adoptedByResultCommit: null };
+      },
       prepareDev: async (requestedProjectRoot) => {
         calls.push(["prepare-dev", requestedProjectRoot]);
         return {
@@ -218,23 +222,23 @@ test("release preflight verifies selected results in dev and always refreshes Te
   const { calls, locks, projectRoot, service } = fixture();
   const result = await service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-1" });
   assert.deepEqual(calls.map(([name]) => name), [
-    "plan", "inspect-main", "guard-primary", "prepare-dev", "resolve-contour", "refresh-contour", "read-contour",
+    "plan", "inspect-main", "verify-upstream-adoption", "guard-primary", "prepare-dev", "resolve-contour", "refresh-contour", "read-contour",
     "verify-dev", "release-integrations", "prepare-candidate", "plan",
   ]);
   assert.deepEqual(locks, ["workspace-1"]);
-  assert.deepEqual(calls[7][1], {
+  assert.deepEqual(calls[8][1], {
     projectRoot,
     resultCommits: ["task-result"],
     taskIds: ["task-1"],
   });
-  assert.deepEqual(calls[5][1], { sourceRoot: path.resolve("D:/dev-worktree/AgentHub") });
-  assert.deepEqual(calls[9][1].frozenTasks, [{
+  assert.deepEqual(calls[6][1], { sourceRoot: path.resolve("D:/dev-worktree/AgentHub") });
+  assert.deepEqual(calls[10][1].frozenTasks, [{
     taskId: "task-1",
     taskRevision: 7,
     resultCommit: "task-result",
     integrations: [{ commit: "integration-1", parent: "integration-parent", order: 1 }],
   }]);
-  assert.equal(calls[9][1].approvedBaseCommit, "main-head");
+  assert.equal(calls[10][1].approvedBaseCommit, "main-head");
   assert.equal(result.planRevision, "plan-1");
   assert.equal(result.testContour.headCommit, "dev-head");
   assert.equal(result.releaseCandidates[0].manifestHash, "manifest-hash");
@@ -265,6 +269,49 @@ test("release preflight returns every post-publication main commit before side e
   assert.deepEqual(calls.map(([name]) => name), ["plan", "inspect-main"]);
 });
 
+test("approved upstream still requires adoption by a selected Task before preflight side effects", async () => {
+  const { calls, projectRoot, service } = fixture();
+  service.releaseGitWorkspaces.inspectMainChanges = async (request) => {
+    calls.push(["inspect-main", request]);
+    return {
+      projectRoot,
+      publishedRevision: "published-head",
+      localMain: "local-main",
+      originMain: "approved-origin-main",
+      commits: [{ commit: "approved-origin-main" }],
+      changed: true,
+      diverged: true,
+      approved: true,
+      approvalRequired: false,
+    };
+  };
+  service.taskGitWorkspaces.assertExplicitUpstreamAdoption = async (request) => {
+    calls.push(["verify-upstream-adoption", request]);
+    throw new Error("approved upstream requires explicit adoption by a selected Task result and managed dev");
+  };
+
+  await assert.rejects(service.preflight({
+    workspaceId: "workspace-1",
+    expectedPlanRevision: "plan-1",
+    approvedRepositories: [{
+      projectRoot,
+      approvedLocalMainCommit: "local-main",
+      approvedOriginMainCommit: "approved-origin-main",
+    }],
+  }), /requires explicit adoption by a selected Task/u);
+  assert.deepEqual(calls.map(([name]) => name), ["plan", "inspect-main", "verify-upstream-adoption"]);
+  const request = calls.find(([name]) => name === "verify-upstream-adoption")[1];
+  assert.deepEqual(request.frozenTasks, [{
+    taskId: "task-1",
+    taskRevision: 7,
+    taskNumber: null,
+    projectRoot,
+    branch: undefined,
+    resultCommit: "task-result",
+  }]);
+  assert.equal("resultCommits" in request, false);
+});
+
 test("release preflight rejects an unscoped global publication baseline", async () => {
   const { calls, service } = fixture();
   service.readPublicationState = async () => ({ revision: "foreign-agent-hub-sha" });
@@ -274,6 +321,27 @@ test("release preflight rejects an unscoped global publication baseline", async 
     /repository-scoped publication evidence/u,
   );
   assert.deepEqual(calls.map(([name]) => name), ["plan"]);
+});
+
+test("release preflight reads a repository baseline appended from a local publisher receipt", async () => {
+  const { calls, projectRoot, service } = fixture();
+  service.readPublicationState = async () => ({
+    revision: "legacy-unscoped-head",
+    repositories: [{
+      root: projectRoot,
+      revision: "published-head",
+      adoptedFrom: "local-publisher-receipt",
+      publisher: { kind: "agent-hub-publication-receipt", runId: "publisher-run-1" },
+    }],
+  });
+
+  const result = await service.preflight({
+    workspaceId: "workspace-1",
+    expectedPlanRevision: "plan-1",
+  });
+
+  assert.equal(result.status, "ready");
+  assert.equal(calls.find(([name]) => name === "inspect-main")[1].publishedRevision, "published-head");
 });
 
 test("release preflight binds approved main commits to the selected repository", async () => {
@@ -348,6 +416,7 @@ test("release preflight requires repository-scoped top-level approvals for multi
   const service = new WorkspaceReleasePreflightService({
     releasePlanner: { plan: async () => plan },
     taskGitWorkspaces: {
+      assertExplicitUpstreamAdoption: async () => ({}),
       prepareDev: async (projectRoot) => ({ repositoryRoot: projectRoot, projectRoot, branch: "dev", headCommit: `dev-${path.basename(projectRoot)}` }),
       verifyReleaseResultsInDev: async ({ projectRoot, resultCommits }) => ({
         repositoryRoot: projectRoot, projectRoot, branch: "dev", headCommit: `dev-${path.basename(projectRoot)}`,
@@ -458,6 +527,7 @@ test("release preflight rejects stale external production validation evidence", 
   const service = new WorkspaceReleasePreflightService({
     releasePlanner: { plan: async () => plan },
     taskGitWorkspaces: {
+      assertExplicitUpstreamAdoption: async () => ({}),
       prepareDev: async (projectRoot) => ({
         repositoryRoot: projectRoot, projectRoot, branch: "dev", headCommit: "dev-current",
       }),
@@ -545,6 +615,7 @@ async function realExternalValidationFixture(t, { afterValidation = null } = {})
   const service = new WorkspaceReleasePreflightService({
     releasePlanner: { plan: async () => plan },
     taskGitWorkspaces: {
+      assertExplicitUpstreamAdoption: async () => ({}),
       prepareDev: async (projectRoot) => ({
         repositoryRoot: projectRoot,
         projectRoot,
@@ -651,6 +722,7 @@ test("release preflight requires external validation for repositories not covere
   const service = new WorkspaceReleasePreflightService({
     releasePlanner: { plan: async () => plan },
     taskGitWorkspaces: {
+      assertExplicitUpstreamAdoption: async () => ({}),
       prepareDev: async (projectRoot) => {
         const prepared = {
           repositoryRoot: projectRoot,
@@ -765,7 +837,7 @@ test("release preflight refreshes the contour before rejecting Task results abse
     /not integrated into dev/u,
   );
   assert.deepEqual(calls.map(([name]) => name), [
-    "plan", "inspect-main", "guard-primary", "prepare-dev", "resolve-contour", "refresh-contour", "read-contour", "verify-dev",
+    "plan", "inspect-main", "verify-upstream-adoption", "guard-primary", "prepare-dev", "resolve-contour", "refresh-contour", "read-contour", "verify-dev",
   ]);
 });
 
@@ -784,7 +856,7 @@ test("release preflight stops before side effects when the registered primary is
     () => service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-1" }),
     /attached to main/u,
   );
-  assert.deepEqual(calls.map(([name]) => name), ["plan", "inspect-main", "guard-primary"]);
+  assert.deepEqual(calls.map(([name]) => name), ["plan", "inspect-main", "verify-upstream-adoption", "guard-primary"]);
 });
 
 test("Await rebuild rejects a stale plan before publishing its candidate", async () => {

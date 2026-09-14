@@ -117,22 +117,23 @@ for (const interruption of ["closed", "before-primary", "after-primary", "before
     assert.deepEqual(f.raw.task(later.id), laterBefore);
     assert.equal(f.calls.complete, 1);
     assert.equal(f.calls.verify, 2);
-    for (const stage of ["primary", "dev", "await"]) {
-      const saved = stage === "await" ? pending.awaitResult : pending.repositories[0][stage];
+    for (const stage of ["primary", "dev"]) {
+      const saved = pending.repositories[0][stage];
       assert.equal(f.calls[stage] - before[stage], saved?.completed ? 0 : 1);
     }
-    assert.deepEqual([...f.effects].sort(), ["await", "dev", "primary"]);
+    assert.equal(f.calls.await, 0);
+    assert.deepEqual([...f.effects].sort(), ["dev", "primary"]);
   });
 }
 
-test("legacy finalization recovers Await without inventing published synchronization evidence", async (t) => {
+test("legacy finalization invalidates the candidate without inventing synchronization evidence", async (t) => {
   const f = await fixture(t, "legacy");
   await assert.rejects(f.createService().completeRelease(f.request), /interrupted legacy/u);
   const result = await f.reopen().completeRelease(f.request);
   assert.equal(result.finalization.synchronization, "legacy_evidence_unavailable");
   assert.equal(f.calls.primary, 0);
   assert.equal(f.calls.dev, 0);
-  assert.equal(f.calls.await, 1);
+  assert.equal(f.calls.await, 0);
   assert.equal(f.calls.complete, 1);
 });
 

@@ -62,6 +62,7 @@ export function createRuntimeOrchestrationComposition({
     scheduleDeliveryOutboxFlush,
     scheduleCodexTerminalAudit,
     rateLimitTelemetry,
+    providerLogin,
     usageSyncAuto,
     taskSyncStore,
     messagePins,
@@ -141,6 +142,7 @@ export function createRuntimeOrchestrationComposition({
   const {
     restartRequestService,
     miniAppLifecycle,
+    desktopAttachments,
     desktopControlServer,
     runtimeCommandServer,
     hubMcpServer,
@@ -271,6 +273,7 @@ export function createRuntimeOrchestrationComposition({
     rateLimitTelemetry,
     usageSyncAuto,
     testContourJournalSync,
+    providerLogin,
   });
 
   ports.taskInteraction.bind(createTaskInteractionWiring({
@@ -372,6 +375,7 @@ export function createRuntimeOrchestrationComposition({
       failedUpdateStore,
       stopCodexAppServerTree,
       miniAppLifecycle,
+      desktopAttachments,
       desktopControlServer,
       runtimeCommandServer,
       hubMcpServer,

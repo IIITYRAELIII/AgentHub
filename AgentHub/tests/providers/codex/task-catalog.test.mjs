@@ -1090,7 +1090,7 @@ test("concurrent rollout activity reads share one in-flight operation", async ()
   assert.deepEqual((await first).activeTurnIds, ["shared"]);
 });
 
-test("terminal rollout reparse replaces an incomplete same-size cache", async () => {
+test("terminal rollout tail recovery and reparse retain the same generated image", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-rollout-terminal-reparse-"));
   const rollout = path.join(root, "rollout.jsonl");
   const turnId = "terminal-image";
@@ -1115,18 +1115,19 @@ test("terminal rollout reparse replaces an incomplete same-size cache", async ()
   });
   await writeFile(rollout, `${generated}\n${"x".repeat(2_048)}\n${completed}\n`, "utf8");
 
-  const incomplete = await readCodexRolloutActivity(rollout, { tailBytes: 512 });
-  assert.deepEqual(incomplete.generatedImageSources?.[turnId] ?? [], []);
-  assert.equal(incomplete.finalMessages[turnId], "Done");
+  const expectedSources = [{
+    type: "generated-path",
+    value: generatedPath,
+  }];
+  const recovered = await readCodexRolloutActivity(rollout, { tailBytes: 512 });
+  assert.deepEqual(recovered.generatedImageSources?.[turnId] ?? [], expectedSources);
+  assert.equal(recovered.finalMessages[turnId], "Done");
 
   const reparsed = await readCodexRolloutActivity(rollout, {
     tailBytes: 4_096,
     reparseTail: true,
   });
-  assert.deepEqual(reparsed.generatedImageSources[turnId], [{
-    type: "generated-path",
-    value: generatedPath,
-  }]);
+  assert.deepEqual(reparsed.generatedImageSources[turnId], expectedSources);
 });
 
 test("an active rollout cache survives a cold historical scan", async () => {

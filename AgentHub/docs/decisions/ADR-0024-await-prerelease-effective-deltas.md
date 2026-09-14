@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted.
+Accepted for effective-delta projection. The eager Await and post-publication
+materialization portions are superseded by ADR-0043.
 
 ## Context
 

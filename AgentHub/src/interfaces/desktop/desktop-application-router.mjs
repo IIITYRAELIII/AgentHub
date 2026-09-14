@@ -11,25 +11,37 @@ const MUTATION_ACTIONS = Object.freeze([
   "archive-stream", "update-stream-settings", "update-stream-rules", "move-stream",
   "board-task-create", "board-task-ingest", "board-task-update", "board-task-checklist", "board-task-checklist-linked-action", "board-task-attachment-add", "board-task-status", "board-task-move", "board-task-complete", "board-task-remove",
   "board-task-retry-triage", "board-task-start", "board-column-move", "board-column-comment",
-  "board-workspace-move", "usage-sync", "usage-sync-invite", "usage-sync-enroll",
+  "board-workspace-move",
+  "usage-sync", "usage-sync-status", "usage-sync-now", "usage-sync-invite", "usage-sync-enroll",
   "usage-sync-device-label",
   "message-pin-set", "message-pins-clear",
 ]);
 
 const CONCURRENT_MUTATION_ACTIONS = Object.freeze([
   "send-message", "cancel-run", "deferred-input", "restart-server", "retry-startup",
+  "usage-sync-now", "usage-sync-invite", "usage-sync-enroll", "usage-sync-device-label",
 ]);
 
 /**
- * Server configuration remains local. Device enrollment may also be delegated
+ * Server configuration remains local. Provider sign-in is local too: its browser
+ * callback reaches only the Hub machine. Device enrollment may also be delegated
  * by an already trusted device; Telegram and unnamed remote sources cannot mint
  * credentials.
  */
 const LOCAL_ONLY_ACTIONS = Object.freeze([
+  "attachment-upload",
   "update-server-configuration",
+  "start-provider-login",
+  "submit-provider-login-code",
+  "cancel-provider-login",
   "command-trace-timeline",
   "command-trace-percentiles",
   "command-trace-stats",
+  "usage-sync-status",
+  "usage-sync-now",
+  "usage-sync-invite",
+  "usage-sync-enroll",
+  "usage-sync-device-label",
 ]);
 const DEVICE_PAIRING_SOURCES = new Set(["desktop-control", "local-mini-app", "trusted-device"]);
 
@@ -59,7 +71,7 @@ export function createDesktopApplicationRouter({
     "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskChecklist", "boardTaskChecklistLinkedAction", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
     "boardWorkspaceMove",
-    "usageSync", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
+    "usageSync", "usageSyncStatus", "usageSyncNow", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
     "messagePinSet", "messagePinsClear",
   ]) requiredFunction(handlers[name], name);
 
@@ -102,12 +114,26 @@ export function createDesktopApplicationRouter({
       "restart-server": handlers.restartServer,
       "set-autostart": handlers.setAutostart,
       "update-server-configuration": handlers.updateServerConfiguration,
+      "start-provider-login": (params) => {
+        if (!handlers.startProviderLogin) throw new Error("Вход в аккаунт недоступен в этой версии");
+        return handlers.startProviderLogin(params);
+      },
+      // Not a durable mutation: the manual code must not enter command receipts.
+      "submit-provider-login-code": (params) => {
+        if (!handlers.submitProviderLoginCode) throw new Error("Вход в аккаунт недоступен в этой версии");
+        return handlers.submitProviderLoginCode(params);
+      },
+      "cancel-provider-login": (params) => {
+        if (!handlers.cancelProviderLogin) throw new Error("Вход в аккаунт недоступен в этой версии");
+        return handlers.cancelProviderLogin(params);
+      },
       "read-pre-turn-instructions": handlers.readPreTurnInstructions,
       "update-global-pre-turn-instructions": handlers.updateGlobalPreTurnInstructions,
       "read-root-agents": handlers.readRootAgents,
       "update-root-agents": handlers.updateRootAgents,
       "compact-context": handlers.compactContext,
       "open-attachment": handlers.openAttachment,
+      "attachment-upload": handlers.uploadAttachment,
       "browse-directory": handlers.browseDirectory,
       "submit-bug-report": handlers.submitBugReport,
       "report-diagnostic": handlers.reportDiagnostic,
@@ -156,6 +182,8 @@ export function createDesktopApplicationRouter({
       "board-column-comment": handlers.boardColumnComment,
       "board-workspace-move": handlers.boardWorkspaceMove,
       "usage-sync": handlers.usageSync,
+      "usage-sync-status": handlers.usageSyncStatus,
+      "usage-sync-now": handlers.usageSyncNow,
       "usage-sync-invite": handlers.usageSyncInvite,
       "usage-sync-enroll": handlers.usageSyncEnroll,
       "usage-sync-device-label": handlers.usageSyncDeviceLabel,

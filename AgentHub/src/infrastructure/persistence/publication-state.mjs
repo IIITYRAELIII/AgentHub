@@ -31,7 +31,12 @@ function canonicalRoot(value) {
 }
 
 function stable(value) {
-  return JSON.stringify(value, Object.keys(value ?? {}).sort());
+  const normalized = (item) => {
+    if (Array.isArray(item)) return item.map(normalized);
+    if (!item || typeof item !== "object") return item;
+    return Object.fromEntries(Object.keys(item).sort().map((key) => [key, normalized(item[key])]));
+  };
+  return JSON.stringify(normalized(value));
 }
 
 function repositoryRootOf(value) {
@@ -118,10 +123,10 @@ async function writePublicationStateUnlocked(value, file) {
 }
 
 export async function writePublicationState(value, file = publicationStateFile()) {
-  return withPublicationStateWriteTurn(file, () => withPublicationLock(
-    () => writePublicationStateUnlocked(value, file),
+  return withPublicationLock(
+    () => withPublicationStateWriteTurn(file, () => writePublicationStateUnlocked(value, file)),
     { environment: process.env },
-  ));
+  );
 }
 
 export async function gitOutput(args, { cwd } = {}) {

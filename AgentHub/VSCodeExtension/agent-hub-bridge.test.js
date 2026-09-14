@@ -94,6 +94,7 @@ test("VS Code bridge returns metadata ETag without loading the journal payload",
     moduleRoot: path.resolve(__dirname, ".."),
     runtimeRoot: root,
   });
+  bridge.control = async () => ({ configured: false });
   try {
     const response = await bridge.http({
       path: "/api/journal",
@@ -107,7 +108,7 @@ test("VS Code bridge returns metadata ETag without loading the journal payload",
   }
 });
 
-test("VS Code bridge exposes account panel HTML and usage sync status in journal payload", async () => {
+test("VS Code bridge exposes account panel HTML and stored usage sync status when control is unavailable", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-journal-sync-status-"));
   let bridge;
   try {
@@ -136,6 +137,7 @@ test("VS Code bridge exposes account panel HTML and usage sync status in journal
       moduleRoot: path.resolve(__dirname, ".."),
       runtimeRoot: root,
     });
+    bridge.control = async () => { throw new Error("desktop control unavailable"); };
 
     const response = await bridge.http({ path: "/api/journal" });
     assert.equal(response.status, 200);
@@ -148,6 +150,101 @@ test("VS Code bridge exposes account panel HTML and usage sync status in journal
     assert.match(response.headers.ETag, /2026-08-20T13:46:00\.000Z/u);
   } finally {
     bridge?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("VS Code bridge exposes usage sync without the local Web App", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-sync-ipc-"));
+  let bridge;
+  try {
+    const actions = [];
+    const status = {
+      configured: false,
+      serverUrl: "https://sync.example.test",
+      deviceId: "device-1",
+      deviceLabel: "SidorukSV",
+      deviceLabelPromptRequired: false,
+    };
+    bridge = new AgentHubBridge({
+      journalDatabase: memoryJournal({ html: day("06.07.2026", "turn-1") }),
+      moduleRoot: path.resolve(__dirname, ".."),
+      runtimeRoot: root,
+    });
+    bridge.control = async (action, params = {}) => {
+      actions.push({ action, params });
+      if (action === "usage-sync-status") return status;
+      return { ok: true, result: { accepted: true, action }, usageSync: status };
+    };
+
+    const journal = await bridge.http({ path: "/api/journal" });
+    const journalSync = JSON.parse(journal.body).usageSync;
+    assert.equal(journalSync.configured, status.configured);
+    assert.equal(journalSync.serverUrl, status.serverUrl);
+    assert.equal(journalSync.deviceId, status.deviceId);
+    assert.equal(journalSync.deviceLabel, status.deviceLabel);
+    assert.equal(journalSync.deviceLabelPromptRequired, status.deviceLabelPromptRequired);
+
+    const sync = await bridge.http({
+      method: "POST",
+      path: "/api/journal/usage-sync/device-label",
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+      body: JSON.stringify({ deviceLabel: "Tyrael" }),
+    });
+    assert.equal(sync.status, 200);
+    assert.deepEqual(JSON.parse(sync.body).usageSync, status);
+    assert.deepEqual(actions.map(({ action }) => action), [
+      "usage-sync-status",
+      "usage-sync-device-label",
+    ]);
+    assert.equal(actions[1].params.deviceLabel, "Tyrael");
+  } finally {
+    bridge?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("VS Code bridge revalidates journal metadata against the current desktop usage sync status", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-sync-etag-"));
+  const database = memoryJournal({ html: day("06.07.2026", "turn-1") });
+  const readPayload = database.payload;
+  let payloadCalls = 0;
+  database.payload = async () => {
+    payloadCalls += 1;
+    return readPayload();
+  };
+  const bridge = new AgentHubBridge({
+    journalDatabase: database,
+    moduleRoot: path.resolve(__dirname, ".."),
+    runtimeRoot: root,
+  });
+  const status = { configured: false, deviceLabel: "Desktop", deviceLabelPromptRequired: true };
+  bridge.control = async (action) => {
+    assert.equal(action, "usage-sync-status");
+    return { ...status };
+  };
+  try {
+    const initial = await bridge.http({ path: "/api/journal" });
+    assert.equal(initial.status, 200);
+    assert.equal(payloadCalls, 1);
+    bridge.journalCache = null;
+    const unchanged = await bridge.http({
+      path: "/api/journal",
+      headers: { "if-none-match": initial.headers.ETag },
+    });
+    assert.equal(unchanged.status, 304);
+    assert.equal(payloadCalls, 1);
+    status.deviceLabel = "Laptop";
+    const changed = await bridge.http({
+      path: "/api/journal",
+      headers: { "if-none-match": initial.headers.ETag },
+    });
+    assert.equal(changed.status, 200);
+    assert.notEqual(changed.headers.ETag, initial.headers.ETag);
+    assert.equal(JSON.parse(changed.body).usageSync.deviceLabel, "Laptop");
+    assert.equal(payloadCalls, 2);
+  } finally {
+    bridge.close();
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -292,6 +389,48 @@ test("VS Code message fallback uses local HTTP with the exact client message id"
     assert.equal(JSON.parse(calls[0].options.body).commandId, "client-message-1");
     assert.equal(JSON.parse(calls[1].options.body).commandId, "client-message-1");
     assert.equal(calls[0].options.headers.Authorization, "webview session-token");
+  } finally {
+    bridge?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("VS Code message uses desktop control when the local Web App is disabled", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-message-desktop-"));
+  let bridge;
+  try {
+    await writeFile(path.join(root, "config.json"), JSON.stringify({
+      components: { miniApp: false, androidApp: false },
+      miniApp: { host: "127.0.0.1", port: 8787 },
+    }), "utf8");
+    bridge = new AgentHubBridge({
+      moduleRoot: root,
+      runtimeRoot: root,
+      fetchImpl: async () => assert.fail("disabled Web App must not receive a message"),
+    });
+    const calls = [];
+    bridge.desktopControl = async (action, params, options) => {
+      calls.push({ action, params, options });
+      return { accepted: true, clientUserMessageId: options.commandId };
+    };
+
+    const result = await bridge.control("send-message", {
+      clientUserMessageId: "client-message-core-1",
+      text: "hello from core",
+    }, { commandId: "client-message-core-1" });
+
+    assert.deepEqual(result, {
+      accepted: true,
+      clientUserMessageId: "client-message-core-1",
+    });
+    assert.deepEqual(calls, [{
+      action: "send-message",
+      params: {
+        clientUserMessageId: "client-message-core-1",
+        text: "hello from core",
+      },
+      options: { commandId: "client-message-core-1" },
+    }]);
   } finally {
     bridge?.close();
     await rm(root, { recursive: true, force: true });
@@ -524,30 +663,73 @@ test("VS Code bridge answers the rate-limit summary without the journal", async 
   }
 });
 
-test("VS Code bridge proxies runtime health without reading the journal", async () => {
+test("VS Code bridge reads runtime health over desktop control without the Web App", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-health-"));
-  let requestedUrl = "";
   try {
-    await writeFile(path.join(root, "config.json"), JSON.stringify({
-      miniApp: { host: "127.0.0.1", port: 9876 },
-    }), "utf8");
     const bridge = new AgentHubBridge({
       runtimeRoot: root,
       journalDatabase: {
         payload: async () => assert.fail("health must not read the journal"),
       },
-      fetchImpl: async (url) => {
-        requestedUrl = url;
-        return new Response(JSON.stringify({
-          ready: false,
-          startup: { operations: [{ id: "web", state: "running" }] },
-        }), { headers: { "Content-Type": "application/json; charset=utf-8" } });
-      },
     });
+    bridge.control = async (action) => {
+      assert.equal(action, "runtime-health");
+      return {
+        ready: false,
+        startup: { operations: [{ id: "web", state: "running" }] },
+      };
+    };
     const response = await bridge.http({ path: "/health" });
-    assert.equal(requestedUrl, "http://127.0.0.1:9876/health");
     assert.equal(response.status, 200);
     assert.equal(JSON.parse(response.body).startup.operations[0].state, "running");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("VS Code bridge starts Runtime Host and retries health after an autostart race", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-autostart-"));
+  try {
+    await mkdir(path.join(root, "data"), { recursive: true });
+    await writeFile(path.join(root, "data", "bot.lock"), JSON.stringify({ pid: 4040 }), "utf8");
+    await writeFile(path.join(root, "AgentHub.RuntimeHost.exe"), "runtime-host", "utf8");
+    const starts = [];
+    const bridge = new AgentHubBridge({
+      runtimeRoot: root,
+      platform: "win32",
+      processIsAlive: () => false,
+      startRuntimeHost: async (runtimeRoot) => starts.push(runtimeRoot),
+      waitImpl: async () => {},
+    });
+    let attempts = 0;
+    bridge.desktopControl = async (action) => {
+      assert.equal(action, "runtime-health");
+      attempts += 1;
+      if (attempts === 1) throw new Error("control pipe is unavailable");
+      return { ready: true };
+    };
+
+    assert.deepEqual(await bridge.control("runtime-health"), { ready: true });
+    assert.deepEqual(starts, [root]);
+    assert.equal(attempts, 2);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("VS Code bridge does not relaunch a live Runtime Host on startup", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-live-runtime-"));
+  try {
+    await mkdir(path.join(root, "data"), { recursive: true });
+    await writeFile(path.join(root, "data", "bot.lock"), JSON.stringify({ pid: 5050 }), "utf8");
+    const bridge = new AgentHubBridge({
+      runtimeRoot: root,
+      platform: "win32",
+      processIsAlive: (pid) => pid === 5050,
+      startRuntimeHost: async () => assert.fail("live runtime must not be relaunched"),
+    });
+
+    assert.equal(await bridge.ensureRuntimeStarted(), false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -573,6 +755,25 @@ test("VS Code bridge issues a short-lived direct WebView session", async () => {
     assert.notEqual(session.token, secret);
     assert.equal(validLocalWebviewSession(session.token, secret), true);
     assert.ok(session.expiresAt > Date.now());
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("VS Code bridge does not advertise direct WebView HTTP when its component is disabled", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-disabled-web-"));
+  try {
+    await writeFile(path.join(root, "config.json"), JSON.stringify({
+      components: { miniApp: false, androidApp: false },
+      miniApp: { host: "127.0.0.1", port: 8787 },
+    }), "utf8");
+    await writeFile(path.join(root, "local-web.secret"), "w".repeat(43), "utf8");
+    const bridge = new AgentHubBridge({
+      moduleRoot: path.resolve(__dirname, ".."),
+      runtimeRoot: root,
+    });
+
+    await assert.rejects(bridge.webviewSession(), /Web App Agent Hub отключён/u);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

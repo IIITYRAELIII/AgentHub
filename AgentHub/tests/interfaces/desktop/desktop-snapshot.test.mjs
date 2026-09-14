@@ -733,6 +733,7 @@ test("desktopRunSnapshot preserves run fields and nested context", () => {
     }],
     progress: "Ход работы",
     response: "Ответ",
+    responseAttachments: [],
     responsePhase: "commentary",
     clientUserMessageId: "client-1",
     submittedAt: "2026-07-30T09:59:00.000Z",
@@ -767,6 +768,14 @@ test("desktopRunSnapshot exposes live response citation references", () => {
   const { desktopRunSnapshot, run } = fixture();
   run.responseAnnotationReferences = [{ index: 1 }];
   assert.deepEqual(desktopRunSnapshot(run).responseAnnotationReferences, [{ index: 1 }]);
+});
+
+test("desktopRunSnapshot exposes generated response attachments without aliasing the run", () => {
+  const { desktopRunSnapshot, run } = fixture();
+  run.responseAttachments = [{ id: "generated-one.png", type: "image/png" }];
+  const snapshot = desktopRunSnapshot(run);
+  assert.deepEqual(snapshot.responseAttachments, run.responseAttachments);
+  assert.notEqual(snapshot.responseAttachments[0], run.responseAttachments[0]);
 });
 
 test("desktopRunSnapshot gives a steer its exact intake time without borrowing root time", () => {

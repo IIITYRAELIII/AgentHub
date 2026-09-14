@@ -1,0 +1,58 @@
+{
+  "id": "horadrim",
+  "name": "Архив Хорадримов",
+  "color": "#11100d",
+  "order": 118,
+  "styles": "theme.css",
+  "assets": {
+    "archive-frame": "archive-frame.svg",
+    "stone-grain": "stone-grain.svg"
+  },
+  "backgrounds": [
+    {
+      "id": "horadrim",
+      "name": "Библиотека Хорадримов",
+      "asset": "archive-library.png"
+    },
+    {
+      "id": "horadrim-soulstone-vault",
+      "name": "Хранилище камня душ",
+      "asset": "soulstone-vault.png",
+      "preload": true
+    },
+    {
+      "id": "horadrim-hall-of-seals",
+      "name": "Зал Печатей",
+      "asset": "hall-of-seals.png",
+      "preload": true
+    },
+    {
+      "id": "horadrim-horadrim-desk",
+      "name": "Стол Хорадрима",
+      "asset": "horadrim-desk.png",
+      "preload": true
+    },
+    {
+      "id": "horadrim-buried-archive",
+      "name": "Погребённый архив",
+      "asset": "buried-archive.png",
+      "preload": true
+    },
+    {
+      "id": "horadrim-tristram-ashes",
+      "name": "Пепел Тристрама",
+      "asset": "tristram-ashes.png",
+      "preload": true
+    },
+    {
+      "id": "horadrim-obsidian-gold",
+      "name": "Обсидиан и золото",
+      "asset": "obsidian-gold.png",
+      "preload": true
+    },
+    {
+      "id": "horadrim-quiet",
+      "name": "Тёмный архив"
+    }
+  ]
+}

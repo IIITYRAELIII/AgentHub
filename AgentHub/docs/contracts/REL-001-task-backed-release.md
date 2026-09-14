@@ -92,7 +92,21 @@ durable ownership assertion fence every npm operation. npm runs through the
 Task lifecycle process-tree guard, so lease loss, cancellation or timeout must
 stop and prove completion of the entire descendant tree before preparation can
 return. An unproven stop leaves the persistent guard in place and blocks the
-next owner until the existing operator-proof recovery. Ownership is rechecked
+next owner until operator reconciliation. Recovery joins the exact unknown MCP
+request, pending lifecycle transition, Task revision, repository and guard ID
+under the Await, Task and repository locks. The repository lease remains held
+from durable classification through guard recovery, resumed Git work, lifecycle
+terminalization and the original receipt CAS; nested Git steps reuse that exact
+lease instead of releasing and reacquiring it. A caller confirmation is not process
+evidence. A guard without a captured process identity is recoverable only when
+`Win32_OperatingSystem.LastBootUpTime` postdates guard creation; this bounded
+recovery deliberately provides no weaker non-reboot proof. Verified recovery
+evidence is persisted before removing the guard, so a crash can reuse only the
+same guard identity. Reconciliation first classifies durable state: exact
+pending Git work resumes, while an exact workflow outcome, rollback or failed
+transition only settles the original receipt without replay. A mismatched or
+mixed state remains unknown. It never reopens an unknown receipt or replays the
+effect under a new request ID. Ownership is rechecked
 after external and validation awaits and immediately before and after marker
 promotion; losing it prevents a falsely prepared result.
 
@@ -154,9 +168,10 @@ after every supported database version is guaranteed to contain operation IDs.
 ## Test and acceptance integration
 
 In a Workspace with `settings.releaseWorkflowEnabled === true`, moving a Task
-to `testing`, or directly to a later implementation status,
-snapshots its complete dirty worktree into a local result commit and merges that
-result into the shared local `dev` branch. Git derives the stable changed-file
+to `testing` snapshots its complete dirty worktree into a local result commit
+and merges that result into the shared local `dev` branch. Later transitions to
+Await or Done reuse that exact Test-owned result and never take another snapshot.
+Git derives the stable changed-file
 set between the Task base commit and Task result commit:
 
 `Array<{projectRoot,path,operation:"added"|"modified"|"deleted",turnId:null|string}>`.
@@ -166,33 +181,45 @@ that root. Git defines the base, result, operation, blobs and patch. Provider
 receipts, final text, timestamps and shared dirty trees are never ownership
 fallbacks.
 
-`TaskGitWorkspaceService` is the single owner of published/current `main` to
-managed `dev` synchronization. Under the repository's existing dev lock it
-fetches one explicit `refs/heads/main:refs/remotes/origin/main` refspec with
-tags and recursive submodule fetch disabled, resolves the exact current main
-commit, verifies that the managed dev worktree is clean, and then incorporates
-that commit before new Task preparation, Task integration, and release
-preflight. Remote tag settings cannot widen this fetch: local `main`, remote
-`dev`, protective branches, and every tag ref remain unchanged. It never checks
-out or updates the registered primary worktree and never creates or pushes
-`origin/dev`. A new Task still starts from the exact main commit returned by
-that locked operation, not from rolling Test content.
+The exact local `refs/heads/main` commit is the accepted repository baseline.
+Fetching or moving `refs/remotes/origin/main` is observation only and never
+changes Task, dev, plan or preflight authority. A new Task atomically verifies
+local main and creates its immutable base ref at that exact commit; it never
+starts from rolling dev content or a newer remote-tracking tip. Existing Task
+base refs remain unchanged. Missing local main fails closed rather than choosing
+`HEAD`, dev, publication state or a remote fallback.
 
-If `main` and `dev` diverge, the owner creates a local merge commit whose result
-must contain both the former dev head and current main as ancestors. A conflict
-is collected, aborted, and reported only after the dev head and clean worktree
-are proven restored. Dirty dev or a published-revision mismatch is
-`manual_required`; an abort that cannot prove restoration throws. No Task
-preparation or integration is reported as successful in either case.
+Ordinary Task preparation, integration and release evidence only recover and
+inspect managed `dev`; they do not fetch or synchronize main. Existing dev must
+be clean and contain the accepted local baseline. Explicit post-publication
+main-to-dev synchronization requires the exact durable published revision and
+also requires local main to equal it. If those exact inputs diverge, or the merge
+conflicts, the operation fails or reports `manual_required` only after proving
+the old dev head and clean worktree were restored. The owner never checks out or
+updates the registered primary worktree, creates `origin/dev`, or treats a
+remote ref movement as acceptance. See ADR-0040.
 
 The one-time bootstrap for an already-diverged managed `dev` is itself a Task
 result: under the same Task and dev locks, the snapshot owner accepts a pending
 Task-worktree merge only when its exact `MERGE_HEAD` is the current managed dev
-head. The resulting two-parent Task snapshot contains current `main` and the
-previous dev line. Integration recognizes those two proven ancestors and merges
-the Task result directly instead of first replaying the conflicting main-to-dev
-merge. Until the owner snapshots and integrates that result, neither `dev` nor
-the registered primary checkout is changed.
+head. The accepted Task result must contain one unique first-parent merge whose
+second parent is the exact current `main`. When ordinary main-to-dev integration
+conflicts, the owner constructs an unreachable bootstrap commit `B` with exact
+ordered parents `[oldDev, main]`. Its automatic merge bytes come only from those
+parents; each conflicting code path is replaced only when the Task-local proof
+matches the index's dev/main mode, type and object identities and the accepted
+Task result exactly. `CHANGELOG.md` may use the accepted Task snapshot only as
+the excluded release-history path in this same atomic integration. A second
+unreachable commit `C=[B, TaskResult]` must reproduce the complete accepted Task
+tree, including Task-only files that are absent from `B`.
+
+Only one compare-and-swap publishes `dev` from `oldDev` to `C`; neither `B` nor
+partial index state becomes a visible dev head. Durable transaction evidence
+written before that CAS distinguishes no effect from the exact committed effect:
+recovery restores the worktree to `C` only when the ref and ordered parents still
+match, and otherwise fails closed. Interruptions before the CAS restore the exact
+old dev head, index and worktree. The registered primary checkout is never
+changed. See ADR-0039.
 
 A successful Test integration records only the deterministic Task branch and
 its accepted immutable result commit on the Task. The base ref and changed-file
@@ -205,20 +232,21 @@ cannot enter Test or Await. Snapshot, merge, ancestry verification and recovery
 complete before one row-revision CAS atomically replaces Git references, updates
 the exact operation binding and changes workflow status. In a release-enabled
 Workspace, every workflow transition is serialized with the Workspace release
-lock. A transition into or out of Await rebuilds the complete Await-only
-`PreRelease` while that lock remains held. If the rebuild fails after the status
-CAS, a second exact CAS restores the prior status, Git references and requested
-workflow bindings before the error is returned. Any Git, recovery, CAS or Await
-rebuild failure therefore preserves the prior release membership.
+lock. Test owns the immutable snapshot and successful `dev` integration proof.
+A transition into or out of Await changes only accepted release membership and
+invalidates any older plan/candidate identity through the Task row revision; it
+does not compose `PreRelease`. Any Git, recovery or CAS failure therefore
+preserves the prior release membership, while an unrelated selected-delta
+composition conflict cannot roll back an already proven Task result.
 
 Moving a Task to `awaiting_implementation` records that its exact immutable
-result is accepted for a future release and atomically rematerializes mutable
-`PreRelease`. A ready Await Task requires a valid exact result and successful
-`dev` integration. Missing or ambiguous integration ownership, an effective
-delta that cannot be applied to the approved main base, or a dependency on work
-owned only by Test/In Progress/New blocks the transition. Such a dependency is
-never silently included; the user resolves it individually, normally by
-combining the dependent work into one accepted Task.
+result is accepted for a future release. A ready Await Task requires a valid
+exact result and successful `dev` integration. Missing or ambiguous integration
+ownership, an effective delta that cannot be applied to the approved main base,
+or a dependency on work owned only by Test/In Progress/New blocks the later
+explicit candidate preparation, not acceptance of the already proven Task.
+Such a dependency is never silently included; the user resolves it individually,
+normally by combining the dependent work into one accepted Task.
 
 ## Task Git reference and CAS
 
@@ -254,32 +282,79 @@ Shared paths are diagnostic: the blocking evidence is an ambiguous integration
 owner or a failed effective-delta application, not path overlap by itself.
 
 For each accepted Task, Agent Hub finds the Task branch first-parent lineage and
-the exact owning merge commits in the `dev` first-parent history. Mutable
-`PreRelease` is rebuilt from the approved `main` by applying only those effective
+the exact owning merge commits in the `dev` first-parent history. Explicit
+release preparation materializes `PreRelease` from the approved `main` by
+applying only those effective
 merge deltas in their original `dev` order, excluding Task-owned changelog
 edits, and writing one aggregate commit. `dev` is never merged into
 `PreRelease`; Test-only work cannot enter a release through a broad Task
 snapshot.
 
+When selected Tasks have nested first-parent result histories, an integration
+claimed by more than one selected lineage belongs only to the unique selected
+Task whose exact result is a first-parent ancestor of every other claimant's
+result. This selected Task identity permits its accepted net delta to be
+projected exactly once before dependent Task deltas. Incomparable claimants,
+duplicate owners, or evidence outside the selected Task results remains
+ambiguous and blocks the release. An unselected ancestor does not establish
+this ownership: only the selected Task's effective integrations remain, and a
+later delta that depends on the omitted ancestor fails instead of importing it.
+
 A Task with repeated integrations may use a net delta from its latest shared
 main ancestor to its accepted result only after bounded Git ancestry proof.
+The frozen evidence carries the exact canonical Task base; that base must
+already be an ancestor of the approved release main. Its unique merge base with
+the accepted result must occur in the result's bounded first-parent history, so
+an approved sibling Task base need not itself be an ancestor of a rewritten
+accepted result. A missing or unpublished Task base cannot borrow authority
+from a merge base inferred only from the result graph.
 Unpublished commits must belong to that Task's first-parent lineage or its
 exact canonical integrations; intervening merge wrappers must reproduce the
-automatic parent merge exactly. Unknown or foreign unpublished contributions
-cannot become release content through a Task's merge of dev. Net projection is
-not used where its affected paths overlap another selected Task's effective
-delta: those Tasks retain chronological effective-delta composition and its
-existing conflict evidence. Unavailable or over-budget proof selects that same
-existing composition, never an unchecked result snapshot. This permits a later
-Task resolution against published main to replace its obsolete intermediate
-conflicts without widening ownership. See ADR-0034.
+automatic parent merge exactly. Every repeated integration has a unique commit,
+order and selected Task owner, and the last integration under the canonical
+`(order, commit)` comparator merges the exact accepted Task result. Unknown or
+foreign unpublished contributions cannot become release content through a
+Task's merge of dev.
+
+The net delta is placed at that last integration order only when no raw
+integration of another selected Task strictly between the first and last Task
+integration touches any path changed by any of the Task's integrations. The
+comparison disables rename detection so that both source and destination paths
+remain part of the conservative identity, and it includes a path changed and
+later reverted out of the final net delta. Overlaps entirely before or after
+the interval do not invalidate the fold because it does not cross them. A
+missing, ambiguous, shared, tied, crossing, unavailable or over-budget proof
+retains chronological effective-delta composition and its existing conflict
+evidence, never an unchecked result snapshot. This permits a later Task
+resolution against published main to replace obsolete intermediate conflicts
+without widening ownership. See ADR-0034.
 
 For a reopened Task, an earlier integration's result already contained in the
 approved main base is accepted only when that integration's automatic merge
 tree is still verified. Ownership is proved before overlap detection; proven
-Tasks use their pending net paths, while unproven Tasks retain all effective
-replay paths. Removing a projection restores its historical paths and overlap
-detection repeats until stable, independently of Task ordering.
+Tasks use their pending net paths at the final owned order, while unproven Tasks
+retain all effective replay paths.
+
+If chronological replay of a reopened Task conflicts because its stale parent
+does not contain bytes already present in the approved base, Agent Hub may use
+one Task-local base merge as resolution evidence. The merge must be the unique
+bounded member of the Task result's first-parent lineage shared with the replayed
+integration, its second parent must equal the exact approved base, and every
+conflicting path must match the index base side plus the same accepted mode,
+object type and blob in the merge, Task result, integration and current `dev`. Missing, foreign,
+non-exact or ambiguous evidence leaves the release blocked. Only those exact
+accepted conflict paths are staged; this proof does not admit a Task snapshot
+or change integration order.
+
+A raw historical integration may instead resolve one stale conflict path from
+Git's direct merge of the exact approved main and that integration's exact Task
+side. The integration must be automatic and uniquely owned by the selected
+Task. Index stage two must equal approved main by mode, type and object; the
+direct merge must report no conflict for the path; and its resulting entry must
+equal index stage three, the integration entry and current accepted dev entry.
+Only that entry is staged. A different parent, owner, base, path conflict,
+mode/type/object or dev state rejects the proof; later Task results and bootstrap
+merges cannot retroactively authorize an older integration.
 
 At explicit release start, Architect reads and selects the exact ready Await
 set. Before choosing the base, Agent Hub fetches without pull/merge/rebase and
@@ -290,6 +365,26 @@ chooses the exact local and origin main commits, and the preflight rechecks both
 values before candidate publication. A second fetch immediately before push is
 a compare-and-set guard; movement of `origin/main` stops publication for another
 user decision.
+
+When the approved origin commit differs from accepted local main, approval of
+the audit is not adoption. Before any contour or candidate side effect,
+preflight also requires an immutable content-addressed adoption receipt for one
+selected frozen Task result plus ancestry of that exact origin commit in current
+managed dev. The receipt binds Task ID, canonical repository and key, immutable
+Task base, accepted local-main baseline, exact adopted SHA, Task branch and
+snapshot commit/tree, unique bounded first-parent merge proof and its exact
+parents/tree, operator request ID and Git blob hash. Ordinary prepare, claim,
+Test, integration, plan and preflight paths can verify this authority but never
+create it. The supported operator surface is `npm run release:policy --
+task-upstream-adoption preview|enable --project-root <root> --task-id <id>
+--branch <branch> --task-base <sha> --accepted-local-main <sha>
+--adopted-commit <sha> --snapshot-commit <sha> --request-id <id>`; preview has
+no write effect, while enable atomically verifies the pinned local main, Task
+base and Task branch before creating one immutable Git ref to the receipt blob.
+Graph shape or later preflight approval cannot retroactively create authority.
+A remote-only commit, broad dev merge, missing/mismatched receipt or changed
+snapshot fails closed. If origin advances after a pinned Task adoption, the new
+tip requires a new audit and a separately authorized Task adoption.
 
 If the preflight response is interrupted after candidate preparation, recovery is
 readback-only. The Architect may reconcile the original request only by naming
@@ -340,30 +435,77 @@ local JSON file, an arbitrary supplied SHA, a foreign remote, a moved tag or an
 Actions run head SHA fails closed. Activation of such an adapter is a separate
 operator decision; existing unscoped state is not rewritten in place.
 
-The Architect adds one consolidated `CHANGELOG.md` entry when it exists, then
-freezes the exact main base, release-plan revision, included Task IDs and row
+An Agent Hub legacy publication that predates repository-scoped state may be
+adopted only through the separate operator surface `npm run release:policy --
+local-publication-receipt preview|enable ...`. This adapter does not infer scope
+from a SHA or ancestry. It binds the exact raw legacy state and successful local
+publisher receipt by SHA-256; verifies their revision, generation, publication
+time, Workspace, repository root, frozen plan/manifest and finalization
+identities; and verifies the exact active installed release and its runtime
+manifest were produced from the publisher checkout. The operator also pins the
+canonical origin and current remote-tracking `origin/main`; local main must equal
+the legacy published revision and that revision must be contained in the pinned
+origin observation. The adapter never fetches or moves refs. Preview is
+zero-write. Enable repeats all verification under the canonical publication
+lock and appends repository-scoped evidence through the publication-state owner,
+retaining the legacy fields and other repositories. Exact retry is idempotent;
+changed bytes, identity, deployment, refs or conflicting scoped evidence fail
+before write. This migration neither authorizes newer upstream content nor
+bypasses ordinary preflight.
+
+Every publication-state writer acquires or re-enters the canonical publication
+lock before reserving its per-file write turn. A writer outside the current
+owner therefore cannot occupy the write queue while waiting for that owner and
+block a nested owner write. The write turn still serializes same-file updates,
+and a rejected write releases its turn so later writers can continue. Duplicate
+repository evidence is compared recursively across the complete persisted
+record, including nested publisher and receipt fields; two records that differ
+below the first object level are conflicting rather than silently coalesced.
+
+The Architect explicitly prepares one selected set, supplies its consolidated
+`CHANGELOG.md`, and freezes the calendar version before validation. Freeze binds
+the exact main base, release-plan revision, included Task IDs and current row
 revisions, Task results, owning dev integrations, aggregate `PreRelease` head,
-manifest hash and standalone candidate head. Later Await Tasks are not silently
-added. Only a Stream with `settings.architect=true` may record verified release
+manifest hash, standalone candidate head and Agent Hub package version. Later
+Await Tasks are not silently added. The frozen release date/version remains the
+tested identity even if the local calendar date changes before publication.
+Only a Stream with `settings.architect=true` may record verified release
 completion.
 
-Prepared Await materialization precedes publication freeze. Freeze binds the
-consolidated root CHANGELOG to the exact prepared aggregate and plan, using the
-same release repository owner and lock. It may change only that CHANGELOG,
-records durable freeze intent before promoting the clone's main reference,
+Explicit preparation ordinarily composes the selected effective deltas. A
+bounded incremental preparation may start from an exact previously frozen
+manifest only when base, Workspace and selected Task IDs are unchanged, every
+other selected result is unchanged, and exactly one selected result advances by
+ancestry. Row-revision changes with an unchanged result are metadata-only. The
+builder applies only that result's exact non-`CHANGELOG.md` patch to the frozen
+candidate, without three-way or alternate fallback, then records the new current
+revisions and reuse evidence. A conflict fails normally. Known unselected paths
+and any contribution outside the selected delta remain excluded; changed
+selection/base or a non-descendant result uses ordinary selected-delta
+composition instead of this optimization.
+
+Freeze binds the consolidated root CHANGELOG and exact package metadata to the
+prepared aggregate and plan using the same release repository owner and lock.
+It records durable freeze intent before promoting the clone's main reference
 and resumes the identical target after interruption. Source edits or mismatched
 plan/head/content fail closed. The registered primary is never the promotion
-target. The frozen candidate remains immutable. If an included Task changes, is
-withdrawn or is excluded before completion, its Task revision or Git reference
-changes and completion CAS fails. Architect must explicitly rebuild and
-refreeze the release before it can complete; acceptance changes never mutate an
-already frozen candidate.
+target. The frozen candidate remains immutable. Any change of plan revision,
+Task revision, Git reference or approved `main` invalidates its use by later
+freeze, publication and completion CAS. Architect must explicitly prepare and
+refreeze; acceptance changes never mutate an already frozen candidate.
+
+Candidate readback is phase-specific. A `prepared` checkpoint requires the
+standalone clone to be an exact clean `PreRelease` checkout. A `frozen`
+checkpoint requires an exact clean `main` checkout while both `main` and
+`PreRelease` still equal the checkpointed `preReleaseHead`. Other phases and
+any branch, ref, tree, index or worktree drift fail closed. Freeze remains the
+only owner that promotes and attaches the standalone clone to `main`.
 
 Completion performs one transaction that CAS-checks every exact Task revision
 and the plan hash, then changes only those Tasks to `done` and persists a
 versioned finalization marker in the same commit. That marker binds the exact
 plan and published repository revisions to primary synchronization, dev
-synchronization and remaining-Await rebuild receipts.
+synchronization and explicit next-candidate invalidation receipts.
 Generic `done` and
 `hub_task_complete` do not create production evidence.
 
@@ -375,10 +517,10 @@ publication revision/generation readback immediately before the Task closure
 transaction. Once verified, only included Tasks are completed
 and their managed branches and worktrees may be removed. Published `main` is
 incorporated into `dev` without discarding later Test work. Remaining Await
-Tasks stay accepted and mutable `PreRelease` is immediately rebuilt for the next
-explicit release. If that rematerialization fails, the caller receives
-`retry_required`; a repeated completion request resumes only unfinished
-synchronization/rebuild stages, never Task closure. Each successful stage
+Tasks stay accepted and the previous candidate is durably invalidated; their
+next `PreRelease` is built only by a later explicit prepare. A repeated
+completion request resumes only unfinished synchronization stages, never Task
+closure or candidate preparation. Each successful stage
 persists its receipt through a short canonical mutation before the next stage.
 The active marker clears only after all stages have confirmed success.
 The last 16 completed exact-plan outcomes remain canonical evidence for lost-response
@@ -386,7 +528,7 @@ replay; transport acknowledgment is not permission to forget release completion.
 Interrupted Desktop completion reconciles only an existing pending or completed
 outcome, never starts fresh Task closure. Legacy Await-only markers cannot prove
 primary/dev synchronization: recovery explicitly reports unavailable legacy
-evidence and resumes their original rebuild scope.
+evidence and resumes only their original synchronization scope.
 
 The publication executor consumes the frozen manifest; it does not select Tasks
 or infer approval. Its durable journal retains exact candidate, validation mode,
@@ -398,6 +540,23 @@ same candidate on origin reconciles a lost push response without another push.
 The first automated adapter supports one exact repository; multiple repositories
 fail before publication rather than receiving partial completion evidence.
 
+Starting a different publication identity cannot overwrite a nonterminal run.
+Under the canonical publication lock, the existing start owner may automatically
+mark a dead run `interrupted` only when its exact journal and checkpoint show
+that execution reached solely the named pre-effect validation stages, no effect
+stage was started, reused, completed or failed, and progress is empty. The old
+terminal status is durably archived beside its existing log before the new
+status is created; an exact retry after a crash between those writes is
+idempotent. A live owner, unknown stage, effect-stage history, progress or
+checkpoint mismatch fails closed and remains subject to its specific recovery
+path.
+
+Before replacing an already terminal publication identity, the start owner
+archives the exact prior status beside its canonical run log. A conflicting
+archive or a log identity outside the canonical run directory fails before the
+new status is created. This preserves the terminal publication evidence even
+though `publication-status.json` remains the current-run projection.
+
 Deferred restart and `--skip-restart` with an unready runtime are
 `awaiting_restart`, not success. Publication-state is recorded only after
 required exact runtime readiness. Pending finalization stays recoverable and
@@ -406,6 +565,27 @@ recording and canonical completion under the publication lock, without build,
 deploy, push or restart; startup readiness does not wait for that work.
 Only completed Workspace finalization yields `succeeded`. A low-level publisher
 without a Workspace adapter yields `published` and does not claim Task closure.
+
+Exact runtime readiness uses the authenticated bounded `runtime-health`
+command, not the full application snapshot. Its live/ready flags and process
+release ID/PID must match the filesystem runtime status, and the endpoint ID is
+reread after the probe so an endpoint swap cannot be accepted. A mismatch keeps
+completion pending and performs no publication or Task-finalization effect.
+
+After readiness, durable `awaiting_finalization` is continued by the single
+owner of the original publication operation without new user input. An explicit
+`retry_required` repeats only the persisted Workspace finalization under the
+same publication lock; retries are bounded by a shared budget and end with an
+explicit reason once it is exhausted. Repeated readiness/resume events are
+idempotent and create neither a second owner nor a second terminal. Already
+successful tests, build, Git publication and deploy are never repeated.
+
+An ambiguous finalization transport result retains the same command identity.
+Only an authenticated definitive Desktop rejection proves that the durable
+command is terminal and permits one fresh command identity for the same saved
+publication completion. The Workspace completion owner then resolves an exact
+completed outcome or pending marker idempotently; it does not repeat Task
+closure, Git publication, deployment or runtime activation.
 
 Validation is explicit and persisted: full, focused by affected surface, or a
 user-authorized quick mode without the test gate. All modes retain publication
@@ -420,6 +600,15 @@ The full-test stage has a two-hour wall-clock and ten-minute output-idle bound.
 These timeouts report failure, not an inferred external outcome. The two cosmetic
 browser matrices run in `test:visual`, affected focused UI validation and full
 validation exactly once, rather than every ordinary unit run. See ADR-0034.
+Validation subprocesses are observers, not delegated publication stages: the
+test runner removes inherited publication session and stage-delegation markers
+before every child process. Publisher-owned deploy, activate and verification
+stages retain their separately verified live-owner delegation. Validation that
+exercises publication locking uses a fixture-local lock root, never the live
+publisher target already held by the parent pipeline. This applies both to
+direct state/adoption writers and to validation wrappers whose production
+defaults acquire the publication lock, including safe restart and publication
+orchestration tests, and runtime publication-completion recovery.
 
 Verified release completion invokes the same Task Git owner with each exact
 published repository revision. The returned `devSynchronization` evidence
@@ -509,8 +698,9 @@ owner finalizes an already-ready exact candidate or records the interrupted
 operation as failed before starting new work. A planned replacement is reported
 as refresh state and is not classified as a runtime crash.
 
-An explicit release preflight always prepares a fresh candidate from `dev`; it
-must never reuse or start a cached candidate. After refresh,
+An explicit release preflight prepares the exact current selected set. It may
+use only the bounded frozen-candidate successor optimization above; no other
+cached or broad `dev` candidate is accepted. After refresh,
 `TestContour.source.headCommit` must equal the exact Agent Hub repository `dev`
 HEAD observed by the preflight. Only this release preflight additionally
 requires every selected immutable Task result commit to be an ancestor of the
@@ -518,7 +708,16 @@ corresponding repository `dev` HEAD. Ordinary plan reads do not impose that
 integration requirement. Preflight accepts only an exact `ready` readback for
 the returned operation ID, source head and full target identity; `not_found`,
 `failed`, `refreshing`, `superseded` and identity mismatch all fail closed. The
-preflight does not reconstruct or compare blob manifests.
+post-refresh confirmation has one 10-second attempt budget. The budget gates
+the start of each read and bounds its HTTP health request by the time remaining
+when that read begins. A read admitted within the budget may finish synchronous
+local diagnostics afterward: exact-ready is accepted, while a non-ready result
+cannot start another read after the budget. This is not a hard interruption
+bound for local file or SQLite diagnostics. Only a still-live exact runtime with
+a transient unavailable/not-ready health response may be retried; stopped
+processes and operation, target, runtime, port or lock identity mismatches fail
+immediately with a stable diagnostic reason. The preflight does not reconstruct
+or compare blob manifests.
 
 Persisted operations created before the target included `model`, or runtime
 states created before the per-launch health nonce, are never eligible for
@@ -632,6 +831,48 @@ finalization never fall back to MCP through this bridge. The context capability
 is not part of durable publication identity or logs. Delete the local context
 after the first update; retire this compatibility bridge when the old wiring is
 outside the supported migration range.
+
+An accepted release-projector correction that is not yet installed may bootstrap
+one exact `Test -> Await` transition from its clean Task checkout. The local
+cutover verifies the exact source commit and resolver SHA-256 before opening the
+production stores, then requires that commit to be the unique immutable Task
+result for the canonical repository. It binds both source identities and the
+expected Task revision and status in the canonical MCP arguments hash, and
+invokes the ordinary `hub_task_status_update` owner.
+When a selected dependency must enter Await before the Task that owns the
+accepted projector, the cutover may name that separate source Task. Source and
+target must belong to the same Workspace and canonical repository. The source
+Task ID, Test revision, unique result commit and resolver hash are bound into the
+receipt; the Await owner acquires both Task locks in deterministic order and
+rechecks the source Task and clean checkout inside those locks immediately
+before the target lifecycle transition. The current target Workspace/Stream and
+both effective repository roots are re-read under those locks. The same SQLite
+transaction that begins the lifecycle transition then fences the exact current
+target and source Task revisions/statuses, Workspace and Stream ownership, both
+repository roots, the source result reference and the enabled release workflow,
+so a settings or source-authority write cannot pass between readback and
+transition. The target Task remains the only Task whose result, status and
+release membership change.
+The same Task, repository and Await locks, lifecycle transition, immutable result,
+dev integration and unknown-receipt rules apply. The successful transition
+invalidates older candidate identity and does not compose `PreRelease` or roll
+back because another selected Task is not currently composable.
+The one-shot composition skips startup reconciliation of unrelated receipts and
+does not patch `PreRelease`, refs or SQLite directly. Its request ID is subject to
+the same no-blind-retry rule as the installed MCP operation.
+If that extended receipt becomes unknown after a durable terminal outcome, its
+operator reconciliation must reproduce the complete original cutover arguments
+hash. The expected revision and status must equal the durable prior Task, the
+source commit must be its unique result for the canonical repository and must
+equal the recorded lifecycle result, and the resolver SHA-256 remains mandatory.
+For a cross-Task cutover, durable lifecycle evidence additionally binds the
+original source Task ID and revision. Terminal reconciliation uses that recorded
+authority even if the source Task later advances; altered, missing or mixed
+source identity remains unknown and performs no Git or lifecycle replay. A
+pending recovery resumes with the exact immutable source evidence from its
+existing transition and preserves that evidence in the terminal outcome.
+Missing, altered or mixed cutover identity stays unknown; terminal reconciliation
+performs no Git or lifecycle replay.
 
 ## Legacy cutover
 

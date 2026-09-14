@@ -185,6 +185,34 @@ async function openStreamTabsDomFixture(page, {
   }
 }
 
+// Редактор шаблонов теперь один и живёт в общей форме: прежние места открывают
+// её с нужной областью, поэтому и проверки идут через неё.
+const PROMPT_TEMPLATES_ENTRY = {
+  global: "[data-settings-global-quick-messages-entry]",
+  workspace: "[data-workspace-card-quick-messages-entry]",
+  stream: "[data-dialog-stream-quick-messages-entry]",
+};
+
+// На узких поверхностях карточка Stream в этой фикстуре не разложена и её узлы
+// имеют нулевой размер — так было и со встроенным редактором. Там вход
+// открывают событием, а настоящую кликабельность проверяют отдельные тесты.
+async function openPromptTemplatesForm(page, scope, { synthetic = false } = {}) {
+  const entry = page.locator(PROMPT_TEMPLATES_ENTRY[scope]);
+  if (synthetic) await entry.dispatchEvent("click");
+  else await entry.click();
+  await page.waitForFunction(() => document.querySelector("[data-prompt-templates-modal]")?.open === true);
+  return page.locator("[data-prompt-templates-editor]");
+}
+
+async function closePromptTemplatesForm(page, { synthetic = false } = {}) {
+  const open = await page.evaluate(() => document.querySelector("[data-prompt-templates-modal]")?.open === true);
+  if (!open) return;
+  const done = page.locator("[data-prompt-templates-done]");
+  if (synthetic) await done.dispatchEvent("click");
+  else await done.click();
+  await page.waitForFunction(() => document.querySelector("[data-prompt-templates-modal]")?.open !== true);
+}
+
 async function startPermanentDeleteConflictBackend() {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-delete-conflict-backend-"));
   const databaseFile = path.join(directory, "journal.sqlite");
@@ -476,13 +504,52 @@ test("persisted rotation uses only exact recorded target and probe measurements"
   assert.equal(message.threadId, "target");
   assert.equal(message.afterPercent, 7);
   assert.equal(message.time, source.context.compaction.rotationCompletedAt);
-  assert.match(message.text, /новый Thread 7%/u);
+  assert.equal(
+    message.text,
+    "Ротация завершена. Использование контекста: после свёртки 26% → новый Thread сразу после переноса 7%",
+  );
   for (const patch of [{ rotated: false }, { status: "running" }, { status: "unknown" }, { id: "" }]) {
     assert.equal(persistedStreamRotationMessages([{
       ...source, context: { compaction: { ...source.context.compaction, ...patch } },
     }]).length, 0);
   }
   assert.equal(persistedStreamRotationMessages([{ ...source, streamId: "" }]).length, 0);
+});
+
+// Случай пользователя: уведомление говорило «новый 11%», а новый Thread уже
+// показывал 27%. Оба числа верны, но относятся к разным моментам — подача
+// обязана называть этап и не выдавать живое значение за замер ротации.
+test("rotation stages stay historical while the new Thread's live usage grows", async () => {
+  const { persistedStreamRotationMessages, rotationMaintenancePresentation } = await streamTabsApi();
+  const source = {
+    streamId: "stream-1", provider: "codex", threadId: "source",
+    context: { compaction: {
+      id: "ac912f09", status: "completed", rotated: true,
+      beforePercent: 85.532508, afterPercent: 27.278251,
+      rotationThreadId: "target", rotationAfterPercent: 11.256192,
+      rotationProbeTurnId: "probe-target", rotationMeasuredAt: "2026-09-12T22:10:34.367Z",
+      rotationCompletedAt: "2026-09-12T22:10:34.500Z", completedAt: "2026-09-12T22:10:23.671Z",
+    } },
+  };
+  const target = {
+    streamId: "stream-1", provider: "codex", threadId: "target",
+    context: { percent: 27.0855 },
+  };
+
+  const [message] = persistedStreamRotationMessages([source, target]);
+
+  assert.equal(
+    message.text,
+    "Ротация завершена. Использование контекста: до свёртки 86% → после свёртки 27% → новый Thread сразу после переноса 11%",
+  );
+  assert.equal(message.afterPercent, 11, "живое использование нового Thread не подменяет замер ротации");
+  assert.equal(message.beforePercent, 27);
+  assert.equal(message.compactionBeforePercent, 86);
+  assert.doesNotMatch(message.text, /новый Thread[^%]*27%/u);
+  assert.equal(
+    rotationMaintenancePresentation(27, null).text,
+    "Ротация завершена. Использование контекста: после свёртки 27% → новый Thread создан, его замер не сохранён",
+  );
 });
 
 test("ordinary Thread continuation does not reuse an old rotation event", async () => {
@@ -1276,7 +1343,10 @@ test("Workspace and Stream cards expose behavioral editing and quick reply contr
     )), true);
     assert.equal(await page.locator("[data-workspace-card-form] input").first().getAttribute("data-workspace-card-name"), "");
     assert.equal(await page.locator("[data-workspace-card-folder]").inputValue(), "Team");
-    await page.locator('[data-workspace-card-quick-messages] [data-quick-message-title]').fill("Workspace edited");
+    const workspaceTemplates = await openPromptTemplatesForm(page, "workspace");
+    await workspaceTemplates.locator("[data-quick-message-title]").fill("Workspace edited");
+    await workspaceTemplates.locator("[data-quick-message-title]").dispatchEvent("change");
+    await closePromptTemplatesForm(page);
     await page.locator("[data-workspace-card-comment]").focus();
     await page.locator("[data-workspace-card-folder]").evaluate((node) => {
       node.value = "Other";
@@ -1603,12 +1673,11 @@ test("composer quick replies render above attached Task references", async () =>
       visualOrder: true,
     });
     assert.equal(await page.locator("[data-composer-quick-messages]").getAttribute("aria-label"), "Prompt-шаблоны");
-    assert.equal(await page.locator("[data-settings-global-quick-messages]").evaluate((node) => (
+    assert.equal(await page.locator("[data-settings-global-quick-messages-entry]").evaluate((node) => (
       node.closest(".quick-messages-settings-row")?.querySelector(".setting-name")?.textContent
     )), "Глобальные prompt-шаблоны");
     assert.equal(await page.locator("[data-settings-global-quick-messages-count]").textContent(), "1 шаблон");
     await page.locator('[data-panel-open="settings"]').click();
-    const globalEditor = page.locator("[data-settings-global-quick-messages]");
     const actionMode = page.locator("[data-quick-message-action-mode]");
     const actionModeNote = page.locator("[data-quick-message-action-mode-note]");
     assert.equal(await actionMode.inputValue(), "insert");
@@ -1627,6 +1696,7 @@ test("composer quick replies render above attached Task references", async () =>
       node.value = "insert";
       node.dispatchEvent(new Event("change", { bubbles: true }));
     });
+    const globalEditor = await openPromptTemplatesForm(page, "global");
     assert.equal(await globalEditor.isVisible(), true);
     assert.equal(await globalEditor.locator("[data-quick-message-row]").count(), 1);
     assert.equal(await globalEditor.locator("[data-quick-message-title]").inputValue(), "Принято");
@@ -1645,25 +1715,29 @@ test("composer quick replies render above attached Task references", async () =>
       && item.value.global[1]?.text === "Продолжай работу"
     ))), true);
     assert.equal(await page.locator("[data-text-dialog]").isHidden(), true);
+    await closePromptTemplatesForm(page);
     await page.locator("[data-panel-close]").click();
 
     const workspace = page.locator('[data-workspace-select="workspace-1"]');
     await workspace.dblclick();
     assert.equal(await page.getByText("Prompt-шаблоны Workspace", { exact: true }).isVisible(), true);
-    assert.equal(await page.locator("[data-workspace-card-quick-messages] [data-quick-message-add]").textContent(), "Добавить шаблон");
     assert.equal(await page.locator("[data-workspace-card-quick-messages-count]").textContent(), "1 шаблон");
-    assert.equal(await page.locator(
-      "[data-workspace-card-quick-messages] [data-quick-message-title]",
+    const workspaceEditor = await openPromptTemplatesForm(page, "workspace");
+    assert.equal(await workspaceEditor.locator("[data-quick-message-add]").textContent(), "Добавить шаблон");
+    assert.equal(await workspaceEditor.locator(
+      "[data-quick-message-title]",
     ).getAttribute("aria-label"), "Название prompt-шаблона 1");
+    await page.keyboard.press("Escape");
     await page.keyboard.press("Escape");
 
     const stream = page.locator('.stream-tabs-track [data-stream-tab-id="stream-1"]');
     await stream.dblclick();
     assert.equal(await page.getByText("Prompt-шаблоны потока", { exact: true }).isVisible(), true);
-    assert.equal(await page.locator("[data-dialog-stream-quick-messages] [data-quick-message-add]").textContent(), "Добавить шаблон");
     assert.equal(await page.locator("[data-dialog-stream-quick-messages-count]").textContent(), "1 шаблон");
-    assert.equal(await page.locator(
-      "[data-dialog-stream-quick-messages] [data-quick-message-title]",
+    const streamEditor = await openPromptTemplatesForm(page, "stream");
+    assert.equal(await streamEditor.locator("[data-quick-message-add]").textContent(), "Добавить шаблон");
+    assert.equal(await streamEditor.locator(
+      "[data-quick-message-title]",
     ).getAttribute("aria-label"), "Название prompt-шаблона 1");
   } finally {
     await browser.close();
@@ -1701,7 +1775,7 @@ test("shared prompt template editor preserves accordion identity and scope behav
       }]);
     });
     await page.locator('[data-panel-open="settings"]').click();
-    const editor = page.locator("[data-settings-global-quick-messages]");
+    const editor = await openPromptTemplatesForm(page, "global");
     const rows = editor.locator("[data-quick-message-row]");
     assert.equal(await rows.count(), 3);
     assert.equal(await editor.locator(".quick-message-editor-details:not([hidden])").count(), 1);
@@ -1780,6 +1854,11 @@ test("shared prompt template editor preserves accordion identity and scope behav
         streams: { "stream-1": [{ title: "Stream", text: "Stream body" }] },
       },
     }));
+    // Добавленная строка ещё не записана, поэтому входящий снимок её не
+    // подменяет: показывается расхождение, а решение принимает человек.
+    assert.equal(await rows.count(), 3);
+    assert.equal(await page.locator("[data-prompt-templates-conflict]").isVisible(), true);
+    await page.locator("[data-prompt-templates-reload]").click();
     assert.equal(await rows.count(), 20);
     assert.equal(await editor.locator("[data-quick-message-add]").isDisabled(), true);
     const overflow = await editor.evaluate((node) => ({
@@ -1851,7 +1930,7 @@ test("prompt template editor keeps rejected drafts and persists a successful ret
       }]);
     });
     await page.locator('[data-panel-open="settings"]').click();
-    const editor = page.locator("[data-settings-global-quick-messages]");
+    const editor = await openPromptTemplatesForm(page, "global");
     const title = editor.locator("[data-quick-message-title]");
     await title.evaluate((node) => {
       node.value = "Local draft";
@@ -1866,9 +1945,9 @@ test("prompt template editor keeps rejected drafts and persists a successful ret
     await page.waitForTimeout(500);
     const rejectedState = await page.evaluate(() => ({
       rejectApi: typeof window.AgentHub.rejectSelection,
-      busy: document.querySelector("[data-settings-global-quick-messages]")?.getAttribute("aria-busy"),
-      error: document.querySelector("[data-settings-global-quick-messages] [data-quick-message-error]")?.textContent,
-      errorHidden: document.querySelector("[data-settings-global-quick-messages] [data-quick-message-error]")?.hidden,
+      busy: document.querySelector("[data-prompt-templates-editor]")?.getAttribute("aria-busy"),
+      error: document.querySelector("[data-prompt-templates-editor] [data-quick-message-error]")?.textContent,
+      errorHidden: document.querySelector("[data-prompt-templates-editor] [data-quick-message-error]")?.hidden,
       toast: document.querySelector("[data-toast]")?.textContent,
     }));
     assert.deepEqual(rejectedState, {
@@ -1889,7 +1968,8 @@ test("prompt template editor keeps rejected drafts and persists a successful ret
     await editor.locator("[data-quick-message-error]").waitFor({ state: "hidden" });
     await page.reload({ waitUntil: "load" });
     await page.locator('[data-panel-open="settings"]').click();
-    assert.equal(await page.locator("[data-settings-global-quick-messages] [data-quick-message-title]").inputValue(), "Persisted retry");
+    const reopened = await openPromptTemplatesForm(page, "global");
+    assert.equal(await reopened.locator("[data-quick-message-title]").inputValue(), "Persisted retry");
   } finally {
     await browser.close();
   }
@@ -1990,9 +2070,7 @@ test("prompt template drafts stay isolated by owner across rejected and pending 
           window.AgentHub.setTasks(taskRows.map((task, index) => ({ ...task, selected: index === 0 })));
         }, { workspaceRows: workspaces, taskRows: tasks });
 
-        const editorSelector = scope === "workspace"
-          ? "[data-workspace-card-quick-messages]"
-          : "[data-dialog-stream-quick-messages]";
+        const editorSelector = "[data-prompt-templates-editor]";
         const editor = page.locator(editorSelector);
         const title = () => editor.locator("[data-quick-message-title]");
         const openWorkspace = async (workspaceId) => {
@@ -2002,6 +2080,7 @@ test("prompt template drafts stay isolated by owner across rejected and pending 
           });
         };
         const openOwner = async (owner) => {
+          await closePromptTemplatesForm(page, { synthetic: true });
           if (scope === "workspace") {
             await openWorkspace(`workspace-${owner}`);
           } else {
@@ -2010,6 +2089,7 @@ test("prompt template drafts stay isolated by owner across rejected and pending 
               window.AgentHub.openDialogSettings();
             }, `stream-${owner}`);
           }
+          await openPromptTemplatesForm(page, scope, { synthetic: true });
         };
 
         await openOwner("a");
@@ -2234,14 +2314,15 @@ test("shared prompt template editor stays responsive across every scope and surf
           const card = node.closest(".prompt-template-editor-card");
           const first = node.querySelector("[data-quick-message-row]");
           const compactButtons = [...node.querySelectorAll(".quick-message-editor-order button")];
-          const nextBlock = card.nextElementSibling;
+          const fields = card.closest(".prompt-templates-fields");
+          const cardBox = card.getBoundingClientRect();
+          const fieldsBox = fields.getBoundingClientRect();
           return {
             cardOverflow: card.scrollWidth - card.clientWidth,
-            cardHeight: card.getBoundingClientRect().height,
-            cardWidth: card.getBoundingClientRect().width,
-            nextBlockGap: nextBlock
-              ? nextBlock.getBoundingClientRect().top - card.getBoundingClientRect().bottom
-              : null,
+            cardHeight: cardBox.height,
+            cardWidth: cardBox.width,
+            fieldsOverflow: fields.scrollWidth - fields.clientWidth,
+            cardInsideFields: cardBox.left >= fieldsBox.left - 1 && cardBox.right <= fieldsBox.right + 1,
             rowOverflow: first.scrollWidth - first.clientWidth,
             openCount: node.querySelectorAll(".quick-message-editor-details:not([hidden])").length,
             touchTargets: compactButtons.map((button) => button.getBoundingClientRect().height),
@@ -2253,9 +2334,8 @@ test("shared prompt template editor stays responsive across every scope and surf
         assert.ok(metrics.cardOverflow <= 1, `${surface}/${scope}: ${JSON.stringify(metrics)}`);
         assert.ok(metrics.cardHeight > 100, `${surface}/${scope}: ${JSON.stringify(metrics)}`);
         assert.ok(metrics.cardWidth <= 621, `${surface}/${scope}: ${JSON.stringify(metrics)}`);
-        if (scope === "workspace") {
-          assert.ok(metrics.nextBlockGap >= 0, `${surface}/${scope}: ${JSON.stringify(metrics)}`);
-        }
+        assert.ok(metrics.fieldsOverflow <= 1, `${surface}/${scope}: ${JSON.stringify(metrics)}`);
+        assert.equal(metrics.cardInsideFields, true, `${surface}/${scope}: ${JSON.stringify(metrics)}`);
         assert.ok(metrics.rowOverflow <= 1, `${surface}/${scope}: ${JSON.stringify(metrics)}`);
         assert.equal(metrics.openCount, 1, `${surface}/${scope}`);
         assert.equal(metrics.firstUpDisabled, true, `${surface}/${scope}`);
@@ -2266,16 +2346,14 @@ test("shared prompt template editor stays responsive across every scope and surf
         if (captureDirectory) {
           await editor.evaluate((node) => {
             const card = node.closest(".prompt-template-editor-card");
-            const scrollContainer = card?.closest(".workspace-card-fields");
+            const scrollContainer = card?.closest(".prompt-templates-fields");
             if (scrollContainer) {
               scrollContainer.scrollTop = Math.max(0, card.offsetTop - scrollContainer.offsetTop);
               return;
             }
             card?.scrollIntoView({ block: "center", inline: "nearest" });
           });
-          const screenshotTarget = scope === "workspace"
-            ? page.locator("[data-workspace-card-modal]")
-            : editor.locator("xpath=ancestor::*[contains(@class,'prompt-template-editor-card')][1]");
+          const screenshotTarget = page.locator("[data-prompt-templates-modal]");
           await screenshotTarget.screenshot({
             path: path.join(captureDirectory, `prompt-template-editor-${scope}-${surface}.png`),
           });
@@ -2283,20 +2361,22 @@ test("shared prompt template editor stays responsive across every scope and surf
       };
 
       await page.locator('[data-panel-open="settings"]').click();
-      await verifyEditor("global", page.locator("[data-settings-global-quick-messages]"));
+      await verifyEditor("global", await openPromptTemplatesForm(page, "global"));
+      await closePromptTemplatesForm(page);
       await page.locator("[data-panel-close]").click();
 
       await page.locator('[data-workspace-select="workspace-1"]').dispatchEvent("click", { detail: 1 });
       await page.locator('[data-workspace-select="workspace-1"]').dispatchEvent("dblclick", { detail: 2 });
       await page.waitForFunction(() => document.querySelector("[data-workspace-card-modal]")?.open === true);
-      await verifyEditor("workspace", page.locator("[data-workspace-card-quick-messages]"));
+      await verifyEditor("workspace", await openPromptTemplatesForm(page, "workspace"));
+      await closePromptTemplatesForm(page);
       await page.locator("[data-workspace-card-close]").click();
 
       const streamTab = page.locator('.stream-tabs-track [data-stream-tab-id="stream-1"]');
       await streamTab.dispatchEvent("click", { detail: 1 });
       await streamTab.dispatchEvent("dblclick", { detail: 2 });
       await page.waitForFunction(() => document.querySelector("[data-dialog-settings]")?.open === true);
-      await verifyEditor("stream", page.locator("[data-dialog-stream-quick-messages]"));
+      await verifyEditor("stream", await openPromptTemplatesForm(page, "stream"));
       await page.close();
     }
   } finally {
@@ -2788,8 +2868,8 @@ test("current and other Workspace or Stream native dblclicks survive exact-ident
           ], `${surface}/${scenario.name}/${region}: native event sequence`);
           assert.equal(new Set(trace.map(({ logicalId }) => logicalId)).size, 1);
           if (scenario.forceFirstClickRerender) {
-            assert.equal(new Set(trace.map(({ rowNodeId }) => rowNodeId)).size, 2,
-              `${surface}/${scenario.name}: the same logical Workspace is legitimately replaced`);
+            assert.equal(new Set(trace.map(({ rowNodeId }) => rowNodeId)).size, 1,
+              `${surface}/${scenario.name}: the same logical Workspace keeps its node through a rerender`);
           }
           if (screenshotDirectory && scenario.name === "selected-workspace" && attempt === 0) {
             console.log(`HUB157_DBLCLICK_TRACE ${surface} ${JSON.stringify(trace)}`);
@@ -3065,7 +3145,8 @@ test("Workspace and Stream cards survive logical-identity rerenders while stale 
         replaced: replacement !== known,
       };
     });
-    assert.deepEqual(rerenderedStreamResult, { open: true, replaced: true });
+    // Обновление сохраняет узел вкладки, поэтому состояние статуса не сбрасывается.
+    assert.deepEqual(rerenderedStreamResult, { open: true, replaced: false });
     await page.keyboard.press("Escape");
 
     const staleStreamResult = await page.evaluate(() => {

@@ -57,3 +57,24 @@ test("release-enabled Task still requires release preflight before changing stat
   assert.equal(taskBoard.task(task.id).workflowStatus, task.workflowStatus);
   assert.equal(taskBoard.lifecycleOutcome("release"), null);
 });
+
+test("workflow cutover CAS rejects a stale revision or status before lifecycle effects", async (t) => {
+  const { service, taskBoard, task } = await fixture(t, { releaseWorkflowEnabled: false }, false);
+  await assert.rejects(service.updateWorkflowStatus({
+    taskId: task.id,
+    status: "awaiting_implementation",
+    operationId: "stale-revision",
+    expectedRevision: task.revision + 1,
+    expectedWorkflowStatus: task.workflowStatus,
+  }), /revision changed/u);
+  await assert.rejects(service.updateWorkflowStatus({
+    taskId: task.id,
+    status: "awaiting_implementation",
+    operationId: "stale-status",
+    expectedRevision: task.revision,
+    expectedWorkflowStatus: "testing",
+  }), /status changed/u);
+  assert.equal(taskBoard.task(task.id).revision, task.revision);
+  assert.equal(taskBoard.lifecycleOutcome("stale-revision"), null);
+  assert.equal(taskBoard.lifecycleOutcome("stale-status"), null);
+});

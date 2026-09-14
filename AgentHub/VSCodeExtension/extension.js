@@ -534,7 +534,9 @@ function activate(context) {
     vscode.commands.registerCommand(OPEN_COMMAND, () => provider.openPanel()),
     vscode.commands.registerCommand(REFRESH_COMMAND, () => provider.scheduleRefresh(0, true)),
   );
-
+  void provider.currentBridge()
+    .then((bridge) => bridge.ensureRuntimeStarted())
+    .catch(() => {});
 }
 
 function deactivate() {}
