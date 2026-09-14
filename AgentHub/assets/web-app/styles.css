@@ -82,8 +82,14 @@
   --brand-shadow: 0 6px 18px -10px rgba(108, 178, 255, 0.7);
 
   --provider-none: #8797ab;
-  --provider-codex: #6cb2ff;
-  --provider-claude: #e08a63;
+  /* Семантическая палитра принадлежит Hub и не меняется вместе с темой. */
+  --provider-codex: #6cb2ff !important;
+  --provider-claude: #e08a63 !important;
+  --task-status-new: #858b94 !important;
+  --task-status-in-progress: #4285f4 !important;
+  --task-status-testing: #d4a20d !important;
+  --task-status-awaiting: #e87823 !important;
+  --task-status-done: #2ea44f !important;
   /* Реестр провайдеров владеет только hue. Светлость, хрома и прозрачность
      колонки расхода задаёт активный пакет темы. */
   --provider-codex-hue: 260;
@@ -3980,19 +3986,15 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .task-board-column.is-status-in_progress {
-  border-top-color: color-mix(in srgb, var(--accent) 70%, var(--line));
+  border-top-color: color-mix(in srgb, var(--task-status-in-progress) 70%, transparent);
 }
 
 .task-board-column.is-status-testing {
-  border-top-color: color-mix(in srgb, var(--pending) 70%, var(--line));
+  border-top-color: color-mix(in srgb, var(--task-status-testing) 70%, transparent);
 }
 
 .task-board-column.is-status-awaiting_implementation {
-  border-top-color: color-mix(
-    in srgb,
-    var(--task-status-awaiting-color, color-mix(in srgb, var(--pending) 84%, var(--accent))) 70%,
-    var(--line)
-  );
+  border-top-color: color-mix(in srgb, var(--task-status-awaiting) 70%, transparent);
 }
 
 @media (min-width: 960px) {
@@ -4221,7 +4223,7 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .board-task-status {
-  --task-status-color: #858b94;
+  --task-status-color: var(--task-status-new);
   border: 1px solid color-mix(in srgb, var(--task-status-color) 72%, transparent);
   color: var(--task-status-color);
   flex: 0 0 auto;
@@ -4235,18 +4237,15 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .board-task-status[data-workflow-status="in_progress"] {
-  --task-status-color: #4285f4;
+  --task-status-color: var(--task-status-in-progress);
 }
 
 .board-task-status[data-workflow-status="testing"] {
-  --task-status-color: #d4a20d;
+  --task-status-color: var(--task-status-testing);
 }
 
 .board-task-status[data-workflow-status="awaiting_implementation"] {
-  --task-status-color: var(
-    --task-status-awaiting-color,
-    color-mix(in srgb, var(--pending) 84%, var(--accent))
-  );
+  --task-status-color: var(--task-status-awaiting);
 }
 
 /* Dashboard rows share the column grid; embedded cards keep their own layout. */
@@ -4606,7 +4605,7 @@ html[data-view="dashboard"] .task-board-view.is-list-view .task-board-columns {
 }
 
 .board-task-status[data-workflow-status="done"] {
-  --task-status-color: #2ea44f;
+  --task-status-color: var(--task-status-done);
 }
 
 .board-task-attachments {
@@ -6202,13 +6201,15 @@ html[data-surface="mobile"]
 
 [data-provider="codex"] > .provider-dot,
 .provider-dot[data-provider="codex"] {
-  background: var(--provider-codex);
+  background: var(--provider-codex) !important;
+  border-color: var(--provider-codex) !important;
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--provider-codex) 18%, transparent);
 }
 
 [data-provider="claude"] > .provider-dot,
 .provider-dot[data-provider="claude"] {
-  background: var(--provider-claude);
+  background: var(--provider-claude) !important;
+  border-color: var(--provider-claude) !important;
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--provider-claude) 18%, transparent);
 }
 
