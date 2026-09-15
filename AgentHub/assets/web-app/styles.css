@@ -14270,7 +14270,8 @@ html[data-view="server"] .server-view {
 
 .server-health-card,
 .server-card {
-  background: var(--card-bg-open), color-mix(in srgb, var(--bg) 94%, transparent);
+  background: var(--card-bg-open);
+  background-color: color-mix(in srgb, var(--bg) 94%, transparent);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-lg);
   box-shadow: var(--card-shadow);
@@ -14282,6 +14283,7 @@ html[data-view="server"] .server-view {
   background:
     radial-gradient(100% 110% at 100% 0%, color-mix(in srgb, var(--accent) 17%, transparent), transparent 64%),
     var(--card-bg-open);
+  background-color: color-mix(in srgb, var(--bg) 94%, transparent);
 }
 
 .server-card-head {
