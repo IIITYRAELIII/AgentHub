@@ -4524,11 +4524,13 @@ html[data-view="dashboard"] .task-board-view.is-workspace-view .board-task-works
 html[data-view="dashboard"] .task-board-view .task-board-toolbar {
   grid-column: 2 / -1;
   grid-row: 1;
-  justify-content: flex-start;
+  justify-content: flex-end;
   border: 0;
   border-bottom: 1px solid var(--line);
   background: var(--surface-1);
 }
+.task-board-toolbar .task-board-toolbar-actions,
+.task-board-toolbar .task-board-view-options { justify-content: flex-end; }
 html[data-view="dashboard"] .task-board-view .task-board-sidebar {
   grid-row: 1 / -1;
   display: flex;
