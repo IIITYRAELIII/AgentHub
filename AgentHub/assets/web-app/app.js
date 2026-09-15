@@ -9271,7 +9271,10 @@ function closeResourceContextMenu() {
 
 function openResourceContextMenu(event, resource) {
   pendingResource = resource;
-  const actions = new Set(resourceInteractions.resourceActions(resource));
+  const actions = new Set(resourceInteractions.resourceActions(resource, {
+    localWorkspaceFilesAvailable: directoryBrowseAvailable,
+    vscode: vscodeMode,
+  }));
   for (const button of resourceContextMenu.querySelectorAll("[data-resource-action]")) {
     button.hidden = !actions.has(button.dataset.resourceAction);
   }

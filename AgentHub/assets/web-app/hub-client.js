@@ -21,7 +21,7 @@ function remoteWorkspaceFileBridgeAvailable() {
     && window.AgentHubBrowserDevice?.isPaired?.() === true;
 }
 
-async function launchWorkspaceFileBridge(action, localPath) {
+async function requestWorkspaceFileTransfer(localPath) {
   const response = await hubFetch("/api/workspace-file/transfer-ticket", {
     method: "POST",
     headers: { ...authorizationHeaders(), "Content-Type": "application/json" },
@@ -31,6 +31,21 @@ async function launchWorkspaceFileBridge(action, localPath) {
   if (!response.ok || payload.ok === false) {
     throw new Error(String(payload.error ?? `Не удалось подготовить файл: HTTP ${response.status}`));
   }
+  return payload;
+}
+
+function startBrowserDownload(downloadPath, name) {
+  const link = document.createElement("a");
+  link.href = new URL(String(downloadPath ?? ""), window.location.origin).href;
+  link.download = String(name ?? "file.bin");
+  link.hidden = true;
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+
+async function launchWorkspaceFileBridge(action, localPath) {
+  const payload = await requestWorkspaceFileTransfer(localPath);
   const source = new URL(String(payload.downloadPath ?? ""), window.location.origin);
   const launch = new URL(`agenthub-file://${action}`);
   launch.searchParams.set("source", source.href);
@@ -4435,7 +4450,13 @@ async function saveLinkResource(resource) {
   }
   if (String(resource?.localPath ?? "").trim()) {
     if (!localWorkspaceFilesAvailable) {
-      throw new Error("Локальный файл Workspace доступен только на этом компьютере");
+      if (!remoteWorkspaceFileBridgeAvailable()) {
+        throw new Error("Чтобы скачать файл с компьютера Agent Hub, сначала сопряги это устройство");
+      }
+      const ticket = await requestWorkspaceFileTransfer(resource.localPath);
+      startBrowserDownload(ticket.downloadPath, ticket.name || resourceFileName(resource));
+      agentHub.toast("Скачивание файла началось");
+      return;
     }
     await localSessionReady;
     const response = await hubFetch(
