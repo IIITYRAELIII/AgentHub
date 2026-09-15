@@ -4445,13 +4445,8 @@ html[data-view="dashboard"] .task-board-view.is-workspace-view .board-task-execu
   grid-column: 2;
 }
 
-html[data-view="dashboard"] .task-board-view.is-workspace-view .board-task-workspace,
-html[data-view="dashboard"] .task-board-view.is-workspace-view .task-board-sidebar {
+html[data-view="dashboard"] .task-board-view.is-workspace-view .board-task-workspace {
   display: none;
-}
-
-html[data-view="dashboard"] .task-board-view.is-workspace-view {
-  --task-rail-width: 0px;
 }
 
 .is-workspace-view .task-board-row-head > :last-child { text-align: end; }
@@ -4525,9 +4520,6 @@ html[data-view="dashboard"] .task-board-view .task-board-sidebar {
 html[data-view="dashboard"] .task-board-view .task-board-columns {
   grid-row: 2;
 }
-html[data-view="dashboard"] .task-board-view.is-workspace-view .task-board-toolbar {
-  grid-column: 1 / -1;
-}
 .task-board-toolbar-actions > label {
   display: flex;
   align-items: center;
@@ -4550,6 +4542,19 @@ html[data-view="dashboard"] .task-board-view.is-list-view .task-board-columns {
 .is-list-view .task-board-column { flex: 1 1 100%; min-width: 0; border-right: 0; }
 .is-list-view .task-board-column-list { flex: 1 1 auto; }
 .is-list-view .task-board-row-head { display: none; }
+
+.is-status-view.has-status-filter .task-board-status-columns > .task-board-column {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+.is-grouped-view.has-status-filter .task-board-status-columns {
+  grid-template-columns: minmax(0, 1fr);
+}
+.has-status-filter .task-board-matrix-content { min-width: 0; }
+
+@media (min-width: 960px) {
+  .task-board-toolbar-actions > .task-board-scope-control { display: none; }
+}
 
 .task-board-filter-controls[hidden] {
   display: none;

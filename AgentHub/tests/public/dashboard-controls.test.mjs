@@ -5,6 +5,10 @@ import test from 'node:test';
 import { launchBrowser, openFixture, snapshot } from './composer-production.fixture.mjs';
 
 async function choose(page, selector, value) {
+  if (selector === '[data-task-board-scope-select]' && page.viewportSize().width >= 960) {
+    await page.locator('[data-task-board-scopes] [data-board-scope="' + value + '"]').click();
+    return;
+  }
   const button = page.locator(selector).locator('..').getByRole('button');
   await button.click();
   const menu = await button.getAttribute('aria-controls');
@@ -17,6 +21,49 @@ const tasks = Array.from({ length: 35 }, (_, i) => ({
   bucket: i === 0 ? 'backlog' : 'workspace', workspaceId: i === 0 ? null : 'workspace-1',
   workflowStatus: i % 2 ? 'testing' : 'new', attachments: [], checklist: [],
 }));
+
+for (const width of [1600, 390]) test(`status filter shows one full-width column at ${width}px`, { timeout: 30_000 }, async () => {
+  const browser = await launchBrowser();
+  try {
+    const page = await browser.newPage({ viewport: { width, height: 900 } });
+    const data = snapshot();
+    data.boardTasks = tasks;
+    const diagnostics = await openFixture(page, { fixtureSnapshot: data });
+    await page.locator(width < 960 ? '[data-mobile-button="dashboard"]' : '[data-view-button="dashboard"]').click();
+    const board = page.locator('[data-task-board]');
+    for (const view of ['statuses', 'workspaces', 'list']) {
+      await board.locator('[data-task-board-view="' + view + '"]').click();
+      assert.equal(await board.locator('.task-board-scope-control').isVisible(), width < 960);
+      assert.equal(await board.locator('.task-board-sidebar').isVisible(), width >= 960);
+    }
+    await board.locator('[data-task-board-view="statuses"]').click();
+    for (const grouped of [false, true]) {
+      await board.locator('[data-task-board-grouping-toggle]').setChecked(grouped);
+      await choose(page, '[data-task-board-status-filter]', 'testing');
+      assert.equal(await board.locator('.task-board-column.is-backlog').count(), 0);
+      const headings = grouped ? board.locator('.task-board-matrix-head .task-board-column')
+        : board.locator('.task-board-status-columns > .task-board-column');
+      assert.equal(await headings.count(), 1);
+      assert.equal(await headings.first().getAttribute('data-board-destination'), 'status:all:testing');
+      assert.equal(await board.locator('[data-board-task-id]').count(), 17);
+      const host = await board.locator('.task-board-columns').boundingBox();
+      const column = await headings.first().boundingBox();
+      assert.ok(column.width >= host.width - 45, JSON.stringify({ host, column }));
+      await choose(page, '[data-task-board-status-filter]', 'done');
+      assert.equal(await headings.count(), 1, 'empty selected status keeps its heading');
+      assert.equal(await board.locator('[data-board-task-id]').count(), 0);
+      await choose(page, '[data-task-board-status-filter]', 'new');
+      assert.equal(await board.locator('[data-board-task-id]').count(), 18, 'matching Backlog tasks remain visible');
+      if (grouped) assert.equal(await board.locator('[data-task-board-group="backlog"] .task-board-lane-heading').textContent(), 'Бэклог1');
+      await choose(page, '[data-task-board-status-filter]', 'all');
+      assert.equal(await headings.count(), grouped ? 4 : 5, 'all statuses restores the board');
+      assert.equal(await board.locator('.task-board-column.is-backlog').count(), 1);
+    }
+    assert.deepEqual(diagnostics, []);
+  } finally {
+    await browser.close();
+  }
+});
 
 for (const width of [1600, 390]) test(`board filters and list work at ${width}px`, { timeout: 30_000 }, async () => {
   const browser = await launchBrowser();

@@ -2221,7 +2221,7 @@
     for (const id of order) {
       const groupTasks = groups.get(id);
       const workspace = id.startsWith('workspace:') ? workspaceById(id.slice(10)) : null;
-      const title = id === 'notes' ? 'Заметки' : workspace?.name || 'Workspace недоступен';
+      const title = id === 'backlog' ? 'Бэклог' : id === 'notes' ? 'Заметки' : workspace?.name || 'Workspace недоступен';
       const lane = node('details', {
         class: 'task-board-lane', 'data-task-board-group': id,
         open: state.collapsedBoardGroups.has(id) ? null : '',
@@ -2409,6 +2409,8 @@
     board.classList.toggle("is-workspace-view", state.boardView === "workspaces");
     board.classList.toggle('is-status-view', state.boardView === 'statuses');
     board.classList.toggle('is-list-view', state.boardView === 'list');
+    const singleStatusView = state.boardView === 'statuses' && state.statusFilter !== 'all';
+    board.classList.toggle('has-status-filter', singleStatusView);
     const grouped = state.boardView === 'statuses' && state.groupByWorkspace && state.boardScope !== "backlog";
     board.classList.toggle('is-grouped-view', grouped);
     if (groupingToggle) groupingToggle.checked = state.groupByWorkspace;
@@ -2440,13 +2442,14 @@
       statusFilter.value = state.statusFilter;
     }
     renderScopeStrip();
-    const rendered = [renderColumn({
+    const rendered = singleStatusView ? [] : [renderColumn({
       id: "backlog", title: "Бэклог", subtitle: "Неразобранные входящие",
       tasks: visibleTasks.filter((task) => task.bucket === "backlog"), accent: "is-backlog", emptyText,
       acceptsTaskDrops: !state.completedOnly,
     })];
-    const scopedTasks = selectedScopeTasks(visibleTasks);
-    const statuses = state.boardScope === "backlog" ? [] : state.completedOnly ? ["done"] : TASK_WORKFLOW_STATUSES.filter((status) => (
+    const scopedTasks = singleStatusView && state.boardScope === "all"
+      ? visibleTasks : selectedScopeTasks(visibleTasks);
+    const statuses = singleStatusView ? [state.statusFilter] : state.boardScope === "backlog" ? [] : state.completedOnly ? ["done"] : TASK_WORKFLOW_STATUSES.filter((status) => (
       status !== "done" || scopedTasks.some((task) => taskWorkflowStatus(task) === "done")
     ));
     if (grouped) rendered.push(renderStatusMatrix(scopedTasks, statuses, emptyText));

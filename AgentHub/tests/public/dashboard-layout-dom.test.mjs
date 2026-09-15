@@ -223,9 +223,9 @@ test("Dashboard keeps view and filters visible and restores Workspace grouping",
     assert.equal(await page.locator('#task-board-settings').isVisible(), true);
     assert.equal(await page.locator('[data-task-status-language="ru"]').isVisible(), true);
     await page.locator('[data-task-board-view="workspaces"]').click();
-    assert.equal(await page.locator('.task-board-sidebar').isVisible(), false);
-    assert.ok((await page.locator('[data-task-board-columns]').boundingBox()).x < 25);
-    await page.locator('[data-task-board-scope-select]').selectOption('all', { force: true });
+    assert.equal(await page.locator('.task-board-sidebar').isVisible(), true);
+    assert.equal(await page.locator('.task-board-scope-control').isVisible(), false);
+    await page.locator('[data-board-scope="all"]').click();
     const columns = page.locator('[data-task-board-columns] .task-board-column');
     assert.deepEqual(await columns.locator('h2').allTextContents(), ['Бэклог', 'DevOps', 'Agent HUB', 'Заметки']);
     const workspace = page.locator('[data-task-board-columns] [data-board-destination="workspace:one"]');
