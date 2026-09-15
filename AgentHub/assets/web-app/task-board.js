@@ -2333,6 +2333,8 @@
 
   function renderScopeStrip() {
     if (!scopeStrip) return;
+    const workspaceCount = document.querySelector("[data-task-board-workspace-count]");
+    if (workspaceCount) workspaceCount.textContent = String(state.workspaces.length);
     const openTasks = (predicate) => tasksForMode(state.tasks, { completedOnly: state.completedOnly }).filter(predicate).length;
     const scopes = [
       { id: "all", label: "Все задачи", count: openTasks(() => true) },
