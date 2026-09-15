@@ -809,8 +809,9 @@
         <label>Статус
           <select data-task-board-status-filter aria-label="Фильтр статуса задачи"></select>
         </label>
-        <label class="task-board-grouping-setting" data-task-board-grouping-setting>
-          <input type="checkbox" data-task-board-grouping-toggle aria-label="Группировать по воркспейсам" checked>
+        <label class="task-board-grouping-setting setting-switch" data-task-board-grouping-setting>
+          <input type="checkbox" role="switch" data-task-board-grouping-toggle aria-label="Группировать по воркспейсам" checked>
+          <span class="switch-track" aria-hidden="true"></span>
           <span>По Workspace</span>
         </label>
         <div class="task-board-filter-controls" data-task-board-filter-controls>

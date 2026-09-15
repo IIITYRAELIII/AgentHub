@@ -3799,7 +3799,18 @@ html[data-view="dashboard"] .task-board-view {
 .task-board-settings .task-board-status-language-options button { flex: 1; }
 .task-board-grouping-setting { display: flex; align-items: center; gap: 0.6rem; font-size: 0.8rem; cursor: pointer; }
 .task-board-grouping-setting[hidden] { display: none; }
-.task-board-grouping-setting input { accent-color: var(--accent); inline-size: 1rem; block-size: 1rem; }
+.task-board-grouping-setting { position: relative; }
+.task-board-grouping-setting.setting-switch input {
+  position: absolute;
+  inset-inline-start: 0;
+  margin: 0;
+  opacity: 0;
+  pointer-events: auto;
+  inline-size: 2.35rem;
+  block-size: 1.3rem;
+  z-index: 1;
+  cursor: pointer;
+}
 
 .task-board-folder-heading { display: flex; min-width: 0; }
 .task-board-folder-heading > .task-board-scope { flex: 1; border: 0; }
@@ -4042,6 +4053,10 @@ html[data-view="dashboard"] .task-board-view {
 
 .task-board-column-head > div:first-child {
   min-width: 0;
+}
+
+.is-status-view .task-board-column-head {
+  background: color-mix(in srgb, var(--bg) 80%, transparent);
 }
 
 .task-board-column-controls,
@@ -4376,7 +4391,7 @@ html[data-view="dashboard"] .is-status-view .is-backlog .board-task-executor { g
   top: 0;
   z-index: 2;
   gap: 0.5rem;
-  background: var(--bg);
+  background: transparent;
 }
 .task-board-status-heading {
   min-width: 0;
