@@ -200,6 +200,14 @@ export function restartRequestProjection(operation, notification = {}) {
 // has settled successfully.
 export const RESTART_FAILURE_NOTICE_WINDOW_MS = 15 * 60_000;
 
+// A runtime restart requested while no Stream and Thread are selected is scoped
+// to the runtime itself. The admission barrier is the global restart request,
+// so this scope never grants or blocks a specific Thread.
+export const RUNTIME_RESTART_SCOPE = Object.freeze({
+  streamId: "agent-hub-runtime",
+  threadId: "agent-hub-runtime",
+});
+
 export function restartFailureProjection(operation) {
   const restored = restoreMaintenanceOperation(operation);
   if (!restored || restored.kind !== MAINTENANCE_OPERATION_KINDS.RESTART
