@@ -1272,6 +1272,14 @@ export class TaskBoardStore {
     return `${this.revision}:${externalRevision}`;
   }
 
+  get snapshotRevision() {
+    if (!this.#database) return null;
+    const externalRevision = Number(
+      this.#database.prepare("PRAGMA data_version").get()?.data_version,
+    ) || 0;
+    return `${this.#revision}:${externalRevision}`;
+  }
+
   close() {
     this.#database?.close();
     this.#database = null;

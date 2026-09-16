@@ -196,6 +196,21 @@ export function restartRequestProjection(operation, notification = {}) {
   };
 }
 
+// A failed restart is explained only while it is recent and no later restart
+// has settled successfully.
+export const RESTART_FAILURE_NOTICE_WINDOW_MS = 15 * 60_000;
+
+export function restartFailureProjection(operation) {
+  const restored = restoreMaintenanceOperation(operation);
+  if (!restored || restored.kind !== MAINTENANCE_OPERATION_KINDS.RESTART
+    || restored.status !== MAINTENANCE_OPERATION_STATUSES.FAILED) return null;
+  return {
+    operationId: restored.operationId,
+    error: String(restored.metadata?.error ?? "").trim() || null,
+    failedAt: restored.completedAt ?? restored.updatedAt ?? null,
+  };
+}
+
 export function restartUiProjection(operation) {
   const restored = restoreMaintenanceOperation(operation);
   if (!restored || restored.kind !== MAINTENANCE_OPERATION_KINDS.RESTART) {

@@ -24,7 +24,7 @@ const RECEIPT_SHAPE = "__agentHubControlReceiptShape";
 const SNAPSHOT_RESULT_KEYS = Object.freeze([
   "apiVersion", "workspaces", "boardTasks", "boardLayout", "selected", "settings",
   "pendingApprovals", "messageReceipts", "messagePins", "deferredInputs", "restartPending",
-  "restartWaiting", "restartBlockingCount", "exchangeRates", "activeCount", "server",
+  "restartWaiting", "restartBlockingCount", "restartFailure", "exchangeRates", "activeCount", "server",
   "tasks", "conversations", "collectionDeltas", "generatedAt", "version", "notModified",
 ]);
 

@@ -182,3 +182,63 @@ test("legacy restart keeps the current bot entry point", () => {
   assert.equal(result.command, "node.exe");
   assert.deepEqual(result.args, [path.resolve("C:\\AgentHub\\agent-hub-server.mjs")]);
 });
+
+test("replacement readiness fails as soon as the captured replacement exits", async () => {
+  const events = [];
+  let ownerChecks = 0;
+  let lock = JSON.stringify({ pid: 84, instanceToken: "replacement", ready: false });
+  const startedAt = Date.now();
+  await assert.rejects(launchReplacementAndWait({
+    invocation: { command: "runtime", args: [], options: {} },
+    lockFile: "bot.lock",
+    currentPid: 42,
+    attempts: 1,
+    ownershipTimeoutMs: 1_000,
+    readinessTimeoutMs: 120_000,
+    spawnImpl: () => ({ pid: 73, once() {}, unref() {} }),
+    readFileImpl: async () => lock,
+    unlinkImpl: async () => {
+      events.push("unlock");
+      lock = "";
+    },
+    stopTree: async (pid) => {
+      events.push(`stop:${pid}`);
+      return true;
+    },
+    delayImpl: async () => {},
+    // Alive while taking ownership, then the startup fails and the process exits.
+    isAlive: (pid) => pid === 84 && ownerChecks++ === 0,
+  }), (error) => {
+    assert.match(error.message, /replacement bot 84 exited before becoming ready/);
+    assert.equal(error.replacementCleanup.confirmed, true);
+    assert.equal(error.replacementCleanup.ownerPid, 84);
+    return true;
+  });
+  assert.ok(Date.now() - startedAt < 5_000, "the readiness timeout is not waited out");
+  assert.deepEqual(events, ["stop:84", "stop:73", "unlock"]);
+});
+
+test("a different dead lock owner does not end the wait for the live captured replacement", async () => {
+  let ownerAlive = true;
+  const locks = [
+    JSON.stringify({ pid: 84, instanceToken: "replacement", ready: false }),
+    JSON.stringify({ pid: 99, instanceToken: "stale", ready: false }),
+  ];
+  await assert.rejects(launchReplacementAndWait({
+    invocation: { command: "runtime", args: [], options: {} },
+    lockFile: "bot.lock",
+    currentPid: 42,
+    attempts: 1,
+    ownershipTimeoutMs: 1_000,
+    readinessTimeoutMs: 20,
+    spawnImpl: () => ({ pid: 73, once() {}, unref() {} }),
+    readFileImpl: async () => (locks.length > 1 ? locks.shift() : locks[0]),
+    unlinkImpl: async () => {},
+    stopTree: async (pid) => {
+      if (pid === 84) ownerAlive = false;
+      return true;
+    },
+    delayImpl: async () => {},
+    isAlive: (pid) => (pid === 84 ? ownerAlive : false),
+  }), /replacement bot 84 acquired bot\.lock but did not become ready/);
+});

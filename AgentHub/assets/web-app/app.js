@@ -132,6 +132,8 @@ const chatPane = document.querySelector("[data-chat-pane]");
 const streamTabs = document.querySelector("[data-stream-tabs]");
 const streamChatColumns = document.querySelector("[data-stream-chat-columns]");
 const streamChatHeader = document.querySelector("[data-stream-chat-header]");
+const streamHeaderWorkspace = document.querySelector("[data-stream-header-workspace]");
+const streamHeaderName = document.querySelector("[data-stream-header-name]");
 const streamHeaderProviderDot = document.querySelector("[data-stream-header-provider-dot]");
 const streamHeaderProvider = document.querySelector("[data-stream-header-provider]");
 const streamHeaderProviderConnection = document.querySelector("[data-provider-connection-quality]");
@@ -4357,6 +4359,7 @@ function renderStreamTabs() {
     overflowItems.push(el("button", {
       ...attributes,
       class: "stream-overflow-item",
+      draggable: window.AgentHubStreamTabs.streamsAreDraggable(streamOrderMode, surface) ? "true" : null,
       hidden: true,
     }, content()));
     return el("span", {
@@ -5500,7 +5503,10 @@ streamTabs?.addEventListener("drop", (event) => {
   const order = orderedWorkspaceStreams(streams, workspaceId).map((stream) => stream.id)
     .filter((id) => id !== streamId);
   const targetIndex = order.indexOf(targetId);
-  const insertAfter = event.clientX > target.getBoundingClientRect().left + target.clientWidth / 2;
+  const rect = target.getBoundingClientRect();
+  const insertAfter = target.classList.contains("stream-overflow-item")
+    ? event.clientY > rect.top + rect.height / 2
+    : event.clientX > rect.left + rect.width / 2;
   order.splice(Math.max(0, targetIndex + (insertAfter ? 1 : 0)), 0, streamId);
   const beforeStreamId = order[order.indexOf(streamId) + 1] ?? null;
   emit("stream:move", { streamId, workspaceId, beforeStreamId });
@@ -5741,6 +5747,13 @@ function providerConnectionTitle(providerLabel, presentation, measurement) {
 function renderStreamChatHeader(task, now = Date.now()) {
   if (!streamChatHeader) return;
   streamChatHeader.hidden = !task;
+  const workspaceName = task ? String(task.workspaceName || task.title || "Workspace").trim() : "";
+  const streamName = task ? String(task.streamName || task.streamDisplayName || "Stream").trim() : "";
+  if (streamHeaderWorkspace) {
+    streamHeaderWorkspace.textContent = workspaceName;
+    streamHeaderWorkspace.title = workspaceName;
+  }
+  if (streamHeaderName) streamHeaderName.textContent = streamName;
   if (!task) return;
   const provider = String(task.provider ?? "none");
   const providerLabel = task.agentLabel || providerLabels[provider] || "Агент";
@@ -10124,16 +10137,12 @@ settingsGlobalQuickMessagesEntry?.addEventListener("click", () => {
   openPromptTemplates("global");
 });
 
-settingsPanel?.addEventListener("change", (event) => {
-  const actionMode = event.target.closest("[data-quick-message-action-mode]");
-  if (actionMode) {
-    const value = actionMode.value === "send" ? "send" : "insert";
-    state.selection = { ...state.selection, quickMessageActionMode: value };
-    renderQuickMessageActionModeSetting();
-    renderComposerQuickMessages();
-    emit("selection:set", { key: "quickMessageActionMode", value });
-    return;
-  }
+quickMessageActionModeSelect?.addEventListener("change", () => {
+  const value = quickMessageActionModeSelect.value === "send" ? "send" : "insert";
+  state.selection = { ...state.selection, quickMessageActionMode: value };
+  renderQuickMessageActionModeSetting();
+  renderComposerQuickMessages();
+  emit("selection:set", { key: "quickMessageActionMode", value });
 });
 
 dialogSettings.addEventListener("click", (event) => {

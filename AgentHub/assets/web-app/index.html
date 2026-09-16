@@ -360,6 +360,11 @@
       <div class="stream-chat-columns" data-stream-chat-columns>
       <div class="chat-pane" data-chat-pane hidden>
         <header class="stream-chat-header" data-stream-chat-header>
+          <div class="stream-chat-identity" aria-label="Текущий поток">
+            <span class="stream-chat-workspace" data-stream-header-workspace></span>
+            <span aria-hidden="true">/</span>
+            <strong class="stream-chat-name" data-stream-header-name></strong>
+          </div>
           <div class="stream-chat-meta">
             <span class="provider-dot" data-stream-header-provider-dot aria-hidden="true"></span>
             <strong data-stream-header-provider>Агент</strong>
@@ -591,14 +596,11 @@
                 </div>
               </div>
               <div class="quick-messages-editor prompt-template-editor-card">
-                <header class="quick-message-editor-header">
+                <button type="button" class="quick-message-editor-header prompt-template-entry-heading"
+                  data-prompt-templates-open="stream" data-dialog-stream-quick-messages-entry aria-haspopup="dialog">
                   <span class="setting-name">Prompt-шаблоны потока</span>
                   <span class="setting-value" data-dialog-stream-quick-messages-count>0 шаблонов</span>
-                </header>
-                <div class="prompt-template-entry-controls">
-                  <button type="button" class="chip-button prompt-template-entry-open"
-                    data-prompt-templates-open="stream" data-dialog-stream-quick-messages-entry>Настроить шаблоны</button>
-                </div>
+                </button>
               </div>
             </section>
             <section class="settings-section stream-agent-rules">
@@ -801,11 +803,24 @@
 
   <main class="task-board-view" data-task-board>
     <header class="task-board-toolbar">
-      <h2 class="eyebrow task-board-catalog-title">Workspaces</h2>
       <div class="task-board-toolbar-actions">
-        <button type="button" class="task-board-filter-toggle" data-task-board-filter-toggle
-          aria-expanded="false" aria-controls="task-board-filter-controls">Фильтры</button>
-        <div class="task-board-filter-controls" id="task-board-filter-controls" data-task-board-filter-controls hidden>
+        <div class="task-board-status-language-options task-board-view-options" role="group" aria-label="Вид доски">
+          <button type="button" data-task-board-view="statuses" aria-pressed="true">По статусам</button>
+          <button type="button" data-task-board-view="workspaces" aria-pressed="false">По воркспейсам</button>
+          <button type="button" data-task-board-view="list" aria-pressed="false">Список</button>
+        </div>
+        <label class="task-board-scope-control">Раздел
+          <select data-task-board-scope-select aria-label="Раздел доски"></select>
+        </label>
+        <label>Статус
+          <select data-task-board-status-filter aria-label="Фильтр статуса задачи"></select>
+        </label>
+        <label class="task-board-grouping-setting setting-switch" data-task-board-grouping-setting>
+          <input type="checkbox" role="switch" data-task-board-grouping-toggle aria-label="Группировать по воркспейсам" checked>
+          <span class="switch-track" aria-hidden="true"></span>
+          <span>По Workspace</span>
+        </label>
+        <div class="task-board-filter-controls" data-task-board-filter-controls>
           <button
             type="button"
             class="task-board-completed-toggle"
@@ -826,19 +841,15 @@
       </div>
     </header>
     <aside class="task-board-sidebar" aria-label="Workspace">
+      <header class="task-rail-head task-board-sidebar-head">
+        <h2 class="task-rail-title">Workspaces <span class="task-count" data-task-board-workspace-count></span></h2>
+      </header>
       <nav class="task-board-scope-strip" data-task-board-scopes aria-label="Workspace и заметки"></nav>
     </aside>
     <div class="task-board-columns" data-task-board-columns aria-live="polite"></div>
   </main>
 
   <div class="task-board-settings" id="task-board-settings" popover="auto" role="group" aria-label="Настройки доски">
-    <div class="task-board-setting">
-      <strong>Вид доски</strong>
-      <div class="task-board-status-language-options task-board-view-options" role="group" aria-label="Вид доски">
-        <button type="button" data-task-board-view="statuses" aria-pressed="true">По статусам</button>
-        <button type="button" data-task-board-view="workspaces" aria-pressed="false">По воркспейсам</button>
-      </div>
-    </div>
     <div class="task-board-setting">
       <strong>Открывать задачу</strong>
       <div class="task-board-status-language-options" role="group" aria-label="Открывать задачу">
@@ -848,10 +859,6 @@
       </div>
       <p>«Справа + окно»: клик — справа, двойной клик — в окне. На узком экране всегда открывается окно.</p>
     </div>
-    <label class="task-board-grouping-setting" data-task-board-grouping-setting>
-      <input type="checkbox" data-task-board-grouping-toggle checked>
-      <span>Группировать по воркспейсам</span>
-    </label>
     <div class="task-board-status-language" role="group" aria-label="Язык статусов задач">
       <span>Язык статусов</span>
       <div class="task-board-status-language-options">
@@ -1147,14 +1154,11 @@
           </span>
         </label>
         <div class="quick-messages-editor prompt-template-editor-card workspace-card-quick-messages">
-          <header class="quick-message-editor-header">
+          <button type="button" class="quick-message-editor-header prompt-template-entry-heading"
+            data-prompt-templates-open="workspace" data-workspace-card-quick-messages-entry aria-haspopup="dialog">
             <span class="setting-name">Prompt-шаблоны Workspace</span>
             <span class="setting-value" data-workspace-card-quick-messages-count>0 шаблонов</span>
-          </header>
-          <div class="prompt-template-entry-controls">
-            <button type="button" class="chip-button prompt-template-entry-open"
-              data-prompt-templates-open="workspace" data-workspace-card-quick-messages-entry>Настроить шаблоны</button>
-          </div>
+          </button>
         </div>
         <div class="workspace-release-workflow-setting">
           <label class="setting-switch workspace-release-workflow-switch">
@@ -1240,6 +1244,18 @@
         </button>
     </header>
     <section class="prompt-templates-fields">
+      <div class="settings-card">
+        <label class="setting-row setting-field prompt-template-action-row">
+          <span class="prompt-template-action-copy">
+            <span class="setting-name">Нажатие на prompt-шаблон</span>
+            <span class="switch-note" data-quick-message-action-mode-note>Ctrl + нажатие — отправить.</span>
+          </span>
+          <select data-quick-message-action-mode aria-label="Нажатие на prompt-шаблон">
+            <option value="insert">Вставлять в поле</option>
+            <option value="send">Отправлять сразу</option>
+          </select>
+        </label>
+      </div>
       <div class="prompt-templates-scopes" role="group" aria-label="Область действия"
         data-prompt-templates-scopes></div>
       <p class="prompt-templates-note" data-prompt-templates-note></p>
@@ -1954,27 +1970,12 @@
       </section>
       <section class="settings-section">
         <h3 class="settings-section-title">Диалоги</h3>
-        <div class="settings-card">
-          <label class="setting-row setting-field prompt-template-action-row">
-            <span class="prompt-template-action-copy">
-              <span class="setting-name">Нажатие на prompt-шаблон</span>
-              <span class="switch-note" data-quick-message-action-mode-note>Ctrl + нажатие — отправить.</span>
-            </span>
-            <select data-quick-message-action-mode aria-label="Нажатие на prompt-шаблон">
-              <option value="insert">Вставлять в поле</option>
-              <option value="send">Отправлять сразу</option>
-            </select>
-          </label>
-        </div>
         <div class="quick-messages-editor prompt-template-editor-card quick-messages-settings-row">
-          <header class="quick-message-editor-header">
-            <span class="setting-name">Глобальные prompt-шаблоны</span>
+          <button type="button" class="quick-message-editor-header prompt-template-entry-heading"
+            data-prompt-templates-open="global" data-settings-global-quick-messages-entry aria-haspopup="dialog">
+            <span class="setting-name">Prompt-шаблоны</span>
             <span class="setting-value" data-settings-global-quick-messages-count>0 шаблонов</span>
-          </header>
-          <div class="prompt-template-entry-controls">
-            <button type="button" class="chip-button prompt-template-entry-open"
-              data-prompt-templates-open="global" data-settings-global-quick-messages-entry>Настроить шаблоны</button>
-          </div>
+          </button>
         </div>
       </section>
       <section class="settings-section">

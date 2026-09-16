@@ -5,6 +5,7 @@ import { createDesktopRunRouterWiring } from "./desktop-run-router-wiring-compos
 import { createDesktopTaskCreationPreparation } from "./desktop-task-creation-composition.mjs";
 import { WorkspaceCatalogService } from "../application/workspace-catalog-service.mjs";
 import { ClientTaskSelectionService } from "../application/client-task-selection-service.mjs";
+import { recoverRejectedContourSelection } from "./contour-selection-recovery.mjs";
 import { agentHubRuntimeHealth } from "../application/runtime-health.mjs";
 import { retryAgentHubStartup } from "../application/agent-hub-startup-coordinator.mjs";
 import { StreamMessagePinService } from "../application/stream-message-pin-service.mjs";
@@ -257,6 +258,7 @@ export function createDesktopShellComposition({
       ),
       approvalSnapshot: () => approvalController.snapshot(),
       restartBlockingRuns: runtime.restartBlockingRuns,
+      latestSettledRestart: (options) => maintenanceOperations?.latestSettledRestart?.(options) ?? null,
       compactionCount: () => contextCompactions.runningCount(),
       mediaJobCount: () => backgroundJobs.mediaSize,
       speechJobCount: () => backgroundJobs.speechSize,
@@ -309,6 +311,12 @@ export function createDesktopShellComposition({
     saveState,
   });
 
+  recoverRejectedContourSelection({
+    mapping: contourCommandMapping,
+    selectionStore,
+    selectedTask,
+    logger: console,
+  });
   const canonicalSelection = (value) => contourCommandMapping ? contourCommandMapping.target(value) : value;
   const telegramSelection = new ClientTaskSelectionService({
     sessionState: hostState,
@@ -545,6 +553,7 @@ export function createDesktopShellComposition({
       describeAttachments: desktopAttachmentDescriptors,
       hasDeferredBacklog: (target) => deferredInputs.hasBacklog(target),
       isMaintenanceActive: (target) => streamContextMaintenance.isActive(target),
+      isManagedMaintenanceActive: (target) => streamContextMaintenance.isManagedActive(target),
       isRestartPending: () => Boolean(hostState.restartRequest),
       scheduleDeferred: scheduleQueuedInput,
       setProgressStage: (...args) => taskProgress.setStage(...args),

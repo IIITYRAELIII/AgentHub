@@ -52,7 +52,11 @@ provider/process completion owner may commit the exact terminal outcome.
   Terminal reconciliation accounts their usage without emitting a user response
   or changing the last message. Inline compaction inside an ordinary turn and
   legacy operations lacking that marker do not authorize suppressing its final.
-- Admission is blocked only by an exact active maintenance operation.
+- Ordinary and new-turn admission is blocked by an exact active maintenance
+  operation. An explicit steer targeting an exact active managed turn may be
+  admitted during provider-internal compaction, but its provider dispatch waits
+  durably for that compaction to settle. Hub-owned compaction and rotation
+  reservations remain admission barriers.
 - Restart is a barrier over durable finals, command receipts, delivery outbox and
   maintenance reconciliation.
 - Once a restart operation is persisted, new durable commands remain queued in
@@ -66,6 +70,19 @@ provider/process completion owner may commit the exact terminal outcome.
   clearing its request and publishing readiness. The restored runtime marks
   itself ready before resuming timers. Deferred cutover uses the same settlement
   even when it did not run through the initial request scheduler.
+- A runtime whose startup fails exits after best-effort shutdown even when
+  partially created handles would keep the process alive, so a half-started
+  process never keeps holding its instance lock. The previous runtime waits
+  for the exact replacement identity captured at lock ownership: when that
+  process exits before readiness the wait ends at once and recovery proceeds
+  without the readiness timeout. A different or stale lock owner does not end
+  that wait.
+- In a recording Test Contour a persisted global selection that the canonical
+  Thread binding rejects as a containing-project reference does not abort
+  startup. Only that selected Thread is cleared with a warning; the project,
+  canonical binding, history, queues and per-client selections stay unchanged,
+  and the containing project still has no execution authority. Other mapping
+  and startup failures remain fatal.
 - Runtime startup wakes the queue owner, which reconciles recoverable persisted
   `task-running` and `activity-unknown` lane heads against current occupancy
   before FIFO dispatch. A stale external-observation reservation therefore
@@ -92,7 +109,11 @@ provider/process completion owner may commit the exact terminal outcome.
   final response.
   A disconnected health request alone never asserts a restart. While waiting
   for connection or replacement, the screen shows no stage progress inherited
-  from the previous health sample and does not claim readiness. Known failed
+  from the previous health sample and does not claim readiness. It shows the
+  measured time since the wait began and says the previous process still
+  answers only after a successful health response. A snapshot served after a
+  failed restart carries its recent persisted reason, shown once per operation,
+  until a later restart settles successfully. Known failed
   startup details remain available during ordinary connection loss. Fresh
   health and the canonical connection state remain the reconnect authority.
 - The startup screen retains failed-stage details and exposes authenticated

@@ -1520,6 +1520,17 @@ test("claim forwards an explicit user dependency exception and complete forwards
   assert.equal(result.cleanupToken, "preview");
 });
 
+test("HubMcpService describes steer as exact intent requiring explicit redirection", async (context) => {
+  const { service } = await fixture(context);
+  const mode = service.tools()
+    .find((tool) => tool.name === "hub_stream_message_send")
+    .inputSchema.properties.mode;
+
+  assert.match(mode.description, /exact steering of the current managed run/u);
+  assert.match(mode.description, /explicit retry or queue decision/u);
+  assert.doesNotMatch(mode.description, /queue if steering is no longer possible/u);
+});
+
 test("HubMcpService claims the active turn while an older terminal remains retained", async (context) => {
   const { service, token, activeRun, taskClaimCalls } = await fixture(context);
   service.setActiveRuns(() => [

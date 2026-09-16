@@ -84,6 +84,14 @@ let refreshRequested = false;
 let connectionFailureCount = 0;
 let connectionFailureSince = 0;
 let connectionOfflineTimer = null;
+const restartFailureStorageKey = "agentHub.announcedRestartFailure";
+let announcedRestartFailureId = (() => {
+  try {
+    return sessionStorage.getItem(restartFailureStorageKey) ?? "";
+  } catch {
+    return "";
+  }
+})();
 let connectionOfflineBreadcrumbRecorded = false;
 let connectionLatencyMs = null;
 let connectionLatencyProbe = null;
@@ -2376,6 +2384,21 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
 function applySnapshotConnection(snapshot, idleStatus = "online") {
   const connection = window.AgentHubConnectionBanner.snapshotConnectionState(snapshot, idleStatus);
   agentHub.setConnection(connection.status, { blockingCount: connection.blockingCount });
+  announceRestartFailure(snapshot);
+}
+
+// The reason comes from the persisted restart operation and is shown once for
+// that operation identity, including across reloads of this client session.
+function announceRestartFailure(snapshot) {
+  const notice = window.AgentHubConnectionBanner.restartFailureNotice?.(snapshot?.restartFailure);
+  if (!notice || notice.operationId === announcedRestartFailureId) return;
+  announcedRestartFailureId = notice.operationId;
+  try {
+    sessionStorage.setItem(restartFailureStorageKey, notice.operationId);
+  } catch {
+    // The notice stays deduplicated for the lifetime of this client.
+  }
+  agentHub.toast(notice.message);
 }
 
 function resetConnectionFailures() {

@@ -18,6 +18,7 @@ async function fixture({
   taskGitDiff = async () => "",
   changedFilesForRun = (value) => value?.changedFiles ?? [],
   resolveTerminalAttachments = async () => [],
+  repairTurnEndAttachments = async () => ({ enriched: false }),
 } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "codex-lifecycle-controller-"));
   const projectRoot = path.join(root, "project");
@@ -62,6 +63,7 @@ async function fixture({
       },
     },
     resolveTerminalAttachments,
+    repairTurnEndAttachments,
     defaultNotificationChatId: () => 101,
     projectTurnUsageToWorkLog: async (...args) => { projected.push(args); },
     rememberLastTaskMessage: (...args) => { remembered.push(args); },
@@ -165,7 +167,7 @@ test("Codex lifecycle commits generated images when no managed run owns the term
   assert.deepEqual(f.recorded[0].responseAttachments, responseAttachments);
 });
 
-test("Codex lifecycle leaves every managed run terminal to the finalizer", async () => {
+test("Codex lifecycle stages exact generated outputs without taking managed terminal delivery", async () => {
   for (const status of ["running", "finishing", "completed"]) {
     let resolverCalls = 0;
     const run = { status };
@@ -173,7 +175,7 @@ test("Codex lifecycle leaves every managed run terminal to the finalizer", async
       run,
       resolveTerminalAttachments: async () => {
         resolverCalls += 1;
-        return [];
+        return [{ id: "codex-generated-dragon.png", type: "image/png" }];
       },
     });
     await f.controller.handle(request("turn-complete", f.projectRoot, {
@@ -182,13 +184,59 @@ test("Codex lifecycle leaves every managed run terminal to the finalizer", async
       generatedImageSources: [{ type: "generated-path", value: "C:/generated/dragon.png" }],
     }));
 
-    assert.equal(resolverCalls, 0, status);
-    assert.deepEqual(f.recorded[0].responseAttachments, [], status);
+    assert.equal(resolverCalls, 1, status);
+    assert.deepEqual(f.recorded[0].responseAttachments, [
+      { id: "codex-generated-dragon.png", type: "image/png" },
+    ], status);
     assert.deepEqual(f.deliveredCompletions, [], status);
     assert.deepEqual(run.generatedImageSources, [
       { type: "generated-path", value: "C:/generated/dragon.png" },
     ], status);
   }
+});
+
+test("Codex lifecycle enriches an already delivered terminal from exact late generated sources", async () => {
+  const attachments = [1, 2, 3].map((index) => ({
+    id: `codex-generated-${index}.png`,
+    name: "Изображение",
+    type: "image/png",
+  }));
+  const repairs = [];
+  const f = await fixture({
+    delivered: true,
+    completion: null,
+    run: { status: "completed" },
+    resolveTerminalAttachments: async (source, turnId) => {
+      assert.equal(turnId, "turn-1");
+      assert.deepEqual(source.generatedImageSources, [1, 2, 3].map((index) => ({
+        type: "generated-path",
+        value: `C:/generated/${index}.png`,
+      })));
+      return attachments;
+    },
+    repairTurnEndAttachments: async (identity, options) => {
+      repairs.push({ identity, expectedCount: options.expectedCount });
+      assert.deepEqual(await options.resolveAttachments(), attachments);
+      return { enriched: true };
+    },
+  });
+
+  const result = await f.controller.handle(request("turn-complete", f.projectRoot, {
+    status: "completed",
+    finalAnswer: "Три фона",
+    imageGenerationCount: 0,
+    generatedImageSources: [1, 2, 3].map((index) => ({
+      type: "generated-path",
+      value: `C:/generated/${index}.png`,
+    })),
+  }));
+
+  assert.equal(result, "Turn was already delivered.");
+  assert.deepEqual(repairs, [{
+    identity: { provider: "codex", threadId: "thread-1", turnId: "turn-1" },
+    expectedCount: 3,
+  }]);
+  assert.equal(f.deliveredCompletions.length, 0);
 });
 
 test("Codex lifecycle preserves managed message origin over provider-only user projection", async () => {

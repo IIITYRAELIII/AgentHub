@@ -214,7 +214,7 @@ export class CodexLifecycleController {
       turnStart?.executionOwner ?? payload.executionOwner ?? run?.executionOwner,
     );
     const lifecycleOwnsTerminal = !run && executionOwner !== TASK_EXECUTION_OWNERS.HUB;
-    const responseAttachments = lifecycleOwnsTerminal
+    const responseAttachments = lifecycleOwnsTerminal || generatedImageSources.length
       ? await d.resolveTerminalAttachments?.({
         threadId: identity.threadId,
         startedAt: payload.startedAt ?? turnStart?.startedAt,
@@ -257,6 +257,14 @@ export class CodexLifecycleController {
       mcpCalls: payload.mcpCalls ?? run?.mcpCalls ?? [],
       toolMetricsKnown: payload.toolMetricsKnown === true || run?.toolMetricsKnown === true,
     });
+    if (!lifecycleOwnsTerminal && generatedImageSources.length) {
+      await d.repairTurnEndAttachments?.(deliveredIdentity, {
+        expectedCount: generatedImageSources.length,
+        resolveAttachments: async () => responseAttachments.map((attachment) => ({
+          ...attachment,
+        })),
+      });
+    }
     if (!completion && alreadyDelivered) {
       const finalAnswer = String(payload.finalAnswer ?? "").trim();
       await d.projectTurnUsageToWorkLog({
