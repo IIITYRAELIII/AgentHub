@@ -78,6 +78,11 @@ publisher`. A path or a version alone is not an executable identity.
   run recovery is pending. Discovery may report the candidate, but activation
   remains `deferred-active-runs` until the next safe lifecycle boundary.
 - Successful startup atomically advances both `active` and `lastKnownGood`.
+  State writes flush the unique temporary file before renaming it over the
+  canonical record. A write or flush failure rejects selection and preserves
+  the previous record. Atomic rename alone does not guarantee data durability
+  after power loss. Corrupt state still fails closed; operator recovery must
+  preserve the damaged record and repeat normal trust and compatibility checks.
   Canary or startup failure keeps or restores the previous last-known-good
   identity. Unknown or missing last-known-good state is reported and never
   guessed from modification time.

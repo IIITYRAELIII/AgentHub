@@ -911,20 +911,20 @@ test("message lifecycle removes a replayed server echo before optimistic reconci
 
 test("history identity accepts only the requested Stream", () => {
   assert.equal(lifecycle.historyMatchesIdentity({
-    streamId: "stream-architect",
+    streamId: "stream-release-manager",
     provider: "codex",
     threadId: "thread-new",
   }, {
-    streamId: "stream-architect",
+    streamId: "stream-release-manager",
     provider: "codex",
     threadId: "thread-old",
   }), true);
   assert.equal(lifecycle.historyMatchesIdentity({
-    streamId: "stream-architect",
+    streamId: "stream-release-manager",
     provider: "claude",
     threadId: "thread-resolved",
   }, {
-    streamId: "stream-architect",
+    streamId: "stream-release-manager",
     provider: "codex",
     threadId: "thread-stale-request",
   }), true);
@@ -933,7 +933,7 @@ test("history identity accepts only the requested Stream", () => {
     provider: "codex",
     threadId: "thread-old",
   }, {
-    streamId: "stream-architect",
+    streamId: "stream-release-manager",
     provider: "codex",
     threadId: "thread-old",
   }), false);
@@ -1926,7 +1926,7 @@ test("an external live turn contributes its missing VSC user messages", () => {
 });
 
 test("live inter-Stream messages preserve the source agent author", () => {
-  const author = "Agent HUB - Architect (Codex)";
+  const author = "Agent HUB - Release Manager (Codex)";
   const fromUserMessages = lifecycle.mergeLiveUserMessages([], {
     provider: "codex",
     threadId: "thread-1",
@@ -1967,7 +1967,7 @@ test("inter-Stream rollout aliases the receipt without replacing the root user",
     turnUserSlot: "root",
   };
   const receipt = {
-    ...message("receipt-item", "Themes → Architect. Принято."),
+    ...message("receipt-item", "Themes → Release Manager. Принято."),
     turnId: "active-turn",
     clientUserMessageId: "mcp:themes-ack-1",
     turnUserSlot: "steer",
@@ -1984,7 +1984,7 @@ test("inter-Stream rollout aliases the receipt without replacing the root user",
     userMessages: [{
       itemId: "rollout-user:1",
       clientUserMessageId: "",
-      text: "Themes → Architect. Принято.",
+      text: "Themes → Release Manager. Принято.",
       author: "Agent HUB - Themes (Sol)",
       origin,
     }],
@@ -1999,7 +1999,7 @@ test("inter-Stream rollout aliases the receipt without replacing the root user",
 test("unattributed live updates do not overwrite a durable inter-Stream author", () => {
   const merged = lifecycle.mergeLiveUserMessages([{
     ...message("server-user", "Сообщение из другого Stream"),
-    author: "Agent HUB - Architect (Codex)",
+    author: "Agent HUB - Release Manager (Codex)",
   }], {
     provider: "codex",
     threadId: "thread-1",
@@ -2011,7 +2011,7 @@ test("unattributed live updates do not overwrite a durable inter-Stream author",
     }],
   });
 
-  assert.equal(merged[0].author, "Agent HUB - Architect (Codex)");
+  assert.equal(merged[0].author, "Agent HUB - Release Manager (Codex)");
 });
 
 test("live VSC user messages do not duplicate official task history", () => {

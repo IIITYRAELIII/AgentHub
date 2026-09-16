@@ -135,8 +135,8 @@ test("Codex history refresh reads the rollout directly without blocking App Serv
   const input = createInterstreamMessage({
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
     requestId: "telegram-history-1",
     text: "Новый запрос",
@@ -156,8 +156,8 @@ test("Codex history refresh reads the rollout directly without blocking App Serv
             origin: {
               workspaceId: "workspace-1",
               workspaceName: "Agent HUB",
-              streamId: "stream-architect",
-              streamName: "Architect",
+              streamId: "stream-release-manager",
+              streamName: "Release Manager",
               provider: "codex",
               requestId: "telegram-history-1",
             },
@@ -572,8 +572,8 @@ test("subagent rollout prompt is attributed to the parent Workspace Stream agent
     }),
     readCodexSnapshot: async () => null,
     workspaceCatalogStore: {
-      thread: ({ threadId }) => threadId === "parent-thread" ? { streamId: "architect" } : null,
-      stream: () => ({ id: "architect", workspaceId: "hub", name: "Architect" }),
+      thread: ({ threadId }) => threadId === "parent-thread" ? { streamId: "releaseManager" } : null,
+      stream: () => ({ id: "releaseManager", workspaceId: "hub", name: "Release Manager" }),
       workspace: () => ({ id: "hub", name: "Agent HUB" }),
     },
     taskSyncStore: {
@@ -591,8 +591,8 @@ test("subagent rollout prompt is attributed to the parent Workspace Stream agent
     chatId: 1,
   });
 
-  assert.equal(result.history[0].messages[0].author, "Agent HUB - Architect (Codex)");
-  assert.equal(recorded[0].messages[0].author, "Agent HUB - Architect (Codex)");
+  assert.equal(result.history[0].messages[0].author, "Agent HUB - Release Manager (Codex)");
+  assert.equal(recorded[0].messages[0].author, "Agent HUB - Release Manager (Codex)");
 });
 
 test("a final rollout answer cannot remain active", () => {

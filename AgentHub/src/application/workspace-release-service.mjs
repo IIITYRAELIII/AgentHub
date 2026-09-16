@@ -77,8 +77,13 @@ export class WorkspaceReleaseService {
       }
 
       if (reconcileOnly) throw new Error("no durable release finalization evidence for interrupted command");
-      const plan = await this.releasePlanner.plan(workspaceId);
+      let plan = await this.releasePlanner.plan(workspaceId);
       const requestedPlanRevision = requiredPlanRevision(expectedPlanRevision);
+      // Only exact legacy receipt identity may finish an already published old candidate.
+      // The unchanged verifier below still requires its exact frozen head and manifest.
+      if (plan.revision !== requestedPlanRevision && plan.legacyRevision === requestedPlanRevision) {
+        plan = { ...plan, revision: requestedPlanRevision };
+      }
       if (plan.revision !== requestedPlanRevision) {
         throw new Error("release plan revision changed; read and verify the current release plan again");
       }
@@ -204,7 +209,7 @@ export class WorkspaceReleaseService {
     const releaseCandidate = {
       status: "invalidated",
       planRevision: pending.planRevision,
-      reason: "released Task membership changed; explicit prepare is required for the next release",
+      reason: "released Task membership changed; the next acceptance into Await prepares the next candidate",
     };
     if (!legacy && !pending.awaitResult?.completed) {
       await this.store.recordReleaseFinalizationStage(workspaceId, {

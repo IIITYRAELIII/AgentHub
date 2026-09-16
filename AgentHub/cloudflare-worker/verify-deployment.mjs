@@ -26,6 +26,15 @@ const publishedRoot = path.join(root, "cloudflare-worker", "public");
 export const WORKER_VERIFY_REQUEST_TIMEOUT_MS = 5 * 60 * 1_000;
 const WORKER_VERIFICATION_CHECKPOINT_VERSION = 1;
 
+export class WorkerDeploymentNotConvergedError extends Error {
+  constructor(message, details = {}) {
+    super(message);
+    this.name = "WorkerDeploymentNotConvergedError";
+    this.code = "WORKER_DEPLOYMENT_NOT_CONVERGED";
+    this.details = details;
+  }
+}
+
 function sha256(body) {
   return createHash("sha256").update(body).digest("hex");
 }
@@ -400,11 +409,11 @@ async function mapConcurrent(values, limit, action) {
 async function readWithRetry(fetchImpl, target, read, {
   attempts = 5,
   timeoutMs = WORKER_VERIFY_REQUEST_TIMEOUT_MS,
+  deadline = Date.now() + timeoutMs,
   log = console.log,
 } = {}) {
   let lastError = null;
   const pathname = new URL(target).pathname;
-  const deadline = Date.now() + timeoutMs;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) break;
@@ -437,8 +446,10 @@ function shellBootstrapManifest(html) {
   return { chunkCount, expectedBytes };
 }
 
-async function readPublishedIndex(fetchImpl, base, { timeoutMs, log }) {
-  const bootstrap = await readWithRetry(fetchImpl, base, (response) => response.text(), { timeoutMs, log });
+async function readPublishedIndex(fetchImpl, base, { timeoutMs, deadline = Date.now() + timeoutMs, log }) {
+  const bootstrap = await readWithRetry(fetchImpl, base, (response) => response.text(), {
+    timeoutMs, deadline, log,
+  });
   const manifest = shellBootstrapManifest(bootstrap);
   if (!manifest) return bootstrap;
   const chunks = await mapConcurrent(Array.from({ length: manifest.chunkCount }, (_, index) => index), 4, async (index) => {
@@ -448,12 +459,15 @@ async function readPublishedIndex(fetchImpl, base, { timeoutMs, log }) {
       fetchImpl,
       target,
       (response) => response.arrayBuffer(),
-      { timeoutMs, log },
+      { timeoutMs, deadline, log },
     ));
   });
   const size = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
   if (size !== manifest.expectedBytes) {
-    throw new Error(`Published Worker index has ${size} of ${manifest.expectedBytes} bytes`);
+    throw new WorkerDeploymentNotConvergedError(
+      `Published Worker index has ${size} of ${manifest.expectedBytes} bytes`,
+      { actualBytes: size, expectedBytes: manifest.expectedBytes },
+    );
   }
   const body = new Uint8Array(size);
   let offset = 0;
@@ -492,6 +506,7 @@ export async function verifyThemeDeployment({
   http1Fetch = fetchWithCurl,
   changedFiles = null,
   requestTimeoutMs = WORKER_VERIFY_REQUEST_TIMEOUT_MS,
+  indexDeadline = null,
   log = console.log,
   checkpoint = null,
   workerSourceFile = path.join(root, "cloudflare-worker", "src", "worker.mjs"),
@@ -520,15 +535,29 @@ export async function verifyThemeDeployment({
   const remoteIndex = await checkpointSession.complete({
     key: "index",
     expected: { url: base.href, hash: indexHash },
-    read: async () => ({
-      body: await readPublishedIndex(fetchImpl, base, {
+    read: async () => {
+      const body = await readPublishedIndex(fetchImpl, base, {
         timeoutMs: requestTimeoutMs,
+        ...(indexDeadline == null ? {} : { deadline: indexDeadline }),
         log,
-      }),
-    }),
+      });
+      if (indexDeadline != null && Date.now() >= indexDeadline) {
+        throw new WorkerDeploymentNotConvergedError("Published Worker index convergence deadline exceeded");
+      }
+      return { body };
+    },
     validate: (evidence) => {
-      if (typeof evidence?.body !== "string" || sha256(evidence.body) !== indexHash) {
-        throw new Error("Published Worker index does not match the built release");
+      const actualHash = typeof evidence?.body === "string" ? sha256(evidence.body) : null;
+      if (actualHash !== indexHash) {
+        throw new WorkerDeploymentNotConvergedError(
+          `Published Worker index does not match the built release (expected ${indexHash}, actual ${actualHash ?? "non-text"})`,
+          {
+            expectedHash: indexHash,
+            actualHash,
+            expectedBytes: Buffer.byteLength(index),
+            actualBytes: typeof evidence?.body === "string" ? Buffer.byteLength(evidence.body) : null,
+          },
+        );
       }
       return evidence.body;
     },

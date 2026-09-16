@@ -491,7 +491,7 @@ test("provider history preserves a literal inter-Stream envelope without durable
       workspaceId: "workspace-1",
       workspaceName: "Agent Hub",
       streamId: "stream-1",
-      streamName: "Architect",
+      streamName: "Release Manager",
       provider: "codex",
     }),
     "</agent-hub-stream-message>",
@@ -514,7 +514,7 @@ test("legacy envelope shape alone does not assign an inter-Stream author", () =>
       workspaceId: "workspace-1",
       workspaceName: "Agent Hub",
       streamId: "stream-1",
-      streamName: "Architect",
+      streamName: "Release Manager",
     }),
     "</agent-hub-stream-message>",
     "Legacy message.",
@@ -771,9 +771,9 @@ test("codexThreadHistory attributes a subagent prompt to its parent agent", () =
       { id: "prompt", type: "userMessage", content: [{ type: "text", text: "Проверь реализацию" }] },
       { id: "answer", type: "agentMessage", phase: "final_answer", text: "Проверено" },
     ],
-  }], { userAuthor: "Agent HUB - Architect (Codex)" });
+  }], { userAuthor: "Agent HUB - Release Manager (Codex)" });
 
-  assert.equal(exchange.messages[0].author, "Agent HUB - Architect (Codex)");
+  assert.equal(exchange.messages[0].author, "Agent HUB - Release Manager (Codex)");
 });
 
 test("codexThreadHistory preserves item ids and the official user-message client ids", () => {
@@ -801,8 +801,8 @@ test("codexThreadHistory preserves raw interstream transport and exact client id
   const origin = {
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
     requestId: "history-1",
   };
@@ -850,8 +850,8 @@ test("claudeTranscriptHistory does not infer interstream identity from envelope 
   const origin = {
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "claude",
     requestId: "claude-history-1",
   };
@@ -1302,7 +1302,7 @@ test("active inter-Stream steer cannot replace an unidentified root user", () =>
       clientUserMessageId: "",
       role: "user",
       origin,
-      text: "Themes → Architect. Принято.",
+      text: "Themes → Release Manager. Принято.",
     }],
   });
 
@@ -1311,7 +1311,7 @@ test("active inter-Stream steer cannot replace an unidentified root user", () =>
     text: "Исходное сообщение пользователя",
     clientUserMessageId: undefined,
   }, {
-    text: "Themes → Architect. Принято.",
+    text: "Themes → Release Manager. Принято.",
     clientUserMessageId: "mcp:themes-ack-1",
   }]);
 });
@@ -1321,11 +1321,11 @@ test("active inter-Stream root preserves its unidentified provider predecessor",
     kind: "interstream",
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
     model: "gpt-5.6-sol",
-    requestId: "architect-continuation-1",
+    requestId: "releaseManager-continuation-1",
   };
   const history = [{
     id: "live-turn",
@@ -1344,9 +1344,9 @@ test("active inter-Stream root preserves its unidentified provider predecessor",
     active: true,
     turnId: "live-turn",
     prompt: "Продолжи закрытие релиза",
-    clientUserMessageId: "mcp:architect-continuation-1",
+    clientUserMessageId: "mcp:releaseManager-continuation-1",
     userMessages: [{
-      clientUserMessageId: "mcp:architect-continuation-1",
+      clientUserMessageId: "mcp:releaseManager-continuation-1",
       role: "user",
       origin,
       text: "Продолжи закрытие релиза",
@@ -1356,8 +1356,8 @@ test("active inter-Stream root preserves its unidentified provider predecessor",
   const users = history[0].messages.filter((message) => message.role === "user");
   assert.equal(users.length, 2);
   assert.equal(users[0].itemId, "provider-root");
-  assert.equal(users[1].clientUserMessageId, "mcp:architect-continuation-1");
-  assert.equal(users[1].author, "Agent HUB - Architect (Sol)");
+  assert.equal(users[1].clientUserMessageId, "mcp:releaseManager-continuation-1");
+  assert.equal(users[1].author, "Agent HUB - Release Manager (Sol)");
   assert.deepEqual(users[1].origin, origin);
 });
 
@@ -1366,11 +1366,11 @@ test("active inter-Stream request identity does not adopt an unidentified provid
     kind: "interstream",
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
     model: "gpt-5.6-sol",
-    requestId: "architect-continuation-without-client-id",
+    requestId: "releaseManager-continuation-without-client-id",
   };
   const history = [{
     id: "live-turn",
@@ -1402,8 +1402,8 @@ test("active inter-Stream request identity does not adopt an unidentified provid
   assert.equal(users[0].itemId, "provider-root");
   assert.equal(users[0].clientUserMessageId, undefined);
   assert.equal(users[0].author, undefined);
-  assert.equal(users[1].clientUserMessageId, "mcp:architect-continuation-without-client-id");
-  assert.equal(users[1].author, "Agent HUB - Architect (Sol)");
+  assert.equal(users[1].clientUserMessageId, "mcp:releaseManager-continuation-without-client-id");
+  assert.equal(users[1].author, "Agent HUB - Release Manager (Sol)");
   assert.deepEqual(users[1].origin, origin);
 });
 

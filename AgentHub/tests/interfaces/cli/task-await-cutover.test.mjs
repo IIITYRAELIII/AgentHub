@@ -313,9 +313,11 @@ test("production cutover composer writes the canonical receipt and leaves unrela
   const releasePreflight = {
     preflight: async () => ({}),
     withAwaitTransition: async (_workspaceId, operation) => operation(),
-    prepareAwaitSet: async () => ({
-      workspaceId: workspace.id, planRevision: "plan-after-cutover", taskIds: [created.id], releaseCandidates: [],
-    }),
+    prepareAwaitSet: async (options) => {
+      const prepared = { workspaceId: workspace.id, planRevision: "plan-after-cutover", taskIds: [created.id], releaseCandidates: [] };
+      await options.commitPrepared(prepared);
+      return prepared;
+    },
   };
   const input = {
     workspaceId: workspace.id,
@@ -339,7 +341,7 @@ test("production cutover composer writes the canonical receipt and leaves unrela
     }),
   });
   assert.equal(result.result.workflowStatus, "awaiting_implementation");
-  assert.equal(result.result.releaseCandidate.status, "invalidated");
+  assert.equal(result.result.releaseCandidate.status, "ready");
 
   readCatalog = new WorkspaceCatalogStore({ databaseFile });
   await readCatalog.load();
@@ -353,7 +355,7 @@ test("production cutover composer writes the canonical receipt and leaves unrela
   assert.equal(readTasks.lifecycleOutcome(input.requestId).result.task.workflowStatus, "awaiting_implementation");
 });
 
-test("production cross-Task cutover succeeds without eager release composition", async (t) => {
+test("production cross-Task cutover stays in Test after candidate composition fails", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-await-cutover-rollback-"));
   const repositoryRoot = path.join(root, "repository");
   const databaseFile = path.join(root, "journal.sqlite");
@@ -372,7 +374,7 @@ test("production cross-Task cutover succeeds without eager release composition",
     settings: { releaseWorkflowEnabled: true, workingDirectory: repositoryRoot },
   }));
   const stream = await rawCatalog.runMutation(() => rawCatalog.createStream({
-    workspaceId: workspace.id, name: "Architect", settings: { architect: true },
+    workspaceId: workspace.id, name: "Release Manager", settings: { releaseManager: true },
   }));
   await rawCatalog.runMutation(() => rawCatalog.bindThread({
     streamId: stream.id, provider: "codex", threadId: "thread-cutover-rollback", projectRoot: repositoryRoot,
@@ -454,20 +456,18 @@ test("production cross-Task cutover succeeds without eager release composition",
     expectedSourceTaskRevision: sourceTesting.revision,
     confirm: true,
   };
-  const result = await executeTaskAwaitCutover(input, {
+  await assert.rejects(executeTaskAwaitCutover(input, {
     inspectSource: async () => {
       sourceInspections += 1;
       if (sourceInspections === 2) assert.equal(multiLockDepth, 1);
       return { headCommit: sha, projectorSha256: projectorSha };
     },
     openRuntime,
-  });
+  }), { code: "TASK_AWAIT_INTEGRATION_FAILED" });
   assert.equal(sourceInspections, 2);
-  assert.equal(result.result.workflowStatus, "awaiting_implementation");
-  assert.equal(result.result.releaseCandidate.status, "invalidated");
 
   runtime = await openRuntime();
-  assert.deepEqual(runtime.taskBoard.lifecycleOutcome(requestId).result.evidence.cutoverSource, {
+  assert.deepEqual(runtime.taskBoard.lifecycleTransition(requestId).evidence.cutoverSource, {
     taskId: sourceCreated.id,
     revision: sourceTesting.revision,
     workflowStatus: "testing",
@@ -475,10 +475,10 @@ test("production cross-Task cutover succeeds without eager release composition",
     projectorSha256: projectorSha,
     projectRoot: repositoryRoot,
   });
-  assert.equal(runtime.workspaceCatalog.mcpOperation(requestId).receiptState, "succeeded");
-  assert.equal(runtime.taskBoard.task(input.taskId).workflowStatus, "awaiting_implementation");
+  assert.equal(runtime.workspaceCatalog.mcpOperation(requestId).receiptState, "failed");
+  assert.equal(runtime.taskBoard.task(input.taskId).workflowStatus, "testing");
   assert.equal(runtime.taskBoard.task(sourceCreated.id).workflowStatus, "testing");
-  assert.equal(runtime.taskBoard.lifecycleOutcome(requestId).result.rollback, undefined);
+  assert.equal(runtime.taskBoard.lifecycleOutcome(requestId), null);
   assert.equal(snapshotCalls, 0);
 });
 
@@ -500,7 +500,7 @@ test("production cross-Task pending recovery preserves its immutable source evid
     name: "Agent HUB", settings: { releaseWorkflowEnabled: true, workingDirectory: repositoryRoot },
   }));
   const stream = await rawCatalog.runMutation(() => rawCatalog.createStream({
-    workspaceId: workspace.id, name: "Architect", settings: { architect: true },
+    workspaceId: workspace.id, name: "Release Manager", settings: { releaseManager: true },
   }));
   await rawCatalog.runMutation(() => rawCatalog.bindThread({
     streamId: stream.id, provider: "codex", threadId: "thread-cutover-pending", projectRoot: repositoryRoot,
@@ -592,7 +592,11 @@ test("production cross-Task pending recovery preserves its immutable source evid
     releasePreflight: {
       preflight: async () => ({}),
       withAwaitTransition: async (_workspaceId, operation) => operation(),
-      prepareAwaitSet: async () => ({ planRevision: "pending-cross-plan" }),
+      prepareAwaitSet: async (options) => {
+        const prepared = { planRevision: "pending-cross-plan" };
+        await options.commitPrepared(prepared);
+        return prepared;
+      },
     },
   });
   const token = runtime.service.contextToken({
@@ -651,7 +655,7 @@ test("cross-Task cutover atomically rejects a settings race without changing the
     name: "Agent HUB", settings: { releaseWorkflowEnabled: true, workingDirectory: repositoryRoot },
   }));
   const targetStream = await rawCatalog.runMutation(() => rawCatalog.createStream({
-    workspaceId: workspace.id, name: "Architect", settings: { architect: true },
+    workspaceId: workspace.id, name: "Release Manager", settings: { releaseManager: true },
   }));
   const sourceStream = await rawCatalog.runMutation(() => rawCatalog.createStream({
     workspaceId: workspace.id, name: "Release owner", settings: {},

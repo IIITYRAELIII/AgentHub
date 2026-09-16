@@ -774,10 +774,10 @@ test("RunCoordinator keeps the provider envelope out of a live interstream steer
     kind: "interstream",
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
-    sourceThreadId: "thread-architect",
+    sourceThreadId: "thread-release-manager",
     requestId: "steer-1",
   };
   const input = createInterstreamMessage({ ...origin, text: "Проверь текущий ход." });

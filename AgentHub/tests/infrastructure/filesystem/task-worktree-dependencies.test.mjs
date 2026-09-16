@@ -109,6 +109,41 @@ async function materializePrismaGeneratedState(packageRoot, { hiddenEntry = fals
   if (hiddenEntry) await writeFile(path.join(clientRoot, ".foreign"), "unexpected\n", "utf8");
 }
 
+test("ensure reuses unchanged inputs without scanning packages; verify repairs reported damage", async (context) => {
+  const projectRoot = await npmProject(context);
+  let installs = 0;
+  let packageReads = 0;
+  const input = {
+    projectRoot,
+    lockfiles: [path.join(projectRoot, "package-lock.json")],
+    verify: false,
+    runNpm: async (_args, { cwd }) => { installs += 1; await materializeLockedState(cwd); },
+    fileSystem: {
+      open: async (file, ...args) => {
+        if (String(file).replaceAll("\\", "/").endsWith("node_modules/playwright/package.json")) packageReads += 1;
+        return fsOpen(file, ...args);
+      },
+    },
+  };
+  await prepareTaskWorktreeDependencies(input);
+  assert.equal(installs, 1);
+  packageReads = 0;
+  await prepareTaskWorktreeDependencies(input);
+  assert.equal(installs, 1);
+  assert.equal(packageReads, 0);
+  await writeFile(path.join(projectRoot, "node_modules", "playwright", "package.json"), "{broken", "utf8");
+  await prepareTaskWorktreeDependencies({ ...input, verify: true });
+  assert.equal(installs, 2);
+  assert.ok(packageReads > 0);
+  const manifest = path.join(projectRoot, "package.json");
+  await writeFile(manifest, (await readFile(manifest, "utf8")) + "\n", "utf8");
+  await prepareTaskWorktreeDependencies(input);
+  assert.equal(installs, 3);
+  await writeFile(path.join(projectRoot, "node_modules", ".package-lock.json"), "{broken", "utf8");
+  await prepareTaskWorktreeDependencies(input);
+  assert.equal(installs, 4);
+});
+
 test("lock and installed metadata jointly gate dependency reuse", async (context) => {
   const projectRoot = await npmProject(context);
   const calls = [];
@@ -807,6 +842,51 @@ test("a local file link uses its target package identity", async (context) => {
   assert.equal((await prepareTaskWorktreeDependencies(input))[0].prepared, true);
   assert.equal((await prepareTaskWorktreeDependencies(input))[0].prepared, false);
   assert.equal(calls, 1);
+});
+
+test("ensure invalidates reuse when a local linked package identity changes without a source lock change", async (context) => {
+  const projectRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-link-reuse-"));
+  context.after(() => rmTree(projectRoot));
+  const packageRoot = path.join(projectRoot, "app");
+  const targetRoot = path.join(projectRoot, "bar");
+  const manifest = path.join(targetRoot, "package.json");
+  await mkdir(targetRoot, { recursive: true });
+  await writeFile(manifest, JSON.stringify({ name: "bar", version: "1.0.0" }), "utf8");
+  const linkEntry = { resolved: "../bar", link: true };
+  await writeNpmProject(packageRoot, {
+    dependencies: { foo: "file:../bar" },
+    packageEntries: { "node_modules/foo": linkEntry },
+  });
+  const lockfile = path.join(packageRoot, "package-lock.json");
+  const sourceLock = await readFile(lockfile, "utf8");
+  let calls = 0;
+  const input = {
+    projectRoot,
+    lockfiles: [lockfile],
+    verify: false,
+    runNpm: async (_args, { cwd }) => {
+      calls += 1;
+      await rmTree(path.join(cwd, "node_modules"));
+      await mkdir(path.join(cwd, "node_modules"), { recursive: true });
+      await symlink(targetRoot, path.join(cwd, "node_modules", "foo"), process.platform === "win32" ? "junction" : "dir");
+      await writeFile(path.join(cwd, "node_modules", ".package-lock.json"), JSON.stringify({
+        lockfileVersion: 3,
+        packages: { "node_modules/foo": linkEntry },
+      }), "utf8");
+    },
+  };
+  const first = (await prepareTaskWorktreeDependencies(input))[0];
+  assert.equal(first.prepared, true);
+  assert.equal((await prepareTaskWorktreeDependencies(input))[0].prepared, false);
+  assert.equal(calls, 1);
+  await writeFile(manifest, JSON.stringify({ name: "bar", version: "2.0.0" }), "utf8");
+  assert.equal(await readFile(lockfile, "utf8"), sourceLock);
+  const changed = (await prepareTaskWorktreeDependencies(input))[0];
+  assert.equal(changed.prepared, true);
+  assert.notEqual(changed.fingerprint, first.fingerprint);
+  assert.equal(calls, 2);
+  assert.equal((await prepareTaskWorktreeDependencies(input))[0].prepared, false);
+  assert.equal(calls, 2);
 });
 
 test("a local file link target cannot escape the managed project", async (context) => {

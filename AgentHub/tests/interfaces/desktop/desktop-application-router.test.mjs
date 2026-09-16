@@ -13,7 +13,7 @@ function router(calls, { omit = [] } = {}) {
     "trustedDevices", "createDevicePairing", "revokeDevice",
     "messagePinSet", "messagePinsClear",
     "renameWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "renameStream", "moveStream",
-    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskChecklist", "boardTaskChecklistLinkedAction", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
+    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskDiff", "boardTaskChecklist", "boardTaskChecklistLinkedAction", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
     "boardWorkspaceMove", "usageSync", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
   ].map((name) => [name, handler]));
@@ -275,6 +275,16 @@ test("Desktop application router saves Task presentation fields", async () => {
   });
 });
 
+test("Desktop Task diff is an addressed read without mutation dispatch", async () => {
+  const calls = [];
+  const control = router(calls);
+  const result = await control.handleDesktopControl({
+    action: "board-task-diff", params: { id: "exact-task" },
+  });
+  assert.equal(result.params.id, "exact-task");
+  assert.deepEqual(calls, []);
+});
+
 test("Desktop application router exposes the checklist mutation boundary", async () => {
   const control = router([]);
   const params = {
@@ -342,7 +352,7 @@ test("Desktop application router accepts a message beside a blocked mutation", a
     "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport", "reportDiagnostic",
     "trustedDevices", "createDevicePairing", "revokeDevice",
     "messagePinSet", "messagePinsClear",
-    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskChecklist", "boardTaskChecklistLinkedAction", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
+    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskDiff", "boardTaskChecklist", "boardTaskChecklistLinkedAction", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
     "boardWorkspaceMove", "usageSync", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
   ].map((name) => [name, async () => ({ accepted: true, name })]));
@@ -374,7 +384,7 @@ test("Desktop application router accepts a restart beside a blocked mutation", a
     "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport", "reportDiagnostic",
     "trustedDevices", "createDevicePairing", "revokeDevice",
     "messagePinSet", "messagePinsClear",
-    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskChecklist", "boardTaskChecklistLinkedAction", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
+    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskDiff", "boardTaskChecklist", "boardTaskChecklistLinkedAction", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
     "boardWorkspaceMove", "usageSync", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
   ].map((name) => [name, async () => ({ accepted: true, name })]));

@@ -42,11 +42,12 @@ const TASK_MANAGED_EFFECTS = new Set(["deliverChecklistEvents"]);
 
 const TASK_READS = new Set([
   "task", "list", "pendingTriage", "orderedColumnIds", "notesComment", "claimedTaskForTurn",
+  "claimBindingForOperation",
   "lifecycleTransition", "lifecycleOutcome", "releaseTasks", "captureEnabled", "mutationDiagnostics", "close",
   "checklistRequestResult", "awaitRebuildPending", "releaseFinalizationOutcome",
 ]);
 
-const READ_PROPERTIES = new Set(["revision"]);
+const READ_PROPERTIES = new Set(["revision", "snapshotRevision"]);
 const OWNER_SCOPES = new WeakMap();
 
 function stableValue(value, seen = new WeakSet()) {

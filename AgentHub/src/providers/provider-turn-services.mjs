@@ -12,6 +12,7 @@ import { emptyTokenUsage } from "../domain/token-usage.mjs";
 import { estimateCodexContextBreakdown } from "../domain/context-usage-breakdown.mjs";
 import { markProviderTurnAccepted, markProviderTurnRequested } from "../domain/task-runs.mjs";
 import { isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
+import { rememberProviderRunTerminalStatus } from "../domain/provider-run-terminal.mjs";
 
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
@@ -464,6 +465,7 @@ export class ProviderCancellationService {
     if (run.observer) return { accepted: true, stopRequested: false };
     if (run.process || d.processIsAlive(run.pid)) {
       if (!await d.stopClaudeRun(run)) throw new Error("Не удалось остановить дерево процессов Claude");
+      rememberProviderRunTerminalStatus(run, "aborted");
       rememberBounded(d.cancelledClaudeTasks, d.claudeCancellationKey(run), Date.now(), 200);
       await d.saveState();
       return { accepted: true, stopRequested: true, message: "Запрошена остановка этого потока." };

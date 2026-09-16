@@ -132,6 +132,26 @@ function fixture({ activeThread = null, sourceDetails = undefined, voiceTranscri
   return { controller, calls };
 }
 
+test("Dashboard diff resolves only the requested persisted Task identity", async () => {
+  const calls = [];
+  const controller = new DesktopTaskBoardController({
+    taskBoard: { task(id) {
+      if (id !== "exact-task") throw new Error("Task не найден");
+      return { id, taskNumber: "HUB-235" };
+    } },
+    taskLauncher: {},
+    taskGitWorkspaces: { async reviewDiff(input) {
+      calls.push(input);
+      return { repositories: [], truncated: false };
+    } },
+  });
+  assert.deepEqual(await controller.diff({ id: "exact-task", projectRoot: "untrusted-path" }),
+    { taskId: "exact-task", repositories: [], truncated: false });
+  assert.deepEqual(calls, [{ taskId: "exact-task", taskNumber: "HUB-235" }]);
+  await assert.rejects(controller.diff({ id: "missing-task" }), /Task не найден/u);
+  assert.equal(calls.length, 1);
+});
+
 test("dashboard attachment mutation accepts only files from the runtime attachment directory", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-attachments-"));
   const attachmentDirectory = path.join(root, "attachments");
@@ -223,11 +243,12 @@ test("a screenshot reply augments the existing dashboard Task", async () => {
 
 test("shared Telegram bot adds a Terra-refined voice transcript and keeps the audio attachment", async () => {
   const transcribed = [];
+  const transcript = "Нужно исправить фильтр до пятницы. ".repeat(1_000).trim();
   const { controller, calls } = fixture({
     voiceTranscriber: {
       transcribe: async (file) => {
         transcribed.push(file);
-        return "Нужно исправить фильтр до пятницы.";
+        return transcript;
       },
     },
   });
@@ -239,6 +260,7 @@ test("shared Telegram bot adds a Terra-refined voice transcript and keeps the au
   });
   assert.deepEqual(transcribed, ["D:/runtime/attachments/voice.ogg"]);
   assert.match(calls[0][1].text, /Расшифровка голосового сообщения 1[\s\S]*исправить фильтр/u);
+  assert.ok(calls[0][1].text.endsWith(transcript));
   assert.deepEqual(calls[0][1].sourceDetails.attachments, ["D:/runtime/attachments/voice.ogg"]);
 });
 

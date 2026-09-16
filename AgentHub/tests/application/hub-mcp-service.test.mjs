@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import test from "node:test";
 
 import { HubMcpService } from "../../src/application/hub-mcp-service.mjs";
+import { TaskIntegrationConflictError, TaskAwaitIntegrationError, TaskWithdrawalBusyError } from "../../src/application/task-lifecycle-service.mjs";
+import { ReleaseCandidateFrozenError } from "../../src/domain/task-board-task.mjs";
+import { TaskBoardService } from "../../src/application/task-board-service.mjs";
+import { TaskBoardStore } from "../../src/infrastructure/persistence/task-board-store.mjs";
+import { TASK_TITLE_MAX_LENGTH, TaskDependencyPendingError } from "../../src/domain/task-board-task.mjs";
 import { incomingLedgerRecord } from "../../src/application/work-log-usage-projection.mjs";
 import { createInterstreamMessage } from "../../src/domain/interstream-message.mjs";
 import { AsyncSqliteMutationQueue } from "../../src/infrastructure/persistence/async-sqlite-mutation-queue.mjs";
@@ -13,6 +18,25 @@ import {
   initializeTaskGitRepository,
   unprovenProcessTaskGit,
 } from "../helpers/task-git-unproven-process.mjs";
+import { TaskGitWorkspaceService } from "../../src/infrastructure/filesystem/task-git-workspace.mjs";
+import { canonicalPath } from "../../src/infrastructure/filesystem/config.mjs";
+import { taskRepositoryKey } from "../../src/domain/task-git-reference.mjs";
+
+function claimOnlyTaskGit(overrides = {}) {
+  const service = {
+    withTaskLock: async (_taskId, operation) => operation({
+      signal: new AbortController().signal,
+      async assertOwned() {},
+      async beginProcessTreeGuard() { throw new Error("unexpected test guard"); },
+    }),
+    prepareOwned: async (params) => service.prepare(params),
+    snapshotAndMergeOwned: async () => { throw new Error("unexpected test snapshot"); },
+    cleanupOwned: async () => { throw new Error("unexpected test cleanup"); },
+    cleanupPreview: async () => ({ workspaces: [], gitReferences: [], dirty: false, unpublished: [] }),
+    ...overrides,
+  };
+  return service;
+}
 
 async function fixture(context, {
   releaseWorkflowEnabled = false,
@@ -75,7 +99,7 @@ async function fixture(context, {
       id: "workspace-1", name: "Agent Hub",
       settings: { releaseWorkflowEnabled, workingDirectory: workspaceWorkingDirectory },
       streams: [
-        { id: "stream-1", displayName: "MCP", settings: { architect: true, workingDirectory: streamWorkingDirectory }, threads: [{ provider: "codex", threadId: "thread-1" }] },
+        { id: "stream-1", displayName: "MCP", settings: { releaseManager: true, workingDirectory: streamWorkingDirectory }, threads: [{ provider: "codex", threadId: "thread-1" }] },
         { id: "stream-2", displayName: "Themes", settings: { workingDirectory: targetWorkingDirectory }, threads: [{ provider: "codex", threadId: "thread-2" }] },
       ],
     }, {
@@ -100,6 +124,7 @@ async function fixture(context, {
   const taskEvidenceCalls = [];
   const legacyAdoptionCalls = [];
   const taskClaimCalls = [];
+  const taskClaimBindings = new Map();
   const checklistCalls = [];
   const checklistResults = new Map();
   workspaceCatalog.beginMcpOperation = (operation) => {
@@ -151,9 +176,20 @@ async function fixture(context, {
     Object.assign(operation, { status: "succeeded", operationStatus: "succeeded", receiptState: "succeeded", result });
     return operation;
   };
-  workspaceCatalog.failUnknownMcpOperation = (requestId, { error }) => {
+  workspaceCatalog.failUnknownMcpOperation = (requestId, {
+    workspaceId, toolName, error, reconciliation,
+  }) => {
     const operation = operations.get(requestId);
-    Object.assign(operation, { status: "failed", operationStatus: "failed", receiptState: "failed", error: error.message });
+    if (operation.workspaceId !== workspaceId || operation.toolName !== toolName) {
+      throw new Error("Unknown MCP operation identity does not match");
+    }
+    Object.assign(operation, {
+      status: "failed",
+      operationStatus: "failed",
+      receiptState: "failed",
+      error: error.message,
+      result: { operatorReconciliation: reconciliation },
+    });
     return operation;
   };
   workspaceCatalog.mcpOperation = (requestId) => operations.get(requestId) ?? null;
@@ -201,10 +237,12 @@ async function fixture(context, {
     }),
     claim: ({ id, streamId, turnId, operationId, operationKind, gitBaseline }) => {
       taskClaimCalls.push({ id, turnId, operationId, operationKind });
+      taskClaimBindings.set(operationId, { taskId: id, operationId, operationKind });
       return Object.assign(tasks.get(id), {
         status: "started", workflowStatus: "in_progress", streamId, claimedTurnId: turnId, gitBaseline,
       });
     },
+    claimBindingForOperation: (operationId) => taskClaimBindings.get(operationId) ?? null,
     requestWorkflowStatus: ({ id, status, turnId }) => Object.assign(tasks.get(id), {
       workflowStatus: status, requestedWorkflowStatus: status, requestedTurnId: turnId,
     }),
@@ -303,8 +341,9 @@ async function fixture(context, {
   const releasePlanWorkspaceIds = [];
   const taskGitPrepareCalls = [];
   const defaultTaskGitWorkspaces = {
-    prepare: async ({ taskId, projectRoot: selectedProjectRoot }) => {
-      taskGitPrepareCalls.push({ taskId, projectRoot: selectedProjectRoot });
+    prepare: async ({ taskId, projectRoot: selectedProjectRoot, dependencyMode, dependencyOverrideReason }) => {
+      taskGitPrepareCalls.push({ taskId, projectRoot: selectedProjectRoot, dependencyMode,
+        ...(dependencyOverrideReason ? { dependencyOverrideReason } : {}) });
       return {
         taskId,
         branch: `agenthub/task/${taskId}/repo`,
@@ -382,10 +421,14 @@ async function fixture(context, {
     },
     releasePreflight: {
       withAwaitTransition: async (_workspaceId, operation) => operation(),
-      prepareAwaitSet: async (options) => ({ ...options, releaseCandidates: [] }),
+      prepareAwaitSet: async (options) => {
+        const result = { releaseCandidates: [] };
+        if (options.commitPrepared) await options.commitPrepared(result);
+        return result;
+      },
       preflight: async (options) => {
         preflightCalls.push(options);
-        return { ...options, testContour: { running: true, headCommit: "dev-head" } };
+        return { ...options, releaseCandidates: [{ preReleaseHead: "prepared-head", reused: true }] };
       },
       reconcilePreflight: async (options) => ({
         ...options,
@@ -446,6 +489,7 @@ async function fixture(context, {
     taskEvidenceCalls,
     legacyAdoptionCalls,
     taskClaimCalls,
+    taskClaimBindings,
     checklistCalls,
     taskGitPrepareCalls,
     taskLaunchCalls,
@@ -459,7 +503,52 @@ async function fixture(context, {
   };
 }
 
-test("Architect adopts exact terminal legacy evidence without accepting arbitrary HEAD", async (context) => {
+test("a proved conflict is a terminal MCP failure and exact retry preserves its diagnostics", async (t) => {
+  const { service, token, operations } = await fixture(t, { releaseWorkflowEnabled: true });
+  let calls = 0;
+  service.taskLifecycle.updateWorkflowStatus = async () => {
+    calls += 1;
+    throw new TaskIntegrationConflictError({ taskId: "task-current", operationId: "conflict",
+      projectRoot: "task-worktree", resultCommit: "a".repeat(40), devCommit: "b".repeat(40),
+      conflicts: ["app.txt"], devRestored: true });
+  };
+  const args = { context_token: token, task_id: "task-current", status: "testing", request_id: "conflict" };
+  await assert.rejects(service.call("hub_task_status_update", args), /app.txt/);
+  assert.equal(operations.get("conflict").status, "failed");
+  await assert.rejects(service.call("hub_task_status_update", args), /dev restored/);
+  assert.equal(calls, 1);
+});
+
+for (const failure of [
+  new ReleaseCandidateFrozenError(),
+  new TaskWithdrawalBusyError(new Error("Another Task withdrawal requires reconciliation")),
+  new TaskAwaitIntegrationError(new Error("PreRelease conflict")),
+]) test(`known refusal ${failure.code} is terminal and exact retry never repeats the operation`, async (t) => {
+  const { service, token, operations } = await fixture(t, { releaseWorkflowEnabled: true });
+  let calls = 0;
+  service.taskLifecycle.updateWorkflowStatus = async () => { calls += 1; throw failure; };
+  const args = { context_token: token, task_id: "task-current", status: "awaiting_implementation", request_id: failure.code };
+  await assert.rejects(service.call("hub_task_status_update", args), { code: failure.code });
+  assert.equal(operations.get(failure.code).status, "failed");
+  await assert.rejects(service.call("hub_task_status_update", args));
+  assert.equal(calls, 1);
+});
+
+test("a blocked publication wait fails admission without an unknown receipt", async (t) => {
+  const { service, token, operations } = await fixture(t, { releaseWorkflowEnabled: true });
+  let calls = 0;
+  service.taskLifecycle.updateWorkflowStatus = async () => {
+    calls += 1;
+    throw new TaskDependencyPendingError("task-current", { taskId: "task-base", taskNumber: "HUB-1" });
+  };
+  const args = { context_token: token, task_id: "task-current", status: "in_progress", request_id: "wait" };
+  await assert.rejects(service.call("hub_task_status_update", args), /HUB-1/);
+  assert.equal(operations.get("wait").status, "failed");
+  await assert.rejects(service.call("hub_task_status_update", args), /HUB-1/);
+  assert.equal(calls, 1);
+});
+
+test("Release Manager adopts exact terminal legacy evidence without accepting arbitrary HEAD", async (context) => {
   const {
     service, token, tasks, historyRecordsByThread, targetWorkingDirectory, legacyAdoptionCalls,
   } = await fixture(context, { releaseWorkflowEnabled: true });
@@ -499,14 +588,14 @@ test("Architect adopts exact terminal legacy evidence without accepting arbitrar
 
   await assert.rejects(() => service.call("hub_task_legacy_git_adopt", {
     context_token: service.contextToken({ provider: "codex", threadId: "thread-2" }),
-    request_id: "adopt-legacy-non-architect",
+    request_id: "adopt-legacy-non-releaseManager",
     task_id: "task-legacy",
     expected_task_revision: 13,
     evidence_turn_id: "turn-legacy",
     reported_result_commit: reportedResultCommit,
     main_result_commit: mainResultCommit,
     confirm_adoption: true,
-  }), /requires an Architect Stream/u);
+  }), /requires a Release Manager Stream/u);
 });
 
 test("HubMcpService lists and changes Dashboard Tasks across Workspaces", async (context) => {
@@ -673,14 +762,14 @@ test("HubMcpService reassigns a started Task and preserves assignment context", 
     request_id: "reassign-task",
     task_id: "task-current",
     stream_id: "stream-2",
-    message: "Пришли результат в Architect.",
+    message: "Пришли результат в Release Manager.",
     confirm_launch: true,
   });
 
   assert.equal(result.previousStreamId, "stream-1");
   assert.equal(result.task.streamId, "stream-2");
   assert.equal(taskLaunchCalls[0].reassign, true);
-  assert.equal(taskLaunchCalls[0].message, "Пришли результат в Architect.");
+  assert.equal(taskLaunchCalls[0].message, "Пришли результат в Release Manager.");
   assert.equal(operations.get("reassign-task").status, "succeeded");
   assert.match(operations.get("reassign-task").interstreamContentHash, /^[a-f0-9]{64}$/u);
 });
@@ -935,6 +1024,107 @@ test("HubMcpService resumes an interrupted pending task start with the same requ
   assert.equal(operations.get("interrupted-start").status, "succeeded");
 });
 
+test("Task create validation stores a failed receipt without entering the Task owner and retries the same failure", async (context) => {
+  const { service, token, taskBoard, workspaceCatalog, operations } = await fixture(context);
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-create-validation-"));
+  const store = new TaskBoardStore({ databaseFile: path.join(directory, "tasks.sqlite") });
+  context.after(async () => {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const owner = new TaskBoardService({ store, workspaceCatalog });
+  let calls = 0;
+  taskBoard.create = (payload) => {
+    calls += 1;
+    return owner.create(payload);
+  };
+  const invalid = [
+    { title: "x".repeat(TASK_TITLE_MAX_LENGTH + 1), description: "", error: /Заголовок Task длиннее 160/u },
+  ];
+  for (const [index, { error, ...payload }] of invalid.entries()) {
+    const input = { context_token: token, request_id: `invalid-create-${index}`, ...payload };
+    await assert.rejects(service.call("hub_task_create", input), error);
+    assert.equal(operations.get(input.request_id).status, "failed");
+    assert.match(operations.get(input.request_id).error, error);
+    await assert.rejects(service.call("hub_task_create", input), error);
+    await assert.rejects(service.call("hub_task_create", { ...input, title: "Corrected" }), /already used for another operation/u);
+  }
+  assert.equal(calls, 0);
+  assert.equal(store.list().length, 0);
+
+  const input = {
+    context_token: token, request_id: "valid-create-at-boundary", title: "Task",
+    description: "Подробности 🚀\n".repeat(5_000).trim(),
+  };
+  const created = await service.call("hub_task_create", input);
+  assert.equal(created.title, "Task");
+  assert.equal(store.task(created.id).rawText, `${input.title}\n\n${input.description}`);
+  assert.equal(store.list().length, 1);
+  assert.equal(operations.get(input.request_id).status, "succeeded");
+  assert.deepEqual(await service.call("hub_task_create", input), created);
+  assert.equal(calls, 1);
+
+  const createSchema = service.tools().find((tool) => tool.name === "hub_task_create").inputSchema.properties;
+  const updateSchema = service.tools().find((tool) => tool.name === "hub_task_update").inputSchema.properties;
+  for (const schema of [createSchema, updateSchema]) {
+    assert.equal(schema.title.maxLength, TASK_TITLE_MAX_LENGTH);
+    assert.equal(schema.description.maxLength, undefined);
+  }
+});
+
+test("long Task descriptions survive MCP update, exact read, replay and SQLite reopen", async (context) => {
+  const { service, token, workspaceCatalog } = await fixture(context);
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-long-description-"));
+  const databaseFile = path.join(directory, "tasks.sqlite");
+  let store = new TaskBoardStore({ databaseFile });
+  context.after(async () => {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  service.taskBoard = new TaskBoardService({ store, workspaceCatalog });
+  const created = await service.call("hub_task_create", {
+    context_token: token, request_id: "long-description-create", title: "Описание",
+    description: "Исходный текст ".repeat(3_000),
+  });
+  const description = "Подробности 🚀\n".repeat(5_000).trim();
+  const input = { context_token: token, request_id: "long-description-update",
+    task_id: created.id, description };
+  const updated = await service.call("hub_task_update", input);
+  assert.equal(updated.description, description);
+  assert.deepEqual(await service.call("hub_task_update", input), updated);
+  store.close();
+  store = new TaskBoardStore({ databaseFile });
+  service.taskBoard = new TaskBoardService({ store, workspaceCatalog });
+  const read = await service.call("hub_task_get", { context_token: token, task_id: created.id });
+  assert.equal(read.description, description);
+});
+
+test("Task update field rejection is failed while an effectful create validation-looking error stays unknown", async (context) => {
+  const { service, token, taskBoard, tasks, operations } = await fixture(context);
+  const original = structuredClone(tasks.get("task-current"));
+  const invalidUpdate = {
+    context_token: token, request_id: "invalid-update-title", task_id: original.id,
+    title: "x".repeat(TASK_TITLE_MAX_LENGTH + 1),
+  };
+  await assert.rejects(service.call("hub_task_update", invalidUpdate), /Заголовок Task длиннее 160/u);
+  assert.equal(operations.get(invalidUpdate.request_id).status, "failed");
+  assert.deepEqual(tasks.get(original.id), original);
+
+  const create = taskBoard.create;
+  let effects = 0;
+  taskBoard.create = (payload) => {
+    create(payload);
+    effects += 1;
+    throw new Error("Описание Task длиннее 20000 символов");
+  };
+  const input = { context_token: token, request_id: "effectful-create-error", title: "Created before failure" };
+  await assert.rejects(service.call("hub_task_create", input), /Описание Task длиннее 20000/u);
+  assert.equal(operations.get(input.request_id).status, "unknown");
+  assert.equal(tasks.get("created").title, input.title);
+  await assert.rejects(service.call("hub_task_create", input), /outcome is unknown/u);
+  assert.equal(effects, 1);
+});
+
 test("HubMcpService keeps ownership across global columns and deletes its task", async (context) => {
   const { service, token } = await fixture(context);
   const created = await service.call("hub_task_create", {
@@ -1047,7 +1237,8 @@ test("HubMcpService exposes cursor events and publication-gated release completi
       approvedOriginMainCommit: "origin-main",
     }],
   });
-  assert.equal(preflight.testContour.headCommit, "dev-head");
+  assert.equal(preflight.releaseCandidates[0].preReleaseHead, "prepared-head");
+  assert.equal(preflight.testContour, undefined);
   assert.deepEqual(preflightCalls[0], {
     workspaceId: "workspace-1", expectedPlanRevision: "plan-1", conflictsResolved: false,
     approvedRepositories: [{
@@ -1059,19 +1250,19 @@ test("HubMcpService exposes cursor events and publication-gated release completi
   });
   await service.call("hub_release_preflight", {
     context_token: token,
-    request_id: "architect-bwm12-release-preflight-20260912-v1",
+    request_id: "releaseManager-bwm12-release-preflight-20260912-v1",
     expected_plan_revision: "plan-1",
   });
-  Object.assign(operations.get("architect-bwm12-release-preflight-20260912-v1"), {
+  Object.assign(operations.get("releaseManager-bwm12-release-preflight-20260912-v1"), {
     status: "unknown",
     result: null,
     error: "serialization error",
   });
   const reconciled = await service.call("hub_release_preflight_reconcile", {
     context_token: token,
-    original_request_id: "architect-bwm12-release-preflight-20260912-v1",
+    original_request_id: "releaseManager-bwm12-release-preflight-20260912-v1",
     original_preflight_arguments: {
-      request_id: "architect-bwm12-release-preflight-20260912-v1",
+      request_id: "releaseManager-bwm12-release-preflight-20260912-v1",
       expected_plan_revision: "plan-1",
     },
     error_class: "serialization_error",
@@ -1081,7 +1272,7 @@ test("HubMcpService exposes cursor events and publication-gated release completi
   assert.equal(reconciled.status, "candidate_snapshot_only");
   assert.equal(reconciled.originalOutcome, "unknown");
   assert.equal(reconciled.replayed, false);
-  assert.equal(reconciled.originalRequestId, "architect-bwm12-release-preflight-20260912-v1");
+  assert.equal(reconciled.originalRequestId, "releaseManager-bwm12-release-preflight-20260912-v1");
   const release = await service.call("hub_release_complete", {
     context_token: token, request_id: "release-1",
     expected_repositories: [{ projectRoot: "D:/repo", revision: "abc" }], expected_plan_revision: "plan-1",
@@ -1140,24 +1331,24 @@ test("HubMcpService rejects release preflight reconcile without exact original r
   );
 });
 
-test("HubMcpService restricts release preflight to Architect Streams", async (context) => {
+test("HubMcpService restricts release preflight to Release Manager Streams", async (context) => {
   const { service, token, workspaceCatalog } = await fixture(context);
   const hierarchy = workspaceCatalog.hierarchy;
   workspaceCatalog.hierarchy = () => hierarchy().map((workspace) => ({
     ...workspace,
     streams: workspace.streams.map((stream) => ({
       ...stream,
-      settings: { ...stream.settings, architect: false },
+      settings: { ...stream.settings, releaseManager: false },
     })),
   }));
   await assert.rejects(() => service.call("hub_release_preflight", {
     context_token: token,
     request_id: "preflight-forbidden",
     expected_plan_revision: "plan-1",
-  }), /requires an Architect Stream/u);
+  }), /requires a Release Manager Stream/u);
 });
 
-test("Architect reconciliation forwards one exact unknown operation and requires confirmation", async (context) => {
+test("Release Manager reconciliation forwards one exact unknown operation and requires confirmation", async (context) => {
   const calls = [];
   const { service, token } = await fixture(context, {
     taskOperationReconciliation: {
@@ -1228,15 +1419,43 @@ test("Architect reconciliation forwards one exact unknown operation and requires
     cutoverSourceTaskRevision: undefined,
     confirmed: true,
   });
+  const ordinaryCasArgs = {
+    ...args,
+    request_id: "reconcile-command-ordinary-cas",
+    expected_task_revision: 2,
+    expected_workflow_status: "in_progress",
+  };
+  delete ordinaryCasArgs.guard_id;
+  delete ordinaryCasArgs.proof_kind;
+  delete ordinaryCasArgs.proof_summary;
+  assert.deepEqual(await service.call("hub_task_operation_reconcile", ordinaryCasArgs), {
+    resolved: true, outcome: "succeeded",
+  });
+  assert.deepEqual(calls[2], {
+    workspaceId: "workspace-1",
+    taskId: "task-current",
+    operationRequestId: "original-status-request",
+    projectRoot: "D:/VSC_Tyrael/Utilities",
+    guardId: undefined,
+    proofKind: undefined,
+    proofSummary: undefined,
+    expectedTaskRevision: 2,
+    expectedWorkflowStatus: "in_progress",
+    cutoverSourceCommit: undefined,
+    cutoverProjectorSha256: undefined,
+    cutoverSourceTaskId: undefined,
+    cutoverSourceTaskRevision: undefined,
+    confirmed: true,
+  });
   await assert.rejects(service.call("hub_task_operation_reconcile", {
     ...args, request_id: "reconcile-command-unconfirmed", confirm_reconcile: false,
   }), /requires explicit confirmation/u);
   await assert.rejects(service.call("hub_task_operation_reconcile", {
     ...args,
     context_token: service.contextToken({ provider: "codex", threadId: "thread-2" }),
-    request_id: "reconcile-command-non-architect",
-  }), /requires an Architect Stream/u);
-  assert.equal(calls.length, 2);
+    request_id: "reconcile-command-non-releaseManager",
+  }), /requires a Release Manager Stream/u);
+  assert.equal(calls.length, 3);
 });
 
 test("HubMcpService binds the current turn to its dedicated Task worktree", async (context) => {
@@ -1263,6 +1482,42 @@ test("HubMcpService binds the current turn to its dedicated Task worktree", asyn
   const tools = service.tools();
   assert.equal(tools.some((tool) => tool.name === "hub_task_release_freeze"), false);
   assert.equal(tools.some((tool) => tool.name === "hub_release_preflight"), true);
+});
+
+test("hub_task_claim defaults to skipping dependencies and forwards explicit ensure or verify", async (context) => {
+  const { service, token, activeRun, taskGitPrepareCalls, taskClaimCalls, operations } = await fixture(context);
+  for (const [index, mode] of [undefined, "ensure", "verify"].entries()) {
+    const requestId = `claim-dependencies-${index}`;
+    const result = await service.call("hub_task_claim", {
+      context_token: token,
+      request_id: requestId,
+      task_id: "task-current",
+      ...(mode ? { dependency_mode: mode } : {}),
+    });
+    assert.equal(result.claimedTurnId, activeRun.turnId);
+    assert.equal(taskGitPrepareCalls.at(-1).dependencyMode, mode ?? "skip");
+    assert.equal(taskClaimCalls.at(-1).operationId, requestId);
+    assert.equal(operations.get(requestId).status, "succeeded");
+  }
+  assert.equal(taskGitPrepareCalls.length, 3);
+  assert.equal(taskClaimCalls.length, 3);
+});
+
+test("claim forwards an explicit user dependency exception and complete forwards its surviving Task", async (t) => {
+  const { service, token, taskGitPrepareCalls } = await fixture(t);
+  const reason = "User requested consolidation before prerequisite release";
+  await service.call("hub_task_claim", { context_token: token, request_id: "override-wait",
+    task_id: "task-current", dependency_override_reason: reason });
+  assert.equal(taskGitPrepareCalls.at(-1).dependencyOverrideReason, reason);
+  let received;
+  service.taskLifecycle.complete = async (args) => {
+    received = args;
+    return { confirmationRequired: true, task: { id: "task-current" }, cleanupToken: "preview" };
+  };
+  const result = await service.call("hub_task_complete", { context_token: token, request_id: "absorb-preview",
+    task_id: "task-current", absorbed_into_task_id: "task-survivor" });
+  assert.equal(received.absorbedIntoTaskId, "task-survivor");
+  assert.equal(result.cleanupToken, "preview");
 });
 
 test("HubMcpService claims the active turn while an older terminal remains retained", async (context) => {
@@ -1327,6 +1582,138 @@ test("HubMcpService claim keeps an unproven process-tree guard before every Task
   });
   assert.equal(claimed.claimedTurnId, "turn-live");
   assert.equal(state.taskClaimCalls.length, 1);
+});
+
+test("HubMcpService terminally records a repository-guard admission failure before claim effects", async (context) => {
+  let guardPath;
+  const state = await fixture(context, {
+    taskGitWorkspacesFactory: async ({ directory, streamWorkingDirectory }) => {
+      await initializeTaskGitRepository(streamWorkingDirectory);
+      const dataDir = path.join(directory, "current-guard-data");
+      const foreignTaskId = "51515151-5151-4151-8151-515151515151";
+      guardPath = path.join(
+        dataDir,
+        "task-process-tree-guards",
+        foreignTaskId,
+        `${taskRepositoryKey(streamWorkingDirectory)}.json`,
+      );
+      await mkdir(path.dirname(guardPath), { recursive: true });
+      await writeFile(guardPath, `${JSON.stringify({
+        version: 1, repositoryRoot: canonicalPath(streamWorkingDirectory),
+      })}\n`, "utf8");
+      return new TaskGitWorkspaceService({ dataDir });
+    },
+  });
+  const input = {
+    context_token: state.token,
+    request_id: "claim-current-guard-no-effect",
+    task_id: "task-current",
+  };
+  await assert.rejects(state.service.call("hub_task_claim", input), /unresolved process-tree guard/u);
+  assert.equal(state.operations.get(input.request_id).status, "failed");
+  assert.equal(state.taskClaimCalls.length, 0);
+  assert.equal(state.tasks.get("task-current").status, "open");
+  assert.equal(await access(guardPath).then(() => true, () => false), true);
+  await assert.rejects(state.service.call("hub_task_claim", input), /unresolved process-tree guard/u);
+  assert.equal(state.taskClaimCalls.length, 0);
+});
+
+test("HubMcpService settles an exact legacy unknown guard claim without replaying Git", async (context) => {
+  let prepareCalls = 0;
+  let legacyVerifier;
+  let legacyMessage;
+  const state = await fixture(context, {
+    taskGitWorkspacesFactory: async ({ directory, streamWorkingDirectory }) => {
+      await initializeTaskGitRepository(streamWorkingDirectory);
+      const dataDir = path.join(directory, "legacy-guard-data");
+      legacyVerifier = new TaskGitWorkspaceService({ dataDir });
+      const foreignTaskId = "61616161-6161-4161-8161-616161616161";
+      const guardPath = path.join(
+        dataDir,
+        "task-process-tree-guards",
+        foreignTaskId,
+        `${taskRepositoryKey(streamWorkingDirectory)}.json`,
+      );
+      legacyMessage = `Task Git repository blocked: unresolved process-tree guard requires operator proof (${guardPath})`;
+      return claimOnlyTaskGit({
+        prepare: async () => {
+          prepareCalls += 1;
+          throw new Error(legacyMessage);
+        },
+        claimAdmissionNoEffectEvidence: (params) => legacyVerifier.claimAdmissionNoEffectEvidence(params),
+      });
+    },
+  });
+  const input = {
+    context_token: state.token,
+    request_id: "claim-legacy-guard-unknown",
+    task_id: "task-current",
+  };
+  await assert.rejects(state.service.call("hub_task_claim", input), /unresolved process-tree guard/u);
+  assert.equal(state.operations.get(input.request_id).status, "unknown");
+  assert.equal(prepareCalls, 1);
+
+  await assert.rejects(state.service.call("hub_task_claim", input), /mutation effect is not authoritatively disproved/u);
+  assert.equal(state.operations.get(input.request_id).status, "failed");
+  assert.equal(
+    state.operations.get(input.request_id).result.operatorReconciliation.kind,
+    "task-claim-admission-failed-before-effects",
+  );
+  assert.equal(prepareCalls, 1);
+  assert.equal(state.taskClaimCalls.length, 0);
+  await assert.rejects(state.service.call("hub_task_claim", input), /mutation effect is not authoritatively disproved/u);
+  assert.equal(prepareCalls, 1);
+  await assert.rejects(state.service.call("hub_task_claim", {
+    ...input, task_id: "task-foreign",
+  }), /request_id was already used/u);
+});
+
+test("HubMcpService preserves unknown when a legacy claim has any durable Task binding", async (context) => {
+  let prepareCalls = 0;
+  const state = await fixture(context, {
+    taskGitWorkspacesFactory: async () => claimOnlyTaskGit({
+      prepare: async () => {
+        prepareCalls += 1;
+        throw new Error("Task Git repository blocked: unresolved process-tree guard requires operator proof (C:\\guard.json)");
+      },
+      claimAdmissionNoEffectEvidence: async ({ error }) => (
+        error instanceof Error ? null : { version: "unexpected-if-bound" }
+      ),
+    }),
+  });
+  const input = {
+    context_token: state.token,
+    request_id: "claim-legacy-bound-unknown",
+    task_id: "task-current",
+  };
+  await assert.rejects(state.service.call("hub_task_claim", input), /unresolved process-tree guard/u);
+  state.taskClaimBindings.set(input.request_id, { taskId: input.task_id, operationId: input.request_id });
+  await assert.rejects(state.service.call("hub_task_claim", input), /outcome is unknown/u);
+  assert.equal(state.operations.get(input.request_id).status, "unknown");
+  assert.equal(prepareCalls, 1);
+});
+
+test("HubMcpService never reclassifies or replays a claim after its Task binding effect", async (context) => {
+  const state = await fixture(context);
+  const completeOperation = state.workspaceCatalog.completeMcpOperation;
+  const input = {
+    context_token: state.token,
+    request_id: "claim-binding-before-receipt-failure",
+    task_id: "task-current",
+  };
+  state.workspaceCatalog.completeMcpOperation = (requestId, result) => {
+    if (requestId === input.request_id) throw new Error("claim receipt write failed after binding");
+    return completeOperation(requestId, result);
+  };
+
+  await assert.rejects(state.service.call("hub_task_claim", input), /receipt reconciliation is required/u);
+  assert.equal(state.operations.get(input.request_id).status, "unknown");
+  assert.equal(state.taskClaimCalls.length, 1);
+  assert.equal(state.taskGitPrepareCalls.length, 1);
+  assert.equal(state.taskClaimBindings.get(input.request_id).taskId, input.task_id);
+  await assert.rejects(state.service.call("hub_task_claim", input), /outcome is unknown/u);
+  assert.equal(state.taskClaimCalls.length, 1);
+  assert.equal(state.taskGitPrepareCalls.length, 1);
 });
 
 test("HubMcpService claim falls back to the Workspace working directory", async (context) => {
@@ -1498,8 +1885,8 @@ test("hub_stream_history projects active content and deterministic lifecycle sta
   const messageOrigin = {
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
     requestId: "foreign-live-1",
   };
@@ -1789,6 +2176,74 @@ test("startup receipt reconciliation preserves a durable workflow rollback as fa
 
   assert.equal(operations.get("workflow-rolled-back").status, "failed");
   assert.match(operations.get("workflow-rolled-back").error, /Await rebuild failed/u);
+});
+
+test("SQLite Task attachments survive exact read, list, replay and store reopen", async (context) => {
+  const { service, token, projectRoot, workspaceCatalog, attachmentDirectory } = await fixture(context);
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub-task-attachment-sqlite-"));
+  const databaseFile = path.join(directory, "tasks.sqlite");
+  let store = new TaskBoardStore({ databaseFile });
+  context.after(async () => {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const task = store.create({ text: "Attachment owner", bucket: "workspace", workspaceId: "workspace-1" });
+  const other = store.create({ text: "Other Task", bucket: "workspace", workspaceId: "workspace-1" });
+  service.taskBoard = new TaskBoardService({ store, workspaceCatalog });
+  const source = path.join(projectRoot, "evidence.md");
+  const body = "Точное содержимое вложения 🦊";
+  await writeFile(source, body, "utf8");
+  const input = { context_token: token, request_id: "sqlite-attachment-add", task_id: task.id, local_path: source };
+  const added = await service.call("hub_task_attachment_add", input);
+  assert.deepEqual(store.task(task.id).sourceDetails.attachments, [path.join(attachmentDirectory, added.attachment.id)]);
+  assert.equal(added.task.attachments[0].id, added.attachment.id);
+  assert.deepEqual(await service.call("hub_task_attachment_add", input), added);
+  assert.deepEqual(await readdir(attachmentDirectory), [added.attachment.id]);
+  store.close();
+  store = new TaskBoardStore({ databaseFile });
+  service.taskBoard = new TaskBoardService({ store, workspaceCatalog });
+  const read = await service.call("hub_task_get", { context_token: token, task_id: task.id });
+  const snapshot = service.taskBoard.snapshot().find((candidate) => candidate.id === task.id);
+  assert.deepEqual(read.attachments, snapshot.attachments);
+  assert.equal(read.attachments[0].id, added.attachment.id);
+  assert.equal(JSON.stringify(read).includes(attachmentDirectory), false);
+  const attachment = await service.call("hub_task_attachment_read", {
+    context_token: token, task_id: task.id, attachment_id: added.attachment.id,
+  });
+  assert.equal(attachment.text, body);
+  await assert.rejects(service.call("hub_task_attachment_read", {
+    context_token: token, task_id: other.id, attachment_id: added.attachment.id,
+  }), /outside the selected task/u);
+});
+
+test("attachment failure after committed linkage preserves bytes and forbids replay", async (context) => {
+  const { service, token, taskBoard, projectRoot, attachmentDirectory, operations } = await fixture(context);
+  const source = path.join(projectRoot, "evidence.txt");
+  await writeFile(source, "committed attachment", "utf8");
+  const add = taskBoard.addAttachment;
+  taskBoard.addAttachment = (payload) => {
+    add(payload);
+    throw new Error("readback failed after attachment commit");
+  };
+  const input = { context_token: token, request_id: "attachment-post-commit", task_id: "task-current", local_path: source };
+  await assert.rejects(service.call("hub_task_attachment_add", input), /readback failed/u);
+  const files = await readdir(attachmentDirectory);
+  assert.equal(files.length, 1);
+  const read = await service.call("hub_task_attachment_read", { context_token: token, task_id: "task-current", attachment_id: files[0] });
+  assert.equal(read.text, "committed attachment");
+  assert.equal(operations.get(input.request_id).status, "unknown");
+  await assert.rejects(service.call("hub_task_attachment_add", input), /outcome is unknown/u);
+  assert.deepEqual(await readdir(attachmentDirectory), files);
+});
+
+test("attachment add cannot report success without persisted membership", async (context) => {
+  const { service, token, taskBoard, projectRoot, operations } = await fixture(context);
+  const source = path.join(projectRoot, "evidence.txt");
+  await writeFile(source, "unconfirmed attachment", "utf8");
+  taskBoard.addAttachment = () => {};
+  const input = { context_token: token, request_id: "attachment-missing-link", task_id: "task-current", local_path: source };
+  await assert.rejects(service.call("hub_task_attachment_add", input), /persistence was not confirmed/u);
+  assert.equal(operations.get(input.request_id).status, "unknown");
 });
 
 test("HubMcpService copies project files into task attachments", async (context) => {

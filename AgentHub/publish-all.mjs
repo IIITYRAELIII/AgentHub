@@ -115,6 +115,7 @@ export function runStep({
   timeoutMs = DEFAULT_STEP_TIMEOUT_MS,
   idleTimeoutMs = 0,
   logFile = "",
+  cwd = ROOT,
 }, {
   spawnImpl = spawn,
   stopTree = stopProcessTree,
@@ -135,7 +136,7 @@ export function runStep({
       return stream;
     })() : null;
     const child = spawnImpl(command, args, {
-      cwd: ROOT,
+      cwd,
       env: { ...process.env, ...env, PYTHONUTF8: "1" },
       shell: false,
       stdio: log || idleTimeoutMs ? ["inherit", "pipe", "pipe"] : "inherit",
@@ -284,6 +285,9 @@ export async function publishAll(args = process.argv.slice(2), {
         requestRestart: (verification) => restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot, verification),
       });
       console.log(`\nПубликация: ${completion.status}.`);
+      if (completion.handoff?.action === "yield_current_turn") {
+        console.log("Safe restart подготовлен: завершите текущий агентский ход без новых операций.");
+      }
       return completion;
     } catch (error) {
       await journal?.finish("failed", error);

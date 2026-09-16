@@ -14,6 +14,8 @@
  * Hub forwards that value to the stdin of the exact running attempt and keeps
  * nothing of it.
  */
+import { providerAccountDisplay } from "../domain/provider-account-display.mjs";
+
 export const PROVIDER_LOGIN_PROVIDERS = Object.freeze(["codex", "claude"]);
 
 const DEFAULT_TIMEOUT_MS = 10 * 60_000;
@@ -64,6 +66,9 @@ export class ProviderLoginService {
   #queues = new Map();
   #attempt = 0;
   #disposed = false;
+  #accounts = new Map();
+  #accountReads = new Map();
+  #accountEpochs = new Map();
 
   constructor({
     sendRpc,
@@ -71,6 +76,8 @@ export class ProviderLoginService {
     spawnProcess,
     stopProcessTree,
     readClaudeLoggedIn,
+    readAccount = null,
+    accountRefreshMs = 30_000,
     onAccountChanged = async () => {},
     timers = { setTimeout, clearTimeout },
     clock = () => Date.now(),
@@ -84,6 +91,8 @@ export class ProviderLoginService {
       spawnProcess: requiredFunction(spawnProcess, "spawnProcess"),
       stopProcessTree: requiredFunction(stopProcessTree, "stopProcessTree"),
       readClaudeLoggedIn: requiredFunction(readClaudeLoggedIn, "readClaudeLoggedIn"),
+      readAccount,
+      accountRefreshMs,
       onAccountChanged,
       timers,
       clock,
@@ -94,7 +103,7 @@ export class ProviderLoginService {
     for (const provider of PROVIDER_LOGIN_PROVIDERS) this.#states.set(provider, { provider, status: "idle" });
   }
 
-  /** Sign-in state for snapshots: never the sign-in link, code or provider identifiers. */
+  /** Login state and allowlisted account display; never credentials or sign-in links. */
   snapshot() {
     return PROVIDER_LOGIN_PROVIDERS.map((provider) => this.#publicEntry(provider));
   }
@@ -260,6 +269,7 @@ export class ProviderLoginService {
 
   #publicEntry(provider) {
     const state = this.#states.get(provider);
+    this.#refreshAccount(provider);
     return {
       provider,
       status: state.status,
@@ -267,7 +277,32 @@ export class ProviderLoginService {
       startedAt: state.startedAt ?? null,
       finishedAt: state.finishedAt ?? null,
       error: state.error || null,
+      currentAccount: this.#accounts.get(provider)?.display ?? { state: this.#d.readAccount ? "checking" : "unknown" },
     };
+  }
+
+  #refreshAccount(provider, invalidate = false) {
+    if (!this.#d.readAccount || this.#disposed) return;
+    if (invalidate) {
+      this.#accountEpochs.set(provider, (this.#accountEpochs.get(provider) ?? 0) + 1);
+      this.#accounts.delete(provider);
+    }
+    if (this.#accountReads.has(provider)) return;
+    const cached = this.#accounts.get(provider);
+    if (cached && this.#d.clock() - cached.at < this.#d.accountRefreshMs) return;
+    const epoch = this.#accountEpochs.get(provider) ?? 0;
+    this.#accounts.delete(provider);
+    const read = Promise.resolve().then(() => this.#d.readAccount(provider))
+      .then((value) => providerAccountDisplay(provider, value), () => ({ state: "unknown" }))
+      .then((display) => {
+        if (!this.#disposed && epoch === (this.#accountEpochs.get(provider) ?? 0)) {
+          this.#accounts.set(provider, { display, at: this.#d.clock() });
+        }
+      }).finally(() => {
+        this.#accountReads.delete(provider);
+        if (epoch !== (this.#accountEpochs.get(provider) ?? 0)) this.#refreshAccount(provider);
+      });
+    this.#accountReads.set(provider, read);
   }
 
   async #startCodex(state) {
@@ -396,6 +431,7 @@ export class ProviderLoginService {
   }
 
   #notifyAccountChanged(provider) {
+    this.#refreshAccount(provider, true);
     Promise.resolve()
       .then(() => this.#d.onAccountChanged(provider))
       .catch((error) => this.#d.logger.error?.(`Cannot refresh ${provider} account:`, boundedError(error)));

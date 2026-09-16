@@ -10,7 +10,7 @@ Moving a Task to `awaiting_implementation` records its exact accepted result for
 a future release. This transition does not build, rebuild or mutate
 `PreRelease`.
 
-Only an explicit user release command starts candidate assembly. Architect
+Only an explicit user release command starts candidate assembly. Release Manager
 selects the exact ready Await set, updates current `main` from `origin/main`,
 builds `PreRelease` from that `main` plus the selected exact Task results, and
 then freezes the exact release-plan revision, included Task IDs and resulting
@@ -18,7 +18,7 @@ then freezes the exact release-plan revision, included Task IDs and resulting
 
 The frozen candidate is immutable. Await Tasks accepted after the freeze are
 reserved for a later release. If an included Task changes, is withdrawn or is
-excluded, completion CAS fails and Architect must explicitly rebuild and
+excluded, completion CAS fails and Release Manager must explicitly rebuild and
 refreeze before publication can complete.
 
 ## Consequences

@@ -41,7 +41,12 @@ export async function completePublication({
       if (deferred) {
         await journal?.stepFinished(RUNTIME_READINESS_STAGE, { status: "waiting" });
         await journal?.finish("awaiting_restart");
-        return { status: "awaiting_restart", expectedReleaseId, publicationOnly: !finalizePublication };
+        return {
+          status: "awaiting_restart",
+          expectedReleaseId,
+          publicationOnly: !finalizePublication,
+          handoff: { action: "yield_current_turn", reason: "safe_runtime_restart" },
+        };
       }
       await journal?.stepFinished(RUNTIME_READINESS_STAGE, { status: "completed" });
     }

@@ -65,7 +65,6 @@ import {
   ensureDashBotTerraStream,
 } from "../providers/codex/codex-terra-voice-transcriber.mjs";
 import { RuntimeNotificationController } from "../runtime/runtime-notification-controller.mjs";
-import { readTestContourStatus, startTestContour } from "../runtime/test-contour-manager.mjs";
 import { sentryDiagnostics } from "../infrastructure/diagnostics/sentry-diagnostics.mjs";
 import { readPublicationState } from "../infrastructure/persistence/publication-state.mjs";
 import { createCommandTraceComposition, measureStartupBeforeTrace } from "./command-trace-composition.mjs";
@@ -199,12 +198,12 @@ function usageSyncRuntimeHomeIds(identityStore) {
   };
 }
 
-async function resolveReleaseTestContourSource(repositories) {
+async function resolveReleaseValidationSource(repositories) {
   for (const repository of repositories) {
     const sourceRoot = path.join(repository.worktreeRoot, "AgentHub");
     try {
-      await access(path.join(sourceRoot, "test-contour.mjs"));
-      return { kind: "agent-hub-test-contour", ...repository, sourceRoot };
+      await access(path.join(sourceRoot, "publish-changed.mjs"));
+      return { kind: "workspace-release-pipeline", ...repository, sourceRoot };
     } catch {}
   }
   return {
@@ -414,14 +413,7 @@ export async function createHubInfrastructure({
     releasePlanner: taskReleasePlanner,
     taskGitWorkspaces,
     releaseGitWorkspaces,
-    resolveTestContourSource: resolveReleaseTestContourSource,
-    refreshTestContour: ({ sourceRoot, ...options }) => startTestContour({
-      refresh: true,
-      sourceRoot,
-      entryFile: path.join(sourceRoot, "test-contour.mjs"),
-      ...options,
-    }),
-    readTestContourStatus,
+    resolveReleaseValidationSource,
     readPublicationState,
     validateProductionCandidate: createRepositoryProductionValidationAdapter({
       policies: config.releaseValidation?.repositories ?? [],

@@ -230,9 +230,9 @@ test("legacy Git adoption reaches immutable CAS audit through the production Tas
     evidenceProvider: "codex",
     evidenceThreadId: "thread-evidence",
     evidenceTurnId: "turn-evidence",
-    actorStreamId: "stream-architect",
+    actorStreamId: "stream-release-manager",
     actorProvider: "codex",
-    actorThreadId: "thread-architect",
+    actorThreadId: "thread-release-manager",
     requestId: "adopt-production-owner",
   });
 
@@ -293,7 +293,11 @@ test("composed release completion retries through the mandatory Task owner witho
     },
     releasePreflight: {
       withAwaitTransition: async (_workspaceId, operation) => operation(),
-      prepareAwaitSet: async (options) => ({ ...options, releaseCandidates: [] }),
+      prepareAwaitSet: async (options) => {
+        const result = { releaseCandidates: [] };
+        if (options.commitPrepared) await options.commitPrepared(result);
+        return result;
+      },
     },
     verifyPublication: async () => ({
       repositories: [{

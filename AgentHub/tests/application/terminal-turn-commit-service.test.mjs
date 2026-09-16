@@ -190,7 +190,7 @@ test("terminal commit drops conflicting top-level and root interstream identity"
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
     streamId: "stream-1",
-    streamName: "Architect",
+    streamName: "Release Manager",
     provider: "codex",
     sourceThreadId: "thread-source",
     requestId: "request-a",

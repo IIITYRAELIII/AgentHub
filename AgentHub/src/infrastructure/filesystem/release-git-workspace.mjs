@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { ReleaseCandidateFrozenError } from "../../domain/task-board-task.mjs";
 import process from "node:process";
 import { assertContourExternalEffects, assertContourGitAvailable } from "../../ports/contour-external-effects.mjs";
 
@@ -477,6 +478,20 @@ export class ReleaseGitWorkspaceService {
     return withInterprocessLocks([lock], operation);
   }
 
+  async assertAwaitChangesAllowed(workspaceId) {
+    this.#assertAvailable("assertAwaitChangesAllowed");
+    const entries = await readdir(this.releaseRepositoriesRoot, { withFileTypes: true }).catch((error) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    });
+    for (const entry of entries.filter((item) => item.isDirectory())) {
+      const checkpoint = await readJson(path.join(this.releaseRepositoriesRoot, entry.name, "checkpoint.json"));
+      if (!["freezing", "frozen"].includes(checkpoint?.phase)) continue;
+      const manifest = checkpoint.manifestFile ? await readJson(checkpoint.manifestFile) : null;
+      if (manifest?.workspaceId === workspaceId) throw new ReleaseCandidateFrozenError();
+    }
+  }
+
   async inspectMainChanges({
     projectRoot, publishedRevision, approvedLocalMainCommit = null, approvedOriginMainCommit = null,
   } = {}) {
@@ -636,10 +651,15 @@ export class ReleaseGitWorkspaceService {
   async prepareCandidate({
     planRevision, projectRoot, workspaceId = null, preflightRequestId = null,
     frozenTasks = [], approvedBaseCommit = null, validateBeforeCommit = null,
+    preserveFrozen = false, commitPrepared = null,
   } = {}) {
     this.#assertAvailable("prepareCandidate");
     const revision = String(planRevision ?? "").trim();
     if (!revision) throw new Error("release candidate requires the exact plan revision");
+    const acceptedBase = String(approvedBaseCommit ?? "").trim();
+    if (!/^[a-f0-9]{40}$/u.test(acceptedBase)) {
+      throw new Error("release candidate requires an exact published or explicitly adopted base commit");
+    }
     const tasks = normalizedFrozenTasks(frozenTasks);
     const initial = await primarySnapshot(projectRoot);
     await this.assertPrimaryInvariant(initial.root, { phase: "release preflight" });
@@ -653,6 +673,15 @@ export class ReleaseGitWorkspaceService {
         cwd: clone.releaseRoot,
         timeoutMs: 300_000,
       });
+      const checkpoint = await readJson(clone.checkpointFile);
+      const acceptanceBefore = commitPrepared ? {
+        head: await runGit(["rev-parse", "HEAD^{commit}"], { cwd: clone.releaseRoot }),
+        checkout: await gitMaybe(["symbolic-ref", "-q", "HEAD"], { cwd: clone.releaseRoot }),
+        branch: await gitMaybe(["rev-parse", `refs/heads/${RELEASE_BRANCH}^{commit}`], { cwd: clone.releaseRoot }),
+      } : null;
+      if (preserveFrozen && ["freezing", "frozen"].includes(checkpoint?.phase)) {
+        throw new ReleaseCandidateFrozenError();
+      }
       await runGit(["fetch", "--prune", "workspace", "+refs/heads/*:refs/remotes/workspace/*"], {
         cwd: clone.releaseRoot,
         timeoutMs: 300_000,
@@ -669,11 +698,12 @@ export class ReleaseGitWorkspaceService {
         const parent = await runGit(["rev-parse", `${task.resultCommit}^1`], { cwd: clone.releaseRoot });
         task.integrations = [{ commit: task.resultCommit, parent, order }];
       }
-      const baseCommit = await runGit(["rev-parse", "refs/remotes/origin/main^{commit}"], { cwd: clone.releaseRoot });
-      if (approvedBaseCommit != null && String(approvedBaseCommit).trim() !== baseCommit) {
-        throw new Error(`approved origin/main changed: expected ${approvedBaseCommit}, got ${baseCommit}`);
+      // Fetch observes remote movement; only the caller's verified authority
+      // chooses the base. Never replace it with the freshly fetched remote tip.
+      if (await gitMaybe(["cat-file", "-e", `${acceptedBase}^{commit}`], { cwd: clone.releaseRoot }) === null) {
+        await runGit(["fetch", "workspace", acceptedBase], { cwd: clone.releaseRoot, timeoutMs: 300_000 });
       }
-      const checkpoint = await readJson(clone.checkpointFile);
+      const baseCommit = await runGit(["rev-parse", `${acceptedBase}^{commit}`], { cwd: clone.releaseRoot });
       const candidateReuse = await selectedResultSuccessorReuse({
         checkpoint, clone, tasks, baseCommit, workspaceId,
       });
@@ -712,11 +742,15 @@ export class ReleaseGitWorkspaceService {
       if (!preReleaseHead) {
         const branchRef = `refs/heads/${RELEASE_BRANCH}`;
         const previousBranchHead = await gitMaybe(["rev-parse", `${branchRef}^{commit}`], { cwd: clone.releaseRoot });
+        const previousHead = await runGit(["rev-parse", "HEAD^{commit}"], { cwd: clone.releaseRoot });
+        const previousCheckoutRef = await gitMaybe(["symbolic-ref", "-q", "HEAD"], { cwd: clone.releaseRoot });
         let branchCommitted = false;
         const restoreWorkingTree = async () => {
-          await runGit(["reset", "--hard", previousBranchHead || baseCommit], { cwd: clone.releaseRoot });
-          if (previousBranchHead) await runGit(["checkout", "-f", RELEASE_BRANCH], { cwd: clone.releaseRoot });
-          else await runGit(["checkout", "--detach", baseCommit], { cwd: clone.releaseRoot });
+          await runGit(["checkout", "--detach", "--force", previousHead], { cwd: clone.releaseRoot });
+          if (previousCheckoutRef) {
+            await runGit(["symbolic-ref", "HEAD", previousCheckoutRef], { cwd: clone.releaseRoot });
+            await runGit(["reset", "--hard", previousHead], { cwd: clone.releaseRoot });
+          }
         };
         try {
           if (candidateReuse) {
@@ -862,30 +896,34 @@ export class ReleaseGitWorkspaceService {
           await runGit(["symbolic-ref", "HEAD", branchRef], { cwd: clone.releaseRoot });
           await runGit(["reset", "--hard", preReleaseHead], { cwd: clone.releaseRoot });
         } catch (error) {
-          if (branchCommitted) {
-            if (previousBranchHead) {
-              await runGit(["update-ref", branchRef, previousBranchHead, preReleaseHead], { cwd: clone.releaseRoot });
-            } else {
-              await runGit(["update-ref", "-d", branchRef, preReleaseHead], { cwd: clone.releaseRoot });
+          try {
+            if (branchCommitted) {
+              if (previousBranchHead) {
+                await runGit(["update-ref", branchRef, previousBranchHead, preReleaseHead], { cwd: clone.releaseRoot });
+              } else {
+                await runGit(["update-ref", "-d", branchRef, preReleaseHead], { cwd: clone.releaseRoot });
+              }
+              if (checkpoint) await writeJsonAtomic(clone.checkpointFile, checkpoint);
+              else await rm(clone.checkpointFile, { force: true });
             }
-            if (checkpoint) await writeJsonAtomic(clone.checkpointFile, checkpoint);
-            else await rm(clone.checkpointFile, { force: true });
+            await restoreWorkingTree();
+          } catch (restoreError) {
+            if (commitPrepared) restoreError.code = "AWAIT_PREPARATION_UNKNOWN";
+            throw restoreError;
           }
-          await restoreWorkingTree();
           throw error;
         }
       }
 
-      const finalPrimary = await primarySnapshot(initial.root);
-      await this.assertPrimaryInvariant(finalPrimary.root, { phase: "release candidate preparation" });
-      if (
-        finalPrimary.headCommit !== initial.headCommit
-        || finalPrimary.branchRef !== initial.branchRef
-        || finalPrimary.dirty.indexFingerprint !== initial.dirty.indexFingerprint
-      ) {
-        throw new Error("release candidate preparation changed the registered primary Workspace");
-      }
-      return {
+      const verifyPrimary = async () => {
+        const finalPrimary = await primarySnapshot(initial.root);
+        await this.assertPrimaryInvariant(finalPrimary.root, { phase: "release candidate preparation" });
+        if (finalPrimary.headCommit !== initial.headCommit || finalPrimary.branchRef !== initial.branchRef
+            || finalPrimary.dirty.indexFingerprint !== initial.dirty.indexFingerprint) {
+          throw new Error("release candidate preparation changed the registered primary Workspace");
+        }
+      };
+      const result = {
         repositoryRoot: initial.root,
         releaseRoot: clone.releaseRoot,
         branch: RELEASE_BRANCH,
@@ -902,6 +940,35 @@ export class ReleaseGitWorkspaceService {
         primaryPreserved: true,
         legacyLinkedHolders: initial.legacyLinkedHolders,
       };
+      if (commitPrepared) {
+        try {
+          await verifyPrimary();
+          await commitPrepared(result);
+        } catch (error) {
+          if (error?.code === "AWAIT_PREPARATION_UNKNOWN") throw error;
+          try {
+            const branchRef = `refs/heads/${RELEASE_BRANCH}`;
+            await runGit(["checkout", "--detach", "--force", acceptanceBefore.head], { cwd: clone.releaseRoot });
+            if (acceptanceBefore.branch) {
+              await runGit(["update-ref", branchRef, acceptanceBefore.branch, preReleaseHead], { cwd: clone.releaseRoot });
+            } else {
+              await runGit(["update-ref", "-d", branchRef, preReleaseHead], { cwd: clone.releaseRoot });
+            }
+            if (checkpoint) await writeJsonAtomic(clone.checkpointFile, checkpoint);
+            else await rm(clone.checkpointFile, { force: true });
+            if (acceptanceBefore.checkout) {
+              await runGit(["symbolic-ref", "HEAD", acceptanceBefore.checkout], { cwd: clone.releaseRoot });
+              await runGit(["reset", "--hard", acceptanceBefore.head], { cwd: clone.releaseRoot });
+            }
+          } catch (rollbackError) {
+            const unknown = new Error(`Await preparation rollback requires reconciliation: ${rollbackError.message}`);
+            unknown.code = "AWAIT_PREPARATION_UNKNOWN";
+            throw unknown;
+          }
+          throw error;
+        }
+      } else await verifyPrimary();
+      return result;
     });
   }
 
@@ -943,6 +1010,15 @@ export class ReleaseGitWorkspaceService {
     }
     const manifest = JSON.parse(manifestBytes.toString("utf8"));
     const marker = await assertReleaseCloneForPublication({ repositoryRoot: layout.releaseRoot });
+    for (const operation of ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-apply", "rebase-merge", "sequencer", "index.lock"]) {
+      const pending = await lstat(path.join(marker.releaseGitCommonDir, operation)).catch((error) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      if (pending) {
+        throw new Error(`release checkpoint has an unfinished Git operation: ${operation}`);
+      }
+    }
     const [branchHead, mainHead] = await Promise.all([
       runGit(["rev-parse", `refs/heads/${RELEASE_BRANCH}^{commit}`], { cwd: marker.releaseRoot }),
       runGit(["rev-parse", "refs/heads/main^{commit}"], { cwd: marker.releaseRoot }),

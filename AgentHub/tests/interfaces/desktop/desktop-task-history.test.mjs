@@ -359,7 +359,7 @@ test("sparse durable history does not erase an already known interstream author"
       itemId: "turn-1:user",
       role: "user",
       text: "Проверь",
-      author: "Agent HUB - Architect (Codex)",
+      author: "Agent HUB - Release Manager (Codex)",
     }],
   }], [{
     id: "turn-1",
@@ -367,7 +367,7 @@ test("sparse durable history does not erase an already known interstream author"
   }]);
 
   assert.equal(history[0].messages.some((message) => (
-    message.author === "Agent HUB - Architect (Codex)"
+    message.author === "Agent HUB - Release Manager (Codex)"
   )), true);
 });
 
@@ -376,8 +376,8 @@ test("durable history preserves an unproven interstream provider root occurrence
     kind: "interstream",
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
     model: "gpt-5.6-sol",
     requestId: "release-continuation-1",
@@ -403,14 +403,14 @@ test("durable history preserves an unproven interstream provider root occurrence
       text: "Продолжи релиз",
       kind: "interstream",
       origin,
-      author: "Agent HUB - Architect (Sol)",
+      author: "Agent HUB - Release Manager (Sol)",
     }],
   }]);
 
   assert.equal(turn.messages.length, 2);
   assert.equal(turn.messages[0].itemId, "managed-root");
   assert.equal(turn.messages[0].clientUserMessageId, "mcp:release-continuation-1");
-  assert.equal(turn.messages[0].author, "Agent HUB - Architect (Sol)");
+  assert.equal(turn.messages[0].author, "Agent HUB - Release Manager (Sol)");
   assert.deepEqual(turn.messages[0].origin, origin);
   assert.equal(turn.messages[1].itemId, "provider-root");
 });
@@ -420,8 +420,8 @@ test("durable history does not coalesce an untrusted literal envelope", () => {
     kind: "interstream",
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
     requestId: "literal-envelope-1",
   };
@@ -947,8 +947,8 @@ test("desktop task history uses durable origin before cleaning interstream messa
   const origin = {
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
   };
   const input = createInterstreamMessage({ ...origin, text: "Проверь доставку." });
@@ -968,9 +968,9 @@ test("desktop task history uses durable origin before cleaning interstream messa
   const result = await desktopTaskHistory({ includeActive: false, limit: 1 });
 
   assert.equal(result.items[0].prompt, "Проверь доставку.");
-  assert.equal(result.items[0].promptAuthor, "Agent HUB - Architect (Codex)");
+  assert.equal(result.items[0].promptAuthor, "Agent HUB - Release Manager (Codex)");
   assert.equal(result.items[0].messages[0].text, "Проверь доставку.");
-  assert.equal(result.items[0].messages[0].author, "Agent HUB - Architect (Codex)");
+  assert.equal(result.items[0].messages[0].author, "Agent HUB - Release Manager (Codex)");
 });
 
 test("desktop task history attributes a prompt-only interstream turn", async () => {
@@ -1041,11 +1041,11 @@ test("desktop task history recovers a legacy task assignment from exact MCP audi
     kind: "interstream",
     workspaceId: "workspace-1",
     workspaceName: "Original Workspace",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
     model: "gpt-5.6-sol",
-    sourceThreadId: "thread-architect",
+    sourceThreadId: "thread-release-manager",
     requestId: "legacy-assignment-1",
   };
   const auditOrigin = {
@@ -1088,12 +1088,12 @@ test("desktop task history recovers a legacy task assignment from exact MCP audi
 
   const result = await desktopTaskHistory({ includeActive: false, limit: 1 });
 
-  assert.equal(result.items[0].promptAuthor, "Original Workspace - Architect (Sol)");
+  assert.equal(result.items[0].promptAuthor, "Original Workspace - Release Manager (Sol)");
   assert.equal(result.items[0].prompt, "Начни работу над Task");
   assert.deepEqual(result.items[0].promptOrigin, envelopeOrigin);
   assert.equal(result.items[0].messages.length, 1);
   assert.equal(result.items[0].messages[0].itemId, "legacy-provider-root");
-  assert.equal(result.items[0].messages[0].author, "Original Workspace - Architect (Sol)");
+  assert.equal(result.items[0].messages[0].author, "Original Workspace - Release Manager (Sol)");
   assert.equal(result.items[0].messages[0].text, "Начни работу над Task");
   assert.equal(result.items[0].messages[0].kind, "interstream");
   assert.deepEqual(result.items[0].messages[0].origin, envelopeOrigin);
@@ -1104,10 +1104,10 @@ test("desktop task history keeps a stable-conflicting audited envelope literal",
   const origin = {
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
-    sourceThreadId: "thread-architect",
+    sourceThreadId: "thread-release-manager",
     requestId: "conflicting-audit-1",
   };
   const input = createInterstreamMessage({ ...origin, text: "Keep literal." });
@@ -1145,10 +1145,10 @@ test("desktop task history rejects a conflicting durable message identity", asyn
   const origin = {
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
-    sourceThreadId: "thread-architect",
+    sourceThreadId: "thread-release-manager",
     requestId: "durable-a",
   };
   const input = createInterstreamMessage({ ...origin, text: "Keep literal." });
@@ -1179,10 +1179,10 @@ test("desktop task history keeps an audit-correlated substituted body literal", 
   const origin = {
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
-    sourceThreadId: "thread-architect",
+    sourceThreadId: "thread-release-manager",
     requestId: "substituted-audit-1",
   };
   const admitted = createInterstreamMessage({ ...origin, text: "Admitted body." });

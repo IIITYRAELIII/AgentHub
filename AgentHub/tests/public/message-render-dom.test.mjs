@@ -529,6 +529,89 @@ test("completed reasoning and tools exist only while their disclosure is open", 
   }
 });
 
+test("triple-click quotes the last paragraph with exact source and rejects foreign selected text", { timeout: 25_000 }, async () => {
+  const page = await browser.newPage({ viewport: { width: 1366, height: 900 } });
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  try {
+    await openWebApp(page);
+    const message = {
+      id: "triple-source", provider: "codex", threadId: "thread-1",
+      turnId: "triple-turn", itemId: "triple-item", role: "agent",
+      text: "Заголовок\n\nСредний **абзац** сообщения.\n\nПоследний **абзац** с emoji 🦊.",
+    };
+    await seedMessages(page, [message, {
+      ...message, id: "triple-other", turnId: "other-turn", itemId: "other-item", text: "Чужой текст.",
+    }]);
+    await page.evaluate(() => {
+      window.__quoteSends = [];
+      window.AgentHub.on("message:send", (detail) => window.__quoteSends.push(detail));
+    });
+    const body = page.locator('[data-message-id="triple-source"] .msg-body');
+    const menu = page.locator("[data-annotation-context-menu]");
+    for (const [index, expected] of [[1, "Средний абзац сообщения."], [2, "Последний абзац с emoji 🦊."]]) {
+      const paragraph = body.locator("p").nth(index);
+      await paragraph.click({ clickCount: 3, position: { x: 20, y: 8 } });
+      assert.equal((await page.evaluate(() => getSelection().toString())).trim(), expected);
+      if (index === 2) assert.equal(await body.evaluate((node) => (
+        node.contains(getSelection().getRangeAt(0).endContainer)
+      )), false, "exercise the native paragraph boundary outside the source");
+      await paragraph.click({ button: "right", position: { x: 20, y: 8 } });
+      await menu.waitFor({ state: "visible" });
+      if (index === 2 && process.env.AGENT_HUB_QA_SCREENSHOT) await page.screenshot({
+        path: `${process.env.AGENT_HUB_QA_SCREENSHOT}-triple-click.png`, fullPage: false,
+      });
+      await menu.locator('[data-action="annotate-selection"]').click();
+      await page.waitForFunction((count) => document.querySelectorAll("[data-annotations] .annotation-quote").length === count, index);
+      assert.equal(await page.locator("[data-annotations] .annotation-quote").last().textContent(), expected);
+    }
+    // Neither a second source nor selected action labels may be clipped away.
+    for (const endKind of ["message", "control"]) {
+      await page.evaluate((endKind) => {
+        const start = document.querySelector('[data-message-id="triple-source"] .msg-body p:last-child');
+        const end = endKind === "message"
+          ? document.querySelector('[data-message-id="triple-other"] .msg-body p')
+          : document.querySelector('.msg-stack:has([data-message-id="triple-source"]) [data-message-copy]');
+        const range = document.createRange();
+        range.setStart(start.firstChild, 0);
+        range.setEnd(end, end.childNodes.length);
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+      }, endKind);
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await body.dispatchEvent("contextmenu", { button: 2 });
+      assert.equal(await menu.isVisible(), false);
+      assert.equal(await page.locator("[data-annotations] .annotation-quote").count(), 2);
+    }
+    await page.locator("[data-composer-input]").fill("Проверь цитаты");
+    await page.locator("[data-composer-input]").press("Control+Enter");
+    await page.waitForFunction(() => window.__quoteSends.length === 1);
+    const verified = await page.evaluate(async (message) => {
+      const api = window.AgentHubMessageDisclosure;
+      const surface = document.querySelector('[data-message-id="triple-source"] .msg-body');
+      return Promise.all(window.__quoteSends[0].annotations.map(async ({ quote, source }) => {
+        const range = api.domRangeFromOffsets(surface, source.start, source.end);
+        return {
+          quote, exact: range.toString() === quote,
+          identity: source.messageKey === api.responseAnnotationSourceIdentity(message).messageKey,
+          hashes: api.responseAnnotationSourceHashesMatch(source, {
+            contentHash: await api.responseAnnotationSha256(api.responseAnnotationSourceContent(message)),
+            surfaceHash: await api.responseAnnotationSha256(surface.textContent),
+            selectionHash: await api.responseAnnotationSha256(quote),
+          }),
+        };
+      }));
+    }, message);
+    assert.deepEqual(verified, ["Средний абзац сообщения.", "Последний абзац с emoji 🦊."].map((quote) => (
+      { quote, exact: true, identity: true, hashes: true }
+    )));
+    assert.match(await page.title(), /Agent Hub/iu);
+    assert.deepEqual(errors, []);
+  } finally {
+    await page.close();
+  }
+});
+
 test("citation navigation materializes a deferred source before range lookup", async () => {
   const page = await browser.newPage();
   try {

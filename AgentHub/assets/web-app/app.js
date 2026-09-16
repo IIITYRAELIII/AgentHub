@@ -120,9 +120,11 @@ const workspaceCardQuickMessagesCount = document.querySelector("[data-workspace-
 const workspaceCardArchive = document.querySelector("[data-workspace-card-archive]");
 const workspaceCardReleaseWorkflow = document.querySelector("[data-workspace-release-workflow]");
 const workspaceCardReleaseWorkflowTooltip = document.querySelector("[data-workspace-release-workflow-tooltip]");
+const workspaceCardAutoReview = document.querySelector("[data-workspace-auto-review]");
 const workspaceCardOrder = document.querySelector("[data-workspace-card-order]");
 const workspaceCardSubmit = document.querySelector("[data-workspace-card-submit]");
 window.AgentHubWorkspaceReleaseWorkflow?.renderTooltip(workspaceCardReleaseWorkflowTooltip);
+window.AgentHubWorkspaceReleaseWorkflow?.renderAutoReviewTooltip(document.querySelector("[data-workspace-auto-review-tooltip]"));
 
 const chatPane = document.querySelector("[data-chat-pane]");
 const streamTabs = document.querySelector("[data-stream-tabs]");
@@ -181,7 +183,7 @@ const dialogWorkingDirectoryNote = document.querySelector("[data-dialog-working-
 const dialogStreamRules = document.querySelector("[data-dialog-stream-rules]");
 const dialogStreamRulesCount = document.querySelector("[data-dialog-stream-rules-count]");
 const dialogStreamRulesSave = document.querySelector("[data-dialog-stream-rules-save]");
-const dialogStreamArchitect = document.querySelector("[data-dialog-stream-architect]");
+const dialogStreamReleaseManager = document.querySelector("[data-dialog-stream-release-manager]");
 const dialogStreamTeamLead = document.querySelector("[data-dialog-stream-team-lead]");
 const dialogStreamTeamLeadTooltip = document.querySelector("[data-stream-team-lead-tooltip]");
 const dialogStreamQuickMessagesEntry = document.querySelector("[data-dialog-stream-quick-messages-entry]");
@@ -5109,6 +5111,7 @@ function openWorkspaceCard(workspaceId) {
   workspaceCardTaskPrefix.value = String(workspace.settings?.taskPrefix ?? "");
   workspaceCardRules.value = entityAgentRules(workspace);
   workspaceCardReleaseWorkflow.checked = workspace.settings?.releaseWorkflowEnabled === true;
+  workspaceCardAutoReview.checked = workspace.settings?.autoReviewEnabled === true;
   updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
   renderWorkspaceCardQuickMessages(workspace.id);
   if (workspaceCardArchive) {
@@ -5145,6 +5148,7 @@ function openNewWorkspaceCard() {
   workspaceCardTaskPrefix.value = "";
   workspaceCardRules.value = "";
   workspaceCardReleaseWorkflow.checked = false;
+  workspaceCardAutoReview.checked = false;
   updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
   renderWorkspaceCardQuickMessages("");
   if (workspaceCardArchive) workspaceCardArchive.hidden = true;
@@ -8608,6 +8612,7 @@ function renderAttachmentStrip(items, { readOnly, taskReferenceList = false }) {
       const status = ({
         new: "New",
         in_progress: "InProg",
+        blocked: "Blocked",
         testing: "Test",
         awaiting_implementation: "Await",
         done: "Done",
@@ -9614,6 +9619,7 @@ workspaceCardForm?.addEventListener("submit", (event) => {
       taskPrefix: workspaceCardTaskPrefix.value.trim(),
       rules: workspaceCardRules.value,
       releaseWorkflowEnabled: workspaceCardReleaseWorkflow.checked,
+      autoReviewEnabled: workspaceCardAutoReview.checked,
       beforeColumnId: order[targetIndex] ?? null,
     });
     closeWorkspaceCard();
@@ -9634,6 +9640,7 @@ workspaceCardForm?.addEventListener("submit", (event) => {
     taskPrefix: workspaceCardTaskPrefix.value.trim(),
     rules: workspaceCardRules.value,
     releaseWorkflowEnabled,
+    autoReviewEnabled: workspaceCardAutoReview.checked,
     beforeColumnId: remaining[targetIndex] ?? null,
   });
   closeWorkspaceCard();
@@ -9976,9 +9983,9 @@ function renderDialogSettings() {
         : "Применится при создании следующего Thread; текущий Thread сохраняет свою директорию.";
     }
   }
-  if (dialogStreamArchitect) {
-    dialogStreamArchitect.checked = streamRoleSettings.architectEnabled(task?.streamSettings);
-    dialogStreamArchitect.disabled = !task?.streamId;
+  if (dialogStreamReleaseManager) {
+    dialogStreamReleaseManager.checked = streamRoleSettings.releaseManagerEnabled(task?.streamSettings);
+    dialogStreamReleaseManager.disabled = !task?.streamId;
   }
   if (dialogStreamTeamLead) {
     dialogStreamTeamLead.checked = streamRoleSettings.teamLeadEnabled(task?.streamSettings);
@@ -10182,11 +10189,11 @@ dialogSettings.addEventListener("change", (event) => {
     renderOptions();
     return;
   }
-  const architect = event.target.closest("[data-dialog-stream-architect]");
-  if (architect) {
+  const releaseManager = event.target.closest("[data-dialog-stream-release-manager]");
+  if (releaseManager) {
     const task = currentTask();
     if (!task?.streamId) return;
-    task.streamSettings = streamRoleSettings.withArchitect(task.streamSettings, architect.checked);
+    task.streamSettings = streamRoleSettings.withReleaseManager(task.streamSettings, releaseManager.checked);
     emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
     renderOptions();
     return;
@@ -10434,6 +10441,7 @@ function renderServerAccounts(accounts) {
     return el("div", { class: "server-component server-account", "data-status": view.status }, [
       el("span", { class: "server-component-name", text: view.label }),
       el("span", { class: "server-component-status", text: view.statusText }),
+      view.loginStatusText ? el("small", { text: view.loginStatusText }) : null,
       view.error ? el("small", { text: view.error }) : null,
       el("div", { class: "server-account-actions" }, [start, open, cancel].filter(Boolean)),
       codeRow,
