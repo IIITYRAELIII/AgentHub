@@ -21,7 +21,7 @@ function remoteWorkspaceFileBridgeAvailable() {
     && window.AgentHubBrowserDevice?.isPaired?.() === true;
 }
 
-async function launchWorkspaceFileBridge(action, localPath) {
+async function requestWorkspaceFileTransfer(localPath) {
   const response = await hubFetch("/api/workspace-file/transfer-ticket", {
     method: "POST",
     headers: { ...authorizationHeaders(), "Content-Type": "application/json" },
@@ -31,6 +31,21 @@ async function launchWorkspaceFileBridge(action, localPath) {
   if (!response.ok || payload.ok === false) {
     throw new Error(String(payload.error ?? `Не удалось подготовить файл: HTTP ${response.status}`));
   }
+  return payload;
+}
+
+function startBrowserDownload(downloadPath, name) {
+  const link = document.createElement("a");
+  link.href = new URL(String(downloadPath ?? ""), window.location.origin).href;
+  link.download = String(name ?? "file.bin");
+  link.hidden = true;
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+
+async function launchWorkspaceFileBridge(action, localPath) {
+  const payload = await requestWorkspaceFileTransfer(localPath);
   const source = new URL(String(payload.downloadPath ?? ""), window.location.origin);
   const launch = new URL(`agenthub-file://${action}`);
   launch.searchParams.set("source", source.href);
@@ -88,7 +103,7 @@ const REMOTE_WAIT_MS = 0;
 const REMOTE_RESULT_FALLBACK_POLL_MS = 600;
 const DEFAULT_CONTROL_TIMEOUT_MS = 45_000;
 const LONG_CONTROL_TIMEOUT_MS = 180_000;
-const LONG_CONTROL_ACTIONS = new Set(["rotate-stream", "submit-bug-report"]);
+const LONG_CONTROL_ACTIONS = new Set(["rotate-stream", "submit-bug-report", "browse-directory"]);
 const VSCODE_MESSAGE_CONTROL_TIMEOUT_MS = LONG_CONTROL_TIMEOUT_MS;
 const VSCODE_MESSAGE_RETRY_DELAYS_MS = Object.freeze([150, 600]);
 const VSCODE_DIRECT_SEND_HEDGE_DELAY_MS = 250;
@@ -2812,9 +2827,6 @@ function dataUrlBody(dataUrl) {
 
 const attachmentUploader = window.AgentHubAttachmentUpload.create({
   request: async (path, init) => {
-    if (vscode && !(await window.__agentHubDirectTransport?.available())) {
-      throw new Error("Локальное соединение для загрузки файлов недоступно. Повтори после подключения Hub.");
-    }
     await localSessionReady;
     const signal = AbortSignal.any([...(init?.signal ? [init.signal] : []), AbortSignal.timeout(30_000)]);
     return hubFetch(path, { ...init, signal, headers: { ...authorizationHeaders(), ...init?.headers } });
@@ -3598,6 +3610,9 @@ agentHub.on("workspace:update", ({
   }
   applySnapshot(snapshot);
 }));
+agentHub.on("directory:browse", ({ initialPath, resolve, reject }) => {
+  void control("browse-directory", { initialPath }).then(resolve, reject);
+});
 document.addEventListener("agenthub:board-action", (event) => {
   const detail = event.detail ?? {};
   if (detail.type === "diff") {
@@ -4457,7 +4472,13 @@ async function saveLinkResource(resource) {
   }
   if (String(resource?.localPath ?? "").trim()) {
     if (!localWorkspaceFilesAvailable) {
-      throw new Error("Локальный файл Workspace доступен только на этом компьютере");
+      if (!remoteWorkspaceFileBridgeAvailable()) {
+        throw new Error("Чтобы скачать файл с компьютера Agent Hub, сначала сопряги это устройство");
+      }
+      const ticket = await requestWorkspaceFileTransfer(resource.localPath);
+      startBrowserDownload(ticket.downloadPath, ticket.name || resourceFileName(resource));
+      agentHub.toast("Скачивание файла началось");
+      return;
     }
     await localSessionReady;
     const response = await hubFetch(
