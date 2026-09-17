@@ -3504,7 +3504,10 @@ export class TaskGitWorkspaceService {
         resultCommit: evidence.resultCommit,
         integrations,
         lineage,
-        ...(squashTransfer ? { squashTransfer } : {}),
+        ...(squashTransfer ? {
+          resultReleaseRevision: Number(task.resultReleaseRevision),
+          squashTransfer,
+        } : {}),
       });
     }
     const integrationClaims = new Map();

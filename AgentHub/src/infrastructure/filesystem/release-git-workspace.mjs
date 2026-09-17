@@ -253,10 +253,17 @@ function normalizedFrozenTasks(tasks = []) {
   for (const task of tasks) {
     const taskId = String(task?.taskId ?? "").trim();
     const taskRevision = Number(task?.taskRevision);
+    const resultReleaseRevision = task?.resultReleaseRevision == null
+      ? null
+      : Number(task.resultReleaseRevision);
     const baseCommit = String(task?.baseCommit ?? "").trim();
     const resultCommit = String(task?.resultCommit ?? "").trim();
     if (!taskId || !Number.isInteger(taskRevision) || taskRevision < 1 || !resultCommit) {
       throw new Error("release candidate requires exact Task IDs, revisions and result commits");
+    }
+    if (resultReleaseRevision != null
+        && (!Number.isInteger(resultReleaseRevision) || resultReleaseRevision < 1)) {
+      throw new Error(`release Task ${taskId} has an invalid result release revision`);
     }
     if (baseCommit && !/^[0-9a-f]{40}$/u.test(baseCommit)) {
       throw new Error(`release Task ${taskId} has an invalid base commit`);
@@ -270,7 +277,9 @@ function normalizedFrozenTasks(tasks = []) {
       !integration.commit || !integration.parent || !Number.isInteger(integration.order) || integration.order < 0
     ))) throw new Error(`release Task ${taskId} has invalid dev integration evidence`);
     const normalized = {
-      taskId, taskRevision, ...(baseCommit ? { baseCommit } : {}), resultCommit, integrations,
+      taskId, taskRevision,
+      ...(resultReleaseRevision != null ? { resultReleaseRevision } : {}),
+      ...(baseCommit ? { baseCommit } : {}), resultCommit, integrations,
       ...(task?.squashTransfer ? {
         squashTransfer: normalizedTaskSquashTransfer(task.squashTransfer),
       } : {}),
@@ -1246,8 +1255,12 @@ export class ReleaseGitWorkspaceService {
         tasks: manifestTasks.map((task) => ({
           taskId: task.taskId,
           taskRevision: task.taskRevision,
+          ...(task.resultReleaseRevision != null
+            ? { resultReleaseRevision: task.resultReleaseRevision }
+            : {}),
           ...(task.baseCommit ? { baseCommit: task.baseCommit } : {}),
           resultCommit: task.resultCommit,
+          ...(task.squashTransfer ? { squashTransfer: task.squashTransfer } : {}),
         })),
         taskIds: manifestTasks.map((task) => task.taskId).sort(),
       },

@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import {
   createRepositoryProductionValidationAdapter,
 } from "../../../src/infrastructure/process/repository-production-validation.mjs";
+import { normalizedTaskSquashTransfer } from "../../../src/domain/task-squash-transfer.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -104,6 +105,39 @@ function policy(overrides = {}) {
   };
 }
 
+function squashProof() {
+  const blob = (digit) => ({ mode: "100644", object: digit.repeat(40) });
+  return normalizedTaskSquashTransfer({
+    version: 1,
+    kind: "task-squash-transfer-v1",
+    survivor: {
+      taskId: "task-1", revision: 14, releaseRevision: 4,
+      resultCommit: "1".repeat(40), baseCommit: "2".repeat(40), branch: "HUB-1",
+    },
+    source: {
+      taskId: "task-source", revision: 3, releaseRevision: 3,
+      resultCommit: "3".repeat(40), baseCommit: "2".repeat(40), branch: "HUB-source",
+    },
+    projectRoot: path.resolve("D:/bookworm"),
+    previousResultCommit: "2".repeat(40),
+    baselineResultCommit: "2".repeat(40),
+    devBeforeCommit: "4".repeat(40),
+    devAfterTree: "5".repeat(40),
+    sourceWitnesses: [{
+      path: "source.txt", source: blob("6"), survivor: blob("6"), disposition: "preserved",
+    }],
+    ownerWitnesses: [{
+      path: "app.txt", baseline: blob("7"), beforeDev: blob("7"),
+      newResult: blob("8"), afterDev: blob("8"), disposition: "applied",
+    }],
+    authority: {
+      workspaceId: "workspace-1", streamId: "release", provider: "codex",
+      threadId: "thread-1", proofRequestId: "proof-request-1",
+    },
+    integrationCommit: "9".repeat(40),
+  });
+}
+
 test("repository production validation adapter binds runner evidence to exact frozen candidate", async () => {
   const calls = [];
   const validate = createRepositoryProductionValidationAdapter({
@@ -135,6 +169,64 @@ test("repository production validation adapter binds runner evidence to exact fr
   assert.equal(result.evidence[0].candidateTree, "tree-1");
   assert.equal(result.evidence[0].checkKind, "bookworm-android-qa");
   assert.equal(calls[0].repository.frozenCandidate.preReleaseHead, "candidate-1");
+});
+
+test("repository production validation binds squash identity and retains taskIds-only compatibility", async () => {
+  const proof = squashProof();
+  const validate = createRepositoryProductionValidationAdapter({
+    policies: [policy()],
+    runCheck: async ({ repository: checked }) => ({
+      status: "passed",
+      candidateCommit: checked.frozenCandidate.preReleaseHead,
+      tree: checked.frozenCandidate.tree,
+    }),
+  });
+  const exactTask = {
+    taskId: "task-1", taskRevision: 14, resultReleaseRevision: 5,
+    resultCommit: "result-1", squashTransfer: proof,
+  };
+  const exactRepository = repository({
+    frozenTasks: [exactTask],
+    frozenCandidate: {
+      ...repository().frozenCandidate,
+      manifest: { workspaceId: "workspace-1", tasks: [exactTask] },
+    },
+  });
+  const exact = await validate({
+    workspaceId: "workspace-1", planRevision: "plan-1", repositories: [exactRepository],
+  });
+  assert.equal(exact.repositories[0].frozenTasks[0].resultReleaseRevision, 5);
+  assert.deepEqual(exact.repositories[0].frozenTasks[0].squashTransfer, proof);
+
+  for (const mutate of [
+    (task) => { delete task.resultReleaseRevision; },
+    (task) => { task.resultReleaseRevision += 1; },
+    (task) => { delete task.squashTransfer; },
+  ]) {
+    const tasks = structuredClone(exactRepository.frozenCandidate.manifest.tasks);
+    mutate(tasks[0]);
+    await assert.rejects(
+      () => validate({
+        workspaceId: "workspace-1",
+        planRevision: "plan-1",
+        repositories: [{
+          ...exactRepository,
+          frozenCandidate: {
+            ...exactRepository.frozenCandidate,
+            manifest: { workspaceId: "workspace-1", tasks },
+          },
+        }],
+      }),
+      /Task evidence is stale/u,
+    );
+  }
+
+  const legacy = repository({ frozenTasks: [] });
+  const legacyResult = await validate({
+    workspaceId: "workspace-1", planRevision: "plan-1", repositories: [legacy],
+  });
+  assert.deepEqual(legacyResult.repositories[0].frozenTasks, []);
+  assert.deepEqual(legacyResult.repositories[0].taskIds, ["task-1"]);
 });
 
 test("repository production validation adapter fails closed when unconfigured", async () => {

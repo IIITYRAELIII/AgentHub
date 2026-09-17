@@ -267,6 +267,9 @@ test("exact squash transfer adds the selected delta once and preserves foreign d
   });
   assert.equal(prospectiveEvidence.tasks[0].taskRevision, prospectiveAwaitTask.taskRevision);
   assert.equal(prospectiveEvidence.tasks[0].resultCommit, newResult);
+  assert.equal(prospectiveEvidence.tasks[0].resultReleaseRevision,
+    prospectiveAwaitTask.resultReleaseRevision);
+  assert.deepEqual(prospectiveEvidence.tasks[0].squashTransfer, applied);
   await assert.rejects(service.releaseIntegrationEvidence({
     projectRoot: root,
     tasks: [{ ...prospectiveAwaitTask, resultReleaseRevision: prospectiveAwaitTask.taskRevision }],
