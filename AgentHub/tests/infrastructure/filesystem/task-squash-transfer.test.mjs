@@ -248,6 +248,29 @@ test("exact squash transfer adds the selected delta once and preserves foreign d
   });
   assert.equal(projections.get(SURVIVOR_ID)?.squashTransferHash, applied.transferHash);
   assert.equal(projections.get(SURVIVOR_ID)?.directResultMerge, true);
+  const prospectiveAwaitTask = {
+    taskId: SURVIVOR_ID,
+    taskNumber: "HUB-235",
+    taskRevision: applied.survivor.releaseRevision + 2,
+    resultReleaseRevision: applied.survivor.releaseRevision + 1,
+    projectRoot: root,
+    branch: survivorWorkspace.branch,
+    resultCommit: newResult,
+    squashTransfer: applied,
+  };
+  const prospectiveEvidence = await service.releaseIntegrationEvidence({
+    projectRoot: root, tasks: [prospectiveAwaitTask],
+  });
+  assert.equal(prospectiveEvidence.tasks[0].taskRevision, prospectiveAwaitTask.taskRevision);
+  assert.equal(prospectiveEvidence.tasks[0].resultCommit, newResult);
+  await assert.rejects(service.releaseIntegrationEvidence({
+    projectRoot: root,
+    tasks: [{ ...prospectiveAwaitTask, resultReleaseRevision: prospectiveAwaitTask.taskRevision }],
+  }), /squash transfer does not match its frozen result/u);
+  await assert.rejects(service.releaseIntegrationEvidence({
+    projectRoot: root,
+    tasks: [{ ...prospectiveAwaitTask, resultCommit: baseline }],
+  }), /changed|does not match/u);
   const ordinaryFallback = await releaseTaskNetProjections({
     tasks: [{ ...releaseTask, baseCommit: "9".repeat(40), squashTransfer: undefined }],
     baseCommit: await git(root, "rev-parse", "main"), git: projectorGit,

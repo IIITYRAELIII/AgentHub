@@ -1524,6 +1524,10 @@ The existing lifecycle transition reserves both Tasks. After exact Git readback,
 one SQLite transaction advances the survivor result/release revision and returns
 the source to work, retaining both cards and histories. The lifecycle outcome is
 the only durable transfer record. Release planning includes its hash; the net
+projector carries the transfer-owned result release revision separately from the
+prospective Await acceptance revision, so the exact proof remains bound to its
+Test-owned result while the future status CAS receives its own newer identity. A
+changed result or mismatched proof-owned revision still rejects composition. The net
 projector revalidates every witness and the exact integration before projecting
 the clean result. It merges that exact result automatically with the preceding
 selected composition; any conflict rejects preparation. The rolling-dev tree is
