@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createDesktopApplicationRouter } from "../../../src/interfaces/desktop/desktop-application-router.mjs";
 
-function router(calls, { omit = [] } = {}) {
+function router(calls, { omit = [], overrides = {} } = {}) {
   const handler = async (params) => ({ params });
   const handlers = Object.fromEntries([
     "snapshot", "runtimeHealth", "retryStartup", "taskHistory", "rateLimitHistory", "usageHistory", "search", "workspaceMessageSearch", "markTaskRead",
@@ -18,6 +18,7 @@ function router(calls, { omit = [] } = {}) {
     "boardWorkspaceMove",
     "usageSync", "usageSyncStatus", "usageSyncNow", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
   ].map((name) => [name, handler]));
+  Object.assign(handlers, overrides);
   for (const name of omit) delete handlers[name];
   return createDesktopApplicationRouter({
     handlers,
@@ -265,22 +266,42 @@ test("Desktop application router moves a Workspace with a narrow folder command"
   ]]);
 });
 
-test("Desktop application router keeps usage sync on the local control surface", async () => {
-  const control = router([]);
-  const result = await control.handleDesktopControl({
-    action: "usage-sync-device-label",
-    params: { deviceLabel: "Tyrael" },
-    context: { source: "desktop-control" },
-  });
-  assert.equal(result.params.deviceLabel, "Tyrael");
-  await assert.rejects(
-    control.handleDesktopControl({
-      action: "usage-sync-status",
-      params: {},
-      context: { source: "telegram" },
-    }),
-    /только локальному Agent Hub/u,
-  );
+test("Desktop application router exposes Sync to authenticated remote contexts", async () => {
+  const received = [];
+  const actions = [
+    ["usage-sync", "usageSync"],
+    ["usage-sync-status", "usageSyncStatus"],
+    ["usage-sync-now", "usageSyncNow"],
+    ["usage-sync-invite", "usageSyncInvite"],
+    ["usage-sync-enroll", "usageSyncEnroll"],
+    ["usage-sync-device-label", "usageSyncDeviceLabel"],
+  ];
+  const overrides = Object.fromEntries(actions.map(([action, handlerName]) => [
+    handlerName,
+    async (params, context) => {
+      received.push({ action, context, requestToken: params.requestToken });
+      return { action, requestToken: params.requestToken };
+    },
+  ]));
+  const control = router([], { overrides });
+
+  for (const source of ["trusted-device", "telegram-mini-app"]) {
+    for (const [action] of actions) {
+      const context = { source, userId: `${source}-user` };
+      const requestToken = `${source}:${action}`;
+      assert.deepEqual(await control.handleDesktopControl({
+        action,
+        params: { requestToken },
+        context,
+      }), { action, requestToken });
+      assert.equal(received.at(-1).context, context);
+    }
+  }
+
+  assert.deepEqual(received.map(({ action, context }) => [context.source, action]),
+    ["trusted-device", "telegram-mini-app"].flatMap((source) => (
+      actions.map(([action]) => [source, action])
+    )));
 });
 
 test("Desktop application router forwards diagnostic events", async () => {
