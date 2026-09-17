@@ -380,6 +380,17 @@ export class TaskBoardService {
     });
   }
 
+  commitSquashTransferTransition(payload = {}) {
+    requiredMethod(this.store, "commitSquashTransferTransition");
+    return this.#resolved(this.store.commitSquashTransferTransition(payload), (result) => {
+      const event = this.#event("task.squash-transfer.committed", result.task, {
+        sourceTaskId: result.sourceTask.id,
+        transferHash: result.squashTransfer.transferHash,
+      });
+      return event && typeof event.then === "function" ? event.then(() => result) : result;
+    });
+  }
+
   rollbackWorkflowOutcome(operationId, error) {
     requiredMethod(this.store, "rollbackWorkflowOutcome");
     return this.#resolved(this.store.rollbackWorkflowOutcome(operationId, error), (task) => {

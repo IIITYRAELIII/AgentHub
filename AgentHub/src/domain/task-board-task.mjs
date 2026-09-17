@@ -4,6 +4,13 @@ export const TASK_WORKFLOW_STATUSES = Object.freeze([
   "new", "in_progress", "blocked", "testing", "awaiting_implementation", "done",
 ]);
 
+export class TaskAbsorptionCompositionError extends Error {
+  constructor(cause) {
+    super(`Combined closure refused before Task mutation: ${cause.message}`, { cause });
+    this.code = "TASK_ABSORPTION_COMPOSITION_FAILED";
+  }
+}
+
 export class ReleaseCandidateFrozenError extends Error {
   constructor() {
     super("Release is frozen until completion. Task status was not changed; keep new work in Test and repeat acceptance after the release.");

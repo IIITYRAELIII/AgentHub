@@ -839,6 +839,57 @@ test("automatic Await preparation composes accepted code without running release
   assert.equal(calls.find(([name]) => name === "prepare-candidate")[1].approvedBaseCommit, "published-head");
 });
 
+test("prospective composition validation does not promote candidates or commit acceptance", async () => {
+  const { service, projectRoot } = fixture();
+  const before = { revision: "before", blocked: [], conflicts: [], ready: [] };
+  const after = { ...before, revision: "prospective", ready: [
+    { taskId: "task-1", taskRevision: 8, projectRoot, resultCommit: "result" },
+  ] };
+  const projection = { id: "task-1", revision: 7 };
+  service.releasePlanner.plan = async (_id, options) => {
+    if (options?.acceptingTask) {
+      assert.deepEqual(options.acceptingTask, projection);
+      return after;
+    }
+    return before;
+  };
+  service.releaseGitWorkspaces.prepareCandidate = () => assert.fail("must not promote PreRelease");
+  const lease = { async assertOwned() {} };
+  service.taskGitWorkspaces.releaseIntegrationEvidence = async (options) => {
+    assert.equal(options.lease, lease);
+    return { tasks: options.tasks };
+  };
+  let validations = 0;
+  service.releaseGitWorkspaces.validateCandidate = async (options) => {
+    validations += 1;
+    assert.equal(options.planRevision, "prospective");
+    assert.equal(options.approvedBaseCommit, "published-head");
+    assert.equal(options.commitPrepared, undefined);
+    await options.validateBeforeCommit();
+    return { status: "validated", tree: "selected-tree", baseCommit: options.approvedBaseCommit };
+  };
+  const result = await service.prepareAwaitSet({ workspaceId: "workspace-1",
+    acceptingTask: projection, validateOnly: true, lease });
+  assert.equal(validations, 1);
+  assert.equal(result.planRevision, "prospective");
+  assert.deepEqual(result.taskIds, ["task-1"]);
+  assert.equal(result.releaseCandidates[0].tree, "selected-tree");
+  await assert.rejects(service.prepareAwaitSet({ workspaceId: "workspace-1", validateOnly: true,
+    commitPrepared: () => assert.fail("must not commit") }), /cannot commit/);
+});
+
+for (const changed of ["plan", "base"]) test(`composition validation rejects ${changed} drift without acceptance`, async () => {
+  const { service } = fixture();
+  service.releaseGitWorkspaces.prepareCandidate = () => assert.fail("must not promote PreRelease");
+  service.releaseGitWorkspaces.validateCandidate = async (options) => {
+    if (changed === "plan") service.releasePlanner.plan = async () => ({ revision: "different" });
+    else service.readPublicationState = async () => ({ repositories: [{ root: options.projectRoot, revision: "changed" }] });
+    await options.validateBeforeCommit();
+    assert.fail("drift must fail");
+  };
+  await assert.rejects(service.prepareAwaitSet({ workspaceId: "workspace-1", validateOnly: true }), /changed/);
+});
+
 for (const refusal of [null, "second-repository", "status-cas"]) {
   test(`prospective Await holds all candidate boundaries until status CAS (${refusal ?? "success"})`, async () => {
     const { service, projectRoot } = fixture();

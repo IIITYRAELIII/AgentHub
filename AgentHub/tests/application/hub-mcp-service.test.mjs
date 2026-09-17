@@ -7,7 +7,7 @@ import test from "node:test";
 
 import { HubMcpService } from "../../src/application/hub-mcp-service.mjs";
 import { TaskIntegrationConflictError, TaskAwaitIntegrationError, TaskWithdrawalBusyError } from "../../src/application/task-lifecycle-service.mjs";
-import { ReleaseCandidateFrozenError } from "../../src/domain/task-board-task.mjs";
+import { ReleaseCandidateFrozenError, TaskAbsorptionCompositionError } from "../../src/domain/task-board-task.mjs";
 import { TaskBoardService } from "../../src/application/task-board-service.mjs";
 import { TaskBoardStore } from "../../src/infrastructure/persistence/task-board-store.mjs";
 import { TASK_TITLE_MAX_LENGTH, TaskDependencyPendingError } from "../../src/domain/task-board-task.mjs";
@@ -19,6 +19,8 @@ import {
   unprovenProcessTaskGit,
 } from "../helpers/task-git-unproven-process.mjs";
 import { TaskGitWorkspaceService } from "../../src/infrastructure/filesystem/task-git-workspace.mjs";
+import { TaskLifecycleService } from "../../src/application/task-lifecycle-service.mjs";
+import { normalizedTaskSquashTransfer } from "../../src/domain/task-squash-transfer.mjs";
 import { canonicalPath } from "../../src/infrastructure/filesystem/config.mjs";
 import { taskRepositoryKey } from "../../src/domain/task-git-reference.mjs";
 
@@ -545,6 +547,21 @@ test("a blocked publication wait fails admission without an unknown receipt", as
   await assert.rejects(service.call("hub_task_status_update", args), /HUB-1/);
   assert.equal(operations.get("wait").status, "failed");
   await assert.rejects(service.call("hub_task_status_update", args), /HUB-1/);
+  assert.equal(calls, 1);
+});
+
+test("absorption composition refusal is terminal and exact retry cannot close the source", async (t) => {
+  const { service, token, operations } = await fixture(t, { releaseWorkflowEnabled: true });
+  let calls = 0;
+  service.taskLifecycle.complete = async () => {
+    calls += 1;
+    throw new TaskAbsorptionCompositionError(new Error("selected Task cannot be composed"));
+  };
+  const args = { context_token: token, task_id: "task-current", absorbed_into_task_id: "survivor",
+    request_id: "absorption-composition-refusal" };
+  await assert.rejects(service.call("hub_task_complete", args), { code: "TASK_ABSORPTION_COMPOSITION_FAILED" });
+  assert.equal(operations.get(args.request_id).status, "failed");
+  await assert.rejects(service.call("hub_task_complete", args), /selected Task cannot be composed/);
   assert.equal(calls, 1);
 });
 
@@ -1099,6 +1116,273 @@ test("long Task descriptions survive MCP update, exact read, replay and SQLite r
   assert.equal(read.description, description);
 });
 
+test("Task status and unknown-operation schemas expose the exact squash transfer identity", async (context) => {
+  const { service } = await fixture(context);
+  const status = service.tools().find((tool) => tool.name === "hub_task_status_update").inputSchema.properties;
+  const reconcile = service.tools().find((tool) => tool.name === "hub_task_operation_reconcile").inputSchema.properties;
+  for (const fields of [status, reconcile]) {
+    assert.equal(fields.squash_source_task_revision.minimum, 1);
+    assert.equal(fields.squash_baseline_result_commit.pattern, "^[0-9a-f]{40}$");
+    assert.equal(fields.squash_new_result_commit.pattern, "^[0-9a-f]{40}$");
+    assert.equal(fields.squash_dev_after_tree.pattern, "^[0-9a-f]{40}$");
+    assert.equal(fields.squash_proof_request_id.type, "string");
+    assert.equal(fields.expected_squash_transfer_hash.pattern, "^[0-9a-f]{64}$");
+  }
+});
+
+test("Release Manager forwards one complete hash-confirmed squash transfer", async (context) => {
+  const { service, token, streamWorkingDirectory, tasks } = await fixture(context, { releaseWorkflowEnabled: true });
+  const calls = [];
+  service.taskLifecycle.squashTransfer = async (options) => {
+    calls.push(options);
+    return {
+      task: tasks.get("task-current"),
+      sourceTask: tasks.get("task-foreign"),
+      squashTransfer: { transferHash: "f".repeat(64) },
+    };
+  };
+  const common = {
+    context_token: token,
+    task_id: "task-current",
+    status: "testing",
+    expected_task_revision: 1,
+    squash_source_task_id: "task-foreign",
+    squash_source_task_revision: 2,
+    squash_baseline_result_commit: "a".repeat(40),
+    squash_new_result_commit: "b".repeat(40),
+    squash_dev_after_tree: "c".repeat(40),
+  };
+  await assert.rejects(service.call("hub_task_status_update", {
+    ...common,
+    request_id: "ordinary-cutover-only-confirm",
+    squash_proof_request_id: "caller-selected-preview",
+    expected_squash_cutover_hash: "e".repeat(64),
+  }), /only by the one-shot cutover entrypoint/u);
+  assert.equal(calls.length, 0);
+  await service.call("hub_task_status_update", {
+    ...common,
+    request_id: "squash-confirm",
+    squash_proof_request_id: "squash-preview",
+    expected_squash_transfer_hash: "d".repeat(64),
+  });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], {
+    taskId: "task-current",
+    sourceTaskId: "task-foreign",
+    operationId: "squash-confirm",
+    expectedTaskRevision: 1,
+    expectedSourceTaskRevision: 2,
+    baselineResultCommit: "a".repeat(40),
+    newResultCommit: "b".repeat(40),
+    devAfterTree: "c".repeat(40),
+    expectedTransferHash: "d".repeat(64),
+    projectRoot: streamWorkingDirectory,
+    authority: {
+      workspaceId: "workspace-1", streamId: "stream-1", provider: "codex",
+      threadId: "thread-1", proofRequestId: "squash-preview",
+    },
+  });
+});
+
+test("one-shot cutover forwards an in-progress squash bootstrap with immutable source evidence", async (context) => {
+  const { service, token, streamWorkingDirectory } = await fixture(context, { releaseWorkflowEnabled: true });
+  let received;
+  const verifySource = async () => ({ sourceRoot: process.cwd() });
+  service.taskLifecycle.squashTransferCutover = async (options) => {
+    received = options;
+    return { confirmationRequired: true, transferHash: "1".repeat(64), cutoverHash: "2".repeat(64) };
+  };
+  const input = {
+    context_token: token, request_id: "bootstrap-preview", task_id: "task-current",
+    status: "testing", expected_task_revision: 1, expected_workflow_status: "in_progress",
+    cutover_source_commit: "b".repeat(40), cutover_projector_sha256: "c".repeat(64),
+    squash_source_task_id: "task-foreign", squash_source_task_revision: 2,
+    squash_baseline_result_commit: "a".repeat(40), squash_new_result_commit: "b".repeat(40),
+    squash_dev_after_tree: "d".repeat(40), squash_cutover_source_tree: "e".repeat(40),
+    squash_cutover_expected_main_commit: "f".repeat(40),
+    squash_cutover_expected_dev_commit: "0".repeat(40),
+    squash_cutover_expected_preserved_tree: "1".repeat(40),
+    squash_cutover_source_zip_sha256: "2".repeat(64),
+    squash_cutover_bundle_sha256: "3".repeat(64),
+    squash_cutover_manifest_sha256: "4".repeat(64),
+    squash_cutover_files_sha256: "5".repeat(64),
+  };
+  const result = await service.callTaskStatusCutover(input, { verifySource });
+  assert.equal(result.cutoverHash, "2".repeat(64));
+  assert.deepEqual(received, {
+    taskId: "task-current", sourceTaskId: "task-foreign", operationId: "bootstrap-preview",
+    expectedTaskRevision: 1, expectedSourceTaskRevision: 2,
+    baselineResultCommit: "a".repeat(40), newResultCommit: "b".repeat(40),
+    devAfterTree: "d".repeat(40), expectedTransferHash: null,
+    projectRoot: streamWorkingDirectory,
+    authority: { workspaceId: "workspace-1", streamId: "stream-1", provider: "codex",
+      threadId: "thread-1", proofRequestId: "bootstrap-preview" },
+    expectedCutoverHash: null, reviewedSourceTree: "e".repeat(40),
+    expectedMainCommit: "f".repeat(40), expectedDevCommit: "0".repeat(40),
+    expectedPreservedTree: "1".repeat(40), projectorSha256: "c".repeat(64),
+    artifacts: { sourceZipSha256: "2".repeat(64), bundleSha256: "3".repeat(64),
+      manifestSha256: "4".repeat(64), filesSha256: "5".repeat(64) },
+    verifySource,
+  });
+  await assert.rejects(service.callTaskStatusCutover({
+    ...input, request_id: "bootstrap-half-confirm", squash_proof_request_id: "bootstrap-preview",
+    expected_squash_transfer_hash: "1".repeat(64),
+  }, { verifySource }), /both exact hashes/u);
+});
+
+test("Release Manager confirms a squash preview in a new MCP request through the real lifecycle", async (context) => {
+  const state = await fixture(context, { releaseWorkflowEnabled: true });
+  const { service, token, streamWorkingDirectory, tasks, taskBoard, taskGitWorkspaces, operations } = state;
+  const readStream = state.workspaceCatalog.stream;
+  state.workspaceCatalog.stream = (id) => {
+    const stream = readStream(id);
+    return id === "stream-1"
+      ? { ...stream, settings: { ...stream.settings, workingDirectory: streamWorkingDirectory } }
+      : stream;
+  };
+  const source = {
+    id: "task-foreign", title: "Source", description: "", bucket: "workspace",
+    status: "started", workflowStatus: "testing", workspaceId: "workspace-1",
+    streamId: "stream-1", revision: 4, releaseRevision: 3,
+    gitReferences: [{ projectRoot: streamWorkingDirectory, branch: "HUB-224", resultCommit: "a".repeat(40) }],
+  };
+  const survivor = {
+    id: "task-current", title: "Survivor", description: "", bucket: "workspace",
+    status: "started", workflowStatus: "testing", workspaceId: "workspace-1",
+    streamId: "stream-1", revision: 7, releaseRevision: 5,
+    gitReferences: [{ projectRoot: streamWorkingDirectory, branch: "HUB-235", resultCommit: "b".repeat(40) }],
+  };
+  tasks.set(source.id, source);
+  tasks.set(survivor.id, survivor);
+  const proofFor = (authority) => normalizedTaskSquashTransfer({
+    version: 1,
+    kind: "task-squash-transfer-v1",
+    survivor: {
+      taskId: survivor.id, revision: survivor.revision, releaseRevision: survivor.releaseRevision,
+      resultCommit: "c".repeat(40), baseCommit: "1".repeat(40), branch: "HUB-235",
+    },
+    source: {
+      taskId: source.id, revision: source.revision, releaseRevision: source.releaseRevision,
+      resultCommit: "a".repeat(40), baseCommit: "2".repeat(40), branch: "HUB-224",
+    },
+    projectRoot: streamWorkingDirectory,
+    previousResultCommit: "b".repeat(40),
+    baselineResultCommit: "3".repeat(40),
+    devBeforeCommit: "4".repeat(40),
+    devAfterTree: "5".repeat(40),
+    sourceWitnesses: [{
+      path: "source.mjs", source: { mode: "100644", object: "6".repeat(40) },
+      survivor: { mode: "100644", object: "6".repeat(40) },
+    }],
+    ownerWitnesses: [{
+      path: "new.mjs", baseline: null, beforeDev: null,
+      newResult: { mode: "100644", object: "7".repeat(40) },
+      afterDev: { mode: "100644", object: "7".repeat(40) },
+    }],
+    authority,
+  });
+  const lease = { signal: null, async assertOwned() {} };
+  const lifecycleGit = {
+    ...taskGitWorkspaces,
+    withTaskLocks: async (_ids, operation) => operation(lease),
+    previewSquashTransferOwned: async ({ authority }) => proofFor(authority),
+    applySquashTransferOwned: async ({ authority }) => normalizedTaskSquashTransfer({
+      ...proofFor(authority), integrationCommit: "8".repeat(40),
+    }),
+    readSquashTransferOwned: async (proof) => ({ status: "applied", proof }),
+  };
+  const beginLifecycleTransition = taskBoard.beginLifecycleTransition.bind(taskBoard);
+  let transitionBegins = 0;
+  taskBoard.beginLifecycleTransition = (...args) => {
+    transitionBegins += 1;
+    return beginLifecycleTransition(...args);
+  };
+  taskBoard.commitSquashTransferTransition = ({ operationId, squashTransfer }) => {
+    assert.equal(operationId, "squash-confirm");
+    Object.assign(survivor, {
+      revision: survivor.revision + 1,
+      releaseRevision: survivor.releaseRevision + 1,
+      gitReferences: [{ projectRoot: streamWorkingDirectory, branch: "HUB-235", resultCommit: "c".repeat(40) }],
+      squashTransfer,
+    });
+    Object.assign(source, { revision: source.revision + 1, workflowStatus: "in_progress", squashAbsorbedBy: squashTransfer });
+    delete survivor.lifecycleOperation;
+    return {
+      task: structuredClone(survivor), sourceTask: structuredClone(source),
+      squashTransfer, evidence: { squashTransfer },
+    };
+  };
+  service.taskLifecycle = new TaskLifecycleService({
+    taskBoard,
+    workspaceCatalog: state.workspaceCatalog,
+    taskGitWorkspaces: lifecycleGit,
+    releasePreflight: { withAwaitTransition: async (_workspaceId, operation) => operation() },
+  });
+  const common = {
+    context_token: token,
+    task_id: survivor.id,
+    status: "testing",
+    expected_task_revision: survivor.revision,
+    squash_source_task_id: source.id,
+    squash_source_task_revision: source.revision,
+    squash_baseline_result_commit: "3".repeat(40),
+    squash_new_result_commit: "c".repeat(40),
+    squash_dev_after_tree: "5".repeat(40),
+  };
+  const preview = await service.call("hub_task_status_update", {
+    ...common, request_id: "squash-preview",
+  });
+  assert.equal(preview.confirmationRequired, true);
+  assert.equal(preview.squashTransfer.authority.proofRequestId, "squash-preview");
+  const rejected = [{
+    request_id: "squash-confirm-wrong-hash",
+    expected_squash_transfer_hash: "0".repeat(64),
+    expectedError: /confirmation hash changed/u,
+  }, {
+    request_id: "squash-confirm-stale-revision",
+    expected_task_revision: survivor.revision - 1,
+    expected_squash_transfer_hash: preview.transferHash,
+    expectedError: /revisions or Test status changed/u,
+  }];
+  for (const item of rejected) {
+    const input = {
+      ...common,
+      request_id: item.request_id,
+      squash_proof_request_id: "squash-preview",
+      expected_squash_transfer_hash: item.expected_squash_transfer_hash,
+      ...(item.expected_task_revision == null ? {} : { expected_task_revision: item.expected_task_revision }),
+    };
+    await assert.rejects(service.call("hub_task_status_update", input), item.expectedError);
+    assert.equal(operations.get(item.request_id).status, "failed");
+    await assert.rejects(service.call("hub_task_status_update", input), item.expectedError);
+    assert.equal(operations.get(item.request_id).status, "failed");
+  }
+  source.workflowStatus = "in_progress";
+  const staleState = {
+    ...common,
+    request_id: "squash-confirm-stale-state",
+    squash_proof_request_id: "squash-preview",
+    expected_squash_transfer_hash: preview.transferHash,
+  };
+  await assert.rejects(service.call("hub_task_status_update", staleState), /revisions or Test status changed/u);
+  assert.equal(operations.get(staleState.request_id).status, "failed");
+  await assert.rejects(service.call("hub_task_status_update", staleState), /revisions or Test status changed/u);
+  assert.equal(operations.get(staleState.request_id).status, "failed");
+  source.workflowStatus = "testing";
+  assert.equal(transitionBegins, 0);
+  const confirmed = await service.call("hub_task_status_update", {
+    ...common,
+    request_id: "squash-confirm",
+    squash_proof_request_id: "squash-preview",
+    expected_squash_transfer_hash: preview.transferHash,
+  });
+  assert.equal(confirmed.squashTransfer.transferHash, preview.transferHash);
+  assert.equal(confirmed.squashTransfer.authority.proofRequestId, "squash-preview");
+  assert.equal(operations.get("squash-preview").status, "succeeded");
+  assert.equal(operations.get("squash-confirm").status, "succeeded");
+  assert.equal(transitionBegins, 1);
+});
+
 test("Task update field rejection is failed while an effectful create validation-looking error stays unknown", async (context) => {
   const { service, token, taskBoard, tasks, operations } = await fixture(context);
   const original = structuredClone(tasks.get("task-current"));
@@ -1520,15 +1804,15 @@ test("claim forwards an explicit user dependency exception and complete forwards
   assert.equal(result.cleanupToken, "preview");
 });
 
-test("HubMcpService describes steer as exact intent requiring explicit redirection", async (context) => {
+test("HubMcpService describes the steering fallback to queued delivery", async (context) => {
   const { service } = await fixture(context);
   const mode = service.tools()
     .find((tool) => tool.name === "hub_stream_message_send")
     .inputSchema.properties.mode;
 
-  assert.match(mode.description, /exact steering of the current managed run/u);
-  assert.match(mode.description, /explicit retry or queue decision/u);
-  assert.doesNotMatch(mode.description, /queue if steering is no longer possible/u);
+  assert.match(mode.description, /steer the active turn/u);
+  assert.match(mode.description, /queue if steering is no longer possible/u);
+  assert.doesNotMatch(mode.description, /explicit retry or queue decision/u);
 });
 
 test("HubMcpService claims the active turn while an older terminal remains retained", async (context) => {

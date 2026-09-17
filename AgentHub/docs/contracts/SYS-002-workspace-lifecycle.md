@@ -110,3 +110,22 @@ See ADR-0067.
   IME composition, repeated keydown and a pending send cannot duplicate it.
 
 See [ADR-0021](../decisions/ADR-0021-permanent-workspace-archive.md).
+
+## Squash-absorbed Task cards
+
+Exact squash absorption never deletes either Task card or its audit history.
+The survivor remains in Test with a new release identity; the source returns to
+work and carries the immutable transfer outcome linking it to the survivor.
+Both row updates are one SQLite transaction after exact Git readback. Ordinary
+edits and lifecycle operations are excluded from both cards while that shared
+transition is active. After durable publication, explicit confirmed completion
+may close the source and remove only its exact clean branch/worktree; the card
+and lifecycle outcome remain available as history.
+
+The bounded local squash bootstrap is the only exception to the ordinary
+Test-to-Test admission precondition. It may start with the survivor in Progress
+only when that survivor still has its exact previously accepted Test result and
+the source remains in Test. The pending lifecycle transition does not project a
+synthetic Test state. The survivor becomes Test, and the source returns to
+Progress, only in the same two-row commit after exact cutover and squash Git
+readback. All ordinary public squash calls continue to require two Test Tasks.

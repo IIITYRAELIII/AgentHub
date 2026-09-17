@@ -12,6 +12,26 @@ import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-boa
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import { JournalDatabase } from "../../../src/infrastructure/persistence/journal-database.mjs";
 
+test("TaskBoardStore snapshot revision advances with the durable journal revision", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "task-journal-snapshot-revision-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const journal = new JournalDatabase(databaseFile);
+  const store = new TaskBoardStore({ databaseFile });
+  t.after(async () => { store.close(); await journal.close(); await rm(directory, { recursive: true, force: true }); });
+  const before = store.snapshotRevision;
+  const beforeJournalRevision = Number(before.split(":", 1)[0]);
+  await journal.upsertRecords([{
+    provider: "codex", threadId: "snapshot-thread", taskThreadId: "snapshot-thread",
+    turnId: "snapshot-turn", projectRoot: directory, title: "Journal changed",
+    body: "not projected into the revision", completedAt: "2026-09-17T00:00:00Z",
+    status: "completed", provisional: false,
+  }]);
+  const after = store.snapshotRevision;
+  assert.notEqual(after, before);
+  assert.equal(Number(after.split(":", 1)[0]), beforeJournalRevision + 1);
+  assert.equal(Number(after.split(":", 1)[0]), store.revision);
+});
+
 test("Task history projects exact terminal journal turns without file evidence or backfill", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "task-journal-view-"));
   const databaseFile = path.join(directory, "journal.sqlite");
@@ -107,6 +127,146 @@ test("Blocked persists its prerequisite and workflow rollback restores it", asyn
   store.rollbackWorkflowOutcome("resume");
   assert.equal(store.task(task.id).workflowStatus, "blocked");
   assert.deepEqual(store.task(task.id).blockedBy, blockedBy);
+});
+
+test("squash transfer reserves and atomically updates both exact Task rows", async (t) => {
+  const store = await fixture(t);
+  const source = store.create({ text: "Source", bucket: "workspace", workspaceId: "workspace" });
+  const survivor = store.create({ text: "Survivor", bucket: "workspace", workspaceId: "workspace" });
+  const root = path.resolve("D:/repo");
+  const enterTest = (task, resultCommit) => {
+    store.beginLifecycleTransition(task.id, {
+      operationId: `test-${task.id}`, kind: "workflow",
+      targetWorkflowStatus: "testing", expectedRevision: task.revision,
+    });
+    return store.commitWorkflowTransition({
+      operationId: `test-${task.id}`,
+      gitReferences: [{ projectRoot: root, branch: `branch-${task.id}`, resultCommit }],
+      evidence: { resultCommit },
+    });
+  };
+  const testedSource = enterTest(source, "a".repeat(40));
+  const testedSurvivor = enterTest(survivor, "b".repeat(40));
+  const proof = {
+    version: 1,
+    kind: "task-squash-transfer-v1",
+    survivor: {
+      taskId: testedSurvivor.id, revision: testedSurvivor.revision,
+      releaseRevision: testedSurvivor.releaseRevision, resultCommit: "c".repeat(40),
+      baseCommit: "1".repeat(40), branch: `branch-${testedSurvivor.id}`,
+    },
+    source: {
+      taskId: testedSource.id, revision: testedSource.revision,
+      releaseRevision: testedSource.releaseRevision, resultCommit: "a".repeat(40),
+      baseCommit: "2".repeat(40), branch: `branch-${testedSource.id}`,
+    },
+    projectRoot: root,
+    previousResultCommit: testedSurvivor.gitReferences[0].resultCommit,
+    baselineResultCommit: "b".repeat(40), devBeforeCommit: "d".repeat(40),
+    devAfterTree: "e".repeat(40),
+    sourceWitnesses: [{
+      path: "source.mjs", source: { mode: "100644", object: "3".repeat(40) },
+      survivor: { mode: "100644", object: "3".repeat(40) },
+    }],
+    ownerWitnesses: [{
+      path: "new.mjs", baseline: null, beforeDev: null,
+      newResult: { mode: "100644", object: "4".repeat(40) },
+      afterDev: { mode: "100644", object: "4".repeat(40) },
+    }],
+    authority: {
+      workspaceId: "workspace", streamId: "release", provider: "codex",
+      threadId: "thread", proofRequestId: "squash-preview",
+    },
+  };
+  store.beginLifecycleTransition(testedSurvivor.id, {
+    operationId: "squash", kind: "workflow", targetWorkflowStatus: "testing",
+    expectedRevision: testedSurvivor.revision, evidence: { squashTransfer: proof },
+  });
+  assert.equal(store.beginLifecycleTransition(testedSurvivor.id, {
+    operationId: "squash", kind: "workflow", targetWorkflowStatus: "testing",
+    expectedRevision: testedSurvivor.revision, evidence: { squashTransfer: proof },
+  }).replayed, true);
+  assert.throws(() => store.beginLifecycleTransition(testedSurvivor.id, {
+    operationId: "squash", kind: "workflow", targetWorkflowStatus: "testing",
+    expectedRevision: testedSurvivor.revision,
+    evidence: { squashTransfer: { ...proof, authority: { ...proof.authority, proofRequestId: "foreign" } } },
+  }), /another squash transfer/);
+  assert.throws(() => store.beginLifecycleTransition(testedSource.id, {
+    operationId: "source-conflict", kind: "workflow", targetWorkflowStatus: "blocked",
+    expectedRevision: testedSource.revision,
+  }), /already active/);
+  const committed = store.commitSquashTransferTransition({
+    operationId: "squash", squashTransfer: { ...proof, integrationCommit: "f".repeat(40) },
+  });
+  assert.equal(committed.task.workflowStatus, "testing");
+  assert.equal(committed.sourceTask.workflowStatus, "in_progress");
+  assert.equal(committed.task.revision, testedSurvivor.revision + 1);
+  assert.equal(committed.sourceTask.revision, testedSource.revision + 1);
+  assert.equal(store.task(testedSurvivor.id).gitReferences[0].resultCommit, "c".repeat(40));
+  assert.equal(store.task(testedSurvivor.id).squashTransfer.integrationCommit, "f".repeat(40));
+  assert.equal(store.task(testedSource.id).squashAbsorbedBy.survivor.taskId, testedSurvivor.id);
+  assert.equal(store.lifecycleTransition("squash"), null);
+  assert.equal(store.lifecycleOutcome("squash").result.sourceTask.workflowStatus, "in_progress");
+});
+
+test("squash cutover commits Test ownership only after exact Git readback", async (t) => {
+  const store = await fixture(t);
+  const source = store.create({ text: "Source", bucket: "workspace", workspaceId: "workspace" });
+  const survivor = store.create({ text: "Survivor", bucket: "workspace", workspaceId: "workspace" });
+  const root = path.resolve("D:/repo");
+  const enterTest = (task, resultCommit) => {
+    store.beginLifecycleTransition(task.id, { operationId: `test-${task.id}`, kind: "workflow",
+      targetWorkflowStatus: "testing", expectedRevision: task.revision });
+    return store.commitWorkflowTransition({ operationId: `test-${task.id}`,
+      gitReferences: [{ projectRoot: root, branch: `branch-${task.id}`, resultCommit }],
+      evidence: { resultCommit } });
+  };
+  const testedSource = enterTest(source, "a".repeat(40));
+  const testedSurvivor = enterTest(survivor, "b".repeat(40));
+  store.beginLifecycleTransition(testedSurvivor.id, { operationId: "resume-survivor", kind: "workflow",
+    targetWorkflowStatus: "in_progress", expectedRevision: testedSurvivor.revision });
+  const currentSurvivor = store.commitWorkflowTransition({
+    operationId: "resume-survivor", replaceGitReferences: false,
+  });
+  const transfer = {
+    version: 1, kind: "task-squash-transfer-v1",
+    survivor: { taskId: currentSurvivor.id, revision: currentSurvivor.revision,
+      releaseRevision: currentSurvivor.releaseRevision, resultCommit: "c".repeat(40),
+      baseCommit: "1".repeat(40), branch: `branch-${currentSurvivor.id}` },
+    source: { taskId: testedSource.id, revision: testedSource.revision,
+      releaseRevision: testedSource.releaseRevision, resultCommit: "a".repeat(40),
+      baseCommit: "2".repeat(40), branch: `branch-${testedSource.id}` },
+    projectRoot: root, previousResultCommit: "b".repeat(40), baselineResultCommit: "3".repeat(40),
+    devBeforeCommit: "4".repeat(40), devAfterTree: "5".repeat(40),
+    sourceWitnesses: [{ path: "source.mjs", source: { mode: "100644", object: "6".repeat(40) },
+      survivor: { mode: "100644", object: "6".repeat(40) } }],
+    ownerWitnesses: [{ path: "new.mjs", baseline: null, beforeDev: null,
+      newResult: { mode: "100644", object: "7".repeat(40) },
+      afterDev: { mode: "100644", object: "7".repeat(40) } }],
+    authority: { workspaceId: "workspace", streamId: "release", provider: "codex",
+      threadId: "thread", proofRequestId: "preview" },
+  };
+  const cutover = {
+    version: 1, kind: "task-squash-cutover-v1", expectedMainCommit: "8".repeat(40),
+    expectedDevCommit: "4".repeat(40), expectedPreservedTree: "9".repeat(40),
+    reviewedSourceCommit: "c".repeat(40), reviewedSourceTree: "a".repeat(40),
+    projectorSha256: "b".repeat(64), artifacts: { sourceZipSha256: "c".repeat(64),
+      bundleSha256: "d".repeat(64), manifestSha256: "e".repeat(64), filesSha256: "f".repeat(64) },
+    squashTransfer: transfer,
+  };
+  store.beginLifecycleTransition(currentSurvivor.id, { operationId: "bootstrap", kind: "workflow",
+    targetWorkflowStatus: "testing", expectedRevision: currentSurvivor.revision,
+    evidence: { squashTransfer: transfer, squashCutover: cutover } });
+  assert.equal(store.task(currentSurvivor.id).workflowStatus, "in_progress");
+  assert.equal(store.task(testedSource.id).workflowStatus, "testing");
+  assert.throws(() => store.commitSquashTransferTransition({ operationId: "bootstrap",
+    squashTransfer: transfer, squashCutover: cutover }), /Git integration readback/u);
+  const result = store.commitSquashTransferTransition({ operationId: "bootstrap",
+    squashTransfer: { ...transfer, integrationCommit: "0".repeat(40) }, squashCutover: cutover });
+  assert.equal(result.task.workflowStatus, "testing");
+  assert.equal(result.sourceTask.workflowStatus, "in_progress");
+  assert.equal(result.squashCutover.cutoverHash, store.lifecycleOutcome("bootstrap")
+    .result.evidence.squashCutover.cutoverHash);
 });
 
 test("claim binds the turn without silently returning Test, Await or Blocked to work", async (t) => {

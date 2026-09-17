@@ -351,6 +351,9 @@ committed by another supported SQLite owner or connection. Unrelated live-run
 revisions must not rebuild or reserialize those collections. A changed or
 unavailable TaskBoard revision invalidates that reuse atomically and preserves
 the existing content-derived collection versions and delta recovery behavior.
+The TaskBoard snapshot revision deliberately includes its own mutation counter,
+the durable `journal_store_meta` revision and SQLite's external data version, so
+a journal-only write invalidates a cached board even when no Task row changed.
 Opening a Task carries the client's exact snapshot and collection versions into
 the selection command. The ordered selection mutation and its exact local
 history read run concurrently; the first response contains the history page and
@@ -407,3 +410,9 @@ paint p95 is at most 200 ms and no navigation-owned main-thread task exceeds
 50 ms. A hidden startup screen owns no animation frame; its canvas animation is
 scheduled only while that screen is visible. The shared invariant applies to
 the browser shell and the VS Code WebView, which execute the same client assets.
+
+Exact squash absorption is an explicit release operation, not an interactive
+read path. Its Git witness work is bounded by the changed paths in the source
+result and survivor replacement delta. It performs one repository-lock phase,
+one expected-old `dev` ref update and one two-Task SQLite commit; it does not scan
+arbitrary Workspace history or add background work to ordinary Task reads.
