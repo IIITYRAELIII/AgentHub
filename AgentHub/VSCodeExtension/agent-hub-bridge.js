@@ -285,8 +285,10 @@ class AgentHubBridge {
     const { callDesktopControl } = await this.desktop();
     return callDesktopControl(action, params, {
       timeoutMs: [
+        "browse-directory",
         "rotate-stream",
         "submit-bug-report",
+        "usage-sync",
         "usage-sync-now",
         "usage-sync-invite",
         "usage-sync-enroll",
@@ -323,32 +325,6 @@ class AgentHubBridge {
     } catch {
       return this.storedUsageSyncStatus();
     }
-  }
-
-  async usageSyncHttpFallback(url, body = "") {
-    let params = {};
-    try {
-      params = body ? JSON.parse(String(body)) : {};
-    } catch {
-      return jsonResponse({ error: "Некорректные параметры Sync" }, 400);
-    }
-    if (!params || typeof params !== "object" || Array.isArray(params)) {
-      return jsonResponse({ error: "Некорректные параметры Sync" }, 400);
-    }
-    const actions = new Map([
-      ["/api/journal/usage-sync", "usage-sync-now"],
-      ["/api/journal/usage-sync/invite", "usage-sync-invite"],
-      ["/api/journal/usage-sync/enroll", "usage-sync-enroll"],
-      ["/api/journal/usage-sync/device-label", "usage-sync-device-label"],
-    ]);
-    const action = actions.get(url.pathname);
-    if (!action) return jsonResponse({ error: "Not Found" }, 404);
-    const result = await this.control(action, params);
-    return jsonResponse({
-      ok: true,
-      result,
-      usageSync: await this.usageSyncStatus(),
-    });
   }
 
   async localControl(action, params, commandId) {
@@ -689,12 +665,8 @@ class AgentHubBridge {
           },
           body: await response.text(),
         };
-      } catch {
-        try {
-          return await this.usageSyncHttpFallback(url, body);
-        } catch (error) {
-          return jsonResponse({ error: `Sync в VS Code недоступен: ${error.message}` }, 503);
-        }
+      } catch (error) {
+        return jsonResponse({ error: `Sync в VS Code недоступен: ${error.message}` }, 503);
       }
     }
     if (requestMethod !== "GET") {
