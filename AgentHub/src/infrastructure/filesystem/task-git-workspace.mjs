@@ -3345,7 +3345,7 @@ export class TaskGitWorkspaceService {
           ], { cwd: devRoot, lease: ownedLease, env: shadowEnv });
         }
         await this.#runOwned([
-          "read-tree", "-m", proof.devBeforeCommit, proof.integrationCommit,
+          "read-tree", "-i", "-m", proof.devBeforeCommit, proof.integrationCommit,
         ], { cwd: devRoot, lease: ownedLease });
       } finally {
         await rm(shadowRoot, { recursive: true, force: true }).catch(() => {});

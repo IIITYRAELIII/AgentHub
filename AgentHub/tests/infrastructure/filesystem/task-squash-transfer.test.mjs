@@ -78,7 +78,8 @@ test("exact squash transfer adds the selected delta once and preserves foreign d
     dataDir,
     readPublication: async () => publication,
     runCommand: async (args, options) => {
-      if (failRealIndexPromotion && args[0] === "read-tree" && args[1] === "-m") {
+      if (failRealIndexPromotion && args[0] === "read-tree"
+          && args[1] === "-i" && args[2] === "-m") {
         failRealIndexPromotion = false;
         throw new Error("injected interruption before real index promotion");
       }
