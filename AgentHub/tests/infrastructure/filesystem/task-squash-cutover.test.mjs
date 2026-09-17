@@ -231,12 +231,12 @@ test("squash cutover preserves dirty bytes and resumes exact staged Git state", 
     await assert.rejects(service.applySquashCutoverOwned({ cutover, source: common.source,
       survivor: common.survivor, lease }), /after preserved ref/u);
     assert.equal((await service.readSquashCutoverOwned(cutover, { projectRoot: root, lease })).status,
-      "pending_materialization");
+      "pending_survivor_index");
     interruptBeforeSafeMaterialization = true;
     await assert.rejects(service.applySquashCutoverOwned({ cutover, source: common.source,
       survivor: common.survivor, lease }), /before safe materialization/u);
     assert.equal((await service.readSquashCutoverOwned(cutover, { projectRoot: root, lease })).status,
-      "pending_materialization");
+      "pending_survivor_index");
     injectLateIgnoredCollision = true;
     await assert.rejects(service.applySquashCutoverOwned({ cutover, source: common.source,
       survivor: common.survivor, lease }), /collides with unknown bytes/u);
@@ -392,7 +392,7 @@ test("squash cutover materializes an additions-only reviewed replacement", { tim
     assert.equal(await git(survivorWorkspace.projectRoot, "write-tree"), oldIndexTree);
     assert.equal(await snapshotTree(survivorWorkspace.projectRoot), preservedTree);
     assert.equal((await service.readSquashCutoverOwned(cutover, { projectRoot: root, lease })).status,
-      "pending_materialization");
+      "pending_survivor_index");
     const applied = await service.applySquashCutoverOwned({ cutover, source, survivor, lease });
     assert.equal((await service.readSquashCutoverOwned(cutover, { projectRoot: root, lease })).status, "applied");
     assert.equal(await readFile(path.join(survivorWorkspace.projectRoot, "only-added.txt"), "utf8"), "reviewed addition\n");
@@ -430,6 +430,7 @@ test("canonical original receipt recovery resumes preserved ref before index pre
   const taskBoard = new TaskBoardService({ store, workspaceCatalog: catalog,
     logger: { error() {}, warn() {} } });
   let interruptAfterPreservedRef = false;
+  let interruptAfterDevRef = false;
   const gitService = new TaskGitWorkspaceService({
     dataDir: path.join(dataDir, "git"),
     runCommand: async (args, options) => {
@@ -438,6 +439,11 @@ test("canonical original receipt recovery resumes preserved ref before index pre
         interruptAfterPreservedRef = false;
         await runTaskGitCommand(args, options);
         throw new Error("injected canonical crash after preserved ref");
+      }
+      if (interruptAfterDevRef && args[0] === "update-ref" && args[1] === "refs/heads/dev") {
+        interruptAfterDevRef = false;
+        await runTaskGitCommand(args, options);
+        throw new Error("injected canonical crash after dev ref");
       }
       return runTaskGitCommand(args, options);
     },
@@ -556,11 +562,18 @@ test("canonical original receipt recovery resumes preserved ref before index pre
   assert.equal(store.lifecycleTransition(requestId)?.phase, "pending_git");
   assert.equal(await git(survivorWorkspace.projectRoot, "write-tree"), oldIndexTree);
   assert.equal(await snapshotTree(survivorWorkspace.projectRoot), preservedTree);
+  await gitService.withTaskLocks([source.id, survivor.id], async (lease) => {
+    const readback = await gitService.readSquashCutoverOwned(preview.squashCutover, {
+      projectRoot: root, lease,
+    });
+    assert.equal(readback.status, "pending_survivor_index");
+    assert.equal(readback.proof, undefined);
+  }, { guardTaskId: survivor.id });
 
   const reconciliation = new TaskOperationReconciliationService({
     workspaceCatalog: catalog, taskBoard, taskLifecycle: lifecycle,
   });
-  const result = await reconciliation.reconcileUnknownWorkflow({
+  const reconciliationInput = {
     workspaceId: workspace.id, taskId: survivor.id, operationRequestId: requestId,
     projectRoot: root, confirmed: true,
     expectedTaskRevision: survivor.revision, expectedWorkflowStatus: "in_progress",
@@ -576,7 +589,26 @@ test("canonical original receipt recovery resumes preserved ref before index pre
     squashCutoverManifestSha256: identity.artifacts.manifestSha256,
     squashCutoverFilesSha256: identity.artifacts.filesSha256,
     expectedSquashCutoverHash: preview.cutoverHash,
-  });
+  };
+  interruptAfterDevRef = true;
+  const interrupted = await reconciliation.reconcileUnknownWorkflow(reconciliationInput);
+  assert.equal(interrupted.outcome, "unknown");
+  assert.match(interrupted.error, /after dev ref/u);
+  assert.equal(catalog.mcpOperation(requestId).receiptState, "unknown");
+  assert.equal(taskBoard.task(survivor.id).workflowStatus, "in_progress");
+  assert.equal(taskBoard.task(source.id).workflowStatus, "testing");
+  const integrationCommit = await git(root, "rev-parse", "refs/heads/dev");
+  assert.notEqual(integrationCommit, devBefore);
+  assert.equal(await git(root, "rev-parse", `${integrationCommit}^{tree}`), devAfterTree);
+  assert.notEqual(await git(dev.projectRoot, "write-tree"), devAfterTree);
+  await gitService.withTaskLocks([source.id, survivor.id], async (lease) => {
+    const readback = await gitService.readSquashCutoverOwned(preview.squashCutover, {
+      projectRoot: root, lease,
+    });
+    assert.equal(readback.status, "pending_materialization");
+    assert.equal(readback.proof.integrationCommit, integrationCommit);
+  }, { guardTaskId: survivor.id });
+  const result = await reconciliation.reconcileUnknownWorkflow(reconciliationInput);
   assert.equal(result.outcome, "succeeded");
   assert.equal(catalog.mcpOperation(requestId).receiptState, "succeeded");
   assert.equal(taskBoard.task(survivor.id).workflowStatus, "testing");

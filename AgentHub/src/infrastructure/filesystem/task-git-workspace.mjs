@@ -2995,7 +2995,7 @@ export class TaskGitWorkspaceService {
               && stagedTree === plan.withoutAddedTree && !unstaged) {
             return { status: "materializing_additions", cutover };
           }
-          return { status: "pending_materialization", cutover };
+          return { status: "pending_survivor_index", cutover };
         }
         return { status: "not_staged", cutover };
       }
@@ -3053,7 +3053,7 @@ export class TaskGitWorkspaceService {
         return existing;
       };
       let readback = await this.readSquashCutoverOwned(cutover, { projectRoot: repoRoot, lease: ownedLease });
-      if (["not_staged", "pending_materialization"].includes(readback.status)) {
+      if (["not_staged", "pending_survivor_index"].includes(readback.status)) {
         const snapshot = await this.#taskWorktreeSnapshotTree(proof.survivor.taskId, repoRoot, ownedLease);
         if (snapshot.headCommit !== proof.previousResultCommit
             || snapshot.tree !== cutover.expectedPreservedTree) {
