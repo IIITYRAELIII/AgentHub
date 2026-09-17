@@ -1,6 +1,10 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { access, mkdir, open, readFile, readdir, rename, rm, rmdir, stat, unlink, writeFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import {
+  access, chmod, copyFile, lstat, mkdir, open, readFile, readdir, readlink, rename, rm, rmdir,
+  stat, symlink, unlink, writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { assertContourExternalEffects, assertContourGitAvailable } from "../../ports/contour-external-effects.mjs";
 import process from "node:process";
@@ -76,6 +80,52 @@ function taskGitTerminationError(args, timeoutMs, processTreeStopped, cause = "t
   const codePrefix = commandLabel === "git" ? "TASK_GIT" : "TASK_EXTERNAL_PROCESS";
   error.code = processTreeStopped ? `${codePrefix}_TERMINATED` : `${codePrefix}_TREE_UNPROVEN`;
   return error;
+}
+
+async function sameMaterializedPath(source, destination) {
+  const [sourceStat, destinationStat] = await Promise.all([lstat(source), lstat(destination)]);
+  if (sourceStat.isSymbolicLink() || destinationStat.isSymbolicLink()) {
+    return sourceStat.isSymbolicLink() && destinationStat.isSymbolicLink()
+      && await readlink(source) === await readlink(destination);
+  }
+  if (!sourceStat.isFile() || !destinationStat.isFile() || sourceStat.size !== destinationStat.size) return false;
+  return (await readFile(source)).equals(await readFile(destination));
+}
+
+async function pathUsesExactCase(root, relativePath) {
+  let current = root;
+  for (const part of relativePath.split("/").filter(Boolean)) {
+    if (!(await readdir(current)).includes(part)) return false;
+    current = path.join(current, part);
+  }
+  return true;
+}
+
+async function materializePathWithoutOverwrite(sourceRoot, worktreeRoot, relativePath) {
+  const source = path.resolve(sourceRoot, relativePath);
+  const destination = path.resolve(worktreeRoot, relativePath);
+  const parent = path.dirname(destination);
+  await mkdir(parent, { recursive: true });
+  const relativeParent = path.posix.dirname(relativePath);
+  if (relativeParent !== "." && !await pathUsesExactCase(worktreeRoot, relativeParent)) {
+    throw new Error(`Squash cutover target collides with unknown path casing: ${relativePath}`);
+  }
+  const sourceStat = await lstat(source);
+  try {
+    if (sourceStat.isSymbolicLink()) await symlink(await readlink(source), destination);
+    else if (sourceStat.isFile()) {
+      await copyFile(source, destination, fsConstants.COPYFILE_EXCL);
+      await chmod(destination, sourceStat.mode & 0o777);
+    } else {
+      throw new Error(`Squash cutover cannot materialize unsupported Git entry: ${relativePath}`);
+    }
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+    if (!await pathUsesExactCase(worktreeRoot, relativePath)
+        || !await sameMaterializedPath(source, destination)) {
+      throw new Error(`Squash cutover target collides with unknown bytes: ${relativePath}`);
+    }
+  }
 }
 
 export function runTaskGitCommand(args, {
@@ -2857,6 +2907,50 @@ export class TaskGitWorkspaceService {
     }
   }
 
+  async #squashCutoverMaterializationPlan(cutover, repoRoot, lease) {
+    const addedPaths = String(await this.#runOwned([
+      "diff", "--name-only", "--diff-filter=A", "-z",
+      cutover.expectedPreservedTree, cutover.reviewedSourceTree,
+    ], { cwd: repoRoot, lease })).split("\0").filter(Boolean).sort();
+    const temporaryRoot = path.join(this.dataDir, "task-squash-cutover-indices", randomUUID());
+    const temporaryIndex = path.join(temporaryRoot, "index");
+    await mkdir(temporaryRoot, { recursive: true });
+    try {
+      const env = { GIT_INDEX_FILE: temporaryIndex };
+      await this.#runOwned(["read-tree", cutover.reviewedSourceTree], { cwd: repoRoot, lease, env });
+      if (addedPaths.length) {
+        await this.#runOwned(["update-index", "--force-remove", "-z", "--stdin"], {
+          cwd: repoRoot, lease, env, input: `${addedPaths.join("\0")}\0`,
+        });
+      }
+      const withoutAddedTree = await this.#runOwned(["write-tree"], { cwd: repoRoot, lease, env });
+      const additions = [];
+      for (const name of addedPaths) {
+        const entry = await this.#treeEntryAt(repoRoot, cutover.reviewedSourceTree, name, lease);
+        if (!entry) throw new Error(`Squash cutover target addition changed: ${name}`);
+        additions.push({ path: name, mode: entry.mode, object: entry.object });
+      }
+      return { additions, withoutAddedTree };
+    } finally {
+      await rm(temporaryRoot, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+
+  async #isSquashCutoverPartialTree(tree, plan, cutover, repoRoot, lease) {
+    if (tree === plan.withoutAddedTree) return true;
+    const changedPaths = String(await this.#runOwned([
+      "diff", "--name-only", "-z", plan.withoutAddedTree, tree,
+    ], { cwd: repoRoot, lease })).split("\0").filter(Boolean);
+    const additions = new Map(plan.additions.map((entry) => [entry.path, entry]));
+    if (!changedPaths.length || changedPaths.some((name) => !additions.has(name))) return false;
+    for (const name of changedPaths) {
+      const actual = await this.#treeEntryAt(repoRoot, tree, name, lease);
+      const expected = additions.get(name);
+      if (!actual || actual.mode !== expected.mode || actual.object !== expected.object) return false;
+    }
+    return tree !== cutover.reviewedSourceTree;
+  }
+
   async previewSquashCutoverOwned(params = {}) {
     this.#assertAvailable("previewSquashCutoverOwned");
     await requiredGuardLease(params.lease).assertOwned();
@@ -2901,6 +2995,12 @@ export class TaskGitWorkspaceService {
           return { status: "staged_before_ref", cutover };
         }
       }
+      if (branch === proof.previousResultCommit && snapshot.headCommit === proof.previousResultCommit) {
+        const plan = await this.#squashCutoverMaterializationPlan(cutover, repoRoot, ownedLease);
+        if (await this.#isSquashCutoverPartialTree(
+          snapshot.tree, plan, cutover, repoRoot, ownedLease,
+        )) return { status: "materializing_additions", cutover };
+      }
       if (branch !== proof.survivor.resultCommit || snapshot.headCommit !== proof.survivor.resultCommit
           || snapshot.tree !== cutover.reviewedSourceTree || snapshot.workspace.dirty) {
         return { status: "unknown", cutover, reason: "survivor staging is partial or changed" };
@@ -2917,6 +3017,27 @@ export class TaskGitWorkspaceService {
     const proof = cutover.squashTransfer;
     const repoRoot = await repositoryRoot(proof.projectRoot);
     return this.#withClearDevLock(repoRoot, lease, async (ownedLease) => {
+      const preservedRef = `refs/agent-hub/task-squash-cutovers/${cutover.cutoverHash}/preserved`;
+      const preservedMessage = `task squash cutover preserved ${cutover.cutoverHash}`;
+      const readPreservedCommit = async () => {
+        const existing = await gitMaybe(["rev-parse", "--verify", `${preservedRef}^{commit}`], { cwd: repoRoot });
+        if (!existing) return null;
+        const existingTree = await this.#runOwned(["rev-parse", `${existing}^{tree}`], {
+          cwd: repoRoot, lease: ownedLease,
+        });
+        const existingParent = await this.#runOwned(["rev-parse", `${existing}^`], {
+          cwd: repoRoot, lease: ownedLease,
+        });
+        const existingMessage = await this.#runOwned(["show", "-s", "--format=%B", existing], {
+          cwd: repoRoot, lease: ownedLease,
+        });
+        if (existingTree !== cutover.expectedPreservedTree
+            || existingParent !== proof.previousResultCommit
+            || existingMessage !== preservedMessage) {
+          throw new Error("Squash cutover preserved ref changed");
+        }
+        return existing;
+      };
       let readback = await this.readSquashCutoverOwned(cutover, { projectRoot: repoRoot, lease: ownedLease });
       if (readback.status === "not_staged") {
         const snapshot = await this.#taskWorktreeSnapshotTree(proof.survivor.taskId, repoRoot, ownedLease);
@@ -2930,34 +3051,21 @@ export class TaskGitWorkspaceService {
         const targetPaths = String(await this.#runOwned([
           "ls-tree", "-r", "--name-only", "-z", proof.survivor.resultCommit,
         ], { cwd: repoRoot, lease: ownedLease })).split("\0").filter(Boolean);
+        const ignoreCase = await this.#runOwned(["config", "--bool", "core.ignorecase"], {
+          cwd: snapshot.root, lease: ownedLease,
+        }).catch(() => "false") === "true";
+        const comparablePath = (value) => ignoreCase ? value.toLocaleLowerCase("en-US") : value;
         const ignoredCollision = ignoredPaths.find((ignoredPath) => targetPaths.some((targetPath) => (
-          ignoredPath === targetPath
-          || ignoredPath.startsWith(`${targetPath}/`)
-          || targetPath.startsWith(`${ignoredPath}/`)
+          comparablePath(ignoredPath) === comparablePath(targetPath)
+          || comparablePath(ignoredPath).startsWith(`${comparablePath(targetPath)}/`)
+          || comparablePath(targetPath).startsWith(`${comparablePath(ignoredPath)}/`)
         )));
         if (ignoredCollision) {
           throw new Error(`Squash cutover target collides with ignored bytes: ${ignoredCollision}`);
         }
-        const preservedRef = `refs/agent-hub/task-squash-cutovers/${cutover.cutoverHash}/preserved`;
-        const existing = await gitMaybe(["rev-parse", "--verify", `${preservedRef}^{commit}`], { cwd: repoRoot });
-        const preservedMessage = `task squash cutover preserved ${cutover.cutoverHash}`;
-        if (existing) {
-          const existingTree = await this.#runOwned(["rev-parse", `${existing}^{tree}`], {
-            cwd: repoRoot, lease: ownedLease,
-          });
-          const existingParent = await this.#runOwned(["rev-parse", `${existing}^`], {
-            cwd: repoRoot, lease: ownedLease,
-          });
-          const existingMessage = await this.#runOwned(["show", "-s", "--format=%B", existing], {
-            cwd: repoRoot, lease: ownedLease,
-          });
-          if (existingTree !== cutover.expectedPreservedTree
-              || existingParent !== proof.previousResultCommit
-              || existingMessage !== preservedMessage) {
-            throw new Error("Squash cutover preserved ref changed");
-          }
-        } else {
-          const preservedCommit = await this.#runOwned([
+        let preservedCommit = await readPreservedCommit();
+        if (!preservedCommit) {
+          preservedCommit = await this.#runOwned([
             "-c", "user.name=Agent Hub", "-c", "user.email=agent-hub@local.invalid",
             "commit-tree", cutover.expectedPreservedTree, "-p", proof.previousResultCommit,
           ], { cwd: repoRoot, lease: ownedLease, input: `${preservedMessage}\n` });
@@ -2967,32 +3075,69 @@ export class TaskGitWorkspaceService {
         }
         const actualTree = await this.#runOwned(["rev-parse", `${proof.survivor.resultCommit}^{tree}`], { cwd: repoRoot, lease: ownedLease });
         if (actualTree !== cutover.reviewedSourceTree) throw new Error("Squash cutover imported result tree changed");
+        const plan = await this.#squashCutoverMaterializationPlan(cutover, repoRoot, ownedLease);
         await this.#runOwned(["read-tree", cutover.expectedPreservedTree], { cwd: snapshot.root, lease: ownedLease });
         await this.#runOwned(["update-index", "--refresh"], { cwd: snapshot.root, lease: ownedLease });
         await this.#runOwned([
-          "read-tree", "-m", "-u", cutover.expectedPreservedTree, cutover.reviewedSourceTree,
-        ], {
-          cwd: snapshot.root, lease: ownedLease,
+          "read-tree", "-m", "-u", cutover.expectedPreservedTree, plan.withoutAddedTree,
+        ], { cwd: snapshot.root, lease: ownedLease });
+        readback = await this.readSquashCutoverOwned(cutover, { projectRoot: repoRoot, lease: ownedLease });
+      }
+      if (readback.status === "materializing_additions") {
+        if (!await readPreservedCommit()) throw new Error("Squash cutover preserved ref is missing");
+        const actualTree = await this.#runOwned(["rev-parse", `${proof.survivor.resultCommit}^{tree}`], {
+          cwd: repoRoot, lease: ownedLease,
         });
+        if (actualTree !== cutover.reviewedSourceTree) throw new Error("Squash cutover imported result tree changed");
+        const plan = await this.#squashCutoverMaterializationPlan(cutover, repoRoot, ownedLease);
+        const snapshot = await this.#taskWorktreeSnapshotTree(proof.survivor.taskId, repoRoot, ownedLease);
+        const temporaryRoot = path.join(this.dataDir, "task-squash-cutover-materialization", randomUUID());
+        const temporaryIndex = path.join(temporaryRoot, "index");
+        const sourceRoot = path.join(temporaryRoot, "source");
+        await mkdir(sourceRoot, { recursive: true });
+        try {
+          if (plan.additions.length) {
+            const env = { GIT_INDEX_FILE: temporaryIndex };
+            await this.#runOwned(["read-tree", cutover.reviewedSourceTree], {
+              cwd: repoRoot, lease: ownedLease, env,
+            });
+            const prefix = `${sourceRoot.replaceAll("\\", "/")}/`;
+            await this.#runOwned(["checkout-index", "-z", "--stdin", `--prefix=${prefix}`], {
+              cwd: repoRoot,
+              lease: ownedLease,
+              env,
+              input: `${plan.additions.map((entry) => entry.path).join("\0")}\0`,
+            });
+            for (const entry of plan.additions) {
+              await this.#runOwned(["cat-file", "-e", `${cutover.reviewedSourceTree}:${entry.path}`], {
+                cwd: snapshot.root, lease: ownedLease,
+              });
+              await materializePathWithoutOverwrite(sourceRoot, snapshot.root, entry.path);
+              await this.#runOwned([
+                "update-index", "--add", "--cacheinfo", entry.mode, entry.object, entry.path,
+              ], { cwd: snapshot.root, lease: ownedLease });
+            }
+          }
+        } finally {
+          await rm(temporaryRoot, { recursive: true, force: true }).catch(() => {});
+        }
+        await this.#runOwned(["update-index", "--refresh"], { cwd: snapshot.root, lease: ownedLease });
         const stagedTree = await this.#runOwned(["write-tree"], { cwd: snapshot.root, lease: ownedLease });
         const unstaged = await this.#runOwned(["diff-files", "--name-only", "-z"], { cwd: snapshot.root, lease: ownedLease });
         if (stagedTree !== cutover.reviewedSourceTree || unstaged) {
-          throw new Error("Squash cutover could not materialize the exact reviewed survivor tree");
+          throw new Error(`Squash cutover could not materialize the exact reviewed survivor tree: staged ${stagedTree}, expected ${cutover.reviewedSourceTree}, unstaged ${unstaged || "<none>"}`);
         }
         const materialized = await this.#taskWorktreeSnapshotTree(proof.survivor.taskId, repoRoot, ownedLease);
         if (materialized.headCommit !== proof.previousResultCommit
             || materialized.tree !== cutover.reviewedSourceTree) {
           throw new Error("Squash cutover survivor changed during safe materialization");
         }
-        await this.#runOwned([
-          "update-ref", `refs/heads/${proof.survivor.branch}`,
-          proof.survivor.resultCommit, proof.previousResultCommit,
-        ], { cwd: repoRoot, lease: ownedLease });
         readback = await this.readSquashCutoverOwned(cutover, { projectRoot: repoRoot, lease: ownedLease });
       }
       if (readback.status === "staged_before_ref") {
+        const survivorRef = `refs/heads/${proof.survivor.branch}`;
         await this.#runOwned([
-          "update-ref", `refs/heads/${proof.survivor.branch}`,
+          "update-ref", survivorRef,
           proof.survivor.resultCommit, proof.previousResultCommit,
         ], { cwd: repoRoot, lease: ownedLease });
         readback = await this.readSquashCutoverOwned(cutover, { projectRoot: repoRoot, lease: ownedLease });

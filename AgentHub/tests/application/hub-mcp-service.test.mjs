@@ -1141,9 +1141,8 @@ test("Release Manager forwards one complete hash-confirmed squash transfer", asy
       squashTransfer: { transferHash: "f".repeat(64) },
     };
   };
-  await service.call("hub_task_status_update", {
+  const common = {
     context_token: token,
-    request_id: "squash-confirm",
     task_id: "task-current",
     status: "testing",
     expected_task_revision: 1,
@@ -1152,6 +1151,17 @@ test("Release Manager forwards one complete hash-confirmed squash transfer", asy
     squash_baseline_result_commit: "a".repeat(40),
     squash_new_result_commit: "b".repeat(40),
     squash_dev_after_tree: "c".repeat(40),
+  };
+  await assert.rejects(service.call("hub_task_status_update", {
+    ...common,
+    request_id: "ordinary-cutover-only-confirm",
+    squash_proof_request_id: "caller-selected-preview",
+    expected_squash_cutover_hash: "e".repeat(64),
+  }), /only by the one-shot cutover entrypoint/u);
+  assert.equal(calls.length, 0);
+  await service.call("hub_task_status_update", {
+    ...common,
+    request_id: "squash-confirm",
     squash_proof_request_id: "squash-preview",
     expected_squash_transfer_hash: "d".repeat(64),
   });

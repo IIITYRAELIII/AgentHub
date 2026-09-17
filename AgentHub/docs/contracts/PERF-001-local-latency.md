@@ -339,6 +339,9 @@ committed by another supported SQLite owner or connection. Unrelated live-run
 revisions must not rebuild or reserialize those collections. A changed or
 unavailable TaskBoard revision invalidates that reuse atomically and preserves
 the existing content-derived collection versions and delta recovery behavior.
+The TaskBoard snapshot revision deliberately includes its own mutation counter,
+the durable `journal_store_meta` revision and SQLite's external data version, so
+a journal-only write invalidates a cached board even when no Task row changed.
 Opening a Task carries the client's exact snapshot and collection versions into
 the selection command. The ordered selection mutation and its exact local
 history read run concurrently; the first response contains the history page and

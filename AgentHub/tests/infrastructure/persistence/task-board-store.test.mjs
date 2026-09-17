@@ -12,6 +12,26 @@ import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-boa
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import { JournalDatabase } from "../../../src/infrastructure/persistence/journal-database.mjs";
 
+test("TaskBoardStore snapshot revision advances with the durable journal revision", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "task-journal-snapshot-revision-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const journal = new JournalDatabase(databaseFile);
+  const store = new TaskBoardStore({ databaseFile });
+  t.after(async () => { store.close(); await journal.close(); await rm(directory, { recursive: true, force: true }); });
+  const before = store.snapshotRevision;
+  const beforeJournalRevision = Number(before.split(":", 1)[0]);
+  await journal.upsertRecords([{
+    provider: "codex", threadId: "snapshot-thread", taskThreadId: "snapshot-thread",
+    turnId: "snapshot-turn", projectRoot: directory, title: "Journal changed",
+    body: "not projected into the revision", completedAt: "2026-09-17T00:00:00Z",
+    status: "completed", provisional: false,
+  }]);
+  const after = store.snapshotRevision;
+  assert.notEqual(after, before);
+  assert.equal(Number(after.split(":", 1)[0]), beforeJournalRevision + 1);
+  assert.equal(Number(after.split(":", 1)[0]), store.revision);
+});
+
 test("Task history projects exact terminal journal turns without file evidence or backfill", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "task-journal-view-"));
   const databaseFile = path.join(directory, "journal.sqlite");

@@ -1478,6 +1478,9 @@ export class HubMcpService {
       if (expectedWorkflowStatus != null && expectedWorkflowStatus !== expectedCurrentStatus) {
         throw new Error(`Task squash transfer expected workflow status must be ${expectedCurrentStatus}`);
       }
+      if (!squashBootstrap && expectedSquashCutoverHash != null) {
+        throw new Error("Task squash cutover hash is accepted only by the one-shot cutover entrypoint");
+      }
       const confirmationRequested = Boolean(expectedSquashTransferHash || expectedSquashCutoverHash);
       if (squashBootstrap && Boolean(expectedSquashTransferHash) !== Boolean(expectedSquashCutoverHash)) {
         throw new Error("Task squash cutover confirmation requires both exact hashes");

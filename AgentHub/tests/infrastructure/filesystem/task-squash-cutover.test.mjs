@@ -31,6 +31,8 @@ test("squash cutover preserves dirty bytes and resumes exact staged Git state", 
     .map((item) => rm(item, { recursive: true, force: true }))));
   await git(root, "init", "-b", "main");
   await git(root, "config", "core.autocrlf", "false");
+  await git(root, "config", "core.ignorecase", "true");
+  await writeFile(path.join(root, ".gitignore"), "combined.txt\nignored-late.txt\nFoo.txt\nDir/\n");
   await writeFile(path.join(root, "app.txt"), "main\n");
   const main = await commit(root, "main");
   await mkdir(origin);
@@ -41,6 +43,7 @@ test("squash cutover preserves dirty bytes and resumes exact staged Git state", 
   let interruptBranchCas = false;
   let interruptAfterPreservedRef = false;
   let interruptBeforeSafeMaterialization = false;
+  let injectLateIgnoredCollision = false;
   const service = new TaskGitWorkspaceService({
     dataDir,
     runCommand: async (args, options) => {
@@ -59,6 +62,11 @@ test("squash cutover preserves dirty bytes and resumes exact staged Git state", 
         interruptBeforeSafeMaterialization = false;
         throw new Error("injected crash before safe materialization");
       }
+      if (injectLateIgnoredCollision && args[0] === "cat-file"
+          && args[1] === "-e" && args[2]?.endsWith(":combined.txt")) {
+        injectLateIgnoredCollision = false;
+        await writeFile(path.join(options.cwd, "combined.txt"), "late ignored bytes\n");
+      }
       return runTaskGitCommand(args, options);
     },
   });
@@ -76,13 +84,20 @@ test("squash cutover preserves dirty bytes and resumes exact staged Git state", 
   await writeFile(path.join(reviewed, "source.txt"), "selected\n");
   const baseline = await commit(reviewed, "reviewed clean baseline");
   await writeFile(path.join(reviewed, "combined.txt"), "clean result\n");
+  await writeFile(path.join(reviewed, "foo.txt"), "reviewed file case\n");
+  await mkdir(path.join(reviewed, "dir"));
+  await writeFile(path.join(reviewed, "dir", "x.txt"), "reviewed directory case\n");
+  await git(reviewed, "add", "-f", "combined.txt", "foo.txt", "dir/x.txt");
   const newResult = await commit(reviewed, "reviewed clean result");
   const reviewedTree = await git(reviewed, "rev-parse", "HEAD^{tree}");
 
   const dev = await service.prepareDev(root);
   const devBefore = await git(dev.projectRoot, "rev-parse", "HEAD");
   await writeFile(path.join(dev.projectRoot, "combined.txt"), "clean result\n");
-  await git(dev.projectRoot, "add", "combined.txt");
+  await writeFile(path.join(dev.projectRoot, "foo.txt"), "reviewed file case\n");
+  await mkdir(path.join(dev.projectRoot, "dir"));
+  await writeFile(path.join(dev.projectRoot, "dir", "x.txt"), "reviewed directory case\n");
+  await git(dev.projectRoot, "add", "-f", "combined.txt", "foo.txt", "dir/x.txt");
   const devAfterTree = await git(dev.projectRoot, "write-tree");
   await git(dev.projectRoot, "reset", "--hard", devBefore);
 
@@ -109,16 +124,25 @@ test("squash cutover preserves dirty bytes and resumes exact staged Git state", 
   await service.withTaskLocks([SOURCE_ID, SURVIVOR_ID], async (lease) => {
     const preview = await service.previewSquashCutoverOwned({ ...common, cutover: cutoverIdentity, lease });
     const cutover = { version: 1, kind: "task-squash-cutover-v1", ...cutoverIdentity, squashTransfer: preview };
-    const commonDir = await git(survivorWorkspace.projectRoot, "rev-parse", "--git-common-dir");
-    const excludeFile = path.resolve(survivorWorkspace.projectRoot, commonDir, "info", "exclude");
-    await writeFile(excludeFile, "combined.txt\n");
+    await writeFile(path.join(survivorWorkspace.projectRoot, "Foo.txt"), "unknown file case bytes\n");
+    await assert.rejects(service.applySquashCutoverOwned({ cutover, source: common.source,
+      survivor: common.survivor, lease }), /collides with ignored bytes/u);
+    assert.equal(await readFile(path.join(survivorWorkspace.projectRoot, "Foo.txt"), "utf8"),
+      "unknown file case bytes\n");
+    await rm(path.join(survivorWorkspace.projectRoot, "Foo.txt"));
+    await mkdir(path.join(survivorWorkspace.projectRoot, "Dir"));
+    await writeFile(path.join(survivorWorkspace.projectRoot, "Dir", "x.txt"), "unknown directory case bytes\n");
+    await assert.rejects(service.applySquashCutoverOwned({ cutover, source: common.source,
+      survivor: common.survivor, lease }), /collides with ignored bytes/u);
+    assert.equal(await readFile(path.join(survivorWorkspace.projectRoot, "Dir", "x.txt"), "utf8"),
+      "unknown directory case bytes\n");
+    await rm(path.join(survivorWorkspace.projectRoot, "Dir"), { recursive: true });
     await writeFile(path.join(survivorWorkspace.projectRoot, "combined.txt"), "unknown ignored bytes\n");
     await assert.rejects(service.applySquashCutoverOwned({ cutover, source: common.source,
       survivor: common.survivor, lease }), /collides with ignored bytes/u);
     assert.equal(await readFile(path.join(survivorWorkspace.projectRoot, "combined.txt"), "utf8"),
       "unknown ignored bytes\n");
     await rm(path.join(survivorWorkspace.projectRoot, "combined.txt"));
-    await writeFile(excludeFile, "");
     await writeFile(path.join(survivorWorkspace.projectRoot, "app.txt"), "late tracked edit\n");
     await assert.rejects(service.applySquashCutoverOwned({ cutover, source: common.source,
       survivor: common.survivor, lease }), /changed/u);
@@ -135,7 +159,6 @@ test("squash cutover preserves dirty bytes and resumes exact staged Git state", 
     await assert.rejects(service.applySquashCutoverOwned({ cutover, source: common.source,
       survivor: common.survivor, lease }), /unknown|partial|changed/u);
     await rm(path.join(survivorWorkspace.projectRoot, "late.txt"));
-    await writeFile(excludeFile, "ignored-late.txt\n");
     await writeFile(path.join(survivorWorkspace.projectRoot, "ignored-late.txt"), "ignored survives\n");
     interruptAfterPreservedRef = true;
     await assert.rejects(service.applySquashCutoverOwned({ cutover, source: common.source,
@@ -147,6 +170,14 @@ test("squash cutover preserves dirty bytes and resumes exact staged Git state", 
       survivor: common.survivor, lease }), /before safe materialization/u);
     assert.equal((await service.readSquashCutoverOwned(cutover, { projectRoot: root, lease })).status,
       "not_staged");
+    injectLateIgnoredCollision = true;
+    await assert.rejects(service.applySquashCutoverOwned({ cutover, source: common.source,
+      survivor: common.survivor, lease }), /collides with unknown bytes/u);
+    assert.equal(await readFile(path.join(survivorWorkspace.projectRoot, "combined.txt"), "utf8"),
+      "late ignored bytes\n");
+    assert.equal((await service.readSquashCutoverOwned(cutover, { projectRoot: root, lease })).status,
+      "materializing_additions");
+    await rm(path.join(survivorWorkspace.projectRoot, "combined.txt"));
     interruptBranchCas = true;
     await assert.rejects(service.applySquashCutoverOwned({ cutover, source: common.source,
       survivor: common.survivor, lease }), /injected crash/u);
