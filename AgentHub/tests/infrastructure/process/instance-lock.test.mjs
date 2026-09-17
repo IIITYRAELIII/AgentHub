@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { SingleInstanceGuard } from "../../../src/infrastructure/process/instance-lock.mjs";
+import {
+  instanceLockEndpoint,
+  readInstanceLockOwner,
+  SingleInstanceGuard,
+} from "../../../src/infrastructure/process/instance-lock.mjs";
 
 test("single-instance guard rejects a concurrent owner and releases cleanly", async (context) => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "telegram-instance-lock-"));
@@ -17,11 +22,35 @@ test("single-instance guard rejects a concurrent owner and releases cleanly", as
   assert.ok(lock.instanceToken);
   assert.equal(lock.releaseId, "release-1");
   assert.equal(lock.ready, false);
+  assert.equal(await readInstanceLockOwner(dataDir), lock.instanceToken);
   await first.markReady();
   assert.equal(JSON.parse(await readFile(path.join(dataDir, "bot.lock"), "utf8")).ready, true);
   await first.release();
+  assert.equal(await readInstanceLockOwner(dataDir), null);
   await second.acquire();
   await second.release();
+});
+
+test("instance owner read has an absolute deadline when a channel stays silent", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "telegram-instance-lock-silent-"));
+  const endpoint = instanceLockEndpoint(dataDir);
+  const server = createServer(() => {});
+  context.after(async () => {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(dataDir, { recursive: true, force: true });
+    if (!endpoint.startsWith("\0") && !endpoint.startsWith("\\\\.\\pipe\\")) {
+      await rm(endpoint, { force: true });
+    }
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(endpoint, resolve);
+  });
+
+  await assert.rejects(
+    readInstanceLockOwner(dataDir, { timeoutMs: 50 }),
+    /Timed out reading Agent Hub instance identity/u,
+  );
 });
 
 test("legacy live PID is preserved during migration", async (context) => {

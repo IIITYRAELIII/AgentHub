@@ -653,17 +653,82 @@ test("installed VS Code bridge keeps the UI on the running release until cutover
     await writeFile(path.join(root, "current.json"), JSON.stringify({ current: "published" }), "utf8");
     await writeFile(path.join(root, "data", "bot.lock"), JSON.stringify({
       pid: 123,
+      instanceToken: "running-owner",
       releaseId: "running",
       ready: true,
     }), "utf8");
-    const bridge = new AgentHubBridge({ runtimeRoot: root, processIsAlive: () => true });
+    let owner = "running-owner";
+    const bridge = new AgentHubBridge({
+      runtimeRoot: root,
+      processIsAlive: () => true,
+      instanceOwner: async () => owner,
+    });
     assert.equal(await bridge.runtimeReleaseRoot(), path.join(root, "releases", "running"));
     await writeFile(path.join(root, "data", "bot.lock"), JSON.stringify({
       pid: 456,
+      instanceToken: "published-owner",
       releaseId: "published",
       ready: true,
     }), "utf8");
+    owner = "published-owner";
     assert.equal(await bridge.runtimeReleaseRoot(), path.join(root, "releases", "published"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("installed VS Code bridge ignores a reused PID without the canonical instance owner", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-runtime-reused-pid-"));
+  try {
+    for (const release of ["stale", "current"]) {
+      await mkdir(path.join(root, "releases", release), { recursive: true });
+    }
+    await mkdir(path.join(root, "data"), { recursive: true });
+    await writeFile(path.join(root, "current.json"), JSON.stringify({ current: "current" }), "utf8");
+    await writeFile(path.join(root, "data", "bot.lock"), JSON.stringify({
+      pid: 5050,
+      instanceToken: "stale-owner",
+      releaseId: "stale",
+      ready: true,
+    }), "utf8");
+    await writeFile(path.join(root, "AgentHub.RuntimeHost.exe"), "runtime-host", "utf8");
+    const starts = [];
+    const bridge = new AgentHubBridge({
+      runtimeRoot: root,
+      platform: "win32",
+      processIsAlive: () => true,
+      instanceOwner: async () => "different-owner",
+      startRuntimeHost: async (runtimeRoot) => starts.push(runtimeRoot),
+    });
+
+    assert.equal(await bridge.runtimeReleaseRoot(), path.join(root, "releases", "current"));
+    assert.equal(await bridge.ensureRuntimeStarted(), true);
+    assert.deepEqual(starts, [root]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("installed VS Code bridge preserves a live old runtime until its token reader is available", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-runtime-legacy-reader-"));
+  try {
+    for (const release of ["running", "current"]) {
+      await mkdir(path.join(root, "releases", release), { recursive: true });
+    }
+    await mkdir(path.join(root, "data"), { recursive: true });
+    await writeFile(path.join(root, "current.json"), JSON.stringify({ current: "current" }), "utf8");
+    await writeFile(path.join(root, "data", "bot.lock"), JSON.stringify({
+      pid: 6060,
+      instanceToken: "legacy-reader-owner",
+      releaseId: "running",
+    }), "utf8");
+    const bridge = new AgentHubBridge({
+      runtimeRoot: root,
+      processIsAlive: () => true,
+      instanceOwner: async () => undefined,
+    });
+
+    assert.equal(await bridge.runtimeReleaseRoot(), path.join(root, "releases", "running"));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -774,11 +839,17 @@ test("VS Code bridge does not relaunch a live Runtime Host on startup", async ()
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-live-runtime-"));
   try {
     await mkdir(path.join(root, "data"), { recursive: true });
-    await writeFile(path.join(root, "data", "bot.lock"), JSON.stringify({ pid: 5050 }), "utf8");
+    await writeFile(path.join(root, "current.json"), JSON.stringify({ current: "release-live" }), "utf8");
+    await writeFile(path.join(root, "data", "bot.lock"), JSON.stringify({
+      pid: 5050,
+      instanceToken: "live-owner",
+      releaseId: "release-live",
+    }), "utf8");
     const bridge = new AgentHubBridge({
       runtimeRoot: root,
       platform: "win32",
       processIsAlive: (pid) => pid === 5050,
+      instanceOwner: async () => "live-owner",
       startRuntimeHost: async () => assert.fail("live runtime must not be relaunched"),
     });
 
