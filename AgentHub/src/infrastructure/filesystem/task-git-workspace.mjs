@@ -25,7 +25,11 @@ import {
   taskBranchName,
   taskRepositoryKey,
 } from "../../domain/task-git-reference.mjs";
-import { normalizedTaskSquashTransfer } from "../../domain/task-squash-transfer.mjs";
+import {
+  exactCrLfToLfNormalization,
+  LF_NORMALIZATION_ALREADY_PRESENT,
+  normalizedTaskSquashTransfer,
+} from "../../domain/task-squash-transfer.mjs";
 import { normalizedTaskSquashCutover } from "../../domain/task-squash-cutover.mjs";
 
 export const TASK_DEV_BRANCH = "dev";
@@ -130,7 +134,7 @@ async function materializePathWithoutOverwrite(sourceRoot, worktreeRoot, relativ
 
 export function runTaskGitCommand(args, {
   cwd, timeoutMs = 60_000, executable = "git", spawnProcess = spawn, signal = null, input = null,
-  commandLabel = "git", env = null,
+  commandLabel = "git", env = null, rawOutput = false,
 } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -190,7 +194,8 @@ export function runTaskGitCommand(args, {
       childClosed = true;
       clearTimeout(timer);
       if (stopTimer) clearTimeout(stopTimer);
-      const output = Buffer.concat(stdout).toString("utf8").trim();
+      const stdoutBytes = Buffer.concat(stdout);
+      const output = rawOutput ? stdoutBytes : stdoutBytes.toString("utf8").trim();
       const errorText = Buffer.concat(stderr).toString("utf8").trim();
       if (termination && terminationOutcome == null) return;
       if (termination) settle(() => reject(
@@ -595,6 +600,31 @@ export class TaskGitWorkspaceService {
     ], { cwd: repoRoot, lease });
     if (!output) return null;
     return exactTreeEntry(output.replace(/\0$/u, ""), `tree entry for ${relativePath}`);
+  }
+
+  async #blobBytes(repoRoot, entry, lease) {
+    if (!entry) return null;
+    return this.#runOwned(["cat-file", "blob", entry.object], {
+      cwd: repoRoot, lease, rawOutput: true,
+    });
+  }
+
+  async #isExactLfNormalizationWitness(repoRoot, witness, lease) {
+    if (witness.disposition !== LF_NORMALIZATION_ALREADY_PRESENT) return false;
+    return exactCrLfToLfNormalization({
+      baseline: await this.#blobBytes(repoRoot, witness.baseline, lease),
+      newResult: await this.#blobBytes(repoRoot, witness.newResult, lease),
+      dev: await this.#blobBytes(repoRoot, witness.beforeDev, lease),
+    });
+  }
+
+  async #verifySquashNormalizationWitnesses(repoRoot, proof, lease) {
+    for (const witness of proof.ownerWitnesses) {
+      if (witness.disposition === LF_NORMALIZATION_ALREADY_PRESENT
+          && !await this.#isExactLfNormalizationWitness(repoRoot, witness, lease)) {
+        throw new Error(`Squash LF normalization evidence changed for ${witness.path}`);
+      }
+    }
   }
 
   async #unmergedEntries(devRoot, relativePath, lease) {
@@ -2847,14 +2877,24 @@ export class TaskGitWorkspaceService {
       survivor: await treeEntry(result, name),
     });
     const ownerWitnesses = [];
-    for (const name of ownerPaths) ownerWitnesses.push({
-      path: name,
-      baseline: await treeEntry(baseline, name),
-      beforeDev: await treeEntry(devBeforeCommit, name),
-      newResult: await treeEntry(result, name),
-      afterDev: await treeEntry(afterTree, name),
-    });
-    return normalizedTaskSquashTransfer({
+    for (const name of ownerPaths) {
+      const witness = {
+        path: name,
+        baseline: await treeEntry(baseline, name),
+        beforeDev: await treeEntry(devBeforeCommit, name),
+        newResult: await treeEntry(result, name),
+        afterDev: await treeEntry(afterTree, name),
+      };
+      if (sameTreeEntry(witness.beforeDev, witness.afterDev)
+          && !sameTreeEntry(witness.afterDev, witness.newResult)) {
+        witness.disposition = LF_NORMALIZATION_ALREADY_PRESENT;
+        if (!await this.#isExactLfNormalizationWitness(repoRoot, witness, lease)) {
+          delete witness.disposition;
+        }
+      }
+      ownerWitnesses.push(witness);
+    }
+    const proof = normalizedTaskSquashTransfer({
       version: 1,
       kind: "task-squash-transfer-v1",
       survivor: {
@@ -2882,6 +2922,8 @@ export class TaskGitWorkspaceService {
       ownerWitnesses,
       authority,
     });
+    await this.#verifySquashNormalizationWitnesses(repoRoot, proof, lease);
+    return proof;
   }
 
   async #taskWorktreeSnapshotTree(taskId, repoRoot, lease) {
@@ -3191,6 +3233,7 @@ export class TaskGitWorkspaceService {
     const proof = normalizedTaskSquashTransfer(proofValue);
     const repoRoot = await repositoryRoot(projectRoot);
     return this.#withClearDevLock(repoRoot, lease, async (ownedLease) => {
+      await this.#verifySquashNormalizationWitnesses(repoRoot, proof, ownedLease);
       const sourceBranch = await this.#runOwned([
         "rev-parse", "--verify", `refs/heads/${proof.source.branch}^{commit}`,
       ], { cwd: repoRoot, lease: ownedLease });

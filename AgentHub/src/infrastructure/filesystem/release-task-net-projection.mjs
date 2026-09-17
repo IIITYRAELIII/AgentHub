@@ -1,4 +1,8 @@
-import { normalizedTaskSquashTransfer } from "../../domain/task-squash-transfer.mjs";
+import {
+  exactCrLfToLfNormalization,
+  LF_NORMALIZATION_ALREADY_PRESENT,
+  normalizedTaskSquashTransfer,
+} from "../../domain/task-squash-transfer.mjs";
 
 const PATHS = [".", ":(exclude,glob)**/CHANGELOG.md", ":(exclude)CHANGELOG.md"];
 const MAX_ANCESTRY = 512;
@@ -40,6 +44,10 @@ export async function releaseTaskNetProjections({ tasks, baseCommit, git }) {
   const automatic = new Map();
   const integrationOwners = new Map();
   const treeEntry = async (treeish, name) => exactEntry(await git(["ls-tree", "-z", treeish, "--", name]));
+  const blobBytes = async (entry) => {
+    const value = await git(["cat-file", "blob", entry.object], { rawOutput: true });
+    return Buffer.isBuffer(value) ? value : Buffer.from(value, "utf8");
+  };
   const changedPaths = async (left, right) => (await git([
     "diff", "--no-renames", "--name-only", "-z", left, right, "--", ...PATHS,
   ])).split("\0").filter(Boolean).sort((left, right) => left.localeCompare(right));
@@ -127,6 +135,14 @@ export async function releaseTaskNetProjections({ tasks, baseCommit, git }) {
               || !sameEntry(witness.beforeDev, await treeEntry(proof.devBeforeCommit, witness.path))
               || !sameEntry(witness.newResult, await treeEntry(proof.survivor.resultCommit, witness.path))
               || !sameEntry(witness.afterDev, await treeEntry(proof.devAfterTree, witness.path))) {
+            exact = false; break;
+          }
+          if (witness.disposition === LF_NORMALIZATION_ALREADY_PRESENT
+              && !exactCrLfToLfNormalization({
+                baseline: await blobBytes(witness.baseline),
+                newResult: await blobBytes(witness.newResult),
+                dev: await blobBytes(witness.beforeDev),
+              })) {
             exact = false; break;
           }
         }

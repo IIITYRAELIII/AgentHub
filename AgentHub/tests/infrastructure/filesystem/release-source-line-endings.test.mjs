@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
@@ -24,8 +26,12 @@ const normalizedReleaseSources = [
 ];
 
 async function git(args, options = {}) {
+  return gitAt(repositoryRoot, args, options);
+}
+
+async function gitAt(cwd, args, options = {}) {
   return execFileAsync("git", args, {
-    cwd: repositoryRoot,
+    cwd,
     encoding: options.encoding ?? "utf8",
     maxBuffer: 16 * 1024 * 1024,
   });
@@ -52,5 +58,34 @@ test("release source artifacts have repository-owned LF normalization", async ()
       false,
       `${sourcePath} must not contain CR bytes in the Git artifact`,
     );
+  }
+});
+
+test("repository attributes normalize staged release sources under either autocrlf policy", async (t) => {
+  const attributes = await readFile(path.join(projectRoot, ".gitattributes"));
+  for (const autoCrlf of ["true", "false"]) {
+    const root = await mkdtemp(path.join(os.tmpdir(), `ah-release-eol-${autoCrlf}-`));
+    t.after(() => rm(root, { recursive: true, force: true, maxRetries: 3 }));
+    await gitAt(root, ["init", "--initial-branch=main"]);
+    await gitAt(root, ["config", "core.autocrlf", autoCrlf]);
+    await writeFile(path.join(root, ".gitattributes"), attributes);
+    await writeFile(path.join(root, "release.mjs"), "first\r\nsecond\r\n", "utf8");
+    await writeFile(path.join(root, "contract.md"), "first\r\nsecond\r\n", "utf8");
+    await writeFile(path.join(root, "module.bsl"), "first\r\nsecond\r\n", "utf8");
+    const binary = Buffer.from([0, 13, 10, 255, 13, 10]);
+    await writeFile(path.join(root, "fixture.bin"), binary);
+    await gitAt(root, ["add", "--", "."]);
+
+    for (const sourcePath of ["release.mjs", "contract.md"]) {
+      const { stdout } = await gitAt(root, ["show", `:${sourcePath}`], { encoding: "buffer" });
+      assert.deepEqual(stdout, Buffer.from("first\nsecond\n"));
+    }
+    const { stdout: binaryBlob } = await gitAt(root, ["show", ":fixture.bin"], { encoding: "buffer" });
+    assert.deepEqual(binaryBlob, binary);
+    const { stdout: unrelatedAttributes } = await gitAt(root, [
+      "check-attr", "eol", "--", "module.bsl", "fixture.bin",
+    ]);
+    assert.match(unrelatedAttributes, /module\.bsl: eol: unspecified/u);
+    assert.match(unrelatedAttributes, /fixture\.bin: eol: unspecified/u);
   }
 });

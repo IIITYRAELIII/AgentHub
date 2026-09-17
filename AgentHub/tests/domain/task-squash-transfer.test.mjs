@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  exactCrLfToLfNormalization,
+  LF_NORMALIZATION_ALREADY_PRESENT,
   normalizedTaskSquashTransfer,
   taskSquashTransferHash,
 } from "../../src/domain/task-squash-transfer.mjs";
@@ -85,6 +87,46 @@ test("Task squash transfer permits only an explicitly hash-bound foreign overlap
       newResult: blob("3"), afterDev: blob("2"),
     }],
   })), /discarded/);
+});
+
+test("Task squash transfer preserves the old discard guard and binds the narrow LF disposition", () => {
+  const ownerWitness = {
+    path: "contract.md", baseline: blob("1"), beforeDev: blob("2"),
+    newResult: blob("3"), afterDev: blob("2"),
+  };
+  assert.throws(() => normalizedTaskSquashTransfer(proof({
+    ownerWitnesses: [ownerWitness],
+  })), /discarded/);
+  const accepted = normalizedTaskSquashTransfer(proof({
+    ownerWitnesses: [{ ...ownerWitness, disposition: LF_NORMALIZATION_ALREADY_PRESENT }],
+  }));
+  assert.equal(accepted.ownerWitnesses[0].disposition, LF_NORMALIZATION_ALREADY_PRESENT);
+  assert.equal(
+    normalizedTaskSquashTransfer(proof()).transferHash,
+    "ae3a0baeb2c66596fb4e369c19e62a32801aa9f5a1844cc3b0fb20bbd6e9cdea",
+  );
+  for (const invalid of [
+    { ...ownerWitness, baseline: null },
+    { ...ownerWitness, baseline: { ...ownerWitness.baseline, mode: "120000" } },
+    { ...ownerWitness, newResult: { ...ownerWitness.newResult, mode: "100755" } },
+  ]) {
+    assert.throws(() => normalizedTaskSquashTransfer(proof({
+      ownerWitnesses: [{ ...invalid, disposition: LF_NORMALIZATION_ALREADY_PRESENT }],
+    })), /discarded/);
+  }
+});
+
+test("exact CRLF-to-LF proof excludes semantic bytes, lone CR, NUL and mixed dev", () => {
+  const valid = {
+    baseline: Buffer.from("first\r\nsecond\r\n"),
+    newResult: Buffer.from("first\nsecond\n"),
+    dev: Buffer.from("first\nsecond\nselected addition\n"),
+  };
+  assert.equal(exactCrLfToLfNormalization(valid), true);
+  assert.equal(exactCrLfToLfNormalization({ ...valid, newResult: Buffer.from("first\nchanged\n") }), false);
+  assert.equal(exactCrLfToLfNormalization({ ...valid, baseline: Buffer.from("first\rsecond\r\n") }), false);
+  assert.equal(exactCrLfToLfNormalization({ ...valid, baseline: Buffer.from("first\0\r\n") }), false);
+  assert.equal(exactCrLfToLfNormalization({ ...valid, dev: Buffer.from("first\r\nsecond\n") }), false);
 });
 
 test("release plan identity includes the exact squash transfer hash", () => {

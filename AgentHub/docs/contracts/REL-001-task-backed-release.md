@@ -2,6 +2,16 @@
 
 ## Exact result coverage and absorption composition (2026-09-16)
 
+A squash owner witness may classify a reviewed change as already satisfied only
+for an explicitly hash-bound LF-normalization disposition. The producer and the
+release consumer independently read the bound Git blobs and require one regular
+file mode, unchanged dev entry, at least one CRLF-to-LF replacement, byte-for-byte
+equality after that replacement, and no NUL, lone CR or remaining CR in the new
+result or dev. The disposition does not authorize dev bytes: candidate content
+continues to come only from the exact selected results and their selected deltas.
+Without the disposition, a dev entry that kept the pre-transfer blob remains a
+discarded owner delta and fails closed.
+
 The latest recorded Task result must be covered by that Task's uniquely owned
 dev integrations before release acceptance. Merely finding the result somewhere
 in dev ancestry is insufficient: another Task may have carried a later result
