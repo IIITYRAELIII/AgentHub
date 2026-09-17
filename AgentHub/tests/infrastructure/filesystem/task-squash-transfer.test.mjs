@@ -15,7 +15,10 @@ import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesyst
 import { releaseTaskNetProjections } from "../../../src/infrastructure/filesystem/release-task-net-projection.mjs";
 import { TaskBoardService } from "../../../src/application/task-board-service.mjs";
 import { TaskLifecycleService } from "../../../src/application/task-lifecycle-service.mjs";
+import { TaskReleasePlanService } from "../../../src/application/task-release-plan-service.mjs";
+import { WorkspaceReleasePreflightService } from "../../../src/application/workspace-release-preflight-service.mjs";
 import { TaskOperationReconciliationService } from "../../../src/application/task-operation-reconciliation-service.mjs";
+import { normalizedTaskSquashTransfer } from "../../../src/domain/task-squash-transfer.mjs";
 import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 
@@ -522,9 +525,9 @@ test("Git-applied squash reconciles its real SQLite transition without an invent
   await git(dev.projectRoot, "add", "unique.txt");
   const devAfterTree = await git(dev.projectRoot, "write-tree");
   await git(dev.projectRoot, "reset", "--hard", devBefore);
-  const releasePreflight = { withAwaitTransition: async (_id, operation) => operation() };
+  const squashReleasePreflight = { withAwaitTransition: async (_id, operation) => operation() };
   const lifecycle = new TaskLifecycleService({
-    taskBoard, workspaceCatalog, taskGitWorkspaces: gitService, releasePreflight,
+    taskBoard, workspaceCatalog, taskGitWorkspaces: gitService, releasePreflight: squashReleasePreflight,
   });
   const authority = {
     workspaceId: workspace.id, streamId: stream.id, provider: "codex",
@@ -597,4 +600,62 @@ test("Git-applied squash reconciles its real SQLite transition without an invent
   assert.equal(taskBoard.task(source.id).workflowStatus, "in_progress");
   assert.equal(taskBoard.task(survivor.id).gitReferences[0].resultCommit, newResultCommit);
   assert.equal(await readFile(path.join(dev.projectRoot, "unique.txt"), "utf8"), "combined\n");
+
+  const releasePlanner = new TaskReleasePlanService({ taskBoard, taskGitWorkspaces: gitService });
+  let candidateBuilds = 0;
+  const releasePreflight = new WorkspaceReleasePreflightService({
+    releasePlanner,
+    taskGitWorkspaces: gitService,
+    releaseGitWorkspaces: {
+      withAwaitTransition: async (_workspaceId, operation) => operation(),
+      assertAwaitChangesAllowed: async () => {},
+      assertPrimaryInvariant: async () => ({ projectRoot: root, headCommit: await git(root, "rev-parse", "main") }),
+      inspectMainChanges: async () => ({}),
+      prepareCandidate: async () => { candidateBuilds += 1; throw new Error("Await must not build PreRelease"); },
+    },
+    resolveReleaseValidationSource: async () => null,
+    readPublicationState: async () => ({ repositories: [] }),
+  });
+  const current = taskBoard.task(survivor.id);
+  assert.equal(current.resultReleaseRevision, current.releaseRevision);
+  const originalReleaseTasks = taskBoard.releaseTasks.bind(taskBoard);
+  const tamperedProof = normalizedTaskSquashTransfer({
+    ...current.squashTransfer,
+    transferHash: undefined,
+    survivor: {
+      ...current.squashTransfer.survivor,
+      releaseRevision: current.squashTransfer.survivor.releaseRevision + 1,
+    },
+  });
+  taskBoard.releaseTasks = (workspaceId) => originalReleaseTasks(workspaceId).map((entry) => (
+    entry.id === current.id ? { ...entry, squashTransfer: tamperedProof } : entry
+  ));
+  await assert.rejects(releasePreflight.validateAwaitAcceptance({
+    workspaceId: workspace.id,
+    acceptingTask: { id: current.id, revision: current.revision },
+    projectRoot: root,
+  }), /squash transfer does not match its frozen result/u);
+  taskBoard.releaseTasks = originalReleaseTasks;
+
+  const planBefore = await releasePlanner.plan(workspace.id);
+  const candidateBytes = { head: "preserved-candidate", tree: "preserved-tree" };
+  const acceptanceLifecycle = new TaskLifecycleService({
+    taskBoard, workspaceCatalog, taskGitWorkspaces: gitService, releasePreflight,
+  });
+  const accepted = await acceptanceLifecycle.updateWorkflowStatus({
+    taskId: current.id,
+    status: "awaiting_implementation",
+    operationId: "survivor-await",
+    projectRoot: root,
+    expectedRevision: current.revision,
+    expectedWorkflowStatus: "testing",
+  });
+  const planAfter = await releasePlanner.plan(workspace.id);
+  assert.equal(accepted.task.workflowStatus, "awaiting_implementation");
+  assert.equal(accepted.releaseIntegration.resultCommit, newResultCommit);
+  assert.equal(accepted.releaseCandidate.status, "invalidated");
+  assert.notEqual(planAfter.revision, planBefore.revision);
+  assert.equal(accepted.releaseCandidate.planRevision, planAfter.revision);
+  assert.deepEqual(candidateBytes, { head: "preserved-candidate", tree: "preserved-tree" });
+  assert.equal(candidateBuilds, 0);
 });

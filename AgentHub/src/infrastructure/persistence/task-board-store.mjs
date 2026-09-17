@@ -1241,6 +1241,7 @@ export class TaskBoardStore {
       adoptedAt: new Date(Number(adoptedAtMs)).toISOString(),
     }));
     let squashTransfer = null;
+    let resultReleaseRevision = null;
     let squashAbsorbedBy = null;
     const transferRow = database.prepare(`
       SELECT result_json FROM hub_task_lifecycle_outcomes
@@ -1252,10 +1253,29 @@ export class TaskBoardStore {
     `).get(taskId, taskId);
     if (transferRow) {
       try {
+        const outcome = JSON.parse(transferRow.result_json);
         const proof = normalizedTaskSquashTransfer(
-          JSON.parse(transferRow.result_json)?.evidence?.squashTransfer,
+          outcome?.evidence?.squashTransfer,
         );
-        if (proof.survivor.taskId === taskId) squashTransfer = proof;
+        if (proof.survivor.taskId === taskId) {
+          const outcomeTask = outcome?.task;
+          const outcomeRevision = Number(outcomeTask?.releaseRevision);
+          const references = normalizedTaskGitReferences(outcomeTask?.gitReferences);
+          const matchingReferences = references.filter((reference) => (
+            sameResolvedPath(reference.projectRoot, proof.projectRoot)
+            && reference.branch === proof.survivor.branch
+            && reference.resultCommit === proof.survivor.resultCommit
+          ));
+          if (outcomeTask?.id === taskId
+              && outcomeTask.workflowStatus === "testing"
+              && Number(outcomeTask.revision) === proof.survivor.revision + 1
+              && Number.isInteger(outcomeRevision)
+              && outcomeRevision === proof.survivor.releaseRevision + 1
+              && matchingReferences.length === 1) {
+            squashTransfer = proof;
+            resultReleaseRevision = outcomeRevision;
+          }
+        }
         if (proof.source.taskId === taskId) squashAbsorbedBy = proof;
       } catch {
         // Invalid durable evidence cannot grant release or cleanup authority.
@@ -1266,6 +1286,7 @@ export class TaskBoardStore {
       gitReferences: normalizedTaskGitReferences(gitReferences),
       gitAdoptions,
       ...(squashTransfer ? { squashTransfer } : {}),
+      ...(resultReleaseRevision ? { resultReleaseRevision } : {}),
       ...(squashAbsorbedBy ? { squashAbsorbedBy } : {}),
     };
   }

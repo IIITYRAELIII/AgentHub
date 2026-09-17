@@ -1523,11 +1523,13 @@ where the accepted tree requires deletion.
 The existing lifecycle transition reserves both Tasks. After exact Git readback,
 one SQLite transaction advances the survivor result/release revision and returns
 the source to work, retaining both cards and histories. The lifecycle outcome is
-the only durable transfer record. Release planning includes its hash; the net
-projector carries the transfer-owned result release revision separately from the
-prospective Await acceptance revision, so the exact proof remains bound to its
-Test-owned result while the future status CAS receives its own newer identity. A
-changed result or mismatched proof-owned revision still rejects composition. The net
+the only durable transfer record. Its one post-transaction Task snapshot, unique
+result reference and squash proof jointly own the Test result release revision;
+release planning must not derive that revision from the proof's pre-transaction
+survivor revision. A prospective Await plan carries this independently stored
+identity while assigning the future status CAS its own newer revision. A changed,
+missing or stale outcome, result reference or proof rejects acceptance and
+composition. The net
 projector revalidates every witness and the exact integration before projecting
 the clean result. It merges that exact result automatically with the preceding
 selected composition; any conflict rejects preparation. The rolling-dev tree is
@@ -1540,6 +1542,13 @@ they never fall back to the effective dev delta. Candidate reuse revalidates the
 same proof and requires its Task ID in the stored projected set. A result already
 contained in the approved base needs no pending projection. Generic manual
 merges receive no exception.
+
+Await validates the exact Test-owned result and its dev integration under the
+Workspace Await, Task and repository leases, then commits only the lifecycle CAS.
+It does not build, rebuild or mutate `PreRelease`. The new accepted-plan revision
+makes every prior candidate stale; the existing candidate reuse and publication
+verification gates reject that old plan while its bytes remain unchanged. Explicit
+release preparation remains the sole candidate builder.
 
 After the survivor is durably published, the same transfer evidence may prove
 the source result and branch/worktree published-by-transfer for cleanup. Exact

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { TaskLifecycleService } from "../../src/application/task-lifecycle-service.mjs";
+import { taskReleasePlanRevision } from "../../src/domain/task-release-snapshot.mjs";
 import { normalizedTaskSquashTransfer } from "../../src/domain/task-squash-transfer.mjs";
 
 function lifecycleFixture({ synchronousFence = false } = {}) {
@@ -174,7 +175,7 @@ test("absorption validates under Await then Task and dev ownership and binds con
     expectedCleanupToken: currentPreview.cleanupToken }), (error) => error === uncertain);
 });
 
-test("Await prepares PreRelease before Task commit and does not commit on composition failure", async () => {
+test("Await validates the exact Test result, commits acceptance and only invalidates the prior candidate", async () => {
   const previousReference = {
     projectRoot: "D:/project", branch: "HUB-159", resultCommit: "a".repeat(40),
   };
@@ -184,6 +185,12 @@ test("Await prepares PreRelease before Task commit and does not commit on compos
     gitReferences: [previousReference],
   };
   const calls = [];
+  const candidateBytes = { head: "old-candidate", tree: "old-tree" };
+  const existingAwait = {
+    id: "existing-await", revision: 3, releaseRevision: 3,
+    gitReferences: [{ projectRoot: "D:/project", branch: "HUB-100", resultCommit: "b".repeat(40) }],
+  };
+  const oldCandidatePlanRevision = taskReleasePlanRevision("workspace-1", [existingAwait]);
   const taskBoard = {
     task: () => task,
     lifecycleTransition: () => null,
@@ -192,6 +199,7 @@ test("Await prepares PreRelease before Task commit and does not commit on compos
       calls.push("commit");
       Object.assign(task, {
         revision: 5,
+        releaseRevision: 5,
         workflowStatus: "awaiting_implementation",
         gitReferences: [previousReference],
       });
@@ -213,6 +221,12 @@ test("Await prepares PreRelease before Task commit and does not commit on compos
     },
     taskGitWorkspaces: {
       withTaskLock: (_taskId, operation) => operation(lease),
+      withTaskRepositoryRecoveryLock: (_taskId, projectRoot, taskLease, operation) => {
+        calls.push("repo");
+        assert.equal(projectRoot, "D:/project");
+        assert.equal(taskLease, lease);
+        return operation(lease);
+      },
       prepareOwned: async () => ({ projectRoot: "D:/managed/task", branch: "HUB-174" }),
       snapshotAndMergeOwned: async () => { throw new Error("Await must not ingest bytes after Test"); },
       cleanupOwned: async () => ({ removed: 0 }),
@@ -225,14 +239,17 @@ test("Await prepares PreRelease before Task commit and does not commit on compos
         calls.push(`lock:${workspaceId}`);
         return operation();
       },
-      prepareAwaitSet: async (options) => {
-        calls.push("compose");
+      prepareAwaitSet: async () => { throw new Error("Await must not build or mutate PreRelease"); },
+      validateAwaitAcceptance: async (options) => {
+        calls.push("validate");
         assert.equal(task.workflowStatus, "testing");
-        assert.equal(options.preserveFrozen, true);
-        if (calls.filter((name) => name === "compose").length > 1) throw new Error("Task B depends on unavailable Task A");
-        const prepared = { releaseCandidates: [{ preReleaseHead: "c".repeat(40) }] };
-        await options.commitPrepared(prepared);
-        return prepared;
+        assert.deepEqual(options.acceptingTask, { id: task.id, revision: task.revision });
+        assert.equal(options.projectRoot, "D:/project");
+        if (calls.filter((name) => name === "validate").length === 2) throw new Error("exact dev integration changed");
+        return {
+          planRevision: "prospective-plan",
+          task: { taskId: task.id, taskRevision: 5, resultCommit: previousReference.resultCommit },
+        };
       },
     },
   });
@@ -249,15 +266,28 @@ test("Await prepares PreRelease before Task commit and does not commit on compos
     status: "awaiting_implementation",
     operationId: "same-await-transition",
     projectRoot: "D:/project",
-  }), /Task B depends/u);
+  }), /exact dev integration changed/u);
+  const retry = await service.updateWorkflowStatus({
+    taskId: task.id,
+    status: "awaiting_implementation",
+    operationId: "retry-await-transition",
+    projectRoot: "D:/project",
+  });
 
   assert.deepEqual(calls, [
-    "lock:workspace-1", "begin", "compose", "commit",
-    "lock:workspace-1", "begin", "compose", "fail",
+    "lock:workspace-1", "begin", "repo", "validate", "commit",
+    "lock:workspace-1", "begin", "repo", "validate", "fail",
+    "lock:workspace-1", "begin", "repo", "validate", "commit",
   ]);
-  assert.equal(task.workflowStatus, "testing");
-  assert.equal(result.releaseCandidate.status, "ready");
-  assert.equal(result.releaseCandidate.releaseCandidates[0].preReleaseHead, "c".repeat(40));
+  assert.equal(task.workflowStatus, "awaiting_implementation");
+  assert.equal(result.releaseCandidate.status, "invalidated");
+  assert.equal(retry.releaseCandidate.status, "invalidated");
+  assert.equal(result.releaseIntegration.resultCommit, previousReference.resultCommit);
+  assert.deepEqual(candidateBytes, { head: "old-candidate", tree: "old-tree" });
+  assert.notEqual(
+    taskReleasePlanRevision("workspace-1", [existingAwait, task]),
+    oldCandidatePlanRevision,
+  );
   assert.deepEqual(task.gitReferences, [previousReference]);
 });
 

@@ -109,8 +109,9 @@ export function taskReleasePlan(workspaceId, tasks = []) {
     branch: reference.branch,
     resultCommit: reference.resultCommit,
     ...(task.squashTransfer ? {
-      resultReleaseRevision: normalizedTaskSquashTransfer(task.squashTransfer)
-        .survivor.releaseRevision + 1,
+      ...(Number.isInteger(Number(task.resultReleaseRevision)) && Number(task.resultReleaseRevision) > 0
+        ? { resultReleaseRevision: Number(task.resultReleaseRevision) }
+        : {}),
       squashTransfer: normalizedTaskSquashTransfer(task.squashTransfer),
     } : {}),
     files: task.changedFiles
