@@ -2920,6 +2920,24 @@ export class TaskGitWorkspaceService {
       let readback = await this.readSquashCutoverOwned(cutover, { projectRoot: repoRoot, lease: ownedLease });
       if (readback.status === "not_staged") {
         const snapshot = await this.#taskWorktreeSnapshotTree(proof.survivor.taskId, repoRoot, ownedLease);
+        if (snapshot.headCommit !== proof.previousResultCommit
+            || snapshot.tree !== cutover.expectedPreservedTree) {
+          throw new Error("Squash cutover survivor changed after preservation readback");
+        }
+        const ignoredPaths = String(await this.#runOwned([
+          "ls-files", "--others", "--ignored", "--exclude-standard", "-z",
+        ], { cwd: snapshot.root, lease: ownedLease })).split("\0").filter(Boolean);
+        const targetPaths = String(await this.#runOwned([
+          "ls-tree", "-r", "--name-only", "-z", proof.survivor.resultCommit,
+        ], { cwd: repoRoot, lease: ownedLease })).split("\0").filter(Boolean);
+        const ignoredCollision = ignoredPaths.find((ignoredPath) => targetPaths.some((targetPath) => (
+          ignoredPath === targetPath
+          || ignoredPath.startsWith(`${targetPath}/`)
+          || targetPath.startsWith(`${ignoredPath}/`)
+        )));
+        if (ignoredCollision) {
+          throw new Error(`Squash cutover target collides with ignored bytes: ${ignoredCollision}`);
+        }
         const preservedRef = `refs/agent-hub/task-squash-cutovers/${cutover.cutoverHash}/preserved`;
         const existing = await gitMaybe(["rev-parse", "--verify", `${preservedRef}^{commit}`], { cwd: repoRoot });
         const preservedMessage = `task squash cutover preserved ${cutover.cutoverHash}`;
@@ -2950,20 +2968,21 @@ export class TaskGitWorkspaceService {
         const actualTree = await this.#runOwned(["rev-parse", `${proof.survivor.resultCommit}^{tree}`], { cwd: repoRoot, lease: ownedLease });
         if (actualTree !== cutover.reviewedSourceTree) throw new Error("Squash cutover imported result tree changed");
         await this.#runOwned(["read-tree", cutover.expectedPreservedTree], { cwd: snapshot.root, lease: ownedLease });
-        await this.#runOwned(["checkout", "--no-overwrite-ignore", proof.survivor.resultCommit, "--", "."], {
-          cwd: snapshot.root, lease: ownedLease,
-        });
-        const deleted = String(await this.#runOwned([
-          "diff", "--diff-filter=D", "--name-only", "-z", cutover.expectedPreservedTree,
-          proof.survivor.resultCommit, "--", ".",
-        ], { cwd: repoRoot, lease: ownedLease })).split("\0").filter(Boolean);
-        if (deleted.length) await this.#runOwned(["rm", "-q", "-f", "--ignore-unmatch", "--", ...deleted], {
+        await this.#runOwned(["update-index", "--refresh"], { cwd: snapshot.root, lease: ownedLease });
+        await this.#runOwned([
+          "read-tree", "-m", "-u", cutover.expectedPreservedTree, cutover.reviewedSourceTree,
+        ], {
           cwd: snapshot.root, lease: ownedLease,
         });
         const stagedTree = await this.#runOwned(["write-tree"], { cwd: snapshot.root, lease: ownedLease });
         const unstaged = await this.#runOwned(["diff-files", "--name-only", "-z"], { cwd: snapshot.root, lease: ownedLease });
         if (stagedTree !== cutover.reviewedSourceTree || unstaged) {
           throw new Error("Squash cutover could not materialize the exact reviewed survivor tree");
+        }
+        const materialized = await this.#taskWorktreeSnapshotTree(proof.survivor.taskId, repoRoot, ownedLease);
+        if (materialized.headCommit !== proof.previousResultCommit
+            || materialized.tree !== cutover.reviewedSourceTree) {
+          throw new Error("Squash cutover survivor changed during safe materialization");
         }
         await this.#runOwned([
           "update-ref", `refs/heads/${proof.survivor.branch}`,

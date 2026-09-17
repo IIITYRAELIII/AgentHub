@@ -40,6 +40,7 @@ test("squash cutover preserves dirty bytes and resumes exact staged Git state", 
 
   let interruptBranchCas = false;
   let interruptAfterPreservedRef = false;
+  let interruptBeforeSafeMaterialization = false;
   const service = new TaskGitWorkspaceService({
     dataDir,
     runCommand: async (args, options) => {
@@ -52,6 +53,11 @@ test("squash cutover preserves dirty bytes and resumes exact staged Git state", 
       if (interruptBranchCas && args[0] === "update-ref" && args[1]?.startsWith("refs/heads/HUB-235")) {
         interruptBranchCas = false;
         throw new Error("injected crash before survivor branch CAS");
+      }
+      if (interruptBeforeSafeMaterialization && args[0] === "read-tree"
+          && args[1] === "-m" && args[2] === "-u") {
+        interruptBeforeSafeMaterialization = false;
+        throw new Error("injected crash before safe materialization");
       }
       return runTaskGitCommand(args, options);
     },
@@ -103,16 +109,42 @@ test("squash cutover preserves dirty bytes and resumes exact staged Git state", 
   await service.withTaskLocks([SOURCE_ID, SURVIVOR_ID], async (lease) => {
     const preview = await service.previewSquashCutoverOwned({ ...common, cutover: cutoverIdentity, lease });
     const cutover = { version: 1, kind: "task-squash-cutover-v1", ...cutoverIdentity, squashTransfer: preview };
+    const commonDir = await git(survivorWorkspace.projectRoot, "rev-parse", "--git-common-dir");
+    const excludeFile = path.resolve(survivorWorkspace.projectRoot, commonDir, "info", "exclude");
+    await writeFile(excludeFile, "combined.txt\n");
+    await writeFile(path.join(survivorWorkspace.projectRoot, "combined.txt"), "unknown ignored bytes\n");
+    await assert.rejects(service.applySquashCutoverOwned({ cutover, source: common.source,
+      survivor: common.survivor, lease }), /collides with ignored bytes/u);
+    assert.equal(await readFile(path.join(survivorWorkspace.projectRoot, "combined.txt"), "utf8"),
+      "unknown ignored bytes\n");
+    await rm(path.join(survivorWorkspace.projectRoot, "combined.txt"));
+    await writeFile(excludeFile, "");
+    await writeFile(path.join(survivorWorkspace.projectRoot, "app.txt"), "late tracked edit\n");
+    await assert.rejects(service.applySquashCutoverOwned({ cutover, source: common.source,
+      survivor: common.survivor, lease }), /changed/u);
+    assert.equal(await readFile(path.join(survivorWorkspace.projectRoot, "app.txt"), "utf8"),
+      "late tracked edit\n");
+    await writeFile(path.join(survivorWorkspace.projectRoot, "app.txt"), "main\n");
+    await rm(path.join(survivorWorkspace.projectRoot, "app.txt"));
+    await assert.rejects(service.applySquashCutoverOwned({ cutover, source: common.source,
+      survivor: common.survivor, lease }), /changed/u);
+    assert.equal(await readFile(path.join(survivorWorkspace.projectRoot, "app.txt"), "utf8")
+      .catch((error) => error.code), "ENOENT");
+    await writeFile(path.join(survivorWorkspace.projectRoot, "app.txt"), "main\n");
     await writeFile(path.join(survivorWorkspace.projectRoot, "late.txt"), "late\n");
     await assert.rejects(service.applySquashCutoverOwned({ cutover, source: common.source,
       survivor: common.survivor, lease }), /unknown|partial|changed/u);
     await rm(path.join(survivorWorkspace.projectRoot, "late.txt"));
-    const commonDir = await git(survivorWorkspace.projectRoot, "rev-parse", "--git-common-dir");
-    await writeFile(path.resolve(survivorWorkspace.projectRoot, commonDir, "info", "exclude"), "ignored-late.txt\n");
+    await writeFile(excludeFile, "ignored-late.txt\n");
     await writeFile(path.join(survivorWorkspace.projectRoot, "ignored-late.txt"), "ignored survives\n");
     interruptAfterPreservedRef = true;
     await assert.rejects(service.applySquashCutoverOwned({ cutover, source: common.source,
       survivor: common.survivor, lease }), /after preserved ref/u);
+    assert.equal((await service.readSquashCutoverOwned(cutover, { projectRoot: root, lease })).status,
+      "not_staged");
+    interruptBeforeSafeMaterialization = true;
+    await assert.rejects(service.applySquashCutoverOwned({ cutover, source: common.source,
+      survivor: common.survivor, lease }), /before safe materialization/u);
     assert.equal((await service.readSquashCutoverOwned(cutover, { projectRoot: root, lease })).status,
       "not_staged");
     interruptBranchCas = true;
