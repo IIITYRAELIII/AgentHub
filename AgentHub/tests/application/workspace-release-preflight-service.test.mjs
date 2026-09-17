@@ -7,6 +7,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 
 import { WorkspaceReleasePreflightService } from "../../src/application/workspace-release-preflight-service.mjs";
+import { normalizedTaskSquashTransfer } from "../../src/domain/task-squash-transfer.mjs";
 import { ReleaseGitWorkspaceService } from "../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import { createRepositoryProductionValidationAdapter } from "../../src/infrastructure/process/repository-production-validation.mjs";
 
@@ -20,6 +21,14 @@ async function commit(cwd, message) {
   await git(cwd, "add", "-A");
   await git(cwd, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", message);
   return git(cwd, "rev-parse", "HEAD");
+}
+
+async function treeEntry(cwd, treeish, file) {
+  const value = await git(cwd, "ls-tree", treeish, "--", file);
+  if (!value) return null;
+  const match = /^(\d{6}) blob ([0-9a-f]{40})\t/u.exec(value);
+  assert.ok(match, `expected blob entry for ${treeish}:${file}`);
+  return { mode: match[1], object: match[2] };
 }
 
 function exactProductionValidation({ workspaceId = "workspace-1", planRevision = "plan-1", repositories }) {
@@ -563,7 +572,7 @@ test("release preflight rejects stale external production validation evidence", 
   );
 });
 
-async function realExternalValidationFixture(t, { afterValidation = null } = {}) {
+async function realExternalValidationFixture(t, { afterValidation = null, squash = false } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-preflight-real-adapter-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const origin = path.join(root, "origin.git");
@@ -577,16 +586,78 @@ async function realExternalValidationFixture(t, { afterValidation = null } = {})
   await writeFile(path.join(primary, "app.txt"), "base\n", "utf8");
   const base = await commit(primary, "base");
   await git(primary, "push", "-u", "origin", "main");
+  let sourceResult = null;
+  if (squash) {
+    const sourceRoot = path.join(root, "source");
+    await git(primary, "worktree", "add", "-b", "HUB-real-source", sourceRoot, "main");
+    t.after(() => git(primary, "worktree", "remove", "--force", sourceRoot).catch(() => {}));
+    await writeFile(path.join(sourceRoot, "source.txt"), "source\n", "utf8");
+    sourceResult = await commit(sourceRoot, "source result");
+  }
   const taskRoot = path.join(root, "task");
   await git(primary, "worktree", "add", "-b", "HUB-real-adapter", taskRoot, "main");
   t.after(() => git(primary, "worktree", "remove", "--force", taskRoot).catch(() => {}));
   await writeFile(path.join(taskRoot, "app.txt"), "candidate\n", "utf8");
+  if (squash) await writeFile(path.join(taskRoot, "source.txt"), "source\n", "utf8");
   const resultCommit = await commit(taskRoot, "task result");
+  let integration = null;
+  let squashTransfer = null;
+  if (squash) {
+    const devRoot = path.join(root, "dev");
+    await git(primary, "worktree", "add", "-b", "dev-fixture", devRoot, "main");
+    t.after(() => git(primary, "worktree", "remove", "--force", devRoot).catch(() => {}));
+    await git(devRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+      "merge", "--no-ff", "--no-edit", resultCommit);
+    const integrationCommit = await git(devRoot, "rev-parse", "HEAD");
+    const devAfterTree = await git(devRoot, "rev-parse", "HEAD^{tree}");
+    integration = { commit: integrationCommit, parent: base, order: 1 };
+    const appBaseline = await treeEntry(primary, base, "app.txt");
+    const appResult = await treeEntry(primary, resultCommit, "app.txt");
+    const sourceEntry = await treeEntry(primary, sourceResult, "source.txt");
+    const survivorSourceEntry = await treeEntry(primary, resultCommit, "source.txt");
+    squashTransfer = normalizedTaskSquashTransfer({
+      version: 1,
+      kind: "task-squash-transfer-v1",
+      survivor: {
+        taskId: "task-real", revision: 5, releaseRevision: 4,
+        resultCommit, baseCommit: base, branch: "HUB-real-adapter",
+      },
+      source: {
+        taskId: "task-source", revision: 3, releaseRevision: 3,
+        resultCommit: sourceResult, baseCommit: base, branch: "HUB-real-source",
+      },
+      projectRoot: primary,
+      previousResultCommit: base,
+      baselineResultCommit: base,
+      devBeforeCommit: base,
+      devAfterTree,
+      sourceWitnesses: [{
+        path: "source.txt", source: sourceEntry, survivor: survivorSourceEntry,
+        disposition: "preserved",
+      }],
+      ownerWitnesses: [{
+        path: "app.txt", baseline: appBaseline, beforeDev: appBaseline,
+        newResult: appResult, afterDev: appResult, disposition: "applied",
+      }, {
+        path: "source.txt", baseline: null, beforeDev: null,
+        newResult: survivorSourceEntry, afterDev: survivorSourceEntry, disposition: "applied",
+      }],
+      authority: {
+        workspaceId: "workspace-1", streamId: "release", provider: "codex",
+        threadId: "thread", proofRequestId: "real-preflight-squash-proof",
+      },
+      integrationCommit,
+    });
+  }
   const releaseGitWorkspaces = new ReleaseGitWorkspaceService({ dataDir });
   let validationCalls = 0;
+  let integrationEvidence = null;
   const plan = {
     revision: "plan-real-adapter",
-    ready: [{ taskId: "task-real", taskRevision: 2, projectRoot: primary, resultCommit }],
+    ready: [{
+      taskId: "task-real", taskRevision: squash ? 6 : 2, projectRoot: primary, resultCommit,
+      ...(squash ? { resultReleaseRevision: 5, squashTransfer } : {}),
+    }],
     blocked: [],
     conflicts: [],
   };
@@ -607,13 +678,20 @@ async function realExternalValidationFixture(t, { afterValidation = null } = {})
         headCommit: resultCommit,
         resultCommits,
       }),
-      releaseIntegrationEvidence: async ({ projectRoot, tasks }) => ({
-        repositoryRoot: projectRoot,
-        projectRoot,
-        branch: "dev",
-        headCommit: resultCommit,
-        tasks: tasks.map((task) => ({ ...task, integrations: [] })),
-      }),
+      releaseIntegrationEvidence: async ({ projectRoot, tasks }) => {
+        integrationEvidence = {
+          repositoryRoot: projectRoot,
+          projectRoot,
+          branch: "dev",
+          headCommit: resultCommit,
+          tasks: tasks.map((task) => ({
+            ...task,
+            baseCommit: base,
+            integrations: integration ? [integration] : [],
+          })),
+        };
+        return integrationEvidence;
+      },
       releaseBaseEvidence: async ({ publishedBaseCommit }) => ({ baseCommit: publishedBaseCommit }),
     },
     releaseGitWorkspaces,
@@ -641,7 +719,10 @@ async function realExternalValidationFixture(t, { afterValidation = null } = {})
     },
   });
   await service.prepareAwaitSet({ workspaceId: "workspace-1" });
-  return { root, primary, dataDir, base, resultCommit, releaseGitWorkspaces, service };
+  return {
+    root, primary, dataDir, base, resultCommit, squashTransfer,
+    integrationEvidence, releaseGitWorkspaces, service,
+  };
 }
 
 test("release preflight reuses real prepared candidate readback with the repository validation adapter", async (t) => {
@@ -660,6 +741,48 @@ test("release preflight reuses real prepared candidate readback with the reposit
   assert.equal(await git(primary, "status", "--porcelain=v1"), "");
   assert.deepEqual(await releaseGitWorkspaces.frozenCandidate(primary), before);
   assert.deepEqual(await readFile(before.checkpointFile), checkpointBefore);
+});
+
+test("real plan through prepare and preflight preserves exact squash result release identity", async (t) => {
+  const {
+    primary, service, releaseGitWorkspaces, squashTransfer, integrationEvidence,
+  } = await realExternalValidationFixture(t, {
+    squash: true,
+  });
+  assert.equal(integrationEvidence.tasks[0].resultReleaseRevision, 5);
+  assert.deepEqual(integrationEvidence.tasks[0].squashTransfer, squashTransfer);
+  const candidate = await releaseGitWorkspaces.frozenCandidate(primary);
+  const serializedManifest = JSON.parse(await readFile(candidate.manifestFile, "utf8"));
+  assert.equal(serializedManifest.tasks[0].resultReleaseRevision, 5);
+  assert.deepEqual(serializedManifest.tasks[0].squashTransfer, squashTransfer);
+  assert.equal(candidate.manifest.tasks[0].resultReleaseRevision, 5);
+  assert.deepEqual(candidate.manifest.tasks[0].squashTransfer, squashTransfer);
+
+  const result = await service.preflight({
+    workspaceId: "workspace-1",
+    expectedPlanRevision: "plan-real-adapter",
+  });
+  assert.equal(result.status, "ready");
+  assert.equal(result.productionValidation.repositories[0].frozenTasks[0].resultReleaseRevision, 5);
+  assert.deepEqual(result.productionValidation.repositories[0].frozenTasks[0].squashTransfer,
+    squashTransfer);
+
+  const readCandidate = service.releaseGitWorkspaces.frozenCandidate.bind(service.releaseGitWorkspaces);
+  for (const mutate of [
+    (task) => { delete task.resultReleaseRevision; },
+    (task) => { task.resultReleaseRevision += 1; },
+    (task) => { delete task.squashTransfer; },
+  ]) {
+    service.releaseGitWorkspaces.frozenCandidate = async (projectRoot) => {
+      const current = structuredClone(await readCandidate(projectRoot));
+      mutate(current.manifest.tasks[0]);
+      return current;
+    };
+    await assert.rejects(
+      () => service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-real-adapter" }),
+      /prepared PreRelease does not match the accepted release plan/u,
+    );
+  }
 });
 
 test("release preflight rejects source candidate movement after external validation", async (t) => {

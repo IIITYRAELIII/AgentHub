@@ -4,6 +4,7 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { normalizedTaskSquashTransfer } from "../../domain/task-squash-transfer.mjs";
 import { pathInsideOrSame, samePath } from "../filesystem/config.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -52,11 +53,24 @@ function normalizePolicy(policy = {}) {
 }
 
 function normalizeTasks(tasks = []) {
-  return tasks.map((task) => ({
-    taskId: String(task?.taskId ?? ""),
-    taskRevision: Number(task?.taskRevision),
-    resultCommit: String(task?.resultCommit ?? ""),
-  })).sort((left, right) => left.taskId.localeCompare(right.taskId));
+  return tasks.map((task) => {
+    const resultReleaseRevision = task?.resultReleaseRevision == null
+      ? null
+      : Number(task.resultReleaseRevision);
+    if (resultReleaseRevision != null
+        && (!Number.isInteger(resultReleaseRevision) || resultReleaseRevision < 1)) {
+      throw new Error(`release Task ${task?.taskId ?? "unknown"} has an invalid result release revision`);
+    }
+    return {
+      taskId: String(task?.taskId ?? ""),
+      taskRevision: Number(task?.taskRevision),
+      ...(resultReleaseRevision != null ? { resultReleaseRevision } : {}),
+      resultCommit: String(task?.resultCommit ?? ""),
+      ...(task?.squashTransfer
+        ? { squashTransfer: normalizedTaskSquashTransfer(task.squashTransfer) }
+        : {}),
+    };
+  }).sort((left, right) => left.taskId.localeCompare(right.taskId));
 }
 
 function sameTaskEvidence(candidateTasks = [], repository = {}) {
@@ -73,6 +87,9 @@ function sameTaskEvidence(candidateTasks = [], repository = {}) {
     if (expectedTask && (
       task.taskRevision !== expectedTask.taskRevision
       || task.resultCommit !== expectedTask.resultCommit
+      || (task.resultReleaseRevision ?? null) !== (expectedTask.resultReleaseRevision ?? null)
+      || String(task.squashTransfer?.transferHash ?? "")
+        !== String(expectedTask.squashTransfer?.transferHash ?? "")
     )) return false;
   }
   return true;
