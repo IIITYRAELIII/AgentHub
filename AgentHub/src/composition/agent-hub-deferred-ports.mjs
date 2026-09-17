@@ -70,10 +70,11 @@ export function createAgentHubDeferredPorts() {
     "savedLastTaskMessageRecord", "lastTaskMessageRevision", "deferredTaskMessageAtMs", "latestThreadContextUsage",
     "trackTurnTokenUsage", "consumeTurnTokenTracker", "finalizeCodexRunDelivery",
     "deliverTurnEndNotification", "repairTurnEndAttachments", "reclassifyTurnEndContextProbe",
-    "retryPendingTurnEndNotifications", "retryPendingTurnEndProjections", "waitForTurnEndCompletion",
+    "retryPendingTurnEndNotifications", "waitForTurnEndCompletion",
     "rememberCodexTaskSettings", "restoreCodexTaskSettings", "applyCodexThreadSettings",
     "backfillWorkLogPricingMetadata", "auditClaudeTranscriptSnapshots", "finalizeTaskCatalog",
     "refreshTaskCatalog",
+    "retryPendingTurnEndProjections",
   ]);
   const statePersistence = createDeferredCompositionPort("state persistence", [
     "saveState", "savePinnedTaskTitles",
