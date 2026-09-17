@@ -22,7 +22,12 @@ const repositoryRoot = path.dirname(projectRoot);
 
 const MAIN = "19bd6728478413da8b3a8a4eedca52b2058af042";
 const DEV = "0b7047c2075fe82367add07540545311fe5d0faa";
-const NORMALIZED_RESULT = "c64d83f21f17f35e9f008cd170c80daade922389";
+const REVIEWED_RESULT = process.env.AGENT_HUB_SELECTED_COMPOSITION_RESULT
+  ?? "c64d83f21f17f35e9f008cd170c80daade922389";
+const REVIEWED_DEV_AFTER_TREE = process.env.AGENT_HUB_SELECTED_COMPOSITION_DEV_AFTER_TREE ?? null;
+const REVIEWED_INTEGRATION = process.env.AGENT_HUB_SELECTED_COMPOSITION_INTEGRATION ?? null;
+const EXPECTED_SELECTED_TREE = process.env.AGENT_HUB_SELECTED_COMPOSITION_EXPECTED_TREE
+  ?? "2d9577b09d805a95087e9e045f67e6fc22f5fd50";
 const PREVIOUS_RESULT = "b717d5db6b8a826007e20bd14afc5da9b3d90042";
 const SELECTED_DESCENDANT_NORMALIZATION_PATHS = new Set([
   "AgentHub/docs/contracts/PERF-001-local-latency.md",
@@ -69,7 +74,7 @@ async function canonicalProof(cwd, dataDir, integrationCommit, devAfterTree) {
   const survivorWorkspace = await service.prepare({ taskId: survivorId, taskNumber: "HUB-235", projectRoot: cwd });
   const devWorkspace = await service.prepareDev(cwd);
   await git(sourceWorkspace.projectRoot, ["reset", "--hard", sourceResult]);
-  await git(survivorWorkspace.projectRoot, ["reset", "--hard", NORMALIZED_RESULT]);
+  await git(survivorWorkspace.projectRoot, ["reset", "--hard", REVIEWED_RESULT]);
   await git(devWorkspace.projectRoot, ["reset", "--hard", DEV]);
   const repositoryKey = taskRepositoryKey(cwd);
   await git(cwd, ["update-ref", `refs/agent-hub/task-bases/${sourceId}/${repositoryKey}`, sourceBase]);
@@ -86,7 +91,7 @@ async function canonicalProof(cwd, dataDir, integrationCommit, devAfterTree) {
     const preview = await service.previewSquashTransferOwned({
       source, survivor, projectRoot: cwd,
       baselineResultCommit: PREVIOUS_RESULT,
-      newResultCommit: NORMALIZED_RESULT,
+      newResultCommit: REVIEWED_RESULT,
       devAfterTree,
       authority: {
       workspaceId: "workspace",
@@ -156,7 +161,7 @@ const selectedTasks = (proof, integrationCommit) => [{
   taskId: "cb6f2929-7b1a-4513-9481-68e39a108480",
   taskRevision: 164,
   baseCommit: "5c2917340256fae8f67efacf55b6a0aee01085a6",
-  resultCommit: NORMALIZED_RESULT,
+  resultCommit: REVIEWED_RESULT,
   integrations: [{ commit: integrationCommit, parent: DEV, order: 1829 }],
   squashTransfer: proof,
 }];
@@ -169,13 +174,25 @@ test("mandatory clean result advances before exact five-Task replay without hist
   await git(primary, ["config", "core.autocrlf", "false"]);
   await git(primary, ["checkout", "main"]);
 
-  const index = path.join(root, "dev-after.index");
-  const env = { GIT_INDEX_FILE: index };
-  await git(primary, ["read-tree", DEV], { env });
-  for (const [position, file] of (await changedPaths(primary, PREVIOUS_RESULT, NORMALIZED_RESULT)).entries()) {
+  let devAfterTree = REVIEWED_DEV_AFTER_TREE;
+  let integrationCommit = REVIEWED_INTEGRATION;
+  if (Boolean(devAfterTree) !== Boolean(integrationCommit)) {
+    throw new Error("exact selected composition override requires both dev-after tree and integration commit");
+  }
+  if (devAfterTree) {
+    assert.equal(await value(primary, ["rev-parse", `${integrationCommit}^{tree}`]), devAfterTree);
+    assert.equal(
+      await value(primary, ["show", "-s", "--format=%P", integrationCommit]),
+      `${DEV} ${REVIEWED_RESULT}`,
+    );
+  } else {
+    const index = path.join(root, "dev-after.index");
+    const env = { GIT_INDEX_FILE: index };
+    await git(primary, ["read-tree", DEV], { env });
+    for (const [position, file] of (await changedPaths(primary, PREVIOUS_RESULT, REVIEWED_RESULT)).entries()) {
     const [before, reviewed] = await Promise.all([
       treeEntry(primary, DEV, file),
-      treeEntry(primary, NORMALIZED_RESULT, file),
+      treeEntry(primary, REVIEWED_RESULT, file),
     ]);
     if (!reviewed) {
       await git(primary, ["update-index", "--force-remove", "--", file], { env });
@@ -192,26 +209,30 @@ test("mandatory clean result advances before exact five-Task replay without hist
       mode = before.mode;
     }
     await git(primary, ["update-index", "--add", "--cacheinfo", mode, object, file], { env });
+    }
+    devAfterTree = await value(primary, ["write-tree"], { env });
+    integrationCommit = await value(primary, [
+      "-c", "user.name=Agent Hub", "-c", "user.email=agent-hub@local.invalid",
+      "commit-tree", devAfterTree, "-p", DEV, "-p", REVIEWED_RESULT,
+      "-m", "test: exact normalized squash integration",
+    ]);
   }
-  const devAfterTree = await value(primary, ["write-tree"], { env });
-  const integrationCommit = await value(primary, [
-    "-c", "user.name=Agent Hub", "-c", "user.email=agent-hub@local.invalid",
-    "commit-tree", devAfterTree, "-p", DEV, "-p", NORMALIZED_RESULT,
-    "-m", "test: exact normalized squash integration",
-  ]);
   await git(primary, ["update-ref", "refs/heads/dev", integrationCommit]);
   await git(primary, ["update-ref", "refs/heads/main", MAIN]);
 
   const proof = await canonicalProof(primary, path.join(root, "task-data"), integrationCommit, devAfterTree);
-  assert.deepEqual(
-    proof.ownerWitnesses
-      .filter((item) => item.disposition === LF_NORMALIZATION_ALREADY_PRESENT)
-      .map((item) => item.path),
-    [
-      "AgentHub/docs/contracts/PERF-001-local-latency.md",
-      "AgentHub/docs/contracts/RST-001-restart-recovery.md",
-    ],
-  );
+  const normalizationPaths = proof.ownerWitnesses
+    .filter((item) => item.disposition === LF_NORMALIZATION_ALREADY_PRESENT)
+    .map((item) => item.path);
+  const requiredNormalizationPaths = [
+    "AgentHub/docs/contracts/PERF-001-local-latency.md",
+    "AgentHub/docs/contracts/RST-001-restart-recovery.md",
+  ];
+  if (REVIEWED_DEV_AFTER_TREE) {
+    for (const requiredPath of requiredNormalizationPaths) {
+      assert.ok(normalizationPaths.includes(requiredPath), requiredPath);
+    }
+  } else assert.deepEqual(normalizationPaths, requiredNormalizationPaths);
   const service = new ReleaseGitWorkspaceService({ dataDir: path.join(root, "data") });
   const candidate = await service.prepareCandidate({
     workspaceId: "workspace",
@@ -222,7 +243,7 @@ test("mandatory clean result advances before exact five-Task replay without hist
   });
 
   const tree = await value(candidate.releaseRoot, ["rev-parse", `${candidate.preReleaseHead}^{tree}`]);
-  assert.equal(tree, "2d9577b09d805a95087e9e045f67e6fc22f5fd50");
+  assert.equal(tree, EXPECTED_SELECTED_TREE);
   const entries = new Map((await value(candidate.releaseRoot, [
     "ls-tree", "-r", tree, "--",
     "AgentHub/assets/web-app/styles.css",
@@ -339,4 +360,146 @@ test("release projection rejects a forged LF disposition with real semantic Git 
     baseCommit: main,
     git: projectorGit,
   }), /requires the exact squash projection/u);
+});
+
+test("mandatory results advance before an earlier ordinary integration and rollback preserves the candidate", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ah-multiple-mandatory-"));
+  const origin = `${root}-origin`;
+  const releaseData = `${root}-release-data`;
+  const index = `${root}-combined.index`;
+  t.after(() => Promise.all([
+    rm(root, { recursive: true, force: true, maxRetries: 3 }),
+    rm(origin, { recursive: true, force: true, maxRetries: 3 }),
+    rm(releaseData, { recursive: true, force: true, maxRetries: 3 }),
+    rm(index, { force: true }),
+  ]));
+  await git(root, ["init", "--bare", origin]);
+  await git(root, ["init", "--initial-branch=main"]);
+  await git(root, ["config", "core.autocrlf", "false"]);
+  await writeFile(path.join(root, "seed.txt"), "seed\n");
+  await git(root, ["add", "."]);
+  await git(root, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "main"]);
+  const main = await value(root, ["rev-parse", "HEAD"]);
+  const resultFor = async (branch, file, content) => {
+    await git(root, ["checkout", "-B", branch, main]);
+    await writeFile(path.join(root, file), content);
+    await git(root, ["add", file]);
+    await git(root, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", branch]);
+    return value(root, ["rev-parse", "HEAD"]);
+  };
+  const ordinaryResult = await resultFor("task-ordinary", "ordinary.txt", "ordinary\n");
+  const resultA = await resultFor("task-a", "a.txt", "a\n");
+  const resultB = await resultFor("task-b", "b.txt", "b\n");
+  const resultConflict = await resultFor("task-conflict", "a.txt", "conflict\n");
+  const ordinaryTree = await value(root, ["rev-parse", `${ordinaryResult}^{tree}`]);
+  const integrationOrdinary = await value(root, [
+    "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "commit-tree", ordinaryTree, "-p", main, "-p", ordinaryResult, "-m", "integrate ordinary",
+  ]);
+  const env = { GIT_INDEX_FILE: index };
+  await git(root, ["read-tree", integrationOrdinary], { env });
+  const aEntry = await treeEntry(root, resultA, "a.txt");
+  await git(root, ["update-index", "--add", "--cacheinfo", aEntry.mode, aEntry.object, "a.txt"], { env });
+  const treeA = await value(root, ["write-tree"], { env });
+  const integrationA = await value(root, [
+    "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "commit-tree", treeA, "-p", integrationOrdinary, "-p", resultA, "-m", "integrate a",
+  ]);
+  await git(root, ["read-tree", integrationA], { env });
+  const bEntry = await treeEntry(root, resultB, "b.txt");
+  await git(root, ["update-index", "--add", "--cacheinfo", bEntry.mode, bEntry.object, "b.txt"], { env });
+  const combinedTree = await value(root, ["write-tree"], { env });
+  const integrationB = await value(root, [
+    "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "commit-tree", combinedTree, "-p", integrationA, "-p", resultB, "-m", "integrate b",
+  ]);
+  await git(root, ["read-tree", integrationOrdinary], { env });
+  const conflictEntry = await treeEntry(root, resultConflict, "a.txt");
+  await git(root, ["update-index", "--add", "--cacheinfo", conflictEntry.mode, conflictEntry.object, "a.txt"], { env });
+  const conflictTree = await value(root, ["write-tree"], { env });
+  const integrationConflict = await value(root, [
+    "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "commit-tree", conflictTree, "-p", integrationA, "-p", resultConflict, "-m", "integrate conflict",
+  ]);
+  await git(root, ["update-ref", "refs/heads/dev", integrationB]);
+  await git(root, ["checkout", "main"]);
+  await git(root, ["remote", "add", "origin", origin]);
+  await git(root, ["push", "origin", "--all"]);
+  const proofFor = async ({ taskId, sourceId, result, file, beforeDev, afterTree, integration }) => {
+    const resultEntry = await treeEntry(root, result, file);
+    return normalizedTaskSquashTransfer({
+      version: 1,
+      kind: "task-squash-transfer-v1",
+      survivor: {
+        taskId, revision: 2, releaseRevision: 2,
+        resultCommit: result, baseCommit: main, branch: taskId,
+      },
+      source: {
+        taskId: sourceId, revision: 2, releaseRevision: 2,
+        resultCommit: result, baseCommit: main, branch: sourceId,
+      },
+      projectRoot: root,
+      previousResultCommit: main,
+      baselineResultCommit: main,
+      devBeforeCommit: beforeDev,
+      devAfterTree: afterTree,
+      sourceWitnesses: [{ path: file, source: resultEntry, survivor: resultEntry }],
+      ownerWitnesses: [{
+        path: file,
+        baseline: null,
+        beforeDev: await treeEntry(root, beforeDev, file),
+        newResult: resultEntry,
+        afterDev: await treeEntry(root, afterTree, file),
+      }],
+      authority: {
+        workspaceId: "workspace", streamId: "release", provider: "codex",
+        threadId: "thread", proofRequestId: `proof-${taskId}`,
+      },
+      integrationCommit: integration,
+    });
+  };
+  const proofA = await proofFor({
+    taskId: "task-a", sourceId: "source-a", result: resultA, file: "a.txt",
+    beforeDev: integrationOrdinary, afterTree: treeA, integration: integrationA,
+  });
+  const proofB = await proofFor({
+    taskId: "task-b", sourceId: "source-b", result: resultB, file: "b.txt",
+    beforeDev: integrationA, afterTree: combinedTree, integration: integrationB,
+  });
+  const proofConflict = await proofFor({
+    taskId: "task-conflict", sourceId: "source-conflict", result: resultConflict, file: "a.txt",
+    beforeDev: integrationA, afterTree: conflictTree, integration: integrationConflict,
+  });
+  const task = (taskId, resultCommit, integration, parent, order, squashTransfer) => ({
+    taskId, taskRevision: 3, baseCommit: main, resultCommit,
+    integrations: [{ commit: integration, parent, order }], squashTransfer,
+  });
+  const ordinaryTask = {
+    taskId: "task-ordinary", taskRevision: 3, baseCommit: main, resultCommit: ordinaryResult,
+    integrations: [{ commit: integrationOrdinary, parent: main, order: 0 }],
+  };
+  const taskA = task("task-a", resultA, integrationA, integrationOrdinary, 1, proofA);
+  const taskB = task("task-b", resultB, integrationB, integrationA, 2, proofB);
+  const conflictTask = task(
+    "task-conflict", resultConflict, integrationConflict, integrationA, 2, proofConflict,
+  );
+  const service = new ReleaseGitWorkspaceService({ dataDir: releaseData });
+  const accepted = await service.prepareCandidate({
+    workspaceId: "workspace", planRevision: "two-mandatory",
+    projectRoot: root, approvedBaseCommit: main, frozenTasks: [ordinaryTask, taskA, taskB],
+  });
+  assert.equal(await value(accepted.releaseRoot, ["rev-parse", `${accepted.preReleaseHead}^{tree}`]), combinedTree);
+  assert.deepEqual(accepted.netProjectedTaskIds.sort(), ["task-a", "task-b", "task-ordinary"]);
+  await assert.rejects(service.prepareCandidate({
+    workspaceId: "workspace", planRevision: "conflicting-mandatory",
+    projectRoot: root, approvedBaseCommit: main, frozenTasks: [ordinaryTask, taskA, conflictTask],
+  }), /Exact squash result advance failed/u);
+  const readback = await service.prepareCandidate({
+    workspaceId: "workspace", planRevision: "two-mandatory",
+    projectRoot: root, approvedBaseCommit: main, frozenTasks: [ordinaryTask, taskA, taskB],
+  });
+  assert.equal(readback.preReleaseHead, accepted.preReleaseHead);
+  assert.equal(await value(readback.releaseRoot, ["rev-parse", `${readback.preReleaseHead}^{tree}`]), combinedTree);
+  assert.equal(await value(root, ["status", "--porcelain"]), "");
+  assert.equal(await value(root, ["rev-parse", "--abbrev-ref", "HEAD"]), "main");
 });

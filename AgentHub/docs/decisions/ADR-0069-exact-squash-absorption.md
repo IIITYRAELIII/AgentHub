@@ -51,6 +51,15 @@ discard guard is unchanged. The release composer still derives its final tree
 only from selected results and deltas, so the disposition never authorizes
 additional dev content.
 
+When a release contains more than one mandatory squash projection, the composer
+speculatively advances all exact selected results before replaying the remaining
+selected integration deltas. Their deterministic projection order is preserved,
+each advance is consumed once, and a failed advance restores the prior speculative
+tree. After every selected delta, the owner binds the complete mode/blob/deletion
+tree, repeats pinned-authority validation, and verifies the committed tree against
+that exact result. Historical integration position never reimports a mandatory
+result or its rolling-dev after-image.
+
 Release projection verifies the durable evidence again from Git objects and
 admits the exact clean survivor result only through a conflict-free automatic
 merge with the preceding selected composition. The composer does not replay the

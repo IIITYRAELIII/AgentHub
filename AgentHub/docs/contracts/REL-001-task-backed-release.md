@@ -12,6 +12,15 @@ continues to come only from the exact selected results and their selected deltas
 Without the disposition, a dev entry that kept the pre-transfer blob remains a
 discarded owner delta and fails closed.
 
+Every mandatory exact-result projection advances speculatively before ordinary
+selected deltas are replayed in durable order. Multiple mandatory results advance
+in their own deterministic order; each successful projection is then consumed
+exactly once instead of being applied again at its historical dev position. A
+failed advance restores the immediately preceding speculative tree, and the
+candidate owner retains the last accepted PreRelease. The final commit is made
+only after the complete selected composition tree and its pinned authority have
+both been revalidated.
+
 The latest recorded Task result must be covered by that Task's uniquely owned
 dev integrations before release acceptance. Merely finding the result somewhere
 in dev ancestry is insufficient: another Task may have carried a later result
