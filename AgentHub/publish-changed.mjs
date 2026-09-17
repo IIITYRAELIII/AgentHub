@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 
 import { callDesktopControl } from "./desktop-control.mjs";
 import { publicationRuntimeStatus } from "./src/runtime/runtime-publication-start.mjs";
+import { prepareRuntime, installPreparedRuntime, verifyInstalledRuntime } from "./src/runtime/runtime-manager.mjs";
 import {
   npmStep,
   publicationRepositories,
@@ -497,7 +498,15 @@ if (invokedFile === fileURLToPath(import.meta.url)) {
   });
   const adapter = createFrozenReleasePublication({ repositoryRoot: REPOSITORY_ROOT, runtimeRoot: defaultRuntimeRoot(), control });
   const journal = publicationRunStore();
-  const artifacts = createPublicationArtifactSteps({ sourceRoot: ROOT, runtimeRoot: defaultRuntimeRoot(), journal, run: runStep });
+  const artifacts = createPublicationArtifactSteps({
+    sourceRoot: ROOT,
+    runtimeRoot: defaultRuntimeRoot(),
+    journal,
+    run: runStep,
+    prepareRuntimeImpl: prepareRuntime,
+    installRuntimeImpl: installPreparedRuntime,
+    verifyRuntimeImpl: verifyInstalledRuntime,
+  });
   publishChanged(process.argv.slice(2), {
     preparePublication: adapter.prepare,
     publishGit: adapter.publishGit,

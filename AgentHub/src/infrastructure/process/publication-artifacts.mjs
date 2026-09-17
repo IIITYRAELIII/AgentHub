@@ -6,7 +6,6 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { prepareRuntime, installPreparedRuntime, verifyInstalledRuntime } from "../../runtime/runtime-manager.mjs";
 import { runtimeLayout, runtimeReleaseDirectory } from "../filesystem/runtime-layout.mjs";
 import { verifyRuntimeManifest } from "../filesystem/runtime-manifest-verifier.mjs";
 
@@ -68,9 +67,9 @@ export function createPublicationArtifactSteps({
     cwd: sourceRoot, encoding: "utf8", windowsHide: true, timeout: 120_000, maxBuffer: 4 * 1024 * 1024,
     env: { ...process.env, PYTHONUTF8: "1", WRANGLER_SEND_METRICS: "false" },
   })).stdout,
-  prepareRuntimeImpl = prepareRuntime,
-  installRuntimeImpl = installPreparedRuntime,
-  verifyRuntimeImpl = verifyInstalledRuntime,
+  prepareRuntimeImpl,
+  installRuntimeImpl,
+  verifyRuntimeImpl,
   loadWorker = (file) => import(pathToFileURL(path.join(sourceRoot, "cloudflare-worker", file)).href),
 } = {}) {
   const artifactIdentity = (identity) => ({ revision: identity.revision, sourceRoot, runtimeRoot, protocol: 1 });
