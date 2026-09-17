@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { promisify } from "node:util";
 
@@ -618,6 +619,34 @@ test("Git-applied squash reconciles its real SQLite transition without an invent
   });
   const current = taskBoard.task(survivor.id);
   assert.equal(current.resultReleaseRevision, current.releaseRevision);
+  const outcomeDatabase = new DatabaseSync(databaseFile);
+  const exactOutcome = outcomeDatabase.prepare(
+    "SELECT result_json FROM hub_task_lifecycle_outcomes WHERE operation_id = ?",
+  ).get(receipt.requestId).result_json;
+  const uncorroboratedOutcomes = [
+    ["missing outcome Task", (result) => { delete result.task; }],
+    ["stale outcome revision", (result) => { result.task.releaseRevision += 1; }],
+    ["foreign outcome reference", (result) => { result.task.gitReferences[0].projectRoot = `${root}-foreign`; }],
+  ];
+  for (const [label, corrupt] of uncorroboratedOutcomes) {
+    const result = JSON.parse(exactOutcome);
+    corrupt(result);
+    outcomeDatabase.prepare(
+      "UPDATE hub_task_lifecycle_outcomes SET result_json = ? WHERE operation_id = ?",
+    ).run(JSON.stringify(result), receipt.requestId);
+    const projected = taskBoard.task(survivor.id);
+    assert.equal(projected.squashTransfer.survivor.taskId, survivor.id, label);
+    assert.equal(projected.resultReleaseRevision, undefined, label);
+    await assert.rejects(releasePreflight.validateAwaitAcceptance({
+      workspaceId: workspace.id,
+      acceptingTask: { id: projected.id, revision: projected.revision },
+      projectRoot: root,
+    }), /squash transfer does not match its frozen result/u, label);
+  }
+  outcomeDatabase.prepare(
+    "UPDATE hub_task_lifecycle_outcomes SET result_json = ? WHERE operation_id = ?",
+  ).run(exactOutcome, receipt.requestId);
+  outcomeDatabase.close();
   const originalReleaseTasks = taskBoard.releaseTasks.bind(taskBoard);
   const tamperedProof = normalizedTaskSquashTransfer({
     ...current.squashTransfer,

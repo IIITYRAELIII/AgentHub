@@ -225,8 +225,13 @@ test("squash transfer reserves and atomically updates both exact Task rows", asy
     database.prepare(
       "UPDATE hub_task_lifecycle_outcomes SET result_json = ? WHERE operation_id = 'squash'",
     ).run(JSON.stringify(result));
-    assert.equal(store.task(testedSurvivor.id).squashTransfer, undefined, label);
-    assert.equal(store.task(testedSurvivor.id).resultReleaseRevision, undefined, label);
+    const projected = store.task(testedSurvivor.id);
+    if (label === "missing proof") {
+      assert.equal(projected.squashTransfer, undefined, label);
+    } else {
+      assert.equal(projected.squashTransfer.survivor.taskId, testedSurvivor.id, label);
+    }
+    assert.equal(projected.resultReleaseRevision, undefined, label);
   }
   database.prepare(
     "UPDATE hub_task_lifecycle_outcomes SET result_json = ? WHERE operation_id = 'squash'",

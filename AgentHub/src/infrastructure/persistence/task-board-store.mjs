@@ -1258,6 +1258,7 @@ export class TaskBoardStore {
           outcome?.evidence?.squashTransfer,
         );
         if (proof.survivor.taskId === taskId) {
+          squashTransfer = proof;
           const outcomeTask = outcome?.task;
           const outcomeRevision = Number(outcomeTask?.releaseRevision);
           const references = normalizedTaskGitReferences(outcomeTask?.gitReferences);
@@ -1272,7 +1273,6 @@ export class TaskBoardStore {
               && Number.isInteger(outcomeRevision)
               && outcomeRevision === proof.survivor.releaseRevision + 1
               && matchingReferences.length === 1) {
-            squashTransfer = proof;
             resultReleaseRevision = outcomeRevision;
           }
         }
