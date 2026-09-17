@@ -254,6 +254,14 @@ export class RunJournalService {
     });
   }
 
+  ensureTurnUsageFact(completion) {
+    return this.usageStore.ensureTurnUsageFact?.(completion) ?? Promise.resolve({ supported: false });
+  }
+
+  turnProjectionStatus(completion) {
+    return this.usageStore.turnProjectionStatus?.(completion) ?? Promise.resolve(null);
+  }
+
   async initialize(restoredTurnEndSnapshot = {}) {
     const restoredTurnMessages = [
       ...(Array.isArray(restoredTurnEndSnapshot.pending) ? restoredTurnEndSnapshot.pending : []),

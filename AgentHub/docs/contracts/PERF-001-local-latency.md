@@ -198,6 +198,14 @@ historical batches read only their exact turn identities, merge repeated
 identities within the batch and commit changed records in one transaction before
 requesting the existing worker projection. Unrelated retained answers and diffs
 do not enter the Hub event loop for these operations.
+Canonical terminal-outbox readback confirms the exact journal record, matching
+immutable accounting fields in the deterministic usage fact and a current turn
+index. Recovery drains at most 100 projection-pending revisions per listing and
+projects batches of at most 16. Attempts use durable least-recently-attempted
+order, so permanent failures cannot starve a later page and a full page never
+creates a zero-delay loop. Transient contention uses one runtime-scoped
+single-flight retry with capped exponential backoff; a bounded low-frequency
+pass retains eventual recovery after that fast budget or an enumeration failure.
 Usage-history aggregation and pricing/image-estimate metadata scans also execute
 in that existing worker. After legacy-read readiness is established, statistics
 reads do not wait on the runtime mutation FIFO or materialize its ledger. They

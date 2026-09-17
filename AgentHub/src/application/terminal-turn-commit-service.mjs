@@ -350,6 +350,10 @@ export class TerminalTurnCommitService {
     return items;
   }
 
+  pendingProjections(options) {
+    return this.store.pendingProjections(options);
+  }
+
   recoverProjecting() {
     return this.store.recoverProjecting();
   }
