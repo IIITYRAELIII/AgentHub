@@ -20,7 +20,7 @@ export const AGENT_HUB_STARTUP_OPERATIONS = Object.freeze([
   { id: "provider", label: "Инициализация провайдера" },
   { id: "provider-metadata", label: "Восстановление метаданных провайдера" },
   { id: "runs", label: "Восстановление активных ходов" },
-  { id: "notifications", label: "Повтор незавершённых уведомлений" },
+  { id: "notifications", label: "Восстановление проекций завершённых ходов" },
   { id: "background-jobs", label: "Восстановление фоновых операций" },
   { id: "timers", label: "Запуск фоновых таймеров" },
   { id: "telegram", label: "Регистрация команд Telegram" },
@@ -46,6 +46,7 @@ export class AgentHubStartupCoordinator {
     providerIsRunning,
     backfillProviderMetadata,
     recoverRuns,
+    retryTerminalProjections,
     retryNotifications,
     restoreBackgroundJobs,
     startTimers,
@@ -77,6 +78,7 @@ export class AgentHubStartupCoordinator {
       providerIsRunning,
       backfillProviderMetadata,
       recoverRuns,
+      retryTerminalProjections,
       retryNotifications,
       restoreBackgroundJobs,
       startTimers,
@@ -102,7 +104,8 @@ export class AgentHubStartupCoordinator {
       ["startRuntimeCommand", "runtime-command"], ["startHubMcp", "hub-mcp"],
       ["sanitizeRollouts", "history"], ["initializeProvider", "provider"],
       ["backfillProviderMetadata", "provider-metadata"], ["recoverRuns", "runs"],
-      ["retryNotifications", "notifications"], ["restoreBackgroundJobs", "background-jobs"],
+      ["retryTerminalProjections", "notifications"], ["retryNotifications", "notifications"],
+      ["restoreBackgroundJobs", "background-jobs"],
       ["registerTelegramCommands", "telegram"], ["finalizeRestart", "restart"],
       ["markReady", "readiness"], ["startTimers", "timers"],
       ["acknowledgeSqliteRecovery", "recovery"],
@@ -237,20 +240,17 @@ export class AgentHubStartupCoordinator {
       this.logError("Cannot recover active tasks:", error.message);
     });
 
-    if (this.telegramEnabled) {
-      this.health.setCapability("telegram", { critical: false });
-      this.health.startOperation("notifications");
-      try {
-        await this.retryNotifications();
-        this.health.completeOperation("notifications");
-      } catch (error) {
-        this.health.failOperation("notifications", error);
-        this.#capture(error, "notifications");
-        throw error;
-      }
-    } else {
-      this.health.setCapability("telegram", { critical: false, state: "disabled" });
-      this.health.skipOperation("notifications");
+    if (this.telegramEnabled) this.health.setCapability("telegram", { critical: false });
+    else this.health.setCapability("telegram", { critical: false, state: "disabled" });
+    this.health.startOperation("notifications");
+    try {
+      await this.retryTerminalProjections();
+      if (this.telegramEnabled) await this.retryNotifications();
+      this.health.completeOperation("notifications");
+    } catch (error) {
+      this.health.failOperation("notifications", error);
+      this.#capture(error, "notifications");
+      throw error;
     }
 
     let backgroundFailed = false;
@@ -389,7 +389,10 @@ export class AgentHubStartupCoordinator {
       ["provider", this.initializeProvider, "provider"],
       ["provider-metadata", this.backfillProviderMetadata],
       ["runs", this.recoverRuns, "provider"],
-      ["notifications", this.retryNotifications, "telegram"],
+      ["notifications", async () => {
+        await this.retryTerminalProjections();
+        if (this.telegramEnabled) await this.retryNotifications();
+      }],
       ["background-jobs", this.restoreBackgroundJobs, "telegram"],
       ["telegram", this.registerTelegramCommands, "telegram"],
       ["recovery", this.acknowledgeSqliteRecovery, "sqlite_recovery"],

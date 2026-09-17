@@ -24,7 +24,8 @@ test("runtime facades preserve stable callbacks across late composition binding"
     },
     turnEndDelivery: {
       deliver: (value) => value,
-      retryPending: () => "retried",
+      retryPendingTelegram: () => "telegram-retried",
+      retryPendingProjections: (options) => ({ projections: options }),
       waitForCompletion: (...args) => args,
     },
     agentPreferences: {
@@ -46,7 +47,10 @@ test("runtime facades preserve stable callbacks across late composition binding"
   }]);
   assert.equal(facades.savedLastTaskMessage({ threadId: "thread" }), "last:thread");
   assert.deepEqual(facades.latestThreadContextUsage("thread"), { percent: 7 });
-  assert.equal(facades.retryPendingTurnEndNotifications(), "retried");
+  assert.equal(facades.retryPendingTurnEndNotifications(), "telegram-retried");
+  assert.deepEqual(facades.retryPendingTurnEndProjections({ recoverProjecting: true }), {
+    projections: { recoverProjecting: true },
+  });
   assert.deepEqual(facades.refreshTaskCatalog({ force: true }), { force: true });
 
   const finalized = facades.finalizeCodexRunDelivery({ turnId: "turn" }, { answer: "done" });

@@ -70,7 +70,7 @@ export function createAgentHubDeferredPorts() {
     "savedLastTaskMessageRecord", "lastTaskMessageRevision", "deferredTaskMessageAtMs", "latestThreadContextUsage",
     "trackTurnTokenUsage", "consumeTurnTokenTracker", "finalizeCodexRunDelivery",
     "deliverTurnEndNotification", "repairTurnEndAttachments", "reclassifyTurnEndContextProbe",
-    "retryPendingTurnEndNotifications", "waitForTurnEndCompletion",
+    "retryPendingTurnEndNotifications", "retryPendingTurnEndProjections", "waitForTurnEndCompletion",
     "rememberCodexTaskSettings", "restoreCodexTaskSettings", "applyCodexThreadSettings",
     "backfillWorkLogPricingMetadata", "auditClaudeTranscriptSnapshots", "finalizeTaskCatalog",
     "refreshTaskCatalog",

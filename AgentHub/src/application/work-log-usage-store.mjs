@@ -317,6 +317,44 @@ export class WorkLogUsageStore {
     );
   }
 
+  async ensureTurnUsageFact(identity) {
+    if (!this.#usageSyncStore?.importSnapshot) return { supported: false, added: 0, updated: 0 };
+    const record = await this.getTurn(identity);
+    if (!record) return { supported: true, missing: true, added: 0, updated: 0 };
+    const snapshot = usageSyncSnapshotFromLedger({ [workLogTurnKey(record)]: record }, {
+      deviceId: this.#usageSyncDeviceId,
+      deviceLabel: this.#usageSyncDeviceLabel,
+      defaultRuntimeHomeIds: this.#usageSyncRuntimeHomeIds,
+    });
+    const result = await this.#usageSyncStore.importSnapshot(snapshot);
+    return { supported: true, missing: false, ...result };
+  }
+
+  async turnProjectionStatus(identity) {
+    if (typeof this.#repository.turnProjectionStatus !== "function") return null;
+    const status = await this.#repository.turnProjectionStatus(identity);
+    const sourceRevision = Number(status?.projectionSource?.revision);
+    const recordRevision = Number(status?.recordRevision);
+    const roots = Array.isArray(status?.projectionSource?.projectRoots)
+      ? status.projectionSource.projectRoots : [];
+    const covered = status?.record && (
+      !roots.some(Boolean)
+      || roots.some((root) => sameProjectRoot(root, status.record.projectRoot))
+    );
+    return {
+      ...status,
+      current: Boolean(
+        status?.record
+        && status.indexed
+        && status.usageFact
+        && covered
+        && Number.isFinite(sourceRevision)
+        && Number.isFinite(recordRevision)
+        && sourceRevision + 1 >= recordRevision
+      ),
+    };
+  }
+
   threadTurns(identities = [], { limit = 20 } = {}) {
     return this.#repository.enqueue(
       async () => structuredClone(await this.#repository.threadRecords(identities, { limit })),

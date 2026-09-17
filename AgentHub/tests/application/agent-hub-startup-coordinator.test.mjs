@@ -19,6 +19,7 @@ function coordinator(overrides = {}) {
     providerIsRunning: () => true,
     backfillProviderMetadata: async () => calls.push("backfill"),
     recoverRuns: async () => calls.push("recover"),
+    retryTerminalProjections: async () => calls.push("projections"),
     retryNotifications: async () => calls.push("notifications"),
     restoreBackgroundJobs: async () => calls.push("jobs"),
     startTimers: () => calls.push("timers"),
@@ -100,6 +101,7 @@ test("startup preserves control, recovery and readiness order", async () => {
     "sanitize",
     "provider",
     "recover",
+    "projections",
     "notifications",
     "jobs",
     "commands",
@@ -220,6 +222,8 @@ test("core-only startup restores runs but skips Telegram-only work", async () =>
   });
   await service.start();
   assert.equal(calls.includes("recover"), true);
+  assert.equal(calls.includes("projections"), true);
+  assert.equal(calls.includes("notifications"), false);
   assert.equal(calls.includes("commands"), false);
   assert.equal(calls.includes("poll"), false);
   assert.ok(calls.includes("wait"));
@@ -227,7 +231,7 @@ test("core-only startup restores runs but skips Telegram-only work", async () =>
     health.snapshot().startup.operations
       .filter(({ state }) => state === "skipped")
       .map(({ id }) => id),
-    ["notifications", "background-jobs", "telegram", "restart", "recovery"],
+    ["background-jobs", "telegram", "restart", "recovery"],
   );
 });
 

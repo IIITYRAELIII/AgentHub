@@ -70,6 +70,18 @@ final status and final content.
   history and journal data are persisted and the shared projection succeeds.
   Projection failure preserves retryability; a superseding revision retains its
   own delivery identity. Ordinary live completion does not wait for a batch.
+- The durable terminal outbox is the sole retry owner for terminal projection.
+  A projection revision is acknowledged only after canonical readback confirms
+  its exact journal record, deterministic usage fact and current turn index.
+  An already-complete projection is acknowledged without rewriting richer
+  display metadata or account attribution. Projection-only recovery never
+  repeats the provider turn, command trace or Telegram delivery.
+- Transient SQLite busy/locked and journal-revision conflicts receive one
+  runtime-scoped, bounded single-flight retry with capped backoff. Conflict
+  recovery re-reads the exact projection before another write. A retry of an
+  already durable terminal cannot infer its historical account from the
+  runtime's current ambient account; independently persisted attribution may
+  still be retained or enriched by its existing evidence owner.
 - A later user turn cannot suppress or mutate the previous terminal entity.
 - Projection overlays the exact latest terminal independently of a later active
   turn, so both entities remain visible in provider sequence.

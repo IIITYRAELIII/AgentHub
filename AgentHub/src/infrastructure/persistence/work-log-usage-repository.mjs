@@ -191,6 +191,10 @@ export class WorkLogUsageRepository {
     return this.#database.getRecord(identity);
   }
 
+  turnProjectionStatus(identity) {
+    return this.#database.turnProjectionStatus(identity);
+  }
+
   upsertRecords(records) {
     return this.applyExternalMutation(() => this.#database.upsertRecords(records));
   }

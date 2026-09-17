@@ -71,6 +71,12 @@ a user turn and does not alter the restart/compaction operation schema.
   Candidate discovery uses terminal-store-owned persisted payload-byte metadata
   and deterministic covering-index order; the read-model owner never scans or
   sorts terminal JSON to discover candidates.
+- Startup also drains the existing durable terminal projection outbox before
+  readiness whether Telegram is enabled or disabled. Only that startup barrier
+  may return abandoned `projecting` rows to their exact pending identities;
+  same-runtime periodic recovery claims pending rows only and cannot steal an
+  active projection. The projection drain has no provider, command or Telegram
+  side effects and is disposed with the runtime timers.
 - Restart UI appears only for a real persisted restart phase and cannot hide a
   final response.
   A disconnected health request alone never asserts a restart. While waiting
