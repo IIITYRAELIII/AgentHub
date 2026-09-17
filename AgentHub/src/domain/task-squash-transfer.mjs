@@ -2,6 +2,34 @@ import { createHash } from "node:crypto";
 
 const COMMIT = /^[0-9a-f]{40}$/u;
 const EMPTY_BLOB = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391";
+export const LF_NORMALIZATION_ALREADY_PRESENT = "lf-normalization-already-present";
+
+function exactBytes(value) {
+  return Buffer.isBuffer(value) ? value : null;
+}
+
+export function exactCrLfToLfNormalization({ baseline, newResult, dev } = {}) {
+  const baselineBytes = exactBytes(baseline);
+  const resultBytes = exactBytes(newResult);
+  const devBytes = exactBytes(dev);
+  if (!baselineBytes || !resultBytes || !devBytes
+      || baselineBytes.includes(0) || resultBytes.includes(0) || devBytes.includes(0)
+      || resultBytes.includes(13) || devBytes.includes(13)) return false;
+  const normalized = [];
+  let replacements = 0;
+  for (let index = 0; index < baselineBytes.length; index++) {
+    const byte = baselineBytes[index];
+    if (byte !== 13) {
+      normalized.push(byte);
+      continue;
+    }
+    if (baselineBytes[index + 1] !== 10) return false;
+    normalized.push(10);
+    replacements++;
+    index++;
+  }
+  return replacements > 0 && Buffer.from(normalized).equals(resultBytes);
+}
 
 function requiredText(value, name, maximumLength = 2_000) {
   const text = String(value ?? "").trim();
@@ -30,6 +58,13 @@ function entry(value, name) {
 
 function sameEntry(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function regularFileEntriesWithOneMode(entries) {
+  const modes = entries.map((value) => value?.mode);
+  return entries.every(Boolean)
+    && modes.every((mode) => mode === modes[0])
+    && ["100644", "100755"].includes(modes[0]);
 }
 
 function pathValue(value) {
@@ -106,7 +141,11 @@ function canonicalWithoutHash(value) {
     } else {
       disposition = "resolved";
       if (sameEntry(afterDev, beforeDev) && !sameEntry(afterDev, newResult)) {
-        throw new Error("squash owner delta was discarded by a resolution");
+        if (String(item?.disposition ?? "") !== LF_NORMALIZATION_ALREADY_PRESENT
+            || !regularFileEntriesWithOneMode([baseline, beforeDev, newResult, afterDev])) {
+          throw new Error("squash owner delta was discarded by a resolution");
+        }
+        disposition = LF_NORMALIZATION_ALREADY_PRESENT;
       }
     }
     if (String(item?.disposition ?? disposition) !== disposition) {

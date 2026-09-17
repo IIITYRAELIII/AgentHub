@@ -774,7 +774,9 @@ export class ReleaseGitWorkspaceService {
         await runGit(["fetch", "workspace", acceptedBase], { cwd: clone.releaseRoot, timeoutMs: 300_000 });
       }
       const baseCommit = await runGit(["rev-parse", `${acceptedBase}^{commit}`], { cwd: clone.releaseRoot });
-      const candidateGit = (args) => runGit(args, { cwd: clone.releaseRoot, timeoutMs: 300_000 });
+      const candidateGit = (args, options = {}) => runGit(args, {
+        ...options, cwd: clone.releaseRoot, timeoutMs: 300_000,
+      });
       const hasSquashTransfer = tasks.some((task) => task.squashTransfer);
       let pendingTasks = hasSquashTransfer
         ? await pendingTaskIntegrations(tasks, baseCommit, candidateGit)
@@ -820,6 +822,7 @@ export class ReleaseGitWorkspaceService {
       const manifestHash = sha256(manifestText);
       const manifestFile = path.join(clone.evidenceRoot, `${manifestHash}.json`);
       let preReleaseHead = null;
+      let preparedCompositionTree = null;
       let reused = false;
       let netProjectedTaskIds = [];
       if (checkpoint?.manifestHash === manifestHash && checkpoint?.preReleaseHead
@@ -893,26 +896,53 @@ export class ReleaseGitWorkspaceService {
               taskResultCommit: task.resultCommit,
             }));
           }).sort((left, right) => left.order - right.order || left.commit.localeCompare(right.commit));
-          const appliedTaskResults = new Set();
-          for (const integration of integrations) {
+          const directResultKey = (integration) => `${integration.taskId}\0${integration.commit}`;
+          const consumedDirectResults = new Set();
+          const mergeDirectResult = async (integration, priorTaskResults, phase) => {
             const priorTree = await runGit(["write-tree"], { cwd: clone.releaseRoot });
-            const priorTaskResults = [...appliedTaskResults];
-            appliedTaskResults.add(integration.taskResultCommit);
-            if (integration.directResultMerge) {
-              const parents = [baseCommit, ...priorTaskResults].flatMap((commit) => ["-p", commit]);
+            const parents = [baseCommit, ...priorTaskResults].flatMap((commit) => ["-p", commit]);
+            try {
               const priorCommit = await runGit([
                 "-c", "user.name=Agent Hub", "-c", "user.email=agent-hub@local.invalid",
                 "commit-tree", priorTree, ...parents, "-m", "release: exact squash composition input",
               ], { cwd: clone.releaseRoot });
-              let mergedTree;
-              try {
-                mergedTree = String(await runGit([
-                  "merge-tree", "--write-tree", priorCommit, integration.commit,
-                ], { cwd: clone.releaseRoot, timeoutMs: 300_000 })).split(/\r?\n/u)[0];
-              } catch (error) {
-                throw new Error(`Exact squash result conflicts with the selected composition for Task ${integration.taskId}: ${error.message}`);
-              }
+              const mergedTree = String(await runGit([
+                "merge-tree", "--write-tree", priorCommit, integration.commit,
+              ], { cwd: clone.releaseRoot, timeoutMs: 300_000 })).split(/\r?\n/u)[0];
               await runGit(["read-tree", "--reset", "-u", mergedTree], { cwd: clone.releaseRoot });
+              const readbackTree = await runGit(["write-tree"], { cwd: clone.releaseRoot });
+              if (readbackTree !== mergedTree) {
+                throw new Error("materialized tree does not match the exact merge result");
+              }
+              return mergedTree;
+            } catch (error) {
+              await runGit(["read-tree", "--reset", "-u", priorTree], { cwd: clone.releaseRoot });
+              throw new Error(
+                `Exact squash result ${phase} failed for Task ${integration.taskId}: ${error.message}`,
+              );
+            }
+          };
+          const advancedTaskResults = [];
+          // A mandatory squash result is a clean, proof-bound composition base.
+          // Advance it first, then replay every other selected delta in its
+          // durable order. The same projection is consumed exactly once.
+          for (const integration of integrations.filter((item) => item.directResultMerge)) {
+            await mergeDirectResult(integration, advancedTaskResults, "advance");
+            advancedTaskResults.push(integration.taskResultCommit);
+            consumedDirectResults.add(directResultKey(integration));
+          }
+          const appliedTaskResults = new Set();
+          for (const integration of integrations) {
+            if (integration.directResultMerge
+                && consumedDirectResults.has(directResultKey(integration))) {
+              appliedTaskResults.add(integration.taskResultCommit);
+              continue;
+            }
+            const priorTree = await runGit(["write-tree"], { cwd: clone.releaseRoot });
+            const priorTaskResults = [...appliedTaskResults];
+            appliedTaskResults.add(integration.taskResultCommit);
+            if (integration.directResultMerge) {
+              await mergeDirectResult(integration, priorTaskResults, "composition");
               continue;
             }
             const actualParents = String(await runGit([
@@ -977,6 +1007,8 @@ export class ReleaseGitWorkspaceService {
           const staged = await gitMaybe(["diff", "--cached", "--quiet", "--"], { cwd: clone.releaseRoot }) === null;
           if (staged || candidateReuse) {
             const tree = await runGit(["write-tree"], { cwd: clone.releaseRoot });
+            preparedCompositionTree = tree;
+            if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
             const parents = [candidateReuse?.sourceHead ?? baseCommit, ...new Set(tasks.map((task) => task.resultCommit))]
               .flatMap((commit) => ["-p", commit]);
             preReleaseHead = await runGit([
@@ -986,8 +1018,20 @@ export class ReleaseGitWorkspaceService {
                 ? `release: refresh accepted Task ${candidateReuse.taskId}`
                 : `release: aggregate ${tasks.length} Await Tasks`,
             ], { cwd: clone.releaseRoot });
-          } else preReleaseHead = baseCommit;
+            const committedTree = await runGit(["rev-parse", `${preReleaseHead}^{tree}`], { cwd: clone.releaseRoot });
+            if (committedTree !== preparedCompositionTree) {
+              throw new Error("PreRelease commit does not match the exact composed tree");
+            }
+          } else {
+            preReleaseHead = baseCommit;
+            preparedCompositionTree = await runGit(["rev-parse", `${baseCommit}^{tree}`], { cwd: clone.releaseRoot });
+          }
           if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
+          const finalIndexTree = await runGit(["write-tree"], { cwd: clone.releaseRoot });
+          const finalCommitTree = await runGit(["rev-parse", `${preReleaseHead}^{tree}`], { cwd: clone.releaseRoot });
+          if (finalIndexTree !== preparedCompositionTree || finalCommitTree !== preparedCompositionTree) {
+            throw new Error("PreRelease final tree changed after selected composition validation");
+          }
           await mkdir(clone.evidenceRoot, { recursive: true });
           if (!await fileExists(manifestFile)) await writeFile(manifestFile, manifestText, "utf8");
           const previousRef = previousBranchHead || "0".repeat(40);

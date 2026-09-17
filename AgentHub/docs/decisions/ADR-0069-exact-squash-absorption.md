@@ -40,6 +40,26 @@ the new delta. This preserves excluded dev residue even when it existed in the
 previous broad survivor result, while ensuring a new selected file or function
 really enters dev. A zero-tree-change synthetic parent fails.
 
+One owner-witness disposition covers an already-satisfied repository line-ending
+normalization without applying or importing a dev blob. All four entries must be
+the same regular-file mode, dev before and after must be the exact same entry,
+and Git object bytes must prove at least one strict CRLF-to-LF replacement with
+no other byte change, NUL, lone CR or remaining CR in the new result or dev.
+Preview, confirmation, reconciliation and release projection recompute that
+predicate from the bound objects. Without this explicit disposition the normal
+discard guard is unchanged. The release composer still derives its final tree
+only from selected results and deltas, so the disposition never authorizes
+additional dev content.
+
+When a release contains more than one mandatory squash projection, the composer
+speculatively advances all exact selected results before replaying the remaining
+selected integration deltas. Their deterministic projection order is preserved,
+each advance is consumed once, and a failed advance restores the prior speculative
+tree. After every selected delta, the owner binds the complete mode/blob/deletion
+tree, repeats pinned-authority validation, and verifies the committed tree against
+that exact result. Historical integration position never reimports a mandatory
+result or its rolling-dev after-image.
+
 Release projection verifies the durable evidence again from Git objects and
 admits the exact clean survivor result only through a conflict-free automatic
 merge with the preceding selected composition. The composer does not replay the
