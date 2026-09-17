@@ -127,6 +127,7 @@ function readyRepositories(ready = [], fallbackProjectRoots = []) {
       projectRoot,
       branch: entry.branch,
       resultCommit,
+      ...(entry.squashTransfer ? { squashTransfer: entry.squashTransfer } : {}),
     });
     repositories.set(key, repository);
   }
@@ -163,6 +164,7 @@ function sameFrozenTasks(left = [], right = []) {
     taskId: String(item?.taskId ?? ""),
     taskRevision: Number(item?.taskRevision),
     resultCommit: String(item?.resultCommit ?? ""),
+    squashTransferHash: String(item?.squashTransfer?.transferHash ?? ""),
   })).sort((a, b) => a.taskId.localeCompare(b.taskId));
   return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
 }
@@ -266,9 +268,11 @@ export class WorkspaceReleasePreflightService {
   }
 
   async prepareAwaitSet({ workspaceId, expectedPlanRevision = null, fallbackProjectRoots = [], preserveFrozen = false,
-    acceptingTask = null, commitPrepared = null, lease = null,
+    acceptingTask = null, commitPrepared = null, lease = null, validateOnly = false,
   } = {}) {
-    if (acceptingTask && typeof commitPrepared !== "function") {
+    if (validateOnly && commitPrepared) throw new Error("Composition validation cannot commit Task acceptance");
+    if (validateOnly) requiredMethod(this.releaseGitWorkspaces, "validateCandidate");
+    if (acceptingTask && !validateOnly && typeof commitPrepared !== "function") {
       throw new Error("Prospective Await preparation requires its lifecycle commit");
     }
     const baseline = await this.releasePlanner.plan(workspaceId);
@@ -351,6 +355,15 @@ export class WorkspaceReleasePreflightService {
         tasks: repository.frozenTasks, lease,
       });
       baseChecks.push({ repository, base });
+      if (validateOnly) {
+        releaseCandidates.push(await this.releaseGitWorkspaces.validateCandidate({
+          planRevision: plan.revision, workspaceId, projectRoot: repository.projectRoot,
+          frozenTasks: evidence.tasks, approvedBaseCommit: base.baseCommit,
+          validateBeforeCommit: async () => { await validatePlan(); await validateBases(); },
+        }));
+        await prepare(index + 1);
+        return;
+      }
       const candidate = await this.releaseGitWorkspaces.prepareCandidate({
         planRevision: plan.revision,
         workspaceId,

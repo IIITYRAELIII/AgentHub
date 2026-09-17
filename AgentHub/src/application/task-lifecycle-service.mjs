@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
-import { ReleaseCandidateFrozenError } from "../domain/task-board-task.mjs";
+import { ReleaseCandidateFrozenError, TaskAbsorptionCompositionError } from "../domain/task-board-task.mjs";
 
 export class TaskWithdrawalBusyError extends Error {
   constructor(cause) {
@@ -31,6 +31,13 @@ export class TaskWithdrawalDependencyError extends Error {
     super(`Task ${taskId} was not returned: ${cause.message}. Handle the dependent Task first, or consolidate the Tasks; no dependent Task was changed.`);
     this.code = "TASK_WITHDRAWAL_DEPENDENCY";
     this.details = { taskId, blockedTaskIds: cause.blockedTaskIds, integrationCommit: cause.integrationCommit };
+  }
+}
+
+export class TaskSquashTransferRejectedError extends Error {
+  constructor(message) {
+    super(String(message ?? "Task squash transfer was rejected before effects"));
+    this.code = "TASK_SQUASH_TRANSFER_REJECTED";
   }
 }
 
@@ -269,6 +276,135 @@ export class TaskLifecycleService {
         return true;
       },
     });
+  }
+
+  async squashTransfer({
+    taskId, sourceTaskId, operationId, expectedTaskRevision = null,
+    expectedSourceTaskRevision = null, baselineResultCommit, newResultCommit,
+    devAfterTree, expectedTransferHash = null, authority = null, projectRoot = null,
+  } = {}) {
+    requiredMethod(this.taskBoard, "commitSquashTransferTransition");
+    requiredMethod(this.taskGitWorkspaces, "withTaskLocks");
+    requiredMethod(this.taskGitWorkspaces, "previewSquashTransferOwned");
+    requiredMethod(this.taskGitWorkspaces, "applySquashTransferOwned");
+    requiredMethod(this.taskGitWorkspaces, "readSquashTransferOwned");
+    const initialSurvivor = this.#task(taskId);
+    const initialSource = this.#task(sourceTaskId);
+    const workspace = initialSurvivor.workspaceId
+      ? this.workspaceCatalog.workspace(initialSurvivor.workspaceId)
+      : null;
+    if (!workspace || workspace.settings?.releaseWorkflowEnabled !== true
+        || initialSource.workspaceId !== initialSurvivor.workspaceId
+        || initialSource.id === initialSurvivor.id) {
+      throw new TaskSquashTransferRejectedError("Task squash transfer requires two Tasks in one enabled release Workspace");
+    }
+    const root = path.resolve(String(projectRoot || this.#projectRoot(initialSurvivor) || ""));
+    if (!root || !samePath(root, this.#projectRoot(initialSource))) {
+      throw new TaskSquashTransferRejectedError("Task squash transfer source and survivor repository does not match");
+    }
+    const operation = String(operationId ?? "").trim();
+    if (!operation) throw new TaskSquashTransferRejectedError("Task squash transfer operation id is required");
+    return this.releasePreflight.withAwaitTransition(workspace.id, () => this.taskGitWorkspaces.withTaskLocks(
+      [initialSource.id, initialSurvivor.id],
+      async (lease) => {
+        const survivor = this.#task(initialSurvivor.id);
+        const source = this.#task(initialSource.id);
+        if (survivor.workflowStatus !== "testing" || source.workflowStatus !== "testing"
+            || (expectedTaskRevision != null && survivor.revision !== Number(expectedTaskRevision))
+            || (expectedSourceTaskRevision != null && source.revision !== Number(expectedSourceTaskRevision))) {
+          throw new TaskSquashTransferRejectedError("Task squash transfer revisions or Test status changed");
+        }
+        const preview = await this.taskGitWorkspaces.previewSquashTransferOwned({
+          source,
+          survivor,
+          projectRoot: root,
+          baselineResultCommit,
+          newResultCommit,
+          devAfterTree,
+          authority,
+          lease,
+        });
+        if (!expectedTransferHash) return {
+          confirmationRequired: true,
+          transferHash: preview.transferHash,
+          squashTransfer: preview,
+          task: survivor,
+          sourceTask: source,
+        };
+        if (String(expectedTransferHash).trim().toLowerCase() !== preview.transferHash) {
+          throw new TaskSquashTransferRejectedError("Task squash transfer confirmation hash changed");
+        }
+        await this.#assertOwned(lease);
+        await this.#mutation(() => this.taskBoard.beginLifecycleTransition({
+          id: survivor.id,
+          operationId: operation,
+          kind: "workflow",
+          targetWorkflowStatus: "testing",
+          expectedRevision: survivor.revision,
+          evidence: { squashTransfer: preview },
+          releaseContext: {
+            workspaceId: survivor.workspaceId,
+            streamId: survivor.streamId,
+            projectRoot: root,
+            source: {
+              taskId: source.id,
+              revision: source.revision,
+              workflowStatus: source.workflowStatus,
+              resultCommit: preview.source.resultCommit,
+              projectRoot: root,
+            },
+          },
+        }), operation);
+        let applied;
+        try {
+          applied = await this.taskGitWorkspaces.applySquashTransferOwned({
+            source,
+            survivor,
+            projectRoot: root,
+            baselineResultCommit,
+            newResultCommit,
+            devAfterTree,
+            authority,
+            expectedTransferHash: preview.transferHash,
+            lease,
+          });
+        } catch (error) {
+          const readback = await this.taskGitWorkspaces.readSquashTransferOwned(preview, {
+            projectRoot: root, lease,
+          });
+          if (readback.status === "applied") applied = readback.proof;
+          else if (readback.status === "not_applied") {
+            await this.#failWhileOwned(lease, operation, error);
+            throw error;
+          } else {
+            const unknown = new Error(`Task squash transfer Git outcome is unknown: ${error.message}`);
+            unknown.code = "TASK_SQUASH_TRANSFER_UNKNOWN";
+            throw unknown;
+          }
+        }
+        await this.#assertOwned(lease);
+        try {
+          return await this.#mutation(() => this.taskBoard.commitSquashTransferTransition({
+            operationId: operation,
+            squashTransfer: applied,
+          }), operation);
+        } catch (error) {
+          const outcome = this.taskBoard.lifecycleOutcome(operation);
+          if (outcome?.taskId === survivor.id
+              && outcome.result?.evidence?.squashTransfer?.transferHash === preview.transferHash) {
+            return {
+              task: outcome.result.task,
+              sourceTask: outcome.result.sourceTask,
+              squashTransfer: outcome.result.evidence.squashTransfer,
+            };
+          }
+          const unknown = new Error(`Task squash transfer durable outcome is unknown: ${error.message}`);
+          unknown.code = "TASK_SQUASH_TRANSFER_UNKNOWN";
+          throw unknown;
+        }
+      },
+      { guardTaskId: initialSurvivor.id },
+    ));
   }
 
   async #updateWorkflowStatusLocked({
@@ -573,20 +709,29 @@ export class TaskLifecycleService {
       }
   }
 
-  withUnknownWorkflowReconciliationLock({ taskId, projectRoot } = {}, operation) {
+  withUnknownWorkflowReconciliationLock({ taskId, sourceTaskId = null, projectRoot } = {}, operation) {
     const task = this.#task(taskId);
     const workspace = task.workspaceId ? this.workspaceCatalog.workspace(task.workspaceId) : null;
     if (workspace?.settings?.releaseWorkflowEnabled !== true || !this.releasePreflight) {
       throw new Error("Unknown workflow reconciliation requires an enabled release workflow");
     }
     requiredMethod(this.taskGitWorkspaces, "withTaskRecoveryLock");
+    if (sourceTaskId) requiredMethod(this.taskGitWorkspaces, "withTaskRecoveryLocks");
     requiredMethod(this.taskGitWorkspaces, "withTaskRepositoryRecoveryLock");
     return this.releasePreflight.withAwaitTransition(workspace.id, () => (
-      this.taskGitWorkspaces.withTaskRecoveryLock(task.id, (taskLease) => (
+      (sourceTaskId
+        ? this.taskGitWorkspaces.withTaskRecoveryLocks(
+          [task.id, sourceTaskId],
+          (taskLease) => this.taskGitWorkspaces.withTaskRepositoryRecoveryLock(
+            task.id, projectRoot, taskLease, operation,
+          ),
+          { guardTaskId: task.id },
+        )
+        : this.taskGitWorkspaces.withTaskRecoveryLock(task.id, (taskLease) => (
         this.taskGitWorkspaces.withTaskRepositoryRecoveryLock(
           task.id, projectRoot, taskLease, operation,
         )
-      ))
+        )))
     ));
   }
 
@@ -596,6 +741,60 @@ export class TaskLifecycleService {
     await this.#assertOwned(lease);
     const current = this.#task(taskId);
     const transition = this.taskBoard.lifecycleTransition?.(operationId);
+    const squashTransfer = transition?.evidence?.squashTransfer ?? null;
+    if (squashTransfer) {
+      requiredMethod(this.taskGitWorkspaces, "readSquashTransferOwned");
+      requiredMethod(this.taskGitWorkspaces, "applySquashTransferOwned");
+      requiredMethod(this.taskGitWorkspaces, "materializeSquashTransferOwned");
+      requiredMethod(this.taskGitWorkspaces, "assertNoProcessTreeGuardOwned");
+      requiredMethod(this.taskBoard, "commitSquashTransferTransition");
+      const source = this.#task(squashTransfer.source.taskId);
+      if (transition.operationId !== operationId || transition.taskId !== current.id
+          || transition.phase !== "pending_git" || transition.targetWorkflowStatus !== "testing"
+          || current.revision !== transition.expectedRevision
+          || source.revision !== transition.priorSourceTask?.revision
+          || current.workflowStatus !== "testing" || source.workflowStatus !== "testing") {
+        throw new Error("Unknown squash transfer identity or two-Task CAS does not match");
+      }
+      const recovery = guardId ? await this.taskGitWorkspaces.recoverProcessTreeGuard(current.id, {
+        repositoryRoot: projectRoot, guardId, proof, lease,
+      }) : null;
+      if (!guardId) {
+        await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(current.id, { lease });
+      }
+      let readback = await this.taskGitWorkspaces.readSquashTransferOwned(squashTransfer, {
+        projectRoot, lease,
+      });
+      if (readback.status === "not_applied") {
+        const applied = await this.taskGitWorkspaces.applySquashTransferOwned({
+          source,
+          survivor: current,
+          projectRoot,
+          baselineResultCommit: squashTransfer.baselineResultCommit,
+          newResultCommit: squashTransfer.survivor.resultCommit,
+          devAfterTree: squashTransfer.devAfterTree,
+          authority: squashTransfer.authority,
+          expectedTransferHash: squashTransfer.transferHash,
+          lease,
+        });
+        readback = { status: "applied", proof: applied };
+      } else if (readback.status === "pending_materialization") {
+        await this.taskGitWorkspaces.materializeSquashTransferOwned(readback.proof, {
+          projectRoot, lease,
+        });
+        readback = await this.taskGitWorkspaces.readSquashTransferOwned(readback.proof, {
+          projectRoot, lease,
+        });
+      }
+      if (readback.status !== "applied") {
+        throw new Error("Unknown squash transfer Git effect cannot be reconciled safely");
+      }
+      const result = await this.#mutation(() => this.taskBoard.commitSquashTransferTransition({
+        operationId,
+        squashTransfer: readback.proof,
+      }), operationId);
+      return { result, recovery };
+    }
     if (finalizeCommittedWithdrawal) {
       const outcome = this.taskBoard.lifecycleOutcome(operationId);
       const withdrawal = outcome?.result?.evidence?.withdrawal;
@@ -663,7 +862,10 @@ export class TaskLifecycleService {
 
   async #cleanupPreview(task, action) {
     const preview = this.taskGitWorkspaces?.cleanupPreview
-      ? await this.taskGitWorkspaces.cleanupPreview(task.id, { gitReferences: task.gitReferences })
+      ? await this.taskGitWorkspaces.cleanupPreview(task.id, {
+        gitReferences: task.gitReferences,
+        squashAbsorbedBy: task.squashAbsorbedBy,
+      })
       : { taskId: task.id, workspaces: [], gitReferences: task.gitReferences ?? [], dirty: false, unpublished: [], deleting: [] };
     return confirmation(task, action, preview);
   }
@@ -672,9 +874,17 @@ export class TaskLifecycleService {
     if (taskId === absorbedIntoTaskId) throw new Error("A Task cannot absorb itself");
     requiredMethod(this.taskGitWorkspaces, "withTaskLocks");
     requiredMethod(this.taskGitWorkspaces, "withAbsorptionEvidenceOwned");
-    return this.taskGitWorkspaces.withTaskLocks([taskId, absorbedIntoTaskId], async (lease) => {
+    const initial = this.#task(taskId);
+    const workspace = initial.workspaceId ? this.workspaceCatalog.workspace(initial.workspaceId) : null;
+    const releaseWorkflow = workspace?.settings?.releaseWorkflowEnabled === true;
+    if (releaseWorkflow) requiredMethod(this.releasePreflight, "prepareAwaitSet");
+    const complete = () => this.taskGitWorkspaces.withTaskLocks([taskId, absorbedIntoTaskId], async (lease) => {
       const task = this.#task(taskId);
       const target = this.#task(absorbedIntoTaskId);
+      if (task.workspaceId !== initial.workspaceId
+          || (this.workspaceCatalog.workspace(task.workspaceId)?.settings?.releaseWorkflowEnabled === true) !== releaseWorkflow) {
+        throw new Error("Workspace changed during combined closure");
+      }
       if (!task.workspaceId || task.workspaceId !== target.workspaceId || target.status === "done"
           || !["testing", "awaiting_implementation"].includes(target.workflowStatus)) {
         throw new Error("Surviving Task must be open and tested in the same Workspace");
@@ -682,12 +892,55 @@ export class TaskLifecycleService {
       if (!["new", "in_progress", "blocked"].includes(task.workflowStatus)) {
         throw new Error("Return the source Task from Test/Await before combining it");
       }
-      return this.taskGitWorkspaces.withAbsorptionEvidenceOwned({ source: task, target, lease }, async (gitEvidence) => {
-        const absorbedInto = { ...gitEvidence, taskRevision: target.revision };
-        const preview = confirmation(task, "complete", { absorbedInto: { ...absorbedInto, taskRevision: target.revision } });
-        preview.warning = "Close the source Task as combined. Its branch, worktree and history are preserved; this does not mark it published.";
+      return this.taskGitWorkspaces.withAbsorptionEvidenceOwned({ source: task, target, lease }, async (gitEvidence, ownedLease) => {
+        let composition = null;
+        // This gate precedes lifecycle admission. Only this bounded scope can
+        // classify composition failure as proof that no source closure began.
+        try {
+          composition = releaseWorkflow ? await this.releasePreflight.prepareAwaitSet({
+            workspaceId: task.workspaceId, validateOnly: true, lease: ownedLease,
+            ...(target.workflowStatus === "testing" ? { acceptingTask: { id: target.id, revision: target.revision } } : {}),
+          }) : null;
+          if (composition && !composition.taskIds.includes(target.id)) {
+            throw new Error("Surviving Task is absent from the verified release composition");
+          }
+          // External editors and Git do not take Hub's leases. Reuse the held
+          // repository leases to read both workspaces again after slow validation.
+          await this.taskGitWorkspaces.withAbsorptionEvidenceOwned({ source: task, target, lease: ownedLease }, async (fresh) => {
+            if (JSON.stringify(fresh) !== JSON.stringify(gitEvidence)) {
+              throw new Error("Task Git evidence changed during combined closure validation");
+            }
+          });
+          if (this.#task(target.id).revision !== target.revision || this.#task(task.id).revision !== task.revision) {
+            throw new Error("Task changed during combined closure validation");
+          }
+        } catch (error) {
+          throw new TaskAbsorptionCompositionError(error);
+        }
+        const absorbedInto = { ...gitEvidence, taskRevision: target.revision,
+          ...(composition ? { composition } : {}),
+        };
+        const exactSquash = (gitEvidence.repositories ?? []).length > 0
+          && gitEvidence.repositories.every((item) => item.squashTransferHash
+            && item.squashTransferHash === task.squashAbsorbedBy?.transferHash);
+        const cleanup = exactSquash
+          ? await this.taskGitWorkspaces.cleanupPreview(task.id, {
+            gitReferences: task.gitReferences,
+            squashAbsorbedBy: task.squashAbsorbedBy,
+          })
+          : { workspaces: [], gitReferences: [], dirty: false, unpublished: [], deleting: [] };
+        const preview = confirmation(task, "complete", {
+          ...cleanup,
+          absorbedInto: { ...absorbedInto, taskRevision: target.revision },
+        });
+        preview.warning = exactSquash
+          ? "Close the squash-absorbed source Task and remove only its exact clean Git artifacts after the survivor is durably published."
+          : "Close the source Task as combined. Its branch, worktree and history are preserved; this does not mark it published.";
         if (confirmCleanup !== true) return preview;
         if (expectedCleanupToken !== preview.cleanupToken) throw new Error("Combined closure confirmation is stale; read the preview again");
+        if (exactSquash && (cleanup.dirty || cleanup.unpublished.length)) {
+          throw new Error("Squash-absorbed Task cleanup requires its exact clean source result and published survivor");
+        }
         await this.#assertOwned(lease);
         await this.#mutation(() => this.taskBoard.beginLifecycleTransition({
           id: task.id, operationId, kind: "complete", expectedRevision: task.revision,
@@ -695,8 +948,17 @@ export class TaskLifecycleService {
         }), operationId);
         try {
           await this.#assertOwned(lease);
+          if (exactSquash) await this.taskGitWorkspaces.cleanupOwned(task.id, {
+            allowDirty: false,
+            requirePublished: true,
+            gitReferences: task.gitReferences,
+            squashAbsorbedBy: task.squashAbsorbedBy,
+            expectedPreview: cleanup,
+            lease: ownedLease,
+          });
+          await this.#assertOwned(lease);
           return await this.#mutation(() => this.taskBoard.finalizeCleanupTransition(operationId, {
-            receiptEvidence: { absorbedInto },
+            receiptEvidence: { absorbedInto, ...(exactSquash ? { cleanup } : {}) },
           }), operationId);
         } catch (error) {
           await this.#failWhileOwned(lease, operationId, error);
@@ -704,6 +966,9 @@ export class TaskLifecycleService {
         }
       });
     });
+    return releaseWorkflow
+      ? this.releasePreflight.withAwaitTransition(workspace.id, complete, { changesAwait: async () => true })
+      : complete();
   }
 
   async complete({ taskId, operationId, confirmCleanup = false, expectedCleanupToken = null, absorbedIntoTaskId = null } = {}) {

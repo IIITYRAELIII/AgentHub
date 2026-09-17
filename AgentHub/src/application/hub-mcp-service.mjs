@@ -25,10 +25,11 @@ import {
   TaskDependencyPendingError,
   TaskLifecycleBeginRejectedError,
   ReleaseCandidateFrozenError,
+  TaskAbsorptionCompositionError,
 } from "../domain/task-board-task.mjs";
 import { taskRunIsActive } from "../domain/task-runs.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
-import { TaskLifecycleService, TaskIntegrationConflictError, TaskAwaitIntegrationError, TaskWithdrawalDependencyError, TaskWithdrawalBusyError } from "./task-lifecycle-service.mjs";
+import { TaskLifecycleService, TaskIntegrationConflictError, TaskAwaitIntegrationError, TaskWithdrawalDependencyError, TaskWithdrawalBusyError, TaskSquashTransferRejectedError } from "./task-lifecycle-service.mjs";
 import { TaskOperationReconciliationService } from "./task-operation-reconciliation-service.mjs";
 import { createWorkspaceCatalogMutationOwner } from "./sqlite-mutation-owner.mjs";
 
@@ -622,7 +623,7 @@ export class HubMcpService {
           type: "string",
           enum: ["queue", "steer"],
           default: "queue",
-          description: "Queue after the active turn, or steer the active turn and queue if steering is no longer possible.",
+          description: "Queue after the active turn, or request exact steering of the current managed run. An undeliverable exact steer requires an explicit retry or queue decision.",
         },
         confirm_send: { type: "boolean", description: "Must be true because this starts, queues or steers another agent turn." },
       }, ["stream_id", "text", "confirm_send"]),
@@ -712,12 +713,19 @@ export class HubMcpService {
         expected_workflow_status: { type: "string", enum: ["new", "in_progress", "blocked", "testing", "awaiting_implementation", "done"], description: "Optional exact current workflow status CAS." },
         cutover_source_commit: { type: "string", description: "Optional clean checkout commit recorded by a local cutover." },
         cutover_projector_sha256: { type: "string", description: "Optional verified release-projector hash recorded by a local cutover." },
+        squash_source_task_id: { type: "string", description: "Release Manager-only source Task whose exact result is transferred into this survivor." },
+        squash_source_task_revision: { type: "integer", minimum: 1 },
+        squash_baseline_result_commit: { type: "string", pattern: "^[0-9a-f]{40}$" },
+        squash_new_result_commit: { type: "string", pattern: "^[0-9a-f]{40}$" },
+        squash_dev_after_tree: { type: "string", pattern: "^[0-9a-f]{40}$" },
+        squash_proof_request_id: { type: "string", description: "On confirmation, the exact request_id of the read-only squash preview." },
+        expected_squash_transfer_hash: { type: "string", pattern: "^[0-9a-f]{64}$", description: "Omit for an exact preview; confirm a later request with the returned hash." },
       }, ["task_id", "status"]),
-      tool("hub_task_operation_reconcile", "Release Manager-only reconciliation of one exact unknown Task workflow operation. A pending Git operation requires trusted process-tree proof; an already terminal lifecycle settles its original receipt without Git replay or invented guard evidence.", {
+      tool("hub_task_operation_reconcile", "Release Manager-only reconciliation of one exact unknown Task workflow operation. A real unresolved process guard requires trusted proof; exact pending withdrawal or squash state can reconcile without inventing one. An already terminal lifecycle settles its original receipt without Git replay.", {
         task_id: { type: "string" },
         operation_request_id: { type: "string" },
         project_root: { type: "string" },
-        guard_id: { type: "string", description: "Required for a guarded pending operation. An exact persisted Task withdrawal without a process guard can reconcile without it." },
+        guard_id: { type: "string", description: "Required for an actually guarded pending operation. Exact persisted Task withdrawal or squash state without a process guard can reconcile without it." },
         proof_kind: { type: "string", enum: ["system-restart-after-guard"], description: "Required when recovering a process-tree guard." },
         proof_summary: { type: "string", description: "Required when recovering a process-tree guard." },
         expected_task_revision: { type: "integer", minimum: 1, description: "Supply exactly when the original workflow request used this CAS field; required for cutover receipts." },
@@ -726,6 +734,13 @@ export class HubMcpService {
         cutover_projector_sha256: { type: "string", description: "Required only to reproduce an original local cutover receipt." },
         cutover_source_task_id: { type: "string", description: "Required only when the original local cutover used a separate source Task." },
         cutover_source_task_revision: { type: "integer", minimum: 1, description: "Required only when the original local cutover used a separate source Task." },
+        squash_source_task_id: { type: "string" },
+        squash_source_task_revision: { type: "integer", minimum: 1 },
+        squash_baseline_result_commit: { type: "string", pattern: "^[0-9a-f]{40}$" },
+        squash_new_result_commit: { type: "string", pattern: "^[0-9a-f]{40}$" },
+        squash_dev_after_tree: { type: "string", pattern: "^[0-9a-f]{40}$" },
+        squash_proof_request_id: { type: "string" },
+        expected_squash_transfer_hash: { type: "string", pattern: "^[0-9a-f]{64}$" },
         confirm_reconcile: { type: "boolean", description: "Must be true because this settles the original unknown receipt and may recover a guarded process boundary." },
       }, ["task_id", "operation_request_id", "project_root", "confirm_reconcile"]),
       tool("hub_task_legacy_git_adopt", "Release Manager-only migration for a legacy Await Task with no Git reference. It verifies terminal Stream evidence and exact non-changelog patch equivalence to a named commit already in local main before recording immutable Task evidence.", {
@@ -969,6 +984,15 @@ export class HubMcpService {
           cutoverProjectorSha256: args.cutover_projector_sha256,
           cutoverSourceTaskId: args.cutover_source_task_id,
           cutoverSourceTaskRevision: args.cutover_source_task_revision,
+          ...(args.squash_source_task_id != null ? {
+            squashSourceTaskId: args.squash_source_task_id,
+            squashSourceTaskRevision: args.squash_source_task_revision,
+            squashBaselineResultCommit: args.squash_baseline_result_commit,
+            squashNewResultCommit: args.squash_new_result_commit,
+            squashDevAfterTree: args.squash_dev_after_tree,
+            squashProofRequestId: args.squash_proof_request_id,
+            expectedSquashTransferHash: args.expected_squash_transfer_hash,
+          } : {}),
           confirmed: args.confirm_reconcile,
         });
       case "hub_task_legacy_git_adopt":
@@ -1361,12 +1385,79 @@ export class HubMcpService {
     expected_workflow_status: expectedWorkflowStatus = null,
     cutover_source_task_id: sourceTaskId = null,
     cutover_source_task_revision: sourceTaskRevision = null,
+    squash_source_task_id: squashSourceTaskId = null,
+    squash_source_task_revision: squashSourceTaskRevision = null,
+    squash_baseline_result_commit: squashBaselineResultCommit = null,
+    squash_new_result_commit: squashNewResultCommit = null,
+    squash_dev_after_tree: squashDevAfterTree = null,
+    squash_proof_request_id: squashProofRequestId = null,
+    expected_squash_transfer_hash: expectedSquashTransferHash = null,
   } = {}, { source = null } = {}) {
     if ((sourceTaskId != null || sourceTaskRevision != null) && !source) {
       throw new Error("Cross-Task cutover requires the supported local cutover entrypoint");
     }
     const task = this.#task(context, taskId);
     const workflowStatus = requiredText(status, "task workflow status", 40);
+    const squashValues = [
+      squashSourceTaskId, squashSourceTaskRevision, squashBaselineResultCommit,
+      squashNewResultCommit, squashDevAfterTree,
+    ];
+    const squashRequested = [...squashValues, squashProofRequestId, expectedSquashTransferHash]
+      .some((value) => value != null);
+    if (squashRequested) {
+      if (squashValues.some((value) => value == null)) {
+        throw new Error("Task squash transfer requires the complete exact source/result/tree identity");
+      }
+      if (source || sourceTaskId != null || sourceTaskRevision != null || workflowStatus !== "testing") {
+        throw new Error("Task squash transfer is a distinct Test-to-Test operation");
+      }
+      if (!this.#isReleaseManager(context)) {
+        throw new Error("Task squash transfer requires a Release Manager Stream");
+      }
+      if (expectedRevision == null) {
+        throw new Error("Task squash transfer requires the exact survivor Task revision");
+      }
+      if (expectedWorkflowStatus != null && expectedWorkflowStatus !== "testing") {
+        throw new Error("Task squash transfer expected workflow status must be testing");
+      }
+      if (expectedSquashTransferHash && !squashProofRequestId) {
+        throw new Error("Task squash transfer confirmation requires the exact preview request id");
+      }
+      if (!expectedSquashTransferHash && squashProofRequestId) {
+        throw new Error("Task squash transfer preview identity is returned by the preview request");
+      }
+      const proofRequestId = expectedSquashTransferHash
+        ? requiredText(squashProofRequestId, "squash proof request id", 200)
+        : operationId;
+      const result = await this.taskLifecycle.squashTransfer({
+        taskId: task.id,
+        sourceTaskId: squashSourceTaskId,
+        operationId,
+        expectedTaskRevision: expectedRevision,
+        expectedSourceTaskRevision: squashSourceTaskRevision,
+        baselineResultCommit: squashBaselineResultCommit,
+        newResultCommit: squashNewResultCommit,
+        devAfterTree: squashDevAfterTree,
+        expectedTransferHash: expectedSquashTransferHash,
+        projectRoot: this.#taskProjectRoot(
+          context,
+          String(task.streamId ?? "").trim() || context.streamId,
+          task.workspaceId,
+        ),
+        authority: {
+          workspaceId: context.workspaceId,
+          streamId: context.streamId,
+          provider: context.provider,
+          threadId: context.threadId,
+          proofRequestId,
+        },
+      });
+      return {
+        ...result,
+        ...(result.task ? { task: compactTask(result.task) } : {}),
+        ...(result.sourceTask ? { sourceTask: compactTask(result.sourceTask) } : {}),
+      };
+    }
     let binding = {};
     try {
       const run = this.#currentRun(context);
@@ -1418,7 +1509,10 @@ export class HubMcpService {
 
   async #cleanupPreview(task, action) {
     const preview = this.taskGitWorkspaces?.cleanupPreview
-      ? await this.taskGitWorkspaces.cleanupPreview(task.id, { gitReferences: task.gitReferences })
+      ? await this.taskGitWorkspaces.cleanupPreview(task.id, {
+        gitReferences: task.gitReferences,
+        squashAbsorbedBy: task.squashAbsorbedBy,
+      })
       : { taskId: task.id, workspaces: [], gitReferences: task.gitReferences ?? [], dirty: false, unpublished: [], deleting: [] };
     return cleanupConfirmation(task, action, preview);
   }
@@ -2128,7 +2222,8 @@ export class HubMcpService {
         if (error instanceof TaskInputValidationError || error instanceof TaskIntegrationConflictError || error instanceof TaskAwaitIntegrationError
             || error instanceof TaskDependencyPendingError || error instanceof TaskWithdrawalDependencyError
             || error instanceof TaskLifecycleBeginRejectedError || error instanceof TaskWithdrawalBusyError
-            || error instanceof ReleaseCandidateFrozenError) {
+            || error instanceof ReleaseCandidateFrozenError || error instanceof TaskAbsorptionCompositionError
+            || error instanceof TaskSquashTransferRejectedError) {
           await this.workspaceCatalog.failMcpOperation(requestId, error);
           throw error;
         }

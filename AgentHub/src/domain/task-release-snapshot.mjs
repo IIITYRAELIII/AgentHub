@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 
 import { normalizedTaskGitReferences } from "./task-git-reference.mjs";
+import { normalizedTaskSquashTransfer } from "./task-squash-transfer.mjs";
 
 const OPERATIONS = new Set(["added", "modified", "deleted"]);
 
@@ -69,6 +70,9 @@ export function taskReleasePlanRevision(workspaceId, tasks = [], { legacy = fals
       id: task.id,
       taskRevision: legacy ? task.revision : (task.releaseRevision ?? task.revision),
       gitReferences: normalizedTaskGitReferences(task.gitReferences),
+      ...(task.squashTransfer ? {
+        squashTransferHash: normalizedTaskSquashTransfer(task.squashTransfer).transferHash,
+      } : {}),
     })).sort((left, right) => left.id.localeCompare(right.id)),
   });
   return createHash("sha256").update(payload, "utf8").digest("hex");
@@ -104,6 +108,9 @@ export function taskReleasePlan(workspaceId, tasks = []) {
     projectRoot: reference.projectRoot,
     branch: reference.branch,
     resultCommit: reference.resultCommit,
+    ...(task.squashTransfer ? {
+      squashTransfer: normalizedTaskSquashTransfer(task.squashTransfer),
+    } : {}),
     files: task.changedFiles
       .filter((file) => canonicalRoot(file.projectRoot) === canonicalRoot(reference.projectRoot))
       .map((file) => file.path),

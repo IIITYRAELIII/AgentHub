@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { normalizedTaskGitReferences } from "../domain/task-git-reference.mjs";
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
+import { normalizedTaskSquashTransfer } from "../domain/task-squash-transfer.mjs";
 
 function requiredMethod(value, name) {
   if (typeof value?.[name] !== "function") throw new TypeError(`${name} is required`);
@@ -81,6 +82,47 @@ function workflowCasArguments({ expectedTaskRevision, expectedWorkflowStatus } =
   return {
     ...(hasRevision ? { expected_task_revision: revision } : {}),
     ...(hasStatus ? { expected_workflow_status: workflowStatus } : {}),
+  };
+}
+
+function squashArguments(options = {}) {
+  const values = [
+    options.squashSourceTaskId, options.squashSourceTaskRevision,
+    options.squashBaselineResultCommit, options.squashNewResultCommit,
+    options.squashDevAfterTree, options.squashProofRequestId,
+    options.expectedSquashTransferHash,
+  ];
+  if (values.every((value) => !supplied(value))) return null;
+  const revision = Number(options.expectedTaskRevision);
+  const sourceRevision = Number(options.squashSourceTaskRevision);
+  const commit = (value) => String(value ?? "").trim().toLowerCase();
+  const sourceTaskId = String(options.squashSourceTaskId ?? "").trim();
+  const proofRequestId = String(options.squashProofRequestId ?? "").trim();
+  const baseline = commit(options.squashBaselineResultCommit);
+  const result = commit(options.squashNewResultCommit);
+  const tree = commit(options.squashDevAfterTree);
+  const hash = commit(options.expectedSquashTransferHash);
+  if (!Number.isInteger(revision) || revision < 1
+      || !Number.isInteger(sourceRevision) || sourceRevision < 1 || !sourceTaskId
+      || !proofRequestId || proofRequestId.length > 200 || /[\r\n\0]/u.test(proofRequestId)
+      || (supplied(options.expectedWorkflowStatus)
+        && String(options.expectedWorkflowStatus).trim() !== "testing")
+      || ![baseline, result, tree].every((value) => /^[0-9a-f]{40}$/u.test(value))
+      || !/^[0-9a-f]{64}$/u.test(hash)) {
+    throw new Error("invalid Task squash transfer reconciliation identity");
+  }
+  return {
+    expected_task_revision: revision,
+    ...(supplied(options.expectedWorkflowStatus) ? {
+      expected_workflow_status: String(options.expectedWorkflowStatus).trim(),
+    } : {}),
+    squash_source_task_id: sourceTaskId,
+    squash_source_task_revision: sourceRevision,
+    squash_baseline_result_commit: baseline,
+    squash_new_result_commit: result,
+    squash_dev_after_tree: tree,
+    squash_proof_request_id: proofRequestId,
+    expected_squash_transfer_hash: hash,
   };
 }
 
@@ -213,8 +255,9 @@ export class TaskOperationReconciliationService {
     const targetWorkflowStatus = transition?.targetWorkflowStatus
       ?? outcome?.result?.task?.workflowStatus
       ?? null;
-    const cutover = cutoverArguments(options);
-    const workflowCas = cutover ? null : workflowCasArguments(options);
+    const squash = squashArguments(options);
+    const cutover = squash ? null : cutoverArguments(options);
+    const workflowCas = squash || cutover ? null : workflowCasArguments(options);
     const validTarget = WORKFLOW_STATUSES.has(targetWorkflowStatus);
     const taskRoot = taskProjectRoot({
       workspace,
@@ -226,7 +269,7 @@ export class TaskOperationReconciliationService {
       && validTarget
       && receipt.argumentsHash === workflowArgumentsHash({
         operationId, taskId: task.id, status: targetWorkflowStatus,
-        identityArguments: cutover ?? workflowCas,
+        identityArguments: squash ?? cutover ?? workflowCas,
       })
       && receipt.operationStatus === "pending"
       && receipt.receiptState === "unknown";
@@ -245,12 +288,39 @@ export class TaskOperationReconciliationService {
       cutover, task, transition, outcome, projectRoot: root, targetWorkflowStatus,
     });
     const workflowCasMatches = exactWorkflowCasEvidence({ workflowCas, task, transition, outcome });
+    let squashMatches = true;
+    let squashSourceTask = null;
+    if (squash) {
+      const proofValue = transition?.evidence?.squashTransfer
+        ?? outcome?.result?.evidence?.squashTransfer;
+      try {
+        const proof = normalizedTaskSquashTransfer(proofValue);
+        squashSourceTask = this.taskBoard.task(proof.source.taskId);
+        squashMatches = targetWorkflowStatus === "testing"
+          && proof.transferHash === squash.expected_squash_transfer_hash
+          && proof.survivor.taskId === task.id
+          && proof.survivor.revision === squash.expected_task_revision
+          && proof.source.taskId === squash.squash_source_task_id
+          && proof.source.revision === squash.squash_source_task_revision
+          && proof.baselineResultCommit === squash.squash_baseline_result_commit
+          && proof.survivor.resultCommit === squash.squash_new_result_commit
+          && proof.devAfterTree === squash.squash_dev_after_tree
+          && proof.authority.proofRequestId === squash.squash_proof_request_id
+          && samePath(proof.projectRoot, root)
+          && Boolean(squashSourceTask);
+      } catch { squashMatches = false; }
+    }
     if (!receiptMatches || !transitionMatches || !outcomeMatches || !cutoverMatches || !workflowCasMatches
+        || !squashMatches
         || !taskRoot || !samePath(taskRoot, root)) {
       throw new Error("Unknown workflow operation identity, lifecycle state, project root or Task CAS does not match");
     }
     let state = null;
     if (outcome && !transition) {
+      if (squash) {
+        if (sameTaskState(task, outcome.result?.task)
+            && sameTaskState(squashSourceTask, outcome.result?.sourceTask)) state = "succeeded";
+      } else
       if (outcome.result?.rollback?.completed === true) {
         if (
           sameTaskState(task, outcome.result?.restoredTask)
@@ -270,8 +340,12 @@ export class TaskOperationReconciliationService {
       }
     } else if (transition && !outcome) {
       const revisionUnchanged = transition.expectedRevision === task.revision;
-      const pendingUnchanged = revisionUnchanged && task.workflowStatus !== targetWorkflowStatus;
-      const failedUnchanged = revisionUnchanged && sameTaskState(task, transition.priorTask);
+      const pendingUnchanged = squash
+        ? revisionUnchanged && sameTaskState(task, transition.priorTask)
+          && sameTaskState(squashSourceTask, transition.priorSourceTask)
+        : revisionUnchanged && task.workflowStatus !== targetWorkflowStatus;
+      const failedUnchanged = revisionUnchanged && sameTaskState(task, transition.priorTask)
+        && (!squash || sameTaskState(squashSourceTask, transition.priorSourceTask));
       if (transition.phase === "pending_git" && pendingUnchanged) state = "pending";
       if (transition.phase === "failed" && failedUnchanged) state = "failed";
     }
@@ -289,6 +363,8 @@ export class TaskOperationReconciliationService {
       operationId,
       projectRoot: root,
       guardId: exactGuardId,
+      squash,
+      sourceTaskId: squash?.squash_source_task_id ?? null,
       withdrawal: state === "succeeded" && outcome?.result?.evidence?.outcome === "withdrawn_result"
         || state === "pending" && ["new", "in_progress", "blocked"].includes(targetWorkflowStatus)
           && ["testing", "awaiting_implementation"].includes(task.workflowStatus)
@@ -300,7 +376,11 @@ export class TaskOperationReconciliationService {
 
   async #settle(identity, { recovery = null } = {}) {
     if (identity.state === "succeeded") {
-      const originalResult = {
+      const originalResult = identity.squash ? {
+        task: identity.outcome.result.task,
+        sourceTask: identity.outcome.result.sourceTask,
+        squashTransfer: identity.outcome.result.evidence.squashTransfer,
+      } : {
         ...identity.outcome.result.task,
         ...(identity.outcome.result?.evidence?.response ?? {}),
       };
@@ -345,11 +425,14 @@ export class TaskOperationReconciliationService {
   async reconcileUnknownWorkflow(options = {}) {
     return this.taskLifecycle.withUnknownWorkflowReconciliationLock({
       taskId: requiredText(options.taskId, "task id", 200),
+      sourceTaskId: options.squashSourceTaskId
+        ? requiredText(options.squashSourceTaskId, "squash source task id", 200)
+        : null,
       projectRoot: path.resolve(requiredText(options.projectRoot, "project root")),
     }, async (lease) => {
       let identity = this.#identity(options);
       const needsRecovery = identity.state === "pending" || identity.withdrawal;
-      if (identity.state === "pending" && !identity.guardId && !identity.withdrawal) {
+      if (identity.state === "pending" && !identity.guardId && !identity.withdrawal && !identity.squash) {
         throw new Error("Pending workflow reconciliation requires the exact process-tree guard id");
       }
       const proof = needsRecovery && identity.guardId ? {

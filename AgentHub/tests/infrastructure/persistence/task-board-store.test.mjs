@@ -107,6 +107,86 @@ test("Blocked persists its prerequisite and workflow rollback restores it", asyn
   assert.deepEqual(store.task(task.id).blockedBy, blockedBy);
 });
 
+test("squash transfer reserves and atomically updates both exact Task rows", async (t) => {
+  const store = await fixture(t);
+  const source = store.create({ text: "Source", bucket: "workspace", workspaceId: "workspace" });
+  const survivor = store.create({ text: "Survivor", bucket: "workspace", workspaceId: "workspace" });
+  const root = path.resolve("D:/repo");
+  const enterTest = (task, resultCommit) => {
+    store.beginLifecycleTransition(task.id, {
+      operationId: `test-${task.id}`, kind: "workflow",
+      targetWorkflowStatus: "testing", expectedRevision: task.revision,
+    });
+    return store.commitWorkflowTransition({
+      operationId: `test-${task.id}`,
+      gitReferences: [{ projectRoot: root, branch: `branch-${task.id}`, resultCommit }],
+      evidence: { resultCommit },
+    });
+  };
+  const testedSource = enterTest(source, "a".repeat(40));
+  const testedSurvivor = enterTest(survivor, "b".repeat(40));
+  const proof = {
+    version: 1,
+    kind: "task-squash-transfer-v1",
+    survivor: {
+      taskId: testedSurvivor.id, revision: testedSurvivor.revision,
+      releaseRevision: testedSurvivor.releaseRevision, resultCommit: "c".repeat(40),
+      baseCommit: "1".repeat(40), branch: `branch-${testedSurvivor.id}`,
+    },
+    source: {
+      taskId: testedSource.id, revision: testedSource.revision,
+      releaseRevision: testedSource.releaseRevision, resultCommit: "a".repeat(40),
+      baseCommit: "2".repeat(40), branch: `branch-${testedSource.id}`,
+    },
+    projectRoot: root,
+    previousResultCommit: testedSurvivor.gitReferences[0].resultCommit,
+    baselineResultCommit: "b".repeat(40), devBeforeCommit: "d".repeat(40),
+    devAfterTree: "e".repeat(40),
+    sourceWitnesses: [{
+      path: "source.mjs", source: { mode: "100644", object: "3".repeat(40) },
+      survivor: { mode: "100644", object: "3".repeat(40) },
+    }],
+    ownerWitnesses: [{
+      path: "new.mjs", baseline: null, beforeDev: null,
+      newResult: { mode: "100644", object: "4".repeat(40) },
+      afterDev: { mode: "100644", object: "4".repeat(40) },
+    }],
+    authority: {
+      workspaceId: "workspace", streamId: "release", provider: "codex",
+      threadId: "thread", proofRequestId: "squash-preview",
+    },
+  };
+  store.beginLifecycleTransition(testedSurvivor.id, {
+    operationId: "squash", kind: "workflow", targetWorkflowStatus: "testing",
+    expectedRevision: testedSurvivor.revision, evidence: { squashTransfer: proof },
+  });
+  assert.equal(store.beginLifecycleTransition(testedSurvivor.id, {
+    operationId: "squash", kind: "workflow", targetWorkflowStatus: "testing",
+    expectedRevision: testedSurvivor.revision, evidence: { squashTransfer: proof },
+  }).replayed, true);
+  assert.throws(() => store.beginLifecycleTransition(testedSurvivor.id, {
+    operationId: "squash", kind: "workflow", targetWorkflowStatus: "testing",
+    expectedRevision: testedSurvivor.revision,
+    evidence: { squashTransfer: { ...proof, authority: { ...proof.authority, proofRequestId: "foreign" } } },
+  }), /another squash transfer/);
+  assert.throws(() => store.beginLifecycleTransition(testedSource.id, {
+    operationId: "source-conflict", kind: "workflow", targetWorkflowStatus: "blocked",
+    expectedRevision: testedSource.revision,
+  }), /already active/);
+  const committed = store.commitSquashTransferTransition({
+    operationId: "squash", squashTransfer: { ...proof, integrationCommit: "f".repeat(40) },
+  });
+  assert.equal(committed.task.workflowStatus, "testing");
+  assert.equal(committed.sourceTask.workflowStatus, "in_progress");
+  assert.equal(committed.task.revision, testedSurvivor.revision + 1);
+  assert.equal(committed.sourceTask.revision, testedSource.revision + 1);
+  assert.equal(store.task(testedSurvivor.id).gitReferences[0].resultCommit, "c".repeat(40));
+  assert.equal(store.task(testedSurvivor.id).squashTransfer.integrationCommit, "f".repeat(40));
+  assert.equal(store.task(testedSource.id).squashAbsorbedBy.survivor.taskId, testedSurvivor.id);
+  assert.equal(store.lifecycleTransition("squash"), null);
+  assert.equal(store.lifecycleOutcome("squash").result.sourceTask.workflowStatus, "in_progress");
+});
+
 test("claim binds the turn without silently returning Test, Await or Blocked to work", async (t) => {
   const store = await fixture(t);
   for (const status of ["testing", "awaiting_implementation", "blocked"]) {

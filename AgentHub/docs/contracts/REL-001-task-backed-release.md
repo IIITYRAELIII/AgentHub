@@ -1,5 +1,46 @@
 # REL-001 — Task-backed Workspace release
 
+## Exact result coverage and absorption composition (2026-09-16)
+
+The latest recorded Task result must be covered by that Task's uniquely owned
+dev integrations before release acceptance. Merely finding the result somewhere
+in dev ancestry is insufficient: another Task may have carried a later result
+while this Task's integration still represents an earlier version. An owned
+integration must carry the exact result. Even a later commit with an identical
+tree requires ordinary Test integration for its new identity; tree equality does
+not rewrite the result named by release evidence.
+Existing already-published results retain their separate base checks. Missing
+coverage fails with TASK_RELEASE_RESULT_NOT_COVERED; rerun ordinary Test for the
+exact result rather than borrowing another Task's integration or a dev snapshot.
+
+In release-enabled Workspaces, absorbed closure additionally validates the
+prospective surviving result together with the current Await set through the
+canonical composer. Lock order is Workspace Await, both Tasks, then repositories.
+The Git callback passes its owned repository lease through to release evidence;
+it must not reacquire that same lease. Preview and confirmation each repeat the
+proof, which binds the plan, approved base and resulting tree. A changed selection,
+base, source or survivor invalidates confirmation. A Test survivor is projected
+as a future acceptance only; validation does not change its workflow status.
+
+Validation invokes the existing prepareCandidate implementation in a fresh
+temporary owned standalone clone. It never promotes or rolls back the live
+PreRelease, edits its checkpoint, or writes readiness into Task rows. Normal
+completion removes that temporary root. An interrupted process may leave only
+its isolated scratch data; this is never release authority. The fresh proof does
+not use prior frozen-checkpoint successor optimization: a result that cannot be
+composed from current selected authority is refused rather than borrowing a
+previous candidate. No full suite, test contour, build or publication runs here.
+
+Agents must not merge rolling dev into Task branches. Joint compatibility uses
+selected-result composition; explicit absorption and approved main updates keep
+their existing workflows. After result, absorption or membership changes, verify
+composition immediately. Source cards and history remain retained, and source
+branches/worktrees remain until verified publication and confirmed cleanup.
+Main/base movement requires renewed validation under existing approval rules.
+This supersedes earlier permission to clean absorbed branches before publication,
+without adding an automatic merge engine or a second ownership registry.
+See ADR-0068.
+
 ## Conflict continuation and Blocked (HUB-235)
 
 The accepted conflict workflow is agent-led Task consolidation (ADR-0049).
@@ -1402,3 +1443,60 @@ evidence. They are never reused or removed by startup/retry. Cleanup requires a
 separate authorization and proven Agent Hub ownership. The detection guard may
 be retired only after every supported installation has an independent-clone
 checkpoint and no supported migration can contain a linked holder.
+
+## Exact squash absorption
+
+A Release Manager may replace one tested source result and one tested survivor
+result with one new survivor-owned squash result. The operation is previewed
+first and confirmed by the returned SHA-256. That identity binds both Task row
+and release revisions, both branch/result/base commits, the repository, the
+previous accepted survivor result, the reviewed clean-before commit, the new
+clean result, the before-dev commit, the exact after-dev tree, every
+source-result path witness, every clean-before-to-clean-after owner witness, and
+the acting Workspace/Stream/provider/thread plus the stable preview request.
+The later effect request has a separate immutable MCP receipt and does not
+change the transfer hash.
+
+The Git owner verifies that the complete source delta exists in the new result.
+A source addition cannot be deleted or replaced by an empty blob. The reviewed
+clean-before commit must be an ancestor of the new clean result. Every changed
+dev path must belong to that exact clean-before-to-clean-after delta; comparing
+against the previous broad survivor result is forbidden because it could claim
+excluded dev residue. Unrelated dev paths and history remain byte-exact. A path
+already carrying the new result is preserved; a foreign overlap requires an
+exact hash-bound resolved entry and may not retain the before-dev entry while
+discarding the survivor delta. Application
+creates one integration with parents `(old dev, new result)`, the accepted tree,
+and one expected-old dev CAS. A no-op merge parent is not acceptance evidence.
+After the ref CAS, the Git owner updates managed dev through a temporary Git
+administrative/index view whose old-to-new checkout uses Git's native
+`--no-overwrite-ignore` protection. It then advances the real index only through
+the exact old-to-new two-tree check. A concurrent tracked, ordinary untracked or
+ignored local file/directory collision is preserved and keeps the operation
+unknown; it is never erased by a hard reset or by treating ignored bytes as
+disposable. Recovery may finish the real index when the worktree already exactly
+matches the target. SQLite commit requires readback of the exact dev ref,
+integration tree, index tree, clean managed worktree and absence of a local path
+where the accepted tree requires deletion.
+
+The existing lifecycle transition reserves both Tasks. After exact Git readback,
+one SQLite transaction advances the survivor result/release revision and returns
+the source to work, retaining both cards and histories. The lifecycle outcome is
+the only durable transfer record. Release planning includes its hash; the net
+projector revalidates every witness and the exact integration before projecting
+the clean result. It merges that exact result automatically with the preceding
+selected composition; any conflict rejects preparation. The rolling-dev tree is
+not replayed into the release candidate. Unlike the optional net projection for
+an ordinary Task, this squash projection is mandatory whenever the selected
+result is absent from the approved base. Missing integrations, invalid or
+unreadable proof objects, witness mismatch, non-unique ownership, and every
+other unproved path reject preparation before candidate ref/checkpoint commit;
+they never fall back to the effective dev delta. Candidate reuse revalidates the
+same proof and requires its Task ID in the stored projected set. A result already
+contained in the approved base needs no pending projection. Generic manual
+merges receive no exception.
+
+After the survivor is durably published, the same transfer evidence may prove
+the source result and branch/worktree published-by-transfer for cleanup. Exact
+source head, clean worktree, survivor publication and expected-old branch CAS
+remain mandatory; late bytes are never removed.

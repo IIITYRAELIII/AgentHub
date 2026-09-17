@@ -104,6 +104,18 @@ stable content-free reason (`absent`, `fingerprint changed`, or the exact
 uncacheable policy reason); they never print environment values or fabricate
 reusable evidence.
 
+Release validation may run at most two test-file processes concurrently, and
+only when the host reports at least four logical CPUs and 4 GiB of free memory.
+A file is parallel-eligible only when its reviewed v2 input declaration proves
+disposable filesystem, lock, Git, port and browser-profile ownership; every
+child receives a unique temporary environment root. Undeclared files remain
+exclusive, and matching shared-resource tags serialize only the files that name
+that resource. This bound protects Hub CPU and memory headroom while allowing
+independent Git and browser fixtures to overlap. Cache decisions report a
+stable content-free reason (`absent`, `fingerprint changed`, or the exact
+uncacheable policy reason); they never print environment values or fabricate
+reusable evidence.
+
 Codex rollout activity fallback runs outside the main Hub event loop. Concurrent
 reads of the same rollout and read options share one in-flight operation. A cold
 fallback physically reads/projects at most the latest 16 MiB plus two bounded
@@ -395,3 +407,9 @@ paint p95 is at most 200 ms and no navigation-owned main-thread task exceeds
 50 ms. A hidden startup screen owns no animation frame; its canvas animation is
 scheduled only while that screen is visible. The shared invariant applies to
 the browser shell and the VS Code WebView, which execute the same client assets.
+
+Exact squash absorption is an explicit release operation, not an interactive
+read path. Its Git witness work is bounded by the changed paths in the source
+result and survivor replacement delta. It performs one repository-lock phase,
+one expected-old `dev` ref update and one two-Task SQLite commit; it does not scan
+arbitrary Workspace history or add background work to ordinary Task reads.

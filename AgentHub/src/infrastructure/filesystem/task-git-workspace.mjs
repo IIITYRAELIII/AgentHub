@@ -21,6 +21,7 @@ import {
   taskBranchName,
   taskRepositoryKey,
 } from "../../domain/task-git-reference.mjs";
+import { normalizedTaskSquashTransfer } from "../../domain/task-squash-transfer.mjs";
 
 export const TASK_DEV_BRANCH = "dev";
 const TASK_BASE_REF_PREFIX = "refs/agent-hub/task-bases/";
@@ -78,7 +79,7 @@ function taskGitTerminationError(args, timeoutMs, processTreeStopped, cause = "t
 
 export function runTaskGitCommand(args, {
   cwd, timeoutMs = 60_000, executable = "git", spawnProcess = spawn, signal = null, input = null,
-  commandLabel = "git",
+  commandLabel = "git", env = null,
 } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -89,6 +90,7 @@ export function runTaskGitCommand(args, {
       cwd,
       windowsHide: true,
       stdio: [input == null ? "ignore" : "pipe", "pipe", "pipe"],
+      ...(env ? { env: { ...process.env, ...env } } : {}),
     });
     const stdout = [];
     const stderr = [];
@@ -1009,6 +1011,25 @@ export class TaskGitWorkspaceService {
       if (!outerLease) lease.repositoryLockKeys = new Set([repoKey]);
       return operation(lease);
     });
+  }
+
+  async assertNoProcessTreeGuardOwned(taskId, { lease } = {}) {
+    this.#assertAvailable("assertNoProcessTreeGuardOwned");
+    await requiredGuardLease(lease).assertOwned();
+    await this.#assertNoProcessTreeGuard(taskId);
+  }
+
+  async withTaskRecoveryLocks(taskIds, operation, { guardTaskId = null, ...options } = {}) {
+    this.#assertAvailable("withTaskRecoveryLocks");
+    const ids = [...new Set((taskIds ?? []).map(normalizedTaskId))].sort();
+    if (!ids.length) throw new Error("Task Git recovery lock set is required");
+    const guardedTaskId = normalizedTaskId(guardTaskId ?? ids[0]);
+    if (!ids.includes(guardedTaskId)) throw new Error("Task Git recovery guard owner must be in the lock set");
+    return withInterprocessLocks(
+      ids.map((taskId) => this.#taskLock(taskId)),
+      (lease) => operation(this.#guardedLease(guardedTaskId, lease)),
+      options,
+    );
   }
 
   async #withClearDevLock(repoRoot, outerLease, operation) {
@@ -2678,6 +2699,342 @@ export class TaskGitWorkspaceService {
     });
   }
 
+  async #squashTransferPreview({
+    source, survivor, projectRoot, baselineResultCommit, newResultCommit, devAfterTree,
+    authority, lease,
+  } = {}) {
+    const repoRoot = await repositoryRoot(projectRoot);
+    const sourceId = normalizedTaskId(source?.id);
+    const survivorId = normalizedTaskId(survivor?.id);
+    if (sourceId === survivorId) throw new Error("Task squash transfer requires two distinct Tasks");
+    const referenceFor = (task, label) => {
+      const references = (task?.gitReferences ?? []).filter((item) => samePath(item.projectRoot, repoRoot));
+      if (references.length !== 1) throw new Error(`${label} requires one exact Test result`);
+      return references[0];
+    };
+    const sourceReference = referenceFor(source, "Squash source Task");
+    const survivorReference = referenceFor(survivor, "Squash survivor Task");
+    const baseline = exactCommitId(baselineResultCommit, "squash baseline result");
+    const result = exactCommitId(newResultCommit, "squash survivor result");
+    const afterTree = exactCommitId(devAfterTree, "squash dev result tree");
+    const previousResult = exactCommitId(
+      survivorReference.resultCommit,
+      "squash survivor previous result",
+    );
+    const sourceResult = exactCommitId(sourceReference.resultCommit, "squash source result");
+    const sourceBranchHead = await this.#runOwned([
+      "rev-parse", "--verify", `refs/heads/${sourceReference.branch}^{commit}`,
+    ], { cwd: repoRoot, lease });
+    const survivorBranchHead = await this.#runOwned([
+      "rev-parse", "--verify", `refs/heads/${survivorReference.branch}^{commit}`,
+    ], { cwd: repoRoot, lease });
+    if (sourceBranchHead !== sourceResult) throw new Error("Squash source branch changed after Test");
+    if (survivorBranchHead !== result) {
+      throw new Error("Squash survivor branch must point to the exact new clean result");
+    }
+    if (await gitMaybe(["merge-base", "--is-ancestor", baseline, result], { cwd: repoRoot }) === null) {
+      throw new Error("Squash clean baseline must be an ancestor of the new survivor result");
+    }
+    for (const [task, expected, label] of [
+      [source, sourceResult, "source"], [survivor, result, "survivor"],
+    ]) {
+      const workspaces = await this.describe(task.id);
+      const workspace = workspaces.find((item) => samePath(item.repositoryRoot, repoRoot));
+      if (!workspace || workspace.dirty || workspace.headCommit !== expected) {
+        throw new Error(`Squash ${label} Task requires a clean exact managed worktree`);
+      }
+    }
+    const repoKey = taskRepositoryKey(repoRoot);
+    const sourceBase = await this.#runOwned([
+      "rev-parse", "--verify", `${taskBaseRef(sourceId, repoKey)}^{commit}`,
+    ], { cwd: repoRoot, lease });
+    const survivorBase = await this.#runOwned([
+      "rev-parse", "--verify", `${taskBaseRef(survivorId, repoKey)}^{commit}`,
+    ], { cwd: repoRoot, lease });
+    await this.#runOwned(["cat-file", "-e", `${afterTree}^{tree}`], { cwd: repoRoot, lease });
+    const devRoot = await worktreeForBranch(repoRoot, this.devBranch);
+    if (!devRoot) throw new Error("Squash transfer requires the managed dev worktree");
+    const devBeforeCommit = await this.#runOwned([
+      "rev-parse", `refs/heads/${this.devBranch}^{commit}`,
+    ], { cwd: repoRoot, lease });
+    const devStatus = await this.#runOwned([
+      "status", "--porcelain=v1", "-z", "--untracked-files=all",
+    ], { cwd: devRoot, lease });
+    if (devStatus) throw new Error("Squash transfer requires a clean managed dev worktree");
+    const changedPaths = async (left, right) => String(await this.#runOwned([
+      "diff", "--no-renames", "--name-only", "-z", left, right, "--",
+      ".", ":(exclude,glob)**/CHANGELOG.md", ":(exclude)CHANGELOG.md",
+    ], { cwd: repoRoot, lease })).split("\0").filter(Boolean).sort();
+    const sourcePaths = await changedPaths(sourceBase, sourceResult);
+    const ownerPaths = await changedPaths(baseline, result);
+    if (!sourcePaths.length) throw new Error("Squash source result has no transferable changes");
+    if (!ownerPaths.length) throw new Error("Squash survivor result has no replacement delta");
+    const actualDevPaths = await changedPaths(devBeforeCommit, afterTree);
+    const ownerPathSet = new Set(ownerPaths);
+    const foreignChanges = actualDevPaths.filter((name) => !ownerPathSet.has(name));
+    if (foreignChanges.length) {
+      throw new Error(`Squash transfer changed paths outside its exact owner delta: ${foreignChanges.join(", ")}`);
+    }
+    const treeEntry = async (treeish, name) => {
+      const value = await this.#treeEntryAt(repoRoot, treeish, name, lease);
+      return value ? { mode: value.mode, object: value.object } : null;
+    };
+    const sourceWitnesses = [];
+    for (const name of sourcePaths) sourceWitnesses.push({
+      path: name,
+      source: await treeEntry(sourceResult, name),
+      survivor: await treeEntry(result, name),
+    });
+    const ownerWitnesses = [];
+    for (const name of ownerPaths) ownerWitnesses.push({
+      path: name,
+      baseline: await treeEntry(baseline, name),
+      beforeDev: await treeEntry(devBeforeCommit, name),
+      newResult: await treeEntry(result, name),
+      afterDev: await treeEntry(afterTree, name),
+    });
+    return normalizedTaskSquashTransfer({
+      version: 1,
+      kind: "task-squash-transfer-v1",
+      survivor: {
+        taskId: survivorId,
+        revision: survivor.revision,
+        releaseRevision: survivor.releaseRevision ?? survivor.revision,
+        resultCommit: result,
+        baseCommit: survivorBase,
+        branch: survivorReference.branch,
+      },
+      source: {
+        taskId: sourceId,
+        revision: source.revision,
+        releaseRevision: source.releaseRevision ?? source.revision,
+        resultCommit: sourceResult,
+        baseCommit: sourceBase,
+        branch: sourceReference.branch,
+      },
+      projectRoot: repoRoot,
+      previousResultCommit: previousResult,
+      baselineResultCommit: baseline,
+      devBeforeCommit,
+      devAfterTree: afterTree,
+      sourceWitnesses,
+      ownerWitnesses,
+      authority,
+    });
+  }
+
+  async previewSquashTransferOwned(params = {}) {
+    this.#assertAvailable("previewSquashTransferOwned");
+    await requiredGuardLease(params.lease).assertOwned();
+    const repoRoot = await repositoryRoot(params.projectRoot);
+    return this.#withClearDevLock(repoRoot, params.lease, (lease) => (
+      this.#squashTransferPreview({ ...params, projectRoot: repoRoot, lease })
+    ));
+  }
+
+  async readSquashTransferOwned(proofValue, { projectRoot, lease } = {}) {
+    this.#assertAvailable("readSquashTransferOwned");
+    const proof = normalizedTaskSquashTransfer(proofValue);
+    const repoRoot = await repositoryRoot(projectRoot);
+    return this.#withClearDevLock(repoRoot, lease, async (ownedLease) => {
+      const sourceBranch = await this.#runOwned([
+        "rev-parse", "--verify", `refs/heads/${proof.source.branch}^{commit}`,
+      ], { cwd: repoRoot, lease: ownedLease });
+      const survivorBranch = await this.#runOwned([
+        "rev-parse", "--verify", `refs/heads/${proof.survivor.branch}^{commit}`,
+      ], { cwd: repoRoot, lease: ownedLease });
+      const exactWorktree = async (taskId, expectedHead) => {
+        const workspaces = await this.describe(taskId);
+        const workspace = workspaces.find((item) => samePath(item.repositoryRoot, repoRoot));
+        return Boolean(workspace && !workspace.dirty && workspace.headCommit === expectedHead);
+      };
+      if (sourceBranch !== proof.source.resultCommit
+          || survivorBranch !== proof.survivor.resultCommit
+          || !await exactWorktree(proof.source.taskId, proof.source.resultCommit)
+          || !await exactWorktree(proof.survivor.taskId, proof.survivor.resultCommit)) {
+        return { status: "unknown", proof, reason: "Task branch or clean worktree changed" };
+      }
+      const current = await this.#runOwned([
+        "rev-parse", `refs/heads/${this.devBranch}^{commit}`,
+      ], { cwd: repoRoot, lease: ownedLease });
+      if (current === proof.devBeforeCommit) return { status: "not_applied", proof };
+      const parents = String(await this.#runOwned([
+        "show", "-s", "--format=%P", current,
+      ], { cwd: repoRoot, lease: ownedLease })).split(" ").filter(Boolean);
+      const tree = await this.#runOwned(["rev-parse", `${current}^{tree}`], { cwd: repoRoot, lease: ownedLease });
+      if (parents.length === 2 && parents[0] === proof.devBeforeCommit
+          && parents[1] === proof.survivor.resultCommit && tree === proof.devAfterTree) {
+        const integratedProof = normalizedTaskSquashTransfer({ ...proof, integrationCommit: current });
+        const devRoot = await worktreeForBranch(repoRoot, this.devBranch);
+        if (!devRoot) return {
+          status: "pending_materialization", proof: integratedProof,
+          reason: "managed dev worktree is unavailable",
+        };
+        const head = await this.#runOwned(["rev-parse", "HEAD^{commit}"], {
+          cwd: devRoot, lease: ownedLease,
+        });
+        const indexTree = await this.#runOwned(["write-tree"], { cwd: devRoot, lease: ownedLease });
+        const status = await this.#runOwned([
+          "status", "--porcelain=v1", "-z", "--untracked-files=all",
+        ], { cwd: devRoot, lease: ownedLease });
+        let deletedPathExists = false;
+        for (const witness of proof.ownerWitnesses.filter((item) => item.afterDev == null)) {
+          const exists = await stat(path.join(devRoot, witness.path)).then(
+            () => true,
+            (error) => {
+              if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return false;
+              throw error;
+            },
+          );
+          if (exists) {
+            deletedPathExists = true;
+            break;
+          }
+        }
+        if (head !== current || indexTree !== proof.devAfterTree || status || deletedPathExists) return {
+          status: "pending_materialization", proof: integratedProof,
+          reason: "managed dev worktree or index does not exactly materialize the accepted integration",
+        };
+        return { status: "applied", proof: integratedProof };
+      }
+      return { status: "unknown", proof, currentDevCommit: current };
+    });
+  }
+
+  async materializeSquashTransferOwned(proofValue, { projectRoot, lease } = {}) {
+    this.#assertAvailable("materializeSquashTransferOwned");
+    await requiredGuardLease(lease).assertOwned();
+    const proof = normalizedTaskSquashTransfer(proofValue);
+    if (!proof.integrationCommit) throw new Error("Squash transfer materialization requires the exact integration commit");
+    const repoRoot = await repositoryRoot(projectRoot);
+    return this.#withClearDevLock(repoRoot, lease, async (ownedLease) => {
+      const current = await this.#runOwned([
+        "rev-parse", `refs/heads/${this.devBranch}^{commit}`,
+      ], { cwd: repoRoot, lease: ownedLease });
+      if (current !== proof.integrationCommit) {
+        throw new Error("Squash transfer materialization ref changed");
+      }
+      const existing = await this.readSquashTransferOwned(proof, {
+        projectRoot: repoRoot, lease: ownedLease,
+      });
+      if (existing.status === "applied") return existing.proof;
+      if (existing.status !== "pending_materialization") {
+        throw new Error(`Squash transfer materialization identity is unknown: ${existing.reason ?? existing.status}`);
+      }
+      const devRoot = await worktreeForBranch(repoRoot, this.devBranch);
+      if (!devRoot) throw new Error("Squash transfer requires the managed dev worktree");
+      const beforeTree = await this.#runOwned(["rev-parse", `${proof.devBeforeCommit}^{tree}`], {
+        cwd: repoRoot, lease: ownedLease,
+      });
+      const indexTree = await this.#runOwned(["write-tree"], { cwd: devRoot, lease: ownedLease });
+      const indexPathValue = await this.#runOwned(["rev-parse", "--git-path", "index"], {
+        cwd: devRoot, lease: ownedLease,
+      });
+      const commonDirValue = await this.#runOwned(["rev-parse", "--git-common-dir"], {
+        cwd: devRoot, lease: ownedLease,
+      });
+      if (indexTree === proof.devAfterTree) {
+        throw new Error(`Squash transfer materialization remains incomplete: ${existing.reason}`);
+      }
+      if (indexTree !== beforeTree) {
+        throw new Error("Squash transfer materialization found a changed managed dev index");
+      }
+      const shadowRoot = path.join(
+        this.dataDir,
+        "task-squash-materializations",
+        proof.transferHash,
+      );
+      const shadowIndex = path.join(shadowRoot, "index");
+      const shadowHead = path.join(shadowRoot, "HEAD");
+      const indexPath = path.resolve(devRoot, indexPathValue);
+      const commonDir = path.resolve(devRoot, commonDirValue);
+      const originalIndex = await readFile(indexPath);
+      const shadowEnv = {
+        GIT_DIR: shadowRoot,
+        GIT_COMMON_DIR: commonDir,
+        GIT_WORK_TREE: devRoot,
+        GIT_INDEX_FILE: shadowIndex,
+      };
+      const deletedPathExists = async () => {
+        for (const witness of proof.ownerWitnesses.filter((item) => item.afterDev == null)) {
+          const exists = await stat(path.join(devRoot, witness.path)).then(
+            () => true,
+            (error) => {
+              if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return false;
+              throw error;
+            },
+          );
+          if (exists) return true;
+        }
+        return false;
+      };
+      await rm(shadowRoot, { recursive: true, force: true });
+      await mkdir(shadowRoot, { recursive: true });
+      try {
+        await writeFile(shadowHead, `${proof.devBeforeCommit}\n`, { flag: "wx" });
+        await writeFile(shadowIndex, originalIndex, { flag: "wx" });
+        await this.#runOwned(["read-tree", proof.integrationCommit], {
+          cwd: devRoot, lease: ownedLease, env: shadowEnv,
+        });
+        await this.#runOwned([
+          "status", "--porcelain=v1", "-z", "--untracked-files=no",
+        ], { cwd: devRoot, lease: ownedLease, env: shadowEnv });
+        const targetDiff = await this.#runOwned(["diff-files", "--name-only", "-z"], {
+          cwd: devRoot, lease: ownedLease, env: shadowEnv,
+        });
+        const alreadyMaterialized = !targetDiff && !await deletedPathExists();
+        if (!alreadyMaterialized) {
+          await writeFile(shadowHead, `${proof.devBeforeCommit}\n`);
+          await writeFile(shadowIndex, originalIndex);
+          await this.#runOwned([
+            "checkout", "--detach", "--no-overwrite-ignore", proof.integrationCommit,
+          ], { cwd: devRoot, lease: ownedLease, env: shadowEnv });
+        }
+        await this.#runOwned([
+          "read-tree", "-m", proof.devBeforeCommit, proof.integrationCommit,
+        ], { cwd: devRoot, lease: ownedLease });
+      } finally {
+        await rm(shadowRoot, { recursive: true, force: true }).catch(() => {});
+      }
+      const readback = await this.readSquashTransferOwned(proof, { projectRoot: repoRoot, lease: ownedLease });
+      if (readback.status !== "applied") {
+        throw new Error(`Squash transfer materialization remains incomplete: ${readback.reason ?? readback.status}`);
+      }
+      return readback.proof;
+    });
+  }
+
+  async applySquashTransferOwned(params = {}) {
+    this.#assertAvailable("applySquashTransferOwned");
+    await requiredGuardLease(params.lease).assertOwned();
+    const repoRoot = await repositoryRoot(params.projectRoot);
+    return this.#withClearDevLock(repoRoot, params.lease, async (lease) => {
+      const proof = await this.#squashTransferPreview({ ...params, projectRoot: repoRoot, lease });
+      if (params.expectedTransferHash && proof.transferHash !== params.expectedTransferHash) {
+        throw new Error("Squash transfer changed after confirmation");
+      }
+      const integrationCommit = await this.#runOwned([
+        "-c", "user.name=Agent Hub", "-c", "user.email=agent-hub@local.invalid",
+        "commit-tree", proof.devAfterTree, "-p", proof.devBeforeCommit,
+        "-p", proof.survivor.resultCommit,
+      ], {
+        cwd: repoRoot,
+        lease,
+        input: `merge(agent-hub): exact squash transfer ${proof.transferHash}\n`,
+      });
+      await this.#runOwned([
+        "update-ref", `refs/heads/${this.devBranch}`, integrationCommit, proof.devBeforeCommit,
+      ], { cwd: repoRoot, lease });
+      const integratedProof = normalizedTaskSquashTransfer({ ...proof, integrationCommit });
+      await this.materializeSquashTransferOwned(integratedProof, { projectRoot: repoRoot, lease });
+      const readback = await this.readSquashTransferOwned(integratedProof, { projectRoot: repoRoot, lease });
+      if (readback.status !== "applied" || readback.proof.integrationCommit !== integrationCommit) {
+        throw new Error("Squash transfer Git readback did not match the exact accepted effect");
+      }
+      return readback.proof;
+    });
+  }
+
   async releaseIntegrationEvidence({ projectRoot, tasks = [], lease = null } = {}) {
     this.#assertAvailable("releaseIntegrationEvidence");
     const dev = await this.prepareDev(projectRoot, { lease });
@@ -2694,6 +3051,15 @@ export class TaskGitWorkspaceService {
         throw new Error(`Task ${task.taskId} requires an exact positive revision for release integration evidence`);
       }
       const evidence = await this.releaseEvidence(task);
+      const squashTransfer = task.squashTransfer
+        ? normalizedTaskSquashTransfer(task.squashTransfer)
+        : null;
+      if (squashTransfer && (
+        squashTransfer.survivor.taskId !== String(task.taskId)
+        || squashTransfer.survivor.resultCommit !== evidence.resultCommit
+        || squashTransfer.survivor.releaseRevision + 1 !== taskRevision
+        || !samePath(squashTransfer.projectRoot, evidence.projectRoot)
+      )) throw new Error(`Task ${task.taskId} squash transfer does not match its frozen result`);
       const lineage = new Set(String(await runGit([
         "rev-list", "--first-parent", evidence.resultCommit, `^${evidence.baseCommit}`,
       ], { cwd: dev.projectRoot })).split(/\r?\n/u).filter(Boolean));
@@ -2704,6 +3070,21 @@ export class TaskGitWorkspaceService {
         parent: entry.parents[0],
         order: entry.order,
       }));
+      if (squashTransfer) {
+        const exactIntegration = firstParentHistory.find((entry) => (
+          entry.commit === squashTransfer.integrationCommit
+        ));
+        const exactTree = exactIntegration
+          ? await runGit(["rev-parse", `${exactIntegration.commit}^{tree}`], { cwd: dev.projectRoot })
+          : null;
+        if (!exactIntegration || exactIntegration.parents.length !== 2
+            || exactIntegration.parents[0] !== squashTransfer.devBeforeCommit
+            || exactIntegration.parents[1] !== squashTransfer.survivor.resultCommit
+            || exactTree !== squashTransfer.devAfterTree
+            || !integrations.some((entry) => entry.commit === exactIntegration.commit)) {
+          throw new Error(`Task ${task.taskId} squash transfer has no exact dev integration readback`);
+        }
+      }
       const resultIntegrated = await gitMaybe([
         "merge-base", "--is-ancestor", evidence.resultCommit, dev.headCommit,
       ], { cwd: dev.projectRoot }) !== null;
@@ -2726,6 +3107,7 @@ export class TaskGitWorkspaceService {
         resultCommit: evidence.resultCommit,
         integrations,
         lineage,
+        ...(squashTransfer ? { squashTransfer } : {}),
       });
     }
     const integrationClaims = new Map();
@@ -2750,6 +3132,23 @@ export class TaskGitWorkspaceService {
           .map((claim) => claim.taskId).join(" and ")}`);
       }
       integrationOwners.set(integrationCommit, nestedOwners[0].taskId);
+    }
+    const integrationParents = new Map(firstParentHistory.map((entry) => [entry.commit, entry.parents]));
+    for (const task of resolvedTasks) {
+      // Dev ancestry alone can come from another Task's nested merge while this
+      // Task's effective integrations still carry only an earlier result.
+      const owned = task.integrations.filter((integration) => (
+        integrationOwners.get(integration.commit) === task.taskId
+      ));
+      if (!task.integrations.length) continue; // Already proved contained in local main above.
+      const carriedResults = new Set(owned.flatMap((integration) => (
+        integrationParents.get(integration.commit).slice(1).filter((parent) => task.lineage.has(parent))
+      )));
+      if (!carriedResults.has(task.resultCommit)) {
+        const error = new Error(`Task ${task.taskId} latest result ${task.resultCommit} is not covered by its owned dev integrations; submit the exact result for Test before release acceptance`);
+        error.code = "TASK_RELEASE_RESULT_NOT_COVERED";
+        throw error;
+      }
     }
     return {
       ...dev,
@@ -3014,7 +3413,7 @@ export class TaskGitWorkspaceService {
     }
     const evidence = [];
     const visit = async (index, ownedLease) => {
-      if (index === workspaces.length) return operation({ taskId: target.id, repositories: evidence });
+      if (index === workspaces.length) return operation({ taskId: target.id, repositories: evidence }, ownedLease);
       const workspace = workspaces[index];
       const repoRoot = workspace.repositoryRoot;
       return this.#withDevLock(repoRoot, ownedLease, async (devLease) => {
@@ -3041,14 +3440,39 @@ export class TaskGitWorkspaceService {
         if (sourceHead !== workspace.headCommit) throw new Error("Source Task changed during combined closure");
         const results = [...new Set([sourceHead, ...(source.gitReferences ?? [])
           .filter((ref) => samePath(ref.projectRoot, repoRoot)).map((ref) => ref.resultCommit)])];
-        for (const result of results) {
-          if (await gitMaybe(["merge-base", "--is-ancestor", result, targetHead], { cwd: repoRoot }) === null) {
-            throw new Error("Surviving Task does not contain all source Task commits");
+        let squashTransfer = null;
+        try {
+          const candidate = target.squashTransfer
+            ? normalizedTaskSquashTransfer(target.squashTransfer)
+            : null;
+          if (candidate
+              && candidate.source.taskId === source.id
+              && candidate.survivor.taskId === target.id
+              && candidate.survivor.resultCommit === targetHead
+              && candidate.source.resultCommit === sourceHead
+              && candidate.transferHash === source.squashAbsorbedBy?.transferHash
+              && samePath(candidate.projectRoot, repoRoot)) squashTransfer = candidate;
+        } catch { squashTransfer = null; }
+        if (!squashTransfer) {
+          for (const result of results) {
+            if (await gitMaybe(["merge-base", "--is-ancestor", result, targetHead], { cwd: repoRoot }) === null) {
+              throw new Error("Surviving Task does not contain all source Task commits");
+            }
           }
         }
         const main = await localMainCommit(repoRoot);
         const dev = await runGit(["rev-parse", `refs/heads/${this.devBranch}^{commit}`], { cwd: repoRoot });
-        if (await gitMaybe(["merge-base", "--is-ancestor", targetHead, dev], { cwd: repoRoot }) === null) {
+        if (squashTransfer) {
+          const integration = squashTransfer.integrationCommit;
+          const parents = String(await runGit(["show", "-s", "--format=%P", integration], { cwd: repoRoot }))
+            .split(" ").filter(Boolean);
+          const tree = await runGit(["rev-parse", `${integration}^{tree}`], { cwd: repoRoot });
+          if (parents.length !== 2 || parents[0] !== squashTransfer.devBeforeCommit
+              || parents[1] !== targetHead || tree !== squashTransfer.devAfterTree
+              || await gitMaybe(["merge-base", "--is-ancestor", integration, dev], { cwd: repoRoot }) === null) {
+            throw new Error("Surviving Task squash transfer is not the exact current dev ownership proof");
+          }
+        } else if (await gitMaybe(["merge-base", "--is-ancestor", targetHead, dev], { cwd: repoRoot }) === null) {
           throw new Error("Surviving Task result is not integrated into dev");
         }
         const sourceBase = await runGit(["rev-parse", `${taskBaseRef(source.id, workspace.repositoryKey)}^{commit}`], { cwd: repoRoot });
@@ -3065,13 +3489,18 @@ export class TaskGitWorkspaceService {
           "log", "--first-parent", "--format=%H %P", "--max-count=4097", dev, `^${main}`,
         ], { cwd: repoRoot })).split(/\r?\n/u).filter(Boolean);
         if (history.length > 4096) throw new Error("dev history exceeds the bounded proof");
-        for (const entry of history) {
-          const [commit, first, ...parents] = entry.split(" ");
-          if (parents.some((parent) => lineage.has(parent) && !targetLineage.has(parent))) {
-            throw new Error(`Source Task still has a separate dev integration ${commit}; return it before integrating the combined Task`);
+        if (!squashTransfer) {
+          for (const entry of history) {
+            const [commit, , ...parents] = entry.split(" ");
+            if (parents.some((parent) => lineage.has(parent) && !targetLineage.has(parent))) {
+              throw new Error(`Source Task still has a separate dev integration ${commit}; return it before integrating the combined Task`);
+            }
           }
         }
-        evidence.push({ projectRoot: repoRoot, sourceHead, targetHead, results });
+        evidence.push({
+          projectRoot: repoRoot, sourceHead, targetHead, results,
+          ...(squashTransfer ? { squashTransferHash: squashTransfer.transferHash } : {}),
+        });
         return visit(index + 1, devLease);
       });
     };
@@ -3079,12 +3508,19 @@ export class TaskGitWorkspaceService {
     return visit(0, lease);
   }
 
-  async cleanupPreview(taskId, { gitReferences = [] } = {}) {
+  async cleanupPreview(taskId, { gitReferences = [], squashAbsorbedBy = null } = {}) {
     this.#assertAvailable("cleanupPreview");
     const id = normalizedTaskId(taskId);
     const workspaces = await this.describe(id);
     const references = [];
     const publication = await this.readPublication();
+    let squashTransfer = null;
+    try {
+      const candidate = squashAbsorbedBy
+        ? normalizedTaskSquashTransfer(squashAbsorbedBy)
+        : null;
+      if (candidate?.source.taskId === id) squashTransfer = candidate;
+    } catch { squashTransfer = null; }
     for (const reference of gitReferences) {
       const repoRoot = canonicalPath(reference.projectRoot);
       const resultCommit = String(reference.resultCommit ?? "").trim();
@@ -3098,13 +3534,25 @@ export class TaskGitWorkspaceService {
       if (publishedRevision && resultCommit && await gitMaybe([
         "merge-base", "--is-ancestor", resultCommit, publishedRevision,
       ], { cwd: repoRoot }) !== null) published = true;
+      const transferredPublished = Boolean(
+        squashTransfer
+        && samePath(squashTransfer.projectRoot, repoRoot)
+        && squashTransfer.source.resultCommit === resultCommit
+        && publishedRevision
+        && await gitMaybe([
+          "merge-base", "--is-ancestor", squashTransfer.survivor.resultCommit, publishedRevision,
+        ], { cwd: repoRoot }) !== null,
+      );
+      if (transferredPublished) published = true;
       const branch = String(reference.branch ?? "").trim();
       const branchHeadCommit = branch ? await gitMaybe([
         "rev-parse", "--verify", `refs/heads/${branch}^{commit}`,
       ], { cwd: repoRoot }) : null;
-      const branchPublished = !branchHeadCommit || Boolean(publishedRevision && await gitMaybe([
-        "merge-base", "--is-ancestor", branchHeadCommit, publishedRevision,
-      ], { cwd: repoRoot }) !== null);
+      const branchPublished = !branchHeadCommit
+        || (transferredPublished && branchHeadCommit === squashTransfer.source.resultCommit)
+        || Boolean(publishedRevision && await gitMaybe([
+          "merge-base", "--is-ancestor", branchHeadCommit, publishedRevision,
+        ], { cwd: repoRoot }) !== null);
       references.push({
         ...reference,
         projectRoot: repoRoot,
@@ -3114,15 +3562,18 @@ export class TaskGitWorkspaceService {
         publicationGeneration: publishedRevision ? durableGeneration : null,
         branchHeadCommit,
         branchPublished,
+        ...(transferredPublished ? { publishedBySquashTransfer: squashTransfer.transferHash } : {}),
       });
     }
     const unpublishedWorktrees = [];
     for (const workspace of workspaces) {
       const reference = references.find((item) => samePath(item.projectRoot, workspace.repositoryRoot)
         && item.branch === workspace.branch);
-      if (!reference?.publishedRevision || await gitMaybe([
+      const transferredWorktree = reference?.publishedBySquashTransfer
+        && workspace.headCommit === squashTransfer?.source.resultCommit;
+      if (!reference?.publishedRevision || (!transferredWorktree && await gitMaybe([
         "merge-base", "--is-ancestor", workspace.headCommit, reference.publishedRevision,
-      ], { cwd: workspace.repositoryRoot }) === null) {
+      ], { cwd: workspace.repositoryRoot }) === null)) {
         unpublishedWorktrees.push({ ...workspace, reason: "current worktree head is not published" });
       }
     }
@@ -3169,6 +3620,7 @@ export class TaskGitWorkspaceService {
       dirty: workspaces.some((item) => item.dirty),
       unpublished: [...references.filter((item) => !item.published || !item.branchPublished), ...unpublishedWorktrees],
       deleting: uniqueDeleting,
+      ...(squashTransfer ? { squashTransfer } : {}),
     };
   }
 
@@ -3178,7 +3630,8 @@ export class TaskGitWorkspaceService {
   }
 
   async cleanupOwned(taskId, {
-    allowDirty = false, requirePublished = false, gitReferences = [], expectedPreview = null, lease = null,
+    allowDirty = false, requirePublished = false, gitReferences = [], squashAbsorbedBy = null,
+    expectedPreview = null, lease = null,
   } = {}) {
     this.#assertAvailable("cleanupOwned");
     await requiredGuardLease(lease).assertOwned();
@@ -3186,7 +3639,7 @@ export class TaskGitWorkspaceService {
     await this.#assertNoProcessTreeGuard(id);
     const root = path.join(this.taskWorktreesRoot, id);
     if (!pathInside(this.taskWorktreesRoot, root)) throw new Error("Task worktree cleanup escaped its managed root");
-    const preview = await this.cleanupPreview(id, { gitReferences });
+    const preview = await this.cleanupPreview(id, { gitReferences, squashAbsorbedBy });
     if (expectedPreview) {
       const expectedPublication = JSON.stringify((expectedPreview.gitReferences ?? []).map((item) => ({
         projectRoot: item.projectRoot,
@@ -3215,7 +3668,7 @@ export class TaskGitWorkspaceService {
       deleting: value.deleting.filter((item) => item.repositoryRoot && samePath(item.repositoryRoot, repoRoot)),
     });
     const assertCurrentRepository = async (repoRoot) => {
-      const current = await this.cleanupPreview(id, { gitReferences });
+      const current = await this.cleanupPreview(id, { gitReferences, squashAbsorbedBy });
       if (JSON.stringify(repositoryEvidence(current, repoRoot)) !== JSON.stringify(repositoryEvidence(preview, repoRoot))) {
         throw new Error("Task cleanup blocked: branch or worktree changed after confirmation");
       }

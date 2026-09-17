@@ -181,3 +181,23 @@ the startup barrier or hide the ready interface. Recovery of active ownership,
 durable terminals and the persisted restart remains mandatory before dispatch.
 Background enrichment reuses one existing owner, yields between bounded units,
 and stops admitting more units during shutdown. See ADR-0030.
+
+## Squash-transfer recovery
+
+An exact squash transfer is a versioned workflow transition reserving the
+survivor and source Task together. Restart/unknown reconciliation acquires both
+Task recovery locks and the existing repository lock. It accepts only the
+persisted transfer hash and exact `(old dev, new result, accepted tree)`
+integration. If dev is still exactly old dev, it may resume that same transfer;
+if the exact integration is present it first proves or completes its
+non-destructive managed worktree/index materialization, then commits the pending
+two-row outcome. Ref-only application, local tracked/untracked bytes or any other
+dev head remain unknown without deleting those bytes. A normally completed Git
+command creates no process guard, so this exact squash recovery does not require
+a fictitious guard ID. A real unresolved guard remains fail-closed until its
+existing exact recovery proof succeeds. Generic recovery/read errors do not
+create transfer or terminal evidence. All cutpoints converge on the existing
+lifecycle outcome; there is no second recovery registry.
+The hash distinguishes the previous accepted survivor result from the reviewed
+clean-before commit, so recovery cannot widen the owner delta or remove foreign
+dev residue after a restart.

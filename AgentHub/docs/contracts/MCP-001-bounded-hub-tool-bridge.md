@@ -46,6 +46,18 @@ an explicit, audited user exception to a prerequisite release wait, never an
 automatic consequence of starting a turn. Claim/launch preserve Test/Await/Blocked
 workflow status.
 
+For release-enabled Workspaces, combined closure also binds canonical selected
+composition validation (plan, approved base and tree) into that same preview and
+receipt. Validation precedes source closure and never accepts the survivor or
+promotes the live PreRelease. Changed evidence requires a new preview. Await
+acceptance rejects incomplete latest-result integration evidence through its
+existing failed-transition/readback path; no new replay or recovery owner is
+introduced. See REL-001 and ADR-0068.
+TASK_ABSORPTION_COMPOSITION_FAILED is a typed terminal refusal only from the
+composition proof before the source lifecycle transition begins. Exact request
+retry returns that refusal. Errors after closure admission retain the existing
+unknown-outcome semantics; they are never classified by message text.
+
 ## Task attachment readback
 
 Task list, exact Task reads and attachment-add results project the same persisted
@@ -276,6 +288,42 @@ rejection leaves the durable prepare
 blocked for explicit cancellation and is not silently converted to success.
 
 ## Queue diagnostics
+
+## Exact squash transfer
+
+`hub_task_status_update` exposes the Release Manager-only Test-to-Test squash
+transfer through `squash_*` fields. All identity fields are supplied together.
+The first request omits `expected_squash_transfer_hash` and returns a read-only
+preview. A later request uses a new request ID and the exact returned hash to
+authorize the bounded Git and two-Task lifecycle effect. Confirmation also
+supplies `squash_proof_request_id`, the exact request ID of that preview. The
+preview identity is part of the content-addressed proof; the new confirmation
+request ID owns only its own MCP receipt. Reusing the preview request ID with
+different confirmation arguments remains forbidden by the ordinary immutable
+arguments hash. The survivor Task revision is mandatory; the source Task
+revision is always explicit.
+`squash_baseline_result_commit` is the reviewed clean-before commit and must be
+an ancestor of the requested new clean result. The durable proof separately
+captures the survivor's current accepted Test result, so a stale card cannot be
+hidden by supplying a different clean baseline.
+
+A lost confirmed response is reconciled only through
+`hub_task_operation_reconcile` with the original confirmation arguments and
+hash. A squash transition whose Git commands ended normally has no process-tree
+guard to invent; exact Git and worktree/index readback owns its recovery. If an
+unresolved process guard actually exists, ordinary exact guard proof remains
+mandatory. Reconciliation first reads the exact dev parent/tree/result effect
+and complete clean materialization. It reuses the same lifecycle transition and
+Task/Git locks, never invents a new owner or infers success from ancestry, equal
+trees, a ref-only effect or an unavailable read.
+
+A changed confirmation hash, stale Task revision or non-Test participant is a
+typed pre-transition rejection. Because no lifecycle intent or Git effect has
+started, the public MCP receipt is terminal `failed` and exact same-request
+replay returns that failure. Errors after intent remain unknown until canonical
+readback. Materialization also treats ignored local files and directories as
+user bytes: native checkout collision protection must refuse rather than replace
+them, and a ref-only effect cannot complete the receipt.
 
 `hub_active_runs_list` and `hub_parallel_streams_list` expose bounded,
 payload-free deferred-input summaries separately from live runs. The summary

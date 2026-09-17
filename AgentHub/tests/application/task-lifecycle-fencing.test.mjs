@@ -118,6 +118,61 @@ test("Task lifecycle rejects a synchronous assertOwned contract before mutation"
   });
 });
 
+test("absorption validates under Await then Task and dev ownership and binds confirmation to composition", async () => {
+  const { service, calls, task } = lifecycleFixture();
+  Object.assign(task, { workflowStatus: "in_progress", status: "open" });
+  const target = { ...task, id: "survivor", revision: 5, workflowStatus: "testing" };
+  service.taskBoard.task = (id) => structuredClone(id === target.id ? target : task);
+  const held = [];
+  const taskLease = { async assertOwned() {} };
+  const devLease = { ...taskLease, repositoryLockKeys: new Set(["repo"]) };
+  const scope = async (name, operation) => {
+    held.push(name);
+    try { return await operation(); } finally { assert.equal(held.pop(), name); }
+  };
+  service.releasePreflight.withAwaitTransition = async (_id, operation, options) => {
+    assert.equal(await options.changesAwait(), true);
+    return scope("Await", operation);
+  };
+  service.taskGitWorkspaces.withTaskLocks = (_ids, operation) => {
+    assert.deepEqual(held, ["Await"]);
+    return scope("Tasks", () => operation(taskLease));
+  };
+  service.taskGitWorkspaces.withAbsorptionEvidenceOwned = (options, operation) => {
+    if (held.at(-1) === "dev") {
+      assert.equal(options.lease, devLease);
+      return operation({ taskId: target.id, repositories: [] }, devLease);
+    }
+    assert.deepEqual(held, ["Await", "Tasks"]);
+    return scope("dev", () => operation({ taskId: target.id, repositories: [] }, devLease));
+  };
+  let planRevision = "first-plan";
+  service.releasePreflight.prepareAwaitSet = async (options) => {
+    assert.deepEqual(held, ["Await", "Tasks", "dev"]);
+    assert.equal(options.lease, devLease);
+    assert.equal(options.validateOnly, true);
+    assert.deepEqual(options.acceptingTask, { id: target.id, revision: target.revision });
+    return { planRevision, taskIds: [target.id], releaseCandidates: [{ baseCommit: "base", tree: "tree" }] };
+  };
+  const request = { taskId: task.id, absorbedIntoTaskId: target.id, operationId: "absorb" };
+  const preview = await service.complete(request);
+  assert.equal(calls.begin, 0);
+  assert.equal(target.workflowStatus, "testing");
+  planRevision = "changed-selection";
+  await assert.rejects(service.complete({ ...request, confirmCleanup: true,
+    expectedCleanupToken: preview.cleanupToken }), /confirmation is stale/);
+  assert.equal(calls.begin, 0);
+  const currentPreview = await service.complete(request);
+  await service.complete({ ...request, confirmCleanup: true, expectedCleanupToken: currentPreview.cleanupToken });
+  assert.equal(calls.begin, 1);
+  assert.equal(calls.complete, 1);
+  assert.deepEqual(held, []);
+  const uncertain = new Error("closure reply lost after admission");
+  service.taskBoard.finalizeCleanupTransition = () => { throw uncertain; };
+  await assert.rejects(service.complete({ ...request, operationId: "uncertain-closure", confirmCleanup: true,
+    expectedCleanupToken: currentPreview.cleanupToken }), (error) => error === uncertain);
+});
+
 test("Await prepares PreRelease before Task commit and does not commit on composition failure", async () => {
   const previousReference = {
     projectRoot: "D:/project", branch: "HUB-159", resultCommit: "a".repeat(40),

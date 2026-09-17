@@ -119,3 +119,14 @@ See ADR-0067.
   IME composition, repeated keydown and a pending send cannot duplicate it.
 
 See [ADR-0021](../decisions/ADR-0021-permanent-workspace-archive.md).
+
+## Squash-absorbed Task cards
+
+Exact squash absorption never deletes either Task card or its audit history.
+The survivor remains in Test with a new release identity; the source returns to
+work and carries the immutable transfer outcome linking it to the survivor.
+Both row updates are one SQLite transaction after exact Git readback. Ordinary
+edits and lifecycle operations are excluded from both cards while that shared
+transition is active. After durable publication, explicit confirmed completion
+may close the source and remove only its exact clean branch/worktree; the card
+and lifecycle outcome remain available as history.

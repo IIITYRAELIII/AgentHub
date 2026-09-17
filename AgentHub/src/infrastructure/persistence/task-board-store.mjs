@@ -21,6 +21,7 @@ import {
   taskReleasePlanRevision,
 } from "../../domain/task-release-snapshot.mjs";
 import { normalizedTaskGitReferences, taskBranchName } from "../../domain/task-git-reference.mjs";
+import { normalizedTaskSquashTransfer } from "../../domain/task-squash-transfer.mjs";
 import { normalizedTaskNumber, normalizedWorkspaceTaskPrefix, taskNumberParts } from "../../domain/task-number.mjs";
 import { taskProjectRoot } from "../../domain/task-project-root.mjs";
 import {
@@ -249,6 +250,10 @@ function configure(database) {
     CREATE UNIQUE INDEX IF NOT EXISTS hub_task_lifecycle_active_idx
       ON hub_task_lifecycle_transitions(task_id)
       WHERE phase IN ('pending_git', 'cleanup');
+    CREATE UNIQUE INDEX IF NOT EXISTS hub_task_lifecycle_active_secondary_idx
+      ON hub_task_lifecycle_transitions(json_extract(evidence_json, '$.squashTransfer.source.taskId'))
+      WHERE phase IN ('pending_git', 'cleanup')
+        AND json_extract(evidence_json, '$.squashTransfer.source.taskId') IS NOT NULL;
     CREATE TABLE IF NOT EXISTS hub_task_lifecycle_outcomes (
       operation_id TEXT PRIMARY KEY,
       task_id TEXT NOT NULL,
@@ -256,6 +261,12 @@ function configure(database) {
       result_json TEXT NOT NULL,
       completed_at_ms INTEGER NOT NULL
     ) WITHOUT ROWID;
+    CREATE INDEX IF NOT EXISTS hub_task_lifecycle_outcome_squash_survivor_idx
+      ON hub_task_lifecycle_outcomes(json_extract(result_json, '$.evidence.squashTransfer.survivor.taskId'))
+      WHERE kind = 'workflow';
+    CREATE INDEX IF NOT EXISTS hub_task_lifecycle_outcome_squash_source_idx
+      ON hub_task_lifecycle_outcomes(json_extract(result_json, '$.evidence.squashTransfer.source.taskId'))
+      WHERE kind = 'workflow';
     CREATE TABLE IF NOT EXISTS hub_task_release_revisions (
       task_id TEXT NOT NULL,
       task_revision INTEGER NOT NULL,
@@ -1228,10 +1239,33 @@ export class TaskBoardStore {
       ...row,
       adoptedAt: new Date(Number(adoptedAtMs)).toISOString(),
     }));
+    let squashTransfer = null;
+    let squashAbsorbedBy = null;
+    const transferRow = database.prepare(`
+      SELECT result_json FROM hub_task_lifecycle_outcomes
+      WHERE kind = 'workflow' AND (
+        json_extract(result_json, '$.evidence.squashTransfer.survivor.taskId') = ?
+        OR json_extract(result_json, '$.evidence.squashTransfer.source.taskId') = ?
+      )
+      ORDER BY completed_at_ms DESC LIMIT 1
+    `).get(taskId, taskId);
+    if (transferRow) {
+      try {
+        const proof = normalizedTaskSquashTransfer(
+          JSON.parse(transferRow.result_json)?.evidence?.squashTransfer,
+        );
+        if (proof.survivor.taskId === taskId) squashTransfer = proof;
+        if (proof.source.taskId === taskId) squashAbsorbedBy = proof;
+      } catch {
+        // Invalid durable evidence cannot grant release or cleanup authority.
+      }
+    }
     return {
       workLog,
       gitReferences: normalizedTaskGitReferences(gitReferences),
       gitAdoptions,
+      ...(squashTransfer ? { squashTransfer } : {}),
+      ...(squashAbsorbedBy ? { squashAbsorbedBy } : {}),
     };
   }
 
@@ -1270,6 +1304,14 @@ export class TaskBoardStore {
       this.#database.prepare("PRAGMA data_version").get()?.data_version,
     ) || 0;
     return `${this.revision}:${externalRevision}`;
+  }
+
+  get snapshotRevision() {
+    if (!this.#database) return null;
+    const externalRevision = Number(
+      this.#database.prepare("PRAGMA data_version").get()?.data_version,
+    ) || 0;
+    return `${this.#revision}:${externalRevision}`;
   }
 
   close() {
@@ -2487,6 +2529,12 @@ export class TaskBoardStore {
               || Number(existing.expected_task_revision) !== revision) {
             throw new Error("Task lifecycle operation id was already used for another transition");
           }
+          const existingTransfer = JSON.parse(existing.evidence_json ?? "{}")?.squashTransfer;
+          if (Boolean(existingTransfer) !== Boolean(evidence?.squashTransfer)
+              || (existingTransfer && normalizedTaskSquashTransfer(existingTransfer).transferHash
+                !== normalizedTaskSquashTransfer(evidence.squashTransfer).transferHash)) {
+            throw new Error("Task lifecycle operation id was already used for another squash transfer");
+          }
           database.exec("COMMIT");
           return { task: this.#taskWithRelease(database, current), replayed: true, phase: existing.phase };
         }
@@ -2548,11 +2596,57 @@ export class TaskBoardStore {
             throw new Error("Task release context changed during lifecycle transition");
           }
         }
+        const squashTransfer = evidence?.squashTransfer
+          ? normalizedTaskSquashTransfer(evidence.squashTransfer)
+          : null;
+        if (squashTransfer) {
+          if (normalizedKind !== "workflow" || target !== "testing"
+              || squashTransfer.survivor.taskId !== taskId
+              || squashTransfer.survivor.revision !== revision
+              || squashTransfer.authority.workspaceId !== String(current.workspace_id ?? "")
+              || current.workflow_status !== "testing") {
+            throw new Error("Task squash transfer survivor identity changed");
+          }
+          const source = this.#taskRow(database, squashTransfer.source.taskId);
+          const sourceReferences = database.prepare(`
+            SELECT project_root, branch, result_commit FROM hub_task_git_references WHERE task_id = ?
+          `).all(source.id);
+          const survivorReferences = database.prepare(`
+            SELECT project_root, branch, result_commit FROM hub_task_git_references WHERE task_id = ?
+          `).all(taskId);
+          if (source.workflow_status !== "testing"
+              || source.workspace_id !== current.workspace_id
+              || Number(source.row_revision) !== squashTransfer.source.revision
+              || Number(source.release_revision) !== squashTransfer.source.releaseRevision
+              || Number(current.release_revision) !== squashTransfer.survivor.releaseRevision
+              || sourceReferences.length !== 1 || survivorReferences.length !== 1
+              || !sameResolvedPath(sourceReferences[0].project_root, squashTransfer.projectRoot)
+              || !sameResolvedPath(survivorReferences[0].project_root, squashTransfer.projectRoot)
+              || sourceReferences[0].result_commit !== squashTransfer.source.resultCommit
+              || sourceReferences[0].branch !== squashTransfer.source.branch
+              || survivorReferences[0].result_commit !== squashTransfer.previousResultCommit
+              || survivorReferences[0].branch !== squashTransfer.survivor.branch) {
+            throw new Error("Task squash transfer source, survivor or Test results changed");
+          }
+        }
         const active = database.prepare(`
           SELECT operation_id FROM hub_task_lifecycle_transitions
-          WHERE task_id = ? AND phase IN ('pending_git', 'cleanup')
-        `).get(taskId);
+          WHERE phase IN ('pending_git', 'cleanup') AND (
+            task_id = ? OR json_extract(evidence_json, '$.squashTransfer.source.taskId') = ?
+          )
+        `).get(taskId, taskId);
         if (active) throw new Error(`Task lifecycle transition is already active: ${active.operation_id}`);
+        if (squashTransfer) {
+          const sourceActive = database.prepare(`
+            SELECT operation_id FROM hub_task_lifecycle_transitions
+            WHERE phase IN ('pending_git', 'cleanup') AND (
+              task_id = ? OR json_extract(evidence_json, '$.squashTransfer.source.taskId') = ?
+            )
+          `).get(squashTransfer.source.taskId, squashTransfer.source.taskId);
+          if (sourceActive) {
+            throw new Error(`Source Task lifecycle transition is already active: ${sourceActive.operation_id}`);
+          }
+        }
         if (evidence?.absorbedInto) {
           const absorbed = evidence.absorbedInto;
           const targetTask = this.#taskRow(database, absorbed.taskId);
@@ -2573,6 +2667,9 @@ export class TaskBoardStore {
           operation, taskId, normalizedKind, normalizedKind === "workflow" ? "pending_git" : "cleanup",
           target, revision, JSON.stringify({
             task: this.#taskWithRelease(database, current),
+            ...(squashTransfer ? {
+              sourceTask: this.#taskWithRelease(database, this.#taskRow(database, squashTransfer.source.taskId)),
+            } : {}),
             bindingRequests: database.prepare(`
               SELECT provider, provider_thread_id, turn_id, operation_id, requested_workflow_status
               FROM hub_task_turn_bindings WHERE task_id = ?
@@ -2604,6 +2701,10 @@ export class TaskBoardStore {
         priorTask: (() => {
           const priorState = JSON.parse(row.prior_state_json);
           return priorState?.task ?? priorState;
+        })(),
+        priorSourceTask: (() => {
+          const priorState = JSON.parse(row.prior_state_json);
+          return priorState?.sourceTask ?? null;
         })(),
         error: row.error_text,
         evidence: JSON.parse(row.evidence_json ?? "{}"),
@@ -2721,6 +2822,83 @@ export class TaskBoardStore {
         database.prepare("DELETE FROM hub_task_lifecycle_transitions WHERE operation_id = ?").run(operation);
         database.exec("COMMIT");
         return task;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
+  commitSquashTransferTransition({ operationId, squashTransfer } = {}) {
+    const operation = String(operationId ?? "").trim();
+    const proof = normalizedTaskSquashTransfer(squashTransfer);
+    if (!proof.integrationCommit) throw new Error("Task squash transfer requires exact Git integration readback");
+    return this.#withDatabase((database) => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const transition = database.prepare(`
+          SELECT * FROM hub_task_lifecycle_transitions
+          WHERE operation_id = ? AND kind = 'workflow' AND phase = 'pending_git'
+        `).get(operation);
+        if (!transition) throw new Error("Task squash transfer is not pending");
+        const pendingProof = normalizedTaskSquashTransfer(
+          JSON.parse(transition.evidence_json)?.squashTransfer,
+        );
+        if (pendingProof.transferHash !== proof.transferHash
+            || transition.task_id !== proof.survivor.taskId
+            || transition.target_workflow_status !== "testing") {
+          throw new Error("Task squash transfer evidence changed before commit");
+        }
+        const survivor = this.#taskRow(database, proof.survivor.taskId);
+        const source = this.#taskRow(database, proof.source.taskId);
+        if (Number(survivor.row_revision) !== proof.survivor.revision
+            || Number(source.row_revision) !== proof.source.revision
+            || Number(survivor.release_revision) !== proof.survivor.releaseRevision
+            || Number(source.release_revision) !== proof.source.releaseRevision
+            || survivor.workflow_status !== "testing" || source.workflow_status !== "testing") {
+          throw new Error("Task squash transfer rows changed while Git was applied");
+        }
+        database.prepare("DELETE FROM hub_task_git_references WHERE task_id = ?").run(survivor.id);
+        this.#recordGitReference(database, survivor.id, proof.projectRoot, proof.survivor.branch, {
+          repoRoot: proof.projectRoot,
+          tree: proof.survivor.resultCommit,
+        });
+        const now = this.now();
+        const survivorChanged = database.prepare(`
+          UPDATE hub_board_tasks SET row_revision = row_revision + 1,
+            release_revision = release_revision + 1, updated_at_ms = ?
+          WHERE id = ? AND row_revision = ? AND workflow_status = 'testing'
+        `).run(now, survivor.id, proof.survivor.revision);
+        const sourceChanged = database.prepare(`
+          UPDATE hub_board_tasks SET workflow_status = 'in_progress', completed_at_ms = NULL,
+            row_revision = row_revision + 1, release_revision = release_revision + 1, updated_at_ms = ?
+          WHERE id = ? AND row_revision = ? AND workflow_status = 'testing'
+        `).run(now, source.id, proof.source.revision);
+        if (!Number(survivorChanged.changes) || !Number(sourceChanged.changes)) {
+          throw new Error("Task squash transfer row CAS failed");
+        }
+        database.prepare(`
+          UPDATE hub_task_turn_bindings SET requested_workflow_status = NULL
+          WHERE task_id IN (?, ?) AND requested_workflow_status IS NOT NULL
+        `).run(survivor.id, source.id);
+        const survivorTask = this.#taskWithRelease(database, this.#taskRow(database, survivor.id));
+        const sourceTask = this.#taskWithRelease(database, this.#taskRow(database, source.id));
+        const priorState = JSON.parse(transition.prior_state_json);
+        const evidence = { ...JSON.parse(transition.evidence_json), squashTransfer: proof };
+        database.prepare(`
+          INSERT OR REPLACE INTO hub_task_lifecycle_outcomes (
+            operation_id, task_id, kind, result_json, completed_at_ms
+          ) VALUES (?, ?, 'workflow', ?, ?)
+        `).run(operation, survivor.id, JSON.stringify({
+          task: survivorTask,
+          sourceTask,
+          priorTask: priorState.task,
+          priorSourceTask: priorState.sourceTask,
+          evidence,
+        }), now);
+        database.prepare("DELETE FROM hub_task_lifecycle_transitions WHERE operation_id = ?").run(operation);
+        database.exec("COMMIT");
+        return { task: survivorTask, sourceTask, squashTransfer: proof };
       } catch (error) {
         database.exec("ROLLBACK");
         throw error;

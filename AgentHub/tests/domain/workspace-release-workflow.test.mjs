@@ -160,3 +160,16 @@ test("the release-Task rule belongs to the Release Manager role only", () => {
   assert.doesNotMatch(effectiveStreamDeveloperRules("", { teamLead: true }), /Релиз \[версия\]/u);
   assert.doesNotMatch(effectiveWorkspaceDeveloperRules("", { releaseWorkflow: true }), /Релиз \[версия\]/u);
 });
+
+test("issued rules require selected composition and retained absorption sources", () => {
+  const workspace = effectiveWorkspaceDeveloperRules("Authored suffix", { releaseWorkflowEnabled: true });
+  const manager = effectiveStreamDeveloperRules("Authored suffix", { releaseManager: true });
+  assert.match(workspace, /Never merge rolling dev into a Task branch/u);
+  assert.match(workspace, /A new result must pass Test and acceptance again/u);
+  assert.match(workspace, /successful canonical composition of the surviving result with the selected release Tasks/u);
+  assert.match(workspace, /Preserve original cards, history, branches and worktrees until verified publication/u);
+  assert.match(manager, /immediately after each selected-result, absorption or release-membership change/u);
+  assert.match(manager, /A changed main or approved base requires renewed base verification/u);
+  assert.ok(workspace.endsWith("Authored suffix"));
+  assert.ok(manager.endsWith("Authored suffix"));
+});

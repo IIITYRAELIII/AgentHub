@@ -619,6 +619,109 @@ function withoutGuard(value) {
   return request;
 }
 
+test("unknown squash transfer reserves both Task identities and settles only exact durable readback", async () => {
+  const projectRoot = process.platform === "win32" ? "C:\\repo" : "/repo";
+  const workspace = { id: "workspace", settings: { releaseWorkflowEnabled: true, workingDirectory: projectRoot } };
+  const survivor = {
+    id: "survivor", workspaceId: workspace.id, streamId: "release", status: "started",
+    workflowStatus: "testing", revision: 7,
+    gitReferences: [{ projectRoot, branch: "HUB-235", resultCommit: "b".repeat(40) }],
+  };
+  const source = {
+    id: "source", workspaceId: workspace.id, streamId: "source-stream", status: "started",
+    workflowStatus: "testing", revision: 4,
+    gitReferences: [{ projectRoot, branch: "HUB-224", resultCommit: "a".repeat(40) }],
+  };
+  const proof = {
+    version: 1, kind: "task-squash-transfer-v1", projectRoot,
+    survivor: { taskId: survivor.id, revision: 7, releaseRevision: 6,
+      resultCommit: "c".repeat(40), baseCommit: "1".repeat(40), branch: "HUB-235" },
+    source: { taskId: source.id, revision: 4, releaseRevision: 3,
+      resultCommit: "a".repeat(40), baseCommit: "2".repeat(40), branch: "HUB-224" },
+    previousResultCommit: survivor.gitReferences[0].resultCommit,
+    baselineResultCommit: "b".repeat(40), devBeforeCommit: "d".repeat(40), devAfterTree: "e".repeat(40),
+    sourceWitnesses: [{ path: "source.mjs", source: { mode: "100644", object: "3".repeat(40) },
+      survivor: { mode: "100644", object: "3".repeat(40) } }],
+    ownerWitnesses: [{ path: "new.mjs", baseline: null, beforeDev: null,
+      newResult: { mode: "100644", object: "4".repeat(40) },
+      afterDev: { mode: "100644", object: "4".repeat(40) } }],
+    authority: { workspaceId: workspace.id, streamId: "release", provider: "codex",
+      threadId: "thread", proofRequestId: "squash-preview" },
+  };
+  const { normalizedTaskSquashTransfer } = await import("../../src/domain/task-squash-transfer.mjs");
+  const pendingProof = normalizedTaskSquashTransfer(proof);
+  const identity = {
+    expected_task_revision: 7,
+    squash_source_task_id: source.id,
+    squash_source_task_revision: 4,
+    squash_baseline_result_commit: proof.baselineResultCommit,
+    squash_new_result_commit: proof.survivor.resultCommit,
+    squash_dev_after_tree: proof.devAfterTree,
+    squash_proof_request_id: proof.authority.proofRequestId,
+    expected_squash_transfer_hash: pendingProof.transferHash,
+  };
+  const receipt = {
+    requestId: "squash-request", workspaceId: workspace.id, toolName: "hub_task_status_update",
+    argumentsHash: hashArguments({ request_id: "squash-request", status: "testing",
+      task_id: survivor.id, ...identity }),
+    status: "unknown", operationStatus: "pending", receiptState: "unknown",
+  };
+  let transition = {
+    operationId: receipt.requestId, taskId: survivor.id, kind: "workflow", phase: "pending_git",
+    targetWorkflowStatus: "testing", expectedRevision: 7,
+    priorTask: structuredClone(survivor), priorSourceTask: structuredClone(source),
+    evidence: { squashTransfer: pendingProof },
+  };
+  let outcome = null;
+  const settlements = [];
+  const workspaceCatalog = {
+    workspace: (id) => id === workspace.id ? workspace : null,
+    stream: (id) => ({ id, workspaceId: workspace.id, settings: {} }),
+    mcpOperation: () => receipt,
+    completeUnknownMcpOperation: (_id, value) => { settlements.push(value); return receipt; },
+    failUnknownMcpOperation: () => { throw new Error("unexpected failure settlement"); },
+  };
+  const taskBoard = {
+    task: (id) => id === survivor.id ? survivor : id === source.id ? source : null,
+    lifecycleTransition: () => transition,
+    lifecycleOutcome: () => outcome,
+  };
+  const taskLifecycle = {
+    withUnknownWorkflowReconciliationLock: async (options, operation) => {
+      assert.equal(options.sourceTaskId, source.id);
+      return operation({ async assertOwned() {} });
+    },
+    reconcileUnknownWorkflowStatusOwned: async ({ guardId, proof: recoveryProof }) => {
+      assert.equal(guardId, null);
+      assert.equal(recoveryProof, null);
+      survivor.revision = 8;
+      survivor.gitReferences = [{ projectRoot, branch: "HUB-235", resultCommit: proof.survivor.resultCommit }];
+      source.revision = 5;
+      source.workflowStatus = "in_progress";
+      const applied = normalizedTaskSquashTransfer({ ...pendingProof, integrationCommit: "f".repeat(40) });
+      outcome = { operationId: receipt.requestId, taskId: survivor.id, kind: "workflow", result: {
+        task: structuredClone(survivor), sourceTask: structuredClone(source),
+        evidence: { squashTransfer: applied },
+      } };
+      transition = null;
+      return { result: outcome.result, recovery: null };
+    },
+  };
+  const service = new TaskOperationReconciliationService({ workspaceCatalog, taskBoard, taskLifecycle });
+  const result = await service.reconcileUnknownWorkflow({
+    workspaceId: workspace.id, taskId: survivor.id, operationRequestId: receipt.requestId,
+    projectRoot, confirmed: true,
+    expectedTaskRevision: 7, squashSourceTaskId: source.id, squashSourceTaskRevision: 4,
+    squashBaselineResultCommit: proof.baselineResultCommit,
+    squashNewResultCommit: proof.survivor.resultCommit, squashDevAfterTree: proof.devAfterTree,
+    squashProofRequestId: proof.authority.proofRequestId,
+    expectedSquashTransferHash: pendingProof.transferHash,
+  });
+  assert.equal(result.outcome, "succeeded");
+  assert.equal(settlements[0].result.squashTransfer.integrationCommit, "f".repeat(40));
+  assert.equal(settlements[0].result.sourceTask.workflowStatus, "in_progress");
+});
+
 test("pending withdrawal resumes without a process guard and settles only after Git intent cleanup", async () => {
   const value = fixture();
   value.withdrawal();
