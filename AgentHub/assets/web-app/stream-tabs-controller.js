@@ -1045,6 +1045,7 @@
         this.rootObserver.observe(this.root, {
           attributes: true,
           attributeFilter: [
+            "data-activity-rail-visibility",
             "data-activity-stream-cards",
             "data-activity-tasks-auto-separate",
             "data-activity-tasks-always-separate",
@@ -1206,7 +1207,15 @@
             </div>
           </section>
           <section class="stream-card-settings-group" aria-labelledby="stream-settings-right-title">
-            <h3 class="stream-card-settings-group-title" id="stream-settings-right-title">Правая панель</h3>
+            <div class="stream-card-settings-group-head">
+              <h3 class="stream-card-settings-group-title" id="stream-settings-right-title">Правая панель</h3>
+              <button type="button" class="stream-card-gap-toggle stream-card-settings-switch"
+                role="switch" aria-checked="true" aria-label="Отображать правую панель" title="Отображать"
+                data-activity-rail-visibility-toggle>
+                <span class="switch-track" aria-hidden="true"></span>
+              </button>
+            </div>
+            <div class="stream-card-settings-options" data-activity-rail-settings>
             <div class="stream-card-settings-section stream-card-settings-recent-section">
               <span class="stream-card-settings-kicker">Показывать недавние за</span>
               <span class="stream-card-settings-duration">
@@ -1244,6 +1253,7 @@
                 data-activity-task-always-separate-toggle>
                 <span class="switch-track" aria-hidden="true"></span>
               </button>
+            </div>
             </div>
           </section>
         </div>`;
@@ -1302,6 +1312,13 @@
         this.update(wrapper);
       };
       wrapper.querySelector("[data-stream-recent-hours]").addEventListener("change", updateRecentPeriod);
+      wrapper.querySelector("[data-activity-rail-visibility-toggle]").addEventListener("click", () => {
+        this.applyViewSetting(
+          "activityRailVisibility",
+          this.root.dataset.activityRailVisibility === "hidden" ? "visible" : "hidden",
+        );
+        this.update(wrapper);
+      });
       wrapper.querySelector("[data-stream-detailed-toggle]").addEventListener("click", () => {
         this.applyViewSetting(
           "activityStreamDetailedCards",
@@ -1389,7 +1406,9 @@
         this.emitViewSetting(key, value);
         return;
       }
-      if (key === "activityStreamDetailedCards") {
+      if (key === "activityRailVisibility") {
+        this.root.dataset.activityRailVisibility = value === "hidden" ? "hidden" : "visible";
+      } else if (key === "activityStreamDetailedCards") {
         const detailed = Boolean(value);
         if (detailed) this.root.dataset.activityStreamCards = "detailed";
         else delete this.root.dataset.activityStreamCards;
@@ -1437,6 +1456,11 @@
       this.tabs.dataset.streamCardGapMode = this.gapEnabled ? "on" : "off";
       wrapper.querySelector("[data-stream-gap-toggle]")
         ?.setAttribute("aria-checked", String(this.gapEnabled));
+      const railVisible = this.root.dataset.activityRailVisibility !== "hidden";
+      wrapper.querySelector("[data-activity-rail-visibility-toggle]")
+        ?.setAttribute("aria-checked", String(railVisible));
+      const railSettings = wrapper.querySelector("[data-activity-rail-settings]");
+      if (railSettings) railSettings.hidden = !railVisible;
       const recentHours = Math.round(this.activityRecentMinutes / 30) / 2;
       const recentHoursInput = wrapper.querySelector("[data-stream-recent-hours]");
       if (recentHoursInput) recentHoursInput.value = String(recentHours);

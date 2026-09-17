@@ -13,10 +13,11 @@ async function activityRailPreferenceApi() {
   return window.AgentHubActivityRailPreference;
 }
 
-test("the activity rail is hidden by default and when storage is unavailable", async () => {
+test("the activity rail is visible by default and when storage is unavailable or invalid", async () => {
   const { stored } = await activityRailPreferenceApi();
-  assert.equal(stored({ getItem: () => null }), "hidden");
-  assert.equal(stored({ getItem: () => { throw new Error("blocked"); } }), "hidden");
+  assert.equal(stored({ getItem: () => null }), "visible");
+  assert.equal(stored({ getItem: () => "invalid" }), "visible");
+  assert.equal(stored({ getItem: () => { throw new Error("blocked"); } }), "visible");
 });
 
 test("the activity rail setting restores, applies, and persists both modes", async () => {

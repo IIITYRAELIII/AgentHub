@@ -72,7 +72,6 @@ const themeSelect = document.querySelector("[data-theme-select]");
 const backgroundSelect = document.querySelector("[data-background-select]");
 const backgroundMotionToggle = document.querySelector("[data-background-motion-toggle]");
 const chatBackgroundToggle = document.querySelector("[data-chat-background-toggle]");
-const activityRailVisibilityToggle = document.querySelector("[data-activity-rail-visibility-toggle]");
 const journalGroupingButtons = [...document.querySelectorAll("[data-journal-grouping]")];
 const journalStreamGroupToggle = document.querySelector("[data-journal-stream-group-toggle]");
 const journalPrimaryColumn = document.querySelector("[data-journal-primary-column]");
@@ -759,7 +758,7 @@ function applyChatSurface(value, { persist = false } = {}) {
 }
 
 function applyActivityRailVisibility(value, { persist = false } = {}) {
-  const selected = activityRailPreference.apply(root, activityRailVisibilityToggle, value);
+  const selected = activityRailPreference.apply(root, null, value);
   if (persist) activityRailPreference.persist(localStorage, selected);
 }
 
@@ -1003,11 +1002,6 @@ backgroundMotionToggle?.addEventListener("change", () => {
 });
 chatBackgroundToggle?.addEventListener("change", () => {
   applyChatSurface(chatBackgroundToggle.checked ? "transparent" : "themed", { persist: true });
-});
-activityRailVisibilityToggle?.addEventListener("change", () => {
-  applyActivityRailVisibility(activityRailVisibilityToggle.checked ? "visible" : "hidden", {
-    persist: true,
-  });
 });
 for (const button of journalGroupingButtons) {
   button.addEventListener("click", () => {
@@ -9449,7 +9443,8 @@ function toggleDialogSettings() {
   setDialogSettingsOpen(!dialogSettings.open);
 }
 
-dialogSettingsClose?.addEventListener("click", () => {
+dialogSettingsClose?.addEventListener("click", (event) => {
+  event.stopPropagation();
   setDialogSettingsOpen(false);
 });
 
@@ -10267,6 +10262,7 @@ modalOverlays?.installDismissibleOverlay({
   close: () => setDialogSettingsOpen(false),
 });
 dialogSettings.addEventListener("close", () => {
+  if (dialogSettings.open) return;
   const returnFocus = streamCardReturnFocus;
   streamCardReturnFocus = null;
   dialogSettings.hidden = true;
@@ -11724,6 +11720,8 @@ document.addEventListener("agenthub:stream-view-settings-change", (event) => {
     applyStreamStatusStyle(value, { persist: true });
   } else if (key === "activityStreamDetailedCards") {
     applyActivityStreamDetailedCards(value, { persist: true });
+  } else if (key === "activityRailVisibility") {
+    applyActivityRailVisibility(value, { persist: true });
   }
 });
 
