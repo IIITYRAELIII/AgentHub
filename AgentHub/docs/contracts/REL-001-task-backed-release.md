@@ -1478,6 +1478,10 @@ derived with rename and copy detection disabled, so a rename destination cannot
 bypass the same exclusive-create boundary. Recovery recognizes the exact
 preserved-plus-subset-of-target-additions state, including an additions-only
 replacement and a crash after the last file copy but before its index update.
+The preserved ref and the additions-ready real index are separate recovery
+facts. If a crash records the ref before preparing that index, readback resumes
+the preserved-to-without-additions phase first; it cannot infer index readiness
+from an exact worktree snapshot alone.
 The reviewed commit object is imported during
 preview, so recovery never depends on a mutable source directory. The normal
 squash proof and dev/materialization owner remain unchanged after survivor

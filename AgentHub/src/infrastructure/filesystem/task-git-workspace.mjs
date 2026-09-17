@@ -2987,9 +2987,15 @@ export class TaskGitWorkspaceService {
         const preservedCommit = await gitMaybe(["rev-parse", "--verify", `${preservedRef}^{commit}`], { cwd: repoRoot });
         if (preservedCommit) {
           const plan = await this.#squashCutoverMaterializationPlan(cutover, repoRoot, ownedLease);
-          if (plan.additions.length && plan.withoutAddedTree === cutover.expectedPreservedTree) {
+          const stagedTree = await this.#runOwned(["write-tree"], { cwd: snapshot.root, lease: ownedLease });
+          const unstaged = await this.#runOwned(["diff-files", "--name-only", "-z"], {
+            cwd: snapshot.root, lease: ownedLease,
+          });
+          if (plan.additions.length && plan.withoutAddedTree === cutover.expectedPreservedTree
+              && stagedTree === plan.withoutAddedTree && !unstaged) {
             return { status: "materializing_additions", cutover };
           }
+          return { status: "pending_materialization", cutover };
         }
         return { status: "not_staged", cutover };
       }
@@ -3047,7 +3053,7 @@ export class TaskGitWorkspaceService {
         return existing;
       };
       let readback = await this.readSquashCutoverOwned(cutover, { projectRoot: repoRoot, lease: ownedLease });
-      if (readback.status === "not_staged") {
+      if (["not_staged", "pending_materialization"].includes(readback.status)) {
         const snapshot = await this.#taskWorktreeSnapshotTree(proof.survivor.taskId, repoRoot, ownedLease);
         if (snapshot.headCommit !== proof.previousResultCommit
             || snapshot.tree !== cutover.expectedPreservedTree) {
