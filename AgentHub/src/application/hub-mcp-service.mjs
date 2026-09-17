@@ -623,7 +623,7 @@ export class HubMcpService {
           type: "string",
           enum: ["queue", "steer"],
           default: "queue",
-          description: "Queue after the active turn, or request exact steering of the current managed run. An undeliverable exact steer requires an explicit retry or queue decision.",
+          description: "Queue after the active turn, or steer the active turn and queue if steering is no longer possible.",
         },
         confirm_send: { type: "boolean", description: "Must be true because this starts, queues or steers another agent turn." },
       }, ["stream_id", "text", "confirm_send"]),
@@ -741,6 +741,15 @@ export class HubMcpService {
         squash_dev_after_tree: { type: "string", pattern: "^[0-9a-f]{40}$" },
         squash_proof_request_id: { type: "string" },
         expected_squash_transfer_hash: { type: "string", pattern: "^[0-9a-f]{64}$" },
+        squash_cutover_source_tree: { type: "string", pattern: "^[0-9a-f]{40}$" },
+        squash_cutover_expected_main_commit: { type: "string", pattern: "^[0-9a-f]{40}$" },
+        squash_cutover_expected_dev_commit: { type: "string", pattern: "^[0-9a-f]{40}$" },
+        squash_cutover_expected_preserved_tree: { type: "string", pattern: "^[0-9a-f]{40}$" },
+        squash_cutover_source_zip_sha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
+        squash_cutover_bundle_sha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
+        squash_cutover_manifest_sha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
+        squash_cutover_files_sha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
+        expected_squash_cutover_hash: { type: "string", pattern: "^[0-9a-f]{64}$" },
         confirm_reconcile: { type: "boolean", description: "Must be true because this settles the original unknown receipt and may recover a guarded process boundary." },
       }, ["task_id", "operation_request_id", "project_root", "confirm_reconcile"]),
       tool("hub_task_legacy_git_adopt", "Release Manager-only migration for a legacy Await Task with no Git reference. It verifies terminal Stream evidence and exact non-changelog patch equivalence to a named commit already in local main before recording immutable Task evidence.", {
@@ -887,14 +896,21 @@ export class HubMcpService {
   async callTaskStatusCutover(args = {}, { verifySource } = {}) {
     await this.#startupReconciliation;
     const context = this.#authorize(args.context_token);
-    const sourceTaskId = requiredText(args.cutover_source_task_id, "cutover source Task id", 200);
+    const squashBootstrap = args.squash_source_task_id != null;
+    const sourceTaskId = requiredText(
+      squashBootstrap ? args.squash_source_task_id : args.cutover_source_task_id,
+      "cutover source Task id", 200,
+    );
     const targetTaskId = requiredText(args.task_id, "cutover target Task id", 200);
-    const sourceTaskRevision = Number(args.cutover_source_task_revision);
+    const sourceTaskRevision = Number(
+      squashBootstrap ? args.squash_source_task_revision : args.cutover_source_task_revision,
+    );
     if (!Number.isInteger(sourceTaskRevision) || sourceTaskRevision < 1) {
       throw new Error("cutover source Task revision must be a positive integer");
     }
-    if (sourceTaskId === targetTaskId || args.status !== "awaiting_implementation") {
-      throw new Error("Cross-Task cutover requires distinct source and target Tasks and an Await target");
+    const expectedStatus = squashBootstrap ? "testing" : "awaiting_implementation";
+    if (sourceTaskId === targetTaskId || args.status !== expectedStatus) {
+      throw new Error(`Cross-Task cutover requires distinct source and target Tasks and a ${expectedStatus} target`);
     }
     const sourceCommit = requiredText(args.cutover_source_commit, "cutover source commit", 128).toLowerCase();
     const projectorSha256 = requiredText(args.cutover_projector_sha256, "cutover projector SHA-256", 128).toLowerCase();
@@ -903,14 +919,42 @@ export class HubMcpService {
       throw new Error("Cross-Task cutover source commit or projector hash is invalid");
     }
     if (typeof verifySource !== "function") throw new TypeError("cutover source verifier is required");
+    let squashCutover = null;
+    if (squashBootstrap) {
+      const commit = (name) => requiredText(args[name], name.replaceAll("_", " "), 64).toLowerCase();
+      const sha256 = (name) => requiredText(args[name], name.replaceAll("_", " "), 64).toLowerCase();
+      squashCutover = {
+        reviewedSourceTree: commit("squash_cutover_source_tree"),
+        expectedMainCommit: commit("squash_cutover_expected_main_commit"),
+        expectedDevCommit: commit("squash_cutover_expected_dev_commit"),
+        expectedPreservedTree: commit("squash_cutover_expected_preserved_tree"),
+        projectorSha256,
+        artifacts: {
+          sourceZipSha256: sha256("squash_cutover_source_zip_sha256"),
+          bundleSha256: sha256("squash_cutover_bundle_sha256"),
+          manifestSha256: sha256("squash_cutover_manifest_sha256"),
+          filesSha256: sha256("squash_cutover_files_sha256"),
+        },
+        expectedCutoverHash: args.expected_squash_cutover_hash,
+      };
+      if (![squashCutover.reviewedSourceTree, squashCutover.expectedMainCommit,
+        squashCutover.expectedDevCommit, squashCutover.expectedPreservedTree]
+        .every((value) => /^[0-9a-f]{40}$/u.test(value))
+          || !Object.values(squashCutover.artifacts).every((value) => /^[0-9a-f]{64}$/u.test(value))
+          || sourceCommit !== String(args.squash_new_result_commit ?? "").trim().toLowerCase()) {
+        throw new Error("Task squash cutover exact source, repository or artifact identity is invalid");
+      }
+    }
     return this.#mutate(context, "hub_task_status_update", args, () => (
       this.#updateTaskWorkflowStatus(context, args, {
         source: {
+          kind: squashBootstrap ? "squash-cutover" : "await-cutover",
           taskId: sourceTaskId,
           expectedRevision: sourceTaskRevision,
           expectedCommit: sourceCommit,
           expectedProjectorSha256: projectorSha256,
           verifySource,
+          ...(squashCutover ?? {}),
         },
       })
     ));
@@ -992,6 +1036,15 @@ export class HubMcpService {
             squashDevAfterTree: args.squash_dev_after_tree,
             squashProofRequestId: args.squash_proof_request_id,
             expectedSquashTransferHash: args.expected_squash_transfer_hash,
+            squashCutoverSourceTree: args.squash_cutover_source_tree,
+            squashCutoverExpectedMainCommit: args.squash_cutover_expected_main_commit,
+            squashCutoverExpectedDevCommit: args.squash_cutover_expected_dev_commit,
+            squashCutoverExpectedPreservedTree: args.squash_cutover_expected_preserved_tree,
+            squashCutoverSourceZipSha256: args.squash_cutover_source_zip_sha256,
+            squashCutoverBundleSha256: args.squash_cutover_bundle_sha256,
+            squashCutoverManifestSha256: args.squash_cutover_manifest_sha256,
+            squashCutoverFilesSha256: args.squash_cutover_files_sha256,
+            expectedSquashCutoverHash: args.expected_squash_cutover_hash,
           } : {}),
           confirmed: args.confirm_reconcile,
         });
@@ -1392,6 +1445,7 @@ export class HubMcpService {
     squash_dev_after_tree: squashDevAfterTree = null,
     squash_proof_request_id: squashProofRequestId = null,
     expected_squash_transfer_hash: expectedSquashTransferHash = null,
+    expected_squash_cutover_hash: expectedSquashCutoverHash = null,
   } = {}, { source = null } = {}) {
     if ((sourceTaskId != null || sourceTaskRevision != null) && !source) {
       throw new Error("Cross-Task cutover requires the supported local cutover entrypoint");
@@ -1402,13 +1456,16 @@ export class HubMcpService {
       squashSourceTaskId, squashSourceTaskRevision, squashBaselineResultCommit,
       squashNewResultCommit, squashDevAfterTree,
     ];
-    const squashRequested = [...squashValues, squashProofRequestId, expectedSquashTransferHash]
+    const squashRequested = [...squashValues, squashProofRequestId, expectedSquashTransferHash,
+      expectedSquashCutoverHash]
       .some((value) => value != null);
     if (squashRequested) {
       if (squashValues.some((value) => value == null)) {
         throw new Error("Task squash transfer requires the complete exact source/result/tree identity");
       }
-      if (source || sourceTaskId != null || sourceTaskRevision != null || workflowStatus !== "testing") {
+      const squashBootstrap = source?.kind === "squash-cutover";
+      if ((!squashBootstrap && source) || sourceTaskId != null || sourceTaskRevision != null
+          || workflowStatus !== "testing") {
         throw new Error("Task squash transfer is a distinct Test-to-Test operation");
       }
       if (!this.#isReleaseManager(context)) {
@@ -1417,19 +1474,24 @@ export class HubMcpService {
       if (expectedRevision == null) {
         throw new Error("Task squash transfer requires the exact survivor Task revision");
       }
-      if (expectedWorkflowStatus != null && expectedWorkflowStatus !== "testing") {
-        throw new Error("Task squash transfer expected workflow status must be testing");
+      const expectedCurrentStatus = squashBootstrap ? "in_progress" : "testing";
+      if (expectedWorkflowStatus != null && expectedWorkflowStatus !== expectedCurrentStatus) {
+        throw new Error(`Task squash transfer expected workflow status must be ${expectedCurrentStatus}`);
       }
-      if (expectedSquashTransferHash && !squashProofRequestId) {
+      const confirmationRequested = Boolean(expectedSquashTransferHash || expectedSquashCutoverHash);
+      if (squashBootstrap && Boolean(expectedSquashTransferHash) !== Boolean(expectedSquashCutoverHash)) {
+        throw new Error("Task squash cutover confirmation requires both exact hashes");
+      }
+      if (confirmationRequested && !squashProofRequestId) {
         throw new Error("Task squash transfer confirmation requires the exact preview request id");
       }
-      if (!expectedSquashTransferHash && squashProofRequestId) {
+      if (!confirmationRequested && squashProofRequestId) {
         throw new Error("Task squash transfer preview identity is returned by the preview request");
       }
-      const proofRequestId = expectedSquashTransferHash
+      const proofRequestId = confirmationRequested
         ? requiredText(squashProofRequestId, "squash proof request id", 200)
         : operationId;
-      const result = await this.taskLifecycle.squashTransfer({
+      const operation = {
         taskId: task.id,
         sourceTaskId: squashSourceTaskId,
         operationId,
@@ -1451,7 +1513,20 @@ export class HubMcpService {
           threadId: context.threadId,
           proofRequestId,
         },
-      });
+      };
+      const result = squashBootstrap
+        ? await this.taskLifecycle.squashTransferCutover({
+          ...operation,
+          expectedCutoverHash: expectedSquashCutoverHash,
+          reviewedSourceTree: source.reviewedSourceTree,
+          expectedMainCommit: source.expectedMainCommit,
+          expectedDevCommit: source.expectedDevCommit,
+          expectedPreservedTree: source.expectedPreservedTree,
+          projectorSha256: source.expectedProjectorSha256,
+          artifacts: source.artifacts,
+          verifySource: source.verifySource,
+        })
+        : await this.taskLifecycle.squashTransfer(operation);
       return {
         ...result,
         ...(result.task ? { task: compactTask(result.task) } : {}),

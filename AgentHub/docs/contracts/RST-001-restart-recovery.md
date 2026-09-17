@@ -201,3 +201,15 @@ lifecycle outcome; there is no second recovery registry.
 The hash distinguishes the previous accepted survivor result from the reviewed
 clean-before commit, so recovery cannot widen the owner delta or remove foreign
 dev residue after a restart.
+
+The local Progress-to-Test squash bootstrap persists its cutover proof in that
+same transition. Recovery recognizes exact pre-stage, fully staged-before-ref,
+survivor-ref-applied, dev-CAS and pending-materialization states. The reviewed
+commit is already present from preview, and the immutable preserved ref proves
+the approved pre-cutover tracked/untracked tree. Recovery may advance only the
+next exact CAS or materialization step; a partial or changed worktree, late
+ordinary bytes, changed main/dev, missing preserved evidence or mixed cutover
+hash remains unknown without cleanup. The final SQLite commit still waits for
+the ordinary squash Git proof and records both hashes in the existing lifecycle
+outcome. No bootstrap-specific registry or direct database/ref recovery path is
+introduced.

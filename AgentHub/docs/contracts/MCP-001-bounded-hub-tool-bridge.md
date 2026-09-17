@@ -307,6 +307,19 @@ an ancestor of the requested new clean result. The durable proof separately
 captures the survivor's current accepted Test result, so a stale card cannot be
 hidden by supplying a different clean baseline.
 
+The installed public squash contract remains Test-to-Test. A bounded local
+one-shot entrypoint may additionally bootstrap one reviewed replacement when
+the survivor is currently Progress but still owns its exact prior Test result,
+and the source is still Test. That entrypoint binds the reviewed checkout
+commit/tree, projector hash, clean-package ZIP/bundle/manifest/inventory hashes,
+expected main/dev commits, preserved survivor tree, both Task revisions, normal
+transfer hash and a second cutover hash into the canonical
+`hub_task_status_update` receipt. Preview and confirmation have different
+request IDs; `squash_proof_request_id` remains the stable preview identity. The
+entrypoint re-verifies its clean checkout and artifact bytes while both Task,
+repository and Await locks are held. It does not manufacture a prior Test,
+write SQLite or refs directly, or create another receipt/reconciliation owner.
+
 A lost confirmed response is reconciled only through
 `hub_task_operation_reconcile` with the original confirmation arguments and
 hash. A squash transition whose Git commands ended normally has no process-tree
@@ -324,6 +337,13 @@ replay returns that failure. Errors after intent remain unknown until canonical
 readback. Materialization also treats ignored local files and directories as
 user bytes: native checkout collision protection must refuse rather than replace
 them, and a ref-only effect cannot complete the receipt.
+
+For the local bootstrap, the final two-Task SQLite transaction is also the only
+operation that changes the survivor from Progress to Test. It is admitted only
+after exact survivor staging, branch CAS, ordinary squash dev CAS and complete
+Git materialization readback. Unknown-operation reconciliation reproduces every
+cutover argument and both hashes from the original receipt; missing or mixed
+artifact, source, Task, main/dev or preserved-tree identity performs no replay.
 
 `hub_active_runs_list` and `hub_parallel_streams_list` expose bounded,
 payload-free deferred-input summaries separately from live runs. The summary

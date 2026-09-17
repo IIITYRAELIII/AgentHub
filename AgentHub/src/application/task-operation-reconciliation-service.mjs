@@ -4,6 +4,7 @@ import path from "node:path";
 import { normalizedTaskGitReferences } from "../domain/task-git-reference.mjs";
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { normalizedTaskSquashTransfer } from "../domain/task-squash-transfer.mjs";
+import { normalizedTaskSquashCutover } from "../domain/task-squash-cutover.mjs";
 
 function requiredMethod(value, name) {
   if (typeof value?.[name] !== "function") throw new TypeError(`${name} is required`);
@@ -91,6 +92,11 @@ function squashArguments(options = {}) {
     options.squashBaselineResultCommit, options.squashNewResultCommit,
     options.squashDevAfterTree, options.squashProofRequestId,
     options.expectedSquashTransferHash,
+    options.squashCutoverSourceTree, options.squashCutoverExpectedMainCommit,
+    options.squashCutoverExpectedDevCommit, options.squashCutoverExpectedPreservedTree,
+    options.squashCutoverSourceZipSha256, options.squashCutoverBundleSha256,
+    options.squashCutoverManifestSha256, options.squashCutoverFilesSha256,
+    options.expectedSquashCutoverHash,
   ];
   if (values.every((value) => !supplied(value))) return null;
   const revision = Number(options.expectedTaskRevision);
@@ -102,13 +108,35 @@ function squashArguments(options = {}) {
   const result = commit(options.squashNewResultCommit);
   const tree = commit(options.squashDevAfterTree);
   const hash = commit(options.expectedSquashTransferHash);
+  const cutoverValues = [
+    options.cutoverSourceCommit, options.cutoverProjectorSha256,
+    options.squashCutoverSourceTree, options.squashCutoverExpectedMainCommit,
+    options.squashCutoverExpectedDevCommit, options.squashCutoverExpectedPreservedTree,
+    options.squashCutoverSourceZipSha256, options.squashCutoverBundleSha256,
+    options.squashCutoverManifestSha256, options.squashCutoverFilesSha256,
+    options.expectedSquashCutoverHash,
+  ];
+  const hasCutover = cutoverValues.some((value) => supplied(value));
+  const cutoverCommit = (value) => String(value ?? "").trim().toLowerCase();
+  const cutoverHash = cutoverCommit(options.expectedSquashCutoverHash);
   if (!Number.isInteger(revision) || revision < 1
       || !Number.isInteger(sourceRevision) || sourceRevision < 1 || !sourceTaskId
       || !proofRequestId || proofRequestId.length > 200 || /[\r\n\0]/u.test(proofRequestId)
       || (supplied(options.expectedWorkflowStatus)
-        && String(options.expectedWorkflowStatus).trim() !== "testing")
+        && String(options.expectedWorkflowStatus).trim() !== (hasCutover ? "in_progress" : "testing"))
       || ![baseline, result, tree].every((value) => /^[0-9a-f]{40}$/u.test(value))
-      || !/^[0-9a-f]{64}$/u.test(hash)) {
+      || !/^[0-9a-f]{64}$/u.test(hash)
+      || (hasCutover && (
+        String(options.expectedWorkflowStatus ?? "").trim() !== "in_progress"
+        || ![options.cutoverSourceCommit, options.squashCutoverSourceTree,
+          options.squashCutoverExpectedMainCommit, options.squashCutoverExpectedDevCommit,
+          options.squashCutoverExpectedPreservedTree]
+          .every((value) => /^[0-9a-f]{40}$/u.test(cutoverCommit(value)))
+        || ![options.cutoverProjectorSha256, options.squashCutoverSourceZipSha256,
+          options.squashCutoverBundleSha256, options.squashCutoverManifestSha256,
+          options.squashCutoverFilesSha256, cutoverHash]
+          .every((value) => /^[0-9a-f]{64}$/u.test(cutoverCommit(value)))
+      ))) {
     throw new Error("invalid Task squash transfer reconciliation identity");
   }
   return {
@@ -123,6 +151,19 @@ function squashArguments(options = {}) {
     squash_dev_after_tree: tree,
     squash_proof_request_id: proofRequestId,
     expected_squash_transfer_hash: hash,
+    ...(hasCutover ? {
+      cutover_source_commit: cutoverCommit(options.cutoverSourceCommit),
+      cutover_projector_sha256: cutoverCommit(options.cutoverProjectorSha256),
+      squash_cutover_source_tree: cutoverCommit(options.squashCutoverSourceTree),
+      squash_cutover_expected_main_commit: cutoverCommit(options.squashCutoverExpectedMainCommit),
+      squash_cutover_expected_dev_commit: cutoverCommit(options.squashCutoverExpectedDevCommit),
+      squash_cutover_expected_preserved_tree: cutoverCommit(options.squashCutoverExpectedPreservedTree),
+      squash_cutover_source_zip_sha256: cutoverCommit(options.squashCutoverSourceZipSha256),
+      squash_cutover_bundle_sha256: cutoverCommit(options.squashCutoverBundleSha256),
+      squash_cutover_manifest_sha256: cutoverCommit(options.squashCutoverManifestSha256),
+      squash_cutover_files_sha256: cutoverCommit(options.squashCutoverFilesSha256),
+      expected_squash_cutover_hash: cutoverHash,
+    } : {}),
   };
 }
 
@@ -295,6 +336,10 @@ export class TaskOperationReconciliationService {
         ?? outcome?.result?.evidence?.squashTransfer;
       try {
         const proof = normalizedTaskSquashTransfer(proofValue);
+        const cutoverValue = transition?.evidence?.squashCutover
+          ?? outcome?.result?.evidence?.squashCutover ?? null;
+        const expectedCutover = squash.expected_squash_cutover_hash ?? null;
+        const cutoverProof = cutoverValue ? normalizedTaskSquashCutover(cutoverValue) : null;
         squashSourceTask = this.taskBoard.task(proof.source.taskId);
         squashMatches = targetWorkflowStatus === "testing"
           && proof.transferHash === squash.expected_squash_transfer_hash
@@ -307,7 +352,21 @@ export class TaskOperationReconciliationService {
           && proof.devAfterTree === squash.squash_dev_after_tree
           && proof.authority.proofRequestId === squash.squash_proof_request_id
           && samePath(proof.projectRoot, root)
-          && Boolean(squashSourceTask);
+          && Boolean(squashSourceTask)
+          && Boolean(cutoverProof) === Boolean(expectedCutover)
+          && (!cutoverProof || (
+            cutoverProof.cutoverHash === expectedCutover
+            && cutoverProof.reviewedSourceCommit === squash.cutover_source_commit
+            && cutoverProof.reviewedSourceTree === squash.squash_cutover_source_tree
+            && cutoverProof.expectedMainCommit === squash.squash_cutover_expected_main_commit
+            && cutoverProof.expectedDevCommit === squash.squash_cutover_expected_dev_commit
+            && cutoverProof.expectedPreservedTree === squash.squash_cutover_expected_preserved_tree
+            && cutoverProof.projectorSha256 === squash.cutover_projector_sha256
+            && cutoverProof.artifacts.sourceZipSha256 === squash.squash_cutover_source_zip_sha256
+            && cutoverProof.artifacts.bundleSha256 === squash.squash_cutover_bundle_sha256
+            && cutoverProof.artifacts.manifestSha256 === squash.squash_cutover_manifest_sha256
+            && cutoverProof.artifacts.filesSha256 === squash.squash_cutover_files_sha256
+          ));
       } catch { squashMatches = false; }
     }
     if (!receiptMatches || !transitionMatches || !outcomeMatches || !cutoverMatches || !workflowCasMatches
@@ -380,6 +439,9 @@ export class TaskOperationReconciliationService {
         task: identity.outcome.result.task,
         sourceTask: identity.outcome.result.sourceTask,
         squashTransfer: identity.outcome.result.evidence.squashTransfer,
+        ...(identity.outcome.result.evidence.squashCutover ? {
+          squashCutover: identity.outcome.result.evidence.squashCutover,
+        } : {}),
       } : {
         ...identity.outcome.result.task,
         ...(identity.outcome.result?.evidence?.response ?? {}),

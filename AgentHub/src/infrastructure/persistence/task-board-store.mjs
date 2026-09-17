@@ -22,6 +22,7 @@ import {
 } from "../../domain/task-release-snapshot.mjs";
 import { normalizedTaskGitReferences, taskBranchName } from "../../domain/task-git-reference.mjs";
 import { normalizedTaskSquashTransfer } from "../../domain/task-squash-transfer.mjs";
+import { normalizedTaskSquashCutover } from "../../domain/task-squash-cutover.mjs";
 import { normalizedTaskNumber, normalizedWorkspaceTaskPrefix, taskNumberParts } from "../../domain/task-number.mjs";
 import { taskProjectRoot } from "../../domain/task-project-root.mjs";
 import {
@@ -1306,14 +1307,6 @@ export class TaskBoardStore {
     return `${this.revision}:${externalRevision}`;
   }
 
-  get snapshotRevision() {
-    if (!this.#database) return null;
-    const externalRevision = Number(
-      this.#database.prepare("PRAGMA data_version").get()?.data_version,
-    ) || 0;
-    return `${this.#revision}:${externalRevision}`;
-  }
-
   close() {
     this.#database?.close();
     this.#database = null;
@@ -2530,10 +2523,16 @@ export class TaskBoardStore {
             throw new Error("Task lifecycle operation id was already used for another transition");
           }
           const existingTransfer = JSON.parse(existing.evidence_json ?? "{}")?.squashTransfer;
+          const existingCutover = JSON.parse(existing.evidence_json ?? "{}")?.squashCutover;
           if (Boolean(existingTransfer) !== Boolean(evidence?.squashTransfer)
               || (existingTransfer && normalizedTaskSquashTransfer(existingTransfer).transferHash
                 !== normalizedTaskSquashTransfer(evidence.squashTransfer).transferHash)) {
             throw new Error("Task lifecycle operation id was already used for another squash transfer");
+          }
+          if (Boolean(existingCutover) !== Boolean(evidence?.squashCutover)
+              || (existingCutover && normalizedTaskSquashCutover(existingCutover).cutoverHash
+                !== normalizedTaskSquashCutover(evidence.squashCutover).cutoverHash)) {
+            throw new Error("Task lifecycle operation id was already used for another squash cutover");
           }
           database.exec("COMMIT");
           return { task: this.#taskWithRelease(database, current), replayed: true, phase: existing.phase };
@@ -2599,12 +2598,19 @@ export class TaskBoardStore {
         const squashTransfer = evidence?.squashTransfer
           ? normalizedTaskSquashTransfer(evidence.squashTransfer)
           : null;
+        const squashCutover = evidence?.squashCutover
+          ? normalizedTaskSquashCutover(evidence.squashCutover)
+          : null;
         if (squashTransfer) {
+          if (Boolean(squashCutover) && squashCutover.squashTransfer.transferHash !== squashTransfer.transferHash) {
+            throw new Error("Task squash cutover and transfer evidence do not match");
+          }
+          const expectedSurvivorStatus = squashCutover ? "in_progress" : "testing";
           if (normalizedKind !== "workflow" || target !== "testing"
               || squashTransfer.survivor.taskId !== taskId
               || squashTransfer.survivor.revision !== revision
               || squashTransfer.authority.workspaceId !== String(current.workspace_id ?? "")
-              || current.workflow_status !== "testing") {
+              || current.workflow_status !== expectedSurvivorStatus) {
             throw new Error("Task squash transfer survivor identity changed");
           }
           const source = this.#taskRow(database, squashTransfer.source.taskId);
@@ -2829,7 +2835,7 @@ export class TaskBoardStore {
     });
   }
 
-  commitSquashTransferTransition({ operationId, squashTransfer } = {}) {
+  commitSquashTransferTransition({ operationId, squashTransfer, squashCutover = null } = {}) {
     const operation = String(operationId ?? "").trim();
     const proof = normalizedTaskSquashTransfer(squashTransfer);
     if (!proof.integrationCommit) throw new Error("Task squash transfer requires exact Git integration readback");
@@ -2844,9 +2850,14 @@ export class TaskBoardStore {
         const pendingProof = normalizedTaskSquashTransfer(
           JSON.parse(transition.evidence_json)?.squashTransfer,
         );
+        const pendingCutoverValue = JSON.parse(transition.evidence_json)?.squashCutover ?? null;
+        const pendingCutover = pendingCutoverValue ? normalizedTaskSquashCutover(pendingCutoverValue) : null;
+        const suppliedCutover = squashCutover ? normalizedTaskSquashCutover(squashCutover) : null;
         if (pendingProof.transferHash !== proof.transferHash
             || transition.task_id !== proof.survivor.taskId
-            || transition.target_workflow_status !== "testing") {
+            || transition.target_workflow_status !== "testing"
+            || Boolean(pendingCutover) !== Boolean(suppliedCutover)
+            || (pendingCutover && pendingCutover.cutoverHash !== suppliedCutover.cutoverHash)) {
           throw new Error("Task squash transfer evidence changed before commit");
         }
         const survivor = this.#taskRow(database, proof.survivor.taskId);
@@ -2855,7 +2866,8 @@ export class TaskBoardStore {
             || Number(source.row_revision) !== proof.source.revision
             || Number(survivor.release_revision) !== proof.survivor.releaseRevision
             || Number(source.release_revision) !== proof.source.releaseRevision
-            || survivor.workflow_status !== "testing" || source.workflow_status !== "testing") {
+            || survivor.workflow_status !== (pendingCutover ? "in_progress" : "testing")
+            || source.workflow_status !== "testing") {
           throw new Error("Task squash transfer rows changed while Git was applied");
         }
         database.prepare("DELETE FROM hub_task_git_references WHERE task_id = ?").run(survivor.id);
@@ -2865,10 +2877,10 @@ export class TaskBoardStore {
         });
         const now = this.now();
         const survivorChanged = database.prepare(`
-          UPDATE hub_board_tasks SET row_revision = row_revision + 1,
+          UPDATE hub_board_tasks SET workflow_status = 'testing', row_revision = row_revision + 1,
             release_revision = release_revision + 1, updated_at_ms = ?
-          WHERE id = ? AND row_revision = ? AND workflow_status = 'testing'
-        `).run(now, survivor.id, proof.survivor.revision);
+          WHERE id = ? AND row_revision = ? AND workflow_status = ?
+        `).run(now, survivor.id, proof.survivor.revision, pendingCutover ? "in_progress" : "testing");
         const sourceChanged = database.prepare(`
           UPDATE hub_board_tasks SET workflow_status = 'in_progress', completed_at_ms = NULL,
             row_revision = row_revision + 1, release_revision = release_revision + 1, updated_at_ms = ?
@@ -2884,7 +2896,11 @@ export class TaskBoardStore {
         const survivorTask = this.#taskWithRelease(database, this.#taskRow(database, survivor.id));
         const sourceTask = this.#taskWithRelease(database, this.#taskRow(database, source.id));
         const priorState = JSON.parse(transition.prior_state_json);
-        const evidence = { ...JSON.parse(transition.evidence_json), squashTransfer: proof };
+        const evidence = {
+          ...JSON.parse(transition.evidence_json),
+          squashTransfer: proof,
+          ...(pendingCutover ? { squashCutover: pendingCutover } : {}),
+        };
         database.prepare(`
           INSERT OR REPLACE INTO hub_task_lifecycle_outcomes (
             operation_id, task_id, kind, result_json, completed_at_ms
@@ -2898,7 +2914,10 @@ export class TaskBoardStore {
         }), now);
         database.prepare("DELETE FROM hub_task_lifecycle_transitions WHERE operation_id = ?").run(operation);
         database.exec("COMMIT");
-        return { task: survivorTask, sourceTask, squashTransfer: proof };
+        return {
+          task: survivorTask, sourceTask, squashTransfer: proof,
+          ...(pendingCutover ? { squashCutover: pendingCutover } : {}),
+        };
       } catch (error) {
         database.exec("ROLLBACK");
         throw error;

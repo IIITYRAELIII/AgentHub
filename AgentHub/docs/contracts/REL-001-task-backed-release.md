@@ -1457,6 +1457,31 @@ the acting Workspace/Stream/provider/thread plus the stable preview request.
 The later effect request has a separate immutable MCP receipt and does not
 change the transfer hash.
 
+One exact local bootstrap may use this same owner when a reviewed replacement
+must supersede the current Progress survivor before the installed public squash
+is available. The survivor must still reference its unique prior accepted Test
+result; the source must remain Test. The immutable cutover proof adds the pinned
+reviewed checkout commit/tree and projector SHA-256, exact clean-package
+ZIP/bundle/manifest/inventory SHA-256 values, expected main and dev commits, and
+the complete current survivor worktree tree. The first call is read-only and
+returns both the ordinary transfer hash and cutover hash. Confirmation uses a
+new request ID and supplies both hashes plus the preview request ID. Stale
+source, survivor, main, dev, checkout or artifact identity rejects before a
+lifecycle transition or visible Git effect.
+
+Before replacing the Progress checkout, the Git owner writes its exact tracked
+and ordinary untracked snapshot to an immutable commit/ref. Checkout uses native
+ignored-file collision protection. A changed late tracked or ordinary untracked
+snapshot fails closed; unrelated ignored bytes remain in place, and an ignored
+collision is never overwritten. The reviewed commit object is imported during
+preview, so recovery never depends on a mutable source directory. The normal
+squash proof and dev/materialization owner remain unchanged after survivor
+staging. Only exact final Git readback permits the atomic Progress-to-Test
+survivor and Test-to-Progress source commit. This is real Test evidence, not a
+synthetic prerequisite. A subsequent ordinary Test-to-Await acceptance and
+candidate preparation must still succeed; the bootstrap alone is not release
+acceptance and cannot bypass a main/dev mismatch.
+
 The Git owner verifies that the complete source delta exists in the new result.
 A source addition cannot be deleted or replaced by an empty blob. The reviewed
 clean-before commit must be an ancestor of the new clean result. Every changed

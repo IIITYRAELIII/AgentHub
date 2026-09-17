@@ -187,6 +187,66 @@ test("squash transfer reserves and atomically updates both exact Task rows", asy
   assert.equal(store.lifecycleOutcome("squash").result.sourceTask.workflowStatus, "in_progress");
 });
 
+test("squash cutover commits Test ownership only after exact Git readback", async (t) => {
+  const store = await fixture(t);
+  const source = store.create({ text: "Source", bucket: "workspace", workspaceId: "workspace" });
+  const survivor = store.create({ text: "Survivor", bucket: "workspace", workspaceId: "workspace" });
+  const root = path.resolve("D:/repo");
+  const enterTest = (task, resultCommit) => {
+    store.beginLifecycleTransition(task.id, { operationId: `test-${task.id}`, kind: "workflow",
+      targetWorkflowStatus: "testing", expectedRevision: task.revision });
+    return store.commitWorkflowTransition({ operationId: `test-${task.id}`,
+      gitReferences: [{ projectRoot: root, branch: `branch-${task.id}`, resultCommit }],
+      evidence: { resultCommit } });
+  };
+  const testedSource = enterTest(source, "a".repeat(40));
+  const testedSurvivor = enterTest(survivor, "b".repeat(40));
+  store.beginLifecycleTransition(testedSurvivor.id, { operationId: "resume-survivor", kind: "workflow",
+    targetWorkflowStatus: "in_progress", expectedRevision: testedSurvivor.revision });
+  const currentSurvivor = store.commitWorkflowTransition({
+    operationId: "resume-survivor", replaceGitReferences: false,
+  });
+  const transfer = {
+    version: 1, kind: "task-squash-transfer-v1",
+    survivor: { taskId: currentSurvivor.id, revision: currentSurvivor.revision,
+      releaseRevision: currentSurvivor.releaseRevision, resultCommit: "c".repeat(40),
+      baseCommit: "1".repeat(40), branch: `branch-${currentSurvivor.id}` },
+    source: { taskId: testedSource.id, revision: testedSource.revision,
+      releaseRevision: testedSource.releaseRevision, resultCommit: "a".repeat(40),
+      baseCommit: "2".repeat(40), branch: `branch-${testedSource.id}` },
+    projectRoot: root, previousResultCommit: "b".repeat(40), baselineResultCommit: "3".repeat(40),
+    devBeforeCommit: "4".repeat(40), devAfterTree: "5".repeat(40),
+    sourceWitnesses: [{ path: "source.mjs", source: { mode: "100644", object: "6".repeat(40) },
+      survivor: { mode: "100644", object: "6".repeat(40) } }],
+    ownerWitnesses: [{ path: "new.mjs", baseline: null, beforeDev: null,
+      newResult: { mode: "100644", object: "7".repeat(40) },
+      afterDev: { mode: "100644", object: "7".repeat(40) } }],
+    authority: { workspaceId: "workspace", streamId: "release", provider: "codex",
+      threadId: "thread", proofRequestId: "preview" },
+  };
+  const cutover = {
+    version: 1, kind: "task-squash-cutover-v1", expectedMainCommit: "8".repeat(40),
+    expectedDevCommit: "4".repeat(40), expectedPreservedTree: "9".repeat(40),
+    reviewedSourceCommit: "c".repeat(40), reviewedSourceTree: "a".repeat(40),
+    projectorSha256: "b".repeat(64), artifacts: { sourceZipSha256: "c".repeat(64),
+      bundleSha256: "d".repeat(64), manifestSha256: "e".repeat(64), filesSha256: "f".repeat(64) },
+    squashTransfer: transfer,
+  };
+  store.beginLifecycleTransition(currentSurvivor.id, { operationId: "bootstrap", kind: "workflow",
+    targetWorkflowStatus: "testing", expectedRevision: currentSurvivor.revision,
+    evidence: { squashTransfer: transfer, squashCutover: cutover } });
+  assert.equal(store.task(currentSurvivor.id).workflowStatus, "in_progress");
+  assert.equal(store.task(testedSource.id).workflowStatus, "testing");
+  assert.throws(() => store.commitSquashTransferTransition({ operationId: "bootstrap",
+    squashTransfer: transfer, squashCutover: cutover }), /Git integration readback/u);
+  const result = store.commitSquashTransferTransition({ operationId: "bootstrap",
+    squashTransfer: { ...transfer, integrationCommit: "0".repeat(40) }, squashCutover: cutover });
+  assert.equal(result.task.workflowStatus, "testing");
+  assert.equal(result.sourceTask.workflowStatus, "in_progress");
+  assert.equal(result.squashCutover.cutoverHash, store.lifecycleOutcome("bootstrap")
+    .result.evidence.squashCutover.cutoverHash);
+});
+
 test("claim binds the turn without silently returning Test, Await or Blocked to work", async (t) => {
   const store = await fixture(t);
   for (const status of ["testing", "awaiting_implementation", "blocked"]) {

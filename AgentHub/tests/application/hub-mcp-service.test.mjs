@@ -1174,6 +1174,52 @@ test("Release Manager forwards one complete hash-confirmed squash transfer", asy
   });
 });
 
+test("one-shot cutover forwards an in-progress squash bootstrap with immutable source evidence", async (context) => {
+  const { service, token, streamWorkingDirectory } = await fixture(context, { releaseWorkflowEnabled: true });
+  let received;
+  const verifySource = async () => ({ sourceRoot: process.cwd() });
+  service.taskLifecycle.squashTransferCutover = async (options) => {
+    received = options;
+    return { confirmationRequired: true, transferHash: "1".repeat(64), cutoverHash: "2".repeat(64) };
+  };
+  const input = {
+    context_token: token, request_id: "bootstrap-preview", task_id: "task-current",
+    status: "testing", expected_task_revision: 1, expected_workflow_status: "in_progress",
+    cutover_source_commit: "b".repeat(40), cutover_projector_sha256: "c".repeat(64),
+    squash_source_task_id: "task-foreign", squash_source_task_revision: 2,
+    squash_baseline_result_commit: "a".repeat(40), squash_new_result_commit: "b".repeat(40),
+    squash_dev_after_tree: "d".repeat(40), squash_cutover_source_tree: "e".repeat(40),
+    squash_cutover_expected_main_commit: "f".repeat(40),
+    squash_cutover_expected_dev_commit: "0".repeat(40),
+    squash_cutover_expected_preserved_tree: "1".repeat(40),
+    squash_cutover_source_zip_sha256: "2".repeat(64),
+    squash_cutover_bundle_sha256: "3".repeat(64),
+    squash_cutover_manifest_sha256: "4".repeat(64),
+    squash_cutover_files_sha256: "5".repeat(64),
+  };
+  const result = await service.callTaskStatusCutover(input, { verifySource });
+  assert.equal(result.cutoverHash, "2".repeat(64));
+  assert.deepEqual(received, {
+    taskId: "task-current", sourceTaskId: "task-foreign", operationId: "bootstrap-preview",
+    expectedTaskRevision: 1, expectedSourceTaskRevision: 2,
+    baselineResultCommit: "a".repeat(40), newResultCommit: "b".repeat(40),
+    devAfterTree: "d".repeat(40), expectedTransferHash: null,
+    projectRoot: streamWorkingDirectory,
+    authority: { workspaceId: "workspace-1", streamId: "stream-1", provider: "codex",
+      threadId: "thread-1", proofRequestId: "bootstrap-preview" },
+    expectedCutoverHash: null, reviewedSourceTree: "e".repeat(40),
+    expectedMainCommit: "f".repeat(40), expectedDevCommit: "0".repeat(40),
+    expectedPreservedTree: "1".repeat(40), projectorSha256: "c".repeat(64),
+    artifacts: { sourceZipSha256: "2".repeat(64), bundleSha256: "3".repeat(64),
+      manifestSha256: "4".repeat(64), filesSha256: "5".repeat(64) },
+    verifySource,
+  });
+  await assert.rejects(service.callTaskStatusCutover({
+    ...input, request_id: "bootstrap-half-confirm", squash_proof_request_id: "bootstrap-preview",
+    expected_squash_transfer_hash: "1".repeat(64),
+  }, { verifySource }), /both exact hashes/u);
+});
+
 test("Release Manager confirms a squash preview in a new MCP request through the real lifecycle", async (context) => {
   const state = await fixture(context, { releaseWorkflowEnabled: true });
   const { service, token, streamWorkingDirectory, tasks, taskBoard, taskGitWorkspaces, operations } = state;
@@ -1746,6 +1792,17 @@ test("claim forwards an explicit user dependency exception and complete forwards
     task_id: "task-current", absorbed_into_task_id: "task-survivor" });
   assert.equal(received.absorbedIntoTaskId, "task-survivor");
   assert.equal(result.cleanupToken, "preview");
+});
+
+test("HubMcpService describes the steering fallback to queued delivery", async (context) => {
+  const { service } = await fixture(context);
+  const mode = service.tools()
+    .find((tool) => tool.name === "hub_stream_message_send")
+    .inputSchema.properties.mode;
+
+  assert.match(mode.description, /steer the active turn/u);
+  assert.match(mode.description, /queue if steering is no longer possible/u);
+  assert.doesNotMatch(mode.description, /explicit retry or queue decision/u);
 });
 
 test("HubMcpService claims the active turn while an older terminal remains retained", async (context) => {

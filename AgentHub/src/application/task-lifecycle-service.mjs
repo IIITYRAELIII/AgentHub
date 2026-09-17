@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { ReleaseCandidateFrozenError, TaskAbsorptionCompositionError } from "../domain/task-board-task.mjs";
+import { normalizedTaskSquashCutover } from "../domain/task-squash-cutover.mjs";
 
 export class TaskWithdrawalBusyError extends Error {
   constructor(cause) {
@@ -407,6 +408,146 @@ export class TaskLifecycleService {
     ));
   }
 
+  async squashTransferCutover({
+    taskId, sourceTaskId, operationId, expectedTaskRevision, expectedSourceTaskRevision,
+    baselineResultCommit, newResultCommit, devAfterTree, expectedTransferHash = null,
+    expectedCutoverHash = null, authority = null, projectRoot = null,
+    reviewedSourceTree, expectedMainCommit, expectedDevCommit, expectedPreservedTree,
+    projectorSha256, artifacts, verifySource,
+  } = {}) {
+    for (const name of [
+      "withTaskLocks", "previewSquashCutoverOwned", "applySquashCutoverOwned", "readSquashCutoverOwned",
+    ]) requiredMethod(this.taskGitWorkspaces, name);
+    requiredMethod(this.taskBoard, "commitSquashTransferTransition");
+    const initialSurvivor = this.#task(taskId);
+    const initialSource = this.#task(sourceTaskId);
+    const workspace = initialSurvivor.workspaceId
+      ? this.workspaceCatalog.workspace(initialSurvivor.workspaceId)
+      : null;
+    if (!workspace || workspace.settings?.releaseWorkflowEnabled !== true
+        || initialSource.workspaceId !== initialSurvivor.workspaceId
+        || initialSource.id === initialSurvivor.id) {
+      throw new TaskSquashTransferRejectedError("Task squash cutover requires two Tasks in one enabled release Workspace");
+    }
+    const root = path.resolve(String(projectRoot || this.#projectRoot(initialSurvivor) || ""));
+    if (!root || !samePath(root, this.#projectRoot(initialSource))) {
+      throw new TaskSquashTransferRejectedError("Task squash cutover repository does not match");
+    }
+    const operation = String(operationId ?? "").trim();
+    if (!operation) throw new TaskSquashTransferRejectedError("Task squash cutover operation id is required");
+    return this.releasePreflight.withAwaitTransition(workspace.id, () => this.taskGitWorkspaces.withTaskLocks(
+      [initialSource.id, initialSurvivor.id],
+      async (lease) => {
+        const survivor = this.#task(initialSurvivor.id);
+        const source = this.#task(initialSource.id);
+        if (survivor.workflowStatus !== "in_progress" || source.workflowStatus !== "testing"
+            || survivor.revision !== Number(expectedTaskRevision)
+            || source.revision !== Number(expectedSourceTaskRevision)) {
+          throw new TaskSquashTransferRejectedError("Task squash cutover revisions or statuses changed");
+        }
+        const cutoverIdentity = {
+          expectedMainCommit, expectedDevCommit, expectedPreservedTree,
+          reviewedSourceCommit: newResultCommit, reviewedSourceTree, projectorSha256, artifacts,
+        };
+        requiredMethod({ verifySource }, "verifySource");
+        const inspected = await verifySource();
+        const inspectedArtifacts = inspected?.artifacts ?? {};
+        if (String(inspected?.headCommit ?? "").trim().toLowerCase() !== String(newResultCommit ?? "").trim().toLowerCase()
+            || String(inspected?.headTree ?? "").trim().toLowerCase() !== String(reviewedSourceTree ?? "").trim().toLowerCase()
+            || String(inspected?.projectorSha256 ?? "").trim().toLowerCase() !== String(projectorSha256 ?? "").trim().toLowerCase()
+            || JSON.stringify(inspectedArtifacts) !== JSON.stringify(artifacts)) {
+          throw new TaskSquashTransferRejectedError("Task squash cutover reviewed source or artifact identity changed");
+        }
+        const preview = await this.taskGitWorkspaces.previewSquashCutoverOwned({
+          source, survivor, projectRoot: root, baselineResultCommit, newResultCommit,
+          devAfterTree, authority, reviewedSourceRoot: inspected.sourceRoot,
+          cutover: cutoverIdentity, lease,
+        });
+        if (preview.devBeforeCommit !== String(expectedDevCommit ?? "").trim().toLowerCase()) {
+          throw new TaskSquashTransferRejectedError("Task squash cutover dev identity changed");
+        }
+        const cutover = normalizedTaskSquashCutover({
+          version: 1, kind: "task-squash-cutover-v1", ...cutoverIdentity,
+          squashTransfer: preview,
+        });
+        if (!expectedTransferHash && !expectedCutoverHash) return {
+          confirmationRequired: true,
+          transferHash: preview.transferHash,
+          cutoverHash: cutover.cutoverHash,
+          squashTransfer: preview,
+          squashCutover: cutover,
+          task: survivor,
+          sourceTask: source,
+        };
+        if (String(expectedTransferHash ?? "").trim().toLowerCase() !== preview.transferHash
+            || String(expectedCutoverHash ?? "").trim().toLowerCase() !== cutover.cutoverHash) {
+          throw new TaskSquashTransferRejectedError("Task squash cutover confirmation hash changed");
+        }
+        await this.#assertOwned(lease);
+        await this.#mutation(() => this.taskBoard.beginLifecycleTransition({
+          id: survivor.id,
+          operationId: operation,
+          kind: "workflow",
+          targetWorkflowStatus: "testing",
+          expectedRevision: survivor.revision,
+          evidence: { squashTransfer: preview, squashCutover: cutover },
+          releaseContext: {
+            workspaceId: survivor.workspaceId,
+            streamId: survivor.streamId,
+            projectRoot: root,
+            source: {
+              taskId: source.id, revision: source.revision,
+              workflowStatus: source.workflowStatus,
+              resultCommit: preview.source.resultCommit, projectRoot: root,
+            },
+          },
+        }), operation);
+        let applied;
+        try {
+          applied = await this.taskGitWorkspaces.applySquashCutoverOwned({
+            cutover, source, survivor, lease,
+          });
+        } catch (error) {
+          const readback = await this.taskGitWorkspaces.readSquashCutoverOwned(cutover, {
+            projectRoot: root, lease,
+          });
+          if (readback.status === "applied") applied = { cutover, squashTransfer: readback.proof };
+          else if (readback.status === "not_staged") {
+            await this.#failWhileOwned(lease, operation, error);
+            throw error;
+          } else {
+            const unknown = new Error(`Task squash cutover Git outcome is unknown: ${error.message}`);
+            unknown.code = "TASK_SQUASH_TRANSFER_UNKNOWN";
+            throw unknown;
+          }
+        }
+        await this.#assertOwned(lease);
+        try {
+          return await this.#mutation(() => this.taskBoard.commitSquashTransferTransition({
+            operationId: operation,
+            squashTransfer: applied.squashTransfer,
+            squashCutover: cutover,
+          }), operation);
+        } catch (error) {
+          const outcome = this.taskBoard.lifecycleOutcome(operation);
+          if (outcome?.taskId === survivor.id
+              && outcome.result?.evidence?.squashTransfer?.transferHash === preview.transferHash
+              && outcome.result?.evidence?.squashCutover?.cutoverHash === cutover.cutoverHash) {
+            return {
+              task: outcome.result.task, sourceTask: outcome.result.sourceTask,
+              squashTransfer: outcome.result.evidence.squashTransfer,
+              squashCutover: outcome.result.evidence.squashCutover,
+            };
+          }
+          const unknown = new Error(`Task squash cutover durable outcome is unknown: ${error.message}`);
+          unknown.code = "TASK_SQUASH_TRANSFER_UNKNOWN";
+          throw unknown;
+        }
+      },
+      { guardTaskId: initialSurvivor.id },
+    ));
+  }
+
   async #updateWorkflowStatusLocked({
     taskId, status, operationId, binding = {}, projectRoot = null,
     expectedRevision = null, expectedWorkflowStatus = null, operationEvidence = null,
@@ -743,9 +884,12 @@ export class TaskLifecycleService {
     const transition = this.taskBoard.lifecycleTransition?.(operationId);
     const squashTransfer = transition?.evidence?.squashTransfer ?? null;
     if (squashTransfer) {
-      requiredMethod(this.taskGitWorkspaces, "readSquashTransferOwned");
-      requiredMethod(this.taskGitWorkspaces, "applySquashTransferOwned");
-      requiredMethod(this.taskGitWorkspaces, "materializeSquashTransferOwned");
+      const squashCutover = transition?.evidence?.squashCutover ?? null;
+      for (const name of squashCutover
+        ? ["readSquashCutoverOwned", "applySquashCutoverOwned"]
+        : ["readSquashTransferOwned", "applySquashTransferOwned", "materializeSquashTransferOwned"]) {
+        requiredMethod(this.taskGitWorkspaces, name);
+      }
       requiredMethod(this.taskGitWorkspaces, "assertNoProcessTreeGuardOwned");
       requiredMethod(this.taskBoard, "commitSquashTransferTransition");
       const source = this.#task(squashTransfer.source.taskId);
@@ -753,7 +897,8 @@ export class TaskLifecycleService {
           || transition.phase !== "pending_git" || transition.targetWorkflowStatus !== "testing"
           || current.revision !== transition.expectedRevision
           || source.revision !== transition.priorSourceTask?.revision
-          || current.workflowStatus !== "testing" || source.workflowStatus !== "testing") {
+          || current.workflowStatus !== (squashCutover ? "in_progress" : "testing")
+          || source.workflowStatus !== "testing") {
         throw new Error("Unknown squash transfer identity or two-Task CAS does not match");
       }
       const recovery = guardId ? await this.taskGitWorkspaces.recoverProcessTreeGuard(current.id, {
@@ -762,29 +907,26 @@ export class TaskLifecycleService {
       if (!guardId) {
         await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(current.id, { lease });
       }
-      let readback = await this.taskGitWorkspaces.readSquashTransferOwned(squashTransfer, {
-        projectRoot, lease,
-      });
-      if (readback.status === "not_applied") {
+      let readback = squashCutover
+        ? await this.taskGitWorkspaces.readSquashCutoverOwned(squashCutover, { projectRoot, lease })
+        : await this.taskGitWorkspaces.readSquashTransferOwned(squashTransfer, { projectRoot, lease });
+      if (squashCutover && ["not_staged", "staged_before_ref", "not_applied", "pending_materialization"].includes(readback.status)) {
+        const applied = await this.taskGitWorkspaces.applySquashCutoverOwned({
+          cutover: squashCutover, source, survivor: current, lease,
+        });
+        readback = { status: "applied", proof: applied.squashTransfer };
+      } else if (!squashCutover && readback.status === "not_applied") {
         const applied = await this.taskGitWorkspaces.applySquashTransferOwned({
-          source,
-          survivor: current,
-          projectRoot,
+          source, survivor: current, projectRoot,
           baselineResultCommit: squashTransfer.baselineResultCommit,
           newResultCommit: squashTransfer.survivor.resultCommit,
-          devAfterTree: squashTransfer.devAfterTree,
-          authority: squashTransfer.authority,
-          expectedTransferHash: squashTransfer.transferHash,
-          lease,
+          devAfterTree: squashTransfer.devAfterTree, authority: squashTransfer.authority,
+          expectedTransferHash: squashTransfer.transferHash, lease,
         });
         readback = { status: "applied", proof: applied };
-      } else if (readback.status === "pending_materialization") {
-        await this.taskGitWorkspaces.materializeSquashTransferOwned(readback.proof, {
-          projectRoot, lease,
-        });
-        readback = await this.taskGitWorkspaces.readSquashTransferOwned(readback.proof, {
-          projectRoot, lease,
-        });
+      } else if (!squashCutover && readback.status === "pending_materialization") {
+        await this.taskGitWorkspaces.materializeSquashTransferOwned(readback.proof, { projectRoot, lease });
+        readback = await this.taskGitWorkspaces.readSquashTransferOwned(readback.proof, { projectRoot, lease });
       }
       if (readback.status !== "applied") {
         throw new Error("Unknown squash transfer Git effect cannot be reconciled safely");
@@ -792,6 +934,7 @@ export class TaskLifecycleService {
       const result = await this.#mutation(() => this.taskBoard.commitSquashTransferTransition({
         operationId,
         squashTransfer: readback.proof,
+        ...(squashCutover ? { squashCutover } : {}),
       }), operationId);
       return { result, recovery };
     }

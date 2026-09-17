@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { TaskLifecycleService } from "../../src/application/task-lifecycle-service.mjs";
+import { normalizedTaskSquashTransfer } from "../../src/domain/task-squash-transfer.mjs";
 
 function lifecycleFixture({ synchronousFence = false } = {}) {
   const task = {
@@ -328,6 +329,103 @@ test("cross-Task cutover rejects missing, mismatched or ambiguous source authori
     }), /unique authoritative Task result/u);
     assert.equal(begins, 0);
   }
+});
+
++test("squash bootstrap rejects stale source, survivor, main, dev and proof before effects", async (t) => {
+  const projectRoot = process.platform === "win32" ? "C:\\repo" : "/repo";
+  const commits = Object.fromEntries("abcdefgh".split("").map((name, index) => [name, String(index + 1).repeat(40)]));
+  const artifacts = {
+    sourceZipSha256: "a".repeat(64), bundleSha256: "b".repeat(64),
+    manifestSha256: "c".repeat(64), filesSha256: "d".repeat(64),
+  };
+  const authority = {
+    workspaceId: "workspace-1", streamId: "stream-1", provider: "codex",
+    threadId: "thread-1", proofRequestId: "bootstrap-preview",
+  };
+  const transfer = normalizedTaskSquashTransfer({
+    version: 1, kind: "task-squash-transfer-v1", projectRoot,
+    previousResultCommit: commits.a, baselineResultCommit: commits.b,
+    devBeforeCommit: commits.d, devAfterTree: commits.e,
+    survivor: { taskId: "survivor", revision: 8, releaseRevision: 6,
+      resultCommit: commits.c, baseCommit: commits.a, branch: "HUB-235" },
+    source: { taskId: "source", revision: 4, releaseRevision: 4,
+      resultCommit: commits.f, baseCommit: commits.a, branch: "HUB-224" },
+    sourceWitnesses: [{ path: "source.txt", source: { mode: "100644", object: commits.g },
+      survivor: { mode: "100644", object: commits.g } }],
+    ownerWitnesses: [{ path: "owner.txt", baseline: null, beforeDev: null,
+      newResult: { mode: "100644", object: commits.h },
+      afterDev: { mode: "100644", object: commits.h } }],
+    authority,
+  });
+  const baseTasks = {
+    survivor: { id: "survivor", taskNumber: "HUB-235", revision: 8, releaseRevision: 6,
+      workspaceId: "workspace-1", streamId: "stream-1", workflowStatus: "in_progress",
+      gitReferences: [{ projectRoot, branch: "HUB-235", resultCommit: commits.a }] },
+    source: { id: "source", taskNumber: "HUB-224", revision: 4, releaseRevision: 4,
+      workspaceId: "workspace-1", streamId: "stream-1", workflowStatus: "testing",
+      gitReferences: [{ projectRoot, branch: "HUB-224", resultCommit: commits.f }] },
+  };
+  const request = {
+    taskId: "survivor", sourceTaskId: "source", operationId: "bootstrap-confirm",
+    expectedTaskRevision: 8, expectedSourceTaskRevision: 4,
+    baselineResultCommit: commits.b, newResultCommit: commits.c, devAfterTree: commits.e,
+    authority, projectRoot, reviewedSourceTree: commits.h,
+    expectedMainCommit: commits.b, expectedDevCommit: commits.d,
+    expectedPreservedTree: commits.g, projectorSha256: "e".repeat(64), artifacts,
+    verifySource: async () => ({ sourceRoot: projectRoot, headCommit: commits.c,
+      headTree: commits.h, projectorSha256: "e".repeat(64), artifacts }),
+  };
+  const scenarios = [
+    { name: "source", mutate: (tasks) => { tasks.source.revision += 1; }, error: /revisions or statuses/u },
+    { name: "survivor", mutate: (tasks) => { tasks.survivor.revision += 1; }, error: /revisions or statuses/u },
+    { name: "main", previewError: new Error("Squash cutover main identity changed"), error: /main identity changed/u },
+    { name: "dev", preview: { ...transfer, transferHash: undefined,
+      devBeforeCommit: commits.f }, error: /dev identity changed/u },
+    { name: "proof", expectedHashes: true, error: /confirmation hash changed/u },
+  ];
+  for (const scenario of scenarios) await t.test(scenario.name, async () => {
+    const tasks = structuredClone(baseTasks);
+    scenario.mutate?.(tasks);
+    let begin = 0;
+    let apply = 0;
+    const lease = { signal: null, async assertOwned() {} };
+    const service = new TaskLifecycleService({
+      taskBoard: {
+        task: (id) => structuredClone(tasks[id]),
+        beginLifecycleTransition: () => { begin += 1; },
+        commitWorkflowTransition: () => { throw new Error("unexpected workflow commit"); },
+        commitSquashTransferTransition: () => { throw new Error("unexpected commit"); },
+        failLifecycleTransition: () => true,
+        rollbackWorkflowOutcome: () => {},
+        finalizeCleanupTransition: () => {},
+      },
+      taskGitWorkspaces: {
+        withTaskLock: (_id, operation) => operation(lease),
+        withTaskLocks: (_ids, operation) => operation(lease),
+        prepareOwned: async () => { throw new Error("unexpected prepare"); },
+        snapshotAndMergeOwned: async () => { throw new Error("unexpected snapshot"); },
+        cleanupOwned: async () => {},
+        cleanupPreview: async () => ({}),
+        previewSquashCutoverOwned: async () => {
+          if (scenario.previewError) throw scenario.previewError;
+          return scenario.preview ? normalizedTaskSquashTransfer(scenario.preview) : transfer;
+        },
+        applySquashCutoverOwned: async () => { apply += 1; throw new Error("unexpected apply"); },
+        readSquashCutoverOwned: async () => ({ status: "unknown" }),
+      },
+      workspaceCatalog: {
+        workspace: () => ({ id: "workspace-1", settings: { workingDirectory: projectRoot,
+          releaseWorkflowEnabled: true } }),
+        stream: () => ({ id: "stream-1", workspaceId: "workspace-1", settings: {} }),
+      },
+      releasePreflight: { withAwaitTransition: (_id, operation) => operation() },
+    });
+    await assert.rejects(service.squashTransferCutover({ ...request,
+      ...(scenario.expectedHashes ? { expectedTransferHash: "f".repeat(64),
+        expectedCutoverHash: "0".repeat(64) } : {}) }), scenario.error);
+    assert.equal(begin, 0);
+    assert.equal(apply, 0);
+  });
 });
 
 test("unknown workflow recovery retains the repository lease through Git continuation", async () => {
