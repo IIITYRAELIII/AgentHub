@@ -44,10 +44,12 @@ test("Task history projects exact terminal journal turns without file evidence o
   assert.equal(store.task(task.id).workLog.length, 1);
   assert.equal(store.task(task.id).workLog[0].summary, "Corrected title");
   await journal.upsertRecords([{ ...record, provisional: false, contextProbe: true }]);
-  assert.deepEqual(store.task(task.id).workLog, []);
-  await journal.upsertRecords([{ ...record, provisional: false, status: "interrupted" }]);
+  assert.deepEqual(store.task(task.id).workLog, log);
+  assert.deepEqual(store.list()[0].workLog, log);
+  await journal.upsertRecords([{ ...record, provisional: false, contextProbe: true, status: "interrupted" }]);
   store.close();
   store = new TaskBoardStore({ databaseFile });
+  assert.equal(store.task(task.id).workLog.length, 1);
   assert.equal(store.task(task.id).workLog[0].status, "interrupted");
   const raw = new DatabaseSync(databaseFile);
   assert.equal(raw.prepare("SELECT count(*) AS n FROM hub_task_work_log").get().n, 0);

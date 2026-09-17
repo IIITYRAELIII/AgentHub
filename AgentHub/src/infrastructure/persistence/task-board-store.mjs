@@ -1193,7 +1193,6 @@ export class TaskBoardStore {
         WHERE b.task_id = ? AND json_valid(j.record_json)
           AND j.completed_at_ms IS NOT NULL
           AND coalesce(json_extract(j.record_json, '$.provisional'), 0) = 0
-          AND coalesce(json_extract(j.record_json, '$.contextProbe'), 0) = 0
           AND coalesce(json_extract(j.record_json, '$.aggregateOnly'), 0) = 0
           AND json_extract(j.record_json, '$.status') IN ('completed', 'failed', 'cancelled', 'interrupted')
       `).all(taskId);
