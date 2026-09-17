@@ -2909,7 +2909,7 @@ export class TaskGitWorkspaceService {
 
   async #squashCutoverMaterializationPlan(cutover, repoRoot, lease) {
     const addedPaths = String(await this.#runOwned([
-      "diff", "--name-only", "--diff-filter=A", "-z",
+      "diff", "--no-renames", "--name-only", "--diff-filter=A", "-z",
       cutover.expectedPreservedTree, cutover.reviewedSourceTree,
     ], { cwd: repoRoot, lease })).split("\0").filter(Boolean).sort();
     const temporaryRoot = path.join(this.dataDir, "task-squash-cutover-indices", randomUUID());
@@ -2948,7 +2948,7 @@ export class TaskGitWorkspaceService {
       const expected = additions.get(name);
       if (!actual || actual.mode !== expected.mode || actual.object !== expected.object) return false;
     }
-    return tree !== cutover.reviewedSourceTree;
+    return true;
   }
 
   async previewSquashCutoverOwned(params = {}) {
@@ -2983,6 +2983,14 @@ export class TaskGitWorkspaceService {
       const snapshot = await this.#taskWorktreeSnapshotTree(proof.survivor.taskId, repoRoot, ownedLease);
       if (branch === proof.previousResultCommit && snapshot.headCommit === proof.previousResultCommit
           && snapshot.tree === cutover.expectedPreservedTree) {
+        const preservedRef = `refs/agent-hub/task-squash-cutovers/${cutover.cutoverHash}/preserved`;
+        const preservedCommit = await gitMaybe(["rev-parse", "--verify", `${preservedRef}^{commit}`], { cwd: repoRoot });
+        if (preservedCommit) {
+          const plan = await this.#squashCutoverMaterializationPlan(cutover, repoRoot, ownedLease);
+          if (plan.additions.length && plan.withoutAddedTree === cutover.expectedPreservedTree) {
+            return { status: "materializing_additions", cutover };
+          }
+        }
         return { status: "not_staged", cutover };
       }
       if (branch === proof.previousResultCommit && snapshot.headCommit === proof.previousResultCommit

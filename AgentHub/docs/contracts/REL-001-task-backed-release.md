@@ -1473,7 +1473,12 @@ Before replacing the Progress checkout, the Git owner writes its exact tracked
 and ordinary untracked snapshot to an immutable commit/ref. Checkout uses native
 ignored-file collision protection. A changed late tracked or ordinary untracked
 snapshot fails closed; unrelated ignored bytes remain in place, and an ignored
-collision is never overwritten. The reviewed commit object is imported during
+collision is never overwritten. Target paths absent from the preserved tree are
+derived with rename and copy detection disabled, so a rename destination cannot
+bypass the same exclusive-create boundary. Recovery recognizes the exact
+preserved-plus-subset-of-target-additions state, including an additions-only
+replacement and a crash after the last file copy but before its index update.
+The reviewed commit object is imported during
 preview, so recovery never depends on a mutable source directory. The normal
 squash proof and dev/materialization owner remain unchanged after survivor
 staging. Only exact final Git readback permits the atomic Progress-to-Test

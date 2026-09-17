@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
+import { TaskLifecycleService } from "../../src/application/task-lifecycle-service.mjs";
 import { TaskOperationReconciliationService } from "../../src/application/task-operation-reconciliation-service.mjs";
 
 function hashArguments(value) {
@@ -780,25 +781,70 @@ test("unknown squash bootstrap reproduces the complete cutover receipt and settl
     evidence: { squashTransfer: transfer, squashCutover: cutover } };
   let outcome = null;
   const settlements = [];
-  const taskBoard = { task: (id) => id === survivor.id ? survivor : id === source.id ? source : null,
-    lifecycleTransition: () => transition, lifecycleOutcome: () => outcome };
-  const taskLifecycle = {
-    withUnknownWorkflowReconciliationLock: async (options, operation) => {
-      assert.equal(options.sourceTaskId, source.id);
-      return operation({ async assertOwned() {} });
-    },
-    reconcileUnknownWorkflowStatusOwned: async () => {
+  let readbacks = 0;
+  let applyCalls = 0;
+  const taskBoard = {
+    task: (id) => id === survivor.id ? survivor : id === source.id ? source : null,
+    lifecycleTransition: () => transition,
+    lifecycleOutcome: () => outcome,
+    beginLifecycleTransition: () => { throw new Error("original receipt recovery must not begin another transition"); },
+    commitWorkflowTransition: () => { throw new Error("squash recovery must use its two-Task commit"); },
+    failLifecycleTransition: () => { throw new Error("successful recovery must not fail the transition"); },
+    rollbackWorkflowOutcome: () => { throw new Error("squash recovery must not roll back workflow"); },
+    finalizeCleanupTransition: () => { throw new Error("squash recovery must not clean Task artifacts"); },
+    commitSquashTransferTransition: ({ operationId, squashTransfer, squashCutover }) => {
+      assert.equal(operationId, receipt.requestId);
+      assert.equal(squashCutover.cutoverHash, cutover.cutoverHash);
       survivor.workflowStatus = "testing"; survivor.revision = 8;
       survivor.gitReferences[0].resultCommit = transfer.survivor.resultCommit;
       source.workflowStatus = "in_progress"; source.revision = 5;
-      const applied = normalizedTaskSquashTransfer({ ...transfer, integrationCommit: "0".repeat(40) });
+      const applied = normalizedTaskSquashTransfer(squashTransfer);
       outcome = { operationId: receipt.requestId, taskId: survivor.id, kind: "workflow", result: {
         task: structuredClone(survivor), sourceTask: structuredClone(source),
         evidence: { squashTransfer: applied, squashCutover: cutover } } };
       transition = null;
-      return { result: outcome.result };
+      return outcome.result;
     },
   };
+  const lease = { signal: null, async assertOwned() {} };
+  const taskGitWorkspaces = {
+    withTaskLock: (_taskId, operation) => operation(lease),
+    withTaskRecoveryLock: (_taskId, operation) => operation(lease),
+    withTaskRecoveryLocks: (ids, operation) => {
+      assert.deepEqual(ids, [survivor.id, source.id]);
+      return operation(lease);
+    },
+    withTaskRepositoryRecoveryLock: (_taskId, root, ownedLease, operation) => {
+      assert.equal(root, projectRoot);
+      assert.equal(ownedLease, lease);
+      return operation(lease);
+    },
+    prepareOwned: async () => { throw new Error("squash recovery must not prepare a Task worktree"); },
+    snapshotAndMergeOwned: async () => { throw new Error("squash recovery must not take a new Test snapshot"); },
+    cleanupOwned: async () => { throw new Error("squash recovery must not clean Task artifacts"); },
+    cleanupPreview: async () => ({ workspaces: [], gitReferences: [], deleting: [] }),
+    assertNoProcessTreeGuardOwned: async () => {},
+    readSquashCutoverOwned: async () => {
+      readbacks += 1;
+      return { status: "materializing_additions", cutover };
+    },
+    applySquashCutoverOwned: async ({ cutover: actualCutover }) => {
+      applyCalls += 1;
+      assert.equal(actualCutover.cutoverHash, cutover.cutoverHash);
+      return { cutover, squashTransfer: normalizedTaskSquashTransfer({
+        ...transfer, integrationCommit: "0".repeat(40),
+      }) };
+    },
+  };
+  const taskLifecycle = new TaskLifecycleService({
+    taskBoard,
+    taskGitWorkspaces,
+    workspaceCatalog: {
+      workspace: () => workspace,
+      stream: (id) => ({ id, workspaceId: workspace.id, settings: {} }),
+    },
+    releasePreflight: { withAwaitTransition: (_id, operation) => operation() },
+  });
   const service = new TaskOperationReconciliationService({
     workspaceCatalog: { workspace: () => workspace,
       stream: (id) => ({ id, workspaceId: workspace.id, settings: {} }), mcpOperation: () => receipt,
@@ -826,6 +872,8 @@ test("unknown squash bootstrap reproduces the complete cutover receipt and settl
     squashCutoverFilesSha256: cutover.artifacts.filesSha256,
     expectedSquashCutoverHash: cutover.cutoverHash });
   assert.equal(result.outcome, "succeeded");
+  assert.equal(readbacks, 1);
+  assert.equal(applyCalls, 1);
   assert.equal(settlements.length, 1);
   assert.equal(settlements[0].result.squashCutover.cutoverHash, cutover.cutoverHash);
 });

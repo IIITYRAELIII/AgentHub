@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
-import { access, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -11,13 +11,14 @@ import { TaskBoardService } from "./src/application/task-board-service.mjs";
 import { TaskLifecycleService } from "./src/application/task-lifecycle-service.mjs";
 import { TaskReleasePlanService } from "./src/application/task-release-plan-service.mjs";
 import { WorkspaceReleasePreflightService } from "./src/application/workspace-release-preflight-service.mjs";
+import { resolveReleaseValidationSource } from "./src/composition/infrastructure-composition.mjs";
 import { createPersistenceMutationCapabilities } from "./src/composition/persistence-mutation-composition.mjs";
 import { taskProjectRoot } from "./src/domain/task-project-root.mjs";
 import { loadConfig, samePath } from "./src/infrastructure/filesystem/config.mjs";
 import { ReleaseGitWorkspaceService } from "./src/infrastructure/filesystem/release-git-workspace.mjs";
 import { TaskGitWorkspaceService } from "./src/infrastructure/filesystem/task-git-workspace.mjs";
 import { readPublicationState } from "./src/infrastructure/persistence/publication-state.mjs";
-import { readTestContourStatus, startTestContour } from "./src/runtime/test-contour-manager.mjs";
+import { createRepositoryProductionValidationAdapter } from "./src/infrastructure/process/repository-production-validation.mjs";
 import { openTaskOperationReconciliationStores } from "./src/interfaces/cli/task-operation-reconciliation-runtime.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -160,17 +161,6 @@ export async function inspectTaskAwaitCutoverSource({
   return { sourceRoot: workspaceRoot, headCommit, headTree, projectorRelativePath, projectorSha256, artifacts };
 }
 
-export async function resolveTaskAwaitTestContourSource(repositories) {
-  for (const repository of repositories) {
-    const sourceRoot = path.join(repository.worktreeRoot, "AgentHub");
-    try {
-      await access(path.join(sourceRoot, "test-contour.mjs"));
-      return { kind: "agent-hub-test-contour", ...repository, sourceRoot };
-    } catch {}
-  }
-  throw new Error("release preflight could not locate AgentHub in an integrated dev worktree");
-}
-
 export async function openTaskAwaitCutoverRuntime({
   config: suppliedConfig = null,
   openStores = openTaskOperationReconciliationStores,
@@ -201,11 +191,11 @@ export async function openTaskAwaitCutoverRuntime({
     releasePlanner,
     taskGitWorkspaces,
     releaseGitWorkspaces,
-    resolveTestContourSource: resolveTaskAwaitTestContourSource,
-    refreshTestContour: ({ sourceRoot, ...options }) => startTestContour({
-      refresh: true, sourceRoot, entryFile: path.join(sourceRoot, "test-contour.mjs"), ...options,
+    resolveReleaseValidationSource,
+    validateProductionCandidate: createRepositoryProductionValidationAdapter({
+      policies: config.releaseValidation?.repositories ?? [],
+      dataDir: path.join(config.dataDir, "release-validation"),
     }),
-    readTestContourStatus,
     readPublicationState,
   });
   const taskLifecycle = new TaskLifecycleService({

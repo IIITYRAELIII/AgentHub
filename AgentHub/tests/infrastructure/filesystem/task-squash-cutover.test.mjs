@@ -32,8 +32,10 @@ test("squash cutover preserves dirty bytes and resumes exact staged Git state", 
   await git(root, "init", "-b", "main");
   await git(root, "config", "core.autocrlf", "false");
   await git(root, "config", "core.ignorecase", "true");
-  await writeFile(path.join(root, ".gitignore"), "combined.txt\nignored-late.txt\nFoo.txt\nDir/\n");
+  await writeFile(path.join(root, ".gitignore"), "combined.txt\nignored-late.txt\nFoo.txt\nDir/\nrename-y069.txt\nrename-z100.txt\n");
   await writeFile(path.join(root, "app.txt"), "main\n");
+  await writeFile(path.join(root, "rename-old-069.txt"), Array.from({ length: 100 }, (_value, index) => `line ${index}\n`).join(""));
+  await writeFile(path.join(root, "rename-old-100.txt"), "same rename bytes\n");
   const main = await commit(root, "main");
   await mkdir(origin);
   await git(origin, "init", "--bare");
@@ -44,6 +46,9 @@ test("squash cutover preserves dirty bytes and resumes exact staged Git state", 
   let interruptAfterPreservedRef = false;
   let interruptBeforeSafeMaterialization = false;
   let injectLateIgnoredCollision = false;
+  let injectLateRename069Collision = false;
+  let injectLateRename100Collision = false;
+  let interruptAfterLastCopyBeforeIndex = false;
   const service = new TaskGitWorkspaceService({
     dataDir,
     runCommand: async (args, options) => {
@@ -67,6 +72,21 @@ test("squash cutover preserves dirty bytes and resumes exact staged Git state", 
         injectLateIgnoredCollision = false;
         await writeFile(path.join(options.cwd, "combined.txt"), "late ignored bytes\n");
       }
+      if (injectLateRename069Collision && args[0] === "cat-file"
+          && args[1] === "-e" && args[2]?.endsWith(":rename-y069.txt")) {
+        injectLateRename069Collision = false;
+        await writeFile(path.join(options.cwd, "rename-y069.txt"), "late R069 user bytes\n");
+      }
+      if (injectLateRename100Collision && args[0] === "cat-file"
+          && args[1] === "-e" && args[2]?.endsWith(":rename-z100.txt")) {
+        injectLateRename100Collision = false;
+        await writeFile(path.join(options.cwd, "rename-z100.txt"), "late R100 user bytes\n");
+      }
+      if (interruptAfterLastCopyBeforeIndex && args[0] === "update-index"
+          && args[1] === "--add" && args.at(-1) === "rename-z100.txt") {
+        interruptAfterLastCopyBeforeIndex = false;
+        throw new Error("injected crash after last exclusive copy before cacheinfo");
+      }
       return runTaskGitCommand(args, options);
     },
   });
@@ -77,7 +97,7 @@ test("squash cutover preserves dirty bytes and resumes exact staged Git state", 
   await writeFile(path.join(survivorWorkspace.projectRoot, "residue.txt"), "excluded\n");
   const survivorTest = await service.snapshotAndMerge({ taskId: SURVIVOR_ID, taskNumber: "HUB-235", projectRoot: survivorWorkspace.projectRoot });
 
-  await git(root, "clone", survivorWorkspace.projectRoot, reviewed);
+  await git(root, "-c", "core.autocrlf=false", "clone", survivorWorkspace.projectRoot, reviewed);
   await git(reviewed, "config", "core.autocrlf", "false");
   await git(reviewed, "checkout", "--detach", survivorTest.snapshot.headCommit);
   await rm(path.join(reviewed, "residue.txt"));
@@ -87,9 +107,20 @@ test("squash cutover preserves dirty bytes and resumes exact staged Git state", 
   await writeFile(path.join(reviewed, "foo.txt"), "reviewed file case\n");
   await mkdir(path.join(reviewed, "dir"));
   await writeFile(path.join(reviewed, "dir", "x.txt"), "reviewed directory case\n");
-  await git(reviewed, "add", "-f", "combined.txt", "foo.txt", "dir/x.txt");
+  await git(reviewed, "mv", "rename-old-069.txt", "rename-y069.txt");
+  await writeFile(path.join(reviewed, "rename-y069.txt"), `${Array.from({ length: 100 }, (_value, index) => (
+    index < 7 ? `replacement content ${index}\n` : `line ${index}\n`
+  )).join("")}${Array.from({ length: 20 }, (_value, index) => `added ${index}\n`).join("")}`);
+  await git(reviewed, "mv", "rename-old-100.txt", "rename-z100.txt");
+  await git(reviewed, "add", "-f", "combined.txt", "foo.txt", "dir/x.txt", "rename-y069.txt", "rename-z100.txt");
   const newResult = await commit(reviewed, "reviewed clean result");
   const reviewedTree = await git(reviewed, "rev-parse", "HEAD^{tree}");
+  const heuristicDiff = await git(reviewed, "diff", "--name-status", baseline, newResult);
+  assert.match(heuristicDiff, /R100\trename-old-100\.txt\trename-z100\.txt/u);
+  assert.match(heuristicDiff, /R069\trename-old-069\.txt\trename-y069\.txt/u);
+  const noRenameDiff = await git(reviewed, "diff", "--no-renames", "--name-status", baseline, newResult);
+  assert.match(noRenameDiff, /A\trename-y069\.txt/u);
+  assert.match(noRenameDiff, /A\trename-z100\.txt/u);
 
   const dev = await service.prepareDev(root);
   const devBefore = await git(dev.projectRoot, "rev-parse", "HEAD");
@@ -97,7 +128,12 @@ test("squash cutover preserves dirty bytes and resumes exact staged Git state", 
   await writeFile(path.join(dev.projectRoot, "foo.txt"), "reviewed file case\n");
   await mkdir(path.join(dev.projectRoot, "dir"));
   await writeFile(path.join(dev.projectRoot, "dir", "x.txt"), "reviewed directory case\n");
-  await git(dev.projectRoot, "add", "-f", "combined.txt", "foo.txt", "dir/x.txt");
+  await rm(path.join(dev.projectRoot, "rename-old-069.txt"));
+  await rm(path.join(dev.projectRoot, "rename-old-100.txt"));
+  await writeFile(path.join(dev.projectRoot, "rename-y069.txt"), await readFile(path.join(reviewed, "rename-y069.txt")));
+  await writeFile(path.join(dev.projectRoot, "rename-z100.txt"), "same rename bytes\n");
+  await git(dev.projectRoot, "add", "-A");
+  await git(dev.projectRoot, "add", "-f", "combined.txt", "foo.txt", "dir/x.txt", "rename-y069.txt", "rename-z100.txt");
   const devAfterTree = await git(dev.projectRoot, "write-tree");
   await git(dev.projectRoot, "reset", "--hard", devBefore);
 
@@ -178,6 +214,29 @@ test("squash cutover preserves dirty bytes and resumes exact staged Git state", 
     assert.equal((await service.readSquashCutoverOwned(cutover, { projectRoot: root, lease })).status,
       "materializing_additions");
     await rm(path.join(survivorWorkspace.projectRoot, "combined.txt"));
+    injectLateRename069Collision = true;
+    await assert.rejects(service.applySquashCutoverOwned({ cutover, source: common.source,
+      survivor: common.survivor, lease }), /collides with unknown bytes/u);
+    assert.equal(await readFile(path.join(survivorWorkspace.projectRoot, "rename-y069.txt"), "utf8"),
+      "late R069 user bytes\n");
+    assert.equal((await service.readSquashCutoverOwned(cutover, { projectRoot: root, lease })).status,
+      "materializing_additions");
+    await rm(path.join(survivorWorkspace.projectRoot, "rename-y069.txt"));
+    injectLateRename100Collision = true;
+    await assert.rejects(service.applySquashCutoverOwned({ cutover, source: common.source,
+      survivor: common.survivor, lease }), /collides with unknown bytes/u);
+    assert.equal(await readFile(path.join(survivorWorkspace.projectRoot, "rename-z100.txt"), "utf8"),
+      "late R100 user bytes\n");
+    assert.equal((await service.readSquashCutoverOwned(cutover, { projectRoot: root, lease })).status,
+      "materializing_additions");
+    await rm(path.join(survivorWorkspace.projectRoot, "rename-z100.txt"));
+    interruptAfterLastCopyBeforeIndex = true;
+    await assert.rejects(service.applySquashCutoverOwned({ cutover, source: common.source,
+      survivor: common.survivor, lease }), /after last exclusive copy/u);
+    assert.equal(await readFile(path.join(survivorWorkspace.projectRoot, "rename-z100.txt"), "utf8"),
+      "same rename bytes\n");
+    assert.equal((await service.readSquashCutoverOwned(cutover, { projectRoot: root, lease })).status,
+      "materializing_additions");
     interruptBranchCas = true;
     await assert.rejects(service.applySquashCutoverOwned({ cutover, source: common.source,
       survivor: common.survivor, lease }), /injected crash/u);
@@ -190,5 +249,97 @@ test("squash cutover preserves dirty bytes and resumes exact staged Git state", 
     assert.equal(await readFile(path.join(survivorWorkspace.projectRoot, "ignored-late.txt"), "utf8"), "ignored survives\n");
     const preservedRef = `refs/agent-hub/task-squash-cutovers/${applied.cutover.cutoverHash}/preserved^{tree}`;
     assert.equal(await git(root, "rev-parse", preservedRef), preservedTree);
+  }, { guardTaskId: SURVIVOR_ID });
+});
+
+test("squash cutover materializes an additions-only reviewed replacement", { timeout: 90_000 }, async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-squash-additions-only-"));
+  const dataDir = `${root}-data`;
+  const reviewed = `${root}-reviewed`;
+  const origin = `${root}-origin`;
+  context.after(() => Promise.all([root, dataDir, reviewed, origin]
+    .map((item) => rm(item, { recursive: true, force: true }))));
+  await git(root, "init", "-b", "main");
+  await git(root, "config", "core.autocrlf", "false");
+  await writeFile(path.join(root, ".gitignore"), "only-added.txt\nunrelated-ignored.txt\n");
+  await writeFile(path.join(root, "app.txt"), "main\n");
+  const main = await commit(root, "main");
+  await mkdir(origin);
+  await git(origin, "init", "--bare");
+  await git(root, "remote", "add", "origin", origin);
+  await git(root, "push", "-u", "origin", "main");
+
+  const service = new TaskGitWorkspaceService({ dataDir });
+  const sourceWorkspace = await service.prepare({ taskId: SOURCE_ID, taskNumber: "HUB-224", projectRoot: root });
+  await writeFile(path.join(sourceWorkspace.projectRoot, "selected.txt"), "selected\n");
+  const sourceTest = await service.snapshotAndMerge({
+    taskId: SOURCE_ID, taskNumber: "HUB-224", projectRoot: sourceWorkspace.projectRoot,
+  });
+  const survivorWorkspace = await service.prepare({ taskId: SURVIVOR_ID, taskNumber: "HUB-235", projectRoot: root });
+  await writeFile(path.join(survivorWorkspace.projectRoot, "residue.txt"), "excluded\n");
+  const survivorTest = await service.snapshotAndMerge({
+    taskId: SURVIVOR_ID, taskNumber: "HUB-235", projectRoot: survivorWorkspace.projectRoot,
+  });
+
+  await git(root, "-c", "core.autocrlf=false", "clone", survivorWorkspace.projectRoot, reviewed);
+  await git(reviewed, "config", "core.autocrlf", "false");
+  await git(reviewed, "checkout", "--detach", survivorTest.snapshot.headCommit);
+  await rm(path.join(reviewed, "residue.txt"));
+  await writeFile(path.join(reviewed, "selected.txt"), "selected\n");
+  const baseline = await commit(reviewed, "reviewed preserved baseline");
+  await writeFile(path.join(reviewed, "only-added.txt"), "reviewed addition\n");
+  await git(reviewed, "add", "-f", "only-added.txt");
+  const newResult = await commit(reviewed, "reviewed addition only");
+  const reviewedTree = await git(reviewed, "rev-parse", "HEAD^{tree}");
+
+  await rm(path.join(survivorWorkspace.projectRoot, "residue.txt"));
+  await writeFile(path.join(survivorWorkspace.projectRoot, "selected.txt"), "selected\n");
+  await git(survivorWorkspace.projectRoot, "add", "-A");
+  const preservedTree = await git(survivorWorkspace.projectRoot, "write-tree");
+  await git(survivorWorkspace.projectRoot, "reset");
+  const baselineTree = await git(reviewed, "rev-parse", `${baseline}^{tree}`);
+  await git(root, "fetch", "--no-tags", reviewed, baseline);
+  assert.equal(preservedTree, baselineTree,
+    `preserved/baseline difference: ${await git(root, "diff", "--name-status", preservedTree, baselineTree)}`);
+  await writeFile(path.join(survivorWorkspace.projectRoot, "unrelated-ignored.txt"), "keep me\n");
+
+  const dev = await service.prepareDev(root);
+  const devBefore = await git(dev.projectRoot, "rev-parse", "HEAD");
+  await writeFile(path.join(dev.projectRoot, "only-added.txt"), "reviewed addition\n");
+  await git(dev.projectRoot, "add", "-A");
+  await git(dev.projectRoot, "add", "-f", "only-added.txt");
+  const devAfterTree = await git(dev.projectRoot, "write-tree");
+  await git(dev.projectRoot, "reset", "--hard", devBefore);
+
+  const source = { id: SOURCE_ID, revision: 4, releaseRevision: 4, workflowStatus: "testing",
+    gitReferences: [{ projectRoot: root, branch: sourceWorkspace.branch, resultCommit: sourceTest.snapshot.headCommit }] };
+  const survivor = { id: SURVIVOR_ID, revision: 8, releaseRevision: 6, workflowStatus: "in_progress",
+    gitReferences: [{ projectRoot: root, branch: survivorWorkspace.branch, resultCommit: survivorTest.snapshot.headCommit }] };
+  await service.withTaskLocks([SOURCE_ID, SURVIVOR_ID], async (lease) => {
+    const preview = await service.previewSquashCutoverOwned({
+      source, survivor, projectRoot: root, baselineResultCommit: baseline,
+      newResultCommit: newResult, devAfterTree,
+      authority: { workspaceId: "workspace", streamId: "release", provider: "codex",
+        threadId: "thread", proofRequestId: "additions-only-preview" },
+      reviewedSourceRoot: reviewed,
+      cutover: {
+        expectedMainCommit: main, expectedDevCommit: devBefore, expectedPreservedTree: preservedTree,
+        reviewedSourceCommit: newResult, reviewedSourceTree: reviewedTree, projectorSha256: "a".repeat(64),
+        artifacts: { sourceZipSha256: "b".repeat(64), bundleSha256: "c".repeat(64),
+          manifestSha256: "d".repeat(64), filesSha256: "e".repeat(64) },
+      },
+      lease,
+    });
+    const cutover = { version: 1, kind: "task-squash-cutover-v1",
+      expectedMainCommit: main, expectedDevCommit: devBefore, expectedPreservedTree: preservedTree,
+      reviewedSourceCommit: newResult, reviewedSourceTree: reviewedTree, projectorSha256: "a".repeat(64),
+      artifacts: { sourceZipSha256: "b".repeat(64), bundleSha256: "c".repeat(64),
+        manifestSha256: "d".repeat(64), filesSha256: "e".repeat(64) },
+      squashTransfer: preview };
+    const applied = await service.applySquashCutoverOwned({ cutover, source, survivor, lease });
+    assert.equal((await service.readSquashCutoverOwned(cutover, { projectRoot: root, lease })).status, "applied");
+    assert.equal(await readFile(path.join(survivorWorkspace.projectRoot, "only-added.txt"), "utf8"), "reviewed addition\n");
+    assert.equal(await readFile(path.join(survivorWorkspace.projectRoot, "unrelated-ignored.txt"), "utf8"), "keep me\n");
+    assert.match(applied.squashTransfer.integrationCommit, /^[0-9a-f]{40}$/u);
   }, { guardTaskId: SURVIVOR_ID });
 });

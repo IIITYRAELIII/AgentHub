@@ -11,7 +11,6 @@ import {
   executeTaskAwaitCutover,
   openTaskAwaitCutoverRuntime,
   parseTaskAwaitCutoverArguments,
-  resolveTaskAwaitTestContourSource,
 } from "../../../task-await-cutover.mjs";
 import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
@@ -173,19 +172,41 @@ test("squash bootstrap enters the supported cutover with exact artifact identity
   assert.equal("expected_squash_transfer_hash" in mutation, false);
 });
 
-test("Await cutover composition identifies the Agent Hub Test Contour owner", async (context) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-await-contour-source-"));
-  context.after(() => rm(root, { recursive: true, force: true }));
-  const sourceRoot = path.join(root, "AgentHub");
-  await mkdir(sourceRoot);
-  await writeFile(path.join(sourceRoot, "test-contour.mjs"), "", "utf8");
-  const repository = { projectRoot: "D:/repository", worktreeRoot: root, headCommit: sha };
-
-  assert.deepEqual(await resolveTaskAwaitTestContourSource([repository]), {
-    kind: "agent-hub-test-contour",
-    ...repository,
-    sourceRoot,
+test("Await cutover default CLI runtime composes canonical release validation", async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-await-default-preflight-"));
+  let runtime = null;
+  context.after(async () => {
+    runtime?.close();
+    await rm(root, { recursive: true, force: true });
   });
+  const lease = { signal: null, async assertOwned() {} };
+  const taskGitWorkspaces = {
+    withTaskLock: (_taskId, operation) => operation(lease),
+    prepareOwned: async () => { throw new Error("construction must not prepare Git"); },
+    snapshotAndMergeOwned: async () => { throw new Error("construction must not snapshot Git"); },
+    cleanupOwned: async () => { throw new Error("construction must not clean Git"); },
+    cleanupPreview: async () => ({ workspaces: [], gitReferences: [], deleting: [] }),
+    releaseEvidence: async () => [],
+    assertExplicitUpstreamAdoption: async () => {},
+    releaseIntegrationEvidence: async () => [],
+  };
+  const releaseGitWorkspaces = {
+    assertPrimaryInvariant: async () => { throw new Error("construction must not inspect primary Git"); },
+    inspectMainChanges: async () => { throw new Error("construction must not inspect main"); },
+    prepareCandidate: async () => { throw new Error("construction must not prepare a candidate"); },
+    withAwaitTransition: async (_workspaceId, operation) => operation(),
+  };
+  runtime = await openTaskAwaitCutoverRuntime({
+    config: {
+      dataDir: root,
+      projectRoot: root,
+      taskBoard: { autoPlaceConfidence: 0.82 },
+      releaseValidation: { repositories: [] },
+    },
+    taskGitWorkspaces,
+    releaseGitWorkspaces,
+  });
+  assert.ok(runtime.service);
 });
 
 test("Await cutover sends a separate source Task through the supported locked cutover", async () => {

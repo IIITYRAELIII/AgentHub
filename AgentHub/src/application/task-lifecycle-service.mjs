@@ -910,7 +910,7 @@ export class TaskLifecycleService {
       let readback = squashCutover
         ? await this.taskGitWorkspaces.readSquashCutoverOwned(squashCutover, { projectRoot, lease })
         : await this.taskGitWorkspaces.readSquashTransferOwned(squashTransfer, { projectRoot, lease });
-      if (squashCutover && ["not_staged", "staged_before_ref", "not_applied", "pending_materialization"].includes(readback.status)) {
+      if (squashCutover && ["not_staged", "materializing_additions", "staged_before_ref", "not_applied", "pending_materialization"].includes(readback.status)) {
         const applied = await this.taskGitWorkspaces.applySquashCutoverOwned({
           cutover: squashCutover, source, survivor: current, lease,
         });

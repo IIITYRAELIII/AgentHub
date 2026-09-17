@@ -198,7 +198,7 @@ function usageSyncRuntimeHomeIds(identityStore) {
   };
 }
 
-async function resolveReleaseValidationSource(repositories) {
+export async function resolveReleaseValidationSource(repositories) {
   for (const repository of repositories) {
     const sourceRoot = path.join(repository.worktreeRoot, "AgentHub");
     try {
